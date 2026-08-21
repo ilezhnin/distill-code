@@ -26,6 +26,7 @@ Environment variables:
   GOOSE_DEV_COMMIT           override pinned commit from lockfile
   GOOSE_DEV_PACKAGE          override cargo package from lockfile
   GOOSE_DEV_BIN              override built binary name from lockfile
+  GOOSE_DEV_PATCH_DIR        Goose patch directory (default: ./patches/goose)
   GOOSE_DEV_ALLOW_DIRTY      1 to allow building a dirty checkout
   GOOSE_BUILD_PROFILE        debug|release (default: debug)
   GOOSE_DEV_OPT_LEVEL        opt-level when GOOSE_BUILD_PROFILE=debug (default: 1)
@@ -84,6 +85,7 @@ pinned_ref="${GOOSE_DEV_REF:-${GOOSE_DEV_BRANCH:-${lock_ref:-main}}}"
 pinned_commit="${GOOSE_DEV_COMMIT:-$lock_commit}"
 goose_package="${GOOSE_DEV_PACKAGE:-${lock_package:-goose-cli}}"
 goose_bin="${GOOSE_DEV_BIN:-${lock_bin:-goose}}"
+goose_patch_dir="${GOOSE_DEV_PATCH_DIR:-$repo_root/patches/goose}"
 allow_dirty="${GOOSE_DEV_ALLOW_DIRTY:-0}"
 build_profile="${GOOSE_BUILD_PROFILE:-debug}"
 if [[ "$build_profile" != "debug" && "$build_profile" != "release" ]]; then
@@ -143,6 +145,60 @@ resolve_ref_to_commit() {
   git -C "$goose_repo" ls-remote "$remote" "$ref" 2>/dev/null | awk 'NR == 1 { print $1 }'
 }
 
+declare -a goose_patch_files=()
+if [[ -d "$goose_patch_dir" ]]; then
+  while IFS= read -r patch_file; do
+    goose_patch_files+=("$patch_file")
+  done < <(find "$goose_patch_dir" -maxdepth 1 -type f -name '*.patch' | sort)
+fi
+
+goose_patch_fingerprint="$(
+  python3 - "$goose_patch_dir" <<'PY'
+import glob
+import hashlib
+import os
+import sys
+
+root = sys.argv[1]
+paths = sorted(glob.glob(os.path.join(root, "*.patch"))) if os.path.isdir(root) else []
+if not paths:
+    print("none")
+    raise SystemExit
+
+digest = hashlib.sha256()
+for path in paths:
+    name = os.path.basename(path).encode("utf-8")
+    with open(path, "rb") as handle:
+        data = handle.read()
+    digest.update(name)
+    digest.update(b"\0")
+    digest.update(str(len(data)).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(data)
+    digest.update(b"\0")
+print(digest.hexdigest())
+PY
+)"
+
+goose_patches_already_applied() {
+  ((${#goose_patch_files[@]} > 0)) || return 1
+  local patch_file
+  for patch_file in "${goose_patch_files[@]}"; do
+    git -C "$goose_repo" apply --reverse --check "$patch_file" >/dev/null 2>&1 || return 1
+  done
+}
+
+apply_goose_patches() {
+  ((${#goose_patch_files[@]} > 0)) || return 0
+  local patch_file
+  for patch_file in "${goose_patch_files[@]}"; do
+    log "Applying Goose patch $(basename "$patch_file")."
+    git -C "$goose_repo" apply --whitespace=nowarn "$patch_file" >/dev/null 2>&1 || {
+      fail_or_skip "Failed to apply Goose patch $patch_file to managed checkout at $goose_repo."
+    }
+  done
+}
+
 # Ask cargo where it will actually write the binary. With CARGO_TARGET_DIR
 # exported above, this is deterministic; we still go through `cargo metadata`
 # (rather than hard-coding the path) so the script and cargo can't disagree
@@ -168,6 +224,7 @@ write_stamp() {
     printf 'STAMP_COMMIT=%q\n' "$commit_sha"
     printf 'STAMP_PACKAGE=%q\n' "$goose_package"
     printf 'STAMP_BIN_NAME=%q\n' "$goose_bin"
+    printf 'STAMP_PATCH_FINGERPRINT=%q\n' "$goose_patch_fingerprint"
     printf 'STAMP_BUILD_PROFILE=%q\n' "$build_profile"
     printf 'STAMP_OPT_LEVEL=%q\n' "$goose_dev_opt_level"
     printf 'STAMP_BIN=%q\n' "$bin_path"
@@ -183,6 +240,7 @@ stamp_matches_current_build() {
   [[ "${STAMP_COMMIT:-}" == "$pinned_commit" ]] || return 1
   [[ "${STAMP_PACKAGE:-$goose_package}" == "$goose_package" ]] || return 1
   [[ "${STAMP_BIN_NAME:-$goose_bin}" == "$goose_bin" ]] || return 1
+  [[ "${STAMP_PATCH_FINGERPRINT:-none}" == "$goose_patch_fingerprint" ]] || return 1
   [[ "${STAMP_BUILD_PROFILE:-}" == "$build_profile" ]] || return 1
   # A stamp without STAMP_OPT_LEVEL predates the opt-level knob, meaning its
   # binary was built at cargo's dev default (0). Default the comparison to 0 —
@@ -220,7 +278,8 @@ ensure_checkout_exists
 
 bin_path="$(resolve_bin_path)"
 
-if [[ "$allow_dirty" != "1" && -n "$(git -C "$goose_repo" status --porcelain)" ]]; then
+if [[ "$allow_dirty" != "1" && -n "$(git -C "$goose_repo" status --porcelain)" ]] &&
+  ! goose_patches_already_applied; then
   fail_or_skip "Managed goose checkout at $goose_repo is dirty. Use a dedicated checkout or set GOOSE_DEV_ALLOW_DIRTY=1."
 fi
 
@@ -257,6 +316,7 @@ fi
 
 git -C "$goose_repo" checkout --detach "$pinned_commit" >/dev/null 2>&1
 git -C "$goose_repo" reset --hard "$pinned_commit" >/dev/null 2>&1
+apply_goose_patches
 
 log "Building Goose from $goose_repo at $pinned_commit."
 # --locked keeps the build on the pinned commit's Cargo.lock. Release bundles

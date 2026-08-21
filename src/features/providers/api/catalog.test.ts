@@ -114,6 +114,39 @@ describe("provider setup catalog API", () => {
     ]);
     expect(mocks.catalogList).toHaveBeenCalledWith({});
   });
+
+  it("rewrites xAI SuperGrok native sign-in to an API key setup", () => {
+    expect(
+      mapProviderSetupCatalogEntryDto({
+        providerId: "xai",
+        name: "xAI (SuperGrok Subscription)",
+        category: "model",
+        description: "Grok via SuperGrok",
+        setupMethod: "oauth_browser",
+        nativeConnectQuery: "xai",
+        group: "default",
+        showOnlyWhenInstalled: false,
+        supportsInstall: false,
+        supportsAuth: false,
+        supportsAuthStatus: false,
+      }),
+    ).toMatchObject({
+      id: "xai",
+      displayName: "xAI",
+      description: "Grok models via the xAI API",
+      setupMethod: "single_api_key",
+      nativeConnectQuery: undefined,
+      fields: [
+        {
+          key: "XAI_API_KEY",
+          label: "API key",
+          secret: true,
+          required: true,
+          placeholder: "xai-...",
+        },
+      ],
+    });
+  });
 });
 
 describe("selectSetupCatalogModelProviders", () => {

@@ -13,7 +13,7 @@ const catalogEntries: ProviderCatalogEntry[] = [
     id: "goose",
     displayName: "Goose",
     category: "agent",
-    description: "Block's open-source coding agent",
+    description: "Open-source agent harness with your configured model providers",
     setupMethod: "none",
     group: "default",
     aliases: ["goose"],
@@ -75,6 +75,7 @@ describe("provider catalog selectors", () => {
       "goose",
       "claude-acp",
       "codex-acp",
+      "grok-acp",
       "copilot-acp",
       "amp-acp",
       "cursor-agent",
@@ -82,6 +83,16 @@ describe("provider catalog selectors", () => {
     expect(getModelProviders().map((provider) => provider.id)).toEqual([
       "databricks_v2",
     ]);
+  });
+
+  it("does not alias the Grok agent to the xAI model provider id", () => {
+    expect(getCatalogEntry("grok-acp")?.aliases).toEqual([
+      "grok-acp",
+      "grok_cli",
+      "grok-cli",
+      "grok",
+    ]);
+    expect(resolveAgentProviderCatalogId("xai")).toBeNull();
   });
 
   it("uses loaded cache entries for provider selectors", () => {

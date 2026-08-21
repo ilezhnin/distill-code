@@ -97,7 +97,7 @@ const providerCatalog: ProviderCatalogEntry[] = [
     id: "goose",
     displayName: "Goose",
     category: "agent",
-    description: "Block's open-source coding agent",
+    description: "Open-source agent harness with your configured model providers",
     setupMethod: "none",
     group: "default",
   },
@@ -350,7 +350,7 @@ describe("ProvidersSettings", () => {
       ).toBeGreaterThan(0);
       expect(screen.queryByText("Anthropic")).not.toBeInTheDocument();
       expect(
-        screen.queryByText("Connect a model provider"),
+        screen.queryByText("Choose a model provider"),
       ).not.toBeInTheDocument();
 
       await act(async () => {
@@ -358,7 +358,7 @@ describe("ProvidersSettings", () => {
       });
 
       expect(
-        screen.getAllByText("Connect a model provider").length,
+        screen.getAllByText("Choose a model provider").length,
       ).toBeGreaterThan(0);
       fireEvent.click(screen.getByRole("button", { name: /model providers/i }));
       expect(screen.getByText("Anthropic")).toBeInTheDocument();
@@ -402,7 +402,7 @@ describe("ProvidersSettings", () => {
         screen.getAllByText("Checking provider status...").length,
       ).toBeGreaterThan(0);
       expect(
-        screen.queryByText("Connect a model provider"),
+        screen.queryByText("Choose a model provider"),
       ).not.toBeInTheDocument();
 
       await act(async () => {
@@ -410,7 +410,7 @@ describe("ProvidersSettings", () => {
       });
 
       expect(
-        screen.getAllByText("Connect a model provider").length,
+        screen.getAllByText("Choose a model provider").length,
       ).toBeGreaterThan(0);
       fireEvent.click(screen.getByRole("button", { name: /model providers/i }));
       expect(screen.getByText("Anthropic")).toBeInTheDocument();
@@ -482,7 +482,7 @@ describe("ProvidersSettings", () => {
       screen.getAllByText("Checking provider status...").length,
     ).toBeGreaterThan(0);
     expect(
-      screen.queryByText("Connect a model provider"),
+      screen.queryByText("Choose a model provider"),
     ).not.toBeInTheDocument();
 
     resolveSecrets([
@@ -504,7 +504,7 @@ describe("ProvidersSettings", () => {
       expect(screen.getAllByText("OpenAI").length).toBeGreaterThan(0);
     });
     expect(
-      screen.queryByText("Connect a model provider"),
+      screen.queryByText("Choose a model provider"),
     ).not.toBeInTheDocument();
   });
 
@@ -609,7 +609,7 @@ describe("ProvidersSettings", () => {
 
     await waitFor(() => {
       expect(
-        screen.getAllByText("Connect a model provider").length,
+        screen.getAllByText("Choose a model provider").length,
       ).toBeGreaterThan(0);
     });
     expect(

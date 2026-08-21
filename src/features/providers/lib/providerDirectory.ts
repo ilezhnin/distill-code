@@ -5,6 +5,7 @@ export const PROMOTED_PROVIDER_IDS = [
   "anthropic",
   "google",
   "openai",
+  "xai",
   "openrouter",
 ] as const;
 
@@ -12,6 +13,7 @@ const DISPLAY_NAME_OVERRIDES: Readonly<Record<string, string>> = {
   google: "Gemini",
   databricks: "Databricks Model Serving",
   databricks_v2: "Databricks",
+  xai: "xAI",
 };
 
 export interface SetupProviderChoice {

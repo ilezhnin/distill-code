@@ -904,6 +904,11 @@ function Get-GooseBackendSettings {
         $remote = "origin"
     }
 
+    $patchDir = $env:GOOSE_DEV_PATCH_DIR
+    if ([string]::IsNullOrWhiteSpace($patchDir)) {
+        $patchDir = Join-Path $script:RepoRoot "patches\goose"
+    }
+
     return [pscustomobject]@{
         LockFile = $lockFile
         CloneUrl = $repo
@@ -915,6 +920,8 @@ function Get-GooseBackendSettings {
         BuildProfile = $buildProfile
         Remote = $remote
         AllowDirty = ($env:GOOSE_DEV_ALLOW_DIRTY -eq "1")
+        PatchDir = $patchDir
+        PatchFingerprint = (Get-GoosePatchFingerprint -PatchDir $patchDir)
     }
 }
 
@@ -1182,6 +1189,85 @@ function Resolve-GooseBinaryPath {
     return (Join-Path (Join-Path $targetDir $Settings.BuildProfile) (Get-WindowsExeName $Settings.Bin))
 }
 
+function Get-GoosePatchFiles {
+    param([AllowEmptyString()][string]$PatchDir)
+
+    if ([string]::IsNullOrWhiteSpace($PatchDir) -or -not (Test-Path -LiteralPath $PatchDir -PathType Container)) {
+        return @()
+    }
+
+    return @(Get-ChildItem -LiteralPath $PatchDir -File -Filter "*.patch" | Sort-Object -Property Name)
+}
+
+function Get-GoosePatchFingerprint {
+    param([AllowEmptyString()][string]$PatchDir)
+
+    $files = @(Get-GoosePatchFiles -PatchDir $PatchDir)
+    if ($files.Count -eq 0) {
+        return "none"
+    }
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $zero = [byte[]](0)
+        foreach ($file in $files) {
+            $nameBytes = [System.Text.Encoding]::UTF8.GetBytes($file.Name)
+            $data = [System.IO.File]::ReadAllBytes($file.FullName)
+            $lengthBytes = [System.Text.Encoding]::ASCII.GetBytes("$($data.Length)")
+            [void]$sha.TransformBlock($nameBytes, 0, $nameBytes.Length, $null, 0)
+            [void]$sha.TransformBlock($zero, 0, 1, $null, 0)
+            [void]$sha.TransformBlock($lengthBytes, 0, $lengthBytes.Length, $null, 0)
+            [void]$sha.TransformBlock($zero, 0, 1, $null, 0)
+            if ($data.Length -gt 0) {
+                [void]$sha.TransformBlock($data, 0, $data.Length, $null, 0)
+            }
+            [void]$sha.TransformBlock($zero, 0, 1, $null, 0)
+        }
+        [void]$sha.TransformFinalBlock([byte[]]@(), 0, 0)
+        return ([System.BitConverter]::ToString($sha.Hash) -replace "-", "").ToLowerInvariant()
+    } finally {
+        $sha.Dispose()
+    }
+}
+
+function Test-GoosePatchesAlreadyApplied {
+    param(
+        [Parameter(Mandatory = $true)][string]$Repo,
+        [AllowEmptyString()][string]$PatchDir
+    )
+
+    $files = @(Get-GoosePatchFiles -PatchDir $PatchDir)
+    if ($files.Count -eq 0) {
+        return $false
+    }
+
+    foreach ($file in $files) {
+        $check = Invoke-CaptureCommand -FilePath "git" -ArgumentList @("-C", $Repo, "apply", "--reverse", "--check", $file.FullName)
+        if ($check.ExitCode -ne 0) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Apply-GoosePatches {
+    param(
+        [Parameter(Mandatory = $true)]$Paths,
+        [Parameter(Mandatory = $true)]$Settings,
+        [Parameter(Mandatory = $true)][string]$Action
+    )
+
+    $files = @(Get-GoosePatchFiles -PatchDir $Settings.PatchDir)
+    foreach ($file in $files) {
+        Write-WindowsDevInfo "Applying Goose patch $($file.Name)."
+        $apply = Invoke-CaptureCommand -FilePath "git" -ArgumentList @("-C", $Paths.Repo, "apply", "--whitespace=nowarn", $file.FullName)
+        if ($apply.ExitCode -ne 0) {
+            return (Resolve-GooseFailure -Message "Failed to apply Goose patch $($file.FullName) to managed checkout at $($Paths.Repo)." -Action $Action -Mode $Settings.Mode)
+        }
+    }
+    return $null
+}
+
 function Test-GooseCheckoutDirtyAllowed {
     param([Parameter(Mandatory = $true)][string]$Repo)
 
@@ -1214,6 +1300,10 @@ function Write-GooseStamp {
 
     $parent = Split-Path -Parent $Paths.StampFile
     New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    $patchFingerprint = Get-ObjectValue $Settings "PatchFingerprint"
+    if ([string]::IsNullOrWhiteSpace($patchFingerprint)) {
+        $patchFingerprint = "none"
+    }
     $stamp = [ordered]@{
         repo = $Paths.Repo
         lockFile = $Settings.LockFile
@@ -1221,6 +1311,7 @@ function Write-GooseStamp {
         commit = $Commit
         package = $Settings.Package
         binName = $Settings.Bin
+        patchFingerprint = $patchFingerprint
         buildProfile = $Settings.BuildProfile
         bin = $BinPath
         sha256 = (Get-FileSha256 -Path $BinPath)
@@ -1253,6 +1344,17 @@ function Test-GooseStampRecordMatches {
         return $false
     }
     if ((Get-ObjectValue $Stamp "binName") -ne $Settings.Bin) {
+        return $false
+    }
+    $expectedFingerprint = Get-ObjectValue $Settings "PatchFingerprint"
+    if ([string]::IsNullOrWhiteSpace($expectedFingerprint)) {
+        $expectedFingerprint = "none"
+    }
+    $recordedFingerprint = Get-ObjectValue $Stamp "patchFingerprint"
+    if ([string]::IsNullOrWhiteSpace($recordedFingerprint)) {
+        $recordedFingerprint = "none"
+    }
+    if ($recordedFingerprint -ne $expectedFingerprint) {
         return $false
     }
     if ((Get-ObjectValue $Stamp "buildProfile") -ne $Settings.BuildProfile) {
@@ -1387,7 +1489,7 @@ function Sync-GooseManagedCheckout {
 
     Invoke-CheckedCommand -FilePath "git" -ArgumentList @("-C", $Paths.Repo, "checkout", "--detach", $Settings.Commit) -Label "checkout pinned Goose commit"
     Invoke-CheckedCommand -FilePath "git" -ArgumentList @("-C", $Paths.Repo, "reset", "--hard", $Settings.Commit) -Label "reset managed Goose checkout"
-    return $null
+    return (Apply-GoosePatches -Paths $Paths -Settings $Settings -Action $Action)
 }
 
 function Build-GooseManagedBinary {
@@ -1435,7 +1537,7 @@ function Invoke-EnsureLocalGoose {
 
     if (-not $settings.AllowDirty) {
         $dirty = Test-GooseCheckoutDirtyAllowed -Repo $paths.Repo
-        if (-not $dirty.Allowed) {
+        if (-not $dirty.Allowed -and -not (Test-GoosePatchesAlreadyApplied -Repo $paths.Repo -PatchDir $settings.PatchDir)) {
             return (Resolve-GooseFailure -Message $dirty.Message -Action $Action -Mode $settings.Mode)
         }
     }

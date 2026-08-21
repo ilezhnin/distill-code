@@ -38,8 +38,8 @@ export interface AgentVersionInfo {
   // `'updateMain'` for the main CLI readout, `'updateBridge'` for the ACP
   // bridge readout. Always paired with `updateCommand`.
   updateFixType?: FixType | null;
-  // True when this binary ships inside Berd's app bundle (resolved from the
-  // bundled ACP tools dir rather than a user install). Stamped by the doctor
+  // True when this binary resolves from Distill's managed ACP tools dir rather
+  // than a user install. Stamped by the doctor
   // crate alongside `installSource === "bundled"`.
   bundled?: boolean | null;
 }
