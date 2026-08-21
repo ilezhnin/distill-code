@@ -175,7 +175,7 @@ describe("AgentVersionInfo", () => {
     );
 
     expect(
-      screen.getByText("Installed via app bundle · v0.142.5"),
+      screen.getByText("Installed via Distill-managed CLI bridge · v0.142.5"),
     ).toBeInTheDocument();
     expect(screen.queryByText(/update available/i)).not.toBeInTheDocument();
   });

@@ -9,6 +9,7 @@ const CRATE_TO_PROVIDER: Record<string, string> = {
   "ai-agent-goose": "goose",
   "ai-agent-claude": "claude-acp",
   "ai-agent-codex": "codex-acp",
+  "ai-agent-grok": "grok-acp",
   "ai-agent-amp": "amp-acp",
   "ai-agent-copilot": "copilot-acp",
   "ai-agent-pi": "pi-acp",

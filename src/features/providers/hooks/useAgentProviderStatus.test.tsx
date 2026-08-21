@@ -269,6 +269,29 @@ describe("useAgentProviderStatus", () => {
     expect(result.current.agentReadiness.get("copilot-acp")).toBe("not_ready");
   });
 
+  it("marks grok-acp ready when the Grok CLI path check passes", async () => {
+    runDoctor.mockResolvedValue(
+      report([
+        check({
+          id: "ai-agent-grok",
+          label: "Grok",
+          status: "pass",
+          path: "/usr/local/bin/grok",
+          authStatus: null,
+        }),
+      ]),
+    );
+
+    const { result } = renderHook(() => useAgentProviderStatus(), {
+      wrapper: createWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.agentReadiness.get("grok-acp")).toBe("ready");
+    expect(result.current.readyAgentIds.has("grok-acp")).toBe(true);
+  });
+
   it("marks codex-acp ready when its auth probe reports authenticated", async () => {
     runDoctor.mockResolvedValue(
       report([

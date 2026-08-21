@@ -160,7 +160,7 @@ describe("AgentProviderCard", () => {
           binaryName: undefined,
         })}
         expandedContent={<div>Model provider setup</div>}
-        statusIndicator={<span>Connect a model provider</span>}
+        statusIndicator={<span>Choose a model provider</span>}
         statusIndicatorOpensDetails
       />,
     );
@@ -168,7 +168,7 @@ describe("AgentProviderCard", () => {
     expect(screen.queryByText("Model provider setup")).not.toBeInTheDocument();
 
     await user.click(
-      screen.getByRole("button", { name: "Connect a model provider" }),
+      screen.getByRole("button", { name: "Choose a model provider" }),
     );
 
     expect(screen.getByText("Model provider setup")).toBeVisible();
@@ -1011,7 +1011,7 @@ describe("AgentProviderCard", () => {
     ).not.toBeInTheDocument();
 
     expect(
-      screen.getByText("Installed via app bundle · v2.1.202"),
+      screen.getByText("Installed via Distill-managed CLI bridge · v2.1.202"),
     ).toBeInTheDocument();
   });
 

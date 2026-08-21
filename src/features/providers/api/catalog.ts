@@ -3,10 +3,40 @@ import { getClient } from "@/shared/api/acpConnection";
 import type { ProviderCatalogEntry } from "@/shared/types/providers";
 import { perfLog } from "@/shared/lib/perfLog";
 
+const XAI_API_KEY_FIELD = {
+  key: "XAI_API_KEY",
+  label: "API key",
+  secret: true,
+  required: true,
+  placeholder: "xai-...",
+};
+
+function withWindowsUsableXaiSetup(
+  entry: ProviderCatalogEntry,
+): ProviderCatalogEntry {
+  if (entry.id !== "xai" || entry.category !== "model") {
+    return entry;
+  }
+
+  // Goose advertises SuperGrok as native OAuth. Distill's native sign-in
+  // path is not implemented on Windows, so keep xAI on the API-key form
+  // Goose already honors via XAI_API_KEY.
+  const fields = entry.fields?.length ? entry.fields : [XAI_API_KEY_FIELD];
+  return {
+    ...entry,
+    displayName: "xAI",
+    description: "Grok models via the xAI API",
+    setupMethod: "single_api_key",
+    fields,
+    nativeConnectQuery: undefined,
+    docsUrl: entry.docsUrl ?? "https://docs.x.ai/docs",
+  };
+}
+
 export function mapProviderSetupCatalogEntryDto(
   dto: ProviderSetupCatalogEntryDto,
 ): ProviderCatalogEntry {
-  return {
+  return withWindowsUsableXaiSetup({
     id: dto.providerId,
     displayName: dto.name,
     category: dto.category,
@@ -26,7 +56,7 @@ export function mapProviderSetupCatalogEntryDto(
     supportsAuthStatus: dto.supportsAuthStatus,
     catalogSource: "setup",
     setupCatalogProvider: true,
-  };
+  });
 }
 
 // Legacy setup-catalog providers Goose still exposes but Berd no longer

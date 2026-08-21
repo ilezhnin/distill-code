@@ -178,6 +178,7 @@ describe("provider promotion", () => {
       "anthropic",
       "google",
       "openai",
+      "xai",
       "openrouter",
     ]);
   });

@@ -73,8 +73,8 @@ pub struct AgentVersionInfo {
     /// `FixType::UpdateMain` or `FixType::UpdateBridge`, matching the slot this
     /// readout occupies. Always paired with `update_command`.
     pub update_fix_type: Option<FixType>,
-    /// Whether this binary ships inside Berd's app bundle (resolved from the
-    /// bundled ACP tools dir rather than a user install). Stamped by the doctor
+    /// Whether this binary resolves from Distill's managed ACP tools dir rather
+    /// than a user install. Stamped by the doctor
     /// crate alongside `install_source == Bundled` when the caller supplies
     /// `RunChecksOptions::bundled_tools_dir`.
     pub bundled: Option<bool>,
@@ -239,6 +239,24 @@ const LOCAL_COMMAND_CHECKS: &[LocalCommandCheck] = &[LocalCommandCheck {
     fail_message: "sq agent-tools is not available; internal workflow integrations may be limited",
 }];
 
+const LOCAL_PATH_CHECKS: &[LocalPathCheck] = &[LocalPathCheck {
+    meta: LocalCheckMeta {
+        id: "ai-agent-grok",
+        label: "Grok",
+        category: AGENTS_CATEGORY,
+        category_label: AGENTS_CATEGORY_LABEL,
+        fix: Some(LocalDoctorFix {
+            fix_type: FixType::Command,
+            command: "npm install -g @xai-official/grok",
+        }),
+        fix_url: Some("https://docs.x.ai/build/cli/reference"),
+        debug_output: None,
+    },
+    binary_name: "grok",
+    pass_message: "Grok CLI is available for ACP sessions",
+    fail_message: "Grok CLI is not on PATH; install the xAI Grok CLI, then run `grok login` or set XAI_API_KEY",
+}];
+
 const LOCAL_CUSTOM_CHECKS: &[LocalCustomCheck] = &[LocalCustomCheck {
     meta: LocalCheckMeta {
         id: "goose-config",
@@ -275,7 +293,7 @@ const NODE_RUNTIME_CHECK: LocalCheckMeta = LocalCheckMeta {
 };
 
 const LOCAL_DOCTOR_REGISTRY: LocalDoctorRegistry<'static> = LocalDoctorRegistry {
-    path_checks: &[],
+    path_checks: LOCAL_PATH_CHECKS,
     command_checks: LOCAL_COMMAND_CHECKS,
     custom_checks: LOCAL_CUSTOM_CHECKS,
 };
@@ -493,14 +511,19 @@ fn build_local_result(
     path: Option<String>,
     raw_output: Option<String>,
 ) -> DoctorCheck {
+    let offered_fix = if status == CheckStatus::Pass {
+        None
+    } else {
+        check.fix.as_ref()
+    };
     DoctorCheck {
         id: check.id.to_string(),
         label: check.label.to_string(),
         status,
         message: message.to_string(),
         fix_url: check.fix_url.map(String::from),
-        fix_command: check.fix.as_ref().map(|fix| fix.command.to_string()),
-        fix_type: check.fix.as_ref().map(|fix| fix.fix_type.clone()),
+        fix_command: offered_fix.map(|fix| fix.command.to_string()),
+        fix_type: offered_fix.map(|fix| fix.fix_type.clone()),
         path,
         bridge_path: None,
         raw_output: raw_output.or_else(|| check.debug_output.map(String::from)),
@@ -1156,11 +1179,8 @@ fn find_local_fix<'a>(
 
 async fn execute_local_fix(
     command: &'static str,
-    shell_env: &HashMap<String, String>,
-    prepend_dirs: &[PathBuf],
+    env_vars: Vec<(String, String)>,
 ) -> Result<(), String> {
-    let extended_path =
-        build_extended_path_with_prepended_dirs(env_key::get(shell_env, "PATH"), prepend_dirs);
     let (shell, flag) = if cfg!(target_os = "windows") {
         ("cmd", "/C")
     } else {
@@ -1168,7 +1188,7 @@ async fn execute_local_fix(
     };
 
     let mut process = tokio::process::Command::new(shell);
-    process.arg(flag).arg(command).env("PATH", extended_path);
+    process.arg(flag).arg(command).envs(env_vars);
     crate::services::process::apply_no_window_async(&mut process);
     let output = process
         .output()
@@ -1608,7 +1628,24 @@ pub async fn run_doctor_fix(
         DoctorFixDispatch::LocalCommand(command) => {
             let captured_shell_env = dir_env::capture_home_interactive_env().await;
             let prepend_dirs = doctor_prepend_dirs(&app_handle);
-            execute_local_fix(command, &captured_shell_env, &prepend_dirs).await
+            // npm-backed local fixes use the same private prefix and managed
+            // runtime as upstream doctor-crate npm fixes.
+            if managed_acp_tools::is_npm_backed_command(command) {
+                ensure_managed_node_runtime_logged(&app_handle).await?;
+            }
+            let mut env_vars = path_env::env_vars_with_extended_path_and_prepended_dirs(
+                &captured_shell_env,
+                &prepend_dirs,
+            );
+            managed_acp_tools::apply_managed_npm_env(
+                &mut env_vars,
+                &managed_acp_tools::managed_npm_env(&app_handle),
+            );
+            if let Some(registry) = crate::commands::agent_setup::npm_registry(&app_handle) {
+                env_key::upsert_vec(&mut env_vars, "NPM_CONFIG_REGISTRY", registry.clone());
+                env_key::upsert_vec(&mut env_vars, "npm_config_registry", registry);
+            }
+            execute_local_fix(command, env_vars).await
         }
         DoctorFixDispatch::CrateCommand => {
             let captured_shell_env = dir_env::capture_home_interactive_env().await;
@@ -1696,13 +1733,13 @@ fn plan_doctor_fix(
 ///
 /// - `node-runtime`: the native runtime check (`Some(Command)` when
 ///   missing/broken, `None` when healthy).
+/// - local-registry checks: their own currently offered fix, when the check is
+///   failing.
 /// - `ai-agent-*`: the crate check's currently-offered top-level fix
 ///   (`Command`/`Bridge` when missing, `Auth` when installed-but-signed-out,
 ///   `None` when healthy), resolved from the crate report — this covers both
 ///   managed bridges and the static-command agents.
-/// - anything else: the local registry defines no runtime fixes, so this
-///   resolves to `None` and the gate rejects. (Add a resolver here if a local
-///   check ever registers a runnable fix.)
+/// - anything else: no runtime fix is offered, so the gate rejects.
 async fn offered_fix_for_check(
     app_handle: &AppHandle,
     check_id: &str,
@@ -1710,10 +1747,46 @@ async fn offered_fix_for_check(
     if check_id == NODE_RUNTIME_CHECK.id {
         return Ok(node_runtime_offered_fix(app_handle).await);
     }
+    if local_registry_has_check(check_id) {
+        return Ok(offered_local_fix_for_check(app_handle, check_id).await);
+    }
     if check_id.starts_with("ai-agent-") {
         return crate::commands::agent_setup::offered_crate_check_fix(app_handle, check_id).await;
     }
     Ok(None)
+}
+
+fn local_registry_has_check(check_id: &str) -> bool {
+    LOCAL_DOCTOR_REGISTRY
+        .path_checks
+        .iter()
+        .any(|check| check.meta.id == check_id)
+        || LOCAL_DOCTOR_REGISTRY
+            .command_checks
+            .iter()
+            .any(|check| check.meta.id == check_id)
+        || LOCAL_DOCTOR_REGISTRY
+            .custom_checks
+            .iter()
+            .any(|check| check.meta.id == check_id)
+}
+
+async fn offered_local_fix_for_check(app_handle: &AppHandle, check_id: &str) -> Option<FixType> {
+    let check = LOCAL_DOCTOR_REGISTRY
+        .path_checks
+        .iter()
+        .find(|check| check.meta.id == check_id)?;
+    let fix = check.meta.fix.as_ref()?;
+    let captured_shell_env = dir_env::capture_home_interactive_env().await;
+    let prepend_dirs = doctor_prepend_dirs(app_handle);
+    let extended_path = build_extended_path_with_prepended_dirs(
+        env_key::get(&captured_shell_env, "PATH"),
+        &prepend_dirs,
+    );
+    match resolve_binary_path(check.binary_name, &extended_path).await {
+        Some(_) => None,
+        None => Some(fix.fix_type.clone()),
+    }
 }
 
 /// Reject a fix request whose typed identity doesn't match the fix the check
@@ -2315,6 +2388,30 @@ mod tests {
         assert_eq!(check.meta.category, "environment-health");
         assert_eq!(check.meta.category_label, "Environment Health");
         assert!(check.meta.fix.is_none());
+    }
+
+    #[test]
+    fn local_registry_includes_grok_agent_check() {
+        let check = LOCAL_DOCTOR_REGISTRY
+            .path_checks
+            .iter()
+            .find(|check| check.meta.id == "ai-agent-grok")
+            .expect("grok agent check");
+
+        assert_eq!(check.binary_name, "grok");
+        assert_eq!(check.meta.category, AGENTS_CATEGORY);
+        assert_eq!(
+            check.meta.fix_url,
+            Some("https://docs.x.ai/build/cli/reference")
+        );
+        let fix = check.meta.fix.as_ref().expect("grok install fix");
+        assert_eq!(fix.fix_type, FixType::Command);
+        assert_eq!(fix.command, "npm install -g @xai-official/grok");
+        assert_eq!(
+            plan_doctor_fix("ai-agent-grok", &FixType::Command, Some(FixType::Command))
+                .expect("grok local fix dispatches"),
+            DoctorFixDispatch::LocalCommand("npm install -g @xai-official/grok")
+        );
     }
 
     #[test]

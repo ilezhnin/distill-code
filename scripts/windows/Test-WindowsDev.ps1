@@ -41,6 +41,7 @@ $oldGooseRepo = $env:GOOSE_DEV_REPO
 $oldGooseTarget = $env:GOOSE_DEV_CARGO_TARGET_DIR
 $oldGooseStamp = $env:GOOSE_DEV_STAMP_FILE
 $oldGooseBuildProfile = $env:GOOSE_BUILD_PROFILE
+$oldGoosePatchDir = $env:GOOSE_DEV_PATCH_DIR
 $oldLocalAppData = $env:LOCALAPPDATA
 $oldUserProfile = $env:USERPROFILE
 $oldAppData = $env:APPDATA
@@ -506,6 +507,39 @@ try {
     Assert-Equal "stamp match rejects a digest-less legacy stamp" `
         (Test-GooseStampRecordMatches -Stamp $legacyStamp -Paths $paths -Settings $settings -BinPath $bin -LocalHead "abc123") $false
 
+    # Restore the binary after the digest-tamper case so later stamp checks
+    # isolate patch-fingerprint reuse, not a leftover sha256 mismatch.
+    Set-Content -Path $bin -Value "fake" -Encoding ASCII
+    Write-GooseStamp -Paths $paths -Settings $settings -Commit "abc123" -BinPath $bin
+    $stamp = Read-GooseStamp -Path $paths.StampFile
+
+    # ── Goose patch fingerprint / stamp reuse ──────────────────────────────
+    # Windows setup must apply the same patches/goose/*.patch set as the Unix
+    # helper, and a stamp without the current fingerprint must rebuild.
+    Assert-Equal "missing patch dir fingerprints as none" `
+        (Get-GoosePatchFingerprint -PatchDir (Join-Path $temp "missing-patches")) "none"
+    $emptyPatchDir = Join-Path $temp "empty-patches"
+    New-Item -ItemType Directory -Force -Path $emptyPatchDir | Out-Null
+    Assert-Equal "empty patch dir fingerprints as none" `
+        (Get-GoosePatchFingerprint -PatchDir $emptyPatchDir) "none"
+    $patchDir = Join-Path $temp "goose-patches"
+    New-Item -ItemType Directory -Force -Path $patchDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $patchDir "0001-example.patch") -Value "diff --git a/x b/x`n" -Encoding Ascii -NoNewline
+    $fingerprint = Get-GoosePatchFingerprint -PatchDir $patchDir
+    Assert-Equal "patch fingerprint is a sha256 hex digest" ($fingerprint -match '^[0-9a-f]{64}$') $true
+    Set-Content -LiteralPath (Join-Path $patchDir "0001-example.patch") -Value "diff --git a/y b/y`n" -Encoding Ascii -NoNewline
+    Assert-Equal "patch fingerprint changes with file bytes" `
+        ((Get-GoosePatchFingerprint -PatchDir $patchDir) -ne $fingerprint) $true
+    $env:GOOSE_DEV_PATCH_DIR = $patchDir
+    Assert-Equal "Goose settings honor GOOSE_DEV_PATCH_DIR" (Get-GooseBackendSettings).PatchDir $patchDir
+    $env:GOOSE_DEV_PATCH_DIR = ""
+    Assert-Equal "Goose settings default patch dir" `
+        (Get-GooseBackendSettings).PatchDir (Join-Path (Get-BerdRepoRoot) "patches\goose")
+    $patchedSettings = $settings.PSObject.Copy()
+    $patchedSettings | Add-Member -NotePropertyName PatchFingerprint -NotePropertyValue $fingerprint -Force
+    Assert-Equal "stamp match rejects a changed Goose patch fingerprint" `
+        (Test-GooseStampRecordMatches -Stamp $stamp -Paths $paths -Settings $patchedSettings -BinPath $bin -LocalHead "abc123") $false
+
     # ── Goose --version identity classification (Test-GooseVersionOutput) ──
     # Pure classifier: distinguishes a real Goose CLI banner from an arbitrary
     # binary, a failing probe, and a hung/timed-out probe. This is the accept/
@@ -719,6 +753,7 @@ try {
     $env:GOOSE_DEV_CARGO_TARGET_DIR = $oldGooseTarget
     $env:GOOSE_DEV_STAMP_FILE = $oldGooseStamp
     $env:GOOSE_BUILD_PROFILE = $oldGooseBuildProfile
+    $env:GOOSE_DEV_PATCH_DIR = $oldGoosePatchDir
     $env:LOCALAPPDATA = $oldLocalAppData
     $env:USERPROFILE = $oldUserProfile
     $env:APPDATA = $oldAppData

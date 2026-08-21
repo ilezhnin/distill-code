@@ -24,7 +24,7 @@
     "signedInAs": "Sesión iniciada como",
     "title": "Cuenta",
     "workspace": {
-      "description": "El espacio de trabajo de BuilderBot que utiliza Berd.",
+      "description": "El espacio de trabajo de BuilderBot que utiliza Distill.",
       "label": "Espacio de trabajo",
       "loadError": "No se pudieron cargar los espacios de trabajo.",
       "loading": "Cargando...",
@@ -52,7 +52,7 @@
     },
     "theme": {
       "darkLabel": "Oscuro",
-      "description": "Elige cómo se ve Berd: claro, oscuro o según tu sistema.",
+      "description": "Elige cómo se ve Distill: claro, oscuro o según tu sistema.",
       "label": "Tema",
       "lightLabel": "Claro",
       "systemDescription": "Coincide con tu dispositivo.",
@@ -71,7 +71,7 @@
       "label": "Archivar chats inactivos",
       "description": "Archiva automáticamente los chats después de este tiempo sin mensajes. Los chats fijados en Inicio nunca se archivan automáticamente.",
       "confirmTitle": "¿Activar el archivado automático?",
-      "confirmDescription": "Berd archivará los chats no fijados {{duration}} sin volver a preguntar. Puedes restaurarlos desde Archivo o desactivar esta opción cuando quieras.",
+      "confirmDescription": "Distill archivará los chats no fijados {{duration}} sin volver a preguntar. Puedes restaurarlos desde Archivo o desactivar esta opción cuando quieras.",
       "confirmAction": "Activar",
       "options": {
         "never": "Nunca",
@@ -112,7 +112,7 @@
     "disconnect": "Desconectar",
     "disconnectError": "No se pudo desconectar. Inténtalo de nuevo.",
     "empty": {
-      "description": "Agrega un servidor MCP para conectar Berd a las apps y servicios que usas.",
+      "description": "Agrega un servidor MCP para conectar Distill a las apps y servicios que usas.",
       "title": "Aún no hay conexiones"
     },
     "expiresInDays": "Caduca en {{count}} días",
@@ -137,7 +137,7 @@
       "title": "No se pudieron cargar tus MCP locales",
       "description": "Inténtalo de nuevo en unos instantes.",
       "partialTitle": "Es posible que falten algunos MCP locales",
-      "partialDescription": "Berd no pudo leer todas las fuentes de configuración local.",
+      "partialDescription": "Distill no pudo leer todas las fuentes de configuración local.",
       "retry": "Intentar de nuevo",
       "retrying": "Intentando…"
     },
@@ -154,14 +154,14 @@
   },
   "doctor": {
     "agents": "Agentes",
-    "bundledPath": "Integrado en Berd",
+    "bundledPath": "puente CLI gestionado por Distill",
     "copied": "Copiado",
     "copyDetails": "Copiar detalles",
     "empty": "Todavía no hay comprobaciones disponibles.",
     "longRunning": "Sigue ejecutándose después de {{seconds}} s. Dejaremos de esperar después de {{timeoutSeconds}} s si una comprobación se bloquea.",
     "open": "Abrir",
     "rerun": "Volver a intentar",
-    "rowDescription": "Ejecuta verificaciones de estado de Berd, agentes y herramientas.",
+    "rowDescription": "Ejecuta verificaciones de estado de Distill, agentes y herramientas.",
     "rowStatus_one": "{{count}} comprobación necesita atención",
     "rowStatus_other": "{{count}} comprobaciones necesitan atención",
     "runFix": "¿Ejecutar corrección?",
@@ -182,7 +182,7 @@
       "source": {
         "asdf": "asdf",
         "brew": "Homebrew",
-        "bundled": "el paquete de la aplicación",
+        "bundled": "puente CLI gestionado por Distill",
         "cargo": "Cargo",
         "curlPipe": "instalador nativo",
         "mise": "mise",
@@ -200,19 +200,19 @@
       "label": "Activar nuevos experimentos automáticamente"
     },
     "berdyOnboarding": {
-      "description": "Muestra la guía interactiva de introducción y ayuda de Berdy en Inicio.",
-      "resetDescription": "Restaura el mensaje inicial de Berdy y lo centra en Inicio.",
-      "resetError": "No se pudo restablecer la introducción de Berdy. Espera a que Inicio termine de cargar e inténtalo de nuevo.",
+      "description": "Muestra la guía interactiva de introducción y ayuda de Distill en Inicio.",
+      "resetDescription": "Restaura el mensaje inicial de Distill y lo centra en Inicio.",
+      "resetError": "No se pudo restablecer la introducción de Distill. Espera a que Inicio termine de cargar e inténtalo de nuevo.",
       "resetLabel": "Restablecer",
-      "resetSuccess": "Se restableció la introducción de Berdy.",
-      "title": "Introducción de Berdy"
+      "resetSuccess": "Se restableció la introducción de Distill.",
+      "title": "Introducción de Distill"
     },
     "builderbot": {
       "description": "Muestra la superficie de tareas y automatizaciones de Builderbot.",
       "title": "Builderbot"
     },
     "defaultLabel": "predeterminado",
-    "description": "Activa funciones de Berd en desarrollo en este dispositivo. Los experimentos pueden cambiar, fallar o desaparecer.",
+    "description": "Activa funciones de Distill en desarrollo en este dispositivo. Los experimentos pueden cambiar, fallar o desaparecer.",
     "emptyDescription": "Los nuevos experimentos aparecerán aquí cuando estén listos para probarse.",
     "onboarding": {
       "cancel": "Cancelar",
@@ -267,7 +267,7 @@
       "title": "¿Eliminar \"{{name}}\" de forma permanente?"
     },
     "deleteExtension": "Eliminar conexión",
-    "description": "Conecta Berd con apps, servicios y capacidades integradas.",
+    "description": "Conecta Distill con apps, servicios y capacidades integradas.",
     "disabledBanner": {
       "description": "Estas extensiones se cargaban automáticamente en cada sesión, pero ahora solo se cargan cuando se necesitan: {{names}}.",
       "dismiss": "Descartar",
@@ -312,7 +312,7 @@
   },
   "general": {
     "agentToolsTips": {
-      "description": "Berd mostrará consejos en el chat sobre herramientas, skills o flujos relevantes.",
+      "description": "Distill mostrará consejos en el chat sobre herramientas, skills o flujos relevantes.",
       "label": "Consejos de chat"
     },
     "artifactAutoOpen": {
@@ -350,7 +350,7 @@
       "versionUnknown": "Versión incluida no disponible"
     },
     "followUpBehavior": {
-      "description": "Pon seguimientos en cola mientras Berd responde o guía la ejecucion actual. Pulsa Cmd+Enter para hacer lo opuesto en un mensaje.",
+      "description": "Pon seguimientos en cola mientras Distill responde o guía la ejecucion actual. Pulsa Cmd+Enter para hacer lo opuesto en un mensaje.",
       "label": "Comportamiento de seguimiento",
       "queue": "Cola",
       "steer": "Guiar (solo arnés de Goose)"
@@ -360,7 +360,7 @@
       "label": "Agrupar chats por proyecto"
     },
     "language": {
-      "description": "Elige cómo Berd formatea y muestra la interfaz.",
+      "description": "Elige cómo Distill formatea y muestra la interfaz.",
       "english": "Inglés",
       "label": "Idioma",
       "spanish": "Español",
@@ -451,7 +451,7 @@
       "beakYeah": "Excited",
       "dingDongGoose": "Ding Dong",
       "paidInBread": "A Bit of Everything",
-      "politeHonk": "Berd",
+      "politeHonk": "Distill",
       "quickPeep": "Chime",
       "silent": "Silencio",
       "youHaveGotGoose": "Twinkle"
@@ -460,15 +460,15 @@
   },
   "privacy": {
     "telemetry": {
-      "description": "Ayuda a mejorar Berd compartiendo eventos de uso, como qué funciones se usan. El contenido de los chats nunca se envía.",
+      "description": "Ayuda a mejorar Distill compartiendo eventos de uso, como qué funciones se usan. El contenido de los chats nunca se envía.",
       "label": "Compartir datos de uso",
       "learnMore": "Más información",
       "saveError": "No se pudo actualizar la configuración de datos de uso. Inténtalo de nuevo.",
       "usageDialog": {
         "collectBody": "Eventos de uso, como las funciones utilizadas, errores y rendimiento, vinculados a un identificador de instalación aleatorio.",
         "collectTitle": "Qué recopilamos",
-        "intro": "Usamos un identificador de instalación aleatorio, no tu identidad, para saber cómo se usa Berd y corregir lo que no funciona.",
-        "notCollectBody": "Tu nombre, correo electrónico o cuenta. Berd no requiere iniciar sesión, así que no hay nada que vincule los datos contigo.",
+        "intro": "Usamos un identificador de instalación aleatorio, no tu identidad, para saber cómo se usa Distill y corregir lo que no funciona.",
+        "notCollectBody": "Tu nombre, correo electrónico o cuenta. Distill no requiere iniciar sesión, así que no hay nada que vincule los datos contigo.",
         "notCollectTitle": "Qué no recopilamos",
         "title": "Compartir datos de uso"
       }
@@ -501,7 +501,7 @@
       "progress": {
         "installedProvider": "{{name}} se instaló correctamente.",
         "installing": "Instalando {{name}}...",
-        "installingForBerd": "Instalando {{name}} para Berd…",
+        "installingForBerd": "Instalando {{name}} para Distill…",
         "preparingProvider": "Preparando la instalación de {{name}}…",
         "preparingRuntime": "Preparando el entorno de Node.js...",
         "step": "Paso {{step}} de {{total}}",
@@ -626,7 +626,7 @@
       "active": "Activo",
       "checkingStatus": "Comprobando estado del proveedor...",
       "configured": "Configurado",
-      "connectPrompt": "Conectar un proveedor de modelos",
+      "connectPrompt": "Elegir un proveedor de modelos",
       "description": "Goose requiere un modelo de IA para ejecutarse.",
       "details": {
         "configuredUrl": "URL configurada"
@@ -637,8 +637,8 @@
         "connected": {
           "cloudCredentials": "Conectado mediante tus credenciales de nube.",
           "local": "Ejecutándose localmente.",
-          "oauthBrowser": "Conectado mediante el inicio de sesión de Berd.",
-          "oauthDeviceCode": "Conectado mediante el inicio de sesión por código de dispositivo de Berd."
+          "oauthBrowser": "Conectado mediante el inicio de sesión de Distill.",
+          "oauthDeviceCode": "Conectado mediante el inicio de sesión por código de dispositivo de Distill."
         },
         "fieldDescription": {
           "cloudCredentials": "Agrega los datos requeridos para usar este proveedor.",
@@ -651,7 +651,7 @@
         "pending": {
           "cloudCredentials": "Configura tus credenciales de nube en el entorno de tu terminal antes de usar este proveedor.",
           "local": "Este proveedor se ejecuta localmente y no necesita ajustes guardados.",
-          "oauthGuided": "Berd te guiará por el inicio de sesión.",
+          "oauthGuided": "Distill te guiará por el inicio de sesión.",
           "oauthTerminal": "Ejecuta `goose configure` en tu terminal para terminar de iniciar sesión."
         }
       },
@@ -717,7 +717,7 @@
       "description": "El nivel de confianza al que una acción marcada te pedirá permitirla o bloquearla. Valores más bajos son más sensibles (más avisos); valores más altos son menos sensibles. Rango 0.0–1.0.",
       "label": "Sensibilidad de detección",
       "rangeError": "Ingresa un valor entre 0.0 y 1.0.",
-      "restartHint": "Los cambios surten efecto después de reiniciar Berd.",
+      "restartHint": "Los cambios surten efecto después de reiniciar Distill.",
       "save": "Guardar",
       "saveError": "No se pudo actualizar la sensibilidad de detección.",
       "saved": "Sensibilidad de detección actualizada."
@@ -781,42 +781,42 @@
       "restartToFinish": "Reiniciar para terminar el cambio a {{channel}}",
       "retry": "Intentar de nuevo",
       "switchTo": "Cambiar a {{channel}}",
-      "update": "Actualizar Berd"
+      "update": "Actualizar Distill"
     },
     "betaBadge": {
-      "build": "Berd {{version}}",
+      "build": "Distill {{version}}",
       "defaultWhatToTest": "Prueba las funciones más recientes e informa de cualquier detalle que necesite pulirse.",
       "open": "Abrir detalles de Beta",
       "reportIssue": "Informar de un problema",
       "reportIssueUnavailable": "Los informes de problemas beta no están configurados para esta compilación.",
       "title": "Versión beta",
-      "waitingForMain": "Las actualizaciones beta están desactivadas. Berd cambiará a Main cuando haya una versión compatible.",
+      "waitingForMain": "Las actualizaciones beta están desactivadas. Distill cambiará a Main cuando haya una versión compatible.",
       "whatToTest": "Qué probar"
     },
     "card": {
       "checkPrompt": "Buscar una nueva versión",
       "currentVersion": "Versión {{version}}",
-      "description": "Mantén Berd actualizado con las últimas funciones y correcciones.",
+      "description": "Mantén Distill actualizado con las últimas funciones y correcciones.",
       "title": "Actualizaciones de software"
     },
     "channel": {
       "description": "Elige Main para las versiones recomendadas o Beta para probar funciones antes.",
       "title": "Versión de lanzamiento",
       "unknown": "Versión actual",
-      "waitingDescription": "Las actualizaciones beta están desactivadas. Berd volverá a Main cuando haya una versión compatible."
+      "waitingDescription": "Las actualizaciones beta están desactivadas. Distill volverá a Main cuando haya una versión compatible."
     },
-    "description": "Berd comprueba actualizaciones firmadas de la app en segundo plano y espera a que reinicies.",
+    "description": "Distill comprueba actualizaciones firmadas de la app en segundo plano y espera a que reinicies.",
     "details": {
       "available": "La actualización {{version}} está lista para descargarse.",
       "checking": "Buscando actualizaciones...",
       "downloading": "Descargando la actualización firmada más reciente.",
       "error": "El último intento de actualización falló.",
-      "idle": "Berd buscará actualizaciones automáticamente cada pocas horas.",
+      "idle": "Distill buscará actualizaciones automáticamente cada pocas horas.",
       "installing": "Instalando la actualización descargada.",
       "ready": "La actualización {{version}} está instalada y se aplicará al reiniciar.",
       "switchReady": "{{channel}} {{version}} está instalado. Reinicia cuando quieras terminar el cambio.",
       "unavailable": "Las actualizaciones solo están disponibles en builds de lanzamiento firmadas de Tauri.",
-      "upToDate": "Berd está actualizado."
+      "upToDate": "Distill está actualizado."
     },
     "errors": {
       "detail": "Detalles: {{detail}}",
@@ -841,9 +841,9 @@
       "upToDate": "Actualizado"
     },
     "switchDialog": {
-      "betaDescription": "Berd descargará la beta más reciente y se reiniciará. Las betas reciben funciones nuevas primero y pueden tener detalles por pulir. Puedes volver a Main en cualquier momento desde Ajustes o la insignia Beta.",
-      "builds": "Estás usando {{source}} {{currentVersion}}. Berd encontró {{target}} {{targetVersion}}.",
-      "mainDescription": "Berd comprobará que todo lo de la beta funcione con Main, luego la descargará y se reiniciará.",
+      "betaDescription": "Distill descargará la beta más reciente y se reiniciará. Las betas reciben funciones nuevas primero y pueden tener detalles por pulir. Puedes volver a Main en cualquier momento desde Ajustes o la insignia Beta.",
+      "builds": "Estás usando {{source}} {{currentVersion}}. Distill encontró {{target}} {{targetVersion}}.",
+      "mainDescription": "Distill comprobará que todo lo de la beta funcione con Main, luego la descargará y se reiniciará.",
       "restartLater": "Puedes seguir trabajando después de la descarga y reiniciar cuando quieras.",
       "title": "¿Cambiar a {{channel}}?"
     },
@@ -854,7 +854,7 @@
         "title": "La actualización falló"
       },
       "ready": {
-        "description": "Berd {{version}} se aplicará al reiniciar.",
+        "description": "Distill {{version}} se aplicará al reiniciar.",
         "title": "Actualización lista"
       }
     }
