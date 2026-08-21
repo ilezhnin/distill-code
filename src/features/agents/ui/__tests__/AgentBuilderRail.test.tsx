@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, screen, fireEvent, waitFor } from "@testing-library/react";
+import { screen, fireEvent, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "@/test/render";
 
 const toastMocks = vi.hoisted(() => ({
@@ -11,6 +11,14 @@ const agentTelemetryMocks = vi.hoisted(() => ({
   trackAgentCreateCompleted: vi.fn(),
   trackAgentEditCompleted: vi.fn(),
   trackAgentDeleteCompleted: vi.fn(),
+}));
+
+const dialogMocks = vi.hoisted(() => ({
+  open: vi.fn(),
+}));
+
+const avatarApiMocks = vi.hoisted(() => ({
+  importAgentAvatarFile: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({
@@ -33,19 +41,13 @@ vi.mock("@/features/agents/lib/agentBuilderSession", () => ({
   PLACEHOLDER_AGENT_DESCRIPTION: "Draft",
 }));
 
-vi.mock("@/features/agents/hooks/useAvatarLibrary", () => ({
-  useAvatarLibrary: vi.fn(() => ({
-    catalog: null,
-    cachedAvatarMediaById: {},
-    loading: false,
-    cacheChecking: false,
-    error: false,
-    errorCode: null,
-    mediaError: false,
-    mediaErrorCode: null,
-    retryCatalog: vi.fn(),
-    retryMedia: vi.fn(),
-  })),
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: dialogMocks.open,
+}));
+
+vi.mock("@/shared/api/avatars", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/shared/api/avatars")>()),
+  importAgentAvatarFile: avatarApiMocks.importAgentAvatarFile,
 }));
 
 vi.mock("@/features/agents/stores/agentStore", () => ({
@@ -68,12 +70,6 @@ vi.mock("@/features/providers/hooks/useAgentProviderStatus", () => ({
 import { AgentBuilderRail } from "../AgentBuilderRail";
 import { usePersonaSource } from "@/features/agents/hooks/usePersonaSource";
 import { promoteDraft } from "@/features/agents/lib/agentBuilderSession";
-import { useAvatarLibrary } from "@/features/agents/hooks/useAvatarLibrary";
-import {
-  EXPERIMENT_PREFERENCES_STORAGE_KEY,
-  EXPERIMENT_PREFERENCES_STORAGE_VERSION,
-} from "@/features/experiments/experimentPreferences";
-import { AVATAR_COLLECTION_PAGE_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
 import type { AgentSourceEntry } from "@/shared/api/agents";
 
 type UsePersonaSourceReturn = ReturnType<typeof usePersonaSource>;
@@ -87,25 +83,6 @@ const baseSource: AgentSourceEntry = {
   properties: { draft: true, builderSessionId: "s1" },
   writable: true,
 } as AgentSourceEntry;
-
-function setExperimentOverrides(overrides: Record<string, boolean>) {
-  localStorage.setItem(
-    EXPERIMENT_PREFERENCES_STORAGE_KEY,
-    JSON.stringify({
-      version: EXPERIMENT_PREFERENCES_STORAGE_VERSION,
-      experiments: Object.fromEntries(
-        Object.entries(overrides).map(([id, enabled]) => [id, { enabled }]),
-      ),
-    }),
-  );
-}
-
-// Most rail tests exercise the classic inline picker, so the collection
-// canvas experiment (auto-enabled in dev/test) is pinned off by default.
-// Overlay-specific tests re-enable it explicitly.
-function disableAvatarCollectionOverlay() {
-  setExperimentOverrides({ [AVATAR_COLLECTION_PAGE_EXPERIMENT_ID]: false });
-}
 
 function mockHook(overrides: Partial<UsePersonaSourceReturn> = {}) {
   const result: UsePersonaSourceReturn = {
@@ -123,27 +100,18 @@ function mockHook(overrides: Partial<UsePersonaSourceReturn> = {}) {
 
 describe("AgentBuilderRail", () => {
   beforeEach(() => {
-    localStorage.removeItem(EXPERIMENT_PREFERENCES_STORAGE_KEY);
-    disableAvatarCollectionOverlay();
     vi.mocked(usePersonaSource).mockReset();
     vi.mocked(promoteDraft).mockReset();
+    dialogMocks.open.mockReset();
+    avatarApiMocks.importAgentAvatarFile.mockReset();
+    avatarApiMocks.importAgentAvatarFile.mockResolvedValue(
+      "user-avatar:agent-1",
+    );
     toastMocks.success.mockReset();
     toastMocks.error.mockReset();
     agentTelemetryMocks.trackAgentCreateCompleted.mockReset();
     agentTelemetryMocks.trackAgentEditCompleted.mockReset();
     agentTelemetryMocks.trackAgentDeleteCompleted.mockReset();
-    vi.mocked(useAvatarLibrary).mockReturnValue({
-      catalog: null,
-      cachedAvatarMediaById: {},
-      loading: false,
-      cacheChecking: false,
-      error: false,
-      errorCode: null,
-      mediaError: false,
-      mediaErrorCode: null,
-      retryCatalog: vi.fn(),
-      retryMedia: vi.fn(),
-    });
   });
 
   it("renders the 'New agent' header when the source still has the placeholder name", () => {
@@ -318,7 +286,7 @@ describe("AgentBuilderRail", () => {
     expect(
       screen.getByRole("button", { name: /save changes/i }),
     ).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByText(/required:/i)).toHaveTextContent(/avatar/i);
+    expect(screen.getByText(/required:/i)).not.toHaveTextContent(/avatar/i);
     expect(screen.getByText(/required:/i)).toHaveTextContent(/description/i);
     expect(screen.getByLabelText(/description/i)).toBeRequired();
     expect(screen.getByLabelText(/description/i)).toHaveAttribute(
@@ -329,57 +297,6 @@ describe("AgentBuilderRail", () => {
 
   it("does not persist a default avatar when the draft opens", async () => {
     const { update } = mockHook();
-    vi.mocked(useAvatarLibrary).mockReturnValue({
-      catalog: {
-        schemaVersion: 1,
-        catalogVersion: "v1",
-        collections: [
-          {
-            id: "gloopies",
-            label: "Gloopies",
-            coverAvatarId: "gloopy-1",
-            avatarIds: ["gloopy-1"],
-          },
-        ],
-        assets: [
-          {
-            id: "gloopy-1",
-            label: "Gloopy 1",
-            collectionId: "gloopies",
-            variants: {
-              webm: {
-                path: "gloopy-1.webm",
-                mimeType: "video/webm",
-                byteSize: 1,
-                sha256:
-                  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-              },
-              hevc: {
-                path: "gloopy-1.mov",
-                mimeType: "video/quicktime",
-                byteSize: 1,
-                sha256:
-                  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-              },
-            },
-          },
-        ],
-      },
-      cachedAvatarMediaById: {
-        "gloopy-1": {
-          catalogVersion: "v1",
-          media: { src: "/cached/gloopy-1.webm", mediaType: "video" },
-        },
-      },
-      loading: false,
-      cacheChecking: false,
-      error: false,
-      errorCode: null,
-      mediaError: false,
-      mediaErrorCode: null,
-      retryCatalog: vi.fn(),
-      retryMedia: vi.fn(),
-    });
 
     renderWithProviders(
       <AgentBuilderRail
@@ -397,8 +314,9 @@ describe("AgentBuilderRail", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
-  it("shows avatar choices only after the selected avatar is clicked", () => {
-    mockHook();
+  it("imports an avatar image when the avatar target is clicked", async () => {
+    const { update } = mockHook();
+    dialogMocks.open.mockResolvedValue("/Users/x/Pictures/avatar.gif");
     renderWithProviders(
       <AgentBuilderRail
         sessionId="s1"
@@ -407,14 +325,17 @@ describe("AgentBuilderRail", () => {
       />,
     );
 
-    expect(
-      screen.queryByRole("heading", { name: /choose an avatar/i }),
-    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /select avatar/i }));
 
-    expect(
-      screen.getByRole("heading", { name: /choose an avatar/i }),
-    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(avatarApiMocks.importAgentAvatarFile).toHaveBeenCalledWith({
+        agentPath: baseSource.path,
+        sourcePath: "/Users/x/Pictures/avatar.gif",
+      }),
+    );
+    expect(update).toHaveBeenCalledWith({
+      properties: { avatar: "user-avatar:agent-1" },
+    });
   });
 
   it("promotes an otherwise-complete draft without provider or model overrides", async () => {
@@ -878,86 +799,6 @@ describe("AgentBuilderRail", () => {
     await waitFor(() => {
       expect(screen.getByText(/draft missing/i)).toBeInTheDocument();
     });
-  });
-
-  it("opens the collection canvas overlay instead of the inline picker when the experiment is on", () => {
-    setExperimentOverrides({ [AVATAR_COLLECTION_PAGE_EXPERIMENT_ID]: true });
-    mockHook();
-    renderWithProviders(
-      <AgentBuilderRail
-        sessionId="s1"
-        targetAgentPath={baseSource.path}
-        targetAgentSlug="draft-1"
-      />,
-    );
-
-    expect(
-      screen.queryByTestId("avatar-collection-overlay"),
-    ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /select avatar/i }));
-
-    // The takeover renders instead of swapping the rail body: the form stays
-    // mounted underneath and the inline picker heading never appears.
-    expect(screen.getByTestId("avatar-collection-overlay")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("heading", { name: /choose an avatar/i }),
-    ).not.toBeInTheDocument();
-    expect(screen.getByLabelText(/agent name/i)).toBeInTheDocument();
-  });
-
-  it("closes the collection canvas overlay back to the untouched form", () => {
-    vi.useFakeTimers();
-    try {
-      setExperimentOverrides({ [AVATAR_COLLECTION_PAGE_EXPERIMENT_ID]: true });
-      mockHook();
-      renderWithProviders(
-        <AgentBuilderRail
-          sessionId="s1"
-          targetAgentPath={baseSource.path}
-          targetAgentSlug="draft-1"
-        />,
-      );
-
-      fireEvent.click(screen.getByRole("button", { name: /select avatar/i }));
-      fireEvent.click(screen.getByRole("button", { name: /^close$/i }));
-
-      // The overlay plays its exit animation before handing control back.
-      expect(
-        screen.getByTestId("avatar-collection-overlay"),
-      ).toBeInTheDocument();
-      act(() => {
-        vi.runAllTimers();
-      });
-
-      expect(
-        screen.queryByTestId("avatar-collection-overlay"),
-      ).not.toBeInTheDocument();
-      expect(
-        screen.getByRole("button", { name: /select avatar/i }),
-      ).toBeInTheDocument();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("keeps the classic inline picker when the collection canvas experiment is off", () => {
-    mockHook();
-    renderWithProviders(
-      <AgentBuilderRail
-        sessionId="s1"
-        targetAgentPath={baseSource.path}
-        targetAgentSlug="draft-1"
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: /select avatar/i }));
-
-    expect(
-      screen.getByRole("heading", { name: /choose an avatar/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByTestId("avatar-collection-overlay"),
-    ).not.toBeInTheDocument();
   });
 
   it("renders an 'Invalid frontmatter' state when the source can't be parsed", () => {

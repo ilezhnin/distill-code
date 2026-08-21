@@ -1,5 +1,6 @@
 {
   "avatar": {
+    "importFailed": "Failed to import avatar image.",
     "loadFailed": "Failed to load image",
     "previewAlt": "Avatar preview",
     "removeAria": "Remove avatar"
@@ -26,17 +27,8 @@
     "descriptionPlaceholder": "A short line about what this agent does",
     "instructionsLabel": "Agent instructions",
     "instructionsPlaceholder": "Describe the agent's goal and instructions",
-    "selectedAvatar": "Selected avatar",
-    "selectedAvatarNone": "None selected",
-    "selectedAvatarCustom": "Custom avatar",
-    "selectedAvatarUnavailable": "Avatar file unavailable",
-    "chooseAvatar": "Choose one from the library",
-    "chooseAvatarTitle": "Choose an avatar",
-    "backToForm": "Back",
-    "backToAgent": "Back to agent",
     "selectAvatar": "Select avatar",
     "changeAvatar": "Change avatar",
-    "doneChoosingAvatar": "Done",
     "saveChanges": "Save changes",
     "savingChanges": "Saving changes...",
     "creatingAgent": "Creating agent...",
@@ -47,7 +39,6 @@
     "unsavedChanges": "Unsaved changes",
     "saveError": "Save failed. Your edits are still here.",
     "completeRequiredFields": "Required: {{fields}}.",
-    "requiredAvatar": "avatar",
     "requiredName": "name",
     "requiredDescription": "description",
     "requiredInstructions": "instructions",
@@ -69,13 +60,6 @@
     "viewAria": "View {{name}}",
     "chatAria": "Chat with {{name}}"
   },
-  "collectionPage": {
-    "collectionBadge": "Collection",
-    "collectionHeading": "{{label}} Collection",
-    "collectionsHeading": "Avatar Collections",
-    "openCollection": "Open the {{label}} collection",
-    "select": "Select"
-  },
   "detail": {
     "startChat": "Start chat",
     "moreActions": "More actions"
@@ -83,23 +67,7 @@
   "editor": {
     "create": "Create",
     "created": "Agent created.",
-    "avatarBackToCollections": "Back to avatar collections",
-    "avatarBundled": "Bundled",
-    "avatarCatalogNetworkAccess": "Unable to load avatar library. Check your network connection and try again.",
-    "avatarCatalogUnavailable": "Avatar library unavailable. Try again.",
-    "avatarCollectionCount": "{{count}} avatars",
-    "avatarCollectionNetworkAccess": "Unable to download avatars. Check your network connection and try again.",
-    "avatarDownloadCollection": "Download {{count}}",
-    "avatarDownloaded": "Downloaded",
-    "avatarDownloading": "Downloading",
-    "avatarLibrary": "Avatar library",
-    "avatarLoading": "Loading",
-    "avatarRetry": "Retry",
-    "avatarBackToProfile": "Back to profile",
     "changeAvatar": "Change avatar",
-    "avatarUrl": "Custom avatar URL",
-    "avatarUrlInvalid": "Enter a valid http or https URL without credentials.",
-    "avatarUrlPlaceholder": "https://example.com/avatar.png",
     "customizeAvatar": "Customize",
     "connectProvider": "Connect",
     "displayName": "Agent Name",

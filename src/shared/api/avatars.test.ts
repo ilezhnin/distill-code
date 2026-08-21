@@ -10,6 +10,7 @@ import {
   cachedAssetToMedia,
   getCachedAvatarForRef,
   getCachedAvatarsForRefs,
+  importAgentAvatarFile,
   listenAvatarCacheWarmed,
   normalizeAvatarLibraryError,
   refreshAvatarCache,
@@ -176,6 +177,22 @@ describe("avatars api", () => {
       avatarRef: "user-avatar:gloopie-1",
     });
     Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+  });
+
+  it("imports an agent avatar image through the native command", async () => {
+    invokeMock.mockResolvedValueOnce("user-avatar:agent-1");
+
+    await expect(
+      importAgentAvatarFile({
+        agentPath: "/Users/x/.agents/agents/helper.md",
+        sourcePath: "/Users/x/Pictures/avatar.gif",
+      }),
+    ).resolves.toBe("user-avatar:agent-1");
+
+    expect(invokeMock).toHaveBeenCalledWith("import_agent_avatar_file", {
+      agentPath: "/Users/x/.agents/agents/helper.md",
+      sourcePath: "/Users/x/Pictures/avatar.gif",
+    });
   });
 
   it("resolves saved refs with the batched cached-only command", async () => {

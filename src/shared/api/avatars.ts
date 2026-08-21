@@ -202,6 +202,19 @@ export async function importUserAvatarDataUrl({
   });
 }
 
+export async function importAgentAvatarFile({
+  agentPath,
+  sourcePath,
+}: {
+  agentPath: string;
+  sourcePath: string;
+}): Promise<string> {
+  return invoke<string>("import_agent_avatar_file", {
+    agentPath,
+    sourcePath,
+  });
+}
+
 export async function deleteUserAvatar(avatarRef: string): Promise<void> {
   if (!window.__TAURI_INTERNALS__) {
     return;
