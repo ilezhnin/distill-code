@@ -33,8 +33,14 @@ const ASSET_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const ASSET_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_DOWNLOAD_CONCURRENCY: usize = 8;
 const MAX_IMPORTED_AVATAR_BYTES: usize = 5 * 1024 * 1024;
+const MAX_IMPORTED_IMAGE_AVATAR_BYTES: usize = 10 * 1024 * 1024;
 const MAX_IMPORTED_POSTER_BYTES: usize = 5 * 1024 * 1024;
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+const JPEG_SIGNATURE: &[u8; 3] = b"\xff\xd8\xff";
+const GIF87A_SIGNATURE: &[u8; 6] = b"GIF87a";
+const GIF89A_SIGNATURE: &[u8; 6] = b"GIF89a";
+const RIFF_SIGNATURE: &[u8; 4] = b"RIFF";
+const WEBP_SIGNATURE: &[u8; 4] = b"WEBP";
 const WEBM_SIGNATURE: &[u8; 4] = b"\x1a\x45\xdf\xa3";
 const MP4_FILE_TYPE_BOX: &[u8; 4] = b"ftyp";
 // A `.part` file older than this is treated as an orphan left behind by a
@@ -315,6 +321,8 @@ struct UserAvatarManifest {
     alpha_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     poster_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent_source_path: Option<String>,
     byte_size: u64,
     created_at_ms: u128,
 }
@@ -458,6 +466,21 @@ pub async fn import_user_avatar_data_url(
     )
 }
 
+#[tauri::command]
+pub async fn import_agent_avatar_file(
+    app: AppHandle,
+    agent_path: String,
+    source_path: String,
+) -> Result<String, String> {
+    let trusted_roots = trusted_agent_roots(&app)?;
+    let agent_path = validate_agent_source_path_with_roots(&agent_path, &trusted_roots)?;
+    let source_path = validate_imported_image_avatar_path(&source_path)?;
+    let bytes = read_imported_image_avatar(&source_path)?;
+    let (mime_type, extension) = imported_image_avatar_format(&bytes)
+        .ok_or_else(|| "Avatar file must be a PNG, JPEG, GIF, or WebP image.".to_string())?;
+    write_agent_image_avatar(&app, &agent_path, &bytes, mime_type, extension)
+}
+
 fn decode_imported_avatar_data_url(data_url: &str) -> Result<(Vec<u8>, &'static str), String> {
     const WEBM_PREFIX: &str = "data:video/webm;base64,";
     const MP4_PREFIX: &str = "data:video/mp4;base64,";
@@ -541,6 +564,129 @@ fn decode_imported_poster_data_url(data_url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+fn trusted_agent_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
+    let mut roots = Vec::new();
+    if let Some(e2e_mode) = app.try_state::<crate::services::e2e_mode::E2eMode>() {
+        roots.push(e2e_mode.goose_agents_dir());
+    }
+    roots.push(
+        dirs::home_dir()
+            .ok_or_else(|| "Failed to resolve home directory for agent avatar import".to_string())?
+            .join(".agents")
+            .join("agents"),
+    );
+    Ok(roots)
+}
+
+fn validate_agent_source_path_with_roots(
+    source_path: &str,
+    trusted_roots: &[PathBuf],
+) -> Result<PathBuf, String> {
+    let path = PathBuf::from(source_path);
+    let metadata = validate_existing_regular_file(&path, "agent source")?;
+    if metadata.len() == 0 {
+        return Err("Agent source file is empty".to_string());
+    }
+    let lower_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Agent source file is missing a valid filename".to_string())?
+        .to_ascii_lowercase();
+    if !lower_name.ends_with(".md") {
+        return Err("Unsupported agent source file type. Expected a .md file.".to_string());
+    }
+    let canonical_path = canonicalize_existing_path(&path, "agent source")?;
+    if trusted_roots.iter().any(|root| {
+        root.canonicalize()
+            .is_ok_and(|canonical_root| canonical_path.starts_with(canonical_root))
+    }) {
+        Ok(canonical_path)
+    } else {
+        Err(format!(
+            "Agent source file '{}' is outside the trusted agent source directory",
+            path.display()
+        ))
+    }
+}
+
+fn validate_imported_image_avatar_path(source_path: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(source_path);
+    let metadata = validate_existing_regular_file(&path, "avatar image")?;
+    if metadata.len() == 0 || metadata.len() > MAX_IMPORTED_IMAGE_AVATAR_BYTES as u64 {
+        return Err("Avatar image must be 10 MB or smaller.".to_string());
+    }
+    canonicalize_existing_path(&path, "avatar image")
+}
+
+fn validate_existing_regular_file(
+    path: &Path,
+    context: &'static str,
+) -> Result<std::fs::Metadata, String> {
+    if path.as_os_str().is_empty() {
+        return Err(format!("Selected {context} path is empty"));
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        format!(
+            "Failed to access selected {context} '{}': {error}",
+            path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Selected {context} path '{}' is a symbolic link. Choose the target file directly.",
+            path.display()
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(format!(
+            "Selected {context} path '{}' is not a file",
+            path.display()
+        ));
+    }
+    Ok(metadata)
+}
+
+fn canonicalize_existing_path(path: &Path, context: &'static str) -> Result<PathBuf, String> {
+    path.canonicalize().map_err(|error| {
+        format!(
+            "Failed to resolve selected {context} '{}': {error}",
+            path.display()
+        )
+    })
+}
+
+fn read_imported_image_avatar(path: &Path) -> Result<Vec<u8>, String> {
+    let file = fs::File::open(path)
+        .map_err(|error| format!("Failed to open avatar image '{}': {error}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_IMPORTED_IMAGE_AVATAR_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Failed to read avatar image '{}': {error}", path.display()))?;
+    if bytes.is_empty() || bytes.len() > MAX_IMPORTED_IMAGE_AVATAR_BYTES {
+        return Err("Avatar image must be 10 MB or smaller.".to_string());
+    }
+    Ok(bytes)
+}
+
+fn imported_image_avatar_format(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
+    if bytes.starts_with(PNG_SIGNATURE) {
+        return Some(("image/png", "png"));
+    }
+    if bytes.starts_with(JPEG_SIGNATURE) {
+        return Some(("image/jpeg", "jpg"));
+    }
+    if bytes.starts_with(GIF87A_SIGNATURE) || bytes.starts_with(GIF89A_SIGNATURE) {
+        return Some(("image/gif", "gif"));
+    }
+    if bytes.len() >= 12
+        && bytes.get(0..4) == Some(RIFF_SIGNATURE.as_slice())
+        && bytes.get(8..12) == Some(WEBP_SIGNATURE.as_slice())
+    {
+        return Some(("image/webp", "webp"));
+    }
+    None
+}
+
 #[tauri::command]
 pub async fn delete_user_avatar(app: AppHandle, avatar_ref: String) -> Result<(), String> {
     delete_user_avatar_by_ref(&app, &avatar_ref)
@@ -551,14 +697,32 @@ pub async fn delete_user_avatar(app: AppHandle, avatar_ref: String) -> Result<()
 /// fails after some options were already persisted).
 pub(crate) fn delete_user_avatar_by_ref(app: &AppHandle, avatar_ref: &str) -> Result<(), String> {
     let paths = user_avatar_paths(app)?;
-    delete_user_avatar_at(&paths, avatar_ref)
+    delete_user_avatar_at_with_app(app, &paths, avatar_ref)
 }
 
 /// Deletes a generated avatar's media and manifest.
 ///
 /// Deleting an avatar that is already gone is a success: callers clean up
 /// abandoned generations best-effort and must not fail on a double delete.
+fn delete_user_avatar_at_with_app(
+    app: &AppHandle,
+    paths: &UserAvatarPaths,
+    avatar_ref: &str,
+) -> Result<(), String> {
+    let trusted_roots = trusted_agent_roots(app)?;
+    delete_user_avatar_at_with_roots(paths, avatar_ref, &trusted_roots)
+}
+
+#[cfg(test)]
 fn delete_user_avatar_at(paths: &UserAvatarPaths, avatar_ref: &str) -> Result<(), String> {
+    delete_user_avatar_at_with_roots(paths, avatar_ref, &[])
+}
+
+fn delete_user_avatar_at_with_roots(
+    paths: &UserAvatarPaths,
+    avatar_ref: &str,
+    trusted_roots: &[PathBuf],
+) -> Result<(), String> {
     let avatar_id = parse_user_avatar_ref(avatar_ref)?
         .ok_or_else(|| "Invalid user avatar reference".to_string())?;
     let manifest_path = paths.meta.join(format!("{avatar_id}.json"));
@@ -567,7 +731,7 @@ fn delete_user_avatar_at(paths: &UserAvatarPaths, avatar_ref: &str) -> Result<()
     }
 
     let manifest = read_user_avatar_manifest(paths, &avatar_id)?;
-    let media_path = user_avatar_media_path(paths, &manifest)?;
+    let media_path = user_avatar_media_path_with_roots(paths, &manifest, trusted_roots)?;
     let poster_path = manifest
         .poster_path
         .as_deref()
@@ -1698,6 +1862,62 @@ pub(crate) fn write_user_avatar_with_poster(
     write_user_avatar_at(&paths, &id, bytes, mime_type, alpha_mode, poster)
 }
 
+fn write_agent_image_avatar(
+    app: &AppHandle,
+    agent_path: &Path,
+    bytes: &[u8],
+    mime_type: &str,
+    extension: &str,
+) -> Result<String, String> {
+    let id = format!("agent-{}", Uuid::new_v4());
+    let paths = user_avatar_paths(app)?;
+    write_agent_image_avatar_at(&paths, agent_path, &id, bytes, mime_type, extension)
+}
+
+fn write_agent_image_avatar_at(
+    paths: &UserAvatarPaths,
+    agent_path: &Path,
+    id: &str,
+    bytes: &[u8],
+    mime_type: &str,
+    extension: &str,
+) -> Result<String, String> {
+    validate_avatar_id(id)?;
+    if user_avatar_extension(mime_type) != Some(extension) {
+        return Err(format!("Unsupported avatar image media type: {mime_type}"));
+    }
+    let agent_dir = agent_path
+        .parent()
+        .ok_or_else(|| "Agent source file has no parent directory".to_string())?;
+    let media_relative_path = format!(".avatars/{id}.{extension}");
+    validate_safe_relative_path(&media_relative_path)?;
+    let media_path = agent_dir.join(&media_relative_path);
+    atomic_write(&media_path, bytes)?;
+
+    let created_at_ms = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis());
+    let manifest = UserAvatarManifest {
+        id: id.to_string(),
+        path: media_relative_path,
+        mime_type: mime_type.to_string(),
+        alpha_mode: None,
+        poster_path: None,
+        agent_source_path: Some(agent_path.to_string_lossy().into_owned()),
+        byte_size: bytes.len() as u64,
+        created_at_ms,
+    };
+    let result = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| format!("Failed to serialize avatar manifest: {error}"))
+        .and_then(|bytes| atomic_write(&paths.meta.join(format!("{id}.json")), &bytes));
+    if let Err(error) = result {
+        rollback_user_avatar_files(&[media_path.as_path()]);
+        return Err(error);
+    }
+
+    Ok(format!("{USER_AVATAR_REF_PREFIX}{id}"))
+}
+
 fn write_user_avatar_at(
     paths: &UserAvatarPaths,
     id: &str,
@@ -1742,6 +1962,7 @@ fn write_user_avatar_at(
         mime_type: mime_type.to_string(),
         alpha_mode: alpha_mode.map(str::to_string),
         poster_path: poster_relative_path,
+        agent_source_path: None,
         byte_size: bytes.len() as u64,
         created_at_ms,
     };
@@ -1776,12 +1997,20 @@ fn cached_user_avatar_for_id(
     avatar_id: &str,
 ) -> Result<Option<CachedAvatar>, String> {
     let paths = user_avatar_paths(app)?;
+    cached_user_avatar_for_id_at(app, &paths, avatar_id)
+}
+
+fn cached_user_avatar_for_id_at(
+    app: &AppHandle,
+    paths: &UserAvatarPaths,
+    avatar_id: &str,
+) -> Result<Option<CachedAvatar>, String> {
     let manifest_path = paths.meta.join(format!("{avatar_id}.json"));
     if !manifest_path.exists() {
         return Ok(None);
     }
-    let manifest = read_user_avatar_manifest(&paths, avatar_id)?;
-    let media_path = user_avatar_media_path(&paths, &manifest)?;
+    let manifest = read_user_avatar_manifest(paths, avatar_id)?;
+    let media_path = user_avatar_media_path(app, paths, &manifest)?;
     if !media_path.exists() {
         return Ok(None);
     }
@@ -1821,17 +2050,25 @@ fn read_user_avatar_manifest(
 fn validate_user_avatar_manifest_paths(manifest: &UserAvatarManifest) -> Result<(), String> {
     let extension = user_avatar_extension(&manifest.mime_type)
         .ok_or_else(|| "Generated avatar manifest has unsupported media type".to_string())?;
-    let expected_media_path = format!("{}.{}", manifest.id, extension);
+    let expected_media_path = if manifest.agent_source_path.is_some() {
+        format!(".avatars/{}.{}", manifest.id, extension)
+    } else {
+        format!("{}.{}", manifest.id, extension)
+    };
     if manifest.path != expected_media_path {
         return Err("Generated avatar manifest media path does not belong to its id".to_string());
     }
     validate_safe_relative_path(&manifest.path)?;
 
+    if manifest.agent_source_path.is_some() && manifest.poster_path.is_some() {
+        return Err("Agent avatar manifest cannot have a poster path".to_string());
+    }
+
     if let Some(poster_path) = manifest.poster_path.as_deref() {
         validate_safe_relative_path(poster_path)?;
         let prefix = format!("{}.poster.", manifest.id);
         let poster_extension = poster_path.strip_prefix(&prefix);
-        if !matches!(poster_extension, Some("png" | "jpg" | "webp")) {
+        if !matches!(poster_extension, Some("png" | "jpg" | "webp" | "gif")) {
             return Err(
                 "Generated avatar manifest poster path does not belong to its id".to_string(),
             );
@@ -1841,10 +2078,30 @@ fn validate_user_avatar_manifest_paths(manifest: &UserAvatarManifest) -> Result<
 }
 
 fn user_avatar_media_path(
+    app: &AppHandle,
     paths: &UserAvatarPaths,
     manifest: &UserAvatarManifest,
 ) -> Result<PathBuf, String> {
+    if manifest.agent_source_path.is_some() {
+        let trusted_roots = trusted_agent_roots(app)?;
+        return user_avatar_media_path_with_roots(paths, manifest, &trusted_roots);
+    }
+    user_avatar_media_path_with_roots(paths, manifest, &[])
+}
+
+fn user_avatar_media_path_with_roots(
+    paths: &UserAvatarPaths,
+    manifest: &UserAvatarManifest,
+    trusted_roots: &[PathBuf],
+) -> Result<PathBuf, String> {
     validate_safe_relative_path(&manifest.path)?;
+    if let Some(agent_source_path) = manifest.agent_source_path.as_deref() {
+        let agent_path = validate_agent_source_path_with_roots(agent_source_path, trusted_roots)?;
+        let agent_dir = agent_path
+            .parent()
+            .ok_or_else(|| "Agent source file has no parent directory".to_string())?;
+        return Ok(agent_dir.join(&manifest.path));
+    }
     Ok(paths.media.join(&manifest.path))
 }
 
@@ -1859,6 +2116,7 @@ fn user_avatar_extension(mime_type: &str) -> Option<&'static str> {
         "image/png" => Some("png"),
         "image/jpeg" => Some("jpg"),
         "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
         "video/webm" => Some("webm"),
         "video/mp4" => Some("mp4"),
         "video/quicktime" => Some("mov"),
@@ -2525,6 +2783,7 @@ mod tests {
             mime_type: "image/png".to_string(),
             alpha_mode: None,
             poster_path: None,
+            agent_source_path: None,
             byte_size: 9,
             created_at_ms: 0,
         };
@@ -2651,6 +2910,101 @@ mod tests {
                 .unwrap_err()
                 .contains("5 MB or smaller")
         );
+    }
+
+    #[test]
+    fn imported_image_avatar_format_accepts_simple_image_signatures() {
+        assert_eq!(
+            imported_image_avatar_format(PNG_SIGNATURE),
+            Some(("image/png", "png"))
+        );
+        assert_eq!(
+            imported_image_avatar_format(JPEG_SIGNATURE),
+            Some(("image/jpeg", "jpg"))
+        );
+        assert_eq!(
+            imported_image_avatar_format(GIF87A_SIGNATURE),
+            Some(("image/gif", "gif"))
+        );
+        assert_eq!(
+            imported_image_avatar_format(GIF89A_SIGNATURE),
+            Some(("image/gif", "gif"))
+        );
+
+        let webp = [
+            RIFF_SIGNATURE.as_slice(),
+            b"1234",
+            WEBP_SIGNATURE.as_slice(),
+        ]
+        .concat();
+        assert_eq!(
+            imported_image_avatar_format(&webp),
+            Some(("image/webp", "webp"))
+        );
+        assert_eq!(imported_image_avatar_format(b"not an image"), None);
+    }
+
+    #[test]
+    fn write_agent_image_avatar_stores_media_next_to_agent_source() {
+        let (dir, paths) = temp_user_avatar_paths();
+        let agent_dir = dir.path().join(".agents").join("agents");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let agent_path = agent_dir.join("helper.md");
+        fs::write(&agent_path, b"agent").unwrap();
+
+        let avatar_ref = write_agent_image_avatar_at(
+            &paths,
+            &agent_path,
+            "agent-avatar-1",
+            PNG_SIGNATURE,
+            "image/png",
+            "png",
+        )
+        .unwrap();
+
+        assert_eq!(avatar_ref, "user-avatar:agent-avatar-1");
+        let media_path = agent_dir.join(".avatars").join("agent-avatar-1.png");
+        assert_eq!(fs::read(&media_path).unwrap(), PNG_SIGNATURE);
+
+        let manifest_path = paths.meta.join("agent-avatar-1.json");
+        let manifest: UserAvatarManifest = read_json_file(&manifest_path).unwrap();
+        assert_eq!(manifest.path, ".avatars/agent-avatar-1.png");
+        let agent_path_string = agent_path.to_string_lossy().into_owned();
+        assert_eq!(
+            manifest.agent_source_path.as_deref(),
+            Some(agent_path_string.as_str())
+        );
+        assert_eq!(
+            user_avatar_media_path_with_roots(&paths, &manifest, &[agent_dir]).unwrap(),
+            media_path
+        );
+    }
+
+    #[test]
+    fn delete_agent_image_avatar_removes_agent_local_media_and_manifest() {
+        let (dir, paths) = temp_user_avatar_paths();
+        let agent_dir = dir.path().join(".agents").join("agents");
+        fs::create_dir_all(&agent_dir).unwrap();
+        let agent_path = agent_dir.join("helper.md");
+        fs::write(&agent_path, b"agent").unwrap();
+        write_agent_image_avatar_at(
+            &paths,
+            &agent_path,
+            "agent-avatar-1",
+            PNG_SIGNATURE,
+            "image/png",
+            "png",
+        )
+        .unwrap();
+
+        let media_path = agent_dir.join(".avatars").join("agent-avatar-1.png");
+        let manifest_path = paths.meta.join("agent-avatar-1.json");
+
+        delete_user_avatar_at_with_roots(&paths, "user-avatar:agent-avatar-1", &[agent_dir])
+            .unwrap();
+
+        assert!(!media_path.exists());
+        assert!(!manifest_path.exists());
     }
 
     #[test]

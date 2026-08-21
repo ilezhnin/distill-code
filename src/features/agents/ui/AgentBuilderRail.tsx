@@ -1,20 +1,13 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import {
   IconAlertTriangle,
-  IconArrowLeft,
   IconLayoutSidebarLeftExpand,
   IconPhoto,
   IconSparkles,
   IconX,
 } from "@tabler/icons-react";
-import { avatarRef, parseAvatarRef } from "@/shared/avatars/catalog";
 import { normalizeAvatarUrl } from "@/shared/lib/avatarUrl";
 import { cn } from "@/shared/lib/cn";
 import type { AgentSourceEntry } from "@/shared/api/agents";
@@ -24,12 +17,6 @@ import { Input } from "@/shared/ui/input";
 import { Textarea } from "@/shared/ui/textarea";
 import { AvatarMedia } from "@/shared/ui/avatar-media";
 import { Spinner } from "@/shared/ui/spinner";
-import {
-  useAvatarLibrary,
-  type AvatarLibraryState,
-} from "@/features/agents/hooks/useAvatarLibrary";
-import { useAgentStore } from "@/features/agents/stores/agentStore";
-import { selectPersonas } from "@/features/agents/stores/agentSelectors";
 import {
   usePersonaSource,
   type PersonaSourcePatch,
@@ -44,13 +31,11 @@ import {
   PLACEHOLDER_AGENT_BODY,
   promoteDraft,
 } from "@/features/agents/lib/agentBuilderSession";
-import { useExperiment } from "@/features/experiments/experimentPreferences";
-import { AVATAR_COLLECTION_PAGE_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
-import { AvatarCollectionOverlay } from "@/features/agents/ui/AvatarCollectionOverlay";
-import { AvatarLibraryPicker } from "@/features/agents/ui/AvatarLibraryPicker";
 import { ProviderModelFields } from "@/features/agents/ui/PersonaFields/ProviderModelFields";
 import { FORM_FIELD_CLASS } from "@/shared/ui/form-field-tokens";
 import { hasRealAgentDescription } from "@/shared/api/agents";
+import { pickAgentAvatarImagePath } from "@/features/agents/lib/avatarFilePicker";
+import { deleteUserAvatar, importAgentAvatarFile } from "@/shared/api/avatars";
 
 const FIELD_CLASS = cn(FORM_FIELD_CLASS, "bg-muted/40");
 const FIELD_LABEL_CLASS = "mb-2 block text-xs text-muted-foreground";
@@ -130,24 +115,12 @@ export function AgentBuilderRail({
       onWritePersisted: handleWritePersisted,
     });
   const [isPromoting, setIsPromoting] = useState(false);
-  const [avatarPanel, setAvatarPanel] = useState<"closed" | "library">(
-    "closed",
-  );
+  const [avatarImportPending, setAvatarImportPending] = useState(false);
   const [recoveringMissingDraftKey, setRecoveringMissingDraftKey] = useState<
     string | null
   >(null);
   const [failedMissingDraftRecoveryKey, setFailedMissingDraftRecoveryKey] =
     useState<string | null>(null);
-  const avatarLibrary = useAvatarLibrary(true);
-  const avatarCollectionExperiment = useExperiment(
-    AVATAR_COLLECTION_PAGE_EXPERIMENT_ID,
-  );
-  // When on, "library" renders as the full-surface collection canvas overlay
-  // (portal over the whole app) instead of the inline picker. The chat +
-  // builder stay mounted underneath, so composer drafts, resize state, all survive the takeover.
-  const avatarCollectionOverlayEnabled = Boolean(
-    avatarCollectionExperiment?.enabled,
-  );
   const isWaitingForDraftTarget = !targetAgentPath;
   const missingDraftRecoveryKey = `${sessionId}:${targetAgentPath ?? "pending"}`;
   const [previousMissingDraftRecoveryKey, setPreviousMissingDraftRecoveryKey] =
@@ -197,16 +170,6 @@ export function AgentBuilderRail({
     typeof data?.properties?.avatar === "string" ? data.properties.avatar : "";
   const trimmedAvatar = avatarRaw.trim();
   const normalizedAvatar = normalizeAvatarUrl(trimmedAvatar);
-  const [selectedCollectionId, setSelectedCollectionId] = useState<
-    string | null
-  >(null);
-  const selectedCollection = useMemo(
-    () =>
-      avatarLibrary.catalog?.collections.find(
-        (collection) => collection.id === selectedCollectionId,
-      ) ?? null,
-    [avatarLibrary.catalog, selectedCollectionId],
-  );
 
   const provider = (data?.properties?.provider as string | undefined) ?? "";
   const modelProviderId =
@@ -227,42 +190,43 @@ export function AgentBuilderRail({
     [writeProperties],
   );
 
-  const onSelectAvatar = useCallback(
-    (avatarId: string) => {
-      writeProperty("avatar", avatarRef(avatarId));
-      setSelectedCollectionId(null);
-      setAvatarPanel("closed");
-    },
-    [writeProperty],
-  );
-
-  const personas = useAgentStore(selectPersonas);
-  const takenAvatarRefCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const persona of personas) {
-      if (typeof persona.avatar !== "string" || persona.avatar.length === 0) {
-        continue;
-      }
-      counts.set(persona.avatar, (counts.get(persona.avatar) ?? 0) + 1);
+  const handleChooseAvatarFile = useCallback(async () => {
+    if (!data || avatarImportPending) {
+      return;
     }
-    return counts;
-  }, [personas]);
 
-  const defaultAvatarId =
-    data && targetAgentPath && trimmedAvatar.length === 0
-      ? pickDefaultAvatarId(
-          avatarLibrary,
-          `${sessionId}:${targetAgentPath}`,
-          takenAvatarRefCounts,
-        )
-      : null;
-  const effectiveAvatar =
-    normalizedAvatar ?? (defaultAvatarId ? avatarRef(defaultAvatarId) : null);
-  const selectedAvatarRefValue = effectiveAvatar
-    ? parseAvatarRef(effectiveAvatar)
-      ? effectiveAvatar
-      : null
-    : null;
+    let importedAvatarRef: string | null = null;
+    setAvatarImportPending(true);
+    try {
+      const sourcePath = await pickAgentAvatarImagePath();
+      if (!sourcePath) {
+        return;
+      }
+
+      const nextAvatar = await importAgentAvatarFile({
+        agentPath: data.path,
+        sourcePath,
+      });
+      importedAvatarRef = nextAvatar;
+      writeProperty("avatar", nextAvatar);
+    } catch (error) {
+      if (importedAvatarRef) {
+        void deleteUserAvatar(importedAvatarRef).catch((cleanupError) => {
+          console.warn(
+            "Failed to clean up unpersisted agent avatar:",
+            cleanupError,
+          );
+        });
+      } else {
+        console.error("Failed to import agent avatar:", error);
+        toast.error(t("avatar.importFailed"));
+      }
+    } finally {
+      setAvatarImportPending(false);
+    }
+  }, [avatarImportPending, data, t, writeProperty]);
+
+  const effectiveAvatar = normalizedAvatar ?? null;
   const selectedAvatarMediaState = useAvatarMediaState(effectiveAvatar);
 
   const onChangeProvider = useCallback(
@@ -316,16 +280,12 @@ export function AgentBuilderRail({
   const contentFieldValue = data?.content ?? "";
   const isPlaceholderContent = contentFieldValue === PLACEHOLDER_AGENT_BODY;
   const instructionsFieldValue = isPlaceholderContent ? "" : contentFieldValue;
-  const avatarRequired = Boolean(effectiveAvatar);
   const nameRequired = nameFieldValue.trim().length > 0;
   const descriptionRequired = descriptionFieldValue.trim().length > 0;
   const instructionsRequired =
     contentFieldValue.trim().length > 0 &&
     contentFieldValue !== PLACEHOLDER_AGENT_BODY;
   const missingRequiredFields = [
-    requiresNewDraftFields && !avatarRequired
-      ? t("builderRail.requiredAvatar")
-      : null,
     !nameRequired ? t("builderRail.requiredName") : null,
     !descriptionRequired ? t("builderRail.requiredDescription") : null,
     requiresNewDraftFields && !instructionsRequired
@@ -346,9 +306,6 @@ export function AgentBuilderRail({
 
   const blockingError =
     error !== null && !(error === "load" && saveStatus === "error");
-  // An agent must never be saved with a half-finished avatar. The rule lives in
-  // the store so this and the session-scoped check cannot drift; pass the gated
-  // phase so a disabled experiment never blocks saving.
   const canPromoteDraft =
     missingRequiredFields.length === 0 &&
     saveStatus !== "saving" &&
@@ -419,13 +376,6 @@ export function AgentBuilderRail({
 
     setIsPromoting(true);
     try {
-      if (
-        requiresNewDraftFields &&
-        trimmedAvatar.length === 0 &&
-        defaultAvatarId
-      ) {
-        update({ properties: { avatar: avatarRef(defaultAvatarId) } });
-      }
       const saved = await saveNow();
       if (!saved) {
         return;
@@ -450,13 +400,10 @@ export function AgentBuilderRail({
     }
   }, [
     canPromoteDraft,
-    defaultAvatarId,
     onDraftPromoted,
     requiresNewDraftFields,
     saveNow,
     sessionId,
-    trimmedAvatar.length,
-    update,
   ]);
 
   const saveButtonUnavailable = !canPromoteDraft;
@@ -520,55 +467,6 @@ export function AgentBuilderRail({
       </div>
       {footer ? <div className="px-5">{footer}</div> : null}
     </aside>
-  );
-
-  // Rendered by both the compact rail and the full-page builder. Declared once
-  // so picker changes cannot be applied to one layout and silently missed in
-  // the other.
-  const avatarLibraryPickerNode = (
-    <AvatarLibraryPicker
-      library={avatarLibrary}
-      selectedAvatarRef={selectedAvatarRefValue}
-      onSelectAvatar={onSelectAvatar}
-      onPreviewError={() => {}}
-      selectedCollectionId={selectedCollectionId}
-      onSelectCollection={setSelectedCollectionId}
-    />
-  );
-
-  const avatarCollectionOverlayNode =
-    avatarCollectionOverlayEnabled && avatarPanel === "library" ? (
-      <AvatarCollectionOverlay
-        library={avatarLibrary}
-        initialCollectionId={selectedCollectionId}
-        onSelectAvatar={onSelectAvatar}
-        onClose={() => {
-          setSelectedCollectionId(null);
-          setAvatarPanel("closed");
-        }}
-      />
-    ) : null;
-
-  const pickerHeaderNode = (
-    <div className={cn(STICKY_HEADER_CLASS, "flex items-center gap-2")}>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-xs"
-        aria-label={t("builderRail.backToForm")}
-        onClick={() => {
-          if (selectedCollectionId) setSelectedCollectionId(null);
-          else setAvatarPanel("closed");
-        }}
-      >
-        <IconArrowLeft className="size-4" aria-hidden="true" />
-      </Button>
-      <h2 className="truncate text-sm font-normal text-foreground">
-        {selectedCollection
-          ? selectedCollection.label
-          : t("builderRail.chooseAvatarTitle")}
-      </h2>
-    </div>
   );
 
   if (error === "parse") {
@@ -666,24 +564,10 @@ export function AgentBuilderRail({
     );
   }
 
-  // With the collection canvas experiment on, the "library" panel renders as
-  // the full-surface overlay (mounted below) instead of swapping the rail
-  // body, so the form stays visible underneath the frosted glass.
-  if (
-    avatarPanel === "library" &&
-    !fullPage &&
-    !avatarCollectionOverlayEnabled
-  ) {
-    return shell(pickerHeaderNode, avatarLibraryPickerNode);
-  }
-
   const avatarNode = (
     <section>
       <button
         type="button"
-        // The takeover's funnel exit collapses toward this preview, so
-        // selecting an avatar visibly lands it here.
-        data-avatar-funnel-target=""
         className={cn(
           "group relative flex min-h-48 w-full items-center justify-center overflow-hidden rounded-md bg-card/40 p-5 transition-colors hover:bg-card/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           fullPage && "min-h-[20rem]",
@@ -693,7 +577,8 @@ export function AgentBuilderRail({
             ? t("builderRail.changeAvatar")
             : t("builderRail.selectAvatar")
         }
-        onClick={() => setAvatarPanel("library")}
+        disabled={avatarImportPending}
+        onClick={() => void handleChooseAvatarFile()}
       >
         {/* `relative` so the hover label anchors to the avatar box rather than
             to the full-width button, where it drifted into the far corner. */}
@@ -703,7 +588,9 @@ export function AgentBuilderRail({
             fullPage && "size-56",
           )}
         >
-          {selectedAvatarMediaState.media ? (
+          {avatarImportPending ? (
+            <Spinner className="size-4 text-muted-foreground" />
+          ) : selectedAvatarMediaState.media ? (
             <AvatarMedia
               media={selectedAvatarMediaState.media}
               alt={t("avatar.previewAlt")}
@@ -824,118 +711,27 @@ export function AgentBuilderRail({
     </>
   );
 
-  const fullPageLeftColumn =
-    avatarPanel === "library" && !avatarCollectionOverlayEnabled ? (
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-8 py-6 xl:px-12 xl:py-8">
-        <div className="flex items-center gap-2 text-sm text-foreground">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-xs"
-            className="-ml-1 shrink-0"
-            aria-label={t("builderRail.backToForm")}
-            onClick={() => {
-              if (selectedCollectionId) {
-                setSelectedCollectionId(null);
-              } else {
-                setAvatarPanel("closed");
-              }
-            }}
-          >
-            <IconArrowLeft className="size-4" aria-hidden="true" />
-          </Button>
-          <h3 className="truncate text-sm font-normal text-foreground">
-            {selectedCollection
-              ? selectedCollection.label
-              : t("builderRail.chooseAvatarTitle")}
-          </h3>
-        </div>
-        {avatarLibraryPickerNode}
-      </div>
-    ) : (
-      <div className="flex flex-col">{avatarNode}</div>
-    );
+  const fullPageLeftColumn = <div className="flex flex-col">{avatarNode}</div>;
 
   if (fullPage) {
-    return (
-      <>
-        {shell(
-          headerNode,
-          <div className="grid min-h-0 flex-1 grid-cols-[minmax(24rem,1fr)_minmax(24rem,1fr)] gap-10">
-            <div className="flex min-h-0 flex-col">{fullPageLeftColumn}</div>
-            <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-4 py-6 xl:px-8 xl:py-8">
-              {fieldsNode}
-            </div>
-          </div>,
-          footerNode,
-        )}
-        {avatarCollectionOverlayNode}
-      </>
-    );
-  }
-
-  return (
-    <>
-      {shell(
-        headerNode,
-        <div className="flex flex-col gap-4">
-          {avatarNode}
+    return shell(
+      headerNode,
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(24rem,1fr)_minmax(24rem,1fr)] gap-10">
+        <div className="flex min-h-0 flex-col">{fullPageLeftColumn}</div>
+        <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-4 py-6 xl:px-8 xl:py-8">
           {fieldsNode}
-        </div>,
-        footerNode,
-      )}
-      {avatarCollectionOverlayNode}
-    </>
-  );
-}
-
-function pickDefaultAvatarId(
-  library: AvatarLibraryState,
-  seed: string,
-  takenAvatarRefCounts: Map<string, number>,
-): string | null {
-  const catalog = library.catalog;
-  if (!catalog || catalog.assets.length === 0) {
-    return null;
-  }
-
-  const cachedIds = Object.entries(library.cachedAvatarMediaById)
-    .filter(([, entry]) => entry.catalogVersion === catalog.catalogVersion)
-    .map(([avatarId]) => avatarId)
-    .filter((avatarId) =>
-      catalog.assets.some((entry) => entry.id === avatarId),
+        </div>
+      </div>,
+      footerNode,
     );
-  const candidateIds =
-    cachedIds.length > 0
-      ? cachedIds
-      : catalog.collections.length > 0
-        ? catalog.collections.map((collection) => collection.coverAvatarId)
-        : catalog.assets.map((entry) => entry.id);
-
-  if (candidateIds.length === 0) {
-    return null;
   }
 
-  // Prefer avatars not in use by any persona; fall back to least-used.
-  // Final tiebreak is the deterministic seed hash so picks are stable per draft.
-  let minCount = Number.POSITIVE_INFINITY;
-  for (const id of candidateIds) {
-    const count = takenAvatarRefCounts.get(avatarRef(id)) ?? 0;
-    if (count < minCount) {
-      minCount = count;
-    }
-  }
-  const leastUsedIds = candidateIds.filter(
-    (id) => (takenAvatarRefCounts.get(avatarRef(id)) ?? 0) === minCount,
+  return shell(
+    headerNode,
+    <div className="flex flex-col gap-4">
+      {avatarNode}
+      {fieldsNode}
+    </div>,
+    footerNode,
   );
-
-  return leastUsedIds[stableHash(seed) % leastUsedIds.length] ?? null;
-}
-
-function stableHash(value: string): number {
-  let hash = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
-  }
-  return hash;
 }

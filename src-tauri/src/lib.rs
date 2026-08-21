@@ -468,6 +468,7 @@ pub fn run() {
             commands::avatars::get_cached_avatars_for_refs,
             commands::avatars::read_cached_avatar_animation,
             commands::avatars::import_user_avatar_data_url,
+            commands::avatars::import_agent_avatar_file,
             commands::avatars::delete_user_avatar,
             commands::cache::clear_local_media_caches,
             #[cfg(feature = "block-agent-tools")]

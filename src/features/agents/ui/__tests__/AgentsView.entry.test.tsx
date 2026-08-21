@@ -4,7 +4,6 @@ import {
   render,
   screen,
   waitFor,
-  within,
 } from "@testing-library/react";
 import { StrictMode } from "react";
 import userEvent from "@testing-library/user-event";
@@ -16,20 +15,19 @@ import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { toast } from "sonner";
 import { importPersonas } from "@/shared/api/agents";
-import { useAvatarLibrary } from "@/features/agents/hooks/useAvatarLibrary";
-import type { AvatarLibraryState } from "@/features/agents/hooks/useAvatarLibrary";
 import type { CreatePersonaRequest } from "@/shared/types/agents";
-import {
-  EXPERIMENT_PREFERENCES_STORAGE_KEY,
-  EXPERIMENT_PREFERENCES_STORAGE_VERSION,
-} from "@/features/experiments/experimentPreferences";
-import { AVATAR_COLLECTION_PAGE_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
 import { AgentsView } from "../AgentsView";
 
 const mockCreatePersona = vi.hoisted(() => vi.fn());
 const mockUpdatePersona = vi.hoisted(() => vi.fn());
 const mockTrackAgentCreateCompleted = vi.hoisted(() => vi.fn());
 const mockTrackAgentEditCompleted = vi.hoisted(() => vi.fn());
+const dialogMocks = vi.hoisted(() => ({
+  open: vi.fn(),
+}));
+const avatarApiMocks = vi.hoisted(() => ({
+  importAgentAvatarFile: vi.fn(),
+}));
 
 const mockDraftSource = vi.hoisted(() => ({
   type: "agent",
@@ -76,7 +74,12 @@ vi.mock("react-i18next", () => ({
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
-  open: vi.fn(),
+  open: dialogMocks.open,
+}));
+
+vi.mock("@/shared/api/avatars", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/shared/api/avatars")>()),
+  importAgentAvatarFile: avatarApiMocks.importAgentAvatarFile,
 }));
 
 vi.mock("@/shared/api/artifacts", () => ({
@@ -154,69 +157,6 @@ vi.mock("@/features/agents/ui/PersonaFields/ProviderModelFields", () => ({
   ProviderModelFields: () => <div data-testid="provider-model-fields" />,
 }));
 
-vi.mock("@/features/agents/hooks/useAvatarLibrary", () => ({
-  useAvatarLibrary: vi.fn(),
-}));
-
-const EMPTY_AVATAR_LIBRARY: AvatarLibraryState = {
-  catalog: null,
-  cachedAvatarMediaById: {},
-  loading: false,
-  cacheChecking: false,
-  error: false,
-  errorCode: null,
-  mediaError: false,
-  mediaErrorCode: null,
-  retryCatalog: () => {},
-  retryMedia: () => {},
-};
-
-/**
- * A one-avatar library, cached and ready, so the collection gallery renders a
- * real selectable tile instead of an empty canvas.
- */
-function singleAvatarLibrary(avatarId: string): AvatarLibraryState {
-  const variant = (extension: string, mimeType: string) => ({
-    path: `${avatarId}.${extension}`,
-    mimeType,
-    byteSize: 1,
-    sha256: avatarId,
-  });
-
-  return {
-    ...EMPTY_AVATAR_LIBRARY,
-    catalog: {
-      schemaVersion: 1,
-      catalogVersion: "v1",
-      collections: [
-        {
-          id: "gloopies",
-          label: "Gloopies",
-          coverAvatarId: avatarId,
-          avatarIds: [avatarId],
-        },
-      ],
-      assets: [
-        {
-          id: avatarId,
-          label: avatarId,
-          collectionId: "gloopies",
-          variants: {
-            webm: variant("webm", "video/webm"),
-            hevc: variant("mov", "video/quicktime"),
-          },
-        },
-      ],
-    },
-    cachedAvatarMediaById: {
-      [avatarId]: {
-        catalogVersion: "v1",
-        media: { src: `cached-${avatarId}`, mediaType: "image" },
-      },
-    },
-  };
-}
-
 const persona = {
   id: "/Users/x/.agents/agents/code-reviewer.md",
   displayName: "Code reviewer",
@@ -256,24 +196,14 @@ describe("AgentsView entry points", () => {
     });
     delete document.documentElement.dataset.agentTransition;
     Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
-    localStorage.removeItem(EXPERIMENT_PREFERENCES_STORAGE_KEY);
     vi.restoreAllMocks();
   });
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    vi.mocked(useAvatarLibrary).mockReturnValue(EMPTY_AVATAR_LIBRARY);
-    // These tests exercise the inline customize section, so the collection
-    // gallery experiment (auto-enabled in dev/test) is pinned off.
-    // Gallery-specific tests re-enable it explicitly.
-    localStorage.setItem(
-      EXPERIMENT_PREFERENCES_STORAGE_KEY,
-      JSON.stringify({
-        version: EXPERIMENT_PREFERENCES_STORAGE_VERSION,
-        experiments: {
-          [AVATAR_COLLECTION_PAGE_EXPERIMENT_ID]: { enabled: false },
-        },
-      }),
+    dialogMocks.open.mockResolvedValue(null);
+    avatarApiMocks.importAgentAvatarFile.mockResolvedValue(
+      "user-avatar:agent-1",
     );
     // Restore the default passthrough after tests that defer extraction.
     const actualZipImport = await vi.importActual<
@@ -821,8 +751,9 @@ describe("AgentsView entry points", () => {
     expect(screen.queryByText("Description")).not.toBeInTheDocument();
   });
 
-  it("shows and activates the avatar customization affordance", async () => {
+  it("imports an avatar image from the detail customization affordance", async () => {
     useAgentStore.setState({ personas: [persona] });
+    dialogMocks.open.mockResolvedValue("/Users/x/Pictures/avatar.png");
     const user = userEvent.setup();
 
     render(<AgentsView activePersonaId={persona.id} />);
@@ -835,89 +766,15 @@ describe("AgentsView entry points", () => {
     expect(customizeAvatar).toHaveFocus();
     await user.keyboard("{Enter}");
 
-    expect(screen.getByText("editor.avatarUrl")).toBeInTheDocument();
-  });
-
-  it("opens the avatar collection gallery instead of the inline section when the experiment is on", async () => {
-    localStorage.setItem(
-      EXPERIMENT_PREFERENCES_STORAGE_KEY,
-      JSON.stringify({
-        version: EXPERIMENT_PREFERENCES_STORAGE_VERSION,
-        experiments: {
-          [AVATAR_COLLECTION_PAGE_EXPERIMENT_ID]: { enabled: true },
-        },
+    await waitFor(() =>
+      expect(avatarApiMocks.importAgentAvatarFile).toHaveBeenCalledWith({
+        agentPath: persona.id,
+        sourcePath: "/Users/x/Pictures/avatar.png",
       }),
     );
-    useAgentStore.setState({ personas: [persona] });
-    const user = userEvent.setup();
-
-    render(<AgentsView activePersonaId={persona.id} />);
-
-    await user.click(
-      screen.getByRole("button", { name: "editor.customizeAvatar" }),
-    );
-
-    // The full-surface gallery takeover renders; the inline customize
-    // section (with its duplicate custom-URL form) never appears.
-    expect(screen.getByTestId("avatar-collection-overlay")).toBeInTheDocument();
-    expect(screen.queryByText("editor.avatarUrl")).not.toBeInTheDocument();
-  });
-
-  it("persists the avatar picked in the collection gallery and closes the takeover", async () => {
-    vi.mocked(useAvatarLibrary).mockReturnValue(
-      singleAvatarLibrary("gloopies-1"),
-    );
-    // jsdom reports zero rects; give the gallery canvas a real size so the
-    // scatter layout has a tile to lay avatars into.
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
-      x: 0,
-      y: 0,
-      top: 0,
-      left: 0,
-      right: 1200,
-      bottom: 800,
-      width: 1200,
-      height: 800,
-      toJSON: () => ({}),
-    } as DOMRect);
-    localStorage.setItem(
-      EXPERIMENT_PREFERENCES_STORAGE_KEY,
-      JSON.stringify({
-        version: EXPERIMENT_PREFERENCES_STORAGE_VERSION,
-        experiments: {
-          [AVATAR_COLLECTION_PAGE_EXPERIMENT_ID]: { enabled: true },
-        },
-      }),
-    );
-    useAgentStore.setState({ personas: [persona] });
-    const user = userEvent.setup();
-
-    render(<AgentsView activePersonaId={persona.id} />);
-
-    await user.click(
-      screen.getByRole("button", { name: "editor.customizeAvatar" }),
-    );
-
-    // Picking is two-step in the gallery: click highlights, Select commits.
-    const overlay = within(screen.getByTestId("avatar-collection-overlay"));
-    await user.click(overlay.getAllByRole("button", { name: "gloopies-1" })[0]);
-    await user.click(
-      overlay.getAllByRole("button", { name: "collectionPage.select" })[0],
-    );
-
-    // The selection is persisted as an app-avatar ref, not a raw id.
-    await waitFor(() =>
-      expect(mockUpdatePersona).toHaveBeenCalledWith(
-        expect.objectContaining({ id: persona.id }),
-        { avatar: "app-avatar:gloopies-1" },
-      ),
-    );
-
-    // The takeover hands control back to the profile after committing.
-    await waitFor(() =>
-      expect(
-        screen.queryByTestId("avatar-collection-overlay"),
-      ).not.toBeInTheDocument(),
+    expect(mockUpdatePersona).toHaveBeenCalledWith(
+      expect.objectContaining({ id: persona.id }),
+      { avatar: "user-avatar:agent-1" },
     );
   });
 
@@ -1220,14 +1077,11 @@ describe("AgentsView entry points", () => {
   });
 
   describe("berd_agent Edit Completed", () => {
-    async function saveCustomAvatarUrl(url: string): Promise<void> {
+    async function chooseAvatarFile(path: string): Promise<void> {
+      dialogMocks.open.mockResolvedValue(path);
       const user = userEvent.setup();
       await user.click(
         screen.getByRole("button", { name: "editor.customizeAvatar" }),
-      );
-      await user.type(screen.getByLabelText("editor.avatarUrl"), url);
-      await user.click(
-        screen.getByRole("button", { name: "common:actions.save" }),
       );
     }
 
@@ -1240,14 +1094,14 @@ describe("AgentsView entry points", () => {
       useAgentStore.setState({ personas: [qualifiedPersona] });
       render(<AgentsView activePersonaId={qualifiedPersona.id} />);
 
-      await saveCustomAvatarUrl("https://example.com/avatar.png");
+      await chooseAvatarFile("/Users/x/Pictures/avatar.png");
 
       await waitFor(() =>
         expect(mockTrackAgentEditCompleted).toHaveBeenCalledTimes(1),
       );
       expect(mockUpdatePersona).toHaveBeenCalledWith(
         expect.objectContaining({ id: qualifiedPersona.id }),
-        { avatar: "https://example.com/avatar.png" },
+        { avatar: "user-avatar:agent-1" },
       );
       expect(mockTrackAgentEditCompleted).toHaveBeenCalledWith({
         provider: "goose",
@@ -1260,7 +1114,7 @@ describe("AgentsView entry points", () => {
       useAgentStore.setState({ personas: [persona] });
       render(<AgentsView activePersonaId={persona.id} />);
 
-      await saveCustomAvatarUrl("https://example.com/avatar.png");
+      await chooseAvatarFile("/Users/x/Pictures/avatar.png");
 
       await waitFor(() => expect(toast.error).toHaveBeenCalled());
       expect(mockTrackAgentEditCompleted).not.toHaveBeenCalled();

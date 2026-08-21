@@ -1,5 +1,6 @@
 {
   "avatar": {
+    "importFailed": "No se pudo importar la imagen del avatar.",
     "loadFailed": "No se pudo cargar la imagen",
     "previewAlt": "Vista previa del avatar",
     "removeAria": "Quitar avatar"
@@ -26,17 +27,8 @@
     "descriptionPlaceholder": "Una línea breve sobre lo que hace este agente",
     "instructionsLabel": "Instrucciones del agente",
     "instructionsPlaceholder": "Describe el objetivo e instrucciones del agente",
-    "selectedAvatar": "Avatar seleccionado",
-    "selectedAvatarNone": "Ninguno seleccionado",
-    "selectedAvatarCustom": "Avatar personalizado",
-    "selectedAvatarUnavailable": "El archivo del avatar no está disponible",
-    "chooseAvatar": "Elige uno de la biblioteca",
-    "chooseAvatarTitle": "Elegir avatar",
-    "backToForm": "Atrás",
-    "backToAgent": "Volver al agente",
     "selectAvatar": "Seleccionar avatar",
     "changeAvatar": "Cambiar avatar",
-    "doneChoosingAvatar": "Listo",
     "saveChanges": "Guardar cambios",
     "savingChanges": "Guardando cambios...",
     "creatingAgent": "Creando agente...",
@@ -47,7 +39,6 @@
     "unsavedChanges": "Cambios sin guardar",
     "saveError": "No se pudo guardar. Tus ediciones siguen aquí.",
     "completeRequiredFields": "Obligatorio: {{fields}}.",
-    "requiredAvatar": "avatar",
     "requiredName": "nombre",
     "requiredDescription": "descripción",
     "requiredInstructions": "instrucciones",
@@ -69,13 +60,6 @@
     "viewAria": "Ver {{name}}",
     "chatAria": "Chatear con {{name}}"
   },
-  "collectionPage": {
-    "collectionBadge": "Colección",
-    "collectionHeading": "Colección {{label}}",
-    "collectionsHeading": "Colecciones de avatares",
-    "openCollection": "Abrir la colección {{label}}",
-    "select": "Seleccionar"
-  },
   "detail": {
     "startChat": "Iniciar chat",
     "moreActions": "Más acciones"
@@ -83,23 +67,7 @@
   "editor": {
     "create": "Crear",
     "created": "Agente creado.",
-    "avatarBackToCollections": "Volver a las colecciones de avatares",
-    "avatarBundled": "Incluidos",
-    "avatarCatalogNetworkAccess": "No se pudo cargar la biblioteca de avatares. Comprueba tu conexión de red e inténtalo de nuevo.",
-    "avatarCatalogUnavailable": "La biblioteca de avatares no está disponible. Inténtalo de nuevo.",
-    "avatarCollectionCount": "{{count}} avatares",
-    "avatarCollectionNetworkAccess": "No se pudieron descargar los avatares. Comprueba tu conexión de red e inténtalo de nuevo.",
-    "avatarDownloadCollection": "Descargar {{count}}",
-    "avatarDownloaded": "Descargado",
-    "avatarDownloading": "Descargando",
-    "avatarLibrary": "Biblioteca de avatares",
-    "avatarLoading": "Cargando",
-    "avatarRetry": "Reintentar",
-    "avatarBackToProfile": "Volver al perfil",
     "changeAvatar": "Cambiar avatar",
-    "avatarUrl": "URL de avatar personalizada",
-    "avatarUrlInvalid": "Ingresa una URL http o https válida sin credenciales.",
-    "avatarUrlPlaceholder": "https://example.com/avatar.png",
     "customizeAvatar": "Personalizar",
     "connectProvider": "Conectar",
     "displayName": "Nombre del agente",
