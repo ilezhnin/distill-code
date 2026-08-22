@@ -124,6 +124,10 @@ vi.mock("@/shared/api/pathResolver", () => ({
     mockCheckDirectoriesExist(...args),
 }));
 
+vi.mock("@/features/status/ui/StatusBar", () => ({
+  StatusBar: () => null,
+}));
+
 vi.mock("@/features/updates/ui/UpdateButton", () => ({
   UpdateButton: () => null,
 }));

@@ -579,6 +579,7 @@ pub fn run() {
             commands::agent_setup::get_agent_setup_status,
             commands::agent_setup::list_agent_setup_status,
             commands::agent_setup::clear_agent_setup_status,
+            commands::provider_rate_limits::get_provider_rate_limits,
             commands::path_resolver::resolve_path,
             commands::path_resolver::canonicalize_authorized_workspace_directory,
             commands::path_resolver::check_directories_exist,

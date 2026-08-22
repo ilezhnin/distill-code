@@ -507,6 +507,10 @@ vi.mock("@/shared/api/system", () => ({
   pathExists: (...args: unknown[]) => mockPathExists(...args),
 }));
 
+vi.mock("@/features/status/ui/StatusBar", () => ({
+  StatusBar: () => null,
+}));
+
 vi.mock("@/features/updates/ui/UpdateButton", () => ({
   UpdateButton: () => null,
 }));

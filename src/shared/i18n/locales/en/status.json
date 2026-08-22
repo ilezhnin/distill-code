@@ -1,0 +1,49 @@
+{
+  "bar": {
+    "aria": "Connected platform usage",
+    "refresh": "Refresh rate limits",
+    "refreshFailed": "Refresh failed",
+    "limited": "Limited",
+    "unavailable": "Unavailable",
+    "signIn": "Sign in",
+    "connect": "Connect",
+    "connectAll": "Connect all",
+    "connectDescription": "Connect your AI provider accounts to see usage limits and availability.",
+    "supports": "Supports",
+    "configureUsage": "Configure usage tracking",
+    "hide": "Hide from status bar",
+    "agentLimits": "Agent usage limits"
+  },
+  "roster": {
+    "title": "Usage",
+    "allAgents": "all agents",
+    "detailed": "Detailed",
+    "compact": "Compact",
+    "detailedAria": "Full usage with bars, labels, and percentages",
+    "compactAria": "Condensed usage: only the tightest window",
+    "usageDetails": "Usage details & history",
+    "manageAccounts": "Manage Accounts…",
+    "account": "{{name}} Account",
+    "updated": "Updated {{when}}",
+    "justNow": "just now",
+    "minutesAgo": "{{count}}m ago",
+    "hoursAgo": "{{count}}h ago",
+    "refreshFailedCached": "Refresh failed — showing cached data",
+    "signInToSee": "Sign in to see usage",
+    "resetsNow": "Resets now",
+    "resetsIn": "Resets in {{duration}}",
+    "session": "Session",
+    "weekly": "Weekly",
+    "fable": "Fable",
+    "monthly": "Monthly",
+    "usedNow": "{{percent}} used now",
+    "usedWindow": "{{percent}} used {{window}}",
+    "usedFable": "{{percent}} used Fable",
+    "percentUsed": "{{percent}} used"
+  },
+  "providers": {
+    "claude-acp": "Claude",
+    "grok-acp": "Grok",
+    "codex-acp": "Codex"
+  }
+}

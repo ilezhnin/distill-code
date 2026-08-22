@@ -22,6 +22,7 @@ import { UpdateButton } from "@/features/updates/ui/UpdateButton";
 import { TopBar } from "./TopBar";
 import { useFocusRegion } from "@/app/focus/FocusRegionProvider";
 import { useSessionListRefresh } from "@/features/sessions/hooks/useSessionListRefresh";
+import { StatusBar } from "@/features/status/ui/StatusBar";
 
 interface AppShellLayoutProps {
   children: ReactNode;
@@ -384,6 +385,7 @@ export function AppShellLayout({
         </main>
       </div>
 
+      <StatusBar />
       <UpdateButton />
       <ChannelSwitchDialog />
 

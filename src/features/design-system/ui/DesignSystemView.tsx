@@ -511,6 +511,15 @@ const spacingTokens: RuntimeToken[] = [
       "Bottom gutter between resizable app panels and the window edge.",
   },
   {
+    name: "--spacing-app-status-bar",
+    description: "Height of the persistent usage status bar.",
+  },
+  {
+    name: "--spacing-app-global-composer-bottom",
+    description:
+      "Docked global composer inset above the status bar on home, agents, and skills.",
+  },
+  {
     name: "--spacing-input",
     description: "Default form control height.",
   },

@@ -225,6 +225,14 @@ describe("GlobalComposerPill", () => {
     expect(screen.getByRole("region")).toHaveClass("shadow-elevated");
   });
 
+  it("docks above the status bar on the work surface", () => {
+    renderGlobalComposer(vi.fn(), { placement: "docked" });
+
+    expect(screen.getByRole("region")).toHaveClass(
+      "bottom-[var(--spacing-app-global-composer-bottom)]",
+    );
+  });
+
   it("pairs the card-glass surface with the shared panel backdrop", () => {
     renderGlobalComposer(vi.fn(), { placement: "docked" });
 
