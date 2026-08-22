@@ -60,6 +60,7 @@ if ([string]::IsNullOrWhiteSpace($gooseSource)) {
     $gooseSource = $goose.BinPath
 }
 Assert-GooseBinaryIdentity -Path $gooseSource -BinName $gooseBinName
+Assert-DistillGooseBinary -BinPath $gooseSource
 $staged = Stage-WindowsSidecar -SourcePath $gooseSource -Triple $Triple -Stem "goosed" -BinDir $binDir
 Write-WindowsDevInfo "Staged Goose sidecar: $staged"
 

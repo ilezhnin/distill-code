@@ -140,6 +140,17 @@ try {
     Assert-Equal "bundle-windows uses positional argv transport" ($justfile -match '(?m)^\[positional-arguments\]\r?\n\[script\("powershell\.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"\)\]\r?\nbundle-windows[^:]*:\r?\n\s+& .*Bundle-Windows\.ps1.*\$args\[0\]') $true
     Assert-Equal "bundle-windows does not interpolate bundle into source" ($justfile -notmatch '(?m)^\s+.*Bundle-Windows\.ps1.*\{\{\s*bundle\s*\}\}') $true
 
+    $setupScript = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Setup-Windows.ps1")
+    $devScript = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Dev-Windows.ps1")
+    $doctorScript = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Doctor-Windows.ps1")
+    $bootstrapScript = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Bootstrap-Windows.ps1")
+    Assert-Equal "setup does not require Block VPN" ($setupScript -notmatch 'Block VPN|Block npm registry is not reachable') $true
+    Assert-Equal "setup initializes public npm" ($setupScript -match 'Initialize-PublicNpmEnvironment') $true
+    Assert-Equal "dev initializes public npm" ($devScript -match 'Initialize-PublicNpmEnvironment') $true
+    Assert-Equal "doctor does not require Block npm cert" ($doctorScript -notmatch 'Block npm cert') $true
+    Assert-Equal "doctor pings public npm" ($doctorScript -match 'Get-PublicNpmRegistry') $true
+    Assert-Equal "bootstrap does not warn for Block npm" ($bootstrapScript -notmatch 'Block npm HTTPS') $true
+
     $bundleScript = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Bundle-Windows.ps1")
     Assert-Equal "bundle exports full SemVer to Rust" `
         ($bundleScript -match '\$env:BERD_APP_VERSION\s*=\s*\$resolvedVersion\.RichVersion') $true
@@ -608,6 +619,18 @@ try {
         Assert-GooseBinaryIdentity -Path (Join-Path $identityDir "absent") -BinName "goose"
     }
 
+    $unpatchedGoose = Join-Path $temp "unpatched-goose.exe"
+    Set-Content -Path $unpatchedGoose -Value "goose serve without distill providers" -Encoding ASCII
+    $patchedGoose = Join-Path $temp "patched-goose.exe"
+    Set-Content -Path $patchedGoose -Value "goose serve grok-acp provider" -Encoding ASCII
+    Assert-Equal "unpatched goose binary lacks grok-acp" (Test-GooseBinaryIncludesGrokAcp -BinPath $unpatchedGoose) $false
+    Assert-Equal "patched goose binary includes grok-acp" (Test-GooseBinaryIncludesGrokAcp -BinPath $patchedGoose) $true
+    Assert-Throws "distill rejects an unpatched Goose binary" { Assert-DistillGooseBinary -BinPath $unpatchedGoose }
+    Assert-NoThrow "distill accepts a grok-acp Goose binary" { Assert-DistillGooseBinary -BinPath $patchedGoose }
+    Assert-Equal "dev-windows asserts Distill Goose patches" ((Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Dev-Windows.ps1")) -match "Assert-DistillGooseBinary") $true
+    Assert-Equal "setup-windows asserts Distill Goose patches" ((Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Setup-Windows.ps1")) -match "Assert-DistillGooseBinary") $true
+    Assert-Equal "sidecar staging asserts Distill Goose patches" ((Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Stage-Sidecar-Windows.ps1")) -match "Assert-DistillGooseBinary") $true
+
     # ── Bundle and stage-sidecar call sites invoke native child processes ──
     # A successful in-process `& script.ps1` leaves $LASTEXITCODE unset, so the
     # old stale guard false-failed before the next step. Pin both public call
@@ -747,6 +770,45 @@ try {
     Assert-Equal "Block npm env node cert target" $nodeCertTarget.ExpectedValue $cleanupPaths.BlockCertFile
     Assert-Equal "Block npm env Corepack registry target" $corepackRegistryTarget.ExpectedValue (Get-BlockNpmRegistry)
     Assert-Equal "Block npm env Corepack integrity target" $corepackIntegrityTarget.ExpectedValue "0"
+
+    Assert-Equal "public npm registry" (Get-PublicNpmRegistry) "https://registry.npmjs.org/"
+    Assert-Equal "detects Block Artifactory host" (Test-IsBlockNpmValue (Get-BlockNpmRegistry)) $true
+    Assert-Equal "detects Block cert path" (Test-IsBlockNpmValue $cleanupPaths.BlockCertFile) $true
+    Assert-Equal "ignores public npm as Block" (Test-IsBlockNpmValue (Get-PublicNpmRegistry)) $false
+    Assert-Equal "ignores empty npm value as Block" (Test-IsBlockNpmValue "") $false
+
+    $oldNpmRegistry = $env:NPM_CONFIG_REGISTRY
+    $oldCorepackRegistry = $env:COREPACK_NPM_REGISTRY
+    $oldCafile = $env:NPM_CONFIG_CAFILE
+    $oldNodeCerts = $env:NODE_EXTRA_CA_CERTS
+    $oldIntegrity = $env:COREPACK_INTEGRITY_KEYS
+    try {
+        $env:NPM_CONFIG_REGISTRY = Get-BlockNpmRegistry
+        $env:COREPACK_NPM_REGISTRY = Get-BlockNpmRegistry
+        $env:NPM_CONFIG_CAFILE = $cleanupPaths.BlockCertFile
+        $env:NODE_EXTRA_CA_CERTS = $cleanupPaths.BlockCertFile
+        $env:COREPACK_INTEGRITY_KEYS = "0"
+        Initialize-PublicNpmEnvironment
+        Assert-Equal "rewrites Block npm registry to public npm" $env:NPM_CONFIG_REGISTRY (Get-PublicNpmRegistry)
+        Assert-Equal "clears Block Corepack registry" ([string]::IsNullOrWhiteSpace($env:COREPACK_NPM_REGISTRY)) $true
+        Assert-Equal "clears Block npm cafile" ([string]::IsNullOrWhiteSpace($env:NPM_CONFIG_CAFILE)) $true
+        Assert-Equal "clears Block NODE_EXTRA_CA_CERTS" ([string]::IsNullOrWhiteSpace($env:NODE_EXTRA_CA_CERTS)) $true
+        Assert-Equal "clears Artifactory Corepack integrity override" ([string]::IsNullOrWhiteSpace($env:COREPACK_INTEGRITY_KEYS)) $true
+
+        $env:NPM_CONFIG_REGISTRY = "https://registry.example.test/npm/"
+        $env:COREPACK_NPM_REGISTRY = "https://registry.example.test/npm/"
+        $env:COREPACK_INTEGRITY_KEYS = "0"
+        Initialize-PublicNpmEnvironment
+        Assert-Equal "leaves non-Block npm registry alone" $env:NPM_CONFIG_REGISTRY "https://registry.example.test/npm/"
+        Assert-Equal "leaves non-Block Corepack registry alone" $env:COREPACK_NPM_REGISTRY "https://registry.example.test/npm/"
+        Assert-Equal "leaves unrelated Corepack integrity override" $env:COREPACK_INTEGRITY_KEYS "0"
+    } finally {
+        $env:NPM_CONFIG_REGISTRY = $oldNpmRegistry
+        $env:COREPACK_NPM_REGISTRY = $oldCorepackRegistry
+        $env:NPM_CONFIG_CAFILE = $oldCafile
+        $env:NODE_EXTRA_CA_CERTS = $oldNodeCerts
+        $env:COREPACK_INTEGRITY_KEYS = $oldIntegrity
+    }
 } finally {
     $env:GOOSE_DEV_ROOT = $oldGooseDevRoot
     $env:GOOSE_DEV_REPO = $oldGooseRepo

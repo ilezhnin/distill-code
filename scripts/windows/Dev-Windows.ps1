@@ -11,7 +11,7 @@ Set-Location (Get-BerdRepoRoot)
 Update-SessionPathFromRegistry
 Assert-MsvcEnvironment
 Initialize-FnmEnvironment | Out-Null
-Import-BlockNpmUserEnvironment
+Initialize-PublicNpmEnvironment
 Update-SessionPathFromRegistry
 
 if ([string]::IsNullOrWhiteSpace($env:GOOSE_BIN)) {
@@ -133,6 +133,7 @@ if ([string]::IsNullOrWhiteSpace($env:GOOSE_BIN)) {
     $env:GOOSE_BIN = $result.BinPath
     Write-WindowsDevInfo "Using local Goose binary: $env:GOOSE_BIN"
 }
+Assert-DistillGooseBinary -BinPath $env:GOOSE_BIN
 
 $env:CARGO_TARGET_DIR = $tauriCargoTargetDir
 

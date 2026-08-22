@@ -28,7 +28,7 @@ Update-SessionPathFromRegistry
 Assert-MsvcEnvironment
 Assert-LibClangEnvironment
 Initialize-FnmEnvironment | Out-Null
-Import-BlockNpmUserEnvironment
+Initialize-PublicNpmEnvironment
 Update-SessionPathFromRegistry
 
 $pnpm = Get-PnpmCommand

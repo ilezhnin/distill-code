@@ -20,7 +20,7 @@ Set-Location (Get-BerdRepoRoot)
 Update-SessionPathFromRegistry
 Assert-MsvcEnvironment
 Initialize-FnmEnvironment | Out-Null
-Import-BlockNpmUserEnvironment
+Initialize-PublicNpmEnvironment
 Update-SessionPathFromRegistry
 
 $pnpm = Get-PnpmCommand
@@ -28,10 +28,6 @@ if ([string]::IsNullOrWhiteSpace($pnpm)) {
     throw "pnpm is not available. Run 'just bootstrap-windows install', open a new PowerShell, then retry."
 }
 Assert-PnpmReady
-$blockNpmReachability = Test-BlockNpmRegistryReachability
-if (-not $blockNpmReachability.Ready) {
-    throw "Block npm registry is not reachable with Node/npm TLS settings. Connect to the Block VPN/proxy or fix network trust, then rerun. Details: $($blockNpmReachability.Message)"
-}
 
 Write-WindowsDevSection "Install pnpm dependencies"
 Invoke-CheckedCommand -FilePath $pnpm -ArgumentList @(
@@ -57,6 +53,9 @@ if ($SkipGooseBuild) {
     $env:GOOSE_DEV_MODE = "required"
     $env:GOOSE_BUILD_PROFILE = $GooseBuildProfile
     Invoke-EnsureLocalGoose -Action Build | Out-Null
+    $settings = Get-GooseBackendSettings
+    $paths = Resolve-GooseDevPaths
+    Assert-DistillGooseBinary -BinPath (Resolve-GooseBinaryPath -Paths $paths -Settings $settings)
 }
 
 Write-Host ""

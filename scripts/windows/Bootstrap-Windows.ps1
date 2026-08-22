@@ -179,12 +179,12 @@ function Invoke-PrerequisiteEvaluation {
             Add-Failure "pnpm version" "expected $(Get-RequiredPnpmVersion), got '$actualVersion'. Run: corepack prepare pnpm@$(Get-RequiredPnpmVersion) --activate" "Schniz.fnm"
         }
     }
-    if ($null -ne $prereqs.BlockNpmReachability) {
-        $blockNpmReachability = $prereqs.BlockNpmReachability
-        if ($blockNpmReachability.Ready) {
-            Add-Pass "Block npm HTTPS" $blockNpmReachability.Message
+    if ($null -ne $prereqs.NpmReachability) {
+        $npmReachability = $prereqs.NpmReachability
+        if ($npmReachability.Ready) {
+            Add-Pass "npm HTTPS" $npmReachability.Message
         } else {
-            Add-Warn "Block npm HTTPS" "could not reach $(Get-BlockNpmRegistry) with Node/npm TLS settings. Configure Block npm access from docs/windows-onboarding.md, then rerun. Details: $($blockNpmReachability.Message)"
+            Add-Warn "npm HTTPS" "could not reach $(Get-PublicNpmRegistry) with Node/npm TLS settings. Check network/TLS, then rerun. Details: $($npmReachability.Message)"
         }
     }
     Test-RequiredCommand -Name "cmake" -WingetId "Kitware.CMake" -DisplayName "CMake" -Check $prereqs.Cmake | Out-Null
@@ -246,25 +246,22 @@ if ($Mode -eq "install") {
 
     if (-not [string]::IsNullOrWhiteSpace((Get-CommandSource "fnm"))) {
         Ensure-FnmNode
-        Import-BlockNpmUserEnvironment
+        Initialize-PublicNpmEnvironment
         Invoke-CheckedCommand -FilePath (Get-CorepackCommand) -ArgumentList @("enable") -Label "corepack enable"
-        # pnpm activation source is a deliberate two-path decision:
-        # - Block npm env configured: corepack fetches pnpm from the Block
-        #   registry (COREPACK_NPM_REGISTRY) with COREPACK_INTEGRITY_KEYS=0,
-        #   because Artifactory does not mirror npm's signing keys.
-        # - Fresh machine, no Block env: corepack falls back to public npmjs
-        #   for the version-pinned pnpm with integrity verification enabled.
+        # Distill fetches the version-pinned pnpm from public npmjs through
+        # Corepack. If Corepack cannot activate it, fall back to a global npm
+        # install of the same pin.
         if (-not (Invoke-CorepackPreparePnpm)) {
             Invoke-NpmInstallPnpm | Out-Null
         }
         try {
             Assert-PnpmReady
         } catch {
-            Add-Warn "pnpm" "$($_.Exception.Message) If this is a fresh machine, configure Block npm access from docs/windows-onboarding.md and rerun 'just bootstrap-windows install'."
+            Add-Warn "pnpm" "$($_.Exception.Message) Rerun 'just bootstrap-windows install'."
         }
-        $blockNpmReachability = Test-BlockNpmRegistryReachability
-        if (-not $blockNpmReachability.Ready) {
-            Add-Warn "Block npm HTTPS" "Could not reach $(Get-BlockNpmRegistry) with Node/npm TLS settings. Configure Block npm access from docs/windows-onboarding.md, then rerun. Details: $($blockNpmReachability.Message)"
+        $npmReachability = Test-NpmRegistryReachability
+        if (-not $npmReachability.Ready) {
+            Add-Warn "npm HTTPS" "Could not reach $(Get-PublicNpmRegistry) with Node/npm TLS settings. Check network/TLS, then rerun. Details: $($npmReachability.Message)"
         }
     }
 

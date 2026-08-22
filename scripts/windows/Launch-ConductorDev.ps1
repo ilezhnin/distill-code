@@ -21,6 +21,7 @@ if ([string]::IsNullOrWhiteSpace($env:GOOSE_BIN)) {
 if (-not (Test-Path $env:GOOSE_BIN -PathType Leaf)) {
     throw "Goose binary missing at $($env:GOOSE_BIN). Set GOOSE_BIN or run just setup-windows."
 }
+Assert-DistillGooseBinary -BinPath $env:GOOSE_BIN
 
 $env:VITE_PORT = [string](Get-StableVitePort)
 $env:VITE_DESIGN_SYSTEM_EXPLORER = "1"

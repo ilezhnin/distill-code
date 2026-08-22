@@ -5,6 +5,7 @@ $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $script:RequiredPnpmVersion = "10.33.0"
 $script:RequiredNodeVersion = "24.10.0"
 $script:BlockNpmRegistry = "https://global.block-artifacts.com/artifactory/api/npm/square-npm/"
+$script:PublicNpmRegistry = "https://registry.npmjs.org/"
 $script:WebView2ClientIds = @(
     "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
     "{F1E7DD3E-2BBD-4C03-AB8D-0808074AC3E6}"
@@ -40,6 +41,18 @@ function Get-RequiredNodeVersion {
 
 function Get-BlockNpmRegistry {
     return $script:BlockNpmRegistry
+}
+
+function Get-PublicNpmRegistry {
+    return $script:PublicNpmRegistry
+}
+
+function Test-IsBlockNpmValue {
+    param([AllowNull()][AllowEmptyString()][string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+    return ($Value -like "*global.block-artifacts.com*") -or ($Value -like "*block-certs*")
 }
 
 function Get-BlockRootCertPath {
@@ -785,9 +798,9 @@ function Get-WindowsPrerequisiteSnapshot {
         $msvcReady = (Initialize-MsvcEnvironment) -and -not [string]::IsNullOrWhiteSpace((Get-CommandSource "link.exe"))
     }
 
-    $blockNpmReachability = $null
+    $npmReachability = $null
     if ($node.Available) {
-        $blockNpmReachability = Test-BlockNpmRegistryReachability
+        $npmReachability = Test-NpmRegistryReachability
     }
 
     return [pscustomobject]@{
@@ -803,7 +816,7 @@ function Get-WindowsPrerequisiteSnapshot {
         Node = $node
         Corepack = $corepack
         Pnpm = $pnpm
-        BlockNpmReachability = $blockNpmReachability
+        NpmReachability = $npmReachability
         Cmake = $cmake
         LibClangPath = Get-LibClangPath
         Jq = $jq
@@ -1187,6 +1200,30 @@ function Resolve-GooseBinaryPath {
     }
 
     return (Join-Path (Join-Path $targetDir $Settings.BuildProfile) (Get-WindowsExeName $Settings.Bin))
+}
+
+function Test-GooseBinaryIncludesGrokAcp {
+    param([Parameter(Mandatory = $true)][string]$BinPath)
+    if (-not (Test-Path -LiteralPath $BinPath -PathType Leaf)) {
+        return $false
+    }
+    $result = Invoke-CaptureCommand -FilePath "findstr.exe" -ArgumentList @("/C:grok-acp", "/M", $BinPath)
+    return ($result.ExitCode -eq 0)
+}
+
+function Assert-DistillGooseBinary {
+    param([Parameter(Mandatory = $true)][string]$BinPath)
+    $patchDir = Join-Path $script:RepoRoot "patches\goose"
+    $hasGrokPatch = @((Get-GoosePatchFiles -PatchDir $patchDir) | Where-Object { $_.Name -match "grok-acp" }).Count -gt 0
+    if (-not $hasGrokPatch) {
+        return
+    }
+    if (-not (Test-Path -LiteralPath $BinPath -PathType Leaf)) {
+        throw "Goose binary not found at $BinPath. Unset GOOSE_BIN and run 'just setup-windows'."
+    }
+    if (-not (Test-GooseBinaryIncludesGrokAcp -BinPath $BinPath)) {
+        throw "Goose at $BinPath does not include grok-acp. Distill patches that provider into the managed Goose checkout. Unset GOOSE_BIN and run 'just setup-windows'."
+    }
 }
 
 function Get-GoosePatchFiles {
@@ -2054,15 +2091,17 @@ function Assert-PnpmReady {
         return
     }
 
-    throw "pnpm did not report $(Get-RequiredPnpmVersion). Configure Block npm access as documented, then rerun 'just bootstrap-windows install'."
+    throw "pnpm did not report $(Get-RequiredPnpmVersion). Run 'just bootstrap-windows install'."
 }
 
-function Test-BlockNpmRegistryReachability {
-    Import-BlockNpmUserEnvironment
+function Test-NpmRegistryReachability {
+    param([string]$Registry = $script:PublicNpmRegistry)
+
+    Initialize-PublicNpmEnvironment
     if ([string]::IsNullOrWhiteSpace((Get-CommandSource "node"))) {
         return [pscustomobject]@{
             Ready = $false
-            Message = "node is unavailable, so Block npm HTTPS reachability could not be checked"
+            Message = "node is unavailable, so npm HTTPS reachability could not be checked"
         }
     }
 
@@ -2072,9 +2111,6 @@ const url = process.argv[2];
 const req = https.request(url, { method: "HEAD", timeout: 15000 }, (res) => {
   console.log(`HTTP ${res.statusCode}`);
   res.resume();
-  // 401/403 mean TLS worked but access is denied (missing/expired
-  // Artifactory token); 5xx means the registry is broken. Either way the
-  // lane is not ready, so only 2xx/3xx count as reachable.
   process.exitCode = res.statusCode >= 400 ? 1 : 0;
 });
 req.on("timeout", () => req.destroy(new Error("timed out after 15s")));
@@ -2088,7 +2124,7 @@ req.end();
     $scriptFile = New-BerdTemporaryFile
     try {
         Set-Content -Path $scriptFile -Value $script -Encoding UTF8
-        $result = Invoke-CaptureCommand -FilePath "node" -ArgumentList @($scriptFile.FullName, $script:BlockNpmRegistry)
+        $result = Invoke-CaptureCommand -FilePath "node" -ArgumentList @($scriptFile.FullName, $Registry)
     } finally {
         Remove-Item -LiteralPath $scriptFile -Force -ErrorAction SilentlyContinue
     }
@@ -2159,11 +2195,35 @@ function Ensure-FnmNode {
     Initialize-FnmEnvironment | Out-Null
 }
 
-function Import-BlockNpmUserEnvironment {
-    foreach ($target in Get-BlockNpmEnvironmentTargets) {
-        $value = [System.Environment]::GetEnvironmentVariable($target.Name, "User")
-        if (-not [string]::IsNullOrWhiteSpace($value)) {
-            [System.Environment]::SetEnvironmentVariable($target.Name, $value, "Process")
+function Initialize-PublicNpmEnvironment {
+    # Distill uses public npm. Leftover Berd/Block Artifactory settings from
+    # the user or process environment would send pnpm/corepack at a VPN-only
+    # host; rewrite those to registry.npmjs.org and drop Block CA overrides.
+    $public = $script:PublicNpmRegistry
+    $clearedBlockRegistry = $false
+    foreach ($name in @("NPM_CONFIG_REGISTRY", "COREPACK_NPM_REGISTRY")) {
+        $processValue = [System.Environment]::GetEnvironmentVariable($name, "Process")
+        $effective = $processValue
+        if ([string]::IsNullOrWhiteSpace($effective)) {
+            $effective = [System.Environment]::GetEnvironmentVariable($name, "User")
         }
+        if (Test-IsBlockNpmValue $effective) {
+            $clearedBlockRegistry = $true
+            if ($name -eq "NPM_CONFIG_REGISTRY") {
+                [System.Environment]::SetEnvironmentVariable($name, $public, "Process")
+            } else {
+                [System.Environment]::SetEnvironmentVariable($name, $null, "Process")
+            }
+        }
+    }
+    foreach ($name in @("NPM_CONFIG_CAFILE", "NODE_EXTRA_CA_CERTS")) {
+        $processValue = [System.Environment]::GetEnvironmentVariable($name, "Process")
+        if (Test-IsBlockNpmValue $processValue) {
+            [System.Environment]::SetEnvironmentVariable($name, $null, "Process")
+        }
+    }
+    $integrity = [System.Environment]::GetEnvironmentVariable("COREPACK_INTEGRITY_KEYS", "Process")
+    if ($clearedBlockRegistry -and $integrity -eq "0") {
+        [System.Environment]::SetEnvironmentVariable("COREPACK_INTEGRITY_KEYS", $null, "Process")
     }
 }
