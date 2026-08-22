@@ -1,0 +1,49 @@
+{
+  "bar": {
+    "aria": "Uso de las plataformas conectadas",
+    "refresh": "Actualizar límites",
+    "refreshFailed": "Error al actualizar",
+    "limited": "Limitado",
+    "unavailable": "No disponible",
+    "signIn": "Iniciar sesión",
+    "connect": "Conectar",
+    "connectAll": "Conectar todo",
+    "connectDescription": "Conecta tus cuentas de proveedores de IA para ver límites de uso y disponibilidad.",
+    "supports": "Compatible con",
+    "configureUsage": "Configurar el seguimiento de uso",
+    "hide": "Ocultar de la barra de estado",
+    "agentLimits": "Límites de uso del agente"
+  },
+  "roster": {
+    "title": "Uso",
+    "allAgents": "todos los agentes",
+    "detailed": "Detallado",
+    "compact": "Compacto",
+    "detailedAria": "Uso completo con barras, etiquetas y porcentajes",
+    "compactAria": "Uso condensado: solo la ventana más ajustada",
+    "usageDetails": "Detalles e historial de uso",
+    "manageAccounts": "Administrar cuentas…",
+    "account": "Cuenta de {{name}}",
+    "updated": "Actualizado {{when}}",
+    "justNow": "ahora mismo",
+    "minutesAgo": "hace {{count}} min",
+    "hoursAgo": "hace {{count}} h",
+    "refreshFailedCached": "Error al actualizar — mostrando datos en caché",
+    "signInToSee": "Inicia sesión para ver el uso",
+    "resetsNow": "Se restablece ahora",
+    "resetsIn": "Se restablece en {{duration}}",
+    "session": "Sesión",
+    "weekly": "Semanal",
+    "fable": "Fable",
+    "monthly": "Mensual",
+    "usedNow": "{{percent}} usado ahora",
+    "usedWindow": "{{percent}} usado {{window}}",
+    "usedFable": "{{percent}} usado Fable",
+    "percentUsed": "{{percent}} usado"
+  },
+  "providers": {
+    "claude-acp": "Claude",
+    "grok-acp": "Grok",
+    "codex-acp": "Codex"
+  }
+}

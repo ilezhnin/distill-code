@@ -16,6 +16,7 @@ export const TRANSLATION_NAMESPACES = [
   "skills",
   "sidebar",
   "sessions",
+  "status",
 ] as const;
 export const LOCALE_STORAGE_KEY = "goose:locale";
 export const SYSTEM_LOCALE = "system";

@@ -33,6 +33,7 @@ pub(crate) mod managed_acp_tools;
 pub(crate) mod managed_node;
 pub mod path_env;
 pub(crate) mod process;
+pub(crate) mod provider_rate_limits;
 pub mod renderer_monitor;
 pub mod shell_env;
 #[cfg(feature = "block-automations")]

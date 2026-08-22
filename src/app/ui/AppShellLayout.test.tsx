@@ -30,6 +30,10 @@ vi.mock("./TopBar", () => ({
   TopBar: () => <header>Top bar</header>,
 }));
 
+vi.mock("@/features/status/ui/StatusBar", () => ({
+  StatusBar: () => <footer data-testid="app-status-bar">Status bar</footer>,
+}));
+
 const noop = vi.fn();
 type TestLayoutProps = Omit<Parameters<typeof AppShellLayout>[0], "children">;
 

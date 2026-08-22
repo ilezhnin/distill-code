@@ -42,6 +42,7 @@ const localeResourceLoaders = {
     skills: () => import("./locales/en/skills.json"),
     sidebar: () => import("./locales/en/sidebar.json"),
     sessions: () => import("./locales/en/sessions.json"),
+    status: () => import("./locales/en/status.json"),
   },
   es: {
     agents: () => import("./locales/es/agents.json"),
@@ -58,6 +59,7 @@ const localeResourceLoaders = {
     skills: () => import("./locales/es/skills.json"),
     sidebar: () => import("./locales/es/sidebar.json"),
     sessions: () => import("./locales/es/sessions.json"),
+    status: () => import("./locales/es/status.json"),
   },
 } as const satisfies Record<
   AppLocale,

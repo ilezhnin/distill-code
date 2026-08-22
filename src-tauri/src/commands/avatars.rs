@@ -768,23 +768,21 @@ pub async fn get_cached_avatars_for_refs(
                     cached_user_avatar_for_id(&app, &avatar_id).unwrap_or(None),
                 );
             }
-            Ok(None) => {
-                match parse_agent_avatar_ref(&avatar_ref) {
-                    Ok(Some(avatar_id)) => {
-                        resolved.insert(
-                            avatar_ref,
-                            cached_agent_avatar_for_id(&app, &avatar_id).unwrap_or(None),
-                        );
-                    }
-                    Ok(None) => {
-                        let avatar_id = parse_app_avatar_ref(&avatar_ref).ok();
-                        parsed_refs.push((avatar_ref, avatar_id));
-                    }
-                    Err(_) => {
-                        resolved.insert(avatar_ref, None);
-                    }
+            Ok(None) => match parse_agent_avatar_ref(&avatar_ref) {
+                Ok(Some(avatar_id)) => {
+                    resolved.insert(
+                        avatar_ref,
+                        cached_agent_avatar_for_id(&app, &avatar_id).unwrap_or(None),
+                    );
                 }
-            }
+                Ok(None) => {
+                    let avatar_id = parse_app_avatar_ref(&avatar_ref).ok();
+                    parsed_refs.push((avatar_ref, avatar_id));
+                }
+                Err(_) => {
+                    resolved.insert(avatar_ref, None);
+                }
+            },
             Err(_) => {
                 resolved.insert(avatar_ref, None);
             }

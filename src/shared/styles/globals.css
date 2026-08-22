@@ -1203,8 +1203,12 @@
   --spacing-app-panel-gutter-top: 4px;
   --spacing-app-panel-gutter-inline: 12px;
   --spacing-app-panel-gutter-bottom: 12px;
+  --spacing-app-status-bar: 28px;
+  --spacing-app-global-composer-bottom: calc(
+    var(--spacing-app-status-bar) + var(--spacing-app-panel-gutter-bottom)
+  );
   --spacing-app-page-bottom: 6rem;
-  --toast-bottom-offset: var(--spacing-app-panel-gutter-bottom);
+  --toast-bottom-offset: calc(var(--spacing-app-status-bar) + 8px);
   --toast-mobile-bottom-offset: 16px;
   --spacing-input: 3.25rem;
   --spacing-input-sm: 2.75rem;
@@ -1447,8 +1451,8 @@
 }
 
 :root[data-global-composer-visible="true"] {
-  --toast-bottom-offset: 88px;
-  --toast-mobile-bottom-offset: 132px;
+  --toast-bottom-offset: calc(var(--spacing-app-status-bar) + 88px);
+  --toast-mobile-bottom-offset: calc(var(--spacing-app-status-bar) + 132px);
 }
 
 @keyframes active-chat-dot-pulse {

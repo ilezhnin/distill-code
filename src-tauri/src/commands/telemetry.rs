@@ -1707,10 +1707,9 @@ mod tests {
     /// and installation id.
     #[test]
     fn rejects_endpoint_with_explicit_port() {
-        let error = allowed_otel_logs_endpoint(
-            "https://otlp.invalid.goose-internal.example:8443/v1/logs",
-        )
-        .unwrap_err();
+        let error =
+            allowed_otel_logs_endpoint("https://otlp.invalid.goose-internal.example:8443/v1/logs")
+                .unwrap_err();
 
         assert!(error.contains("port"));
     }
@@ -1719,10 +1718,9 @@ mod tests {
     /// tripping the explicit-port rejection.
     #[test]
     fn allows_the_scheme_default_port() {
-        let url = allowed_otel_logs_endpoint(
-            "https://otlp.invalid.goose-internal.example:443/v1/logs",
-        )
-        .unwrap();
+        let url =
+            allowed_otel_logs_endpoint("https://otlp.invalid.goose-internal.example:443/v1/logs")
+                .unwrap();
 
         assert_eq!(
             url.as_str(),

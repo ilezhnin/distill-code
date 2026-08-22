@@ -1212,7 +1212,7 @@ export function GlobalComposerPill({
     placement === "handoff" && handoffSourceRect
       ? "global-composer-pill-flip fixed overflow-hidden"
       : placement === "docked"
-        ? "bottom-3 right-3 w-[482px] max-w-[calc(100vw-24px)]"
+        ? "bottom-[var(--spacing-app-global-composer-bottom)] right-3 w-[482px] max-w-[calc(100vw-24px)]"
         : "left-[calc(var(--global-composer-main-left)+(100vw-var(--global-composer-main-left))/2)] top-1/2 w-[min(680px,calc(100vw-var(--global-composer-main-left)-48px))] max-w-[calc(100vw-24px)] -translate-x-1/2 -translate-y-1/2 shadow-global-composer-pill-hover";
 
   return (
