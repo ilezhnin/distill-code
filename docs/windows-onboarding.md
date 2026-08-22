@@ -70,9 +70,13 @@ Bootstrap installs or validates:
 - Lefthook
 - just
 
-Bootstrap does not create or mutate npm registry or TLS configuration. If your environment uses a registry mirror, proxy, or custom certificate authority, configure those through your normal Node/npm tooling before running `just setup-windows`. Never bypass TLS verification with `strict-ssl=false`.
-
-> **Current limitation:** the checked-in Windows scripts still validate a legacy organization-specific npm mirror. External contributors cannot complete `doctor-windows` or `setup-windows` on a fresh machine until those checks are made distribution-neutral. This guide intentionally does not publish the private environment configuration; contributors working on Windows should follow [the tracking issue](https://github.com/block/berd/issues) or use the supported macOS setup in the meantime.
+Bootstrap does not create or mutate user-level npm registry or TLS configuration.
+The Windows setup/dev scripts talk to the public npm registry
+(`https://registry.npmjs.org/`) and ignore leftover Block Artifactory settings
+in the process environment, so Block VPN is not required. If your environment
+uses a non-Block registry mirror, proxy, or custom certificate authority,
+configure those through your normal Node/npm tooling before running
+`just setup-windows`. Never bypass TLS verification with `strict-ssl=false`.
 
 Open a fresh PowerShell after install mode if PATH changes are not visible.
 
@@ -86,8 +90,7 @@ just doctor-windows
 
 Expected result:
 
-- organization-distributed builds pass all required checks after their npm environment is configured
-- external builds remain blocked by the legacy npm validation described above
+- required checks pass against public npm (Block VPN is not required)
 - one warning is acceptable: native Windows sign-in is deferred
 
 If doctor reports managed Goose is missing, continue with `setup-windows`.

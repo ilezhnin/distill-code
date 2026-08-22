@@ -117,7 +117,7 @@ if ($null -ne $rustc) {
 }
 
 Check-Command "fnm" "Run: just bootstrap-windows install" $prereqs.Fnm | Out-Null
-Import-BlockNpmUserEnvironment
+Initialize-PublicNpmEnvironment
 $node = Check-Command "node" "Run: fnm install $(Get-RequiredNodeVersion); fnm use $(Get-RequiredNodeVersion)" $prereqs.Node
 if ($null -ne $node) {
     $nodeVersion = Invoke-CaptureCommand -FilePath "node" -ArgumentList @("--version")
@@ -129,29 +129,21 @@ if ($null -ne $node) {
 }
 
 Check-Command "corepack" "Run: corepack enable" $prereqs.Corepack | Out-Null
-$certPath = Get-BlockRootCertPath
-if (Test-Path $certPath -PathType Leaf) {
-    Pass "Block npm cert" $certPath
-} else {
-    Fail "Block npm cert" "missing. Configure Block npm access from docs/windows-onboarding.md"
-}
 $npm = Get-NpmCommand
 if ([string]::IsNullOrWhiteSpace($npm)) {
     Fail "npm registry" "npm is unavailable. Run: just bootstrap-windows install"
 } else {
     $configuredRegistry = Invoke-CaptureCommand -FilePath $npm -ArgumentList @("config", "get", "registry")
-    if ($configuredRegistry.ExitCode -eq 0 -and $configuredRegistry.Output.Trim() -eq (Get-BlockNpmRegistry)) {
+    if ($configuredRegistry.ExitCode -eq 0) {
         Pass "npm registry" $configuredRegistry.Output.Trim()
     } else {
-        Fail "npm registry" "expected $(Get-BlockNpmRegistry), got '$($configuredRegistry.Output.Trim())'. Configure Block npm access from docs/windows-onboarding.md"
+        Fail "npm registry" "npm could not report its registry. Run: just bootstrap-windows install"
     }
-    # Functional probe through npm's own TLS/cafile/auth config: catches
-    # expired or missing Artifactory tokens that a raw HTTPS check misses.
-    $npmPing = Invoke-CaptureCommand -FilePath $npm -ArgumentList @("ping", "--registry", (Get-BlockNpmRegistry))
+    $npmPing = Invoke-CaptureCommand -FilePath $npm -ArgumentList @("ping", "--registry", (Get-PublicNpmRegistry))
     if ($npmPing.ExitCode -eq 0) {
-        Pass "npm ping" (Get-BlockNpmRegistry)
+        Pass "npm ping" (Get-PublicNpmRegistry)
     } else {
-        Fail "npm ping" "npm cannot authenticate to $(Get-BlockNpmRegistry). Refresh Block npm credentials from docs/windows-onboarding.md. Details: $($npmPing.Output)"
+        Fail "npm ping" "npm cannot reach $(Get-PublicNpmRegistry). Check network/TLS, then rerun. Details: $($npmPing.Output)"
     }
 }
 $pnpm = Check-Command "pnpm" "Run: corepack prepare pnpm@$(Get-RequiredPnpmVersion) --activate" $prereqs.Pnpm
@@ -164,14 +156,14 @@ if ($null -ne $pnpm) {
     }
 }
 
-$blockNpmReachability = $prereqs.BlockNpmReachability
-if ($null -eq $blockNpmReachability) {
-    $blockNpmReachability = Test-BlockNpmRegistryReachability
+$npmReachability = $prereqs.NpmReachability
+if ($null -eq $npmReachability) {
+    $npmReachability = Test-NpmRegistryReachability
 }
-if ($blockNpmReachability.Ready) {
-    Pass "Block npm HTTPS" $blockNpmReachability.Message
+if ($npmReachability.Ready) {
+    Pass "npm HTTPS" $npmReachability.Message
 } else {
-    Fail "Block npm HTTPS" "could not reach $(Get-BlockNpmRegistry) with Node/npm TLS settings. Configure Block npm access from docs/windows-onboarding.md, connect to the Block VPN/proxy, or fix local trust, then rerun. Details: $($blockNpmReachability.Message)"
+    Fail "npm HTTPS" "could not reach $(Get-PublicNpmRegistry) with Node/npm TLS settings. Check network/TLS, then rerun. Details: $($npmReachability.Message)"
 }
 
 Check-Command "cmake" "Run: winget install --id Kitware.CMake -e" $prereqs.Cmake | Out-Null
