@@ -228,9 +228,13 @@ describe("GlobalComposerPill", () => {
   it("docks above the status bar on the work surface", () => {
     renderGlobalComposer(vi.fn(), { placement: "docked" });
 
-    expect(screen.getByRole("region")).toHaveClass(
-      "bottom-[var(--spacing-app-global-composer-bottom)]",
+    const region = screen.getByRole("region");
+    expect(region).toHaveClass(
+      "bottom-[var(--app-global-composer-bottom,calc(1.75rem+1rem))]",
     );
+    expect(region).toHaveStyle({
+      bottom: "var(--app-global-composer-bottom, calc(1.75rem + 1rem))",
+    });
   });
 
   it("pairs the card-glass surface with the shared panel backdrop", () => {

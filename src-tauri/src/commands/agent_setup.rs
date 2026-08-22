@@ -24,6 +24,11 @@ use crate::services::{
 use doctor::FixType;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+#[cfg(windows)]
+use std::path::PathBuf;
+#[cfg(windows)]
+use std::process::Stdio;
+
 pub(crate) fn npm_registry(app: &AppHandle) -> Option<String> {
     app.try_state::<DistroBundleState>()
         .and_then(|state| npm_registry_for_distro(state.inner()))
@@ -944,18 +949,15 @@ async fn run_fix(
     let registry_for_lines = registry.clone();
     let provider_for_lines = provider_id.to_string();
     let log_tag_for_lines = log_tag.clone();
-    // No cancellation token in `execute_fix_streaming_with_env_options` by design —
-    // `run_fix` always runs to completion. Leaving the screen never stopped the
-    // work; the registry just tracks the work that was already running.
-    let result = doctor::execute_fix_streaming_with_env_options(
+    // No cancellation token in `execute_fix_command` by design — `run_fix`
+    // always runs to completion. Leaving the screen never stopped the work;
+    // the registry just tracks the work that was already running.
+    let result = execute_fix_command(
         check_id,
         fix_type,
-        doctor::ExecuteFixOptions {
-            command_override,
-            npm_registry: npm_registry(app),
-            env: None,
-        }
-        .with_env_snapshot(setup_env_vars(app).await),
+        command_override,
+        npm_registry(app),
+        setup_env_vars(app).await,
         move |line| {
             log::info!("{log_tag_for_lines} {line}");
             append_output(
@@ -973,6 +975,153 @@ async fn run_fix(
         Err(error) => log::info!("{log_tag} fix failed: {error}"),
     }
     result
+}
+
+/// Run a doctor-resolved shell fix. The upstream doctor crate always spawns
+/// `/bin/zsh` or `/bin/bash -l -c`, which on Windows fails immediately with
+/// `The system cannot find the path specified. (os error 3)`. Auth/install
+/// commands that still go through this path (Claude `auth login`, Copilot
+/// npm, etc.) therefore have to be launched via `cmd.exe` here.
+async fn execute_fix_command<F>(
+    check_id: String,
+    fix_type: FixType,
+    command_override: Option<String>,
+    npm_registry: Option<String>,
+    env_vars: Vec<(String, String)>,
+    on_line: F,
+) -> Result<(), String>
+where
+    F: FnMut(&str) + Send + 'static,
+{
+    #[cfg(windows)]
+    {
+        let _ = npm_registry;
+        let command = command_override
+            .or_else(|| doctor::agents::lookup_fix_command(&check_id, &fix_type))
+            .ok_or_else(|| format!("Unknown check '{check_id}' or fix type '{fix_type:?}'"))?;
+        execute_windows_cmd_streaming(command, env_vars, on_line).await
+    }
+    #[cfg(not(windows))]
+    {
+        doctor::execute_fix_streaming_with_env_options(
+            check_id,
+            fix_type,
+            doctor::ExecuteFixOptions {
+                command_override,
+                npm_registry,
+                env: None,
+            }
+            .with_env_snapshot(env_vars),
+            on_line,
+        )
+        .await
+    }
+}
+
+#[cfg(windows)]
+fn windows_cmd_exe() -> PathBuf {
+    std::env::var_os("ComSpec")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| PathBuf::from("cmd.exe"))
+}
+
+#[cfg(windows)]
+enum CmdStreamLine {
+    Stdout(String),
+    Stderr(String),
+}
+
+/// Stream a doctor fix through `cmd.exe /d /c` so managed `.cmd` shims resolve
+/// via PATHEXT. Mirrors the crate's `$ <command>` preamble and stderr-on-failure
+/// message so the Providers card stays unchanged.
+#[cfg(windows)]
+async fn execute_windows_cmd_streaming<F>(
+    command: String,
+    env_vars: Vec<(String, String)>,
+    mut on_line: F,
+) -> Result<(), String>
+where
+    F: FnMut(&str) + Send + 'static,
+{
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    on_line(&format!("$ {command}"));
+
+    let mut process = tokio::process::Command::new(windows_cmd_exe());
+    process
+        .arg("/d")
+        .arg("/c")
+        .arg(&command)
+        .envs(env_vars)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    crate::services::process::apply_no_window_async(&mut process);
+
+    let mut child = process
+        .spawn()
+        .map_err(|error| format!("Failed to run command: {error}"))?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CmdStreamLine>();
+    let tx_stdout = tx.clone();
+    let tx_stderr = tx.clone();
+    drop(tx);
+
+    let stdout_task = tokio::spawn(async move {
+        if let Some(stdout) = stdout {
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if tx_stdout.send(CmdStreamLine::Stdout(line)).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+    let stderr_task = tokio::spawn(async move {
+        if let Some(stderr) = stderr {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if tx_stderr.send(CmdStreamLine::Stderr(line)).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    let mut stderr_accum = String::new();
+    while let Some(line) = rx.recv().await {
+        match line {
+            CmdStreamLine::Stdout(text) => on_line(&text),
+            CmdStreamLine::Stderr(text) => {
+                on_line(&text);
+                if !stderr_accum.is_empty() {
+                    stderr_accum.push('\n');
+                }
+                stderr_accum.push_str(&text);
+            }
+        }
+    }
+
+    let _ = tokio::join!(stdout_task, stderr_task);
+    let status = child
+        .wait()
+        .await
+        .map_err(|error| format!("Failed to wait for command: {error}"))?;
+
+    if status.success() {
+        Ok(())
+    } else if stderr_accum.is_empty() {
+        Err(format!(
+            "Command failed with exit code {}",
+            status.code().unwrap_or(-1)
+        ))
+    } else {
+        Err(stderr_accum)
+    }
 }
 
 /// Install (or upgrade) a managed bridge through the managed installer,
@@ -1083,6 +1232,55 @@ mod tests {
             npm_registry_for_distribution(Some(&distribution)),
             Some("https://packages.example.test/npm/".to_string())
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_cmd_exe_prefers_comspec() {
+        let cmd = windows_cmd_exe();
+        let name = cmd
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        assert!(
+            name == "cmd.exe" || name == "cmd",
+            "expected cmd.exe from ComSpec, got {}",
+            cmd.display()
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_cmd_streaming_runs_through_cmd_exe() {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = lines.clone();
+        execute_windows_cmd_streaming("echo hello-from-cmd".to_string(), Vec::new(), move |line| {
+            captured.lock().unwrap().push(line.to_string())
+        })
+        .await
+        .expect("cmd.exe /c echo should succeed");
+        let lines = lines.lock().unwrap();
+        assert_eq!(
+            lines.first().map(String::as_str),
+            Some("$ echo hello-from-cmd")
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("hello-from-cmd")),
+            "expected echo output in {lines:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn doctor_login_shell_is_missing_on_windows() {
+        // Pin the failure Connect-all used to hit: the doctor crate always
+        // spawns `/bin/bash -l -c`, which is os error 3 on this host.
+        let error = std::process::Command::new("/bin/bash")
+            .args(["-l", "-c", "echo hi"])
+            .output()
+            .expect_err("unix login shell must not exist on Windows");
+        assert_eq!(error.raw_os_error(), Some(3));
     }
 
     #[test]

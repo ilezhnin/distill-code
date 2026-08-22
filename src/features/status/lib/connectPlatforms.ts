@@ -50,7 +50,12 @@ export async function connectAllAgentPlatforms(
   openProviderAccounts();
   for (const providerId of TRACKED_AGENT_PLATFORM_IDS) {
     const status = readiness.get(providerId);
-    if (status === "ready") continue;
+    // Install missing CLIs from here. Do not auto-run interactive `auth login`:
+    // that command needs a browser/TTY, and the doctor crate's Unix login-shell
+    // spawn used to fail on Windows with os error 3, leaving the Providers
+    // card stuck on "Setup hit a snag." Sign-in stays on the per-platform
+    // action / the Providers card.
+    if (status !== "not_installed") continue;
     await connectAgentPlatform(providerId, status);
   }
 }

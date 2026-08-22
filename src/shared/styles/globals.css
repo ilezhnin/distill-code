@@ -1203,12 +1203,10 @@
   --spacing-app-panel-gutter-top: 4px;
   --spacing-app-panel-gutter-inline: 12px;
   --spacing-app-panel-gutter-bottom: 12px;
-  --spacing-app-status-bar: 28px;
-  --spacing-app-global-composer-bottom: calc(
-    var(--spacing-app-status-bar) + var(--spacing-app-panel-gutter-bottom)
-  );
+  --spacing-app-status-bar: 1.75rem;
+  --spacing-app-global-composer-bottom: 2.75rem;
   --spacing-app-page-bottom: 6rem;
-  --toast-bottom-offset: calc(var(--spacing-app-status-bar) + 8px);
+  --toast-bottom-offset: calc(1.75rem + 8px);
   --toast-mobile-bottom-offset: 16px;
   --spacing-input: 3.25rem;
   --spacing-input-sm: 2.75rem;
@@ -1450,9 +1448,17 @@
   }
 }
 
+:root {
+  /* Runtime copies of the status-bar / composer insets. `@theme inline`
+     spacing tokens do not exist as `var(--spacing-…)` at runtime, so the
+     docked composer must read these instead. */
+  --app-status-bar-height: 1.75rem;
+  --app-global-composer-bottom: calc(var(--app-status-bar-height) + 1rem);
+}
+
 :root[data-global-composer-visible="true"] {
-  --toast-bottom-offset: calc(var(--spacing-app-status-bar) + 88px);
-  --toast-mobile-bottom-offset: calc(var(--spacing-app-status-bar) + 132px);
+  --toast-bottom-offset: calc(var(--app-status-bar-height) + 88px);
+  --toast-mobile-bottom-offset: calc(var(--app-status-bar-height) + 132px);
 }
 
 @keyframes active-chat-dot-pulse {

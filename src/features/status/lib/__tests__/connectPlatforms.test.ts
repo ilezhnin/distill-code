@@ -54,7 +54,7 @@ describe("connectPlatforms", () => {
     );
   });
 
-  it("connects every unready tracked platform", async () => {
+  it("installs missing CLIs from Connect all without auto-running auth", async () => {
     await connectAllAgentPlatforms(
       new Map([
         ["claude-acp", "not_ready"],
@@ -62,6 +62,17 @@ describe("connectPlatforms", () => {
         ["codex-acp", "ready"],
       ]),
     );
-    expect(mocks.startSetup).toHaveBeenCalledTimes(2);
+    expect(mocks.startSetup).toHaveBeenCalledTimes(1);
+    expect(mocks.startSetup).toHaveBeenCalledWith(
+      "grok-acp",
+      "install",
+      expect.objectContaining({ installFixType: "command" }),
+    );
+  });
+
+  it("opens Providers from Connect all instead of kicking Claude auth", async () => {
+    await connectAllAgentPlatforms(new Map([["claude-acp", "not_ready"]]));
+    expect(mocks.openSettings).toHaveBeenCalledWith("providers");
+    expect(mocks.startSetup).not.toHaveBeenCalled();
   });
 });
