@@ -198,7 +198,7 @@ import {
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
 import { useDefaultModelGate } from "@/features/migration/hooks/useDefaultModelGate";
-import { findBerdyPersonaId } from "@/features/onboarding/berdyAgent";
+import { findBerdyPersonaId } from "@/features/agents/lib/berdyAgent";
 import { StartupDiagnosticView } from "./ui/StartupDiagnosticView";
 import { buildStartupDiagnosticIssue } from "./lib/startupDiagnostics";
 import { usePersistedState } from "@/shared/hooks/usePersistedState";
@@ -230,9 +230,6 @@ import {
   isSystemNotification,
 } from "@/shared/types/messages";
 import { isDesignSystemExplorerEnabled } from "@/features/design-system/lib/designSystemEnabled";
-import { useExperiment } from "@/features/experiments/experimentPreferences";
-import { OnboardingFlow } from "@/features/onboarding/ui/OnboardingFlow";
-import { useOnboardingState } from "@/features/onboarding/model";
 import { useVoiceConversationStore } from "@/features/voice-conversation/stores/voiceConversationStore";
 import { usePocketVoiceSetup } from "@/features/voice-conversation/hooks/usePocketVoiceSetup";
 import { PocketVoiceSetupDialog } from "@/features/voice-conversation/ui/PocketVoiceSetupDialog";
@@ -259,32 +256,6 @@ import type {
 import type { TopBarBreadcrumb } from "./ui/TopBar";
 import { STARTUP_LOADING_MIN_DISPLAY_MS } from "./lib/startupLoading";
 import { StartupLoadingView } from "./ui/StartupLoadingView";
-import { deriveStarterTaskCompletion } from "@/features/home/onboarding/starterTaskCompletion";
-import {
-  omittedStarterTasksAfterFirstRun,
-  type StarterTaskCompletionState,
-  type StarterTaskId,
-} from "@/features/home/onboarding/starterTasks";
-import { StarterTaskList } from "@/features/home/onboarding/StarterTaskList";
-import {
-  clearStarterTaskProgress,
-  EMPTY_STARTER_TASK_COMPLETION,
-  loadStarterTaskProgress,
-  saveStarterTaskProgress,
-  STARTER_TASK_PROGRESS_STORAGE_KEY,
-} from "@/features/home/onboarding/starterTaskProgress";
-import { StarterTasksProvider } from "@/features/home/onboarding/StarterTasksContext";
-import {
-  requestStarterWidgetPicker,
-  STARTER_WIDGET_ADDED_EVENT,
-} from "@/features/home/onboarding/starterWidgetTask";
-import { STARTER_TASKS_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
-import {
-  recordAssistiveMomentRetired,
-  recordAssistiveMomentShown,
-  shouldShowAssistiveMoment,
-} from "@/shared/assistive-ux/runtime";
-import { resetAssistiveUxMoment } from "@/shared/assistive-ux/state";
 export type { AppView } from "./types/appNavigation";
 
 type AppNavigationHistory = {
@@ -753,7 +724,6 @@ export function AppShell({
   }, [capabilities.voiceConversation, stopVoiceConversation]);
   const sessions = useChatSessionStore(selectSessions);
   const activeSessionId = useChatSessionStore(selectActiveSessionId);
-  const messagesBySession = useChatStore((state) => state.messagesBySession);
   const previousActiveSessionIdRef = useRef(activeSessionId);
   useEffect(() => {
     const previousSessionId = previousActiveSessionIdRef.current;
@@ -785,86 +755,6 @@ export function AppShell({
   const [agentsPersonaId, setAgentsPersonaId] = useState<string | null>(null);
   const [globalComposerFocusRequest, setGlobalComposerFocusRequest] =
     useState(0);
-  const onboardingState = useOnboardingState();
-  const omittedStarterTaskIds = useMemo<ReadonlySet<StarterTaskId>>(
-    () =>
-      omittedStarterTasksAfterFirstRun({
-        onboardingCompleted: onboardingState.lifecycle === "completed",
-        providerHandled: onboardingState.completedHarnessSetupIds.length > 0,
-      }),
-    [
-      onboardingState.completedHarnessSetupIds.length,
-      onboardingState.lifecycle,
-    ],
-  );
-  const starterTasksExperimentEnabled =
-    useExperiment(STARTER_TASKS_EXPERIMENT_ID)?.enabled === true;
-  const [starterTasksEligible, setStarterTasksEligible] = useState(() =>
-    shouldShowAssistiveMoment("home.starterTasks"),
-  );
-  const starterTasksVisible =
-    starterTasksExperimentEnabled && starterTasksEligible;
-  const [starterTasksDocked, setStarterTasksDocked] = useState(false);
-  const [selectedStarterTaskId, setSelectedStarterTaskId] =
-    useState<StarterTaskId | null>(null);
-  const [starterProjectId, setStarterProjectId] = useState<string | null>(null);
-  const [starterProjectStickyExiting, setStarterProjectStickyExiting] =
-    useState(false);
-  const starterProjectStickyExitTimerRef = useRef<number | null>(null);
-  const starterTasksLeftHomeRef = useRef(false);
-  useEffect(
-    () => () => {
-      if (starterProjectStickyExitTimerRef.current !== null) {
-        window.clearTimeout(starterProjectStickyExitTimerRef.current);
-      }
-    },
-    [],
-  );
-  const initialStarterTaskProgressRef = useRef(loadStarterTaskProgress());
-  const [starterTaskOverrides, setStarterTaskOverrides] =
-    useState<StarterTaskCompletionState>(
-      initialStarterTaskProgressRef.current.completion,
-    );
-  const [starterTasksAwaitingCompletion, setStarterTasksAwaitingCompletion] =
-    useState<Set<StarterTaskId>>(
-      initialStarterTaskProgressRef.current.awaiting,
-    );
-
-  useEffect(() => {
-    if (starterTasksVisible) {
-      recordAssistiveMomentShown("home.starterTasks");
-    }
-  }, [starterTasksVisible]);
-
-  useEffect(() => {
-    const reset = () => {
-      clearStarterTaskProgress();
-      setStarterTaskOverrides({ ...EMPTY_STARTER_TASK_COMPLETION });
-      setStarterTasksAwaitingCompletion(new Set());
-      setStarterTasksDocked(false);
-      setStarterProjectId(null);
-      setStarterTasksEligible(true);
-    };
-    const synchronize = (event: StorageEvent) => {
-      if (
-        event.key !== STARTER_TASK_PROGRESS_STORAGE_KEY &&
-        event.key !== null
-      ) {
-        return;
-      }
-      const progress = loadStarterTaskProgress();
-      setStarterTaskOverrides(progress.completion);
-      setStarterTasksAwaitingCompletion(progress.awaiting);
-    };
-    window.addEventListener("starter-tasks-reset", reset);
-    window.addEventListener("starter-tasks-state-reset", reset);
-    window.addEventListener("storage", synchronize);
-    return () => {
-      window.removeEventListener("starter-tasks-reset", reset);
-      window.removeEventListener("starter-tasks-state-reset", reset);
-      window.removeEventListener("storage", synchronize);
-    };
-  }, []);
   const [globalComposerPlacement, setGlobalComposerPlacement] =
     useState<GlobalComposerPlacement>("docked");
   const [globalComposerStarterRequest, setGlobalComposerStarterRequest] =
@@ -1079,9 +969,6 @@ export function AppShell({
   const selectedProviderRef = useRef(selectedProvider);
   selectedProviderRef.current = selectedProvider;
   const projects = useProjectStore(selectProjects);
-  const hasFetchedProjects = useProjectStore(
-    (state) => state.hasFetchedProjects,
-  );
   const fetchProjects = useProjectStore((s) => s.fetchProjects);
   const reorderProjects = useProjectStore((s) => s.reorderProjects);
   const retryFailedSessionsForProjectRef = useRef<
@@ -1126,17 +1013,6 @@ export function AppShell({
       startChatForCreatedProjectRef.current(project);
     },
   });
-  useEffect(() => {
-    if (!createProjectOpen || selectedStarterTaskId !== "create-project")
-      return;
-    const appRoot = document.getElementById("root");
-    if (!appRoot) return;
-    const wasInert = appRoot.inert;
-    appRoot.inert = true;
-    return () => {
-      appRoot.inert = wasInert;
-    };
-  }, [createProjectOpen, selectedStarterTaskId]);
   const startup = useAppStartup();
   const [startupLoadingMinElapsed, setStartupLoadingMinElapsed] = useState(
     () => startup.ready,
@@ -4829,215 +4705,10 @@ export function AppShell({
     };
   }, [showGlobalComposer]);
 
-  const derivedStarterTaskCompletion = useMemo(
-    () =>
-      deriveStarterTaskCompletion({
-        providerReady: defaultProviderReadinessStatus === "ready",
-        sessionsHydrated: hasHydratedSessions,
-        sessions,
-        messagesBySession,
-        projectsFetched: hasFetchedProjects,
-        projects,
-      }),
-    [
-      defaultProviderReadinessStatus,
-      hasHydratedSessions,
-      sessions,
-      messagesBySession,
-      hasFetchedProjects,
-      projects,
-    ],
-  );
-  useEffect(() => {
-    const completedTaskIds = [...starterTasksAwaitingCompletion].filter(
-      (taskId) => derivedStarterTaskCompletion[taskId],
-    );
-    if (completedTaskIds.length === 0) return;
-
-    setStarterTasksAwaitingCompletion((awaiting) => {
-      const next = new Set(awaiting);
-      for (const taskId of completedTaskIds) next.delete(taskId);
-      return next;
-    });
-    setStarterTaskOverrides((overrides) => {
-      const next = { ...overrides };
-      for (const taskId of completedTaskIds) next[taskId] = true;
-      return next;
-    });
-  }, [derivedStarterTaskCompletion, starterTasksAwaitingCompletion]);
-
-  const starterTaskCompletion = starterTaskOverrides;
-
-  useEffect(() => {
-    if (omittedStarterTaskIds.size === 0) return;
-    setStarterTasksAwaitingCompletion((awaiting) => {
-      const next = new Set(awaiting);
-      for (const taskId of omittedStarterTaskIds) next.delete(taskId);
-      return next.size === awaiting.size ? awaiting : next;
-    });
-  }, [omittedStarterTaskIds]);
-
-  useEffect(() => {
-    saveStarterTaskProgress({
-      completion: starterTaskOverrides,
-      awaiting: starterTasksAwaitingCompletion,
-    });
-  }, [starterTaskOverrides, starterTasksAwaitingCompletion]);
-
-  useEffect(() => {
-    if (!starterTasksDocked) return;
-    if (renderedLocation.view !== "home") {
-      starterTasksLeftHomeRef.current = true;
-      return;
-    }
-    if (starterTasksLeftHomeRef.current) {
-      starterTasksLeftHomeRef.current = false;
-      setStarterTasksDocked(false);
-    }
-  }, [renderedLocation.view, starterTasksDocked]);
-
-  useEffect(() => {
-    const handleStarterWidgetAdded = () => {
-      setStarterTasksAwaitingCompletion((awaiting) => {
-        if (!awaiting.has("add-widget")) return awaiting;
-        const next = new Set(awaiting);
-        next.delete("add-widget");
-        return next;
-      });
-      setStarterTaskOverrides((overrides) => ({
-        ...overrides,
-        "add-widget": true,
-      }));
-    };
-    window.addEventListener(
-      STARTER_WIDGET_ADDED_EVENT,
-      handleStarterWidgetAdded,
-    );
-    return () =>
-      window.removeEventListener(
-        STARTER_WIDGET_ADDED_EVENT,
-        handleStarterWidgetAdded,
-      );
-  }, []);
-
-  const handleStarterTaskToggle = (taskId: StarterTaskId) => {
-    setStarterTasksAwaitingCompletion((awaiting) => {
-      if (!awaiting.has(taskId)) return awaiting;
-      const next = new Set(awaiting);
-      next.delete(taskId);
-      return next;
-    });
-    setStarterTaskOverrides((overrides) => ({
-      ...overrides,
-      [taskId]: !overrides[taskId],
-    }));
-  };
-
-  const handleStarterProjectCreated = (projectId: string) => {
-    setStarterProjectId(projectId);
-    setStarterTasksAwaitingCompletion((awaiting) => {
-      const next = new Set(awaiting);
-      next.delete("create-project");
-      return next;
-    });
-    setStarterTaskOverrides((overrides) => ({
-      ...overrides,
-      "create-project": true,
-    }));
-    const homeWidgetState = useHomeWidgetStore.getState();
-    const starterProject = homeWidgetState.instances.find(
-      (instance) =>
-        instance.type === "onboardingProjectArtifact" ||
-        instance.state?.onboardingStarterProject === true,
-    );
-    if (starterProject) {
-      homeWidgetState.updateWidgetState(starterProject.id, {
-        ...starterProject.state,
-        projectId,
-      });
-    }
-  };
-
-  const handleStarterTaskSelect = (taskId: StarterTaskId) => {
-    if (starterProjectStickyExitTimerRef.current !== null) {
-      window.clearTimeout(starterProjectStickyExitTimerRef.current);
-      starterProjectStickyExitTimerRef.current = null;
-      setStarterProjectStickyExiting(false);
-    }
-    const selectTask = () => {
-      setSelectedStarterTaskId(taskId);
-      // The widget task stays on Home. Keep the existing canvas sticky mounted
-      // so its content can crossfade instead of replacing it with an overlay.
-      setStarterTasksDocked(taskId !== "add-widget");
-      starterTasksLeftHomeRef.current = renderedLocation.view !== "home";
-      if (derivedStarterTaskCompletion[taskId]) {
-        setStarterTaskOverrides((overrides) => ({
-          ...overrides,
-          [taskId]: true,
-        }));
-      } else {
-        setStarterTasksAwaitingCompletion((awaiting) =>
-          new Set(awaiting).add(taskId),
-        );
-      }
-    };
-    if (taskId !== "add-widget") selectTask();
-    switch (taskId) {
-      case "connect-provider":
-        openSettings("providers");
-        break;
-      case "start-chat":
-        void createNewTab();
-        break;
-      case "create-project":
-        openCreateProjectDialog({ onCreated: handleStarterProjectCreated });
-        break;
-      case "add-widget":
-        guardAppNavigation(() => {
-          selectTask();
-          setActiveSession(null);
-          clearSettingsSectionUrl();
-          setActiveView("home");
-          window.setTimeout(requestStarterWidgetPicker, 0);
-        });
-        break;
-    }
-  };
-
-  const handleCloseStarterTaskSecondary = () => {
-    setSelectedStarterTaskId(null);
-    setStarterTasksDocked(false);
-  };
-
-  const handleStarterTasksBackHome = () => {
-    setSelectedStarterTaskId(null);
-    setStarterTasksDocked(false);
-    handleNavigate("home");
-  };
-
-  const dismissStarterTasks = () => {
-    recordAssistiveMomentRetired("home.starterTasks", "dismissed");
-    setStarterTasksEligible(false);
-  };
-
-  const restoreStarterTasks = () => {
-    resetAssistiveUxMoment("home.starterTasks");
-    setStarterTasksDocked(false);
-    setSelectedStarterTaskId(null);
-    setStarterTasksEligible(true);
-  };
-
   // The dev-only `?startupLoading` override still preempts everything, so the
   // loader stays inspectable on a fresh install.
   if (forceStartupLoading) {
     return <StartupLoadingView />;
-  }
-
-  // The first-run landing ceremony comes before startup gates because it needs
-  // nothing from the chat runtime. Advancing completes the ceremony and then
-  // exposes the normal loading or diagnostic surface until startup settles.
-  if (onboardingState.lifecycle !== "completed") {
-    return <OnboardingFlow />;
   }
 
   if (!startup.ready || !startupLoadingMinElapsed) {
@@ -5135,61 +4806,14 @@ export function AppShell({
         contentTakeover={activeView === "design-system"}
         createProjectDialog={{
           isOpen: createProjectOpen,
-          onClose: () => {
-            const closingStarterProjectTask =
-              selectedStarterTaskId === "create-project" && starterTasksDocked;
-            if (closingStarterProjectTask) {
-              setStarterProjectStickyExiting(true);
-            }
-            closeCreateProjectDialog();
-            setStarterTasksAwaitingCompletion((awaiting) => {
-              if (!awaiting.has("create-project")) return awaiting;
-              const next = new Set(awaiting);
-              next.delete("create-project");
-              return next;
-            });
-            if (starterTasksDocked && renderedLocation.view === "home") {
-              if (closingStarterProjectTask) {
-                starterProjectStickyExitTimerRef.current = window.setTimeout(
-                  () => {
-                    starterProjectStickyExitTimerRef.current = null;
-                    setSelectedStarterTaskId(null);
-                    setStarterTasksDocked(false);
-                    setStarterProjectStickyExiting(false);
-                  },
-                  300,
-                );
-              } else {
-                setStarterTasksDocked(false);
-              }
-            }
-          },
+          onClose: closeCreateProjectDialog,
           onCreated: handleProjectCreated,
           initialWorkingDir: createProjectInitialWorkingDir,
           editingProject: editingProject ?? undefined,
-          // Keep the visual modal backdrop, but let keyboard focus move between
-          // the starter-task sticky and the project panel.
-          modal: selectedStarterTaskId !== "create-project",
         }}
       >
         {children ?? (
-          <StarterTasksProvider
-            value={{
-              completionState: starterTaskCompletion,
-              enabled: starterTasksExperimentEnabled,
-              visible: starterTasksVisible,
-              docked: starterTasksDocked,
-              selectedTaskId: selectedStarterTaskId,
-              starterProjectId,
-              omittedTaskIds: omittedStarterTaskIds,
-              onTaskSelect: handleStarterTaskSelect,
-              onTaskToggle: handleStarterTaskToggle,
-              onBackHome: handleStarterTasksBackHome,
-              onCloseSecondary: handleCloseStarterTaskSecondary,
-              onDismiss: dismissStarterTasks,
-              onRestore: restoreStarterTasks,
-            }}
-          >
+          <>
             <AppShellContent
               targetLocation={targetLocation}
               renderedLocation={renderedLocation}
@@ -5233,21 +4857,7 @@ export function AppShell({
               onAgentBuilderCompleted={handleAgentBuilderCompleted}
               onStartAgentBuilderSession={agentBuilder.start}
               onArchiveChat={handleArchiveChat}
-              onCreateProject={(options) => {
-                if (starterTasksVisible) {
-                  setStarterTasksAwaitingCompletion((awaiting) =>
-                    new Set(awaiting).add("create-project"),
-                  );
-                  openCreateProjectDialog({
-                    onCreated: (projectId) => {
-                      handleStarterProjectCreated(projectId);
-                      options?.onCreated?.(projectId);
-                    },
-                  });
-                  return;
-                }
-                openCreateProjectDialog(options);
-              }}
+              onCreateProject={openCreateProjectDialog}
               onOpenProjectSettings={handleEditProject}
               onActivateHomeSession={activateHomeSession}
               onRenameChat={handleRenameChat}
@@ -5280,63 +4890,6 @@ export function AppShell({
               }
               onOpenProvidersSettings={() => openSettings("providers")}
             />
-            {starterTasksVisible && starterTasksDocked ? (
-              <StarterTaskList
-                completionState={starterTaskCompletion}
-                omittedTaskIds={omittedStarterTaskIds}
-                mode="overlay"
-                selectedTaskId={selectedStarterTaskId}
-                labels={{
-                  title: t("home:onboarding.starterTasks.title"),
-                  backHome: t("home:onboarding.starterTasks.backHome"),
-                  backToList: t("home:onboarding.starterTasks.backToList"),
-                  markDone: t("home:onboarding.starterTasks.markDone"),
-                  dismiss: t("home:onboarding.starterTasks.dismiss"),
-                  closeTaskDetails: t(
-                    "home:onboarding.starterTasks.closeTaskDetails",
-                  ),
-                  tasks: {
-                    "connect-provider": t(
-                      "home:onboarding.starterTasks.connectProvider",
-                    ),
-                    "start-chat": t("home:onboarding.starterTasks.startChat"),
-                    "create-project": t(
-                      "home:onboarding.starterTasks.createProject",
-                    ),
-                    "add-widget": t("home:onboarding.starterTasks.addWidget"),
-                  },
-                  taskDetails: {
-                    "connect-provider": t(
-                      "home:onboarding.starterTasks.taskDetails.connectProvider",
-                    ),
-                    "start-chat": t(
-                      "home:onboarding.starterTasks.taskDetails.startChat",
-                    ),
-                    "create-project": t(
-                      "home:onboarding.starterTasks.taskDetails.createProject",
-                    ),
-                    "add-widget": t(
-                      "home:onboarding.starterTasks.taskDetails.addWidget",
-                    ),
-                  },
-                  openTask: (label) =>
-                    t("home:onboarding.starterTasks.openTask", { label }),
-                  completedTask: (label) =>
-                    t("home:onboarding.starterTasks.completedTask", { label }),
-                  checkTask: (label) =>
-                    t("home:onboarding.starterTasks.checkTask", { label }),
-                  uncheckTask: (label) =>
-                    t("home:onboarding.starterTasks.uncheckTask", { label }),
-                }}
-                onTaskSelect={handleStarterTaskSelect}
-                onTaskDetailsBack={() => setSelectedStarterTaskId(null)}
-                onCloseSecondary={handleCloseStarterTaskSecondary}
-                onTaskToggle={handleStarterTaskToggle}
-                onBackHome={handleStarterTasksBackHome}
-                onDismiss={dismissStarterTasks}
-                exiting={starterProjectStickyExiting}
-              />
-            ) : null}
             {showGlobalComposerShim ? (
               <div
                 aria-hidden="true"
@@ -5391,7 +4944,7 @@ export function AppShell({
                 }
               />
             ) : null}
-          </StarterTasksProvider>
+          </>
         )}
       </AppShellLayout>
       <PocketVoiceSetupDialog

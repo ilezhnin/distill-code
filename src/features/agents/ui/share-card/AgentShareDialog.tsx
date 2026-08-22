@@ -15,9 +15,7 @@ import {
   MAX_PNG_AVATAR_BYTES,
 } from "@/shared/lib/avatarUrl";
 import {
-  AgentSnapshotError,
   encodeAgentImage,
-  MAX_SNAPSHOT_AVATAR_ANIMATION_BYTES,
   personaToSnapshot,
 } from "@/features/agents/agent-snapshot";
 import {
@@ -25,7 +23,6 @@ import {
   useAvatarMediaState,
 } from "@/shared/hooks/useAvatarSrc";
 import { resolveAgentIcon } from "@/features/agents/lib/resolveAgentIcon";
-import { readCachedAvatarAnimation } from "@/shared/api/avatars";
 import { SplitButton } from "@/shared/ui/split-button";
 import {
   Dialog,
@@ -78,7 +75,6 @@ async function avatarSourceToDataUrl(source: string): Promise<string | null> {
   }
 }
 
-export const AVATAR_ANIMATION_EMBED_TIMEOUT_MS = 5_000;
 export const AGENT_ZIP_TIMEOUT_MS = 15_000;
 
 export function createAgentZip(
@@ -130,25 +126,6 @@ export function createAgentZip(
       workerContents.buffer,
     ]);
   });
-}
-
-async function withAnimationEmbedDeadline<T>(
-  operation: (signal: AbortSignal) => Promise<T>,
-  timeoutMs = AVATAR_ANIMATION_EMBED_TIMEOUT_MS,
-): Promise<T> {
-  const controller = new AbortController();
-  let timeout: number | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timeout = window.setTimeout(() => {
-      controller.abort();
-      reject(new Error("Avatar animation request timed out"));
-    }, timeoutMs);
-  });
-  try {
-    return await Promise.race([operation(controller.signal), deadline]);
-  } finally {
-    if (timeout !== undefined) window.clearTimeout(timeout);
-  }
 }
 
 interface AgentShareDialogProps {
@@ -207,7 +184,7 @@ export function AgentShareDialog({
     failedAvatarSources.has(source),
   );
   // The card can render as soon as the exact still image it will display has
-  // decoded. Cached animation/poster resolution may continue independently.
+  // decoded. Cached poster resolution may continue independently.
   const cardReady = Boolean(avatarSrc && avatarReadySrc === avatarSrc);
   const cardBase = getAgentShareCardBase(persona.id);
   const locale = i18n?.resolvedLanguage ?? i18n?.language ?? "en";
@@ -297,8 +274,7 @@ export function AgentShareDialog({
       cardOperationAbortRef.current = controller;
       setCardDownloadPending(true);
       try {
-        // Render exactly what the reviewed card displays. Re-generating a second
-        // poster here can produce a different or blank frame for stacked videos.
+        // Render exactly what the reviewed card displays.
         const cardAvatarSrc = avatarReadySrc;
         if (!cardAvatarSrc) {
           throw new Error("Agent avatar is not ready");
@@ -317,76 +293,9 @@ export function AgentShareDialog({
           ...persona,
           avatar: embeddedAvatar ?? persona.avatar,
         });
-        let animation = null;
-        const stillMatchesAnimation = Boolean(
-          cachedAvatar?.mediaType === "video" &&
-            (cardAvatarSrc === currentGeneratedAvatarPoster ||
-              cardAvatarSrc === cachedAvatar.posterSrc),
-        );
-        if (cachedAvatar?.mediaType === "video" && stillMatchesAnimation) {
-          try {
-            if (
-              /^asset:/u.test(cachedAvatar.src) &&
-              typeof persona.avatar === "string"
-            ) {
-              const avatarRef = persona.avatar;
-              const cachedAnimation = await withAnimationEmbedDeadline(() =>
-                readCachedAvatarAnimation({ avatarRef }),
-              );
-              if (cachedAnimation) {
-                animation = {
-                  bytes: new Uint8Array(cachedAnimation.bytes),
-                  mimeType:
-                    cachedAnimation.mimeType === "video/mp4"
-                      ? ("video/mp4" as const)
-                      : ("video/webm" as const),
-                  alphaMode: cachedAnimation.alphaMode,
-                };
-              }
-            } else if (/^(?:https?:|blob:|data:)/u.test(cachedAvatar.src)) {
-              const blob = await withAnimationEmbedDeadline(async (signal) => {
-                const response = await fetch(cachedAvatar.src, { signal });
-                if (!response.ok)
-                  throw new Error("Avatar animation request failed");
-                return await response.blob();
-              });
-              if (blob.type !== "video/mp4" && blob.type !== "video/webm") {
-                throw new Error(
-                  "Avatar animation has an unsupported media type",
-                );
-              }
-              const animationBytes = await blobToBytes(blob);
-              const mimeType = blob.type as "video/mp4" | "video/webm";
-              if (
-                animationBytes.length <= MAX_SNAPSHOT_AVATAR_ANIMATION_BYTES
-              ) {
-                animation = {
-                  bytes: animationBytes,
-                  mimeType,
-                  alphaMode: cachedAvatar.alphaMode,
-                };
-              }
-            }
-          } catch (error) {
-            console.warn("Could not embed animated avatar:", error);
-          }
-        }
         if (operationGeneration !== cardOperationGenerationRef.current) return;
         const cardBytes = await blobToBytes(card);
-        let encodedCard: Uint8Array;
-        try {
-          encodedCard = encodeAgentImage(cardBytes, snapshot, animation);
-        } catch (error) {
-          if (
-            !(error instanceof AgentSnapshotError) ||
-            error.code !== "too-large"
-          ) {
-            throw error;
-          }
-          // The still card remains portable when an otherwise-valid animation
-          // would push the combined PNG over the snapshot size limit.
-          encodedCard = encodeAgentImage(cardBytes, snapshot, null);
-        }
+        const encodedCard = encodeAgentImage(cardBytes, snapshot, null);
         if (operationGeneration !== cardOperationGenerationRef.current) return;
         const pngFilename = getAgentShareFilename(persona.displayName);
         const filename =
@@ -417,16 +326,7 @@ export function AgentShareDialog({
         }
       }
     },
-    [
-      avatarReadySrc,
-      cachedAvatar,
-      cardBase,
-      currentGeneratedAvatarPoster,
-      description,
-      locale,
-      persona,
-      t,
-    ],
+    [avatarReadySrc, cardBase, description, locale, persona, t],
   );
 
   const handleAvatarPreloadRef = useCallback(

@@ -24,6 +24,7 @@ import { flushBufferedStreamingUpdatesForSession } from "../liveStreamingUpdates
 import { setActiveMessageId } from "@/shared/api/acpActiveMessageTracking";
 import { registerPreparedSession } from "@/shared/api/acpSessionRegistry";
 import { claimSessionPrompt } from "@/features/chat/lib/sessionPromptOwnership";
+import { resetUsageLedgerForTests } from "@/features/stats/lib/usageLedger";
 
 const workspaceObservationMocks = vi.hoisted(() => ({
   clearWorkspaceToolCallObservations: vi.fn(),
@@ -109,6 +110,7 @@ function getReplayMessage(sessionId = "acp-session") {
 
 describe("acpNotificationHandler", () => {
   beforeEach(() => {
+    resetUsageLedgerForTests();
     workspaceObservationMocks.clearWorkspaceToolCallObservations.mockClear();
     workspaceObservationMocks.observeWorkspaceToolCall.mockClear();
     clearMessageTracking();

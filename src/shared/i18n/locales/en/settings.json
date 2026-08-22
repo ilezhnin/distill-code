@@ -35,14 +35,6 @@
     }
   },
   "appearance": {
-    "animatedAvatars": {
-      "description": "Loop video avatars in chats, agent lists, and previews.",
-      "label": "Animated avatars"
-    },
-    "homePinLabels": {
-      "description": "Always show names on pinned agents and projects, not just on hover.",
-      "label": "Always show pin labels"
-    },
     "primary": {
       "custom": "Custom",
       "description": "Use the theme primary by default, or choose one primary color to keep across themes.",
@@ -199,14 +191,6 @@
       "description": "Dev builds enable experiments by default. Turn off individual experiments below when you need the stable path.",
       "label": "Auto-enable new experiments"
     },
-    "berdyOnboarding": {
-      "description": "Show Distill's interactive onboarding guide and help bubble on Home.",
-      "resetDescription": "Restore Distill's starter tooltip and center it on Home.",
-      "resetError": "Couldn't reset Distill onboarding. Wait for Home to finish loading and try again.",
-      "resetLabel": "Reset",
-      "resetSuccess": "Distill onboarding was reset.",
-      "title": "Distill onboarding"
-    },
     "builderbot": {
       "description": "Show the Builderbot tasks and automations surface.",
       "title": "Builderbot"
@@ -214,31 +198,11 @@
     "defaultLabel": "default",
     "description": "Opt into in-progress Distill features on this device. Experiments can change, break, or disappear.",
     "emptyDescription": "New experiments will appear here when they are ready for opt-in testing.",
-    "onboarding": {
-      "cancel": "Cancel",
-      "confirm": "Reset canvas",
-      "confirmDescription": "This replaces everything on your Home canvas with the starter layout. Your projects, chats, agents, and files won’t be deleted.",
-      "confirmTitle": "Reset onboarding canvas?",
-      "confirming": "Resetting…",
-      "description": "Try and reset onboarding experiences together.",
-      "resetAll": "Reset all onboarding",
-      "resetAllError": "Couldn't reset all onboarding experiences. Try again.",
-      "resetAllPartial": "Onboarding was reset. Starter agents will appear when they're available.",
-      "resetAllSuccess": "All onboarding experiences were reset.",
-      "title": "Onboarding"
-    },
     "resetToAuto": "Reset to auto",
     "saveError": "Couldn't save the experiment setting. Try again.",
     "skillDiscovery": {
       "description": "Add a Discover tab to Skills for browsing and installing skills from the Block catalog without leaving the app. Requires the sq-agents CLI.",
       "title": "Skill discovery"
-    },
-    "starterTasks": {
-      "description": "Show the starter-task sticky note on Home for trying the onboarding flow.",
-      "reset": "Reset",
-      "resetAria": "Reset starter tasks onboarding",
-      "resetSuccess": "Onboarding starter tasks reset.",
-      "title": "Onboarding starter tasks"
     },
     "title": "Experiments",
     "transcriptVirtualRenderer": {
@@ -415,6 +379,7 @@
     "providersUpdateAvailable": "Update available",
     "security": "Security",
     "shortcuts": "Keyboard shortcuts",
+    "stats": "Stats & Usage",
     "system": "System",
     "updates": "Updates",
     "voice": "Voice"
@@ -721,6 +686,59 @@
     },
     "title": "Security",
     "warpNotice": "ML classification requires a connection to WARP to reach the classification service."
+  },
+  "stats": {
+    "activeDays": "Active days",
+    "agentsSpawned": "Agents spawned",
+    "bestDay": "Best: {{date}}",
+    "cache": "Cache",
+    "cacheShare": "Cache share",
+    "chatsStarted": "Chats started",
+    "costUnavailable": "n/a",
+    "dailyIntensity": "Daily intensity",
+    "dailyIntensityDescription": "Recent combined token activity across your agents.",
+    "description": "Distill stats plus token analytics across your agents and providers.",
+    "duration": {
+      "daysHours": "{{days}}d {{hours}}h",
+      "hoursMinutes": "{{hours}}h {{minutes}}m",
+      "minutes": "{{minutes}}m",
+      "zero": "0m"
+    },
+    "emptyTracking": "Start your first chat to begin tracking",
+    "estCost": "Est. cost",
+    "events": "events",
+    "heatmapAria": "Recent token activity heatmap",
+    "less": "Less",
+    "more": "More",
+    "newInput": "New input",
+    "noModelYet": "No model yet",
+    "noUsageYet": "No token usage recorded yet. Totals appear after a chat reports usage.",
+    "notUpdated": "Not updated yet",
+    "output": "Output",
+    "overview": "Overview",
+    "partialCost": " — some model prices are unavailable",
+    "providerFilterAria": "Usage analytics provider: {{provider}}",
+    "providers": "Providers",
+    "providersSummary": "{{enabled}} enabled — {{withData}} with data",
+    "refresh": "Refresh",
+    "refreshAria": "Refresh usage overview",
+    "segmentAria": "{{label}}: {{tokens}} tokens",
+    "sessionsActivity": "{{sessions}} sessions — {{activity}} {{activityLabel}}",
+    "sessionsBadge": "{{count}} sessions",
+    "statusEnabled": "Enabled",
+    "statusOff": "Off",
+    "timeWorked": "Time agents worked",
+    "title": "Stats & Usage",
+    "tokenMix": "Token mix",
+    "tokenMixAria": "Combined token mix",
+    "tokenMixDescription": "Combined input, output, and cache tokens across your sessions.",
+    "tokens": "tokens",
+    "totalTokens": "Total tokens",
+    "trackingSince": "Tracking since {{date}}",
+    "turns": "turns",
+    "updatedAt": "Updated {{date}}",
+    "usageAnalytics": "Usage Analytics",
+    "usageOverview": "Usage Overview"
   },
   "securityConfirmation": {
     "allow": "Allow once",

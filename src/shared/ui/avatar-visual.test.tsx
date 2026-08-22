@@ -18,10 +18,6 @@ vi.mock("@/shared/hooks/useAvatarSrc", () => ({
   useAvatarMedia: () => avatarHooks.media,
 }));
 
-vi.mock("@/shared/avatars/avatarPlaybackPreferences", () => ({
-  useAnimatedAvatarsPreference: () => false,
-}));
-
 describe("AvatarVisual", () => {
   it("prefers the static image used by default avatars", () => {
     avatarHooks.image = "asset:///avatars/default.png";

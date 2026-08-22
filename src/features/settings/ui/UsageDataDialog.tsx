@@ -14,8 +14,7 @@ interface UsageDataDialogProps {
 
 // The "Sharing usage data" details: what telemetry collects and what it never
 // collects. One copy of the story, rendered by every surface that asks for
-// consent — the onboarding landing page and the Settings privacy row — so the
-// two can never drift apart.
+// consent — Settings privacy — so later surfaces cannot drift apart.
 export function UsageDataDialog({ open, onOpenChange }: UsageDataDialogProps) {
   const { t } = useTranslation(["settings", "common"]);
 

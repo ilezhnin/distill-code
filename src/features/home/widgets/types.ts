@@ -140,7 +140,6 @@ export interface WidgetMutationHandlers {
     y: number,
     state?: Record<string, unknown>,
     bounds?: LayoutConstraints,
-    options?: { notifyStarterTask?: boolean },
   ) => boolean;
   moveWidget: (
     id: string,

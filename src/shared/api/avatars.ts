@@ -257,17 +257,16 @@ export function cachedAssetToMedia(asset: {
   alphaMode?: ResolvedAvatarMedia["alphaMode"];
   posterPath?: string;
 }): ResolvedAvatarMedia {
-  const media: ResolvedAvatarMedia = {
+  if (asset.posterPath) {
+    return {
+      src: convertFileSrc(asset.posterPath, "asset"),
+      mediaType: "image",
+    };
+  }
+  return {
     src: convertFileSrc(asset.path, "asset"),
     mediaType: mediaTypeFromMimeType(asset.mimeType),
-    ...(asset.posterPath
-      ? { posterSrc: convertFileSrc(asset.posterPath, "asset") }
-      : {}),
   };
-  if (asset.alphaMode) {
-    media.alphaMode = asset.alphaMode;
-  }
-  return media;
 }
 
 export const AVATAR_CACHE_WARMED_EVENT = "berd:avatar-cache-warmed";

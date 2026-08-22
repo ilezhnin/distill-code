@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import {
   Archive,
+  BarChart3,
   Bell,
   FlaskConical,
   Headphones,
@@ -97,6 +98,7 @@ export const SETTINGS_SECTIONS = [
   { id: "providers", labelKey: "nav.providers", icon: IconServer },
   { id: "notifications", labelKey: "nav.notifications", icon: Bell },
   { id: "shortcuts", labelKey: "nav.shortcuts", icon: Keyboard },
+  { id: "stats", labelKey: "nav.stats", icon: BarChart3 },
   {
     id: "voice",
     labelKey: "nav.voice",

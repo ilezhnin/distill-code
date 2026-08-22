@@ -1,5 +1,5 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { resetHomeWidgetStoreForTests } from "@/features/home/stores/homeWidgetStore";
 import { PersonaCard } from "../PersonaCard";
@@ -42,62 +42,24 @@ describe("PersonaCard", () => {
     expect(screen.getByText("Coder")).toBeInTheDocument();
   });
 
-  it("autoplays animated avatars without scroll-triggered loading", () => {
+  it("renders a still avatar image without a video overlay", () => {
     avatarMediaMocks.media = {
-      src: "asset://animated.mp4",
-      mediaType: "video",
-      posterSrc: "asset://still.png",
+      src: "asset://still.png",
+      mediaType: "image",
     };
     avatarMediaMocks.image = "asset://still.png";
     const { container } = render(
       <PersonaCard persona={makePersona({ avatar: "user-avatar:one" })} />,
     );
 
-    expect(screen.queryByRole("img", { name: "Berd Default" })).toHaveAttribute(
+    expect(screen.getByRole("img", { name: "Berd Default" })).toHaveAttribute(
       "src",
       "asset://still.png",
     );
-    const video = container.querySelector("video");
-    const still = container.querySelector('img[src="asset://still.png"]');
-    expect(video).toHaveAttribute("src", "asset://animated.mp4");
-    expect(video).toHaveClass("opacity-0");
-    expect(still).not.toHaveClass("opacity-0");
-
-    fireEvent.loadedData(video as HTMLVideoElement);
-    expect(video).toHaveClass("opacity-100");
-    expect(still).toHaveClass("opacity-0");
+    expect(container.querySelector("video")).toBeNull();
   });
 
-  it("keeps the next poster visible until a changed video is ready", () => {
-    avatarMediaMocks.media = {
-      src: "asset://first.mp4",
-      mediaType: "video",
-      posterSrc: "asset://first.png",
-    };
-    avatarMediaMocks.image = "asset://first.png";
-    const persona = makePersona({ avatar: "user-avatar:first" });
-    const { container, rerender } = render(<PersonaCard persona={persona} />);
-    fireEvent.loadedData(container.querySelector("video") as HTMLVideoElement);
-
-    avatarMediaMocks.media = {
-      src: "asset://second.mp4",
-      mediaType: "video",
-      posterSrc: "asset://second.png",
-    };
-    avatarMediaMocks.image = "asset://second.png";
-    rerender(
-      <PersonaCard persona={{ ...persona, avatar: "user-avatar:second" }} />,
-    );
-
-    expect(
-      container.querySelector('img[src="asset://second.png"]'),
-    ).not.toHaveClass("opacity-0");
-    expect(
-      container.querySelector('video[src="asset://second.mp4"]'),
-    ).toHaveClass("opacity-0");
-  });
-
-  it("uses the first video frame when no static avatar exists", () => {
+  it("falls back to the agent icon when no still exists", () => {
     avatarMediaMocks.media = {
       src: "asset://animated-without-poster.mp4",
       mediaType: "video",
@@ -106,8 +68,7 @@ describe("PersonaCard", () => {
       <PersonaCard persona={makePersona({ avatar: "user-avatar:legacy" })} />,
     );
 
-    const video = container.querySelector("video");
-    expect(video).toHaveAttribute("src", "asset://animated-without-poster.mp4");
+    expect(container.querySelector("video")).toBeNull();
     expect(container.querySelector("img")).toHaveAttribute(
       "src",
       expect.stringContaining("goose-"),
@@ -242,9 +203,6 @@ describe("PersonaCard", () => {
 
     await user.click(optionsButton);
     expect(screen.getByRole("menu")).toHaveClass("shadow-mini");
-    expect(
-      screen.getByRole("menuitem", { name: /pin to home/i }),
-    ).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: /edit/i })).toBeInTheDocument();
     expect(
       screen.getByRole("menuitem", { name: /duplicate/i }),

@@ -80,7 +80,7 @@ describe("avatars api", () => {
     invokeMock.mockReset();
   });
 
-  it("resolves cached video and poster paths as one avatar presentation", () => {
+  it("resolves cached video posters as a still image", () => {
     expect(
       cachedAssetToMedia({
         path: "/tmp/avatar.mp4",
@@ -88,9 +88,8 @@ describe("avatars api", () => {
         posterPath: "/tmp/avatar.png",
       }),
     ).toEqual({
-      src: "asset:///tmp/avatar.mp4",
-      mediaType: "video",
-      posterSrc: "asset:///tmp/avatar.png",
+      src: "asset:///tmp/avatar.png",
+      mediaType: "image",
     });
   });
 

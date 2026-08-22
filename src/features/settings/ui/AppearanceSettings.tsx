@@ -10,9 +10,7 @@ import {
 } from "@/shared/ui/settings-section";
 import { Switch } from "@/shared/ui/switch";
 import { useTheme } from "@/shared/theme/ThemeProvider";
-import { useAnimatedAvatarsPreference } from "@/shared/avatars/avatarPlaybackPreferences";
 import { useWorkingIndicatorAnimationPreference } from "@/shared/preferences/workingIndicatorAnimationPreference";
-import { useHomePinLabelsPreference } from "@/features/home/lib/homePinLabelPreference";
 
 // Appearance (rev 3): purely visual settings, split out of the old
 // GeneralSettings.tsx. Theme is the primary -- first, no sub-header.
@@ -26,10 +24,8 @@ export function AppearanceSettings() {
     setPrimaryColor,
     resetPrimaryColor,
   } = useTheme();
-  const animatedAvatarsPreference = useAnimatedAvatarsPreference();
   const workingIndicatorAnimationPreference =
     useWorkingIndicatorAnimationPreference();
-  const homePinLabelsPreference = useHomePinLabelsPreference();
 
   const THEME_PRIMARY_PRESET_ID = "theme";
   const primaryColorPresets = [
@@ -133,17 +129,6 @@ export function AppearanceSettings() {
           </SettingsRow>
 
           <SettingsRow
-            label={t("appearance.animatedAvatars.label")}
-            description={t("appearance.animatedAvatars.description")}
-          >
-            <Switch
-              checked={animatedAvatarsPreference.enabled}
-              onCheckedChange={animatedAvatarsPreference.setEnabled}
-              aria-label={t("appearance.animatedAvatars.label")}
-            />
-          </SettingsRow>
-
-          <SettingsRow
             label={t("appearance.workingIndicatorAnimation.label")}
             description={t("appearance.workingIndicatorAnimation.description")}
           >
@@ -151,17 +136,6 @@ export function AppearanceSettings() {
               checked={workingIndicatorAnimationPreference.enabled}
               onCheckedChange={workingIndicatorAnimationPreference.setEnabled}
               aria-label={t("appearance.workingIndicatorAnimation.label")}
-            />
-          </SettingsRow>
-
-          <SettingsRow
-            label={t("appearance.homePinLabels.label")}
-            description={t("appearance.homePinLabels.description")}
-          >
-            <Switch
-              checked={homePinLabelsPreference.enabled}
-              onCheckedChange={homePinLabelsPreference.setEnabled}
-              aria-label={t("appearance.homePinLabels.label")}
             />
           </SettingsRow>
         </SettingsSection>

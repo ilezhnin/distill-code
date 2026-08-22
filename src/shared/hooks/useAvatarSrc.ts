@@ -38,7 +38,7 @@ export function useAvatarSrc(
 }
 
 /**
- * React hook that resolves an Avatar to displayable image or video media.
+ * React hook that resolves an Avatar to displayable image media.
  */
 export function useAvatarMedia(avatar: Avatar | null | undefined) {
   return useAvatarMediaState(avatar).media;
@@ -48,9 +48,7 @@ export function useAvatarMedia(avatar: Avatar | null | undefined) {
  * React hook that resolves an Avatar to a static image URL. For bundled
  * `app-avatar:<id>` refs it looks up the matching `collectionImage` in the
  * artifacts catalog (downloaded on startup). For remote URLs it passes
- * through. Use this instead of `useAvatarMedia` when an image is preferable
- * to the animated video variant — e.g. small surfaces where the video
- * doesn't scale down well.
+ * through.
  */
 export function useAvatarImage(
   avatar: Avatar | null | undefined,

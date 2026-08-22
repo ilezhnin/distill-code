@@ -8,23 +8,17 @@ interface AvatarVisualProps {
   alt?: string;
   className?: string;
   fallback?: ReactNode;
-  loadingStrategy?: "eager" | "lazy-once" | "visible-video";
 }
 
 /**
- * Renders every supported avatar representation through one surface.
- *
- * Small surfaces prefer a static image when one exists. User-generated and
- * legacy custom avatars may only have cached image or video media, so they
- * fall back to AvatarMedia instead of disappearing when no artifacts-catalog
- * image is available.
+ * Renders every supported avatar representation through one still-image
+ * surface. Catalog videos keep their poster when that is all Distill has.
  */
 export function AvatarVisual({
   avatar,
   alt = "",
   className,
   fallback = null,
-  loadingStrategy = "visible-video",
 }: AvatarVisualProps) {
   const image = useAvatarImage(avatar);
   const media = useAvatarMedia(avatar);
@@ -42,15 +36,7 @@ export function AvatarVisual({
   }
 
   if (media) {
-    return (
-      <AvatarMedia
-        media={media}
-        alt={alt}
-        poster={media.posterSrc}
-        loadingStrategy={loadingStrategy}
-        className={className}
-      />
-    );
+    return <AvatarMedia media={media} alt={alt} className={className} />;
   }
 
   return <>{fallback}</>;

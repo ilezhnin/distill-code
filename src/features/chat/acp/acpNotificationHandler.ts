@@ -70,6 +70,7 @@ import {
   isStreamingMessageOwnedByCurrentPrompt,
   registerStreamingMessageOwner,
 } from "./liveStreamingUpdates";
+import { recordAcpSessionUsage } from "@/features/stats/lib/usageRecorder";
 
 // Per-session perf counters for replay streaming.
 interface ReplayPerf {
@@ -231,6 +232,8 @@ export async function handleSessionNotification(
   const sessionId = notification.sessionId;
   const { update } = notification;
   const isReplay = useChatStore.getState().loadingSessionIds.has(sessionId);
+
+  recordUsageNotification(sessionId, update);
 
   if (isReplay) {
     const sid = sessionId.slice(0, 8);
@@ -792,6 +795,66 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
   }
 }
 
+function recordUsageNotification(
+  sessionId: string,
+  update: SessionUpdate,
+): void {
+  const kind = (update as { sessionUpdate?: string }).sessionUpdate;
+  if (kind === "usage_update") {
+    const usage = update as SessionUpdate & {
+      sessionUpdate: "usage_update";
+      used?: number;
+      cost?: { amount?: number | null } | null;
+      accumulatedInputTokens?: number;
+      accumulatedOutputTokens?: number;
+      accumulatedCost?: number | null;
+    };
+    let costUsd: number | null | undefined;
+    if (usage.cost === undefined) {
+      costUsd =
+        typeof usage.accumulatedCost === "number"
+          ? usage.accumulatedCost
+          : undefined;
+    } else if (typeof usage.cost?.amount === "number") {
+      costUsd = usage.cost.amount;
+    } else {
+      costUsd = null;
+    }
+    recordAcpSessionUsage(sessionId, {
+      inputTokens: usage.accumulatedInputTokens,
+      outputTokens: usage.accumulatedOutputTokens,
+      totalTokens:
+        typeof usage.accumulatedInputTokens === "number" ||
+        typeof usage.accumulatedOutputTokens === "number"
+          ? (usage.accumulatedInputTokens ?? 0) +
+            (usage.accumulatedOutputTokens ?? 0)
+          : undefined,
+      costUsd,
+    });
+    return;
+  }
+
+  if (kind !== "message_usage") {
+    return;
+  }
+  const usage = (update as unknown as { usage?: unknown }).usage;
+  if (!isRecord(usage)) {
+    return;
+  }
+  const cacheTokens =
+    (typeof usage.cacheReadTokens === "number" ? usage.cacheReadTokens : 0) +
+    (typeof usage.cacheWriteTokens === "number" ? usage.cacheWriteTokens : 0);
+  recordAcpSessionUsage(sessionId, {
+    mode: "add",
+    inputTokens: typeof usage.inputTokens === "number" ? usage.inputTokens : 0,
+    outputTokens:
+      typeof usage.outputTokens === "number" ? usage.outputTokens : 0,
+    cacheTokens,
+    costUsd: typeof usage.cost === "number" ? usage.cost : undefined,
+    turnsDelta: 1,
+  });
+}
+
 function handleShared(sessionId: string, update: SessionUpdate): void {
   switch (update.sessionUpdate) {
     case "session_info_update": {
@@ -809,7 +872,13 @@ function handleShared(sessionId: string, update: SessionUpdate): void {
     case "usage_update": {
       const usage = update as SessionUpdate & {
         sessionUpdate: "usage_update";
+        used?: number;
+        size?: number;
+        contextLimit?: number;
         cost?: { amount?: number | null } | null;
+        accumulatedInputTokens?: number;
+        accumulatedOutputTokens?: number;
+        accumulatedCost?: number | null;
       };
 
       // The standard ACP usage_update carries cumulative session cost (USD)
@@ -823,16 +892,28 @@ function handleShared(sessionId: string, update: SessionUpdate): void {
       // lets the store's preserve-on-`undefined` behavior kick in.
       let accumulatedCost: number | null | undefined;
       if (usage.cost === undefined) {
-        accumulatedCost = undefined;
+        accumulatedCost =
+          typeof usage.accumulatedCost === "number"
+            ? usage.accumulatedCost
+            : undefined;
       } else if (typeof usage.cost?.amount === "number") {
         accumulatedCost = usage.cost.amount;
       } else {
         accumulatedCost = null;
       }
 
+      const contextLimit = usage.size ?? usage.contextLimit;
       useChatStore.getState().updateTokenState(sessionId, {
-        accumulatedTotal: usage.used,
-        contextLimit: usage.size,
+        ...(typeof usage.used === "number"
+          ? { accumulatedTotal: usage.used }
+          : {}),
+        ...(typeof contextLimit === "number" ? { contextLimit } : {}),
+        ...(typeof usage.accumulatedInputTokens === "number"
+          ? { accumulatedInput: usage.accumulatedInputTokens }
+          : {}),
+        ...(typeof usage.accumulatedOutputTokens === "number"
+          ? { accumulatedOutput: usage.accumulatedOutputTokens }
+          : {}),
         ...(accumulatedCost !== undefined ? { accumulatedCost } : {}),
       });
       break;

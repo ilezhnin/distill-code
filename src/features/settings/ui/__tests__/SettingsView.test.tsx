@@ -50,6 +50,10 @@ vi.mock("@/features/connections/ui/ConnectionsSettings", () => ({
   ConnectionsSettings: () => <div>connections.settings</div>,
 }));
 
+vi.mock("../StatsSettings", () => ({
+  StatsSettings: () => <div>stats.title</div>,
+}));
+
 function renderSettingsView(
   activeSection: ComponentProps<
     typeof SettingsView
@@ -98,6 +102,12 @@ describe("SettingsView", () => {
     renderSettingsView("connections");
 
     expect(screen.getByText("connections.settings")).toBeInTheDocument();
+  });
+
+  it("renders stats settings in the shared pane", () => {
+    renderSettingsView("stats");
+
+    expect(screen.getByText("stats.title")).toBeInTheDocument();
   });
 
   // BOT-1272: `connections` used to early-return its own `SettingsPane`, so

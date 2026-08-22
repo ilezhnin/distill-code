@@ -32,6 +32,7 @@ import {
   type AdmittedQueuedMessagePayload,
   type QueuedMessagePayload,
 } from "../lib/admittedSend";
+import { noteSessionWorkState } from "@/features/stats/lib/usageLedger";
 
 const MESSAGE_SESSION_CACHE_LIMIT = 10;
 
@@ -1230,6 +1231,9 @@ const createChatStore: StateCreator<
     set((state) => {
       const current =
         state.sessionStateById[sessionId] ?? createInitialSessionRuntime();
+      if (current.chatState !== chatState) {
+        noteSessionWorkState(sessionId, chatState);
+      }
       const isIdle = chatState === "idle";
       const streamingMessageId = isIdle ? null : current.streamingMessageId;
       const pendingInterventionBoundary = isIdle
