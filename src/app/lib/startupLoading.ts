@@ -1,8 +1,8 @@
 import { BERD_LOADER_LOOP_MS } from "@/shared/ui/berd-loader-timing";
 
-const STARTUP_LOADING_LOOP_COUNT = 2;
+const STARTUP_LOADING_LOOP_COUNT = 4;
 
-/** Minimum time the startup loader stays visible (~two full loader loops). */
+/** Minimum time the startup loader stays visible (~four full loader loops). */
 export const STARTUP_LOADING_MIN_DISPLAY_MS =
   STARTUP_LOADING_LOOP_COUNT * BERD_LOADER_LOOP_MS;
 

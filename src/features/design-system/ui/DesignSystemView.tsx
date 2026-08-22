@@ -3550,17 +3550,17 @@ function BerdLoaderPage() {
   const tokenDetails = {
     colorRows: [
       {
-        anatomy: "SVG mark",
+        anatomy: "Pixel frames",
         state: playgroundAnimated ? "Animated" : "Static",
-        background: "none",
-        textIcon: "currentColor",
+        background: "sprite strip",
+        textIcon: "authored frame colors",
         border: "none",
       },
       {
-        anatomy: "Mask cutouts",
-        state: playgroundAnimated ? "Looping" : "Settled",
+        anatomy: "Loop",
+        state: playgroundAnimated ? "Looping" : "Settled first frame",
         background: "none",
-        textIcon: "transparent cut from currentColor",
+        textIcon: "five distillation frames",
         border: "none",
       },
       {
@@ -3584,12 +3584,12 @@ function BerdLoaderPage() {
     <>
       <PageIntro
         title="Berd Loader"
-        description="Branded Berd activity mark for startup, active sessions, and agent work states."
+        description="Branded Distill activity mark for startup, active sessions, and agent work states. Five-frame distillation sprite."
       />
       <ComponentSpec name="Berd Loader" />
 
       <ComponentPlayground
-        description="Inspect the inline SVG loader in its animated, reduced-motion, decorative, and labeled states. The mark inherits currentColor from its surrounding context."
+        description="Inspect the Distill loader in its animated, reduced-motion, decorative, and labeled states. The mark is a pixel sprite, not a currentColor SVG."
         preview={
           <div
             className={cn(
@@ -3668,17 +3668,17 @@ function BerdLoaderInlinePage() {
   const tokenDetails = {
     colorRows: [
       {
-        anatomy: "SVG mark",
+        anatomy: "Pixel frames",
         state: playgroundAnimated ? "Animated" : "Static",
-        background: "none",
-        textIcon: "currentColor",
+        background: "sprite strip",
+        textIcon: "authored frame colors",
         border: "none",
       },
       {
-        anatomy: "Mask cutouts",
-        state: playgroundAnimated ? "Looping" : "Settled",
+        anatomy: "Loop",
+        state: playgroundAnimated ? "Looping" : "Settled first frame",
         background: "none",
-        textIcon: "transparent cut from currentColor",
+        textIcon: "five distillation frames",
         border: "none",
       },
       {
@@ -3702,12 +3702,12 @@ function BerdLoaderInlinePage() {
     <>
       <PageIntro
         title="Berd Loader Inline"
-        description="In-app activity mark for running sessions — left nav rows, the quick switcher, and the responding pill. A separate copy of Berd Loader so its animation can be tuned for small, repeated, in-app placements without changing the startup loader."
+        description="In-app activity mark for running sessions — left nav rows, the quick switcher, and the responding pill. Same Distill distillation sprite as the startup loader, with a separate loop duration for small placements."
       />
       <ComponentSpec name="Berd Loader Inline" />
 
       <ComponentPlayground
-        description="Inspect the in-app inline loader at the small sizes it actually renders in product. The mark inherits currentColor from its surrounding context."
+        description="Inspect the in-app inline loader at the small sizes it actually renders in product. The mark is a pixel sprite, not a currentColor SVG."
         preview={
           <div
             className={cn(

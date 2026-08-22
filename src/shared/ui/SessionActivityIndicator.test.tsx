@@ -24,7 +24,9 @@ describe("SessionActivityIndicator", () => {
     expect(
       container.querySelector('[data-slot="berd-loader-inline"]'),
     ).toBeInTheDocument();
-    expect(container.querySelector("animateTransform")).toBeInTheDocument();
+    expect(
+      container.querySelector('[data-slot="berd-loader-inline"]'),
+    ).toHaveAttribute("data-animated", "true");
     expect(screen.getByLabelText(/chat active/i)).toHaveClass(
       "animate-in",
       "fade-in-0",
