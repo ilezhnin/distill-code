@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { ExternalLink } from "lucide-react";
 import { cn } from "@/shared/lib/cn";
 import { FileContextMenu } from "@/shared/ui/file-context-menu";
+import { useArtifactActionsContext } from "@/features/chat/hooks/ArtifactPolicyContext";
 import { Skeleton } from "@/shared/ui/skeleton";
 import type { ChangedFile } from "@/shared/types/git";
 import type { WorkspaceChangedFilesRuntime } from "../hooks/useWorkspaceGitRuntimes";
@@ -91,6 +92,7 @@ function ChangedFileRow({
   fullPath: string;
   onOpen: (path: string) => void;
 }) {
+  const { openResolvedPath } = useArtifactActionsContext();
   const { dir, name } = splitPath(file.path);
   const isDeleted = file.status === "deleted";
 
@@ -125,7 +127,16 @@ function ChangedFileRow({
 
   if (isDeleted) return row;
 
-  return <FileContextMenu path={fullPath}>{row}</FileContextMenu>;
+  return (
+    <FileContextMenu
+      path={fullPath}
+      onOpenExternally={() => {
+        void openResolvedPath(fullPath).catch(() => {});
+      }}
+    >
+      {row}
+    </FileContextMenu>
+  );
 }
 
 function ChangedFilesList({

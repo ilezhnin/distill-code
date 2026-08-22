@@ -681,6 +681,10 @@
   },
   "artifactViewer": {
     "close": "Cerrar visor",
+    "closeTab": "Cerrar {{filename}}",
+    "hideChat": "Ocultar chat",
+    "showChat": "Mostrar chat",
+    "tabs": "Archivos abiertos",
     "resize": "Redimensionar visor",
     "openExternally": "Abrir en el editor",
     "fileActions": "Acciones de archivo",
@@ -688,6 +692,7 @@
     "viewCode": "Código",
     "loading": "Cargando archivo…",
     "loadError": "No se pudo cargar este archivo.",
+    "truncated": "Se muestra la primera parte de este archivo.",
     "imageAlt": "Vista previa de {{filename}}"
   },
   "artifactChips": {

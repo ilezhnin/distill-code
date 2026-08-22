@@ -47,7 +47,7 @@ import {
   useWorkspaceChangedFilesRuntimes,
   useWorkspaceGitRuntimes,
 } from "./hooks/useWorkspaceGitRuntimes";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { useArtifactActionsContext } from "@/features/chat/hooks/ArtifactPolicyContext";
 import { toast } from "sonner";
 import { INITIAL_SESSION_CHAT_RUNTIME } from "@/shared/types/chat";
 import {
@@ -264,6 +264,7 @@ export function ContextPanel({
   onOpenTerminalAtPath,
 }: ContextPanelProps) {
   const { t } = useTranslation("chat");
+  const { openInApp } = useArtifactActionsContext();
   const workspaceRepository = useWorkspaceRepository();
   const [activeTab, setActiveTab] = useState<ContextPanelTab>("details");
   const [isAddWorkspaceOpen, setIsAddWorkspaceOpen] = useState(false);
@@ -996,13 +997,16 @@ export function ContextPanel({
     (filePath: string) => {
       if (!gitTargetPath) return;
       const fullPath = `${gitTargetPath}/${filePath}`;
-      void openPath(fullPath);
+      void openInApp(fullPath).catch(() => {});
     },
-    [gitTargetPath],
+    [gitTargetPath, openInApp],
   );
-  const handleOpenWorkspaceChangedFile = useCallback((filePath: string) => {
-    void openPath(filePath);
-  }, []);
+  const handleOpenWorkspaceChangedFile = useCallback(
+    (filePath: string) => {
+      void openInApp(filePath).catch(() => {});
+    },
+    [openInApp],
+  );
 
   const handleRefresh = useCallback(() => {
     void refetchAll();

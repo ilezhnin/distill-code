@@ -3,14 +3,17 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FilesList } from "../FilesList";
 
-import { openPath } from "@tauri-apps/plugin-opener";
-
-const { mockListDirectoryEntries, mockRevealInFileManager } = vi.hoisted(
-  () => ({
-    mockListDirectoryEntries: vi.fn(),
-    mockRevealInFileManager: vi.fn(),
-  }),
-);
+const {
+  mockListDirectoryEntries,
+  mockRevealInFileManager,
+  mockOpenInApp,
+  mockOpenResolvedPath,
+} = vi.hoisted(() => ({
+  mockListDirectoryEntries: vi.fn(),
+  mockRevealInFileManager: vi.fn(),
+  mockOpenInApp: vi.fn(),
+  mockOpenResolvedPath: vi.fn(),
+}));
 
 vi.mock("@/shared/api/system", () => ({
   listDirectoryEntries: mockListDirectoryEntries,
@@ -18,6 +21,15 @@ vi.mock("@/shared/api/system", () => ({
 
 vi.mock("@/shared/lib/fileManager", () => ({
   revealInFileManager: mockRevealInFileManager,
+}));
+
+vi.mock("@/features/chat/hooks/ArtifactPolicyContext", () => ({
+  useArtifactActionsContext: () => ({
+    openInApp: mockOpenInApp,
+    openResolvedPath: mockOpenResolvedPath,
+    pathExists: () => Promise.resolve(true),
+    resolveMarkdownHref: () => null,
+  }),
 }));
 
 const makeEntry = (overrides: Record<string, unknown> = {}) => ({
@@ -30,7 +42,8 @@ const makeEntry = (overrides: Record<string, unknown> = {}) => ({
 describe("FilesList", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(openPath).mockResolvedValue(undefined);
+    mockOpenInApp.mockResolvedValue(undefined);
+    mockOpenResolvedPath.mockResolvedValue(undefined);
     mockRevealInFileManager.mockResolvedValue(undefined);
     mockListDirectoryEntries.mockResolvedValue([]);
   });
@@ -111,11 +124,11 @@ describe("FilesList", () => {
         "/Users/test/project/src",
       );
     });
-    expect(vi.mocked(openPath)).not.toHaveBeenCalled();
+    expect(mockOpenInApp).not.toHaveBeenCalled();
     expect(screen.getByText("App.tsx")).toBeInTheDocument();
   });
 
-  it("opens files externally when a file is clicked", async () => {
+  it("opens files in the in-app viewer when a file is clicked", async () => {
     const user = userEvent.setup();
     mockListDirectoryEntries.mockResolvedValue([
       makeEntry({
@@ -138,7 +151,7 @@ describe("FilesList", () => {
 
     await user.click(fileName);
 
-    expect(vi.mocked(openPath)).toHaveBeenCalledWith(
+    expect(mockOpenInApp).toHaveBeenCalledWith(
       "/Users/test/project/README.md",
     );
   });
@@ -180,5 +193,27 @@ describe("FilesList", () => {
     expect(mockRevealInFileManager).toHaveBeenCalledWith(
       "/Users/test/project/README.md",
     );
+  });
+
+  it("keeps opening the file in an external editor from the context menu", async () => {
+    const user = userEvent.setup();
+    mockListDirectoryEntries.mockResolvedValue([
+      makeEntry({
+        name: "README.md",
+        path: "/Users/test/project/README.md",
+      }),
+    ]);
+
+    render(<FilesList projectWorkingDirs={["/Users/test/project"]} />);
+
+    fireEvent.contextMenu(await screen.findByText("README.md"));
+    await user.click(
+      screen.getByRole("menuitem", { name: /open in editor/i }),
+    );
+
+    expect(mockOpenResolvedPath).toHaveBeenCalledWith(
+      "/Users/test/project/README.md",
+    );
+    expect(mockOpenInApp).not.toHaveBeenCalled();
   });
 });

@@ -115,9 +115,9 @@ function ArtifactActions({ locations }: { locations?: ToolCallLocation[] }) {
   const [moreOutputsOpen, setMoreOutputsOpen] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const { openInApp } = useArtifactActionsContext();
-  // Viewable files (markdown, images) are owned by the ArtifactChips row that
-  // ToolChainCards anchors at the message level, so this per-card action list
-  // only handles the rest: folders, code files, and other open-externally
+  // Viewable files (markdown, images, code) are owned by the ArtifactChips
+  // row that ToolChainCards anchors at the message level, so this per-card
+  // action list only handles the rest: folders and other open-externally
   // targets. Rendering viewables here too would put two different-looking
   // controls for the same file on one expanded card.
   const artifactLocations = visibleLocations(locations).filter(

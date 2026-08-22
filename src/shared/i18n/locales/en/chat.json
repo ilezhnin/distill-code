@@ -685,6 +685,10 @@
   },
   "artifactViewer": {
     "close": "Close viewer",
+    "closeTab": "Close {{filename}}",
+    "hideChat": "Hide chat",
+    "showChat": "Show chat",
+    "tabs": "Open files",
     "resize": "Resize viewer",
     "openExternally": "Open in editor",
     "fileActions": "File actions",
@@ -692,6 +696,7 @@
     "viewCode": "Code",
     "loading": "Loading file…",
     "loadError": "Couldn't load this file.",
+    "truncated": "Showing the first part of this file.",
     "imageAlt": "Preview of {{filename}}"
   },
   "artifactChips": {
