@@ -101,6 +101,19 @@ describe("ArtifactViewer header actions", () => {
     expect(heading.className).not.toMatch(/text-(?:xl|2xl|3xl|4xl)/);
   });
 
+  it("renders source files as highlighted code without a preview toggle", async () => {
+    mockReadTextFile.mockResolvedValue({
+      contents: "export const n = 1;\n",
+      truncated: false,
+    });
+    render(
+      <ArtifactViewer artifact={artifact("/p/main.ts")} onClose={vi.fn()} />,
+    );
+
+    expect(screen.queryByText("Preview")).not.toBeInTheDocument();
+    expect(await screen.findByText("export const n = 1;")).toBeInTheDocument();
+  });
+
   it("never uppercases heading text, so authored identifiers survive", async () => {
     // Heading text is authored document content, not app chrome. A `uppercase`
     // utility would silently rewrite casing that carries meaning (`api_KEY`,

@@ -41,19 +41,25 @@ describe("classifyArtifactView", () => {
     }
   });
 
-  it("returns null for non-viewable files", () => {
-    expect(classifyArtifactView("main.ts")).toBeNull();
-    expect(classifyArtifactView("data.csv")).toBeNull();
+  it("classifies source and config files as code", () => {
+    expect(classifyArtifactView("main.ts")).toBe("code");
+    expect(classifyArtifactView("data.csv")).toBe("code");
+    expect(classifyArtifactView("Dockerfile")).toBe("code");
+    expect(classifyArtifactView(".gitignore")).toBe("code");
+  });
+
+  it("returns null for known binary files", () => {
     expect(classifyArtifactView("report.pdf")).toBeNull();
-    expect(classifyArtifactView("Dockerfile")).toBeNull();
+    expect(classifyArtifactView("archive.zip")).toBeNull();
+    expect(classifyArtifactView("song.mp3")).toBeNull();
   });
 });
 
 describe("isViewableArtifact", () => {
-  it("is true only for viewable types", () => {
+  it("is true for previewable types and false for binaries", () => {
     expect(isViewableArtifact("a.md")).toBe(true);
     expect(isViewableArtifact("a.png")).toBe(true);
-    expect(isViewableArtifact("a.ts")).toBe(false);
+    expect(isViewableArtifact("a.ts")).toBe(true);
     expect(isViewableArtifact("a.pdf")).toBe(false);
   });
 });

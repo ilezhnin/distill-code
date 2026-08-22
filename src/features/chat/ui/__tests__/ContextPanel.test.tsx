@@ -127,6 +127,7 @@ vi.mock("@/shared/api/git", () => ({
 vi.mock("../../hooks/ArtifactPolicyContext", () => ({
   useArtifactActionsContext: () => ({
     openResolvedPath: vi.fn(),
+    openInApp: vi.fn().mockResolvedValue(undefined),
     pathExists: () => Promise.resolve(true),
   }),
   useSessionArtifacts: () => mockGetAllSessionArtifacts(),

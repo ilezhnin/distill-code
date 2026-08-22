@@ -142,6 +142,8 @@
   "labels": {
     "assistant": "Asistente",
     "copyPath": "Copiar ruta",
+    "openInEditor": "Abrir en el editor",
+    "openInViewer": "Abrir en el visor",
     "revealInFileManager_mac": "Mostrar en Finder",
     "revealInFileManager_windows": "Mostrar en Explorador",
     "revealInFileManager_linux": "Mostrar en gestor de archivos",

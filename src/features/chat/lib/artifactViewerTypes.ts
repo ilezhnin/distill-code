@@ -1,17 +1,18 @@
 /**
  * Classifies a file path into a viewer "view mode". This is the extension
- * point for the in-app artifact viewer: new renderable types (code, csv,
- * pdf, html) are added here without touching the panel or the trigger.
+ * point for the in-app artifact viewer: new renderable types are added here
+ * without touching the panel or the trigger.
  *
- * v1 supports:
+ * Supported:
  *  - "markdown": rendered (Streamdown) with a Preview <-> Raw toggle
  *  - "image": rendered via convertFileSrc
+ *  - "code": syntax-highlighted text (source, config, and other UTF-8 files)
  *
- * Files that don't map to a view mode are never opened in the viewer — the
- * caller keeps the existing "open externally" behavior for them.
+ * Known binary types return null so callers keep "open externally". The
+ * backend still rejects binary/non-UTF-8 reads for anything we do open.
  */
 import type { ToolRequestContent } from "@/shared/types/messages";
-export type ArtifactViewMode = "markdown" | "image";
+export type ArtifactViewMode = "markdown" | "image" | "code";
 
 const MARKDOWN_EXTENSIONS = new Set([".md", ".mdx", ".markdown"]);
 
@@ -22,6 +23,62 @@ const IMAGE_EXTENSIONS = new Set([
   ".gif",
   ".webp",
   ".svg",
+]);
+
+const BINARY_EXTENSIONS = new Set([
+  ".7z",
+  ".a",
+  ".aac",
+  ".apk",
+  ".avi",
+  ".bin",
+  ".blend",
+  ".bz2",
+  ".class",
+  ".db",
+  ".dll",
+  ".dmg",
+  ".doc",
+  ".docx",
+  ".dylib",
+  ".eot",
+  ".exe",
+  ".fbx",
+  ".flac",
+  ".gz",
+  ".icns",
+  ".ico",
+  ".iso",
+  ".jar",
+  ".lib",
+  ".mov",
+  ".mp3",
+  ".mp4",
+  ".o",
+  ".obj",
+  ".ogg",
+  ".otf",
+  ".pdf",
+  ".ppt",
+  ".pptx",
+  ".psd",
+  ".pyc",
+  ".pyo",
+  ".rar",
+  ".so",
+  ".sqlite",
+  ".tar",
+  ".tgz",
+  ".ttf",
+  ".wasm",
+  ".wav",
+  ".webm",
+  ".woff",
+  ".woff2",
+  ".xls",
+  ".xlsx",
+  ".xz",
+  ".zip",
 ]);
 
 /** Basename of a path, tolerant of both `/` and `\` separators. */
@@ -41,7 +98,8 @@ export function classifyArtifactView(path: string): ArtifactViewMode | null {
   const ext = fileExtension(path);
   if (MARKDOWN_EXTENSIONS.has(ext)) return "markdown";
   if (IMAGE_EXTENSIONS.has(ext)) return "image";
-  return null;
+  if (BINARY_EXTENSIONS.has(ext)) return null;
+  return "code";
 }
 
 /**
@@ -54,7 +112,7 @@ export interface ViewableArtifactTarget {
 }
 
 /**
- * Every distinct viewable artifact (markdown/image) across the given tool
+ * Every distinct viewable artifact (markdown/image/code) across the given tool
  * requests, in first-seen order.
  *
  * This replaced an earlier `singleViewableArtifact` helper that collapsed to

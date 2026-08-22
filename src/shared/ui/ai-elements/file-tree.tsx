@@ -303,6 +303,8 @@ export type FileTreeFileProps = HTMLAttributes<HTMLDivElement> & {
   path: string;
   name: string;
   icon?: ReactNode;
+  onOpenInViewer?: () => void;
+  onOpenExternally?: () => void;
 };
 
 export const FileTreeFile = ({
@@ -310,6 +312,8 @@ export const FileTreeFile = ({
   path,
   name,
   icon,
+  onOpenInViewer,
+  onOpenExternally,
   className,
   children,
   ...props
@@ -335,7 +339,11 @@ export const FileTreeFile = ({
   return (
     <FileTreeFileContext.Provider value={fileContextValue}>
       {contextMenuPath ? (
-        <FileContextMenu path={contextMenuPath}>
+        <FileContextMenu
+          path={contextMenuPath}
+          onOpenInViewer={onOpenInViewer}
+          onOpenExternally={onOpenExternally}
+        >
           <div
             className={cn(
               fileTreeRowClassName,

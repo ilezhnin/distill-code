@@ -32,8 +32,10 @@ import { readTextFile } from "@/shared/api/system";
 import { revealInFileManager } from "@/shared/lib/fileManager";
 import { getPlatform } from "@/shared/lib/platform";
 import { useArtifactActionsContext } from "@/features/chat/hooks/ArtifactPolicyContext";
+import { codeLanguageForPath } from "@/features/chat/lib/artifactViewerLanguage";
 import { classifyArtifactView } from "@/features/chat/lib/artifactViewerTypes";
 import type { OpenArtifact } from "@/features/chat/stores/artifactViewerStore";
+import type { BundledLanguage } from "shiki";
 
 // Platform-aware reveal label ("Reveal in Finder" / "Explorer" / "File
 // Manager"), matching FileContextMenu so the doc viewer and right-click
@@ -44,6 +46,9 @@ const revealLabelKey =
 interface ArtifactViewerProps {
   artifact: OpenArtifact;
   onClose: () => void;
+  /** When false, the tab strip owns the filename and close control. */
+  showFilename?: boolean;
+  showClose?: boolean;
 }
 
 type MarkdownView = "preview" | "raw";
@@ -51,19 +56,30 @@ type MarkdownView = "preview" | "raw";
 interface TextState {
   status: "loading" | "loaded" | "error";
   contents: string;
+  truncated: boolean;
 }
 
-export function ArtifactViewer({ artifact, onClose }: ArtifactViewerProps) {
+export function ArtifactViewer({
+  artifact,
+  onClose,
+  showFilename = true,
+  showClose = true,
+}: ArtifactViewerProps) {
   const { t } = useTranslation(["chat", "common"]);
   const { openResolvedPath } = useArtifactActionsContext();
   const viewMode = useMemo(
-    () => classifyArtifactView(artifact.resolvedPath),
+    () => classifyArtifactView(artifact.resolvedPath) ?? "code",
+    [artifact.resolvedPath],
+  );
+  const codeLanguage = useMemo(
+    () => codeLanguageForPath(artifact.resolvedPath),
     [artifact.resolvedPath],
   );
   const [markdownView, setMarkdownView] = useState<MarkdownView>("preview");
   const [textState, setTextState] = useState<TextState>({
     status: "loading",
     contents: "",
+    truncated: false,
   });
 
   // Escape closes the viewer — but only when nothing closer to the event
@@ -82,15 +98,19 @@ export function ArtifactViewer({ artifact, onClose }: ArtifactViewerProps) {
   useEffect(() => {
     if (viewMode === "image") return;
     let cancelled = false;
-    setTextState({ status: "loading", contents: "" });
+    setTextState({ status: "loading", contents: "", truncated: false });
     void readTextFile(artifact.resolvedPath)
       .then((payload) => {
         if (cancelled) return;
-        setTextState({ status: "loaded", contents: payload.contents });
+        setTextState({
+          status: "loaded",
+          contents: payload.contents,
+          truncated: Boolean(payload.truncated),
+        });
       })
       .catch(() => {
         if (cancelled) return;
-        setTextState({ status: "error", contents: "" });
+        setTextState({ status: "error", contents: "", truncated: false });
       });
     return () => {
       cancelled = true;
@@ -103,18 +123,22 @@ export function ArtifactViewer({ artifact, onClose }: ArtifactViewerProps) {
   return (
     <Artifact className="h-full min-h-0 flex-1 rounded-none border-0 shadow-none">
       <ArtifactHeader>
-        <div className="flex min-w-0 items-center gap-2">
-          {viewMode === "image" ? (
-            <ImageIcon className="size-3.5 shrink-0 text-muted-foreground" />
-          ) : (
-            <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
-          )}
-          <ArtifactTitle title={artifact.resolvedPath}>
-            {artifact.filename}
-          </ArtifactTitle>
-        </div>
+        {showFilename ? (
+          <div className="flex min-w-0 items-center gap-2">
+            {viewMode === "image" ? (
+              <ImageIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            ) : (
+              <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            )}
+            <ArtifactTitle title={artifact.resolvedPath}>
+              {artifact.filename}
+            </ArtifactTitle>
+          </div>
+        ) : (
+          <div />
+        )}
         <ArtifactActions>
-          {viewMode !== "image" ? (
+          {viewMode === "markdown" ? (
             <ToggleGroup
               type="single"
               variant="outline"
@@ -172,21 +196,31 @@ export function ArtifactViewer({ artifact, onClose }: ArtifactViewerProps) {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <ArtifactAction
-            icon={XIcon}
-            tooltip={t("artifactViewer.close")}
-            label={t("artifactViewer.close")}
-            onClick={onClose}
-          />
+          {showClose ? (
+            <ArtifactAction
+              icon={XIcon}
+              tooltip={t("artifactViewer.close")}
+              label={t("artifactViewer.close")}
+              onClick={onClose}
+            />
+          ) : null}
         </ArtifactActions>
       </ArtifactHeader>
 
       <div className="flex-1 overflow-auto">
         {viewMode === "image" ? (
           <ImageBody artifact={artifact} />
-        ) : (
+        ) : viewMode === "markdown" ? (
           <MarkdownBody
             markdownView={markdownView}
+            textState={textState}
+            onOpenExternally={() => {
+              void openResolvedPath(artifact.resolvedPath).catch(() => {});
+            }}
+          />
+        ) : (
+          <CodeBody
+            language={codeLanguage}
             textState={textState}
             onOpenExternally={() => {
               void openResolvedPath(artifact.resolvedPath).catch(() => {});
@@ -219,12 +253,10 @@ function ImageBody({ artifact }: { artifact: OpenArtifact }) {
   );
 }
 
-function MarkdownBody({
-  markdownView,
+function TextLoadState({
   textState,
   onOpenExternally,
 }: {
-  markdownView: MarkdownView;
   textState: TextState;
   onOpenExternally: () => void;
 }) {
@@ -247,6 +279,57 @@ function MarkdownBody({
           {t("artifactViewer.openExternally")}
         </Button>
       </div>
+    );
+  }
+  return null;
+}
+
+function CodeBody({
+  language,
+  textState,
+  onOpenExternally,
+}: {
+  language: BundledLanguage;
+  textState: TextState;
+  onOpenExternally: () => void;
+}) {
+  const { t } = useTranslation("chat");
+  if (textState.status !== "loaded") {
+    return (
+      <TextLoadState textState={textState} onOpenExternally={onOpenExternally} />
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {textState.truncated ? (
+        <p className="border-b border-border/80 px-4 py-2 text-xs text-muted-foreground">
+          {t("artifactViewer.truncated")}
+        </p>
+      ) : null}
+      <CodeBlock
+        code={textState.contents}
+        language={language}
+        showLineNumbers
+        transparentBackground
+        className="min-h-0 flex-1 px-1"
+      />
+    </div>
+  );
+}
+
+function MarkdownBody({
+  markdownView,
+  textState,
+  onOpenExternally,
+}: {
+  markdownView: MarkdownView;
+  textState: TextState;
+  onOpenExternally: () => void;
+}) {
+  if (textState.status !== "loaded") {
+    return (
+      <TextLoadState textState={textState} onOpenExternally={onOpenExternally} />
     );
   }
 

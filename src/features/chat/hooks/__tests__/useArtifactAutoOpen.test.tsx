@@ -40,6 +40,8 @@ function md(
 
 function resetStore() {
   useArtifactViewerStore.setState({
+    tabsBySession: {},
+    activePathBySession: {},
     openBySession: {},
     lastClosedPathBySession: {},
   });

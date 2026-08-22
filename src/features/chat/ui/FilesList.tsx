@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { openPath } from "@tauri-apps/plugin-opener";
 import {
   FileTree,
   FileTreeFile,
@@ -9,6 +8,7 @@ import {
 import { SIDEBAR_ROW_ICON_TEXT_GAP_CLASS } from "@/shared/ui/sidebar-tokens";
 import { cn } from "@/shared/lib/cn";
 import { listDirectoryEntries, type FileTreeEntry } from "@/shared/api/system";
+import { useArtifactActionsContext } from "@/features/chat/hooks/ArtifactPolicyContext";
 
 interface FilesListProps {
   projectWorkingDirs?: string[];
@@ -60,6 +60,7 @@ interface DirectoryNodeProps {
   directoryStates: Record<string, DirectoryState>;
   entry: FileTreeEntry;
   loadDirectory: (path: string) => void;
+  onOpenExternally: (path: string) => void;
   t: (key: string) => string;
 }
 
@@ -67,6 +68,7 @@ function DirectoryNode({
   directoryStates,
   entry,
   loadDirectory,
+  onOpenExternally,
   t,
 }: DirectoryNodeProps) {
   if (entry.kind === "file") {
@@ -77,6 +79,7 @@ function DirectoryNode({
         className={FILES_TREE_ROW_CLASS}
         contextMenuPath={entry.path}
         title={entry.path}
+        onOpenExternally={() => onOpenExternally(entry.path)}
       />
     );
   }
@@ -94,6 +97,7 @@ function DirectoryNode({
         directoryPath={entry.path}
         directoryStates={directoryStates}
         loadDirectory={loadDirectory}
+        onOpenExternally={onOpenExternally}
         t={t}
       />
     </FileTreeFolder>
@@ -104,11 +108,13 @@ function DirectoryChildren({
   directoryPath,
   directoryStates,
   loadDirectory,
+  onOpenExternally,
   t,
 }: {
   directoryPath: string;
   directoryStates: Record<string, DirectoryState>;
   loadDirectory: (path: string) => void;
+  onOpenExternally: (path: string) => void;
   t: (key: string) => string;
 }) {
   const state = directoryStates[directoryPath];
@@ -139,6 +145,7 @@ function DirectoryChildren({
           directoryStates={directoryStates}
           entry={entry}
           loadDirectory={loadDirectory}
+          onOpenExternally={onOpenExternally}
           t={t}
         />
       ))}
@@ -148,6 +155,7 @@ function DirectoryChildren({
 
 export function FilesList({ projectWorkingDirs }: FilesListProps) {
   const { t } = useTranslation("chat");
+  const { openInApp, openResolvedPath } = useArtifactActionsContext();
   const roots = useMemo(
     () => normalizeRoots(projectWorkingDirs ?? EMPTY_ROOTS),
     [projectWorkingDirs],
@@ -239,10 +247,20 @@ export function FilesList({ projectWorkingDirs }: FilesListProps) {
     [loadDirectory],
   );
 
-  const handleOpenFile = useCallback((path: string) => {
-    setSelectedPath(path);
-    void openPath(path);
-  }, []);
+  const handleOpenFile = useCallback(
+    (path: string) => {
+      setSelectedPath(path);
+      void openInApp(path).catch(() => {});
+    },
+    [openInApp],
+  );
+
+  const handleOpenExternally = useCallback(
+    (path: string) => {
+      void openResolvedPath(path).catch(() => {});
+    },
+    [openResolvedPath],
+  );
 
   if (roots.length === 0) {
     return (
@@ -282,6 +300,7 @@ export function FilesList({ projectWorkingDirs }: FilesListProps) {
                   directoryPath={root}
                   directoryStates={directoryStates}
                   loadDirectory={loadDirectory}
+                  onOpenExternally={handleOpenExternally}
                   t={t}
                 />
               )}

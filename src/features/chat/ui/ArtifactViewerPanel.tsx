@@ -11,19 +11,22 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { IconLayoutSidebarLeftExpand, IconX } from "@tabler/icons-react";
 import { usePersistedState } from "@/shared/hooks/usePersistedState";
+import { cn } from "@/shared/lib/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { ArtifactViewer } from "./ArtifactViewer";
 import {
   useArtifactViewerStore,
   useOpenArtifact,
+  useOpenArtifactTabs,
   type OpenArtifact,
 } from "../stores/artifactViewerStore";
 
 const VIEWER_WIDTH_STORAGE_KEY = "goose:artifact-viewer-width";
-const VIEWER_MIN_WIDTH = 420;
-const VIEWER_MAX_WIDTH = 900;
-const VIEWER_DEFAULT_WIDTH = 640;
+const VIEWER_MIN_WIDTH = 280;
+const VIEWER_MAX_WIDTH = Number.POSITIVE_INFINITY;
+const VIEWER_DEFAULT_WIDTH = 0;
 // When the row runs out of space (right rail docked, narrow window), the
 // viewer is the flex child that yields: it may render narrower than the
 // user-chosen width, but never below this floor. Flexbox resolves the
@@ -47,14 +50,20 @@ function clampWidth(width: number): number {
   return Math.min(Math.max(width, VIEWER_MIN_WIDTH), VIEWER_MAX_WIDTH);
 }
 
+function widthIsAuto(width: number): boolean {
+  return width <= 0;
+}
+
 function validateWidth(value: unknown, defaults: number): number {
-  return typeof value === "number" && Number.isFinite(value)
-    ? clampWidth(value)
-    : defaults;
+  if (typeof value !== "number" || !Number.isFinite(value)) return defaults;
+  if (value <= 0) return 0;
+  return clampWidth(value);
 }
 
 interface ArtifactViewerPanelProps {
   sessionId: string;
+  chatCollapsed?: boolean;
+  onToggleChat?: () => void;
 }
 
 /**
@@ -69,7 +78,11 @@ interface ArtifactViewerPanelProps {
  * down to a floor instead of crushing the conversation column, which keeps
  * its own floor via CONVERSATION_MIN_WIDTH_WITH_VIEWER.
  */
-export function ArtifactViewerPanel({ sessionId }: ArtifactViewerPanelProps) {
+export function ArtifactViewerPanel({
+  sessionId,
+  chatCollapsed = false,
+  onToggleChat,
+}: ArtifactViewerPanelProps) {
   const artifact = useOpenArtifact(sessionId);
 
   return (
@@ -79,6 +92,8 @@ export function ArtifactViewerPanel({ sessionId }: ArtifactViewerPanelProps) {
           key="artifact-viewer"
           sessionId={sessionId}
           artifact={artifact}
+          chatCollapsed={chatCollapsed}
+          onToggleChat={onToggleChat}
         />
       ) : null}
     </AnimatePresence>
@@ -88,12 +103,18 @@ export function ArtifactViewerPanel({ sessionId }: ArtifactViewerPanelProps) {
 function ViewerPanel({
   sessionId,
   artifact,
+  chatCollapsed,
+  onToggleChat,
 }: {
   sessionId: string;
   artifact: OpenArtifact;
+  chatCollapsed: boolean;
+  onToggleChat?: () => void;
 }) {
   const { t } = useTranslation("chat");
-  const close = useArtifactViewerStore((s) => s.close);
+  const tabs = useOpenArtifactTabs(sessionId);
+  const activate = useArtifactViewerStore((s) => s.activate);
+  const closeTab = useArtifactViewerStore((s) => s.closeTab);
   const reduceMotion = useReducedMotion();
   // False while AnimatePresence is exit-animating this panel. The min-width
   // floor must lift during enter/exit so the width can actually reach 0;
@@ -110,6 +131,9 @@ function ViewerPanel({
   // let the content fill the rendered width instead of holding the target.
   const [entered, setEntered] = useState(false);
   const settled = entered && isPresent;
+  const fillWorkspace = chatCollapsed;
+  const autoSplit = !fillWorkspace && widthIsAuto(width);
+  const usesFlexSize = fillWorkspace || autoSplit;
 
   const startResize = useCallback(
     (event: ReactPointerEvent<HTMLElement>) => {
@@ -150,13 +174,16 @@ function ViewerPanel({
     <motion.div
       ref={panelRef}
       data-artifact-viewer-panel
-      className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-md bg-card"
+      className={cn(
+        "relative flex h-full min-h-0 flex-col overflow-hidden rounded-md bg-card",
+        usesFlexSize && "flex-1",
+      )}
       style={{
-        maxWidth: VIEWER_MAX_WIDTH,
-        minWidth: settled ? VIEWER_FLEX_MIN_WIDTH : 0,
+        minWidth: fillWorkspace ? 0 : settled ? VIEWER_FLEX_MIN_WIDTH : 0,
+        ...(usesFlexSize ? { flex: "1 1 0%" } : { width }),
       }}
-      initial={{ width: 0, opacity: 0 }}
-      animate={{ width, opacity: 1 }}
+      initial={usesFlexSize ? { opacity: 0 } : { width: 0, opacity: 0 }}
+      animate={usesFlexSize ? { opacity: 1 } : { width, opacity: 1 }}
       exit={{ width: 0, opacity: 0 }}
       onAnimationComplete={() => setEntered(true)}
       transition={
@@ -171,22 +198,123 @@ function ViewerPanel({
           instead of clipping the panel's right edge. */}
       <div
         className="flex h-full min-h-0 flex-col"
-        style={settled ? undefined : { width }}
+        style={settled || usesFlexSize ? undefined : { width }}
       >
+        {fillWorkspace ? null : (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                tabIndex={-1}
+                aria-label={t("artifactViewer.resize")}
+                onPointerDown={startResize}
+                className="absolute top-2 bottom-2 left-0 z-30 w-3 -translate-x-1/2 cursor-col-resize bg-transparent outline-none"
+              />
+            </TooltipTrigger>
+            <TooltipContent>{t("artifactViewer.resize")}</TooltipContent>
+          </Tooltip>
+        )}
+        <FileViewerTabBar
+          tabs={tabs}
+          activePath={artifact.resolvedPath}
+          showChatButton={fillWorkspace && Boolean(onToggleChat)}
+          onShowChat={onToggleChat}
+          onActivate={(path) => activate(sessionId, path)}
+          onCloseTab={(path) => closeTab(sessionId, path)}
+        />
+        <ArtifactViewer
+          artifact={artifact}
+          onClose={() => closeTab(sessionId, artifact.resolvedPath)}
+          showFilename={false}
+          showClose={false}
+        />
+      </div>
+    </motion.div>
+  );
+}
+
+function FileViewerTabBar({
+  tabs,
+  activePath,
+  showChatButton,
+  onShowChat,
+  onActivate,
+  onCloseTab,
+}: {
+  tabs: readonly OpenArtifact[];
+  activePath: string;
+  showChatButton: boolean;
+  onShowChat?: () => void;
+  onActivate: (path: string) => void;
+  onCloseTab: (path: string) => void;
+}) {
+  const { t } = useTranslation("chat");
+
+  return (
+    <div className="flex min-h-9 shrink-0 items-center gap-1 border-b border-border/80 px-1">
+      {showChatButton ? (
         <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
-              tabIndex={-1}
-              aria-label={t("artifactViewer.resize")}
-              onPointerDown={startResize}
-              className="absolute top-2 bottom-2 left-0 z-30 w-3 -translate-x-1/2 cursor-col-resize bg-transparent outline-none"
-            />
+              aria-label={t("artifactViewer.showChat")}
+              title={t("artifactViewer.showChat")}
+              onClick={onShowChat}
+              className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <IconLayoutSidebarLeftExpand className="size-4" aria-hidden="true" />
+            </button>
           </TooltipTrigger>
-          <TooltipContent>{t("artifactViewer.resize")}</TooltipContent>
+          <TooltipContent>{t("artifactViewer.showChat")}</TooltipContent>
         </Tooltip>
-        <ArtifactViewer artifact={artifact} onClose={() => close(sessionId)} />
+      ) : null}
+      <div
+        className="flex min-w-0 flex-1 items-stretch gap-0.5 overflow-x-auto"
+        role="tablist"
+        aria-label={t("artifactViewer.tabs")}
+      >
+        {tabs.map((tab) => {
+          const isActive = tab.resolvedPath === activePath;
+          return (
+            <div
+              key={tab.resolvedPath}
+              className={cn(
+                "group flex max-w-[14rem] min-w-0 items-center rounded-t-md border border-transparent",
+                isActive
+                  ? "border-border/80 border-b-transparent bg-background text-foreground"
+                  : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+              )}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                title={tab.resolvedPath}
+                onClick={() => onActivate(tab.resolvedPath)}
+                className="min-w-0 truncate px-2.5 py-1.5 text-left text-xs"
+              >
+                {tab.filename}
+              </button>
+              <button
+                type="button"
+                aria-label={t("artifactViewer.closeTab", {
+                  filename: tab.filename,
+                })}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onCloseTab(tab.resolvedPath);
+                }}
+                className={cn(
+                  "mr-1 inline-flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground",
+                  !isActive && "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+                )}
+              >
+                <IconX className="size-3" aria-hidden="true" />
+              </button>
+            </div>
+          );
+        })}
       </div>
-    </motion.div>
+    </div>
   );
 }

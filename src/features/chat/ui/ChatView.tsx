@@ -369,17 +369,35 @@ export function ChatView({
       initialized: true,
     });
   }
+  const isSessionChatCollapsed =
+    chatCollapseState.sessionId === sessionId && chatCollapseState.collapsed;
   const isAgentBuilderChatCollapsed =
-    isAgentBuilderSession &&
-    chatCollapseState.sessionId === sessionId &&
-    chatCollapseState.collapsed;
-  const toggleAgentBuilderChat = useCallback(() => {
+    isAgentBuilderSession && isSessionChatCollapsed;
+  const isViewerChatCollapsed =
+    !isAgentBuilderSession && isArtifactViewerOpen && isSessionChatCollapsed;
+  const toggleSessionChat = useCallback(() => {
     setChatCollapseState((current) =>
       current.sessionId === sessionId
         ? { ...current, collapsed: !current.collapsed, initialized: true }
         : { sessionId, collapsed: true, initialized: true },
     );
   }, [sessionId]);
+  const toggleAgentBuilderChat = toggleSessionChat;
+
+  useEffect(() => {
+    if (!isAgentBuilderSession && !isArtifactViewerOpen && isSessionChatCollapsed) {
+      setChatCollapseState((current) =>
+        current.sessionId === sessionId
+          ? { ...current, collapsed: false }
+          : current,
+      );
+    }
+  }, [
+    isAgentBuilderSession,
+    isArtifactViewerOpen,
+    isSessionChatCollapsed,
+    sessionId,
+  ]);
   const {
     railFraction: builderRailFraction,
     isResizingRail: isResizingBuilderRail,
@@ -1115,7 +1133,8 @@ export function ChatView({
             data-chat-column
             className={cn(
               "relative flex min-h-0 min-w-0 flex-col overflow-hidden",
-              !isAgentBuilderSession && "h-full flex-1",
+              !isAgentBuilderSession && !isViewerChatCollapsed && "h-full flex-1",
+              isViewerChatCollapsed && "hidden",
               isAgentBuilderSession && "agent-builder-column-enter",
               // While editing an agent the chat lives in a grid track that can
               // animate to zero width; clip its contents so the slide reads
@@ -1127,14 +1146,20 @@ export function ChatView({
             // order, pointer events, and the a11y tree in one step, so keyboard
             // and screen-reader users can't land in the invisible zero-width
             // panel while its focusable children stay mounted.
-            inert={isAgentBuilderChatCollapsed ? true : undefined}
+            inert={
+              isAgentBuilderChatCollapsed || isViewerChatCollapsed
+                ? true
+                : undefined
+            }
             style={{
               ...agentBuilderChatColumnStyle,
               // While the viewer is open, the conversation keeps a readable
               // floor; the viewer panel is the flex child that yields (down to
               // its own floor) when the row tightens. Skipped for agent-builder
               // sessions, where the grid track must be free to collapse to 0.
-              ...(isArtifactViewerOpen && !isAgentBuilderSession
+              ...(isArtifactViewerOpen &&
+              !isAgentBuilderSession &&
+              !isViewerChatCollapsed
                 ? { minWidth: CONVERSATION_MIN_WIDTH_WITH_VIEWER }
                 : null),
             }}
@@ -1146,12 +1171,20 @@ export function ChatView({
                 terminal.visible && !terminal.isFloating && "min-h-[280px]",
               )}
             >
-              {isAgentBuilderSession ? (
+              {isAgentBuilderSession || isArtifactViewerOpen ? (
                 <button
                   type="button"
-                  aria-label={t("agentBuilder.hideChat")}
-                  title={t("agentBuilder.hideChat")}
-                  onClick={toggleAgentBuilderChat}
+                  aria-label={
+                    isAgentBuilderSession
+                      ? t("agentBuilder.hideChat")
+                      : t("artifactViewer.hideChat")
+                  }
+                  title={
+                    isAgentBuilderSession
+                      ? t("agentBuilder.hideChat")
+                      : t("artifactViewer.hideChat")
+                  }
+                  onClick={toggleSessionChat}
                   className="absolute right-3 top-3 z-30 inline-flex size-7 items-center justify-center rounded-full bg-card/80 text-muted-foreground backdrop-blur transition-colors hover:bg-card hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <IconLayoutSidebarLeftCollapse
@@ -1223,7 +1256,11 @@ export function ChatView({
           </div>
 
           {sessionId && !isAgentBuilderSession ? (
-            <ArtifactViewerPanel sessionId={sessionId} />
+            <ArtifactViewerPanel
+              sessionId={sessionId}
+              chatCollapsed={isViewerChatCollapsed}
+              onToggleChat={toggleSessionChat}
+            />
           ) : null}
 
           <ChatRightRail
