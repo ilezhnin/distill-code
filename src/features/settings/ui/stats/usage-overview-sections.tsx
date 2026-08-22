@@ -121,7 +121,7 @@ export function DailyIntensityGrid({
             {t("stats.dailyIntensityDescription")}
           </p>
         </div>
-        {bestDay && bestDay.totalTokens > 0 ? (
+        {bestDay && (bestDay.totalTokens > 0 || bestDay.activity > 0) ? (
           <Badge variant="outline" className="shrink-0">
             {t("stats.bestDay", { date: formatDayLabel(bestDay.day) })}
           </Badge>

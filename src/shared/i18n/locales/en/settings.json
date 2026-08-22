@@ -696,12 +696,13 @@
     "chatsStarted": "Chats started",
     "costUnavailable": "n/a",
     "dailyIntensity": "Daily intensity",
-    "dailyIntensityDescription": "Recent combined token activity across your agents.",
+    "dailyIntensityDescription": "Recent chat and token activity across your agents.",
     "description": "Distill stats plus token analytics across your agents and providers.",
     "duration": {
       "daysHours": "{{days}}d {{hours}}h",
       "hoursMinutes": "{{hours}}h {{minutes}}m",
-      "minutes": "{{minutes}}m",
+      "minutesSeconds": "{{minutes}}m {{seconds}}s",
+      "seconds": "{{seconds}}s",
       "zero": "0m"
     },
     "emptyTracking": "Start your first chat to begin tracking",

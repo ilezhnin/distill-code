@@ -11,8 +11,8 @@ const ledger: UsageLedger = {
       providerId: "goose",
       modelId: "gpt-5",
       modelName: "GPT-5",
-      createdAt: 1,
-      lastActivityAt: 1,
+      createdAt: Date.parse("2026-08-01T12:00:00"),
+      lastActivityAt: Date.parse("2026-08-01T12:00:00"),
       messageCount: 3,
       started: true,
       inputTokens: 80,
@@ -27,8 +27,8 @@ const ledger: UsageLedger = {
       providerId: "claude-acp",
       modelId: "opus",
       modelName: "Opus",
-      createdAt: 1,
-      lastActivityAt: 1,
+      createdAt: Date.parse("2026-08-02T12:00:00"),
+      lastActivityAt: Date.parse("2026-08-02T12:00:00"),
       messageCount: 1,
       started: true,
       inputTokens: 10,
@@ -101,5 +101,38 @@ describe("usageOverviewModel", () => {
     ]);
     expect(days[0]?.intensity).toBe(0);
     expect(days[1]?.intensity).toBeGreaterThan(0);
+  });
+
+  it("lights heatmap days from session activity even without token totals", () => {
+    const overview = buildUsageOverview({
+      ledger: {
+        version: 1,
+        firstEventAt: Date.parse("2026-08-20T12:00:00"),
+        lastUpdatedAt: Date.parse("2026-08-21T12:00:00"),
+        sessions: {
+          chat: {
+            providerId: "grok-acp",
+            modelId: "grok-4",
+            modelName: "grok-4",
+            createdAt: Date.parse("2026-08-20T12:00:00"),
+            lastActivityAt: Date.parse("2026-08-21T12:00:00"),
+            messageCount: 12,
+            started: true,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheTokens: 0,
+            totalTokens: 0,
+            costUsd: null,
+            turns: 0,
+            workedMs: 0,
+          },
+        },
+        daily: {},
+      },
+    });
+    expect(overview.totalTokens).toBe(0);
+    expect(overview.activeDays).toBe(1);
+    expect(overview.bestDay?.day).toBe("2026-08-21");
+    expect(overview.bestDay?.activity).toBeGreaterThan(0);
   });
 });

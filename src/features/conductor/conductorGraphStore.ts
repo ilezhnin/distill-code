@@ -6,6 +6,11 @@ import type {
   SessionRole,
   StructuredReport,
 } from "./types";
+import {
+  noteConductorRunStatus,
+  remapSessionWorkState,
+} from "@/features/stats/lib/usageLedger";
+import { syncConductorNodesIntoUsageLedger } from "@/features/stats/lib/usageRecorder";
 
 export const CONDUCTOR_GRAPH_STORAGE_KEY = "goose:conductor-graph";
 
@@ -205,22 +210,38 @@ export const useConductorGraphStore = create<ConductorGraphStore>(
         persistGraph(next);
         return next;
       });
+      try {
+        syncConductorNodesIntoUsageLedger([node]);
+        if (node.role === "orchestrator" || node.role === "worker") {
+          noteConductorRunStatus(node.sessionId, node.status);
+        }
+      } catch {
+        // Usage tracking must never fail graph updates.
+      }
     },
 
     patchNode: (sessionId, patch) => {
+      const existing = get().nodesById[sessionId];
       set((state) => {
-        const existing = state.nodesById[sessionId];
-        if (!existing) return state;
+        const current = state.nodesById[sessionId];
+        if (!current) return state;
         const next = {
           ...state,
           nodesById: {
             ...state.nodesById,
-            [sessionId]: { ...existing, ...patch, sessionId },
+            [sessionId]: { ...current, ...patch, sessionId },
           },
         };
         persistGraph(next);
         return next;
       });
+      if (patch.status && patch.status !== existing?.status) {
+        try {
+          noteConductorRunStatus(sessionId, patch.status);
+        } catch {
+          // Usage tracking must never fail graph updates.
+        }
+      }
     },
 
     remapSessionId: (fromId, toId) => {
@@ -252,6 +273,7 @@ export const useConductorGraphStore = create<ConductorGraphStore>(
         persistGraph(next);
         return next;
       });
+      remapSessionWorkState(fromId, toId);
     },
 
     attachReport: (report) => {

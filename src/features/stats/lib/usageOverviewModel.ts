@@ -40,6 +40,7 @@ export function getRecentUsageDays(
       byDay.get(day) ?? {
         day,
         totalTokens: 0,
+        activity: 0,
         intensity: 0,
       },
     );
@@ -57,18 +58,47 @@ function dailyTotalForFilter(
 
 function buildDailyPoints(
   ledger: UsageLedger,
+  sessions: UsageLedger["sessions"][string][],
   providerFilter: string | null,
 ): UsageOverviewDailyPoint[] {
+  const byDay = new Map<string, { totalTokens: number; activity: number }>();
+  const ensureDay = (day: string) => {
+    const existing = byDay.get(day);
+    if (existing) return existing;
+    const created = { totalTokens: 0, activity: 0 };
+    byDay.set(day, created);
+    return created;
+  };
+
+  for (const [day, record] of Object.entries(ledger.daily)) {
+    ensureDay(day).totalTokens += dailyTotalForFilter(record, providerFilter);
+  }
+  for (const session of sessions) {
+    if (session.lastActivityAt <= 0 && session.createdAt <= 0) continue;
+    const timestamp = session.lastActivityAt || session.createdAt;
+    const day = formatLocalDay(new Date(timestamp));
+    ensureDay(day).activity += Math.max(
+      session.messageCount,
+      session.started ? 1 : 0,
+    );
+  }
+
   let maxTokens = 0;
-  const points = Object.entries(ledger.daily).map(([day, record]) => {
-    const totalTokens = dailyTotalForFilter(record, providerFilter);
-    maxTokens = Math.max(maxTokens, totalTokens);
-    return { day, totalTokens };
-  });
-  return points
-    .map((entry) => ({
-      ...entry,
-      intensity: getIntensity(entry.totalTokens, maxTokens),
+  let maxActivity = 0;
+  for (const entry of byDay.values()) {
+    maxTokens = Math.max(maxTokens, entry.totalTokens);
+    maxActivity = Math.max(maxActivity, entry.activity);
+  }
+  const intensityBasis = maxTokens > 0 ? "tokens" : "activity";
+  return [...byDay.entries()]
+    .map(([day, entry]) => ({
+      day,
+      totalTokens: entry.totalTokens,
+      activity: entry.activity,
+      intensity: getIntensity(
+        intensityBasis === "tokens" ? entry.totalTokens : entry.activity,
+        intensityBasis === "tokens" ? maxTokens : maxActivity,
+      ),
     }))
     .sort((left, right) => left.day.localeCompare(right.day));
 }
@@ -196,13 +226,15 @@ export function buildUsageOverview({
       return left.label.localeCompare(right.label);
     });
 
-  const daily = buildDailyPoints(ledger, providerFilter);
+  const daily = buildDailyPoints(ledger, sessions, providerFilter);
   const bestDay =
-    daily.reduce<UsageOverviewDailyPoint | null>(
-      (best, entry) =>
-        !best || entry.totalTokens > best.totalTokens ? entry : best,
-      null,
-    ) ?? null;
+    daily.reduce<UsageOverviewDailyPoint | null>((best, entry) => {
+      if (!best) return entry;
+      if (entry.totalTokens !== best.totalTokens) {
+        return entry.totalTokens > best.totalTokens ? entry : best;
+      }
+      return entry.activity > best.activity ? entry : best;
+    }, null) ?? null;
 
   const totalTokens = providers.reduce(
     (sum, provider) => sum + provider.totalTokens,
@@ -255,7 +287,9 @@ export function buildUsageOverview({
     sessions: sessionCount,
     activityCount,
     activeDays: new Set(
-      daily.filter((entry) => entry.totalTokens > 0).map((entry) => entry.day),
+      daily
+        .filter((entry) => entry.totalTokens > 0 || entry.activity > 0)
+        .map((entry) => entry.day),
     ).size,
     estimatedCostUsd,
     hasPartialCost,
@@ -264,7 +298,10 @@ export function buildUsageOverview({
         ? cacheTokens / (newInputTokens + cacheTokens)
         : null,
     daily,
-    bestDay: bestDay && bestDay.totalTokens > 0 ? bestDay : null,
+    bestDay:
+      bestDay && (bestDay.totalTokens > 0 || bestDay.activity > 0)
+        ? bestDay
+        : null,
     lastUpdatedAt: ledger.lastUpdatedAt,
   };
 }

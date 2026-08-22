@@ -70,6 +70,7 @@ import {
   isStreamingMessageOwnedByCurrentPrompt,
   registerStreamingMessageOwner,
 } from "./liveStreamingUpdates";
+import { addSessionWorkedMs } from "@/features/stats/lib/usageLedger";
 import { recordAcpSessionUsage } from "@/features/stats/lib/usageRecorder";
 
 // Per-session perf counters for replay streaming.
@@ -795,6 +796,23 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
   }
 }
 
+function readNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+function gooseMeta(update: SessionUpdate): Record<string, unknown> | null {
+  if (
+    !isRecord(update) ||
+    !isRecord(update._meta) ||
+    !isRecord(update._meta.goose)
+  ) {
+    return null;
+  }
+  return update._meta.goose;
+}
+
 function recordUsageNotification(
   sessionId: string,
   update: SessionUpdate,
@@ -809,25 +827,32 @@ function recordUsageNotification(
       accumulatedOutputTokens?: number;
       accumulatedCost?: number | null;
     };
+    const meta = gooseMeta(update);
+    const inputTokens =
+      readNumber(usage.accumulatedInputTokens) ??
+      readNumber(meta?.accumulatedInputTokens);
+    const outputTokens =
+      readNumber(usage.accumulatedOutputTokens) ??
+      readNumber(meta?.accumulatedOutputTokens);
     let costUsd: number | null | undefined;
     if (usage.cost === undefined) {
       costUsd =
-        typeof usage.accumulatedCost === "number"
-          ? usage.accumulatedCost
-          : undefined;
+        readNumber(usage.accumulatedCost) ?? readNumber(meta?.accumulatedCost);
     } else if (typeof usage.cost?.amount === "number") {
       costUsd = usage.cost.amount;
     } else {
       costUsd = null;
     }
+    if (inputTokens == null && outputTokens == null && costUsd === undefined) {
+      return;
+    }
     recordAcpSessionUsage(sessionId, {
-      inputTokens: usage.accumulatedInputTokens,
-      outputTokens: usage.accumulatedOutputTokens,
+      mode: "replace",
+      inputTokens,
+      outputTokens,
       totalTokens:
-        typeof usage.accumulatedInputTokens === "number" ||
-        typeof usage.accumulatedOutputTokens === "number"
-          ? (usage.accumulatedInputTokens ?? 0) +
-            (usage.accumulatedOutputTokens ?? 0)
+        inputTokens != null || outputTokens != null
+          ? (inputTokens ?? 0) + (outputTokens ?? 0)
           : undefined,
       costUsd,
     });
@@ -842,17 +867,20 @@ function recordUsageNotification(
     return;
   }
   const cacheTokens =
-    (typeof usage.cacheReadTokens === "number" ? usage.cacheReadTokens : 0) +
-    (typeof usage.cacheWriteTokens === "number" ? usage.cacheWriteTokens : 0);
+    (readNumber(usage.cacheReadTokens) ?? 0) +
+    (readNumber(usage.cacheWriteTokens) ?? 0);
+  const elapsedMs = readNumber(usage.elapsedMs);
   recordAcpSessionUsage(sessionId, {
     mode: "add",
-    inputTokens: typeof usage.inputTokens === "number" ? usage.inputTokens : 0,
-    outputTokens:
-      typeof usage.outputTokens === "number" ? usage.outputTokens : 0,
+    inputTokens: readNumber(usage.inputTokens) ?? 0,
+    outputTokens: readNumber(usage.outputTokens) ?? 0,
     cacheTokens,
-    costUsd: typeof usage.cost === "number" ? usage.cost : undefined,
+    costUsd: readNumber(usage.cost),
     turnsDelta: 1,
   });
+  if (elapsedMs && elapsedMs > 0) {
+    addSessionWorkedMs(sessionId, elapsedMs);
+  }
 }
 
 function handleShared(sessionId: string, update: SessionUpdate): void {

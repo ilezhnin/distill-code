@@ -58,18 +58,21 @@ export function formatWorkedDuration(
     zero: string;
     daysHours: (days: number, hours: number) => string;
     hoursMinutes: (hours: number, minutes: number) => string;
-    minutes: (minutes: number) => string;
+    minutesSeconds: (minutes: number, seconds: number) => string;
+    seconds: (seconds: number) => string;
   },
 ): string {
   if (ms <= 0) {
     return labels.zero;
   }
 
-  const totalMinutes = Math.floor(ms / 60_000);
+  const totalSeconds = Math.max(1, Math.floor(ms / 1000));
+  const totalMinutes = Math.floor(totalSeconds / 60);
   const totalHours = Math.floor(totalMinutes / 60);
   const totalDays = Math.floor(totalHours / 24);
   const remainingHours = totalHours % 24;
   const remainingMinutes = totalMinutes % 60;
+  const remainingSeconds = totalSeconds % 60;
 
   if (totalDays > 0) {
     return labels.daysHours(totalDays, remainingHours);
@@ -77,5 +80,8 @@ export function formatWorkedDuration(
   if (totalHours > 0) {
     return labels.hoursMinutes(totalHours, remainingMinutes);
   }
-  return labels.minutes(totalMinutes);
+  if (totalMinutes > 0) {
+    return labels.minutesSeconds(totalMinutes, remainingSeconds);
+  }
+  return labels.seconds(totalSeconds);
 }

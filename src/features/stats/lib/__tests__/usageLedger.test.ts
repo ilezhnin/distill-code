@@ -47,11 +47,13 @@ describe("usageLedger", () => {
 
   it("keeps token totals monotonic on replace and adds on add", () => {
     recordSessionTokens("s1", {
+      mode: "replace",
       inputTokens: 100,
       outputTokens: 20,
       totalTokens: 120,
     });
     recordSessionTokens("s1", {
+      mode: "replace",
       inputTokens: 80,
       outputTokens: 10,
       totalTokens: 90,
@@ -79,6 +81,20 @@ describe("usageLedger", () => {
 
     addSessionWorkedMs("s1", 250);
     expect(getUsageLedger().sessions.s1?.workedMs).toBe(3_250);
+  });
+
+  it("adds later smaller token snapshots instead of dropping them", () => {
+    recordSessionTokens("s1", {
+      inputTokens: 100,
+      outputTokens: 50,
+      totalTokens: 150,
+    });
+    recordSessionTokens("s1", {
+      inputTokens: 40,
+      outputTokens: 10,
+      totalTokens: 50,
+    });
+    expect(getUsageLedger().sessions.s1?.totalTokens).toBe(200);
   });
 
   it("summarizes started sessions and extra conductor agents", () => {

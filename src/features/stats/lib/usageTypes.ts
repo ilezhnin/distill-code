@@ -43,13 +43,14 @@ export interface UsageSessionSource {
   updatedAt: string;
   lastMessageAt?: string;
   messageCount: number;
+  started?: boolean;
   providerId?: string | null;
   modelId?: string | null;
   modelName?: string | null;
 }
 
 export interface UsageTokenSnapshot {
-  mode?: "replace" | "add";
+  mode?: "replace" | "add" | "auto";
   inputTokens?: number;
   outputTokens?: number;
   cacheTokens?: number;
@@ -78,6 +79,7 @@ export interface UsageProviderOverview {
 export interface UsageOverviewDailyPoint {
   day: string;
   totalTokens: number;
+  activity: number;
   intensity: UsageIntensity;
 }
 
