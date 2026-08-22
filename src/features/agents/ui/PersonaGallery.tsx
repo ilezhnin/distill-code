@@ -8,7 +8,6 @@ import { Button } from "@/shared/ui/button";
 import { AgentTileButton } from "@/shared/ui/agent-tile-button";
 import { AgentAddChoiceButton } from "@/shared/ui/agent-add-choice-button";
 import { AgentImportSecondaryButton } from "@/shared/ui/agent-import-secondary-button";
-import { AvatarMedia } from "@/shared/ui/avatar-media";
 import { Badge } from "@/shared/ui/badge";
 import { Skeleton } from "@/shared/ui/skeleton";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
@@ -90,9 +89,6 @@ function PersonaDraftCard({
   onDelete?: (sessionId: string) => void;
 }) {
   const { t } = useTranslation("agents");
-  const [readyAnimatedAvatarSrc, setReadyAnimatedAvatarSrc] = useState<
-    string | null
-  >(null);
   const { data } = usePersonaSource(session.targetAgentPath ?? null, {
     builderSessionId: session.id,
   });
@@ -104,9 +100,6 @@ function PersonaDraftCard({
   const staticAvatarSrc =
     avatarMedia?.posterSrc ??
     (avatarMedia?.mediaType === "image" ? avatarMedia.src : undefined);
-  const animatedAvatarReady =
-    avatarMedia?.mediaType === "video" &&
-    readyAnimatedAvatarSrc === avatarMedia.src;
   const fallbackIconSrc = resolveAgentIcon(
     session.targetAgentPath ?? session.id,
   );
@@ -155,25 +148,8 @@ function PersonaDraftCard({
             className={cn(
               "pointer-events-none absolute inset-0 size-full object-contain opacity-55 saturate-[0.8] transition-[transform,opacity] duration-300",
               "group-hover:scale-[1.02] group-hover:opacity-70",
-              animatedAvatarReady && "opacity-0",
             )}
           />
-          {avatarMedia?.mediaType === "video" ? (
-            <AvatarMedia
-              media={avatarMedia}
-              alt=""
-              loadingStrategy="eager"
-              poster={staticAvatarSrc}
-              onReady={() => setReadyAnimatedAvatarSrc(avatarMedia.src)}
-              className={cn(
-                "pointer-events-none absolute inset-0 object-contain opacity-0 saturate-[0.8] transition-[transform,opacity] duration-200",
-                "group-hover:scale-[1.02]",
-                animatedAvatarReady
-                  ? "opacity-55 group-hover:opacity-70"
-                  : null,
-              )}
-            />
-          ) : null}
         </div>
         {hoverActionsOverlay}
       </div>

@@ -283,7 +283,6 @@ function LoginAvatar({ slot }: { slot: LoginAvatarSlot }) {
         <AvatarMedia
           media={media}
           alt=""
-          loadingStrategy="visible-video"
           poster={image}
           className="pointer-events-none h-full w-full object-contain"
         />

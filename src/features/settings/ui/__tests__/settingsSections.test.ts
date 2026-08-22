@@ -51,6 +51,16 @@ describe("settingsSections", () => {
     expect(resolveSettingsSection("shortcuts")).toBe("shortcuts");
   });
 
+  it("includes stats in settings navigation after shortcuts", () => {
+    const sectionIds = SETTINGS_SECTIONS.map((section) => section.id);
+
+    expect(sectionIds).toContain("stats");
+    expect(sectionIds.indexOf("stats")).toBe(
+      sectionIds.indexOf("shortcuts") + 1,
+    );
+    expect(resolveSettingsSection("stats")).toBe("stats");
+  });
+
   it("includes security in settings navigation permanently", () => {
     expect(
       getVisibleSettingsSections(enabledCapabilities).map(

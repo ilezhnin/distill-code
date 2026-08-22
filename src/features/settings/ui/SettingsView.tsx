@@ -6,6 +6,7 @@ import { BehaviorSettings } from "./BehaviorSettings";
 import { ProvidersSettings } from "./ProvidersSettings";
 import { NotificationSettings } from "./NotificationSettings";
 import { SecuritySettings } from "./SecuritySettings";
+import { StatsSettings } from "./StatsSettings";
 import { SystemSettings } from "./SystemSettings";
 import type { SectionId } from "./settingsSections";
 import { ExperimentsSettings } from "@/features/experiments/ExperimentsSettings";
@@ -88,6 +89,7 @@ export function SettingsView({
       )}
       {activeSection === "notifications" && <NotificationSettings />}
       {activeSection === "shortcuts" && <KeyboardShortcutsSettings />}
+      {activeSection === "stats" && <StatsSettings />}
       {activeSection === "voice" && voiceConversationEnabled && (
         <VoiceSettings />
       )}

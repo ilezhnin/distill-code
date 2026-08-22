@@ -10,7 +10,6 @@ import {
 } from "@tabler/icons-react";
 import { cn } from "@/shared/lib/cn";
 import { AgentTileButton } from "@/shared/ui/agent-tile-button";
-import { AvatarMedia } from "@/shared/ui/avatar-media";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -65,9 +64,6 @@ export const PersonaCard = memo(function PersonaCard({
 }: PersonaCardProps) {
   const { t } = useTranslation(["agents", "common"]);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [readyAnimatedAvatarSrc, setReadyAnimatedAvatarSrc] = useState<
-    string | null
-  >(null);
 
   const avatarMedia = useAvatarMedia(persona.avatar);
   const avatarImage = useAvatarImage(persona.avatar);
@@ -75,9 +71,6 @@ export const PersonaCard = memo(function PersonaCard({
     avatarImage ??
     avatarMedia?.posterSrc ??
     (avatarMedia?.mediaType === "image" ? avatarMedia.src : undefined);
-  const animatedAvatarReady =
-    avatarMedia?.mediaType === "video" &&
-    readyAnimatedAvatarSrc === avatarMedia.src;
   const fallbackIconSrc = resolveAgentIcon(persona.id);
   const isEditable = canEditPersona(persona);
   const isDeletable = canDeletePersona(persona);
@@ -201,25 +194,10 @@ export const PersonaCard = memo(function PersonaCard({
             loading="lazy"
             decoding="async"
             className={cn(
-              "pointer-events-none absolute inset-0 size-full object-contain transition-[transform,opacity] duration-300",
+              "pointer-events-none absolute inset-0 size-full object-contain transition-transform duration-300",
               "group-hover:scale-[1.02]",
-              animatedAvatarReady && "opacity-0",
             )}
           />
-          {avatarMedia?.mediaType === "video" ? (
-            <AvatarMedia
-              media={avatarMedia}
-              alt=""
-              loadingStrategy="eager"
-              poster={staticAvatarSrc}
-              onReady={() => setReadyAnimatedAvatarSrc(avatarMedia.src)}
-              className={cn(
-                "pointer-events-none absolute inset-0 object-contain opacity-0 transition-[transform,opacity] duration-200",
-                "group-hover:scale-[1.02]",
-                animatedAvatarReady && "opacity-100",
-              )}
-            />
-          ) : null}
         </div>
         {hoverActionsOverlay}
       </div>

@@ -28,19 +28,9 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     labelKey: "appearance.primary.label",
   },
   {
-    id: "animated-avatars",
-    sectionId: "appearance",
-    labelKey: "appearance.animatedAvatars.label",
-  },
-  {
     id: "working-indicator",
     sectionId: "appearance",
     labelKey: "appearance.workingIndicatorAnimation.label",
-  },
-  {
-    id: "pin-labels",
-    sectionId: "appearance",
-    labelKey: "appearance.homePinLabels.label",
   },
   {
     id: "chat-tips",
@@ -138,6 +128,21 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     id: "shortcuts",
     sectionId: "shortcuts",
     labelKey: "nav.shortcuts",
+  },
+  {
+    id: "stats",
+    sectionId: "stats",
+    labelKey: "nav.stats",
+  },
+  {
+    id: "usage-analytics",
+    sectionId: "stats",
+    labelKey: "stats.usageAnalytics",
+  },
+  {
+    id: "stats-tokens",
+    sectionId: "stats",
+    labelKey: "stats.totalTokens",
   },
   {
     id: "archive",

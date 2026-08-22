@@ -1,9 +1,5 @@
 import { toast } from "sonner";
 import { create, type StoreApi, type UseBoundStore } from "zustand";
-import { BERDY_ONBOARDING_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
-import { STARTER_TASKS_NOTE_ID } from "@/features/home/onboarding/starterTasks";
-import { notifyStarterWidgetAdded } from "@/features/home/onboarding/starterWidgetTask";
-import { createStarterHomeWidgets } from "@/features/home/onboarding/createStarterHomeWidgets";
 import {
   notifyHomeWidgetSaveConfirmed,
   notifyHomeWidgetSaveDiscarded,
@@ -11,31 +7,17 @@ import {
 import {
   clearStarterHomeLayoutEligibility,
   markStarterHomeArranged,
-  markStarterHomeCameraPending,
   isStarterHomeLayoutEligible,
-  resetStarterHomeArrangement,
   STARTER_HOME_LAYOUT,
 } from "@/features/home/onboarding/starterHomeLayout";
-import { getExperiment } from "@/features/experiments/experimentPreferences";
-import {
-  HOME_LAYOUT_ID,
-  saveLayoutItems,
-  type LayoutCamera,
-  type LayoutConstraints,
-  type LayoutMutationResult,
+
+import type {
+  LayoutCamera,
+  LayoutConstraints,
 } from "@/features/layout/api/layout";
 import { i18n } from "@/shared/i18n";
 import { markFreshWidgetPlacement } from "../lib/freshWidgetPlacements";
 import { isLayoutConstraints } from "../lib/snapToGrid";
-import {
-  createDefaultOnboardingTourWidget,
-  defaultStickyNoteId,
-  homeWidgetsToLayoutItems,
-  HOME_LAYOUT_REPLACE_KINDS,
-  layoutItemsToHomeWidgets,
-  onboardingTourAvatarCenter,
-  reconcileOnboardingExperimentWidgets,
-} from "../lib/homeLayoutMapper";
 import { HOME_WIDGET_CATALOG_BY_ID } from "../widgets/catalog";
 import type {
   CanvasBounds,
@@ -184,12 +166,6 @@ function createAddedCleanUpSnapshotItem(
   };
 }
 
-export type OnboardingHomeResetResult = {
-  itemsConfirmed: boolean;
-  cameraConfirmed: boolean;
-  starterAgentsConfirmed?: boolean;
-};
-
 interface HomeWidgetStore extends HomeWidgetState {
   cleanUpSnapshot: WidgetLayoutSnapshotItem[] | null;
   initialize: () => Promise<void>;
@@ -201,7 +177,6 @@ interface HomeWidgetStore extends HomeWidgetState {
     y: number,
     state?: Record<string, unknown>,
     bounds?: WidgetPlacementInput,
-    options?: { notifyStarterTask?: boolean },
   ) => boolean;
   moveWidget: (
     id: string,
@@ -223,15 +198,10 @@ interface HomeWidgetStore extends HomeWidgetState {
     camera: LayoutCamera | null,
   ) => Promise<boolean>;
   toggleCleanUpWidgets: (bounds?: WidgetPlacementInput) => void;
-  syncOnboardingExperiment: (enabled: boolean) => void;
-  resetOnboardingTour: () => Promise<boolean>;
-  resetStarterTasks: () => Promise<boolean>;
-  resetHomeForOnboarding: () => Promise<OnboardingHomeResetResult>;
   addMissingStarterAgentPins: (
     agentIds: readonly string[],
     legacyBerdyAgentId?: string | null,
   ) => Promise<boolean>;
-  reloadOnboardingTourForDev: () => void;
   removeWidget: (id: string) => void;
   updateWidgetState: (
     id: string,
@@ -251,9 +221,7 @@ function createHomeWidgetStore() {
     UNCHANGED_SNAPSHOT;
   let cleanUpSnapshotOnSaveDiscarded: PendingCleanUpSnapshot =
     UNCHANGED_SNAPSHOT;
-  let starterWidgetCompletionPending = false;
   let starterAgentRecoveryPromise: Promise<boolean> | null = null;
-  let onboardingResetInFlight = false;
 
   function applyPendingCleanUpSnapshot(snapshot: PendingCleanUpSnapshot): void {
     if (snapshot === UNCHANGED_SNAPSHOT) {
@@ -282,17 +250,12 @@ function createHomeWidgetStore() {
   function handleItemSaveConfirmed(): void {
     applyPendingCleanUpSnapshot(cleanUpSnapshotOnSaveConfirmed);
     clearPendingCleanUpSaveOutcomes();
-    if (starterWidgetCompletionPending) {
-      starterWidgetCompletionPending = false;
-      notifyStarterWidgetAdded();
-    }
     notifyHomeWidgetSaveConfirmed();
   }
 
   function handleItemSaveDiscarded(): void {
     applyPendingCleanUpSnapshot(cleanUpSnapshotOnSaveDiscarded);
     clearPendingCleanUpSaveOutcomes();
-    starterWidgetCompletionPending = false;
     notifyHomeWidgetSaveDiscarded();
   }
 
@@ -305,7 +268,7 @@ function createHomeWidgetStore() {
 
   store = create<HomeWidgetStore>()((set, get) => {
     function canAcceptMutation(state: HomeWidgetStore): boolean {
-      return !onboardingResetInFlight && canMutateWidgets(state);
+      return canMutateWidgets(state);
     }
 
     function applyMutation(
@@ -423,7 +386,7 @@ function createHomeWidgetStore() {
         });
         return starterAgentRecoveryPromise;
       },
-      addWidget: (type, x, y, state, bounds, options) => {
+      addWidget: (type, x, y, state, bounds) => {
         clearStarterHomeLayoutEligibility();
         if (!HOME_WIDGET_CATALOG_BY_ID[type]) {
           return false;
@@ -474,9 +437,6 @@ function createHomeWidgetStore() {
             instances: next,
             cleanUpSnapshot: nextSnapshot,
           });
-          if (options?.notifyStarterTask !== false) {
-            starterWidgetCompletionPending = true;
-          }
           runtime.enqueueSave(next);
           return true;
         }
@@ -497,9 +457,6 @@ function createHomeWidgetStore() {
           // Mark only after the mutation succeeds so a rejected add does not
           // leave an orphaned entry in the fresh-placement registry.
           markFreshWidgetPlacement(id);
-          if (options?.notifyStarterTask !== false) {
-            starterWidgetCompletionPending = true;
-          }
         }
         return added;
       },
@@ -621,214 +578,6 @@ function createHomeWidgetStore() {
           cleanUpSnapshot: snapshot,
         });
         runtime.enqueueSave(next);
-      },
-      syncOnboardingExperiment: (enabled) => {
-        applyMutation((instances) => {
-          const next = reconcileOnboardingExperimentWidgets(instances, enabled);
-          return next === instances ? null : next;
-        });
-      },
-      resetOnboardingTour: async () => {
-        const state = get();
-        const berdyOnboardingEnabled =
-          getExperiment(BERDY_ONBOARDING_EXPERIMENT_ID)?.enabled === true;
-        if (!berdyOnboardingEnabled || !canAcceptMutation(state)) {
-          return false;
-        }
-
-        const clock = state.instances.find(
-          (instance) => instance.type === "clock",
-        );
-        const onboardingTour = createDefaultOnboardingTourWidget(clock);
-        const avatarCenter = onboardingTourAvatarCenter(onboardingTour);
-        const expectedCamera = state.camera
-          ? {
-              ...state.camera,
-              centerX: avatarCenter.x,
-              centerY: avatarCenter.y,
-            }
-          : null;
-        const initialItemRevision = state.itemRevision;
-        const initialCameraRevision = state.cameraRevision;
-        applyMutation((instances) => {
-          const withoutOnboardingTour = instances.filter(
-            (instance) => defaultStickyNoteId(instance) !== "onboarding:tour",
-          );
-          const maxZ = withoutOnboardingTour.reduce(
-            (currentMax, instance) => Math.max(currentMax, instance.z),
-            0,
-          );
-
-          return [...withoutOnboardingTour, { ...onboardingTour, z: maxZ + 1 }];
-        });
-
-        if (expectedCamera) {
-          get().saveCamera(expectedCamera);
-        }
-        await runtime.waitForPendingSaves();
-
-        const latest = get();
-        const itemSaved =
-          latest.itemRevision !== initialItemRevision &&
-          latest.instances.some(
-            (instance) => instance.id === onboardingTour.id,
-          );
-        const cameraSaved =
-          !expectedCamera ||
-          (latest.cameraRevision !== initialCameraRevision &&
-            latest.camera?.centerX === expectedCamera.centerX &&
-            latest.camera.centerY === expectedCamera.centerY);
-        return itemSaved && cameraSaved;
-      },
-      resetStarterTasks: async () => {
-        const state = get();
-        if (!canAcceptMutation(state)) return false;
-        const initialItemRevision = state.itemRevision;
-        const existingTaskNote = state.instances.find(
-          (instance) => defaultStickyNoteId(instance) === STARTER_TASKS_NOTE_ID,
-        );
-        const withoutOwnedWidgets = state.instances.filter(
-          (instance) =>
-            instance.id !== existingTaskNote?.id &&
-            instance.type !== "onboardingProjectArtifact" &&
-            instance.state?.onboardingStarterProject !== true,
-        );
-        const nextInstances: WidgetInstance[] = [
-          ...withoutOwnedWidgets,
-          {
-            id: existingTaskNote?.id ?? crypto.randomUUID(),
-            type: "stickyNote",
-            x: existingTaskNote?.x ?? -20,
-            y: existingTaskNote?.y ?? -260,
-            z: existingTaskNote?.z ?? withoutOwnedWidgets.length + 1,
-            width: 256,
-            height: 196,
-            state: { noteId: STARTER_TASKS_NOTE_ID },
-          },
-        ];
-        set({ instances: nextInstances });
-        runtime.enqueueSave(nextInstances);
-        await runtime.waitForPendingSaves();
-        const latest = get();
-        return (
-          latest.itemRevision !== initialItemRevision &&
-          latest.instances.some(
-            (instance) =>
-              defaultStickyNoteId(instance) === STARTER_TASKS_NOTE_ID,
-          ) &&
-          !latest.instances.some(
-            (instance) =>
-              instance.type === "onboardingProjectArtifact" ||
-              instance.state?.onboardingStarterProject === true,
-          )
-        );
-      },
-      resetHomeForOnboarding: async () => {
-        if (onboardingResetInFlight) {
-          return { itemsConfirmed: false, cameraConfirmed: false };
-        }
-        onboardingResetInFlight = true;
-        try {
-          await runtime.waitForPendingSaves();
-          const state = get();
-          if (!canMutateWidgets(state) || state.itemRevision === null) {
-            return { itemsConfirmed: false, cameraConfirmed: false };
-          }
-          const initialItemRevision = state.itemRevision;
-          const initialCameraRevision = state.cameraRevision;
-
-          resetStarterHomeArrangement();
-          const nextInstances = createStarterHomeWidgets([]);
-
-          const expectedCamera = state.camera
-            ? {
-                ...state.camera,
-                centerX: 0,
-                centerY: 40,
-                zoomBps: 10_000,
-              }
-            : null;
-          const previousState = {
-            instances: state.instances,
-            itemRevision: state.itemRevision,
-            camera: state.camera,
-            cameraRevision: state.cameraRevision,
-            lastConfirmedLayout: state.lastConfirmedLayout,
-            cleanUpSnapshot: state.cleanUpSnapshot,
-          };
-          persistCleanUpSnapshot(null);
-          clearPendingCleanUpSaveOutcomes();
-          set({ instances: nextInstances, cleanUpSnapshot: null });
-          let itemResult: LayoutMutationResult;
-          try {
-            itemResult = await saveLayoutItems({
-              layoutId: HOME_LAYOUT_ID,
-              expectedRevision: initialItemRevision,
-              replaceKinds: HOME_LAYOUT_REPLACE_KINDS,
-              items: homeWidgetsToLayoutItems(nextInstances),
-            });
-            if (!itemResult.ok) {
-              itemResult = await saveLayoutItems({
-                layoutId: HOME_LAYOUT_ID,
-                expectedRevision: itemResult.layout.itemRevision,
-                replaceKinds: HOME_LAYOUT_REPLACE_KINDS,
-                items: homeWidgetsToLayoutItems(nextInstances),
-              });
-            }
-          } catch (error) {
-            persistCleanUpSnapshot(previousState.cleanUpSnapshot);
-            set(previousState);
-            console.error("Failed to reset Home for onboarding:", error);
-            return { itemsConfirmed: false, cameraConfirmed: false };
-          }
-          if (!itemResult.ok) {
-            set({
-              ...initialHomeWidgetState,
-              ...itemResult.layout,
-              instances: layoutItemsToHomeWidgets(itemResult.layout.items),
-              loadStatus: "ready",
-            });
-            return { itemsConfirmed: false, cameraConfirmed: false };
-          }
-          set({
-            instances: layoutItemsToHomeWidgets(itemResult.layout.items),
-            itemRevision: itemResult.layout.itemRevision,
-            lastConfirmedLayout: itemResult.layout,
-          });
-          if (expectedCamera) get().saveCamera(expectedCamera);
-          await runtime.waitForPendingSaves();
-
-          const latest = get();
-          const confirmedIds = new Set(
-            latest.instances.map((instance) => instance.id),
-          );
-          const itemsConfirmed =
-            latest.itemRevision !== initialItemRevision &&
-            latest.instances.length === nextInstances.length &&
-            nextInstances.every((instance) => confirmedIds.has(instance.id));
-          const cameraConfirmed =
-            !expectedCamera ||
-            (latest.cameraRevision !== initialCameraRevision &&
-              latest.camera?.centerX === expectedCamera.centerX &&
-              latest.camera.centerY === expectedCamera.centerY &&
-              latest.camera.zoomBps === expectedCamera.zoomBps);
-          if (itemsConfirmed && cameraConfirmed) {
-            markStarterHomeArranged();
-          } else if (itemsConfirmed && expectedCamera) {
-            markStarterHomeCameraPending({
-              expectedRevision: initialCameraRevision ?? 0,
-              camera: expectedCamera,
-            });
-            toast.warning(i18n.t("home:widgetLayer.toasts.cameraSaveFailed"));
-          }
-          return { itemsConfirmed, cameraConfirmed };
-        } finally {
-          onboardingResetInFlight = false;
-        }
-      },
-      reloadOnboardingTourForDev: () => {
-        if (!import.meta.env.DEV) return;
-        void get().resetOnboardingTour();
       },
       removeWidget: (id) => {
         clearStarterHomeLayoutEligibility();

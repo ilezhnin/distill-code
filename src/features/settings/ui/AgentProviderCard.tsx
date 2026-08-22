@@ -95,7 +95,7 @@ interface AgentProviderCardProps {
   autoInstallProgressOnly?: boolean;
   /** Development-only visual setup simulation; never invokes the backend. */
   simulateAutoInstall?: boolean;
-  /** Surface-specific card treatment; onboarding uses a white setup panel. */
+  /** Surface-specific card treatment for a white setup panel. */
   className?: string;
 }
 

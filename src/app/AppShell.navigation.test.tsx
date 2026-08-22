@@ -29,16 +29,10 @@ import { OPEN_SETTINGS_EVENT } from "@/features/settings/lib/settingsEvents";
 import { SHORTCUT_PREFERENCES_STORAGE_KEY } from "@/features/shortcuts/lib/shortcutRegistry";
 import { useShortcutsDialogStore } from "@/features/shortcuts/stores/shortcutsDialogStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
-import { dispatchOnboarding } from "@/features/onboarding/model";
 import {
   resetHomeWidgetStoreForTests,
   useHomeWidgetStore,
 } from "@/features/home/stores/homeWidgetStore";
-import { useStarterTasks } from "@/features/home/onboarding/StarterTasksContext";
-import {
-  hasStarterWidgetPickerRequest,
-  resetStarterWidgetPickerRequestForTests,
-} from "@/features/home/onboarding/starterWidgetTask";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { BUILDERBOT_SURFACE_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
 import {
@@ -51,8 +45,6 @@ import { useProviderModelCacheStore } from "@/features/providers/stores/provider
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import { useRuntimeConfigStore } from "@/shared/runtime-config/runtimeConfigStore";
 import { gooseServeSelectionFromExecutionTarget } from "@/features/chat/lib/gooseServeExecutionTarget";
-import { ASSISTIVE_UX_STORAGE_KEY } from "@/shared/assistive-ux/registry";
-
 import {
   DEFAULT_RUNTIME_CONFIG,
   type RuntimeConfig,
@@ -581,7 +573,6 @@ vi.mock("./ui/AppShellContent", () => ({
     onResolveBerdyAgent,
     onStartConnectionSetupChat,
   }) => {
-    const starterTasks = useStarterTasks();
     const activeView = targetLocation.view;
     const activeSettingsSection =
       targetLocation.view === "settings"
@@ -628,39 +619,6 @@ vi.mock("./ui/AppShellContent", () => ({
         <div data-testid="builderbot-route">
           {JSON.stringify(activeBuilderbotRoute)}
         </div>
-        <div data-testid="starter-tasks-visible">
-          {String(starterTasks?.visible)}
-        </div>
-        <div data-testid="starter-tasks-docked">
-          {String(starterTasks?.docked)}
-        </div>
-        <div data-testid="starter-task-selection">
-          {starterTasks?.selectedTaskId ?? "none"}
-        </div>
-        <button
-          type="button"
-          onClick={() => starterTasks?.onTaskSelect("connect-provider")}
-        >
-          Select provider starter task
-        </button>
-        <button
-          type="button"
-          onClick={() => starterTasks?.onTaskSelect("add-widget")}
-        >
-          Select add widget starter task
-        </button>
-        <button
-          type="button"
-          onClick={() => starterTasks?.onTaskSelect("create-project")}
-        >
-          Open project starter task
-        </button>
-        <button type="button" onClick={() => starterTasks?.onDismiss()}>
-          Dismiss starter tasks
-        </button>
-        <button type="button" onClick={() => starterTasks?.onRestore()}>
-          Restore starter tasks
-        </button>
         <button
           type="button"
           onClick={() => onStartProjectChat?.("project-startup")}
@@ -915,9 +873,7 @@ describe("AppShell global navigation", () => {
   afterEach(cleanup);
 
   beforeEach(() => {
-    dispatchOnboarding({ type: "complete" });
     resetHomeWidgetStoreForTests();
-    resetStarterWidgetPickerRequestForTests();
     mockRepairManagedGooseModelSelection.mockReset();
     mockRepairManagedGooseModelSelection.mockImplementation(
       async (selection: unknown) => selection,
@@ -4234,109 +4190,6 @@ describe("AppShell global navigation", () => {
     expect(useChatSessionStore.getState().isRightRailOpen).toBe(false);
   });
 
-  it("navigates a starter task to its relevant settings page", async () => {
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Select provider starter task" }),
-    );
-
-    expect(screen.getByTestId("active-view")).toHaveTextContent("settings");
-    expect(screen.getByTestId("settings-section")).toHaveTextContent(
-      "providers",
-    );
-  });
-
-  it("keeps background content inert and clears project selection after exit", async () => {
-    const user = userEvent.setup();
-    const appRoot = document.createElement("div");
-    appRoot.id = "root";
-    document.body.append(appRoot);
-    render(appShellWithTheme(), { container: appRoot });
-
-    await user.click(
-      screen.getByRole("button", { name: "Open project starter task" }),
-    );
-    expect(screen.getByTestId("starter-task-selection")).toHaveTextContent(
-      "create-project",
-    );
-    expect(appRoot.inert).toBe(true);
-    await user.click(await screen.findByRole("button", { name: "Close" }));
-
-    await waitFor(
-      () => {
-        expect(screen.getByTestId("starter-task-selection")).toHaveTextContent(
-          "none",
-        );
-      },
-      { timeout: 1000 },
-    );
-    expect(screen.getByTestId("starter-tasks-docked")).toHaveTextContent(
-      "false",
-    );
-    expect(appRoot.inert).toBeFalsy();
-  });
-
-  it("persists restoring dismissed starter tasks", async () => {
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Dismiss starter tasks" }),
-    );
-    expect(screen.getByTestId("starter-tasks-visible")).toHaveTextContent(
-      "false",
-    );
-
-    await user.click(
-      screen.getByRole("button", { name: "Restore starter tasks" }),
-    );
-    expect(screen.getByTestId("starter-tasks-visible")).toHaveTextContent(
-      "true",
-    );
-    const persisted = JSON.parse(
-      window.localStorage.getItem(ASSISTIVE_UX_STORAGE_KEY) ?? "{}",
-    );
-    expect(persisted.moments?.["home.starterTasks"]).not.toMatchObject({
-      retiredReason: "dismissed",
-    });
-  });
-
-  it("guards the add-widget starter task against unsaved automation changes", async () => {
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Sidebar automations" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Open automation builder" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Mark automation edits unsaved" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Select add widget starter task" }),
-    );
-
-    expect(
-      await screen.findByText("Unsaved automation changes"),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId("active-view")).toHaveTextContent("automations");
-    expect(hasStarterWidgetPickerRequest()).toBe(false);
-
-    await user.click(screen.getByRole("button", { name: "Keep editing" }));
-    expect(screen.getByTestId("active-view")).toHaveTextContent("automations");
-    expect(screen.getByTestId("starter-tasks-docked")).toHaveTextContent(
-      "false",
-    );
-    expect(screen.getByTestId("starter-task-selection")).toHaveTextContent(
-      "none",
-    );
-    expect(hasStarterWidgetPickerRequest()).toBe(false);
-  });
-
   it("prompts before leaving unsaved automation builder changes", async () => {
     const user = userEvent.setup();
     renderAppShell();
@@ -4454,10 +4307,10 @@ describe("AppShell global navigation", () => {
     const search = await screen.findByRole("textbox", {
       name: "Universal search",
     });
-    await user.type(search, "animated avatars");
+    await user.type(search, "primary color");
     await user.click(
       await screen.findByRole("button", {
-        name: "Open Animated avatars settings",
+        name: "Open Primary color settings",
       }),
     );
 

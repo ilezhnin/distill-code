@@ -88,33 +88,15 @@ describe("main entrypoint telemetry startup", () => {
     vi.restoreAllMocks();
   });
 
-  // The one native command the main window's boot may issue is the
-  // installation-cohort lookup — telemetry itself stays off the network and
-  // off native commands in this build.
-  it("resolves the installation cohort before rendering the main app, with no telemetry work", async () => {
+  it("renders the main app without native boot work or telemetry traffic", async () => {
     await loadMainAt("");
 
     await screen.findByTestId("main-app");
     expect(globalThis.fetch).not.toHaveBeenCalled();
-    expect(mockInvoke).toHaveBeenCalledOnce();
-    expect(mockInvoke).toHaveBeenCalledWith("get_installation_cohort");
+    expect(mockInvoke).not.toHaveBeenCalled();
     expect(mockInstallRendererDiagnostics).toHaveBeenCalledWith({
       windowKind: "main",
     });
-  });
-
-  it("reports cohort lookup failures without blocking startup", async () => {
-    const error = new Error("state unavailable");
-    mockInvoke.mockRejectedValueOnce(error);
-    vi.spyOn(console, "error").mockImplementation(() => {});
-
-    await loadMainAt("");
-
-    await screen.findByTestId("main-app");
-    expect(mockReportRendererError).toHaveBeenCalledWith(
-      "installation_cohort_failed",
-      error,
-    );
   });
 
   it("runs the session window startup path without telemetry network or native-command work", async () => {

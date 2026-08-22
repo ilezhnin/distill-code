@@ -12,7 +12,6 @@ function PersonaAvatarMedia({ persona }: { persona: Persona }) {
   return (
     <AvatarVisual
       avatar={persona.avatar}
-      loadingStrategy="eager"
       className="h-full w-full object-contain"
       fallback={
         <img
@@ -27,10 +26,9 @@ function PersonaAvatarMedia({ persona }: { persona: Persona }) {
 }
 
 /**
- * Renders the selected agent's animated avatar above the empty-state
+ * Renders the selected agent's avatar above the empty-state
  * "Start a conversation" text. The avatar cross-fades when the selected agent
- * changes. Reduced-motion / animated-avatar preferences are handled internally
- * by AvatarMedia.
+ * changes.
  */
 export function ConversationEmptyAvatar({ persona }: { persona: Persona }) {
   return (

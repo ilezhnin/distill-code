@@ -1,5 +1,6 @@
 import type { LayoutItem, LayoutItemKind } from "@/features/layout/api/layout";
-import { STARTER_PROJECT_ID } from "@/features/home/onboarding/starterTasks";
+
+const STARTER_PROJECT_ID = "onboarding-starter-project";
 import {
   clampWidgetSize,
   clampWidgetSizeForInstance,

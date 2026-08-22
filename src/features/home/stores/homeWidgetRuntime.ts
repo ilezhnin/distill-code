@@ -1,6 +1,4 @@
 import { toast } from "sonner";
-import { BERDY_ONBOARDING_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
-import { getExperiment } from "@/features/experiments/experimentPreferences";
 import {
   getLayout,
   HOME_LAYOUT_ID,
@@ -11,58 +9,23 @@ import {
   type LayoutConstraints,
 } from "@/features/layout/api/layout";
 import { i18n } from "@/shared/i18n";
-import { markStarterAgentPinsEligible } from "@/features/home/onboarding/starterAgents";
 import {
   clearPendingStarterHomeCamera,
   getPendingStarterHomeCamera,
-  markStarterHomeCameraPending,
-  markStarterHomeLayoutEligible,
 } from "@/features/home/onboarding/starterHomeLayout";
-import { createStarterHomeWidgets } from "@/features/home/onboarding/createStarterHomeWidgets";
 import {
   notifyHomeCameraSaveConfirmed,
   notifyHomeCameraSaveDiscarded,
 } from "@/features/home/onboarding/homeWidgetSaveLifecycle";
 import {
-  createDefaultHomeLayoutItems,
-  createDefaultOnboardingWidgets,
-  defaultStickyNoteId,
   homeWidgetsToLayoutItems,
   HOME_LAYOUT_REPLACE_KINDS,
   layoutItemsToHomeWidgets,
-  reconcileOnboardingExperimentWidgets,
 } from "../lib/homeLayoutMapper";
 import type { WidgetInstance } from "../widgets/types";
 
 const ONBOARDING_STICKIES_SEEDED_STORAGE_KEY =
   "goose:home:onboarding-stickies-seeded";
-const ONBOARDING_STICKIES_SEEDED_VERSION = 6;
-const ONBOARDING_STICKY_INTRODUCED_VERSION: Record<string, number> = {
-  "onboarding:tour": 6,
-  "onboarding:welcome": 5,
-  "onboarding:build-agent": 1,
-  "onboarding:start-project": 1,
-  "onboarding:reuse-workflows": 3,
-  "onboarding:shape-home": 3,
-  "onboarding:manage-automations": 4,
-};
-const LEGACY_DEFAULT_STICKY_NOTE_POSITIONS_BY_ID: Record<
-  string,
-  { x: number; y: number; width: number; height: number }
-> = {
-  "onboarding:welcome": { x: -360, y: -250, width: 224, height: 196 },
-  "onboarding:start-project": { x: -96, y: -250, width: 224, height: 196 },
-  "onboarding:build-agent": { x: 168, y: -250, width: 224, height: 196 },
-  "onboarding:reuse-workflows": { x: -360, y: -14, width: 224, height: 196 },
-  "onboarding:manage-automations": {
-    x: -96,
-    y: -14,
-    width: 224,
-    height: 196,
-  },
-  "onboarding:shape-home": { x: 168, y: -14, width: 224, height: 196 },
-};
-
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
 export type SaveStatus = "idle" | "saving";
 
@@ -214,150 +177,12 @@ function widgetIdentityKey(instance: WidgetInstance): string {
   return `${instance.type}:${stableStateKey(instance.state)}`;
 }
 
-function onboardingStickiesSeenVersion(): number {
-  try {
-    const value = localStorage.getItem(ONBOARDING_STICKIES_SEEDED_STORAGE_KEY);
-    const version = value ? Number.parseInt(value, 10) : 0;
-    return Number.isFinite(version) ? version : 0;
-  } catch {
-    return ONBOARDING_STICKIES_SEEDED_VERSION;
-  }
-}
-
-function markOnboardingStickiesSeen(): void {
-  try {
-    localStorage.setItem(
-      ONBOARDING_STICKIES_SEEDED_STORAGE_KEY,
-      String(ONBOARDING_STICKIES_SEEDED_VERSION),
-    );
-  } catch {
-    // Ignore unavailable storage; the layout itself is still the source of truth.
-  }
-}
-
 function clearOnboardingStickiesSeenForTests(): void {
   try {
     localStorage.removeItem(ONBOARDING_STICKIES_SEEDED_STORAGE_KEY);
   } catch {
     // Ignore unavailable storage in non-browser tests.
   }
-}
-
-function hasStickyNote(instances: WidgetInstance[]): boolean {
-  return instances.some((instance) => instance.type === "stickyNote");
-}
-
-function withMissingDefaultStickyNotes(
-  instances: WidgetInstance[],
-  berdyOnboardingEnabled: boolean,
-): WidgetInstance[] {
-  const seenVersion = onboardingStickiesSeenVersion();
-  if (seenVersion >= ONBOARDING_STICKIES_SEEDED_VERSION) {
-    return instances;
-  }
-
-  const existingNoteIds = new Set(
-    instances.flatMap((instance) => {
-      const noteId = defaultStickyNoteId(instance);
-      return noteId ? [noteId] : [];
-    }),
-  );
-  const missingStickyNotes = createDefaultOnboardingWidgets(
-    berdyOnboardingEnabled,
-  ).filter((instance) => {
-    const noteId = defaultStickyNoteId(instance);
-    if (noteId === "onboarding:tour" && !berdyOnboardingEnabled) {
-      return false;
-    }
-    if (!noteId || existingNoteIds.has(noteId)) {
-      return false;
-    }
-    const introducedVersion =
-      ONBOARDING_STICKY_INTRODUCED_VERSION[noteId] ??
-      ONBOARDING_STICKIES_SEEDED_VERSION;
-    return seenVersion < introducedVersion;
-  });
-  if (missingStickyNotes.length === 0) {
-    return instances;
-  }
-
-  const maxZ = instances.reduce(
-    (currentMax, instance) => Math.max(currentMax, instance.z),
-    0,
-  );
-  const stickyNotes = missingStickyNotes.map((instance, index) => ({
-    ...instance,
-    z: maxZ + index + 1,
-  }));
-
-  return [...instances, ...stickyNotes];
-}
-
-function defaultStickyNotePositionsById(
-  berdyOnboardingEnabled: boolean,
-): Map<string, { x: number; y: number; width: number; height: number }> {
-  return new Map(
-    createDefaultOnboardingWidgets(berdyOnboardingEnabled).flatMap(
-      (instance) => {
-        const noteId = defaultStickyNoteId(instance);
-        if (!noteId || !instance.width || !instance.height) {
-          return [];
-        }
-        return [
-          [
-            noteId,
-            {
-              x: instance.x,
-              y: instance.y,
-              width: instance.width,
-              height: instance.height,
-            },
-          ],
-        ];
-      },
-    ),
-  );
-}
-
-function withSnappedDefaultStickyNotePositions(
-  instances: WidgetInstance[],
-  berdyOnboardingEnabled: boolean,
-): WidgetInstance[] {
-  const currentPositionsById = defaultStickyNotePositionsById(
-    berdyOnboardingEnabled,
-  );
-  let changed = false;
-
-  const nextInstances = instances.map((instance) => {
-    const noteId = defaultStickyNoteId(instance);
-    if (!noteId) {
-      return instance;
-    }
-
-    const legacyPosition = LEGACY_DEFAULT_STICKY_NOTE_POSITIONS_BY_ID[noteId];
-    const currentPosition = currentPositionsById.get(noteId);
-    if (!legacyPosition || !currentPosition) {
-      return instance;
-    }
-
-    const matchesLegacyPosition =
-      instance.x === legacyPosition.x &&
-      instance.y === legacyPosition.y &&
-      instance.width === legacyPosition.width &&
-      instance.height === legacyPosition.height;
-    if (!matchesLegacyPosition) {
-      return instance;
-    }
-
-    changed = true;
-    return {
-      ...instance,
-      x: currentPosition.x,
-      y: currentPosition.y,
-    };
-  });
-
-  return changed ? nextInstances : instances;
 }
 
 function mergeAddedWidgetsAfterConflict(
@@ -471,108 +296,7 @@ export function createHomeWidgetRuntime({
         if (generation !== runtime.generation) {
           return;
         }
-
-        const berdyOnboardingEnabled =
-          getExperiment(BERDY_ONBOARDING_EXPERIMENT_ID)?.enabled === true;
-        const instances = layoutItemsToHomeWidgets(layout.items);
-        if (instances.length > 0) {
-          const instancesWithoutWelcome = reconcileOnboardingExperimentWidgets(
-            instances,
-            berdyOnboardingEnabled,
-          );
-          const instancesWithMissingNotes = withMissingDefaultStickyNotes(
-            instancesWithoutWelcome,
-            berdyOnboardingEnabled,
-          );
-          const preparedInstances = withSnappedDefaultStickyNotePositions(
-            instancesWithMissingNotes,
-            berdyOnboardingEnabled,
-          );
-          if (preparedInstances !== instances) {
-            const result = await saveLayoutItems({
-              layoutId: HOME_LAYOUT_ID,
-              expectedRevision: layout.itemRevision,
-              replaceKinds: HOME_LAYOUT_REPLACE_KINDS,
-              items: homeWidgetsToLayoutItems(preparedInstances),
-            });
-            if (generation !== runtime.generation) {
-              return;
-            }
-            if (hasStickyNote(layoutItemsToHomeWidgets(result.layout.items))) {
-              markOnboardingStickiesSeen();
-            }
-            setReadyLayout(result.layout, generation);
-            return;
-          }
-
-          if (hasStickyNote(instances)) {
-            markOnboardingStickiesSeen();
-          }
-          setReadyLayout(layout, generation);
-          return;
-        }
-
-        if (!berdyOnboardingEnabled) {
-          const defaultItems = createDefaultHomeLayoutItems(undefined, false);
-          const result = await saveLayoutItems({
-            layoutId: HOME_LAYOUT_ID,
-            expectedRevision: layout.itemRevision,
-            replaceKinds: HOME_LAYOUT_REPLACE_KINDS,
-            items: defaultItems,
-          });
-          if (generation !== runtime.generation) return;
-          if (hasStickyNote(layoutItemsToHomeWidgets(result.layout.items))) {
-            markOnboardingStickiesSeen();
-          }
-          setReadyLayout(result.layout, generation);
-          return;
-        }
-
-        // Starter-agent pins are optional enrichment. Persist the usable Home
-        // immediately, then let Home recover pins when persona discovery is ready.
-        const starterWidgets = createStarterHomeWidgets([]);
-
-        const result = await saveLayoutItems({
-          layoutId: HOME_LAYOUT_ID,
-          expectedRevision: layout.itemRevision,
-          replaceKinds: HOME_LAYOUT_REPLACE_KINDS,
-          items: homeWidgetsToLayoutItems(starterWidgets),
-        });
-        if (generation !== runtime.generation) return;
-        if (hasStickyNote(layoutItemsToHomeWidgets(result.layout.items))) {
-          markOnboardingStickiesSeen();
-        }
-        if (!result.ok) {
-          setReadyLayout(result.layout, generation);
-          return;
-        }
-
-        markStarterAgentPinsEligible();
-        markStarterHomeLayoutEligible();
-
-        const starterCamera = {
-          ...result.layout.camera,
-          centerX: 0,
-          centerY: 40,
-          zoomBps: 10_000,
-        };
-        const cameraRevisionBeforeSave = result.layout.cameraRevision;
-        setReadyLayout({ ...result.layout, camera: starterCamera }, generation);
-        enqueueCameraSave(starterCamera);
-        await waitForPendingSaves();
-        if (generation !== runtime.generation) return;
-        const savedState = getState();
-        const cameraSaved =
-          savedState.cameraRevision !== cameraRevisionBeforeSave &&
-          savedState.camera?.centerX === starterCamera.centerX &&
-          savedState.camera.centerY === starterCamera.centerY &&
-          savedState.camera.zoomBps === starterCamera.zoomBps;
-        if (!cameraSaved) {
-          markStarterHomeCameraPending({
-            expectedRevision: cameraRevisionBeforeSave,
-            camera: starterCamera,
-          });
-        }
+        setReadyLayout(layout, generation);
         return;
       } catch (error) {
         if (generation !== runtime.generation) {

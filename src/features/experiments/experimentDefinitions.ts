@@ -55,10 +55,6 @@ export const VOICE_CONVERSATION_EXPERIMENT_ID = "voice-conversation";
 export const TRANSCRIPT_VIRTUAL_RENDERER_EXPERIMENT_ID =
   "transcript-virtual-renderer";
 
-export const STARTER_TASKS_EXPERIMENT_ID = "onboarding-starter-tasks";
-
-export const BERDY_ONBOARDING_EXPERIMENT_ID = "berdy-onboarding";
-
 export const SKILL_DISCOVERY_EXPERIMENT_ID = "skill-discovery";
 
 export const EXPERIMENT_DEFINITIONS = [
@@ -82,21 +78,9 @@ export const EXPERIMENT_DEFINITIONS = [
     defaultEnabled: false,
   },
   {
-    id: STARTER_TASKS_EXPERIMENT_ID,
-    titleKey: "experiments.starterTasks.title",
-    descriptionKey: "experiments.starterTasks.description",
-    settingsVisibility: "dev",
-  },
-  {
     id: VOICE_CONVERSATION_EXPERIMENT_ID,
     titleKey: "experiments.voiceConversation.title",
     descriptionKey: "experiments.voiceConversation.description",
     defaultEnabled: true,
-  },
-  {
-    id: BERDY_ONBOARDING_EXPERIMENT_ID,
-    titleKey: "experiments.berdyOnboarding.title",
-    descriptionKey: "experiments.berdyOnboarding.description",
-    settingsVisibility: "dev",
   },
 ] as const satisfies readonly ExperimentDefinition[];

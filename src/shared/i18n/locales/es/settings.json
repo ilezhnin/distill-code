@@ -35,14 +35,6 @@
     }
   },
   "appearance": {
-    "animatedAvatars": {
-      "description": "Reproduce avatares de video en bucle en chats, listas de agentes y vistas previas.",
-      "label": "Avatares animados"
-    },
-    "homePinLabels": {
-      "description": "Muestra siempre los nombres de los agentes y proyectos fijados, no solo al pasar el cursor.",
-      "label": "Mostrar siempre las etiquetas de los pines"
-    },
     "primary": {
       "custom": "Personalizado",
       "description": "Usa el color primario del tema de forma predeterminada o elige un color primario para conservarlo entre temas.",
@@ -199,14 +191,6 @@
       "description": "Las compilaciones de desarrollo activan los experimentos de forma predeterminada. Desactiva experimentos individuales abajo cuando necesites el flujo estable.",
       "label": "Activar nuevos experimentos automáticamente"
     },
-    "berdyOnboarding": {
-      "description": "Muestra la guía interactiva de introducción y ayuda de Distill en Inicio.",
-      "resetDescription": "Restaura el mensaje inicial de Distill y lo centra en Inicio.",
-      "resetError": "No se pudo restablecer la introducción de Distill. Espera a que Inicio termine de cargar e inténtalo de nuevo.",
-      "resetLabel": "Restablecer",
-      "resetSuccess": "Se restableció la introducción de Distill.",
-      "title": "Introducción de Distill"
-    },
     "builderbot": {
       "description": "Muestra la superficie de tareas y automatizaciones de Builderbot.",
       "title": "Builderbot"
@@ -214,31 +198,11 @@
     "defaultLabel": "predeterminado",
     "description": "Activa funciones de Distill en desarrollo en este dispositivo. Los experimentos pueden cambiar, fallar o desaparecer.",
     "emptyDescription": "Los nuevos experimentos aparecerán aquí cuando estén listos para probarse.",
-    "onboarding": {
-      "cancel": "Cancelar",
-      "confirm": "Restablecer lienzo",
-      "confirmDescription": "Esto reemplaza todo el contenido del lienzo de Inicio con el diseño inicial. Tus proyectos, chats, agentes y archivos no se eliminarán.",
-      "confirmTitle": "¿Restablecer el lienzo de incorporación?",
-      "confirming": "Restableciendo…",
-      "description": "Prueba y restablece las experiencias de incorporación juntas.",
-      "resetAll": "Restablecer toda la incorporación",
-      "resetAllError": "No se pudieron restablecer todas las experiencias de incorporación. Inténtalo de nuevo.",
-      "resetAllPartial": "Se restableció la incorporación. Los agentes iniciales aparecerán cuando estén disponibles.",
-      "resetAllSuccess": "Se restablecieron todas las experiencias de incorporación.",
-      "title": "Incorporación"
-    },
     "resetToAuto": "Restablecer a automático",
     "saveError": "No se pudo guardar el ajuste del experimento. Inténtalo de nuevo.",
     "skillDiscovery": {
       "description": "Agrega una pestaña Descubrir a Skills para explorar e instalar skills del catálogo de Block sin salir de la app. Requiere la CLI sq-agents.",
       "title": "Descubrimiento de skills"
-    },
-    "starterTasks": {
-      "description": "Muestra la nota adhesiva de tareas iniciales en Inicio para probar el flujo de incorporación.",
-      "reset": "Restablecer",
-      "resetAria": "Restablecer incorporación de tareas iniciales",
-      "resetSuccess": "Se restablecieron las tareas iniciales.",
-      "title": "Tareas iniciales de incorporación"
     },
     "title": "Experimentos",
     "transcriptVirtualRenderer": {
@@ -415,6 +379,7 @@
     "providersUpdateAvailable": "Actualización disponible",
     "security": "Seguridad",
     "shortcuts": "Atajos de teclado",
+    "stats": "Estadísticas y uso",
     "system": "Sistema",
     "updates": "Actualizaciones",
     "voice": "Voz"
@@ -724,6 +689,59 @@
     },
     "title": "Seguridad",
     "warpNotice": "La clasificación por ML requiere una conexión a WARP para acceder al servicio de clasificación."
+  },
+  "stats": {
+    "activeDays": "Días activos",
+    "agentsSpawned": "Agentes creados",
+    "bestDay": "Mejor: {{date}}",
+    "cache": "Caché",
+    "cacheShare": "Uso de caché",
+    "chatsStarted": "Chats iniciados",
+    "costUnavailable": "n/d",
+    "dailyIntensity": "Intensidad diaria",
+    "dailyIntensityDescription": "Actividad reciente combinada de tokens de tus agentes.",
+    "description": "Estadísticas de Distill y analítica de tokens de tus agentes y proveedores.",
+    "duration": {
+      "daysHours": "{{days}}d {{hours}}h",
+      "hoursMinutes": "{{hours}}h {{minutes}}m",
+      "minutes": "{{minutes}}m",
+      "zero": "0m"
+    },
+    "emptyTracking": "Inicia tu primer chat para comenzar el seguimiento",
+    "estCost": "Coste est.",
+    "events": "eventos",
+    "heatmapAria": "Mapa de calor de actividad reciente de tokens",
+    "less": "Menos",
+    "more": "Más",
+    "newInput": "Entrada nueva",
+    "noModelYet": "Aún no hay modelo",
+    "noUsageYet": "Aún no hay uso de tokens. Los totales aparecen cuando un chat informa uso.",
+    "notUpdated": "Aún no actualizado",
+    "output": "Salida",
+    "overview": "Resumen",
+    "partialCost": " — algunos precios de modelo no están disponibles",
+    "providerFilterAria": "Proveedor de analítica de uso: {{provider}}",
+    "providers": "Proveedores",
+    "providersSummary": "{{enabled}} activados — {{withData}} con datos",
+    "refresh": "Actualizar",
+    "refreshAria": "Actualizar el resumen de uso",
+    "segmentAria": "{{label}}: {{tokens}} tokens",
+    "sessionsActivity": "{{sessions}} sesiones — {{activity}} {{activityLabel}}",
+    "sessionsBadge": "{{count}} sesiones",
+    "statusEnabled": "Activado",
+    "statusOff": "Inactivo",
+    "timeWorked": "Tiempo de trabajo de agentes",
+    "title": "Estadísticas y uso",
+    "tokenMix": "Mezcla de tokens",
+    "tokenMixAria": "Mezcla combinada de tokens",
+    "tokenMixDescription": "Tokens de entrada, salida y caché combinados de tus sesiones.",
+    "tokens": "tokens",
+    "totalTokens": "Tokens totales",
+    "trackingSince": "Seguimiento desde {{date}}",
+    "turns": "turnos",
+    "updatedAt": "Actualizado {{date}}",
+    "usageAnalytics": "Analítica de uso",
+    "usageOverview": "Resumen de uso"
   },
   "securityConfirmation": {
     "allow": "Permitir una vez",

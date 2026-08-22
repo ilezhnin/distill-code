@@ -7,7 +7,6 @@ export type AssistiveUxMomentId =
   | "notifications.changeSound"
   | "chat.jumpToResponseStart"
   | "chat.agentToolsConnectionTips"
-  | "home.starterTasks"
   | "sidebar.projectsInfo";
 
 export type AssistiveUxRetiredReason =
@@ -38,10 +37,6 @@ export const ASSISTIVE_UX_RULES = {
   chatAgentToolsConnectionTips: {
     id: "chat.agentToolsConnectionTips",
     type: "autoApply",
-  },
-  homeStarterTasks: {
-    id: "home.starterTasks",
-    type: "discover",
   },
   sidebarProjectsInfo: {
     id: "sidebar.projectsInfo",

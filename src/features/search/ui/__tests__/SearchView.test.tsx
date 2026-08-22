@@ -295,10 +295,10 @@ describe("SearchView", () => {
     );
 
     const input = screen.getByRole("textbox", { name: "Universal search" });
-    await user.type(input, "animated avatars");
+    await user.type(input, "primary color");
 
     expect(
-      await screen.findByText('No matches for "animated avatars"'),
+      await screen.findByText('No matches for "primary color"'),
     ).toBeInTheDocument();
     expect(input).not.toHaveAttribute("aria-activedescendant");
   });
@@ -319,13 +319,13 @@ describe("SearchView", () => {
     );
 
     const input = screen.getByRole("textbox", { name: "Universal search" });
-    await user.type(input, "animated avatars");
+    await user.type(input, "primary color");
 
     expect(
       await screen.findByRole("button", {
-        name: "Open Animated avatars settings",
+        name: "Open Primary color settings",
       }),
-    ).toHaveTextContent("Settings > Animated avatars");
+    ).toHaveTextContent("Settings > Primary color");
     expect(
       screen.getByRole("tab", { name: "Settings (1)" }),
     ).toBeInTheDocument();
