@@ -90,7 +90,7 @@ interface CliSurfaceContract {
 
 const API_COMMENT =
   "GENERATED FILE — do not hand-edit; run `pnpm generate:berdctl-contract`. " +
-  "Client-neutral wire surface of the Berd desktop app's control API: " +
+  "Client-neutral wire surface of the Distill desktop app's control API: " +
   'POST /v1/call {"command": "<group>", "args": {"action": "<action>", ' +
   "...fields}} against the loopback endpoint in the berdctl discovery file. " +
   "protocolVersion mirrors PROTOCOL_VERSION in both discovery.rs copies " +

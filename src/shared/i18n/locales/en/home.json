@@ -20,24 +20,24 @@
       "backHome": "Back to Home",
       "backToList": "Back to starter tasks",
       "taskDetails": {
-        "connectProvider": "Connect any provider to chat with it in Berd.\n\nYou can switch between models or providers anytime, even mid-chat.",
+        "connectProvider": "Connect any provider to chat with it in Distill.\n\nYou can switch between models or providers anytime, even mid-chat.",
         "createProject": "Link projects to a folder or repo, and that context is there in every chat.\n\nChats, files, and history stay together, not scattered across sessions.",
         "addWidget": "Right-click to add sticky notes, checklists, or photos.\n\nPin them alongside your agents and projects to make Home feel like yours.",
-        "startChat": "Want something more specialized? @mention an agent to call them in.\n\n@Berdy and ask them about your agents."
+        "startChat": "Want something more specialized? @mention an agent to call them in.\n\n@Distill and ask them about your agents."
       },
       "markDone": "Mark as done",
       "startChat": "Start a chat",
       "closeTaskDetails": "Close task details"
     },
     "callout": {
-      "avatarLabel": "Berdy",
-      "avatarAlt": "Berdy, your onboarding buddy",
-      "agentUnavailable": "Berdy couldn't start a chat. Try again.",
+      "avatarLabel": "Distill",
+      "avatarAlt": "Distill, your onboarding buddy",
+      "agentUnavailable": "Distill couldn't start a chat. Try again.",
       "dismiss": "Dismiss onboarding",
       "title": "Welcome!",
-      "body": "I’m Berdy – your built-in Berd assistant. I’m here to help you get stuff done.",
+      "body": "I’m Distill – your built-in assistant. I’m here to help you get stuff done.",
       "action": "Take a tour",
-      "openHelp": "Ask Berdy"
+      "openHelp": "Ask Distill"
     },
     "tour": {
       "progress": "{{current}} of {{total}}",
@@ -51,13 +51,13 @@
         "responseLine1": "Birds stitch dawn with song",
         "responseLine2": "Wings brush gold across the sky",
         "responseLine3": "Morning learns to fly",
-        "typing": "Berd is typing"
+        "typing": "Distill is typing"
       },
       "steps": {
         "1": {
           "title": "Your canvas, your home",
           "body": "Pin what matters, find it fast. Home is where you keep the stuff you don't want to dig for — pin a chat, an agent, a widget.",
-          "visual": "A preview of the Berd home canvas"
+          "visual": "A preview of the Distill home canvas"
         },
         "2": {
           "title": "All your AI providers in one place",
@@ -65,19 +65,19 @@
           "visual": "A collection of AI provider icons"
         },
         "3": {
-          "title": "Ask Berd anything",
-          "body": "Ask questions, explore ideas, or work through a task. Berd keeps the context so you can keep going.",
-          "visual": "A short conversation with Berd"
+          "title": "Ask Distill anything",
+          "body": "Ask questions, explore ideas, or work through a task. Distill keeps the context so you can keep going.",
+          "visual": "A short conversation with Distill"
         },
         "4": {
           "title": "Agents have joined the chat",
           "body": "An agent is a specialist you talk to directly. @mention one in a chat and it works with you like a teammate, not a tool.",
-          "visual": "A collection of Berd agents"
+          "visual": "A collection of Distill agents"
         },
         "5": {
-          "title": "Teach Berd a new trick with skills",
-          "body": "Skills give Berd and your agents instructions for a specific task, tool, or workflow, so you don't have to spell it out every time.",
-          "visual": "A collection of reusable Berd skills"
+          "title": "Teach Distill a new trick with skills",
+          "body": "Skills give Distill and your agents instructions for a specific task, tool, or workflow, so you don't have to spell it out every time.",
+          "visual": "A collection of reusable Distill skills"
         }
       }
     }
@@ -118,7 +118,7 @@
       "fileType": "Images",
       "importFailed": "The photo could not be added.",
       "notAFile": "Choose an image file instead of a folder.",
-      "readFailed": "Berd could not read that photo.",
+      "readFailed": "Distill could not read that photo.",
       "tooLarge": "Choose a photo smaller than 50 MB.",
       "unsupportedType": "Choose a PNG, JPEG, WebP, GIF, or AVIF image.",
       "unavailable": "This photo is unavailable",
@@ -136,7 +136,7 @@
       "label": "Pin an agent",
       "description": "Pin an agent for quick access",
       "kicker": "Agent",
-      "fallbackName": "Berd",
+      "fallbackName": "Distill",
       "openAria": "Start chat with {{name}}"
     },
     "chatPin": {
@@ -207,12 +207,12 @@
       },
       "notes": {
         "welcome": {
-          "title": "Welcome to Berd",
+          "title": "Welcome to Distill",
           "body": "One AI workspace for all facets of your work. This is just the beginning."
         },
         "buildAgent": {
           "title": "Build an agent",
-          "body": "Give Berd a role, model, and instructions for work you repeat.",
+          "body": "Give Distill a role, model, and instructions for work you repeat.",
           "action": "Build agent"
         },
         "startProject": {
@@ -221,8 +221,8 @@
           "action": "New project"
         },
         "skills": {
-          "title": "Teach Berd a skill",
-          "body": "Save how-to instructions and resources so Berd can apply them when a task calls for it.",
+          "title": "Teach Distill a skill",
+          "body": "Save how-to instructions and resources so Distill can apply them when a task calls for it.",
           "action": "Explore skills"
         },
         "shapeHome": {
@@ -231,7 +231,7 @@
         },
         "automations": {
           "title": "Manage automations",
-          "body": "G2 automations live in Berd now. View, create, and manage scheduled work here.",
+          "body": "G2 automations live in Distill now. View, create, and manage scheduled work here.",
           "action": "Open automations"
         }
       },

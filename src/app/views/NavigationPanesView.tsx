@@ -37,6 +37,7 @@ export interface NavigationPanesViewProps {
   onSettingsBack?: () => void;
   onSettingsSectionChange?: (section: SectionId) => void;
   onNewChatInProject?: (projectId: string) => void;
+  onNewConductorInProject?: (projectId: string) => void;
   onNewChat?: () => void;
   onCreateProject?: () => void;
   onEditProject?: (projectId: string) => void;
@@ -205,6 +206,7 @@ export function NavigationPanesView({
   onSettingsBack,
   onSettingsSectionChange,
   onNewChatInProject,
+  onNewConductorInProject,
   onNewChat,
   onCreateProject,
   onEditProject,
@@ -390,6 +392,7 @@ export function NavigationPanesView({
                   onOpenProject={onOpenProject}
                   onNewChat={onNewChat}
                   onNewChatInProject={onNewChatInProject}
+                  onNewConductorInProject={onNewConductorInProject}
                   onRenameChat={onRenameChat}
                   onReorderProject={onReorderProject}
                   onSelectSession={onSelectSession}

@@ -76,7 +76,7 @@
     "voiceInputFailedTitle": "Falló el dictado por voz",
     "voiceInputNoMicrophoneDescription": "Conecta o selecciona un micrófono y vuelve a intentar el dictado por voz.",
     "voiceInputNoMicrophoneTitle": "No se encontró ningún micrófono",
-    "voiceInputPermissionDescription": "Permite el acceso al micrófono para Berd en Configuración del Sistema y vuelve a intentar el dictado por voz.",
+    "voiceInputPermissionDescription": "Permite el acceso al micrófono para Distill en Configuración del Sistema y vuelve a intentar el dictado por voz.",
     "voiceInputPermissionTitle": "El acceso al micrófono está bloqueado",
     "voiceInputUnavailableDescription": "Otra app puede estar usando tu micrófono, o macOS no pudo iniciar la grabación. Cierra otras apps de grabación y vuelve a intentarlo.",
     "voiceInputUnavailableTitle": "El micrófono no está disponible"
@@ -387,7 +387,7 @@
     "providerError": {
       "anthropicThinkingHistory": "Este chat no puede continuar con un modelo Claude porque su historial de razonamiento previo ya no tiene una forma que Claude acepte. Inicia un chat nuevo o cambia este chat a un modelo que no sea Claude para continuar."
     },
-    "berdctlCrossSessionLabel": "Enviado por Berd desde otra sesión",
+    "berdctlCrossSessionLabel": "Enviado por Distill desde otra sesión",
     "steerLabel": "Guiado",
     "viewMore": "Ver más",
     "viewLess": "Ver menos",
@@ -444,6 +444,45 @@
   },
   "emptyState": {
     "startAConversation": "Inicia una conversación"
+  },
+  "conductor": {
+    "spawnTitle": "Iniciar un orquestador",
+    "spawnDescription": "Asigna una tarea acotada. Un orquestador con nombre la ejecuta y reporta aquí.",
+    "nameLabel": "Nombre",
+    "taskLabel": "Tarea",
+    "taskPlaceholder": "¿Qué debe hacer este orquestador?",
+    "startOrchestrator": "Iniciar orquestador",
+    "starting": "Iniciando…",
+    "emptyState": "Habla con el conductor. Elige agentes del catálogo y ejecuta el trabajo.",
+    "pickAgentTitle": "Elige un conductor",
+    "pickAgentDescription": "El conductor es uno de tus agentes. Elegirá otros agentes para orquestadores y trabajadores.",
+    "pickAgentConfirm": "Iniciar conductor",
+    "pickAgentCancel": "Cancelar",
+    "pickAgentEmpty": "Aún no hay agentes. Distill empezará con Producer.",
+    "openTranscript": "Abrir transcripción",
+    "backToConductor": "Volver a {{name}}",
+    "openChild": "{{name}}, {{status}}",
+    "resultTitle": "{{name}} — {{status}}",
+    "statsWorking": "{{count}} en curso",
+    "statsDone": "{{count}} listos",
+    "statsTokens": "{{tokens}} tokens",
+    "statsCost": "${{cost}}",
+    "stopChild": "Detener {{name}}",
+    "decisions": "Decisiones",
+    "artifacts": "Artefactos",
+    "risks": "Riesgos",
+    "needsOperator": "Necesita al operador.",
+    "operatorIntervened": "El operador intervino en esta ejecución.",
+    "nextTask": "Siguiente",
+    "status": {
+      "starting": "iniciando",
+      "running": "en curso",
+      "waiting": "en espera",
+      "completed": "completado",
+      "failed": "falló",
+      "cancelled": "cancelado",
+      "stopped": "detenido"
+    }
   },
   "skeleton": {
     "loadingConversation": "Cargando conversación"

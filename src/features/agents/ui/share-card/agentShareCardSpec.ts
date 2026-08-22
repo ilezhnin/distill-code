@@ -15,7 +15,7 @@ export function truncateAgentCardTitle(
   name: string,
   locale = CARD_MATCH_LOCALE,
 ): string {
-  const title = name.trim().toLocaleUpperCase(locale) || "BERD AGENT";
+  const title = name.trim().toLocaleUpperCase(locale) || "DISTILL AGENT";
   const graphemes = segmentCardGraphemes(title, locale);
   return graphemes.length > MAX_TITLE_GRAPHEMES
     ? `${graphemes.slice(0, MAX_TITLE_GRAPHEMES - 1).join("")}…`

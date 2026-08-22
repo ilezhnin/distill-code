@@ -14,7 +14,7 @@ export const listSessionFoldersCommand = defineCommand({
   summary: "List folders attached to a chat and identify its cwd",
   description:
     "List every attached folder with its Git identity and whether it is the chat's current working directory.",
-  helpFooter: `The top-level cwd is returned even when it is Berd's implicit default and is not an attached folder.
+  helpFooter: `The top-level cwd is returned even when it is Distill's implicit default and is not an attached folder.
 
 Example:
   berdctl folder list --session-id <session-id>

@@ -49,6 +49,7 @@ export function SidebarProjectList({
   onNavigate,
   onSelectSession,
   onNewChatInProject,
+  onNewConductorInProject,
   onEditProject,
   onArchiveProject,
   onArchiveChat,
@@ -87,6 +88,7 @@ export function SidebarProjectList({
   onNavigate?: (view: AppView) => void;
   onSelectSession?: (sessionId: string) => void;
   onNewChatInProject?: (projectId: string) => void;
+  onNewConductorInProject?: (projectId: string) => void;
   onEditProject?: (projectId: string) => void;
   onArchiveProject?: (projectId: string) => void;
   onArchiveChat?: (sessionId: string) => void | Promise<void>;
@@ -355,6 +357,7 @@ export function SidebarProjectList({
             onNavigate={onNavigate}
             onSelectSession={onSelectSession}
             onNewChatInProject={onNewChatInProject}
+            onNewConductorInProject={onNewConductorInProject}
             onEditProject={onEditProject}
             onArchiveProject={onArchiveProject}
             onArchiveChat={onArchiveChat}

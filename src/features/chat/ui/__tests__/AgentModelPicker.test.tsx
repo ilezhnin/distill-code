@@ -431,6 +431,126 @@ describe("AgentModelPicker", () => {
     expect(onReasoningEffortChange).toHaveBeenCalledWith("high");
   });
 
+  it("collapses effort-suffixed models and moves effort into the reasoning column", async () => {
+    const user = userEvent.setup();
+    const onModelChange = vi.fn();
+
+    render(
+      <AgentModelPicker
+        agents={AGENTS}
+        selectedAgentId="codex-acp"
+        onAgentChange={vi.fn()}
+        currentModelId="gpt-5.4-mini[high]"
+        currentModelName="GPT 5.4 Mini[high]"
+        availableModels={[
+          { id: "gpt-5.4-mini[low]", name: "GPT 5.4 Mini[low]" },
+          { id: "gpt-5.4-mini[high]", name: "GPT 5.4 Mini[high]" },
+          { id: "gpt-5.4[low]", name: "GPT 5.4[low]" },
+          { id: "gpt-5.4[high]", name: "GPT 5.4[high]" },
+        ]}
+        onModelChange={onModelChange}
+      />,
+    );
+
+    const trigger = screen.getByRole("button", {
+      name: /choose agent and model/i,
+    });
+    expect(trigger).toHaveTextContent("GPT 5.4 Mini");
+    expect(trigger).toHaveTextContent("High");
+    expect(trigger).not.toHaveTextContent("Mini[high]");
+
+    await user.click(trigger);
+
+    expect(screen.getByText("Reasoning effort")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "GPT 5.4 Mini" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "GPT 5.4" })).toBeInTheDocument();
+    expect(screen.queryByText("GPT 5.4 Mini[high]")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Low" }));
+    expect(onModelChange).toHaveBeenCalledWith(
+      "gpt-5.4-mini[low]",
+      expect.objectContaining({ id: "gpt-5.4-mini[low]" }),
+    );
+  });
+
+  it("collapses Claude ultrathink suffixes into the reasoning column", async () => {
+    const user = userEvent.setup();
+    const onModelChange = vi.fn();
+
+    render(
+      <AgentModelPicker
+        agents={AGENTS}
+        selectedAgentId="claude-acp"
+        onAgentChange={vi.fn()}
+        currentModelId="claude-opus-4-6[ultrathink]"
+        currentModelName="Opus 4.6[ultrathink]"
+        availableModels={[
+          { id: "claude-opus-4-6[think]", name: "Opus 4.6[think]" },
+          { id: "claude-opus-4-6[ultrathink]", name: "Opus 4.6[ultrathink]" },
+          { id: "claude-sonnet-4-6[max]", name: "Sonnet 4.6[max]" },
+          { id: "claude-sonnet-4-6[thinking]", name: "Sonnet 4.6[thinking]" },
+        ]}
+        onModelChange={onModelChange}
+      />,
+    );
+
+    const trigger = screen.getByRole("button", {
+      name: /choose agent and model/i,
+    });
+    expect(trigger).toHaveTextContent("Opus 4.6");
+    expect(trigger).toHaveTextContent("Ultrathink");
+    expect(trigger).not.toHaveTextContent("Opus 4.6[ultrathink]");
+
+    await user.click(trigger);
+
+    expect(screen.getByText("Reasoning effort")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Opus 4.6" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sonnet 4.6" })).toBeInTheDocument();
+    expect(screen.queryByText("Opus 4.6[ultrathink]")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Think" }));
+    expect(onModelChange).toHaveBeenCalledWith(
+      "claude-opus-4-6[think]",
+      expect.objectContaining({ id: "claude-opus-4-6[think]" }),
+    );
+  });
+
+  it("shows a reasoning column for Grok when the session only advertises a dummy off value", async () => {
+    const user = userEvent.setup();
+    const onReasoningEffortChange = vi.fn();
+
+    render(
+      <AgentModelPicker
+        agents={[...AGENTS, { id: "grok-acp", label: "Grok" }]}
+        selectedAgentId="grok-acp"
+        onAgentChange={vi.fn()}
+        currentModelId="grok-4.6"
+        currentModelName="Grok 4.6"
+        availableModels={[
+          { id: "grok-4.6", name: "Grok 4.6" },
+          { id: "grok-4.5", name: "Grok 4.5" },
+        ]}
+        onModelChange={vi.fn()}
+        reasoningEffort={{
+          config: {
+            configId: "thinking_effort",
+            currentValue: "off",
+            options: [{ id: "off", name: "off" }],
+          },
+          onChange: onReasoningEffortChange,
+        }}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: /choose agent and model/i }),
+    );
+
+    expect(screen.getByText("Reasoning effort")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Low" }));
+    expect(onReasoningEffortChange).toHaveBeenCalledWith("low");
+  });
+
   it("hides off reasoning effort in the picker trigger", () => {
     render(
       <AgentModelPicker

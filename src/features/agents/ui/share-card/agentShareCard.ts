@@ -274,7 +274,7 @@ export async function renderAgentShareCard(
   context.textBaseline = "alphabetic";
   context.font = "600 36px Inter, sans-serif";
   context.textAlign = "right";
-  context.fillText("BERD AGENT", brand.x, brand.y);
+  context.fillText("DISTILL AGENT", brand.x, brand.y);
 
   // Berd avatars are character illustrations, not portrait photographs. Keep
   // the full artwork visible instead of applying Buzz's circular cover crop.

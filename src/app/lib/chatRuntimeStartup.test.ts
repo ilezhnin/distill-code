@@ -5,6 +5,7 @@ const mockLoadPersistedMessageQueues = vi.hoisted(() =>
 );
 const mockGetClient = vi.hoisted(() => vi.fn<() => Promise<unknown>>());
 const mockRefreshAllModelProviders = vi.hoisted(() => vi.fn());
+const mockSetProviders = vi.hoisted(() => vi.fn());
 
 // The latch under test wraps startChatRuntime, whose body touches most of the
 // startup module graph. Everything it reaches is stubbed inert (resolved,
@@ -15,7 +16,7 @@ const mockRefreshAllModelProviders = vi.hoisted(() => vi.fn());
 vi.mock("@/features/agents/stores/agentStore", () => ({
   useAgentStore: {
     getState: () => ({
-      setProviders: () => {},
+      setProviders: mockSetProviders,
       setPersonas: () => {},
       setPersonasLoading: () => {},
     }),
@@ -39,7 +40,12 @@ vi.mock("@/features/chat/stores/chatSessionStore", () => ({
 }));
 
 vi.mock("@/features/providers/curatedProviders", () => ({
-  getCuratedAgentProviders: () => [],
+  getCuratedAgentProviders: () => [
+    { id: "goose", label: "Goose" },
+    { id: "claude-acp", label: "Claude Code" },
+    { id: "codex-acp", label: "Codex" },
+    { id: "grok-acp", label: "Grok" },
+  ],
 }));
 
 vi.mock("@/features/providers/runtimeProviderConstraints", () => ({
@@ -190,6 +196,7 @@ describe("runChatRuntimeStartup", () => {
     mockGetClient.mockResolvedValue({});
     mockRefreshAllModelProviders.mockReset();
     mockRefreshAllModelProviders.mockResolvedValue(undefined);
+    mockSetProviders.mockReset();
   });
 
   it("collapses concurrent callers onto one startup run", async () => {
@@ -208,6 +215,27 @@ describe("runChatRuntimeStartup", () => {
     await expect(first).resolves.toBeUndefined();
     await expect(second).resolves.toBeUndefined();
     expect(mockGetClient).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes curated harnesses before waiting on ACP", async () => {
+    const { runChatRuntimeStartup } = await import("./chatRuntimeStartup");
+    const connect = deferred<unknown>();
+    mockGetClient.mockReturnValue(connect.promise);
+
+    const startup = runChatRuntimeStartup();
+    await vi.waitFor(() => {
+      expect(mockSetProviders).toHaveBeenCalled();
+    });
+    expect(mockSetProviders.mock.calls[0]?.[0]).toEqual([
+      { id: "goose", label: "Goose" },
+      { id: "claude-acp", label: "Claude Code" },
+      { id: "codex-acp", label: "Codex" },
+      { id: "grok-acp", label: "Grok" },
+    ]);
+    expect(mockSetProviders.mock.calls[0]?.[1]).toBe(false);
+
+    connect.resolve({});
+    await expect(startup).resolves.toBeUndefined();
   });
 
   it("does not block startup on model inventory refresh", async () => {

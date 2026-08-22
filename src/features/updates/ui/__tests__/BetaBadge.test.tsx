@@ -90,12 +90,12 @@ describe("BetaBadge", () => {
     renderBadge();
 
     await user.click(screen.getByRole("button", { name: "Open Beta details" }));
-    expect(screen.getByText("Berd 2.0.0")).toBeInTheDocument();
+    expect(screen.getByText("Distill 2.0.0")).toBeInTheDocument();
     expect(screen.getByText("Try the new agent builder.")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Report an issue" }));
     expect(useFeedbackDialogStore.getState().draft).toMatchObject({
-      titleSuffix: " [Berd 2.0.0 Beta]",
+      titleSuffix: " [Distill 2.0.0 Beta]",
       metadata: { "Release channel": "Beta", "Running build": "2.0.0" },
     });
   });

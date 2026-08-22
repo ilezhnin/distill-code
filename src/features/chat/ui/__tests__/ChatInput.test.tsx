@@ -52,11 +52,12 @@ vi.mock("@/shared/lib/platform", () => ({
 
 vi.mock("@/features/providers/hooks/useAgentProviderStatus", () => ({
   useAgentProviderStatus: () => ({
-    readyAgentIds: new Set(["goose", "claude-acp", "codex-acp"]),
+    readyAgentIds: new Set(["goose", "claude-acp", "codex-acp", "grok-acp"]),
     agentReadiness: new Map([
       ["goose", "ready"],
       ["claude-acp", "ready"],
       ["codex-acp", "ready"],
+      ["grok-acp", "ready"],
     ]),
     loading: false,
     refresh: vi.fn(),
@@ -709,6 +710,48 @@ describe("ChatInput", () => {
     expect(screen.getByText("Agent")).toBeInTheDocument();
     expect(screen.getByText("Model")).toBeInTheDocument();
     expect(screen.getByText("Claude Code")).toBeInTheDocument();
+  });
+
+  it("lists catalog harnesses even when the store snapshot is empty", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <ChatInput
+        onSend={vi.fn()}
+        providers={[]}
+        selectedProvider="claude-acp"
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: /choose agent and model/i }),
+    );
+
+    const agentColumn = document.querySelector('[data-col="agent"]');
+    expect(agentColumn).toBeTruthy();
+    expect(
+      within(agentColumn as HTMLElement).getByRole("button", { name: "Codex" }),
+    ).toBeInTheDocument();
+    expect(
+      within(agentColumn as HTMLElement).getByRole("button", {
+        name: /Grok/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(agentColumn as HTMLElement).queryByRole("button", {
+        name: /Copilot/,
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(agentColumn as HTMLElement).queryByRole("button", {
+        name: /Amp/,
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(agentColumn as HTMLElement).queryByRole("button", {
+        name: /Cursor/,
+      }),
+    ).not.toBeInTheDocument();
   });
 
   it("opens the project selector menu", async () => {

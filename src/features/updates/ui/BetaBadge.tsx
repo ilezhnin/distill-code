@@ -80,7 +80,7 @@ export function BetaBadge() {
                   title: "",
                   description: "",
                   includeLogs: false,
-                  titleSuffix: ` [Berd ${runningBuild.version} ${betaLabel}]`,
+                  titleSuffix: ` [Distill ${runningBuild.version} ${betaLabel}]`,
                   metadata: {
                     "Release channel": betaLabel,
                     "Running build": runningBuild.version,

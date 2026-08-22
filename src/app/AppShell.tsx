@@ -93,6 +93,16 @@ import { useProjectStore } from "@/features/projects/stores/projectStore";
 import { selectProjects } from "@/features/projects/stores/projectSelectors";
 import { findExistingDraft } from "@/features/chat/lib/newChat";
 import { DEFAULT_CHAT_TITLE } from "@/features/chat/lib/sessionTitle";
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import { pickUniqueDisplayName } from "@/features/conductor/pickUniqueDisplayName";
+import {
+  DEFAULT_CONDUCTOR_ROLE_ID,
+  fileStemFromPersonaId,
+  resolveDefaultConductorPersona,
+  roleById,
+} from "@/features/conductor/roleCatalog";
+import { registerConductorSession } from "@/features/conductor/spawnOrchestrator";
+import { ConductorAgentPickerDialog } from "@/features/conductor/ui/ConductorAgentPickerDialog";
 import { useAppStartup } from "./hooks/useAppStartup";
 import { useCompletionNotifications } from "@/shared/hooks/useCompletionNotifications";
 import { useHomeSessionStateSync } from "./hooks/useHomeSessionStateSync";
@@ -297,6 +307,7 @@ type ProjectChatDraftOptions = {
   executionTarget?: SessionExecutionTarget;
   reuseExistingDraft?: boolean;
   reasoningEffort?: GlobalComposeOptions["reasoningEffort"];
+  personaId?: string;
 };
 
 function executionTargetFromModelPreference(
@@ -677,6 +688,9 @@ export function AppShell({
   );
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [searchDialogOpen, setSearchDialogOpen] = useState(false);
+  const [conductorPickerProjectId, setConductorPickerProjectId] = useState<
+    string | null
+  >(null);
   const [searchEscapeRequest, setSearchEscapeRequest] = useState(0);
   const [
     pendingWorkspaceCleanupConfirmation,
@@ -976,6 +990,7 @@ export function AppShell({
     (s) => s.resetSessionCreation,
   );
   const patchSession = useChatSessionStore((s) => s.patchSession);
+  const personas = useAgentStore((state) => state.personas);
   const setActiveSession = useChatSessionStore((s) => s.setActiveSession);
   const handleNavigateToSession = useCallback(
     (sessionId: string) => {
@@ -1815,6 +1830,7 @@ export function AppShell({
             {
               projectId,
               modelId: requestedTarget.modelId,
+              personaId: liveDraft?.personaId ?? session.personaId,
               // The draft is already interactive. Construct its provider now so
               // a selection made while creation is in flight can be applied to
               // the backend session as soon as it exists.
@@ -2447,6 +2463,7 @@ export function AppShell({
                 ),
             )
           : asIs?.workspaceAttachments,
+        personaId: options.personaId,
       });
       clearSettingsSectionUrl();
       setActiveSession(session.id);
@@ -3409,6 +3426,69 @@ export function AppShell({
       });
     },
     [createNewProjectDraft, projects, guardAppNavigation],
+  );
+
+  const handleNewConductorInProject = useCallback((projectId: string) => {
+    setConductorPickerProjectId(projectId);
+  }, []);
+
+  const handleConfirmConductorAgent = useCallback(
+    (persona: (typeof personas)[number] | null) => {
+      const projectId = conductorPickerProjectId;
+      setConductorPickerProjectId(null);
+      if (!projectId) {
+        return;
+      }
+      const project = projects.find((candidate) => candidate.id === projectId);
+      if (!project) {
+        return;
+      }
+      const chosen =
+        persona ?? resolveDefaultConductorPersona(personas) ?? null;
+      const displayName = pickUniqueDisplayName(
+        chosen?.displayName ?? "Producer",
+        Object.values(useConductorGraphStore.getState().nodesById).map(
+          (node) => node.displayName,
+        ),
+      );
+      guardAppNavigation(() => {
+        void createNewProjectDraft(displayName, project, {
+          reuseExistingDraft: false,
+          personaId: chosen?.id,
+        })
+          .then((session) => {
+            if (!session) return;
+            registerConductorSession({
+              sessionId: session.id,
+              projectId: project.id,
+              displayName,
+              harnessId: session.executionTarget?.harnessId,
+              modelProviderId: session.executionTarget?.modelProviderId,
+              modelId: session.executionTarget?.modelId,
+              personaId: chosen?.id,
+              roleId: chosen
+                ? (roleById(fileStemFromPersonaId(chosen.id))?.id ??
+                  DEFAULT_CONDUCTOR_ROLE_ID)
+                : DEFAULT_CONDUCTOR_ROLE_ID,
+            });
+            useChatSessionStore.getState().patchSession(session.id, {
+              title: displayName,
+              userSetName: true,
+              personaId: chosen?.id,
+            });
+          })
+          .catch((error) => {
+            logProjectChatStartError("Failed to start conductor chat:", error);
+          });
+      });
+    },
+    [
+      conductorPickerProjectId,
+      createNewProjectDraft,
+      guardAppNavigation,
+      personas,
+      projects,
+    ],
   );
   const handleArchiveProject = useCallback(
     async (projectId: string) => {
@@ -4979,7 +5059,6 @@ export function AppShell({
           canGoBack: navigationAvailability.canGoBack,
           canGoForward: navigationAvailability.canGoForward,
           onToggleSidebar: toggleSidebar,
-          onHomeClick: () => handleNavigate("home"),
           onGoBack: goBack,
           onGoForward: goForward,
           showRightRailToggle:
@@ -5000,6 +5079,7 @@ export function AppShell({
           onSettingsSectionChange: selectSettingsSection,
           onNavigate: handleNavigate,
           onNewChatInProject: handleNewChatInProject,
+          onNewConductorInProject: handleNewConductorInProject,
           onNewChat: () => {
             guardAppNavigation(() => {
               void createNewTab(DEFAULT_CHAT_TITLE).catch((error) => {
@@ -5044,8 +5124,8 @@ export function AppShell({
         onHeightResizeDoubleClick={handleHeightResizeDoubleClick}
         onCornerResizeStart={handleCornerResizeStart}
         onCornerResizeDoubleClick={handleCornerResizeDoubleClick}
-        contentUnderSidebar={activeView === "home"}
-        contentUnderTopBar={activeView === "home"}
+        contentUnderSidebar={false}
+        contentUnderTopBar={false}
         projectTint={activeView === "chat" ? activeProjectTint : null}
         designSystemInspectorModeToggleRequest={
           designSystemInspectorModeToggleRequest
@@ -5393,6 +5473,15 @@ export function AppShell({
         open={quickSwitcherOpen}
         onOpenChange={setQuickSwitcherOpen}
         onSelectSession={handleSelectSession}
+      />
+      <ConductorAgentPickerDialog
+        open={conductorPickerProjectId != null}
+        personas={personas}
+        defaultPersonaId={resolveDefaultConductorPersona(personas)?.id ?? null}
+        onOpenChange={(open) => {
+          if (!open) setConductorPickerProjectId(null);
+        }}
+        onConfirm={handleConfirmConductorAgent}
       />
       <AgentBuilderLeaveDraftDialog {...agentBuilder.leaveDraftDialogProps} />
       <AutomationBuilderLeaveDialog

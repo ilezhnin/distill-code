@@ -2,13 +2,10 @@ import { useCallback, useMemo, useRef } from "react";
 import type { AcpProvider } from "@/shared/api/acp";
 import { useProviderModels } from "@/features/providers/hooks/useProviderModels";
 import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProviderStatus";
-import {
-  getCatalogEntryFromEntries,
-  resolveAgentProviderCatalogIdStrictFromEntries,
-} from "@/features/providers/providerCatalog";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import { resolveSelectedAgentId } from "../lib/agentProviderResolution";
-import type { AgentPickerOption, ModelOption } from "../types";
+import { listVisibleAgentPickerOptions } from "../lib/listVisibleAgentPickerOptions";
+import type { ModelOption } from "../types";
 
 interface UseAgentModelPickerStateOptions {
   providers: AcpProvider[];
@@ -50,65 +47,25 @@ export function useAgentModelPickerState({
     [catalogEntries, catalogLoaded, selectedProvider],
   );
 
-  const pickerAgents = useMemo(() => {
-    const visible = new Map<string, AgentPickerOption>();
-    const gooseReadiness = agentReadiness.get("goose") ?? "not_ready";
-
-    visible.set("goose", {
-      id: "goose",
-      label:
-        getCatalogEntryFromEntries(catalogEntries, "goose")?.displayName ??
-        "Goose",
-      readiness: gooseReadiness,
-      ...(gooseReadiness === "ready" ? {} : { setupAction: "connect" }),
-    });
-
-    for (const provider of providers) {
-      const agentId =
-        resolveAgentProviderCatalogIdStrictFromEntries(
-          catalogEntries,
-          provider.id,
-        ) ?? (!catalogLoaded ? provider.id : null);
-      if (!agentId || agentId === "goose") {
-        continue;
-      }
-
-      const catalogEntry = getCatalogEntryFromEntries(catalogEntries, agentId);
-      const readiness = agentReadiness.get(agentId) ?? "not_ready";
-      const setupAction =
-        readiness === "ready"
-          ? undefined
-          : readiness === "not_installed" && catalogEntry?.supportsInstall
-            ? "install"
-            : "connect";
-
-      visible.set(agentId, {
-        id: agentId,
-        label: catalogEntry?.displayName ?? provider.label,
-        readiness,
-        setupAction,
-      });
-    }
-
-    if (!visible.has(selectedAgentId) && readyAgentIds.has(selectedAgentId)) {
-      visible.set(selectedAgentId, {
-        id: selectedAgentId,
-        label:
-          getCatalogEntryFromEntries(catalogEntries, selectedAgentId)
-            ?.displayName ?? selectedAgentId,
-        readiness: "ready",
-      });
-    }
-
-    return [...visible.values()];
-  }, [
-    agentReadiness,
-    catalogEntries,
-    catalogLoaded,
-    providers,
-    readyAgentIds,
-    selectedAgentId,
-  ]);
+  const pickerAgents = useMemo(
+    () =>
+      listVisibleAgentPickerOptions({
+        catalogEntries,
+        catalogLoaded,
+        agentReadiness,
+        extraProviders: providers,
+        selectedAgentId,
+        readyAgentIds,
+      }),
+    [
+      agentReadiness,
+      catalogEntries,
+      catalogLoaded,
+      providers,
+      readyAgentIds,
+      selectedAgentId,
+    ],
+  );
 
   const availableModels = useMemo(
     () => getModelsForAgent(selectedAgentId),

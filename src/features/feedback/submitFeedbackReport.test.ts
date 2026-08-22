@@ -61,14 +61,14 @@ describe("submitFeedbackReport", () => {
       title: "Rough edge",
       description: "Details",
       includeLogs: false,
-      titleSuffix: " [Berd 1.2.3 Beta]",
+      titleSuffix: " [Distill 1.2.3 Beta]",
       metadata: { "Release channel": "Beta", "Running build": "1.2.3" },
       labelIds: ["12345678-1234-1234-1234-123456789abc"],
     });
 
     expect(submitFeedbackIssue).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: "Rough edge [Berd 1.2.3 Beta]",
+        title: "Rough edge [Distill 1.2.3 Beta]",
         description:
           "Details\n\n---\nApp version: 1.2.3\nPlatform: mac\nRelease channel: Beta\nRunning build: 1.2.3",
         labelIds: ["12345678-1234-1234-1234-123456789abc"],

@@ -675,7 +675,7 @@ vi.mock("./ui/AppShellContent", () => ({
             });
           }}
         >
-          Ask Berdy from Home
+          Ask Distill from Home
         </button>
         <button
           type="button"
@@ -2962,7 +2962,7 @@ describe("AppShell global navigation", () => {
     renderAppShell();
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Ask Berdy from Home" }),
+      screen.getByRole("button", { name: "Ask Distill from Home" }),
     );
 
     await waitFor(() => {
@@ -2987,7 +2987,7 @@ describe("AppShell global navigation", () => {
     renderAppShell();
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Ask Berdy from Home" }),
+      screen.getByRole("button", { name: "Ask Distill from Home" }),
     );
 
     await waitFor(() => {
@@ -2998,7 +2998,7 @@ describe("AppShell global navigation", () => {
       mockListPersonas.mock.invocationCallOrder[0],
     );
     expect(mockToastError).not.toHaveBeenCalledWith(
-      "Berdy couldn't start a chat. Try again.",
+      "Distill couldn't start a chat. Try again.",
     );
   });
 
@@ -3020,7 +3020,7 @@ describe("AppShell global navigation", () => {
     renderAppShell();
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Ask Berdy from Home" }),
+      screen.getByRole("button", { name: "Ask Distill from Home" }),
     );
 
     await waitFor(() => {

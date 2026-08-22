@@ -1,0 +1,62 @@
+---
+name: unity-orient
+description: Map an unfamiliar Unity project or feature area before coding. Use when module ownership, relevant files, assembly boundaries, scene/prefab/asset references, nearby tests, Unity version, or validation paths must be discovered for a nontrivial feature or bug fix. Do not trigger solely because a request mentions Assets, Packages, or ProjectSettings when the needed paths and boundaries are already known.
+metadata:
+  berdBundled: true
+---
+
+In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.
+
+
+# Unity Orient Project
+
+## Overview
+
+Build the smallest useful map of a Unity project before editing. Default role: `unity-explorer`. Prefer targeted discovery over broad file reading, and return actionable paths, risks, and validation options.
+
+## Workflow
+
+1. Confirm the Unity root by checking for `Assets/`, `Packages/`, and `ProjectSettings/`.
+2. Read `ProjectSettings/ProjectVersion.txt`, `Packages/manifest.json`, and `Packages/packages-lock.json` when present.
+3. Find assembly boundaries with `rg --files -g "*.asmdef" -g "*.asmref"` and inspect only relevant assemblies.
+4. Identify runtime, editor, tests, generated code, and third-party folders before opening many files.
+5. Use `rg` for domain names, class names, scene names, serialized field names, and asset GUIDs.
+6. Identify the cheapest meaningful validation path: Unity Test Framework, compile-only batchmode, package tests, or project-specific scripts.
+7. Report a short orientation: Unity version, packages that matter, candidate files, architectural boundaries, risks, and recommended next command.
+
+## Reading Boundaries
+
+Skip `Library/`, `Temp/`, `Obj/`, `Build/`, `Builds/`, `Logs/`, `.vs/`, `UserSettings/`, and generated IDE files unless the task explicitly needs them.
+
+Prefer these first:
+
+- `Assets/**/Scripts/**/*.cs`
+- `Assets/**/Editor/**/*.cs`
+- `Assets/**/Tests/**/*.cs`
+- `Assets/**/*.asmdef`
+- `ProjectSettings/*.asset`
+- `Packages/manifest.json`
+
+## Stop Conditions
+
+Stop and ask before:
+
+- Expanding discovery into edits; hand off to unity-implement (or unity-debug for failures) once the map is built.
+- Opening scene, prefab, or asset YAML wholesale to "understand" them - query targeted names and GUIDs with `rg` instead.
+- Reading credentials, license files, or anything under user-specific paths.
+- Spending more time mapping when the task's candidate files are already identified - orientation is a means, not the deliverable.
+
+## Final Report
+
+Report:
+
+- Unity version and render pipeline; packages that matter for the task.
+- Relevant assemblies and their boundaries; where runtime, editor, and test code live.
+- Candidate files for the task, with one line on why each matters.
+- Serialization, asset, or GUID risks the change could touch.
+- Cheapest meaningful validation path for this project.
+- Recommended next action (skill and first concrete step).
+
+## Reference
+
+Read `references/discovery-checklist.md` when the project is large, unfamiliar, or has multiple assemblies/packages.

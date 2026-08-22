@@ -1,4 +1,8 @@
-import { isAppAvatarRef, isUserAvatarRef } from "@/shared/avatars/catalog";
+import {
+  isAgentAvatarRef,
+  isAppAvatarRef,
+  isUserAvatarRef,
+} from "@/shared/avatars/catalog";
 import type { ResolvedAvatarMedia } from "@/shared/avatars/catalog";
 
 export const MAX_PNG_AVATAR_BYTES = 2 * 1024 * 1024;
@@ -145,6 +149,7 @@ export function isSupportedAvatarRef(value: string): boolean {
     isRemoteAvatarUrl(value) ||
     isAppAvatarRef(value) ||
     isUserAvatarRef(value) ||
+    isAgentAvatarRef(value) ||
     isSafePngAvatarDataUrl(value)
   );
 }
@@ -164,7 +169,9 @@ export function resolveAvatarSrc(value: unknown): string | undefined {
     return undefined;
   }
 
-  return isAppAvatarRef(normalized) || isUserAvatarRef(normalized)
+  return isAppAvatarRef(normalized) ||
+    isUserAvatarRef(normalized) ||
+    isAgentAvatarRef(normalized)
     ? undefined
     : normalized;
 }
@@ -177,7 +184,9 @@ export function resolveAvatarMedia(
     return undefined;
   }
 
-  return isAppAvatarRef(normalized) || isUserAvatarRef(normalized)
+  return isAppAvatarRef(normalized) ||
+    isUserAvatarRef(normalized) ||
+    isAgentAvatarRef(normalized)
     ? undefined
     : {
         src: normalized,

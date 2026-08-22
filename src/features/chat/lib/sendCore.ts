@@ -16,6 +16,10 @@ import {
   clearLiveSubtitleUpdate,
   flushBufferedStreamingUpdatesForSession,
 } from "@/features/chat/acp/liveStreamingUpdates";
+import {
+  isGraphCoordinatorSession,
+  useConductorGraphStore,
+} from "@/features/conductor/conductorGraphStore";
 import { acpSendMessage } from "@/shared/api/acp";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import {
@@ -267,6 +271,17 @@ export async function dispatchPrompt(
           ...userMessageMetadata,
         };
       }
+      const graphRole =
+        useConductorGraphStore.getState().nodesById[sessionId]?.role;
+      if (
+        (graphRole === "orchestrator" || graphRole === "worker") &&
+        !userMessage.metadata?.origin
+      ) {
+        userMessage.metadata = {
+          ...userMessage.metadata,
+          origin: "operator_direct",
+        };
+      }
       // Embed image content blocks into the user message for local display.
       if (images && images.length > 0) {
         for (const img of images) {
@@ -299,6 +314,15 @@ export async function dispatchPrompt(
       sessionStore.markWorkspaceUsedByAgent(sessionId);
       setChatState(sessionId, "streaming");
     };
+
+    if (isGraphCoordinatorSession(sessionId)) {
+      commitUserMessage();
+      if (isCurrent()) {
+        setChatState(sessionId, "idle");
+        setPendingAssistantProvider(sessionId, null);
+      }
+      return;
+    }
 
     const promptWithPaths = appendAttachmentPaths(
       background ? text : text.trim(),

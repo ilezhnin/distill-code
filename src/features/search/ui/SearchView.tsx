@@ -34,6 +34,8 @@ import {
   getVisibleSessions,
   useChatSessionStore,
 } from "@/features/chat/stores/chatSessionStore";
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import { isNestedExecutorSession } from "@/features/conductor/sessionVisibility";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 import { useSessionSearch } from "@/features/sessions/hooks/useSessionSearch";
@@ -130,6 +132,19 @@ export function SearchView({
   const trimmedDebouncedQuery = debouncedQuery.trim();
 
   const sessions = useChatSessionStore((state) => state.sessions);
+  const nestedExecutorIdList = useConductorGraphStore(
+    useShallow((state) =>
+      Object.values(state.nodesById)
+        .filter(
+          (node) => node.role === "orchestrator" || node.role === "worker",
+        )
+        .map((node) => node.sessionId),
+    ),
+  );
+  const nestedExecutorIds = useMemo(
+    () => new Set(nestedExecutorIdList),
+    [nestedExecutorIdList],
+  );
   const localMessageCountsBySession = useChatStore(
     useShallow(selectLocalMessageCountsBySession),
   );
@@ -139,10 +154,14 @@ export function SearchView({
   const visibleSessions = useMemo(
     () =>
       getVisibleSessions(
-        sessions.filter((session) => !session.archivedAt),
+        sessions.filter(
+          (session) =>
+            !session.archivedAt &&
+            !isNestedExecutorSession(session, nestedExecutorIds),
+        ),
         localMessageCountsBySession,
       ),
-    [localMessageCountsBySession, sessions],
+    [localMessageCountsBySession, nestedExecutorIds, sessions],
   );
 
   const resolvers = useMemo(

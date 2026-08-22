@@ -306,7 +306,7 @@ describe("homeWidgetStore", () => {
     expect(saveLayoutCamera).not.toHaveBeenCalled();
   });
 
-  it("resets starter tasks from a non-Home route and persists the placeholder cube", async () => {
+  it("resets starter tasks from a non-Home route without restoring the placeholder cube", async () => {
     const existingProject = {
       id: "00000000-0000-0000-0000-000000000099",
       type: "onboardingProjectArtifact",
@@ -336,16 +336,14 @@ describe("homeWidgetStore", () => {
     expect(useHomeWidgetStore.getState().instances).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          id: existingProject.id,
-          type: "onboardingProjectArtifact",
-          state: expect.objectContaining({
-            projectId: "onboarding-starter-project",
-          }),
-        }),
-        expect.objectContaining({
           type: "stickyNote",
           state: { noteId: "onboarding:starter-tasks" },
         }),
+      ]),
+    );
+    expect(useHomeWidgetStore.getState().instances).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "onboardingProjectArtifact" }),
       ]),
     );
   });
@@ -584,8 +582,6 @@ describe("homeWidgetStore", () => {
     expect(vi.mocked(saveLayoutItems).mock.calls[0][0].items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ kind: "clock" }),
-        expect.objectContaining({ targetId: "onboarding:tour" }),
-        expect.objectContaining({ targetId: "onboarding:starter-project" }),
         expect.objectContaining({ targetId: "onboarding:starter-tasks" }),
       ]),
     );

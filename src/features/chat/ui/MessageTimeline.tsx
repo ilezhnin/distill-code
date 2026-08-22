@@ -1436,7 +1436,7 @@ export function MessageTimeline({
   return (
     <div
       className={cn(
-        "relative flex min-h-0 flex-1 flex-col overflow-visible",
+        "relative flex min-h-0 flex-1 flex-col overflow-hidden",
         className,
       )}
     >

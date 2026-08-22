@@ -155,16 +155,16 @@ fn installed_agent_path_state(path: &Path) -> Result<InstalledAgentPathState, St
     }
 }
 
-/// Extracts an agent file's `app-avatar:*` ref from its raw contents, if the
+/// Extracts an agent file's cache-backed avatar ref from its raw contents, if the
 /// YAML frontmatter declares one. Keeps the `frontmatter -> yaml -> avatar ->
-/// app-avatar:` prefix contract in a single place; callers layer their own
+/// cache-backed prefix` contract in a single place; callers layer their own
 /// read-error handling on top.
 fn avatar_ref_from_contents(contents: &str) -> Option<String> {
     agent_frontmatter(contents)
         .and_then(|frontmatter| yaml_serde::from_str::<AgentFrontmatter>(frontmatter).ok())
         .and_then(|frontmatter| frontmatter.avatar)
         .map(|value| value.trim().to_string())
-        .filter(|value| value.starts_with("app-avatar:"))
+        .filter(|value| value.starts_with("app-avatar:") || value.starts_with("agent-avatar:"))
 }
 
 fn seed_bundled_agents_from_dir(

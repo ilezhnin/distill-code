@@ -308,17 +308,6 @@ describe("HomeScreen", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("renders the clock", () => {
-    renderHome();
-    expect(screen.getByText("2:30")).toBeInTheDocument();
-    expect(screen.getByText("PM")).toBeInTheDocument();
-  });
-
-  it("shows afternoon greeting at 2:30 PM", () => {
-    renderHome();
-    expect(screen.getByText("Good afternoon")).toBeInTheDocument();
-  });
-
   it("renders the chat input placeholder with default agent name when no persona selected", () => {
     renderHome();
     expect(

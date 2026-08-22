@@ -8,6 +8,7 @@ import {
   type CSSProperties,
 } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import { useShallow } from "zustand/react/shallow";
 import { IconLayoutSidebarLeftCollapse } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { VirtualMessageTimelineGate } from "./VirtualMessageTimelineGate";
@@ -80,6 +81,13 @@ import {
   useHasPendingSecurityConfirmation,
   useRegisterSecurityConfirmationSurface,
 } from "@/features/security/ui/SecurityConfirmationPanel";
+import { ConductorTranscriptProvider } from "@/features/conductor/ConductorTranscriptContext";
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import { distillConductorTranscript } from "@/features/conductor/distillConductorTranscript";
+import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
+import { footerAgentNodes } from "@/features/conductor/sessionVisibility";
+import { useConductorAutoSpawn } from "@/features/conductor/useConductorAutoSpawn";
+import { ConductorBackBanner } from "@/features/conductor/ui/ConductorBackBanner";
 
 const CHAT_RESPONDING_PILL_CLASS =
   "rounded-full bg-surface-chat-responding-pill-bg text-surface-chat-responding-pill-fg shadow-[var(--shadow-chat)] [--shimmer-ink:var(--color-surface-chat-responding-pill-fg)]";
@@ -109,6 +117,7 @@ interface ChatViewProps {
   onComposerHandoffTarget?: (rect: GlobalComposerHandoffRect) => void;
   onWorkspaceNameRequest?: (request: WorkspaceNameRequest) => void;
   onAgentBuilderCompleted?: (agentId: string) => void;
+  onSelectSession?: (sessionId: string) => void;
 }
 
 export function ChatView({
@@ -127,6 +136,7 @@ export function ChatView({
   onComposerHandoffTarget,
   onWorkspaceNameRequest,
   onAgentBuilderCompleted,
+  onSelectSession,
 }: ChatViewProps) {
   const { t } = useTranslation("chat");
   useRegisterSecurityConfirmationSurface(sessionId);
@@ -204,6 +214,32 @@ export function ChatView({
   ]);
   const workspaceRepository = useWorkspaceRepository();
   const effectiveSession = controller.session ?? activeSession ?? null;
+  const conductorNode = useConductorGraphStore(
+    (state) =>
+      state.nodesById[sessionId] ??
+      (effectiveSession?.id
+        ? state.nodesById[effectiveSession.id]
+        : undefined) ??
+      (effectiveSession?.clientSessionId
+        ? state.nodesById[effectiveSession.clientSessionId]
+        : undefined),
+  );
+  const conductorChildren = useConductorGraphStore(
+    useShallow((state) =>
+      footerAgentNodes(state.nodesById, conductorNode, [
+        sessionId,
+        effectiveSession?.id,
+        effectiveSession?.clientSessionId,
+      ]),
+    ),
+  );
+  const conductorReportsByRunId = useConductorGraphStore(
+    (state) => state.reportsByRunId,
+  );
+  const isConductorChat = conductorNode?.role === "conductor";
+  const showsNestedAgentFooter =
+    conductorNode?.role === "conductor" ||
+    conductorNode?.role === "orchestrator";
   const isReadOnly = Boolean(readOnlyStatus);
   // While the viewer panel is open it occupies row width much like the
   // sidebar occludes the viewport: include its floor allowance in the
@@ -619,10 +655,41 @@ export function ChatView({
       : shouldStageTranscript;
   const showTimelineLoading =
     controller.isLoadingHistory || isPreparingInitialTranscript;
-  const shouldShowLoadingIndicator = showIndicator && !showTimelineLoading;
-  const timelineMessages = isPreparingInitialTranscript
-    ? []
-    : controller.messages;
+  const shouldShowLoadingIndicator =
+    showIndicator && !showTimelineLoading && !isConductorChat;
+  const timelineMessages = useMemo(() => {
+    const messages = isPreparingInitialTranscript ? [] : controller.messages;
+    return isConductorChat ? distillConductorTranscript(messages) : messages;
+  }, [controller.messages, isConductorChat, isPreparingInitialTranscript]);
+  useConductorAutoSpawn({
+    sessionId: effectiveSession?.id ?? sessionId,
+    enabled: isConductorChat && !isReadOnly,
+    isHydrating: controller.isLoadingHistory || isPreparingInitialTranscript,
+    messages: controller.messages,
+    executionTarget:
+      controller.currentExecutionTarget ?? effectiveSession?.executionTarget,
+  });
+  const handleStopChild = useCallback((childSessionId: string) => {
+    void stopOrchestratorSession(childSessionId);
+  }, []);
+  const conductorTranscriptValue = useMemo(
+    () => ({
+      enabled: showsNestedAgentFooter,
+      children: conductorChildren,
+      reportsByRunId: conductorReportsByRunId,
+      messages: timelineMessages,
+      onOpenChild: onSelectSession,
+      onStopChild: handleStopChild,
+    }),
+    [
+      conductorChildren,
+      conductorReportsByRunId,
+      handleStopChild,
+      onSelectSession,
+      showsNestedAgentFooter,
+      timelineMessages,
+    ],
+  );
   const suppressEmptyConversationPlaceholder =
     composerHandoffInProgress || controller.queue.queuedMessage !== null;
   const handleForkFromMessage = useCallback(
@@ -733,6 +800,11 @@ export function ChatView({
     workspaceSetup?.desired ?? [],
   );
 
+  const parentConductor = useConductorGraphStore((state) =>
+    conductorNode?.parentSessionId
+      ? state.nodesById[conductorNode.parentSessionId]
+      : undefined,
+  );
   const composerFooter = (
     <div className="px-[var(--spacing-app-panel-gutter-inline)] pb-[var(--spacing-app-panel-gutter-inline)]">
       <div
@@ -925,7 +997,9 @@ export function ChatView({
         ) : null}
       </AnimatePresence>
       <p className="text-sm font-normal text-foreground">
-        {t("emptyState.startAConversation")}
+        {isConductorChat
+          ? t("conductor.emptyState")
+          : t("emptyState.startAConversation")}
       </p>
     </div>
   );
@@ -982,198 +1056,208 @@ export function ChatView({
   });
 
   return (
-    <ArtifactPolicyProvider
-      messages={timelineMessages}
-      sessionCwd={controller.sessionArtifactCwd}
-      sessionId={sessionId}
-    >
-      <PocketVoiceSetupDialog
-        open={pocketVoiceSetupOpen}
-        onOpenChange={handlePocketVoiceSetupOpenChange}
-        onUseSelected={handlePocketVoiceUseSelected}
-        setup={pocketVoiceSetup}
-      />
-      <ArtifactAutoOpenMount
-        sessionId={sessionId}
-        isHistoryLoading={controller.isLoadingHistory}
+    <ConductorTranscriptProvider value={conductorTranscriptValue}>
+      <ArtifactPolicyProvider
+        messages={timelineMessages}
         sessionCwd={controller.sessionArtifactCwd}
-      />
-      <div
-        // The builder's resize divider measures this element to map pointer x
-        // to a column fraction. It resolves the element by this attribute
-        // rather than by counting parentElement hops, so inserting a wrapper
-        // between the divider and this grid cannot silently corrupt the math.
-        data-agent-builder-grid={isAgentBuilderSession ? "" : undefined}
-        className={cn(
-          // @container: the chat row is a size container so the viewer/
-          // conversation min-width floors (cqw units) resolve against the
-          // row's actual width — sidebar occlusion included — not the
-          // viewport.
-          "@container h-full min-w-0 px-[var(--spacing-app-panel-gutter-inline)] pb-[var(--spacing-app-panel-gutter-bottom)] pt-[var(--spacing-app-panel-gutter-top)]",
-          !composerHandoffActive && "page-transition",
-          // Agent-builder sessions lay out as a two-column grid so the chat can
-          // slide in/out and the builder can be resized via the grid template.
-          isAgentBuilderSession ? "grid" : "flex",
-          !isAgentBuilderSession &&
-            (effectiveHasVisibleRightRail || isArtifactViewerOpen) &&
-            "gap-[var(--spacing-app-panel-gutter-inline)]",
-        )}
-        style={
-          isAgentBuilderSession
-            ? ({
-                gridTemplateColumns: agentBuilderGridTemplate,
-                // Collapse the inter-column gap to 0 when the chat is hidden so
-                // the builder truly fills the surface; animate it in step with
-                // the tracks so nothing jumps.
-                columnGap: isAgentBuilderChatCollapsed
-                  ? "0px"
-                  : "var(--spacing-app-panel-gutter-inline)",
-                transition: isResizingBuilderRail
-                  ? "none"
-                  : "grid-template-columns 240ms cubic-bezier(0.22, 1, 0.36, 1), column-gap 240ms cubic-bezier(0.22, 1, 0.36, 1)",
-              } as CSSProperties)
-            : undefined
-        }
+        sessionId={sessionId}
       >
+        <PocketVoiceSetupDialog
+          open={pocketVoiceSetupOpen}
+          onOpenChange={handlePocketVoiceSetupOpenChange}
+          onUseSelected={handlePocketVoiceUseSelected}
+          setup={pocketVoiceSetup}
+        />
+        <ArtifactAutoOpenMount
+          sessionId={sessionId}
+          isHistoryLoading={controller.isLoadingHistory}
+          sessionCwd={controller.sessionArtifactCwd}
+        />
         <div
-          ref={chatColumnRef}
-          data-chat-column
+          // The builder's resize divider measures this element to map pointer x
+          // to a column fraction. It resolves the element by this attribute
+          // rather than by counting parentElement hops, so inserting a wrapper
+          // between the divider and this grid cannot silently corrupt the math.
+          data-agent-builder-grid={isAgentBuilderSession ? "" : undefined}
           className={cn(
-            "relative flex min-w-0 flex-col",
-            !isAgentBuilderSession && "flex-1",
-            isAgentBuilderSession && "agent-builder-column-enter",
-            // While editing an agent the chat lives in a grid track that can
-            // animate to zero width; clip its contents so the slide reads
-            // cleanly. Kept mounted (not unmounted) so composer draft/focus
-            // state survives the collapse/expand toggle.
-            isAgentBuilderSession && "overflow-hidden",
+            // @container: the chat row is a size container so the viewer/
+            // conversation min-width floors (cqw units) resolve against the
+            // row's actual width — sidebar occlusion included — not the
+            // viewport.
+            "@container h-full min-h-0 min-w-0 overflow-hidden px-[var(--spacing-app-panel-gutter-inline)] pb-[var(--spacing-app-panel-gutter-bottom)] pt-[var(--spacing-app-panel-gutter-top)]",
+            !composerHandoffActive && "page-transition",
+            // Agent-builder sessions lay out as a two-column grid so the chat can
+            // slide in/out and the builder can be resized via the grid template.
+            isAgentBuilderSession ? "grid" : "flex",
+            !isAgentBuilderSession &&
+              (effectiveHasVisibleRightRail || isArtifactViewerOpen) &&
+              "gap-[var(--spacing-app-panel-gutter-inline)]",
           )}
-          // `inert` (vs aria-hidden) removes the collapsed chat from the tab
-          // order, pointer events, and the a11y tree in one step, so keyboard
-          // and screen-reader users can't land in the invisible zero-width
-          // panel while its focusable children stay mounted.
-          inert={isAgentBuilderChatCollapsed ? true : undefined}
-          style={{
-            ...agentBuilderChatColumnStyle,
-            // While the viewer is open, the conversation keeps a readable
-            // floor; the viewer panel is the flex child that yields (down to
-            // its own floor) when the row tightens. Skipped for agent-builder
-            // sessions, where the grid track must be free to collapse to 0.
-            ...(isArtifactViewerOpen && !isAgentBuilderSession
-              ? { minWidth: CONVERSATION_MIN_WIDTH_WITH_VIEWER }
-              : null),
-          }}
+          style={
+            isAgentBuilderSession
+              ? ({
+                  gridTemplateColumns: agentBuilderGridTemplate,
+                  // Collapse the inter-column gap to 0 when the chat is hidden so
+                  // the builder truly fills the surface; animate it in step with
+                  // the tracks so nothing jumps.
+                  columnGap: isAgentBuilderChatCollapsed
+                    ? "0px"
+                    : "var(--spacing-app-panel-gutter-inline)",
+                  transition: isResizingBuilderRail
+                    ? "none"
+                    : "grid-template-columns 240ms cubic-bezier(0.22, 1, 0.36, 1), column-gap 240ms cubic-bezier(0.22, 1, 0.36, 1)",
+                } as CSSProperties)
+              : undefined
+          }
         >
           <div
-            ref={conversationDropTargetRef}
+            ref={chatColumnRef}
+            data-chat-column
             className={cn(
-              "relative flex min-h-0 flex-1 flex-col overflow-visible rounded-md bg-card",
-              terminal.visible && !terminal.isFloating && "min-h-[280px]",
+              "relative flex min-h-0 min-w-0 flex-col overflow-hidden",
+              !isAgentBuilderSession && "h-full flex-1",
+              isAgentBuilderSession && "agent-builder-column-enter",
+              // While editing an agent the chat lives in a grid track that can
+              // animate to zero width; clip its contents so the slide reads
+              // cleanly. Kept mounted (not unmounted) so composer draft/focus
+              // state survives the collapse/expand toggle.
+              isAgentBuilderSession && "overflow-hidden",
             )}
+            // `inert` (vs aria-hidden) removes the collapsed chat from the tab
+            // order, pointer events, and the a11y tree in one step, so keyboard
+            // and screen-reader users can't land in the invisible zero-width
+            // panel while its focusable children stay mounted.
+            inert={isAgentBuilderChatCollapsed ? true : undefined}
+            style={{
+              ...agentBuilderChatColumnStyle,
+              // While the viewer is open, the conversation keeps a readable
+              // floor; the viewer panel is the flex child that yields (down to
+              // its own floor) when the row tightens. Skipped for agent-builder
+              // sessions, where the grid track must be free to collapse to 0.
+              ...(isArtifactViewerOpen && !isAgentBuilderSession
+                ? { minWidth: CONVERSATION_MIN_WIDTH_WITH_VIEWER }
+                : null),
+            }}
           >
-            {isAgentBuilderSession ? (
-              <button
-                type="button"
-                aria-label={t("agentBuilder.hideChat")}
-                title={t("agentBuilder.hideChat")}
-                onClick={toggleAgentBuilderChat}
-                className="absolute right-3 top-3 z-30 inline-flex size-7 items-center justify-center rounded-full bg-card/80 text-muted-foreground backdrop-blur transition-colors hover:bg-card hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <IconLayoutSidebarLeftCollapse
-                  className="size-4"
-                  aria-hidden="true"
+            <div
+              ref={conversationDropTargetRef}
+              className={cn(
+                "relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-md bg-card",
+                terminal.visible && !terminal.isFloating && "min-h-[280px]",
+              )}
+            >
+              {isAgentBuilderSession ? (
+                <button
+                  type="button"
+                  aria-label={t("agentBuilder.hideChat")}
+                  title={t("agentBuilder.hideChat")}
+                  onClick={toggleAgentBuilderChat}
+                  className="absolute right-3 top-3 z-30 inline-flex size-7 items-center justify-center rounded-full bg-card/80 text-muted-foreground backdrop-blur transition-colors hover:bg-card hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <IconLayoutSidebarLeftCollapse
+                    className="size-4"
+                    aria-hidden="true"
+                  />
+                </button>
+              ) : null}
+              {messageTimeline}
+              {conversationAttachmentDragOver ? (
+                <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-md border border-dashed border-border/80 bg-surface-glass-subtle p-6 [backdrop-filter:var(--backdrop-glass-subtle)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150 [-webkit-backdrop-filter:var(--backdrop-glass-subtle)]">
+                  <Badge variant="inverse">
+                    {t("attachments.dropToAttach")}
+                  </Badge>
+                </div>
+              ) : null}
+              {parentConductor ? (
+                <ConductorBackBanner
+                  conductorName={parentConductor.displayName}
+                  onBack={() => onSelectSession?.(parentConductor.sessionId)}
                 />
-              </button>
+              ) : null}
+              {search.isOpen ? (
+                <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center px-4 sm:justify-end sm:px-[var(--chat-transcript-inline-padding)]">
+                  <ChatSearchBar
+                    query={search.query}
+                    totalMatches={search.matchCount}
+                    activeMatchIndex={search.activeMatchIndex}
+                    isIndexing={search.isIndexing}
+                    announcedTotalMatches={search.announcedMatchCount}
+                    announcedActiveMatchIndex={search.announcedActiveMatchIndex}
+                    announcedIsIndexing={search.announcedIsIndexing}
+                    focusSignal={search.focusSignal}
+                    onQueryChange={search.setQuery}
+                    onNext={search.goToNext}
+                    onPrevious={search.goToPrevious}
+                    onClose={closeSearch}
+                  />
+                </div>
+              ) : null}
+            </div>
+            {terminal.visible &&
+            terminal.isFloating &&
+            terminalDockPreview?.region === "chatColumn" ? (
+              <TerminalDockPreview
+                height={terminalDockPreview.size.height}
+                surface="chatColumn"
+              />
             ) : null}
-            {messageTimeline}
-            {conversationAttachmentDragOver ? (
-              <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-md border border-dashed border-border/80 bg-surface-glass-subtle p-6 [backdrop-filter:var(--backdrop-glass-subtle)] motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150 [-webkit-backdrop-filter:var(--backdrop-glass-subtle)]">
-                <Badge variant="inverse">{t("attachments.dropToAttach")}</Badge>
-              </div>
-            ) : null}
-            {search.isOpen ? (
-              <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center px-4 sm:justify-end sm:px-[var(--chat-transcript-inline-padding)]">
-                <ChatSearchBar
-                  query={search.query}
-                  totalMatches={search.matchCount}
-                  activeMatchIndex={search.activeMatchIndex}
-                  isIndexing={search.isIndexing}
-                  announcedTotalMatches={search.announcedMatchCount}
-                  announcedActiveMatchIndex={search.announcedActiveMatchIndex}
-                  announcedIsIndexing={search.announcedIsIndexing}
-                  focusSignal={search.focusSignal}
-                  onQueryChange={search.setQuery}
-                  onNext={search.goToNext}
-                  onPrevious={search.goToPrevious}
-                  onClose={closeSearch}
+            {terminal.visible && !terminalInRightRail ? (
+              <div
+                ref={terminalRootRef}
+                className={cn(
+                  terminal.isFloating
+                    ? "contents"
+                    : "mt-[var(--spacing-app-panel-gutter-inline)] flex min-h-0 shrink flex-col gap-2",
+                )}
+              >
+                <TerminalCapability
+                  controller={terminal}
+                  rootRef={terminalRootRef}
+                  sessionId={sessionId}
+                  getDockTargetForPointer={getTerminalDockTargetForPointer}
+                  onDockPreviewChange={setTerminalDockPreview}
+                  onDockToRegion={handleTerminalDockToRegion}
                 />
               </div>
             ) : null}
           </div>
-          {terminal.visible &&
-          terminal.isFloating &&
-          terminalDockPreview?.region === "chatColumn" ? (
-            <TerminalDockPreview
-              height={terminalDockPreview.size.height}
-              surface="chatColumn"
-            />
+
+          {sessionId && !isAgentBuilderSession ? (
+            <ArtifactViewerPanel sessionId={sessionId} />
           ) : null}
-          {terminal.visible && !terminalInRightRail ? (
-            <div
-              ref={terminalRootRef}
-              className={cn(
-                terminal.isFloating
-                  ? "contents"
-                  : "mt-[var(--spacing-app-panel-gutter-inline)] flex min-h-0 shrink flex-col gap-2",
-              )}
-            >
-              <TerminalCapability
-                controller={terminal}
-                rootRef={terminalRootRef}
-                sessionId={sessionId}
-                getDockTargetForPointer={getTerminalDockTargetForPointer}
-                onDockPreviewChange={setTerminalDockPreview}
-                onDockToRegion={handleTerminalDockToRegion}
-              />
-            </div>
-          ) : null}
+
+          <ChatRightRail
+            ref={rightRailRef}
+            session={effectiveSession}
+            project={controller.project}
+            sessionWorkingDir={
+              workspaceRepository.chatWorkspaces(effectiveSession).primary
+                ?.path ?? effectiveSession?.workingDir
+            }
+            contextVisible={contextVisible}
+            agentBuilderReadOnly={isReadOnly}
+            agentBuilderChatCollapsed={isAgentBuilderChatCollapsed}
+            builderRailSeparatorProps={builderRailSeparatorProps}
+            onExpandAgentBuilderChat={toggleAgentBuilderChat}
+            onAgentBuilderCompleted={onAgentBuilderCompleted}
+            builderColumnClassName={
+              isAgentBuilderOpen ? "agent-builder-column-enter" : undefined
+            }
+            builderColumnStyle={agentBuilderRailColumnStyle}
+            terminalOpen={terminal.activeWorkspaceHasTerminal}
+            contextPanelLeftViewportOcclusionPx={chatRowOcclusionPx}
+            onRequestCloseRightRail={handleCloseRightRail}
+            onToggleTerminal={handleToggleTerminal}
+            terminalController={terminal}
+            terminalDockPreview={terminalDockPreview}
+            terminalRootRef={terminalRootRef}
+            getTerminalDockTargetForPointer={getTerminalDockTargetForPointer}
+            onTerminalDockPreviewChange={setTerminalDockPreview}
+            onTerminalDockToRegion={handleTerminalDockToRegion}
+            onOpenTerminalAtPath={handleOpenTerminalAtPath}
+          />
         </div>
-
-        {sessionId && !isAgentBuilderSession ? (
-          <ArtifactViewerPanel sessionId={sessionId} />
-        ) : null}
-
-        <ChatRightRail
-          ref={rightRailRef}
-          session={effectiveSession}
-          project={controller.project}
-          sessionWorkingDir={
-            workspaceRepository.chatWorkspaces(effectiveSession).primary
-              ?.path ?? effectiveSession?.workingDir
-          }
-          contextVisible={contextVisible}
-          agentBuilderReadOnly={isReadOnly}
-          agentBuilderChatCollapsed={isAgentBuilderChatCollapsed}
-          builderRailSeparatorProps={builderRailSeparatorProps}
-          onExpandAgentBuilderChat={toggleAgentBuilderChat}
-          onAgentBuilderCompleted={onAgentBuilderCompleted}
-          builderColumnClassName={
-            isAgentBuilderOpen ? "agent-builder-column-enter" : undefined
-          }
-          builderColumnStyle={agentBuilderRailColumnStyle}
-          terminalOpen={terminal.activeWorkspaceHasTerminal}
-          contextPanelLeftViewportOcclusionPx={chatRowOcclusionPx}
-          onRequestCloseRightRail={handleCloseRightRail}
-          onToggleTerminal={handleToggleTerminal}
-          terminalController={terminal}
-          terminalDockPreview={terminalDockPreview}
-          terminalRootRef={terminalRootRef}
-          getTerminalDockTargetForPointer={getTerminalDockTargetForPointer}
-          onTerminalDockPreviewChange={setTerminalDockPreview}
-          onTerminalDockToRegion={handleTerminalDockToRegion}
-          onOpenTerminalAtPath={handleOpenTerminalAtPath}
-        />
-      </div>
-    </ArtifactPolicyProvider>
+      </ArtifactPolicyProvider>
+    </ConductorTranscriptProvider>
   );
 }

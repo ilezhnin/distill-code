@@ -545,7 +545,7 @@ export function UpdaterProvider({
       }
       const transitionId = result.runtime.pendingInstall?.transitionId;
       if (!transitionId) {
-        throw new Error("Berd could not record the release switch safely.");
+        throw new Error("Distill could not record the release switch safely.");
       }
       setAvailableVersion(prepared.version);
       await downloadAndInstallUpdate(rid, transitionId);

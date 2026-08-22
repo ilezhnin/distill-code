@@ -152,10 +152,10 @@ export const ALL_TOOL_GROUPS = {
   },
   feedback: {
     description:
-      "Open an approved report in Berd's feedback form or submit it directly after explicit user approval.",
+      "Open an approved report in Distill's feedback form or submit it directly after explicit user approval.",
     cli: {
       noun: "feedback",
-      about: "Open or submit an approved Berd feedback report",
+      about: "Open or submit an approved Distill feedback report",
     },
     actions: {
       open: openFeedbackCommand,

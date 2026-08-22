@@ -33,7 +33,7 @@ export const openFeedbackCommand = defineCommand({
   destructive: false,
   summary: "Open the feedback form with a report prefilled",
   description:
-    "Open Berd's existing feedback form with the supplied title and description ready for optional hand editing. Nothing is submitted. Logs and Doctor diagnostics are selected only when --include-logs is explicitly passed.",
+    "Open Distill's existing feedback form with the supplied title and description ready for optional hand editing. Nothing is submitted. Logs and Doctor diagnostics are selected only when --include-logs is explicitly passed.",
   helpFooter: `Example:
   berdctl feedback open --title "Composer loses draft" \\
     --description "Steps to reproduce..." --include-logs --json

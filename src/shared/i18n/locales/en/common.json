@@ -103,19 +103,19 @@
     "clipboardUnavailable": "Clipboard API not available"
   },
   "rendererError": {
-    "description": "Berd hit a renderer error. Reload the window to try again.",
+    "description": "Distill hit a renderer error. Reload the window to try again.",
     "reload": "Reload",
     "title": "Something went wrong"
   },
   "startup": {
-    "loadingLabel": "Starting Berd",
+    "loadingLabel": "Starting Distill",
     "error": {
       "gooseServe": {
-        "title": "Berd couldn't start",
+        "title": "Distill couldn't start",
         "description": "The local Goose service didn't start. Try again, or copy the startup details and open the logs folder to share them with support."
       },
       "networkWarp": {
-        "title": "Berd can't reach Block's internal services",
+        "title": "Distill can't reach required internal services",
         "description": "It looks like you aren't connected to Cloudflare WARP.",
         "steps": {
           "connect": "Connect to WARP",
@@ -124,11 +124,11 @@
       },
       "runtimeConfig": {
         "title": "Configuration unavailable",
-        "description": "Berd couldn't load its runtime configuration. Try again, or copy the startup details and share them with support."
+        "description": "Distill couldn't load its runtime configuration. Try again, or copy the startup details and share them with support."
       },
       "unknown": {
-        "title": "Berd couldn't start",
-        "description": "Berd couldn't finish starting. Try again, or copy the startup details and open the logs folder to share them with support."
+        "title": "Distill couldn't start",
+        "description": "Distill couldn't finish starting. Try again, or copy the startup details and open the logs folder to share them with support."
       },
       "copyDetails": "Copy details",
       "openLogsFolder": "Open logs folder",

@@ -477,6 +477,8 @@ mod tests {
         // Native npm/Volta locations are appended.
         assert!(paths.iter().any(|p| p.ends_with("npm")));
         assert!(paths.iter().any(|p| p.ends_with("Volta\\bin")));
+        assert!(paths.iter().any(|p| p.ends_with(".local\\bin")));
+        assert!(paths.iter().any(|p| p.ends_with(".grok\\bin")));
 
         // Impossible-on-Windows Unix locations must never be appended.
         for unix_dir in [

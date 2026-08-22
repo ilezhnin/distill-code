@@ -29,9 +29,10 @@ import { Progress } from "@/shared/ui/progress";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/shared/ui/tooltip";
 import { Kbd } from "@/shared/ui/kbd";
 import { AgentModelPicker } from "./AgentModelPicker";
-import { formatProviderLabel } from "@/shared/ui/icons/ProviderIcons";
+import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProviderStatus";
 import { getCatalogEntryFromEntries } from "@/features/providers/providerCatalog";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
+import { listVisibleAgentPickerOptions } from "../lib/listVisibleAgentPickerOptions";
 import { supportsContextCompactionControls } from "../lib/autoCompact";
 import { requestOpenSettings } from "@/features/settings/lib/settingsEvents";
 import { ProjectInputSelector } from "./ProjectInputSelector";
@@ -117,6 +118,8 @@ export function ChatInputToolbar({
   const { formatNumber } = useLocaleFormatting();
   const anyVoiceDictationActive = useAnyVoiceDictationActive();
   const catalogEntries = useProviderCatalogStore((state) => state.entries);
+  const catalogLoaded = useProviderCatalogStore((state) => state.loaded);
+  const { agentReadiness, readyAgentIds } = useAgentProviderStatus();
   const [openMenu, setOpenMenu] = useState<OpenToolbarMenu | null>(null);
   const handleMenuOpenChange = (menu: OpenToolbarMenu) => (open: boolean) => {
     setOpenMenu((current) => (open ? menu : current === menu ? null : current));
@@ -218,31 +221,28 @@ export function ChatInputToolbar({
     voiceRecording ||
     voiceTranscribing;
 
-  const agentProviders = useMemo(() => {
-    const seen = new Set<string>();
-    const available: AgentPickerOption[] = [];
-    for (const provider of providers) {
-      if (seen.has(provider.id)) {
-        continue;
-      }
-      seen.add(provider.id);
-      available.push({
-        ...provider,
-        label:
-          getCatalogEntryFromEntries(catalogEntries, provider.id)
-            ?.displayName ?? provider.label,
-      });
-    }
-    if (available.length > 0) return available;
-    return [
-      {
-        id: selectedProvider,
-        label:
-          getCatalogEntryFromEntries(catalogEntries, selectedProvider)
-            ?.displayName ?? formatProviderLabel(selectedProvider),
-      },
-    ];
-  }, [catalogEntries, providers, selectedProvider]);
+  const agentProviders = useMemo((): AgentPickerOption[] => {
+    return listVisibleAgentPickerOptions({
+      catalogEntries,
+      catalogLoaded,
+      agentReadiness,
+      extraProviders: providers,
+      selectedAgentId: selectedProvider,
+      readyAgentIds,
+    }).map((agent) => ({
+      ...agent,
+      label:
+        getCatalogEntryFromEntries(catalogEntries, agent.id)?.displayName ??
+        agent.label,
+    }));
+  }, [
+    agentReadiness,
+    catalogEntries,
+    catalogLoaded,
+    providers,
+    readyAgentIds,
+    selectedProvider,
+  ]);
   const contextProgress =
     contextLimit > 0 ? Math.min(contextTokens / contextLimit, 1) : 0;
   const showContextUsage =

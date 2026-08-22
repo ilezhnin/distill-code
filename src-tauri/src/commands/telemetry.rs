@@ -39,26 +39,11 @@ const TELEMETRY_BOOTSTRAP_PATH: &str = "/v1/bootstrap";
 const TELEMETRY_SCHEMA_VERSION_HEADER: &str = "x-berd-schema-version";
 const TELEMETRY_SCHEMA_VERSION: &str = "berd-otlp-logs-v1";
 
-// Telemetry-gateway host allowlist. The renderer's OTLP endpoint is
-// build-injected from VITE_OTLP_LOGS_ENDPOINT (see vite.config.ts) and must
-// resolve to one of these hosts:
-//
-// - otel.berd.xyz — the production gateway (squareup/berd-monitoring's
-//   production deployment), injected for VITE_ENVIRONMENT=production builds.
-// - otel.test.blockstaging.build — the staging gateway
-//   (squareup/berd-monitoring's staging deployment), injected for
-//   VITE_ENVIRONMENT=staging builds.
-// - otlp.invalid.goose-internal.example — DUMMY placeholder injected in
-//   development; the prod/staging gate plus this fake host keep the path
-//   inert in dev and external clones.
-//
-// Keep this in sync with vite.config.ts's endpoint constants and
-// tauri.conf.json's CSP connect-src.
-const ALLOWED_OTEL_LOGS_HOSTS: [&str; 3] = [
-    "otel.berd.xyz",
-    "otel.test.blockstaging.build",
-    "otlp.invalid.goose-internal.example",
-];
+// Distill does not operate a telemetry collector. The only allowed host is an
+// inert placeholder so local/dev builds cannot reach Berd or Block gateways.
+// A Distill-owned collector can be added later by expanding this list together
+// with DISTILL_OTLP_LOGS_ENDPOINT.
+const ALLOWED_OTEL_LOGS_HOSTS: [&str; 1] = ["otlp.invalid.goose-internal.example"];
 
 // File under the app-data dir holding the persistent anonymous installation
 // id. It keys bootstrap-token issuance (and rate limiting) on the gateway and
@@ -1655,37 +1640,19 @@ mod tests {
         );
     }
 
-    /// Pins the exact URL pair a production build uses: the injected
-    /// `/v1/logs` endpoint validates against the allowlist and derives the
-    /// production `/v1/bootstrap` URL.
     #[test]
-    fn allows_the_production_gateway_host_and_derives_its_bootstrap_url() {
-        let logs_url = allowed_otel_logs_endpoint("https://otel.berd.xyz/v1/logs").unwrap();
+    fn rejects_the_berd_production_gateway_host() {
+        let error = allowed_otel_logs_endpoint("https://otel.berd.xyz/v1/logs").unwrap_err();
 
-        let bootstrap_url = telemetry_bootstrap_url(&logs_url).unwrap();
-
-        assert_eq!(logs_url.as_str(), "https://otel.berd.xyz/v1/logs");
-        assert_eq!(bootstrap_url.as_str(), "https://otel.berd.xyz/v1/bootstrap");
+        assert!(error.contains("not allowed"));
     }
 
-    /// Pins the exact URL pair a staging build uses: the injected
-    /// `/v1/logs` endpoint validates against the allowlist and derives the
-    /// staging `/v1/bootstrap` URL.
     #[test]
-    fn allows_the_staging_gateway_host_and_derives_its_bootstrap_url() {
-        let logs_url =
-            allowed_otel_logs_endpoint("https://otel.test.blockstaging.build/v1/logs").unwrap();
+    fn rejects_the_block_staging_gateway_host() {
+        let error =
+            allowed_otel_logs_endpoint("https://otel.test.blockstaging.build/v1/logs").unwrap_err();
 
-        let bootstrap_url = telemetry_bootstrap_url(&logs_url).unwrap();
-
-        assert_eq!(
-            logs_url.as_str(),
-            "https://otel.test.blockstaging.build/v1/logs"
-        );
-        assert_eq!(
-            bootstrap_url.as_str(),
-            "https://otel.test.blockstaging.build/v1/bootstrap"
-        );
+        assert!(error.contains("not allowed"));
     }
 
     #[test]
@@ -1740,8 +1707,10 @@ mod tests {
     /// and installation id.
     #[test]
     fn rejects_endpoint_with_explicit_port() {
-        let error = allowed_otel_logs_endpoint("https://otel.test.blockstaging.build:8443/v1/logs")
-            .unwrap_err();
+        let error = allowed_otel_logs_endpoint(
+            "https://otlp.invalid.goose-internal.example:8443/v1/logs",
+        )
+        .unwrap_err();
 
         assert!(error.contains("port"));
     }
@@ -1750,10 +1719,15 @@ mod tests {
     /// tripping the explicit-port rejection.
     #[test]
     fn allows_the_scheme_default_port() {
-        let url =
-            allowed_otel_logs_endpoint("https://otel.test.blockstaging.build:443/v1/logs").unwrap();
+        let url = allowed_otel_logs_endpoint(
+            "https://otlp.invalid.goose-internal.example:443/v1/logs",
+        )
+        .unwrap();
 
-        assert_eq!(url.as_str(), "https://otel.test.blockstaging.build/v1/logs");
+        assert_eq!(
+            url.as_str(),
+            "https://otlp.invalid.goose-internal.example/v1/logs"
+        );
     }
 
     #[test]

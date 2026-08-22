@@ -115,6 +115,19 @@ export function resetChatRuntimeStartup(): void {
   startupLatch = null;
 }
 
+function applyCuratedProvidersToAgentStore(validated = true) {
+  const providerAllowlist = parseProviderAllowlist(
+    useRuntimeConfigStore.getState().config,
+  );
+  const providers = filterStartupProvidersForRuntimeConfig(
+    getCuratedAgentProviders(),
+    providerAllowlist,
+    getModelProviders(),
+  );
+  useAgentStore.getState().setProviders(providers, validated);
+  return providers;
+}
+
 async function startChatRuntime(
   options: { hydrateMessageQueues?: boolean } = {},
 ): Promise<void> {
@@ -128,6 +141,12 @@ async function startChatRuntime(
   if (getBuildFeatureState().securityMl) {
     setPermissionHandler(handleSecurityPermissionRequest);
   }
+
+  // Catalog harnesses do not depend on goose serve. Publish them before
+  // waiting on ACP so the composer Agent column matches Settings even if
+  // the backend is slow or stuck connecting.
+  applyCuratedProvidersToAgentStore(false);
+
   await getClient();
   perfLog(
     `[perf:startup] ACP getClient ready in ${(performance.now() - tConn).toFixed(1)}ms`,
@@ -160,19 +179,6 @@ async function startChatRuntime(
     .catch((err) => {
       console.error("Failed to initialize model setup state on startup:", err);
     });
-
-  const applyCuratedProviders = (validated = true) => {
-    const providerAllowlist = parseProviderAllowlist(
-      useRuntimeConfigStore.getState().config,
-    );
-    const providers = filterStartupProvidersForRuntimeConfig(
-      getCuratedAgentProviders(),
-      providerAllowlist,
-      getModelProviders(),
-    );
-    store.setProviders(providers, validated);
-    return providers;
-  };
 
   const loadDistroBundle = async () => {
     try {
@@ -330,8 +336,6 @@ async function startChatRuntime(
     );
   };
 
-  applyCuratedProviders(false);
-
   await loadRuntimeConfig();
   await loadSetupCatalog();
   try {
@@ -364,7 +368,7 @@ async function startChatRuntime(
     }
   }
   await loadDistroBundle();
-  applyCuratedProviders(true);
+  applyCuratedProvidersToAgentStore(true);
 
   // Legacy agent-target repair runs off the critical path: the read-time
   // compatibility layer in personaExecutionTarget keeps unmigrated agents

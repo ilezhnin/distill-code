@@ -30,7 +30,7 @@ function readBuildFeatures(): Record<BuildFeature, boolean> {
     byoKeyProviders: import.meta.env.VITE_BYO_KEY_PROVIDERS !== "0",
     feedback: import.meta.env.VITE_FEEDBACK === "1",
     managedConnections: import.meta.env.VITE_MANAGED_CONNECTIONS === "1",
-    telemetry: import.meta.env.VITE_TELEMETRY !== "0",
+    telemetry: import.meta.env.VITE_TELEMETRY === "1",
     // Managed internal distributions force telemetry consent ON: the user
     // setting is skipped and the settings toggle is hidden. A positive opt-in
     // like the Block-service gates; public builds leave it unset. Paired with

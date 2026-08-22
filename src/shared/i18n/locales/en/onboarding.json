@@ -3,16 +3,16 @@
     "goBack": "Go back"
   },
   "welcome": {
-    "title": "Welcome to Berd.",
-    "subtitle": "Your place for doing.",
+    "title": "Welcome to Distill.",
+    "subtitle": "Your place for conducting work.",
     "getStarted": "Let’s go",
-    "usageConsent": "Share anonymous usage data to help improve Berd.",
+    "usageConsent": "Share anonymous usage data to help improve Distill.",
     "learnMore": "Learn more"
   },
   "workTypes": {
-    "title": "What type of work will you use Berd for?",
+    "title": "What type of work will you use Distill for?",
     "descriptionLine1": "Pick one or more options and we’ll recommend",
-    "descriptionLine2": "some Berd agents for you to set up.",
+    "descriptionLine2": "some Distill agents for you to set up.",
     "next": "Next",
     "items": {
       "engineering": {
@@ -52,7 +52,7 @@
     "waitingForRuntime": "Getting ready…",
     "keep": "Keep ’em",
     "skip": "Skip for now",
-    "runtimeUnavailable": "Berd couldn’t finish starting, so agents can’t be added yet.",
+    "runtimeUnavailable": "Distill couldn’t finish starting, so agents can’t be added yet.",
     "retryRuntime": "Try again",
     "genericError": "Some agents could not be adopted. Try again.",
     "adoptionError": "Couldn’t adopt {{names}}. The other agents were kept; try again for the rest.",
@@ -77,7 +77,7 @@
     "partialAdoptionWarning": "Some agents were kept, but {{names}} could not be added. You can continue and try again later."
   },
   "harness": {
-    "title": "Choose a provider to power Berd",
+    "title": "Choose a provider to power Distill",
     "description": "Start with one now, or connect a provider later in Settings.",
     "finish": "Finish",
     "install": "Install",
@@ -86,7 +86,7 @@
   },
   "setup": {
     "readyTitle": "{{provider}} is ready",
-    "readyDescription": "Your provider is connected and ready to use in Berd.",
+    "readyDescription": "Your provider is connected and ready to use in Distill.",
     "finishOnboarding": "Finish onboarding",
     "installationComplete": "Installation complete",
     "installing": "Installing your",

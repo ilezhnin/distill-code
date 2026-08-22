@@ -1,5 +1,6 @@
 export const APP_AVATAR_REF_PREFIX = "app-avatar:" as const;
 export const USER_AVATAR_REF_PREFIX = "user-avatar:" as const;
+export const AGENT_AVATAR_REF_PREFIX = "agent-avatar:" as const;
 
 export type AvatarMediaType = "image" | "video";
 export type AvatarAlphaMode = "stacked";
@@ -102,6 +103,24 @@ export function parseUserAvatarRef(value: string): string | undefined {
 
 export function isUserAvatarRef(value: string): boolean {
   return parseUserAvatarRef(value) !== undefined;
+}
+
+export function agentAvatarRef(id: string): string {
+  return `${AGENT_AVATAR_REF_PREFIX}${id}`;
+}
+
+export function parseAgentAvatarRef(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith(AGENT_AVATAR_REF_PREFIX)) {
+    return undefined;
+  }
+
+  const id = trimmed.slice(AGENT_AVATAR_REF_PREFIX.length);
+  return APP_AVATAR_ID_PATTERN.test(id) ? id : undefined;
+}
+
+export function isAgentAvatarRef(value: string): boolean {
+  return parseAgentAvatarRef(value) !== undefined;
 }
 
 export function mediaTypeFromMimeType(mimeType: string): AvatarMediaType {

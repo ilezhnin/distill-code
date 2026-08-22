@@ -8,6 +8,8 @@ import {
   getVisibleSessions,
   useChatSessionStore,
 } from "@/features/chat/stores/chatSessionStore";
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import { isNestedExecutorSession } from "@/features/conductor/sessionVisibility";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { selectLocalMessageCountsBySession } from "@/features/chat/stores/chatSelectors";
 import {
@@ -82,6 +84,19 @@ export function SessionQuickSwitcher({
   }
 
   const sessions = useChatSessionStore((state) => state.sessions);
+  const nestedExecutorIdList = useConductorGraphStore(
+    useShallow((state) =>
+      Object.values(state.nodesById)
+        .filter(
+          (node) => node.role === "orchestrator" || node.role === "worker",
+        )
+        .map((node) => node.sessionId),
+    ),
+  );
+  const nestedExecutorIds = useMemo(
+    () => new Set(nestedExecutorIdList),
+    [nestedExecutorIdList],
+  );
   const localMessageCountsBySession = useChatStore(
     useShallow(selectLocalMessageCountsBySession),
   );
@@ -89,7 +104,11 @@ export function SessionQuickSwitcher({
 
   const results = useMemo<QuickSwitchResult[]>(() => {
     const candidates = getVisibleSessions(sessions, localMessageCountsBySession)
-      .filter((session) => !session.archivedAt)
+      .filter(
+        (session) =>
+          !session.archivedAt &&
+          !isNestedExecutorSession(session, nestedExecutorIds),
+      )
       .map((session) => ({
         id: session.id,
         title: getDisplaySessionTitle(
@@ -103,7 +122,14 @@ export function SessionQuickSwitcher({
         ),
       }));
     return buildQuickSwitchResults(candidates, query);
-  }, [sessions, localMessageCountsBySession, sessionStateById, query, t]);
+  }, [
+    sessions,
+    localMessageCountsBySession,
+    nestedExecutorIds,
+    sessionStateById,
+    query,
+    t,
+  ]);
 
   const handleSelect = (sessionId: string) => {
     onOpenChange(false);

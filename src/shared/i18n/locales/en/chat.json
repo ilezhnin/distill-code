@@ -77,7 +77,7 @@
     "voiceInputFailedTitle": "Voice dictation failed",
     "voiceInputNoMicrophoneDescription": "Connect or select a microphone, then try voice dictation again.",
     "voiceInputNoMicrophoneTitle": "No microphone found",
-    "voiceInputPermissionDescription": "Allow microphone access for Berd in System Settings, then try voice dictation again.",
+    "voiceInputPermissionDescription": "Allow microphone access for Distill in System Settings, then try voice dictation again.",
     "voiceInputPermissionTitle": "Microphone access is blocked",
     "voiceInputUnavailableDescription": "Another app may be using your microphone, or macOS could not start recording. Close other recording apps and try again.",
     "voiceInputUnavailableTitle": "Microphone is unavailable"
@@ -388,7 +388,7 @@
     "providerError": {
       "anthropicThinkingHistory": "This chat can't continue with a Claude model because its earlier reasoning history is no longer in a form Claude will accept. Start a new chat, or switch this chat to a non-Claude model to keep going."
     },
-    "berdctlCrossSessionLabel": "Sent by Berd from another session",
+    "berdctlCrossSessionLabel": "Sent by Distill from another session",
     "steerLabel": "Steered",
     "viewMore": "View more",
     "viewLess": "View less",
@@ -445,6 +445,45 @@
   },
   "emptyState": {
     "startAConversation": "Start a conversation"
+  },
+  "conductor": {
+    "spawnTitle": "Start an orchestrator",
+    "spawnDescription": "Give a bounded task. A named orchestrator runs it and reports back here.",
+    "nameLabel": "Name",
+    "taskLabel": "Task",
+    "taskPlaceholder": "What should this orchestrator do?",
+    "startOrchestrator": "Start orchestrator",
+    "starting": "Starting…",
+    "emptyState": "Ask the conductor. It picks agents from the catalog and runs the work.",
+    "pickAgentTitle": "Choose a conductor",
+    "pickAgentDescription": "The conductor is one of your agents. It will pick other agents for orchestrators and workers.",
+    "pickAgentConfirm": "Start conductor",
+    "pickAgentCancel": "Cancel",
+    "pickAgentEmpty": "No agents yet. Distill will start with Producer.",
+    "openTranscript": "Open transcript",
+    "backToConductor": "Back to {{name}}",
+    "openChild": "{{name}}, {{status}}",
+    "resultTitle": "{{name}} — {{status}}",
+    "statsWorking": "{{count}} working",
+    "statsDone": "{{count}} done",
+    "statsTokens": "{{tokens}} tokens",
+    "statsCost": "${{cost}}",
+    "stopChild": "Stop {{name}}",
+    "decisions": "Decisions",
+    "artifacts": "Artifacts",
+    "risks": "Risks",
+    "needsOperator": "Needs the operator.",
+    "operatorIntervened": "The operator intervened in this run.",
+    "nextTask": "Next",
+    "status": {
+      "starting": "starting",
+      "running": "running",
+      "waiting": "waiting",
+      "completed": "completed",
+      "failed": "failed",
+      "cancelled": "cancelled",
+      "stopped": "stopped"
+    }
   },
   "skeleton": {
     "loadingConversation": "Loading conversation"

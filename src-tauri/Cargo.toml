@@ -1,8 +1,8 @@
 [package]
 name = "Berd"
 version = "0.6.2"
-description = "Berd desktop app"
-authors = ["Block, Inc."]
+description = "Distill desktop app"
+authors = ["Distill"]
 edition = "2021"
 default-run = "Berd"
 

@@ -191,7 +191,7 @@ export function AgentShareCardPreview({
           textAnchor="end"
         >
           {/* i18n-check-ignore: fixed brand text embedded in shareable card artwork */}
-          BERD AGENT
+          DISTILL AGENT
         </text>
 
         <image

@@ -8,8 +8,6 @@ import {
   IconPencil,
   IconTrash,
 } from "@tabler/icons-react";
-import { PinIcon } from "lucide-react";
-import { usePinToHomeWidget } from "@/features/home/hooks/usePinToHomeWidget";
 import { cn } from "@/shared/lib/cn";
 import { AgentTileButton } from "@/shared/ui/agent-tile-button";
 import { AvatarMedia } from "@/shared/ui/avatar-media";
@@ -83,12 +81,6 @@ export const PersonaCard = memo(function PersonaCard({
   const fallbackIconSrc = resolveAgentIcon(persona.id);
   const isEditable = canEditPersona(persona);
   const isDeletable = canDeletePersona(persona);
-  const {
-    isPinned: isPinnedToHome,
-    isPinning: isPinningToHome,
-    pinToHome,
-    unpinFromHome,
-  } = usePinToHomeWidget({ kind: "agent", id: persona.id });
   const avatarTransitionName = getAgentAvatarTransitionName(persona.id);
 
   const optionsMenu = (
@@ -118,20 +110,6 @@ export const PersonaCard = memo(function PersonaCard({
         sideOffset={4}
         className="shadow-mini"
       >
-        <DropdownMenuItem
-          onSelect={() => (isPinnedToHome ? unpinFromHome() : void pinToHome())}
-          disabled={isPinningToHome}
-        >
-          <PinIcon
-            className="size-3.5"
-            fill={isPinnedToHome ? "currentColor" : "none"}
-          />
-          {isPinnedToHome
-            ? t("common:actions.unpinFromHome")
-            : isPinningToHome
-              ? t("common:actions.pinningToHome")
-              : t("common:actions.pinToHome")}
-        </DropdownMenuItem>
         {isEditable && (
           <DropdownMenuItem onSelect={() => onEdit?.(persona)}>
             <IconPencil className="size-3.5" />

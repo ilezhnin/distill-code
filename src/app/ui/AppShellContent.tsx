@@ -529,6 +529,7 @@ function renderRouteContent({
           onComposerHandoffTarget={onChatComposerHandoffTarget}
           onWorkspaceNameRequest={onWorkspaceNameRequest}
           onAgentBuilderCompleted={onAgentBuilderCompleted}
+          onSelectSession={onSelectSession}
         />
       ) : (
         (setupRequiredContent ?? (

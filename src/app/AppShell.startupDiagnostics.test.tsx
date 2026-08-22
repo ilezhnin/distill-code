@@ -169,17 +169,17 @@ describe("AppShell startup diagnostics", () => {
     expect(screen.getByTestId("app-shell-content")).toBeInTheDocument();
     expect(mocks.defaultModelRepair).toHaveBeenCalledWith(true);
     expect(
-      screen.queryByRole("heading", { name: "Berd couldn't start" }),
+      screen.queryByRole("heading", { name: "Distill couldn't start" }),
     ).not.toBeInTheDocument();
   });
 
-  it("shows the Berd loader while app startup is loading", () => {
+  it("shows the Distill loader while app startup is loading", () => {
     mocks.startupState.ready = false;
 
     const { container } = renderAppShell();
 
     expect(
-      screen.getByRole("status", { name: "Starting Berd" }),
+      screen.getByRole("status", { name: "Starting Distill" }),
     ).toBeInTheDocument();
     expect(
       container.querySelector('[data-slot="berd-loader"]'),
@@ -198,7 +198,7 @@ describe("AppShell startup diagnostics", () => {
     renderAppShell();
 
     expect(
-      screen.getByRole("heading", { name: "Berd couldn't start" }),
+      screen.getByRole("heading", { name: "Distill couldn't start" }),
     ).toBeInTheDocument();
     expect(screen.queryByTestId("app-shell-content")).not.toBeInTheDocument();
 
@@ -233,10 +233,10 @@ describe("AppShell startup diagnostics", () => {
 
     expect(screen.getByTestId("onboarding-flow")).toBeInTheDocument();
     expect(
-      screen.queryByRole("status", { name: "Starting Berd" }),
+      screen.queryByRole("status", { name: "Starting Distill" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("heading", { name: "Berd couldn't start" }),
+      screen.queryByRole("heading", { name: "Distill couldn't start" }),
     ).not.toBeInTheDocument();
   });
 
@@ -253,7 +253,7 @@ describe("AppShell startup diagnostics", () => {
     });
 
     expect(
-      screen.getByRole("heading", { name: "Berd couldn't start" }),
+      screen.getByRole("heading", { name: "Distill couldn't start" }),
     ).toBeInTheDocument();
     expect(screen.queryByTestId("onboarding-flow")).not.toBeInTheDocument();
   });

@@ -20,24 +20,24 @@
       "backHome": "Volver a Inicio",
       "backToList": "Volver a las tareas iniciales",
       "taskDetails": {
-        "connectProvider": "Conecta Berd a un proveedor de IA para elegir un modelo y empezar a chatear.",
+        "connectProvider": "Conecta Distill a un proveedor de IA para elegir un modelo y empezar a chatear.",
         "createProject": "Crea un proyecto para mantener juntos los chats, archivos y contexto relacionados.",
         "addWidget": "Personaliza Inicio con un widget que mantenga la información útil a mano.",
-        "startChat": "Hazle una pregunta a Berd o dale una tarea para iniciar tu primera conversación."
+        "startChat": "Hazle una pregunta a Distill o dale una tarea para iniciar tu primera conversación."
       },
       "markDone": "Marcar como hecha",
       "startChat": "Inicia un chat",
       "closeTaskDetails": "Cerrar detalles de la tarea"
     },
     "callout": {
-      "avatarLabel": "Berdy",
-      "avatarAlt": "Berdy, tu guía de introducción",
-      "agentUnavailable": "Berdy no pudo iniciar un chat. Inténtalo de nuevo.",
+      "avatarLabel": "Distill",
+      "avatarAlt": "Distill, tu guía de introducción",
+      "agentUnavailable": "Distill no pudo iniciar un chat. Inténtalo de nuevo.",
       "dismiss": "Cerrar introducción",
       "title": "¡Te damos la bienvenida!",
-      "body": "Soy Berdy, tu asistente integrado de Berd. Estoy aquí para ayudarte a avanzar.",
+      "body": "Soy Distill, tu asistente integrado. Estoy aquí para ayudarte a avanzar.",
       "action": "Ver el recorrido",
-      "openHelp": "Preguntarle a Berdy"
+      "openHelp": "Preguntarle a Distill"
     },
     "tour": {
       "progress": "{{current}} de {{total}}",
@@ -51,13 +51,13 @@
         "responseLine1": "Las aves cosen el alba con su canto",
         "responseLine2": "Las alas rozan de oro el cielo",
         "responseLine3": "La mañana aprende a volar",
-        "typing": "Berd está escribiendo"
+        "typing": "Distill está escribiendo"
       },
       "steps": {
         "1": {
           "title": "Tu lienzo, tu hogar",
           "body": "Fija lo que importa y encuéntralo rápido. Inicio es donde guardas lo que no quieres tener que buscar: fija un chat, un agente o un widget.",
-          "visual": "Una vista previa del lienzo de inicio de Berd"
+          "visual": "Una vista previa del lienzo de inicio de Distill"
         },
         "2": {
           "title": "Todos tus proveedores de IA en un solo lugar",
@@ -65,19 +65,19 @@
           "visual": "Una colección de iconos de proveedores de IA"
         },
         "3": {
-          "title": "Pregúntale cualquier cosa a Berd",
-          "body": "Haz preguntas, explora ideas o resuelve una tarea. Berd conserva el contexto para que puedas seguir avanzando.",
-          "visual": "Una conversación breve con Berd"
+          "title": "Pregúntale cualquier cosa a Distill",
+          "body": "Haz preguntas, explora ideas o resuelve una tarea. Distill conserva el contexto para que puedas seguir avanzando.",
+          "visual": "Una conversación breve con Distill"
         },
         "4": {
           "title": "Los agentes se han unido al chat",
           "body": "Un agente es un especialista con quien hablas directamente. @Menciónalo en un chat y trabajará contigo como un compañero, no como una herramienta.",
-          "visual": "Una colección de agentes de Berd"
+          "visual": "Una colección de agentes de Distill"
         },
         "5": {
-          "title": "Enséñale a Berd un truco nuevo con habilidades",
-          "body": "Las habilidades dan a Berd y a tus agentes instrucciones para una tarea, herramienta o flujo de trabajo específico, para que no tengas que explicarlo cada vez.",
-          "visual": "Una colección de habilidades reutilizables de Berd"
+          "title": "Enséñale a Distill un truco nuevo con habilidades",
+          "body": "Las habilidades dan a Distill y a tus agentes instrucciones para una tarea, herramienta o flujo de trabajo específico, para que no tengas que explicarlo cada vez.",
+          "visual": "Una colección de habilidades reutilizables de Distill"
         }
       }
     }
@@ -118,7 +118,7 @@
       "fileType": "Imágenes",
       "importFailed": "No se pudo agregar la foto.",
       "notAFile": "Elige un archivo de imagen en lugar de una carpeta.",
-      "readFailed": "Berd no pudo leer esa foto.",
+      "readFailed": "Distill no pudo leer esa foto.",
       "tooLarge": "Elige una foto de menos de 50 MB.",
       "unsupportedType": "Elige una imagen PNG, JPEG, WebP, GIF o AVIF.",
       "unavailable": "Esta foto no está disponible",
@@ -136,7 +136,7 @@
       "label": "Fijar un agente",
       "description": "Fija un agente para acceso rápido",
       "kicker": "Agente",
-      "fallbackName": "Berd",
+      "fallbackName": "Distill",
       "openAria": "Iniciar chat con {{name}}"
     },
     "chatPin": {
@@ -207,12 +207,12 @@
       },
       "notes": {
         "welcome": {
-          "title": "Te damos la bienvenida a Berd",
+          "title": "Te damos la bienvenida a Distill",
           "body": "Un espacio de trabajo de IA para todas las facetas de tu trabajo. Esto es solo el comienzo."
         },
         "buildAgent": {
           "title": "Crea un agente",
-          "body": "Dale a Berd un rol, modelo e instrucciones para el trabajo que repites.",
+          "body": "Dale a Distill un rol, modelo e instrucciones para el trabajo que repites.",
           "action": "Crear agente"
         },
         "startProject": {
@@ -221,8 +221,8 @@
           "action": "Nuevo proyecto"
         },
         "skills": {
-          "title": "Enséñale una habilidad a Berd",
-          "body": "Guarda instrucciones y recursos para que Berd sepa cómo aplicarlos cuando la tarea lo pida.",
+          "title": "Enséñale una habilidad a Distill",
+          "body": "Guarda instrucciones y recursos para que Distill sepa cómo aplicarlos cuando la tarea lo pida.",
           "action": "Explorar habilidades"
         },
         "shapeHome": {
@@ -231,7 +231,7 @@
         },
         "automations": {
           "title": "Gestiona automatizaciones",
-          "body": "Las automatizaciones de G2 ahora viven en Berd. Puedes ver, crear y gestionar trabajo programado aquí.",
+          "body": "Las automatizaciones de G2 ahora viven en Distill. Puedes ver, crear y gestionar trabajo programado aquí.",
           "action": "Abrir automatizaciones"
         }
       },

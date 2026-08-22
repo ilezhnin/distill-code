@@ -411,7 +411,7 @@ export function SessionWindowApp({
     content = (
       <div className="flex h-screen min-w-0 flex-col bg-canvas-base text-foreground">
         <SessionWindowTopBar
-          title={session?.title ?? "Berd"}
+          title={session?.title ?? "Distill"}
           rightRailLabel={rightRailLabel}
           rightRailOpen={isContextVisible}
           showRightRailToggle={Boolean(session)}

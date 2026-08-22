@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -86,8 +86,26 @@ describe("validateBundledAgent", () => {
     );
 
     expect(errors).toContain(
-      "support-bot.md: frontmatter `avatar` is required and must be an `app-avatar:<id>` ref",
+      "support-bot.md: frontmatter `avatar` is required and must be an `app-avatar:<id>` ref or an `agent-avatar:<id>` ref with a matching `.avatars/<id>` image",
     );
+  });
+
+  it("accepts a bundled agent-local avatar image ref", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bundled-agent-"));
+    tempDirs.push(dir);
+    const avatarDir = join(dir, ".avatars");
+    mkdirSync(avatarDir, { recursive: true });
+    writeFileSync(join(avatarDir, "support-bot.png"), "png");
+
+    expect(
+      validateBundledAgent(
+        join(dir, "support-bot.md"),
+        VALID_AGENT.replace(
+          "app-avatar:gloopies-19",
+          "agent-avatar:support-bot",
+        ),
+      ),
+    ).toEqual([]);
   });
 
   it.each([
@@ -104,7 +122,7 @@ describe("validateBundledAgent", () => {
     );
 
     expect(errors).toContain(
-      "support-bot.md: frontmatter `avatar` is required and must be an `app-avatar:<id>` ref",
+      "support-bot.md: frontmatter `avatar` is required and must be an `app-avatar:<id>` ref or an `agent-avatar:<id>` ref with a matching `.avatars/<id>` image",
     );
   });
 

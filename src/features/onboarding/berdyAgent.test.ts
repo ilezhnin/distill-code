@@ -22,6 +22,12 @@ describe("findBerdyPersonaId", () => {
     );
   });
 
+  it("also matches the Distill display name for the same bundled agent", () => {
+    expect(findBerdyPersonaId([persona({ displayName: "Distill" })])).toBe(
+      "/Users/test/.agents/agents/berdy.md",
+    );
+  });
+
   it("does not select another agent that only shares Berdy's name", () => {
     expect(
       findBerdyPersonaId([

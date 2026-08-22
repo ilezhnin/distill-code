@@ -1,0 +1,69 @@
+---
+name: arch-audit
+description: Audit a module or system architecture and produce a dependency-ordered, developer-ready refactor backlog. Use when the user asks for an architecture audit or review, a module cleanup or decomposition plan, dependency untangling, boundary analysis, overengineering analysis, silent fallback cleanup, Unity runtime authoring cleanup, says the code became spaghetti or a god class, or wants a refactor planned before anyone edits code. Use unity-codebase-audit instead for read-only error/risk reports focused on code quality, bugs, security, rollback/GGPO readiness, or strict determinism without an architecture refactor backlog.
+metadata:
+  berdBundled: true
+---
+
+In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.
+
+
+# Architecture Audit
+
+## Goal
+
+Inspect a whole module or system - not just the open file - and produce a developer-ready Markdown plan a lead can execute and delegate. This skill plans; it does not implement. Output goes to `.agents/plans/<module>-architecture-audit.md`; create the plans `.gitignore` with `*` and `!.gitignore` when missing.
+
+If the requested output is a no-change issue report for overengineering, bugs, security, silent fallbacks, runtime authoring, rollback, or determinism rather than an architecture refactor backlog, route to `unity-codebase-audit` instead. Use this skill after that audit only when the next step is to plan structural refactors.
+
+## Principles Lens
+
+When the project ships `.agents/ARCHITECTURE.md` or a root overlay, those contracts are the primary standard to audit against; the lens below is the baseline that applies with or without them. Judge everything through these, by name, in the findings:
+
+- **SRP / SOLID**: one reason to change per type; depend on narrow abstractions at real boundaries; no leaky or fat interfaces.
+- **KISS / DRY**: the simplest shape that solves the problem; duplication is a finding only when the copies must evolve together.
+- **Systems hierarchy**: decompose into systems and subsystems, each isolated with one public API and one entry point, so a subsystem can be replaced, extended, or tested alone.
+- **Patterns where they pay**: use Gang of Four patterns when they remove real coupling or duplication (factory for families, strategy for swappable policy, observer for decoupled events, adapter at boundaries). Naming a pattern is never a justification by itself.
+- **Anti-overengineering**: no abstractions or entities for their own sake. Delete before abstracting. A new interface, facade, registry, factory, event bus, or helper must pay for itself by removing duplication or creating a boundary with multiple real call sites. Public surface is a liability: a public member with one internal caller is a private detail. Compatibility wrappers must have an owner and a removal condition.
+- **Asset-first authoring**: code that builds hierarchies/UI at runtime, resolves references via `Find`/tags/`Resources.Load`, or hardcodes values behind branches is an architecture smell when a one-time scene/prefab/asset edit with a serialized field does the job; propose the asset-side fix, not a better wrapper. Comment/doc bloat in the audited module (prose restating code, changelogs inside living docs) goes on the backlog as deletions.
+- **Failure honesty**: broken required references, invalid config, bad content, failed migrations, and external operation failures must fail loudly at the right boundary. Silent fallbacks, best-effort no-ops, broad catches, scene-wide searches, runtime repair, and default substitution are findings unless they are deliberate, documented, tested degraded-mode behavior.
+- **One file - one entity**: a hard rule with no exceptions - every type lives in its own file named after it; nested types (including private ones) are findings that go into the backlog as extraction tasks.
+- **Economical growth**: before proposing new code, check what already exists and whether less code solves it. A cleanup pass should be neutral or negative in production code; net-new code needs an explicit reason.
+
+## Workflow
+
+1. **Inventory**: list every file in the target module; classify by responsibility: public API, runtime orchestration, domain model, content/data loading, presentation/view, diagnostics, adapters, tests, documentation.
+2. **Dependency map**: which subsystems know about each other; which dependencies violate boundaries (UI mutating runtime internals, algorithms consuming foreign types directly, diagnostics reaching into runtime fields). In Unity, detect the boundary mechanism first: asmdef references or source-scan guard tests. Missing asmdefs are a finding only when the project expects asmdef enforcement.
+3. **Trace flows**: initialization, loading, command execution, per-frame work, presentation, diagnostics, shutdown, scene/domain reload, failure, retry.
+4. **State ownership**: one owner and one mutation path per mutable state. Find duplicated state, hidden mutation paths, cache ownership gaps, lifecycle races, silent failures, and fallback paths that hide authoring or wiring defects.
+5. **Target architecture**: define it as narrow public ports, internal services, domain models, adapters, diagnostics read models, and tests. Every subsystem gets one public API/entry point; cross-module data enters through adapters and becomes module-owned.
+6. **Backlog**: dependency-ordered tasks in the format from `references/audit-process.md` (stable ID, severity, depends-on, scope, non-goals, work, acceptance criteria, required tests, verification, rollback note). Behavior and ownership fixes before broad cleanup.
+7. **Verification plan**: Unity compilation/build checks, focused tests, source-level boundary scans, `git diff --check`, and editor constraints.
+8. **Migration plan**: prototype default is to migrate call sites directly and delete the old surface; propose a compatibility wrapper only for an externally shipped contract, and give it a removal condition. Cover serialized data and content compatibility and documentation updates.
+
+## Stack Notes
+
+- Unity: asmdefs are the default boundary mechanism - runtime/editor/tests split per module, no cycles, minimal references.
+- Unity: source-scan guards live near the owning module, usually under `Tests/Editor`, and scan the on-disk tree for forbidden folder tokens, illegal layer references, cross-module reach-ins, and folder/namespace mismatches.
+- Unity: gameplay-critical findings include nondeterminism (render-frame coupling, wall-clock time, unordered iteration, static random) and serialized-contract risks.
+- Unity: stable object hierarchies, serialized fields, UI layouts, materials, and component composition belong in scenes, prefabs, or assets. Runtime construction/configuration is a finding unless the object is genuinely spawned, pooled, data-driven, or variable at runtime.
+
+## Stop Conditions
+
+Stop and ask when:
+
+- The requested scope is ambiguous (one module vs the whole project).
+- The audit reveals product decisions (feature removal, behavior change) that a refactor must not decide alone.
+- Reading the module requires credentials, closed-source packages, or generated code that is unavailable.
+
+## Final Report
+
+- Audit document path and the module map it covers.
+- Top findings ordered by severity, each naming the violated principle or boundary.
+- Backlog size and the first three executable tasks.
+- What was not inspected and why.
+- Recommended next step: usually `planning` for the first task, then `crossworking` to execute.
+
+## Reference
+
+Read `references/audit-process.md` for the required task format, refactor discipline, verification gate, and the definition of done for module refactors.

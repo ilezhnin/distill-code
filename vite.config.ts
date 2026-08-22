@@ -41,34 +41,36 @@ function resolveAppVersion(): string {
 // env), ALLOWED_OTEL_LOGS_HOSTS in src-tauri/src/commands/telemetry.rs,
 // tauri.conf.json's CSP connect-src, and the pinned test values.
 //
-// The production gateway (squareup/berd-monitoring's production deployment) —
-// injected whenever VITE_ENVIRONMENT=production.
-const PRODUCTION_OTLP_LOGS_ENDPOINT = "https://otel.berd.xyz/v1/logs";
-
-// The staging gateway (squareup/berd-monitoring's staging deployment) —
-// injected whenever VITE_ENVIRONMENT=staging.
-const STAGING_OTLP_LOGS_ENDPOINT =
-  "https://otel.test.blockstaging.build/v1/logs";
-
-// DUMMY placeholder for development. The telemetry send path (OTel logs over
-// OTLP) is gated to production/staging, so this fake host is never contacted
-// in dev or external clones.
+// Distill does not ship a telemetry collector. Keep the OTLP path pointed at
+// an inert placeholder unless an explicit Distill-owned endpoint is provided.
+// Never fall back to Berd/Block gateways.
 const DUMMY_OTLP_LOGS_ENDPOINT =
   "https://otlp.invalid.goose-internal.example/v1/logs";
 
+function isForeignTelemetryHost(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return (
+      host === "otel.berd.xyz" ||
+      host.endsWith(".berd.xyz") ||
+      host === "blockstaging.build" ||
+      host.endsWith(".blockstaging.build")
+    );
+  } catch {
+    return true;
+  }
+}
+
 function resolveOtlpLogsEndpoint(): string {
-  const explicit = process.env.VITE_OTLP_LOGS_ENDPOINT?.trim();
-  if (explicit) {
+  const explicit = (
+    process.env.DISTILL_OTLP_LOGS_ENDPOINT ??
+    process.env.VITE_OTLP_LOGS_ENDPOINT ??
+    ""
+  ).trim();
+  if (explicit && !isForeignTelemetryHost(explicit)) {
     return explicit;
   }
-  switch (resolveBuildEnvironment()) {
-    case "production":
-      return PRODUCTION_OTLP_LOGS_ENDPOINT;
-    case "staging":
-      return STAGING_OTLP_LOGS_ENDPOINT;
-    case "development":
-      return DUMMY_OTLP_LOGS_ENDPOINT;
-  }
+  return DUMMY_OTLP_LOGS_ENDPOINT;
 }
 
 export default defineConfig(async ({ command }) => {
