@@ -87,8 +87,6 @@ export interface UseSessionActionsMenuOptions {
   onExportSelected?: () => void;
   onOpenInWindow?: (id: string) => void;
   isOpenInWindow?: boolean;
-  onPinSelectedToHome?: () => void;
-  onUnpinSelectedFromHome?: () => void;
   isSelectionPinnedToHome?: boolean;
   isPinningSelectedToHome?: boolean;
   onMarkSelectedRead?: () => void;
@@ -116,19 +114,13 @@ export function useSessionActionsMenu({
   onExportSelected,
   onOpenInWindow,
   isOpenInWindow = false,
-  onPinSelectedToHome,
-  onUnpinSelectedFromHome,
   isSelectionPinnedToHome = false,
   isPinningSelectedToHome = false,
   onMarkSelectedRead,
   onMarkSelectedUnread,
 }: UseSessionActionsMenuOptions) {
-  const {
-    isPinned: isPinnedToHome,
-    isPinning: isPinningToHome,
-    pinToHome,
-    unpinFromHome,
-  } = usePinToHomeWidget({ kind: "chat", id });
+  const { isPinned: isPinnedToHome, isPinning: isPinningToHome } =
+    usePinToHomeWidget({ kind: "chat", id });
   const hasUnread = useChatStore(
     (state) => state.sessionStateById[id]?.hasUnread ?? false,
   );
@@ -154,21 +146,7 @@ export function useSessionActionsMenu({
       ? onMarkSelectedUnread
       : () => markSessionUnread(id),
     isSelectionPinned: isSelectionPinnedToHome,
-    onTogglePin: () => {
-      if (shouldApplyToSelection) {
-        if (isSelectionPinnedToHome) {
-          onUnpinSelectedFromHome?.();
-        } else {
-          onPinSelectedToHome?.();
-        }
-        return;
-      }
-      if (isPinnedToHome) {
-        unpinFromHome();
-        return;
-      }
-      void pinToHome();
-    },
+    onTogglePin: undefined,
     onOpenInWindow: onOpenInWindow ? () => onOpenInWindow(id) : undefined,
     onDuplicate: onFork ? () => onFork(id) : undefined,
     // The menu content discriminates between the single and bulk export

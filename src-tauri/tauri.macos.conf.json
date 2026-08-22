@@ -2,7 +2,7 @@
   "app": {
     "windows": [
       {
-        "title": "Berd",
+        "title": "Distill",
         "width": 1450,
         "height": 920,
         "minWidth": 608,

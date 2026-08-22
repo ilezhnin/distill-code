@@ -5,20 +5,23 @@
 // contract the runtime seeder expects:
 //   - YAML frontmatter delimited by `--- ... ---` at the top of the file
 //   - `name` and `description` fields
-//   - an `avatar` ref in `app-avatar:<id>` form so the renderer can warm it
+//   - an `avatar` ref in `app-avatar:<id>` or `agent-avatar:<id>` form so the
+//     renderer can warm it
 //   - `metadata.berdBundled: true` so updates/re-seeds behave like the other
 //     bundled agents
 //
 // Run via pnpm exec: `pnpm exec tsx scripts/validate-bundled-agents.ts <path>...`
 // Exits 0 on success, 1 on any validation failure, 2 on usage error.
 
-import { readFileSync, realpathSync } from "node:fs";
-import { basename } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---(?:\n|$)/;
 const APP_AVATAR_REF_RE = /^app-avatar:[a-z0-9][a-z0-9_-]{0,63}$/;
+const AGENT_AVATAR_REF_RE = /^agent-avatar:([a-z0-9][a-z0-9_-]{0,63})$/;
+const AVATAR_IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp"] as const;
 const CARD_COPY_MAX_GRAPHEMES = { good_for: 44, vibes: 32 } as const;
 const GRAPHEME_SEGMENTER = new Intl.Segmenter("en", {
   granularity: "grapheme",
@@ -38,6 +41,23 @@ const USAGE =
 
 function error(message: string, file?: string): string {
   return file ? `${file}: ${message}` : message;
+}
+
+function isSupportedBundledAvatarRef(filePath: string, value: string): boolean {
+  if (APP_AVATAR_REF_RE.test(value)) {
+    return true;
+  }
+
+  const agentAvatarMatch = AGENT_AVATAR_REF_RE.exec(value);
+  if (!agentAvatarMatch) {
+    return false;
+  }
+
+  const avatarId = agentAvatarMatch[1];
+  const avatarDir = join(dirname(filePath), ".avatars");
+  return AVATAR_IMAGE_EXTENSIONS.some((extension) =>
+    existsSync(join(avatarDir, `${avatarId}.${extension}`)),
+  );
 }
 
 export function validateBundledAgent(
@@ -126,11 +146,11 @@ export function validateBundledAgent(
 
   if (
     typeof frontmatter.avatar !== "string" ||
-    !APP_AVATAR_REF_RE.test(frontmatter.avatar)
+    !isSupportedBundledAvatarRef(filePath, frontmatter.avatar)
   ) {
     errors.push(
       error(
-        "frontmatter `avatar` is required and must be an `app-avatar:<id>` ref",
+        "frontmatter `avatar` is required and must be an `app-avatar:<id>` ref or an `agent-avatar:<id>` ref with a matching `.avatars/<id>` image",
         filePath,
       ),
     );

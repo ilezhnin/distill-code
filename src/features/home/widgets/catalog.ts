@@ -1,13 +1,3 @@
-import { AgentPinWidget } from "./AgentPinWidget";
-import { AutomationOutputWidget } from "./AutomationOutputWidget";
-import { ChatPinWidget } from "./ChatPinWidget";
-import { ChecklistWidget } from "./ChecklistWidget";
-import { ClockWidget } from "./ClockWidget";
-import { OnboardingTourWidget } from "./OnboardingTourWidget";
-import { photoAspectRatioOf, photoShapeOf, PhotoWidget } from "./PhotoWidget";
-import { ProjectArtifactWidget } from "./ProjectArtifactWidget";
-import { SkillPinWidget } from "./SkillPinWidget";
-import { StickyNoteWidget } from "./StickyNoteWidget";
 import { clockModeOf } from "./clockWidgetMode";
 import type {
   WidgetCatalogEntry,
@@ -17,6 +7,10 @@ import type {
   WidgetSizeBounds,
   WidgetSizeProfile,
 } from "./types";
+
+function RetiredHomeWidget() {
+  return null;
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -95,7 +89,7 @@ export const HOME_WIDGET_CATALOG: WidgetCatalogEntry[] = [
             }),
           },
     preservePositionOnProfileChange: true,
-    Component: OnboardingTourWidget,
+    Component: RetiredHomeWidget,
   },
   {
     id: "clock",
@@ -109,7 +103,7 @@ export const HOME_WIDGET_CATALOG: WidgetCatalogEntry[] = [
       clockModeOf(instance) === "digital"
         ? CLOCK_DIGITAL_PROFILE
         : CLOCK_ANALOG_PROFILE,
-    Component: ClockWidget,
+    Component: RetiredHomeWidget,
   },
   {
     id: "stickyNote",
@@ -143,7 +137,7 @@ export const HOME_WIDGET_CATALOG: WidgetCatalogEntry[] = [
               maxHeight: 320,
             },
           },
-    Component: StickyNoteWidget,
+    Component: RetiredHomeWidget,
   },
   {
     id: "checklist",
@@ -157,7 +151,7 @@ export const HOME_WIDGET_CATALOG: WidgetCatalogEntry[] = [
       minHeight: 160,
       maxHeight: 560,
     },
-    Component: ChecklistWidget,
+    Component: RetiredHomeWidget,
   },
   {
     id: "photo",
@@ -173,33 +167,7 @@ export const HOME_WIDGET_CATALOG: WidgetCatalogEntry[] = [
     },
     preserveWidthOnProfileChange: true,
     preserveSizeOnCleanUp: true,
-    resolveProfile: (instance) => {
-      const shape = photoShapeOf(instance.state);
-      if (shape === "original") {
-        const aspectRatio = photoAspectRatioOf(instance.state);
-        return {
-          defaultSize: { width: 280, height: 280 / aspectRatio },
-          sizeBounds: {
-            minWidth: 96,
-            maxWidth: 1440,
-            minHeight: 48,
-            maxHeight: 1440,
-            lockAspectRatio: true,
-          },
-        };
-      }
-      return {
-        defaultSize: { width: 240, height: 240 },
-        sizeBounds: {
-          minWidth: 96,
-          maxWidth: 1440,
-          minHeight: 96,
-          maxHeight: 1440,
-          lockAspectRatio: true,
-        },
-      };
-    },
-    Component: PhotoWidget,
+    Component: RetiredHomeWidget,
   },
   {
     id: "agentPin",
@@ -217,7 +185,7 @@ export const HOME_WIDGET_CATALOG: WidgetCatalogEntry[] = [
       maxHeight: 528,
       lockAspectRatio: true,
     },
-    Component: AgentPinWidget,
+    Component: RetiredHomeWidget,
   },
   {
     id: "chatPin",
@@ -230,7 +198,7 @@ export const HOME_WIDGET_CATALOG: WidgetCatalogEntry[] = [
       minHeight: 72,
       maxHeight: 260,
     },
-    Component: ChatPinWidget,
+    Component: RetiredHomeWidget,
   },
   {
     id: "onboardingProjectArtifact",
@@ -248,7 +216,7 @@ export const HOME_WIDGET_CATALOG: WidgetCatalogEntry[] = [
     },
     resizeHandleClassName:
       "absolute right-[6%] bottom-[13%] z-30 hidden size-6 cursor-nwse-resize items-center justify-center rounded-full group-hover/widget:flex focus-visible:flex focus-visible:ring-2 focus-visible:ring-ring",
-    Component: ProjectArtifactWidget,
+    Component: RetiredHomeWidget,
   },
   {
     id: "projectArtifactPin",
@@ -290,7 +258,7 @@ export const HOME_WIDGET_CATALOG: WidgetCatalogEntry[] = [
           },
     resizeHandleClassName:
       "absolute right-[6%] bottom-[13%] z-30 hidden size-6 cursor-nwse-resize items-center justify-center rounded-full group-hover/widget:flex focus-visible:flex focus-visible:ring-2 focus-visible:ring-ring",
-    Component: ProjectArtifactWidget,
+    Component: RetiredHomeWidget,
   },
   {
     id: "automationOutputPin",
@@ -304,7 +272,7 @@ export const HOME_WIDGET_CATALOG: WidgetCatalogEntry[] = [
       minHeight: 176,
       maxHeight: 480,
     },
-    Component: AutomationOutputWidget,
+    Component: RetiredHomeWidget,
   },
   {
     id: "skillPin",
@@ -317,7 +285,7 @@ export const HOME_WIDGET_CATALOG: WidgetCatalogEntry[] = [
       minHeight: 40,
       maxHeight: 132,
     },
-    Component: SkillPinWidget,
+    Component: RetiredHomeWidget,
   },
 ];
 

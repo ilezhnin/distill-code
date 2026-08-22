@@ -5,8 +5,8 @@ import {
 } from "./agentShareCardSpec";
 
 describe("agentShareCardSpec", () => {
-  it("uses Berd branding for an empty title", () => {
-    expect(truncateAgentCardTitle("  ")).toBe("BERD AGENT");
+  it("uses Distill branding for an empty title", () => {
+    expect(truncateAgentCardTitle("  ")).toBe("DISTILL AGENT");
   });
 
   it("uppercases and bounds long titles", () => {

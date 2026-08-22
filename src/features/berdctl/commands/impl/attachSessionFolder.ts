@@ -19,8 +19,8 @@ export const attachSessionFolderCommand = defineCommand({
   destructive: false,
   summary: "Attach a folder, repository, or worktree to a chat",
   description:
-    "Register an existing folder as chat context. If the chat still uses Berd's implicit default cwd, the folder becomes cwd safely after the current turn; otherwise cwd stays unchanged. Repeating the command is safe and refreshes Git identity.",
-  helpFooter: `Use this after creating or adopting a folder inside a workspace root already authorized for the chat. Registered Git worktrees of an authorized repository are also allowed; select a new unrelated root in Berd first.
+    "Register an existing folder as chat context. If the chat still uses Distill's implicit default cwd, the folder becomes cwd safely after the current turn; otherwise cwd stays unchanged. Repeating the command is safe and refreshes Git identity.",
+  helpFooter: `Use this after creating or adopting a folder inside a workspace root already authorized for the chat. Registered Git worktrees of an authorized repository are also allowed; select a new unrelated root in Distill first.
 
 Example:
   berdctl folder attach --session-id <session-id> --path ~/src/repo-worktrees/feature

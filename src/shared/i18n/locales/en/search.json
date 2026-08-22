@@ -13,7 +13,7 @@
   "heading": {
     "ariaLabel": "Universal search",
     "filterAriaLabel": "Filter search results",
-    "placeholder": "Search your Berd"
+    "placeholder": "Search Distill"
   },
   "noMatches": "No matches for \"{{query}}\"",
   "settingsResult": {

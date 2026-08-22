@@ -30,6 +30,13 @@ import {
   resolveDisplayModelLabel,
   resolvePickerTriggerLabel,
 } from "../lib/modelDisplayLabel";
+import {
+  collapseEmbeddedReasoningModels,
+  composeEmbeddedReasoningModelId,
+  grokReasoningEffortConfig,
+  splitEmbeddedReasoning,
+  stripEmbeddedReasoningLabel,
+} from "../lib/modelReasoningVariants";
 import type {
   AgentPickerOption,
   ChatInputReasoningEffort,
@@ -221,42 +228,56 @@ export function AgentModelPicker({
   const selectedAgentLabel =
     agents.find((agent) => agent.id === selectedAgentId)?.label ??
     formatProviderLabel(selectedAgentId);
-  const displayModelLabel = resolveDisplayModelLabel({
-    currentModelId,
-    currentModelName,
-    currentModelProviderId,
-    availableModels,
-  });
+  const collapsedModels = useMemo(
+    () => collapseEmbeddedReasoningModels(availableModels, currentModelId),
+    [availableModels, currentModelId],
+  );
+  const pickerModels =
+    collapsedModels.reasoning != null
+      ? collapsedModels.models
+      : availableModels;
+  const currentDisplayModelId =
+    collapsedModels.reasoning != null
+      ? (splitEmbeddedReasoning(currentModelId)?.base ?? currentModelId)
+      : currentModelId;
+  const displayModelLabel = stripEmbeddedReasoningLabel(
+    resolveDisplayModelLabel({
+      currentModelId: currentDisplayModelId,
+      currentModelName: stripEmbeddedReasoningLabel(currentModelName),
+      currentModelProviderId,
+      availableModels: pickerModels,
+    }),
+  );
   const displayedModels = useMemo(() => {
     const currentModelBelongsToSelectedAgent =
       selectedAgentId === "goose"
         ? Boolean(currentModelProviderId) &&
-          availableModels.some(
+          pickerModels.some(
             (model) => model.providerId === currentModelProviderId,
           )
         : currentModelProviderId === selectedAgentId;
     if (
-      !currentModelId ||
+      !currentDisplayModelId ||
       !displayModelLabel ||
       !currentModelBelongsToSelectedAgent
     ) {
-      return availableModels;
+      return pickerModels;
     }
 
-    const hasCurrentModel = availableModels.some(
+    const hasCurrentModel = pickerModels.some(
       (model) =>
-        model.id === currentModelId &&
+        model.id === currentDisplayModelId &&
         (!currentModelProviderId ||
           !model.providerId ||
           model.providerId === currentModelProviderId),
     );
     if (hasCurrentModel) {
-      return availableModels;
+      return pickerModels;
     }
 
     return [
       {
-        id: currentModelId,
+        id: currentDisplayModelId,
         name: displayModelLabel,
         displayName: displayModelLabel,
         providerId: currentModelProviderId ?? undefined,
@@ -266,19 +287,19 @@ export function AgentModelPicker({
         recommended: true,
         featured: false,
       },
-      ...availableModels,
+      ...pickerModels,
     ];
   }, [
-    availableModels,
-    currentModelId,
+    currentDisplayModelId,
     currentModelProviderId,
     displayModelLabel,
+    pickerModels,
     selectedAgentId,
   ]);
   const triggerLabel = showSelectedModelInTrigger
     ? resolvePickerTriggerLabel({
-        currentModelId,
-        currentModelName,
+        currentModelId: currentDisplayModelId,
+        currentModelName: displayModelLabel,
         currentModelProviderId,
         availableModels: displayedModels,
         selectedAgentLabel,
@@ -290,7 +311,30 @@ export function AgentModelPicker({
   const triggerProviderIcon =
     getProviderIcon(selectedAgentId, "size-4") ??
     (triggerIconOnly ? <IconAiAgents className="size-4" /> : null);
-  const reasoningEffortConfig = reasoningEffort?.config;
+  const sessionReasoningConfig = reasoningEffort?.config;
+  const sessionHasSelectableReasoning =
+    (sessionReasoningConfig?.options.length ?? 0) > 1;
+  const grokReasoningConfig = useMemo(() => {
+    if (
+      selectedAgentId !== "grok-acp" ||
+      sessionHasSelectableReasoning ||
+      collapsedModels.reasoning != null
+    ) {
+      return null;
+    }
+    return grokReasoningEffortConfig(sessionReasoningConfig?.currentValue);
+  }, [
+    collapsedModels.reasoning,
+    selectedAgentId,
+    sessionHasSelectableReasoning,
+    sessionReasoningConfig?.currentValue,
+  ]);
+  const reasoningEffortConfig = sessionHasSelectableReasoning
+    ? sessionReasoningConfig
+    : (collapsedModels.reasoning ??
+      grokReasoningConfig ??
+      sessionReasoningConfig);
+  const usesModelEmbeddedReasoning = collapsedModels.reasoning != null;
   const hasLiveReasoningEffort =
     Boolean(reasoningEffortConfig?.configId) &&
     (reasoningEffortConfig?.options.length ?? 0) > 1;
@@ -366,7 +410,41 @@ export function AgentModelPicker({
   };
 
   const handleModelSelect = (model: ModelOption) => {
+    if (usesModelEmbeddedReasoning) {
+      const wireId = composeEmbeddedReasoningModelId(
+        model.id,
+        displayReasoningEffortConfig?.currentValue,
+        collapsedModels,
+      );
+      onModelChange?.(wireId, { ...model, id: wireId });
+      return;
+    }
     onModelChange?.(model.id, model);
+  };
+
+  const handleReasoningSelect = (value: string) => {
+    if (usesModelEmbeddedReasoning) {
+      const baseId = currentDisplayModelId ?? displayedModels[0]?.id;
+      if (!baseId) {
+        return;
+      }
+      const wireId = composeEmbeddedReasoningModelId(
+        baseId,
+        value,
+        collapsedModels,
+      );
+      const baseModel =
+        displayedModels.find((model) => model.id === baseId) ??
+        pickerModels.find((model) => model.id === baseId);
+      onModelChange?.(
+        wireId,
+        baseModel
+          ? { ...baseModel, id: wireId }
+          : { id: wireId, name: wireId },
+      );
+      return;
+    }
+    reasoningEffort?.onChange?.(value);
   };
 
   // Re-gate the provider column when the popover closes, so every reopen
@@ -699,7 +777,7 @@ export function AgentModelPicker({
                   key={selectedAgentId}
                   ref={modelListRef}
                   models={displayedModels}
-                  currentModelId={currentModelId}
+                  currentModelId={currentDisplayModelId}
                   currentModelProviderId={currentModelProviderId}
                   selectedAgentId={selectedAgentId}
                   onModelSelect={handleModelSelect}
@@ -747,7 +825,7 @@ export function AgentModelPicker({
                     disabled={
                       isReasoningEffortPending || !showReasoningEffortColumn
                     }
-                    onChange={reasoningEffort?.onChange}
+                    onChange={handleReasoningSelect}
                     t={t}
                   />
                 ) : null}

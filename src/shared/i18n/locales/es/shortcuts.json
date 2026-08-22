@@ -60,7 +60,7 @@
     "invalid": "Los atajos necesitan una tecla modificadora como Cmd, Ctrl o Alt",
     "invalidUnmodified": "Esa tecla no puede usarse sola: añade una tecla modificadora o usa Enter o una flecha",
     "label": "Atajos de teclado",
-    "pageDescription": "Personaliza los atajos de teclado que se usan en Berd.",
+    "pageDescription": "Personaliza los atajos de teclado que se usan en Distill.",
     "recording": "Pulsa el atajo…",
     "recordingHint": "Pulsa la nueva combinación de teclas. Esc cancela.",
     "reset": "Restablecer valor predeterminado",

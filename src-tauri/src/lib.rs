@@ -39,7 +39,7 @@ const APP_LOG_MAX_FILE_SIZE_BYTES: u128 = 10 * 1024 * 1024;
 /// mid-incident.
 const APP_LOG_ARCHIVES_KEPT: usize = 2;
 #[cfg(target_os = "macos")]
-const APP_DISPLAY_NAME: &str = "Berd";
+const APP_DISPLAY_NAME: &str = "Distill";
 #[cfg(target_os = "macos")]
 const DEV_APP_NAME_ENV: &str = "BERD_DEV_APP_NAME";
 #[cfg(target_os = "macos")]
@@ -376,7 +376,7 @@ pub fn run() {
             services::renderer_monitor::start(app.handle().clone());
 
             // Build a custom macOS application menu so that the app submenu,
-            // "About" item, and "Quit" item use the product name "Berd"
+            // "About" item, and "Quit" item use the product name "Distill"
             // instead of the Cargo binary name.
             #[cfg(target_os = "macos")]
             {
@@ -384,19 +384,19 @@ pub fn run() {
                 refresh_traffic_light_position_on_window_changes(app);
                 attach_main_window_lifecycle(app);
 
-                let app_menu = SubmenuBuilder::new(app, "Berd")
+                let app_menu = SubmenuBuilder::new(app, "Distill")
                     .about_with_text(
-                        "About Berd",
-                        Some(AboutMetadataBuilder::new().name(Some("Berd")).build()),
+                        "About Distill",
+                        Some(AboutMetadataBuilder::new().name(Some("Distill")).build()),
                     )
                     .separator()
                     .services()
                     .separator()
-                    .hide_with_text("Hide Berd")
+                    .hide_with_text("Hide Distill")
                     .hide_others()
                     .show_all()
                     .separator()
-                    .quit_with_text("Quit Berd")
+                    .quit_with_text("Quit Distill")
                     .build()?;
                 let edit_menu = SubmenuBuilder::new(app, "Edit")
                     .undo()

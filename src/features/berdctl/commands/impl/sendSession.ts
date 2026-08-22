@@ -59,7 +59,7 @@ export const sendSessionCommand = defineCommand({
   description:
     "Send a prompt into an existing chat session without opening or focusing it. " +
     "Idle sends are fire-and-forget and visibly add a user message marked as sent " +
-    "by Berd from another session. Running sessions are refused by default; use " +
+    "by Distill from another session. Running sessions are refused by default; use " +
     "--if-running steer to add context to the active run, or --if-running queue " +
     "to send one follow-up after the current run finishes.",
   helpFooter: `Example:

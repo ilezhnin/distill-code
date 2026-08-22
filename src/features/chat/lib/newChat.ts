@@ -1,3 +1,4 @@
+import { isConductorSession } from "@/features/conductor/conductorGraphStore";
 import type { Message } from "@/shared/types/messages";
 import type { ChatSession } from "../stores/chatSessionStore";
 import { isDefaultChatTitle } from "./sessionTitle";
@@ -59,6 +60,8 @@ function isReusableDraft(
   return (
     !session.archivedAt &&
     session.intent !== "build-agent" &&
+    !isConductorSession(session.id) &&
+    !(session.clientSessionId && isConductorSession(session.clientSessionId)) &&
     session.messageCount === 0 &&
     (localMessages?.length ?? 0) === 0
   );

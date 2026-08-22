@@ -1687,7 +1687,7 @@ describe("MessageTimeline", () => {
 
     const scroller = screen.getByTestId("message-timeline-scroll");
 
-    expect(scroller).toHaveClass("scrollbar-subtle", "overscroll-contain");
+    expect(scroller).toHaveClass("scrollbar-visible", "overscroll-contain");
     expect(scroller).not.toHaveClass("scrollbar-none");
   });
 

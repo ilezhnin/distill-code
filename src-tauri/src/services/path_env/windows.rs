@@ -9,6 +9,12 @@ pub(super) fn push_tool_manager_dirs(paths: &mut Vec<PathBuf>) {
     if let Some(appdata) = &appdata {
         paths.push(appdata.join("npm"));
     }
+    if let Some(home) = dirs::home_dir() {
+        // Claude Code and Grok CLI install user shims here; Distill's doctor
+        // and managed ACP bridges spawn those CLIs and must see them.
+        paths.push(home.join(".local").join("bin"));
+        paths.push(home.join(".grok").join("bin"));
+    }
     if let Some(fnm_root) = windows_fnm_root(std::env::vars_os(), appdata.as_deref()) {
         push_windows_fnm_bin(paths, &fnm_root);
     }

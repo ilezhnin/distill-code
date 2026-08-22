@@ -51,8 +51,6 @@ export const CURATED_PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     supportsInstall: true,
     supportsAuth: false,
     supportsAuthStatus: false,
-    supportsModelList: false,
-    modelSelectionHint: "Use the Grok CLI to configure the model.",
   },
   {
     id: "copilot-acp",

@@ -4,7 +4,7 @@ import {
 } from "../model/onboardingStore";
 import { WelcomeStep } from "./WelcomeStep";
 
-/** The first-run landing ceremony. Advancing enters Berd immediately. */
+/** The first-run landing ceremony. Advancing enters Distill immediately. */
 export function OnboardingFlow() {
   const state = useOnboardingState();
 

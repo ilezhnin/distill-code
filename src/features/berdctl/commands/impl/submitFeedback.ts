@@ -29,9 +29,9 @@ export const submitFeedbackCommand = defineCommand({
   effect: "create",
   visibility: "immediate",
   destructive: false,
-  summary: "Submit an approved report directly to the Berd team",
+  summary: "Submit an approved report directly to the Distill team",
   description:
-    "Submit the supplied approved report without opening the feedback form. Use this only after the user explicitly asks to file, send, or submit it. Berd immediately shows success or failure in the app. Logs and Doctor diagnostics are attached only when --include-logs is explicitly passed.",
+    "Submit the supplied approved report without opening the feedback form. Use this only after the user explicitly asks to file, send, or submit it. Distill immediately shows success or failure in the app. Logs and Doctor diagnostics are attached only when --include-logs is explicitly passed.",
   helpFooter: `Example:
   berdctl feedback submit --title "Composer loses draft" \\
     --description "Steps to reproduce..." --include-logs --json

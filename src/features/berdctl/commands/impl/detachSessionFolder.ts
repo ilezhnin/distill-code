@@ -19,7 +19,7 @@ export const detachSessionFolderCommand = defineCommand({
   destructive: false,
   summary: "Detach a folder, repository, or worktree from a chat",
   description:
-    "Remove an existing folder from chat context without deleting anything. If it is cwd, the chat safely falls back to the first remaining attachment or Berd's default cwd.",
+    "Remove an existing folder from chat context without deleting anything. If it is cwd, the chat safely falls back to the first remaining attachment or Distill's default cwd.",
   helpFooter: `Detach the checked-out folder to detach its branch from chat context. This does not delete anything from disk or Git.
 
 Example:

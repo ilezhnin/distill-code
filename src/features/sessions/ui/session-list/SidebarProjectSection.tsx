@@ -4,9 +4,10 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconEdit,
+  IconSitemap,
 } from "@tabler/icons-react";
 import type { AppView } from "@/app/AppShell";
-import { usePinToHomeWidget } from "@/features/home/hooks/usePinToHomeWidget";
+
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { ProjectIcon } from "@/features/projects/ui/ProjectIcon";
 import { cn } from "@/shared/lib/cn";
@@ -69,6 +70,7 @@ export function SidebarProjectSection({
   activeSessionId,
   onSelectSession,
   onNewChatInProject,
+  onNewConductorInProject,
   onEditProject,
   onArchiveProject,
   onArchiveChat,
@@ -107,6 +109,7 @@ export function SidebarProjectSection({
   activeSessionId?: string | null;
   onSelectSession?: (sessionId: string) => void;
   onNewChatInProject?: (projectId: string) => void;
+  onNewConductorInProject?: (projectId: string) => void;
   onEditProject?: (projectId: string) => void;
   onArchiveProject?: (projectId: string) => void;
   onArchiveChat?: (sessionId: string) => void | Promise<void>;
@@ -160,13 +163,6 @@ export function SidebarProjectSection({
   // When collapsed, surface unread on the project identity because its chat
   // rows are hidden. Expanded chats carry their own activity overlays.
   const showProjectUnread = projectHasUnread && !isExpanded;
-  const {
-    isPinned: isPinnedToHome,
-    isPinning: isPinningToHome,
-    pinToHome,
-    unpinFromHome,
-  } = usePinToHomeWidget({ kind: "project", id: project.id });
-
   useEffect(() => {
     if (isExpanded) {
       if (collapseProjectChatsTimerRef.current != null) {
@@ -305,14 +301,6 @@ export function SidebarProjectSection({
 
   // One action set, two entry points: the row's overflow menu and right-click.
   const projectMenuActions: SidebarItemMenuActions = {
-    onPinToHome: () => (isPinnedToHome ? unpinFromHome() : void pinToHome()),
-    pinToHomeDisabled: isPinningToHome,
-    isPinnedToHome,
-    pinToHomeLabel: isPinnedToHome
-      ? t("sidebar:actions.unpinProject")
-      : isPinningToHome
-        ? t("common:actions.pinningToHome")
-        : t("sidebar:actions.pinProject"),
     onEdit: () => onEditProject?.(project.id),
     onArchive: () => onArchiveProject?.(project.id),
   };
@@ -397,7 +385,23 @@ export function SidebarProjectSection({
                 {...projectMenuActions}
               />
             </div>
-            <span data-sidebar-drag-ignore className="ml-1 flex flex-shrink-0">
+            <span
+              data-sidebar-drag-ignore
+              className="ml-1 flex flex-shrink-0 gap-0.5"
+            >
+              <SidebarSectionHeaderAction
+                icon={IconSitemap}
+                label={t("actions.newConductorInProject")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onNewConductorInProject?.(project.id);
+                }}
+                revealClassName={
+                  menuOpen || contextMenuOpen
+                    ? "visible"
+                    : "invisible group-hover:visible group-focus-within:visible"
+                }
+              />
               <SidebarSectionHeaderAction
                 icon={IconEdit}
                 label={t("actions.newChatInProject")}

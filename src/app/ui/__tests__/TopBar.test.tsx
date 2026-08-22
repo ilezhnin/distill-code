@@ -18,28 +18,34 @@ function renderTopBar(props: Partial<Parameters<typeof TopBar>[0]> = {}) {
 }
 
 describe("TopBar", () => {
-  it("renders the Berd home logo and navigates home", async () => {
-    const onHomeClick = vi.fn();
-    renderTopBar({ onHomeClick });
+  it("shows the current view title after the navigation icons", () => {
+    renderTopBar({ breadcrumbs: [{ id: "root", label: "Home" }] });
 
-    const home = screen.getByRole("button", { name: /Berd home/i });
-    home.click();
-    expect(onHomeClick).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("app-top-bar-title")).toHaveTextContent("Home");
+    expect(
+      screen.queryByRole("button", { name: /Distill home/i }),
+    ).not.toBeInTheDocument();
   });
 
-  it("does not render breadcrumbs", () => {
+  it("prefers the selected chat title over parent breadcrumbs", () => {
     renderTopBar({
-      breadcrumbs: [{ label: "Chat" }, { label: "Model and system info" }],
+      breadcrumbs: [
+        { id: "chat", label: "Chat" },
+        { id: "chat-session", label: "Conductor" },
+      ],
     });
 
+    expect(screen.getByTestId("app-top-bar-title")).toHaveTextContent(
+      "Conductor",
+    );
     expect(screen.queryByText("Chat")).not.toBeInTheDocument();
-    expect(screen.queryByText("Model and system info")).not.toBeInTheDocument();
   });
 
   it("renders the skills title in the chat-title position", () => {
     renderTopBar({ breadcrumbs: [{ id: "skills", label: "Skills" }] });
 
-    expect(screen.getByText("Skills")).toHaveClass("w-full", "truncate");
+    expect(screen.getByTestId("app-top-bar-title")).toHaveClass("truncate");
+    expect(screen.getByTestId("app-top-bar-title")).toHaveTextContent("Skills");
   });
 
   it("omits search when onSearchClick is not provided", () => {
@@ -61,13 +67,14 @@ describe("TopBar", () => {
   it("shows the agents page title in the chat-title position", () => {
     renderTopBar({ breadcrumbs: [{ id: "agents", label: "Agents" }] });
 
-    expect(screen.getByText("Agents")).toHaveClass(
+    expect(screen.getByTestId("app-top-bar-title")).toHaveClass(
       "text-[length:var(--text-app-top-bar-title)]",
       "font-normal",
     );
+    expect(screen.getByTestId("app-top-bar-title")).toHaveTextContent("Agents");
   });
 
-  it("keeps a long chat title in the flexible middle track", () => {
+  it("keeps a long chat title in the flexible title slot after icons", () => {
     const { container } = renderTopBar({
       breadcrumbs: [
         {
@@ -81,11 +88,12 @@ describe("TopBar", () => {
     });
 
     const header = container.querySelector("header");
-    const title = screen.getByText(/A very long chat title/);
-    expect(header).toHaveClass("grid-cols-[max-content_minmax(0,1fr)_auto]");
-    expect(title).toHaveClass("w-full", "min-w-0", "truncate");
-    expect(title).not.toHaveAttribute("title");
-    expect(title).not.toHaveClass("absolute");
+    const title = screen.getByTestId("app-top-bar-title");
+    expect(header).toHaveClass("grid-cols-[minmax(0,1fr)_auto]");
+    expect(title).toHaveClass("min-w-0", "truncate");
+    expect(title).toHaveTextContent(
+      "A very long chat title that must truncate before controls",
+    );
   });
 
   it("keeps right-side toolbar controls available", () => {

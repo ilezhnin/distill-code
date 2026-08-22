@@ -63,6 +63,8 @@ import {
 } from "@/shared/ui/ai-elements/shimmer";
 import { SidebarLeadingIcon } from "./SidebarLeadingIcon";
 import { SidebarUnreadDot } from "./SidebarUnreadDot";
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import { ConductorLeadingIcon } from "@/features/conductor/ui/ConductorLeadingIcon";
 import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 import { useWorkingIndicatorAnimationPreference } from "@/shared/preferences/workingIndicatorAnimationPreference";
 import { useSidebarChatDrag } from "./SidebarChatDragContext";
@@ -277,6 +279,12 @@ export function SidebarChatRow({
   const suppressNextClickResetRef = useRef<number | null>(null);
   const sessionWindowSupport = useSessionWindowSupport();
   const isMultiWindowEnabled = sessionWindowSupport.supported;
+  const isConductor = useConductorGraphStore(
+    (state) => state.nodesById[id]?.role === "conductor",
+  );
+  const resolvedLeadingIcon = isConductor
+    ? (leadingIcon ?? <ConductorLeadingIcon />)
+    : leadingIcon;
   const displayTitle = getDisplaySessionTitle(
     title,
     t("common:session.defaultTitle"),
@@ -304,6 +312,7 @@ export function SidebarChatRow({
   const needsLeadingSlot =
     nested ||
     showLeadingIcon ||
+    isConductor ||
     hasFlatProjectColumn ||
     (showQuickPin && isPinnedToHome);
   const showAbsoluteLeadingSlot = !hasFlatProjectColumn && needsLeadingSlot;
@@ -826,8 +835,8 @@ export function SidebarChatRow({
               }
               testId={leadingIconTestId}
             >
-              {showLeadingIcon
-                ? (leadingIcon ?? <SidebarChatMenuIcon />)
+              {showLeadingIcon || isConductor
+                ? (resolvedLeadingIcon ?? <SidebarChatMenuIcon />)
                 : null}
             </SidebarLeadingIcon>
           ) : null}

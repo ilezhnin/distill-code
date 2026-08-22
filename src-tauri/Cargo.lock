@@ -9,9 +9,9 @@ dependencies = [
  "anyhow",
  "audioadapter-buffers",
  "base64 0.22.1",
+ "berd-voice",
  "block2",
  "builderbot-auth",
- "berd-voice",
  "bytes",
  "bzip2 0.6.1",
  "chrono",
@@ -580,6 +580,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a8241f3ebb85c056b509d4327ad0358fbbba6ffb340bf388f26350aeda225b1"
 
 [[package]]
+name = "berd-voice"
+version = "0.1.0"
+dependencies = [
+ "ort",
+ "ort-sys",
+ "rand 0.10.2",
+ "sentencepiece-model",
+ "serde",
+ "serde_json",
+ "sherpa-onnx",
+ "tokenizers",
+]
+
+[[package]]
 name = "berdctl"
 version = "0.6.2"
 dependencies = [
@@ -711,20 +725,6 @@ name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
-
-[[package]]
-name = "berd-voice"
-version = "0.1.0"
-dependencies = [
- "ort",
- "ort-sys",
- "rand 0.10.2",
- "sentencepiece-model",
- "serde",
- "serde_json",
- "sherpa-onnx",
- "tokenizers",
-]
 
 [[package]]
 name = "bytemuck"

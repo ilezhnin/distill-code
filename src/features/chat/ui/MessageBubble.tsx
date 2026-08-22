@@ -64,6 +64,11 @@ import {
 } from "./UserMessageClamp";
 import { ImageLightbox } from "@/shared/ui/ImageLightbox";
 import { VoiceSpeechStatusIndicator } from "./VoiceSpeechStatusIndicator";
+import {
+  latestConductorFooterHostId,
+  useConductorTranscript,
+} from "@/features/conductor/ConductorTranscriptContext";
+import { ConductorAgentFooter } from "@/features/conductor/ui/ConductorAgentFooter";
 
 interface MessageAttachmentPreviewItem {
   key: string;
@@ -703,6 +708,7 @@ export const MessageBubble = memo(function MessageBubble({
 }: MessageBubbleProps) {
   const { t } = useTranslation(["chat", "common"]);
   const { formatDate } = useLocaleFormatting();
+  const conductorTranscript = useConductorTranscript();
   const { role, content: rawContent, created } = message;
   // Only user messages carry annotated blocks; skip the filter for others.
   const content = contentOverride
@@ -868,6 +874,11 @@ export const MessageBubble = memo(function MessageBubble({
   const canHostMessageActions =
     !fragmentRole || fragmentRole === "end" || fragmentRole === "single";
   const showMessageActions = !isStreaming && canHostMessageActions;
+  const showConductorFooter =
+    conductorTranscript.enabled &&
+    canHostMessageActions &&
+    conductorTranscript.children.length > 0 &&
+    latestConductorFooterHostId(conductorTranscript.messages) === message.id;
   // Reserve the action tray while the terminal assistant row is still
   // streaming so completion does not add pb-9 and nudge a bottom-pinned
   // transcript upward.
@@ -1088,6 +1099,15 @@ export const MessageBubble = memo(function MessageBubble({
             </p>
           )}
         </div>
+
+        {showConductorFooter ? (
+          <ConductorAgentFooter
+            nodes={conductorTranscript.children}
+            reportsByRunId={conductorTranscript.reportsByRunId}
+            onOpen={conductorTranscript.onOpenChild}
+            onStop={conductorTranscript.onStopChild}
+          />
+        ) : null}
 
         {showMessageActions ? (
           <div

@@ -22,15 +22,10 @@ import type {
 } from "@opentelemetry/sdk-logs";
 import { JsonLogsSerializer } from "@opentelemetry/otlp-transformer";
 
-// Injected by vite.config.ts from VITE_OTLP_LOGS_ENDPOINT: the full telemetry
-// gateway `https://<host>/v1/logs` URL. Production builds get the production
-// gateway (otel.berd.xyz), staging builds the staging gateway
-// (otel.test.blockstaging.build); development gets an obviously-fake DUMMY
-// host, so the prod/staging gate (see `./client`) plus that placeholder keep
-// the path inert in dev and external clones. The native side derives the
-// anonymous `/v1/bootstrap` URL from this same endpoint, so no bootstrap URL
-// is plumbed here. The fallback below is only reachable where the vite define
-// is absent (vitest).
+// Injected by vite.config.ts. Distill has no collector, so this is an inert
+// placeholder unless DISTILL_OTLP_LOGS_ENDPOINT is set to a Distill-owned
+// host. Berd/Block gateways are never injected. The native allowlist refuses
+// those hosts even if a build tries to override the endpoint.
 const OTLP_LOGS_ENDPOINT =
   import.meta.env.VITE_OTLP_LOGS_ENDPOINT ??
   "https://otlp.invalid.goose-internal.example/v1/logs";

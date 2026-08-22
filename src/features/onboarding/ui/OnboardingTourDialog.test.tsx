@@ -134,7 +134,7 @@ describe("OnboardingTourDialog", () => {
     await user.click(screen.getByRole("button", { name: "Next tour step" }));
     expect(
       screen.getByRole("heading", {
-        name: "Teach Berd a new trick with skills",
+        name: "Teach Distill a new trick with skills",
       }),
     ).toBeInTheDocument();
     const skillPills = document.querySelectorAll(

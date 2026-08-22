@@ -17,7 +17,7 @@ export function findBerdyPersonaId(
     return (
       normalizedPath.endsWith(BERDY_GLOBAL_AGENT_PATH_SUFFIX) &&
       isBerdBundled &&
-      persona.displayName.trim().toLowerCase() === "berdy" &&
+      ["berdy", "distill"].includes(persona.displayName.trim().toLowerCase()) &&
       persona.avatar === "app-avatar:gloopies-22"
     );
   });

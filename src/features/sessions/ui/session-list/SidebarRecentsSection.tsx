@@ -252,7 +252,7 @@ export function SidebarRecentsSection({
                 branchName={session.branchName}
                 activityAt={session.activityAt}
                 showLeadingIcon={showChatIcons}
-                quickPinMode={showChatIcons ? "always" : "pinned-only"}
+                quickPinMode="never"
                 showTimestamp={showTimestamps}
                 showRenameTooltip={false}
                 isActive={isActive}

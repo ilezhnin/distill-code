@@ -1,10 +1,7 @@
 import { toast } from "sonner";
 import { create, type StoreApi, type UseBoundStore } from "zustand";
 import { BERDY_ONBOARDING_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
-import {
-  STARTER_PROJECT_ID,
-  STARTER_TASKS_NOTE_ID,
-} from "@/features/home/onboarding/starterTasks";
+import { STARTER_TASKS_NOTE_ID } from "@/features/home/onboarding/starterTasks";
 import { notifyStarterWidgetAdded } from "@/features/home/onboarding/starterWidgetTask";
 import { createStarterHomeWidgets } from "@/features/home/onboarding/createStarterHomeWidgets";
 import {
@@ -690,15 +687,11 @@ function createHomeWidgetStore() {
         const existingTaskNote = state.instances.find(
           (instance) => defaultStickyNoteId(instance) === STARTER_TASKS_NOTE_ID,
         );
-        const existingProject = state.instances.find(
-          (instance) =>
-            instance.type === "onboardingProjectArtifact" ||
-            instance.state?.onboardingStarterProject === true,
-        );
         const withoutOwnedWidgets = state.instances.filter(
           (instance) =>
             instance.id !== existingTaskNote?.id &&
-            instance.id !== existingProject?.id,
+            instance.type !== "onboardingProjectArtifact" &&
+            instance.state?.onboardingStarterProject !== true,
         );
         const nextInstances: WidgetInstance[] = [
           ...withoutOwnedWidgets,
@@ -712,19 +705,6 @@ function createHomeWidgetStore() {
             height: 196,
             state: { noteId: STARTER_TASKS_NOTE_ID },
           },
-          {
-            id: existingProject?.id ?? crypto.randomUUID(),
-            type: "onboardingProjectArtifact",
-            x: existingProject?.x ?? 300,
-            y: existingProject?.y ?? -260,
-            z: existingProject?.z ?? withoutOwnedWidgets.length + 2,
-            width: 400,
-            height: 400,
-            state: {
-              projectId: STARTER_PROJECT_ID,
-              onboardingStarterProject: true,
-            },
-          },
         ];
         set({ instances: nextInstances });
         runtime.enqueueSave(nextInstances);
@@ -736,10 +716,10 @@ function createHomeWidgetStore() {
             (instance) =>
               defaultStickyNoteId(instance) === STARTER_TASKS_NOTE_ID,
           ) &&
-          latest.instances.some(
+          !latest.instances.some(
             (instance) =>
-              instance.type === "onboardingProjectArtifact" &&
-              instance.state?.projectId === STARTER_PROJECT_ID,
+              instance.type === "onboardingProjectArtifact" ||
+              instance.state?.onboardingStarterProject === true,
           )
         );
       },

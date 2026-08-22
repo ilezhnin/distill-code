@@ -13,7 +13,6 @@ import { useTopBarActions } from "@/app/contexts/TopBarActionsContext";
 import { BetaBadge } from "@/features/updates/ui/BetaBadge";
 import { cn } from "@/shared/lib/cn";
 import { TopBarIconButton } from "@/shared/ui/top-bar-icon-button";
-import { BerdIcon } from "@/shared/ui/icons/BerdIcon";
 
 type TopBarLeadingChromeInset = "compact" | "trafficLights";
 export interface TopBarChromeInsets {
@@ -35,7 +34,6 @@ interface TopBarProps {
   onToggleRightRail?: () => void;
   onToggleSidebar?: () => void;
   onFeedbackClick?: () => void;
-  onHomeClick?: () => void;
   onSearchClick?: () => void;
 }
 
@@ -60,17 +58,14 @@ export function TopBar({
   onToggleRightRail,
   onToggleSidebar,
   onFeedbackClick,
-  onHomeClick,
   onSearchClick,
 }: TopBarProps) {
   const { t } = useTranslation(["sidebar", "feedback"]);
   const viewActions = useTopBarActions();
   const topBarTitle =
     breadcrumbs.find((breadcrumb) => breadcrumb.id === "chat-session")?.label ??
-    breadcrumbs.find((breadcrumb) => breadcrumb.id === "skills")?.label ??
-    (breadcrumbs.length === 1 && breadcrumbs[0]?.id === "agents"
-      ? breadcrumbs[0].label
-      : null);
+    breadcrumbs[breadcrumbs.length - 1]?.label ??
+    null;
   const sidebarLabel = sidebarCollapsed
     ? t("actions.expand")
     : t("actions.collapse");
@@ -92,7 +87,7 @@ export function TopBar({
     <header
       className={cn(
         "relative grid h-[var(--spacing-app-top-bar)] min-w-0 select-none items-center gap-2 pr-4",
-        "grid-cols-[max-content_minmax(0,1fr)_auto]",
+        "grid-cols-[minmax(0,1fr)_auto]",
         className,
       )}
       data-tauri-drag-region="deep"
@@ -100,15 +95,6 @@ export function TopBar({
       <div className="flex min-w-0 items-center gap-2">
         <div className={cn("h-full shrink-0", leadingSpaceClassName)} />
         <div className="flex shrink-0 items-center gap-[var(--spacing-app-top-bar-button-gap)]">
-          <TopBarIconButton
-            type="button"
-            size="icon-top-bar"
-            onClick={onHomeClick}
-            aria-label={t("navigation.gooseHome")}
-            tooltip={t("navigation.gooseHome")}
-          >
-            <BerdIcon aria-hidden="true" className="size-4" />
-          </TopBarIconButton>
           <TopBarIconButton
             type="button"
             size="icon-top-bar"
@@ -141,13 +127,12 @@ export function TopBar({
             </TopBarIconButton>
           </div>
         </div>
-      </div>
-      <div className="flex min-w-0 items-center self-stretch">
-        {topBarTitle ? (
-          <span className="block w-full min-w-0 truncate text-[length:var(--text-app-top-bar-title)] font-normal text-foreground">
-            {topBarTitle}
-          </span>
-        ) : null}
+        <span
+          data-testid="app-top-bar-title"
+          className="block min-w-0 flex-1 truncate pl-2 text-[length:var(--text-app-top-bar-title)] font-normal text-foreground"
+        >
+          {topBarTitle ?? "\u00a0"}
+        </span>
       </div>
       <div className="flex shrink-0 items-center gap-3 text-app-top-bar-control-fg [&_svg]:size-[length:var(--text-app-top-bar-icon)]">
         {viewActions}

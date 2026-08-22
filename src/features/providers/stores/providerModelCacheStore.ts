@@ -128,7 +128,7 @@ export function isCachedModelInventoryAuthoritative(
 }
 
 function isStale(entry: CachedProviderModels | undefined): boolean {
-  if (!entry || !isCachedModelInventoryAuthoritative(entry)) {
+  if (!entry || entry.error || !isCachedModelInventoryAuthoritative(entry)) {
     return true;
   }
   return (

@@ -7,8 +7,6 @@ import {
   IconShare,
   IconTrash,
 } from "@tabler/icons-react";
-import { PinIcon } from "lucide-react";
-import { usePinToHomeWidget } from "@/features/home/hooks/usePinToHomeWidget";
 import { AgentProfileLayout } from "@/features/agents/ui/AgentProfileLayout";
 import { AgentIdentityRail } from "@/features/agents/ui/AgentIdentityRail";
 import { MessageResponse } from "@/shared/ui/ai-elements/message";
@@ -50,16 +48,6 @@ export function SkillDetailPage({
   onDelete,
 }: SkillDetailPageProps) {
   const { t } = useTranslation(["skills", "common"]);
-  const {
-    isPinned: isPinnedToHome,
-    isPinning: isPinningToHome,
-    pinToHome,
-    unpinFromHome,
-  } = usePinToHomeWidget({
-    kind: "skill",
-    id: skill?.id,
-    legacyIds: skill?.legacyPinIds,
-  });
 
   if (!skill) {
     return (
@@ -77,11 +65,6 @@ export function SkillDetailPage({
       ? [...new Set(skill.projectLinks.map((project) => project.name))]
       : [skill.sourceLabel];
   const startChatLabel = t("view.startChatShort");
-  const pinLabel = isPinnedToHome
-    ? t("common:actions.unpinFromHome")
-    : isPinningToHome
-      ? t("common:actions.pinningToHome")
-      : t("common:actions.pinToHome");
   const editLabel = t("common:actions.edit");
   const revealLabel = t("view.reveal");
   const moreLabel = t("view.more");
@@ -101,21 +84,6 @@ export function SkillDetailPage({
           <IconPencil className={ACTION_ICON_CLASS} />
         </Button>
       ) : null}
-      <Button
-        type="button"
-        size="icon"
-        variant="ghost"
-        aria-label={pinLabel}
-        tooltip={pinLabel}
-        onClick={() => (isPinnedToHome ? unpinFromHome() : void pinToHome())}
-        disabled={isPinningToHome}
-        className={ACTION_BUTTON_CLASS}
-      >
-        <PinIcon
-          className={ACTION_ICON_CLASS}
-          fill={isPinnedToHome ? "currentColor" : "none"}
-        />
-      </Button>
       {onStartChat ? (
         <Button
           type="button"

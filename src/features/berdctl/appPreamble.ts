@@ -16,9 +16,9 @@ import {
  * appPreamble.test.ts so renames cannot drift silently; the listing is
  * intentionally non-exhaustive (niche verbs are omitted to save tokens).
  */
-export const BERDCTL_PREAMBLE = `[Berd]
-You are running inside Berd, a desktop app for working with agents.
-A CLI named \`berdctl\` is on your PATH; it controls the Berd app itself.
+export const BERDCTL_PREAMBLE = `[Distill]
+You are running inside Distill, a desktop app for working with agents.
+A CLI named \`berdctl\` is on your PATH; it controls the Distill app itself.
 
 Usage: berdctl <noun> <verb> [--json]
 - session: create, send, open, list, get, rename, fork, archive, move

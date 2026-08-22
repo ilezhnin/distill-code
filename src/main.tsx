@@ -17,6 +17,7 @@ import { LocalMediaCacheEvents } from "@/app/LocalMediaCacheEvents";
 import { RendererTelemetry } from "@/app/RendererTelemetry";
 import { StartupLoadingView } from "@/app/ui/StartupLoadingView";
 import { BackgroundQueuedMessageDrain } from "@/features/chat/ui/BackgroundQueuedMessageDrain";
+import { ConductorGraphSync } from "@/features/conductor/ConductorGraphSync";
 import { getInstallationCohort } from "@/features/onboarding/api/installationCohort";
 import { initializeOnboardingGraduation } from "@/features/onboarding/model";
 import { UpdaterProvider } from "@/features/updates/hooks/useUpdater";
@@ -27,6 +28,8 @@ import { TooltipProvider } from "@/shared/ui/tooltip";
 import { RendererErrorBoundary } from "@/app/ui/RendererErrorBoundary";
 import "@xterm/xterm/css/xterm.css";
 import "@/shared/styles/globals.css";
+
+document.title = "Distill";
 
 // One-time cleanup of legacy onboarding state from previous builds. Safe to
 // remove once we're confident no users still carry this localStorage entry.
@@ -206,6 +209,7 @@ if (bootError) {
                 <GitStateEvents />
                 <LocalMediaCacheEvents />
                 <BackgroundQueuedMessageDrain />
+                <ConductorGraphSync />
                 <OptionalBerdctlBridge />
                 <RendererTelemetry />
                 <I18nProvider>

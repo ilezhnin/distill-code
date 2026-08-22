@@ -125,6 +125,7 @@ describe("useProviderModels", () => {
     expect(result.current.modelCacheRefreshProviderIds).toEqual([
       "claude-acp",
       "codex-acp",
+      "grok-acp",
       "copilot-acp",
       "cursor-agent",
     ]);
@@ -149,6 +150,7 @@ describe("useProviderModels", () => {
     expect(result.current.modelCacheRefreshProviderIds).toEqual([
       "claude-acp",
       "codex-acp",
+      "grok-acp",
       "copilot-acp",
       "cursor-agent",
     ]);

@@ -1,5 +1,5 @@
 {
-  "appName": "Berd",
+  "appName": "Distill",
   "actions": {
     "backToMainNavigation": "Back",
     "back": "Back",
@@ -11,6 +11,7 @@
     "search": "Search",
     "newChat": "New chat",
     "newChatInProject": "New chat in project",
+    "newConductorInProject": "New conductor in project",
     "pinProject": "Add to Home",
     "unpinProject": "Unpin project",
     "newProject": "New project",
@@ -58,7 +59,7 @@
     "automations": "Automations",
     "builderbot": "Builderbot",
     "connections": "Connections",
-    "gooseHome": "Berd home",
+    "gooseHome": "Distill home",
     "home": "Home",
     "main": "Main navigation",
     "sessionList": "Projects and chats",

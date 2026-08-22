@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use futures_util::{stream, StreamExt};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -10,6 +12,8 @@ use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Manager};
 use tokio::io::AsyncWriteExt;
 
+// Berd's project-cube catalog. Distill does not operate a replacement CDN and
+// must not fetch this host; `ensure_artifacts` returns an empty catalog.
 const ARTIFACT_CDN_BASE: &str = "https://dwwgwmfqqjotj.cloudfront.net/artifacts/";
 const LATEST_PATH: &str = "latest.json";
 const MANIFEST_FILE: &str = "manifest.json";
@@ -101,29 +105,13 @@ async fn clear_artifacts_cache_paths(paths: &ArtifactCachePaths) -> Result<(), S
     Ok(())
 }
 
-async fn ensure_artifacts(app: AppHandle) -> Result<Artifacts, String> {
-    let _cache_guard = artifact_cache_lock().lock().await;
-    let paths = artifact_cache_paths(&app)?;
-    clean_part_files(&paths)?;
-
-    if let Some((catalog, assets)) = read_complete_cached_assets(&paths).await? {
-        if is_cache_fresh(&paths)? {
-            prune_obsolete_versions(&paths, &catalog.catalog_version)?;
-            return Ok(assets);
-        }
-
-        match refresh_artifacts_cache_unlocked(&paths).await {
-            Ok(refreshed) => return Ok(refreshed),
-            Err(error) => {
-                log::warn!(
-                    "Failed to refresh stale artifact asset cache; using cached assets: {error}"
-                );
-                return Ok(assets);
-            }
-        }
-    }
-
-    refresh_artifacts_cache_unlocked(&paths).await
+async fn ensure_artifacts(_app: AppHandle) -> Result<Artifacts, String> {
+    // Distill has no artifact CDN. Do not fetch Berd/Block catalogs or reuse
+    // their cached promo cubes; project previews fall back to the local glyph.
+    Ok(Artifacts {
+        catalog_version: "distill-disabled".to_string(),
+        assets: vec![],
+    })
 }
 
 async fn read_complete_cached_assets(

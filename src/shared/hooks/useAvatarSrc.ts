@@ -11,6 +11,7 @@ import {
   getCachedAvatarForRef,
 } from "@/shared/api/avatars";
 import {
+  isAgentAvatarRef,
   isAppAvatarRef,
   isUserAvatarRef,
   parseAvatarRef,
@@ -89,7 +90,10 @@ export function useAvatarMediaState(
   // User-avatar refs (generated gloopies) resolve through the same cached
   // lookup as bundled app-avatar refs.
   const shouldLoadCachedAvatar =
-    !directMedia && (isAppAvatarRef(avatarRef) || isUserAvatarRef(avatarRef));
+    !directMedia &&
+    (isAppAvatarRef(avatarRef) ||
+      isUserAvatarRef(avatarRef) ||
+      isAgentAvatarRef(avatarRef));
   const enabled = shouldLoadCachedAvatar && Boolean(queryClient);
 
   // Reactive observer on the shared per-ref cache entry: when the app-level

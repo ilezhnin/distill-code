@@ -19,8 +19,11 @@ use uuid::Uuid;
 const AVATAR_CDN_BASE: &str = "https://dwwgwmfqqjotj.cloudfront.net/avatars/";
 const APP_AVATAR_REF_PREFIX: &str = "app-avatar:";
 const USER_AVATAR_REF_PREFIX: &str = "user-avatar:";
+const AGENT_AVATAR_REF_PREFIX: &str = "agent-avatar:";
 const USER_AVATAR_CATALOG_VERSION: &str = "user-generated";
 const USER_AVATAR_COLLECTION_ID: &str = "generated-gloopies";
+const AGENT_AVATAR_CATALOG_VERSION: &str = "bundled-agent-avatars";
+const AGENT_AVATAR_COLLECTION_ID: &str = "agents";
 const AVATAR_CACHE_WARMED_EVENT: &str = "berd:avatar-cache-warmed";
 const LATEST_PATH: &str = "latest.json";
 const MANIFEST_FILE: &str = "manifest.json";
@@ -430,6 +433,9 @@ pub async fn get_cached_avatar_for_ref(
     if let Some(avatar_id) = parse_user_avatar_ref(&avatar_ref)? {
         return cached_user_avatar_for_id(&app, &avatar_id);
     }
+    if let Some(avatar_id) = parse_agent_avatar_ref(&avatar_ref)? {
+        return cached_agent_avatar_for_id(&app, &avatar_id);
+    }
 
     let avatar_id = parse_app_avatar_ref(&avatar_ref)?;
     let paths = avatar_cache_paths(&app)?;
@@ -763,8 +769,21 @@ pub async fn get_cached_avatars_for_refs(
                 );
             }
             Ok(None) => {
-                let avatar_id = parse_app_avatar_ref(&avatar_ref).ok();
-                parsed_refs.push((avatar_ref, avatar_id));
+                match parse_agent_avatar_ref(&avatar_ref) {
+                    Ok(Some(avatar_id)) => {
+                        resolved.insert(
+                            avatar_ref,
+                            cached_agent_avatar_for_id(&app, &avatar_id).unwrap_or(None),
+                        );
+                    }
+                    Ok(None) => {
+                        let avatar_id = parse_app_avatar_ref(&avatar_ref).ok();
+                        parsed_refs.push((avatar_ref, avatar_id));
+                    }
+                    Err(_) => {
+                        resolved.insert(avatar_ref, None);
+                    }
+                }
             }
             Err(_) => {
                 resolved.insert(avatar_ref, None);
@@ -809,6 +828,68 @@ fn cached_avatar_for_id(
     avatar_id: &str,
 ) -> Result<Option<CachedAvatar>, String> {
     cached_avatar_for_id_with_format(paths, catalog, avatar_id, platform_avatar_format())
+}
+
+fn cached_agent_avatar_for_id(
+    app: &AppHandle,
+    avatar_id: &str,
+) -> Result<Option<CachedAvatar>, String> {
+    let Some(distro_state) = app.try_state::<crate::services::distro_bundle::DistroBundleState>()
+    else {
+        return Ok(None);
+    };
+    let Some(bundle) = distro_state.bundle() else {
+        return Ok(None);
+    };
+    cached_agent_avatar_for_id_at(&bundle.root_dir.join("agents").join(".avatars"), avatar_id)
+}
+
+fn cached_agent_avatar_for_id_at(
+    avatar_dir: &Path,
+    avatar_id: &str,
+) -> Result<Option<CachedAvatar>, String> {
+    validate_avatar_id(avatar_id)?;
+    for (extension, mime_type) in [
+        ("png", "image/png"),
+        ("jpg", "image/jpeg"),
+        ("jpeg", "image/jpeg"),
+        ("gif", "image/gif"),
+        ("webp", "image/webp"),
+    ] {
+        let path = avatar_dir.join(format!("{avatar_id}.{extension}"));
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "Failed to inspect bundled agent avatar '{}': {error}",
+                    path.display()
+                ));
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!(
+                "Bundled agent avatar '{}' must be a regular file",
+                path.display()
+            ));
+        }
+        if metadata.len() == 0 {
+            return Ok(None);
+        }
+        return Ok(Some(CachedAvatar {
+            catalog_version: AGENT_AVATAR_CATALOG_VERSION.to_string(),
+            collection_id: AGENT_AVATAR_COLLECTION_ID.to_string(),
+            asset: CachedAvatarAsset {
+                id: avatar_id.to_string(),
+                path: path.to_string_lossy().into_owned(),
+                mime_type: mime_type.to_string(),
+                alpha_mode: None,
+                poster_path: None,
+            },
+        }));
+    }
+
+    Ok(None)
 }
 
 fn cached_avatars_for_parsed_refs_with_format(
@@ -2365,6 +2446,14 @@ fn parse_app_avatar_ref(value: &str) -> Result<String, String> {
 
 fn parse_user_avatar_ref(value: &str) -> Result<Option<String>, String> {
     let Some(id) = value.trim().strip_prefix(USER_AVATAR_REF_PREFIX) else {
+        return Ok(None);
+    };
+    validate_avatar_id(id)?;
+    Ok(Some(id.to_string()))
+}
+
+fn parse_agent_avatar_ref(value: &str) -> Result<Option<String>, String> {
+    let Some(id) = value.trim().strip_prefix(AGENT_AVATAR_REF_PREFIX) else {
         return Ok(None);
     };
     validate_avatar_id(id)?;

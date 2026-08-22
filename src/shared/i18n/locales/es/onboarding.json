@@ -3,16 +3,16 @@
     "goBack": "Volver"
   },
   "welcome": {
-    "title": "Te damos la bienvenida a Berd.",
-    "subtitle": "Tu lugar para hacer.",
+    "title": "Te damos la bienvenida a Distill.",
+    "subtitle": "Tu lugar para dirigir el trabajo.",
     "getStarted": "Vamos",
-    "usageConsent": "Comparte datos de uso anónimos para ayudar a mejorar Berd.",
+    "usageConsent": "Comparte datos de uso anónimos para ayudar a mejorar Distill.",
     "learnMore": "Más información"
   },
   "workTypes": {
-    "title": "¿Para qué tipo de trabajo usarás Berd?",
+    "title": "¿Para qué tipo de trabajo usarás Distill?",
     "descriptionLine1": "Elige una o más opciones y te recomendaremos",
-    "descriptionLine2": "algunos agentes de Berd para configurar.",
+    "descriptionLine2": "algunos agentes de Distill para configurar.",
     "next": "Siguiente",
     "items": {
       "engineering": {
@@ -52,7 +52,7 @@
     "waitingForRuntime": "Preparando…",
     "keep": "Conservar",
     "skip": "Omitir por ahora",
-    "runtimeUnavailable": "Berd no terminó de iniciarse, así que aún no se pueden añadir agentes.",
+    "runtimeUnavailable": "Distill no terminó de iniciarse, así que aún no se pueden añadir agentes.",
     "retryRuntime": "Reintentar",
     "genericError": "No se pudieron añadir algunos agentes. Inténtalo de nuevo.",
     "adoptionError": "No se pudo añadir a {{names}}. Los demás agentes se conservaron; inténtalo de nuevo para añadir el resto.",
@@ -77,7 +77,7 @@
     "partialAdoptionWarning": "Se conservaron algunos agentes, pero no se pudo añadir a {{names}}. Puedes continuar e intentarlo de nuevo más tarde."
   },
   "harness": {
-    "title": "Elige un proveedor para impulsar Berd",
+    "title": "Elige un proveedor para impulsar Distill",
     "description": "Comienza con uno ahora o conecta un proveedor más tarde en Configuración.",
     "finish": "Finalizar",
     "install": "Instalar",
@@ -86,7 +86,7 @@
   },
   "setup": {
     "readyTitle": "{{provider}} está listo",
-    "readyDescription": "Tu proveedor está conectado y listo para usar en Berd.",
+    "readyDescription": "Tu proveedor está conectado y listo para usar en Distill.",
     "finishOnboarding": "Finalizar introducción",
     "installationComplete": "Instalación completada",
     "installing": "Instalando",

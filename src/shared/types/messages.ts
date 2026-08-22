@@ -250,7 +250,7 @@ export interface MessageMetadata {
   agentVisible?: boolean;
   delivery?: "steering" | "steer";
   steeringRequestId?: string;
-  origin?: "berdctl_cross_session" | "voice_conversation";
+  origin?: "berdctl_cross_session" | "voice_conversation" | "operator_direct";
   voiceUtteranceId?: string;
   voiceConversationLifecycleId?: string;
   voiceConversationRevision?: number;

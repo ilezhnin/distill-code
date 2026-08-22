@@ -79,6 +79,7 @@ export interface SidebarProjectsSectionProps {
   onOpenProject?: (projectId: string) => void;
   onSelectSession?: (sessionId: string) => void;
   onNewChatInProject?: (projectId: string) => void;
+  onNewConductorInProject?: (projectId: string) => void;
   onNewChat?: () => void;
   onCreateProject?: () => void;
   onEditProject?: (projectId: string) => void;
@@ -154,6 +155,7 @@ export function SidebarProjectsSection({
   onNavigate,
   onSelectSession,
   onNewChatInProject,
+  onNewConductorInProject,
   onNewChat,
   onCreateProject,
   onEditProject,
@@ -363,6 +365,7 @@ export function SidebarProjectsSection({
             onNavigate={onNavigate}
             onSelectSession={onSelectSession}
             onNewChatInProject={onNewChatInProject}
+            onNewConductorInProject={onNewConductorInProject}
             onEditProject={onEditProject}
             onArchiveProject={onArchiveProject}
             onArchiveChat={onArchiveChat}

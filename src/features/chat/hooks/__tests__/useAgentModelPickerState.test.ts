@@ -37,12 +37,14 @@ describe("useAgentModelPickerState", () => {
         "codex-acp",
         "cursor-agent",
         "claude-acp",
+        "grok-acp",
       ]),
       agentReadiness: new Map([
         ["goose", "ready"],
         ["codex-acp", "ready"],
         ["cursor-agent", "ready"],
         ["claude-acp", "ready"],
+        ["grok-acp", "ready"],
       ]),
       loading: false,
       refresh: mockRefreshAgentProviderStatus,
@@ -262,14 +264,24 @@ describe("useAgentModelPickerState", () => {
       }),
     );
 
-    expect(result.current.pickerAgents).toEqual([
-      { id: "goose", label: "Goose", readiness: "ready" },
-      { id: "codex-acp", label: "Codex", readiness: "ready" },
-      { id: "cursor-agent", label: "Cursor Agent", readiness: "ready" },
-    ]);
+    expect(result.current.pickerAgents.map((agent) => agent.id)).toEqual(
+      expect.arrayContaining([
+        "goose",
+        "claude-acp",
+        "codex-acp",
+        "grok-acp",
+        "cursor-agent",
+      ]),
+    );
+    expect(result.current.pickerAgents.map((agent) => agent.id)).not.toEqual(
+      expect.arrayContaining(["copilot-acp", "amp-acp"]),
+    );
+    expect(
+      result.current.pickerAgents.find((agent) => agent.id === "codex-acp"),
+    ).toMatchObject({ id: "codex-acp", label: "Codex", readiness: "ready" });
   });
 
-  it("shows curated agents that are not ready with setup actions", () => {
+  it("hides catalog harnesses that are not connected", () => {
     mockUseAgentProviderStatus.mockReturnValue({
       readyAgentIds: new Set(["goose", "cursor-agent"]),
       agentReadiness: new Map([
@@ -292,19 +304,19 @@ describe("useAgentModelPickerState", () => {
       }),
     );
 
-    expect(result.current.pickerAgents).toEqual([
-      { id: "goose", label: "Goose", readiness: "ready" },
-      {
-        id: "codex-acp",
-        label: "Codex",
-        readiness: "not_installed",
-        setupAction: "install",
-      },
-      { id: "cursor-agent", label: "Cursor Agent", readiness: "ready" },
-    ]);
+    expect(
+      result.current.pickerAgents.find((agent) => agent.id === "codex-acp"),
+    ).toBeUndefined();
+    expect(
+      result.current.pickerAgents.find((agent) => agent.id === "cursor-agent"),
+    ).toMatchObject({
+      id: "cursor-agent",
+      label: "Cursor Agent",
+      readiness: "ready",
+    });
   });
 
-  it("shows Goose with a connect action when default provider setup is required", () => {
+  it("keeps Goose visible when it is selected and still needs setup", () => {
     mockUseAgentProviderStatus.mockReturnValue({
       readyAgentIds: new Set(["codex-acp"]),
       agentReadiness: new Map([
@@ -323,14 +335,34 @@ describe("useAgentModelPickerState", () => {
       }),
     );
 
-    expect(result.current.pickerAgents).toEqual([
-      {
-        id: "goose",
-        label: "Goose",
-        readiness: "not_ready",
-        setupAction: "connect",
-      },
-      { id: "codex-acp", label: "Codex", readiness: "ready" },
+    expect(
+      result.current.pickerAgents.find((agent) => agent.id === "goose"),
+    ).toEqual({
+      id: "goose",
+      label: "Goose",
+      readiness: "not_ready",
+      setupAction: "connect",
+    });
+    expect(
+      result.current.pickerAgents.find((agent) => agent.id === "codex-acp"),
+    ).toMatchObject({ id: "codex-acp", label: "Codex", readiness: "ready" });
+  });
+
+  it("still lists connected catalog harnesses when startup has not populated providers", () => {
+    const { result } = renderHook(() =>
+      useAgentModelPickerState({
+        providers: [],
+        selectedProvider: "claude-acp",
+        onProviderSelected: vi.fn(),
+      }),
+    );
+
+    expect(result.current.pickerAgents.map((agent) => agent.id)).toEqual([
+      "goose",
+      "claude-acp",
+      "codex-acp",
+      "grok-acp",
+      "cursor-agent",
     ]);
   });
 });

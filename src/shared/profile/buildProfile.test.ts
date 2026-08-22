@@ -23,7 +23,7 @@ describe("buildProfile", () => {
       byoKeyProviders: true,
       feedback: false,
       managedConnections: false,
-      telemetry: true,
+      telemetry: false,
       telemetryEnforced: false,
       voiceConversation: true,
       voiceDictation: false,
@@ -79,26 +79,18 @@ describe("buildProfile", () => {
     expect(getFreshBuildFeatureState().byoKeyProviders).toBe(true);
   });
 
-  it("disables telemetry when VITE_TELEMETRY is set to 0 (inverse-positive default-on)", async () => {
+  it("keeps telemetry off unless VITE_TELEMETRY is exactly 1", async () => {
     vi.resetModules();
     vi.stubEnv("VITE_TELEMETRY", "0");
 
-    const { getBuildFeatureState: getFreshBuildFeatureState } = await import(
-      "./buildProfile"
-    );
+    const { getBuildFeatureState: disabled } = await import("./buildProfile");
+    expect(disabled().telemetry).toBe(false);
 
-    expect(getFreshBuildFeatureState().telemetry).toBe(false);
-  });
-
-  it("keeps telemetry on for any VITE_TELEMETRY value other than 0", async () => {
     vi.resetModules();
     vi.stubEnv("VITE_TELEMETRY", "1");
 
-    const { getBuildFeatureState: getFreshBuildFeatureState } = await import(
-      "./buildProfile"
-    );
-
-    expect(getFreshBuildFeatureState().telemetry).toBe(true);
+    const { getBuildFeatureState: enabled } = await import("./buildProfile");
+    expect(enabled().telemetry).toBe(true);
   });
 
   it("enforces telemetry consent only when VITE_TELEMETRY_ENFORCED is exactly 1", async () => {

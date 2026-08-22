@@ -18,10 +18,10 @@ index 2de7b00f7..c2b488f52 100644
              .find(|entry| entry.provider_id == "ollama")
 diff --git a/crates/goose/src/providers/grok_acp.rs b/crates/goose/src/providers/grok_acp.rs
 new file mode 100644
-index 000000000..4d880a1c8
+index 000000000..63c450e3d
 --- /dev/null
 +++ b/crates/goose/src/providers/grok_acp.rs
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,88 @@
 +use anyhow::Result;
 +use futures::future::BoxFuture;
 +use std::path::PathBuf;
@@ -87,9 +87,7 @@ index 000000000..4d880a1c8
 +    ) -> BoxFuture<'static, Result<AcpProvider>> {
 +        Box::pin(async move {
 +            let config = Config::global();
-+            let resolved_command = SearchPaths::builder()
-+                .with_npm()
-+                .resolve(GROK_ACP_BINARY)?;
++            let resolved_command = SearchPaths::builder().with_npm().resolve(GROK_ACP_BINARY)?;
 +            let goose_mode = config.get_goose_mode().unwrap_or(GooseMode::Auto);
 +            let mcp_servers = extension_configs_to_mcp_servers(&extensions);
 +

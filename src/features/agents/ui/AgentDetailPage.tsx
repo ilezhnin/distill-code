@@ -8,11 +8,9 @@ import {
   MessageCircle,
   MoreHorizontal,
   Pencil,
-  PinIcon,
   Share2,
   Trash2,
 } from "lucide-react";
-import { usePinToHomeWidget } from "@/features/home/hooks/usePinToHomeWidget";
 import { MessageResponse } from "@/shared/ui/ai-elements/message";
 import { AvatarMedia } from "@/shared/ui/avatar-media";
 import { Badge } from "@/shared/ui/badge";
@@ -102,12 +100,6 @@ export function AgentDetailPage({
   const acpProviders = useAgentStore((s) => s.providers);
   const isEditable = canEditPersona(persona);
   const isDeletable = canDeletePersona(persona);
-  const {
-    isPinned: isPinnedToHome,
-    isPinning: isPinningToHome,
-    pinToHome,
-    unpinFromHome,
-  } = usePinToHomeWidget({ kind: "agent", id: persona.id });
   const [avatarPreviewFailed, setAvatarPreviewFailed] = useState(false);
   const [avatarSavePending, setAvatarSavePending] = useState(false);
   const [previousPersonaAvatarValue, setPreviousPersonaAvatarValue] = useState(
@@ -237,10 +229,6 @@ export function AgentDetailPage({
     </div>
   );
 
-  const pinLabel = isPinnedToHome
-    ? t("common:actions.unpinFromHome")
-    : t("common:actions.pinToHome");
-
   const profileActions = (
     <>
       {onStartChat ? (
@@ -267,17 +255,6 @@ export function AgentDetailPage({
           {t("common:actions.edit")}
         </Button>
       ) : null}
-      <Button
-        type="button"
-        variant="ghost"
-        size="default"
-        onClick={() => (isPinnedToHome ? unpinFromHome() : void pinToHome())}
-        disabled={isPinningToHome}
-        leftIcon={<PinIcon fill={isPinnedToHome ? "currentColor" : "none"} />}
-        className={SECONDARY_ACTION_CLASS}
-      >
-        {pinLabel}
-      </Button>
       <DropdownMenu>
         <Tooltip>
           <TooltipTrigger asChild>

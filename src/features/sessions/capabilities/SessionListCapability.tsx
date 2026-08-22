@@ -72,6 +72,8 @@ import type {
   SidebarProjectsSectionProps,
 } from "@/features/sessions/ui/session-list/SidebarProjectsSection";
 import { SessionListSurface } from "./SessionListSurface";
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import { isNestedExecutorSession } from "@/features/conductor/sessionVisibility";
 
 const EXPANDED_PROJECTS_STORAGE_KEY = "goose:sidebar:expanded-projects";
 const SECTION_VISIBILITY_STORAGE_KEY = "goose:sidebar:section-visibility";
@@ -157,6 +159,7 @@ export interface SessionListCapabilityProps {
   onOpenProject?: (projectId: string) => void;
   onNewChat?: () => void;
   onNewChatInProject?: (projectId: string) => void;
+  onNewConductorInProject?: (projectId: string) => void;
   onRenameChat?: (sessionId: string, nextTitle: string) => void;
   onReorderProject?: (fromId: string, toId: string) => void;
   onSelectSession?: (sessionId: string) => void;
@@ -348,6 +351,7 @@ function includeSessionListPlaceholderSessions(
   nonEmptyDraftSessionIds: ReadonlySet<string>,
   sessionIdsWithTerminals: ReadonlySet<string>,
   activeSessionId?: string | null,
+  extraSessionIds?: ReadonlySet<string>,
 ): {
   sessions: ChatSession[];
   placeholderSessionIds: ReadonlySet<string>;
@@ -362,6 +366,9 @@ function includeSessionListPlaceholderSessions(
 
     return (
       session.id === activeSessionId ||
+      extraSessionIds?.has(session.id) ||
+      (session.clientSessionId != null &&
+        extraSessionIds?.has(session.clientSessionId)) ||
       nonEmptyDraftSessionIds.has(session.id) ||
       sessionHasTerminal(session, sessionIdsWithTerminals)
     );
@@ -477,6 +484,7 @@ export function SessionListCapability({
   onOpenProject,
   onNewChat,
   onNewChatInProject,
+  onNewConductorInProject,
   onRenameChat,
   onReorderProject,
   onSelectSession,
@@ -534,6 +542,30 @@ export function SessionListCapability({
   );
   const sessionStateById = useChatStore(selectSessionStateById);
   const sessions = useChatSessionStore(selectSessions);
+  const conductorSessionIdList = useConductorGraphStore(
+    useShallow((state) =>
+      Object.values(state.nodesById)
+        .filter((node) => node.role === "conductor")
+        .map((node) => node.sessionId),
+    ),
+  );
+  const conductorSessionIds = useMemo(
+    () => new Set(conductorSessionIdList),
+    [conductorSessionIdList],
+  );
+  const nestedExecutorIdList = useConductorGraphStore(
+    useShallow((state) =>
+      Object.values(state.nodesById)
+        .filter(
+          (node) => node.role === "orchestrator" || node.role === "worker",
+        )
+        .map((node) => node.sessionId),
+    ),
+  );
+  const nestedExecutorIds = useMemo(
+    () => new Set(nestedExecutorIdList),
+    [nestedExecutorIdList],
+  );
   const activeWorkspaceBySession = useChatSessionStore(
     (s) => s.activeWorkspaceBySession,
   );
@@ -571,23 +603,31 @@ export function SessionListCapability({
     () => new Map(projects.map((project) => [project.id, project])),
     [projects],
   );
-  const visibleSessions = useMemo(
-    () =>
-      includeSessionListPlaceholderSessions(
-        getVisibleSessions(sessions, localMessageCountsBySession),
-        sessions,
-        nonEmptyDraftSessionIds,
-        sessionIdsWithTerminals,
-        activeSessionId,
-      ),
-    [
-      activeSessionId,
-      localMessageCountsBySession,
+  const visibleSessions = useMemo(() => {
+    const included = includeSessionListPlaceholderSessions(
+      getVisibleSessions(sessions, localMessageCountsBySession),
+      sessions,
       nonEmptyDraftSessionIds,
       sessionIdsWithTerminals,
-      sessions,
-    ],
-  );
+      activeSessionId,
+      conductorSessionIds,
+    );
+    const sessionsWithoutNestedExecutors = included.sessions.filter(
+      (session) => !isNestedExecutorSession(session, nestedExecutorIds),
+    );
+    return {
+      ...included,
+      sessions: sessionsWithoutNestedExecutors,
+    };
+  }, [
+    activeSessionId,
+    conductorSessionIds,
+    localMessageCountsBySession,
+    nestedExecutorIds,
+    nonEmptyDraftSessionIds,
+    sessionIdsWithTerminals,
+    sessions,
+  ]);
   const activeSessions = useMemo(
     () => visibleSessions.sessions.filter((session) => !session.archivedAt),
     [visibleSessions],
@@ -696,14 +736,6 @@ export function SessionListCapability({
   );
 
   const selectedCount = selectedSessionIds.size;
-  const isSelectionPinnedToHome = useMemo(
-    () =>
-      selectedCount > 0 &&
-      [...selectedSessionIds].every((sessionId) =>
-        pinnedHomeChatSessionIds.has(sessionId),
-      ),
-    [pinnedHomeChatSessionIds, selectedCount, selectedSessionIds],
-  );
   const clearSelection = () => {
     selectionAnchorRef.current = null;
     setSelectedSessionIds(new Set());
@@ -751,19 +783,7 @@ export function SessionListCapability({
     onFailure: reportBulkFailure,
   });
 
-  const { pinBatchToHome, unpinBatchFromHome, isPinningBatch } =
-    usePinBatchToHome();
-  const handlePinSelectedToHome = useCallback(async () => {
-    await pinBatchToHome("chat", Array.from(selectedSessionIds));
-    selectionAnchorRef.current = null;
-    setSelectedSessionIds(new Set());
-  }, [pinBatchToHome, selectedSessionIds]);
-
-  const handleUnpinSelectedFromHome = useCallback(() => {
-    unpinBatchFromHome("chat", Array.from(selectedSessionIds));
-    selectionAnchorRef.current = null;
-    setSelectedSessionIds(new Set());
-  }, [selectedSessionIds, unpinBatchFromHome]);
+  const { isPinningBatch } = usePinBatchToHome();
 
   const handleOpenSelectedInWindows = useCallback(() => {
     void applySelectionAction((sessionId) => {
@@ -1020,7 +1040,7 @@ export function SessionListCapability({
 
   const sectionProps: SidebarProjectsSectionProps = {
     projects,
-    pinnedNavigationItems,
+    pinnedNavigationItems: [],
     onReorderPinnedNavigationItem: reorderPinnedNavigationItem,
     pinnedChatProjectIds,
     projectSessions,
@@ -1051,6 +1071,7 @@ export function SessionListCapability({
     onOpenProject,
     onSelectSession: selectSession,
     onNewChatInProject,
+    onNewConductorInProject,
     onNewChat,
     onCreateProject,
     onEditProject,
@@ -1071,9 +1092,9 @@ export function SessionListCapability({
     onSelectionChange: toggleSessionSelection,
     onRangeSelect: rangeSelectSessions,
     onArchiveSelected: requestArchiveSelected,
-    onPinSelectedToHome: handlePinSelectedToHome,
-    onUnpinSelectedFromHome: handleUnpinSelectedFromHome,
-    isSelectionPinnedToHome,
+    onPinSelectedToHome: undefined,
+    onUnpinSelectedFromHome: undefined,
+    isSelectionPinnedToHome: false,
     onOpenSelectedInWindows: handleOpenSelectedInWindows,
     isPinningSelectedToHome: isPinningBatch,
     onMarkSelectedRead: () => void applySelectionAction(onMarkChatRead),
