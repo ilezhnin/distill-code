@@ -45,6 +45,7 @@ import {
   shortLogId,
 } from "@/shared/lib/reasoningEffortDiagnostics";
 import { normalizeConcreteModelId } from "@/shared/lib/modelIdentity";
+import { recordSessionTokens } from "@/features/stats/lib/usageLedger";
 
 export interface AcpProvider {
   id: string;
@@ -278,7 +279,27 @@ async function acpSendMessageNow(
         onPromptDispatched,
       },
     );
-    await promptPromise;
+    const promptResponse = await promptPromise;
+    try {
+      const usage = promptResponse?.usage;
+      if (usage) {
+        const cacheTokens =
+          (usage.cachedReadTokens ?? 0) + (usage.cachedWriteTokens ?? 0);
+        recordSessionTokens(
+          sessionId,
+          {
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            cacheTokens,
+            totalTokens: usage.totalTokens,
+            turnsDelta: 1,
+          },
+          { providerId: resolvedProvider },
+        );
+      }
+    } catch {
+      // Usage tracking must never fail a prompt.
+    }
     const tDone = performance.now();
     perfLog(
       `[perf:send] ${sid} prompt() resolved in ${(tDone - tPrompt).toFixed(1)}ms (total acpSendMessage ${(tDone - tStart).toFixed(1)}ms)`,

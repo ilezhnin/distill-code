@@ -284,7 +284,10 @@ function sessionFromSource(
         : createdAt,
     lastActivityAt: Math.max(existing?.lastActivityAt ?? 0, lastActivityAt),
     messageCount: Math.max(existing?.messageCount ?? 0, source.messageCount),
-    started: (existing?.started ?? false) || source.messageCount > 0,
+    started:
+      (existing?.started ?? false) ||
+      source.started === true ||
+      source.messageCount > 0,
   };
 }
 
@@ -329,7 +332,13 @@ export function recordSessionTokens(
     const previousOutput = next.outputTokens;
     const previousCache = next.cacheTokens;
     const previousTotal = next.totalTokens;
-    const add = snapshot.mode === "add";
+    const add =
+      snapshot.mode === "add" ||
+      (snapshot.mode !== "replace" &&
+        snapshot.inputTokens != null &&
+        snapshot.outputTokens != null &&
+        (snapshot.inputTokens < next.inputTokens ||
+          snapshot.outputTokens < next.outputTokens));
 
     if (snapshot.inputTokens !== undefined) {
       next.inputTokens = add
@@ -347,15 +356,26 @@ export function recordSessionTokens(
         : Math.max(next.cacheTokens, snapshot.cacheTokens);
     }
 
-    const inferredTotal =
-      snapshot.totalTokens ??
-      (snapshot.inputTokens !== undefined || snapshot.outputTokens !== undefined
-        ? next.inputTokens + next.outputTokens + next.cacheTokens
-        : undefined);
-    if (inferredTotal !== undefined) {
-      next.totalTokens = add
-        ? Math.max(next.totalTokens, inferredTotal)
-        : Math.max(next.totalTokens, inferredTotal);
+    if (add) {
+      if (snapshot.totalTokens != null) {
+        next.totalTokens += snapshot.totalTokens;
+      } else if (
+        snapshot.inputTokens !== undefined ||
+        snapshot.outputTokens !== undefined ||
+        snapshot.cacheTokens !== undefined
+      ) {
+        next.totalTokens = next.inputTokens + next.outputTokens + next.cacheTokens;
+      }
+    } else {
+      const inferredTotal =
+        snapshot.totalTokens ??
+        (snapshot.inputTokens !== undefined ||
+        snapshot.outputTokens !== undefined
+          ? next.inputTokens + next.outputTokens + next.cacheTokens
+          : undefined);
+      if (inferredTotal !== undefined) {
+        next.totalTokens = Math.max(next.totalTokens, inferredTotal);
+      }
     }
 
     if (snapshot.costUsd !== undefined) {
@@ -424,6 +444,30 @@ export function getInProgressWorkMs(now = Date.now()): number {
     total += Math.max(0, now - startedAt);
   }
   return total;
+}
+
+export function remapSessionWorkState(fromId: string, toId: string): void {
+  if (!fromId || !toId || fromId === toId) return;
+  const startedAt = workStartedAtBySession.get(fromId);
+  if (startedAt == null) return;
+  workStartedAtBySession.delete(fromId);
+  if (!workStartedAtBySession.has(toId)) {
+    workStartedAtBySession.set(toId, startedAt);
+  }
+}
+
+const WORKING_RUN_STATUSES = new Set(["starting", "running", "waiting"]);
+
+export function noteConductorRunStatus(
+  sessionId: string,
+  status: string,
+  now = Date.now(),
+): void {
+  noteSessionWorkState(
+    sessionId,
+    WORKING_RUN_STATUSES.has(status) ? "thinking" : "idle",
+    now,
+  );
 }
 
 export function buildUsageSummary(

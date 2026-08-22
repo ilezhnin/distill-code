@@ -28,8 +28,9 @@ function sourceFromSession(session: {
   };
 }
 
-export function syncChatSessionsIntoUsageLedger(): void {
-  const sessions = useChatSessionStore.getState().sessions;
+export function syncChatSessionsIntoUsageLedger(
+  sessions = useChatSessionStore.getState().sessions,
+): void {
   syncUsageSessions(sessions.map(sourceFromSession));
 }
 
@@ -65,9 +66,77 @@ export function recordLiveTokenState(
     return;
   }
   recordAcpSessionUsage(sessionId, {
+    mode: "replace",
     inputTokens: tokenState.accumulatedInput,
     outputTokens: tokenState.accumulatedOutput,
     totalTokens: tokenState.accumulatedInput + tokenState.accumulatedOutput,
     costUsd: tokenState.accumulatedCost,
   });
+}
+
+export function recordPromptResponseUsage(
+  sessionId: string,
+  usage:
+    | {
+        inputTokens?: number | null;
+        outputTokens?: number | null;
+        totalTokens?: number | null;
+        cachedReadTokens?: number | null;
+        cachedWriteTokens?: number | null;
+      }
+    | null
+    | undefined,
+  providerId?: string | null,
+): void {
+  if (!usage) return;
+  const inputTokens = usage.inputTokens ?? 0;
+  const outputTokens = usage.outputTokens ?? 0;
+  const cacheTokens =
+    (usage.cachedReadTokens ?? 0) + (usage.cachedWriteTokens ?? 0);
+  const totalTokens =
+    usage.totalTokens ?? inputTokens + outputTokens + cacheTokens;
+  if (
+    inputTokens <= 0 &&
+    outputTokens <= 0 &&
+    cacheTokens <= 0 &&
+    totalTokens <= 0
+  ) {
+    return;
+  }
+  recordSessionTokens(
+    sessionId,
+    {
+      inputTokens,
+      outputTokens,
+      cacheTokens,
+      totalTokens,
+      turnsDelta: 1,
+    },
+    providerId ? { providerId } : undefined,
+  );
+}
+
+export function syncConductorNodesIntoUsageLedger(
+  nodes: ReadonlyArray<{
+    sessionId: string;
+    harnessId?: string;
+    modelId?: string;
+    createdAt?: number;
+    role: string;
+    status: string;
+  }>,
+): void {
+  if (nodes.length === 0) return;
+  syncUsageSessions(
+    nodes.map((node) => ({
+      id: node.sessionId,
+      createdAt: new Date(node.createdAt ?? Date.now()).toISOString(),
+      updatedAt: new Date(node.createdAt ?? Date.now()).toISOString(),
+      lastMessageAt: new Date(node.createdAt ?? Date.now()).toISOString(),
+      messageCount: 0,
+      started: node.role === "orchestrator" || node.role === "worker",
+      providerId: node.harnessId || "goose",
+      modelId: node.modelId ?? null,
+    })),
+  );
 }

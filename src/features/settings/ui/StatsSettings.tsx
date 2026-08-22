@@ -22,6 +22,7 @@ import { providerDisplayName } from "@/features/stats/lib/usageProvider";
 import {
   recordLiveTokenState,
   syncChatSessionsIntoUsageLedger,
+  syncConductorNodesIntoUsageLedger,
 } from "@/features/stats/lib/usageRecorder";
 import { Button } from "@/shared/ui/button";
 import {
@@ -63,6 +64,7 @@ async function refreshUsageSources(): Promise<void> {
 export function StatsSettings() {
   const { t } = useTranslation("settings");
   const ledger = useUsageLedger();
+  const sessions = useChatSessionStore((state) => state.sessions);
   const conductorNodes = useConductorGraphStore((state) => state.nodesById);
   const { readyAgentIds } = useAgentProviderStatus();
   const [providerFilter, setProviderFilter] = useState<string | null>(null);
@@ -71,6 +73,14 @@ export function StatsSettings() {
   useEffect(() => {
     void refreshUsageSources();
   }, []);
+
+  useEffect(() => {
+    syncChatSessionsIntoUsageLedger(sessions);
+  }, [sessions]);
+
+  useEffect(() => {
+    syncConductorNodesIntoUsageLedger(Object.values(conductorNodes));
+  }, [conductorNodes]);
 
   const extraAgentIds = useMemo(() => {
     const ids = new Set<string>();
@@ -114,7 +124,9 @@ export function StatsSettings() {
     daysHours: (days, hours) => t("stats.duration.daysHours", { days, hours }),
     hoursMinutes: (hours, minutes) =>
       t("stats.duration.hoursMinutes", { hours, minutes }),
-    minutes: (minutes) => t("stats.duration.minutes", { minutes }),
+    minutesSeconds: (minutes, seconds) =>
+      t("stats.duration.minutesSeconds", { minutes, seconds }),
+    seconds: (seconds) => t("stats.duration.seconds", { seconds }),
   });
 
   const handleRefresh = () => {
