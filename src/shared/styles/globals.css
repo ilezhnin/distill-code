@@ -1473,6 +1473,12 @@
   }
 }
 
+@keyframes distill-loader-frames {
+  to {
+    background-position: calc(var(--distill-loader-size) * -5) 0;
+  }
+}
+
 @keyframes voice-waveform {
   0%,
   100% {

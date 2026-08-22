@@ -669,6 +669,8 @@ pub fn open_session_window(
         format!("failed to build session window: {error}")
     })?;
 
+    crate::apply_window_icon(&window);
+
     #[cfg(target_os = "macos")]
     attach_traffic_light_management(&window);
 

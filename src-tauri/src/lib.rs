@@ -23,9 +23,9 @@ use services::{bundled_agents, bundled_skills, distro_bundle::DistroBundleState}
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use tauri::menu::{AboutMetadataBuilder, MenuBuilder, SubmenuBuilder};
-use tauri::{Manager, RunEvent};
+use tauri::{include_image, Manager, RunEvent, WebviewWindow};
 #[cfg(target_os = "macos")]
-use tauri::{WebviewWindow, WindowEvent};
+use tauri::WindowEvent;
 use tauri_plugin_window_state::StateFlags;
 
 #[cfg(target_os = "macos")]
@@ -66,6 +66,18 @@ fn set_process_name() {
     }
 
     NSProcessInfo::processInfo().setProcessName(&NSString::from_str(app_name));
+}
+
+pub(crate) fn apply_window_icon(window: &WebviewWindow) {
+    if let Err(error) = window.set_icon(include_image!("icons/32x32.png")) {
+        log::warn!("Failed to set window icon: {error}");
+    }
+}
+
+fn apply_app_window_icons(app: &tauri::AppHandle) {
+    for window in app.webview_windows().values() {
+        apply_window_icon(window);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -375,6 +387,8 @@ pub fn run() {
             // Surface WKWebView renderer memory and detect silent OOM reaps.
             services::renderer_monitor::start(app.handle().clone());
 
+            apply_app_window_icons(app.handle());
+
             // Build a custom macOS application menu so that the app submenu,
             // "About" item, and "Quit" item use the product name "Distill"
             // instead of the Cargo binary name.
@@ -679,8 +693,9 @@ pub fn run() {
             // once setup has returned and the event loop is running, keeping
             // setup non-blocking. Fires once. Accepting copies the bundle,
             // relaunches the installed copy, and exits this process.
-            #[cfg(target_os = "macos")]
             RunEvent::Ready => {
+                apply_app_window_icons(app);
+                #[cfg(target_os = "macos")]
                 services::installer_media::maybe_prompt_move_to_applications(app);
             }
             _ => {}
