@@ -1207,12 +1207,15 @@ export function GlobalComposerPill({
     "--global-composer-to-top": `${handoffTargetRect?.top ?? handoffSourceRect?.top ?? 0}px`,
     "--global-composer-to-width": `${handoffTargetRect?.width ?? handoffSourceRect?.width ?? 0}px`,
     "--global-composer-to-height": `${handoffTargetRect?.height ?? handoffSourceRect?.height ?? 0}px`,
+    ...(placement === "docked"
+      ? { bottom: "var(--app-global-composer-bottom, calc(1.75rem + 1rem))" }
+      : {}),
   } as CSSProperties;
   const placementClassName =
     placement === "handoff" && handoffSourceRect
       ? "global-composer-pill-flip fixed overflow-hidden"
       : placement === "docked"
-        ? "bottom-[var(--spacing-app-global-composer-bottom)] right-3 w-[482px] max-w-[calc(100vw-24px)]"
+        ? "bottom-[var(--app-global-composer-bottom,calc(1.75rem+1rem))] right-3 w-[482px] max-w-[calc(100vw-24px)]"
         : "left-[calc(var(--global-composer-main-left)+(100vw-var(--global-composer-main-left))/2)] top-1/2 w-[min(680px,calc(100vw-var(--global-composer-main-left)-48px))] max-w-[calc(100vw-24px)] -translate-x-1/2 -translate-y-1/2 shadow-global-composer-pill-hover";
 
   return (
