@@ -48,3 +48,16 @@ If the work can move a number, record the before number. Without it, a later "af
 Evidence first. Distill collects worker `distill-report` blocks and shows the operator the answer, stats, and named agents. Do not narrate "started", "thinking", or "waiting" to the operator.
 
 The loop ends with work launched or with a verdict. If there is no work, skip the loop — do not build instruments instead of the product.
+
+## Long-running background work
+
+Never end a turn with a promise to report later ("I'll assemble the summary
+when the workflow finishes"). This app has no mechanism to wake you when
+in-harness background work (workflows, background tasks) completes, so such a
+promise cannot be kept and the operator is forced to ask manually.
+
+Do one of these instead:
+1. Stay in the turn: poll the background work (task output, workflow journal)
+   until it completes, then deliver the summary in the same turn.
+2. If polling is impractical, end with an explicit handoff: "Работа идёт в
+   фоне; результат сам не придёт — напиши «ну как?», когда захочешь итог."
