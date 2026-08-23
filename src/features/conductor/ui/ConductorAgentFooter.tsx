@@ -1,23 +1,12 @@
-import { IconPlayerPause, IconPlayerStop } from "@tabler/icons-react";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { cn } from "@/shared/lib/cn";
-import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 
-import { isWorkingStatus, summarizeBrigadeActivity } from "../brigadeActivity";
-import type { RunStatus, SessionNode, StructuredReport } from "../types";
-
-const STATUS_DOT_CLASS: Record<RunStatus, string> = {
-  starting: "bg-info",
-  running: "bg-info",
-  waiting: "bg-warning",
-  completed: "bg-success",
-  failed: "bg-destructive",
-  cancelled: "bg-muted-foreground",
-  stopped: "bg-muted-foreground",
-};
+import { summarizeBrigadeActivity } from "../brigadeActivity";
+import type { SessionNode, StructuredReport } from "../types";
+import { BrigadeChip, type BrigadeChipViewModel } from "./BrigadeChip";
 
 function formatTokenCount(value: number): string {
   if (value >= 1000) {
@@ -25,26 +14,6 @@ function formatTokenCount(value: number): string {
     return `${thousands >= 10 ? thousands.toFixed(0) : thousands.toFixed(1).replace(/\.0$/, "")}k`;
   }
   return String(Math.round(value));
-}
-
-function AgentStatusGlyph({ status }: { status: RunStatus }) {
-  if (status === "running" || status === "starting") {
-    return <ActiveChatPulseDot className="shrink-0" />;
-  }
-  if (status === "waiting") {
-    return (
-      <IconPlayerPause
-        aria-hidden="true"
-        className="size-3.5 shrink-0 text-muted-foreground"
-      />
-    );
-  }
-  return (
-    <span
-      aria-hidden="true"
-      className={cn("size-2 shrink-0 rounded-full", STATUS_DOT_CLASS[status])}
-    />
-  );
 }
 
 export function ConductorAgentFooter({
@@ -104,6 +73,26 @@ export function ConductorAgentFooter({
     return parts.join(" · ");
   }, [nodes, t, tokenTotals]);
 
+  // SessionNode → the session-free chip view model; stage 2b feeds the same
+  // component ephemeral harness subagents that have no session at all.
+  const chips = useMemo<BrigadeChipViewModel[]>(
+    () =>
+      nodes.map((node) => {
+        const report = node.runId ? reportsByRunId[node.runId] : undefined;
+        return {
+          id: node.sessionId,
+          name: node.displayName,
+          status: node.status,
+          title: report?.summary || node.task || undefined,
+          // The chip hands the session id back; `onOpenChild` applies its own
+          // default intent (navigate).
+          onOpen,
+          onStop,
+        };
+      }),
+    [nodes, onOpen, onStop, reportsByRunId],
+  );
+
   if (nodes.length === 0) {
     return null;
   }
@@ -125,47 +114,9 @@ export function ConductorAgentFooter({
         </p>
       ) : null}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        {nodes.map((node) => {
-          const report = node.runId ? reportsByRunId[node.runId] : undefined;
-          const statusLabel = t(`conductor.status.${node.status}`);
-          const working = isWorkingStatus(node.status);
-          return (
-            <span
-              key={node.sessionId}
-              className="inline-flex items-center gap-1"
-            >
-              <button
-                type="button"
-                data-testid="conductor-agent-chip"
-                aria-label={t("conductor.openChild", {
-                  name: node.displayName,
-                  status: statusLabel,
-                })}
-                title={report?.summary || node.task || statusLabel}
-                onClick={() => onOpen?.(node.sessionId)}
-                className="inline-flex items-center gap-1.5 rounded-full text-xs text-muted-foreground hover:text-foreground"
-              >
-                <AgentStatusGlyph status={node.status} />
-                <span className="font-medium text-foreground">
-                  {node.displayName}
-                </span>
-              </button>
-              {working && onStop ? (
-                <button
-                  type="button"
-                  data-testid="conductor-agent-stop"
-                  aria-label={t("conductor.stopChild", {
-                    name: node.displayName,
-                  })}
-                  onClick={() => onStop(node.sessionId)}
-                  className="inline-flex size-5 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
-                >
-                  <IconPlayerStop className="size-3" />
-                </button>
-              ) : null}
-            </span>
-          );
-        })}
+        {chips.map((chip) => (
+          <BrigadeChip key={chip.id} {...chip} />
+        ))}
       </div>
     </div>
   );
