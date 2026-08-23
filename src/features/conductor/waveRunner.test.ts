@@ -20,6 +20,8 @@ const {
   getWaveEngineState,
   hasWaveTombstone,
   resetWaveEngineStateCache,
+  setWaveEngineState,
+  withWave,
 } = await import("./waveStore");
 
 const CONDUCTOR_ID = "conductor-1";
@@ -324,6 +326,66 @@ describe("waveRunner", () => {
     await vi.waitFor(() =>
       expect(spawnConductorChildSession).toHaveBeenCalledTimes(2),
     );
+  });
+
+  it("refuses a second wave while the first one is still live (§4.1)", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    // Ninety seconds in, the operator adds "also, while you're in there…".
+    // The conductor answers the only way it was told to: with another plan.
+    setTranscript([...conductorMessages(), assistant("plan-2", TWO_STEP_PLAN)]);
+    runWaveEngineTick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Nothing new was spawned into the same working folder…
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+    expect(getWaveEngineState().waves).toHaveLength(1);
+    // …the operator is told, in their own language, what happened and what to
+    // do instead…
+    expect(noticeTexts().join("\n")).toContain(
+      i18n.t("chat:conductor.wave.concurrent.title"),
+    );
+    expect(noticeTexts().join("\n")).toContain(
+      i18n.t("chat:conductor.wave.concurrent.body"),
+    );
+    // …and the refusal is tombstoned, so it is not repeated on every tick.
+    expect(hasWaveTombstone(getWaveEngineState(), "plan-2")).toBe(true);
+    for (let index = 0; index < 4; index += 1) runWaveEngineTick();
+    expect(noticeTexts()).toHaveLength(1);
+  });
+
+  it("admits a new plan once the conductor's wave is no longer live", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    // A wave parked on `needsOperator` is a record backing the retry, not work
+    // in flight, so a new root request replaces it exactly as it did before.
+    const parked = getWaveEngineState().waves[0];
+    setWaveEngineState(
+      withWave(getWaveEngineState(), {
+        ...parked,
+        phase: "needsOperator",
+      }),
+    );
+
+    setTranscript([...conductorMessages(), assistant("plan-2", TWO_STEP_PLAN)]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2),
+    );
+    const waves = getWaveEngineState().waves;
+    expect(waves).toHaveLength(1);
+    expect(waves[0].planMessageId).toBe("plan-2");
   });
 
   it('leaves old managedBy:"ui" children alone', () => {

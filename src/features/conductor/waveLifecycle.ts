@@ -22,6 +22,15 @@
  *   and the only honest way to tell a delivered digest from a lost one is to
  *   look for it in the transcript.
  *
+ * That last one has a precondition the code has to respect: the transcript has
+ * to have been *read*. `chat.messagesBySession` is an evictable cache that is
+ * empty for any session the operator has not opened this run, and this file
+ * runs precisely when the conductor chat is shut. So every transcript read
+ * here goes through `waveTranscripts.ts`, which answers "loaded" or "unknown"
+ * and hydrates in the background; on "unknown" the wave waits. Re-delivering a
+ * digest that already landed costs two model turns and discards the answer to
+ * the first copy, and waiting costs nothing.
+ *
  * ## Why the verdict scan runs before plan admission
  *
  * A `revise` verdict is an assistant message carrying a `distill-wave` fence.
@@ -43,6 +52,8 @@ import {
   admitWavePlan,
   collectWaveStepReports,
   createWaveState,
+  hasAttestedWaveStepReport,
+  withVerdictIssue,
   withWavePhase,
   type WaveState,
 } from "./waveEngine";
@@ -61,8 +72,10 @@ import {
   decideWaveVerdict,
   digestUndeliverableDecision,
   isWaveRetired,
+  waveInterruptedDecision,
   type WaveVerdictDecision,
 } from "./waveVerdict";
+import { readConductorTranscript } from "./waveTranscripts";
 import {
   setWaveEngineState,
   updateWaveEngineState,
@@ -158,13 +171,23 @@ function markWaveReportsPublished(wave: WaveState): void {
  * first settled assistant message after it. Whatever the outcome, that message
  * id is tombstoned so the plan detector can never re-admit it as a new root.
  */
-export function processWaveVerdicts(state: WaveEngineState): WaveEngineState {
-  const chat = useChatStore.getState();
+export function processWaveVerdicts(
+  state: WaveEngineState,
+  onHydrated: () => void,
+): WaveEngineState {
   let next = state;
 
   for (const wave of [...next.waves]) {
     if (wave.phase !== "awaitingVerdict") continue;
-    const messages = chat.messagesBySession[wave.conductorSessionId];
+    // An unread transcript is not an unanswered digest. Without this the wave
+    // would sit in `awaitingVerdict` for as long as the conductor chat stays
+    // shut, which is the normal way this feature is used.
+    const transcript = readConductorTranscript(
+      wave.conductorSessionId,
+      onHydrated,
+    );
+    if (transcript.kind === "unknown") continue;
+    const messages = transcript.messages;
     const digestIndex = findDigestMessageIndex(
       messages,
       waveDigestMarker(wave.waveId, wave.digestAttempt),
@@ -186,6 +209,11 @@ export function processWaveVerdicts(state: WaveEngineState): WaveEngineState {
     const decision = decideWaveVerdict({
       parse: parseDistillVerdict(getTextContent(answer)),
       revisionCount: wave.revisionCount,
+      // E2: `accept` is honoured only on the verification step's evidence.
+      // The decision stays pure — it is handed the wave and a report lookup,
+      // not a store.
+      wave,
+      reportOf: useConductorGraphStore.getState().getReport,
     });
     next = applyVerdictDecision(next, wave, decision, answer.id);
     setWaveEngineState(next);
@@ -200,7 +228,11 @@ function applyVerdictDecision(
   verdictMessageId: string,
 ): WaveEngineState {
   let next = state;
-  const closed = withWavePhase(wave, decision.phase);
+  // Q5/M3: what was wrong with this answer rides on the wave, so the operator's
+  // retry can re-ask in terms the conductor can act on. It is cleared whenever
+  // the answer *was* readable, so a later retry never quotes a stale failure.
+  const judged = withVerdictIssue(wave, decision.verdictIssue);
+  const closed = withWavePhase(judged, decision.phase);
 
   if (decision.revision) {
     const admission = admitWavePlan({
@@ -212,7 +244,13 @@ function applyVerdictDecision(
     if (admission.kind === "rejected") {
       // The revision wave itself is unrunnable (a `model` field, say). No
       // revision is spent and the operator sees why.
-      const parked = withWavePhase(wave, "needsOperator");
+      const parked = withWavePhase(
+        withVerdictIssue(judged, {
+          reason: "invalid",
+          detail: admission.detail,
+        }),
+        "needsOperator",
+      );
       next = withWave(next, parked);
       appendNotice(
         wave.conductorSessionId,
@@ -274,7 +312,10 @@ function applyVerdictDecision(
  * to start once the tick's state has been committed — the same "persist first,
  * then act" order `waveRunner.ts` uses for spawns.
  */
-export function processWaveDigests(state: WaveEngineState): {
+export function processWaveDigests(
+  state: WaveEngineState,
+  onHydrated: () => void,
+): {
   state: WaveEngineState;
   pending: PendingDigestDispatch[];
 } {
@@ -289,12 +330,52 @@ export function processWaveDigests(state: WaveEngineState): {
     const key = digestKey(wave.waveId, wave.digestAttempt);
     if (inFlightDigests.has(key)) continue;
 
+    // A wave every step of which went terminal without a single report is not
+    // a finished wave — it is an interrupted one. The startup reconcile
+    // demotes children whose runtime died with the process to `stopped`,
+    // which is terminal, so a restart mid-wave otherwise digests "unknown"
+    // for every step: a model call spent judging nothing, and that junk
+    // embedded in the prompt of any `access: "all"` step still to come.
+    // Attempt 0 refuses; a digest the operator re-armed by hand goes through,
+    // because by then they have read the notice and asked for it anyway.
+    if (wave.phase === "digestPending" && wave.digestAttempt === 0) {
+      const graph = useConductorGraphStore.getState();
+      if (!hasAttestedWaveStepReport(wave, graph.getReport)) {
+        const decision = waveInterruptedDecision();
+        // Park first, notice second — same discipline as every other
+        // transition here: a persisted phase that a failing notice cannot
+        // undo is what stops the refusal repeating on the next tick.
+        next = withWave(next, withWavePhase(wave, decision.phase));
+        setWaveEngineState(next);
+        appendNotice(
+          wave.conductorSessionId,
+          waveClosureNoticeText(
+            decision.closure ?? { reason: "wave-interrupted" },
+          ),
+          "error",
+          {
+            type: "retryWaveDigest",
+            sessionId: wave.conductorSessionId,
+            waveId: wave.waveId,
+          },
+        );
+        continue;
+      }
+    }
+
     if (wave.phase === "dispatchingDigest") {
       // Resuming after a restart (or after a delivery that never returned).
       // The transcript is the only honest witness: if the digest is there it
-      // landed, and the wave is simply waiting for an answer.
+      // landed, and the wave is simply waiting for an answer. But a transcript
+      // that was never loaded is not a witness at all — "absent" and "unknown"
+      // are different answers, and only "absent" may re-deliver.
       const marker = waveDigestMarker(wave.waveId, wave.digestAttempt);
-      const messages = chat.messagesBySession[wave.conductorSessionId];
+      const transcript = readConductorTranscript(
+        wave.conductorSessionId,
+        onHydrated,
+      );
+      if (transcript.kind === "unknown") continue;
+      const messages = transcript.messages;
       if (findDigestMessageIndex(messages, marker) >= 0) {
         next = withWave(next, withWavePhase(wave, "awaitingVerdict"));
         continue;
@@ -317,6 +398,10 @@ export function processWaveDigests(state: WaveEngineState): {
       waveId: wave.waveId,
       attempt: wave.digestAttempt,
       entries: digestEntriesFor(wave),
+      // Q5/M3: a re-asked digest says why it is being asked again. Re-sending
+      // a byte-identical question to a model that already failed to answer it
+      // is a model call spent on the same failure.
+      ...(wave.verdictIssue ? { verdictIssue: wave.verdictIssue } : {}),
     });
     next = withWave(next, withWavePhase(wave, "dispatchingDigest"));
     inFlightDigests.add(key);

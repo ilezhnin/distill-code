@@ -10,11 +10,14 @@
  * keeps one in-memory copy and writes it through to localStorage.
  */
 
-import type {
-  WavePhase,
-  WaveState,
-  WaveStepPhase,
-  WaveStepState,
+import {
+  WAVE_PHASES,
+  WAVE_STEP_PHASES,
+  type WavePhase,
+  type WaveState,
+  type WaveStepPhase,
+  type WaveStepState,
+  type WaveVerdictIssue,
 } from "./waveEngine";
 import type { CompletedWaveStepReport } from "./wavePrompts";
 import type { StructuredReport } from "./types";
@@ -68,8 +71,14 @@ export function emptyWaveEngineState(): WaveEngineState {
   return { version: WAVE_ENGINE_STATE_VERSION, waves: [], tombstones: [] };
 }
 
+/**
+ * Both guards are derived from the engine's own phase arrays rather than
+ * re-listing the members here. A hand-written second schema is what dropped
+ * every wave holding a `"failed"` step on reload — the union grew, the guard
+ * did not, and a wave that could not be parsed took its live children with it.
+ */
 function isPhase(value: unknown): value is WaveStepPhase {
-  return value === "pending" || value === "spawning" || value === "spawned";
+  return (WAVE_STEP_PHASES as readonly unknown[]).includes(value);
 }
 
 function parseStep(value: unknown): WaveStepState | null {
@@ -106,15 +115,20 @@ function parseStep(value: unknown): WaveStepState | null {
 }
 
 function isWavePhase(value: unknown): value is WavePhase {
-  return (
-    value === "running" ||
-    value === "digestPending" ||
-    value === "dispatchingDigest" ||
-    value === "awaitingVerdict" ||
-    value === "accepted" ||
-    value === "revised" ||
-    value === "needsOperator"
-  );
+  return (WAVE_PHASES as readonly unknown[]).includes(value);
+}
+
+/** The Q5 retry note: why the last answer to this wave's digest was unusable. */
+function parseVerdictIssue(value: unknown): WaveVerdictIssue | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<WaveVerdictIssue>;
+  if (raw.reason !== "missing" && raw.reason !== "invalid") return null;
+  return {
+    reason: raw.reason,
+    ...(typeof raw.detail === "string" && raw.detail
+      ? { detail: raw.detail }
+      : {}),
+  };
 }
 
 function parseStructuredReport(value: unknown): StructuredReport | null {
@@ -205,12 +219,18 @@ function parseWave(value: unknown): WaveState | null {
   const steps: WaveStepState[] = [];
   for (const step of raw.steps) {
     const parsed = parseStep(step);
-    // A wave with an unreadable step cannot be resumed safely: dropping the
-    // whole wave leaves the tombstone in place, so nothing respawns either.
-    if (!parsed) return null;
+    // An unreadable *step* is dropped; the wave is not. Dropping the wave is
+    // the most destructive possible response to a parse miss — the tombstone
+    // survives, so nothing is ever re-admitted, and the wave's still-running
+    // children are orphaned with no digest and no notice. A wave short one
+    // step still digests, still asks for a verdict, and is still visible.
+    if (!parsed) continue;
     steps.push(parsed);
   }
+  // Nothing readable is left: there is no wave to resume.
+  if (steps.length === 0) return null;
   const carriedReports = parseCarriedReports(raw.carriedReports);
+  const verdictIssue = parseVerdictIssue(raw.verdictIssue);
   return {
     waveId: raw.waveId,
     conductorSessionId: raw.conductorSessionId,
@@ -238,6 +258,7 @@ function parseWave(value: unknown): WaveState | null {
         ? raw.digestAttempt
         : 0,
     ...(carriedReports.length > 0 ? { carriedReports } : {}),
+    ...(verdictIssue ? { verdictIssue } : {}),
   };
 }
 
@@ -350,6 +371,40 @@ export function withoutParkedWavesFor(
       wave.phase !== "needsOperator",
   );
   return waves.length === state.waves.length ? state : { ...state, waves };
+}
+
+/**
+ * Rewrites every reference to a conductor session id that has been promoted
+ * from its draft (client) id to its backend id.
+ *
+ * A conductor chat can be created lazily: the graph node is registered under
+ * the draft id, and the wave the conductor's first turn plans is created with
+ * that same draft id. When the promotion lands, the graph node is remapped —
+ * and a wave still holding the draft id would be deleted by
+ * {@link pruneOrphanedWaves} on the very next tick, taking its live children
+ * with it. `WaveStepState.sessionId` is deliberately *not* touched: it is
+ * re-derived from the graph node on every `advanceWave` pass. Tombstones are
+ * matched on `planMessageId`, so their session id is informational only, but
+ * it is rewritten too so the record does not lie.
+ */
+export function withRemappedConductorSessionId(
+  state: WaveEngineState,
+  fromId: string,
+  toId: string,
+): WaveEngineState {
+  if (!fromId || !toId || fromId === toId) return state;
+  let changed = false;
+  const waves = state.waves.map((wave) => {
+    if (wave.conductorSessionId !== fromId) return wave;
+    changed = true;
+    return { ...wave, conductorSessionId: toId };
+  });
+  const tombstones = state.tombstones.map((tombstone) => {
+    if (tombstone.conductorSessionId !== fromId) return tombstone;
+    changed = true;
+    return { ...tombstone, conductorSessionId: toId };
+  });
+  return changed ? { ...state, waves, tombstones } : state;
 }
 
 /** Waves belonging to conductor sessions the graph no longer knows about. */

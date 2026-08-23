@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { createWaveState, type WaveState } from "./waveEngine";
+import {
+  WAVE_PHASES,
+  WAVE_STEP_PHASES,
+  createWaveState,
+  type WaveState,
+} from "./waveEngine";
 import {
   CONDUCTOR_WAVES_STORAGE_KEY,
   MAX_WAVE_TOMBSTONES,
@@ -168,7 +173,78 @@ describe("parseWaveEngineState", () => {
     );
   });
 
-  it("drops a wave with an unreadable step rather than resuming it wrong", () => {
+  it("survives every phase either union can hold", () => {
+    // The C1 regression, as a property over the unions themselves: a phase
+    // that exists in `waveEngine.ts` but not in this module's guard used to
+    // make `parseStep` return null, which dropped the whole wave — its live
+    // children orphaned, its tombstone still in place so nothing was ever
+    // re-admitted, and no notice anywhere. Enumerating both unions is what
+    // stops the two schemas drifting apart again.
+    for (const stepPhase of WAVE_STEP_PHASES) {
+      for (const phase of WAVE_PHASES) {
+        const stored: WaveState = {
+          ...wave(`w-${phase}-${stepPhase}`),
+          phase,
+          steps: [
+            {
+              stepIndex: 0,
+              role: "scout",
+              subtask: "Look",
+              access: [],
+              phase: stepPhase,
+              sessionId: "child-0",
+              runId: "run-0",
+            },
+          ],
+        };
+        const state = withWave(emptyWaveEngineState(), stored);
+        const parsed = parseWaveEngineState(JSON.parse(JSON.stringify(state)));
+        expect(
+          parsed.waves,
+          `wave phase "${phase}" with step phase "${stepPhase}" did not survive`,
+        ).toHaveLength(1);
+        expect(parsed.waves[0].phase).toBe(phase);
+        expect(parsed.waves[0].steps[0].phase).toBe(stepPhase);
+      }
+    }
+  });
+
+  it("drops an unreadable step, and keeps the rest of the wave", () => {
+    // Dropping the wave is the most destructive answer available to a parse
+    // miss: the children keep running under a record that no longer exists.
+    const parsed = parseWaveEngineState({
+      version: 1,
+      waves: [
+        {
+          waveId: "w1",
+          conductorSessionId: "conductor-1",
+          planMessageId: "plan-1",
+          createdAt: 1,
+          steps: [
+            {
+              stepIndex: 0,
+              role: "scout",
+              subtask: "Look",
+              access: [],
+              phase: "spawned",
+              sessionId: "child-0",
+              runId: "run-0",
+            },
+            { stepIndex: 1, role: "qa", subtask: "Check" },
+          ],
+        },
+      ],
+      tombstones: [],
+    });
+    expect(parsed.waves).toHaveLength(1);
+    expect(parsed.waves[0].steps).toHaveLength(1);
+    expect(parsed.waves[0].steps[0]).toMatchObject({
+      stepIndex: 0,
+      sessionId: "child-0",
+    });
+  });
+
+  it("drops a wave whose every step is unreadable", () => {
     const parsed = parseWaveEngineState({
       version: 1,
       waves: [
@@ -183,6 +259,27 @@ describe("parseWaveEngineState", () => {
       tombstones: [],
     });
     expect(parsed.waves).toEqual([]);
+  });
+
+  it("round-trips the Q5 retry note and rejects a malformed one", () => {
+    const parked: WaveState = {
+      ...wave("w-parked"),
+      phase: "needsOperator",
+      digestAttempt: 1,
+      verdictIssue: { reason: "invalid", detail: 'Unknown verdict "ok".' },
+    };
+    const state = withWave(emptyWaveEngineState(), parked);
+    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
+      state,
+    );
+
+    const bogus = parseWaveEngineState({
+      version: 2,
+      waves: [{ ...parked, verdictIssue: { reason: "whatever" } }],
+      tombstones: [],
+    });
+    expect(bogus.waves).toHaveLength(1);
+    expect(bogus.waves[0].verdictIssue).toBeUndefined();
   });
 
   it('keeps only [] or "all" access values', () => {
