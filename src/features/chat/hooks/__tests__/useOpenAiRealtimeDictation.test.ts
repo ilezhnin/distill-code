@@ -397,7 +397,7 @@ describe("useOpenAiRealtimeDictation", () => {
         "Microphone access is blocked",
         {
           description:
-            "Allow microphone access for Berd in System Settings, then try voice dictation again.",
+            "Allow microphone access for Distill in System Settings, then try voice dictation again.",
         },
       );
     });

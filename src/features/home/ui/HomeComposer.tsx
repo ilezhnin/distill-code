@@ -111,6 +111,14 @@ export function HomeComposer({
       reasoningEffort={{
         config: controller.reasoningEffort,
         onChange: controller.handleReasoningEffortChange,
+        ultracode: {
+          armed: controller.ultracodeArmed,
+          setArmed: controller.handleUltracodeArmedChange,
+        },
+      }}
+      fastMode={{
+        config: controller.fastMode,
+        onChange: controller.handleFastModeChange,
       }}
       projectPicker={{
         selectedProjectId: controller.selectedProjectId,

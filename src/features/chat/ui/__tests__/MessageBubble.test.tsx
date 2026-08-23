@@ -606,7 +606,7 @@ describe("MessageBubble", () => {
 
     render(<MessageBubble message={message} />);
 
-    const label = screen.getByText("Sent by Berd from another session");
+    const label = screen.getByText("Sent by Distill from another session");
     expect(label).toBeInTheDocument();
     expect(label).toHaveAttribute(
       "data-role",
@@ -628,7 +628,7 @@ describe("MessageBubble", () => {
     render(<MessageBubble message={message} />);
 
     expect(
-      screen.getByText("Sent by Berd from another session"),
+      screen.getByText("Sent by Distill from another session"),
     ).toBeInTheDocument();
     expect(screen.getByText("Steered")).toBeInTheDocument();
   });

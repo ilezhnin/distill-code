@@ -64,6 +64,13 @@ export interface ChatSession {
   executionTargetSource?: "ui" | "acp";
   personaId?: string;
   reasoningEffort?: ChatSessionReasoningEffortConfig;
+  fastMode?: ChatSessionFastModeConfig;
+  /**
+   * Client-held Ultracode arm state: while true (and the session still
+   * qualifies — see supportsUltracode) every outgoing prompt carries the
+   * SDK's per-turn `ultracode` keyword opt-in.
+   */
+  ultracodeArmed?: boolean;
   workingDir?: string | null;
   workspaceAttachments?: WorkspaceAttachment[];
   activeWorkspaceId?: string | null;
@@ -102,6 +109,15 @@ export interface ChatSessionReasoningEffortConfig {
   configId: string;
   currentValue: string;
   options: ChatSessionReasoningEffortOption[];
+}
+
+/** Session-advertised fast-mode toggle (Claude Code `fast` config option). */
+export interface ChatSessionFastModeConfig {
+  configId: string;
+  name?: string;
+  enabled: boolean;
+  /** Wire shape to send back: a boolean value or an on/off select value. */
+  kind: "boolean" | "select";
 }
 
 type ArchiveMutationStatus = "pending" | "succeeded";
@@ -311,7 +327,9 @@ function withExecutionTarget(
     ...session,
     executionTarget,
     executionTargetSource: source,
-    ...(identityChanged ? { reasoningEffort: undefined } : {}),
+    ...(identityChanged
+      ? { reasoningEffort: undefined, ultracodeArmed: undefined }
+      : {}),
   };
 }
 

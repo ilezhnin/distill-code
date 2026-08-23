@@ -382,9 +382,8 @@ describe("AgentModelPicker", () => {
     expect(screen.getByText("Agent")).toBeInTheDocument();
   });
 
-  it("shows reasoning effort as a picker column when available", async () => {
+  it("shows no reasoning effort column even when a session config is passed", async () => {
     const user = userEvent.setup();
-    const onReasoningEffortChange = vi.fn();
 
     render(
       <AgentModelPicker
@@ -405,7 +404,7 @@ describe("AgentModelPicker", () => {
               { id: "high", name: "high" },
             ],
           },
-          onChange: onReasoningEffortChange,
+          onChange: vi.fn(),
         }}
       />,
     );
@@ -414,24 +413,18 @@ describe("AgentModelPicker", () => {
       name: /choose agent and model/i,
     });
     expect(trigger).toHaveTextContent("GPT 5.5");
-    expect(trigger).toHaveTextContent("Medium");
-    expect(trigger).toHaveClass("group");
-    expect(screen.getByText("Medium")).toHaveClass(
-      "text-muted-foreground/70",
-      "dark:group-hover:text-foreground",
-      "dark:group-data-[state=open]:text-foreground",
-      "dark:group-aria-expanded:text-foreground",
-    );
+    // Effort now lives in the standalone ReasoningEffortPill, not the picker.
+    expect(trigger).not.toHaveTextContent("Medium");
 
     await user.click(trigger);
 
-    expect(screen.getByText("Reasoning effort")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "High" }));
-
-    expect(onReasoningEffortChange).toHaveBeenCalledWith("high");
+    expect(screen.queryByText("Reasoning effort")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "High" }),
+    ).not.toBeInTheDocument();
   });
 
-  it("collapses effort-suffixed models and moves effort into the reasoning column", async () => {
+  it("collapses effort-suffixed models and composes wire ids with the current effort", async () => {
     const user = userEvent.setup();
     const onModelChange = vi.fn();
 
@@ -456,24 +449,27 @@ describe("AgentModelPicker", () => {
       name: /choose agent and model/i,
     });
     expect(trigger).toHaveTextContent("GPT 5.4 Mini");
-    expect(trigger).toHaveTextContent("High");
     expect(trigger).not.toHaveTextContent("Mini[high]");
 
     await user.click(trigger);
 
-    expect(screen.getByText("Reasoning effort")).toBeInTheDocument();
+    // The effort column moved out of the picker; only collapsed base models
+    // remain, and no [effort] duplicates render.
+    expect(screen.queryByText("Reasoning effort")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "GPT 5.4 Mini" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "GPT 5.4" })).toBeInTheDocument();
     expect(screen.queryByText("GPT 5.4 Mini[high]")).not.toBeInTheDocument();
+    expect(screen.queryByText("GPT 5.4[low]")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Low" }));
+    // Clicking a base model composes the wire id with the current effort.
+    await user.click(screen.getByRole("button", { name: "GPT 5.4" }));
     expect(onModelChange).toHaveBeenCalledWith(
-      "gpt-5.4-mini[low]",
-      expect.objectContaining({ id: "gpt-5.4-mini[low]" }),
+      "gpt-5.4[high]",
+      expect.objectContaining({ id: "gpt-5.4[high]" }),
     );
   });
 
-  it("collapses Claude ultrathink suffixes into the reasoning column", async () => {
+  it("collapses Claude ultrathink suffixes and clamps composed efforts per base model", async () => {
     const user = userEvent.setup();
     const onModelChange = vi.fn();
 
@@ -498,26 +494,31 @@ describe("AgentModelPicker", () => {
       name: /choose agent and model/i,
     });
     expect(trigger).toHaveTextContent("Opus 4.6");
-    expect(trigger).toHaveTextContent("Ultrathink");
+    expect(trigger).not.toHaveTextContent("Ultrathink");
     expect(trigger).not.toHaveTextContent("Opus 4.6[ultrathink]");
 
     await user.click(trigger);
 
-    expect(screen.getByText("Reasoning effort")).toBeInTheDocument();
+    expect(screen.queryByText("Reasoning effort")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Opus 4.6" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sonnet 4.6" })).toBeInTheDocument();
     expect(screen.queryByText("Opus 4.6[ultrathink]")).not.toBeInTheDocument();
+    expect(screen.queryByText("Sonnet 4.6[max]")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Think" }));
+    // Sonnet has no ultrathink variant, so the composed wire id falls back to
+    // the model's own available efforts instead of carrying "ultrathink" over.
+    await user.click(screen.getByRole("button", { name: "Sonnet 4.6" }));
     expect(onModelChange).toHaveBeenCalledWith(
-      "claude-opus-4-6[think]",
-      expect.objectContaining({ id: "claude-opus-4-6[think]" }),
+      "claude-sonnet-4-6[max]",
+      expect.objectContaining({ id: "claude-sonnet-4-6[max]" }),
     );
   });
 
-  it("shows a reasoning column for Grok when the session only advertises a dummy off value", async () => {
+  // The Grok dummy-off fallback surfaces through the standalone
+  // ReasoningEffortPill now (see ReasoningEffortPill.test.tsx); the picker
+  // itself stays effort-free.
+  it("shows no reasoning column for Grok when the session only advertises a dummy off value", async () => {
     const user = userEvent.setup();
-    const onReasoningEffortChange = vi.fn();
 
     render(
       <AgentModelPicker
@@ -537,7 +538,7 @@ describe("AgentModelPicker", () => {
             currentValue: "off",
             options: [{ id: "off", name: "off" }],
           },
-          onChange: onReasoningEffortChange,
+          onChange: vi.fn(),
         }}
       />,
     );
@@ -546,9 +547,10 @@ describe("AgentModelPicker", () => {
       screen.getByRole("button", { name: /choose agent and model/i }),
     );
 
-    expect(screen.getByText("Reasoning effort")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Low" }));
-    expect(onReasoningEffortChange).toHaveBeenCalledWith("low");
+    expect(screen.queryByText("Reasoning effort")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Low" }),
+    ).not.toBeInTheDocument();
   });
 
   it("hides off reasoning effort in the picker trigger", () => {
@@ -583,31 +585,30 @@ describe("AgentModelPicker", () => {
     expect(trigger).not.toHaveTextContent("Off");
   });
 
-  it("keeps the reasoning column stable while model reasoning config refreshes", async () => {
+  it("folds superseded generations behind the older-models disclosure", async () => {
     const user = userEvent.setup();
-    const reasoningEffortConfig = {
-      configId: "thinking_effort",
-      currentValue: "medium",
-      options: [
-        { id: "low", name: "low" },
-        { id: "medium", name: "medium" },
-        { id: "high", name: "high" },
-      ],
-    };
 
-    const { rerender } = render(
+    render(
       <AgentModelPicker
         agents={AGENTS}
         selectedAgentId="goose"
         onAgentChange={vi.fn()}
-        currentModelId="gpt-5.5"
-        currentModelName="GPT 5.5"
-        availableModels={[{ id: "gpt-5.5", name: "GPT 5.5" }]}
+        currentModelId="claude-sonnet-4-5"
+        currentModelName="Claude Sonnet 4.5"
+        availableModels={[
+          {
+            id: "claude-sonnet-4-5",
+            name: "Claude Sonnet 4.5",
+            recommended: true,
+          },
+          {
+            id: "claude-3-5-sonnet",
+            name: "Claude 3.5 Sonnet",
+            recommended: true,
+          },
+          { id: "gpt-4o", name: "GPT-4o" },
+        ]}
         onModelChange={vi.fn()}
-        reasoningEffort={{
-          config: reasoningEffortConfig,
-          onChange: vi.fn(),
-        }}
       />,
     );
 
@@ -615,59 +616,40 @@ describe("AgentModelPicker", () => {
       screen.getByRole("button", { name: /choose agent and model/i }),
     );
 
-    expect(screen.getByText("Reasoning effort")).toBeInTheDocument();
-
-    rerender(
-      <AgentModelPicker
-        agents={AGENTS}
-        selectedAgentId="goose"
-        onAgentChange={vi.fn()}
-        currentModelId="claude-opus-4-8"
-        currentModelName="Claude Opus 4.8"
-        availableModels={[{ id: "claude-opus-4-8", name: "Claude Opus 4.8" }]}
-        onModelChange={vi.fn()}
-        reasoningEffort={{
-          config: undefined,
-          onChange: vi.fn(),
-        }}
-      />,
-    );
-
-    expect(screen.getByText("Reasoning effort")).toBeInTheDocument();
+    // The superseded generation hides behind the disclosure by default.
+    const picker = screen.getByRole("dialog");
     expect(
-      screen.getByText("Reasoning effort").closest("[aria-busy='true']"),
+      within(picker).getByRole("button", { name: "Claude Sonnet 4.5" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "High" })).toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
+    expect(
+      within(picker).queryByRole("button", { name: "Claude 3.5 Sonnet" }),
+    ).not.toBeInTheDocument();
+    const disclosure = within(picker).getByRole("button", {
+      name: "Older models",
+    });
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
 
-    rerender(
-      <AgentModelPicker
-        agents={AGENTS}
-        selectedAgentId="goose"
-        onAgentChange={vi.fn()}
-        currentModelId="gpt-4o"
-        currentModelName="GPT-4o"
-        availableModels={[{ id: "gpt-4o", name: "GPT-4o" }]}
-        onModelChange={vi.fn()}
-        reasoningEffort={{
-          config: {
-            configId: "thinking_effort",
-            currentValue: "off",
-            options: [{ id: "off", name: "off" }],
-          },
-          onChange: vi.fn(),
-        }}
-      />,
-    );
+    // Expanding reveals the legacy model.
+    await user.click(disclosure);
+    expect(
+      within(picker).getByRole("button", { name: "Claude 3.5 Sonnet" }),
+    ).toBeInTheDocument();
 
-    await waitFor(
-      () => {
-        expect(screen.queryByText("Reasoning effort")).not.toBeInTheDocument();
-      },
-      { timeout: 500 },
+    // Search finds legacy models in the flat list.
+    await user.click(disclosure);
+    expect(
+      within(picker).queryByRole("button", { name: "Claude 3.5 Sonnet" }),
+    ).not.toBeInTheDocument();
+    await user.click(
+      within(picker).getByRole("button", { name: "Search models..." }),
     );
+    await user.type(
+      within(picker).getByRole("searchbox", { name: "Search models..." }),
+      "3.5",
+    );
+    expect(
+      within(picker).getByRole("button", { name: "Claude 3.5 Sonnet" }),
+    ).toBeInTheDocument();
   });
 
   it("passes the clicked model option through for duplicate model ids", async () => {
@@ -1485,7 +1467,7 @@ describe("AgentModelPicker", () => {
       ).toBeInTheDocument();
     });
 
-    it("stays compact while collapsed and widens on reveal", async () => {
+    it("keeps a fixed popover width and expands the agent column on reveal", async () => {
       const user = userEvent.setup();
 
       render(
@@ -1498,18 +1480,6 @@ describe("AgentModelPicker", () => {
           availableModels={[{ id: "gpt-5.5", name: "GPT 5.5" }]}
           onModelChange={vi.fn()}
           providerColumnMode="gated"
-          reasoningEffort={{
-            config: {
-              configId: "thinking_effort",
-              currentValue: "medium",
-              options: [
-                { id: "low", name: "low" },
-                { id: "medium", name: "medium" },
-                { id: "high", name: "high" },
-              ],
-            },
-            onChange: vi.fn(),
-          }}
         />,
       );
 
@@ -1517,10 +1487,18 @@ describe("AgentModelPicker", () => {
 
       const content = document.querySelector('[data-slot="popover-content"]');
       expect(content).toHaveClass("w-[26.25rem]");
+      const agentColumn = document.querySelector('[data-col="agent"]');
+      const modelColumn = document.querySelector('[data-col="model"]');
+      expect(agentColumn).toHaveClass("w-0", "opacity-0");
+      expect(modelColumn).toHaveClass("flex-1");
 
       await user.click(screen.getByRole("button", { name: /switch agent/i }));
 
-      expect(content).toHaveClass("w-[37.25rem]");
+      // The popover width no longer changes; the agent column animates open
+      // inside it and the model column narrows to make room.
+      expect(content).toHaveClass("w-[26.25rem]");
+      expect(agentColumn).toHaveClass("w-[11.75rem]", "opacity-100");
+      expect(modelColumn).toHaveClass("w-56");
     });
 
     it("hides the switch-agent button when the only agent is ready", async () => {

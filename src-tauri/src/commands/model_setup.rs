@@ -450,6 +450,7 @@ async fn run_shell_command(
         .arg(command)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    crate::services::shell_env::remove_inherited_launcher_env(process.as_std_mut());
     crate::services::process::apply_no_window_async(&mut process);
     let mut child = process
         .spawn()

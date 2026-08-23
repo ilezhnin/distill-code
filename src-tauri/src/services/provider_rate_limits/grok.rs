@@ -30,7 +30,7 @@ pub enum GrokAuthReadResult {
 }
 
 pub fn grok_home() -> PathBuf {
-    if let Ok(override_dir) = std::env::var("GROK_HOME") {
+    if let Some(override_dir) = crate::services::shell_env::user_env_var("GROK_HOME") {
         let trimmed = override_dir.trim();
         if !trimmed.is_empty() {
             return PathBuf::from(trimmed);
@@ -94,9 +94,7 @@ pub fn parse_grok_auth_session(raw: &str) -> GrokAuthReadResult {
         }
     }
 
-    if let Some(session) =
-        expired_preferred.or_else(|| if preferred_key_seen { None } else { fallback })
-    {
+    if let Some(session) = expired_preferred.or(if preferred_key_seen { None } else { fallback }) {
         return GrokAuthReadResult::Ok(session);
     }
     GrokAuthReadResult::Missing
@@ -145,7 +143,7 @@ fn timestamps_match(left: Option<&str>, right: Option<&str>) -> bool {
     }
 }
 
-fn billing_config<'a>(data: &'a Value) -> Option<&'a Value> {
+fn billing_config(data: &Value) -> Option<&Value> {
     data.get("config").or_else(|| {
         if data.get("creditUsagePercent").is_some() || data.get("monthlyLimit").is_some() {
             Some(data)

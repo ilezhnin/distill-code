@@ -200,7 +200,7 @@ fn claude_code_config_files(workspace_paths: &[String]) -> Vec<ConfigFile> {
 pub fn codex_config_files(workspace_paths: &[String]) -> Vec<ConfigFile> {
     let mut files = Vec::new();
     if let Some(home) = home_dir() {
-        let codex_root = env::var_os("CODEX_HOME")
+        let codex_root = crate::services::shell_env::user_env_var("CODEX_HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .unwrap_or_else(|| home.join(".codex"));

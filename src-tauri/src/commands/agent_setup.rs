@@ -18,6 +18,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+#[cfg(windows)]
+use crate::services::shell_env;
 use crate::services::{
     distro_bundle::DistroBundleState, managed_acp_tools, managed_node, path_env,
 };
@@ -1058,6 +1060,10 @@ where
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // `env_vars` is a scrubbed snapshot layered over the inherited environment;
+    // the crate's Unix runner clears the environment first, so match that for
+    // the launcher identity (sign-in flows start the agent CLIs directly).
+    shell_env::remove_inherited_launcher_env(process.as_std_mut());
     crate::services::process::apply_no_window_async(&mut process);
 
     let mut child = process

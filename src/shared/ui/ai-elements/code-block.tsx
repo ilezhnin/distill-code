@@ -25,8 +25,12 @@ import type {
   BundledLanguage,
   BundledTheme,
   HighlighterGeneric,
+  SpecialLanguage,
   ThemedToken,
 } from "shiki";
+
+/** Highlightable language: bundled grammars plus shiki's built-in specials. */
+export type CodeBlockLanguage = BundledLanguage | SpecialLanguage;
 import { createHighlighter } from "shiki";
 
 // Shiki uses bitflags for font styles: 1=italic, 2=bold, 4=underline
@@ -126,7 +130,7 @@ const LineSpan = ({
 // Types
 type CodeBlockProps = HTMLAttributes<HTMLDivElement> & {
   code: string;
-  language: BundledLanguage;
+  language: CodeBlockLanguage;
   showLineNumbers?: boolean;
   viewportClassName?: string;
   transparentBackground?: boolean;
@@ -186,7 +190,7 @@ const subscribers = new Map<
   }>
 >();
 
-const getTokensCacheKey = (code: string, language: BundledLanguage) => {
+const getTokensCacheKey = (code: string, language: CodeBlockLanguage) => {
   const start = code.slice(0, 100);
   const end = code.length > 100 ? code.slice(-100) : "";
   return `${language}:${code.length}:${start}:${end}`;
@@ -194,11 +198,11 @@ const getTokensCacheKey = (code: string, language: BundledLanguage) => {
 
 const getCachedTokenizedCodeForInput = (
   code: string,
-  language: BundledLanguage,
+  language: CodeBlockLanguage,
 ) => tokensCache.get(getTokensCacheKey(code, language)) ?? null;
 
 const getHighlighter = (
-  language: BundledLanguage,
+  language: CodeBlockLanguage,
 ): Promise<HighlighterGeneric<BundledLanguage, BundledTheme>> => {
   const cached = highlighterCache.get(language);
   if (cached) {
@@ -233,7 +237,7 @@ const createRawTokens = (code: string): TokenizedCode => ({
 // Synchronous highlight with callback for async results
 export const highlightCode = (
   code: string,
-  language: BundledLanguage,
+  language: CodeBlockLanguage,
   // oxlint-disable-next-line eslint-plugin-promise(prefer-await-to-callbacks)
   callback?: (result: TokenizedCode) => void,
   // oxlint-disable-next-line eslint-plugin-promise(prefer-await-to-callbacks)
@@ -439,7 +443,7 @@ export const CodeBlockContent = ({
   transparentBackground = false,
 }: {
   code: string;
-  language: BundledLanguage;
+  language: CodeBlockLanguage;
   showLineNumbers?: boolean;
   viewportClassName?: string;
   transparentBackground?: boolean;
