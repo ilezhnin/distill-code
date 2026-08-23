@@ -468,6 +468,8 @@
     "statsDone": "{{count}} done",
     "statsTokens": "{{tokens}} tokens",
     "statsCost": "${{cost}}",
+    "waitingOnChildren_one": "1 executor is working — the result will arrive as a message",
+    "waitingOnChildren_other": "{{count}} executors are working — the result will arrive as a message",
     "stopChild": "Stop {{name}}",
     "decisions": "Decisions",
     "artifacts": "Artifacts",
