@@ -117,7 +117,10 @@ function FileViewerTabBar({
               onClick={onShowChat}
               className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
             >
-              <IconLayoutSidebarLeftExpand className="size-4" aria-hidden="true" />
+              <IconLayoutSidebarLeftExpand
+                className="size-4"
+                aria-hidden="true"
+              />
             </button>
           </TooltipTrigger>
           <TooltipContent>{t("artifactViewer.showChat")}</TooltipContent>
@@ -161,7 +164,8 @@ function FileViewerTabBar({
                 }}
                 className={cn(
                   "mr-1 inline-flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-muted hover:text-foreground",
-                  !isActive && "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+                  !isActive &&
+                    "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
                 )}
               >
                 <IconX className="size-3" aria-hidden="true" />

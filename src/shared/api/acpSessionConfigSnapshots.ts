@@ -282,7 +282,10 @@ function readFastModeOption(
   if (!id) {
     return null;
   }
-  if (id !== "fast" && getStringProperty(option, "category") !== "model_config") {
+  if (
+    id !== "fast" &&
+    getStringProperty(option, "category") !== "model_config"
+  ) {
     return null;
   }
 

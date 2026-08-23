@@ -3602,4 +3602,16 @@ export const designSystemComponentManifest = [
     stateClasses: [],
     sourceTokenClasses: [],
   },
+  {
+    name: "Transcript Overlay Button",
+    source: "src/shared/ui/transcript-overlay-button.tsx",
+    description:
+      'Chrome button for pills that hover over a scrolling transcript without\nbelonging to it (e.g. the chat view\'s "back to conductor" banner).\n\nComposes Button. Base semantic variant: `subtle`.\n\nExtra styling on top of subtle:\n- carries a small shadow so the pill separates from the message content\n  scrolling underneath it; every Button variant is deliberately\n  `shadow-none`, so elevation has to be asked for by name\n- `select-none` so a click on a moving surface never selects the label\n\nThe soft accent fill is the point: unlike `JumpToLatestButton`, this pill\nsits over prose the reader is still reading, so it stays quiet rather\nthan claiming the primary fill. Use it for navigation that overlays a\ntranscript. For controls floating over media or artwork, use\n`GlassButton`; on ordinary content surfaces, use `Button variant="subtle"`.\n\nIntent: the recipe owns the elevation so overlay chrome cannot drift when\nthe base variant changes. The base `subtle` contributes role, geometry,\nfocus behavior, and icon sizing. No flag props are used or accepted.',
+    exports: ["TranscriptOverlayButton", "TranscriptOverlayButtonProps"],
+    slots: [],
+    cva: [],
+    tokenClasses: [],
+    stateClasses: [],
+    sourceTokenClasses: [],
+  },
 ] as const satisfies readonly DesignSystemComponentManifestItem[];

@@ -45,15 +45,10 @@ function activeTab(
   return tabs.find((tab) => tab.resolvedPath === activePath) ?? tabs[0] ?? null;
 }
 
-function neighborPath(
-  tabs: OpenArtifact[],
-  closedPath: string,
-): string | null {
+function neighborPath(tabs: OpenArtifact[], closedPath: string): string | null {
   const index = tabs.findIndex((tab) => tab.resolvedPath === closedPath);
   if (index < 0) return tabs[0]?.resolvedPath ?? null;
-  return (
-    tabs[index + 1]?.resolvedPath ?? tabs[index - 1]?.resolvedPath ?? null
-  );
+  return tabs[index + 1]?.resolvedPath ?? tabs[index - 1]?.resolvedPath ?? null;
 }
 
 function sessionSlice(
@@ -104,7 +99,13 @@ export const useArtifactViewerStore = create<ArtifactViewerState>((set) => ({
                 : tab,
             )
           : [...tabs, { ...artifact, revision: 0 }];
-      return sessionSlice(state, sessionId, nextTabs, artifact.resolvedPath, null);
+      return sessionSlice(
+        state,
+        sessionId,
+        nextTabs,
+        artifact.resolvedPath,
+        null,
+      );
     }),
   activate: (sessionId, resolvedPath) =>
     set((state) => {

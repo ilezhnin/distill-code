@@ -58,9 +58,7 @@ describe("ArtifactViewerPanel tabs", () => {
     );
 
     const user = userEvent.setup();
-    await user.click(
-      screen.getByRole("button", { name: "Close b.ts" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Close b.ts" }));
 
     expect(screen.queryByRole("tab", { name: "b.ts" })).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "a.ts" })).toHaveAttribute(

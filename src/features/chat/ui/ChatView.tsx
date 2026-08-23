@@ -1284,7 +1284,9 @@ export function ChatView({
             data-chat-column
             className={cn(
               "relative flex min-h-0 min-w-0 flex-col overflow-hidden",
-              !isAgentBuilderSession && !isViewerChatCollapsed && "h-full flex-1",
+              !isAgentBuilderSession &&
+                !isViewerChatCollapsed &&
+                "h-full flex-1",
               isViewerChatCollapsed && "hidden",
               isAgentBuilderSession && "agent-builder-column-enter",
               // While editing an agent the chat lives in a grid track that can

@@ -134,12 +134,12 @@ export function formatDuration(deltaMs: number): string {
 export function barColorClass(usedPercent: number): string {
   const used = clampUsedPercent(usedPercent);
   if (used < 60) return "bg-muted-foreground/40";
-  if (used < 80) return "bg-yellow-500";
-  return "bg-red-500";
+  if (used < 80) return "bg-warning";
+  return "bg-destructive";
 }
 
 export function usageTextClass(usedPercent: number): string {
   const used = clampUsedPercent(usedPercent);
   if (used < 80) return "text-foreground";
-  return "text-red-500";
+  return "text-destructive";
 }

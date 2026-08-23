@@ -1,5 +1,5 @@
 {
-  "$comment": "GENERATED FILE — do not hand-edit; run `pnpm generate:berdctl-contract`. Client-neutral wire surface of the Berd desktop app's control API: POST /v1/call {\"command\": \"<group>\", \"args\": {\"action\": \"<action>\", ...fields}} against the loopback endpoint in the berdctl discovery file. protocolVersion mirrors PROTOCOL_VERSION in both discovery.rs copies (berdctl and plugin crate tests pin them equal). Per action: description, fields (flat wire model: name, required, kind, values, description, bounds), and schema (JSON Schema 2020-12 of the args object, minus the action discriminator). Derived from the authoritative zod schemas in the colocated command modules (src/features/berdctl/commands/impl/*.ts); the renderer registry's strict zod parse — not this file — is the trust boundary. vitest asserts freshness (src/features/berdctl/__tests__/apiSurface.test.ts).",
+  "$comment": "GENERATED FILE — do not hand-edit; run `pnpm generate:berdctl-contract`. Client-neutral wire surface of the Distill desktop app's control API: POST /v1/call {\"command\": \"<group>\", \"args\": {\"action\": \"<action>\", ...fields}} against the loopback endpoint in the berdctl discovery file. protocolVersion mirrors PROTOCOL_VERSION in both discovery.rs copies (berdctl and plugin crate tests pin them equal). Per action: description, fields (flat wire model: name, required, kind, values, description, bounds), and schema (JSON Schema 2020-12 of the args object, minus the action discriminator). Derived from the authoritative zod schemas in the colocated command modules (src/features/berdctl/commands/impl/*.ts); the renderer registry's strict zod parse — not this file — is the trust boundary. vitest asserts freshness (src/features/berdctl/__tests__/apiSurface.test.ts).",
   "protocolVersion": 4,
   "groups": {
     "sessions": {
@@ -87,7 +87,7 @@
           }
         },
         "send": {
-          "description": "Send a prompt into an existing chat session without opening or focusing it. Idle sends are fire-and-forget and visibly add a user message marked as sent by Berd from another session. Running sessions are refused by default; use --if-running steer to add context to the active run, or --if-running queue to send one follow-up after the current run finishes.",
+          "description": "Send a prompt into an existing chat session without opening or focusing it. Idle sends are fire-and-forget and visibly add a user message marked as sent by Distill from another session. Running sessions are refused by default; use --if-running steer to add context to the active run, or --if-running queue to send one follow-up after the current run finishes.",
           "fields": [
             {
               "name": "session_id",
@@ -456,7 +456,7 @@
       "description": "Manage folders attached to chat sessions: attach, detach, replace, set cwd, list.",
       "actions": {
         "attach": {
-          "description": "Register an existing folder as chat context. If the chat still uses Berd's implicit default cwd, the folder becomes cwd safely after the current turn; otherwise cwd stays unchanged. Repeating the command is safe and refreshes Git identity.",
+          "description": "Register an existing folder as chat context. If the chat still uses Distill's implicit default cwd, the folder becomes cwd safely after the current turn; otherwise cwd stays unchanged. Repeating the command is safe and refreshes Git identity.",
           "fields": [
             {
               "name": "session_id",
@@ -493,7 +493,7 @@
           }
         },
         "detach": {
-          "description": "Remove an existing folder from chat context without deleting anything. If it is cwd, the chat safely falls back to the first remaining attachment or Berd's default cwd.",
+          "description": "Remove an existing folder from chat context without deleting anything. If it is cwd, the chat safely falls back to the first remaining attachment or Distill's default cwd.",
           "fields": [
             {
               "name": "session_id",
@@ -971,10 +971,10 @@
       }
     },
     "feedback": {
-      "description": "Open an approved report in Berd's feedback form or submit it directly after explicit user approval.",
+      "description": "Open an approved report in Distill's feedback form or submit it directly after explicit user approval.",
       "actions": {
         "open": {
-          "description": "Open Berd's existing feedback form with the supplied title and description ready for optional hand editing. Nothing is submitted. Logs and Doctor diagnostics are selected only when --include-logs is explicitly passed.",
+          "description": "Open Distill's existing feedback form with the supplied title and description ready for optional hand editing. Nothing is submitted. Logs and Doctor diagnostics are selected only when --include-logs is explicitly passed.",
           "fields": [
             {
               "name": "title",
@@ -1026,7 +1026,7 @@
           }
         },
         "submit": {
-          "description": "Submit the supplied approved report without opening the feedback form. Use this only after the user explicitly asks to file, send, or submit it. Berd immediately shows success or failure in the app. Logs and Doctor diagnostics are attached only when --include-logs is explicitly passed.",
+          "description": "Submit the supplied approved report without opening the feedback form. Use this only after the user explicitly asks to file, send, or submit it. Distill immediately shows success or failure in the app. Logs and Doctor diagnostics are attached only when --include-logs is explicitly passed.",
           "fields": [
             {
               "name": "title",

@@ -1442,6 +1442,7 @@ describe("AppShell global navigation", () => {
       {
         deferProviderSetup: false,
         modelId: undefined,
+        personaId: "persona-resolves",
         projectId: undefined,
       },
     );
@@ -1469,6 +1470,7 @@ describe("AppShell global navigation", () => {
       {
         deferProviderSetup: false,
         modelId: "goose-model",
+        personaId: "persona-resolves",
         projectId: undefined,
       },
     );
@@ -4711,18 +4713,22 @@ describe("AppShell global navigation", () => {
     expect(screen.getByText("Habilidades")).toBeInTheDocument();
   });
 
-  it("shows the Agents and Skills titles but keeps detail breadcrumbs out of the top bar", async () => {
+  it("titles the top bar with the leaf breadcrumb and never links a trail segment", async () => {
     const user = userEvent.setup();
     renderAppShell();
 
     await user.click(screen.getByRole("button", { name: "Sidebar agents" }));
     expect(screen.getByTestId("active-view")).toHaveTextContent("agents");
-    expect(screen.getByText("Agents")).toBeInTheDocument();
+    expect(screen.getByTestId("app-top-bar-title")).toHaveTextContent("Agents");
 
     await user.click(screen.getByRole("button", { name: "Sidebar skills" }));
-    expect(screen.getByText("Skills")).toBeInTheDocument();
+    expect(screen.getByTestId("app-top-bar-title")).toHaveTextContent("Skills");
     await user.click(screen.getByRole("button", { name: "Open skill detail" }));
-    expect(screen.getByText("Skills")).toBeInTheDocument();
+    // The top bar renders the last breadcrumb, so a detail page names itself
+    // rather than its section; the section stays in the trail, unrendered.
+    expect(screen.getByTestId("app-top-bar-title")).toHaveTextContent(
+      "Code Review",
+    );
     expect(screen.queryByRole("link", { name: "Skills" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Code Review" })).toBeNull();
 
@@ -4881,6 +4887,7 @@ describe("AppShell global navigation", () => {
         {
           deferProviderSetup: false,
           modelId: "goose-model",
+          personaId: "persona-resolves",
           projectId: undefined,
         },
       );
