@@ -32,10 +32,12 @@ import { readTextFile } from "@/shared/api/system";
 import { revealInFileManager } from "@/shared/lib/fileManager";
 import { getPlatform } from "@/shared/lib/platform";
 import { useArtifactActionsContext } from "@/features/chat/hooks/ArtifactPolicyContext";
-import { codeLanguageForPath } from "@/features/chat/lib/artifactViewerLanguage";
+import {
+  type ArtifactViewerLanguage,
+  codeLanguageForPath,
+} from "@/features/chat/lib/artifactViewerLanguage";
 import { classifyArtifactView } from "@/features/chat/lib/artifactViewerTypes";
 import type { OpenArtifact } from "@/features/chat/stores/artifactViewerStore";
-import type { BundledLanguage } from "shiki";
 
 // Platform-aware reveal label ("Reveal in Finder" / "Explorer" / "File
 // Manager"), matching FileContextMenu so the doc viewer and right-click
@@ -289,7 +291,7 @@ function CodeBody({
   textState,
   onOpenExternally,
 }: {
-  language: BundledLanguage;
+  language: ArtifactViewerLanguage;
   textState: TextState;
   onOpenExternally: () => void;
 }) {
