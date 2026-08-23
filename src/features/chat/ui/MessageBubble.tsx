@@ -976,8 +976,12 @@ export const MessageBubble = memo(function MessageBubble({
   // the text rather than in metadata on purpose — metadata does not survive
   // rehydration from ACP history, and a digest that lost its card on reload
   // would flood the transcript with report JSON.
+  // Gated on the marker alone, never on the cross-session metadata: that
+  // metadata is only restored for Goose replays, so gating on it would drop
+  // the card — and dump the raw report JSON — after a reload on every other
+  // harness.
   const digestEnvelope =
-    isBerdctlCrossSessionMessage && isDigestMessage(message)
+    isUser && isDigestMessage(message)
       ? parseDigestEnvelope(getTextContent(message))
       : null;
   const timestamp = (

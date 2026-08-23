@@ -127,12 +127,35 @@ describe("digest messages render as a compact card", () => {
     expect(screen.getByText("Check the CI failure")).toBeInTheDocument();
   });
 
-  it("does not card a digest-shaped message the operator typed themselves", () => {
+  // The card is gated on the marker alone, never on the cross-session origin
+  // metadata: that metadata is only restored for Goose replays, so gating on
+  // it would drop the card — and dump the raw report JSON — after a reload on
+  // every other harness. The marker has to open the message, sit alone on its
+  // first line and carry the attempt suffix, which is what keeps an operator
+  // who mentions one from being carded.
+  it("cards a delivered digest that came back without its origin metadata", () => {
     renderBubble({
       id: "m2",
       role: "user",
       created: 0,
       content: [{ type: "text", text: DIGEST_TEXT }],
+    });
+
+    expect(screen.getByTestId("conductor-digest-card")).toBeInTheDocument();
+  });
+
+  it("does not card a message that merely mentions a marker", () => {
+    renderBubble({
+      id: "m3",
+      role: "user",
+      created: 0,
+      content: [
+        {
+          type: "text",
+          text: `why did this show up? ${DIGEST_TEXT.split("\n")[0]}`,
+        },
+      ],
+      metadata: { origin: "berdctl_cross_session" },
     });
 
     expect(screen.queryByTestId("conductor-digest-card")).toBeNull();
