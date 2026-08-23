@@ -151,9 +151,7 @@ describe("FilesList", () => {
 
     await user.click(fileName);
 
-    expect(mockOpenInApp).toHaveBeenCalledWith(
-      "/Users/test/project/README.md",
-    );
+    expect(mockOpenInApp).toHaveBeenCalledWith("/Users/test/project/README.md");
   });
 
   it("supports context menu actions for folders and files", async () => {
@@ -207,9 +205,7 @@ describe("FilesList", () => {
     render(<FilesList projectWorkingDirs={["/Users/test/project"]} />);
 
     fireEvent.contextMenu(await screen.findByText("README.md"));
-    await user.click(
-      screen.getByRole("menuitem", { name: /open in editor/i }),
-    );
+    await user.click(screen.getByRole("menuitem", { name: /open in editor/i }));
 
     expect(mockOpenResolvedPath).toHaveBeenCalledWith(
       "/Users/test/project/README.md",

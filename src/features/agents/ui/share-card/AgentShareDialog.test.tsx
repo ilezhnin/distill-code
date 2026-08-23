@@ -15,10 +15,7 @@ import {
   encodeAgentImage,
   personaToSnapshot,
 } from "@/features/agents/agent-snapshot";
-import {
-  AgentShareDialog,
-  createAgentZip,
-} from "./AgentShareDialog";
+import { AgentShareDialog, createAgentZip } from "./AgentShareDialog";
 import { downloadBlob, renderAgentShareCard } from "./agentShareCard";
 
 const workerMocks = vi.hoisted(() => ({
@@ -740,5 +737,4 @@ describe("AgentShareDialog", () => {
     });
     await waitFor(() => expect(downloadBlob).toHaveBeenCalledTimes(1));
   });
-
 });

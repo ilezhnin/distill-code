@@ -747,7 +747,8 @@ export function GlobalComposerPill({
       resolveEffectiveReasoningEffort({
         availableModels,
         currentModelId: effectiveModelSelection?.modelId ?? null,
-        currentModelProviderId: effectiveModelSelection?.modelProviderId ?? null,
+        currentModelProviderId:
+          effectiveModelSelection?.modelProviderId ?? null,
         selectedAgentId,
         sessionReasoningEffort: activeReasoningEffort,
         onModelChange: handleModelChange,

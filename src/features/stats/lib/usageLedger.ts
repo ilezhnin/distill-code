@@ -364,7 +364,8 @@ export function recordSessionTokens(
         snapshot.outputTokens !== undefined ||
         snapshot.cacheTokens !== undefined
       ) {
-        next.totalTokens = next.inputTokens + next.outputTokens + next.cacheTokens;
+        next.totalTokens =
+          next.inputTokens + next.outputTokens + next.cacheTokens;
       }
     } else {
       const inferredTotal =
