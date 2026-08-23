@@ -2,6 +2,9 @@ import { createContext, useContext, type ReactNode } from "react";
 
 import type { Message } from "@/shared/types/messages";
 
+// Type-only: `brigadeAnchors` imports `latestConductorFooterHostId` from here,
+// so the value graph must stay one-directional.
+import type { BrigadeNodesByMessageId } from "./brigadeAnchors";
 import type { SessionNode, StructuredReport } from "./types";
 
 /**
@@ -17,6 +20,11 @@ export interface ConductorTranscriptContextValue {
   children: SessionNode[];
   reportsByRunId: Record<string, StructuredReport>;
   messages: readonly Message[];
+  /**
+   * Which message hosts which children's chips. Computed once per transcript
+   * (see `groupBrigadeNodesByHostMessage`) so each bubble is an O(1) lookup.
+   */
+  brigadeNodesByMessageId: BrigadeNodesByMessageId;
   onOpenChild?: (sessionId: string, intent?: ConductorOpenChildIntent) => void;
   onStopChild?: (sessionId: string) => void;
 }
@@ -26,6 +34,7 @@ const EMPTY_VALUE: ConductorTranscriptContextValue = {
   children: [],
   reportsByRunId: {},
   messages: [],
+  brigadeNodesByMessageId: new Map(),
 };
 
 const ConductorTranscriptContext =
