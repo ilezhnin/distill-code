@@ -60,15 +60,29 @@ export function resolveEffectiveReasoningEffort(
   );
   const sessionConfig = input.sessionReasoningEffort?.config;
   const sessionHasSelectableReasoning = (sessionConfig?.options.length ?? 0) > 1;
+  // The static Grok ladder stands in for an agent that advertises a value but
+  // no choices. It requires a session config all the same: the write path
+  // addresses that config's id, so without one the ladder would be a control
+  // whose selections have nowhere to go — stops that move nothing when clicked.
   const grokConfig =
     input.selectedAgentId === "grok-acp" &&
+    sessionConfig != null &&
     !sessionHasSelectableReasoning &&
     collapsedModels.reasoning == null
-      ? grokReasoningEffortConfig(sessionConfig?.currentValue)
+      ? grokReasoningEffortConfig(sessionConfig.currentValue)
       : null;
-  const baseConfig = sessionHasSelectableReasoning
-    ? sessionConfig
-    : (collapsedModels.reasoning ?? grokConfig ?? sessionConfig);
+  // Effort embedded in the model id wins over a session-advertised config.
+  // The id is what goes on the wire, so `gpt-5.6-sol[ultra]` *is* the effective
+  // effort; a provider that also advertises a parallel knob of its own (codex's
+  // `reasoning_effort`, on its own scale) cannot override what the id already
+  // encodes. Letting the session config win left the control reading "xhigh"
+  // for a model pinned to [ultra], and flipping between the two scales as
+  // snapshots arrived — the top stop appearing and vanishing between renders.
+  const baseConfig =
+    collapsedModels.reasoning ??
+    (sessionHasSelectableReasoning
+      ? sessionConfig
+      : (grokConfig ?? sessionConfig));
   const usesModelEmbeddedReasoning = collapsedModels.reasoning != null;
 
   const ultracode = input.sessionReasoningEffort?.ultracode;
@@ -148,6 +162,21 @@ export function resolveEffectiveReasoningEffort(
  */
 export const ULTRACODE_OPTION_ID = "ultracode";
 export const ULTRACODE_KEYWORD = "ultracode";
+
+/**
+ * Stops that sit past the top of an ordinary effort scale and earn the accented
+ * treatment on the track. Claude Code's synthetic Ultracode is one; a model list
+ * whose top variant is an `[ultra]` id is the same tier by another name, and
+ * looked oddly plain next to it.
+ */
+const TOP_TIER_EFFORT_IDS: ReadonlySet<string> = new Set([
+  ULTRACODE_OPTION_ID,
+  "ultra",
+]);
+
+export function isTopTierEffortId(id: string | undefined | null): boolean {
+  return id != null && TOP_TIER_EFFORT_IDS.has(id.trim().toLowerCase());
+}
 
 /**
  * Only the Claude Code bridge's own effort option qualifies: its config id is
