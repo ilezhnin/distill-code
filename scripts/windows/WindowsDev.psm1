@@ -1609,10 +1609,14 @@ function Invoke-EnsureGooseFromLocalSource {
     $binPath = Resolve-GooseBinaryPath -Paths $Paths -Settings $Settings
 
     if ($Action -eq "Check") {
-        if (Test-Path $binPath -PathType Leaf) {
-            return (New-GooseResult -ExitCode 0 -Ready $true -BinPath $binPath -Message "Local Goose binary is ready.")
-        }
-        return (Resolve-GooseFailure -Message "Local Goose binary has not been built from $($Paths.Repo) yet. Run 'just setup-windows'." -Action $Action -Mode $Settings.Mode)
+        # A binary on disk proves nothing here. The one sitting in the shared
+        # target dir may have been built from a different checkout entirely, and
+        # a source tree the developer edits changes without its commit changing,
+        # so there is no artifact this mode can trust. Report not-ready and let
+        # the caller run the build; cargo settles an unchanged tree in seconds.
+        $message = "Local Goose source at $($Paths.Repo) needs a build before it can be called ready."
+        Write-WindowsDevInfo $message
+        return (New-GooseResult -ExitCode 2 -Ready $false -BinPath $null -Message $message)
     }
 
     $head = Get-GitHead -Repo $Paths.Repo

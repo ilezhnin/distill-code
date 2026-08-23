@@ -314,12 +314,11 @@ if [[ "$local_source" == "1" ]]; then
   bin_path="$(resolve_bin_path)"
 
   if [[ "$action" == "check" ]]; then
-    [[ -x "$bin_path" ]] ||
-      fail_or_skip "Local Goose binary has not been built from $goose_repo yet. Rerun just setup."
-    if [[ "$print_bin" == "1" ]]; then
-      printf '%s\n' "$bin_path"
-    fi
-    exit 0
+    # A binary on disk proves nothing here: the one in the shared target dir may
+    # have been built from a different checkout entirely, and a source tree the
+    # developer edits changes without its commit changing. Report not-ready and
+    # let the caller build; cargo settles an unchanged tree in seconds.
+    fail_or_skip "Local Goose source at $goose_repo needs a build before it can be called ready."
   fi
 
   head_commit="$(git -C "$goose_repo" rev-parse HEAD)"
