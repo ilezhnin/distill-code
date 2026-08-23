@@ -350,6 +350,13 @@ interface MessageBubbleProps {
   animateEntry?: boolean;
   contentOverride?: readonly MessageContent[];
   contentContext?: readonly MessageContent[];
+  /**
+   * Earlier `delegate` tool calls, when this turn awaits a Goose background
+   * task that a previous assistant message spawned. Supplied by the projection,
+   * which is the only layer that sees the whole transcript; the bubble never
+   * holds one itself.
+   */
+  subagentLinkage?: ReadonlyArray<{ content: readonly MessageContent[] }>;
   actionMessageId?: string;
   fragmentRole?: "single" | "start" | "middle" | "end";
   onCopy?: () => void;
@@ -707,6 +714,7 @@ export const MessageBubble = memo(function MessageBubble({
   animateEntry = true,
   contentOverride,
   contentContext,
+  subagentLinkage,
   actionMessageId = message.id,
   fragmentRole,
   onRetryMessage,
@@ -915,6 +923,7 @@ export const MessageBubble = memo(function MessageBubble({
     ? selectHarnessBrigade({
         content: renderingContext,
         turnFinished: !isStreaming,
+        ...(subagentLinkage ? { messages: subagentLinkage } : {}),
       })
     : NO_HARNESS_BRIGADE;
   // Reserve the action tray while the terminal assistant row is still
