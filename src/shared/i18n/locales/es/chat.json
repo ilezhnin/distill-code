@@ -509,6 +509,10 @@
       }
     }
   },
+  "harnessBrigade": {
+    "label": "Subagentes de este turno",
+    "fallbackName": "Subagente"
+  },
   "skeleton": {
     "loadingConversation": "Cargando conversación"
   },

@@ -1254,6 +1254,10 @@ function buildAgentWorkItems({
         isStreaming,
         idSuffix: "answer",
         responseStartMessageId: message.id,
+        // The answer renders only its own text, but it is the row that hosts
+        // the turn's footers (harness brigade chips), which are read from the
+        // tool calls that stayed behind in the work rows.
+        preserveMessageContext: true,
       }),
     });
   }

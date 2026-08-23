@@ -510,6 +510,10 @@
       }
     }
   },
+  "harnessBrigade": {
+    "label": "Subagents in this turn",
+    "fallbackName": "Subagent"
+  },
   "skeleton": {
     "loadingConversation": "Loading conversation"
   },
