@@ -925,14 +925,14 @@ function Get-GooseBackendSettings {
     # Local source mode: build Goose straight out of a working copy the
     # developer owns instead of the disposable managed clone. The path comes
     # from GOOSE_DEV_REPO or the lockfile's "localRepo"; a relative value is
-    # resolved against this repo's parent, so a sibling checkout
-    # (../distill-goose) works on any machine without hardcoding a drive.
+    # resolved against this repo's root, so a sibling checkout
+    # ("../distill-goose") works on any machine without hardcoding a drive.
     $localRepo = $env:GOOSE_DEV_REPO
     if ([string]::IsNullOrWhiteSpace($localRepo)) {
         $localRepo = Get-ObjectValue $lock "localRepo"
     }
     if (-not [string]::IsNullOrWhiteSpace($localRepo) -and -not [System.IO.Path]::IsPathRooted($localRepo)) {
-        $localRepo = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $script:RepoRoot) $localRepo))
+        $localRepo = [System.IO.Path]::GetFullPath((Join-Path $script:RepoRoot $localRepo))
     }
 
     $localSource = ($env:GOOSE_DEV_LOCAL -eq "1")
