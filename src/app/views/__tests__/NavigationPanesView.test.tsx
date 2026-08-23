@@ -1132,7 +1132,10 @@ describe("NavigationPanesView", () => {
     expect(within(rows[1]).queryByRole("button", { name: /edit/i })).toBeNull();
   });
 
-  it("preserves Home pin order in the global pinned section", () => {
+  // Pinning a chat to Home now means it lives on the Home canvas, and the
+  // sidebar no longer mirrors those pins: SessionListCapability passes an
+  // empty pinnedNavigationItems list, so no pinned section renders at all.
+  it("renders no global pinned section for chats pinned to Home", () => {
     disableProjectGrouping();
     seedPinnedHomeChats("older-pin", "newer-pin");
     seedSessions(
@@ -1151,17 +1154,10 @@ describe("NavigationPanesView", () => {
     );
 
     renderSidebar();
-    const pinnedSection = screen.getByTestId("sidebar-pinned-section");
-    const rows = Array.from(
-      pinnedSection.querySelectorAll<HTMLElement>("[data-sidebar-chat-row]"),
-    );
-    expect(rows.map((row) => row.dataset.sessionId)).toEqual([
-      "older-pin",
-      "newer-pin",
-    ]);
+    expect(screen.queryByTestId("sidebar-pinned-section")).toBeNull();
   });
 
-  it("moves pinned flat chats into the global pinned section", () => {
+  it("leaves chats pinned to Home out of the flat chat list", () => {
     disableProjectGrouping();
     seedPinnedHomeChats("old-pinned-chat");
     seedSessions(
@@ -1185,13 +1181,8 @@ describe("NavigationPanesView", () => {
       container.querySelectorAll<HTMLElement>("[data-sidebar-chat-row]"),
     );
     expect(rows.map((row) => row.dataset.sessionId)).toEqual([
-      "old-pinned-chat",
       "new-unpinned-chat",
     ]);
-    expect(screen.getByRole("button", { name: "Unpin chat" })).toHaveAttribute(
-      "tabindex",
-      "-1",
-    );
 
     const groups = Array.from(
       container.querySelectorAll<HTMLElement>("[data-sidebar-flat-chat-group]"),
@@ -1199,9 +1190,10 @@ describe("NavigationPanesView", () => {
     expect(groups.map((group) => group.dataset.sidebarFlatChatGroup)).toEqual([
       "last-hour",
     ]);
-    expect(screen.getByTestId("sidebar-pinned-section")).toHaveTextContent(
-      "Old Pinned Chat",
-    );
+    // The pinned chat is on the Home canvas, not in the sidebar: neither a
+    // pinned section nor a pinned flat-chat group is rendered for it.
+    expect(screen.queryByTestId("sidebar-pinned-section")).toBeNull();
+    expect(screen.queryByText("Old Pinned Chat")).toBeNull();
   });
 
   it("does not make stale flat project icons clickable", () => {
@@ -1344,7 +1336,7 @@ describe("NavigationPanesView", () => {
     await waitFor(() => expect(mockLoadMoreSessions).toHaveBeenCalledTimes(2));
   });
 
-  it("keeps pinned project chats at the top of their project", async () => {
+  it("leaves chats pinned to Home out of their project's chat list", async () => {
     const user = userEvent.setup();
     seedPinnedHomeChats("old-pinned-project-chat");
     seedSessions(
@@ -1374,9 +1366,9 @@ describe("NavigationPanesView", () => {
       container.querySelectorAll<HTMLElement>("[data-sidebar-chat-row]"),
     );
     expect(rows.map((row) => row.dataset.sessionId)).toEqual([
-      "old-pinned-project-chat",
       "new-project-chat",
     ]);
+    expect(screen.queryByText("Old Pinned Project Chat")).toBeNull();
   });
 
   it("keeps project grouping by default", async () => {
