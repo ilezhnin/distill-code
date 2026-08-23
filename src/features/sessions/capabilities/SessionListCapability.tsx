@@ -188,6 +188,7 @@ function toSessionListItem(
   const branchName = branchNameBySessionId.get(session.id);
   return {
     id: session.id,
+    clientSessionId: session.clientSessionId,
     title: session.title,
     branchName,
     activityAt: sessionActivityAt(session),

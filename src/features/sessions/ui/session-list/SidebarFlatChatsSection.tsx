@@ -305,6 +305,7 @@ export function SidebarFlatChatsSection({
                       showTimestamp={showTimestamps}
                       showRenameTooltip={false}
                       isActive={isActive}
+                      clientSessionId={session.clientSessionId}
                       isRunning={session.isRunning ?? false}
                       hasUnread={session.hasUnread ?? false}
                       selected={selectedSessionIds?.has(session.id) ?? false}
