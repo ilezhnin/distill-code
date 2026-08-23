@@ -64,10 +64,11 @@ import {
 } from "./UserMessageClamp";
 import { ImageLightbox } from "@/shared/ui/ImageLightbox";
 import { VoiceSpeechStatusIndicator } from "./VoiceSpeechStatusIndicator";
+import { useConductorTranscript } from "@/features/conductor/ConductorTranscriptContext";
 import {
-  latestConductorFooterHostId,
-  useConductorTranscript,
-} from "@/features/conductor/ConductorTranscriptContext";
+  brigadeNodesForMessage,
+  NO_BRIGADE_NODES,
+} from "@/features/conductor/brigadeAnchors";
 import { ConductorAgentFooter } from "@/features/conductor/ui/ConductorAgentFooter";
 
 interface MessageAttachmentPreviewItem {
@@ -874,11 +875,16 @@ export const MessageBubble = memo(function MessageBubble({
   const canHostMessageActions =
     !fragmentRole || fragmentRole === "end" || fragmentRole === "single";
   const showMessageActions = !isStreaming && canHostMessageActions;
-  const showConductorFooter =
-    conductorTranscript.enabled &&
-    canHostMessageActions &&
-    conductorTranscript.children.length > 0 &&
-    latestConductorFooterHostId(conductorTranscript.messages) === message.id;
+  // Chips live under the message that owns them: children anchored to this
+  // message id, plus the unanchored fallback group on the latest host.
+  const conductorFooterNodes =
+    conductorTranscript.enabled && canHostMessageActions
+      ? brigadeNodesForMessage(
+          conductorTranscript.brigadeNodesByMessageId,
+          message.id,
+        )
+      : NO_BRIGADE_NODES;
+  const showConductorFooter = conductorFooterNodes.length > 0;
   // Reserve the action tray while the terminal assistant row is still
   // streaming so completion does not add pb-9 and nudge a bottom-pinned
   // transcript upward.
@@ -957,194 +963,211 @@ export const MessageBubble = memo(function MessageBubble({
         />
       ) : null}
       <div
-        data-role={
-          isUser ? "user-message-content" : "assistant-message-content"
-        }
         className={cn(
-          "group relative min-w-0 flex flex-col gap-1",
-          shouldReserveMessageActionSpace && "pb-9",
+          "flex min-w-0 flex-col",
           isUser
             ? "max-w-[var(--chat-user-message-max-width)] items-end"
             : "w-full items-start",
         )}
       >
-        {showAssistantIdentity ? (
-          <div className="mb-0.5 flex items-center gap-1 text-xs">
-            {hasPersonaAvatar ? (
-              <AvatarVisual
-                avatar={persona?.avatar}
-                className="h-5 w-5 rounded-full object-cover"
-              />
-            ) : assistantProviderIcon ? (
-              <span className="flex h-5 w-5 items-center justify-center">
-                {assistantProviderIcon}
-              </span>
-            ) : (
-              <span className="flex h-5 w-5 items-center justify-center">
-                <IconRobot size={14} className="text-muted-foreground" />
-              </span>
-            )}
-            {assistantDisplayName ? (
-              <span className="font-normal text-foreground">
-                {assistantDisplayName}
-              </span>
-            ) : null}
-          </div>
-        ) : null}
-
-        {/* biome-ignore lint/a11y/useKeyWithClickEvents: delegated link handler */}
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated link handler */}
         <div
+          data-role={
+            isUser ? "user-message-content" : "assistant-message-content"
+          }
           className={cn(
-            "min-w-0 text-sm leading-relaxed",
+            "group relative min-w-0 flex flex-col gap-1",
+            shouldReserveMessageActionSpace && "pb-9",
             isUser
-              ? "rounded-sm bg-message-user-bg px-4 py-2 leading-normal"
-              : "w-full",
+              ? "max-w-[var(--chat-user-message-max-width)] items-end"
+              : "w-full items-start",
           )}
-          onClick={handleContentClick}
         >
-          {isBerdctlCrossSessionMessage || isSteeredMessage ? (
-            <div className="mb-1 flex flex-col items-start gap-0.5 text-xs font-normal leading-4 text-muted-foreground">
-              {isBerdctlCrossSessionMessage ? (
-                <span
-                  data-role="berdctl-cross-session-message-label"
-                  className="leading-4"
-                >
-                  {t("message.berdctlCrossSessionLabel")}
+          {showAssistantIdentity ? (
+            <div className="mb-0.5 flex items-center gap-1 text-xs">
+              {hasPersonaAvatar ? (
+                <AvatarVisual
+                  avatar={persona?.avatar}
+                  className="h-5 w-5 rounded-full object-cover"
+                />
+              ) : assistantProviderIcon ? (
+                <span className="flex h-5 w-5 items-center justify-center">
+                  {assistantProviderIcon}
                 </span>
-              ) : null}
-              {isSteeredMessage ? (
-                <span data-role="steer-message-label" className="leading-4">
-                  {t("message.steerLabel")}
+              ) : (
+                <span className="flex h-5 w-5 items-center justify-center">
+                  <IconRobot size={14} className="text-muted-foreground" />
+                </span>
+              )}
+              {assistantDisplayName ? (
+                <span className="font-normal text-foreground">
+                  {assistantDisplayName}
                 </span>
               ) : null}
             </div>
           ) : null}
-          {isUser && messageChips.length > 0 && (
-            <div className="mb-1.5 flex flex-wrap gap-1.5">
-              {messageChips.map((chip) => (
-                <MessageMetadataChip
-                  key={`${chip.type}-${chip.id ?? chip.label}`}
-                  chip={chip}
-                />
-              ))}
-            </div>
-          )}
-          {attachmentPreviewItems.length > 0 && (
-            <MessageAttachmentGrid items={attachmentPreviewItems} />
-          )}
-          {groupContentSections(renderedContent).map((section, sectionIdx) => {
-            if (section.type === "toolChain") {
-              const toolItems = section.items as ToolChainItem[];
-              return (
-                <ToolChainCards
-                  key={section.key}
-                  chainId={section.key}
-                  toolItems={toolItems}
-                />
-              );
-            }
-            const block = section.items[0] as MessageContent;
-            if (isUser && block.type === "text") {
-              if (!block.text.trim()) return null;
-              return couldOverflowUserMessagePreview(block.text) ? (
-                <UserMessageClamp
-                  key={`${message.id}-${section.key}`}
-                  text={block.text}
-                  stateKey={section.key}
-                />
-              ) : (
-                <LinkifiedText
-                  key={`${message.id}-${section.key}`}
-                  text={block.text}
-                />
-              );
-            }
-            return (
-              <div key={`${message.id}-${section.key}`}>
-                {renderContentBlock(
-                  block,
-                  sectionIdx,
-                  {
-                    defaultImageAlt: t("message.defaultImageAlt"),
-                    redactedThinking: t("message.redactedThinking"),
-                    voiceSpeechSpeakingLabel: t(
-                      "message.voiceSpeechSpeakingLabel",
-                    ),
-                    voiceSpeechSpokenLabel: t("message.voiceSpeechSpokenLabel"),
-                    voiceSpeechInterruptedLabel: t(
-                      "message.voiceSpeechInterruptedLabel",
-                    ),
-                    voiceSpeechNotSpokenLabel: t(
-                      "message.voiceSpeechNotSpokenLabel",
-                    ),
-                    voiceSpeechFailedLabel: t("message.voiceSpeechFailedLabel"),
-                    contentBlocks: renderingContext,
-                    onSendMcpAppMessage,
-                    onMcpAppAutoScroll,
-                    onRunShellCommand,
-                    runItCodeRenderers,
-                    stateKey: section.key,
-                    resolveProviderErrorNotice,
-                  },
-                  isStreaming,
-                  isUser,
-                )}
+
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: delegated link handler */}
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated link handler */}
+          <div
+            className={cn(
+              "min-w-0 text-sm leading-relaxed",
+              isUser
+                ? "rounded-sm bg-message-user-bg px-4 py-2 leading-normal"
+                : "w-full",
+            )}
+            onClick={handleContentClick}
+          >
+            {isBerdctlCrossSessionMessage || isSteeredMessage ? (
+              <div className="mb-1 flex flex-col items-start gap-0.5 text-xs font-normal leading-4 text-muted-foreground">
+                {isBerdctlCrossSessionMessage ? (
+                  <span
+                    data-role="berdctl-cross-session-message-label"
+                    className="leading-4"
+                  >
+                    {t("message.berdctlCrossSessionLabel")}
+                  </span>
+                ) : null}
+                {isSteeredMessage ? (
+                  <span data-role="steer-message-label" className="leading-4">
+                    {t("message.steerLabel")}
+                  </span>
+                ) : null}
               </div>
-            );
-          })}
-          {pathNotice && (
-            <p className="mt-2 text-xs text-destructive" role="status">
-              {pathNotice}
-            </p>
-          )}
+            ) : null}
+            {isUser && messageChips.length > 0 && (
+              <div className="mb-1.5 flex flex-wrap gap-1.5">
+                {messageChips.map((chip) => (
+                  <MessageMetadataChip
+                    key={`${chip.type}-${chip.id ?? chip.label}`}
+                    chip={chip}
+                  />
+                ))}
+              </div>
+            )}
+            {attachmentPreviewItems.length > 0 && (
+              <MessageAttachmentGrid items={attachmentPreviewItems} />
+            )}
+            {groupContentSections(renderedContent).map(
+              (section, sectionIdx) => {
+                if (section.type === "toolChain") {
+                  const toolItems = section.items as ToolChainItem[];
+                  return (
+                    <ToolChainCards
+                      key={section.key}
+                      chainId={section.key}
+                      toolItems={toolItems}
+                    />
+                  );
+                }
+                const block = section.items[0] as MessageContent;
+                if (isUser && block.type === "text") {
+                  if (!block.text.trim()) return null;
+                  return couldOverflowUserMessagePreview(block.text) ? (
+                    <UserMessageClamp
+                      key={`${message.id}-${section.key}`}
+                      text={block.text}
+                      stateKey={section.key}
+                    />
+                  ) : (
+                    <LinkifiedText
+                      key={`${message.id}-${section.key}`}
+                      text={block.text}
+                    />
+                  );
+                }
+                return (
+                  <div key={`${message.id}-${section.key}`}>
+                    {renderContentBlock(
+                      block,
+                      sectionIdx,
+                      {
+                        defaultImageAlt: t("message.defaultImageAlt"),
+                        redactedThinking: t("message.redactedThinking"),
+                        voiceSpeechSpeakingLabel: t(
+                          "message.voiceSpeechSpeakingLabel",
+                        ),
+                        voiceSpeechSpokenLabel: t(
+                          "message.voiceSpeechSpokenLabel",
+                        ),
+                        voiceSpeechInterruptedLabel: t(
+                          "message.voiceSpeechInterruptedLabel",
+                        ),
+                        voiceSpeechNotSpokenLabel: t(
+                          "message.voiceSpeechNotSpokenLabel",
+                        ),
+                        voiceSpeechFailedLabel: t(
+                          "message.voiceSpeechFailedLabel",
+                        ),
+                        contentBlocks: renderingContext,
+                        onSendMcpAppMessage,
+                        onMcpAppAutoScroll,
+                        onRunShellCommand,
+                        runItCodeRenderers,
+                        stateKey: section.key,
+                        resolveProviderErrorNotice,
+                      },
+                      isStreaming,
+                      isUser,
+                    )}
+                  </div>
+                );
+              },
+            )}
+            {pathNotice && (
+              <p className="mt-2 text-xs text-destructive" role="status">
+                {pathNotice}
+              </p>
+            )}
+          </div>
+
+          {showMessageActions ? (
+            <div
+              data-role="message-actions"
+              data-copy-confirmed={isCopyConfirmed ? "true" : "false"}
+              className={cn(
+                "absolute bottom-0 transition-opacity duration-150 ease-out",
+                "opacity-0 pointer-events-none",
+                !messageActionsArePersistentlyVisible &&
+                  "group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto",
+                messageActionsArePersistentlyVisible &&
+                  "opacity-100 pointer-events-auto",
+                isUser ? "right-0" : "-left-1.5",
+              )}
+            >
+              <MessageBubbleActions
+                isUser={isUser}
+                messageId={actionMessageId}
+                timestamp={timestamp}
+                textContent={actionTextContent}
+                copied={isCopyConfirmed}
+                onCopy={() => copyToClipboard(actionTextContent)}
+                onRetryMessage={onRetryMessage}
+                onEditMessage={onEditMessage}
+                onJumpToResponseStart={
+                  !isUser && !isStreaming ? onJumpToResponseStart : undefined
+                }
+                onForkFromMessage={!isStreaming ? onForkFromMessage : undefined}
+                showJumpToResponseStartHint={
+                  !isUser && !isStreaming ? showJumpToResponseStartHint : false
+                }
+                onJumpToResponseStartHintClose={onJumpToResponseStartHintClose}
+                onJumpToResponseStartHintDismiss={
+                  onJumpToResponseStartHintDismiss
+                }
+              />
+            </div>
+          ) : null}
         </div>
 
+        {/* Below the actions/timestamp row: the chip row is a normal-flow
+            sibling after the reserved action space, so nothing overlaps it. */}
         {showConductorFooter ? (
           <ConductorAgentFooter
-            nodes={conductorTranscript.children}
+            nodes={conductorFooterNodes}
             reportsByRunId={conductorTranscript.reportsByRunId}
             onOpen={conductorTranscript.onOpenChild}
             onStop={conductorTranscript.onStopChild}
           />
-        ) : null}
-
-        {showMessageActions ? (
-          <div
-            data-role="message-actions"
-            data-copy-confirmed={isCopyConfirmed ? "true" : "false"}
-            className={cn(
-              "absolute bottom-0 transition-opacity duration-150 ease-out",
-              "opacity-0 pointer-events-none",
-              !messageActionsArePersistentlyVisible &&
-                "group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto",
-              messageActionsArePersistentlyVisible &&
-                "opacity-100 pointer-events-auto",
-              isUser ? "right-0" : "-left-1.5",
-            )}
-          >
-            <MessageBubbleActions
-              isUser={isUser}
-              messageId={actionMessageId}
-              timestamp={timestamp}
-              textContent={actionTextContent}
-              copied={isCopyConfirmed}
-              onCopy={() => copyToClipboard(actionTextContent)}
-              onRetryMessage={onRetryMessage}
-              onEditMessage={onEditMessage}
-              onJumpToResponseStart={
-                !isUser && !isStreaming ? onJumpToResponseStart : undefined
-              }
-              onForkFromMessage={!isStreaming ? onForkFromMessage : undefined}
-              showJumpToResponseStartHint={
-                !isUser && !isStreaming ? showJumpToResponseStartHint : false
-              }
-              onJumpToResponseStartHintClose={onJumpToResponseStartHintClose}
-              onJumpToResponseStartHintDismiss={
-                onJumpToResponseStartHintDismiss
-              }
-            />
-          </div>
         ) : null}
       </div>
     </div>
