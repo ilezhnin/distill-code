@@ -84,6 +84,10 @@ import {
   preSeedDraftAgent,
 } from "@/features/agents/lib/agentBuilderSession";
 import { personaExecutionTarget } from "@/features/agents/lib/personaExecutionTarget";
+import { rankedPersonaExecutionTarget } from "@/features/agents/lib/rankedPersonaTarget";
+import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
+import { toast } from "sonner";
+import { i18n } from "@/shared/i18n";
 import { deletePersonaSource } from "@/shared/api/agents";
 import type { Persona } from "@/shared/types/agents";
 import {
@@ -1203,13 +1207,43 @@ export function useChatSessionController({
   }, [handlePickerOpen, refreshMissingReasoningEffort]);
 
   const resolvePersonaTarget = useCallback(
-    (persona: Persona) =>
-      personaExecutionTarget(persona, {
+    (persona: Persona) => {
+      // A ranked preference outranks the single saved model: the ranking is
+      // how the operator asked models to be chosen by preference and limits.
+      // A rank>0 pick is surfaced (D5 — no silent substitution); rank 0 is
+      // the preference itself, not a downgrade.
+      const ranked = rankedPersonaExecutionTarget(persona, {
+        providers,
+        getModelsForHarness: getModelsForAgent,
+        rateLimits:
+          useProviderRateLimitsStore.getState().snapshot?.providers ?? [],
+      });
+      if (ranked) {
+        const { resolution } = ranked;
+        if (resolution.choice && resolution.choice.rankIndex > 0) {
+          const skipped = resolution.skipped[0];
+          toast.info(
+            i18n.t(
+              skipped?.reason === "at-limit"
+                ? "agents:modelRanking.fallbackAtLimit"
+                : "agents:modelRanking.fallbackMissing",
+              {
+                agent: persona.displayName,
+                skipped: skipped?.label ?? "",
+                picked: resolution.choice.label,
+              },
+            ),
+          );
+        }
+        return ranked.target;
+      }
+      return personaExecutionTarget(persona, {
         providers,
         models: getModelsForAgent("goose"),
         getModelsForHarness: getModelsForAgent,
         catalogEntries,
-      }),
+      });
+    },
     [catalogEntries, getModelsForAgent, providers],
   );
   const prepareSessionForCurrentSelection = useCallback(
