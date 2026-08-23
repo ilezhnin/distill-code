@@ -922,6 +922,33 @@ function Get-GooseBackendSettings {
         $patchDir = Join-Path $script:RepoRoot "patches\goose"
     }
 
+    # Local source mode: build Goose straight out of a working copy the
+    # developer owns instead of the disposable managed clone. The path comes
+    # from GOOSE_DEV_REPO or the lockfile's "localRepo"; a relative value is
+    # resolved against this repo's parent, so a sibling checkout
+    # (../distill-goose) works on any machine without hardcoding a drive.
+    $localRepo = $env:GOOSE_DEV_REPO
+    if ([string]::IsNullOrWhiteSpace($localRepo)) {
+        $localRepo = Get-ObjectValue $lock "localRepo"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($localRepo) -and -not [System.IO.Path]::IsPathRooted($localRepo)) {
+        $localRepo = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $script:RepoRoot) $localRepo))
+    }
+
+    $localSource = ($env:GOOSE_DEV_LOCAL -eq "1")
+    if (-not $localSource -and $env:GOOSE_DEV_LOCAL -ne "0") {
+        $lockLocal = Get-ObjectValue $lock "local"
+        if ($lockLocal -is [bool]) {
+            $localSource = $lockLocal
+        }
+        elseif ("$lockLocal" -in @("1", "true")) {
+            $localSource = $true
+        }
+    }
+    if ($localSource -and [string]::IsNullOrWhiteSpace($localRepo)) {
+        throw "Local Goose source mode is enabled but no checkout path is set. Set GOOSE_DEV_REPO or 'localRepo' in $lockFile."
+    }
+
     return [pscustomobject]@{
         LockFile = $lockFile
         CloneUrl = $repo
@@ -935,6 +962,8 @@ function Get-GooseBackendSettings {
         AllowDirty = ($env:GOOSE_DEV_ALLOW_DIRTY -eq "1")
         PatchDir = $patchDir
         PatchFingerprint = (Get-GoosePatchFingerprint -PatchDir $patchDir)
+        LocalSource = $localSource
+        LocalRepo = $localRepo
     }
 }
 
@@ -1537,7 +1566,13 @@ function Build-GooseManagedBinary {
     )
 
     Write-WindowsDevInfo "Building Goose from $($Paths.Repo) at $($Settings.Commit)."
-    $cargoArguments = @("build", "--locked")
+    # --locked pins the managed checkout to the commit's own Cargo.lock. A local
+    # source tree is one the developer edits, so a dependency change that needs
+    # a lockfile refresh is expected there rather than a sign of tampering.
+    $cargoArguments = @("build")
+    if (-not $Settings.LocalSource) {
+        $cargoArguments += "--locked"
+    }
     if ($Settings.BuildProfile -eq "release") {
         $cargoArguments += "--release"
     }
@@ -1554,6 +1589,45 @@ function Build-GooseManagedBinary {
     return (New-GooseResult -ExitCode 0 -Ready $true -BinPath $BinPath -Message "Local Goose binary is ready.")
 }
 
+# Build Goose from a checkout the developer owns rather than the managed
+# clone. Nothing here fetches, resets, or patches: whatever is checked out is
+# what gets built, so editing Goose sources and relaunching picks the change
+# up. Readiness is deliberately not cached against the stamp either, because a
+# working tree changes without the commit changing — cargo's own incremental
+# build keeps the no-op case cheap.
+function Invoke-EnsureGooseFromLocalSource {
+    param(
+        [Parameter(Mandatory = $true)]$Paths,
+        [Parameter(Mandatory = $true)]$Settings,
+        [Parameter(Mandatory = $true)][string]$Action
+    )
+
+    if (-not (Test-Path (Join-Path $Paths.Repo ".git") -PathType Container)) {
+        return (Resolve-GooseFailure -Message "Local Goose source checkout not found at $($Paths.Repo). Clone your Goose fork there or point 'localRepo' in $($Settings.LockFile) at it." -Action $Action -Mode $Settings.Mode)
+    }
+
+    $binPath = Resolve-GooseBinaryPath -Paths $Paths -Settings $Settings
+
+    if ($Action -eq "Check") {
+        if (Test-Path $binPath -PathType Leaf) {
+            return (New-GooseResult -ExitCode 0 -Ready $true -BinPath $binPath -Message "Local Goose binary is ready.")
+        }
+        return (Resolve-GooseFailure -Message "Local Goose binary has not been built from $($Paths.Repo) yet. Run 'just setup-windows'." -Action $Action -Mode $Settings.Mode)
+    }
+
+    $head = Get-GitHead -Repo $Paths.Repo
+    if ([string]::IsNullOrWhiteSpace($head)) {
+        return (Resolve-GooseFailure -Message "Could not read HEAD of the local Goose checkout at $($Paths.Repo)." -Action $Action -Mode $Settings.Mode)
+    }
+
+    Write-WindowsDevInfo "Building Goose from local source at $($Paths.Repo) (HEAD $head); fetch, reset, and patching are skipped."
+    Assert-MsvcEnvironment
+    Assert-LibClangEnvironment
+
+    $Settings.Commit = $head
+    return (Build-GooseManagedBinary -Paths $Paths -Settings $Settings -BinPath $binPath)
+}
+
 function Invoke-EnsureLocalGoose {
     param(
         [ValidateSet("Build", "Check")][string]$Action = "Build"
@@ -1564,6 +1638,11 @@ function Invoke-EnsureLocalGoose {
     $settings = Get-GooseBackendSettings
     $paths = Resolve-GooseDevPaths
     $env:CARGO_TARGET_DIR = $paths.CargoTargetDir
+
+    if ($settings.LocalSource) {
+        $paths.Repo = $settings.LocalRepo
+        return (Invoke-EnsureGooseFromLocalSource -Paths $paths -Settings $settings -Action $Action)
+    }
 
     $checkoutFailure = Initialize-GooseManagedCheckout -Paths $paths -Settings $settings -Action $Action
     if ($null -ne $checkoutFailure) {
