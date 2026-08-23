@@ -54,8 +54,8 @@ function renderTranscript(
     enabled: true,
     children: nodes,
     reportsByRunId: {},
-    messages: MESSAGES,
     brigadeNodesByMessageId: groupBrigadeNodesByHostMessage(nodes, MESSAGES),
+    wavePlanStepsByMessageId: new Map(),
     ...handlers,
   };
   return render(
@@ -187,11 +187,11 @@ describe("MessageBubble conductor footer", () => {
           enabled: false,
           children: nodes,
           reportsByRunId: {},
-          messages: MESSAGES,
           brigadeNodesByMessageId: groupBrigadeNodesByHostMessage(
             nodes,
             MESSAGES,
           ),
+          wavePlanStepsByMessageId: new Map(),
         }}
       >
         {MESSAGES.map((item) => (

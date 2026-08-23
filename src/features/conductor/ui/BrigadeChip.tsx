@@ -34,6 +34,17 @@ export interface BrigadeChipViewModel {
   status: RunStatus;
   /** Hover tooltip; falls back to the localized status label. */
   title?: string;
+  /**
+   * Zero-based wave step this child executes, rendered as a 1-based prefix.
+   * Absent for chips that are not wave steps (legacy orchestrator children,
+   * ephemeral harness subagents).
+   */
+  stepIndex?: number;
+  /**
+   * Localized access mode of that step ("sees nothing" / "sees earlier
+   * reports"). Absent when the plan that named it is not in this transcript.
+   */
+  accessLabel?: string;
   /** Omitted → the chip is not clickable. */
   onOpen?: (id: string) => void;
   /** Omitted → no stop button, whatever the status. */
@@ -73,6 +84,8 @@ export function BrigadeChip({
   name,
   status,
   title,
+  stepIndex,
+  accessLabel,
   onOpen,
   onStop,
   className,
@@ -80,23 +93,57 @@ export function BrigadeChip({
   const { t } = useTranslation("chat");
   const statusLabel = t(`conductor.status.${status}`);
   const showStop = Boolean(onStop) && isWorkingStatus(status);
+  // Step number and access mode are diagnostic affordances, not decoration:
+  // when a wave returns a wrong answer they are how the operator gets from
+  // "this is wrong" to "that step", matching the plan list above the row.
+  const step = typeof stepIndex === "number" ? stepIndex + 1 : undefined;
+  const label =
+    step === undefined
+      ? t("conductor.openChild", { name, status: statusLabel })
+      : accessLabel
+        ? t("conductor.openChildStepAccess", {
+            step,
+            access: accessLabel,
+            name,
+            status: statusLabel,
+          })
+        : t("conductor.openChildStep", { step, name, status: statusLabel });
 
   return (
     <span
       data-testid="brigade-chip"
       data-status={status}
+      data-step={step}
       className={cn("inline-flex items-center gap-1", className)}
     >
       <button
         type="button"
         data-testid="conductor-agent-chip"
-        aria-label={t("conductor.openChild", { name, status: statusLabel })}
+        aria-label={label}
         title={title || statusLabel}
         onClick={onOpen ? () => onOpen(id) : undefined}
         className="inline-flex items-center gap-1.5 rounded-full text-xs text-muted-foreground hover:text-foreground"
       >
+        {step === undefined ? null : (
+          <span
+            aria-hidden="true"
+            data-testid="brigade-chip-step"
+            className="tabular-nums text-muted-foreground"
+          >
+            {step}
+          </span>
+        )}
         <BrigadeStatusGlyph status={status} />
         <span className="font-medium text-foreground">{name}</span>
+        {accessLabel ? (
+          <span
+            aria-hidden="true"
+            data-testid="brigade-chip-access"
+            className="text-[11px] text-muted-foreground"
+          >
+            {accessLabel}
+          </span>
+        ) : null}
       </button>
       {showStop && onStop ? (
         <button
