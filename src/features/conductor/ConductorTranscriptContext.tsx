@@ -4,12 +4,20 @@ import type { Message } from "@/shared/types/messages";
 
 import type { SessionNode, StructuredReport } from "./types";
 
+/**
+ * How a child chip wants its session surfaced. Callers omit it and get
+ * `navigate`; `openInTab` and `reveal` gain distinct handling in later stages.
+ */
+export type ConductorOpenChildIntent = "navigate" | "openInTab" | "reveal";
+
+export const DEFAULT_OPEN_CHILD_INTENT: ConductorOpenChildIntent = "navigate";
+
 export interface ConductorTranscriptContextValue {
   enabled: boolean;
   children: SessionNode[];
   reportsByRunId: Record<string, StructuredReport>;
   messages: readonly Message[];
-  onOpenChild?: (sessionId: string) => void;
+  onOpenChild?: (sessionId: string, intent?: ConductorOpenChildIntent) => void;
   onStopChild?: (sessionId: string) => void;
 }
 

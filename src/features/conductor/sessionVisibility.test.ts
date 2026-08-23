@@ -11,6 +11,7 @@ function node(sessionId: string, role: SessionNode["role"]): SessionNode {
     sessionId,
     projectId: "project",
     role,
+    managedBy: "ui",
     parentSessionId: role === "conductor" ? null : "conductor-1",
     rootConductorId: "conductor-1",
     runId: role === "orchestrator" ? "run-1" : null,
