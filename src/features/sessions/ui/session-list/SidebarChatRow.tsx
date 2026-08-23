@@ -63,7 +63,9 @@ import {
 } from "@/shared/ui/ai-elements/shimmer";
 import { SidebarLeadingIcon } from "./SidebarLeadingIcon";
 import { SidebarUnreadDot } from "./SidebarUnreadDot";
+import { SidebarChildWorkDot } from "./SidebarChildWorkDot";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import { workingChildCountForSession } from "@/features/conductor/brigadeActivity";
 import { ConductorLeadingIcon } from "@/features/conductor/ui/ConductorLeadingIcon";
 import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 import { useWorkingIndicatorAnimationPreference } from "@/shared/preferences/workingIndicatorAnimationPreference";
@@ -136,6 +138,12 @@ export function formatSidebarChatTimestamp(
 
 interface SidebarChatRowProps {
   id: string;
+  /**
+   * Pre-promotion id for this chat, when it has one. Graph children spawned
+   * before the session was promoted still point at this alias, so the
+   * "agents working" indicator would miss them without it.
+   */
+  clientSessionId?: string;
   title: string;
   /** Current Git branch for this chat; only passed when the sidebar branch setting is enabled. */
   branchName?: string;
@@ -194,6 +202,7 @@ interface SidebarChatRowProps {
 
 export function SidebarChatRow({
   id,
+  clientSessionId,
   title,
   branchName,
   activityAt,
@@ -281,6 +290,11 @@ export function SidebarChatRow({
   const isMultiWindowEnabled = sessionWindowSupport.supported;
   const isConductor = useConductorGraphStore(
     (state) => state.nodesById[id]?.role === "conductor",
+  );
+  // Row-local and deliberately a plain number: zustand's default `Object.is`
+  // comparison is enough, so this re-renders only when the tally changes.
+  const workingChildCount = useConductorGraphStore((state) =>
+    workingChildCountForSession(state.nodesById, id, [clientSessionId]),
   );
   const resolvedLeadingIcon = isConductor
     ? (leadingIcon ?? <ConductorLeadingIcon />)
@@ -887,6 +901,29 @@ export function SidebarChatRow({
               )}
             >
               <ActiveChatPulseDot />
+            </span>
+          ) : workingChildCount > 0 ? (
+            // The chat itself is idle but its agents are not: the operator
+            // should expect a result later. Mirrors `brigadeWaitIndicator`,
+            // which is likewise "only when the session itself is idle", and so
+            // sits below the row's own running state but above unread and the
+            // timestamp.
+            <span
+              data-sidebar-chat-children-status
+              role="status"
+              aria-label={t("status.childrenWorking", {
+                count: workingChildCount,
+              })}
+              className={cn(
+                "pointer-events-none absolute flex size-5 items-center justify-center transition-opacity duration-75",
+                hasBranchName ? "top-1" : "top-1/2 -translate-y-1/2",
+                densityClasses.menuInset,
+                selectionEnabled || menuOpen || contextMenuOpen || dragging
+                  ? "opacity-0"
+                  : "opacity-100 group-hover/chat-row:opacity-0 group-focus-within/chat-row:opacity-0",
+              )}
+            >
+              <SidebarChildWorkDot />
             </span>
           ) : hasUnread ? (
             <span
