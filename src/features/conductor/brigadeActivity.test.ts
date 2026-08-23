@@ -4,6 +4,7 @@ import {
   brigadeWaitIndicator,
   isWorkingStatus,
   summarizeBrigadeActivity,
+  workingChildCountForSession,
 } from "./brigadeActivity";
 import type { SessionNode } from "./types";
 
@@ -128,5 +129,155 @@ describe("brigadeWaitIndicator", () => {
         children: [node("a", "running")],
       }),
     ).toEqual({ visible: true, workingCount: 1 });
+  });
+});
+
+describe("workingChildCountForSession", () => {
+  const conductor = node("conductor-1", "waiting", {
+    role: "conductor",
+    parentSessionId: null,
+    rootConductorId: null,
+  });
+
+  function graph(...nodes: SessionNode[]): Record<string, SessionNode> {
+    return Object.fromEntries(nodes.map((item) => [item.sessionId, item]));
+  }
+
+  it("counts only the working children of the session", () => {
+    expect(
+      workingChildCountForSession(
+        graph(
+          conductor,
+          node("w1", "running"),
+          node("w2", "starting"),
+          node("w3", "waiting"),
+          node("w4", "completed"),
+        ),
+        "conductor-1",
+      ),
+    ).toBe(3);
+  });
+
+  it("returns 0 once every child reached a terminal state", () => {
+    expect(
+      workingChildCountForSession(
+        graph(
+          conductor,
+          node("w1", "completed"),
+          node("w2", "failed"),
+          node("w3", "cancelled"),
+          node("w4", "stopped"),
+        ),
+        "conductor-1",
+      ),
+    ).toBe(0);
+  });
+
+  it("ignores the session's own node even while it is running", () => {
+    const runningConductor = node("conductor-1", "running", {
+      role: "conductor",
+      parentSessionId: null,
+      rootConductorId: null,
+    });
+    expect(
+      workingChildCountForSession(graph(runningConductor), "conductor-1"),
+    ).toBe(0);
+  });
+
+  it("does not count children belonging to a different parent", () => {
+    expect(
+      workingChildCountForSession(
+        graph(
+          conductor,
+          node("mine", "running"),
+          node("theirs", "running", {
+            parentSessionId: "conductor-2",
+            rootConductorId: "conductor-2",
+          }),
+        ),
+        "conductor-1",
+      ),
+    ).toBe(1);
+  });
+
+  it("returns 0 for an empty graph and for sessions with no node", () => {
+    expect(workingChildCountForSession({}, "conductor-1")).toBe(0);
+    expect(
+      workingChildCountForSession(graph(node("w1", "running")), "conductor-1"),
+    ).toBe(0);
+  });
+
+  it("returns 0 for a plain chat that somehow has children pointed at it", () => {
+    const plain = node("plain-1", "waiting", {
+      role: "plain-chat",
+      parentSessionId: null,
+      rootConductorId: null,
+    });
+    expect(
+      workingChildCountForSession(
+        graph(
+          plain,
+          node("w1", "running", {
+            parentSessionId: "plain-1",
+            rootConductorId: "plain-1",
+          }),
+        ),
+        "plain-1",
+      ),
+    ).toBe(0);
+  });
+
+  it("counts an orchestrator's direct workers", () => {
+    const orchestrator = node("orch-1", "waiting", {
+      role: "orchestrator",
+      parentSessionId: "conductor-1",
+    });
+    expect(
+      workingChildCountForSession(
+        graph(
+          orchestrator,
+          node("w1", "running", { parentSessionId: "orch-1" }),
+          node("w2", "running", {
+            parentSessionId: "conductor-1",
+            rootConductorId: "conductor-1",
+          }),
+        ),
+        "orch-1",
+      ),
+    ).toBe(1);
+  });
+
+  it("reaches children still pointed at a pre-promotion client session id", () => {
+    const promoted = node("real-1", "waiting", {
+      role: "conductor",
+      parentSessionId: null,
+      rootConductorId: null,
+    });
+    const nodes = graph(
+      promoted,
+      node("w1", "running", {
+        parentSessionId: "client-1",
+        rootConductorId: "client-1",
+      }),
+    );
+    expect(workingChildCountForSession(nodes, "real-1")).toBe(0);
+    expect(workingChildCountForSession(nodes, "real-1", ["client-1"])).toBe(1);
+  });
+
+  it("resolves the root through an alias when the node is keyed by it", () => {
+    const nodes = graph(
+      node("client-1", "waiting", {
+        role: "conductor",
+        parentSessionId: null,
+        rootConductorId: null,
+      }),
+      node("w1", "running", {
+        parentSessionId: "client-1",
+        rootConductorId: "client-1",
+      }),
+    );
+    expect(
+      workingChildCountForSession(nodes, "real-1", [undefined, "client-1"]),
+    ).toBe(1);
   });
 });
