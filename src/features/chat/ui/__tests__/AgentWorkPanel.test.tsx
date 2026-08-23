@@ -30,6 +30,7 @@ describe("AgentWorkPanel", () => {
       content,
       isActiveWork: true,
       hasFinalAnswer: false,
+      hostsTurnFooters: false,
       thoughtCount: 0,
       toolCount: 0,
       textCount: 2,

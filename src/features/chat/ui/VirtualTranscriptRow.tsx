@@ -380,6 +380,7 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
           animateEntry={false}
           contentOverride={row.messageContent}
           contentContext={row.messageContentContext}
+          subagentLinkage={row.subagentLinkage}
           actionMessageId={row.responseStartMessageId ?? row.messageId}
           isStreaming={isStreaming}
           actionsAlwaysVisible={actionsAlwaysVisible}
