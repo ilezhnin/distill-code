@@ -78,7 +78,7 @@ describe("project chat expansion", () => {
     ).toBeTruthy();
   });
 
-  it("labels the project pin action as Add to Home", async () => {
+  it("offers only edit and archive in the project options menu", async () => {
     const user = userEvent.setup();
     render(
       <SidebarChatDragProvider>
@@ -96,8 +96,14 @@ describe("project chat expansion", () => {
     await user.click(screen.getByRole("button", { name: "Options for Alpha" }));
 
     expect(
-      screen.getByRole("menuitem", { name: "Add to Home" }),
-    ).toBeInTheDocument();
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual(["Edit", "Archive"]);
+    // Pinning a project to Home left the sidebar row menu when the widget
+    // canvas was replaced; SidebarItemMenu only renders the item when a
+    // caller passes onPinToHome, and this caller no longer does.
+    expect(
+      screen.queryByRole("menuitem", { name: "Add to Home" }),
+    ).not.toBeInTheDocument();
   });
 
   it.each([
