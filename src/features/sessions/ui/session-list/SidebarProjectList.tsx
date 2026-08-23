@@ -41,7 +41,6 @@ interface ProjectDropTargetState {
 export function SidebarProjectList({
   projects,
   projectSessionsByProject,
-  pinnedChatProjectIds,
   expandedProjects,
   toggleProject,
   collapsed,
@@ -65,11 +64,7 @@ export function SidebarProjectList({
   onSelectionChange,
   onRangeSelect,
   onArchiveSelected,
-  onPinSelectedToHome,
-  onUnpinSelectedFromHome,
-  isSelectionPinnedToHome,
   onOpenSelectedInWindows,
-  isPinningSelectedToHome = false,
   onMarkSelectedRead,
   onMarkSelectedUnread,
   showChatIcons,
@@ -80,7 +75,6 @@ export function SidebarProjectList({
 }: {
   projects: ProjectInfo[];
   projectSessionsByProject: Record<string, SidebarSessionItem[]>;
-  pinnedChatProjectIds?: ReadonlySet<string>;
   expandedProjects: Record<string, boolean>;
   toggleProject: (projectId: string) => void;
   collapsed: boolean;
@@ -104,11 +98,7 @@ export function SidebarProjectList({
   onSelectionChange?: (sessionId: string, selected: boolean) => void;
   onRangeSelect?: (sessionId: string) => void;
   onArchiveSelected?: () => void;
-  onPinSelectedToHome?: () => void;
-  onUnpinSelectedFromHome?: () => void;
-  isSelectionPinnedToHome?: boolean;
   onOpenSelectedInWindows?: () => void;
-  isPinningSelectedToHome?: boolean;
   onMarkSelectedRead?: () => void;
   onMarkSelectedUnread?: () => void;
   showChatIcons: boolean;
@@ -346,9 +336,7 @@ export function SidebarProjectList({
             projectChats={projectSessionsByProject[project.id] ?? []}
             emptyState={
               (projectSessionsByProject[project.id]?.length ?? 0) === 0
-                ? pinnedChatProjectIds?.has(project.id)
-                  ? "chats-pinned"
-                  : "no-chats"
+                ? "no-chats"
                 : undefined
             }
             isExpanded={expandedProjects[project.id] ?? false}
@@ -373,11 +361,7 @@ export function SidebarProjectList({
             onSelectionChange={onSelectionChange}
             onRangeSelect={onRangeSelect}
             onArchiveSelected={onArchiveSelected}
-            onPinSelectedToHome={onPinSelectedToHome}
-            onUnpinSelectedFromHome={onUnpinSelectedFromHome}
-            isSelectionPinnedToHome={isSelectionPinnedToHome}
             onOpenSelectedInWindows={onOpenSelectedInWindows}
-            isPinningSelectedToHome={isPinningSelectedToHome}
             onMarkSelectedRead={onMarkSelectedRead}
             onMarkSelectedUnread={onMarkSelectedUnread}
             showChatIcons={showChatIcons}

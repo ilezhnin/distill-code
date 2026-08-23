@@ -88,11 +88,7 @@ export function SidebarProjectSection({
   onSelectionChange,
   onRangeSelect,
   onArchiveSelected,
-  onPinSelectedToHome,
-  onUnpinSelectedFromHome,
-  isSelectionPinnedToHome,
   onOpenSelectedInWindows,
-  isPinningSelectedToHome = false,
   onMarkSelectedRead,
   onMarkSelectedUnread,
   showChatIcons,
@@ -127,11 +123,7 @@ export function SidebarProjectSection({
   onSelectionChange?: (sessionId: string, selected: boolean) => void;
   onRangeSelect?: (sessionId: string) => void;
   onArchiveSelected?: () => void;
-  onPinSelectedToHome?: () => void;
-  onUnpinSelectedFromHome?: () => void;
-  isSelectionPinnedToHome?: boolean;
   onOpenSelectedInWindows?: () => void;
-  isPinningSelectedToHome?: boolean;
   onMarkSelectedRead?: () => void;
   onMarkSelectedUnread?: () => void;
   showChatIcons: boolean;
@@ -141,7 +133,7 @@ export function SidebarProjectSection({
   hasMoreSessions?: boolean;
   dropTargetEnabled?: boolean;
   showExpansionChevron?: boolean;
-  emptyState?: "no-chats" | "chats-pinned";
+  emptyState?: "no-chats";
 }) {
   const { t } = useTranslation(["sidebar", "common"]);
   const { activeSessionDropTargetKey, registerSessionDropTarget } =
@@ -432,11 +424,7 @@ export function SidebarProjectSection({
           <div data-sidebar-project-chat-list className="pb-2">
             {emptyState ? (
               <div className="h-7 py-1 pl-[38px] pr-3 text-sm font-normal leading-normal text-muted-foreground">
-                {t(
-                  emptyState === "chats-pinned"
-                    ? "empty.chatsPinned"
-                    : "empty.noChats",
-                )}
+                {t("empty.noChats")}
               </div>
             ) : null}
             {baseVisibleChats.map((session) => {
@@ -471,11 +459,7 @@ export function SidebarProjectSection({
                   onMarkUnread={onMarkChatUnread}
                   onArchive={onArchiveChat}
                   onArchiveSelected={onArchiveSelected}
-                  onPinSelectedToHome={onPinSelectedToHome}
-                  onUnpinSelectedFromHome={onUnpinSelectedFromHome}
-                  isSelectionPinnedToHome={isSelectionPinnedToHome}
                   onOpenSelectedInWindows={onOpenSelectedInWindows}
-                  isPinningSelectedToHome={isPinningSelectedToHome}
                   onMarkSelectedRead={onMarkSelectedRead}
                   onMarkSelectedUnread={onMarkSelectedUnread}
                 />
@@ -515,11 +499,7 @@ export function SidebarProjectSection({
                       onMarkUnread={onMarkChatUnread}
                       onArchive={onArchiveChat}
                       onArchiveSelected={onArchiveSelected}
-                      onPinSelectedToHome={onPinSelectedToHome}
-                      onUnpinSelectedFromHome={onUnpinSelectedFromHome}
-                      isSelectionPinnedToHome={isSelectionPinnedToHome}
                       onOpenSelectedInWindows={onOpenSelectedInWindows}
-                      isPinningSelectedToHome={isPinningSelectedToHome}
                       onMarkSelectedRead={onMarkSelectedRead}
                       onMarkSelectedUnread={onMarkSelectedUnread}
                     />

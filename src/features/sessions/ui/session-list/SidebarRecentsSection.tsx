@@ -46,11 +46,7 @@ export function SidebarRecentsSection({
   onSelectionChange,
   onRangeSelect,
   onArchiveSelected,
-  onPinSelectedToHome,
-  onUnpinSelectedFromHome,
-  isSelectionPinnedToHome,
   onOpenSelectedInWindows,
-  isPinningSelectedToHome = false,
   onMarkSelectedRead,
   onMarkSelectedUnread,
   showChatIcons,
@@ -84,11 +80,7 @@ export function SidebarRecentsSection({
   onSelectionChange?: (sessionId: string, selected: boolean) => void;
   onRangeSelect?: (sessionId: string) => void;
   onArchiveSelected?: () => void;
-  onPinSelectedToHome?: () => void;
-  onUnpinSelectedFromHome?: () => void;
-  isSelectionPinnedToHome?: boolean;
   onOpenSelectedInWindows?: () => void;
-  isPinningSelectedToHome?: boolean;
   onMarkSelectedRead?: () => void;
   onMarkSelectedUnread?: () => void;
   showChatIcons: boolean;
@@ -252,7 +244,6 @@ export function SidebarRecentsSection({
                 branchName={session.branchName}
                 activityAt={session.activityAt}
                 showLeadingIcon={showChatIcons}
-                quickPinMode="never"
                 showTimestamp={showTimestamps}
                 showRenameTooltip={false}
                 isActive={isActive}
@@ -274,11 +265,7 @@ export function SidebarRecentsSection({
                 onMarkUnread={onMarkChatUnread}
                 onArchive={onArchiveChat}
                 onArchiveSelected={onArchiveSelected}
-                onPinSelectedToHome={onPinSelectedToHome}
-                onUnpinSelectedFromHome={onUnpinSelectedFromHome}
-                isSelectionPinnedToHome={isSelectionPinnedToHome}
                 onOpenSelectedInWindows={onOpenSelectedInWindows}
-                isPinningSelectedToHome={isPinningSelectedToHome}
                 onMarkSelectedRead={onMarkSelectedRead}
                 onMarkSelectedUnread={onMarkSelectedUnread}
               />

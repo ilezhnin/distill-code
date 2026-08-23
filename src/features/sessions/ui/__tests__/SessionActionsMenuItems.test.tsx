@@ -29,7 +29,6 @@ describe("SessionActionsMenuContent", () => {
     renderMenu({
       onClose: vi.fn(),
       onMarkUnread: vi.fn(),
-      onTogglePin: vi.fn(),
       onRename: vi.fn(),
       onOpenInWindow: vi.fn(),
       onDuplicate: vi.fn(),
@@ -39,7 +38,6 @@ describe("SessionActionsMenuContent", () => {
 
     expect(menuItemLabels()).toEqual([
       "Mark unread",
-      "Pin chat",
       "Rename",
       "Open in new window",
       "Duplicate",
@@ -54,10 +52,8 @@ describe("SessionActionsMenuContent", () => {
     renderMenu({
       onClose: vi.fn(),
       hasUnread: true,
-      isPinned: true,
       isOpenInWindow: true,
       onMarkRead: vi.fn(),
-      onTogglePin: vi.fn(),
       onRename: vi.fn(),
       onOpenInWindow: vi.fn(),
       onArchive: vi.fn(),
@@ -65,7 +61,6 @@ describe("SessionActionsMenuContent", () => {
 
     expect(menuItemLabels()).toEqual([
       "Mark read",
-      "Unpin chat",
       "Rename",
       "Open window",
       "Copy chat link",

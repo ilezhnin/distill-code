@@ -26,7 +26,6 @@ import {
   isMultiSelectModifier,
   isRangeSelectModifier,
 } from "@/features/sessions/lib/sessionSelection";
-import { usePinToHomeWidget } from "@/features/home/hooks/usePinToHomeWidget";
 import {
   SessionActionsContextMenuContent,
   SessionActionsMenuContent,
@@ -161,7 +160,6 @@ interface SidebarChatRowProps {
   contentPaddingClassName?: string;
   nested?: boolean;
   /** Leading pin-control policy for this list surface. */
-  quickPinMode?: "always" | "hover-only" | "pinned-only" | "never";
   /** Rename guidance is omitted on surfaces where rows move under the pointer. */
   showRenameTooltip?: boolean;
   pointerDragEnabled?: boolean;
@@ -188,11 +186,7 @@ interface SidebarChatRowProps {
   onFork?: (id: string) => void;
   onArchive?: (id: string) => void;
   onArchiveSelected?: () => void;
-  onPinSelectedToHome?: () => void;
-  onUnpinSelectedFromHome?: () => void;
-  isSelectionPinnedToHome?: boolean;
   onOpenSelectedInWindows?: () => void;
-  isPinningSelectedToHome?: boolean;
   onMenuOpenChange?: (open: boolean) => void;
   onMarkRead?: (id: string) => void;
   onMarkUnread?: (id: string) => void;
@@ -217,7 +211,6 @@ export function SidebarChatRow({
   className,
   contentPaddingClassName,
   nested = false,
-  quickPinMode = "always",
   showRenameTooltip = true,
   pointerDragEnabled = true,
   density = "default",
@@ -240,11 +233,7 @@ export function SidebarChatRow({
   onFork,
   onArchive,
   onArchiveSelected,
-  onPinSelectedToHome,
-  onUnpinSelectedFromHome,
-  isSelectionPinnedToHome = false,
   onOpenSelectedInWindows,
-  isPinningSelectedToHome = false,
   onMenuOpenChange,
   onMarkRead,
   onMarkUnread,
@@ -270,12 +259,6 @@ export function SidebarChatRow({
     x: number;
     y: number;
   } | null>(null);
-  const {
-    isPinned: isPinnedToHome,
-    isPinning: isPinningToHome,
-    pinToHome,
-    unpinFromHome,
-  } = usePinToHomeWidget({ kind: "chat", id });
   const inputRef = useRef<HTMLInputElement>(null);
   const pointerDragRef = useRef<{
     pointerId: number;
@@ -315,20 +298,8 @@ export function SidebarChatRow({
   const trimmedBranchName = branchName?.trim() ?? "";
   const hasBranchName = trimmedBranchName.length > 0;
   // Running and ready/unread states share the trailing timestamp slot.
-  // Pin presentation is surface-specific: some lists expose it on hover,
-  // while compact Chat lists show only an already-pinned chat as an unpin
-  // control. Both occupy the same leading slot when it exists.
-  const showQuickPin =
-    !selectionEnabled &&
-    (quickPinMode === "always" ||
-      quickPinMode === "hover-only" ||
-      (quickPinMode === "pinned-only" && isPinnedToHome));
   const needsLeadingSlot =
-    nested ||
-    showLeadingIcon ||
-    isConductor ||
-    hasFlatProjectColumn ||
-    (showQuickPin && isPinnedToHome);
+    nested || showLeadingIcon || isConductor || hasFlatProjectColumn;
   const showAbsoluteLeadingSlot = !hasFlatProjectColumn && needsLeadingSlot;
   const densityClasses = SIDEBAR_CHAT_ROW_DENSITY_CLASSES[density];
   const rowPaddingClass =
@@ -360,7 +331,7 @@ export function SidebarChatRow({
   const rowTooltipLabel = isOpenInWindow
     ? openWindowLabel
     : t("actions.renameHint");
-  const showRowTooltip = isOpenInWindow || (showRenameTooltip && !showQuickPin);
+  const showRowTooltip = isOpenInWindow || showRenameTooltip;
   const projectEditLabel = flatProjectName?.trim()
     ? t("actions.editProject", { name: flatProjectName })
     : t("actions.editProjectFallback");
@@ -438,16 +409,6 @@ export function SidebarChatRow({
       testId="sidebar-flat-chat-project-icon"
     />
   );
-
-  const toggleQuickPin = (event: MouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation();
-    if (isPinningToHome) return;
-    if (isPinnedToHome) {
-      unpinFromHome();
-      return;
-    }
-    void pinToHome();
-  };
 
   const handleRowClick = (event: MouseEvent<HTMLButtonElement>) => {
     if (onRangeSelect && isRangeSelectModifier(event)) {
@@ -696,10 +657,6 @@ export function SidebarChatRow({
     sessionId: id,
     onClose: closeMenus,
     hasUnread,
-    isPinned: isPinnedToHome,
-    isPinning: shouldApplyToSelection
-      ? isPinningSelectedToHome
-      : isPinningToHome,
     isOpenInWindow,
     selectionCount: shouldApplyToSelection ? selectionCount : 0,
     selectionActionsDisabled,
@@ -709,18 +666,6 @@ export function SidebarChatRow({
     onMarkUnread: shouldApplyToSelection
       ? onMarkSelectedUnread
       : () => onMarkUnread?.(id),
-    onTogglePin: shouldApplyToSelection
-      ? isSelectionPinnedToHome
-        ? onUnpinSelectedFromHome
-        : onPinSelectedToHome
-      : () => {
-          if (isPinnedToHome) {
-            unpinFromHome();
-            return;
-          }
-          void pinToHome();
-        },
-    isSelectionPinned: isSelectionPinnedToHome,
     onRename: startRename,
     onOpenInWindow: isMultiWindowEnabled
       ? isOpenInWindow
@@ -835,18 +780,6 @@ export function SidebarChatRow({
               className={absoluteLeadingSlotClass}
               activeLabel={t("status.chatActive")}
               unreadLabel={t("status.unreadMessages")}
-              quickPin={
-                showQuickPin
-                  ? {
-                      pinned: isPinnedToHome,
-                      disabled: isPinningToHome,
-                      persistWhenPinned: quickPinMode !== "hover-only",
-                      pinLabel: t("common:actions.pinChat"),
-                      unpinLabel: t("common:actions.unpinChat"),
-                      onClick: toggleQuickPin,
-                    }
-                  : undefined
-              }
               testId={leadingIconTestId}
             >
               {showLeadingIcon || isConductor
@@ -863,18 +796,6 @@ export function SidebarChatRow({
                   "rounded-sm text-muted-foreground/70",
                   flatProjectIconSlotClass,
                 )}
-                quickPin={
-                  showQuickPin
-                    ? {
-                        pinned: isPinnedToHome,
-                        disabled: isPinningToHome,
-                        persistWhenPinned: quickPinMode !== "hover-only",
-                        pinLabel: t("common:actions.pinChat"),
-                        unpinLabel: t("common:actions.unpinChat"),
-                        onClick: toggleQuickPin,
-                      }
-                    : undefined
-                }
               >
                 <span aria-hidden="true" data-sidebar-flat-project-icon>
                   {flatProjectGlyph}

@@ -140,10 +140,6 @@ describe("SidebarFlatChatsSection", () => {
         flatChatGroups={flatChatGroups}
         hasFlatChatOverflow={false}
         groupChatsByProject
-        pinnedShowChatIcons
-        onPinnedShowChatIconsChange={vi.fn()}
-        pinnedShowTimestamps={false}
-        onPinnedShowTimestampsChange={vi.fn()}
         projectShowChatIcons={false}
         onProjectShowChatIconsChange={onShowChatIconsChange}
         projectShowTimestamps={false}

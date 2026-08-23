@@ -108,7 +108,6 @@ describe("project chat expansion", () => {
 
   it.each([
     ["no-chats", "No chats"],
-    ["chats-pinned", "Chats are pinned"],
   ] as const)("shows the %s placeholder for an expanded empty project", (emptyState, label) => {
     render(
       <SidebarChatDragProvider>
