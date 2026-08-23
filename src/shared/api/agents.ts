@@ -35,6 +35,7 @@ const PORTABLE_SPROUT_FRONTMATTER_KEYS = new Set([
   "display_name",
   "description",
   "model",
+  "model_ranking",
   "avatar",
   "good_for",
   "vibes",
@@ -65,6 +66,7 @@ export type AgentSourceProperties = {
   provider?: string | null;
   modelProviderId?: string | null;
   model?: string | null;
+  model_ranking?: string | null;
   avatar?: string | null;
   draft?: boolean;
   builderSessionId?: string;
@@ -143,6 +145,7 @@ function personaProperties(
     properties.modelProviderId = request.modelProviderId;
   }
   if (request.model) properties.model = request.model;
+  if (request.modelRanking) properties.model_ranking = request.modelRanking;
   if (request.goodFor) properties.good_for = request.goodFor;
   if (request.vibes) properties.vibes = request.vibes;
 
@@ -156,7 +159,7 @@ function applyOptionalProperty(
   properties: AgentSourceProperties,
   key: keyof Pick<
     AgentSourceProperties,
-    "provider" | "modelProviderId" | "model" | "avatar"
+    "provider" | "modelProviderId" | "model" | "model_ranking" | "avatar"
   >,
   value: string | null | undefined,
 ): void {
@@ -181,6 +184,7 @@ function mergedPersonaProperties(
   applyOptionalProperty(properties, "provider", request.provider);
   applyOptionalProperty(properties, "modelProviderId", request.modelProviderId);
   applyOptionalProperty(properties, "model", request.model);
+  applyOptionalProperty(properties, "model_ranking", request.modelRanking);
   applyOptionalProperty(
     properties,
     "avatar",
@@ -698,6 +702,7 @@ export function agentSourceToPersona(source: AgentSourceEntry): Persona {
     provider: propertyToString(source.properties?.provider),
     modelProviderId: propertyToString(source.properties?.modelProviderId),
     model: propertyToString(source.properties?.model),
+    modelRanking: propertyToString(source.properties?.model_ranking),
     isBuiltin: !writable,
     writable,
     sourceDescription: source.description,

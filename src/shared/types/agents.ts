@@ -16,6 +16,8 @@ export interface Persona {
   provider?: ProviderType;
   modelProviderId?: string;
   model?: string;
+  /** Ranked model preference class id; overrides the single `model`. */
+  modelRanking?: string;
   isBuiltin: boolean;
   writable: boolean;
   sourceDescription?: string;
@@ -37,6 +39,7 @@ export interface CreatePersonaRequest {
   provider?: ProviderType;
   modelProviderId?: string;
   model?: string;
+  modelRanking?: string;
 }
 
 export interface UpdatePersonaRequest {
@@ -47,6 +50,7 @@ export interface UpdatePersonaRequest {
   provider?: ProviderType | null;
   modelProviderId?: string | null;
   model?: string | null;
+  modelRanking?: string | null;
 }
 
 // Agent types
