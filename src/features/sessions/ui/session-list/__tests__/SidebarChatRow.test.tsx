@@ -7,6 +7,8 @@ import {
   useHomeWidgetStore,
 } from "@/features/home/stores/homeWidgetStore";
 import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import type { SessionNode } from "@/features/conductor/types";
 import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import { formatSidebarChatTimestamp, SidebarChatRow } from "../SidebarChatRow";
 import {
@@ -65,6 +67,10 @@ describe("SidebarChatRow", () => {
     Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
     resetHomeWidgetStoreForTests();
     localStorage.clear();
+    // The conductor graph store hydrates from localStorage at module load and
+    // is never reset by `localStorage.clear()`; without this any test that
+    // registers nodes would leak into every later case in this file.
+    useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
     useSessionWindowStore.getState().setSnapshot([]);
     vi.mocked(getSessionWindowSupport).mockResolvedValue({
       supported: true,
@@ -73,6 +79,7 @@ describe("SidebarChatRow", () => {
   });
 
   afterEach(() => {
+    useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
     if (originalClipboardDescriptor) {
       Object.defineProperty(
         navigator,
@@ -302,6 +309,209 @@ describe("SidebarChatRow", () => {
     expect(
       container.querySelector("[data-sidebar-chat-ready-status]"),
     ).toBeInTheDocument();
+  });
+
+  describe("graph children still working", () => {
+    function graphNode(
+      sessionId: string,
+      overrides: Partial<SessionNode> = {},
+    ): SessionNode {
+      return {
+        sessionId,
+        projectId: "project-1",
+        role: "worker",
+        managedBy: "ui",
+        parentSessionId: "session-1",
+        rootConductorId: "session-1",
+        runId: null,
+        harnessId: "goose",
+        displayName: sessionId,
+        status: "running",
+        ...overrides,
+      };
+    }
+
+    function registerGraph(...nodes: SessionNode[]): void {
+      useConductorGraphStore.setState({
+        nodesById: Object.fromEntries(
+          nodes.map((node) => [node.sessionId, node]),
+        ),
+        reportsByRunId: {},
+      });
+    }
+
+    const conductorNode = (sessionId = "session-1") =>
+      graphNode(sessionId, {
+        role: "conductor",
+        parentSessionId: null,
+        rootConductorId: null,
+        status: "waiting",
+      });
+
+    it("shows a distinct ring with a counted label when the chat is idle", () => {
+      registerGraph(
+        conductorNode(),
+        graphNode("worker-1", { status: "running" }),
+        graphNode("worker-2", { status: "starting" }),
+        graphNode("worker-3", { status: "completed" }),
+      );
+
+      const { container } = render(
+        <SidebarChatRow
+          id="session-1"
+          title="Delegating Chat"
+          activityAt={new Date(Date.now() - 5 * 60_000).toISOString()}
+          isActive={false}
+        />,
+      );
+
+      expect(
+        screen.getByLabelText("2 agents still working"),
+      ).toBeInTheDocument();
+      const ring = container.querySelector(
+        '[data-slot="sidebar-child-work-dot"]',
+      );
+      expect(ring).toBeInTheDocument();
+      // Distinct from both the active pulse dot and the unread dot.
+      expect(ring).toHaveClass("border-info");
+      expect(ring).toHaveClass("bg-transparent");
+      expect(ring).not.toHaveClass("bg-success");
+      expect(
+        container.querySelector('[data-slot="active-chat-pulse-dot"]'),
+      ).not.toBeInTheDocument();
+      expect(
+        container.querySelector("[data-sidebar-chat-ready-status]"),
+      ).not.toBeInTheDocument();
+      // Preempts the timestamp slot.
+      expect(
+        container.querySelector("[data-sidebar-chat-timestamp]"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("uses the singular label for one working child", () => {
+      registerGraph(conductorNode(), graphNode("worker-1"));
+
+      render(
+        <SidebarChatRow id="session-1" title="One Agent" isActive={false} />,
+      );
+
+      expect(
+        screen.getByLabelText("1 agent still working"),
+      ).toBeInTheDocument();
+    });
+
+    it("lets the row's own running state win over working children", () => {
+      registerGraph(conductorNode(), graphNode("worker-1"));
+
+      const { container } = render(
+        <SidebarChatRow
+          id="session-1"
+          title="Busy Conductor"
+          isActive={false}
+          isRunning
+        />,
+      );
+
+      expect(screen.getByLabelText(/chat active/i)).toBeInTheDocument();
+      expect(
+        container.querySelector("[data-sidebar-chat-children-status]"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("outranks the unread dot", () => {
+      registerGraph(conductorNode(), graphNode("worker-1"));
+
+      const { container } = render(
+        <SidebarChatRow
+          id="session-1"
+          title="Unread Conductor"
+          isActive={false}
+          hasUnread
+        />,
+      );
+
+      expect(
+        container.querySelector("[data-sidebar-chat-children-status]"),
+      ).toBeInTheDocument();
+      expect(
+        container.querySelector("[data-sidebar-chat-ready-status]"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("falls back to the timestamp once every child is terminal", () => {
+      registerGraph(
+        conductorNode(),
+        graphNode("worker-1", { status: "completed" }),
+        graphNode("worker-2", { status: "failed" }),
+      );
+
+      const { container } = render(
+        <SidebarChatRow
+          id="session-1"
+          title="Finished Chat"
+          activityAt={new Date(Date.now() - 5 * 60_000).toISOString()}
+          isActive={false}
+        />,
+      );
+
+      expect(
+        container.querySelector("[data-sidebar-chat-children-status]"),
+      ).not.toBeInTheDocument();
+      expect(
+        container.querySelector("[data-sidebar-chat-timestamp]"),
+      ).toBeInTheDocument();
+    });
+
+    it("ignores children that belong to another chat", () => {
+      registerGraph(
+        conductorNode(),
+        graphNode("worker-1", {
+          parentSessionId: "session-2",
+          rootConductorId: "session-2",
+        }),
+      );
+
+      const { container } = render(
+        <SidebarChatRow id="session-1" title="Idle Chat" isActive={false} />,
+      );
+
+      expect(
+        container.querySelector("[data-sidebar-chat-children-status]"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("reaches children still pointed at the pre-promotion client id", () => {
+      registerGraph(
+        conductorNode("session-1"),
+        graphNode("worker-1", {
+          parentSessionId: "client-1",
+          rootConductorId: "client-1",
+        }),
+      );
+
+      const { container, rerender } = render(
+        <SidebarChatRow
+          id="session-1"
+          title="Promoted Chat"
+          isActive={false}
+        />,
+      );
+      expect(
+        container.querySelector("[data-sidebar-chat-children-status]"),
+      ).not.toBeInTheDocument();
+
+      rerender(
+        <SidebarChatRow
+          id="session-1"
+          clientSessionId="client-1"
+          title="Promoted Chat"
+          isActive={false}
+        />,
+      );
+      expect(
+        container.querySelector("[data-sidebar-chat-children-status]"),
+      ).toBeInTheDocument();
+    });
   });
 
   it("shows a chat menu icon for idle chats without an activity indicator", () => {

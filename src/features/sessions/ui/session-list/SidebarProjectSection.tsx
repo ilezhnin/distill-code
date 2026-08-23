@@ -49,6 +49,8 @@ const PROJECT_CHAT_DISCLOSURE_CLASS = cn(
 
 export interface SidebarSessionItem {
   id: string;
+  /** Pre-promotion id, when the chat still has one; see `SidebarChatRow`. */
+  clientSessionId?: string;
   title: string;
   branchName?: string;
   activityAt?: string | null;
@@ -447,6 +449,7 @@ export function SidebarProjectSection({
                   branchName={session.branchName}
                   activityAt={session.activityAt}
                   isActive={isActive}
+                  clientSessionId={session.clientSessionId}
                   isRunning={session.isRunning ?? false}
                   hasUnread={session.hasUnread ?? false}
                   selected={selectedSessionIds?.has(session.id) ?? false}
@@ -490,6 +493,7 @@ export function SidebarProjectSection({
                       branchName={session.branchName}
                       activityAt={session.activityAt}
                       isActive={isActive}
+                      clientSessionId={session.clientSessionId}
                       isRunning={session.isRunning ?? false}
                       hasUnread={session.hasUnread ?? false}
                       selected={selectedSessionIds?.has(session.id) ?? false}

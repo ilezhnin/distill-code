@@ -80,6 +80,8 @@
   },
   "status": {
     "chatActive": "Chat active",
+    "childrenWorking_one": "1 agent still working",
+    "childrenWorking_other": "{{count}} agents still working",
     "pinnedChat": "Pinned chat",
     "unreadMessages": "Unread messages"
   },
