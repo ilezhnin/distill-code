@@ -1,5 +1,5 @@
 import { AnimatePresence } from "motion/react";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import {
   IconArrowUpRight,
@@ -41,8 +41,8 @@ const INERT_CONDUCTOR_TRANSCRIPT: ConductorTranscriptContextValue = {
   enabled: false,
   children: [],
   reportsByRunId: {},
-  messages: [],
   brigadeNodesByMessageId: new Map(),
+  wavePlanStepsByMessageId: new Map(),
 };
 
 interface ChildChatPanelProps {
@@ -307,9 +307,28 @@ function ChildChatTranscript({ childSessionId }: { childSessionId: string }) {
     (s) => s.sessionStateById[childSessionId]?.streamingMessageId ?? null,
   );
 
+  // Re-hydration, not a poll. The store's message cache holds ten sessions and
+  // `canEvictSessionMessages` treats a settled, non-streaming session as
+  // evictable — which is exactly a finished worker left open in a tab. Loading
+  // once on mount therefore left the panel permanently blank after an eviction,
+  // because `childSessionId` never changed.
+  //
+  // So the load is armed once, disarmed by the request it makes, and re-armed
+  // only when a transcript we actually had is gone again. A genuinely empty
+  // child transcript asks once and then stays quiet.
+  const hydrationRef = useRef({ sessionId: childSessionId, armed: true });
   useEffect(() => {
+    if (hydrationRef.current.sessionId !== childSessionId) {
+      hydrationRef.current = { sessionId: childSessionId, armed: true };
+    }
+    if (messages.length > 0) {
+      hydrationRef.current.armed = true;
+      return;
+    }
+    if (isLoading || !hydrationRef.current.armed) return;
+    hydrationRef.current.armed = false;
     void loadSessionMessages(childSessionId);
-  }, [childSessionId]);
+  }, [childSessionId, isLoading, messages]);
 
   const placeholder = useMemo(
     () => (

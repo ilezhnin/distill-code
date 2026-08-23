@@ -29,10 +29,10 @@ function task(id: string, description: string): MessageContent[] {
   ];
 }
 
-function project(messages: readonly Message[]) {
+function project(messages: readonly Message[], sessionId = "session-1") {
   const cache = createTranscriptProjectionCache();
   return cache.update({
-    sessionId: `session-${Math.random()}`,
+    sessionId,
     sessionEpoch: 1,
     messages,
     streamingMessageId: null,
@@ -280,5 +280,61 @@ describe("cross-turn Goose delegate → load linkage", () => {
     // Row descriptors must not churn just because the projection re-ran.
     expect(firstRow?.subagentLinkage).toBeDefined();
     expect(secondRow?.subagentLinkage).toBe(firstRow?.subagentLinkage);
+  });
+
+  it("does not let a second transcript evict the first one's linkage", () => {
+    // Since the child-chat panel shipped, a host conversation and a child
+    // transcript are projected side by side and interleave on every streamed
+    // token. A single shared memo made each projection replace the other's
+    // entry, so both arrays churned on every token — the exact churn the memo
+    // exists to prevent.
+    const host: Message[] = [
+      { id: "host-1", role: "assistant", created: 1, content: DELEGATE },
+      {
+        id: "host-2",
+        role: "assistant",
+        created: 2,
+        content: loadTurn("20260808_12"),
+      },
+    ];
+    const child: Message[] = [
+      {
+        id: "child-1",
+        role: "assistant",
+        created: 1,
+        content: [
+          {
+            type: "toolRequest",
+            id: "delegate-2",
+            name: "delegate",
+            toolName: "delegate",
+            arguments: { source: "Bohr", instructions: "Count the tests" },
+            status: "completed",
+          },
+          {
+            type: "toolResponse",
+            id: "delegate-2",
+            name: "delegate",
+            result: "Started background task 20260808_99",
+            isError: false,
+          },
+        ],
+      },
+      {
+        id: "child-2",
+        role: "assistant",
+        created: 2,
+        content: loadTurn("20260808_99"),
+      },
+    ];
+
+    const hostFirst = project(host, "host-session");
+    project(child, "child-session");
+    const hostSecond = project(host, "host-session");
+
+    const before = hostFirst.rows.find((row) => row.subagentLinkage);
+    const after = hostSecond.rows.find((row) => row.subagentLinkage);
+    expect(before?.subagentLinkage).toBeDefined();
+    expect(after?.subagentLinkage).toBe(before?.subagentLinkage);
   });
 });
