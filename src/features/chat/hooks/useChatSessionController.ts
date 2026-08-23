@@ -1371,7 +1371,19 @@ export function useChatSessionController({
 
   const handleReasoningEffortChange = useCallback(
     (value: string) => {
-      if (!sessionId || !session?.reasoningEffort) {
+      if (!sessionId) {
+        return;
+      }
+      if (!session?.reasoningEffort) {
+        // The control can be driven by a synthesized ladder (the static Grok
+        // set) while the session advertises no config of its own. The write
+        // addresses the session's config id, so there is nothing to send to —
+        // say so instead of returning into silence, which reads as a dead
+        // slider from the outside.
+        console.warn(
+          "[reasoning-effort] session advertises no writable config; selection ignored",
+          { sessionId, value },
+        );
         return;
       }
       const current = session.reasoningEffort;

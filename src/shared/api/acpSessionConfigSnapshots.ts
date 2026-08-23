@@ -211,6 +211,23 @@ function getModelConfigSnapshot(
   return { modelId, modelName };
 }
 
+/**
+ * Ids agents use for the reasoning-effort knob when they don't also tag it with
+ * the `thought_level` category. Goose's own option is `thinking_effort` and the
+ * Claude bridge tags its `effort` properly, but a bridge is free to ship an
+ * untagged option under its own name — and an effort control that the snapshot
+ * layer fails to recognise doesn't degrade, it disappears.
+ */
+const REASONING_EFFORT_OPTION_IDS: ReadonlySet<string> = new Set([
+  "thinking_effort",
+  "reasoning_effort",
+  "reasoning",
+  "reasoning_level",
+  "effort",
+  "effort_level",
+  "thought_level",
+]);
+
 function getReasoningEffortConfigSnapshot(
   source: unknown,
 ): AcpReasoningEffortConfigSnapshot | null {
@@ -218,7 +235,9 @@ function getReasoningEffortConfigSnapshot(
     source,
     (candidate) =>
       candidate.category === "thought_level" ||
-      candidate.id === "thinking_effort",
+      REASONING_EFFORT_OPTION_IDS.has(
+        (getStringProperty(candidate, "id") ?? "").trim().toLowerCase(),
+      ),
   );
   if (!option) {
     return null;
