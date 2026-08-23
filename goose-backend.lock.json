@@ -1,7 +1,9 @@
 {
-  "repo": "https://github.com/aaif-goose/goose.git",
-  "ref": "main",
-  "commit": "063694cf769269c1f151416605687991fdcbc496",
+  "repo": "https://github.com/ilezhnin/distill-goose.git",
+  "ref": "distill/main",
+  "commit": "153f4e2f960c2da3897cd58ebd0a8e5ac470d7b8",
   "package": "goose-cli",
-  "bin": "goose"
+  "bin": "goose",
+  "local": true,
+  "localRepo": "../distill-goose"
 }
