@@ -11,9 +11,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import type { ChatSessionReasoningEffortConfig } from "../stores/chatSessionStore";
 import {
   hasSelectableReasoningEffort,
+  isTopTierEffortId,
   selectedReasoningEffortLabel,
   toSentenceCaseLabel,
-  ULTRACODE_OPTION_ID,
 } from "../lib/effectiveReasoningEffort";
 
 interface ReasoningEffortPillProps {
@@ -59,9 +59,9 @@ export function ReasoningEffortPill({
     (option) => option.id === config.currentValue,
   );
   const currentLabel = selectedReasoningEffortLabel(config);
-  // Ultracode is the reference widget's violet top stop; the theme has no
+  // The top-tier stop is the reference widget's violet one; the theme has no
   // brand accent token, so the tint is explicit for both schemes.
-  const ultracodeSelected = config.currentValue === ULTRACODE_OPTION_ID;
+  const ultracodeSelected = isTopTierEffortId(config.currentValue);
   // How far the fill runs, as a share of the distance between the first and
   // last stop centres. A selection the config doesn't list leaves the rail
   // empty rather than guessing a position for it.
@@ -204,7 +204,7 @@ export function ReasoningEffortPill({
                         ? cn("effort-knob h-4 w-2", "bg-foreground")
                         : cn(
                             "effort-stop-dot size-1.5",
-                            option.id === ULTRACODE_OPTION_ID
+                            isTopTierEffortId(option.id)
                               ? "bg-violet-500/60 group-hover:bg-violet-500 dark:bg-violet-400/60 dark:group-hover:bg-violet-400"
                               : "bg-muted-foreground/50 group-hover:bg-muted-foreground",
                           ),
