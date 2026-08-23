@@ -182,6 +182,7 @@ export function ReasoningEffortPill({
                 option.name ?? option.id,
               );
               return (
+                // biome-ignore lint/a11y/useSemanticElements: deliberate ARIA radio pattern — an <input type="radio"> cannot host this icon-only roving-tabindex segmented control, and the wrapper already carries role="radiogroup"
                 <button
                   key={option.id}
                   type="button"

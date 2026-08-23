@@ -286,7 +286,7 @@ export const designSystemComponentManifest = [
     name: "Avatar Media",
     source: "src/shared/ui/avatar-media.tsx",
     description: "",
-    exports: ["AvatarMedia"],
+    exports: ["avatarImageSrc", "AvatarMedia"],
     slots: [],
     cva: [],
     tokenClasses: [],
@@ -297,7 +297,7 @@ export const designSystemComponentManifest = [
     name: "Avatar Visual",
     source: "src/shared/ui/avatar-visual.tsx",
     description:
-      "Renders every supported avatar representation through one surface.\n\nSmall surfaces prefer a static image when one exists. User-generated and\nlegacy custom avatars may only have cached image or video media, so they\nfall back to AvatarMedia instead of disappearing when no artifacts-catalog\nimage is available.",
+      "Renders every supported avatar representation through one still-image\nsurface. Catalog videos keep their poster when that is all Distill has.",
     exports: ["AvatarVisual"],
     slots: [],
     cva: [],

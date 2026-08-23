@@ -24,6 +24,13 @@ export interface DistillLoaderMarkProps
   size?: number;
   /** Kept for API compatibility with the previous SVG loaders. */
   color?: string;
+  /**
+   * Kept for API compatibility with the previous SVG loaders: a `span` has no
+   * width/height attributes, so they are declared here and consumed by
+   * `boxSize` rather than forwarded to the element.
+   */
+  width?: string | number;
+  height?: string | number;
   durationMs?: number;
 }
 
