@@ -13,15 +13,15 @@
 import { sendPromptToExistingSessionInBackground } from "@/features/berdctl/commands/runtime/sessionSend";
 
 import { withWavePhase } from "./waveEngine";
-import { WAVE_REPLAN_REQUEST_PROMPT } from "./wavePrompts";
+import { buildWaveReplanRequest } from "./wavePrompts";
 import { runWaveEngineTick } from "./waveRunner";
 import { updateWaveEngineState, withWave } from "./waveStore";
 
 /** Asks a conductor session for a new wave plan. Fire and forget. */
-export function requestWaveReplan(sessionId: string): void {
+export function requestWaveReplan(sessionId: string, detail?: string): void {
   void sendPromptToExistingSessionInBackground(
     sessionId,
-    WAVE_REPLAN_REQUEST_PROMPT,
+    buildWaveReplanRequest(detail),
   ).catch((error: unknown) => {
     console.error("Failed to ask the conductor for a new plan:", error);
   });
