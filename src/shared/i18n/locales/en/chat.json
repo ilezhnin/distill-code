@@ -485,6 +485,29 @@
       "failed": "failed",
       "cancelled": "cancelled",
       "stopped": "stopped"
+    },
+    "wave": {
+      "invalidTitle": "The conductor's plan could not be run, so nothing was started.",
+      "retry": "Ask for a new plan",
+      "spawnFailed": "Step {{step}} of this wave could not be started.",
+      "reason": {
+        "multipleFences": "The message contained more than one plan block, so there is no single plan to run.",
+        "unterminatedFence": "The plan block was opened but never closed.",
+        "malformedJson": "The plan block is not valid JSON.",
+        "notAnObject": "The plan block must hold a JSON object with a \"steps\" array.",
+        "stepsNotArray": "The plan has no \"steps\" array.",
+        "stepsEmpty": "The plan has no steps in it.",
+        "tooManySteps": "The plan asks for more steps than a wave allows.",
+        "stepNotAnObject": "Step {{step}} is not a JSON object.",
+        "roleNotAString": "Step {{step}} does not name a role.",
+        "roleUnknown": "Step {{step}} names a role that is not in the catalog.",
+        "roleNotWorkerLayer": "Step {{step}} names a role that cannot do work in a wave.",
+        "subtaskNotAString": "Step {{step}} does not carry a subtask.",
+        "subtaskEmpty": "Step {{step}} has an empty subtask.",
+        "accessInvalid": "Step {{step}} has an unsupported \"access\" value.",
+        "modelNotAString": "Step {{step}} has a \"model\" field that is not a model name.",
+        "stepModelUnsupported": "Step {{step}} asks to run on a specific model. Per-step models are not supported yet, and the whole plan was refused rather than quietly running the step on another model."
+      }
     }
   },
   "skeleton": {

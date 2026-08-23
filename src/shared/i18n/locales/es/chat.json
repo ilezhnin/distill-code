@@ -484,6 +484,29 @@
       "failed": "falló",
       "cancelled": "cancelado",
       "stopped": "detenido"
+    },
+    "wave": {
+      "invalidTitle": "No se pudo ejecutar el plan del conductor, así que no se inició nada.",
+      "retry": "Pedir un plan nuevo",
+      "spawnFailed": "No se pudo iniciar el paso {{step}} de esta ola.",
+      "reason": {
+        "multipleFences": "El mensaje contenía más de un bloque de plan, así que no hay un único plan que ejecutar.",
+        "unterminatedFence": "El bloque del plan se abrió pero nunca se cerró.",
+        "malformedJson": "El bloque del plan no es JSON válido.",
+        "notAnObject": "El bloque del plan debe contener un objeto JSON con un arreglo \"steps\".",
+        "stepsNotArray": "El plan no tiene un arreglo \"steps\".",
+        "stepsEmpty": "El plan no tiene ningún paso.",
+        "tooManySteps": "El plan pide más pasos de los que permite una ola.",
+        "stepNotAnObject": "El paso {{step}} no es un objeto JSON.",
+        "roleNotAString": "El paso {{step}} no indica ningún rol.",
+        "roleUnknown": "El paso {{step}} indica un rol que no está en el catálogo.",
+        "roleNotWorkerLayer": "El paso {{step}} indica un rol que no puede ejecutar trabajo en una ola.",
+        "subtaskNotAString": "El paso {{step}} no lleva ninguna subtarea.",
+        "subtaskEmpty": "El paso {{step}} tiene la subtarea vacía.",
+        "accessInvalid": "El paso {{step}} tiene un valor de \"access\" no admitido.",
+        "modelNotAString": "El paso {{step}} tiene un campo \"model\" que no es un nombre de modelo.",
+        "stepModelUnsupported": "El paso {{step}} pide ejecutarse en un modelo concreto. Todavía no se admiten modelos por paso, y se rechazó el plan entero en lugar de ejecutar el paso en otro modelo sin avisar."
+      }
     }
   },
   "skeleton": {

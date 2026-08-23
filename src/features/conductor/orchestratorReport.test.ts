@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   parseStructuredReport,
   stripReportFence,
-  wrapOrchestratorCoordinationPrompt,
   wrapOrchestratorTaskPrompt,
 } from "./orchestratorReport";
 
@@ -11,13 +10,6 @@ describe("orchestratorReport", () => {
     expect(wrapOrchestratorTaskPrompt("Fix login")).toContain(
       "```distill-report",
     );
-  });
-
-  it("tells a coordinating orchestrator not to implement the worker's task", () => {
-    const prompt = wrapOrchestratorCoordinationPrompt("Fix login", "Brigade");
-    expect(prompt).toContain("Brigade");
-    expect(prompt).toContain("Do not implement");
-    expect(prompt).toContain("Fix login");
   });
 
   it("parses a fenced structured report", () => {
