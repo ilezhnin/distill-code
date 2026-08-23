@@ -338,7 +338,7 @@ export async function configureSession(
 export function applySessionConfigOption(
   sessionId: string,
   configId: string,
-  value: string,
+  value: string | boolean,
   context: Omit<AcpSessionConfigSnapshotContext, "origin"> = {},
 ): Promise<AcpSessionConfigSnapshots> {
   return serializeSessionMutation(sessionId, () =>

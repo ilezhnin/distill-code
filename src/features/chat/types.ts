@@ -8,7 +8,10 @@ import type {
   MessageChip,
   MessageMetadata,
 } from "@/shared/types/messages";
-import type { ChatSessionReasoningEffortConfig } from "./stores/chatSessionStore";
+import type {
+  ChatSessionFastModeConfig,
+  ChatSessionReasoningEffortConfig,
+} from "./stores/chatSessionStore";
 import type { QueuedMessagePayload } from "./stores/chatStore";
 import type { SessionExecutionTarget } from "./lib/sessionExecutionTarget";
 
@@ -173,6 +176,16 @@ export interface ChatInputProjectPicker {
 export interface ChatInputReasoningEffort {
   config?: ChatSessionReasoningEffortConfig;
   onChange?: (value: string) => void;
+  /** Ultracode arm state for Claude Code sessions (synthetic top stop). */
+  ultracode?: {
+    armed: boolean;
+    setArmed: (armed: boolean) => void;
+  };
+}
+
+export interface ChatInputFastMode {
+  config?: ChatSessionFastModeConfig;
+  onChange?: (enabled: boolean) => void;
 }
 
 export interface ChatInputContextUsage {
@@ -217,6 +230,7 @@ export interface ChatInputProps {
   personaPicker?: ChatInputPersonaPicker;
   agentModelPicker?: ChatInputAgentModelPicker;
   reasoningEffort?: ChatInputReasoningEffort;
+  fastMode?: ChatInputFastMode;
   projectPicker?: ChatInputProjectPicker;
   contextUsage?: ChatInputContextUsage;
   controls?: ChatInputControls;

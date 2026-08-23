@@ -23,6 +23,7 @@ use crate::services::{
     kgoose::{KgooseContext, KgooseProbeResult},
     managed_acp_tools, managed_node,
     path_env::{self, build_extended_path_with_prepended_dirs},
+    shell_env,
 };
 
 use crate::commands::runtime_config::{RuntimeConfig, RuntimeConfigState, RuntimeDoctorConfig};
@@ -1189,6 +1190,7 @@ async fn execute_local_fix(
 
     let mut process = tokio::process::Command::new(shell);
     process.arg(flag).arg(command).envs(env_vars);
+    shell_env::remove_inherited_launcher_env(process.as_std_mut());
     crate::services::process::apply_no_window_async(&mut process);
     let output = process
         .output()

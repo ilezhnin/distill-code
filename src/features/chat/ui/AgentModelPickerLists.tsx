@@ -7,14 +7,22 @@ import {
   useRef,
   useState,
 } from "react";
-import { IconCheck, IconDots, IconSearch, IconX } from "@tabler/icons-react";
+import {
+  IconCheck,
+  IconChevronRight,
+  IconDots,
+  IconSearch,
+  IconX,
+} from "@tabler/icons-react";
 import { SearchBar } from "@/shared/ui/SearchBar";
 import { Button } from "@/shared/ui/button";
 import { ScrollArea } from "@/shared/ui/scroll-area";
+import { cn } from "@/shared/lib/cn";
 import {
   formatProviderLabel,
   getProviderIcon,
 } from "@/shared/ui/icons/ProviderIcons";
+import { groupModelsByGeneration } from "../lib/modelGenerations";
 import type { ModelOption } from "../types";
 import { PickerItem } from "./AgentModelPickerItem";
 
@@ -124,6 +132,7 @@ export const RecommendedModelList = forwardRef<
 ) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [showAll, setShowAll] = useState(false);
+  const [legacyExpanded, setLegacyExpanded] = useState(false);
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const searchButtonRef = useRef<HTMLButtonElement>(null);
@@ -141,6 +150,7 @@ export const RecommendedModelList = forwardRef<
     setQuery("");
     setSearchOpen(false);
     setShowAll(false);
+    setLegacyExpanded(false);
     resetScroll();
   }, [resetScroll]);
   const recommended = useMemo(() => {
@@ -184,9 +194,32 @@ export const RecommendedModelList = forwardRef<
     };
   }, [onBrowseChange]);
 
+  // Superseded generations collapse behind an "Older models" disclosure in
+  // the recommended view. A selected legacy model stays visible in the main
+  // list so the current choice is never hidden. Search and "View more" show
+  // the flat list, so legacy models stay findable there.
+  const generationGroups = useMemo(() => {
+    const groups = groupModelsByGeneration(recommended);
+    if (groups.legacy.length === 0) {
+      return groups;
+    }
+    const selectedLegacy = groups.legacy.filter((model) =>
+      modelMatchesSelection(model, currentModelId, currentModelProviderId),
+    );
+    if (selectedLegacy.length === 0) {
+      return groups;
+    }
+    return {
+      current: [...groups.current, ...selectedLegacy],
+      legacy: groups.legacy.filter(
+        (model) => !selectedLegacy.includes(model),
+      ),
+    };
+  }, [recommended, currentModelId, currentModelProviderId]);
+
   const visibleModels = useMemo(() => {
     if (!searchOpen && !showAll) {
-      return recommended;
+      return generationGroups.current;
     }
     const normalizedQuery = query.trim().toLowerCase();
     if (!normalizedQuery) {
@@ -200,11 +233,28 @@ export const RecommendedModelList = forwardRef<
         model.providerName?.toLowerCase().includes(normalizedQuery) ||
         model.providerId?.toLowerCase().includes(normalizedQuery),
     );
-  }, [models, query, recommended, searchOpen, showAll]);
+  }, [generationGroups, models, query, searchOpen, showAll]);
 
   const sorted = useMemo(
     () => sortModels(visibleModels, currentModelId, currentModelProviderId),
     [visibleModels, currentModelId, currentModelProviderId],
+  );
+  const sortedLegacy = useMemo(
+    () =>
+      searchOpen || showAll
+        ? []
+        : sortModels(
+            generationGroups.legacy,
+            currentModelId,
+            currentModelProviderId,
+          ),
+    [
+      generationGroups,
+      searchOpen,
+      showAll,
+      currentModelId,
+      currentModelProviderId,
+    ],
   );
 
   const hasMore = models.length > recommended.length;
@@ -236,6 +286,47 @@ export const RecommendedModelList = forwardRef<
   const showAllModels = () => {
     resetScroll();
     setShowAll(true);
+  };
+
+  const renderModelRow = (model: ModelOption) => {
+    const providerLabel = getGooseModelProviderLabel(model);
+    const providerIcon =
+      selectedAgentId === "goose" && model.providerId
+        ? getProviderIcon(model.providerId, "size-3.5")
+        : null;
+    const isSelected = modelMatchesSelection(
+      model,
+      currentModelId,
+      currentModelProviderId,
+    );
+    return (
+      <PickerItem
+        key={`${model.providerId ?? "model"}:${model.id}`}
+        onClick={() => {
+          onModelSelect(model);
+          resetView();
+        }}
+        selected={isSelected}
+        className="justify-between"
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+          {providerIcon ? (
+            <span
+              className="shrink-0 text-muted-foreground"
+              title={providerLabel ?? undefined}
+            >
+              {providerIcon}
+            </span>
+          ) : null}
+          <div className="min-w-0 flex-1 truncate">
+            {getModelDisplayName(model)}
+          </div>
+        </div>
+        {isSelected ? (
+          <IconCheck className="size-4 shrink-0 text-muted-foreground" />
+        ) : null}
+      </PickerItem>
+    );
   };
 
   return (
@@ -296,46 +387,25 @@ export const RecommendedModelList = forwardRef<
           className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:!block"
         >
           <div className="space-y-0.5 p-1 pr-3">
-            {sorted.map((model) => {
-              const providerLabel = getGooseModelProviderLabel(model);
-              const providerIcon =
-                selectedAgentId === "goose" && model.providerId
-                  ? getProviderIcon(model.providerId, "size-3.5")
-                  : null;
-              const isSelected = modelMatchesSelection(
-                model,
-                currentModelId,
-                currentModelProviderId,
-              );
-              return (
+            {sorted.map(renderModelRow)}
+            {sortedLegacy.length > 0 ? (
+              <>
                 <PickerItem
-                  key={`${model.providerId ?? "model"}:${model.id}`}
-                  onClick={() => {
-                    onModelSelect(model);
-                    resetView();
-                  }}
-                  selected={isSelected}
-                  className="justify-between"
+                  onClick={() => setLegacyExpanded((expanded) => !expanded)}
+                  aria-expanded={legacyExpanded}
+                  className="text-muted-foreground/70 hover:text-muted-foreground"
                 >
-                  <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
-                    {providerIcon ? (
-                      <span
-                        className="shrink-0 text-muted-foreground"
-                        title={providerLabel ?? undefined}
-                      >
-                        {providerIcon}
-                      </span>
-                    ) : null}
-                    <div className="min-w-0 flex-1 truncate">
-                      {getModelDisplayName(model)}
-                    </div>
-                  </div>
-                  {isSelected ? (
-                    <IconCheck className="size-4 shrink-0 text-muted-foreground" />
-                  ) : null}
+                  <IconChevronRight
+                    className={cn(
+                      "size-3.5 shrink-0 transition-transform",
+                      legacyExpanded && "rotate-90",
+                    )}
+                  />
+                  <span>{t("toolbar.olderModels")}</span>
                 </PickerItem>
-              );
-            })}
+                {legacyExpanded ? sortedLegacy.map(renderModelRow) : null}
+              </>
+            ) : null}
             {hasMore && !searchOpen && !showAll ? (
               <PickerItem
                 onClick={showAllModels}

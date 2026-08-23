@@ -1,7 +1,10 @@
-import type { BundledLanguage } from "shiki";
+import type { BundledLanguage, SpecialLanguage } from "shiki";
 import { artifactBasename, fileExtension } from "./artifactViewerTypes";
 
-const EXTENSION_LANGUAGES: Record<string, BundledLanguage> = {
+/** Shiki accepts special languages ("plaintext") alongside bundled ones. */
+export type ArtifactViewerLanguage = BundledLanguage | SpecialLanguage;
+
+const EXTENSION_LANGUAGES: Record<string, ArtifactViewerLanguage> = {
   ".bash": "bash",
   ".bat": "bat",
   ".c": "c",
@@ -64,12 +67,13 @@ const EXTENSION_LANGUAGES: Record<string, BundledLanguage> = {
   ".zsh": "bash",
 };
 
-const BASENAME_LANGUAGES: Record<string, BundledLanguage> = {
+const BASENAME_LANGUAGES: Record<string, ArtifactViewerLanguage> = {
   ".dockerignore": "docker",
   ".editorconfig": "ini",
   ".env": "dotenv",
   ".gitattributes": "git-commit",
-  ".gitignore": "gitignore",
+  // Shiki bundles no gitignore grammar; ini covers its comments and globs.
+  ".gitignore": "ini",
   ".npmrc": "ini",
   cmakelists: "cmake",
   dockerfile: "dockerfile",
@@ -78,10 +82,10 @@ const BASENAME_LANGUAGES: Record<string, BundledLanguage> = {
   makefile: "make",
 };
 
-const DEFAULT_LANGUAGE: BundledLanguage = "plaintext";
+const DEFAULT_LANGUAGE: ArtifactViewerLanguage = "plaintext";
 
 /** Shiki language id used to highlight a path in the in-app file viewer. */
-export function codeLanguageForPath(path: string): BundledLanguage {
+export function codeLanguageForPath(path: string): ArtifactViewerLanguage {
   const ext = fileExtension(path);
   if (ext && ext in EXTENSION_LANGUAGES) {
     return EXTENSION_LANGUAGES[ext] ?? DEFAULT_LANGUAGE;

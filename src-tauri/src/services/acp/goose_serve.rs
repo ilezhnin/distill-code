@@ -28,6 +28,7 @@ use crate::services::process::{kill_process, terminate_process};
 use crate::services::process::{pid_t_from_u32, process_is_alive};
 #[cfg(windows)]
 use crate::services::process::{IdentityProbe, ProcessIdentity};
+use crate::services::shell_env;
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
@@ -204,6 +205,13 @@ impl GooseServeProcess {
         let berdctl_paths = resolve_berdctl_spawn_paths(&app_handle, &mut prepend_dirs);
 
         apply_shell_env_with_extended_path(&mut command, &shell_env, &prepend_dirs);
+        // The captured shell env is already scrubbed, but goosed also inherits
+        // this process's live environment. When Berd itself was started from a
+        // terminal pane or by another coding agent (`just dev` inside Orca,
+        // Claude Code, Codex, Grok, ...), that pane's identity would flow
+        // goosed → every ACP bridge → the agent CLI, whose host-installed hooks
+        // then report each Berd chat as a session of that pane.
+        shell_env::remove_inherited_launcher_env(command.as_std_mut());
         // Set after the shell-env copy so same-named vars in the user's
         // shell cannot clobber Berd-managed values.
         apply_goose_search_paths_env(&mut command, &shell_env, &prepend_dirs);

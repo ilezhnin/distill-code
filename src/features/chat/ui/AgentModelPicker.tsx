@@ -31,12 +31,11 @@ import {
   resolvePickerTriggerLabel,
 } from "../lib/modelDisplayLabel";
 import {
-  collapseEmbeddedReasoningModels,
   composeEmbeddedReasoningModelId,
-  grokReasoningEffortConfig,
   splitEmbeddedReasoning,
   stripEmbeddedReasoningLabel,
 } from "../lib/modelReasoningVariants";
+import { resolveEffectiveReasoningEffort } from "../lib/effectiveReasoningEffort";
 import type {
   AgentPickerOption,
   ChatInputReasoningEffort,
@@ -80,93 +79,10 @@ interface AgentModelPickerProps {
  * model list. New-chat composers keep it always visible.
  */
 type ProviderColumnMode = "visible" | "gated";
-type ReasoningEffortConfig = NonNullable<ChatInputReasoningEffort["config"]>;
 type PopoverContentAlign = NonNullable<
   ComponentProps<typeof PopoverContent>["align"]
 >;
-const REASONING_EFFORT_COLUMN_TRANSITION_MS = 240;
-const PICKER_WIDTH_COMPACT_PX = 420;
-const PICKER_WIDTH_EXPANDED_PX = 596;
-
-function toSentenceCaseLabel(value: string | undefined): string {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    return "";
-  }
-
-  const normalized = /^[a-z0-9_-]+$/.test(trimmed)
-    ? trimmed.replace(/[_-]+/g, " ")
-    : trimmed;
-
-  if (/[A-Z]{2,}/.test(normalized)) {
-    return normalized;
-  }
-
-  return normalized.charAt(0).toUpperCase() + normalized.slice(1).toLowerCase();
-}
-
-function isReasoningEffortOff(value: string | undefined): boolean {
-  return value?.trim().toLowerCase() === "off";
-}
-
-function ReasoningEffortList({
-  config,
-  disabled = false,
-  onChange,
-  t,
-}: {
-  config: ReasoningEffortConfig;
-  disabled?: boolean;
-  onChange?: (value: string) => void;
-  t: (key: string) => string;
-}) {
-  return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col" aria-busy={disabled}>
-      <div className="shrink-0 px-2 py-1.5 text-sm font-semibold">
-        {t("toolbar.reasoningEffort")}
-      </div>
-      <ScrollArea className="min-h-0 min-w-0 flex-1">
-        <div className="space-y-0.5 p-1">
-          {config.options.map((option) => {
-            const isSelected = option.id === config.currentValue;
-            return (
-              <PickerItem
-                key={option.id}
-                onClick={() => {
-                  if (!disabled) {
-                    onChange?.(option.id);
-                  }
-                }}
-                selected={isSelected}
-                aria-disabled={disabled}
-                tabIndex={disabled ? -1 : undefined}
-                className={cn(
-                  "justify-between transition-[background-color,color] duration-150 ease-[cubic-bezier(0.2,0,0,1)]",
-                  disabled &&
-                    "pointer-events-none text-muted-foreground hover:bg-transparent focus-visible:bg-transparent",
-                )}
-              >
-                <span className="min-w-0 flex-1 truncate transition-colors duration-150 ease-[cubic-bezier(0.2,0,0,1)]">
-                  {toSentenceCaseLabel(option.name ?? option.id)}
-                </span>
-                {isSelected ? (
-                  <IconCheck
-                    className={cn(
-                      "size-4 shrink-0 transition-colors duration-150 ease-[cubic-bezier(0.2,0,0,1)]",
-                      disabled
-                        ? "text-muted-foreground/70"
-                        : "text-muted-foreground",
-                    )}
-                  />
-                ) : null}
-              </PickerItem>
-            );
-          })}
-        </div>
-      </ScrollArea>
-    </div>
-  );
-}
+const PICKER_WIDTH_PX = 420;
 
 export function AgentModelPicker({
   agents,
@@ -218,20 +134,31 @@ export function AgentModelPicker({
   const [modelBrowsing, setModelBrowsing] = useState(false);
   const [resolvedContentAlign, setResolvedContentAlign] =
     useState<PopoverContentAlign>("start");
-  const [latchedReasoningEffortConfig, setLatchedReasoningEffortConfig] =
-    useState<ReasoningEffortConfig | null>(null);
-  const [previousLatchInputs, setPreviousLatchInputs] = useState<{
-    open: boolean;
-    hasLive: boolean;
-    config: ReasoningEffortConfig | undefined;
-  }>({ open: false, hasLive: false, config: undefined });
   const selectedAgentLabel =
     agents.find((agent) => agent.id === selectedAgentId)?.label ??
     formatProviderLabel(selectedAgentId);
-  const collapsedModels = useMemo(
-    () => collapseEmbeddedReasoningModels(availableModels, currentModelId),
-    [availableModels, currentModelId],
+  // Shared with the composer's standalone effort pill so model clicks compose
+  // wire ids with the same effective effort the pill displays.
+  const effectiveReasoning = useMemo(
+    () =>
+      resolveEffectiveReasoningEffort({
+        availableModels,
+        currentModelId,
+        currentModelProviderId,
+        selectedAgentId,
+        sessionReasoningEffort: reasoningEffort,
+        onModelChange,
+      }),
+    [
+      availableModels,
+      currentModelId,
+      currentModelProviderId,
+      onModelChange,
+      reasoningEffort,
+      selectedAgentId,
+    ],
   );
+  const collapsedModels = effectiveReasoning.collapsedModels;
   const pickerModels =
     collapsedModels.reasoning != null
       ? collapsedModels.models
@@ -311,90 +238,8 @@ export function AgentModelPicker({
   const triggerProviderIcon =
     getProviderIcon(selectedAgentId, "size-4") ??
     (triggerIconOnly ? <IconAiAgents className="size-4" /> : null);
-  const sessionReasoningConfig = reasoningEffort?.config;
-  const sessionHasSelectableReasoning =
-    (sessionReasoningConfig?.options.length ?? 0) > 1;
-  const grokReasoningConfig = useMemo(() => {
-    if (
-      selectedAgentId !== "grok-acp" ||
-      sessionHasSelectableReasoning ||
-      collapsedModels.reasoning != null
-    ) {
-      return null;
-    }
-    return grokReasoningEffortConfig(sessionReasoningConfig?.currentValue);
-  }, [
-    collapsedModels.reasoning,
-    selectedAgentId,
-    sessionHasSelectableReasoning,
-    sessionReasoningConfig?.currentValue,
-  ]);
-  const reasoningEffortConfig = sessionHasSelectableReasoning
-    ? sessionReasoningConfig
-    : (collapsedModels.reasoning ??
-      grokReasoningConfig ??
-      sessionReasoningConfig);
-  const usesModelEmbeddedReasoning = collapsedModels.reasoning != null;
-  const hasLiveReasoningEffort =
-    Boolean(reasoningEffortConfig?.configId) &&
-    (reasoningEffortConfig?.options.length ?? 0) > 1;
-  // Latch (or release) the reasoning-effort config inline as its live inputs
-  // change, instead of in an effect, so the picker never paints a stale column.
-  // The transient transition-clear (open with no live config) stays in the
-  // effect below because it is a timer, not a synchronous state adjustment.
-  if (
-    previousLatchInputs.open !== open ||
-    previousLatchInputs.hasLive !== hasLiveReasoningEffort ||
-    previousLatchInputs.config !== reasoningEffortConfig
-  ) {
-    setPreviousLatchInputs({
-      open,
-      hasLive: hasLiveReasoningEffort,
-      config: reasoningEffortConfig,
-    });
-    if (hasLiveReasoningEffort && reasoningEffortConfig) {
-      setLatchedReasoningEffortConfig(reasoningEffortConfig);
-    } else if (!open) {
-      setLatchedReasoningEffortConfig(null);
-    }
-  }
-  const isReasoningEffortPending =
-    open && !reasoningEffortConfig && Boolean(latchedReasoningEffortConfig);
-  const displayReasoningEffortConfig =
-    reasoningEffortConfig ?? latchedReasoningEffortConfig;
-  const selectedReasoningEffort = displayReasoningEffortConfig?.options.find(
-    (option) => option.id === displayReasoningEffortConfig.currentValue,
-  );
-  const selectedReasoningEffortValue =
-    selectedReasoningEffort?.id ?? displayReasoningEffortConfig?.currentValue;
-  const selectedReasoningEffortLabel = isReasoningEffortOff(
-    selectedReasoningEffortValue,
-  )
-    ? null
-    : toSentenceCaseLabel(
-        selectedReasoningEffort?.name ??
-          displayReasoningEffortConfig?.currentValue,
-      );
-  const showReasoningEffort =
-    hasLiveReasoningEffort || isReasoningEffortPending;
-  const renderedReasoningEffortConfig =
-    hasLiveReasoningEffort || isReasoningEffortPending
-      ? displayReasoningEffortConfig
-      : latchedReasoningEffortConfig;
-
-  useEffect(() => {
-    if (!open || hasLiveReasoningEffort || !reasoningEffortConfig) {
-      return;
-    }
-
-    const clearLatchedConfig = window.setTimeout(() => {
-      setLatchedReasoningEffortConfig(null);
-    }, REASONING_EFFORT_COLUMN_TRANSITION_MS);
-
-    return () => {
-      window.clearTimeout(clearLatchedConfig);
-    };
-  }, [hasLiveReasoningEffort, open, reasoningEffortConfig]);
+  const usesModelEmbeddedReasoning =
+    effectiveReasoning.usesModelEmbeddedReasoning;
 
   const handleAgentSelect = (agent: AgentPickerOption) => {
     if (agent.readiness && agent.readiness !== "ready") {
@@ -413,38 +258,13 @@ export function AgentModelPicker({
     if (usesModelEmbeddedReasoning) {
       const wireId = composeEmbeddedReasoningModelId(
         model.id,
-        displayReasoningEffortConfig?.currentValue,
+        effectiveReasoning.config?.currentValue,
         collapsedModels,
       );
       onModelChange?.(wireId, { ...model, id: wireId });
       return;
     }
     onModelChange?.(model.id, model);
-  };
-
-  const handleReasoningSelect = (value: string) => {
-    if (usesModelEmbeddedReasoning) {
-      const baseId = currentDisplayModelId ?? displayedModels[0]?.id;
-      if (!baseId) {
-        return;
-      }
-      const wireId = composeEmbeddedReasoningModelId(
-        baseId,
-        value,
-        collapsedModels,
-      );
-      const baseModel =
-        displayedModels.find((model) => model.id === baseId) ??
-        pickerModels.find((model) => model.id === baseId);
-      onModelChange?.(
-        wireId,
-        baseModel
-          ? { ...baseModel, id: wireId }
-          : { id: wireId, name: wireId },
-      );
-      return;
-    }
-    reasoningEffort?.onChange?.(value);
   };
 
   // Re-gate the provider column when the popover closes, so every reopen
@@ -470,11 +290,6 @@ export function AgentModelPicker({
     !providerRevealed &&
     !modelBrowsing &&
     (agents.length > 1 || hasAgentNeedingSetup);
-  const showReasoningEffortColumn = showReasoningEffort;
-  const isWidePicker = showReasoningEffortColumn && showAgentColumn;
-  const pickerWidth = isWidePicker
-    ? PICKER_WIDTH_EXPANDED_PX
-    : PICKER_WIDTH_COMPACT_PX;
 
   // Land keyboard focus in the revealed column, since the reveal button that
   // held focus unmounts with it.
@@ -500,11 +315,11 @@ export function AgentModelPicker({
       return "start";
     }
 
-    const leftAlignedRightEdge = triggerRect.left + pickerWidth;
+    const leftAlignedRightEdge = triggerRect.left + PICKER_WIDTH_PX;
     return leftAlignedRightEdge <= window.innerWidth - contentCollisionPadding
       ? "start"
       : "center";
-  }, [contentAlign, contentCollisionPadding, pickerWidth]);
+  }, [contentAlign, contentCollisionPadding]);
 
   useEffect(() => {
     if (open) {
@@ -555,11 +370,6 @@ export function AgentModelPicker({
                   <span className="min-w-0 truncate">
                     {triggerLabel ?? (loading ? t("toolbar.loading") : null)}
                   </span>
-                  {showReasoningEffort && selectedReasoningEffortLabel ? (
-                    <span className="shrink-0 text-muted-foreground/70 dark:group-hover:text-foreground dark:group-data-[state=open]:text-foreground dark:group-aria-expanded:text-foreground">
-                      {selectedReasoningEffortLabel}
-                    </span>
-                  ) : null}
                 </span>
               )}
             </ComposerActionButton>
@@ -575,8 +385,7 @@ export function AgentModelPicker({
           // Fit the content up to the cap instead of pinning the height, so the
           // gated single-column layout has no dead vertical space below the
           // model list.
-          "flex max-h-[min(24rem,50vh)] flex-col overflow-hidden p-1 transition-[width] duration-[240ms] ease-[cubic-bezier(0.2,0,0,1)]",
-          isWidePicker ? "w-[37.25rem]" : "w-[26.25rem]",
+          "flex max-h-[min(24rem,50vh)] w-[26.25rem] flex-col overflow-hidden p-1",
         )}
         onInteractOutside={(event) => {
           classifyOutsideInteraction(event.target);
@@ -800,37 +609,6 @@ export function AgentModelPicker({
               )}
             </div>
 
-            <div
-              data-col="reasoning"
-              data-hidden={!showReasoningEffortColumn}
-              aria-hidden={!showReasoningEffortColumn}
-              className={cn(
-                "min-h-0 min-w-0 shrink-0 overflow-hidden transition-[width,opacity] duration-[240ms] ease-[cubic-bezier(0.2,0,0,1)]",
-                showReasoningEffortColumn
-                  ? "w-[11rem] opacity-100"
-                  : "pointer-events-none w-0 opacity-0",
-              )}
-            >
-              <div
-                className={cn(
-                  "flex h-full w-[11rem] min-w-0 p-1 pl-2 transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.2,0,0,1)]",
-                  showReasoningEffortColumn
-                    ? "translate-x-0 opacity-100 delay-75"
-                    : "-translate-x-1 opacity-0 delay-0",
-                )}
-              >
-                {renderedReasoningEffortConfig ? (
-                  <ReasoningEffortList
-                    config={renderedReasoningEffortConfig}
-                    disabled={
-                      isReasoningEffortPending || !showReasoningEffortColumn
-                    }
-                    onChange={handleReasoningSelect}
-                    t={t}
-                  />
-                ) : null}
-              </div>
-            </div>
           </div>
 
           {showSwitchProviderFooter ? (

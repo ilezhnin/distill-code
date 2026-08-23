@@ -513,7 +513,7 @@ export async function acpCreateSession(
 export async function acpSetSessionConfigOption(
   sessionId: string,
   configId: string,
-  value: string,
+  value: string | boolean,
   context: Omit<AcpSessionConfigSnapshotContext, "origin"> = {},
 ): Promise<AcpSessionConfigSnapshots> {
   return sessionRegistry.applySessionConfigOption(

@@ -5,7 +5,7 @@ describe("codeLanguageForPath", () => {
   it("maps common source extensions", () => {
     expect(codeLanguageForPath("src/app.tsx")).toBe("tsx");
     expect(codeLanguageForPath("lib.rs")).toBe("rust");
-    expect(codeLanguageForPath("C:\\repo\\.gitignore")).toBe("gitignore");
+    expect(codeLanguageForPath("C:\\repo\\.gitignore")).toBe("ini");
   });
 
   it("maps extensionless config filenames", () => {

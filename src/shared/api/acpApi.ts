@@ -250,18 +250,20 @@ export async function setModel(
 export async function setSessionConfigOption(
   sessionId: string,
   configId: string,
-  value: string,
+  value: string | boolean,
   context: Omit<AcpSessionConfigSnapshotContext, "origin"> = {},
 ): Promise<AcpSessionConfigSnapshots> {
   const sid = sessionId.slice(0, 8);
   const tClient = performance.now();
   const client = await getClient();
   const tCall = performance.now();
-  const response = await client.setSessionConfigOption({
-    sessionId,
-    configId,
-    value,
-  });
+  // Boolean config options (kind "boolean") take a typed boolean payload on
+  // the wire; everything else is a select value id.
+  const response = await client.setSessionConfigOption(
+    typeof value === "boolean"
+      ? { sessionId, configId, type: "boolean", value }
+      : { sessionId, configId, value },
+  );
   const snapshots = readSessionConfigOptionsSnapshots(response);
   logReasoningEffortInfo("setSessionConfigOption response", {
     sessionId: shortLogId(sessionId),

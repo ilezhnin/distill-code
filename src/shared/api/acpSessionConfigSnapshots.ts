@@ -24,9 +24,21 @@ export interface AcpReasoningEffortConfigSnapshot {
   options: Array<{ id: string; name: string }>;
 }
 
+export interface AcpFastModeConfigSnapshot {
+  configId: string;
+  name?: string;
+  enabled: boolean;
+  kind: "boolean" | "select";
+}
+
 export interface AcpSessionConfigSnapshots {
   model: AcpModelConfigSnapshot | null;
   reasoningEffort: AcpReasoningEffortConfigSnapshot | null;
+  /**
+   * Optional so hand-built snapshot literals (tests, mocks) stay valid; the
+   * reader always populates it.
+   */
+  fastMode?: AcpFastModeConfigSnapshot | null;
 }
 
 interface AcpSessionExecutionConfigSnapshot {
@@ -56,6 +68,11 @@ export interface AcpSessionConfigSnapshotHandlers {
   applyReasoningEffortConfigSnapshot?: (
     sessionId: string,
     snapshot: AcpReasoningEffortConfigSnapshot,
+    context: AcpSessionConfigSnapshotContext,
+  ) => void;
+  applyFastModeConfigSnapshot?: (
+    sessionId: string,
+    snapshot: AcpFastModeConfigSnapshot,
     context: AcpSessionConfigSnapshotContext,
   ) => void;
 }
@@ -123,6 +140,17 @@ export function dispatchSessionConfigSnapshots(
       warnUnhandledSnapshot("reasoningEffort", sessionId);
     }
   }
+  if (snapshots.fastMode) {
+    if (handlers.applyFastModeConfigSnapshot) {
+      handlers.applyFastModeConfigSnapshot(
+        sessionId,
+        snapshots.fastMode,
+        context,
+      );
+    } else {
+      warnUnhandledSnapshot("fastMode", sessionId);
+    }
+  }
 }
 
 // A snapshot arrived but no handler is wired up — surface the misconfiguration
@@ -143,6 +171,7 @@ export function readSessionConfigOptionsSnapshots(
   return {
     model: getModelConfigSnapshot(source),
     reasoningEffort: getReasoningEffortConfigSnapshot(source),
+    fastMode: getFastModeConfigSnapshot(source),
   };
 }
 
@@ -200,6 +229,78 @@ function getReasoningEffortConfigSnapshot(
     currentValue: option.currentValue,
     options: option.options,
   };
+}
+
+function getFastModeConfigSnapshot(
+  source: unknown,
+): AcpFastModeConfigSnapshot | null {
+  const options = getConfigOptions(source);
+  if (!options) {
+    return null;
+  }
+
+  for (const option of options) {
+    if (!isRecord(option)) {
+      continue;
+    }
+    const snapshot = readFastModeOption(option);
+    if (snapshot) {
+      return snapshot;
+    }
+  }
+  return null;
+}
+
+/**
+ * Fast mode arrives either as the dedicated `fast` option or as a generic
+ * `model_config` toggle: a boolean kind, or a select whose values are exactly
+ * on/off. Anything else in the category is some other model tuning knob.
+ */
+function readFastModeOption(
+  option: Record<string, unknown>,
+): AcpFastModeConfigSnapshot | null {
+  const id = getStringProperty(option, "id");
+  if (!id) {
+    return null;
+  }
+  if (id !== "fast" && getStringProperty(option, "category") !== "model_config") {
+    return null;
+  }
+
+  const payload = isRecord(option.kind) ? option.kind : option;
+  const name = getStringProperty(option, "name");
+  const type = getStringProperty(payload, "type");
+
+  if (type === "boolean") {
+    const currentValue = payload.currentValue;
+    if (typeof currentValue !== "boolean") {
+      return null;
+    }
+    return { configId: id, name, enabled: currentValue, kind: "boolean" };
+  }
+
+  if (type === "select") {
+    const currentValue = getStringProperty(payload, "currentValue");
+    if (currentValue !== "on" && currentValue !== "off") {
+      return null;
+    }
+    const values = getSelectOptions(payload.options);
+    const isOnOffSelect =
+      values.length === 2 &&
+      values.some((value) => value.id === "on") &&
+      values.some((value) => value.id === "off");
+    if (id !== "fast" && !isOnOffSelect) {
+      return null;
+    }
+    return {
+      configId: id,
+      name,
+      enabled: currentValue === "on",
+      kind: "select",
+    };
+  }
+
+  return null;
 }
 
 function getSelectConfigOption(

@@ -1036,14 +1036,50 @@ export function observeSessionTargetConfigSnapshots(input: {
       ...(reasoningEffort ? { reasoningEffort } : {}),
       context: input.context,
     });
-    return;
-  }
-  if (reasoningEffort) {
+  } else if (reasoningEffort) {
     observeSessionTargetReasoningSnapshot({
       sessionId: input.sessionId,
       reasoningEffort,
       context: input.context,
     });
+  }
+  applySessionFastModeSnapshot(input.sessionId, input.snapshots);
+}
+
+/**
+ * Fast mode is a plain toggle without the target-correlation hazards of
+ * model/reasoning snapshots, so it commits directly: a present option updates
+ * the session, and a full snapshot (one that carries the model option) that
+ * lacks a fast option clears any stale toggle after a model or agent switch.
+ * Applied after the model observation so identity-change resets in the store
+ * cannot clobber a fresh value.
+ */
+function applySessionFastModeSnapshot(
+  sessionId: string,
+  snapshots: AcpSessionConfigSnapshots,
+): void {
+  const store = useChatSessionStore.getState();
+  const session = store.getSession(sessionId);
+  if (!session) {
+    return;
+  }
+  const fastMode = snapshots.fastMode ?? null;
+  if (fastMode) {
+    const existing = session.fastMode;
+    if (
+      existing &&
+      existing.configId === fastMode.configId &&
+      existing.name === fastMode.name &&
+      existing.enabled === fastMode.enabled &&
+      existing.kind === fastMode.kind
+    ) {
+      return;
+    }
+    store.patchSession(sessionId, { fastMode });
+    return;
+  }
+  if (snapshots.model && session.fastMode) {
+    store.patchSession(sessionId, { fastMode: undefined });
   }
 }
 
