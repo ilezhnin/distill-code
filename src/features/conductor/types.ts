@@ -4,6 +4,16 @@ export type SessionRole =
   | "worker"
   | "plain-chat";
 
+/**
+ * Which machine owns a session node's lifecycle.
+ *
+ * - `ui` — spawned/registered by the current UI heuristics (also the migration
+ *   default for graphs persisted before this field existed).
+ * - `wave` — owned by the wave engine; only these nodes are driven by it.
+ * - `agent-cli` — registered from outside the UI (berdctl).
+ */
+export type SessionManagedBy = "ui" | "wave" | "agent-cli";
+
 export type RunStatus =
   | "starting"
   | "running"
@@ -17,6 +27,7 @@ export interface SessionNode {
   sessionId: string;
   projectId: string;
   role: SessionRole;
+  managedBy: SessionManagedBy;
   parentSessionId: string | null;
   rootConductorId: string | null;
   runId: string | null;
@@ -31,6 +42,10 @@ export interface SessionNode {
   task?: string;
   createdAt?: number;
   anchorMessageId?: string;
+  /** Wave that produced this node. Set only for `managedBy: "wave"` children. */
+  waveId?: string;
+  /** Zero-based index of the wave step this node executes. */
+  stepIndex?: number;
 }
 
 export interface StructuredReport {
