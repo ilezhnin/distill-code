@@ -10,7 +10,6 @@ import {
   Mail,
   MailOpen,
   Pencil,
-  PinIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -58,16 +57,11 @@ export interface SessionActionsMenuProps {
   onClose?: () => void;
   archived?: boolean;
   hasUnread?: boolean;
-  isPinned?: boolean;
-  isPinning?: boolean;
-  /** Whether every chat in the current selection is already pinned to home. */
-  isSelectionPinned?: boolean;
   isOpenInWindow?: boolean;
   selectionCount?: number;
   selectionActionsDisabled?: boolean;
   onMarkRead?: () => void;
   onMarkUnread?: () => void;
-  onTogglePin?: () => void;
   onRename?: () => void;
   onOpenInWindow?: () => void;
   /** Bulk variant of open-in-window; opens every selected chat. */
@@ -91,15 +85,11 @@ function SessionActionsMenuItems({
   onClose,
   archived = false,
   hasUnread = false,
-  isPinned = false,
-  isPinning = false,
-  isSelectionPinned = false,
   isOpenInWindow = false,
   selectionCount = 0,
   selectionActionsDisabled = false,
   onMarkRead,
   onMarkUnread,
-  onTogglePin,
   onRename,
   onOpenInWindow,
   onOpenSelectedInWindows,
@@ -150,8 +140,7 @@ function SessionActionsMenuItems({
   };
 
   const markAction = hasUnread ? onMarkRead : onMarkUnread;
-  const showAttentionGroup =
-    !archived && (markAction != null || onTogglePin != null);
+  const showAttentionGroup = !archived && markAction != null;
   // Single-chat-only actions are hidden (not disabled) during multi-select;
   // bulk-capable actions stay when their bulk callback exists.
   const showRenameItem = onRename != null && !appliesToSelection;
@@ -206,29 +195,6 @@ function SessionActionsMenuItems({
                   ? "sidebar:actions.markRead"
                   : "sidebar:actions.markUnread",
               )}
-            </Item>
-          ) : null}
-          {onTogglePin ? (
-            <Item onClick={() => invoke(onTogglePin)} disabled={isPinning}>
-              <PinIcon
-                className="size-3.5"
-                fill={
-                  (appliesToSelection ? isSelectionPinned : isPinned)
-                    ? "currentColor"
-                    : "none"
-                }
-              />
-              {appliesToSelection
-                ? isSelectionPinned
-                  ? t("common:actions.unpinChats")
-                  : isPinning
-                    ? t("common:actions.pinningChat")
-                    : t("common:actions.pinChats")
-                : isPinned
-                  ? t("common:actions.unpinChat")
-                  : isPinning
-                    ? t("common:actions.pinningChat")
-                    : t("common:actions.pinChat")}
             </Item>
           ) : null}
         </>

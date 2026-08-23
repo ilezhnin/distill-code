@@ -1157,7 +1157,7 @@ describe("NavigationPanesView", () => {
     expect(screen.queryByTestId("sidebar-pinned-section")).toBeNull();
   });
 
-  it("leaves chats pinned to Home out of the flat chat list", () => {
+  it("resurfaces chats an older build pinned to Home in the flat chat list", () => {
     disableProjectGrouping();
     seedPinnedHomeChats("old-pinned-chat");
     seedSessions(
@@ -1180,20 +1180,15 @@ describe("NavigationPanesView", () => {
     const rows = Array.from(
       container.querySelectorAll<HTMLElement>("[data-sidebar-chat-row]"),
     );
+    // Pin-to-Home is gone from the product. A chat that an older build marked
+    // pinned in the persisted widget store must simply reappear in the list -
+    // hiding it would strand it with no Home canvas to show it.
     expect(rows.map((row) => row.dataset.sessionId)).toEqual([
       "new-unpinned-chat",
+      "old-pinned-chat",
     ]);
-
-    const groups = Array.from(
-      container.querySelectorAll<HTMLElement>("[data-sidebar-flat-chat-group]"),
-    );
-    expect(groups.map((group) => group.dataset.sidebarFlatChatGroup)).toEqual([
-      "last-hour",
-    ]);
-    // The pinned chat is on the Home canvas, not in the sidebar: neither a
-    // pinned section nor a pinned flat-chat group is rendered for it.
     expect(screen.queryByTestId("sidebar-pinned-section")).toBeNull();
-    expect(screen.queryByText("Old Pinned Chat")).toBeNull();
+    expect(screen.getByText("Old Pinned Chat")).toBeInTheDocument();
   });
 
   it("does not make stale flat project icons clickable", () => {
@@ -1336,7 +1331,7 @@ describe("NavigationPanesView", () => {
     await waitFor(() => expect(mockLoadMoreSessions).toHaveBeenCalledTimes(2));
   });
 
-  it("leaves chats pinned to Home out of their project's chat list", async () => {
+  it("resurfaces previously pinned chats in their project's chat list", async () => {
     const user = userEvent.setup();
     seedPinnedHomeChats("old-pinned-project-chat");
     seedSessions(
@@ -1365,10 +1360,13 @@ describe("NavigationPanesView", () => {
     const rows = Array.from(
       container.querySelectorAll<HTMLElement>("[data-sidebar-chat-row]"),
     );
+    // Same resurfacing rule inside a project: the persisted pin state no
+    // longer hides anything.
     expect(rows.map((row) => row.dataset.sessionId)).toEqual([
       "new-project-chat",
+      "old-pinned-project-chat",
     ]);
-    expect(screen.queryByText("Old Pinned Project Chat")).toBeNull();
+    expect(screen.getByText("Old Pinned Project Chat")).toBeInTheDocument();
   });
 
   it("keeps project grouping by default", async () => {

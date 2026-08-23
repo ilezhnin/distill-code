@@ -1,11 +1,7 @@
 import type { ComponentProps } from "react";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  resetHomeWidgetStoreForTests,
-  useHomeWidgetStore,
-} from "@/features/home/stores/homeWidgetStore";
+import { describe, expect, it, vi } from "vitest";
 import { SidebarChatDragProvider } from "../SidebarChatDragContext";
 import type { SidebarSessionItem } from "../SidebarProjectSection";
 import { SidebarRecentsSection } from "../SidebarRecentsSection";
@@ -53,25 +49,6 @@ function renderRecents(
 }
 
 describe("SidebarRecentsSection", () => {
-  beforeEach(() => {
-    resetHomeWidgetStoreForTests();
-    useHomeWidgetStore.setState({
-      loadStatus: "ready",
-      itemRevision: 1,
-      camera: { centerX: 0, centerY: 0, zoomBps: 10_000 },
-      instances: [
-        {
-          id: "chat-pin-1",
-          type: "chatPin",
-          x: 0,
-          y: 0,
-          z: 1,
-          state: { sessionId: "pinned-chat" },
-        },
-      ],
-    });
-  });
-
   it("renders an empty chat section as a non-collapsible label", () => {
     const onToggleOpen = vi.fn();
     renderRecents(false, {}, false, {
@@ -109,8 +86,8 @@ describe("SidebarRecentsSection", () => {
     expect(
       within(regularRow).getByTestId("sidebar-chat-menu-icon"),
     ).toBeInTheDocument();
-    // Recents passes quickPinMode="never": the leading slot is the chat glyph
-    // only, and pinning a chat to Home happens on the canvas itself.
+    // Pin-to-Home is gone from the product: the leading slot is the chat
+    // glyph only, and no pin control may ever appear on a row.
     await user.hover(regularRow);
     expect(screen.queryByRole("button", { name: "Pin chat" })).toBeNull();
   });
@@ -128,8 +105,7 @@ describe("SidebarRecentsSection", () => {
     ).toBeNull();
     await user.hover(regularRow);
     expect(screen.queryByRole("button", { name: "Pin chat" })).toBeNull();
-    // The already-pinned chat gets no unpin control here either — quickPinMode
-    // is "never" regardless of the icon setting.
+    // No unpin control either — the pin feature no longer exists.
     expect(screen.queryByRole("button", { name: "Unpin chat" })).toBeNull();
   });
 

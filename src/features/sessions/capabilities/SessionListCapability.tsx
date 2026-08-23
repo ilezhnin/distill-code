@@ -38,11 +38,7 @@ import {
   openSessionWindow,
 } from "@/features/chat/lib/sessionWindowCommands";
 import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
-import { getPinnedHomeChatSessionIdsInOrder } from "@/features/home/lib/pinnedHomeChats";
-import { usePinBatchToHome } from "@/features/home/hooks/usePinToHomeWidget";
-import { useHomeWidgetStore } from "@/features/home/stores/homeWidgetStore";
 import type { ProjectInfo } from "@/features/projects/api/projects";
-import { useProjectStore } from "@/features/projects/stores/projectStore";
 import { useBulkSessionActions } from "@/features/sessions/hooks/useBulkSessionActions";
 import {
   areSetsEqual,
@@ -67,10 +63,7 @@ import {
 } from "@/features/terminal/lib/terminalSessionManager";
 import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
 import type { SidebarSessionItem } from "@/features/sessions/ui/session-list/SidebarProjectSection";
-import type {
-  SidebarPinnedNavigationItem,
-  SidebarProjectsSectionProps,
-} from "@/features/sessions/ui/session-list/SidebarProjectsSection";
+import type { SidebarProjectsSectionProps } from "@/features/sessions/ui/session-list/SidebarProjectsSection";
 import { SessionListSurface } from "./SessionListSurface";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { isNestedExecutorSession } from "@/features/conductor/sessionVisibility";
@@ -78,20 +71,16 @@ import { isNestedExecutorSession } from "@/features/conductor/sessionVisibility"
 const EXPANDED_PROJECTS_STORAGE_KEY = "goose:sidebar:expanded-projects";
 const SECTION_VISIBILITY_STORAGE_KEY = "goose:sidebar:section-visibility";
 const DISPLAY_OPTIONS_STORAGE_KEY = "goose:sidebar:display-options";
-const PINNED_NAV_ORDER_STORAGE_KEY = "goose:sidebar:pinned-nav-order";
 const MAX_RECENTS = MAX_FLAT_SIDEBAR_CHATS;
 const MAX_AUTO_LOADED_GROUPED_CHATS = MAX_FLAT_SIDEBAR_CHATS * 2;
 const FLAT_CHAT_GROUP_REFRESH_INTERVAL_MS = 60 * 1000;
 
 type SessionListSectionVisibility = {
-  pinned: boolean;
   projects: boolean;
   recents: boolean;
 };
 
 type SessionListDisplayOptions = {
-  pinnedShowChatIcons: boolean;
-  pinnedShowTimestamps: boolean;
   projectShowChatIcons: boolean;
   projectShowTimestamps: boolean;
   chatShowChatIcons: boolean;
@@ -99,14 +88,11 @@ type SessionListDisplayOptions = {
 };
 
 const DEFAULT_SECTION_VISIBILITY: SessionListSectionVisibility = {
-  pinned: true,
   projects: true,
   recents: true,
 };
 
 const DEFAULT_DISPLAY_OPTIONS: SessionListDisplayOptions = {
-  pinnedShowChatIcons: true,
-  pinnedShowTimestamps: true,
   projectShowChatIcons: false,
   projectShowTimestamps: true,
   chatShowChatIcons: false,
@@ -200,20 +186,6 @@ function toSessionListItem(
   };
 }
 
-function compareSessionsByPinnedThenActivityDesc(
-  a: SidebarSessionItem,
-  b: SidebarSessionItem,
-  pinnedSessionIds: ReadonlySet<string>,
-): number {
-  const aIsPinned = pinnedSessionIds.has(a.id);
-  const bIsPinned = pinnedSessionIds.has(b.id);
-  if (aIsPinned !== bIsPinned) {
-    return aIsPinned ? -1 : 1;
-  }
-
-  return compareSessionsByActivityDesc(a, b);
-}
-
 function getFlatSessionListItems(
   visibleSessions: ChatSession[],
   projectsById: ReadonlyMap<string, ProjectInfo>,
@@ -246,24 +218,8 @@ function getFlatSessionListItems(
 
 function orderFlatSessionListItems(
   sessions: SidebarSessionItem[],
-  placeholderSessionIds: ReadonlySet<string>,
-  pinnedSessionIds: ReadonlySet<string>,
 ): SidebarSessionItem[] {
-  const pinnedSessions = sessions.filter((session) =>
-    pinnedSessionIds.has(session.id),
-  );
-  const unpinnedSessions = sessions.filter(
-    (session) => !pinnedSessionIds.has(session.id),
-  );
-
-  pinnedSessions.sort((a, b) =>
-    compareSessionListItems(a, b, placeholderSessionIds),
-  );
-
-  return [
-    ...pinnedSessions,
-    ...limitFlatSidebarSessions(unpinnedSessions),
-  ].slice(0, MAX_FLAT_SIDEBAR_CHATS);
+  return limitFlatSidebarSessions(sessions).slice(0, MAX_FLAT_SIDEBAR_CHATS);
 }
 
 function getSessionListGroups(
@@ -272,7 +228,6 @@ function getSessionListGroups(
   sessionStateById: Record<string, SessionChatRuntime>,
   placeholderSessionIds: ReadonlySet<string>,
   branchNameBySessionId: ReadonlyMap<string, string>,
-  pinnedSessionIds: ReadonlySet<string>,
 ): SessionListGroups {
   const byProject: Record<string, SidebarSessionItem[]> = {};
   const standalone: SidebarSessionItem[] = [];
@@ -293,13 +248,11 @@ function getSessionListGroups(
   }
 
   for (const chats of Object.values(byProject)) {
-    chats.sort((a, b) =>
-      compareSessionListItems(a, b, placeholderSessionIds, pinnedSessionIds),
-    );
+    chats.sort((a, b) => compareSessionListItems(a, b, placeholderSessionIds));
   }
 
   const sortedStandalone = standalone.sort((a, b) =>
-    compareSessionListItems(a, b, placeholderSessionIds, pinnedSessionIds),
+    compareSessionListItems(a, b, placeholderSessionIds),
   );
   const standalonePlaceholders = sortedStandalone.filter((session) =>
     placeholderSessionIds.has(session.id),
@@ -320,7 +273,6 @@ function compareSessionListItems(
   a: SidebarSessionItem,
   b: SidebarSessionItem,
   placeholderSessionIds: ReadonlySet<string>,
-  pinnedSessionIds?: ReadonlySet<string>,
 ): number {
   const aIsPlaceholder = placeholderSessionIds.has(a.id);
   const bIsPlaceholder = placeholderSessionIds.has(b.id);
@@ -328,9 +280,7 @@ function compareSessionListItems(
     return aIsPlaceholder ? -1 : 1;
   }
 
-  return pinnedSessionIds
-    ? compareSessionsByPinnedThenActivityDesc(a, b, pinnedSessionIds)
-    : compareSessionsByActivityDesc(a, b);
+  return compareSessionsByActivityDesc(a, b);
 }
 
 function sessionHasTerminal(
@@ -397,8 +347,6 @@ function validateSectionVisibility(
     Record<keyof SessionListSectionVisibility, unknown>
   >;
   return {
-    pinned:
-      typeof parsed.pinned === "boolean" ? parsed.pinned : defaults.pinned,
     projects:
       typeof parsed.projects === "boolean"
         ? parsed.projects
@@ -431,16 +379,6 @@ export function validateDisplayOptions(
     fallback: boolean,
   ) => (typeof value === "boolean" ? value : (legacy ?? fallback));
   return {
-    pinnedShowChatIcons: booleanOption(
-      parsed.pinnedShowChatIcons,
-      legacyShowChatIcons,
-      defaults.pinnedShowChatIcons,
-    ),
-    pinnedShowTimestamps: booleanOption(
-      parsed.pinnedShowTimestamps,
-      legacyShowTimestamps,
-      defaults.pinnedShowTimestamps,
-    ),
     projectShowChatIcons: booleanOption(
       parsed.projectShowChatIcons,
       typeof parsed.showProjectChatIcons === "boolean"
@@ -519,14 +457,6 @@ export function SessionListCapability({
     DEFAULT_DISPLAY_OPTIONS,
     validateDisplayOptions,
   );
-  const [pinnedNavOrder, setPinnedNavOrder] = usePersistedState<string[]>(
-    PINNED_NAV_ORDER_STORAGE_KEY,
-    [],
-    (value) =>
-      Array.isArray(value)
-        ? value.filter((item): item is string => typeof item === "string")
-        : [],
-  );
   // Last chat toggled via cmd/ctrl-click; shift-click ranges extend from it.
   const selectionAnchorRef = useRef<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(
@@ -582,9 +512,6 @@ export function SessionListCapability({
     Date.now(),
   );
   const attemptedChatLoadMoreCursorRef = useRef<string | null>(null);
-  const hasFetchedProjects = useProjectStore(
-    (state) => state.hasFetchedProjects,
-  );
   const projectIds = useMemo(
     () => new Set(projects.map((project) => project.id)),
     [projects],
@@ -642,100 +569,6 @@ export function SessionListCapability({
     activeWorkspaceBySession,
     enabled: false,
   });
-  const homeWidgetInstances = useHomeWidgetStore((state) => state.instances);
-  const homeWidgetLoadStatus = useHomeWidgetStore((state) => state.loadStatus);
-  const pinnedHomeChatSessionIdsInOrder = useMemo(
-    () => getPinnedHomeChatSessionIdsInOrder(homeWidgetInstances),
-    [homeWidgetInstances],
-  );
-  const pinnedHomeChatSessionIds = useMemo(
-    () => new Set(pinnedHomeChatSessionIdsInOrder),
-    [pinnedHomeChatSessionIdsInOrder],
-  );
-  const pinnedNavigationItems = useMemo(() => {
-    const itemByKey = new Map<string, SidebarPinnedNavigationItem>();
-    const sessionsById = new Map(
-      activeSessions.map((session) => [session.id, session]),
-    );
-    for (const sessionId of pinnedHomeChatSessionIdsInOrder) {
-      const session = sessionsById.get(sessionId);
-      if (!session) continue;
-      const item = toSessionListItem(
-        session,
-        sessionStateById,
-        branchNameBySessionId,
-      );
-      itemByKey.set(`chat:${session.id}`, { kind: "chat", session: item });
-    }
-
-    const orderedKeys = [
-      ...pinnedNavOrder.filter((key) => itemByKey.has(key)),
-      ...Array.from(itemByKey.keys()).filter(
-        (key) => !pinnedNavOrder.includes(key),
-      ),
-    ];
-    return orderedKeys.flatMap((key) => {
-      const item = itemByKey.get(key);
-      return item ? [item] : [];
-    });
-  }, [
-    activeSessions,
-    branchNameBySessionId,
-    pinnedHomeChatSessionIdsInOrder,
-    pinnedNavOrder,
-    sessionStateById,
-  ]);
-  useEffect(() => {
-    const validKeys = new Set(
-      Array.from(pinnedHomeChatSessionIds, (id) => `chat:${id}`),
-    );
-    setPinnedNavOrder((current) => {
-      const next = current.filter((key) => validKeys.has(key));
-      return next.length === current.length ? current : next;
-    });
-  }, [pinnedHomeChatSessionIds, setPinnedNavOrder]);
-
-  useEffect(() => {
-    if (homeWidgetLoadStatus !== "ready" || !hasFetchedProjects) return;
-    for (const instance of homeWidgetInstances) {
-      const isStaleProject =
-        instance.type === "projectArtifactPin" &&
-        typeof instance.state?.projectId === "string" &&
-        !projectIds.has(instance.state.projectId.trim());
-      if (isStaleProject) {
-        useHomeWidgetStore.getState().removeWidget(instance.id);
-      }
-    }
-  }, [
-    hasFetchedProjects,
-    homeWidgetInstances,
-    homeWidgetLoadStatus,
-    projectIds,
-  ]);
-
-  const reorderPinnedNavigationItem = useCallback(
-    (fromKey: string, toKey: string, placement: "before" | "after") => {
-      setPinnedNavOrder(() => {
-        const current = pinnedNavigationItems.map(
-          (item) => `chat:${item.session.id}`,
-        );
-        const fromIndex = current.indexOf(fromKey);
-        const toIndex = current.indexOf(toKey);
-        if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex)
-          return current;
-        const [moved] = current.splice(fromIndex, 1);
-        const adjustedTarget = fromIndex < toIndex ? toIndex - 1 : toIndex;
-        current.splice(
-          placement === "after" ? adjustedTarget + 1 : adjustedTarget,
-          0,
-          moved,
-        );
-        return current;
-      });
-    },
-    [pinnedNavigationItems, setPinnedNavOrder],
-  );
-
   const selectedCount = selectedSessionIds.size;
   const clearSelection = () => {
     selectionAnchorRef.current = null;
@@ -784,8 +617,6 @@ export function SessionListCapability({
     onFailure: reportBulkFailure,
   });
 
-  const { isPinningBatch } = usePinBatchToHome();
-
   const handleOpenSelectedInWindows = useCallback(() => {
     void applySelectionAction((sessionId) => {
       if (useSessionWindowStore.getState().isOpenInWindow(sessionId)) {
@@ -828,33 +659,20 @@ export function SessionListCapability({
     return () => window.clearInterval(interval);
   }, [groupChatsByProject]);
 
-  const pinnedChatProjectIds = useMemo(
-    () =>
-      new Set(
-        activeSessions
-          .filter((session) => pinnedHomeChatSessionIds.has(session.id))
-          .flatMap((session) => (session.projectId ? [session.projectId] : [])),
-      ),
-    [activeSessions, pinnedHomeChatSessionIds],
-  );
   const projectSessions = useMemo(
     () =>
       groupChatsByProject
         ? getSessionListGroups(
-            visibleSessions.sessions.filter(
-              (session) => !pinnedHomeChatSessionIds.has(session.id),
-            ),
+            visibleSessions.sessions,
             projectIds,
             sessionStateById,
             visibleSessions.placeholderSessionIds,
             branchNameBySessionId,
-            pinnedHomeChatSessionIds,
           )
         : EMPTY_SESSION_LIST_GROUPS,
     [
       branchNameBySessionId,
       groupChatsByProject,
-      pinnedHomeChatSessionIds,
       projectIds,
       sessionStateById,
       visibleSessions,
@@ -863,9 +681,7 @@ export function SessionListCapability({
   const flatSessionCandidates = useMemo(() => {
     if (groupChatsByProject) return [];
     return getFlatSessionListItems(
-      visibleSessions.sessions.filter(
-        (session) => !pinnedHomeChatSessionIds.has(session.id),
-      ),
+      visibleSessions.sessions,
       projectsById,
       sessionStateById,
       visibleSessions.placeholderSessionIds,
@@ -874,39 +690,20 @@ export function SessionListCapability({
   }, [
     branchNameBySessionId,
     groupChatsByProject,
-    pinnedHomeChatSessionIds,
     projectsById,
     sessionStateById,
     visibleSessions,
   ]);
   const flatSessions = useMemo(
-    () =>
-      orderFlatSessionListItems(
-        flatSessionCandidates,
-        visibleSessions.placeholderSessionIds,
-        pinnedHomeChatSessionIds,
-      ),
-    [
-      flatSessionCandidates,
-      pinnedHomeChatSessionIds,
-      visibleSessions.placeholderSessionIds,
-    ],
+    () => orderFlatSessionListItems(flatSessionCandidates),
+    [flatSessionCandidates],
   );
   const flatChatGroups = useMemo(
     () =>
       groupChatsByProject
         ? []
-        : groupFlatChatsByActivityAge(
-            flatSessions,
-            flatChatGroupNowMs,
-            pinnedHomeChatSessionIds,
-          ),
-    [
-      flatChatGroupNowMs,
-      flatSessions,
-      groupChatsByProject,
-      pinnedHomeChatSessionIds,
-    ],
+        : groupFlatChatsByActivityAge(flatSessions, flatChatGroupNowMs),
+    [flatChatGroupNowMs, flatSessions, groupChatsByProject],
   );
 
   const hasFlatChatOverflow =
@@ -1041,19 +838,12 @@ export function SessionListCapability({
 
   const sectionProps: SidebarProjectsSectionProps = {
     projects,
-    pinnedNavigationItems: [],
-    onReorderPinnedNavigationItem: reorderPinnedNavigationItem,
-    pinnedChatProjectIds,
     projectSessions,
     hasVisibleChats: activeSessions.length > 0,
     flatChatGroups,
     hasFlatChatOverflow,
     groupChatsByProject,
     onGroupChatsByProjectChange: setGroupChatsByProject,
-    pinnedShowChatIcons: displayOptions.pinnedShowChatIcons,
-    onPinnedShowChatIconsChange: setDisplayOption("pinnedShowChatIcons"),
-    pinnedShowTimestamps: displayOptions.pinnedShowTimestamps,
-    onPinnedShowTimestampsChange: setDisplayOption("pinnedShowTimestamps"),
     projectShowChatIcons: displayOptions.projectShowChatIcons,
     onProjectShowChatIconsChange: setDisplayOption("projectShowChatIcons"),
     projectShowTimestamps: displayOptions.projectShowTimestamps,
@@ -1093,19 +883,13 @@ export function SessionListCapability({
     onSelectionChange: toggleSessionSelection,
     onRangeSelect: rangeSelectSessions,
     onArchiveSelected: requestArchiveSelected,
-    onPinSelectedToHome: undefined,
-    onUnpinSelectedFromHome: undefined,
-    isSelectionPinnedToHome: false,
     onOpenSelectedInWindows: handleOpenSelectedInWindows,
-    isPinningSelectedToHome: isPinningBatch,
     onMarkSelectedRead: () => void applySelectionAction(onMarkChatRead),
     onMarkSelectedUnread: () => void applySelectionAction(onMarkChatUnread),
     onReorderProject,
     hasMoreSessions,
-    pinnedSectionOpen: sectionVisibility.pinned,
     projectsSectionOpen: sectionVisibility.projects,
     recentsSectionOpen: sectionVisibility.recents,
-    onTogglePinnedSection: () => toggleSection("pinned"),
     onToggleProjectsSection: () => toggleSection("projects"),
     onToggleRecentsSection: () => toggleSection("recents"),
     showTopDivider: surface.showTopDivider,

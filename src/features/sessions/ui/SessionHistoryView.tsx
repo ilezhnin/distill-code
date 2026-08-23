@@ -49,9 +49,6 @@ import {
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { exportSessionAction } from "../lib/exportSessionAction";
 import { saveExportedSessionFiles } from "@/shared/api/system";
-import { usePinBatchToHome } from "@/features/home/hooks/usePinToHomeWidget";
-import { getPinnedHomeChatSessionIds } from "@/features/home/lib/pinnedHomeChats";
-import { useHomeWidgetStore } from "@/features/home/stores/homeWidgetStore";
 import { defaultExportFilename, downloadJson } from "../lib/exportSession";
 import {
   areSetsEqual,
@@ -915,31 +912,6 @@ export function SessionHistoryView({
     [t],
   );
 
-  const { pinBatchToHome, unpinBatchFromHome, isPinningBatch } =
-    usePinBatchToHome();
-  const handlePinSelectedToHome = useCallback(async () => {
-    const ids = Array.from(selectedSessionIds);
-    if (ids.length === 0) return;
-    await pinBatchToHome("chat", ids);
-    clearSelection();
-  }, [clearSelection, pinBatchToHome, selectedSessionIds]);
-
-  const handleUnpinSelectedFromHome = useCallback(() => {
-    const ids = Array.from(selectedSessionIds);
-    if (ids.length === 0) return;
-    unpinBatchFromHome("chat", ids);
-    clearSelection();
-  }, [clearSelection, selectedSessionIds, unpinBatchFromHome]);
-
-  const homeWidgetInstances = useHomeWidgetStore((state) => state.instances);
-  const isSelectionPinnedToHome = useMemo(() => {
-    if (selectedSessionIds.size === 0) return false;
-    const pinnedIds = getPinnedHomeChatSessionIds(homeWidgetInstances);
-    return [...selectedSessionIds].every((sessionId) =>
-      pinnedIds.has(sessionId),
-    );
-  }, [homeWidgetInstances, selectedSessionIds]);
-
   const handleMarkSelectedRead = useCallback(() => {
     const markSessionRead = useChatStore.getState().markSessionRead;
     selectedSessionIds.forEach(markSessionRead);
@@ -1200,10 +1172,6 @@ export function SessionHistoryView({
               : undefined
           }
           isOpenInWindow={isMultiWindowEnabled && session.id in openSessions}
-          onPinSelectedToHome={handlePinSelectedToHome}
-          onUnpinSelectedFromHome={handleUnpinSelectedFromHome}
-          isSelectionPinnedToHome={isSelectionPinnedToHome}
-          isPinningSelectedToHome={isPinningBatch}
           onMarkSelectedRead={handleMarkSelectedRead}
           onMarkSelectedUnread={handleMarkSelectedUnread}
         />
@@ -1224,13 +1192,9 @@ export function SessionHistoryView({
       handleExport,
       handleExportSelected,
       handleOpenInWindow,
-      handlePinSelectedToHome,
-      handleUnpinSelectedFromHome,
-      isSelectionPinnedToHome,
       handleMarkSelectedRead,
       handleMarkSelectedUnread,
       isMultiWindowEnabled,
-      isPinningBatch,
       handleSelectResult,
       isApplyingSelectionAction,
       onRenameChat,

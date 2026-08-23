@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import { IconAlertTriangle, IconPlus, IconRefresh } from "@tabler/icons-react";
 import { PlayIcon } from "lucide-react";
 import { toast } from "sonner";
-import { usePinToHomeWidget } from "@/features/home/hooks/usePinToHomeWidget";
 import {
   type AutomationTile,
   createAutomationTile,
@@ -402,17 +401,6 @@ export function AutomationsWorkbench({
   const isDuplicating = duplicateMutation.isPending;
   const isDeleting = deleteMutation.isPending;
   const setTopBarActions = useSetTopBarActions();
-  const {
-    isPinned: isPinnedToHome,
-    isPinning: isPinningToHome,
-    pinToHome,
-    unpinFromHome,
-  } = usePinToHomeWidget({ kind: "automation", id: detailTile?.id });
-  const pinLabel = isPinnedToHome
-    ? t("common:actions.unpinFromHome")
-    : isPinningToHome
-      ? t("common:actions.pinningToHome")
-      : t("common:actions.pinToHome");
 
   useEffect(() => {
     if (currentRoute.surface === "builder") {
@@ -549,11 +537,6 @@ export function AutomationsWorkbench({
                 }
                 isSaving={updateMutation.isPending}
                 actions={{
-                  pinLabel,
-                  isPinned: isPinnedToHome,
-                  isPinning: isPinningToHome,
-                  onTogglePin: () =>
-                    isPinnedToHome ? unpinFromHome() : void pinToHome(),
                   onEditWithChat: () => {
                     if (!detailTile.id) return;
                     setNavigationRoute({
