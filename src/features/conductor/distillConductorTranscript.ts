@@ -1,6 +1,6 @@
 import type { Message, MessageContent } from "@/shared/types/messages";
 
-import { parseDistillWave } from "./distillWave";
+import { WAVE_FENCE_TAG, parseDistillWave } from "./distillWave";
 
 const VISIBLE_BLOCK_TYPES = new Set<MessageContent["type"]>([
   "text",
@@ -61,6 +61,9 @@ function stripWavePlanFence(
   wavePlanLabel: string,
 ): MessageContent {
   if (block.type !== "text") return block;
+  // Cheap reject before the fence scan: this runs over the whole transcript on
+  // every render of a conductor chat, i.e. on every streamed token.
+  if (!block.text.includes(WAVE_FENCE_TAG)) return block;
   const parse = parseDistillWave(block.text);
   if (parse.kind !== "plan") return block;
   return { ...block, text: parse.prose || wavePlanLabel };
