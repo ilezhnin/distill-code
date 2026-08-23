@@ -40,8 +40,8 @@ function renderBubble(message: Message, enabled = true) {
     enabled,
     children: [],
     reportsByRunId: {},
-    messages: [message],
     brigadeNodesByMessageId: new Map(),
+    wavePlanStepsByMessageId: new Map(),
   };
   return render(
     <ConductorTranscriptProvider value={value}>
@@ -76,6 +76,42 @@ describe("digest messages render as a compact card", () => {
     expect(screen.getByTestId("conductor-digest-card")).toHaveTextContent(
       "Found three callers",
     );
+  });
+
+  it("escapes the user-bubble width clamp at every level of the row", () => {
+    // jsdom has no layout engine, so this is a class assertion, not a measured
+    // one: it asserts that neither the content box nor the wrapper above it
+    // (which is what actually bounds the box) still carries the user-message
+    // max-width. The wrapper was the one that kept it, so a digest rendered
+    // narrow and right-aligned.
+    const { container } = renderBubble(digestMessage);
+
+    const card = screen.getByTestId("conductor-digest-card");
+    const clamped = Array.from(
+      container.querySelectorAll<HTMLElement>(
+        "[class*='--chat-user-message-max-width']",
+      ),
+    ).filter((element) => element.contains(card));
+    expect(clamped).toEqual([]);
+
+    const box = card.closest("[data-role='user-message-content']");
+    expect(box).not.toBeNull();
+    expect(box?.parentElement?.className).toContain("w-full");
+    expect(box?.parentElement?.className).toContain("items-start");
+  });
+
+  it("keeps the width clamp for an ordinary user bubble", () => {
+    const { container } = renderBubble({
+      id: "m3",
+      role: "user",
+      created: 0,
+      content: [{ type: "text", text: "Just a message" }],
+    });
+
+    expect(
+      container.querySelectorAll("[class*='--chat-user-message-max-width']")
+        .length,
+    ).toBeGreaterThan(0);
   });
 
   it("leaves an ordinary cross-session message as a normal bubble", () => {

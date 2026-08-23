@@ -30,6 +30,7 @@ export class DefaultTranscriptProjectionCache
     const previous =
       input.previous ?? this.snapshotsBySession.get(input.sessionId);
     const items = buildTranscriptItems({
+      sessionId: input.sessionId,
       messages: input.messages,
       streamingMessageId: input.streamingMessageId,
       nowBucket: input.nowBucket,

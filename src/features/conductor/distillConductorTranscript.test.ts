@@ -2,7 +2,11 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { i18n } from "@/shared/i18n";
 import type { Message } from "@/shared/types/messages";
-import { distillConductorTranscript } from "./distillConductorTranscript";
+import {
+  collectWavePlanSteps,
+  distillConductorTranscript,
+  NO_WAVE_PLAN_STEPS,
+} from "./distillConductorTranscript";
 
 function message(
   partial: Partial<Message> & Pick<Message, "id" | "role">,
@@ -44,13 +48,20 @@ describe("distillConductorTranscript", () => {
     ]);
 
     expect(distilled).toHaveLength(2);
-    // The tool card is still stripped; what survives it is the Q6 badge, which
-    // is the only trace the operator gets that the conductor executed.
+    // Thinking is still stripped. The tool card is not: this turn tripped the
+    // Q6 badge, and on that turn the tool call is the evidence for it.
     expect(distilled[1]?.content).toEqual([
       {
         type: "systemNotification",
         notificationType: "warning",
         text: "The conductor ran a tool itself — it should only plan or answer.",
+      },
+      {
+        type: "toolRequest",
+        id: "tool-1",
+        name: "spawn_agent",
+        arguments: {},
+        status: "completed",
       },
       { type: "text", text: "The repo has two packages." },
     ]);
@@ -66,6 +77,141 @@ describe("distillConductorTranscript", () => {
     ]);
 
     expect(distilled).toEqual([]);
+  });
+
+  describe("object identity (the projection cache depends on it)", () => {
+    // `buildTranscriptItems` caches its per-message work in `WeakMap`s keyed on
+    // the `Message` object. A distiller that cloned every assistant message made
+    // every message a cache miss on every streamed token; at 2000 messages that
+    // measured +9–10 ms of re-projection per token.
+    const PLAN_FENCE =
+      '```distill-wave\n{"steps":[{"role":"qa","subtask":"Run","access":[]}]}\n```';
+
+    it("returns the very same objects when nothing was changed", () => {
+      const messages = [
+        message({
+          id: "u1",
+          role: "user",
+          content: [{ type: "text", text: "Go" }],
+        }),
+        message({
+          id: "a1",
+          role: "assistant",
+          content: [{ type: "text", text: "Done." }],
+        }),
+      ];
+      const distilled = distillConductorTranscript(messages);
+
+      expect(distilled[0]).toBe(messages[0]);
+      expect(distilled[1]).toBe(messages[1]);
+      // The array identity matters as much: every consumer memoizes on it.
+      expect(distilled).toBe(messages);
+    });
+
+    it("keeps identity across repeated calls, as a streamed token would", () => {
+      const messages = [
+        message({
+          id: "a1",
+          role: "assistant",
+          content: [{ type: "text", text: "Done." }],
+        }),
+      ];
+      expect(distillConductorTranscript(messages)[0]).toBe(
+        distillConductorTranscript(messages)[0],
+      );
+    });
+
+    it("clones only the messages distillation actually touched", () => {
+      const untouched = message({
+        id: "a1",
+        role: "assistant",
+        content: [{ type: "text", text: "Untouched." }],
+      });
+      const filtered = message({
+        id: "a2",
+        role: "assistant",
+        content: [
+          { type: "thinking", text: "hidden" },
+          { type: "text", text: "Kept." },
+        ],
+      });
+      const planned = message({
+        id: "a3",
+        role: "assistant",
+        content: [{ type: "text", text: PLAN_FENCE }],
+      });
+      const messages = [untouched, filtered, planned];
+      const distilled = distillConductorTranscript(messages);
+
+      expect(distilled).not.toBe(messages);
+      expect(distilled[0]).toBe(untouched);
+      expect(distilled[1]).not.toBe(filtered);
+      expect(distilled[2]).not.toBe(planned);
+    });
+
+    it("re-renders the plan when the wave plan label changes", () => {
+      const planned = message({
+        id: "a1",
+        role: "assistant",
+        content: [{ type: "text", text: PLAN_FENCE }],
+      });
+      const first = distillConductorTranscript([planned], {
+        wavePlanLabel: "One",
+      });
+      const second = distillConductorTranscript([planned], {
+        wavePlanLabel: "Two",
+      });
+      expect(first[0]).not.toBe(second[0]);
+      const block = second[0]?.content[0];
+      expect(block?.type === "text" && block.text).toContain("Two");
+    });
+  });
+
+  describe("collectWavePlanSteps", () => {
+    it("returns the shared empty map for a transcript with no plan", () => {
+      expect(
+        collectWavePlanSteps([
+          message({
+            id: "a1",
+            role: "assistant",
+            content: [{ type: "text", text: "Just an answer." }],
+          }),
+        ]),
+      ).toBe(NO_WAVE_PLAN_STEPS);
+    });
+
+    it("keys the plan's steps by the message that carried the fence", () => {
+      const plan = message({
+        id: "a1",
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: '```distill-wave\n{"steps":[{"role":"qa","subtask":"Run","access":[]},{"role":"researcher","subtask":"Read","access":"all"}]}\n```',
+          },
+        ],
+      });
+      const plans = collectWavePlanSteps([plan]);
+
+      expect(plans.get("a1")?.map((step) => step.access)).toEqual([[], "all"]);
+      // Identity is stable per message, so the map can be compared cheaply by
+      // the caller that holds it in a React context.
+      expect(collectWavePlanSteps([plan]).get("a1")).toBe(plans.get("a1"));
+    });
+
+    it("ignores an invalid fence", () => {
+      expect(
+        collectWavePlanSteps([
+          message({
+            id: "a1",
+            role: "assistant",
+            content: [
+              { type: "text", text: '```distill-wave\n{"steps":[]}\n```' },
+            ],
+          }),
+        ]),
+      ).toBe(NO_WAVE_PLAN_STEPS);
+    });
   });
 
   describe("wave plan fences", () => {
@@ -91,12 +237,17 @@ describe("distillConductorTranscript", () => {
       ]);
 
       expect(distilled).toHaveLength(1);
+      // The prose survives, and the plan is rendered where its fence was: the
+      // step list is the operator's only path from "wrong answer" to "step 1".
       expect(distilled[0]?.content).toEqual([
-        { type: "text", text: "Fanning this out.\n\nBack shortly." },
+        {
+          type: "text",
+          text: "Fanning this out.\n\nBack shortly.\n\n1. **QA** · sees nothing — Run",
+        },
       ]);
       const text = JSON.stringify(distilled[0]?.content);
       expect(text).not.toContain("distill-wave");
-      expect(text).not.toContain("steps");
+      expect(text).not.toContain('"access"');
     });
 
     it("substitutes the localized label when the plan carried no prose", () => {
@@ -107,7 +258,10 @@ describe("distillConductorTranscript", () => {
       // The message is the wave's anchor: it must never drop out.
       expect(distilled).toHaveLength(1);
       expect(distilled[0]?.content).toEqual([
-        { type: "text", text: "Plan for the brigade below." },
+        {
+          type: "text",
+          text: "Plan for the brigade below.\n\n1. **QA** · sees nothing — Run",
+        },
       ]);
     });
 
@@ -163,7 +317,10 @@ describe("distillConductorTranscript", () => {
 
       expect(distilled[0]?.content).toEqual([
         { type: "text", text: "First." },
-        { type: "text", text: "Second." },
+        {
+          type: "text",
+          text: "Second.\n\n1. **QA** · sees nothing — Run",
+        },
         {
           type: "systemNotification",
           notificationType: "error",
@@ -218,7 +375,10 @@ describe("distillConductorTranscript", () => {
         'Here is the plan.\n\n```distill-wave\n{"steps":[{"role":"qa","subtask":"Run","access":[]}]}\n```',
       );
       expect(distilled[0]?.content).toEqual([
-        { type: "text", text: "Here is the plan." },
+        {
+          type: "text",
+          text: "Here is the plan.\n\n1. **QA** · sees nothing — Run",
+        },
       ]);
     });
   });
@@ -242,9 +402,8 @@ describe("distillConductorTranscript", () => {
         }),
       ]);
 
-      // The tool card itself stays out of a conductor transcript, but the fact
-      // that there was one must not vanish with it: this is the only layer that
-      // still sees it.
+      // The badge leads, and the tool call it is about stays underneath it:
+      // a warning about a leak with the evidence stripped is worse than either.
       expect(distilled[0]?.content[0]).toEqual({
         type: "systemNotification",
         notificationType: "warning",
@@ -252,7 +411,7 @@ describe("distillConductorTranscript", () => {
       });
       expect(
         distilled[0]?.content.some((block) => block.type === "toolRequest"),
-      ).toBe(false);
+      ).toBe(true);
     });
 
     it("keeps a tool-only turn visible instead of dropping it", () => {
@@ -272,7 +431,32 @@ describe("distillConductorTranscript", () => {
         }),
       ]);
       expect(distilled).toHaveLength(1);
-      expect(distilled[0].content).toHaveLength(1);
+      expect(distilled[0].content).toHaveLength(2);
+      expect(distilled[0].content[1]?.type).toBe("toolRequest");
+    });
+
+    it("still strips tool blocks from a turn that only planned or answered", () => {
+      // Only the leaking turn keeps its tool cards; a `toolResponse` with no
+      // request in the same turn is ordinary harness noise and stays out.
+      const distilled = distillConductorTranscript([
+        message({
+          id: "a1",
+          role: "assistant",
+          content: [
+            { type: "text", text: "Here is the answer." },
+            {
+              type: "toolResponse",
+              id: "t1",
+              name: "shell",
+              result: "ok",
+              isError: false,
+            },
+          ],
+        }),
+      ]);
+      expect(distilled[0]?.content).toEqual([
+        { type: "text", text: "Here is the answer." },
+      ]);
     });
 
     it("says nothing about a turn that only planned or answered", () => {

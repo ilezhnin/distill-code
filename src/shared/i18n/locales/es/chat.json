@@ -462,6 +462,8 @@
     "openTranscript": "Abrir transcripción",
     "backToConductor": "Volver a {{name}}",
     "openChild": "{{name}}, {{status}}",
+    "openChildStep": "Paso {{step}}: {{name}}, {{status}}",
+    "openChildStepAccess": "Paso {{step}} ({{access}}): {{name}}, {{status}}",
     "resultTitle": "{{name}} — {{status}}",
     "statsWorking": "{{count}} en curso",
     "statsDone": "{{count}} listos",
@@ -487,6 +489,13 @@
     },
     "wave": {
       "planSummary": "Plan para la brigada de abajo.",
+      "plan": {
+        "stepLine": "{{index}}. **{{role}}** · {{access}} — {{subtask}}"
+      },
+      "access": {
+        "none": "no ve nada",
+        "all": "ve los informes anteriores"
+      },
       "invalidTitle": "No se pudo ejecutar el plan del conductor, así que no se inició nada.",
       "retry": "Pedir un plan nuevo",
       "spawnFailed": "No se pudo iniciar el paso {{step}} de esta ola.",
