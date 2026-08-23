@@ -1,3 +1,4 @@
+import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import type { ChatState } from "@/shared/types/chat";
 
 import type { RunStatus, SessionNode } from "./types";
@@ -27,16 +28,6 @@ export function summarizeBrigadeActivity(
     else if (node.status === "completed") done += 1;
   }
   return { working, done };
-}
-
-/** The chat's own turn is in flight (so the composer already shows activity). */
-export function isSessionRunning(chatState: ChatState): boolean {
-  return (
-    chatState === "thinking" ||
-    chatState === "streaming" ||
-    chatState === "waiting" ||
-    chatState === "compacting"
-  );
 }
 
 export interface BrigadeWaitIndicator {
