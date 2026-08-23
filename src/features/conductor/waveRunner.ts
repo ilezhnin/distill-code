@@ -56,6 +56,13 @@ const inFlightPlans = new Set<string>();
 /** `waveId:stepIndex` of spawns awaiting their child session. */
 const inFlightSpawns = new Set<string>();
 
+/**
+ * Settled conductor messages already scanned and found to carry no plan. The
+ * sync subscription fires on every chat-store change, so without this the
+ * engine would re-read every message of every conductor transcript per token.
+ */
+const scannedWithoutPlan = new Set<string>();
+
 /** Re-entrancy guard: spawning writes stores, which call this again. */
 let ticking = false;
 
@@ -101,8 +108,10 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
     conductorSessionIds: conductors.map((node) => node.sessionId),
     messagesBySession: chat.messagesBySession,
     isProcessed: (planMessageId) =>
+      scannedWithoutPlan.has(planMessageId) ||
       inFlightPlans.has(planMessageId) ||
       hasWaveTombstone(state, planMessageId),
+    markScanned: (messageId) => scannedWithoutPlan.add(messageId),
   });
 
   let next = state;
@@ -293,6 +302,7 @@ export function runWaveEngineTick(): void {
 export function resetWaveRunnerForTests(): void {
   inFlightPlans.clear();
   inFlightSpawns.clear();
+  scannedWithoutPlan.clear();
   ticking = false;
   hasResumedOrphanedSpawns = false;
 }

@@ -107,3 +107,41 @@ describe("detectWavePlanCandidates", () => {
     ]);
   });
 });
+
+describe("markScanned", () => {
+  it("reports settled messages that carry no plan so callers can skip them", () => {
+    const scanned: string[] = [];
+    const candidates = detectWavePlanCandidates({
+      conductorSessionIds: ["conductor-1"],
+      messagesBySession: {
+        "conductor-1": [
+          assistant("prose-1", "Just an ordinary answer."),
+          assistant(
+            "mentions-tag",
+            "I could write a distill-wave block here but I will not.",
+          ),
+          assistant("plan-1", `Plan:\n\n${PLAN}`),
+        ],
+      },
+      isProcessed: () => false,
+      markScanned: (messageId) => scanned.push(messageId),
+    });
+
+    expect(candidates.map((candidate) => candidate.planMessageId)).toEqual([
+      "plan-1",
+    ]);
+    expect(scanned).toEqual(["prose-1", "mentions-tag"]);
+  });
+
+  it("is optional", () => {
+    expect(() =>
+      detectWavePlanCandidates({
+        conductorSessionIds: ["conductor-1"],
+        messagesBySession: {
+          "conductor-1": [assistant("prose-1", "Ordinary answer.")],
+        },
+        isProcessed: () => false,
+      }),
+    ).not.toThrow();
+  });
+});
