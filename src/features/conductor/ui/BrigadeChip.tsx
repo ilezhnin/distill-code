@@ -44,7 +44,11 @@ export interface BrigadeChipProps extends BrigadeChipViewModel {
   className?: string;
 }
 
-function BrigadeStatusGlyph({ status }: { status: RunStatus }) {
+/**
+ * Exported so surfaces that show the same run statuses without a whole chip —
+ * the child-chat tab strip — read from one status vocabulary.
+ */
+export function BrigadeStatusGlyph({ status }: { status: RunStatus }) {
   if (status === "running" || status === "starting") {
     return <ActiveChatPulseDot className="shrink-0" />;
   }
