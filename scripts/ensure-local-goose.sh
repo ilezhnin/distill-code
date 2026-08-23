@@ -17,7 +17,8 @@ Environment variables:
   GOOSE_BACKEND_LOCK_FILE    lockfile path (default: ./goose-backend.lock.json)
   GOOSE_DEV_MODE             auto|required (default: auto)
   GOOSE_DEV_ROOT             cache root (default: platform cache dir)
-  GOOSE_DEV_REPO             managed goose checkout path
+  GOOSE_DEV_REPO             goose checkout path (the managed clone, or the
+                             local source tree when GOOSE_DEV_LOCAL=1)
   GOOSE_DEV_STAMP_FILE       build stamp path
   GOOSE_DEV_CLONE_URL        override clone URL from lockfile
   GOOSE_DEV_REMOTE           git remote to sync from (default: origin)
@@ -28,6 +29,9 @@ Environment variables:
   GOOSE_DEV_BIN              override built binary name from lockfile
   GOOSE_DEV_PATCH_DIR        Goose patch directory (default: ./patches/goose)
   GOOSE_DEV_ALLOW_DIRTY      1 to allow building a dirty checkout
+  GOOSE_DEV_LOCAL            1 to build from a local Goose source checkout
+                             instead of the managed clone (0 forces managed;
+                             default: the lockfile's "local" field)
   GOOSE_BUILD_PROFILE        debug|release (default: debug)
   GOOSE_DEV_OPT_LEVEL        opt-level when GOOSE_BUILD_PROFILE=debug (default: 1)
 USAGE
@@ -273,6 +277,71 @@ ensure_checkout_exists() {
     fail_or_skip "Failed to clone managed goose checkout from $clone_url into $goose_repo."
   }
 }
+
+# ── Local source mode ────────────────────────────────────────────────────────
+# GOOSE_DEV_LOCAL=1, or "local": true in the lockfile, builds Goose out of a
+# checkout the developer owns: "localRepo" in the lockfile, or GOOSE_DEV_REPO.
+# A relative path resolves against this repo's parent, so a sibling checkout
+# (../distill-goose) works on any machine without hardcoding a path. Nothing is
+# fetched, reset, or patched there — whatever is checked out is what gets
+# built, so editing Goose sources and rebuilding picks the change up. Readiness
+# is never reused from the stamp either, because a working tree changes without
+# the commit changing; cargo's own incremental build keeps the no-op case cheap.
+lock_local="$(read_lock_field local)"
+lock_local_repo="$(read_lock_field localRepo)"
+local_source="${GOOSE_DEV_LOCAL:-}"
+if [[ -z "$local_source" ]]; then
+  case "$lock_local" in
+    True | true | 1) local_source=1 ;;
+    *) local_source=0 ;;
+  esac
+fi
+
+if [[ "$local_source" == "1" ]]; then
+  local_repo="${GOOSE_DEV_REPO:-$lock_local_repo}"
+  if [[ -z "$local_repo" ]]; then
+    echo "Local Goose source mode is enabled but no checkout path is set. Set GOOSE_DEV_REPO or 'localRepo' in $lock_file." >&2
+    exit 1
+  fi
+  if [[ "$local_repo" != /* ]]; then
+    local_repo="$(cd "$(dirname "$repo_root")" && cd "$local_repo" 2>/dev/null && pwd)" ||
+      fail_or_skip "Local Goose source checkout not found at $(dirname "$repo_root")/$local_repo."
+  fi
+  goose_repo="$local_repo"
+  [[ -d "$goose_repo/.git" ]] ||
+    fail_or_skip "Local Goose source checkout not found at $goose_repo."
+
+  bin_path="$(resolve_bin_path)"
+
+  if [[ "$action" == "check" ]]; then
+    [[ -x "$bin_path" ]] ||
+      fail_or_skip "Local Goose binary has not been built from $goose_repo yet. Rerun just setup."
+    if [[ "$print_bin" == "1" ]]; then
+      printf '%s\n' "$bin_path"
+    fi
+    exit 0
+  fi
+
+  head_commit="$(git -C "$goose_repo" rev-parse HEAD)"
+  log "Building Goose from local source at $goose_repo (HEAD $head_commit); fetch, reset, and patching are skipped."
+  # No --locked here, unlike the managed path: this is a tree the developer
+  # edits, so a Cargo.toml change that needs a lockfile refresh is expected
+  # rather than a sign that the pinned commit was tampered with.
+  cargo_args=(build)
+  [[ "$build_profile" == "release" ]] && cargo_args+=(--release)
+  cargo_args+=(-p "$goose_package" --bin "$goose_bin")
+  (cd "$goose_repo" && cargo "${cargo_args[@]}")
+  [[ -x "$bin_path" ]] || {
+    echo "Expected Goose binary at $bin_path, but it was not built." >&2
+    exit 1
+  }
+  write_stamp "${pinned_ref:-local}" "$head_commit"
+  log "Local Goose binary ready at $bin_path."
+  if [[ "$print_bin" == "1" ]]; then
+    printf '%s\n' "$bin_path"
+  fi
+  exit 0
+fi
 
 ensure_checkout_exists
 
