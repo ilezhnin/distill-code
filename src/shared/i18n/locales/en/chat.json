@@ -765,6 +765,15 @@
     "truncated": "Showing the first part of this file.",
     "imageAlt": "Preview of {{filename}}"
   },
+  "childChat": {
+    "tabs": "Open agent chats",
+    "closeTab": "Close {{name}}",
+    "showChat": "Show chat",
+    "resize": "Resize agent chat panel",
+    "openFully": "Open {{name}} as the chat",
+    "loading": "Loading this agent's chat…",
+    "empty": "This agent hasn't said anything yet."
+  },
   "artifactChips": {
     "open": "Open {{name}} in viewer",
     "more": "+{{count}} more"
