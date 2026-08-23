@@ -6,6 +6,8 @@ import { cn } from "@/shared/lib/cn";
 
 import type { ConductorOpenChildIntent } from "../ConductorTranscriptContext";
 import { summarizeBrigadeActivity } from "../brigadeActivity";
+import { waveStepAccessKey } from "../distillConductorTranscript";
+import type { WaveStep } from "../distillWave";
 import type { SessionNode, StructuredReport } from "../types";
 import { BrigadeChip, type BrigadeChipViewModel } from "./BrigadeChip";
 
@@ -17,15 +19,41 @@ function formatTokenCount(value: number): string {
   return String(Math.round(value));
 }
 
+/**
+ * Wave children in plan order.
+ *
+ * The graph hands them back in registration order, which is spawn-completion
+ * order — so a wave whose second step started faster than its first showed its
+ * chips out of order. Failure attribution starts with "which step", so the row
+ * has to read like the plan above it. Nodes without a `stepIndex` (legacy
+ * orchestrator children) keep their relative order at the end.
+ */
+function inPlanOrder(nodes: readonly SessionNode[]): readonly SessionNode[] {
+  if (nodes.length < 2) return nodes;
+  if (!nodes.some((node) => typeof node.stepIndex === "number")) return nodes;
+  const rank = (node: SessionNode) =>
+    typeof node.stepIndex === "number"
+      ? node.stepIndex
+      : Number.MAX_SAFE_INTEGER;
+  return [...nodes].sort((left, right) => rank(left) - rank(right));
+}
+
 export function ConductorAgentFooter({
   nodes,
   reportsByRunId,
+  planSteps,
   onOpen,
   onStop,
   className,
 }: {
   nodes: readonly SessionNode[];
   reportsByRunId: Record<string, StructuredReport>;
+  /**
+   * Steps of the wave plan this message carried, if it carried one. Read for
+   * each chip's access mode; absent for a legacy orchestrator row, and then the
+   * chips simply show no access.
+   */
+  planSteps?: readonly WaveStep[];
   onOpen?: (sessionId: string, intent?: ConductorOpenChildIntent) => void;
   onStop?: (sessionId: string) => void;
   className?: string;
@@ -90,18 +118,24 @@ export function ConductorAgentFooter({
   // component ephemeral harness subagents that have no session at all.
   const chips = useMemo<BrigadeChipViewModel[]>(
     () =>
-      nodes.map((node) => {
+      inPlanOrder(nodes).map((node) => {
         const report = node.runId ? reportsByRunId[node.runId] : undefined;
+        const step =
+          typeof node.stepIndex === "number"
+            ? planSteps?.[node.stepIndex]
+            : undefined;
         return {
           id: node.sessionId,
           name: node.displayName,
           status: node.status,
           title: report?.summary || node.task || undefined,
+          stepIndex: node.stepIndex,
+          accessLabel: step ? t(waveStepAccessKey(step)) : undefined,
           onOpen: openInTab,
           onStop,
         };
       }),
-    [nodes, onStop, openInTab, reportsByRunId],
+    [nodes, onStop, openInTab, planSteps, reportsByRunId, t],
   );
 
   if (nodes.length === 0) {

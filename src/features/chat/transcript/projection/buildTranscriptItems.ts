@@ -28,6 +28,12 @@ import type {
 } from "./transcriptItemTypes";
 
 interface BuildTranscriptItemsInput {
+  /**
+   * Which transcript this run projects. Two transcripts are mounted side by
+   * side since the child-chat panel shipped, and the per-transcript memos below
+   * must not be shared between them.
+   */
+  sessionId: string;
   messages: readonly Message[];
   streamingMessageId: string | null;
   nowBucket: string;
@@ -109,6 +115,7 @@ let staticTextMessageItemCacheGeneration = 0;
 
 export function invalidateTranscriptItemDescriptorCache(): void {
   staticTextMessageItemCacheGeneration += 1;
+  cachedSubagentLinkageBySession.clear();
 }
 
 /**
@@ -128,8 +135,23 @@ export function invalidateTranscriptItemDescriptorCache(): void {
  * Returns `undefined` when the transcript contains no `delegate` at all, which
  * is every non-Goose session: those rows keep the previous behaviour of looking
  * only at their own content.
+ *
+ * Kept **per session**, not in one module-global slot: the child-chat panel
+ * mounts a second transcript beside the conversation, and both are typically
+ * Goose sessions with `delegate` calls. Sharing one slot made each transcript's
+ * projection evict the other's entry, so the linkage array identity changed on
+ * every projection of either — exactly the churn this memo exists to prevent.
+ *
+ * The map is keyed by session id and cleared wholesale by
+ * `invalidateTranscriptItemDescriptorCache`, which the projection cache already
+ * calls when a session is cleaned up. A `WeakMap` keyed on the `messages` array
+ * would not work here: `controller.messages` is a fresh array on every streamed
+ * token, so every lookup would miss.
  */
-let cachedSubagentLinkage: TranscriptSubagentLinkage | undefined;
+const cachedSubagentLinkageBySession = new Map<
+  string,
+  TranscriptSubagentLinkage
+>();
 
 function subagentLinkageUnchanged(
   previous: TranscriptSubagentLinkage,
@@ -154,6 +176,7 @@ function subagentLinkageUnchanged(
 }
 
 function collectSubagentLinkage(
+  sessionId: string,
   messages: readonly Message[],
 ): TranscriptSubagentLinkage | undefined {
   const delegateRequestIds = new Set<string>();
@@ -181,16 +204,16 @@ function collectSubagentLinkage(
   }
 
   if (!entries) {
+    cachedSubagentLinkageBySession.delete(sessionId);
     return undefined;
   }
-  if (
-    cachedSubagentLinkage &&
-    subagentLinkageUnchanged(cachedSubagentLinkage, entries)
-  ) {
-    return cachedSubagentLinkage;
+  const previous = cachedSubagentLinkageBySession.get(sessionId);
+  if (previous && subagentLinkageUnchanged(previous, entries)) {
+    return previous;
   }
-  cachedSubagentLinkage = Object.freeze(entries);
-  return cachedSubagentLinkage;
+  const next = Object.freeze(entries);
+  cachedSubagentLinkageBySession.set(sessionId, next);
+  return next;
 }
 
 /** Whether this content awaits a Goose background task (`load <task-id>`). */
@@ -201,6 +224,7 @@ function awaitsGooseTask(content: readonly MessageContent[]): boolean {
 }
 
 export function buildTranscriptItems({
+  sessionId,
   messages,
   streamingMessageId,
   nowBucket,
@@ -214,7 +238,7 @@ export function buildTranscriptItems({
   // responses are stored as user messages, but product-wise they are still part
   // of the assistant's work turn, so they should not reset this set.
   let displayedReasoningSignatures = new Set<string>();
-  const subagentLinkage = collectSubagentLinkage(messages);
+  const subagentLinkage = collectSubagentLinkage(sessionId, messages);
 
   for (const message of messages) {
     if (!isVisibleTranscriptMessage(message)) {
