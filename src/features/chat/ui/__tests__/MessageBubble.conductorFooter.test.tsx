@@ -161,7 +161,7 @@ describe("MessageBubble conductor footer", () => {
     expect(footer.parentElement).toBe(content.parentElement);
   });
 
-  it("opens the child session from a chip click", () => {
+  it("opens the child session in a tab from a chip click", () => {
     const onOpenChild = vi.fn();
     const { container } = renderTranscript(
       [node("Kepler", { anchorMessageId: "a1" })],
@@ -174,8 +174,9 @@ describe("MessageBubble conductor footer", () => {
       ),
     );
 
-    // No intent argument: `onOpenChild` applies its own default (navigate).
-    expect(onOpenChild).toHaveBeenCalledWith("Kepler");
+    // A chip click asks for the transcript beside the conversation; full
+    // navigation is the tab header's explicit "open fully" control.
+    expect(onOpenChild).toHaveBeenCalledWith("Kepler", "openInTab");
   });
 
   it("renders no chips when the transcript is not a conductor chat", () => {
