@@ -199,4 +199,54 @@ describe("buildWaveStepPrompt", () => {
     const prompt = buildWaveStepPrompt({ ...noAccessStep, model: "gpt-5" });
     expect(prompt).not.toContain("gpt-5");
   });
+
+  it("labels a revision's carried reports as coming from the previous wave", () => {
+    const prompt = buildWaveStepPrompt(
+      { role: "qa", subtask: "Re-check", access: "all" },
+      [
+        {
+          stepIndex: 0,
+          role: "scout",
+          subtask: "Find every caller",
+          fromPreviousWave: true,
+          report: {
+            runId: "run-prev",
+            status: "completed",
+            summary: "Three callers, all in src/",
+            decisions: [],
+            artifacts: [],
+            risks: [],
+            needsOperator: false,
+            nextSuggestedTask: null,
+          },
+        },
+        {
+          stepIndex: 0,
+          role: "scout",
+          subtask: "Re-run the search",
+          report: {
+            runId: "run-now",
+            status: "completed",
+            summary: "Still three",
+            decisions: [],
+            artifacts: [],
+            risks: [],
+            needsOperator: false,
+            nextSuggestedTask: null,
+          },
+        },
+      ],
+    );
+
+    // Q4: a revision has to be able to tell what it is revising from what its
+    // own siblings just did, or "the revision sees what happened" is a claim
+    // with no mechanism behind it.
+    expect(prompt).toContain('"wave": "previous"');
+    expect(prompt).toContain('"wave": "current"');
+    expect(prompt).toContain("that is what is being revised");
+    // Previous-wave reports come first, whatever order the caller passed.
+    expect(prompt.indexOf("Three callers, all in src/")).toBeLessThan(
+      prompt.indexOf("Still three"),
+    );
+  });
 });

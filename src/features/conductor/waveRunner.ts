@@ -29,10 +29,18 @@ import {
   admitWavePlan,
   advanceWave,
   createWaveState,
+  withWavePhase,
   withWaveStepPhase,
   type WaveSpawnRequest,
   type WaveState,
 } from "./waveEngine";
+import {
+  processWaveDigests,
+  processWaveVerdicts,
+  resetWaveLifecycleForTests,
+  startDigestDispatch,
+  type PendingDigestDispatch,
+} from "./waveLifecycle";
 import { waveRejectionNoticeText, waveSpawnFailureText } from "./waveNotices";
 import { buildWaveStepPrompt } from "./wavePrompts";
 import {
@@ -43,7 +51,7 @@ import {
   updateWaveEngineState,
   withWave,
   withWaveTombstone,
-  withoutWave,
+  withoutParkedWavesFor,
   type WaveEngineState,
 } from "./waveStore";
 
@@ -147,12 +155,17 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       createdAt: Date.now(),
     });
     next = withWave(
-      withWaveTombstone(next, {
-        planMessageId: candidate.planMessageId,
-        conductorSessionId: candidate.conductorSessionId,
-        outcome: "spawned",
-        at: Date.now(),
-      }),
+      // A new plan is a new root request, so this conductor's wave parked on
+      // `needsOperator` (and the retry it backed) is stale and goes away.
+      withoutParkedWavesFor(
+        withWaveTombstone(next, {
+          planMessageId: candidate.planMessageId,
+          conductorSessionId: candidate.conductorSessionId,
+          outcome: "spawned",
+          at: Date.now(),
+        }),
+        candidate.conductorSessionId,
+      ),
       wave,
     );
     setWaveEngineState(next);
@@ -240,6 +253,9 @@ function advanceWaves(state: WaveEngineState): {
   const pending: Array<{ wave: WaveState; request: WaveSpawnRequest }> = [];
 
   for (const wave of [...next.waves]) {
+    // Only a running wave schedules work. Everything past `running` belongs to
+    // the digest/verdict pass, which must never see a new spawn appear under it.
+    if (wave.phase !== "running") continue;
     const inFlight = new Set<number>();
     for (const step of wave.steps) {
       if (inFlightSpawns.has(spawnKey(wave.waveId, step.stepIndex))) {
@@ -254,9 +270,10 @@ function advanceWaves(state: WaveEngineState): {
     });
     let current = advanced.wave;
     if (advanced.complete) {
-      // The tombstone keeps the plan from ever re-triggering; the wave record
-      // itself has nothing left to say.
-      next = withoutWave(next, wave.waveId);
+      // The wave is no longer *running*, but it is far from over: its reports
+      // now have to reach the conductor and come back as a verdict. The record
+      // stays and moves into the closed loop.
+      next = withWave(next, withWavePhase(current, "digestPending"));
       continue;
     }
     for (const request of advanced.spawn) {
@@ -285,21 +302,33 @@ export function runWaveEngineTick(): void {
   if (!useChatSessionStore.getState().hasHydratedSessions) return;
   ticking = true;
   let pending: Array<{ wave: WaveState; request: WaveSpawnRequest }> = [];
+  let digests: PendingDigestDispatch[] = [];
   try {
-    const admitted = admitCandidates(getWaveEngineState());
+    // Verdicts first: a `revise` verdict is an assistant message with a wave
+    // fence in it, and this pass tombstones that message id before the plan
+    // detector below ever looks at it. Without this order the revision would be
+    // admitted a second time as a fresh root wave, outside the revision cap.
+    const judged = processWaveVerdicts(getWaveEngineState());
+    const admitted = admitCandidates(judged);
     const advanced = advanceWaves(admitted);
-    setWaveEngineState(advanced.state);
+    const digested = processWaveDigests(advanced.state);
+    setWaveEngineState(digested.state);
     pending = advanced.pending;
+    digests = digested.pending;
   } finally {
     ticking = false;
   }
   for (const { wave, request } of pending) {
     startSpawn(wave, request);
   }
+  for (const dispatch of digests) {
+    startDigestDispatch(dispatch, runWaveEngineTick);
+  }
 }
 
 /** Clears the process-local guards. Tests only. */
 export function resetWaveRunnerForTests(): void {
+  resetWaveLifecycleForTests();
   inFlightPlans.clear();
   inFlightSpawns.clear();
   scannedWithoutPlan.clear();

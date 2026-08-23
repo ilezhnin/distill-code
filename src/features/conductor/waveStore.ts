@@ -10,7 +10,14 @@
  * keeps one in-memory copy and writes it through to localStorage.
  */
 
-import type { WaveState, WaveStepPhase, WaveStepState } from "./waveEngine";
+import type {
+  WavePhase,
+  WaveState,
+  WaveStepPhase,
+  WaveStepState,
+} from "./waveEngine";
+import type { CompletedWaveStepReport } from "./wavePrompts";
+import type { StructuredReport } from "./types";
 
 export const CONDUCTOR_WAVES_STORAGE_KEY = "goose:conductor-waves";
 
@@ -35,15 +42,30 @@ export interface WaveTombstone {
   at: number;
 }
 
+/**
+ * Current schema version.
+ *
+ * v1 (2a) held only running waves. v2 (3a) adds the closed-loop fields — the
+ * lifecycle phase, the root request identity, the revision count, the digest
+ * attempt and the carried reports of a revision. v1 payloads are migrated in
+ * place rather than discarded: a wave persisted mid-run resumes as `running`
+ * with a fresh root identity, which is exactly what it was.
+ */
+export const WAVE_ENGINE_STATE_VERSION = 2;
+
 export interface WaveEngineState {
-  version: 1;
-  /** Waves still running. Finished waves are dropped; the tombstone remains. */
+  version: 2;
+  /**
+   * Waves the engine still has something to do with. Accepted and superseded
+   * waves are dropped (the tombstone remains); waves parked on `needsOperator`
+   * are kept, because they back the manual retry.
+   */
   waves: WaveState[];
   tombstones: WaveTombstone[];
 }
 
 export function emptyWaveEngineState(): WaveEngineState {
-  return { version: 1, waves: [], tombstones: [] };
+  return { version: WAVE_ENGINE_STATE_VERSION, waves: [], tombstones: [] };
 }
 
 function isPhase(value: unknown): value is WaveStepPhase {
@@ -83,6 +105,88 @@ function parseStep(value: unknown): WaveStepState | null {
   };
 }
 
+function isWavePhase(value: unknown): value is WavePhase {
+  return (
+    value === "running" ||
+    value === "digestPending" ||
+    value === "dispatchingDigest" ||
+    value === "awaitingVerdict" ||
+    value === "accepted" ||
+    value === "revised" ||
+    value === "needsOperator"
+  );
+}
+
+function parseStructuredReport(value: unknown): StructuredReport | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<StructuredReport>;
+  if (typeof raw.runId !== "string" || typeof raw.summary !== "string") {
+    return null;
+  }
+  if (
+    raw.status !== "completed" &&
+    raw.status !== "failed" &&
+    raw.status !== "cancelled"
+  ) {
+    return null;
+  }
+  const strings = (input: unknown): string[] =>
+    Array.isArray(input)
+      ? input.filter((item): item is string => typeof item === "string")
+      : [];
+  return {
+    runId: raw.runId,
+    status: raw.status,
+    summary: raw.summary,
+    decisions: strings(raw.decisions),
+    artifacts: Array.isArray(raw.artifacts)
+      ? raw.artifacts.flatMap((item) =>
+          item && typeof item === "object" && typeof item.label === "string"
+            ? [item]
+            : [],
+        )
+      : [],
+    risks: strings(raw.risks),
+    needsOperator: raw.needsOperator === true,
+    nextSuggestedTask:
+      typeof raw.nextSuggestedTask === "string" ? raw.nextSuggestedTask : null,
+    ...(raw.publishedToParent ? { publishedToParent: true } : {}),
+    ...(raw.operatorIntervened ? { operatorIntervened: true } : {}),
+  };
+}
+
+/**
+ * Carried reports are the Q4 handoff of a revision wave. A carried report that
+ * cannot be read is dropped rather than failing the whole wave: losing one
+ * entry degrades the handoff, losing the wave would strand live children.
+ */
+function parseCarriedReports(value: unknown): CompletedWaveStepReport[] {
+  if (!Array.isArray(value)) return [];
+  const entries: CompletedWaveStepReport[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const raw = item as Partial<CompletedWaveStepReport>;
+    const report = parseStructuredReport(raw.report);
+    if (
+      typeof raw.stepIndex !== "number" ||
+      !Number.isInteger(raw.stepIndex) ||
+      typeof raw.role !== "string" ||
+      typeof raw.subtask !== "string" ||
+      !report
+    ) {
+      continue;
+    }
+    entries.push({
+      stepIndex: raw.stepIndex,
+      role: raw.role,
+      subtask: raw.subtask,
+      report,
+      ...(raw.fromPreviousWave ? { fromPreviousWave: true } : {}),
+    });
+  }
+  return entries;
+}
+
 function parseWave(value: unknown): WaveState | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Partial<WaveState>;
@@ -106,12 +210,34 @@ function parseWave(value: unknown): WaveState | null {
     if (!parsed) return null;
     steps.push(parsed);
   }
+  const carriedReports = parseCarriedReports(raw.carriedReports);
   return {
     waveId: raw.waveId,
     conductorSessionId: raw.conductorSessionId,
     planMessageId: raw.planMessageId,
     createdAt: typeof raw.createdAt === "number" ? raw.createdAt : 0,
     steps: steps.sort((left, right) => left.stepIndex - right.stepIndex),
+    // v1 → v2 migration, applied per wave rather than in a separate pass: a
+    // wave persisted before 3a was by construction still running, served its
+    // own plan message as the root request, and had spent no revisions.
+    phase: isWavePhase(raw.phase) ? raw.phase : "running",
+    rootRequestId:
+      typeof raw.rootRequestId === "string" && raw.rootRequestId
+        ? raw.rootRequestId
+        : raw.planMessageId,
+    revisionCount:
+      typeof raw.revisionCount === "number" &&
+      Number.isInteger(raw.revisionCount) &&
+      raw.revisionCount >= 0
+        ? raw.revisionCount
+        : 0,
+    digestAttempt:
+      typeof raw.digestAttempt === "number" &&
+      Number.isInteger(raw.digestAttempt) &&
+      raw.digestAttempt >= 0
+        ? raw.digestAttempt
+        : 0,
+    ...(carriedReports.length > 0 ? { carriedReports } : {}),
   };
 }
 
@@ -134,11 +260,20 @@ function parseTombstone(value: unknown): WaveTombstone | null {
   };
 }
 
-/** Strict parse of whatever the storage key holds. Never throws. */
+/**
+ * Strict parse of whatever the storage key holds. Never throws.
+ *
+ * Both v1 and v2 payloads are accepted and normalised to v2; anything else
+ * (including a future version this build does not know) reads as empty.
+ */
 export function parseWaveEngineState(value: unknown): WaveEngineState {
   if (!value || typeof value !== "object") return emptyWaveEngineState();
-  const raw = value as Partial<WaveEngineState>;
-  if (raw.version !== 1) return emptyWaveEngineState();
+  const raw = value as Omit<Partial<WaveEngineState>, "version"> & {
+    version?: unknown;
+  };
+  if (raw.version !== 1 && raw.version !== WAVE_ENGINE_STATE_VERSION) {
+    return emptyWaveEngineState();
+  }
   const waves: WaveState[] = [];
   for (const wave of Array.isArray(raw.waves) ? raw.waves : []) {
     const parsed = parseWave(wave);
@@ -149,7 +284,7 @@ export function parseWaveEngineState(value: unknown): WaveEngineState {
     const parsed = parseTombstone(tombstone);
     if (parsed) tombstones.push(parsed);
   }
-  return { version: 1, waves, tombstones };
+  return { version: WAVE_ENGINE_STATE_VERSION, waves, tombstones };
 }
 
 export function hasWaveTombstone(
@@ -196,6 +331,24 @@ export function withoutWave(
   waveId: string,
 ): WaveEngineState {
   const waves = state.waves.filter((wave) => wave.waveId !== waveId);
+  return waves.length === state.waves.length ? state : { ...state, waves };
+}
+
+/**
+ * Drops the waves a conductor has parked on `needsOperator`.
+ *
+ * Called when that conductor admits a new plan: the new plan is a new root
+ * request, so the parked record — and the retry it backs — is stale.
+ */
+export function withoutParkedWavesFor(
+  state: WaveEngineState,
+  conductorSessionId: string,
+): WaveEngineState {
+  const waves = state.waves.filter(
+    (wave) =>
+      wave.conductorSessionId !== conductorSessionId ||
+      wave.phase !== "needsOperator",
+  );
   return waves.length === state.waves.length ? state : { ...state, waves };
 }
 
