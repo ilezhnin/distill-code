@@ -24,20 +24,3 @@ export function reportStatusFromRun(
   }
   return null;
 }
-
-export function emptyStructuredReport(
-  runId: string,
-  status: StructuredReport["status"],
-  summary: string,
-): StructuredReport {
-  return {
-    runId,
-    status,
-    summary,
-    decisions: [],
-    artifacts: [],
-    risks: [],
-    needsOperator: status !== "completed",
-    nextSuggestedTask: null,
-  };
-}

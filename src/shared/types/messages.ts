@@ -206,6 +206,14 @@ export type SystemNotificationAction =
     }
   | {
       type: "openContextPanel";
+    }
+  | {
+      /**
+       * Ask a conductor for a new wave plan after a refused one. The manual
+       * retry of decision Q2 — there is no automatic one.
+       */
+      type: "retryWavePlan";
+      sessionId: string;
     };
 
 export interface SystemNotificationContent {

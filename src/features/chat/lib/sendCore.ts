@@ -21,9 +21,11 @@ import {
   flushBufferedStreamingUpdatesForSession,
 } from "@/features/chat/acp/liveStreamingUpdates";
 import {
-  isGraphCoordinatorSession,
+  isConductorSession,
+  isLegacyOrchestratorShellSession,
   useConductorGraphStore,
 } from "@/features/conductor/conductorGraphStore";
+import { composeConductorSystemPrompt } from "@/features/conductor/wavePrompts";
 import { acpSendMessage } from "@/shared/api/acp";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import {
@@ -319,7 +321,11 @@ export async function dispatchPrompt(
       setChatState(sessionId, "streaming");
     };
 
-    if (isGraphCoordinatorSession(sessionId)) {
+    // Legacy orchestrator shells were never a model call — they exist only to
+    // host a worker subtree — so their turns still short-circuit. Conductors do
+    // not: since the wave engine (2a) a conductor session is a real ACP send
+    // whose answer may carry the wave plan the engine executes.
+    if (isLegacyOrchestratorShellSession(sessionId)) {
       commitUserMessage();
       if (isCurrent()) {
         setChatState(sessionId, "idle");
@@ -327,6 +333,13 @@ export async function dispatchPrompt(
       }
       return;
     }
+
+    // The wave protocol rides the keyed `client_system_prompt` channel, which
+    // ACP replaces on every send rather than appending to — so re-sending it
+    // each turn keeps the contract in sync without growing the context.
+    const effectiveSystemPrompt = isConductorSession(sessionId)
+      ? composeConductorSystemPrompt(systemPrompt)
+      : systemPrompt;
 
     const promptWithPaths = appendAttachmentPaths(
       background ? text : text.trim(),
@@ -350,7 +363,7 @@ export async function dispatchPrompt(
       );
     }
     const promptPromise = acpSendMessage(sessionId, acpPrompt, {
-      systemPrompt,
+      systemPrompt: effectiveSystemPrompt,
       ...(assistantPrompt ? { assistantPrompt } : {}),
       personaId: persona?.id,
       personaName: persona?.name,

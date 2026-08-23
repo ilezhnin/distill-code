@@ -95,7 +95,6 @@ import { distillConductorTranscript } from "@/features/conductor/distillConducto
 import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
 import { footerAgentNodes } from "@/features/conductor/sessionVisibility";
 import { BrigadeWaitIndicator } from "@/features/conductor/ui/BrigadeWaitIndicator";
-import { useConductorAutoSpawn } from "@/features/conductor/useConductorAutoSpawn";
 import { ConductorBackBanner } from "@/features/conductor/ui/ConductorBackBanner";
 
 const CHAT_RESPONDING_PILL_CLASS =
@@ -688,14 +687,6 @@ export function ChatView({
     const messages = isPreparingInitialTranscript ? [] : controller.messages;
     return isConductorChat ? distillConductorTranscript(messages) : messages;
   }, [controller.messages, isConductorChat, isPreparingInitialTranscript]);
-  useConductorAutoSpawn({
-    sessionId: effectiveSession?.id ?? sessionId,
-    enabled: isConductorChat && !isReadOnly,
-    isHydrating: controller.isLoadingHistory || isPreparingInitialTranscript,
-    messages: controller.messages,
-    executionTarget:
-      controller.currentExecutionTarget ?? effectiveSession?.executionTarget,
-  });
   const handleStopChild = useCallback((childSessionId: string) => {
     void stopOrchestratorSession(childSessionId);
   }, []);

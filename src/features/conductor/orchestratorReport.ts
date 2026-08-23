@@ -4,17 +4,6 @@ import type { SessionNode, StructuredReport } from "./types";
 
 const REPORT_FENCE_PATTERN = /```distill-report\s*([\s\S]*?)```/i;
 
-export function wrapOrchestratorCoordinationPrompt(
-  task: string,
-  workerName: string,
-): string {
-  const trimmed = task.trim();
-  const specialist = workerName.trim() || "a specialist";
-  return `You are coordinating this Distill assignment. Distill already started ${specialist} to do the work below. Do not implement it yourself. Distill will collect the worker report for the operator.
-
-${trimmed}`;
-}
-
 export function wrapOrchestratorTaskPrompt(task: string): string {
   return `${task.trim()}
 

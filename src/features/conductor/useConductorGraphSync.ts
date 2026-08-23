@@ -17,7 +17,10 @@ import {
   lastCompletedAssistantSummary,
   reportStatusFromRun,
 } from "./runStatus";
+import { groupPublishableTurns } from "./publishGroups";
 import type { RunStatus, SessionNode, StructuredReport } from "./types";
+import { runWaveEngineTick } from "./waveRunner";
+import { getWaveEngineState } from "./waveStore";
 
 const seenRunningBySession = new Set<string>();
 
@@ -193,26 +196,32 @@ function syncChildStatuses(): void {
       graph.patchNode(node.sessionId, { status: nextStatus });
     }
   }
+  // The engine runs on the statuses and reports this pass just wrote, so a step
+  // that went terminal already has its report when an `access: "all"` successor
+  // is scheduled — and a wave that just finished has already been retired from
+  // the wave store by the time `publishCompletedTurns` looks for open waves.
+  runWaveEngineTick();
   publishCompletedTurns();
 }
 
+/**
+ * Publishes one synthetic summary per finished turn, for legacy orchestrator
+ * trees and for wave-worker groups alike (the bridge until the 3a digest).
+ */
 function publishCompletedTurns(): void {
   const graph = useConductorGraphStore.getState();
   const chat = useChatStore.getState();
-  const groups = new Map<string, SessionNode[]>();
-  for (const node of Object.values(graph.nodesById)) {
-    if (node.role !== "orchestrator" || !node.parentSessionId) continue;
-    const key = `${node.parentSessionId}::${node.anchorMessageId ?? node.runId ?? node.sessionId}`;
-    const group = groups.get(key) ?? [];
-    group.push(node);
-    groups.set(key, group);
-  }
+  const openWaveIds = new Set(
+    getWaveEngineState().waves.map((wave) => wave.waveId),
+  );
+  const groups = groupPublishableTurns(
+    Object.values(graph.nodesById),
+    workersFor,
+    (waveId) => openWaveIds.has(waveId),
+  );
 
-  for (const group of groups.values()) {
-    const leaves = group.flatMap((node) => {
-      const workers = workersFor(node.sessionId);
-      return workers.length > 0 ? workers : [node];
-    });
+  for (const { parentSessionId, leaves } of groups) {
+    if (leaves.length === 0) continue;
     if (leaves.some((node) => isWorkingStatus(node.status))) continue;
     const results: Array<{ node: SessionNode; report: StructuredReport }> = [];
     let ready = true;
@@ -227,14 +236,12 @@ function publishCompletedTurns(): void {
       results.push({ node, report });
     }
     if (!ready || alreadyPublished || results.length === 0) continue;
-    const parentId = group[0]?.parentSessionId;
-    if (!parentId) continue;
     const text = formatConductorAnswer(results);
     if (!text.trim()) continue;
     for (const { report } of results) {
       graph.attachReport({ ...report, publishedToParent: true });
     }
-    chat.addMessage(parentId, {
+    chat.addMessage(parentSessionId, {
       id: crypto.randomUUID(),
       role: "assistant",
       created: Date.now(),

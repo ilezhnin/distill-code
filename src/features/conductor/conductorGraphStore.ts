@@ -319,12 +319,20 @@ export function isConductorSession(
   );
 }
 
-export function isGraphCoordinatorSession(
+/**
+ * Legacy orchestrator shells only.
+ *
+ * These are the ceremonial `managedBy: "ui"` orchestrators the pre-wave
+ * auto-spawn created; they were never a real model call and still must not be.
+ * Conductor sessions deliberately do *not* match: since 2a a conductor is a
+ * real model call that authors its own wave plan.
+ */
+export function isLegacyOrchestratorShellSession(
   sessionId: string | null | undefined,
 ): boolean {
   if (!sessionId) return false;
-  const role = useConductorGraphStore.getState().nodesById[sessionId]?.role;
-  return role === "conductor" || role === "orchestrator";
+  const node = useConductorGraphStore.getState().nodesById[sessionId];
+  return node?.role === "orchestrator" && node.managedBy !== "wave";
 }
 
 export function conductorSessionIds(): string[] {
