@@ -96,15 +96,56 @@ import {
   DEFAULT_OPEN_CHILD_INTENT,
 } from "@/features/conductor/ConductorTranscriptContext";
 import {
+  type BrigadeNodesByMessageId,
   EMPTY_BRIGADE_NODES_BY_MESSAGE_ID,
   groupBrigadeNodesByHostMessage,
 } from "@/features/conductor/brigadeAnchors";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
-import { distillConductorTranscript } from "@/features/conductor/distillConductorTranscript";
+import {
+  collectWavePlanSteps,
+  distillConductorTranscript,
+  NO_WAVE_PLAN_STEPS,
+} from "@/features/conductor/distillConductorTranscript";
+import type { WaveStep } from "@/features/conductor/distillWave";
 import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
 import { footerAgentNodes } from "@/features/conductor/sessionVisibility";
 import { BrigadeWaitIndicator } from "@/features/conductor/ui/BrigadeWaitIndicator";
 import { ConductorBackBanner } from "@/features/conductor/ui/ConductorBackBanner";
+
+/**
+ * Whether two chip groupings say the same thing. Node arrays come straight from
+ * the graph store, so identity comparison is the right test — this only has to
+ * catch "the transcript array changed but the grouping did not", which is every
+ * streamed token.
+ */
+function sameBrigadeGrouping(
+  previous: BrigadeNodesByMessageId,
+  next: BrigadeNodesByMessageId,
+): boolean {
+  if (previous === next) return true;
+  if (previous.size !== next.size) return false;
+  for (const [messageId, nodes] of next) {
+    const before = previous.get(messageId);
+    if (!before || before.length !== nodes.length) return false;
+    for (let index = 0; index < nodes.length; index += 1) {
+      if (before[index] !== nodes[index]) return false;
+    }
+  }
+  return true;
+}
+
+/** Same idea for the per-message wave plans; step arrays are cached and frozen. */
+function sameWavePlanSteps(
+  previous: ReadonlyMap<string, readonly WaveStep[]>,
+  next: ReadonlyMap<string, readonly WaveStep[]>,
+): boolean {
+  if (previous === next) return true;
+  if (previous.size !== next.size) return false;
+  for (const [messageId, steps] of next) {
+    if (previous.get(messageId) !== steps) return false;
+  }
+  return true;
+}
 
 const CHAT_RESPONDING_PILL_CLASS =
   "rounded-full bg-surface-chat-responding-pill-bg text-surface-chat-responding-pill-fg shadow-[var(--shadow-chat)] [--shimmer-ink:var(--color-surface-chat-responding-pill-fg)]";
@@ -755,20 +796,43 @@ export function ChatView({
   );
   // Grouped once per transcript instead of per bubble: every MessageBubble
   // only looks its own id up in this map.
-  const brigadeNodesByMessageId = useMemo(
-    () =>
-      showsNestedAgentFooter
-        ? groupBrigadeNodesByHostMessage(conductorChildren, timelineMessages)
-        : EMPTY_BRIGADE_NODES_BY_MESSAGE_ID,
-    [conductorChildren, showsNestedAgentFooter, timelineMessages],
+  // `timelineMessages` is a new array on every streamed token, so both of these
+  // derived maps would be too — and they are read through context, which
+  // bypasses `memo`: a fresh context value re-renders every visible bubble. Both
+  // are therefore held by ref and reused whenever the derived content is
+  // unchanged, which during streaming is almost always.
+  const brigadeGroupingRef = useRef<BrigadeNodesByMessageId>(
+    EMPTY_BRIGADE_NODES_BY_MESSAGE_ID,
   );
+  const brigadeNodesByMessageId = useMemo(() => {
+    const next = showsNestedAgentFooter
+      ? groupBrigadeNodesByHostMessage(conductorChildren, timelineMessages)
+      : EMPTY_BRIGADE_NODES_BY_MESSAGE_ID;
+    const previous = brigadeGroupingRef.current;
+    if (sameBrigadeGrouping(previous, next)) return previous;
+    brigadeGroupingRef.current = next;
+    return next;
+  }, [conductorChildren, showsNestedAgentFooter, timelineMessages]);
+  const wavePlanStepsRef =
+    useRef<ReadonlyMap<string, readonly WaveStep[]>>(NO_WAVE_PLAN_STEPS);
+  const wavePlanStepsByMessageId = useMemo(() => {
+    // Read from the *raw* transcript: distillation replaces the plan fence with
+    // the rendered step list, so the machine-readable plan only exists here.
+    const next = isConductorChat
+      ? collectWavePlanSteps(controller.messages)
+      : NO_WAVE_PLAN_STEPS;
+    const previous = wavePlanStepsRef.current;
+    if (sameWavePlanSteps(previous, next)) return previous;
+    wavePlanStepsRef.current = next;
+    return next;
+  }, [controller.messages, isConductorChat]);
   const conductorTranscriptValue = useMemo(
     () => ({
       enabled: showsNestedAgentFooter,
       children: conductorChildren,
       reportsByRunId: conductorReportsByRunId,
-      messages: timelineMessages,
       brigadeNodesByMessageId,
+      wavePlanStepsByMessageId,
       onOpenChild: handleOpenChild,
       onStopChild: handleStopChild,
     }),
@@ -779,7 +843,7 @@ export function ChatView({
       handleOpenChild,
       handleStopChild,
       showsNestedAgentFooter,
-      timelineMessages,
+      wavePlanStepsByMessageId,
     ],
   );
   const suppressEmptyConversationPlaceholder =

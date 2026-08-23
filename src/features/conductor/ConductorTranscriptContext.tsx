@@ -5,6 +5,7 @@ import type { Message } from "@/shared/types/messages";
 // Type-only: `brigadeAnchors` imports `latestConductorFooterHostId` from here,
 // so the value graph must stay one-directional.
 import type { BrigadeNodesByMessageId } from "./brigadeAnchors";
+import type { WaveStep } from "./distillWave";
 import type { SessionNode, StructuredReport } from "./types";
 
 /**
@@ -19,22 +20,33 @@ export interface ConductorTranscriptContextValue {
   enabled: boolean;
   children: SessionNode[];
   reportsByRunId: Record<string, StructuredReport>;
-  messages: readonly Message[];
   /**
    * Which message hosts which children's chips. Computed once per transcript
    * (see `groupBrigadeNodesByHostMessage`) so each bubble is an O(1) lookup.
    */
   brigadeNodesByMessageId: BrigadeNodesByMessageId;
+  /**
+   * The wave plan each plan message carried, by that message's id — the chip
+   * row's own anchor. It is what lets a chip name its step's access mode after
+   * the wave itself has left the engine state.
+   */
+  wavePlanStepsByMessageId: ReadonlyMap<string, readonly WaveStep[]>;
   onOpenChild?: (sessionId: string, intent?: ConductorOpenChildIntent) => void;
   onStopChild?: (sessionId: string) => void;
 }
 
+/**
+ * The transcript itself is deliberately *not* on this value. Nothing consumed
+ * it, and `controller.messages` is a fresh array on every streamed token — so
+ * carrying it here made the context value new on every token, and context
+ * consumption bypasses `memo`: every visible bubble re-rendered per token.
+ */
 const EMPTY_VALUE: ConductorTranscriptContextValue = {
   enabled: false,
   children: [],
   reportsByRunId: {},
-  messages: [],
   brigadeNodesByMessageId: new Map(),
+  wavePlanStepsByMessageId: new Map(),
 };
 
 const ConductorTranscriptContext =

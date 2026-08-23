@@ -141,6 +141,46 @@ describe("ChildChatPanel", () => {
     expect(loadSessionMessages).toHaveBeenCalledWith("child-1");
   });
 
+  it("re-hydrates a transcript the store evicted while the tab stayed open", () => {
+    // `canEvictSessionMessages` treats a settled, non-streaming session as
+    // evictable, and the cache holds ten — so a finished worker left open in a
+    // tab is a prime candidate. Loading once on mount left the panel blank
+    // forever, because `childSessionId` never changed.
+    useChatStore.setState({
+      messagesBySession: { "child-1": [textMessage("m1", "from Atlas")] },
+    });
+    useChildChatTabsStore
+      .getState()
+      .open("host", { sessionId: "child-1", name: "Atlas" });
+
+    renderWithProviders(<ChildChatPanel hostSessionId="host" />);
+    expect(loadSessionMessages).not.toHaveBeenCalled();
+
+    act(() => {
+      useChatStore.setState({ messagesBySession: {} });
+    });
+
+    expect(loadSessionMessages).toHaveBeenCalledWith("child-1");
+  });
+
+  it("asks once for a child that genuinely has nothing to show", () => {
+    // The counterpart of the re-hydration above: an empty transcript must not
+    // turn the effect into a poll.
+    useChildChatTabsStore
+      .getState()
+      .open("host", { sessionId: "child-1", name: "Atlas" });
+
+    const { rerender } = renderWithProviders(
+      <ChildChatPanel hostSessionId="host" />,
+    );
+    act(() => {
+      useChatStore.setState({ messagesBySession: {} });
+    });
+    rerender(<ChildChatPanel hostSessionId="host" />);
+
+    expect(loadSessionMessages).toHaveBeenCalledTimes(1);
+  });
+
   it("switches transcripts when another tab is activated", async () => {
     useChatStore.setState({
       messagesBySession: {

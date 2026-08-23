@@ -1036,7 +1036,10 @@ export const MessageBubble = memo(function MessageBubble({
       <div
         className={cn(
           "flex min-w-0 flex-col",
-          isUser
+          // A digest is a real user message but renders as a full-width system
+          // card, so it must escape the user-bubble clamp here as well as on
+          // the content box below — this wrapper is what actually bounds it.
+          isUser && !digestEnvelope
             ? "max-w-[var(--chat-user-message-max-width)] items-end"
             : "w-full items-start",
         )}
@@ -1239,6 +1242,9 @@ export const MessageBubble = memo(function MessageBubble({
           <ConductorAgentFooter
             nodes={conductorFooterNodes}
             reportsByRunId={conductorTranscript.reportsByRunId}
+            planSteps={conductorTranscript.wavePlanStepsByMessageId.get(
+              message.id,
+            )}
             onOpen={conductorTranscript.onOpenChild}
             onStop={conductorTranscript.onStopChild}
           />
