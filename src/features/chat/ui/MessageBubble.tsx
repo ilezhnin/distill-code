@@ -64,6 +64,11 @@ import {
 } from "./UserMessageClamp";
 import { ImageLightbox } from "@/shared/ui/ImageLightbox";
 import { VoiceSpeechStatusIndicator } from "./VoiceSpeechStatusIndicator";
+import {
+  NO_HARNESS_BRIGADE,
+  selectHarnessBrigade,
+} from "@/features/chat/lib/harnessBrigade";
+import { HarnessBrigadeRow } from "./HarnessBrigadeRow";
 import { requestWaveReplan } from "@/features/conductor/waveRetry";
 import { useConductorTranscript } from "@/features/conductor/ConductorTranscriptContext";
 import {
@@ -897,6 +902,21 @@ export const MessageBubble = memo(function MessageBubble({
         )
       : NO_BRIGADE_NODES;
   const showConductorFooter = conductorFooterNodes.length > 0;
+  // In-harness subagents of this turn. They have no session and no graph node,
+  // so they are read straight off the tool calls; `renderingContext` is the
+  // whole assistant message even when this bubble renders only its answer.
+  // Only the answer bubble hosts the row — a companion block (image, MCP app)
+  // shares the same turn context and must not repeat the chips.
+  const hostsTurnFooters =
+    !isUser &&
+    canHostMessageActions &&
+    renderedContent.every((block) => block.type === "text");
+  const harnessBrigade = hostsTurnFooters
+    ? selectHarnessBrigade({
+        content: renderingContext,
+        turnFinished: !isStreaming,
+      })
+    : NO_HARNESS_BRIGADE;
   // Reserve the action tray while the terminal assistant row is still
   // streaming so completion does not add pb-9 and nudge a bottom-pinned
   // transcript upward.
@@ -1181,6 +1201,7 @@ export const MessageBubble = memo(function MessageBubble({
             onStop={conductorTranscript.onStopChild}
           />
         ) : null}
+        <HarnessBrigadeRow entries={harnessBrigade} className="pt-1" />
       </div>
     </div>
   );

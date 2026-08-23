@@ -86,7 +86,7 @@ export interface ResolvedSubagentContext {
 export function resolveSubagentContext(
   toolName: string | undefined,
   args: Record<string, unknown>,
-  messages: ReadonlyArray<{ content: MessageContent[] }>,
+  messages: ReadonlyArray<{ content: readonly MessageContent[] }>,
 ): ResolvedSubagentContext | undefined {
   if (toolName !== "load") return undefined;
   const source = stringArg(args, "source")?.trim();
@@ -95,14 +95,15 @@ export function resolveSubagentContext(
 }
 
 /**
- * Resolve the delegate request whose response announced a background task id.
- * Both identity and task are retained: follow-up activity must not discard
- * facts that were already present in the transcript.
+ * Find the `delegate` request whose response announced a background task id.
+ *
+ * Walks the transcript backwards so the newest delegate wins, collecting the
+ * responses that mention the id and returning the request they belong to.
  */
-export function resolveDelegateContextForTask(
-  messages: ReadonlyArray<{ content: MessageContent[] }>,
+export function findDelegateRequestForTask(
+  messages: ReadonlyArray<{ content: readonly MessageContent[] }>,
   taskId: string,
-): ResolvedSubagentContext | undefined {
+): Extract<MessageContent, { type: "toolRequest" }> | undefined {
   const matchingResponseIds = new Set<string>();
   for (let m = messages.length - 1; m >= 0; m -= 1) {
     const content = messages[m].content;
@@ -118,21 +119,35 @@ export function resolveDelegateContextForTask(
         block.toolName === "delegate" &&
         matchingResponseIds.has(block.id)
       ) {
-        const agentName = stringArg(block.arguments, "source")?.trim();
-        const taskLabel = stringArg(block.arguments, "instructions");
-        const context: ResolvedSubagentContext = {
-          ...(agentName ? { subagentAgentName: agentName } : {}),
-          ...(taskLabel
-            ? { subagentTaskLabel: truncateLabel(taskLabel) }
-            : agentName
-              ? { subagentTaskIsConfigured: true }
-              : {}),
-        };
-        return Object.keys(context).length > 0 ? context : undefined;
+        return block;
       }
     }
   }
   return undefined;
+}
+
+/**
+ * Resolve the delegate request whose response announced a background task id.
+ * Both identity and task are retained: follow-up activity must not discard
+ * facts that were already present in the transcript.
+ */
+export function resolveDelegateContextForTask(
+  messages: ReadonlyArray<{ content: readonly MessageContent[] }>,
+  taskId: string,
+): ResolvedSubagentContext | undefined {
+  const request = findDelegateRequestForTask(messages, taskId);
+  if (!request) return undefined;
+  const agentName = stringArg(request.arguments, "source")?.trim();
+  const taskLabel = stringArg(request.arguments, "instructions");
+  const context: ResolvedSubagentContext = {
+    ...(agentName ? { subagentAgentName: agentName } : {}),
+    ...(taskLabel
+      ? { subagentTaskLabel: truncateLabel(taskLabel) }
+      : agentName
+        ? { subagentTaskIsConfigured: true }
+        : {}),
+  };
+  return Object.keys(context).length > 0 ? context : undefined;
 }
 
 const MAX_LABEL_LENGTH = 60;
