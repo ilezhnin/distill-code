@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { cn } from "@/shared/lib/cn";
 
+import type { ConductorOpenChildIntent } from "../ConductorTranscriptContext";
 import { summarizeBrigadeActivity } from "../brigadeActivity";
 import type { SessionNode, StructuredReport } from "../types";
 import { BrigadeChip, type BrigadeChipViewModel } from "./BrigadeChip";
@@ -25,7 +26,7 @@ export function ConductorAgentFooter({
 }: {
   nodes: readonly SessionNode[];
   reportsByRunId: Record<string, StructuredReport>;
-  onOpen?: (sessionId: string) => void;
+  onOpen?: (sessionId: string, intent?: ConductorOpenChildIntent) => void;
   onStop?: (sessionId: string) => void;
   className?: string;
 }) {
@@ -73,6 +74,18 @@ export function ConductorAgentFooter({
     return parts.join(" · ");
   }, [nodes, t, tokenTotals]);
 
+  // Clicking a chip for a real session opens that child's transcript beside
+  // the conversation instead of replacing it; full navigation is the explicit
+  // "open fully" control in the tab header. Ephemeral harness chips never come
+  // through here — they carry their own reveal handler.
+  const openInTab = useMemo(
+    () =>
+      onOpen
+        ? (sessionId: string) => onOpen(sessionId, "openInTab")
+        : undefined,
+    [onOpen],
+  );
+
   // SessionNode → the session-free chip view model; stage 2b feeds the same
   // component ephemeral harness subagents that have no session at all.
   const chips = useMemo<BrigadeChipViewModel[]>(
@@ -84,13 +97,11 @@ export function ConductorAgentFooter({
           name: node.displayName,
           status: node.status,
           title: report?.summary || node.task || undefined,
-          // The chip hands the session id back; `onOpenChild` applies its own
-          // default intent (navigate).
-          onOpen,
+          onOpen: openInTab,
           onStop,
         };
       }),
-    [nodes, onOpen, onStop, reportsByRunId],
+    [nodes, onStop, openInTab, reportsByRunId],
   );
 
   if (nodes.length === 0) {

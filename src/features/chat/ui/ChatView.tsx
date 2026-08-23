@@ -21,12 +21,21 @@ import { ChatLoadingSkeleton } from "./ChatLoadingSkeleton";
 import { ConversationEmptyAvatar } from "./ConversationEmptyAvatar";
 import { ArtifactPolicyProvider } from "../hooks/ArtifactPolicyContext";
 import { ChatRightRail } from "./ChatRightRail";
+import { ArtifactViewerPanel } from "./ArtifactViewerPanel";
+import { ChildChatPanel } from "./ChildChatPanel";
 import {
-  ARTIFACT_VIEWER_RAIL_ALLOWANCE_PX,
-  ArtifactViewerPanel,
-  CONVERSATION_MIN_WIDTH_WITH_VIEWER,
-} from "./ArtifactViewerPanel";
+  CONVERSATION_MIN_WIDTH_WITH_SIDE_PANEL,
+  SIDE_PANEL_RAIL_ALLOWANCE_PX,
+} from "./SidePanelShell";
 import { useOpenArtifact } from "../stores/artifactViewerStore";
+import {
+  useChildChatTabsStore,
+  useOpenChildChatTabs,
+} from "../stores/childChatTabsStore";
+import {
+  canOpenChildChatTab,
+  resolveSidePanelSurface,
+} from "../lib/childChatTabs";
 import { ArtifactAutoOpenMount } from "./ArtifactAutoOpenMount";
 import {
   CP_TOTAL_W,
@@ -150,7 +159,16 @@ export function ChatView({
   useRegisterSecurityConfirmationSurface(sessionId);
   const hasPendingSecurityConfirmation =
     useHasPendingSecurityConfirmation(sessionId);
-  const isArtifactViewerOpen = useOpenArtifact(sessionId) !== null;
+  // The conversation has room for exactly one side panel. `sidePanelSurface`
+  // decides which one owns it; neither store is cleared when the other wins,
+  // so closing the last child tab brings the artifact viewer straight back.
+  const hasOpenArtifact = useOpenArtifact(sessionId) !== null;
+  const openChildChatTabs = useOpenChildChatTabs(sessionId);
+  const sidePanelSurface = resolveSidePanelSurface({
+    hasChildChatTab: openChildChatTabs.length > 0,
+    hasArtifact: hasOpenArtifact,
+  });
+  const isSidePanelOpen = sidePanelSurface !== "none";
   const mountStart = useRef(performance.now());
   const terminalRootRef = useRef<HTMLDivElement | null>(null);
   const chatColumnRef = useRef<HTMLDivElement | null>(null);
@@ -259,7 +277,7 @@ export function ChatView({
   });
   const chatRowOcclusionPx =
     leftViewportOcclusionPx +
-    (isArtifactViewerOpen ? ARTIFACT_VIEWER_RAIL_ALLOWANCE_PX : 0) +
+    (isSidePanelOpen ? SIDE_PANEL_RAIL_ALLOWANCE_PX : 0) +
     (agentBuilderOpenForLayout ? CP_TOTAL_W : 0);
   const isContextPanelCompactViewport =
     useChatContextPanelCompactViewport(chatRowOcclusionPx);
@@ -382,7 +400,7 @@ export function ChatView({
   const isAgentBuilderChatCollapsed =
     isAgentBuilderSession && isSessionChatCollapsed;
   const isViewerChatCollapsed =
-    !isAgentBuilderSession && isArtifactViewerOpen && isSessionChatCollapsed;
+    !isAgentBuilderSession && isSidePanelOpen && isSessionChatCollapsed;
   const toggleSessionChat = useCallback(() => {
     setChatCollapseState((current) =>
       current.sessionId === sessionId
@@ -393,7 +411,7 @@ export function ChatView({
   const toggleAgentBuilderChat = toggleSessionChat;
 
   useEffect(() => {
-    if (!isAgentBuilderSession && !isArtifactViewerOpen && isSessionChatCollapsed) {
+    if (!isAgentBuilderSession && !isSidePanelOpen && isSessionChatCollapsed) {
       setChatCollapseState((current) =>
         current.sessionId === sessionId
           ? { ...current, collapsed: false }
@@ -402,7 +420,7 @@ export function ChatView({
     }
   }, [
     isAgentBuilderSession,
-    isArtifactViewerOpen,
+    isSidePanelOpen,
     isSessionChatCollapsed,
     sessionId,
   ]);
@@ -697,16 +715,43 @@ export function ChatView({
   const handleStopChild = useCallback((childSessionId: string) => {
     void stopOrchestratorSession(childSessionId);
   }, []);
-  const handleOpenChild = useCallback(
-    (
-      childSessionId: string,
-      // Every intent still resolves to in-place navigation; `openInTab` and
-      // `reveal` get their own handling in later stages.
-      _intent: ConductorOpenChildIntent = DEFAULT_OPEN_CHILD_INTENT,
-    ) => {
+  const openChildChatTab = useChildChatTabsStore((s) => s.open);
+  const handleNavigateToChild = useCallback(
+    (childSessionId: string) => {
       onSelectSession?.(childSessionId);
     },
     [onSelectSession],
+  );
+  const handleOpenChild = useCallback(
+    (
+      childSessionId: string,
+      intent: ConductorOpenChildIntent = DEFAULT_OPEN_CHILD_INTENT,
+    ) => {
+      // `navigate` is the explicit "go there fully" action, reached from the
+      // tab header's open-fully control. `openInTab` (what a chip click sends
+      // now) and `reveal` both mean "show it to me without losing my place",
+      // and fall back to navigation when there is no transcript to tab open.
+      if (intent !== "navigate") {
+        const child = conductorChildren.find(
+          (node) => node.sessionId === childSessionId,
+        );
+        if (
+          canOpenChildChatTab({
+            childSessionId,
+            hostSessionId: sessionId,
+            childSessionIds: conductorChildren.map((node) => node.sessionId),
+          })
+        ) {
+          openChildChatTab(sessionId, {
+            sessionId: childSessionId,
+            name: child?.displayName ?? childSessionId,
+          });
+          return;
+        }
+      }
+      handleNavigateToChild(childSessionId);
+    },
+    [conductorChildren, handleNavigateToChild, openChildChatTab, sessionId],
   );
   // Grouped once per transcript instead of per bubble: every MessageBubble
   // only looks its own id up in this map.
@@ -1150,7 +1195,7 @@ export function ChatView({
             // slide in/out and the builder can be resized via the grid template.
             isAgentBuilderSession ? "grid" : "flex",
             !isAgentBuilderSession &&
-              (effectiveHasVisibleRightRail || isArtifactViewerOpen) &&
+              (effectiveHasVisibleRightRail || isSidePanelOpen) &&
               "gap-[var(--spacing-app-panel-gutter-inline)]",
           )}
           style={
@@ -1199,10 +1244,10 @@ export function ChatView({
               // floor; the viewer panel is the flex child that yields (down to
               // its own floor) when the row tightens. Skipped for agent-builder
               // sessions, where the grid track must be free to collapse to 0.
-              ...(isArtifactViewerOpen &&
+              ...(isSidePanelOpen &&
               !isAgentBuilderSession &&
               !isViewerChatCollapsed
-                ? { minWidth: CONVERSATION_MIN_WIDTH_WITH_VIEWER }
+                ? { minWidth: CONVERSATION_MIN_WIDTH_WITH_SIDE_PANEL }
                 : null),
             }}
           >
@@ -1213,7 +1258,7 @@ export function ChatView({
                 terminal.visible && !terminal.isFloating && "min-h-[280px]",
               )}
             >
-              {isAgentBuilderSession || isArtifactViewerOpen ? (
+              {isAgentBuilderSession || isSidePanelOpen ? (
                 <button
                   type="button"
                   aria-label={
@@ -1297,11 +1342,30 @@ export function ChatView({
             ) : null}
           </div>
 
-          {sessionId && !isAgentBuilderSession ? (
+          {/* One side region, two surfaces: whichever `sidePanelSurface`
+              names is the one that mounts, so the panels can never fight over
+              the row. The other surface keeps its tabs in its own store and
+              comes back when this one closes. */}
+          {sessionId &&
+          !isAgentBuilderSession &&
+          sidePanelSurface === "artifact" ? (
             <ArtifactViewerPanel
               sessionId={sessionId}
               chatCollapsed={isViewerChatCollapsed}
               onToggleChat={toggleSessionChat}
+            />
+          ) : null}
+
+          {sessionId &&
+          !isAgentBuilderSession &&
+          sidePanelSurface === "child-chat" ? (
+            <ChildChatPanel
+              hostSessionId={sessionId}
+              chatCollapsed={isViewerChatCollapsed}
+              onToggleChat={toggleSessionChat}
+              onNavigateToChild={
+                onSelectSession ? handleNavigateToChild : undefined
+              }
             />
           ) : null}
 
