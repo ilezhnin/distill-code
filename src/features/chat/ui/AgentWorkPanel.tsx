@@ -9,7 +9,13 @@ import {
 } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { viewableArtifacts } from "@/features/chat/lib/artifactViewerTypes";
+import { selectHarnessBrigade } from "@/features/chat/lib/harnessBrigade";
+import {
+  onHarnessSubagentReveal,
+  TOOL_CALL_ID_ATTRIBUTE,
+} from "@/features/chat/lib/harnessBrigadeFocus";
 import { ArtifactChips } from "./ArtifactChips";
+import { HarnessBrigadeRow } from "./HarnessBrigadeRow";
 import { cn } from "@/shared/lib/cn";
 import { MessageResponse } from "@/shared/ui/ai-elements/message";
 import {
@@ -340,8 +346,11 @@ function AgentWorkItemRow({
   }
 
   const status = getToolStatus(item);
+  const toolCallId = item.request?.id ?? item.response?.id;
   return (
-    <div className="flex gap-2.5">
+    // The tool-call id is the reveal seam: a harness brigade chip finds its
+    // card by this attribute (see `harnessBrigadeFocus`).
+    <div className="flex gap-2.5" {...{ [TOOL_CALL_ID_ATTRIBUTE]: toolCallId }}>
       <WorkRail isLast={isLast} status={status} />
       <div className="min-w-0 flex-1 pb-2">
         <ToolCallAdapter
@@ -395,6 +404,18 @@ export function AgentWorkPanel({
       ),
     [items],
   );
+  // Ephemeral in-harness subagents (Claude Code Task/Agent, Ultracode
+  // workflows, Goose delegate/load, Codex spawn_agent/wait_agent). The strip
+  // is the live view: once the turn settles the same row moves under the
+  // answer, so the chips are never rendered twice.
+  const harnessBrigade = useMemo(
+    () =>
+      selectHarnessBrigade({
+        content: payload.content,
+        turnFinished: !payload.isActiveWork,
+      }),
+    [payload.content, payload.isActiveWork],
+  );
   const shouldOpenActiveWork = payload.isActiveWork;
   const [open, setOpen] = useState(shouldOpenActiveWork || settleOnMount);
   const [previousStepsOpen, setPreviousStepsOpen] = useState(false);
@@ -437,6 +458,30 @@ export function AgentWorkPanel({
     wasActiveRef.current = false;
     return cancelScheduledSettleClose;
   }, [payload.isActiveWork, settleOnMount, shouldOpenActiveWork]);
+
+  // A harness brigade chip asking for its tool card: expand this panel (and
+  // the "previous steps" bucket when the card is hidden there) if the card
+  // belongs to us. Panels that do not own the call ignore the request, and
+  // the scroll itself is the caller's business.
+  useEffect(
+    () =>
+      onHarnessSubagentReveal((toolCallId) => {
+        const owned = items.some(
+          (item) => item.kind === "tool" && item.request?.id === toolCallId,
+        );
+        if (!owned) return;
+        setOpen(true);
+        if (
+          payload.isActiveWork &&
+          getActivePreviewState(items).hiddenItems.some(
+            (item) => item.kind === "tool" && item.request?.id === toolCallId,
+          )
+        ) {
+          setPreviousStepsOpen(true);
+        }
+      }),
+    [items, payload.isActiveWork],
+  );
 
   const showTrigger = !payload.isActiveWork;
   const isActiveWorkPreview = payload.isActiveWork;
@@ -498,6 +543,9 @@ export function AgentWorkPanel({
         */}
         {workArtifacts.length > 0 ? (
           <ArtifactChips artifacts={workArtifacts} className="px-1 pb-1.5" />
+        ) : null}
+        {payload.isActiveWork ? (
+          <HarnessBrigadeRow entries={harnessBrigade} className="px-1 pb-1.5" />
         ) : null}
         <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
           <div className="min-h-0 space-y-0">
