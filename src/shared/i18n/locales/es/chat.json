@@ -732,6 +732,15 @@
     "truncated": "Se muestra la primera parte de este archivo.",
     "imageAlt": "Vista previa de {{filename}}"
   },
+  "childChat": {
+    "tabs": "Chats de agentes abiertos",
+    "closeTab": "Cerrar {{name}}",
+    "showChat": "Mostrar el chat",
+    "resize": "Redimensionar el panel de chat del agente",
+    "openFully": "Abrir {{name}} como el chat",
+    "loading": "Cargando el chat de este agente…",
+    "empty": "Este agente todavía no ha dicho nada."
+  },
   "artifactChips": {
     "open": "Abrir {{name}} en el visor",
     "more": "+{{count}} más"
