@@ -23,9 +23,9 @@ use services::{bundled_agents, bundled_skills, distro_bundle::DistroBundleState}
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use tauri::menu::{AboutMetadataBuilder, MenuBuilder, SubmenuBuilder};
-use tauri::{include_image, Manager, RunEvent, WebviewWindow};
 #[cfg(target_os = "macos")]
 use tauri::WindowEvent;
+use tauri::{include_image, Manager, RunEvent, WebviewWindow};
 use tauri_plugin_window_state::StateFlags;
 
 #[cfg(target_os = "macos")]
