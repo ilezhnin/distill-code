@@ -45,6 +45,13 @@ export function detectWavePlanCandidates(args: {
   conductorSessionIds: readonly string[];
   messagesBySession: Readonly<Record<string, readonly Message[] | undefined>>;
   isProcessed: (planMessageId: string) => boolean;
+  /**
+   * Called once for every settled message that turned out to carry no plan.
+   * The runner remembers those ids so the next tick — and the sync subscription
+   * fires on every chat-store change, i.e. on every streamed token — can skip
+   * them without re-joining their text.
+   */
+  markScanned?: (messageId: string) => void;
 }): WavePlanCandidate[] {
   const candidates: WavePlanCandidate[] = [];
   for (const conductorSessionId of args.conductorSessionIds) {
@@ -55,9 +62,15 @@ export function detectWavePlanCandidates(args: {
       if (args.isProcessed(message.id)) continue;
       const text = getTextContent(message);
       // Cheap reject before the real parse: most conductor turns are prose.
-      if (!text.includes(WAVE_FENCE_TAG)) continue;
+      if (!text.includes(WAVE_FENCE_TAG)) {
+        args.markScanned?.(message.id);
+        continue;
+      }
       const parse = parseDistillWave(text);
-      if (parse.kind === "none") continue;
+      if (parse.kind === "none") {
+        args.markScanned?.(message.id);
+        continue;
+      }
       candidates.push({
         conductorSessionId,
         planMessageId: message.id,
