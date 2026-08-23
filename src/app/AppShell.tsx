@@ -4926,10 +4926,11 @@ export function AppShell({
                     ? {
                         armed: homeSession?.ultracodeArmed ?? false,
                         setArmed: (armed: boolean) =>
-                          useChatSessionStore.getState().patchSession(
-                            homeSessionId,
-                            { ultracodeArmed: armed || undefined },
-                          ),
+                          useChatSessionStore
+                            .getState()
+                            .patchSession(homeSessionId, {
+                              ultracodeArmed: armed || undefined,
+                            }),
                       }
                     : undefined,
                 }}

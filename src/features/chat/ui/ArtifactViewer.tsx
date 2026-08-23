@@ -298,7 +298,10 @@ function CodeBody({
   const { t } = useTranslation("chat");
   if (textState.status !== "loaded") {
     return (
-      <TextLoadState textState={textState} onOpenExternally={onOpenExternally} />
+      <TextLoadState
+        textState={textState}
+        onOpenExternally={onOpenExternally}
+      />
     );
   }
 
@@ -331,7 +334,10 @@ function MarkdownBody({
 }) {
   if (textState.status !== "loaded") {
     return (
-      <TextLoadState textState={textState} onOpenExternally={onOpenExternally} />
+      <TextLoadState
+        textState={textState}
+        onOpenExternally={onOpenExternally}
+      />
     );
   }
 

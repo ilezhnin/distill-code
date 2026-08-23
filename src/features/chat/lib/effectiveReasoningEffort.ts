@@ -59,7 +59,8 @@ export function resolveEffectiveReasoningEffort(
     input.currentModelId,
   );
   const sessionConfig = input.sessionReasoningEffort?.config;
-  const sessionHasSelectableReasoning = (sessionConfig?.options.length ?? 0) > 1;
+  const sessionHasSelectableReasoning =
+    (sessionConfig?.options.length ?? 0) > 1;
   // The static Grok ladder stands in for an agent that advertises a value but
   // no choices. It requires a session config all the same: the write path
   // addresses that config's id, so without one the ladder would be a control
@@ -140,9 +141,7 @@ export function resolveEffectiveReasoningEffort(
       );
       input.onModelChange?.(
         wireId,
-        baseModel
-          ? { ...baseModel, id: wireId }
-          : { id: wireId, name: wireId },
+        baseModel ? { ...baseModel, id: wireId } : { id: wireId, name: wireId },
       );
       return;
     }
