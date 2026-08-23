@@ -57,6 +57,7 @@ these instead of restyling Button for app chrome:
 | `AgentTileButton` | subtle | Actions floating over agent/persona tiles. |
 | `GlassButton` | subtle | Controls floating over media, canvases, artwork. |
 | `JumpToLatestButton` | primary | Floating back-to-live-edge pills over streams. |
+| `TranscriptOverlayButton` | subtle | Quiet pills hovering over a scrolling transcript. |
 | `DisclosureButton` | ghost | "View more" / "View less" / "View all" affordances. Pick a `surface`. |
 
 Each wrapper's recipe owns all of its interactive states; see the doc
