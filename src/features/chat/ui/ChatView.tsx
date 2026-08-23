@@ -90,6 +90,7 @@ import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore
 import { distillConductorTranscript } from "@/features/conductor/distillConductorTranscript";
 import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
 import { footerAgentNodes } from "@/features/conductor/sessionVisibility";
+import { BrigadeWaitIndicator } from "@/features/conductor/ui/BrigadeWaitIndicator";
 import { useConductorAutoSpawn } from "@/features/conductor/useConductorAutoSpawn";
 import { ConductorBackBanner } from "@/features/conductor/ui/ConductorBackBanner";
 
@@ -847,6 +848,10 @@ export function ChatView({
           composerHandoffActive && "invisible pointer-events-none",
         )}
       >
+        <BrigadeWaitIndicator
+          chatState={controller.chatState}
+          nodes={conductorChildren}
+        />
         <SecurityConfirmationPanel sessionId={sessionId} />
         <ChatInput
           className={hasPendingSecurityConfirmation ? "hidden" : undefined}
