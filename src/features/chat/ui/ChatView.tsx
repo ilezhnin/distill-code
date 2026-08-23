@@ -86,6 +86,10 @@ import {
   ConductorTranscriptProvider,
   DEFAULT_OPEN_CHILD_INTENT,
 } from "@/features/conductor/ConductorTranscriptContext";
+import {
+  EMPTY_BRIGADE_NODES_BY_MESSAGE_ID,
+  groupBrigadeNodesByHostMessage,
+} from "@/features/conductor/brigadeAnchors";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { distillConductorTranscript } from "@/features/conductor/distillConductorTranscript";
 import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
@@ -706,16 +710,27 @@ export function ChatView({
     },
     [onSelectSession],
   );
+  // Grouped once per transcript instead of per bubble: every MessageBubble
+  // only looks its own id up in this map.
+  const brigadeNodesByMessageId = useMemo(
+    () =>
+      showsNestedAgentFooter
+        ? groupBrigadeNodesByHostMessage(conductorChildren, timelineMessages)
+        : EMPTY_BRIGADE_NODES_BY_MESSAGE_ID,
+    [conductorChildren, showsNestedAgentFooter, timelineMessages],
+  );
   const conductorTranscriptValue = useMemo(
     () => ({
       enabled: showsNestedAgentFooter,
       children: conductorChildren,
       reportsByRunId: conductorReportsByRunId,
       messages: timelineMessages,
+      brigadeNodesByMessageId,
       onOpenChild: handleOpenChild,
       onStopChild: handleStopChild,
     }),
     [
+      brigadeNodesByMessageId,
       conductorChildren,
       conductorReportsByRunId,
       handleOpenChild,
