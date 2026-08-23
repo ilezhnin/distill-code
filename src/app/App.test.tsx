@@ -179,9 +179,11 @@ describe("App", () => {
     ).toHaveLength(6);
     expect(mocks.useAvatarMedia).toHaveBeenCalledWith("app-avatar:pollies-22");
     expect(mocks.useAvatarMedia).toHaveBeenCalledWith("app-avatar:gloopies-14");
-    expect(
-      container.querySelectorAll("[data-login-avatar] video"),
-    ).toHaveLength(14);
+    // Avatars are stills now — AvatarMedia paints the poster frame through an
+    // <img> even when the catalog entry is a video.
+    expect(container.querySelectorAll("[data-login-avatar] img")).toHaveLength(
+      14,
+    );
     expect(screen.queryByText("App Shell")).not.toBeInTheDocument();
     expect(mocks.appShellRender).not.toHaveBeenCalled();
   });
