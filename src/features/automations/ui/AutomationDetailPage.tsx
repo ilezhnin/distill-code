@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconCopy, IconPencil, IconTrash } from "@tabler/icons-react";
-import { PinIcon } from "lucide-react";
 import type {
   AutomationTile,
   UpdateAutomationTileRequest,
@@ -85,10 +84,6 @@ export function AutomationDetailPage({
   mutationError: string | null;
   isSaving: boolean;
   actions?: {
-    pinLabel: string;
-    isPinned: boolean;
-    isPinning: boolean;
-    onTogglePin: () => void;
     onEditWithChat: () => void;
     onDuplicate: () => void;
     onDelete: () => void;
@@ -547,21 +542,6 @@ export function AutomationDetailPage({
                       className={PRIMARY_ACTION_BUTTON_CLASS}
                     >
                       <IconPencil className={ACTION_ICON_CLASS} />
-                    </Button>
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      aria-label={actions.pinLabel}
-                      tooltip={actions.pinLabel}
-                      onClick={actions.onTogglePin}
-                      disabled={actions.isPinning || !tile.id}
-                      className={ACTION_BUTTON_CLASS}
-                    >
-                      <PinIcon
-                        className={ACTION_ICON_CLASS}
-                        fill={actions.isPinned ? "currentColor" : "none"}
-                      />
                     </Button>
                     <Button
                       type="button"

@@ -30,22 +30,9 @@ import {
 } from "./SidebarProjectsInfoButton";
 import type { SidebarSessionItem } from "./SidebarProjectSection";
 import { SidebarRecentsSection } from "./SidebarRecentsSection";
-import { SidebarPinnedItemsSection } from "./SidebarPinnedItemsSection";
-
-export type SidebarPinnedNavigationItem = {
-  kind: "chat";
-  session: SidebarSessionItem;
-};
 
 export interface SidebarProjectsSectionProps {
   projects: ProjectInfo[];
-  pinnedNavigationItems?: SidebarPinnedNavigationItem[];
-  onReorderPinnedNavigationItem?: (
-    fromKey: string,
-    toKey: string,
-    placement: "before" | "after",
-  ) => void;
-  pinnedChatProjectIds?: ReadonlySet<string>;
   projectSessions: {
     byProject: Record<string, SidebarSessionItem[]>;
     standalone: SidebarSessionItem[];
@@ -57,10 +44,6 @@ export interface SidebarProjectsSectionProps {
   hasFlatChatOverflow: boolean;
   groupChatsByProject: boolean;
   onGroupChatsByProjectChange?: (grouped: boolean) => void;
-  pinnedShowChatIcons: boolean;
-  onPinnedShowChatIconsChange: (show: boolean) => void;
-  pinnedShowTimestamps: boolean;
-  onPinnedShowTimestampsChange: (show: boolean) => void;
   projectShowChatIcons: boolean;
   onProjectShowChatIconsChange: (show: boolean) => void;
   projectShowTimestamps: boolean;
@@ -97,11 +80,7 @@ export interface SidebarProjectsSectionProps {
   onSelectionChange?: (sessionId: string, selected: boolean) => void;
   onRangeSelect?: (sessionId: string) => void;
   onArchiveSelected?: () => void;
-  onPinSelectedToHome?: () => void;
-  onUnpinSelectedFromHome?: () => void;
-  isSelectionPinnedToHome?: boolean;
   onOpenSelectedInWindows?: () => void;
-  isPinningSelectedToHome?: boolean;
   onMarkSelectedRead?: () => void;
   onMarkSelectedUnread?: () => void;
   onReorderProject?: (
@@ -110,10 +89,8 @@ export interface SidebarProjectsSectionProps {
     placement?: "before" | "after",
   ) => void;
   hasMoreSessions?: boolean;
-  pinnedSectionOpen?: boolean;
   projectsSectionOpen: boolean;
   recentsSectionOpen: boolean;
-  onTogglePinnedSection?: () => void;
   onToggleProjectsSection: () => void;
   onToggleRecentsSection: () => void;
   showTopDivider?: boolean;
@@ -125,19 +102,12 @@ const SECTION_HEADER_TEXT_CLASS = SIDEBAR_GROUP_LABEL_TEXT_CLASS;
 
 export function SidebarProjectsSection({
   projects,
-  pinnedNavigationItems = [],
-  onReorderPinnedNavigationItem,
-  pinnedChatProjectIds,
   projectSessions,
   hasVisibleChats,
   flatChatGroups,
   hasFlatChatOverflow,
   groupChatsByProject,
   onGroupChatsByProjectChange,
-  pinnedShowChatIcons,
-  onPinnedShowChatIconsChange,
-  pinnedShowTimestamps,
-  onPinnedShowTimestampsChange,
   projectShowChatIcons,
   onProjectShowChatIconsChange,
   projectShowTimestamps,
@@ -173,19 +143,13 @@ export function SidebarProjectsSection({
   onSelectionChange,
   onRangeSelect,
   onArchiveSelected,
-  onPinSelectedToHome,
-  onUnpinSelectedFromHome,
-  isSelectionPinnedToHome,
   onOpenSelectedInWindows,
-  isPinningSelectedToHome = false,
   onMarkSelectedRead,
   onMarkSelectedUnread,
   onReorderProject,
   hasMoreSessions = false,
-  pinnedSectionOpen = true,
   projectsSectionOpen,
   recentsSectionOpen,
-  onTogglePinnedSection,
   onToggleProjectsSection,
   onToggleRecentsSection,
   showTopDivider: _showTopDivider = true,
@@ -218,50 +182,10 @@ export function SidebarProjectsSection({
     "w-full justify-start gap-2 text-sm text-muted-foreground",
     SIDEBAR_ROW_HORIZONTAL_PADDING_CLASS,
   );
-  const pinnedSection =
-    pinnedNavigationItems.length > 0 ? (
-      <SidebarPinnedItemsSection
-        items={pinnedNavigationItems}
-        isOpen={pinnedSectionOpen}
-        onToggleOpen={onTogglePinnedSection ?? (() => {})}
-        onReorder={onReorderPinnedNavigationItem}
-        collapsed={collapsed}
-        labelTransition={labelTransition}
-        labelVisible={labelVisible}
-        activeSessionId={activeSessionId}
-        projectsById={new Map(projects.map((project) => [project.id, project]))}
-        onSelectSession={onSelectSession}
-        onEditProject={onEditProject}
-        onArchiveChat={onArchiveChat}
-        onRenameChat={onRenameChat}
-        onForkChat={onForkChat}
-        onMarkChatRead={onMarkChatRead}
-        onMarkChatUnread={onMarkChatUnread}
-        selectedSessionIds={selectedSessionIds}
-        selectionEnabled={selectionEnabled}
-        selectionActionsDisabled={selectionActionsDisabled}
-        onSelectionClear={onSelectionClear}
-        onSelectionChange={onSelectionChange}
-        onRangeSelect={onRangeSelect}
-        onArchiveSelected={onArchiveSelected}
-        onPinSelectedToHome={onPinSelectedToHome}
-        onUnpinSelectedFromHome={onUnpinSelectedFromHome}
-        isSelectionPinnedToHome={isSelectionPinnedToHome}
-        onOpenSelectedInWindows={onOpenSelectedInWindows}
-        isPinningSelectedToHome={isPinningSelectedToHome}
-        onMarkSelectedRead={onMarkSelectedRead}
-        onMarkSelectedUnread={onMarkSelectedUnread}
-        showChatIcons={pinnedShowChatIcons}
-        onShowChatIconsChange={onPinnedShowChatIconsChange}
-        showTimestamps={pinnedShowTimestamps}
-        onShowTimestampsChange={onPinnedShowTimestampsChange}
-      />
-    ) : null;
 
   if (!groupChatsByProject) {
     return (
       <>
-        {pinnedSection}
         <SidebarFlatChatsSection
           groups={flatChatGroups}
           onGroupChatsByProjectChange={onGroupChatsByProjectChange}
@@ -286,11 +210,7 @@ export function SidebarProjectsSection({
           onSelectionChange={onSelectionChange}
           onRangeSelect={onRangeSelect}
           onArchiveSelected={onArchiveSelected}
-          onPinSelectedToHome={onPinSelectedToHome}
-          onUnpinSelectedFromHome={onUnpinSelectedFromHome}
-          isSelectionPinnedToHome={isSelectionPinnedToHome}
           onOpenSelectedInWindows={onOpenSelectedInWindows}
-          isPinningSelectedToHome={isPinningSelectedToHome}
           onMarkSelectedRead={onMarkSelectedRead}
           onMarkSelectedUnread={onMarkSelectedUnread}
           showTimestamps={chatShowTimestamps}
@@ -315,7 +235,6 @@ export function SidebarProjectsSection({
               : "opacity-0 max-h-0 overflow-hidden",
         )}
       >
-        {pinnedSection}
         <SidebarSectionHeader
           label={t("sections.projects")}
           collapsed={collapsed}
@@ -357,7 +276,6 @@ export function SidebarProjectsSection({
           <SidebarProjectList
             projects={projects}
             projectSessionsByProject={projectSessions.byProject}
-            pinnedChatProjectIds={pinnedChatProjectIds}
             expandedProjects={expandedProjects}
             toggleProject={toggleProject}
             collapsed={collapsed}
@@ -381,11 +299,7 @@ export function SidebarProjectsSection({
             onSelectionChange={onSelectionChange}
             onRangeSelect={onRangeSelect}
             onArchiveSelected={onArchiveSelected}
-            onPinSelectedToHome={onPinSelectedToHome}
-            onUnpinSelectedFromHome={onUnpinSelectedFromHome}
-            isSelectionPinnedToHome={isSelectionPinnedToHome}
             onOpenSelectedInWindows={onOpenSelectedInWindows}
-            isPinningSelectedToHome={isPinningSelectedToHome}
             onMarkSelectedRead={onMarkSelectedRead}
             onMarkSelectedUnread={onMarkSelectedUnread}
             showChatIcons={projectShowChatIcons}
@@ -490,11 +404,7 @@ export function SidebarProjectsSection({
             onSelectionChange={onSelectionChange}
             onRangeSelect={onRangeSelect}
             onArchiveSelected={onArchiveSelected}
-            onPinSelectedToHome={onPinSelectedToHome}
-            onUnpinSelectedFromHome={onUnpinSelectedFromHome}
-            isSelectionPinnedToHome={isSelectionPinnedToHome}
             onOpenSelectedInWindows={onOpenSelectedInWindows}
-            isPinningSelectedToHome={isPinningSelectedToHome}
             onMarkSelectedRead={onMarkSelectedRead}
             onMarkSelectedUnread={onMarkSelectedUnread}
             showChatIcons={chatShowChatIcons}

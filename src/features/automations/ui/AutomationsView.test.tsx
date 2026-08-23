@@ -302,9 +302,6 @@ describe("AutomationsView", () => {
       ),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Pin to home" }),
-    ).toBeInTheDocument();
-    expect(
       screen.getByRole("button", { name: "Edit with chat" }),
     ).toBeInTheDocument();
     expect(

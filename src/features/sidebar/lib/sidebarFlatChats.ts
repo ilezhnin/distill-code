@@ -2,13 +2,12 @@ import { sessionActivityAt } from "@/features/chat/lib/sessionActivity";
 import type { SidebarSessionItem } from "@/features/sessions/ui/session-list/SidebarProjectSection";
 
 export interface FlatChatGroup {
-  id: "pinned" | "last-hour" | "last-day" | "older";
+  id: "last-hour" | "last-day" | "older";
   sessions: SidebarSessionItem[];
 }
 
 export const MAX_FLAT_SIDEBAR_CHATS = 30;
 const FLAT_CHAT_GROUP_DEFINITIONS: Array<Omit<FlatChatGroup, "sessions">> = [
-  { id: "pinned" },
   { id: "last-hour" },
   { id: "last-day" },
   { id: "older" },
@@ -36,7 +35,6 @@ function getFlatChatGroupId(
 export function groupFlatChatsByActivityAge(
   sessions: SidebarSessionItem[],
   nowMs: number = Date.now(),
-  pinnedSessionIds: ReadonlySet<string> = new Set(),
 ): FlatChatGroup[] {
   const groups = new Map<FlatChatGroup["id"], FlatChatGroup>(
     FLAT_CHAT_GROUP_DEFINITIONS.map((group) => [
@@ -46,9 +44,7 @@ export function groupFlatChatsByActivityAge(
   );
 
   for (const session of sessions) {
-    const groupId = pinnedSessionIds.has(session.id)
-      ? "pinned"
-      : getFlatChatGroupId(session, nowMs);
+    const groupId = getFlatChatGroupId(session, nowMs);
     groups.get(groupId)?.sessions.push(session);
   }
 

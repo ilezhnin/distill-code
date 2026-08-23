@@ -48,11 +48,7 @@ export function SidebarFlatChatsSection({
   onSelectionChange,
   onRangeSelect,
   onArchiveSelected,
-  onPinSelectedToHome,
-  onUnpinSelectedFromHome,
-  isSelectionPinnedToHome,
   onOpenSelectedInWindows,
-  isPinningSelectedToHome = false,
   onMarkSelectedRead,
   onMarkSelectedUnread,
   showChatIcons = false,
@@ -84,11 +80,7 @@ export function SidebarFlatChatsSection({
   onSelectionChange?: (sessionId: string, selected: boolean) => void;
   onRangeSelect?: (sessionId: string) => void;
   onArchiveSelected?: () => void;
-  onPinSelectedToHome?: () => void;
-  onUnpinSelectedFromHome?: () => void;
-  isSelectionPinnedToHome?: boolean;
   onOpenSelectedInWindows?: () => void;
-  isPinningSelectedToHome?: boolean;
   onMarkSelectedRead?: () => void;
   onMarkSelectedUnread?: () => void;
   showChatIcons?: boolean;
@@ -330,11 +322,7 @@ export function SidebarFlatChatsSection({
                       onMarkUnread={onMarkChatUnread}
                       onArchive={onArchiveChat}
                       onArchiveSelected={onArchiveSelected}
-                      onPinSelectedToHome={onPinSelectedToHome}
-                      onUnpinSelectedFromHome={onUnpinSelectedFromHome}
-                      isSelectionPinnedToHome={isSelectionPinnedToHome}
                       onOpenSelectedInWindows={onOpenSelectedInWindows}
-                      isPinningSelectedToHome={isPinningSelectedToHome}
                       onMarkSelectedRead={onMarkSelectedRead}
                       onMarkSelectedUnread={onMarkSelectedUnread}
                     />
