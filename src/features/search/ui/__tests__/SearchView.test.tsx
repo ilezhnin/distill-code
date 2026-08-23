@@ -335,6 +335,9 @@ describe("SearchView", () => {
   });
 
   it("finds the telemetry toggle while the telemetry capability is available", async () => {
+    // Telemetry is an opt-in build feature (VITE_TELEMETRY === "1"), so the
+    // capability this test is about has to be arranged, not assumed.
+    vi.stubEnv("VITE_TELEMETRY", "1");
     const user = userEvent.setup();
     render(
       <SearchView
@@ -363,6 +366,9 @@ describe("SearchView", () => {
   // the search hit has to go with it — otherwise the result navigates to a
   // System page that renders no such control.
   it("hides the telemetry toggle when runtime config disables telemetry", async () => {
+    // Build feature on, runtime toggle off: the runtime toggle alone has to
+    // remove the hit, which is only a real assertion once the build gate is up.
+    vi.stubEnv("VITE_TELEMETRY", "1");
     useRuntimeConfigStore.setState({
       loaded: true,
       config: {
