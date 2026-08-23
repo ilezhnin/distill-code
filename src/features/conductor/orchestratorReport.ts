@@ -7,6 +7,10 @@ const REPORT_FENCE_PATTERN = /```distill-report\s*([\s\S]*?)```/i;
 export function wrapOrchestratorTaskPrompt(task: string): string {
   return `${task.trim()}
 
+Do this step and stop. Do not carry on into the next piece of work, and do not keep trying variations once you have an answer or once you are genuinely stuck. If you cannot finish — blocked, missing access, the task turns out to be impossible — that is a legitimate result: report it with "status": "failed" and "needsOperator": true instead of looping.
+
+Put in "decisions" every choice and assumption you made that someone continuing from your report would otherwise have to guess. They get this report, never your conversation.
+
 When you finish, end with this report block and no extra commentary after it:
 
 \`\`\`distill-report

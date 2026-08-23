@@ -250,3 +250,53 @@ describe("buildWaveStepPrompt", () => {
     );
   });
 });
+
+describe("verification and decomposition guidance", () => {
+  it("tells the conductor to split by context boundary, not by job title", () => {
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain("How to split the work");
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain(
+      "Split along context boundaries, not job titles.",
+    );
+  });
+
+  it("requires a last-step artifact verification for checkable work", () => {
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain("## Verification");
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain('role "acceptor"');
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain('"access":"all"');
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain(
+      "inspect the artifact directly",
+    );
+  });
+
+  it("names both verification roles it asks for, and they are legal wave roles", () => {
+    for (const role of ["acceptor", "adversary"]) {
+      expect(CONDUCTOR_PROTOCOL_PROMPT).toContain(role);
+      const parsed = parseDistillWave(
+        [
+          "```" + WAVE_FENCE_TAG,
+          JSON.stringify({
+            steps: [{ role, subtask: "Check the build", access: "all" }],
+          }),
+          "```",
+        ].join("\n"),
+      );
+      expect(parsed.kind).toBe("plan");
+    }
+  });
+
+  it("forbids accepting checkable work that was never checked", () => {
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain(
+      `was checkable and was not checked is "${VERDICT_TOKENS.needsOperator}"`,
+    );
+  });
+
+  it("gives the worker a stopping condition and a legitimate way to fail", () => {
+    const prompt = buildWaveStepPrompt(
+      { role: "qa", subtask: "Run the suite", access: [] },
+      [],
+    );
+    expect(prompt).toContain("Do this step and stop.");
+    expect(prompt).toContain('"needsOperator": true');
+    expect(prompt).toContain('Put in "decisions"');
+  });
+});
