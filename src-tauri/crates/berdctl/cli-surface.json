@@ -69,7 +69,7 @@
         "attach": {
           "action": "attach",
           "about": "Attach a folder, repository, or worktree to a chat",
-          "afterHelp": "Use this after creating or adopting a folder inside a workspace root already authorized for the chat. Registered Git worktrees of an authorized repository are also allowed; select a new unrelated root in Berd first.\n\nExample:\n  berdctl folder attach --session-id <session-id> --path ~/src/repo-worktrees/feature\n\nResult:\n  {\"ok\": true, \"path\": \"...\", \"kind\": \"...\", \"branch\": \"...\"|null}"
+          "afterHelp": "Use this after creating or adopting a folder inside a workspace root already authorized for the chat. Registered Git worktrees of an authorized repository are also allowed; select a new unrelated root in Distill first.\n\nExample:\n  berdctl folder attach --session-id <session-id> --path ~/src/repo-worktrees/feature\n\nResult:\n  {\"ok\": true, \"path\": \"...\", \"kind\": \"...\", \"branch\": \"...\"|null}"
         },
         "detach": {
           "action": "detach",
@@ -89,7 +89,7 @@
         "list": {
           "action": "list",
           "about": "List folders attached to a chat and identify its cwd",
-          "afterHelp": "The top-level cwd is returned even when it is Berd's implicit default and is not an attached folder.\n\nExample:\n  berdctl folder list --session-id <session-id>\n\nResult:\n  {\"ok\": true, \"cwd\": \"...\", \"folders\": [{\"path\": \"...\", \"kind\": \"...\", \"branch\": \"...\"|null, \"cwd\": true|false}]}"
+          "afterHelp": "The top-level cwd is returned even when it is Distill's implicit default and is not an attached folder.\n\nExample:\n  berdctl folder list --session-id <session-id>\n\nResult:\n  {\"ok\": true, \"cwd\": \"...\", \"folders\": [{\"path\": \"...\", \"kind\": \"...\", \"branch\": \"...\"|null, \"cwd\": true|false}]}"
         }
       }
     },
