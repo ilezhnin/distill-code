@@ -360,3 +360,20 @@ describe("allowedWaveRoleIds", () => {
     expect(allowedWaveRoleIds()).not.toContain("planner");
   });
 });
+
+describe("malformed-json hint", () => {
+  it("names the unescaped-quote cause when V8 reports it", () => {
+    const parsed = parseDistillWave(
+      [
+        "```distill-wave",
+        '{"steps":[{"role":"scout","subtask":"say "hi" to them","access":[]}]}',
+        "```",
+      ].join("\n"),
+    );
+    expect(parsed.kind).toBe("invalid");
+    if (parsed.kind === "invalid") {
+      expect(parsed.reason).toBe("malformed-json");
+      expect(parsed.detail).toContain("raw double-quote");
+    }
+  });
+});

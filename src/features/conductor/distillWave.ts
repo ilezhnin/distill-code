@@ -256,9 +256,15 @@ export function parseWavePlanBody(
     parsed = JSON.parse(body);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // V8 phrases an unescaped quote inside a string value as this complaint;
+    // long free-text subtasks make it the most likely malformed-json cause by
+    // far, so the detail names it instead of leaving a bare byte position.
+    const hint = /Expected ',' or '}' after property value/.test(message)
+      ? " A common cause is a raw double-quote inside a string value, such as a subtask that quotes something."
+      : "";
     return invalid(
       "malformed-json",
-      `The ${WAVE_FENCE_TAG} block is not valid JSON: ${message}`,
+      `The ${WAVE_FENCE_TAG} block is not valid JSON: ${message}.${hint}`,
     );
   }
 
