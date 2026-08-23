@@ -99,8 +99,17 @@ export function stripReportFence(text: string): string {
   return text.replace(REPORT_FENCE_PATTERN, "").trim();
 }
 
+/**
+ * Renders a set of finished children's reports as the prose a reader sees.
+ *
+ * Takes only the display name off the node so callers that hold a partial node
+ * (the digest builder works from wave steps, not from graph nodes) can use it.
+ */
 export function formatConductorAnswer(
-  results: Array<{ node: SessionNode; report: StructuredReport }>,
+  results: Array<{
+    node: Pick<SessionNode, "displayName">;
+    report: StructuredReport;
+  }>,
 ): string {
   return results
     .map(({ node, report }) => {

@@ -508,7 +508,36 @@
         "accessInvalid": "Step {{step}} has an unsupported \"access\" value.",
         "modelNotAString": "Step {{step}} has a \"model\" field that is not a model name.",
         "stepModelUnsupported": "Step {{step}} asks to run on a specific model. Per-step models are not supported yet, and the whole plan was refused rather than quietly running the step on another model."
+      },
+      "verdict": {
+        "needsOperatorTitle": "This wave stopped without a decision, so it is over to you.",
+        "note": "The conductor's note: {{note}}",
+        "retry": "Ask the conductor again",
+        "reason": {
+          "accepted": "The conductor accepted the result.",
+          "conductorNeedsOperator": "The conductor says it cannot finish this without you.",
+          "verdictMissing": "The conductor replied without a verdict, so nothing was decided.",
+          "verdictInvalid": "The conductor's verdict could not be read, so nothing was decided.",
+          "revisionCapReached": "The conductor asked for another revision, but this request has already used its {{max}} revisions.",
+          "digestUndeliverable": "The brigade's report could not be delivered to the conductor."
+        },
+        "prose": {
+          "accept": "Accepted the brigade's result.",
+          "revise": "Asked for a revision — see the brigade below.",
+          "needsOperator": "Handed this back to the operator."
+        }
+      },
+      "digest": {
+        "cardTitle": "Brigade report delivered to this chat",
+        "expand": "Show report",
+        "collapse": "Hide report",
+        "deliveryFailed": "The brigade's report could not be delivered into this chat. It is kept below so nothing is lost."
       }
+    },
+    "selfExecutingBadge": "The conductor ran a tool itself — it should only plan or answer.",
+    "poke": {
+      "ask": "Ask for a status",
+      "pending": "Asking…"
     }
   },
   "harnessBrigade": {
