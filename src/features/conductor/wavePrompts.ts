@@ -243,6 +243,45 @@ Summarize what you dispatched, what you already know, and what is still outstand
 export const WAVE_VERDICT_RETRY_PROMPT = `Your previous answer to this digest could not be read as a verdict, so nothing was decided and the operator asked for another try.`;
 
 /**
+ * The header of a re-asked digest (Q5).
+ *
+ * A retry that re-sends the identical question is a model call spent
+ * reproducing the same failure: the conductor is handed the same input, told
+ * nothing about what went wrong, and has no reason to answer differently. So
+ * this says three things the first attempt did not — that the answer failed,
+ * *how* it failed, and exactly what a readable answer looks like.
+ *
+ * `issue` is what the app observed, not what the model claims: `missing` means
+ * no fence at all, `invalid` means a fence that did not parse, and the detail
+ * is the parser's own message.
+ */
+export function buildWaveVerdictRetryInstruction(issue?: {
+  reason: "missing" | "invalid";
+  detail?: string;
+}): string {
+  const what =
+    issue?.reason === "invalid"
+      ? `Your ${VERDICT_FENCE_TAG} block was there but could not be read.`
+      : issue?.reason === "missing"
+        ? `Your reply contained no ${VERDICT_FENCE_TAG} block at all.`
+        : "";
+  const detail = issue?.detail?.trim();
+  return [
+    WAVE_VERDICT_RETRY_PROMPT,
+    [what, detail].filter((part) => part && part.length > 0).join(" "),
+    `Answer this time with exactly one ${VERDICT_FENCE_TAG} block, on its own fenced lines, holding a JSON object whose "verdict" is exactly one of ${VERDICT_TOKENS.accept}, ${VERDICT_TOKENS.revise} or ${VERDICT_TOKENS.needsOperator} — no other word is accepted, and nothing else counts as an answer:
+
+\`\`\`${VERDICT_FENCE_TAG}
+{"verdict":"${VERDICT_TOKENS.accept}","note":"one line for the operator"}
+\`\`\`
+
+If you ${VERDICT_TOKENS.revise}, put the revision wave in a ${WAVE_FENCE_TAG} block in the same message. The digest below is unchanged — this is the same wave, asked again.`,
+  ]
+    .filter((part) => part.trim().length > 0)
+    .join("\n\n");
+}
+
+/**
  * Header of a wave digest.
  *
  * The receiving model is a conductor whose every other incoming user message is

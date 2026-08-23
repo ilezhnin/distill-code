@@ -41,8 +41,14 @@ import {
   startDigestDispatch,
   type PendingDigestDispatch,
 } from "./waveLifecycle";
-import { waveRejectionNoticeText, waveSpawnFailureText } from "./waveNotices";
+import {
+  waveConcurrentPlanNoticeText,
+  waveRejectionNoticeText,
+  waveSpawnFailureText,
+} from "./waveNotices";
+import { isWaveLive } from "./waveVerdict";
 import { buildWaveStepPrompt } from "./wavePrompts";
+import { resetConductorTranscriptsForTests } from "./waveTranscripts";
 import {
   getWaveEngineState,
   hasWaveTombstone,
@@ -93,6 +99,7 @@ function appendConductorNotice(
   sessionId: string,
   text: string,
   retryAction: boolean,
+  type: "error" | "warning" = "error",
 ): void {
   useChatStore
     .getState()
@@ -100,10 +107,21 @@ function appendConductorNotice(
       sessionId,
       createSystemNotificationMessage(
         text,
-        "error",
+        type,
         retryAction ? { type: "retryWavePlan", sessionId } : undefined,
       ),
     );
+}
+
+/** True when this conductor already has a wave that has not closed yet. */
+function hasLiveWaveFor(
+  state: WaveEngineState,
+  conductorSessionId: string,
+): boolean {
+  return state.waves.some(
+    (wave) =>
+      wave.conductorSessionId === conductorSessionId && isWaveLive(wave),
+  );
 }
 
 function admitCandidates(state: WaveEngineState): WaveEngineState {
@@ -126,6 +144,32 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
   for (const candidate of candidates) {
     if (inFlightPlans.has(candidate.planMessageId)) continue;
     inFlightPlans.add(candidate.planMessageId);
+
+    // One wave at a time per conductor. Admitting a second one while the first
+    // is still live is the only unbounded cost path in the system: the
+    // operator adds "and while you're in there…" mid-run, the conductor
+    // answers with a plan because that is what it was told to do, and five
+    // more sessions start editing the same working folder with no coordination
+    // between the two waves. The refusal is tombstoned like any other, so it
+    // is said once and not on every tick, and it is a warning rather than an
+    // error because nobody did anything wrong.
+    if (hasLiveWaveFor(next, candidate.conductorSessionId)) {
+      next = withWaveTombstone(next, {
+        planMessageId: candidate.planMessageId,
+        conductorSessionId: candidate.conductorSessionId,
+        outcome: "rejected",
+        at: Date.now(),
+      });
+      setWaveEngineState(next);
+      appendConductorNotice(
+        candidate.conductorSessionId,
+        waveConcurrentPlanNoticeText(),
+        false,
+        "warning",
+      );
+      next = getWaveEngineState();
+      continue;
+    }
 
     const admission = admitWavePlan(candidate.parse);
     if (admission.kind === "rejected") {
@@ -308,10 +352,13 @@ export function runWaveEngineTick(): void {
     // fence in it, and this pass tombstones that message id before the plan
     // detector below ever looks at it. Without this order the revision would be
     // admitted a second time as a fresh root wave, outside the revision cap.
-    const judged = processWaveVerdicts(getWaveEngineState());
+    // Both passes may have to hydrate a conductor transcript that was never
+    // loaded in this process; when one lands, they re-run through this same
+    // tick rather than waiting for an unrelated chat-store change.
+    const judged = processWaveVerdicts(getWaveEngineState(), runWaveEngineTick);
     const admitted = admitCandidates(judged);
     const advanced = advanceWaves(admitted);
-    const digested = processWaveDigests(advanced.state);
+    const digested = processWaveDigests(advanced.state, runWaveEngineTick);
     setWaveEngineState(digested.state);
     pending = advanced.pending;
     digests = digested.pending;
@@ -329,6 +376,7 @@ export function runWaveEngineTick(): void {
 /** Clears the process-local guards. Tests only. */
 export function resetWaveRunnerForTests(): void {
   resetWaveLifecycleForTests();
+  resetConductorTranscriptsForTests();
   inFlightPlans.clear();
   inFlightSpawns.clear();
   scannedWithoutPlan.clear();

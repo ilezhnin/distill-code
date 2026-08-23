@@ -18,22 +18,34 @@ import type {
   WaveStep,
   WaveStepAccess,
 } from "./distillWave";
+import { roleStage } from "./roleLayers";
 import type { RunStatus, SessionNode, StructuredReport } from "./types";
 import type { CompletedWaveStepReport } from "./wavePrompts";
 
-/** Lifecycle of a single step inside a persisted wave. */
-export type WaveStepPhase =
+/**
+ * Every lifecycle a single step inside a persisted wave can be in.
+ *
+ * This array is the single source of truth: the type is derived from it, and
+ * `waveStore.ts`'s persistence guard reads it rather than hand-writing a second
+ * copy of the same list. A hand-written second copy is exactly how a `"failed"`
+ * step came to be unreadable on reload, which deleted the whole wave.
+ */
+export const WAVE_STEP_PHASES = [
   /** Not started. Waiting on its `access` precondition, or just created. */
-  | "pending"
+  "pending",
   /** A spawn was started for this step; the child node is not visible yet. */
-  | "spawning"
+  "spawning",
   /** A graph node exists for this step; the graph owns its status from here. */
-  | "spawned"
+  "spawned",
   /**
    * The spawn itself threw and no child exists. Terminal: there is no
    * auto-retry (Q2), and later steps must not wait on it forever.
    */
-  | "failed";
+  "failed",
+] as const;
+
+/** Lifecycle of a single step inside a persisted wave. */
+export type WaveStepPhase = (typeof WAVE_STEP_PHASES)[number];
 
 export interface WaveStepState {
   stepIndex: number;
@@ -59,22 +71,42 @@ export interface WaveStepState {
  * *old* wave — a revision is a new wave — so it never appears here; the old
  * wave lands on `accepted` semantics only through its own verdict, and a
  * revised wave closes as `revised`.
+ *
+ * Like {@link WAVE_STEP_PHASES}, the array is the source of truth the
+ * persistence guard reads, so a phase added here cannot go missing there.
  */
-export type WavePhase =
+export const WAVE_PHASES = [
   /** Steps are still being scheduled, spawned or executed. */
-  | "running"
+  "running",
   /** Every step is terminal; the digest has not been built yet. */
-  | "digestPending"
+  "digestPending",
   /** The digest is being delivered to the conductor. */
-  | "dispatchingDigest"
+  "dispatchingDigest",
   /** The digest landed; the conductor's next settled answer is the verdict. */
-  | "awaitingVerdict"
+  "awaitingVerdict",
   /** The conductor accepted the result. Terminal. */
-  | "accepted"
+  "accepted",
   /** The conductor asked for another wave, which now exists. Terminal here. */
-  | "revised"
+  "revised",
   /** The loop stopped and the operator has to look at it. Terminal. */
-  | "needsOperator";
+  "needsOperator",
+] as const;
+
+export type WavePhase = (typeof WAVE_PHASES)[number];
+
+/**
+ * Why the conductor's last answer to this wave's digest was not a verdict.
+ *
+ * Persisted on the wave so the operator's manual retry (Q5) can re-ask in
+ * terms the model can act on — "you sent no fence" and "your fence did not
+ * parse" are different mistakes and need different corrections.
+ */
+export interface WaveVerdictIssue {
+  /** `missing` — no verdict fence at all. `invalid` — a fence that failed. */
+  reason: "missing" | "invalid";
+  /** The parser's explanation, when there was one. */
+  detail?: string;
+}
 
 export interface WaveState {
   waveId: string;
@@ -110,6 +142,12 @@ export interface WaveState {
    * Empty on a first wave.
    */
   carriedReports?: CompletedWaveStepReport[];
+  /**
+   * What went wrong with the last answer to this wave's digest. Set only while
+   * the wave is parked on `needsOperator` for an unreadable verdict; the next
+   * digest quotes it so the retry is not the same question twice.
+   */
+  verdictIssue?: WaveVerdictIssue;
 }
 
 /**
@@ -123,7 +161,14 @@ export type WaveRejectionReason =
    * honouring the field would silently run the step on the conductor's model,
    * which D5 forbids. The whole plan is refused, before any spawn.
    */
-  | "step-model-unsupported";
+  | "step-model-unsupported"
+  /**
+   * The plan builds something inspectable but never inspects it (E1). The
+   * protocol prompt has asked for a closing verification step since `81b29ef`;
+   * this is the floor under that instruction, so "the conductor forgot" is a
+   * refused plan the operator can see rather than an accept nobody checked.
+   */
+  | "verification-step-missing";
 
 export type WaveAdmission =
   | { kind: "accepted"; steps: readonly WaveStep[] }
@@ -192,6 +237,65 @@ export function synthesizeMissingStepReport(
   };
 }
 
+/**
+ * Role stages that make a wave *checkable*.
+ *
+ * `prod` is the stage of the roles that build the thing — integrator, brigade,
+ * unity-worker, unity-asset-integrator, artist, audio, writer. When one of them
+ * is in the plan there is an artifact to look at afterwards, and looking at it
+ * is the only external signal this loop ever gets.
+ *
+ * Deliberately narrow. `pre` work (research, design, scouting) and `post` work
+ * (marketing, playtesting) have nothing to inspect, and `release` roles
+ * (pr-submitter, localizer, devops) act on an artifact someone else already
+ * built and verified — widening the trigger to them would refuse plans that are
+ * genuinely uncheckable, and a false refusal costs the operator a replan on
+ * work that never needed a verifier.
+ */
+export const VERIFICATION_TRIGGER_STAGES: readonly string[] = ["prod"];
+
+/** Stage a wave's closing verification step must carry. */
+export const VERIFICATION_STAGE = "verify";
+
+interface WaveStepShape {
+  role: string;
+  access: WaveStepAccess;
+}
+
+/**
+ * True when a plan produces something that can be checked by looking at it,
+ * and is therefore required to end by looking at it.
+ *
+ * A one-step wave is exempt: the single worker is the work, there is no
+ * handoff to lose, and demanding a second session to check one step doubles
+ * the cost of the cheapest useful wave.
+ */
+export function waveRequiresVerification(
+  steps: readonly WaveStepShape[],
+): boolean {
+  if (steps.length < 2) return false;
+  return steps.some((step) =>
+    VERIFICATION_TRIGGER_STAGES.includes(roleStage(step.role) ?? ""),
+  );
+}
+
+/**
+ * The plan's closing verification step, or `null` when it does not have one.
+ *
+ * Both halves are load-bearing: a `verify`-stage role because that is what the
+ * catalog says inspects work, and `access: "all"` because a verifier that
+ * cannot see the earlier steps' reports cannot know what it is verifying.
+ */
+export function waveVerificationStep<Step extends WaveStepShape>(
+  steps: readonly Step[],
+): Step | null {
+  const last = steps.at(-1);
+  if (!last) return null;
+  if (roleStage(last.role) !== VERIFICATION_STAGE) return null;
+  if (last.access !== "all") return null;
+  return last;
+}
+
 function rejected(
   reason: WaveRejectionReason,
   detail: string,
@@ -232,6 +336,17 @@ export function admitWavePlan(
       "step-model-unsupported",
       `Step ${modelStepIndex + 1} asks for model "${step.model}". Per-step models are not supported yet, and running the step on another model would be a silent substitution, so the whole wave was refused. Re-send the plan without "model".`,
       modelStepIndex,
+    );
+  }
+
+  if (
+    waveRequiresVerification(parse.steps) &&
+    !waveVerificationStep(parse.steps)
+  ) {
+    return rejected(
+      "verification-step-missing",
+      `This wave builds something that can be inspected, so its last step must inspect it: role "acceptor" (or "adversary") with "access":"all", and a subtask that checks the artifact itself rather than re-reading the other steps' reports. Re-send the plan with that step, or — if there is genuinely nothing to inspect — without the step that builds one.`,
+      parse.steps.length - 1,
     );
   }
 
@@ -280,6 +395,49 @@ export function createWaveState(args: {
 /** Returns a wave with a new lifecycle phase, or the same object if unchanged. */
 export function withWavePhase(wave: WaveState, phase: WavePhase): WaveState {
   return wave.phase === phase ? wave : { ...wave, phase };
+}
+
+/**
+ * Returns a wave carrying the Q5 retry note, or with it removed.
+ *
+ * Removal matters as much as the note: a wave whose verdict was finally read
+ * must not keep quoting an older failure at the conductor on a later retry.
+ */
+export function withVerdictIssue(
+  wave: WaveState,
+  issue: WaveVerdictIssue | undefined,
+): WaveState {
+  if (issue) {
+    if (
+      wave.verdictIssue?.reason === issue.reason &&
+      wave.verdictIssue?.detail === issue.detail
+    ) {
+      return wave;
+    }
+    return { ...wave, verdictIssue: issue };
+  }
+  if (!wave.verdictIssue) return wave;
+  const { verdictIssue: _cleared, ...rest } = wave;
+  return rest;
+}
+
+/**
+ * True when at least one step of the wave produced a real report.
+ *
+ * The wave engine treats any terminal step as "over", which is right while the
+ * app runs: a step that stopped is not coming back. Across a restart it is
+ * only half the story — the startup reconcile demotes every child whose
+ * runtime died with the process, so a wave interrupted mid-flight looks
+ * exactly like a wave that finished, except that not one step ever reported.
+ * That difference is the whole signal, and it is this predicate.
+ */
+export function hasAttestedWaveStepReport(
+  wave: WaveState,
+  reportOf: (runId: string | null | undefined) => StructuredReport | undefined,
+): boolean {
+  return wave.steps.some((step) =>
+    step.runId ? reportOf(step.runId) !== undefined : false,
+  );
 }
 
 /**
