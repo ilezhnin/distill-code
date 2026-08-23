@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   brigadeWaitIndicator,
-  isSessionRunning,
   isWorkingStatus,
   summarizeBrigadeActivity,
 } from "./brigadeActivity";
@@ -54,17 +53,6 @@ describe("summarizeBrigadeActivity", () => {
 
   it("returns zeroes for an empty brigade", () => {
     expect(summarizeBrigadeActivity([])).toEqual({ working: 0, done: 0 });
-  });
-});
-
-describe("isSessionRunning", () => {
-  it("counts every non-idle, non-error chat state as running", () => {
-    expect(isSessionRunning("thinking")).toBe(true);
-    expect(isSessionRunning("streaming")).toBe(true);
-    expect(isSessionRunning("waiting")).toBe(true);
-    expect(isSessionRunning("compacting")).toBe(true);
-    expect(isSessionRunning("idle")).toBe(false);
-    expect(isSessionRunning("error")).toBe(false);
   });
 });
 

@@ -1,16 +1,8 @@
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import type { ChatState } from "@/shared/types/chat";
 
-import type { RunStatus, SessionNode } from "./types";
-
-/**
- * Statuses that claim "this session is executing right now". A persisted graph
- * keeps them across an app restart even though nothing is running any more —
- * that is the staleness this module detects.
- */
-function isWorkingStatus(status: RunStatus): boolean {
-  return status === "starting" || status === "running" || status === "waiting";
-}
+import { isWorkingStatus } from "./brigadeActivity";
+import type { SessionNode } from "./types";
 
 /**
  * The slice of `SessionChatRuntime` that decides whether a session is live.
