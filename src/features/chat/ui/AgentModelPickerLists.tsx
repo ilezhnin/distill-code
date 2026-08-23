@@ -211,9 +211,7 @@ export const RecommendedModelList = forwardRef<
     }
     return {
       current: [...groups.current, ...selectedLegacy],
-      legacy: groups.legacy.filter(
-        (model) => !selectedLegacy.includes(model),
-      ),
+      legacy: groups.legacy.filter((model) => !selectedLegacy.includes(model)),
     };
   }, [recommended, currentModelId, currentModelProviderId]);
 

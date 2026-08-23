@@ -240,16 +240,27 @@ describe("homeWidgetMutations", () => {
 });
 
 describe("updateWidgetStateMutation — photo shape resize", () => {
-  it("preserves displayed width when an original photo becomes square", () => {
+  // The photo widget's shape-aware size profiles retired with the old Home
+  // canvas: the catalog entry keeps one profile now, so a shape change never
+  // crosses a profile boundary and the merge leaves geometry untouched.
+  it.each([
+    { width: 280, height: 280, aspectRatio: 1 },
+    { width: 900, height: 450, aspectRatio: 2 },
+    { width: 320, height: 240, aspectRatio: 4 / 3 },
+  ])("merges the new shape without resizing a $width x $height photo", ({
+    width,
+    height,
+    aspectRatio,
+  }) => {
     const photo: WidgetInstance = {
       id: "photo-1",
       type: "photo",
       x: 20,
       y: 30,
       z: 1,
-      width: 280,
-      height: 280,
-      state: { shape: "original", aspectRatio: 1 },
+      width,
+      height,
+      state: { shape: "original", aspectRatio },
     };
 
     const next = updateWidgetStateMutation([photo], "photo-1", {
@@ -259,55 +270,9 @@ describe("updateWidgetStateMutation — photo shape resize", () => {
     expect(next?.[0]).toMatchObject({
       x: 20,
       y: 30,
-      width: 280,
-      height: 280,
+      width,
+      height,
       state: { shape: "square" },
-    });
-  });
-
-  it("preserves widths outside the previous square bounds when changing shape", () => {
-    const photo: WidgetInstance = {
-      id: "photo-1",
-      type: "photo",
-      x: 20,
-      y: 30,
-      z: 1,
-      width: 900,
-      height: 450,
-      state: { shape: "original", aspectRatio: 2 },
-    };
-
-    const next = updateWidgetStateMutation([photo], "photo-1", {
-      shape: "square",
-    });
-
-    expect(next?.[0]).toMatchObject({
-      width: 900,
-      height: 900,
-    });
-  });
-
-  it("preserves width and recenters vertically when a landscape photo becomes square", () => {
-    const photo: WidgetInstance = {
-      id: "photo-1",
-      type: "photo",
-      x: 20,
-      y: 30,
-      z: 1,
-      width: 320,
-      height: 240,
-      state: { shape: "original", aspectRatio: 4 / 3 },
-    };
-
-    const next = updateWidgetStateMutation([photo], "photo-1", {
-      shape: "square",
-    });
-
-    expect(next?.[0]).toMatchObject({
-      x: 20,
-      y: -10,
-      width: 320,
-      height: 320,
     });
   });
 });

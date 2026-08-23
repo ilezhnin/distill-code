@@ -16,7 +16,8 @@ export const EMBEDDED_REASONING_EFFORTS = [
   "off",
 ] as const;
 
-export type EmbeddedReasoningEffort = (typeof EMBEDDED_REASONING_EFFORTS)[number];
+export type EmbeddedReasoningEffort =
+  (typeof EMBEDDED_REASONING_EFFORTS)[number];
 
 const EFFORT_SET = new Set<string>(EMBEDDED_REASONING_EFFORTS);
 const EFFORT_SUFFIX_ALTERNATION = [...EMBEDDED_REASONING_EFFORTS]
@@ -119,9 +120,9 @@ export function collapseEmbeddedReasoningModels(
     }
   }
 
-  const uniqueEfforts = [
-    ...new Set([...effortsByBaseId.values()].flat()),
-  ].sort((left, right) => effortSortRank(left) - effortSortRank(right));
+  const uniqueEfforts = [...new Set([...effortsByBaseId.values()].flat())].sort(
+    (left, right) => effortSortRank(left) - effortSortRank(right),
+  );
 
   if (variantCount < 2 || uniqueEfforts.length < 2) {
     return {

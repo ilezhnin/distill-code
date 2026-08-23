@@ -456,7 +456,9 @@ describe("AgentModelPicker", () => {
     // The effort column moved out of the picker; only collapsed base models
     // remain, and no [effort] duplicates render.
     expect(screen.queryByText("Reasoning effort")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "GPT 5.4 Mini" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "GPT 5.4 Mini" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "GPT 5.4" })).toBeInTheDocument();
     expect(screen.queryByText("GPT 5.4 Mini[high]")).not.toBeInTheDocument();
     expect(screen.queryByText("GPT 5.4[low]")).not.toBeInTheDocument();
@@ -500,8 +502,12 @@ describe("AgentModelPicker", () => {
     await user.click(trigger);
 
     expect(screen.queryByText("Reasoning effort")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Opus 4.6" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Sonnet 4.6" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Opus 4.6" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Sonnet 4.6" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Opus 4.6[ultrathink]")).not.toBeInTheDocument();
     expect(screen.queryByText("Sonnet 4.6[max]")).not.toBeInTheDocument();
 

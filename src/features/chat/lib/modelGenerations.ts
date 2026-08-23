@@ -58,14 +58,18 @@ const GENERATION_PATTERNS: GenerationPattern[] = [
   },
   // Display names: "Claude Opus 4.6", "Claude Sonnet 4"
   {
-    pattern: new RegExp(`^claude\\s+(${CLAUDE_FAMILIES})\\s+(\\d+)(?:\\.(\\d+))?`),
+    pattern: new RegExp(
+      `^claude\\s+(${CLAUDE_FAMILIES})\\s+(\\d+)(?:\\.(\\d+))?`,
+    ),
     family: (match) => `claude-${match[1]}`,
     major: 2,
     minor: 3,
   },
   // Legacy display names: "Claude 3.5 Sonnet"
   {
-    pattern: new RegExp(`^claude\\s+(\\d+)(?:\\.(\\d+))?\\s+(${CLAUDE_FAMILIES})`),
+    pattern: new RegExp(
+      `^claude\\s+(\\d+)(?:\\.(\\d+))?\\s+(${CLAUDE_FAMILIES})`,
+    ),
     family: (match) => `claude-${match[3]}`,
     major: 1,
     minor: 2,

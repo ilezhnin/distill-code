@@ -128,9 +128,9 @@ describe("resolveEffectiveReasoningEffort", () => {
       });
 
       expect(effective.config?.currentValue).toBe(ULTRACODE_OPTION_ID);
-      expect(effective.config && selectedReasoningEffortLabel(effective.config)).toBe(
-        "Ultracode",
-      );
+      expect(
+        effective.config && selectedReasoningEffortLabel(effective.config),
+      ).toBe("Ultracode");
     });
 
     it("selecting ultracode pins the top effort and arms the keyword", () => {

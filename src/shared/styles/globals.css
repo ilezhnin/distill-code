@@ -1563,6 +1563,28 @@
   --effort-accent-soft: #ddd6fe;
 }
 
+/* The same accent, worn as ink and as a dot. The composer trigger label sits
+   outside the track, so it carries its own value rather than inheriting
+   `--effort-accent`; the top-tier stop dot lives inside the track and reads
+   the accent straight. `:where()` keeps the hover rule at single-class
+   weight so the ultracode overrides further down still win over both. */
+.effort-accent-ink {
+  color: #7c3aed;
+}
+
+[data-theme="dark"] .effort-accent-ink,
+.dark .effort-accent-ink {
+  color: #a78bfa;
+}
+
+.effort-stop-dot-top-tier {
+  background-color: color-mix(in srgb, var(--effort-accent) 60%, transparent);
+}
+
+:where(.group:hover) .effort-stop-dot-top-tier {
+  background-color: var(--effort-accent);
+}
+
 .effort-rail,
 .effort-fill,
 .effort-sheen {

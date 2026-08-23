@@ -20,6 +20,7 @@ import {
   getUsageSections,
   providerMaxUsed,
   remainingDurationLabel,
+  usageTextClass,
 } from "../lib/rateLimitWindows";
 import {
   formatUsedPercent,
@@ -49,12 +50,7 @@ function UsageMetric({
           />
         </span>
       ) : null}
-      <span
-        className={cn(
-          "tabular-nums text-[11px]",
-          used >= 80 ? "text-red-500" : "text-foreground",
-        )}
-      >
+      <span className={cn("tabular-nums text-[11px]", usageTextClass(used))}>
         {formatUsedPercent(used)}
       </span>
     </span>

@@ -608,7 +608,6 @@ export function AgentModelPicker({
                 </div>
               )}
             </div>
-
           </div>
 
           {showSwitchProviderFooter ? (
