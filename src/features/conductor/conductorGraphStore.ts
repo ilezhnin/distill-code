@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 import type {
   RunStatus,
+  SessionManagedBy,
   SessionNode,
   SessionRole,
   StructuredReport,
@@ -58,6 +59,10 @@ function isSessionRole(value: unknown): value is SessionRole {
   );
 }
 
+function isSessionManagedBy(value: unknown): value is SessionManagedBy {
+  return value === "ui" || value === "wave" || value === "agent-cli";
+}
+
 function parseNode(value: unknown): SessionNode | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Partial<SessionNode>;
@@ -76,6 +81,8 @@ function parseNode(value: unknown): SessionNode | null {
     sessionId: raw.sessionId,
     projectId: raw.projectId,
     role: raw.role,
+    // Migration: graphs persisted before `managedBy` existed load as "ui".
+    managedBy: isSessionManagedBy(raw.managedBy) ? raw.managedBy : "ui",
     parentSessionId:
       typeof raw.parentSessionId === "string" ? raw.parentSessionId : null,
     rootConductorId:
@@ -94,6 +101,11 @@ function parseNode(value: unknown): SessionNode | null {
     createdAt: typeof raw.createdAt === "number" ? raw.createdAt : undefined,
     anchorMessageId:
       typeof raw.anchorMessageId === "string" ? raw.anchorMessageId : undefined,
+    waveId: typeof raw.waveId === "string" ? raw.waveId : undefined,
+    stepIndex:
+      typeof raw.stepIndex === "number" && Number.isInteger(raw.stepIndex)
+        ? raw.stepIndex
+        : undefined,
   };
 }
 
