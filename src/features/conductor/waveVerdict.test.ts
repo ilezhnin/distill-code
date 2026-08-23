@@ -5,12 +5,59 @@ import {
   MAX_WAVE_REVISIONS,
   decideWaveVerdict,
   digestUndeliverableDecision,
+  isWaveLive,
   isWaveRetired,
 } from "./waveVerdict";
-import { createWaveState, withWavePhase } from "./waveEngine";
+import { createWaveState, withWavePhase, type WaveState } from "./waveEngine";
+import type { StructuredReport } from "./types";
 
 function parse(text: string) {
   return parseDistillVerdict(text);
+}
+
+function stepReport(over: Partial<StructuredReport> = {}): StructuredReport {
+  return {
+    runId: "run-verify",
+    status: "completed",
+    summary: "Ran the build and the tests",
+    decisions: [],
+    artifacts: [{ label: "build.log" }],
+    risks: [],
+    needsOperator: false,
+    nextSuggestedTask: null,
+    ...over,
+  };
+}
+
+/**
+ * A wave with nothing inspectable in it: no `prod`-stage role, so the E2
+ * evidence gate does not apply and `accept` is the conductor's to give. Used
+ * by every case that is about the verdict vocabulary rather than about
+ * verification.
+ */
+function uncheckableWave(): WaveState {
+  return createWaveState({
+    waveId: "w-plain",
+    conductorSessionId: "c1",
+    planMessageId: "plan-1",
+    steps: [{ role: "researcher", subtask: "Read the docs", access: [] }],
+    createdAt: 1,
+  });
+}
+
+/** `decideWaveVerdict` over a wave the evidence gate has no opinion about. */
+function decide(input: {
+  parse: ReturnType<typeof parseDistillVerdict>;
+  revisionCount: number;
+  maxRevisions?: number;
+  wave?: WaveState;
+  reportOf?: (runId: string | null | undefined) => StructuredReport | undefined;
+}) {
+  return decideWaveVerdict({
+    ...input,
+    wave: input.wave ?? uncheckableWave(),
+    reportOf: input.reportOf ?? (() => undefined),
+  });
 }
 
 function verdictFence(body: string): string {
@@ -21,7 +68,7 @@ const REVISION_WAVE = `\n\n\`\`\`distill-wave\n{"steps":[{"role":"scout","subtas
 
 describe("decideWaveVerdict", () => {
   it("closes the wave on accept and offers no retry", () => {
-    const decision = decideWaveVerdict({
+    const decision = decide({
       parse: parse(verdictFence('{"verdict":"accept","note":"Both landed."}')),
       revisionCount: 0,
     });
@@ -35,7 +82,7 @@ describe("decideWaveVerdict", () => {
   });
 
   it("hands the request back on needs-operator, carrying the note", () => {
-    const decision = decideWaveVerdict({
+    const decision = decide({
       parse: parse(
         verdictFence(
           '{"verdict":"needs-operator","note":"I need the API key."}',
@@ -53,7 +100,7 @@ describe("decideWaveVerdict", () => {
   });
 
   it("asks for one revision wave and numbers it", () => {
-    const decision = decideWaveVerdict({
+    const decision = decide({
       parse: parse(verdictFence('{"verdict":"revise"}') + REVISION_WAVE),
       revisionCount: 0,
     });
@@ -65,7 +112,7 @@ describe("decideWaveVerdict", () => {
   });
 
   it("numbers the second revision and still allows it", () => {
-    const decision = decideWaveVerdict({
+    const decision = decide({
       parse: parse(verdictFence('{"verdict":"revise"}') + REVISION_WAVE),
       revisionCount: 1,
     });
@@ -75,7 +122,7 @@ describe("decideWaveVerdict", () => {
 
   it("refuses a third revision — the cap is 2 per root request", () => {
     expect(MAX_WAVE_REVISIONS).toBe(2);
-    const decision = decideWaveVerdict({
+    const decision = decide({
       parse: parse(verdictFence('{"verdict":"revise"}') + REVISION_WAVE),
       revisionCount: MAX_WAVE_REVISIONS,
     });
@@ -86,7 +133,7 @@ describe("decideWaveVerdict", () => {
   });
 
   it("goes straight to needsOperator when there is no verdict fence (Q5)", () => {
-    const decision = decideWaveVerdict({
+    const decision = decide({
       parse: parse("Looks good to me, nice work everyone."),
       revisionCount: 0,
     });
@@ -96,7 +143,7 @@ describe("decideWaveVerdict", () => {
   });
 
   it("goes straight to needsOperator on an unreadable verdict (Q5)", () => {
-    const decision = decideWaveVerdict({
+    const decision = decide({
       parse: parse(verdictFence('{"verdict":"looks-fine"}')),
       revisionCount: 0,
     });
@@ -109,14 +156,14 @@ describe("decideWaveVerdict", () => {
   it("does not spend a revision on an unreadable verdict", () => {
     // The cap is already at its last slot. An unreadable answer must not eat
     // it: the operator retries and the conductor still gets its revision.
-    const decision = decideWaveVerdict({
+    const decision = decide({
       parse: parse("no fence here"),
       revisionCount: MAX_WAVE_REVISIONS - 1,
     });
     expect(decision.phase).toBe("needsOperator");
     expect(decision.revision).toBeUndefined();
     // Nothing in the decision increments the count; the wave keeps its own.
-    const afterRetry = decideWaveVerdict({
+    const afterRetry = decide({
       parse: parse(verdictFence('{"verdict":"revise"}') + REVISION_WAVE),
       revisionCount: MAX_WAVE_REVISIONS - 1,
     });
@@ -125,7 +172,7 @@ describe("decideWaveVerdict", () => {
   });
 
   it("rejects a revise verdict whose wave does not parse", () => {
-    const decision = decideWaveVerdict({
+    const decision = decide({
       parse: parse(
         `${verdictFence('{"verdict":"revise"}')}\n\n\`\`\`distill-wave\n{oops\n\`\`\``,
       ),
@@ -134,6 +181,163 @@ describe("decideWaveVerdict", () => {
     expect(decision.phase).toBe("needsOperator");
     expect(decision.closure?.reason).toBe("verdict-invalid");
     expect(decision.offerRetry).toBe(true);
+  });
+});
+
+describe("the E2 evidence gate on accept", () => {
+  const ACCEPT = '{"verdict":"accept","note":"Shipped."}';
+
+  /**
+   * A checkable wave: a `prod`-stage worker builds something, and the last
+   * step is the `verify`-stage acceptor that is supposed to look at it.
+   */
+  function checkableWave(
+    over: {
+      verifierRole?: string;
+      verifierAccess?: readonly [] | "all";
+      verifierRunId?: string;
+    } = {},
+  ): WaveState {
+    const wave = createWaveState({
+      waveId: "w-build",
+      conductorSessionId: "c1",
+      planMessageId: "plan-1",
+      steps: [
+        { role: "writer", subtask: "Write the module", access: [] },
+        {
+          role: over.verifierRole ?? "acceptor",
+          subtask: "Run the build and check the file is there",
+          access: over.verifierAccess ?? "all",
+        },
+      ],
+      createdAt: 1,
+    });
+    return {
+      ...wave,
+      steps: wave.steps.map((step, index) =>
+        index === 1
+          ? {
+              ...step,
+              phase: "spawned",
+              runId: over.verifierRunId ?? "run-verify",
+            }
+          : { ...step, phase: "spawned", runId: `run-${index}` },
+      ),
+    };
+  }
+
+  it("honours accept when the verification step actually produced evidence", () => {
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      wave: checkableWave(),
+      reportOf: (runId) => (runId === "run-verify" ? stepReport() : undefined),
+    });
+    expect(decision.phase).toBe("accepted");
+    expect(decision.closure?.reason).toBe("accepted");
+  });
+
+  it("downgrades accept when the wave never had a verification step", () => {
+    // The plan lint (E1) refuses these now, but a wave admitted by an older
+    // build — or a revision the conductor reshaped — can still be sitting in
+    // localStorage, and `accept` is the decision that must not be honoured.
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      wave: checkableWave({ verifierRole: "brigade" }),
+      reportOf: () => stepReport(),
+    });
+    expect(decision.phase).toBe("needsOperator");
+    expect(decision.closure?.reason).toBe("accepted-without-evidence");
+    // The conductor's own note survives: the operator still reads what it said.
+    expect(decision.closure?.note).toBe("Shipped.");
+    expect(decision.offerRetry).toBe(false);
+  });
+
+  it("downgrades accept when the verifier could not read the earlier steps", () => {
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      wave: checkableWave({ verifierAccess: [] }),
+      reportOf: () => stepReport(),
+    });
+    expect(decision.phase).toBe("needsOperator");
+    expect(decision.closure?.reason).toBe("accepted-without-evidence");
+  });
+
+  it("downgrades accept when the verification step never reported", () => {
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      wave: checkableWave(),
+      reportOf: () => undefined,
+    });
+    expect(decision.phase).toBe("needsOperator");
+    expect(decision.closure?.detail).toContain("did not complete");
+  });
+
+  it("downgrades accept when the verification step itself failed", () => {
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      wave: checkableWave(),
+      reportOf: (runId) =>
+        runId === "run-verify" ? stepReport({ status: "failed" }) : undefined,
+    });
+    expect(decision.phase).toBe("needsOperator");
+    expect(decision.closure?.reason).toBe("accepted-without-evidence");
+  });
+
+  it("downgrades accept when the verifier reported nothing it looked at", () => {
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      wave: checkableWave(),
+      reportOf: (runId) =>
+        runId === "run-verify" ? stepReport({ artifacts: [] }) : undefined,
+    });
+    expect(decision.phase).toBe("needsOperator");
+    expect(decision.closure?.detail).toContain("no artifacts");
+  });
+
+  it("leaves an uncheckable wave's accept alone", () => {
+    // Nothing here builds anything: research, then a summary of the research.
+    const wave = createWaveState({
+      waveId: "w-read",
+      conductorSessionId: "c1",
+      planMessageId: "plan-1",
+      steps: [
+        { role: "researcher", subtask: "Read the RFCs", access: [] },
+        { role: "oracle", subtask: "Answer the question", access: "all" },
+      ],
+      createdAt: 1,
+    });
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      wave,
+      reportOf: () => undefined,
+    });
+    expect(decision.phase).toBe("accepted");
+  });
+
+  it("does not gate revise or needs-operator", () => {
+    // Only `accept` claims the work is done; the other two are already the
+    // operator's problem, and blocking them would strand the wave.
+    const revise = decide({
+      parse: parse(verdictFence('{"verdict":"revise"}') + REVISION_WAVE),
+      revisionCount: 0,
+      wave: checkableWave({ verifierRole: "brigade" }),
+      reportOf: () => undefined,
+    });
+    expect(revise.phase).toBe("revised");
+    const needsOperator = decide({
+      parse: parse(verdictFence('{"verdict":"needs-operator"}')),
+      revisionCount: 0,
+      wave: checkableWave({ verifierRole: "brigade" }),
+      reportOf: () => undefined,
+    });
+    expect(needsOperator.closure?.reason).toBe("conductor-needs-operator");
   });
 });
 
@@ -166,5 +370,34 @@ describe("isWaveRetired", () => {
   it("keeps a wave parked on needsOperator so the retry can find it", () => {
     expect(isWaveRetired(withWavePhase(base, "needsOperator"))).toBe(false);
     expect(isWaveRetired(base)).toBe(false);
+  });
+});
+
+describe("isWaveLive", () => {
+  const base = createWaveState({
+    waveId: "w1",
+    conductorSessionId: "c1",
+    planMessageId: "plan-1",
+    steps: [{ role: "scout", subtask: "Look", access: [] }],
+    createdAt: 1,
+  });
+
+  it("covers every phase that still owes the operator something", () => {
+    for (const phase of [
+      "running",
+      "digestPending",
+      "dispatchingDigest",
+      "awaitingVerdict",
+    ] as const) {
+      expect(isWaveLive(withWavePhase(base, phase))).toBe(true);
+    }
+  });
+
+  it("does not count a closed or parked wave as live", () => {
+    // A parked wave is a record backing the retry, not work in flight: a new
+    // root request may replace it, and already does.
+    for (const phase of ["accepted", "revised", "needsOperator"] as const) {
+      expect(isWaveLive(withWavePhase(base, phase))).toBe(false);
+    }
   });
 });

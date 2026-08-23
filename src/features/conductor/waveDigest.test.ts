@@ -98,13 +98,33 @@ describe("digest markers", () => {
     ).toBeNull();
   });
 
-  it("only calls a cross-session user message a digest", () => {
+  it("recognises a digest by its marker alone, with no renderer metadata", () => {
     const text = `${waveDigestMarker("wave-1", 0)}\nbody`;
     expect(isDigestMessage(userMessage("m1", text))).toBe(true);
-    // Same text typed by the operator is not a digest.
-    expect(isDigestMessage(userMessage("m2", text, false))).toBe(false);
-    // Nor is an assistant message quoting it back.
+    // The regression: renderer metadata does not survive rehydration from ACP
+    // history on any harness but Goose, so a digest that came back from the
+    // server carries no `origin` — and used to render as a raw user bubble
+    // holding the instruction and every worker's report.
+    expect(isDigestMessage(userMessage("m2", text, false))).toBe(true);
+    // An assistant message is never a digest, whatever it quotes.
     expect(isDigestMessage(assistantMessage("m3", text))).toBe(false);
+  });
+
+  it("does not turn a message that merely quotes a marker into a digest", () => {
+    const marker = waveDigestMarker("wave-1", 0);
+    // Quoted inside prose: the marker does not open the message.
+    expect(
+      isDigestMessage(userMessage("m1", `Look at this: ${marker}\nbody`)),
+    ).toBe(false);
+    // Quoted inside a code fence, same reason.
+    expect(
+      isDigestMessage(userMessage("m2", `\`\`\`\n${marker}\n\`\`\``)),
+    ).toBe(false);
+    // Opens the message but is not the marker syntax the app writes: no
+    // delivery attempt on the id.
+    expect(
+      isDigestMessage(userMessage("m3", "[distill-digest:wave-1]\nbody")),
+    ).toBe(false);
   });
 });
 
@@ -203,6 +223,44 @@ describe("buildWaveDigest", () => {
   it("starts with the marker so the envelope parser can read it back", () => {
     const digest = buildWaveDigest({ waveId: "wave-1", attempt: 2, entries });
     expect(parseDigestEnvelope(digest)?.digestKey).toBe("wave-1#2");
+  });
+
+  it("asks the same question on the first attempt and a different one on a retry", () => {
+    const first = buildWaveDigest({ waveId: "wave-1", attempt: 0, entries });
+    expect(first).not.toContain("could not be read as a verdict");
+
+    // Q5/M3: a retry that re-sends byte-identical text is a model call spent
+    // reproducing the same failure.
+    const retry = buildWaveDigest({
+      waveId: "wave-1",
+      attempt: 1,
+      entries,
+      verdictIssue: { reason: "missing" },
+    });
+    expect(retry).not.toBe(first);
+    expect(retry).toContain("could not be read as a verdict");
+    expect(retry).toContain("no distill-verdict block at all");
+    // The three tokens and the fence are restated, so the model can correct.
+    expect(retry).toContain("accept");
+    expect(retry).toContain("revise");
+    expect(retry).toContain("needs-operator");
+    // …and the digest itself is still there, unchanged.
+    expect(retry).toContain("Found three callers");
+    expect(parseDigestEnvelope(retry)?.digestKey).toBe("wave-1#1");
+  });
+
+  it("quotes the parser's own complaint when the fence was unreadable", () => {
+    const retry = buildWaveDigest({
+      waveId: "wave-1",
+      attempt: 1,
+      entries,
+      verdictIssue: {
+        reason: "invalid",
+        detail: 'Unknown verdict "looks-good".',
+      },
+    });
+    expect(retry).toContain("could not be read");
+    expect(retry).toContain('Unknown verdict "looks-good".');
   });
 });
 

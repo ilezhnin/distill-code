@@ -34,6 +34,7 @@ export const WAVE_REJECTION_REASON_KEYS: Record<WaveRejectionReason, string> = {
   "access-invalid": "accessInvalid",
   "model-not-a-string": "modelNotAString",
   "step-model-unsupported": "stepModelUnsupported",
+  "verification-step-missing": "verificationStepMissing",
 };
 
 export interface WaveRejectionNotice {
@@ -83,6 +84,8 @@ export const WAVE_CLOSURE_REASON_KEYS: Record<WaveClosureReason, string> = {
   "verdict-invalid": "verdictInvalid",
   "revision-cap-reached": "revisionCapReached",
   "digest-undeliverable": "digestUndeliverable",
+  "accepted-without-evidence": "acceptedWithoutEvidence",
+  "wave-interrupted": "waveInterrupted",
 };
 
 /**
@@ -106,6 +109,22 @@ export function waveClosureNoticeText(closure: WaveClosure): string {
   const detail = closure.detail?.trim();
   if (detail) lines.push(detail);
   return lines.join("\n\n");
+}
+
+/**
+ * The notice posted when a conductor plans a second wave while its first one
+ * is still live (§4.1).
+ *
+ * It is not an error the conductor made — the operator asking for one more
+ * thing mid-run is the most natural thing in the world — so it says what
+ * happened, that nothing was spawned, and what to do instead: wait for the
+ * wave to close, or ask the running wave for a status.
+ */
+export function waveConcurrentPlanNoticeText(): string {
+  return [
+    i18n.t("chat:conductor.wave.concurrent.title"),
+    i18n.t("chat:conductor.wave.concurrent.body"),
+  ].join("\n\n");
 }
 
 /** Label of the manual verdict re-ask (Q5). There is no auto-retry. */

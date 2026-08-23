@@ -129,3 +129,114 @@ describe("conductorGraphStore persistence", () => {
     expect(node?.anchorMessageId).toBe("plan-message-1");
   });
 });
+
+describe("promoting a draft conductor session", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  function conductorNode(sessionId: string): SessionNode {
+    return {
+      sessionId,
+      projectId: "project",
+      role: "conductor",
+      managedBy: "ui",
+      parentSessionId: null,
+      rootConductorId: sessionId,
+      runId: null,
+      harnessId: "goose",
+      displayName: "Producer",
+      status: "running",
+    };
+  }
+
+  it("carries the conductor's live wave across the promotion", async () => {
+    const store = await loadGraph();
+    const { createWaveState } = await import("./waveEngine");
+    const {
+      getWaveEngineState,
+      pruneOrphanedWaves,
+      resetWaveEngineStateCache,
+      setWaveEngineState,
+      withWave,
+      withWaveTombstone,
+      emptyWaveEngineState,
+    } = await import("./waveStore");
+
+    resetWaveEngineStateCache();
+    store.getState().registerNode(conductorNode("draft-1"));
+    // The conductor's first settled turn carried a plan, so the wave was
+    // created under the draft id the graph node still had.
+    setWaveEngineState(
+      withWaveTombstone(
+        withWave(
+          emptyWaveEngineState(),
+          createWaveState({
+            waveId: "w1",
+            conductorSessionId: "draft-1",
+            planMessageId: "plan-1",
+            steps: [{ role: "scout", subtask: "Look", access: [] }],
+            createdAt: 1,
+          }),
+        ),
+        {
+          planMessageId: "plan-1",
+          conductorSessionId: "draft-1",
+          outcome: "spawned",
+          at: 1,
+        },
+      ),
+    );
+
+    store.getState().remapSessionId("draft-1", "backend-1");
+
+    const state = getWaveEngineState();
+    expect(state.waves[0].conductorSessionId).toBe("backend-1");
+    expect(state.tombstones[0].conductorSessionId).toBe("backend-1");
+
+    // The regression: the next tick prunes waves whose conductor the graph no
+    // longer knows, and the graph only knows the backend id now. A wave left
+    // holding the draft id is deleted here, with its children still running.
+    const conductorIds = new Set(
+      Object.values(store.getState().nodesById)
+        .filter((node) => node.role === "conductor")
+        .map((node) => node.sessionId),
+    );
+    expect(pruneOrphanedWaves(state, conductorIds).waves).toHaveLength(1);
+
+    resetWaveEngineStateCache();
+  });
+
+  it("leaves the waves of other conductors alone", async () => {
+    const store = await loadGraph();
+    const { createWaveState } = await import("./waveEngine");
+    const {
+      getWaveEngineState,
+      resetWaveEngineStateCache,
+      setWaveEngineState,
+      withWave,
+      emptyWaveEngineState,
+    } = await import("./waveStore");
+
+    resetWaveEngineStateCache();
+    store.getState().registerNode(conductorNode("draft-1"));
+    store.getState().registerNode(conductorNode("other-1"));
+    setWaveEngineState(
+      withWave(
+        emptyWaveEngineState(),
+        createWaveState({
+          waveId: "w-other",
+          conductorSessionId: "other-1",
+          planMessageId: "plan-other",
+          steps: [{ role: "scout", subtask: "Look", access: [] }],
+          createdAt: 1,
+        }),
+      ),
+    );
+
+    store.getState().remapSessionId("draft-1", "backend-1");
+
+    expect(getWaveEngineState().waves[0].conductorSessionId).toBe("other-1");
+    resetWaveEngineStateCache();
+  });
+});
