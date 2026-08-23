@@ -81,7 +81,11 @@ import {
   useHasPendingSecurityConfirmation,
   useRegisterSecurityConfirmationSurface,
 } from "@/features/security/ui/SecurityConfirmationPanel";
-import { ConductorTranscriptProvider } from "@/features/conductor/ConductorTranscriptContext";
+import {
+  type ConductorOpenChildIntent,
+  ConductorTranscriptProvider,
+  DEFAULT_OPEN_CHILD_INTENT,
+} from "@/features/conductor/ConductorTranscriptContext";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { distillConductorTranscript } from "@/features/conductor/distillConductorTranscript";
 import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
@@ -690,20 +694,31 @@ export function ChatView({
   const handleStopChild = useCallback((childSessionId: string) => {
     void stopOrchestratorSession(childSessionId);
   }, []);
+  const handleOpenChild = useCallback(
+    (
+      childSessionId: string,
+      // Every intent still resolves to in-place navigation; `openInTab` and
+      // `reveal` get their own handling in later stages.
+      _intent: ConductorOpenChildIntent = DEFAULT_OPEN_CHILD_INTENT,
+    ) => {
+      onSelectSession?.(childSessionId);
+    },
+    [onSelectSession],
+  );
   const conductorTranscriptValue = useMemo(
     () => ({
       enabled: showsNestedAgentFooter,
       children: conductorChildren,
       reportsByRunId: conductorReportsByRunId,
       messages: timelineMessages,
-      onOpenChild: onSelectSession,
+      onOpenChild: handleOpenChild,
       onStopChild: handleStopChild,
     }),
     [
       conductorChildren,
       conductorReportsByRunId,
+      handleOpenChild,
       handleStopChild,
-      onSelectSession,
       showsNestedAgentFooter,
       timelineMessages,
     ],
