@@ -841,7 +841,7 @@ describe("SkillsView", () => {
     expect(screen.getByText("goose-doc-guide")).toBeInTheDocument();
   });
 
-  it("shows pin-to-home in skill card menus", async () => {
+  it("offers only edit and delete in skill card menus", async () => {
     listSkills.mockResolvedValue(mockSkills);
     const user = userEvent.setup();
 
@@ -857,8 +857,13 @@ describe("SkillsView", () => {
     await user.click(menuButton);
 
     expect(
-      screen.getByRole("menuitem", { name: "Pin to home" }),
-    ).toBeInTheDocument();
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual(["Edit", "Delete"]);
+    // Pinning a skill to Home moved onto the canvas itself when the widget
+    // canvas was replaced; the card menu no longer carries the action.
+    expect(
+      screen.queryByRole("menuitem", { name: "Pin to home" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows a delete confirmation from the detail panel", async () => {
@@ -915,8 +920,8 @@ describe("SkillsView", () => {
       screen.queryByRole("button", { name: "More" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Pin to home" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: "Pin to home" }),
+    ).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Start chat" }));
 

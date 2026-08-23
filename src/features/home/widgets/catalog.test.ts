@@ -4,46 +4,36 @@ import type { WidgetInstance } from "./types";
 
 const baseClock: WidgetInstance = { id: "c1", type: "clock", x: 0, y: 0, z: 1 };
 
+function photoInstance(state: Record<string, unknown>): WidgetInstance {
+  return { id: "photo-1", type: "photo", x: 0, y: 0, z: 1, state };
+}
+
 describe("photo size profiles", () => {
-  it("preserves a wide photo's original aspect ratio", () => {
-    const photo: WidgetInstance = {
-      id: "photo-1",
-      type: "photo",
-      x: 0,
-      y: 0,
-      z: 1,
-      state: { shape: "original", aspectRatio: 2.5 },
-    };
-
-    expect(widgetSizeForInstance(photo)).toEqual({ width: 280, height: 112 });
+  // PhotoWidget and its aspect-ratio-aware profile retired with the old Home
+  // canvas. The catalog keeps a plain, freely resizable box, so the shape and
+  // aspectRatio a stored instance still carries no longer steer its size.
+  it("ignores the retired shape and aspect-ratio state", () => {
+    expect(
+      widgetSizeForInstance(
+        photoInstance({ shape: "original", aspectRatio: 2.5 }),
+      ),
+    ).toEqual({ width: 280, height: 210 });
+    expect(
+      widgetSizeForInstance(
+        photoInstance({ shape: "original", aspectRatio: 0.4 }),
+      ),
+    ).toEqual({ width: 280, height: 210 });
   });
 
-  it("preserves a tall photo's original aspect ratio", () => {
-    const photo: WidgetInstance = {
-      id: "photo-1",
-      type: "photo",
-      x: 0,
-      y: 0,
-      z: 1,
-      state: { shape: "original", aspectRatio: 0.4 },
-    };
-
-    expect(widgetSizeForInstance(photo)).toEqual({ width: 280, height: 700 });
-  });
-
-  it("keeps original proportions while resizing", () => {
-    const photo: WidgetInstance = {
-      id: "photo-1",
-      type: "photo",
-      x: 0,
-      y: 0,
-      z: 1,
-      state: { shape: "original", aspectRatio: 2.5 },
-    };
+  it("resizes freely inside its bounds", () => {
+    const photo = photoInstance({ shape: "original", aspectRatio: 2.5 });
 
     expect(
       clampWidgetSizeForInstance(photo, { width: 500, height: 500 }),
-    ).toEqual({ width: 500, height: 200 });
+    ).toEqual({ width: 500, height: 500 });
+    expect(
+      clampWidgetSizeForInstance(photo, { width: 999, height: 12 }),
+    ).toEqual({ width: 720, height: 168 });
   });
 });
 

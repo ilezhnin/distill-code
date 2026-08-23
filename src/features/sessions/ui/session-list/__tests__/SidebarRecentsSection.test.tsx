@@ -98,7 +98,7 @@ describe("SidebarRecentsSection", () => {
     ).toBeInTheDocument();
   });
 
-  it("offers one-click pinning when general chat icons are shown", async () => {
+  it("shows the chat glyph but no quick-pin control when general chat icons are shown", async () => {
     const user = userEvent.setup();
     const { container } = renderRecents(true);
     const regularRow = container.querySelector<HTMLElement>(
@@ -109,10 +109,10 @@ describe("SidebarRecentsSection", () => {
     expect(
       within(regularRow).getByTestId("sidebar-chat-menu-icon"),
     ).toBeInTheDocument();
+    // Recents passes quickPinMode="never": the leading slot is the chat glyph
+    // only, and pinning a chat to Home happens on the canvas itself.
     await user.hover(regularRow);
-    expect(
-      screen.getByRole("button", { name: "Pin chat" }),
-    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pin chat" })).toBeNull();
   });
 
   it("hides general chat icons and hover pinning when icons are off", async () => {
@@ -128,7 +128,9 @@ describe("SidebarRecentsSection", () => {
     ).toBeNull();
     await user.hover(regularRow);
     expect(screen.queryByRole("button", { name: "Pin chat" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Unpin chat" })).toBeVisible();
+    // The already-pinned chat gets no unpin control here either — quickPinMode
+    // is "never" regardless of the icon setting.
+    expect(screen.queryByRole("button", { name: "Unpin chat" })).toBeNull();
   });
 
   it.each([

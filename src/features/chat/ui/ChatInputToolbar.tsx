@@ -97,7 +97,12 @@ function AgentVoiceActivityIndicator() {
   );
 }
 
-type OpenToolbarMenu = "attachments" | "model" | "effort" | "project" | "context";
+type OpenToolbarMenu =
+  | "attachments"
+  | "model"
+  | "effort"
+  | "project"
+  | "context";
 
 interface ChatInputToolbarProps {
   agentModelPicker: ChatInputAgentModelPicker & { enabled?: boolean };

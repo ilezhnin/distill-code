@@ -46,19 +46,24 @@ describe("artifactViewerStore", () => {
       0,
     );
     expect(
-      useArtifactViewerStore.getState().tabsBySession.s1?.map((tab) => tab.filename),
+      useArtifactViewerStore
+        .getState()
+        .tabsBySession.s1?.map((tab) => tab.filename),
     ).toEqual(["a.md", "b.md"]);
   });
 
   it("keeps other tabs when the active tab is closed", () => {
-    const { open, close, closeTab, activate } = useArtifactViewerStore.getState();
+    const { open, close, closeTab, activate } =
+      useArtifactViewerStore.getState();
     open("s1", { resolvedPath: "/p/a.md", filename: "a.md" });
     open("s1", { resolvedPath: "/p/b.md", filename: "b.md" });
     open("s1", { resolvedPath: "/p/c.md", filename: "c.md" });
 
     closeTab("s1", "/p/b.md");
     expect(
-      useArtifactViewerStore.getState().tabsBySession.s1?.map((tab) => tab.filename),
+      useArtifactViewerStore
+        .getState()
+        .tabsBySession.s1?.map((tab) => tab.filename),
     ).toEqual(["a.md", "c.md"]);
     expect(useArtifactViewerStore.getState().openBySession.s1?.filename).toBe(
       "c.md",
