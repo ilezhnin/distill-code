@@ -77,11 +77,7 @@ describe("modelReasoningVariants", () => {
     ]);
     expect(collapsed.reasoning?.currentValue).toBe("ultrathink");
     expect(
-      composeEmbeddedReasoningModelId(
-        "claude-opus-4-6",
-        "think",
-        collapsed,
-      ),
+      composeEmbeddedReasoningModelId("claude-opus-4-6", "think", collapsed),
     ).toBe("claude-opus-4-6[think]");
   });
 

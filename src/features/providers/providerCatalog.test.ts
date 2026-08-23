@@ -13,7 +13,8 @@ const catalogEntries: ProviderCatalogEntry[] = [
     id: "goose",
     displayName: "Goose",
     category: "agent",
-    description: "Open-source agent harness with your configured model providers",
+    description:
+      "Open-source agent harness with your configured model providers",
     setupMethod: "none",
     group: "default",
     aliases: ["goose"],
