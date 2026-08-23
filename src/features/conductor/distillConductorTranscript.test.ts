@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
+
+import { i18n } from "@/shared/i18n";
 import type { Message } from "@/shared/types/messages";
 import { distillConductorTranscript } from "./distillConductorTranscript";
 
@@ -13,6 +15,10 @@ function message(
 }
 
 describe("distillConductorTranscript", () => {
+  beforeAll(async () => {
+    await i18n.loadNamespaces("chat");
+  });
+
   it("keeps user text and assistant answers", () => {
     const distilled = distillConductorTranscript([
       message({
@@ -38,7 +44,14 @@ describe("distillConductorTranscript", () => {
     ]);
 
     expect(distilled).toHaveLength(2);
+    // The tool card is still stripped; what survives it is the Q6 badge, which
+    // is the only trace the operator gets that the conductor executed.
     expect(distilled[1]?.content).toEqual([
+      {
+        type: "systemNotification",
+        notificationType: "warning",
+        text: "The conductor ran a tool itself — it should only plan or answer.",
+      },
       { type: "text", text: "The repo has two packages." },
     ]);
   });
@@ -158,6 +171,123 @@ describe("distillConductorTranscript", () => {
         },
         { type: "text", text: "Third." },
       ]);
+    });
+  });
+
+  describe("verdict fences", () => {
+    function distillAssistant(text: string) {
+      return distillConductorTranscript([
+        message({
+          id: "a1",
+          role: "assistant",
+          content: [{ type: "text", text }],
+        }),
+      ]);
+    }
+
+    it("replaces an accept verdict with the prose that is the answer", () => {
+      const distilled = distillAssistant(
+        'Three callers, all in src/.\n\n```distill-verdict\n{"verdict":"accept"}\n```',
+      );
+      expect(distilled[0]?.content).toEqual([
+        { type: "text", text: "Three callers, all in src/." },
+      ]);
+    });
+
+    it("keeps the message visible when the verdict was its whole body", () => {
+      const distilled = distillAssistant(
+        '```distill-verdict\n{"verdict":"needs-operator","note":"key please"}\n```',
+      );
+      const [block] = distilled[0]?.content ?? [];
+      expect(block).toBeDefined();
+      expect(block.type === "text" && block.text.length > 0).toBe(true);
+      expect(block.type === "text" && block.text).not.toContain(
+        "distill-verdict",
+      );
+    });
+
+    it("leaves an unreadable verdict raw, next to the notice explaining it", () => {
+      const raw = '```distill-verdict\n{"verdict":"maybe"}\n```';
+      expect(distillAssistant(raw)[0]?.content).toEqual([
+        { type: "text", text: raw },
+      ]);
+    });
+
+    it("leaves a plain wave plan to the plan-fence path", () => {
+      const distilled = distillAssistant(
+        'Here is the plan.\n\n```distill-wave\n{"steps":[{"role":"qa","subtask":"Run","access":[]}]}\n```',
+      );
+      expect(distilled[0]?.content).toEqual([
+        { type: "text", text: "Here is the plan." },
+      ]);
+    });
+  });
+
+  describe("the conductor self-execution badge (Q6)", () => {
+    it("marks a conductor turn that ran a tool itself", () => {
+      const distilled = distillConductorTranscript([
+        message({
+          id: "a1",
+          role: "assistant",
+          content: [
+            { type: "text", text: "I'll just check that myself." },
+            {
+              type: "toolRequest",
+              id: "t1",
+              name: "shell",
+              arguments: {},
+              status: "completed",
+            },
+          ],
+        }),
+      ]);
+
+      // The tool card itself stays out of a conductor transcript, but the fact
+      // that there was one must not vanish with it: this is the only layer that
+      // still sees it.
+      expect(distilled[0]?.content[0]).toEqual({
+        type: "systemNotification",
+        notificationType: "warning",
+        text: "The conductor ran a tool itself — it should only plan or answer.",
+      });
+      expect(
+        distilled[0]?.content.some((block) => block.type === "toolRequest"),
+      ).toBe(false);
+    });
+
+    it("keeps a tool-only turn visible instead of dropping it", () => {
+      const distilled = distillConductorTranscript([
+        message({
+          id: "a1",
+          role: "assistant",
+          content: [
+            {
+              type: "toolRequest",
+              id: "t1",
+              name: "shell",
+              arguments: {},
+              status: "completed",
+            },
+          ],
+        }),
+      ]);
+      expect(distilled).toHaveLength(1);
+      expect(distilled[0].content).toHaveLength(1);
+    });
+
+    it("says nothing about a turn that only planned or answered", () => {
+      const distilled = distillConductorTranscript([
+        message({
+          id: "a1",
+          role: "assistant",
+          content: [{ type: "text", text: "Here is the plan." }],
+        }),
+      ]);
+      expect(
+        distilled[0]?.content.some(
+          (block) => block.type === "systemNotification",
+        ),
+      ).toBe(false);
     });
   });
 });

@@ -7,9 +7,11 @@ import {
   UNSTARTED_STEP_REPORT_SUMMARY,
   admitWavePlan,
   advanceWave,
+  collectWaveStepReports,
   createWaveState,
   isTerminalRunStatus,
   reportStatusForTerminalRun,
+  withWavePhase,
   withWaveStepPhase,
   type WaveState,
 } from "./waveEngine";
@@ -315,5 +317,113 @@ describe("advanceWave reconciliation", () => {
     });
     expect(advanced.complete).toBe(true);
     expect(advanced.spawn).toHaveLength(0);
+  });
+});
+
+describe("the closed-loop fields on a wave", () => {
+  it("starts a first wave running, at its own root, with no revisions spent", () => {
+    const wave = waveOf([step("scout", "Look")]);
+    expect(wave.phase).toBe("running");
+    expect(wave.rootRequestId).toBe("plan-1");
+    expect(wave.revisionCount).toBe(0);
+    expect(wave.digestAttempt).toBe(0);
+    expect(wave.carriedReports).toBeUndefined();
+  });
+
+  it("carries the root identity and the spent count into a revision", () => {
+    const revision = createWaveState({
+      waveId: "wave-2",
+      conductorSessionId: "conductor-1",
+      planMessageId: "verdict-1",
+      steps: [step("qa", "Re-check", "all")],
+      createdAt: 2,
+      rootRequestId: "plan-1",
+      revisionCount: 1,
+      carriedReports: [
+        {
+          stepIndex: 0,
+          role: "scout",
+          subtask: "Look",
+          fromPreviousWave: true,
+          report: report("run-prev", "Found three"),
+        },
+      ],
+    });
+    expect(revision.rootRequestId).toBe("plan-1");
+    expect(revision.revisionCount).toBe(1);
+    expect(revision.carriedReports).toHaveLength(1);
+  });
+
+  it("hands a revision's first `all` step the previous wave's reports", () => {
+    const revision = createWaveState({
+      waveId: "wave-2",
+      conductorSessionId: "conductor-1",
+      planMessageId: "verdict-1",
+      steps: [step("qa", "Re-check", "all")],
+      createdAt: 2,
+      rootRequestId: "plan-1",
+      revisionCount: 1,
+      carriedReports: [
+        {
+          stepIndex: 0,
+          role: "scout",
+          subtask: "Look",
+          report: report("run-prev", "Found three"),
+        },
+      ],
+    });
+    // Without this, the revision's very first step has no earlier step of its
+    // own to inherit from and would start blind.
+    const advanced = advanceWave(revision, {
+      nodes: [],
+      reportOf: () => undefined,
+    });
+    expect(advanced.spawn).toHaveLength(1);
+    const [request] = advanced.spawn;
+    expect(request.previousReports).toHaveLength(1);
+    expect(request.previousReports[0].fromPreviousWave).toBe(true);
+    expect(request.previousReports[0].report.summary).toBe("Found three");
+  });
+
+  it("moves a wave between phases without touching its steps", () => {
+    const wave = waveOf([step("scout", "Look")]);
+    const parked = withWavePhase(wave, "needsOperator");
+    expect(parked.phase).toBe("needsOperator");
+    expect(parked.steps).toBe(wave.steps);
+    expect(withWavePhase(parked, "needsOperator")).toBe(parked);
+  });
+});
+
+describe("collectWaveStepReports", () => {
+  it("returns one entry per step, in step order", () => {
+    let wave = waveOf([step("scout", "Look"), step("qa", "Check", "all")]);
+    wave = withWaveStepPhase(wave, 0, {
+      phase: "spawned",
+      sessionId: "child-0",
+      runId: "run-0",
+    });
+    wave = withWaveStepPhase(wave, 1, {
+      phase: "spawned",
+      sessionId: "child-1",
+      runId: "run-1",
+    });
+    const reports = collectWaveStepReports(wave, (runId) =>
+      runId === "run-0" ? report("run-0", "Found three") : undefined,
+    );
+    expect(reports.map((entry) => entry.stepIndex)).toEqual([0, 1]);
+    expect(reports[0].report.summary).toBe("Found three");
+    // A step that finished without a report is never silently dropped from the
+    // digest — it contributes a stand-in that says so.
+    expect(reports[1].report.summary).toBe(MISSING_STEP_REPORT_SUMMARY);
+    expect(reports[1].report.needsOperator).toBe(true);
+  });
+
+  it("says so when a step was never started at all", () => {
+    const wave = withWaveStepPhase(waveOf([step("scout", "Look")]), 0, {
+      phase: "failed",
+    });
+    const [entry] = collectWaveStepReports(wave, () => undefined);
+    expect(entry.report.summary).toBe(UNSTARTED_STEP_REPORT_SUMMARY);
+    expect(entry.report.status).toBe("failed");
   });
 });

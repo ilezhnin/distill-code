@@ -47,6 +47,35 @@ export interface WaveStepState {
   runId?: string;
 }
 
+/**
+ * Where a wave sits in the closed loop (D4).
+ *
+ * `running` is the only phase that spawns anything. Everything after it is the
+ * digest/verdict cycle: the wave's reports are collected, delivered to the
+ * conductor as a real user message, and the conductor's next settled answer is
+ * read as a verdict.
+ *
+ * `accepted` and `needsOperator` are terminal. `revising` is not a phase of the
+ * *old* wave — a revision is a new wave — so it never appears here; the old
+ * wave lands on `accepted` semantics only through its own verdict, and a
+ * revised wave closes as `revised`.
+ */
+export type WavePhase =
+  /** Steps are still being scheduled, spawned or executed. */
+  | "running"
+  /** Every step is terminal; the digest has not been built yet. */
+  | "digestPending"
+  /** The digest is being delivered to the conductor. */
+  | "dispatchingDigest"
+  /** The digest landed; the conductor's next settled answer is the verdict. */
+  | "awaitingVerdict"
+  /** The conductor accepted the result. Terminal. */
+  | "accepted"
+  /** The conductor asked for another wave, which now exists. Terminal here. */
+  | "revised"
+  /** The loop stopped and the operator has to look at it. Terminal. */
+  | "needsOperator";
+
 export interface WaveState {
   waveId: string;
   /** Conductor session that authored the plan; the children's parent. */
@@ -55,6 +84,32 @@ export interface WaveState {
   planMessageId: string;
   createdAt: number;
   steps: WaveStepState[];
+  /** Position in the closed loop. Waves persisted before 3a resume `running`. */
+  phase: WavePhase;
+  /**
+   * Identity of the *root operator request* this wave serves. The first wave
+   * of a request uses its own `planMessageId`; every revision wave inherits it
+   * unchanged. This is what makes the revision cap "per root request" (D4)
+   * rather than "per wave".
+   */
+  rootRequestId: string;
+  /**
+   * How many revision waves the root request has already spent. `0` on the
+   * first wave; a revision spawned from this wave carries `revisionCount + 1`.
+   */
+  revisionCount: number;
+  /**
+   * Which digest delivery attempt this wave is on. Bumped only by the operator
+   * pressing the manual retry (Q5); it is part of the digest's marker, so the
+   * verdict scan always anchors on the newest digest.
+   */
+  digestAttempt: number;
+  /**
+   * Reports of the previous wave of this root request, handed to this wave's
+   * `access: "all"` steps ahead of its own earlier steps (handoff §6/Q4).
+   * Empty on a first wave.
+   */
+  carriedReports?: CompletedWaveStepReport[];
 }
 
 /**
@@ -183,19 +238,35 @@ export function admitWavePlan(
   return { kind: "accepted", steps: parse.steps };
 }
 
-/** Builds the initial persisted state for an admitted plan. */
+/**
+ * Builds the initial persisted state for an admitted plan.
+ *
+ * A first wave omits `rootRequestId`/`revisionCount`/`carriedReports` and gets
+ * the defaults; a revision wave passes the previous wave's root identity, its
+ * revision count plus one, and the reports the revision must see.
+ */
 export function createWaveState(args: {
   waveId: string;
   conductorSessionId: string;
   planMessageId: string;
   steps: readonly WaveStep[];
   createdAt: number;
+  rootRequestId?: string;
+  revisionCount?: number;
+  carriedReports?: readonly CompletedWaveStepReport[];
 }): WaveState {
   return {
     waveId: args.waveId,
     conductorSessionId: args.conductorSessionId,
     planMessageId: args.planMessageId,
     createdAt: args.createdAt,
+    phase: "running",
+    rootRequestId: args.rootRequestId ?? args.planMessageId,
+    revisionCount: args.revisionCount ?? 0,
+    digestAttempt: 0,
+    ...(args.carriedReports?.length
+      ? { carriedReports: [...args.carriedReports] }
+      : {}),
     steps: args.steps.map((step, stepIndex) => ({
       stepIndex,
       role: step.role,
@@ -204,6 +275,46 @@ export function createWaveState(args: {
       phase: "pending" as const,
     })),
   };
+}
+
+/** Returns a wave with a new lifecycle phase, or the same object if unchanged. */
+export function withWavePhase(wave: WaveState, phase: WavePhase): WaveState {
+  return wave.phase === phase ? wave : { ...wave, phase };
+}
+
+/**
+ * The reports of a finished wave, in step order, as an `access: "all"` handoff.
+ *
+ * Used for two things: the digest handed to the conductor, and the
+ * `carriedReports` a revision wave inherits (Q4 — a revision must see what the
+ * previous wave of the same root produced, or "the revision sees what happened"
+ * does not mechanically exist).
+ */
+export function collectWaveStepReports(
+  wave: WaveState,
+  reportOf: (runId: string | null | undefined) => StructuredReport | undefined,
+): CompletedWaveStepReport[] {
+  return [...wave.steps]
+    .sort((left, right) => left.stepIndex - right.stepIndex)
+    .map((step) => {
+      const fallbackRunId =
+        step.runId ?? `${wave.waveId}:step:${step.stepIndex}`;
+      const report =
+        (step.runId ? reportOf(step.runId) : undefined) ??
+        (step.phase === "failed"
+          ? synthesizeMissingStepReport(
+              fallbackRunId,
+              "failed",
+              UNSTARTED_STEP_REPORT_SUMMARY,
+            )
+          : synthesizeMissingStepReport(fallbackRunId, "completed"));
+      return {
+        stepIndex: step.stepIndex,
+        role: step.role,
+        subtask: step.subtask,
+        report,
+      };
+    });
 }
 
 /** Returns a wave with one step's spawn bookkeeping replaced. */
@@ -395,8 +506,19 @@ export function advanceWave(
     );
     if (step.access === "all" && !earlier.every(isStepTerminal)) continue;
 
+    // Q4: a revision wave's `"all"` steps see the previous wave of the root
+    // ahead of this wave's own earlier steps. Carried reports are already in
+    // step order and are marked so the prompt can say which wave they are from.
     const previousReports: CompletedWaveStepReport[] =
-      step.access === "all" ? earlier.map(reportForEarlierStep) : [];
+      step.access === "all"
+        ? [
+            ...(wave.carriedReports ?? []).map((entry) => ({
+              ...entry,
+              fromPreviousWave: true as const,
+            })),
+            ...earlier.map(reportForEarlierStep),
+          ]
+        : [];
 
     spawn.push({
       stepIndex: step.stepIndex,

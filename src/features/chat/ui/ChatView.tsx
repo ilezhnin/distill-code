@@ -864,6 +864,7 @@ export function ChatView({
         <BrigadeWaitIndicator
           chatState={controller.chatState}
           nodes={conductorChildren}
+          sessionId={sessionId}
         />
         <SecurityConfirmationPanel sessionId={sessionId} />
         <ChatInput
