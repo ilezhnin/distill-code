@@ -281,8 +281,8 @@ ensure_checkout_exists() {
 # ── Local source mode ────────────────────────────────────────────────────────
 # GOOSE_DEV_LOCAL=1, or "local": true in the lockfile, builds Goose out of a
 # checkout the developer owns: "localRepo" in the lockfile, or GOOSE_DEV_REPO.
-# A relative path resolves against this repo's parent, so a sibling checkout
-# (../distill-goose) works on any machine without hardcoding a path. Nothing is
+# A relative path resolves against this repo's root, so a sibling checkout
+# ("../distill-goose") works on any machine without hardcoding a path. Nothing is
 # fetched, reset, or patched there — whatever is checked out is what gets
 # built, so editing Goose sources and rebuilding picks the change up. Readiness
 # is never reused from the stamp either, because a working tree changes without
@@ -304,8 +304,8 @@ if [[ "$local_source" == "1" ]]; then
     exit 1
   fi
   if [[ "$local_repo" != /* ]]; then
-    local_repo="$(cd "$(dirname "$repo_root")" && cd "$local_repo" 2>/dev/null && pwd)" ||
-      fail_or_skip "Local Goose source checkout not found at $(dirname "$repo_root")/$local_repo."
+    local_repo="$(cd "$repo_root" && cd "$local_repo" 2>/dev/null && pwd)" ||
+      fail_or_skip "Local Goose source checkout not found at $repo_root/$local_repo."
   fi
   goose_repo="$local_repo"
   [[ -d "$goose_repo/.git" ]] ||
