@@ -12,6 +12,10 @@ import {
   remapSessionWorkState,
 } from "@/features/stats/lib/usageLedger";
 import { syncConductorNodesIntoUsageLedger } from "@/features/stats/lib/usageRecorder";
+import {
+  updateWaveEngineState,
+  withRemappedConductorSessionId,
+} from "./waveStore";
 
 export const CONDUCTOR_GRAPH_STORAGE_KEY = "goose:conductor-graph";
 
@@ -286,6 +290,12 @@ export const useConductorGraphStore = create<ConductorGraphStore>(
         return next;
       });
       remapSessionWorkState(fromId, toId);
+      // The wave store keys its records by conductor session id and is pruned
+      // against the graph's conductor nodes every tick, so a promotion that
+      // rewrote the node but not the wave would delete a live wave.
+      updateWaveEngineState((state) =>
+        withRemappedConductorSessionId(state, fromId, toId),
+      );
     },
 
     attachReport: (report) => {

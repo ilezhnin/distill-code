@@ -29,9 +29,11 @@ import { getTextContent } from "@/shared/types/messages";
 
 import { formatConductorAnswer } from "./orchestratorReport";
 import type { SessionNode, StructuredReport } from "./types";
+import type { WaveVerdictIssue } from "./waveEngine";
 import {
   AGENT_DIGEST_INSTRUCTION,
   buildWaveDigestInstruction,
+  buildWaveVerdictRetryInstruction,
 } from "./wavePrompts";
 
 /** Opening of every digest marker. Also the cheap reject before a real parse. */
@@ -80,13 +82,39 @@ export function parseDigestEnvelope(text: string): DigestEnvelope | null {
   };
 }
 
-/** True when this message is a digest envelope delivered into a transcript. */
+/**
+ * `<id>#<attempt>` — the shape every marker this app writes has.
+ *
+ * Checked on top of the envelope parse so a message that merely *looks* like a
+ * marker is not mistaken for one.
+ */
+const DIGEST_KEY_PATTERN = /^[A-Za-z0-9:_-]+#\d+$/;
+
+/**
+ * True when this message is a digest envelope delivered into a transcript.
+ *
+ * Identified by the marker alone, deliberately. Renderer metadata does not
+ * survive rehydration from ACP history on any harness but Goose — which is the
+ * whole reason the text marker exists — so gating on `metadata.origin` meant
+ * that on Claude Code or Codex the digest card silently degraded, after a
+ * reload, into a right-aligned user bubble containing the raw instruction and
+ * every worker's report. That is precisely the outcome this module was written
+ * to prevent.
+ *
+ * A user message that merely quotes a marker is not turned into a fake digest,
+ * because a quote cannot satisfy all three conditions at once: the marker must
+ * *open* the message (`parseDigestEnvelope` requires `startsWith`, so anything
+ * preceding it — a sentence, a code fence, a `>` — disqualifies it), it must be
+ * alone on its first line and match the strict marker syntax (no whitespace, no
+ * `]`), and its id must carry the `#<attempt>` suffix the app always writes.
+ * Prose that mentions a digest fails the first test; a pasted copy of a real
+ * digest passes all three and renders as the card it is a copy of, which is the
+ * right answer for it.
+ */
 export function isDigestMessage(message: Message): boolean {
-  return (
-    message.role === "user" &&
-    message.metadata?.origin === "berdctl_cross_session" &&
-    parseDigestEnvelope(getTextContent(message)) !== null
-  );
+  if (message.role !== "user") return false;
+  const envelope = parseDigestEnvelope(getTextContent(message));
+  return envelope !== null && DIGEST_KEY_PATTERN.test(envelope.digestKey);
 }
 
 /**
@@ -164,9 +192,21 @@ export function buildWaveDigest(args: {
   waveId: string;
   attempt: number;
   entries: readonly DigestEntry[];
+  /**
+   * Why the previous attempt produced no verdict (Q5). Present only on a
+   * re-ask of a digest the conductor answered unreadably, and what makes that
+   * re-ask a different question from the first. Its *absence* is meaningful
+   * too: a wave the operator re-armed for some other reason — an interrupted
+   * run that never had a digest at all — must not be told its last answer
+   * could not be read, because there was no last answer.
+   */
+  verdictIssue?: WaveVerdictIssue;
 }): string {
   return [
     waveDigestMarker(args.waveId, args.attempt),
+    args.verdictIssue
+      ? buildWaveVerdictRetryInstruction(args.verdictIssue)
+      : "",
     buildWaveDigestInstruction(args.entries.length),
     digestBody(args.entries),
   ]

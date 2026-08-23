@@ -11,6 +11,7 @@ import {
   ROLE_CATALOG,
   type RoleDefinition,
   type RoleLayer,
+  type RoleStage,
   rolesForLayer,
 } from "./roleCatalog";
 
@@ -78,6 +79,17 @@ export function isRoleInLayer(roleId: string, layer: RoleLayer): boolean {
 /** True when `roleId` may be used as a wave step / worker session role. */
 export function isWorkerLayerRole(roleId: string): boolean {
   return isRoleInLayer(roleId, "worker");
+}
+
+/**
+ * Pipeline stage of a role id, or `undefined` when the id is not in the
+ * catalog. The wave engine's verification lint reads it: `prod` roles are the
+ * ones that produce something inspectable, `verify` roles are the ones whose
+ * job is to inspect it.
+ */
+export function roleStage(roleId: string): RoleStage | undefined {
+  const normalized = normalizeRoleId(roleId);
+  return ROLE_CATALOG.find((entry) => entry.id === normalized)?.stage;
 }
 
 /** Display name for a role id, falling back to the raw id when unknown. */
