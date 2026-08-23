@@ -17,7 +17,11 @@ import { useConductorGraphStore } from "./conductorGraphStore";
 import { pickUniqueDisplayName } from "./pickUniqueDisplayName";
 import { wrapOrchestratorTaskPrompt } from "./orchestratorReport";
 import { pickUniqueScientistName } from "./scientistNames";
-import { DEFAULT_ORCHESTRATOR_NAME, type SessionRole } from "./types";
+import {
+  DEFAULT_ORCHESTRATOR_NAME,
+  type SessionManagedBy,
+  type SessionRole,
+} from "./types";
 
 export async function spawnConductorChildSession(args: {
   parentSessionId: string;
@@ -30,6 +34,12 @@ export async function spawnConductorChildSession(args: {
   prompt?: string;
   executionTarget?: SessionExecutionTarget;
   anchorMessageId?: string | null;
+  /** Which machine owns the child. Defaults to the UI heuristics. */
+  managedBy?: SessionManagedBy;
+  /** Wave that produced the child; required for `managedBy: "wave"`. */
+  waveId?: string;
+  /** Zero-based wave step the child executes. */
+  stepIndex?: number;
 }): Promise<{ sessionId: string; runId: string }> {
   const task = args.task.trim();
   if (!task) {
@@ -103,7 +113,7 @@ export async function spawnConductorChildSession(args: {
     sessionId: child.id,
     projectId: parent.projectId ?? conductor?.projectId ?? "",
     role: args.role,
-    managedBy: "ui",
+    managedBy: args.managedBy ?? "ui",
     parentSessionId: args.parentSessionId,
     rootConductorId,
     runId,
@@ -117,6 +127,10 @@ export async function spawnConductorChildSession(args: {
     task,
     createdAt: Date.now(),
     anchorMessageId: args.anchorMessageId?.trim() || undefined,
+    ...(args.waveId ? { waveId: args.waveId } : {}),
+    ...(typeof args.stepIndex === "number"
+      ? { stepIndex: args.stepIndex }
+      : {}),
   });
 
   const childPrompt = args.prompt?.trim() || wrapOrchestratorTaskPrompt(task);
@@ -147,23 +161,6 @@ export async function spawnConductorChildSession(args: {
   }
 
   return { sessionId: child.id, runId };
-}
-
-export async function spawnOrchestratorSession(args: {
-  parentSessionId: string;
-  displayName?: string;
-  task: string;
-  executionTarget?: SessionExecutionTarget;
-  anchorMessageId?: string | null;
-  personaId?: string;
-  personaName?: string;
-  roleId?: string;
-  prompt?: string;
-}): Promise<{ sessionId: string; runId: string }> {
-  return spawnConductorChildSession({
-    ...args,
-    role: "orchestrator",
-  });
 }
 
 export function registerConductorSession(args: {
