@@ -24,6 +24,7 @@ import type {
   TranscriptDateLabelKey,
   TranscriptItemDescriptor,
   TranscriptMessageItem,
+  TranscriptSubagentLinkage,
 } from "./transcriptItemTypes";
 
 interface BuildTranscriptItemsInput {
@@ -110,6 +111,95 @@ export function invalidateTranscriptItemDescriptorCache(): void {
   staticTextMessageItemCacheGeneration += 1;
 }
 
+/**
+ * Goose announces a background task id in a `delegate` response and awaits it
+ * later with `load <task-id>` — sometimes from a *different* assistant message.
+ * `selectHarnessBrigade` can follow that link, but only if it is handed the
+ * earlier tool calls; neither `MessageBubble` nor `AgentWorkPanel` has a
+ * transcript in scope, and giving them one would re-run every chip row on every
+ * streamed token.
+ *
+ * So the projection collects the linkage once per run: one pass over the
+ * messages, keeping only `delegate` requests and their responses. The result is
+ * frozen and reused by reference across the rows that need it, and reused
+ * across runs whenever the collected blocks are identical — a row descriptor
+ * must not churn just because the projection re-ran.
+ *
+ * Returns `undefined` when the transcript contains no `delegate` at all, which
+ * is every non-Goose session: those rows keep the previous behaviour of looking
+ * only at their own content.
+ */
+let cachedSubagentLinkage: TranscriptSubagentLinkage | undefined;
+
+function subagentLinkageUnchanged(
+  previous: TranscriptSubagentLinkage,
+  next: TranscriptSubagentLinkage,
+): boolean {
+  if (previous.length !== next.length) {
+    return false;
+  }
+  for (let index = 0; index < previous.length; index += 1) {
+    const previousContent = previous[index]?.content ?? [];
+    const nextContent = next[index]?.content ?? [];
+    if (previousContent.length !== nextContent.length) {
+      return false;
+    }
+    for (let block = 0; block < previousContent.length; block += 1) {
+      if (previousContent[block] !== nextContent[block]) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function collectSubagentLinkage(
+  messages: readonly Message[],
+): TranscriptSubagentLinkage | undefined {
+  const delegateRequestIds = new Set<string>();
+  let entries: Array<{ content: readonly MessageContent[] }> | undefined;
+
+  for (const message of messages) {
+    const blocks: MessageContent[] = [];
+    for (const block of message.content) {
+      if (block.type === "toolRequest") {
+        if (block.toolName !== "delegate") continue;
+        delegateRequestIds.add(block.id);
+      } else if (block.type === "toolResponse") {
+        // Only the responses that can carry a task id are worth keeping; a
+        // whole transcript of tool output is exactly what must not be copied.
+        if (!delegateRequestIds.has(block.id)) continue;
+      } else {
+        continue;
+      }
+      blocks.push(block);
+    }
+    if (blocks.length > 0) {
+      entries = entries ?? [];
+      entries.push({ content: blocks });
+    }
+  }
+
+  if (!entries) {
+    return undefined;
+  }
+  if (
+    cachedSubagentLinkage &&
+    subagentLinkageUnchanged(cachedSubagentLinkage, entries)
+  ) {
+    return cachedSubagentLinkage;
+  }
+  cachedSubagentLinkage = Object.freeze(entries);
+  return cachedSubagentLinkage;
+}
+
+/** Whether this content awaits a Goose background task (`load <task-id>`). */
+function awaitsGooseTask(content: readonly MessageContent[]): boolean {
+  return content.some(
+    (block) => block.type === "toolRequest" && block.toolName === "load",
+  );
+}
+
 export function buildTranscriptItems({
   messages,
   streamingMessageId,
@@ -124,6 +214,7 @@ export function buildTranscriptItems({
   // responses are stored as user messages, but product-wise they are still part
   // of the assistant's work turn, so they should not reset this set.
   let displayedReasoningSignatures = new Set<string>();
+  const subagentLinkage = collectSubagentLinkage(messages);
 
   for (const message of messages) {
     if (!isVisibleTranscriptMessage(message)) {
@@ -201,6 +292,7 @@ export function buildTranscriptItems({
       message,
       visibleContent: contentForProjection,
       isStreaming,
+      subagentLinkage,
     });
     if (agentWorkItems) {
       items.push(...agentWorkItems);
@@ -373,6 +465,7 @@ function createMessageItem({
   estimatedHeight,
   measurementDecision,
   responseStartMessageId,
+  subagentLinkage,
 }: {
   message: Message;
   visibleContent: readonly MessageContent[];
@@ -383,6 +476,7 @@ function createMessageItem({
   estimatedHeight: number;
   measurementDecision: TranscriptMeasurementPolicyDecision;
   responseStartMessageId?: string;
+  subagentLinkage?: TranscriptSubagentLinkage;
 }): TranscriptMessageItem {
   return {
     itemId: `message:${message.id}`,
@@ -395,6 +489,7 @@ function createMessageItem({
     blockIds,
     searchableText,
     isStreaming,
+    ...(subagentLinkage ? { subagentLinkage } : {}),
     renderRevision: revisions.renderRevision,
     heightRevision: revisions.heightRevision,
     estimatedHeight,
@@ -972,6 +1067,7 @@ function buildMessageItemForContent({
   idSuffix,
   responseStartMessageId,
   preserveMessageContext = false,
+  subagentLinkage,
 }: {
   message: Message;
   content: readonly MessageContent[];
@@ -979,6 +1075,7 @@ function buildMessageItemForContent({
   idSuffix: string;
   responseStartMessageId?: string;
   preserveMessageContext?: boolean;
+  subagentLinkage?: TranscriptSubagentLinkage;
 }): TranscriptMessageItem {
   const syntheticMessage: Message = {
     ...message,
@@ -1002,6 +1099,7 @@ function buildMessageItemForContent({
     estimatedHeight: estimateMessageHeight(syntheticMessage, content),
     measurementDecision,
     responseStartMessageId,
+    subagentLinkage,
   });
 }
 
@@ -1056,13 +1154,17 @@ function buildAgentWorkItem({
   content,
   isStreaming,
   hasFinalAnswer = false,
+  hostsTurnFooters = false,
   idSuffix = "agent-work",
+  subagentLinkage,
 }: {
   message: Message;
   content: readonly MessageContent[];
   isStreaming: boolean;
   hasFinalAnswer?: boolean;
+  hostsTurnFooters?: boolean;
   idSuffix?: string;
+  subagentLinkage?: TranscriptSubagentLinkage;
 }): TranscriptAgentWorkItem {
   const workMessage: Message = {
     ...message,
@@ -1108,6 +1210,8 @@ function buildAgentWorkItem({
     content,
     isActiveWork,
     hasFinalAnswer,
+    hostsTurnFooters,
+    ...(subagentLinkage ? { subagentLinkage } : {}),
     thoughtCount,
     toolCount,
     textCount,
@@ -1116,6 +1220,7 @@ function buildAgentWorkItem({
       message.id,
       idSuffix,
       hasFinalAnswer ? "answered" : "unanswered",
+      hostsTurnFooters ? "hosts-footers" : "no-footers",
       revisions.renderRevision,
     ].join(":"),
     heightRevision: [
@@ -1138,10 +1243,12 @@ function buildAgentWorkItems({
   message,
   visibleContent,
   isStreaming,
+  subagentLinkage,
 }: {
   message: Message;
   visibleContent: readonly MessageContent[];
   isStreaming: boolean;
+  subagentLinkage?: TranscriptSubagentLinkage;
 }): readonly TranscriptItemDescriptor[] | null {
   if (message.role !== "assistant" || visibleContent.length === 0) {
     return null;
@@ -1218,9 +1325,12 @@ function buildAgentWorkItems({
 
   const finalAnswerIndex = answerEntries[0]?.index;
 
+  const hasFinalAnswer = finalTextContent.length > 0;
+
   workEntryGroups.forEach((entries, groupIndex) => {
     const content = compactWorkContent(entries.map(({ block }) => block));
     const sourceIndex = entries[0]?.index ?? 0;
+    const isLastGroup = groupIndex === workEntryGroups.length - 1;
     // Some providers persist reasoning summaries after their final text. Move
     // that work directly before the answer so the answer keeps its source-order
     // relationship with companion content such as images and MCP apps. Groups
@@ -1234,18 +1344,23 @@ function buildAgentWorkItems({
         message,
         content,
         isStreaming,
-        hasFinalAnswer:
-          groupIndex === workEntryGroups.length - 1 &&
-          finalTextContent.length > 0,
+        hasFinalAnswer: isLastGroup && hasFinalAnswer,
+        // A turn that ends in tool calls with no final text has no answer
+        // bubble to hang the harness chips off, so the last work group keeps
+        // them once the turn settles. Exactly one row per turn hosts them.
+        hostsTurnFooters: isLastGroup && !hasFinalAnswer,
         idSuffix:
           workEntryGroups.length === 1
             ? "agent-work"
             : `agent-work-${groupIndex}`,
+        ...(subagentLinkage && awaitsGooseTask(content)
+          ? { subagentLinkage }
+          : {}),
       }),
     });
   });
 
-  if (finalTextContent.length > 0) {
+  if (hasFinalAnswer) {
     positionedItems.push({
       index: answerEntries[0]?.index ?? visibleContent.length,
       item: buildMessageItemForContent({
@@ -1254,6 +1369,11 @@ function buildAgentWorkItems({
         isStreaming,
         idSuffix: "answer",
         responseStartMessageId: message.id,
+        // The answer bubble reads the chips off the whole message, so the
+        // linkage gate looks at the whole message too.
+        ...(subagentLinkage && awaitsGooseTask(message.content)
+          ? { subagentLinkage }
+          : {}),
         // The answer renders only its own text, but it is the row that hosts
         // the turn's footers (harness brigade chips), which are read from the
         // tool calls that stayed behind in the work rows.

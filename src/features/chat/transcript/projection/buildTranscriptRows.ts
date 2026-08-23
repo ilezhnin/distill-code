@@ -75,6 +75,7 @@ export function buildTranscriptRows(
             item.visibleContent === item.message.content
               ? undefined
               : item.message.content,
+          subagentLinkage: item.subagentLinkage,
           renderRevision: item.renderRevision,
           heightRevision: item.heightRevision,
           layoutRevision: TRANSCRIPT_ZERO_LAYOUT_REVISION,
@@ -121,6 +122,8 @@ export function buildTranscriptRows(
             content: item.content,
             isActiveWork: item.isActiveWork,
             hasFinalAnswer: item.hasFinalAnswer,
+            hostsTurnFooters: item.hostsTurnFooters,
+            subagentLinkage: item.subagentLinkage,
             thoughtCount: item.thoughtCount,
             toolCount: item.toolCount,
             textCount: item.textCount,
@@ -178,6 +181,7 @@ export function canReuseTranscriptRowDescriptor(
     previous.blockIds === next.blockIds &&
     previous.messageContent === next.messageContent &&
     previous.messageContentContext === next.messageContentContext &&
+    previous.subagentLinkage === next.subagentLinkage &&
     previous.fragment === next.fragment &&
     previous.date === next.date &&
     previous.agentWork === next.agentWork &&
@@ -199,6 +203,7 @@ export function canReuseTranscriptRowDescriptor(
       previous.messageContentContext,
       next.messageContentContext,
     ) &&
+    previous.subagentLinkage === next.subagentLinkage &&
     fragmentsEqual(previous.fragment, next.fragment) &&
     datePayloadsEqual(previous.date, next.date) &&
     agentWorkPayloadsEqual(previous.agentWork, next.agentWork) &&
@@ -300,6 +305,8 @@ function agentWorkPayloadsEqual(
     ) &&
     left.isActiveWork === right.isActiveWork &&
     left.hasFinalAnswer === right.hasFinalAnswer &&
+    left.hostsTurnFooters === right.hostsTurnFooters &&
+    left.subagentLinkage === right.subagentLinkage &&
     left.thoughtCount === right.thoughtCount &&
     left.toolCount === right.toolCount &&
     left.textCount === right.textCount

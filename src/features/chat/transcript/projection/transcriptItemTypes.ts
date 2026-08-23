@@ -53,6 +53,19 @@ export interface TranscriptDateSeparatorPayload {
   firstMessageId: string;
 }
 
+/**
+ * Prior tool-call context a row needs to resolve a Goose `load <task-id>` back
+ * to the `delegate` that announced the id, when the two live in different
+ * assistant messages.
+ *
+ * It carries only the delegate requests and their responses, and the projection
+ * hands every row that needs it the *same* frozen array, so putting it on a
+ * payload costs one reference rather than a copy of the transcript.
+ */
+export type TranscriptSubagentLinkage = ReadonlyArray<{
+  content: readonly MessageContent[];
+}>;
+
 export interface TranscriptAgentWorkPayload {
   workId: string;
   message: Message;
@@ -60,6 +73,13 @@ export interface TranscriptAgentWorkPayload {
   isActiveWork: boolean;
   /** Whether a final answer row follows this work panel in the transcript. */
   hasFinalAnswer: boolean;
+  /**
+   * Whether this work row hosts the turn's persistent footers (harness brigade
+   * chips). True only on the last work group of a turn that produced no answer
+   * row — otherwise the answer bubble hosts them, and no turn hosts them twice.
+   */
+  hostsTurnFooters: boolean;
+  subagentLinkage?: TranscriptSubagentLinkage;
   thoughtCount: number;
   toolCount: number;
   textCount: number;
@@ -76,6 +96,8 @@ export interface TranscriptRowDescriptor {
   messageContent?: readonly MessageContent[];
   /** Related blocks needed to render the visible content without displaying them. */
   messageContentContext?: readonly MessageContent[];
+  /** Earlier delegate tool calls this row's brigade chips may need to resolve. */
+  subagentLinkage?: TranscriptSubagentLinkage;
   fragment?: TranscriptAssistantContentFragmentPayload;
   date?: TranscriptDateSeparatorPayload;
   agentWork?: TranscriptAgentWorkPayload;
@@ -113,6 +135,7 @@ export interface TranscriptMessageItem {
   blockIds: readonly string[];
   searchableText: string;
   isStreaming: boolean;
+  subagentLinkage?: TranscriptSubagentLinkage;
   renderRevision: string;
   heightRevision: string;
   estimatedHeight: number;
@@ -173,6 +196,8 @@ export interface TranscriptAgentWorkItem {
   content: readonly MessageContent[];
   isActiveWork: boolean;
   hasFinalAnswer: boolean;
+  hostsTurnFooters: boolean;
+  subagentLinkage?: TranscriptSubagentLinkage;
   thoughtCount: number;
   toolCount: number;
   textCount: number;
