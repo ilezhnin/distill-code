@@ -118,11 +118,7 @@ export function ReasoningEffortPill({
           tooltip={t("toolbar.reasoningEffort")}
           className="shrink-0"
         >
-          <span
-            className={cn(
-              ultracodeSelected && "text-violet-600 dark:text-violet-400",
-            )}
-          >
+          <span className={cn(ultracodeSelected && "effort-accent-ink")}>
             {currentLabel}
           </span>
         </ComposerActionButton>
@@ -138,9 +134,7 @@ export function ReasoningEffortPill({
           <span
             className={cn(
               "font-semibold",
-              ultracodeSelected
-                ? "text-violet-600 dark:text-violet-400"
-                : "text-foreground",
+              ultracodeSelected ? "effort-accent-ink" : "text-foreground",
             )}
           >
             {currentLabel}
@@ -178,9 +172,7 @@ export function ReasoningEffortPill({
                 selectedIndex < 0
                   ? option.id === config.currentValue
                   : index === selectedIndex;
-              const optionLabel = toSentenceCaseLabel(
-                option.name ?? option.id,
-              );
+              const optionLabel = toSentenceCaseLabel(option.name ?? option.id);
               return (
                 // biome-ignore lint/a11y/useSemanticElements: deliberate ARIA radio pattern — an <input type="radio"> cannot host this icon-only roving-tabindex segmented control, and the wrapper already carries role="radiogroup"
                 <button
@@ -206,7 +198,7 @@ export function ReasoningEffortPill({
                         : cn(
                             "effort-stop-dot size-1.5",
                             isTopTierEffortId(option.id)
-                              ? "bg-violet-500/60 group-hover:bg-violet-500 dark:bg-violet-400/60 dark:group-hover:bg-violet-400"
+                              ? "effort-stop-dot-top-tier"
                               : "bg-muted-foreground/50 group-hover:bg-muted-foreground",
                           ),
                     )}
