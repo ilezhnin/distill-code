@@ -505,7 +505,7 @@ function resolveNotificationAction(
   if (action.type === "retryWavePlan") {
     return {
       label: options.retryWavePlanLabel,
-      onClick: () => requestWaveReplan(action.sessionId),
+      onClick: () => requestWaveReplan(action.sessionId, action.detail),
     };
   }
   // The unreadable-verdict retry of Q5: re-deliver the wave's digest so the

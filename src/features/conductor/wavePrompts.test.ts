@@ -10,7 +10,9 @@ import type { StructuredReport } from "./types";
 import {
   CONDUCTOR_PROTOCOL_PROMPT,
   type CompletedWaveStepReport,
+  WAVE_REPLAN_REQUEST_PROMPT,
   buildConductorProtocolPrompt,
+  buildWaveReplanRequest,
   buildWaveStepPrompt,
 } from "./wavePrompts";
 
@@ -298,5 +300,30 @@ describe("verification and decomposition guidance", () => {
     expect(prompt).toContain("Do this step and stop.");
     expect(prompt).toContain('"needsOperator": true');
     expect(prompt).toContain('Put in "decisions"');
+  });
+});
+
+describe("subtask string discipline and the replan request", () => {
+  it("forbids raw double quotes and pasted JSON inside subtasks", () => {
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain(
+      "never use the double-quote character",
+    );
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain(
+      "Do not describe the report format",
+    );
+  });
+
+  it("quotes the parser's complaint back to the model on a retry", () => {
+    const request = buildWaveReplanRequest(
+      "The distill-wave block is not valid JSON: Expected ',' or '}' after property value in JSON at position 6038.",
+    );
+    expect(request).toContain("What was wrong with the previous block:");
+    expect(request).toContain("position 6038");
+    expect(request).toContain("raw double-quote character");
+  });
+
+  it("falls back to the plain request when there is no detail", () => {
+    expect(buildWaveReplanRequest()).toBe(WAVE_REPLAN_REQUEST_PROMPT);
+    expect(buildWaveReplanRequest("  ")).toBe(WAVE_REPLAN_REQUEST_PROMPT);
   });
 });

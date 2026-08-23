@@ -214,6 +214,8 @@ export type SystemNotificationAction =
        */
       type: "retryWavePlan";
       sessionId: string;
+      /** Parser detail of the refused plan, quoted back to the model on retry. */
+      detail?: string;
     }
   | {
       /**

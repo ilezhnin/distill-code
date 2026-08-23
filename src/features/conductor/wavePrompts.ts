@@ -77,6 +77,7 @@ Rules, all enforced by a strict parser — a malformed wave runs nothing and is 
 - At most ${MAX_WAVE_STEPS} steps. Fewer is better; most good waves are two or three.
 - "role" must be one of these worker roles: ${allowedWaveRoleIds().join(", ")}. The role is framing for the worker, not the reason a step exists — see "How to split the work".
 - "subtask" is a step-by-step instruction written for that worker. It must never be a copy of the operator's request: if every subtask could be replaced by "solve the user's question", the wave is not written yet.
+- "subtask" is a JSON string, and broken JSON runs nothing — so inside it never use the double-quote character. Quote with «guillemets» or 'single quotes' instead, and never paste JSON snippets, code, or fenced blocks into a subtask. Do not describe the report format either: every worker receives the report contract automatically, restating it only risks the plan.
 - "access" is either [] or "all". Nothing else — no lists of step indexes.
 - "model" is optional. Omit it and the step inherits the conductor's model.
 - Anything you want the operator to read goes outside the block, as ordinary prose.
@@ -143,9 +144,26 @@ export function composeConductorSystemPrompt(
  * Q2: there is no auto-retry. This text only exists because the operator asked
  * for another plan by pressing the button.
  */
-export const WAVE_REPLAN_REQUEST_PROMPT = `Your last wave plan was refused: the ${WAVE_FENCE_TAG} block did not parse, or asked for something this build cannot run. Read the error in the transcript above.
+export const WAVE_REPLAN_REQUEST_PROMPT = `Your last wave plan was refused: the ${WAVE_FENCE_TAG} block did not parse, or asked for something this build cannot run.
 
 Send the plan again as exactly one ${WAVE_FENCE_TAG} block that follows the contract — or, if the request does not actually need a wave, answer it directly with no fence at all.`;
+
+/**
+ * The replan request with the parser's own complaint attached.
+ *
+ * "Read the error in the transcript above" is useless to the model: the
+ * notices are client-side and a byte position in a minified line says nothing.
+ * Quoting the enumerated detail is what lets the model fix the actual defect
+ * instead of reproducing it — the first live fence failures were exactly that,
+ * twice in a row.
+ */
+export function buildWaveReplanRequest(detail?: string): string {
+  if (!detail?.trim()) return WAVE_REPLAN_REQUEST_PROMPT;
+  return `${WAVE_REPLAN_REQUEST_PROMPT}
+
+What was wrong with the previous block: ${detail.trim()}
+Fix exactly that. A frequent cause is a raw double-quote character inside a "subtask" string — use «guillemets» there instead, and keep JSON snippets and report-format descriptions out of subtasks entirely.`;
+}
 
 function reportPayload(
   entry: CompletedWaveStepReport,

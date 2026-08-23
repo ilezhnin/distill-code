@@ -100,6 +100,7 @@ function appendConductorNotice(
   text: string,
   retryAction: boolean,
   type: "error" | "warning" = "error",
+  retryDetail?: string,
 ): void {
   useChatStore
     .getState()
@@ -108,7 +109,9 @@ function appendConductorNotice(
       createSystemNotificationMessage(
         text,
         type,
-        retryAction ? { type: "retryWavePlan", sessionId } : undefined,
+        retryAction
+          ? { type: "retryWavePlan", sessionId, detail: retryDetail }
+          : undefined,
       ),
     );
 }
@@ -186,6 +189,10 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
         candidate.conductorSessionId,
         waveRejectionNoticeText(admission),
         true,
+        "error",
+        // Quoted back to the model when the operator asks for a new plan, so
+        // the retry names the defect instead of asking blind (Q2 stays manual).
+        admission.detail,
       );
       next = getWaveEngineState();
       continue;
