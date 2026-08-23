@@ -467,6 +467,8 @@
     "statsDone": "{{count}} listos",
     "statsTokens": "{{tokens}} tokens",
     "statsCost": "${{cost}}",
+    "waitingOnChildren_one": "1 ejecutor está trabajando: el resultado llegará como mensaje",
+    "waitingOnChildren_other": "{{count}} ejecutores están trabajando: el resultado llegará como mensaje",
     "stopChild": "Detener {{name}}",
     "decisions": "Decisiones",
     "artifacts": "Artefactos",

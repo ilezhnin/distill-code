@@ -6,6 +6,7 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import { cn } from "@/shared/lib/cn";
 import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 
+import { isWorkingStatus, summarizeBrigadeActivity } from "../brigadeActivity";
 import type { RunStatus, SessionNode, StructuredReport } from "../types";
 
 const STATUS_DOT_CLASS: Record<RunStatus, string> = {
@@ -17,10 +18,6 @@ const STATUS_DOT_CLASS: Record<RunStatus, string> = {
   cancelled: "bg-muted-foreground",
   stopped: "bg-muted-foreground",
 };
-
-function isWorkingStatus(status: RunStatus): boolean {
-  return status === "starting" || status === "running" || status === "waiting";
-}
 
 function formatTokenCount(value: number): string {
   if (value >= 1000) {
@@ -82,8 +79,7 @@ export function ConductorAgentFooter({
   }, [nodes, sessionStateById]);
 
   const stats = useMemo(() => {
-    const working = nodes.filter((node) => isWorkingStatus(node.status)).length;
-    const done = nodes.filter((node) => node.status === "completed").length;
+    const { working, done } = summarizeBrigadeActivity(nodes);
     const parts: string[] = [];
     if (working > 0) {
       parts.push(t("conductor.statsWorking", { count: working }));
