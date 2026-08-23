@@ -418,47 +418,6 @@ export const ROLE_CATALOG: readonly RoleDefinition[] = [
   },
 ] as const;
 
-const DEFAULT_ROLE_BY_LAYER: Record<RoleLayer, string> = {
-  conductor: DEFAULT_CONDUCTOR_ROLE_ID,
-  orchestrator: DEFAULT_ORCHESTRATOR_ROLE_ID,
-  worker: DEFAULT_WORKER_ROLE_ID,
-};
-
-export interface RolePick {
-  role: RoleDefinition;
-  persona?: Persona;
-}
-
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((token) => token.length >= 3);
-}
-
-function scoreRole(task: string, role: RoleDefinition): number {
-  const haystack = task.toLowerCase();
-  const tokens = new Set(tokenize(task));
-  let score = 0;
-  for (const keyword of role.keywords) {
-    const needle = keyword.toLowerCase();
-    if (needle.includes(" ")) {
-      if (haystack.includes(needle)) score += 3;
-      continue;
-    }
-    if (tokens.has(needle) || haystack.includes(needle)) {
-      score += needle === role.id ? 4 : 2;
-    }
-  }
-  if (
-    haystack.includes(role.id) ||
-    haystack.includes(role.displayName.toLowerCase())
-  ) {
-    score += 5;
-  }
-  return score;
-}
-
 export function roleById(roleId: string): RoleDefinition | undefined {
   return ROLE_CATALOG.find((role) => role.id === roleId);
 }
@@ -504,35 +463,6 @@ export function resolvePersonaForRole(
   return personas.find(
     (persona) => persona.displayName.trim().toLowerCase() === displayName,
   );
-}
-
-export function selectRoleForTask(
-  task: string,
-  layer: RoleLayer,
-  personas: readonly Persona[] = [],
-): RolePick {
-  const candidates = rolesForLayer(layer);
-  const fallbackId = DEFAULT_ROLE_BY_LAYER[layer];
-  const fallback =
-    candidates.find((role) => role.id === fallbackId) ??
-    candidates[0] ??
-    ROLE_CATALOG[0];
-  let best = fallback;
-  let bestScore = Number.NEGATIVE_INFINITY;
-  for (const role of candidates) {
-    const score = scoreRole(task, role);
-    if (score > bestScore) {
-      best = role;
-      bestScore = score;
-    }
-  }
-  if (bestScore <= 0) {
-    best = fallback;
-  }
-  return {
-    role: best,
-    persona: resolvePersonaForRole(best.id, personas),
-  };
 }
 
 export function resolveDefaultConductorPersona(
