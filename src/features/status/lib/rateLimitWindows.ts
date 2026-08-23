@@ -143,3 +143,20 @@ export function usageTextClass(usedPercent: number): string {
   if (used < 80) return "text-foreground";
   return "text-destructive";
 }
+
+/**
+ * True when any of the platform's rate-limit windows is exhausted — the signal
+ * the ranked-model resolver uses to fall through to the next preference. A
+ * platform with no usage data is NOT at limit: unknown must never demote a
+ * model silently.
+ */
+export function isPlatformAtLimit(
+  providers: readonly ProviderRateLimits[],
+  platform: string,
+): boolean {
+  const entry = providers.find((provider) => provider.provider === platform);
+  if (!entry) return false;
+  return getUsageSections(entry).some(
+    (section) => clampUsedPercent(section.window.usedPercent) >= 100,
+  );
+}

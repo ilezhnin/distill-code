@@ -248,5 +248,9 @@
     "previewAlt": "Vista previa de {{name}}",
     "descriptionFallback": "{{name}} está listo para ayudar.",
     "import": "Importar agente"
+  },
+  "modelRanking": {
+    "fallbackAtLimit": "{{agent}}: {{skipped}} alcanzó su límite de uso — se usará {{picked}}",
+    "fallbackMissing": "{{agent}}: {{skipped}} no está instalado — se usará {{picked}}"
   }
 }
