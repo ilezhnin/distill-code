@@ -120,6 +120,101 @@ describe("admitWavePlan", () => {
   });
 });
 
+/**
+ * E1. The protocol prompt has told the conductor to end a checkable wave with
+ * a verification step since `81b29ef`, and nothing read that instruction: a
+ * four-step wave of pure builders was admitted and ran, and its `accept` was
+ * honoured on nobody's evidence. This is the floor under the prompt — narrow
+ * on purpose, because a false refusal costs one replan while an unverified
+ * accept costs a wrong answer the operator believes.
+ */
+describe("the E1 verification lint", () => {
+  function plan(steps: readonly WaveStep[]) {
+    return admitWavePlan({
+      kind: "plan",
+      planText: "",
+      prose: "",
+      steps: [...steps],
+    });
+  }
+
+  it("refuses a wave that builds something and never inspects it", () => {
+    const admission = plan([
+      step("writer", "Write the migration guide"),
+      step("brigade", "Update the callers", "all"),
+    ]);
+    expect(admission).toMatchObject({
+      kind: "rejected",
+      reason: "verification-step-missing",
+      stepIndex: 1,
+    });
+    if (admission.kind !== "rejected") return;
+    expect(admission.detail).toContain("acceptor");
+  });
+
+  it("accepts the same wave once it ends with a verifier", () => {
+    expect(
+      plan([
+        step("writer", "Write the migration guide"),
+        step("brigade", "Update the callers"),
+        step("acceptor", "Run the build and open the changed files", "all"),
+      ]).kind,
+    ).toBe("accepted");
+    // `adversary` is the other verify-stage role the prompt names.
+    expect(
+      plan([
+        step("brigade", "Update the callers"),
+        step("adversary", "Try to break it", "all"),
+      ]).kind,
+    ).toBe("accepted");
+  });
+
+  it("refuses a verifier that cannot see what it is verifying", () => {
+    // `access: []` means the step never receives the earlier reports, so it
+    // does not know what was built. It is a verification step in name only.
+    expect(
+      plan([
+        step("brigade", "Update the callers"),
+        step("acceptor", "Check the work"),
+      ]),
+    ).toMatchObject({ kind: "rejected", reason: "verification-step-missing" });
+  });
+
+  it("refuses a verifier that is not the last step", () => {
+    expect(
+      plan([
+        step("acceptor", "Check the old state", "all"),
+        step("brigade", "Update the callers"),
+      ]),
+    ).toMatchObject({ kind: "rejected", reason: "verification-step-missing" });
+  });
+
+  it("leaves waves with nothing to inspect alone", () => {
+    // `pre`-stage research and a `pre`-stage answer: there is no artifact, and
+    // demanding a verifier here would refuse a legitimate plan.
+    expect(
+      plan([
+        step("researcher", "Read the RFCs"),
+        step("oracle", "Answer the question", "all"),
+      ]).kind,
+    ).toBe("accepted");
+    // `release`-stage work acts on an artifact someone else already built and
+    // verified, so it does not trigger the lint either.
+    expect(
+      plan([
+        step("localizer", "Translate the strings"),
+        step("pr-submitter", "Open the PR", "all"),
+      ]).kind,
+    ).toBe("accepted");
+  });
+
+  it("leaves a one-step wave alone, whatever it builds", () => {
+    // The single worker *is* the work: there is no handoff to lose, and a
+    // second session to check one step doubles the cheapest useful wave.
+    expect(plan([step("brigade", "Update the callers")]).kind).toBe("accepted");
+  });
+});
+
 describe("run status helpers", () => {
   it("treats stopped as terminal and reports it as failed", () => {
     expect(isTerminalRunStatus("stopped")).toBe(true);

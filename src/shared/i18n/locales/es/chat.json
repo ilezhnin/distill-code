@@ -506,7 +506,12 @@
         "subtaskEmpty": "El paso {{step}} tiene la subtarea vacía.",
         "accessInvalid": "El paso {{step}} tiene un valor de \"access\" no admitido.",
         "modelNotAString": "El paso {{step}} tiene un campo \"model\" que no es un nombre de modelo.",
-        "stepModelUnsupported": "El paso {{step}} pide ejecutarse en un modelo concreto. Todavía no se admiten modelos por paso, y se rechazó el plan entero en lugar de ejecutar el paso en otro modelo sin avisar."
+        "stepModelUnsupported": "El paso {{step}} pide ejecutarse en un modelo concreto. Todavía no se admiten modelos por paso, y se rechazó el plan entero en lugar de ejecutar el paso en otro modelo sin avisar.",
+        "verificationStepMissing": "Este plan construye algo que se puede comprobar, pero su último paso no lo comprueba. Una ola así debe terminar con un paso de verificación que inspeccione el resultado."
+      },
+      "concurrent": {
+        "title": "Este chat ya tiene una ola en curso, así que el plan nuevo no se inició.",
+        "body": "Solo se ejecuta una ola por conductor a la vez: una segunda pondría más ejecutores en la misma carpeta de trabajo sin coordinación entre ellos. Espera a que termine la ola en curso, o pídele su estado; después vuelve a enviar esta petición."
       },
       "verdict": {
         "needsOperatorTitle": "Esta ola se detuvo sin una decisión, así que queda en tus manos.",
@@ -518,7 +523,9 @@
           "verdictMissing": "El conductor respondió sin un veredicto, así que no se decidió nada.",
           "verdictInvalid": "No se pudo leer el veredicto del conductor, así que no se decidió nada.",
           "revisionCapReached": "El conductor pidió otra revisión, pero esta petición ya agotó sus {{max}} revisiones.",
-          "digestUndeliverable": "No se pudo entregar al conductor el informe de la brigada."
+          "digestUndeliverable": "No se pudo entregar al conductor el informe de la brigada.",
+          "acceptedWithoutEvidence": "El conductor aceptó el resultado, pero nada externo lo comprobó, así que no se respetó la aceptación.",
+          "waveInterrupted": "Esta ola se interrumpió antes de que ningún ejecutor informara, así que no hay nada que juzgar. Su trabajo no se completó."
         },
         "prose": {
           "accept": "Aceptó el resultado de la brigada.",
