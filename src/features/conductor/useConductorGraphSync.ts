@@ -12,6 +12,7 @@ import {
   formatConductorAnswer,
   parseStructuredReport,
 } from "./orchestratorReport";
+import { reconcileStaleGraphStatuses } from "./reconcileStaleGraphStatuses";
 import {
   lastCompletedAssistantSummary,
   reportStatusFromRun,
@@ -19,6 +20,44 @@ import {
 import type { RunStatus, SessionNode, StructuredReport } from "./types";
 
 const seenRunningBySession = new Set<string>();
+
+/**
+ * The startup reconcile is one-shot per app start: module-level, so a remount of
+ * the hook (or a second mount in another view) cannot re-stomp nodes that have
+ * legitimately gone back to work since.
+ */
+let hasReconciledStaleStatuses = false;
+
+/**
+ * Persisted `starting|running|waiting` nodes survive an app kill forever — the
+ * graph has no way to learn that the process that owned them is gone. Once both
+ * the sessions and the message queues are hydrated, any orchestrator/worker node
+ * that claims to work while it has neither a live runtime nor a queued send that
+ * would start it is demoted to `stopped`. `statusFromRuntime` stays authoritative
+ * from there: as soon as a real runtime shows up it wins again.
+ */
+function reconcileStaleStatusesOnce(): void {
+  if (hasReconciledStaleStatuses) return;
+  if (!useChatSessionStore.getState().hasHydratedSessions) return;
+  const chat = useChatStore.getState();
+  // Queues hydrate from native storage after the cached snapshot; reconciling
+  // earlier could stomp a child whose queued first message is still loading.
+  if (!chat.hasHydratedMessageQueues) return;
+  hasReconciledStaleStatuses = true;
+
+  const graph = useConductorGraphStore.getState();
+  const staleSessionIds = reconcileStaleGraphStatuses(
+    Object.values(graph.nodesById),
+    {
+      sessionStateById: chat.sessionStateById,
+      hasQueuedFirstSend: (sessionId) =>
+        (chat.queuedMessageBySession[sessionId]?.length ?? 0) > 0,
+    },
+  );
+  for (const sessionId of staleSessionIds) {
+    graph.patchNode(sessionId, { status: "stopped" });
+  }
+}
 
 function isWorkingStatus(status: RunStatus): boolean {
   return status === "starting" || status === "running" || status === "waiting";
@@ -252,6 +291,7 @@ async function hydrateMissingSessions(): Promise<void> {
 export function useConductorGraphSync(): void {
   useEffect(() => {
     remapPromotedSessions();
+    reconcileStaleStatusesOnce();
     syncChildStatuses();
     void hydrateMissingSessions();
 
@@ -259,6 +299,7 @@ export function useConductorGraphSync(): void {
       syncChildStatuses();
     });
     const unsubChat = useChatStore.subscribe(() => {
+      reconcileStaleStatusesOnce();
       syncChildStatuses();
     });
     const unsubSessions = useChatSessionStore.subscribe((state, previous) => {
@@ -266,6 +307,7 @@ export function useConductorGraphSync(): void {
         remapPromotedSessions();
       }
       if (state.hasHydratedSessions && !previous.hasHydratedSessions) {
+        reconcileStaleStatusesOnce();
         void hydrateMissingSessions();
       }
     });
