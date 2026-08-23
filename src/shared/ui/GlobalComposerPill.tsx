@@ -30,6 +30,8 @@ import { ChatInputAttachments } from "@/features/chat/ui/ChatInputAttachments";
 import { ChatInputSelectionChips } from "@/features/chat/ui/ChatInputSelectionChips";
 import { MentionAutocomplete } from "@/features/chat/ui/MentionAutocomplete";
 import { AgentModelPicker } from "@/features/chat/ui/AgentModelPicker";
+import { ReasoningEffortPill } from "@/features/chat/ui/ReasoningEffortPill";
+import { resolveEffectiveReasoningEffort } from "@/features/chat/lib/effectiveReasoningEffort";
 import { ProjectInputSelector } from "@/features/chat/ui/ProjectInputSelector";
 import type { SkillMentionItem } from "@/features/chat/ui/mentionDetection";
 import { useVoiceDictation } from "@/features/chat/hooks/useVoiceDictation";
@@ -738,6 +740,27 @@ export function GlobalComposerPill({
     reasoningEffortSelectionMatch.modelMatches
       ? reasoningEffort
       : undefined;
+  // Powers the standalone effort pill and keeps embedded-variant model ids
+  // composed with the same effort the model picker uses.
+  const effectiveReasoning = useMemo(
+    () =>
+      resolveEffectiveReasoningEffort({
+        availableModels,
+        currentModelId: effectiveModelSelection?.modelId ?? null,
+        currentModelProviderId: effectiveModelSelection?.modelProviderId ?? null,
+        selectedAgentId,
+        sessionReasoningEffort: activeReasoningEffort,
+        onModelChange: handleModelChange,
+      }),
+    [
+      activeReasoningEffort,
+      availableModels,
+      effectiveModelSelection?.modelId,
+      effectiveModelSelection?.modelProviderId,
+      handleModelChange,
+      selectedAgentId,
+    ],
+  );
 
   const {
     mentionOpen,
@@ -1518,6 +1541,13 @@ export function GlobalComposerPill({
             reasoningEffort={activeReasoningEffort}
             contentAlign="smart"
             contentCollisionPadding={16}
+          />
+
+          <ReasoningEffortPill
+            config={effectiveReasoning.config}
+            onSelect={effectiveReasoning.onSelect}
+            disabled={handoffActive}
+            triggerTabIndex={expanded ? 0 : -1}
           />
 
           <ProjectInputSelector

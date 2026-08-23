@@ -1357,6 +1357,18 @@ export function useChatSessionController({
     }
   }, [session?.reasoningEffort, sessionId]);
 
+  const handleUltracodeArmedChange = useCallback(
+    (armed: boolean) => {
+      if (!sessionId) {
+        return;
+      }
+      useChatSessionStore.getState().patchSession(sessionId, {
+        ultracodeArmed: armed || undefined,
+      });
+    },
+    [sessionId],
+  );
+
   const handleReasoningEffortChange = useCallback(
     (value: string) => {
       if (!sessionId || !session?.reasoningEffort) {
@@ -1414,6 +1426,50 @@ export function useChatSessionController({
       sessionHasStarted,
       sessionId,
     ],
+  );
+
+  const handleFastModeChange = useCallback(
+    (enabled: boolean) => {
+      if (!sessionId || !session?.fastMode) {
+        return;
+      }
+      const current = session.fastMode;
+      if (current.enabled === enabled) {
+        return;
+      }
+
+      useChatSessionStore.getState().patchSession(sessionId, {
+        fastMode: { ...current, enabled },
+      });
+
+      const targetAtRequest = session.executionTarget;
+      const { providerId, modelId } =
+        gooseServeSelectionFromExecutionTarget(targetAtRequest);
+      const wireValue: string | boolean =
+        current.kind === "boolean" ? enabled : enabled ? "on" : "off";
+      void acpSetSessionConfigOption(sessionId, current.configId, wireValue, {
+        providerId,
+        modelId,
+      }).catch((error) => {
+        const liveSession = useChatSessionStore
+          .getState()
+          .getSession(sessionId);
+        if (
+          !sameSessionExecutionTarget(
+            liveSession?.executionTarget,
+            targetAtRequest,
+          ) ||
+          liveSession?.fastMode?.enabled !== enabled
+        ) {
+          return;
+        }
+        console.error("Failed to set fast mode:", error);
+        useChatSessionStore.getState().patchSession(sessionId, {
+          fastMode: current,
+        });
+      });
+    },
+    [session?.executionTarget, session?.fastMode, sessionId],
   );
 
   const handleProjectChange = useCallback(
@@ -3390,6 +3446,10 @@ export function useChatSessionController({
     handlePickerOpen: handlePickerOpenWithReasoningRefresh,
     reasoningEffort: session?.reasoningEffort,
     handleReasoningEffortChange,
+    ultracodeArmed: session?.ultracodeArmed ?? false,
+    handleUltracodeArmedChange,
+    fastMode: session?.fastMode,
+    handleFastModeChange,
     selectedProjectId: effectiveProjectId,
     availableProjects,
     handleProjectChange,

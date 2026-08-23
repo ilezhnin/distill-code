@@ -29,6 +29,9 @@ import { Progress } from "@/shared/ui/progress";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/shared/ui/tooltip";
 import { Kbd } from "@/shared/ui/kbd";
 import { AgentModelPicker } from "./AgentModelPicker";
+import { FastModePill } from "./FastModePill";
+import { ReasoningEffortPill } from "./ReasoningEffortPill";
+import { resolveEffectiveReasoningEffort } from "../lib/effectiveReasoningEffort";
 import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProviderStatus";
 import { getCatalogEntryFromEntries } from "@/features/providers/providerCatalog";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
@@ -40,6 +43,7 @@ import type {
   AgentPickerOption,
   ChatInputAgentModelPicker,
   ChatInputContextUsage,
+  ChatInputFastMode,
   ChatInputProjectPicker,
   ChatInputReasoningEffort,
   ChatInputVoiceConversation,
@@ -93,11 +97,12 @@ function AgentVoiceActivityIndicator() {
   );
 }
 
-type OpenToolbarMenu = "attachments" | "model" | "project" | "context";
+type OpenToolbarMenu = "attachments" | "model" | "effort" | "project" | "context";
 
 interface ChatInputToolbarProps {
   agentModelPicker: ChatInputAgentModelPicker & { enabled?: boolean };
   reasoningEffort?: ChatInputReasoningEffort;
+  fastMode?: ChatInputFastMode;
   projectPicker: ChatInputProjectPicker;
   contextUsage: ChatInputContextUsage;
   composerActions: ChatInputToolbarComposerActions;
@@ -108,6 +113,7 @@ interface ChatInputToolbarProps {
 export function ChatInputToolbar({
   agentModelPicker,
   reasoningEffort,
+  fastMode,
   projectPicker,
   contextUsage,
   composerActions,
@@ -243,6 +249,28 @@ export function ChatInputToolbar({
     readyAgentIds,
     selectedProvider,
   ]);
+  // One derivation feeds both the standalone effort pill and the model
+  // picker's embedded-variant wire-id composition.
+  const effectiveReasoning = useMemo(
+    () =>
+      resolveEffectiveReasoningEffort({
+        availableModels,
+        currentModelId: currentModelId ?? null,
+        currentModelProviderId: currentModelProviderId ?? null,
+        selectedAgentId: selectedProvider,
+        sessionReasoningEffort: reasoningEffort,
+        onModelChange,
+      }),
+    [
+      availableModels,
+      currentModelId,
+      currentModelProviderId,
+      onModelChange,
+      reasoningEffort,
+      selectedProvider,
+    ],
+  );
+
   const contextProgress =
     contextLimit > 0 ? Math.min(contextTokens / contextLimit, 1) : 0;
   const showContextUsage =
@@ -377,6 +405,24 @@ export function ChatInputToolbar({
               providerColumnMode={providerColumnMode}
             />
           )}
+
+        {agentModelPickerEnabled ? (
+          <ReasoningEffortPill
+            config={effectiveReasoning.config}
+            onSelect={effectiveReasoning.onSelect}
+            disabled={disabled}
+            open={openMenu === "effort"}
+            onOpenChange={handleMenuOpenChange("effort")}
+          />
+        ) : null}
+
+        {agentModelPickerEnabled ? (
+          <FastModePill
+            config={fastMode?.config}
+            onToggle={fastMode?.onChange}
+            disabled={disabled}
+          />
+        ) : null}
 
         {projectPickerEnabled ? (
           <ProjectInputSelector

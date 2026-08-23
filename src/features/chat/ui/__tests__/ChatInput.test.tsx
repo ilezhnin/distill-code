@@ -4362,7 +4362,7 @@ describe("ChatInput", () => {
     expect(onMicrophoneMuteToggle).toHaveBeenCalledOnce();
   });
 
-  it("shows and updates reasoning effort from the model picker", async () => {
+  it("shows and updates reasoning effort from the effort pill", async () => {
     const onChange = vi.fn();
     const user = userEvent.setup();
 
@@ -4403,13 +4403,19 @@ describe("ChatInput", () => {
       />,
     );
 
-    const pickerTrigger = screen.getByRole("button", {
-      name: /choose agent and model/i,
-    });
-    expect(pickerTrigger).toHaveTextContent("Medium");
+    // Effort no longer renders inside the model picker; the standalone pill
+    // carries the current value and the stop track.
+    expect(
+      screen.getByRole("button", { name: /choose agent and model/i }),
+    ).not.toHaveTextContent("Medium");
 
-    await user.click(pickerTrigger);
-    await user.click(screen.getByRole("button", { name: "High" }));
+    const pillTrigger = screen.getByRole("button", {
+      name: "Reasoning effort: Medium",
+    });
+    expect(pillTrigger).toHaveTextContent("Medium");
+
+    await user.click(pillTrigger);
+    await user.click(screen.getByRole("radio", { name: "High" }));
 
     expect(onChange).toHaveBeenCalledWith("high");
   });

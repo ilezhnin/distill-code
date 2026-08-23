@@ -729,6 +729,7 @@ describe("provider wire translation", () => {
         modelId: "claude-opus-4-8",
         modelName: "Claude Opus 4.8",
       },
+      fastMode: null,
       reasoningEffort: {
         configId: "thinking_effort",
         currentValue: "high",

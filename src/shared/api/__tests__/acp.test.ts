@@ -871,6 +871,7 @@ describe("acpCreateSession", () => {
       configOptionsSnapshot: {
         model: null,
         reasoningEffort: null,
+        fastMode: null,
       },
     });
 

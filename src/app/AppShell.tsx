@@ -4922,6 +4922,16 @@ export function AppShell({
                 reasoningEffort={{
                   config: homeSession?.reasoningEffort,
                   onChange: handleGlobalComposerReasoningEffortChange,
+                  ultracode: homeSessionId
+                    ? {
+                        armed: homeSession?.ultracodeArmed ?? false,
+                        setArmed: (armed: boolean) =>
+                          useChatSessionStore.getState().patchSession(
+                            homeSessionId,
+                            { ultracodeArmed: armed || undefined },
+                          ),
+                      }
+                    : undefined,
                 }}
                 currentExecutionTarget={currentGlobalComposerExecutionTarget}
                 onExecutionTargetChange={

@@ -78,10 +78,10 @@ describe("ToolCallAdapter — ArtifactActions", () => {
 
   it('renders an "Open file" button for a non-viewable location', () => {
     const locations: ToolCallLocation[] = [
-      { path: "/Users/test/project/main.rs" },
+      { path: "/Users/test/project/build.zip" },
     ];
 
-    renderAdapter({ arguments: { path: "/project/main.rs" }, locations });
+    renderAdapter({ arguments: { path: "/project/build.zip" }, locations });
 
     expect(screen.getByRole("button", { name: /open file/i })).toBeEnabled();
   });
@@ -97,8 +97,8 @@ describe("ToolCallAdapter — ArtifactActions", () => {
   it('shows "More outputs" toggle when there are multiple non-viewable locations', async () => {
     const user = userEvent.setup();
     const locations: ToolCallLocation[] = [
-      { path: "/Users/test/project/main.rs" },
-      { path: "/Users/test/project/lib.rs" },
+      { path: "/Users/test/project/build.zip" },
+      { path: "/Users/test/project/data.sqlite" },
     ];
 
     renderAdapter({ locations });
@@ -107,18 +107,22 @@ describe("ToolCallAdapter — ArtifactActions", () => {
     expect(toggle).toBeInTheDocument();
 
     expect(
-      screen.queryByText("/Users/test/project/lib.rs"),
+      screen.queryByText("/Users/test/project/data.sqlite"),
     ).not.toBeInTheDocument();
 
     await user.click(toggle);
 
-    expect(screen.getByText("/Users/test/project/lib.rs")).toBeInTheDocument();
+    expect(
+      screen.getByText("/Users/test/project/data.sqlite"),
+    ).toBeInTheDocument();
   });
 
   it("counts only non-viewable locations toward the overflow toggle", () => {
-    // One code file + one markdown file: the markdown is ceded to chips, so
-    // there is exactly one action and no "More outputs" disclosure.
+    // One binary file + viewable code and markdown files: the viewables are
+    // ceded to chips, so there is exactly one action and no "More outputs"
+    // disclosure.
     const locations: ToolCallLocation[] = [
+      { path: "/Users/test/project/build.zip" },
       { path: "/Users/test/project/main.rs" },
       { path: "/Users/test/project/notes.md" },
     ];
@@ -133,14 +137,14 @@ describe("ToolCallAdapter — ArtifactActions", () => {
     const user = userEvent.setup();
     mockOpenInApp.mockResolvedValue(undefined);
     const locations: ToolCallLocation[] = [
-      { path: "/Users/test/project/main.rs" },
+      { path: "/Users/test/project/build.zip" },
     ];
 
     renderAdapter({ locations });
 
     await user.click(screen.getByRole("button", { name: /open file/i }));
 
-    expect(mockOpenInApp).toHaveBeenCalledWith("/Users/test/project/main.rs");
+    expect(mockOpenInApp).toHaveBeenCalledWith("/Users/test/project/build.zip");
   });
 });
 

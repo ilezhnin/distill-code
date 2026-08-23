@@ -19,7 +19,7 @@ pub struct CodexBackendAuth {
 }
 
 pub fn codex_home() -> PathBuf {
-    if let Ok(override_dir) = std::env::var("CODEX_HOME") {
+    if let Some(override_dir) = crate::services::shell_env::user_env_var("CODEX_HOME") {
         let trimmed = override_dir.trim();
         if !trimmed.is_empty() {
             return PathBuf::from(trimmed);
@@ -113,12 +113,7 @@ pub fn map_codex_backend_usage(data: &Value) -> ProviderRateLimits {
         classify_codex_window_minutes(duration)
     });
 
-    let (session, weekly) = if primary_kind == Some("weekly") {
-        (
-            window_from_backend(secondary, SESSION_WINDOW_MINUTES),
-            window_from_backend(primary, WEEKLY_WINDOW_MINUTES),
-        )
-    } else if secondary_kind == Some("session") {
+    let (session, weekly) = if primary_kind == Some("weekly") || secondary_kind == Some("session") {
         (
             window_from_backend(secondary, SESSION_WINDOW_MINUTES),
             window_from_backend(primary, WEEKLY_WINDOW_MINUTES),

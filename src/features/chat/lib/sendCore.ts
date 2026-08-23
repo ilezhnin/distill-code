@@ -9,6 +9,10 @@ import {
   getSessionTitleFromDraft,
   isDefaultChatTitle,
 } from "@/features/chat/lib/sessionTitle";
+import {
+  appendUltracodeKeyword,
+  supportsUltracode,
+} from "@/features/chat/lib/effectiveReasoningEffort";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
@@ -328,8 +332,17 @@ export async function dispatchPrompt(
       background ? text : text.trim(),
       attachments,
     );
+    // Armed Ultracode sessions opt every turn in through the SDK's per-turn
+    // keyword trigger; the transcript keeps the user's own text (displayText
+    // precedent) while the wire prompt carries the opt-in.
+    const sessionAtSend = useChatSessionStore.getState().getSession(sessionId);
+    const promptWithUltracode =
+      sessionAtSend?.ultracodeArmed &&
+      supportsUltracode(sessionAtSend.reasoningEffort)
+        ? appendUltracodeKeyword(promptWithPaths)
+        : promptWithPaths;
     const acpPrompt =
-      promptWithPaths || (images?.length ? " " : promptWithPaths);
+      promptWithUltracode || (images?.length ? " " : promptWithUltracode);
     const tAcp = performance.now();
     if (!background) {
       perfLog(
