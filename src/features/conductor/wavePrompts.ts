@@ -100,6 +100,31 @@ No other verdict word is accepted, and a malformed verdict is treated as ${VERDI
 /** The conductor protocol prompt. Stable for the lifetime of the process. */
 export const CONDUCTOR_PROTOCOL_PROMPT: string = buildConductorProtocolPrompt();
 
+/**
+ * Merges the protocol prompt with whatever system prompt the caller composed.
+ *
+ * The protocol comes first so the session's own system prompt reads as the
+ * override, matching how the app layers its other always-on preambles.
+ */
+export function composeConductorSystemPrompt(
+  systemPrompt: string | undefined,
+): string {
+  const base = systemPrompt?.trim();
+  return base
+    ? `${CONDUCTOR_PROTOCOL_PROMPT}\n\n${base}`
+    : CONDUCTOR_PROTOCOL_PROMPT;
+}
+
+/**
+ * Sent to the conductor by the manual retry affordance on a refused plan.
+ *
+ * Q2: there is no auto-retry. This text only exists because the operator asked
+ * for another plan by pressing the button.
+ */
+export const WAVE_REPLAN_REQUEST_PROMPT = `Your last wave plan was refused: the ${WAVE_FENCE_TAG} block did not parse, or asked for something this build cannot run. Read the error in the transcript above.
+
+Send the plan again as exactly one ${WAVE_FENCE_TAG} block that follows the contract — or, if the request does not actually need a wave, answer it directly with no fence at all.`;
+
 function reportPayload(
   entry: CompletedWaveStepReport,
 ): Record<string, unknown> {

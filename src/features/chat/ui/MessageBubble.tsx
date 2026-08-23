@@ -64,6 +64,7 @@ import {
 } from "./UserMessageClamp";
 import { ImageLightbox } from "@/shared/ui/ImageLightbox";
 import { VoiceSpeechStatusIndicator } from "./VoiceSpeechStatusIndicator";
+import { requestWaveReplan } from "@/features/conductor/waveRetry";
 import { useConductorTranscript } from "@/features/conductor/ConductorTranscriptContext";
 import {
   brigadeNodesForMessage,
@@ -470,12 +471,21 @@ function resolveNotificationAction(
     onOpenContextPanel?: () => void;
     editProjectLabel?: string;
     changeFolderLabel?: string;
+    retryWavePlanLabel?: string;
   },
 ): { label?: string; onClick: () => void } | null {
   if (!action) {
     return null;
   }
   const { onEditProject, onChangeFolder, onOpenContextPanel } = options;
+  // The conductor's refused-plan notice carries its own target session, so it
+  // needs no host wiring: pressing it asks that conductor for a new plan.
+  if (action.type === "retryWavePlan") {
+    return {
+      label: options.retryWavePlanLabel,
+      onClick: () => requestWaveReplan(action.sessionId),
+    };
+  }
   if (action.type === "editProject" && onEditProject) {
     return {
       label: options.editProjectLabel,
@@ -519,6 +529,7 @@ function renderContentBlock(
     onOpenContextPanel?: () => void;
     editProjectLabel?: string;
     changeFolderLabel?: string;
+    retryWavePlanLabel?: string;
     stateKey?: string;
     resolveProviderErrorNotice?: (text: string) => string | null;
   },
@@ -846,6 +857,7 @@ export const MessageBubble = memo(function MessageBubble({
               onOpenContextPanel,
               editProjectLabel: t("toolbar.editProjectFolders"),
               changeFolderLabel: t("toolbar.changeFolder"),
+              retryWavePlanLabel: t("conductor.wave.retry"),
               stateKey: `${c.type}-${i}`,
             }),
           )}
