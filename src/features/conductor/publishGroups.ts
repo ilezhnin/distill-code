@@ -1,19 +1,18 @@
 /**
  * Which finished child sessions get published back to their parent as one
- * synthetic summary message.
+ * digest message.
  *
- * Pure grouping so both shapes can be tested without a runtime:
- * - legacy orchestrator shells (`managedBy: "ui"` trees still in operators'
- *   localStorage): one group per orchestrator turn, leaves are the
- *   orchestrator's workers, or the orchestrator itself when it has none;
- * - wave workers (`managedBy: "wave"`): one group per plan message, leaves are
- *   the workers themselves — a wave has no orchestrator shell. A wave that is
- *   still live is skipped entirely: its already-finished steps are not the
- *   turn's result, and publishing them would mark their reports published and
- *   silently swallow the steps that had not started yet.
+ * Pure grouping so it can be tested without a runtime: one group per
+ * orchestrator turn, keyed by `parentSessionId` + `anchorMessageId`, with the
+ * orchestrator's workers as leaves — or the orchestrator itself when it has
+ * none. These are the legacy `managedBy: "ui"` trees still in operators'
+ * localStorage, plus anything registered from outside the UI.
  *
- * This is the bridge until 3a replaces synthetic publishing with a real digest
- * message to the conductor.
+ * **Wave children are deliberately not here.** Since 3a a wave publishes one
+ * digest per `waveId` from `waveLifecycle.ts`, as part of its closed loop —
+ * that is the only place that knows when every step is terminal, what the
+ * revision cap has left, and that a verdict is expected back. Grouping wave
+ * workers here as well would publish the same reports twice.
  */
 
 import type { SessionNode } from "./types";
@@ -49,28 +48,13 @@ function orderLeaves(leaves: SessionNode[]): SessionNode[] {
 export function groupPublishableTurns(
   nodes: readonly SessionNode[],
   workersOf: (parentSessionId: string) => readonly SessionNode[],
-  /**
-   * True while the wave still has steps to spawn or finish. Groups of an open
-   * wave are withheld until it is over.
-   */
-  isWaveOpen: (waveId: string) => boolean = () => false,
 ): PublishGroup[] {
   const orchestratorGroups = new Map<string, SessionNode[]>();
-  const waveGroups = new Map<string, SessionNode[]>();
 
   for (const node of nodes) {
     if (!node.parentSessionId) continue;
-    if (node.managedBy === "wave") {
-      // Only wave-managed workers are leaves of a wave; anything else under a
-      // conductor keeps its own path.
-      if (node.role !== "worker") continue;
-      if (node.waveId && isWaveOpen(node.waveId)) continue;
-      const key = `${node.parentSessionId}::${turnKey(node)}`;
-      const group = waveGroups.get(key) ?? [];
-      group.push(node);
-      waveGroups.set(key, group);
-      continue;
-    }
+    // Wave children belong to the wave's own digest, never to a group here.
+    if (node.managedBy === "wave") continue;
     if (node.role !== "orchestrator") continue;
     const key = `${node.parentSessionId}::${turnKey(node)}`;
     const group = orchestratorGroups.get(key) ?? [];
@@ -87,11 +71,6 @@ export function groupPublishableTurns(
       return workers.length > 0 ? [...workers] : [shell];
     });
     groups.push({ parentSessionId, key, leaves: orderLeaves(leaves) });
-  }
-  for (const [key, workers] of waveGroups) {
-    const parentSessionId = workers[0]?.parentSessionId;
-    if (!parentSessionId) continue;
-    groups.push({ parentSessionId, key, leaves: orderLeaves(workers) });
   }
   return groups;
 }

@@ -27,12 +27,130 @@ function wave(waveId: string, conductorSessionId = "conductor-1"): WaveState {
 }
 
 describe("parseWaveEngineState", () => {
-  it("rejects anything that is not a version 1 payload", () => {
+  it("rejects anything that is not a known version", () => {
     expect(parseWaveEngineState(null)).toEqual(emptyWaveEngineState());
-    expect(parseWaveEngineState({ version: 2 })).toEqual(
+    expect(parseWaveEngineState({ version: 3 })).toEqual(
       emptyWaveEngineState(),
     );
     expect(parseWaveEngineState("nope")).toEqual(emptyWaveEngineState());
+  });
+
+  it("migrates a v1 wave into the closed loop without losing it", () => {
+    const parsed = parseWaveEngineState({
+      version: 1,
+      waves: [
+        {
+          waveId: "w1",
+          conductorSessionId: "conductor-1",
+          planMessageId: "plan-1",
+          createdAt: 7,
+          steps: [
+            {
+              stepIndex: 0,
+              role: "scout",
+              subtask: "Look",
+              access: [],
+              phase: "spawned",
+              sessionId: "child-0",
+              runId: "run-0",
+            },
+          ],
+        },
+      ],
+      tombstones: [
+        {
+          planMessageId: "plan-1",
+          conductorSessionId: "c",
+          outcome: "spawned",
+        },
+      ],
+    });
+    expect(parsed.version).toBe(2);
+    expect(parsed.tombstones).toHaveLength(1);
+    const [migrated] = parsed.waves;
+    // Everything a v1 wave held survives verbatim…
+    expect(migrated.steps).toEqual([
+      {
+        stepIndex: 0,
+        role: "scout",
+        subtask: "Look",
+        access: [],
+        phase: "spawned",
+        sessionId: "child-0",
+        runId: "run-0",
+      },
+    ]);
+    expect(migrated.createdAt).toBe(7);
+    // …and the loop fields take the only values a pre-3a wave could have had.
+    expect(migrated.phase).toBe("running");
+    expect(migrated.rootRequestId).toBe("plan-1");
+    expect(migrated.revisionCount).toBe(0);
+    expect(migrated.digestAttempt).toBe(0);
+    expect(migrated.carriedReports).toBeUndefined();
+  });
+
+  it("round-trips a revision wave's carried reports", () => {
+    const revision = createWaveState({
+      waveId: "w2",
+      conductorSessionId: "conductor-1",
+      planMessageId: "verdict-1",
+      steps: [{ role: "scout", subtask: "Look again", access: "all" }],
+      createdAt: 2,
+      rootRequestId: "plan-1",
+      revisionCount: 1,
+      carriedReports: [
+        {
+          stepIndex: 0,
+          role: "scout",
+          subtask: "Look",
+          fromPreviousWave: true,
+          report: {
+            runId: "run-0",
+            status: "completed",
+            summary: "Found three",
+            decisions: [],
+            artifacts: [],
+            risks: [],
+            needsOperator: false,
+            nextSuggestedTask: null,
+          },
+        },
+      ],
+    });
+    const state = withWave(emptyWaveEngineState(), revision);
+    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
+      state,
+    );
+  });
+
+  it("drops an unreadable carried report rather than the whole wave", () => {
+    const parsed = parseWaveEngineState({
+      version: 2,
+      waves: [
+        {
+          waveId: "w1",
+          conductorSessionId: "conductor-1",
+          planMessageId: "plan-1",
+          phase: "running",
+          rootRequestId: "plan-1",
+          revisionCount: 1,
+          digestAttempt: 0,
+          steps: [
+            {
+              stepIndex: 0,
+              role: "scout",
+              subtask: "Look",
+              access: "all",
+              phase: "pending",
+            },
+          ],
+          carriedReports: [{ stepIndex: 0, role: "scout" }],
+        },
+      ],
+      tombstones: [],
+    });
+    expect(parsed.waves).toHaveLength(1);
+    expect(parsed.waves[0].carriedReports).toBeUndefined();
   });
 
   it("round-trips a wave and its tombstone", () => {

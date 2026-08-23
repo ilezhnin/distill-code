@@ -8,19 +8,15 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
-import {
-  formatConductorAnswer,
-  parseStructuredReport,
-} from "./orchestratorReport";
+import { publishTerminalGroupDigests } from "./digestPublisher";
+import { parseStructuredReport } from "./orchestratorReport";
 import { reconcileStaleGraphStatuses } from "./reconcileStaleGraphStatuses";
 import {
   lastCompletedAssistantSummary,
   reportStatusFromRun,
 } from "./runStatus";
-import { groupPublishableTurns } from "./publishGroups";
-import type { RunStatus, SessionNode, StructuredReport } from "./types";
+import type { RunStatus, SessionNode } from "./types";
 import { runWaveEngineTick } from "./waveRunner";
-import { getWaveEngineState } from "./waveStore";
 
 const seenRunningBySession = new Set<string>();
 
@@ -198,61 +194,11 @@ function syncChildStatuses(): void {
   }
   // The engine runs on the statuses and reports this pass just wrote, so a step
   // that went terminal already has its report when an `access: "all"` successor
-  // is scheduled — and a wave that just finished has already been retired from
-  // the wave store by the time `publishCompletedTurns` looks for open waves.
+  // is scheduled, and a wave whose last step just landed builds its digest from
+  // the reports of this same pass. Wave children publish through the engine's
+  // closed loop; everything else publishes here.
   runWaveEngineTick();
-  publishCompletedTurns();
-}
-
-/**
- * Publishes one synthetic summary per finished turn, for legacy orchestrator
- * trees and for wave-worker groups alike (the bridge until the 3a digest).
- */
-function publishCompletedTurns(): void {
-  const graph = useConductorGraphStore.getState();
-  const chat = useChatStore.getState();
-  const openWaveIds = new Set(
-    getWaveEngineState().waves.map((wave) => wave.waveId),
-  );
-  const groups = groupPublishableTurns(
-    Object.values(graph.nodesById),
-    workersFor,
-    (waveId) => openWaveIds.has(waveId),
-  );
-
-  for (const { parentSessionId, leaves } of groups) {
-    if (leaves.length === 0) continue;
-    if (leaves.some((node) => isWorkingStatus(node.status))) continue;
-    const results: Array<{ node: SessionNode; report: StructuredReport }> = [];
-    let ready = true;
-    let alreadyPublished = false;
-    for (const node of leaves) {
-      const report = node.runId ? graph.getReport(node.runId) : undefined;
-      if (!report) {
-        ready = false;
-        break;
-      }
-      if (report.publishedToParent) alreadyPublished = true;
-      results.push({ node, report });
-    }
-    if (!ready || alreadyPublished || results.length === 0) continue;
-    const text = formatConductorAnswer(results);
-    if (!text.trim()) continue;
-    for (const { report } of results) {
-      graph.attachReport({ ...report, publishedToParent: true });
-    }
-    chat.addMessage(parentSessionId, {
-      id: crypto.randomUUID(),
-      role: "assistant",
-      created: Date.now(),
-      content: [{ type: "text", text }],
-      metadata: {
-        userVisible: true,
-        agentVisible: false,
-        completionStatus: "completed",
-      },
-    });
-  }
+  publishTerminalGroupDigests(workersFor);
 }
 
 function remapPromotedSessions(): void {

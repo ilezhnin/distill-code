@@ -20,6 +20,18 @@ vi.mock("@/features/chat/stores/chatSessionOperations", () => ({
 const spawnConductorChildSession = vi.hoisted(() => vi.fn());
 vi.mock("./spawnOrchestrator", () => ({ spawnConductorChildSession }));
 
+/**
+ * The envelope is the whole point of 3a, so it is the seam the tests hold: a
+ * digest is a *real user message* through the berdctl cross-session path, not
+ * a synthetic assistant bubble. The mock commits exactly what that path
+ * commits — a user message carrying `origin: "berdctl_cross_session"`.
+ */
+const deliverEnvelope = vi.hoisted(() => vi.fn());
+vi.mock("./digestDelivery", () => ({
+  deliverEnvelope,
+  classifyDigestDispatchError: () => ({ status: "failed" as const }),
+}));
+
 const CONDUCTOR_ID = "conductor-1";
 
 function assistant(id: string, text: string): Message {
@@ -84,13 +96,14 @@ describe("useConductorGraphSync wave bridge", () => {
     await i18n.loadNamespaces("chat");
     window.localStorage.clear();
     spawnConductorChildSession.mockReset();
+    deliverEnvelope.mockReset();
   });
 
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it("runs a whole wave and publishes one summary for it", async () => {
+  it("runs a whole wave and delivers one digest envelope for it", async () => {
     const modules = await loadModules();
     const {
       useConductorGraphSync,
@@ -121,6 +134,18 @@ describe("useConductorGraphSync wave bridge", () => {
       });
       return { sessionId, runId };
     });
+    deliverEnvelope.mockImplementation(
+      async (sessionId: string, text: string) => {
+        useChatStore.getState().addMessage(sessionId, {
+          id: `digest-${crypto.randomUUID()}`,
+          role: "user",
+          created: Date.now(),
+          content: [{ type: "text", text }],
+          metadata: { origin: "berdctl_cross_session" },
+        });
+        return { status: "dispatched" as const };
+      },
+    );
 
     useChatSessionStore.setState({ hasHydratedSessions: true });
     useChatStore.setState({
@@ -152,14 +177,8 @@ describe("useConductorGraphSync wave bridge", () => {
     const secondPrompt = spawnConductorChildSession.mock.calls[1][0].prompt;
     expect(secondPrompt).toContain("Three callers in src/");
 
-    // Nothing is published while the wave still has a step running.
-    expect(
-      useChatStore
-        .getState()
-        .messagesBySession[CONDUCTOR_ID].filter(
-          (message) => message.id !== "plan-1",
-        ),
-    ).toHaveLength(0);
+    // Nothing is delivered while the wave still has a step running.
+    expect(deliverEnvelope).not.toHaveBeenCalled();
 
     await act(async () => {
       useChatStore.setState((state) => ({
@@ -173,44 +192,39 @@ describe("useConductorGraphSync wave bridge", () => {
         .patchNode("child-1", { status: "completed" });
     });
 
-    await vi.waitFor(() => {
-      const published = useChatStore
-        .getState()
-        .messagesBySession[CONDUCTOR_ID].filter(
-          (message) => message.role === "assistant" && message.id !== "plan-1",
-        );
-      expect(published).toHaveLength(1);
-    });
+    await vi.waitFor(() => expect(deliverEnvelope).toHaveBeenCalledTimes(1));
+    const [target, digest] = deliverEnvelope.mock.calls[0];
+    expect(target).toBe(CONDUCTOR_ID);
+    // One digest per wave, covering both steps — never one per worker.
+    expect(digest).toContain("Three callers in src/");
+    expect(digest).toContain("Test plan written");
+    expect(digest).toContain("[distill-digest:");
 
-    const summary = useChatStore
+    // No synthetic assistant summary is appended any more: the only thing that
+    // reaches the conductor is the digest the envelope committed.
+    const assistantMessages = useChatStore
       .getState()
       .messagesBySession[CONDUCTOR_ID].filter(
         (message) => message.role === "assistant" && message.id !== "plan-1",
-      )[0];
-    const text = summary.content
-      .flatMap((block) => (block.type === "text" ? [block.text] : []))
-      .join("\n");
-    expect(text).toContain("Three callers in src/");
-    expect(text).toContain("Test plan written");
+      );
+    expect(assistantMessages).toHaveLength(0);
 
-    // The wave is retired once it is over; the tombstone keeps it from rerunning.
-    expect(modules.waveStore.getWaveEngineState().waves).toHaveLength(0);
-    expect(
-      modules.waveStore.hasWaveTombstone(
-        modules.waveStore.getWaveEngineState(),
-        "plan-1",
-      ),
-    ).toBe(true);
+    // The wave is not retired at the digest: it is waiting for a verdict.
+    await vi.waitFor(() => {
+      const [wave] = modules.waveStore.getWaveEngineState().waves;
+      expect(wave?.phase).toBe("awaitingVerdict");
+    });
     expect(spawnCount).toBe(2);
   });
 
-  it("still publishes a legacy orchestrator turn", async () => {
+  it("still publishes a legacy orchestrator turn, through the envelope", async () => {
     const {
       useConductorGraphSync,
       useConductorGraphStore,
       useChatStore,
       useChatSessionStore,
     } = await loadModules();
+    deliverEnvelope.mockResolvedValue({ status: "dispatched" as const });
 
     useChatSessionStore.setState({ hasHydratedSessions: true });
     useChatStore.setState({
@@ -239,16 +253,16 @@ describe("useConductorGraphSync wave bridge", () => {
 
     renderHook(() => useConductorGraphSync());
 
-    await vi.waitFor(() => {
-      const published =
-        useChatStore.getState().messagesBySession[CONDUCTOR_ID] ?? [];
-      expect(published).toHaveLength(1);
-    });
-    const text = (useChatStore.getState().messagesBySession[CONDUCTOR_ID] ??
-      [])[0].content
-      .flatMap((block) => (block.type === "text" ? [block.text] : []))
-      .join("\n");
-    expect(text).toContain("Legacy work done");
+    await vi.waitFor(() => expect(deliverEnvelope).toHaveBeenCalledTimes(1));
+    const [target, digest] = deliverEnvelope.mock.calls[0];
+    expect(target).toBe(CONDUCTOR_ID);
+    expect(digest).toContain("Legacy work done");
+    expect(digest).toContain("[distill-digest:");
     expect(spawnConductorChildSession).not.toHaveBeenCalled();
+    // The report is flagged exactly once, so a second sync pass sends nothing.
+    expect(
+      useConductorGraphStore.getState().getReport("run-orch")
+        ?.publishedToParent,
+    ).toBe(true);
   });
 });

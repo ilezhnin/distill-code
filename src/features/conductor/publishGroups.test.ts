@@ -61,7 +61,7 @@ describe("groupPublishableTurns", () => {
     ]);
   });
 
-  it("groups wave workers by their plan message", () => {
+  it("never groups wave workers — the wave publishes its own digest", () => {
     const nodes = [
       node({
         sessionId: "w-1",
@@ -77,41 +77,11 @@ describe("groupPublishableTurns", () => {
         stepIndex: 0,
         anchorMessageId: "plan-1",
       }),
-      node({
-        sessionId: "w-2",
-        managedBy: "wave",
-        waveId: "wave-2",
-        stepIndex: 0,
-        anchorMessageId: "plan-2",
-      }),
     ];
-    const groups = groupPublishableTurns(nodes, () => []);
-    expect(groups).toHaveLength(2);
-    const first = groups.find((group) => group.key.endsWith("plan-1"));
-    expect(first?.leaves.map((leaf) => leaf.sessionId)).toEqual(["w-0", "w-1"]);
+    expect(groupPublishableTurns(nodes, () => [])).toEqual([]);
   });
 
-  it("withholds a wave whose steps are still running", () => {
-    const nodes = [
-      node({
-        sessionId: "w-0",
-        managedBy: "wave",
-        waveId: "wave-1",
-        stepIndex: 0,
-        anchorMessageId: "plan-1",
-      }),
-    ];
-    expect(
-      groupPublishableTurns(
-        nodes,
-        () => [],
-        (waveId) => waveId === "wave-1",
-      ),
-    ).toEqual([]);
-    expect(groupPublishableTurns(nodes, () => [])).toHaveLength(1);
-  });
-
-  it("keeps waves and legacy trees in separate groups", () => {
+  it("keeps the legacy tree and drops the wave worker beside it", () => {
     const orchestrator = node({
       sessionId: "orch-1",
       role: "orchestrator",
@@ -125,7 +95,8 @@ describe("groupPublishableTurns", () => {
       anchorMessageId: "plan-1",
     });
     const groups = groupPublishableTurns([orchestrator, waveWorker], () => []);
-    expect(groups).toHaveLength(2);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].leaves.map((leaf) => leaf.sessionId)).toEqual(["orch-1"]);
   });
 
   it("ignores nodes with no parent and non-worker wave nodes", () => {

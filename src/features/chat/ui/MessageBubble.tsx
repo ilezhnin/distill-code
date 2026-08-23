@@ -54,6 +54,7 @@ import type {
   ReasoningContent as ReasoningContentType,
   SystemNotificationContent,
 } from "@/shared/types/messages";
+import { getTextContent } from "@/shared/types/messages";
 import { Button } from "@/shared/ui/button";
 import { LinkifiedText } from "@/shared/ui/LinkifiedText";
 import { MessageBubbleActions } from "./MessageBubbleActions";
@@ -69,7 +70,15 @@ import {
   selectHarnessBrigade,
 } from "@/features/chat/lib/harnessBrigade";
 import { HarnessBrigadeRow } from "./HarnessBrigadeRow";
-import { requestWaveReplan } from "@/features/conductor/waveRetry";
+import {
+  requestWaveReplan,
+  retryWaveDigest,
+} from "@/features/conductor/waveRetry";
+import {
+  isDigestMessage,
+  parseDigestEnvelope,
+} from "@/features/conductor/waveDigest";
+import { ConductorDigestCard } from "@/features/conductor/ui/ConductorDigestCard";
 import { useConductorTranscript } from "@/features/conductor/ConductorTranscriptContext";
 import {
   brigadeNodesForMessage,
@@ -484,6 +493,7 @@ function resolveNotificationAction(
     editProjectLabel?: string;
     changeFolderLabel?: string;
     retryWavePlanLabel?: string;
+    retryWaveDigestLabel?: string;
   },
 ): { label?: string; onClick: () => void } | null {
   if (!action) {
@@ -496,6 +506,15 @@ function resolveNotificationAction(
     return {
       label: options.retryWavePlanLabel,
       onClick: () => requestWaveReplan(action.sessionId),
+    };
+  }
+  // The unreadable-verdict retry of Q5: re-deliver the wave's digest so the
+  // conductor gets another chance to judge it. Self-contained like the plan
+  // retry — the notice carries both the session and the wave.
+  if (action.type === "retryWaveDigest") {
+    return {
+      label: options.retryWaveDigestLabel,
+      onClick: () => retryWaveDigest(action.sessionId, action.waveId),
     };
   }
   if (action.type === "editProject" && onEditProject) {
@@ -542,6 +561,7 @@ function renderContentBlock(
     editProjectLabel?: string;
     changeFolderLabel?: string;
     retryWavePlanLabel?: string;
+    retryWaveDigestLabel?: string;
     stateKey?: string;
     resolveProviderErrorNotice?: (text: string) => string | null;
   },
@@ -871,6 +891,7 @@ export const MessageBubble = memo(function MessageBubble({
               editProjectLabel: t("toolbar.editProjectFolders"),
               changeFolderLabel: t("toolbar.changeFolder"),
               retryWavePlanLabel: t("conductor.wave.retry"),
+              retryWaveDigestLabel: t("conductor.wave.verdict.retry"),
               stateKey: `${c.type}-${i}`,
             }),
           )}
@@ -950,6 +971,15 @@ export const MessageBubble = memo(function MessageBubble({
   const isSteeredMessage = isUser && message.metadata?.delivery === "steer";
   const isBerdctlCrossSessionMessage =
     isUser && message.metadata?.origin === "berdctl_cross_session";
+  // A brigade digest is a real cross-session user message; contract 3 says it
+  // renders as a compact card rather than a chat bubble. The marker lives in
+  // the text rather than in metadata on purpose — metadata does not survive
+  // rehydration from ACP history, and a digest that lost its card on reload
+  // would flood the transcript with report JSON.
+  const digestEnvelope =
+    isBerdctlCrossSessionMessage && isDigestMessage(message)
+      ? parseDigestEnvelope(getTextContent(message))
+      : null;
   const timestamp = (
     <span
       data-role="message-timestamp"
@@ -1018,7 +1048,7 @@ export const MessageBubble = memo(function MessageBubble({
           className={cn(
             "group relative min-w-0 flex flex-col gap-1",
             shouldReserveMessageActionSpace && "pb-9",
-            isUser
+            isUser && !digestEnvelope
               ? "max-w-[var(--chat-user-message-max-width)] items-end"
               : "w-full items-start",
           )}
@@ -1052,7 +1082,7 @@ export const MessageBubble = memo(function MessageBubble({
           <div
             className={cn(
               "min-w-0 text-sm leading-relaxed",
-              isUser
+              isUser && !digestEnvelope
                 ? "rounded-sm bg-message-user-bg px-4 py-2 leading-normal"
                 : "w-full",
             )}
@@ -1075,7 +1105,10 @@ export const MessageBubble = memo(function MessageBubble({
                 ) : null}
               </div>
             ) : null}
-            {isUser && messageChips.length > 0 && (
+            {digestEnvelope ? (
+              <ConductorDigestCard body={digestEnvelope.body} />
+            ) : null}
+            {!digestEnvelope && isUser && messageChips.length > 0 && (
               <div className="mb-1.5 flex flex-wrap gap-1.5">
                 {messageChips.map((chip) => (
                   <MessageMetadataChip
@@ -1085,10 +1118,10 @@ export const MessageBubble = memo(function MessageBubble({
                 ))}
               </div>
             )}
-            {attachmentPreviewItems.length > 0 && (
+            {!digestEnvelope && attachmentPreviewItems.length > 0 && (
               <MessageAttachmentGrid items={attachmentPreviewItems} />
             )}
-            {groupContentSections(renderedContent).map(
+            {(digestEnvelope ? [] : groupContentSections(renderedContent)).map(
               (section, sectionIdx) => {
                 if (section.type === "toolChain") {
                   const toolItems = section.items as ToolChainItem[];
