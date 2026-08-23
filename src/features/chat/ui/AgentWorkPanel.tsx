@@ -406,16 +406,22 @@ export function AgentWorkPanel({
   );
   // Ephemeral in-harness subagents (Claude Code Task/Agent, Ultracode
   // workflows, Goose delegate/load, Codex spawn_agent/wait_agent). The strip
-  // is the live view: once the turn settles the same row moves under the
-  // answer, so the chips are never rendered twice.
+  // is the live view: once the turn settles the same row normally moves under
+  // the answer, so the chips are never rendered twice. A turn that ends in
+  // tool calls with no final text has no answer bubble at all, and then the
+  // projection marks this group as the footer host so the chips persist here.
   const harnessBrigade = useMemo(
     () =>
       selectHarnessBrigade({
         content: payload.content,
         turnFinished: !payload.isActiveWork,
+        ...(payload.subagentLinkage
+          ? { messages: payload.subagentLinkage }
+          : {}),
       }),
-    [payload.content, payload.isActiveWork],
+    [payload.content, payload.isActiveWork, payload.subagentLinkage],
   );
+  const showsHarnessBrigade = payload.isActiveWork || payload.hostsTurnFooters;
   const shouldOpenActiveWork = payload.isActiveWork;
   const [open, setOpen] = useState(shouldOpenActiveWork || settleOnMount);
   const [previousStepsOpen, setPreviousStepsOpen] = useState(false);
@@ -544,7 +550,7 @@ export function AgentWorkPanel({
         {workArtifacts.length > 0 ? (
           <ArtifactChips artifacts={workArtifacts} className="px-1 pb-1.5" />
         ) : null}
-        {payload.isActiveWork ? (
+        {showsHarnessBrigade ? (
           <HarnessBrigadeRow entries={harnessBrigade} className="px-1 pb-1.5" />
         ) : null}
         <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">

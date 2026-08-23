@@ -486,6 +486,7 @@
       "stopped": "detenido"
     },
     "wave": {
+      "planSummary": "Plan para la brigada de abajo.",
       "invalidTitle": "No se pudo ejecutar el plan del conductor, así que no se inició nada.",
       "retry": "Pedir un plan nuevo",
       "spawnFailed": "No se pudo iniciar el paso {{step}} de esta ola.",

@@ -487,6 +487,7 @@
       "stopped": "stopped"
     },
     "wave": {
+      "planSummary": "Plan for the brigade below.",
       "invalidTitle": "The conductor's plan could not be run, so nothing was started.",
       "retry": "Ask for a new plan",
       "spawnFailed": "Step {{step}} of this wave could not be started.",
