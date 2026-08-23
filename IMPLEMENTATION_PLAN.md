@@ -2,7 +2,10 @@
 
 Status: active
 
-Updated: 2026-08-20
+Updated: 2026-08-23 (re-baseline: первый conductor-срез отгружен на main 2026-08-21,
+commit `3dc2fa78`; план объединяет трек «волны кондуктора» из `../conductor_handoff.md`
+и трек «прозрачность бригад» из `../combined_plan.md`; развилки Q2/Q3/Q5/Q6 утверждены
+оператором 2026-08-23 и в задачах не пересматриваются)
 
 ## Рабочий принцип
 
@@ -13,287 +16,235 @@ Updated: 2026-08-20
 Первый агент должен сразу менять продукт и закончить работу видимым сквозным
 сценарием. Нельзя завершать задачу исследованием, планом, набором типов,
 макетом, тестами без интерфейса или документом о том, что когда-нибудь нужно
-реализовать.
+реализовать. Исключения указаны явно (пункт 1b — библиотека с тестами без
+прошивки в рантайм; пункт 0 — контракты).
 
-После появления работающего UI допускается минимальная проверка запуска и
-сборки. Полное тестовое покрытие и формализация выполняются позже, когда
-оператор увидит продукт и подтвердит направление.
+## Реальность на 2026-08-23 (что уже в main)
 
-## Что строим
+- Conductor — тип чата; на каждое сообщение оператора UI-эвристика
+  (`planOrchestratorTasks` regex → `useConductorAutoSpawn`) спавнит пары
+  оркестратор+воркер. **Модель кондуктор не вызывает**: `sendCore.ts` обрывает
+  диспатч для graph-координаторов (`isGraphCoordinatorSession`).
+- Граф — `features/conductor/conductorGraphStore.ts`, localStorage
+  `goose:conductor-graph`. Чипы детей — `ConductorAgentFooter`, только под
+  последним сообщением, только в conductor/orchestrator-чатах.
+- Отчёты — `distill-report` fence; синтетическая публикация итога —
+  `publishCompletedTurns` в `useConductorGraphSync.ts`.
+- Дети скрыты из сайдбара/поиска/свитчера (`sessionVisibility.ts`).
+- Harness-субагенты (Goose delegate/load, Claude Code Task/Agent, Codex
+  spawn_agent…) классифицируются в `features/chat/lib/subagentToolCalls.ts`, но
+  видны только как строки инструментов в шагах.
 
-```text
-Project
-└─ Conductor chat — единственный основной разговор с оператором
-   ├─ Orchestrator session A — одна ограниченная задача или этап
-   │  ├─ Worker A1
-   │  └─ Worker A2
-   └─ Orchestrator session B
-      └─ Worker B1
-```
+Авто-спавн — временная конструкция: удаляется в пункте 2a.
 
-Кондуктор:
+## Зафиксированные решения (не пересматривать)
 
-- принимает запрос оператора;
-- выбирает исполнителя, модель, reasoning effort и лимиты;
-- создаёт, останавливает и перезапускает оркестраторов;
-- получает от них результат;
-- не копирует в основной чат сырые логи и повторы;
-- показывает наверх итог, решения, риски, артефакты и блокеры;
-- позволяет оператору открыть любого исполнителя и вмешаться напрямую.
+1. **D1**: план кондуктора — fenced `distill-wave` JSON
+   `{"steps":[{"role","subtask","access":[]|"all","model"?}]}`, ≤5 шагов,
+   строгий парс.
+2. **D2**: первое сообщение ребёнка = роль + сабтаск + (при `"all"`) JSON-отчёты
+   завершённых предыдущих шагов. Отчёты, никогда не транскрипты.
+3. **D3**: гейт сложности — простое → прямой ответ; волна только для
+   многошагового (волна из 1 шага = «один ребёнок»).
+4. **D4**: замкнутый цикл — digest конвертов кондуктору → ровно одно из:
+   accept / одна ревизионная волна / needsOperator; кап 2 ревизии на корень,
+   в приложении.
+5. **D5**: per-step model — явное поле, видимое в UI; дефолт — наследование;
+   тихий даунгрейд запрещён.
+6. **Q2 (решено)**: strict-parse без fallback. Нет fence → обычный ответ; битый
+   fence → видимая ошибка с причиной + ручная кнопка «повторить». Без
+   авторетраев, regex-fallback не оставлять.
+7. **Q3 (решено)**: S2+S3 одним релизом, без experiment-flag.
+8. **Q5 (решено)**: битый verdict → сразу needsOperator, без авторетраев;
+   ретрай — ручной кнопкой.
+9. **Q6 (решено)**: кондуктор prompt-only («plan or answer only»); tool call
+   кондуктора → видимый бейдж «исполняет сам». Harness-запрет — только при
+   реальной протечке.
+10. **Прозрачность — свойство любого чата**; авто-поведение (волны) — только у
+    conductor-типа. Plain-чаты не меняют поведения.
+11. Не удалять `roleCatalog.ts` (нужен валидации слоёв) и
+    `subagentToolCalls.ts` (фундамент проекции 2b).
+12. Отчёт наверх = **реальное user-сообщение** (envelope) через berdctl-seam
+    (`session send`, `if_running=queue`) для родителя любого типа — вводится в
+    3a; до 3a живёт синтетический `publishCompletedTurns`.
 
-Worktree, terminal и checkout являются ресурсами конкретного запуска, а не
-главными сущностями интерфейса.
+## Контракты Этапа 0 (обязательны для всех последующих пунктов)
 
-## Зафиксированные архитектурные решения
+1. `SessionNode.managedBy: "ui" | "wave" | "agent-cli"` — wave-машина управляет
+   только `"wave"`; миграция localStorage: ноды без поля → `"ui"`. Для
+   wave-детей дополнительно `waveId`, `stepIndex`.
+2. `anchorMessageId` обязателен для wave-детей и равен `planMessageId`
+   (сообщению кондуктора с fence). Это же поле — ключ per-message футера.
+3. Навигация из чипа — intent `{openInTab | navigate | reveal}` в
+   `ConductorTranscriptContext`, не прямой `onSelectSession`.
+4. Один словарь `RunStatus`; эфемерные harness-субагенты мапятся из
+   tool-статусов: pending/in_progress → running, completed → completed,
+   failed → failed, stopped → cancelled; конец turn'а терминализирует висящие.
+5. Один модуль валидации ролей/слоёв (появляется в 1b, используется движком,
+   berdctl `--role` и валидатором few-shot примеров).
 
-1. Этот репозиторий — единственный продуктовый репозиторий.
-2. Berd остаётся основой desktop-приложения: Tauri 2, React 19, проекты, чаты,
-   навигация, ACP, providers, personas, фоновые сессии и `berdctl` переиспользуются.
-3. Upstream Goose пока остаётся встроенным невидимым `goose serve` sidecar.
-   Пользователь не устанавливает и не открывает отдельное приложение Goose.
-4. Не изменять `goose-backend.lock.json` и sibling `distill-goose`, пока
-   конкретная продуктовая функция действительно не упрётся в backend.
-5. Buzz не является runtime-зависимостью. `../distill-buzz` — донор решений для
-   статусов, activity feed, agent identity, raw/polished view и liveness.
-6. Не переносить из Buzz Nostr, Postgres, Redis, S3, communities, membership и
-   Git collaboration stack.
-7. `.distill` станет переносимым источником истины проекта. SQL не нужен в
-   основном контуре.
-8. Credentials, токены и provider secrets никогда не пишутся в `.distill`.
-9. Не начинать с массового ребрендинга Berd. Сначала рабочая иерархия сессий.
-10. Обычный чат остаётся обычным чатом. Conductor — явный тип чата, а не режим,
-    который незаметно меняет все существующие разговоры.
-
-## Что уже есть и должно переиспользоваться
-
-Перед изменением кода быстро прочитать, но не превращать чтение в отдельный
-этап работы:
-
-- `AGENTS.md`
-- `LAWS/README.md`, `LAWS/AGENTS.md`, `LAWS/CHAT.md`
-- `docs/berdctl-architecture.md`
-- `src/features/berdctl/commands/impl/createSession.ts`
-- `src/features/berdctl/commands/impl/sendSession.ts`
-- `src/features/berdctl/commands/runtime/sessions.ts`
-- `src/features/chat/stores/chatSessionStore.ts`
-- `src/features/chat/stores/chatSessionOperations.ts`
-- `src/features/chat/lib/sessionExecutionTarget.ts`
-- `src/features/chat/lib/sessionActivity.ts`
-- `src/features/chat/lib/queuedSessionSend.ts`
-- `src/features/chat/acp/acpNotificationHandler.ts`
-- `src/features/projects/stores/projectStore.ts`
-- `src/features/projects/lib/projectChatWorkspaces.ts`
-
-Первый кандидат для создания оркестратора — существующий путь, который
-использует `berdctl session create`. Нельзя строить второй независимый session
-manager, если существующий store/API можно вызвать напрямую.
-
-Полезные Buzz-референсы, которые можно адаптировать после появления нашего
-domain model:
-
-- `../distill-buzz/VISION_ACTIVITY.md`
-- `../distill-buzz/desktop/src/features/agents/activeAgentTurnsStore.ts`
-- `../distill-buzz/desktop/src/features/agents/agentWorkingSignal.ts`
-- `../distill-buzz/desktop/src/features/agents/ui/ManagedAgentSessionPanel.tsx`
-
-Не копировать Buzz-типы `channel`, `pubkey`, relay events и Nostr identity в
-ядро Distill Code.
-
-## Минимальный domain model
-
-Ядро должно быть harness-neutral:
-
-```ts
-type SessionRole = "conductor" | "orchestrator" | "worker" | "plain-chat";
-
-type RunStatus =
-  | "starting"
-  | "running"
-  | "waiting"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "stopped";
-
-interface SessionNode {
-  sessionId: string;
-  projectId: string;
-  role: SessionRole;
-  parentSessionId: string | null;
-  rootConductorId: string | null;
-  runId: string | null;
-  harnessId: string;
-  modelProviderId?: string;
-  modelId?: string;
-  displayName: string;
-  icon?: string;
-  status: RunStatus;
-}
-
-interface StructuredReport {
-  runId: string;
-  status: "completed" | "failed" | "cancelled";
-  summary: string;
-  decisions: string[];
-  artifacts: Array<{ label: string; path?: string; url?: string }>;
-  risks: string[];
-  needsOperator: boolean;
-  nextSuggestedTask: string | null;
-}
-```
-
-Не нужно сначала строить идеальный event-sourcing framework. Добавлять только
-поля, необходимые работающему экрану и восстановлению текущего дерева.
-
-## Первый production slice — делать немедленно
-
-Результатом первой задачи должен стать UI, который оператор может запустить и
-пощупать.
-
-### 1. Conductor как реальный тип чата
-
-- Добавить создание conductor-чата внутри проекта.
-- В навигации conductor должен отличаться от обычного чата именем/иконкой.
-- Не менять поведение существующих plain chats.
-
-### 2. Создание одного настоящего оркестратора
-
-- В conductor-чате добавить работающий action создания дочерней сессии.
-- Использовать существующий session creation path.
-- Передавать выбранные harness, model/provider и рабочую папку.
-- Сохранить `parentSessionId`, `rootConductorId`, роль, имя и run id.
-- На первом срезе допустим ручной выбор задачи/исполнителя в UI. Автоматический
-  выбор кондуктором добавляется следующим этапом.
-
-### 3. Живой статус под ответом/задачей кондуктора
-
-Показывать компактную строку:
+## Порядок работ
 
 ```text
-● Atlas — анализ архитектуры      running
+Этап 0: контракты                                  ← до всего
+Этап 1: 1a футер | 1b S1-библиотека | 1c reconcile | 1d индикатор   ← параллельно
+Этап 2: 2a S2+S3 волны (после 0,1a,1b)  ∥  2b harness-проекция (после 0)
+Этап 3: 3a digest/verdict + poke  →  3b вкладки дочерних чатов
+Этап 4: 4a per-step model → 4b berdctl --parent/--role → 4c скиллы
+Этап 5: 5a Agents-сайдбар | 5b hardening | 5c N1-research | 5d examples
+Этап 6: re-baseline, .distill, полировка
 ```
 
-Состояния:
+Ветки: одна ветка на пункт от актуального main (`feat/stage0-contracts`,
+`feat/t1-footer`, `feat/s1-wave-lib`, `feat/t6-reconcile`, `feat/n1-indicator`,
+`feat/wave-engine`, `feat/harness-brigade`). 2a стартует только после мержа
+0, 1a и 1b.
 
-```text
-blue / visible label       starting
-animated / visible label   running
-amber / visible label      waiting
-red / visible label        failed
-green / visible label      completed
-gray / visible label       stopped or cancelled
-```
+## Спецификации ближайших пунктов
 
-Цвет не должен быть единственным носителем смысла.
+### 0. Контракты [S]
 
-### 4. Переход в дочерний чат
+- `types.ts`: `managedBy`, `waveId?`, `stepIndex?` в `SessionNode`.
+- `conductorGraphStore.ts`: parse/persist новых полей; миграция default `"ui"`.
+- Существующие точки регистрации (`registerConductorSession`,
+  `spawnConductorChildSession`) ставят `managedBy:"ui"`.
+- `ConductorTranscriptContext`: `onOpenChild(sessionId, intent?)`, дефолт
+  `navigate` (поведение не меняется).
 
-- Клик по строке/кружку открывает настоящий transcript оркестратора.
-- Оператор может отправить ему уточнение обычным composer.
-- Можно вернуться к conductor, не потеряв состояние дочерней сессии.
+Готово когда: сборка зелёная, существующий conductor-флоу работает как раньше,
+старый localStorage-граф читается.
 
-### 5. Возврат результата наверх
+### 1a. Футер бригады per-message, ниже строки действий [S]
 
-- При завершении дочерней сессии её итог появляется у conductor как одна
-  очищенная карточка, а не копия полного transcript.
-- Для первой рабочей версии допустимо использовать последнее завершённое
-  assistant-сообщение как `summary`, оставив остальные поля отчёта пустыми.
-- Raw transcript остаётся доступен по клику на дочернюю сессию.
+- `MessageBubble.tsx`: футер рендерится **после/ниже** строки действий и
+  времени (сейчас вставлен до absolute-блока actions и виден выше него).
+- Привязка per-message: сообщение показывает детей с
+  `anchorMessageId === message.id`; дети без anchor — фолбэк на текущий
+  `latestConductorFooterHostId`. Футеры исторических сообщений постоянны.
+- Компонент чипа выделить переиспользуемым (понадобится 2b и placeholder'ам 5b).
 
-### 6. Минимальное восстановление
+Готово когда: две волны в conductor-чате видны каждая под своим сообщением,
+чипы ниже времени, живые статусы у активной.
 
-- После перезапуска приложения conductor должен по-прежнему знать своего
-  оркестратора и его последний статус/результат.
-- Использовать существующее persistent session state как самый быстрый путь.
-- Если для связи parent/child нужен отдельный небольшой store, сделать его
-  сейчас. Полный перенос в `.distill` выполняется следующим этапом.
+### 1b. Протокольная библиотека S1 [M] (без прошивки в рантайм)
 
-## Что запрещено делать вместо первого среза
+- `distillWave.ts`: tri-state парс (нет fence / валиден / невалиден с
+  перечисленной причиной: JSON, >5 шагов, пустой subtask, access не
+  `[]`/`"all"`, роль не worker-layer, model не строка).
+- Парсер `distill-verdict` — токены вердикта фиксируются здесь один раз.
+- `wavePrompts.ts`: протокольный промпт кондуктора + `buildWaveStepPrompt`
+  (вставка отчётов при `"all"`).
+- Модуль валидации ролей/слоёв поверх `roleCatalog`.
+- Vitest на всё; в UI не подключать.
 
-Нельзя тратить первую задачу на:
+### 1c. Reconcile статусов при старте [S]
 
-- написание тестов до появления работающего UI;
-- тестовую документацию;
-- отдельный отчёт о baseline/spike;
-- доказательство, что архитектура когда-нибудь заработает;
-- макеты без реальной ACP-сессии;
-- только типы и reducer без интерфейса;
-- полный event-sourcing framework;
-- SQL, relay или server infrastructure;
-- импорт больших экранов Buzz;
-- форк Goose без реального блокера;
-- массовый rename/rebrand;
-- автоматическое планирование нескольких команд;
-- идеальную схему памяти и backup до первого запускаемого продукта.
+После гидрации сессий: orchestrator/worker-ноды со статусом
+starting/running/waiting, чья сессия реально не исполняется (нет runtime state,
+нет queued-отправки) → `stopped`. Закрывает «второй Atlas висит running
+навсегда».
 
-Если встречается неопределённость, выбрать самый простой обратимый вариант,
-который даёт рабочий экран, и продолжать.
+### 1d. Индикатор «ждёт внешнюю работу» [S]
 
-## Быстрая проверка после появления продукта
+Чат, у которого есть работающие graph-дети, а сам он idle — показывает
+индикатор у композера («N исполнителей работают, итог придёт сообщением»).
+**Кнопку-poke не делать**: до 2a сообщение в кондуктор перехватит авто-спавн и
+наспавнит новую бригаду; poke появляется в 3a вместе с digest-машиной.
 
-Только после того, как сквозной сценарий реализован:
+### 2a. S2+S3 — модельный кондуктор + движок волн, одним релизом [L]
 
-1. Запустить приложение.
-2. Создать conductor.
-3. Создать через него одного оркестратора.
-4. Увидеть смену статуса.
-5. Открыть дочерний чат и отправить сообщение.
-6. Увидеть один итог у conductor.
-7. Перезапустить приложение и проверить восстановление.
+S2:
+- Сузить short-circuit в `sendCore.ts`: conductor-сессии диспатчатся в
+  `acpSendMessage` с протокольным промптом из `wavePrompts.ts`; short-circuit
+  остаётся только для legacy оркестраторных оболочек.
+- **Удалить**: `planOrchestratorTasks.ts`(+тест), `useConductorAutoSpawn.ts`,
+  `userMessagesNeedingOrchestrator.ts`(+тест),
+  `wrapOrchestratorCoordinationPrompt` (в `orchestratorReport.ts`),
+  `selectRoleForTask` (сам `roleCatalog` остаётся), мёртвые экспорты
+  `spawnOrchestratorSession`, `emptyStructuredReport`; вызов авто-спавна из
+  `ChatView.tsx`.
 
-Не писать отдельные тесты и тестовые отчёты в первой задаче. Исправлять только
-ошибки, которые мешают сборке или этому ручному сценарию.
+S3 (движок в глобальном sync, работает при закрытом чате):
+- Детект `distill-wave` fence в assistant-сообщениях кондуктора; persisted
+  `planMessageId`; повторный парс не зацикливается (tombstone).
+- Валидный план → спавн воркеров напрямую под кондуктором:
+  `spawnConductorChildSession` c `role:"worker"`, `managedBy:"wave"`, `waveId`,
+  `stepIndex`, `anchorMessageId=planMessageId`; промпт шага —
+  `buildWaveStepPrompt`.
+- `access:[]` → спавн сразу, параллельно; `"all"` → ждать терминальности всех
+  предыдущих шагов волны, отчёты вложить в промпт; упавший предыдущий не
+  блокирует.
+- Битый fence → видимая ошибка с причиной + tombstone + ручная кнопка
+  «повторить» (Q2). Шаги с полем `model` → отклонять видимо до 4a (D5-щель).
+- Персистентное состояние волны (расширение graph store или соседний ключ).
+- Мост до 3a: `publishCompletedTurns` научить группе wave-воркеров по
+  `anchorMessageId` (сейчас фильтрует только role=orchestrator — иначе итог
+  волны не публикуется вовсе).
+- Миграция: старые ноды (`managedBy:"ui"`) движок не трогает.
 
-## Следующий production slice
+Готово когда: многочастный запрос кондуктору → модель отвечает планом → чипы
+под план-сообщением (per 1a) → воркеры исполняются и завершаются → один
+синтетический итог; битый fence показывает ошибку и ничего не спавнит;
+рестарт посреди волны не дублирует спавн.
 
-После подтверждения первого экрана оператором:
+### 2b. Проекция harness-субагентов [M] (любой чат)
 
-- автоматическое создание оркестратора самим conductor;
-- два параллельных оркестратора;
-- structured report со всеми полями;
-- `operator.intervention` и уведомление родителя;
-- orchestrator/agent sidebar;
-- worker-проекция harness-native субагентов;
-- stop/restart/replace;
-- токены, стоимость, wall-time и context limits;
-- перенос graph/events/reports в проектный `.distill`;
-- память с ограничением прав записи;
-- backup/import/export;
-- Grok ACP preset;
-- rebranding Distill Code.
+- Новый селектор/модуль (`features/chat/lib/harnessBrigade.ts`): из content
+  turn'а собрать эфемерные записи по subagent tool calls
+  (`getSubagentToolCallInfo`/уже проставленным `subagentAgentName` полям):
+  имя, задача, статус по контракту №4; Goose `load(task_id)` обновляет запись
+  своего delegate (связка `resolveDelegateContextForTask`).
+- Рендер: тем же чип-компонентом (1a) под host-сообщением в **любом** чате +
+  live-strip в зоне шагов, пока ответа нет.
+- Клик по эфемерному чипу — раскрыть/подскроллить его tool-карточку (своего
+  чата у in-harness агента нет — не имитировать).
+- Ничего не пишет в граф, сессий не создаёт.
 
-## Готовый prompt для implementation agent
+Готово когда: Ultracode/Task-воркфлоу в plain-чате виден живыми чипами во
+время работы и остаётся под сообщением после.
 
-```text
-Work immediately in E:\Unity\distill_code\distill-code on the existing
-feat/conductor-vertical-slice branch.
+### Этапы 3–6 — кратко (детальные спеки добавляются при re-baseline перед стартом этапа)
 
-Read AGENTS.md, the relevant LAWS files, and IMPLEMENTATION_PLAN.md, then start
-changing the product immediately. Do not stop after research, planning, a
-baseline report, domain types, tests, or documentation.
+- **3a** digest/verdict: терминальный ребёнок (любой `managedBy`) → envelope
+  реальным user-сообщением родителю (berdctl-seam, `if_running=queue`);
+  wave-надстройка: persisted стейт-машина, verdict accept / одна ревизия /
+  needsOperator, кап 2, битый verdict → needsOperator (Q5); ревизионная волна
+  с `"all"` видит отчёты предыдущей волны корня; удалить
+  `publishCompletedTurns`; кнопка-poke; digest-сообщения — компактной
+  карточкой; бейдж «кондуктор исполняет сам» при tool call (Q6).
+- **3b** вкладки дочерних чатов по образцу `ArtifactViewerPanel`; intent
+  `openInTab`; back-banner остаётся.
+- **4a** per-step model (`resolveWaveStepTarget`, ошибка до спавна, суффикс на
+  чипе); **4b** `berdctl session create --parent --role --name --task` +
+  `registerNode(managedBy:"agent-cli")`; **4c** скиллы
+  orchestrate/dispatch/providers по расписанию handoff §6 Track B.
+- **5a** Agents-секция сайдбара; **5b** hardening (degraded-report warning,
+  wave-stop, placeholder-чипы, стоимость кондуктора); **5c** research wake для
+  in-harness воркфлоу (адаптер / journal-watcher); **5d** orchestrate-examples
+  (OOD, abdication, валидация по JSON и слою ролей).
+- **6** `.distill`, группировка чипов по волнам, токены/стоимость на чип,
+  финальный re-baseline.
 
-Implement the complete “Первый production slice — делать немедленно” from
-IMPLEMENTATION_PLAN.md. The deliverable is a visible runnable product flow:
+## Что запрещено делать вместо пунктов плана
 
-1. Create a conductor chat in a project.
-2. From that conductor UI, create one real child orchestrator session through
-   Berd's existing ACP/session creation path with a selected harness/model.
-3. Show the child's live named status under the conductor task/response.
-4. Clicking it opens the real child transcript, where the operator can send a
-   direct message and return.
-5. On completion, show one distilled result card in the conductor instead of
-   copying raw chatter.
-6. Preserve the parent/child link and last result across app restart using the
-   fastest existing persistence seam.
+- превращать plain-чаты в conductor-режим;
+- второй session manager (4b — только флаги к существующему `createSession`);
+- fine-grained access-графы; MoA-агрегация; свой RL; репутационные приоры
+  моделей; неограниченные ревизии;
+- авторетраи парса/вердикта (Q2/Q5);
+- `.distill`, SQL, relay/server-инфраструктура до этапа 6;
+- удалять `roleCatalog.ts` или `subagentToolCalls.ts`;
+- массовый rebrand;
+- завершать задачу без работающего UI (кроме 0 и 1b).
 
-Reuse createSession/sendSession/chatSessionStore and current navigation. Keep
-plain chats unchanged. Do not add an experiment flag, tests, test docs, a spike
-report, SQL, Nostr/relay infrastructure, broad Buzz UI copies, Goose changes,
-or mass rebranding. Do not spend the task proving architecture before producing
-UI.
+## Быстрая проверка после каждого пункта
 
-Once the visible flow exists, launch it and fix only build/runtime blockers and
-errors in that manual scenario. Finish by telling the operator exactly how to
-open and try the new conductor flow, what is working, and what the next visible
-slice should add.
-```
+Запустить приложение и пройти «Готово когда» своего пункта руками; чинить
+только сборку и ошибки этого сценария. Полное покрытие — после подтверждения
+оператором.
+
+## Ссылки
+
+- `../combined_plan.md` — объединённый план с обоснованием и сверкой треков.
+- `../conductor_handoff.md` — протокол волн, проверенные факты кода и статьи.
+- `../launch_prompts.md` — готовые промпты для implementation-агентов.
