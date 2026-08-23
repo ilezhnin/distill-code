@@ -334,7 +334,9 @@ if [[ "$local_source" == "1" ]]; then
     echo "Expected Goose binary at $bin_path, but it was not built." >&2
     exit 1
   }
-  write_stamp "${pinned_ref:-local}" "$head_commit"
+  # No stamp here: the managed path writes one so it can skip a later rebuild,
+  # but this mode always rebuilds and lets cargo decide, so the record would
+  # only cost a digest pass over a ~300 MB binary that nothing reads back.
   log "Local Goose binary ready at $bin_path."
   if [[ "$print_bin" == "1" ]]; then
     printf '%s\n' "$bin_path"

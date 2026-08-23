@@ -1583,8 +1583,14 @@ function Build-GooseManagedBinary {
         throw "Expected Goose binary at $BinPath, but it was not built."
     }
 
-    $headAfterBuild = Get-GitHead -Repo $Paths.Repo
-    Write-GooseStamp -Paths $Paths -Settings $Settings -Commit $headAfterBuild -BinPath $BinPath
+    # The stamp exists so the managed path can skip a rebuild next time. Local
+    # source mode never reads it back — it always rebuilds and lets cargo decide
+    # — so writing it would only buy a SHA-256 pass over a ~300 MB binary on
+    # every single launch, with nothing on the other side to consume the digest.
+    if (-not $Settings.LocalSource) {
+        $headAfterBuild = Get-GitHead -Repo $Paths.Repo
+        Write-GooseStamp -Paths $Paths -Settings $Settings -Commit $headAfterBuild -BinPath $BinPath
+    }
     Write-WindowsDevInfo "Local Goose binary ready at $BinPath."
     return (New-GooseResult -ExitCode 0 -Ready $true -BinPath $BinPath -Message "Local Goose binary is ready.")
 }
