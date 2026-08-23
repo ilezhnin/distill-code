@@ -685,8 +685,15 @@ export function ChatView({
     showIndicator && !showTimelineLoading && !isConductorChat;
   const timelineMessages = useMemo(() => {
     const messages = isPreparingInitialTranscript ? [] : controller.messages;
-    return isConductorChat ? distillConductorTranscript(messages) : messages;
-  }, [controller.messages, isConductorChat, isPreparingInitialTranscript]);
+    return isConductorChat
+      ? distillConductorTranscript(messages, {
+          // Shown in place of the machine-facing plan fence when the conductor
+          // sent nothing but the plan. The message must stay non-empty: it is
+          // the row the wave's brigade chips hang off.
+          wavePlanLabel: t("conductor.wave.planSummary"),
+        })
+      : messages;
+  }, [controller.messages, isConductorChat, isPreparingInitialTranscript, t]);
   const handleStopChild = useCallback((childSessionId: string) => {
     void stopOrchestratorSession(childSessionId);
   }, []);

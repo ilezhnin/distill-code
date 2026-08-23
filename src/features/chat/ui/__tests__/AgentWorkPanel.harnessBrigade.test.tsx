@@ -69,6 +69,7 @@ function payload(
     content: CONTENT,
     isActiveWork: true,
     hasFinalAnswer: false,
+    hostsTurnFooters: false,
     thoughtCount: 0,
     toolCount: 2,
     textCount: 0,
