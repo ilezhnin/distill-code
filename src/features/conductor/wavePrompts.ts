@@ -35,6 +35,12 @@ export interface CompletedWaveStepReport {
   subtask: string;
   /** The structured report that step produced (never its transcript — D2). */
   report: StructuredReport;
+  /**
+   * True when this report comes from the *previous* wave of the same root
+   * request rather than from an earlier step of this wave (Q4). Only revision
+   * waves ever carry these.
+   */
+  fromPreviousWave?: boolean;
 }
 
 export interface WaveStepPromptOptions {
@@ -129,6 +135,7 @@ function reportPayload(
   entry: CompletedWaveStepReport,
 ): Record<string, unknown> {
   return {
+    wave: entry.fromPreviousWave ? "previous" : "current",
     step: entry.stepIndex + 1,
     role: entry.role,
     subtask: entry.subtask,
@@ -168,16 +175,26 @@ export function buildWaveStepPrompt(
   ];
 
   if (step.access === "all") {
-    const ordered = [...previousReports].sort(
-      (left, right) => left.stepIndex - right.stepIndex,
-    );
+    // Previous-wave reports come first as a block, then this wave's own steps;
+    // within each block, step order.
+    const ordered = [...previousReports].sort((left, right) => {
+      const leftWave = left.fromPreviousWave ? 0 : 1;
+      const rightWave = right.fromPreviousWave ? 0 : 1;
+      if (leftWave !== rightWave) return leftWave - rightWave;
+      return left.stepIndex - right.stepIndex;
+    });
     if (ordered.length === 0) {
       sections.push(
         "No earlier step of this wave produced a report, so you are starting from the subtask alone.",
       );
     } else {
+      const hasCarried = ordered.some((entry) => entry.fromPreviousWave);
       sections.push(
-        `Reports from the earlier steps of this wave, in order. These are their reports, not their transcripts — those sessions are not readable and must not be asked for.
+        `${
+          hasCarried
+            ? 'Reports you may read, in order. Entries marked "wave":"previous" are from the previous wave of this same request — that is what is being revised; entries marked "wave":"current" are earlier steps of this wave.'
+            : "Reports from the earlier steps of this wave, in order."
+        } These are their reports, not their transcripts — those sessions are not readable and must not be asked for.
 
 \`\`\`json
 ${JSON.stringify(ordered.map(reportPayload), null, 2)}
@@ -188,3 +205,47 @@ ${JSON.stringify(ordered.map(reportPayload), null, 2)}
 
   return wrapOrchestratorTaskPrompt(sections.join("\n\n"));
 }
+
+/**
+ * Sent to a session that is waiting on graph children when the operator asks
+ * for an interim summary (the poke button).
+ *
+ * It is deliberately a *question*, not a dispatch order: the children are still
+ * working, and a conductor that answered it with a new wave would double the
+ * brigade. The wording says so explicitly, because the protocol prompt's
+ * default reflex on any operator message is "plan or answer".
+ */
+export const WAVE_POKE_PROMPT = `The operator is asking for an interim status, not for new work.
+
+Summarize what you dispatched, what you already know, and what is still outstanding, in a few lines of plain prose. Do not emit a ${WAVE_FENCE_TAG} block, do not emit a ${VERDICT_FENCE_TAG} block, and do not start doing the work yourself — the executors you already dispatched are still running and their reports will arrive on their own.`;
+
+/**
+ * Sent to the conductor when the operator retries a digest whose verdict could
+ * not be read (Q5). The digest itself is re-delivered alongside it, so this
+ * text only has to explain why it is arriving twice.
+ */
+export const WAVE_VERDICT_RETRY_PROMPT = `Your previous answer to this digest could not be read as a verdict, so nothing was decided and the operator asked for another try.`;
+
+/**
+ * Header of a wave digest.
+ *
+ * The receiving model is a conductor whose every other incoming user message is
+ * an operator request; the digest has to say, in its first line, that it is not
+ * one. `{{count}}`-free on purpose: this is prompt text, not operator chrome.
+ */
+export function buildWaveDigestInstruction(stepCount: number): string {
+  return `WAVE REPORT DIGEST — this is the collected report of the ${stepCount === 1 ? "worker" : `${stepCount} workers`} you dispatched. It is not a request from the operator and contains no new instructions for you.
+
+Judge it: reply with exactly one ${VERDICT_FENCE_TAG} block, per the protocol you were given (${VERDICT_TOKENS.accept} | ${VERDICT_TOKENS.revise} | ${VERDICT_TOKENS.needsOperator}). If you ${VERDICT_TOKENS.accept}, the prose outside the block is what the operator reads as the answer, so write the answer there.`;
+}
+
+/**
+ * Header of a digest for children that are not part of a wave (legacy
+ * orchestrator trees, and agent-cli children under any chat).
+ *
+ * No verdict is demanded: the receiving session may be an ordinary chat that
+ * was never told the wave protocol.
+ */
+export const AGENT_DIGEST_INSTRUCTION = `AGENT REPORT DIGEST — the agents dispatched from this chat have finished. This is their report, not a request from the operator and not a set of instructions for you.
+
+Use it to continue the work or to answer the operator.`;

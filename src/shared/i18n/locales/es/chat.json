@@ -507,7 +507,36 @@
         "accessInvalid": "El paso {{step}} tiene un valor de \"access\" no admitido.",
         "modelNotAString": "El paso {{step}} tiene un campo \"model\" que no es un nombre de modelo.",
         "stepModelUnsupported": "El paso {{step}} pide ejecutarse en un modelo concreto. Todavía no se admiten modelos por paso, y se rechazó el plan entero en lugar de ejecutar el paso en otro modelo sin avisar."
+      },
+      "verdict": {
+        "needsOperatorTitle": "Esta ola se detuvo sin una decisión, así que queda en tus manos.",
+        "note": "Nota del conductor: {{note}}",
+        "retry": "Preguntar de nuevo al conductor",
+        "reason": {
+          "accepted": "El conductor aceptó el resultado.",
+          "conductorNeedsOperator": "El conductor dice que no puede terminar esto sin ti.",
+          "verdictMissing": "El conductor respondió sin un veredicto, así que no se decidió nada.",
+          "verdictInvalid": "No se pudo leer el veredicto del conductor, así que no se decidió nada.",
+          "revisionCapReached": "El conductor pidió otra revisión, pero esta petición ya agotó sus {{max}} revisiones.",
+          "digestUndeliverable": "No se pudo entregar al conductor el informe de la brigada."
+        },
+        "prose": {
+          "accept": "Aceptó el resultado de la brigada.",
+          "revise": "Pidió una revisión: mira la brigada más abajo.",
+          "needsOperator": "Devolvió esto al operador."
+        }
+      },
+      "digest": {
+        "cardTitle": "Informe de la brigada entregado en este chat",
+        "expand": "Ver informe",
+        "collapse": "Ocultar informe",
+        "deliveryFailed": "No se pudo entregar el informe de la brigada en este chat. Queda abajo para que no se pierda nada."
       }
+    },
+    "selfExecutingBadge": "El conductor ejecutó una herramienta él mismo: solo debería planificar o responder.",
+    "poke": {
+      "ask": "Pedir estado",
+      "pending": "Preguntando…"
     }
   },
   "harnessBrigade": {

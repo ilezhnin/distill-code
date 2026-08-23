@@ -214,6 +214,17 @@ export type SystemNotificationAction =
        */
       type: "retryWavePlan";
       sessionId: string;
+    }
+  | {
+      /**
+       * Re-deliver a finished wave's digest after the conductor's answer could
+       * not be read as a verdict. The manual retry of decision Q5 — the wave
+       * went straight to `needsOperator`, no revision was spent, and nothing
+       * happens again until the operator presses this.
+       */
+      type: "retryWaveDigest";
+      sessionId: string;
+      waveId: string;
     };
 
 export interface SystemNotificationContent {
