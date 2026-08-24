@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 import {
   MAX_WAVE_STEPS,
@@ -7,6 +10,7 @@ import {
 } from "./distillWave";
 import { VERDICT_FENCE_TAG, VERDICT_TOKENS } from "./distillVerdict";
 import type { StructuredReport } from "./types";
+import { admitWavePlan } from "./waveEngine";
 import {
   CONDUCTOR_PROTOCOL_PROMPT,
   type CompletedWaveStepReport,
@@ -102,7 +106,31 @@ describe("CONDUCTOR_PROTOCOL_PROMPT", () => {
     const parsed = parseDistillWave(example);
     expect(parsed.kind).toBe("plan");
     if (parsed.kind !== "plan") return;
-    expect(parsed.steps).toHaveLength(2);
+    expect(parsed.steps).toHaveLength(3);
+  });
+
+  it("shows worked examples, and every fence in the prompt is a plan the ENGINE admits", () => {
+    // Few-shots are the largest single win our own ablation measured
+    // (Nielsen et al., Table 9: −9.43pp without them), so the prompt carries
+    // worked examples — including one request that must NOT become a wave.
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain("## Worked examples");
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain("no wave");
+
+    // Every example is held to admitWavePlan, not just the parser: the format
+    // example used to end on a prod-stage writer, which the E1 lint refuses —
+    // a conductor imitating the canonical example was handed
+    // "verification-step-missing" for its trouble.
+    const fences =
+      CONDUCTOR_PROTOCOL_PROMPT.match(
+        new RegExp(`\`\`\`${WAVE_FENCE_TAG}[\\s\\S]*?\`\`\``, "g"),
+      ) ?? [];
+    expect(fences.length).toBeGreaterThanOrEqual(3);
+    for (const fence of fences) {
+      const parsed = parseDistillWave(fence);
+      expect(parsed.kind).toBe("plan");
+      const admission = admitWavePlan(parsed);
+      expect(admission.kind).toBe("accepted");
+    }
   });
 });
 
@@ -373,5 +401,26 @@ describe("buildWaveGitDeltaLine (E3a)", () => {
     const line = buildWaveGitDeltaLine({ digestDirty: 4 });
     expect(line).toContain("was not captured");
     expect(line).not.toMatch(/against \d/);
+  });
+});
+
+describe("the orchestrate skill's wave examples (5d)", () => {
+  it("every distill-wave fence in the skill is a plan the engine admits", () => {
+    // The skill is prose, so nothing type-checks it; this is the pairing
+    // test that keeps its examples from drifting away from the parser and
+    // the E1 lint the way the protocol prompt's own format example once did.
+    const skill = readFileSync(
+      resolve(__dirname, "../../../distro/skills/orchestrate/SKILL.md"),
+      "utf8",
+    );
+    const fences =
+      skill.match(new RegExp(`\`\`\`${WAVE_FENCE_TAG}[\\s\\S]*?\`\`\``, "g")) ??
+      [];
+    expect(fences.length).toBeGreaterThanOrEqual(2);
+    for (const fence of fences) {
+      const parsed = parseDistillWave(fence);
+      expect(parsed.kind).toBe("plan");
+      expect(admitWavePlan(parsed).kind).toBe("accepted");
+    }
   });
 });
