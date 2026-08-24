@@ -551,7 +551,7 @@
         "deliveryFailed": "No se pudo entregar el informe de la brigada en este chat. Queda abajo para que no se pierda nada."
       }
     },
-    "selfExecutingBadge": "El conductor ejecutó una herramienta él mismo: solo debería planificar o responder.",
+    "selfExecutingBadge": "El conductor cambió algo él mismo: puede leer para responder, pero el trabajo pertenece a una ola.",
     "poke": {
       "ask": "Pedir estado",
       "pending": "Preguntando…"
