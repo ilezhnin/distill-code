@@ -22,7 +22,7 @@ import {
 } from "./distillWave";
 import { VERDICT_FENCE_TAG, VERDICT_TOKENS } from "./distillVerdict";
 import { wrapOrchestratorTaskPrompt } from "./orchestratorReport";
-import { roleDisplayName } from "./roleLayers";
+import { roleDisplayName, roleStage } from "./roleLayers";
 import type { StructuredReport } from "./types";
 
 /** A finished earlier step of the same wave, as handed to an `"all"` step. */
@@ -230,6 +230,12 @@ export function buildWaveStepPrompt(
     `You are the ${roleDisplayName(step.role)} (role: ${step.role}) on ${position}. Do this step and nothing else.`,
     step.subtask.trim(),
   ];
+
+  if (roleStage(step.role) === "verify") {
+    sections.push(
+      'Your report is this wave\'s external evidence. The acceptance you enable is only honoured when your "artifacts" list names what you actually inspected — the files you opened, the commands or tests you ran. An empty artifacts list is read as no verification at all, and the wave is handed back to the operator.',
+    );
+  }
 
   if (step.access === "all") {
     // Previous-wave reports come first as a block, then this wave's own steps;
