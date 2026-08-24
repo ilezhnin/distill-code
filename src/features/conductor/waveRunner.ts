@@ -46,6 +46,7 @@ import {
 import {
   waveConcurrentPlanNoticeText,
   waveRejectionNoticeText,
+  waveReportDegradedNoticeText,
   waveSpawnFailureText,
 } from "./waveNotices";
 import { isWaveLive } from "./waveVerdict";
@@ -328,11 +329,18 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           }, WAVE_SPAWN_TIMEOUT_MS);
         }),
       ]);
+      // Adopt the child only into a wave that is still running. A wave the
+      // operator stopped (5b) — or one that was pruned — must not gain a
+      // worker after the fact: the child was spawned with a real prompt and
+      // would do real work that nothing manages, reports to, or stops. Same
+      // reasoning as the timeout race above, one failure mode over.
+      let adopted = false;
       updateWaveEngineState((state) => {
         const current = state.waves.find(
           (candidate) => candidate.waveId === wave.waveId,
         );
-        if (!current) return state;
+        if (!current || current.phase !== "running") return state;
+        adopted = true;
         return withWave(
           state,
           withWaveStepPhase(current, request.stepIndex, {
@@ -342,6 +350,7 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           }),
         );
       });
+      if (!adopted) void stopOrchestratorSession(sessionId);
     } catch (error) {
       // No auto-retry (Q2): the step is marked failed so later `access: "all"`
       // steps stop waiting on it, and the operator sees why.
@@ -440,6 +449,28 @@ function advanceWaves(state: WaveEngineState): {
         return true;
       },
     });
+    // 5b: a step that just went terminal on the "result unknown" stub is
+    // announced to the operator. The engine's persisted `reportDegraded` flag
+    // keeps this to one notice per step; this loop is only the messenger.
+    for (const stepIndex of advanced.degraded) {
+      const step = advanced.wave.steps.find(
+        (candidate) => candidate.stepIndex === stepIndex,
+      );
+      const child = nodes.find(
+        (candidate) =>
+          candidate.waveId === wave.waveId && candidate.stepIndex === stepIndex,
+      );
+      appendConductorNotice(
+        wave.conductorSessionId,
+        waveReportDegradedNoticeText(
+          stepIndex,
+          child?.displayName ??
+            (step ? roleDisplayName(step.role) : `#${stepIndex + 1}`),
+        ),
+        false,
+        "warning",
+      );
+    }
     let current = advanced.wave;
     if (advanced.complete) {
       // The wave is no longer *running*, but it is far from over: its reports

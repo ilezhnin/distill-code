@@ -210,6 +210,41 @@ describe("parseWaveEngineState", () => {
     );
   });
 
+  it("round-trips the E3a git counts and the 5b degradation mark, and drops junk values", () => {
+    const base = wave("w1");
+    const state = withWave(emptyWaveEngineState(), {
+      ...base,
+      gitDirtyAtAdmission: 3,
+      gitDirtyAtDigest: 7,
+      gitDigestProbed: true,
+      steps: [{ ...base.steps[0], reportDegraded: true }],
+    });
+    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
+      state,
+    );
+
+    // A restart must not resurrect these from garbage: a negative or
+    // non-integer count reads as "never measured", a non-true flag as
+    // "never degraded / never probed".
+    const parsed = parseWaveEngineState({
+      version: 2,
+      waves: [
+        {
+          ...JSON.parse(JSON.stringify(base)),
+          gitDirtyAtAdmission: -1,
+          gitDirtyAtDigest: 1.5,
+          gitDigestProbed: "yes",
+          steps: [{ ...base.steps[0], reportDegraded: "yes" }],
+        },
+      ],
+      tombstones: [],
+    });
+    expect(parsed.waves[0]?.gitDirtyAtAdmission).toBeUndefined();
+    expect(parsed.waves[0]?.gitDirtyAtDigest).toBeUndefined();
+    expect(parsed.waves[0]?.gitDigestProbed).toBeUndefined();
+    expect(parsed.waves[0]?.steps[0]?.reportDegraded).toBeUndefined();
+  });
+
   it("survives every phase either union can hold", () => {
     // The C1 regression, as a property over the unions themselves: a phase
     // that exists in `waveEngine.ts` but not in this module's guard used to
