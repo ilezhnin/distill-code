@@ -1,6 +1,6 @@
 import { useEffect, type ReactNode } from "react";
-import { HomeScreen } from "@/features/home/ui/HomeScreen";
-import { HomeView } from "@/features/home/ui/HomeView";
+import { HomeScreen } from "@/features/chat/ui/home/HomeScreen";
+import { WelcomeView } from "@/features/chat/ui/home/WelcomeView";
 import { ChatView } from "@/features/chat/ui/ChatView";
 import { ProviderSetupRequired } from "@/features/providers/ui/ProviderSetupRequired";
 import { AutomationsWorkbench } from "@/features/automations/ui/AutomationsView";
@@ -57,7 +57,6 @@ interface AppShellContentProps {
   chatComposerHandoffInProgress?: boolean;
   onChatComposerHandoffTarget?: (rect: GlobalComposerHandoffRect) => void;
   onWorkspaceNameRequest?: (request: WorkspaceNameRequest) => void;
-  homeViewportLeftOcclusionPx?: number;
   chatViewportLeftOcclusionPx?: number;
   onNavigateSkills: (
     skillId: string | null,
@@ -100,20 +99,13 @@ interface AppShellContentProps {
     messageId?: string,
     query?: string,
   ) => void;
-  onStartChatFromProjectId: (projectId: string) => void;
   onStartChatFromProject: (project: ProjectInfo) => void;
-  onStartProjectChat: (projectId: string) => void;
   onStartChatWithSkill: (skill: SkillInfo, projectId?: string | null) => void;
-  onResolveBerdyAgent: () => Promise<string | null>;
   onExitSearch: () => void;
   onOpenExtension: (entry: ExtensionEntry) => void;
   onOpenAgent: (agentId: string) => void;
   onOpenAutomation: (automationId: string) => void;
   onOpenSkill: (skill: SkillInfo) => void;
-  onTagHomeComposerAgent: (agentId: string) => void;
-  onTagHomeComposerProject: (projectId: string) => void;
-  onTagHomeComposerSkill: (skill: SkillInfo) => void;
-  onHydratePinnedChatSessions?: (sessionIds: string[]) => void;
   onStartProviderTroubleshootingChat: (
     request: AgentSetupTroubleshootingRequest,
   ) => void;
@@ -142,7 +134,6 @@ export function AppShellContent({
   chatComposerHandoffInProgress = false,
   onChatComposerHandoffTarget,
   onWorkspaceNameRequest,
-  homeViewportLeftOcclusionPx = 0,
   chatViewportLeftOcclusionPx = 0,
   onNavigateSkills,
   onNavigateAgents,
@@ -164,20 +155,13 @@ export function AppShellContent({
   onForkChat,
   onSelectSession,
   onSelectSearchResult,
-  onStartChatFromProjectId,
   onStartChatFromProject,
-  onStartProjectChat,
   onStartChatWithSkill,
-  onResolveBerdyAgent,
   onExitSearch,
   onOpenExtension,
   onOpenAgent,
   onOpenAutomation,
   onOpenSkill,
-  onTagHomeComposerAgent,
-  onTagHomeComposerProject,
-  onTagHomeComposerSkill,
-  onHydratePinnedChatSessions,
   onLoggedOut,
   onStartProviderTroubleshootingChat,
   onStartConnectionSetupChat,
@@ -191,41 +175,21 @@ export function AppShellContent({
     targetLocation,
   });
 
-  const openHomeAutomation = automationsEnabled
-    ? (automationId: string) =>
-        onNavigateAutomations({
-          surface: "detail",
-          automationId,
-          tab: "details",
-          selectedRunKey: null,
-        })
-    : undefined;
-  const openHomeAutomations = automationsEnabled
-    ? () => onNavigateAutomations({ surface: "overview" })
-    : undefined;
   const setupRequiredContent = homeProviderSetupRequired ? (
     <div className="flex h-full w-full items-center justify-center p-6">
       <ProviderSetupRequired onOpenProviders={onOpenProvidersSettings} />
     </div>
   ) : null;
+  // The widget desktop is gone (features/home with it): home is the
+  // invitation to start — the composer is the new chat, the button the new
+  // project. The planner arrives underneath this as its own feature.
   const homeContent = setupRequiredContent ?? (
-    <HomeView
-      onOpenProject={onStartChatFromProjectId}
-      onOpenAgent={onOpenAgent}
-      onOpenSkill={onOpenSkill}
-      onTagAgentInComposer={onTagHomeComposerAgent}
-      onTagProjectInComposer={onTagHomeComposerProject}
-      onTagSkillInComposer={onTagHomeComposerSkill}
-      onSelectSession={onSelectSession}
-      onStartProjectChat={onStartProjectChat}
+    <WelcomeView
+      sessionId={homeSessionId}
+      onActivateSession={onActivateHomeSession}
       onCreatePersona={onCreatePersona}
       onCreateProject={onCreateProject}
-      onOpenAutomation={openHomeAutomation}
-      onOpenSkills={() => onNavigateSkills(null)}
-      onOpenAutomations={openHomeAutomations}
-      onHydratePinnedChatSessions={onHydratePinnedChatSessions}
-      onResolveBerdyAgent={onResolveBerdyAgent}
-      viewportLeftOcclusionPx={homeViewportLeftOcclusionPx}
+      onWorkspaceNameRequest={onWorkspaceNameRequest}
     />
   );
 

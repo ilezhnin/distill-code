@@ -24,15 +24,10 @@ import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
 import type { Message } from "@/shared/types/messages";
 import type { GitState } from "@/shared/types/git";
-import { setMultiWorkspaceEnabled } from "@/features/workspaces/multiWorkspacePreference";
 import { OPEN_SETTINGS_EVENT } from "@/features/settings/lib/settingsEvents";
 import { SHORTCUT_PREFERENCES_STORAGE_KEY } from "@/features/shortcuts/lib/shortcutRegistry";
 import { useShortcutsDialogStore } from "@/features/shortcuts/stores/shortcutsDialogStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
-import {
-  resetHomeWidgetStoreForTests,
-  useHomeWidgetStore,
-} from "@/features/home/stores/homeWidgetStore";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { BUILDERBOT_SURFACE_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
 import {
@@ -569,12 +564,7 @@ vi.mock("./ui/AppShellContent", () => ({
     onExitSearch,
     onArchiveChat,
     onOpenAgent,
-    onTagHomeComposerAgent,
-    onTagHomeComposerProject,
-    onTagHomeComposerSkill,
     onSelectSession,
-    onStartProjectChat,
-    onResolveBerdyAgent,
     onStartConnectionSetupChat,
   }) => {
     const activeView = targetLocation.view;
@@ -623,22 +613,6 @@ vi.mock("./ui/AppShellContent", () => ({
         <div data-testid="builderbot-route">
           {JSON.stringify(activeBuilderbotRoute)}
         </div>
-        <button
-          type="button"
-          onClick={() => onStartProjectChat?.("project-startup")}
-        >
-          Start project chat
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            void onResolveBerdyAgent?.().then((personaId) => {
-              if (personaId) onTagHomeComposerAgent?.(personaId);
-            });
-          }}
-        >
-          Ask Distill from Home
-        </button>
         <button
           type="button"
           onClick={() => {
@@ -725,38 +699,6 @@ vi.mock("./ui/AppShellContent", () => ({
           onClick={() => onOpenAgent?.("persona-unresolved")}
         >
           Start chat with unresolved agent
-        </button>
-        <button
-          type="button"
-          onClick={() => onTagHomeComposerAgent?.("persona-resolves")}
-        >
-          Tag home composer agent
-        </button>
-        <button
-          type="button"
-          onClick={() => onTagHomeComposerProject?.("project-1")}
-        >
-          Tag home composer project
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            onTagHomeComposerSkill?.({
-              id: "global:/Users/test/.agents/skills/code-review/SKILL.md",
-              name: "code-review",
-              description: "Review code before PR",
-              instructions: "",
-              path: "/Users/test/.agents/skills/code-review",
-              fileLocation: "/Users/test/.agents/skills/code-review/SKILL.md",
-              sourceKind: "global",
-              sourceLabel: "Personal",
-              projectLinks: [],
-              readonly: false,
-              color: null,
-            })
-          }
-        >
-          Tag home composer skill
         </button>
         <button
           type="button"
@@ -877,7 +819,6 @@ describe("AppShell global navigation", () => {
   afterEach(cleanup);
 
   beforeEach(() => {
-    resetHomeWidgetStoreForTests();
     mockRepairManagedGooseModelSelection.mockReset();
     mockRepairManagedGooseModelSelection.mockImplementation(
       async (selection: unknown) => selection,
@@ -1986,48 +1927,6 @@ describe("AppShell global navigation", () => {
     expect(mockToastError).toHaveBeenCalledWith("backend down");
   });
 
-  it("removes a pinned chat from Home only after archive succeeds", async () => {
-    const user = userEvent.setup();
-    const archive = deferred<void>();
-    mockAcpArchiveSession.mockReturnValueOnce(archive.promise);
-    useChatSessionStore.setState({
-      sessions: [
-        {
-          id: "session-1",
-          title: "Pinned chat",
-          executionTarget: { harnessId: "goose" },
-          workingDir: "~/goose artifacts",
-          createdAt: "2026-06-09T00:00:00.000Z",
-          updatedAt: "2026-06-09T00:00:00.000Z",
-          messageCount: 1,
-        },
-      ],
-    });
-    useHomeWidgetStore.setState({
-      loadStatus: "ready",
-      itemRevision: 1,
-      instances: [
-        {
-          id: "chat-pin-1",
-          type: "chatPin",
-          x: 0,
-          y: 0,
-          z: 1,
-          state: { sessionId: "session-1" },
-        },
-      ],
-    });
-
-    renderAppShell();
-    await user.click(screen.getByRole("button", { name: "Archive session 1" }));
-    expect(useHomeWidgetStore.getState().instances).toHaveLength(1);
-
-    await act(async () => archive.resolve(undefined));
-    await waitFor(() => {
-      expect(useHomeWidgetStore.getState().instances).toHaveLength(0);
-    });
-  });
-
   it("archives chats without managed Git resources when session pagination fails", async () => {
     const user = userEvent.setup();
     mockAcpListSessionsPage.mockRejectedValue(new Error("list failed"));
@@ -2903,213 +2802,6 @@ describe("AppShell global navigation", () => {
             ? { kind: "none" }
             : { kind: "persona", id: expectedPersonaId },
       },
-    });
-  });
-
-  it("resolves the bundled Berdy persona for Home", async () => {
-    const personaId = "/Users/test/.agents/agents/berdy.md";
-    useAgentStore.setState({
-      personas: [
-        {
-          id: personaId,
-          displayName: "Berdy",
-          avatar: "app-avatar:gloopies-22",
-          systemPrompt: "Help people use Berd.",
-          isBuiltin: false,
-          writable: true,
-          sourceProperties: { metadata: { berdBundled: true } },
-        },
-      ],
-    });
-    renderAppShell();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Ask Distill from Home" }),
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Berdy")).toBeInTheDocument();
-    });
-  });
-
-  it("restores a missing bundled Berdy agent before tagging it", async () => {
-    const personaId = "/Users/test/.agents/agents/berdy.md";
-    mockListPersonas.mockResolvedValue([
-      {
-        id: personaId,
-        displayName: "Berdy",
-        avatar: "app-avatar:gloopies-22",
-        systemPrompt: "Help people use Berd.",
-        isBuiltin: false,
-        writable: false,
-        sourceProperties: { metadata: { berdBundled: true } },
-      },
-    ]);
-    useAgentStore.setState({ personas: [], personasLoading: false });
-    renderAppShell();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Ask Distill from Home" }),
-    );
-
-    await waitFor(() => {
-      expect(mockRepairBundledAgent).toHaveBeenCalledWith("berdy.md");
-      expect(screen.getByText("Berdy")).toBeInTheDocument();
-    });
-    expect(mockRepairBundledAgent.mock.invocationCallOrder[0]).toBeLessThan(
-      mockListPersonas.mock.invocationCallOrder[0],
-    );
-    expect(mockToastError).not.toHaveBeenCalledWith(
-      "Distill couldn't start a chat. Try again.",
-    );
-  });
-
-  it("refreshes personas when repair reports an error after changing disk", async () => {
-    const personaId = "/Users/test/.agents/agents/berdy.md";
-    mockRepairBundledAgent.mockRejectedValue(new Error("marker write failed"));
-    mockListPersonas.mockResolvedValue([
-      {
-        id: personaId,
-        displayName: "Berdy",
-        avatar: "app-avatar:gloopies-22",
-        systemPrompt: "Help people use Berd.",
-        isBuiltin: false,
-        writable: false,
-        sourceProperties: { metadata: { berdBundled: true } },
-      },
-    ]);
-    useAgentStore.setState({ personas: [], personasLoading: false });
-    renderAppShell();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Ask Distill from Home" }),
-    );
-
-    await waitFor(() => {
-      expect(mockListPersonas).toHaveBeenCalled();
-      expect(screen.getByText("Berdy")).toBeInTheDocument();
-    });
-  });
-
-  it.each([
-    {
-      multiWorkspaceEnabled: true,
-      expectedAttachments: [
-        { path: "/repo/builderbot", source: "inferred" },
-        { path: "/repo/bbsubscriber", source: "inferred" },
-      ],
-    },
-    {
-      multiWorkspaceEnabled: false,
-      expectedAttachments: [{ path: "/repo/builderbot", source: "inferred" }],
-    },
-  ])("gates as-is project workspace attachments for centered composer sends (multi=$multiWorkspaceEnabled)", async ({
-    multiWorkspaceEnabled,
-    expectedAttachments,
-  }) => {
-    setMultiWorkspaceEnabled(multiWorkspaceEnabled);
-    const createSession = deferred<{ sessionId: string }>();
-    mockAcpCreateSession.mockReturnValueOnce(createSession.promise);
-    const project: ProjectInfo = {
-      id: "project-1",
-      path: "/tmp/project-startup.md",
-      name: "Project Startup",
-      description: "",
-      prompt: "",
-      icon: "tabler:folder-code",
-      color: "olive",
-      projectWorkspaces: [
-        {
-          id: "path:/repo/builderbot",
-          path: "/repo/builderbot",
-          kind: "subdirectory",
-          source: "selected",
-          branch: "main",
-          repositoryPath: "/repo",
-          worktreePath: "/repo",
-          usedByAgent: false,
-          startupMode: "none",
-        },
-        {
-          id: "path:/repo/bbsubscriber",
-          path: "/repo/bbsubscriber",
-          kind: "subdirectory",
-          source: "selected",
-          branch: "main",
-          repositoryPath: "/repo",
-          worktreePath: "/repo",
-          usedByAgent: false,
-          startupMode: "none",
-        },
-      ],
-      workingDirs: ["/repo/builderbot", "/repo/bbsubscriber"],
-      useWorktrees: false,
-      order: 0,
-      archivedAt: null,
-      artifact: null,
-    };
-    useProjectStore.setState({ projects: [project] });
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("chat");
-    });
-    mockAcpCreateSession.mockClear();
-    await user.keyboard("{Meta>}n{/Meta}");
-    const textbox = await screen.findByPlaceholderText("Start a conversation");
-    await waitFor(() => {
-      expect(textbox.closest("[data-placement]")).toHaveAttribute(
-        "data-placement",
-        "centered",
-      );
-    });
-
-    await user.click(screen.getByRole("button", { name: /select project/i }));
-    await user.click(
-      screen.getByRole("menuitem", { name: /Project Startup/i }),
-    );
-    expect(await screen.findByText("Project Startup")).toBeInTheDocument();
-    await user.type(textbox, "send with all folders");
-    await user.keyboard("{Enter}");
-
-    await waitFor(() => {
-      expect(mockAcpCreateSession).toHaveBeenCalledWith(
-        "goose",
-        "/repo/builderbot",
-        {
-          deferProviderSetup: false,
-          modelId: undefined,
-          projectId: "project-1",
-        },
-      );
-    });
-    expect(gitMocks.getGitState).not.toHaveBeenCalled();
-    expect(gitMocks.createWorktree).not.toHaveBeenCalled();
-    expect(gitMocks.createBranch).not.toHaveBeenCalled();
-
-    const draftSessionId = useChatSessionStore.getState().sessions[0]?.id;
-    expect(draftSessionId).toEqual(expect.any(String));
-    expect(
-      useChatSessionStore
-        .getState()
-        .sessions[0]?.workspaceAttachments?.map((attachment) => ({
-          path: attachment.path,
-          source: attachment.source,
-        })),
-    ).toEqual(expectedAttachments);
-    expect(useChatStore.getState().queuedMessageBySession).toMatchObject({
-      [draftSessionId as string]: [
-        { payload: { text: "send with all folders" } },
-      ],
-    });
-
-    createSession.resolve({ sessionId: "created-session" });
-    await waitFor(() => {
-      expect(useChatStore.getState().queuedMessageBySession).toMatchObject({
-        "created-session": [{ payload: { text: "send with all folders" } }],
-      });
     });
   });
 
@@ -4980,186 +4672,6 @@ describe("AppShell global navigation", () => {
     expect(
       useChatSessionStore.getState().getSession("created-session"),
     ).toMatchObject({ personaId: "persona-unresolved" });
-  });
-
-  it("tags a Home agent starter in the composer instead of opening a blank chat", async () => {
-    setResolvingPersona("goose-model");
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Tag home composer agent" }),
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("home");
-      expect(screen.getByText("Reviewer")).toBeInTheDocument();
-    });
-    expect(mockAcpCreateSession).not.toHaveBeenCalled();
-  });
-
-  it("tags a Home skill starter in the composer instead of opening a blank chat", async () => {
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Tag home composer skill" }),
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("home");
-      expect(screen.getByText("code-review")).toBeInTheDocument();
-    });
-    expect(mockAcpCreateSession).not.toHaveBeenCalled();
-  });
-
-  it("tags a Home project starter in the composer instead of opening a blank chat", async () => {
-    useProjectStore.setState({
-      projects: [
-        {
-          id: "project-1",
-          path: "/tmp/project.yaml",
-          name: "Project One",
-          description: "",
-          prompt: "",
-          icon: "",
-          color: "",
-          workingDirs: ["/workspace/project"],
-          projectWorkspaces: [],
-          useWorktrees: false,
-          order: 0,
-          archivedAt: null,
-        },
-      ],
-      loading: false,
-      activeProjectId: null,
-    });
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Tag home composer project" }),
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("home");
-      expect(screen.getByText("Project One")).toBeInTheDocument();
-    });
-    expect(mockAcpCreateSession).not.toHaveBeenCalled();
-  });
-
-  it("expands the Home composer into a full chat with the current draft context", async () => {
-    setResolvingPersona("goose-model");
-    mockCheckAllProviderStatus.mockResolvedValue([
-      { providerId: "databricks_v2", isConfigured: true },
-    ]);
-    useProjectStore.setState({
-      projects: [
-        {
-          id: "project-1",
-          path: "/tmp/project.yaml",
-          name: "Project One",
-          description: "",
-          prompt: "",
-          icon: "",
-          color: "",
-          workingDirs: ["/workspace/project"],
-          projectWorkspaces: [],
-          useWorktrees: false,
-          order: 0,
-          archivedAt: null,
-        },
-      ],
-      loading: false,
-      activeProjectId: null,
-    });
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Tag home composer agent" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Tag home composer project" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Tag home composer skill" }),
-    );
-
-    const textbox = screen.getByPlaceholderText("Start a conversation");
-    await user.type(textbox, "expand this");
-    await user.click(
-      screen.getByRole("button", { name: "Expand to full chat" }),
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("chat");
-      expect(useChatSessionStore.getState().getActiveSession()).toMatchObject({
-        id: "created-session",
-        projectId: "project-1",
-        personaId: "persona-resolves",
-        executionTarget: {
-          harnessId: "goose",
-          modelProviderId: "databricks_v2",
-          modelId: "goose-model",
-          modelName: "goose-model",
-        },
-      });
-      expect(useChatStore.getState().draftsBySession).toMatchObject({
-        "created-session": "expand this",
-      });
-      expect(useChatStore.getState().skillDraftsBySession).toMatchObject({
-        "created-session": [
-          expect.objectContaining({
-            id: "global:/Users/test/.agents/skills/code-review/SKILL.md",
-            name: "code-review",
-          }),
-        ],
-      });
-    });
-  });
-
-  it("applies later Home starters after consuming the previous starter request", async () => {
-    setResolvingPersona("goose-model");
-    useProjectStore.setState({
-      projects: [
-        {
-          id: "project-1",
-          path: "/tmp/project.yaml",
-          name: "Project One",
-          description: "",
-          prompt: "",
-          icon: "",
-          color: "",
-          workingDirs: ["/workspace/project"],
-          projectWorkspaces: [],
-          useWorktrees: false,
-          order: 0,
-          archivedAt: null,
-        },
-      ],
-      loading: false,
-      activeProjectId: null,
-    });
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Tag home composer agent" }),
-    );
-    await waitFor(() => {
-      expect(screen.getByText("Reviewer")).toBeInTheDocument();
-    });
-
-    await user.click(
-      screen.getByRole("button", { name: "Tag home composer project" }),
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Project One")).toBeInTheDocument();
-    });
-    expect(screen.getByTestId("active-view")).toHaveTextContent("home");
-    expect(mockAcpCreateSession).not.toHaveBeenCalled();
   });
 
   it("opens search with Cmd+K", async () => {

@@ -6,7 +6,6 @@ import {
   TopBarActionsProvider,
   useTopBarActions,
 } from "@/app/contexts/TopBarActionsContext";
-import { resetHomeWidgetStoreForTests } from "@/features/home/stores/homeWidgetStore";
 import type { SkillInfo } from "../../api/skills";
 import { SKILL_DISCOVERY_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
 import { SkillsView } from "../SkillsView";
@@ -171,7 +170,6 @@ const { listSkills, deleteSkill, updateSkill, exportSkill } = (await import(
 };
 
 beforeEach(() => {
-  resetHomeWidgetStoreForTests();
   vi.clearAllMocks();
   mockDiscoveryExperimentEnabled.value = false;
   mockReducedMotion.value = false;

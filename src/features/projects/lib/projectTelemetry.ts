@@ -1,8 +1,7 @@
 /**
  * Thin, feature-scoped wrappers over the vendored `berd_project` event
- * factories, mirroring `src/features/agents/lib/agentTelemetry.ts`,
- * `src/features/chat/lib/chatTelemetry.ts`, and
- * `src/features/home/lib/homeTelemetry.ts`.
+ * factories, mirroring `src/features/agents/lib/agentTelemetry.ts` and
+ * `src/features/chat/lib/chatTelemetry.ts`.
  *
  * These build the vendored schema events and hand them to the shared telemetry
  * `track` chokepoint, inheriting its prod/staging gate, consent gating, and

@@ -3,23 +3,16 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
-import { useHomeWidgetStore } from "@/features/home/stores/homeWidgetStore";
 import { setAutoArchiveAfter } from "@/features/settings/lib/autoArchivePreference";
 import { runAutoArchiveSweep } from "../useAutoArchiveSessions";
 
 const mocks = vi.hoisted(() => ({
-  getLayout: vi.fn(),
   getSessionInfo: vi.fn(),
   loadAllSessions: vi.fn(),
 }));
 
 vi.mock("@/shared/api/acp", () => ({
   acpGetSessionInfo: (...args: unknown[]) => mocks.getSessionInfo(...args),
-}));
-
-vi.mock("@/features/layout/api/layout", () => ({
-  HOME_LAYOUT_ID: "home",
-  getLayout: (...args: unknown[]) => mocks.getLayout(...args),
 }));
 
 vi.mock("@/features/chat/lib/sessionWorkspaceCleanup", () => ({
@@ -38,36 +31,6 @@ function session(id: string, updatedAt = "2026-01-01T00:00:00.000Z") {
   } satisfies ChatSession;
 }
 
-function layout(sessionIds: string[] = []) {
-  return {
-    layoutId: "home",
-    itemRevision: 1,
-    cameraRevision: 1,
-    camera: { centerX: 0, centerY: 0, zoomBps: 10_000 },
-    constraints: {
-      minCenter: -100,
-      maxCenter: 100,
-      minSize: 1,
-      maxSize: 100,
-      minZoomBps: 1,
-      maxZoomBps: 20_000,
-      maxTitleOverrideLength: 100,
-      maxItems: 100,
-    },
-    items: sessionIds.map((sessionId, index) => ({
-      id: `pin-${sessionId}`,
-      kind: "session" as const,
-      targetId: sessionId,
-      centerX: 0,
-      centerY: 0,
-      width: 1,
-      height: 1,
-      zIndex: index,
-      titleOverride: null,
-    })),
-  };
-}
-
 function resetStores() {
   useChatSessionStore.setState({
     sessions: [],
@@ -83,7 +46,6 @@ function resetStores() {
     hasHydratedMessageQueues: true,
   });
   useSessionWindowStore.getState().setSnapshot([]);
-  useHomeWidgetStore.setState({ instances: [] });
 }
 
 describe("runAutoArchiveSweep", () => {
@@ -91,7 +53,6 @@ describe("runAutoArchiveSweep", () => {
     localStorage.clear();
     resetStores();
     setAutoArchiveAfter("7-days");
-    mocks.getLayout.mockReset().mockResolvedValue(layout());
     mocks.getSessionInfo
       .mockReset()
       .mockImplementation((sessionId: string) => ({
@@ -245,25 +206,6 @@ describe("runAutoArchiveSweep", () => {
       }
       return { ok: true };
     });
-
-    await runAutoArchiveSweep({ archiveSession });
-
-    expect(archiveSession).toHaveBeenCalledTimes(1);
-    expect(archiveSession).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "first" }),
-      expect.any(Function),
-    );
-  });
-
-  it("skips a later candidate that is pinned during the sweep", async () => {
-    const first = session("first");
-    const second = session("second");
-    mocks.loadAllSessions.mockResolvedValue([first, second]);
-    mocks.getLayout
-      .mockResolvedValueOnce(layout())
-      .mockResolvedValueOnce(layout())
-      .mockResolvedValueOnce(layout(["second"]));
-    const archiveSession = vi.fn().mockResolvedValue({ ok: true });
 
     await runAutoArchiveSweep({ archiveSession });
 

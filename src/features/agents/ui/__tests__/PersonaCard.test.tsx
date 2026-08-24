@@ -1,7 +1,6 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { resetHomeWidgetStoreForTests } from "@/features/home/stores/homeWidgetStore";
 import { PersonaCard } from "../PersonaCard";
 import type { Persona } from "@/shared/types/agents";
 
@@ -32,7 +31,6 @@ function makePersona(overrides: Partial<Persona> = {}): Persona {
 
 describe("PersonaCard", () => {
   beforeEach(() => {
-    resetHomeWidgetStoreForTests();
     avatarMediaMocks.media = undefined;
     avatarMediaMocks.image = undefined;
   });
