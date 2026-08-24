@@ -544,6 +544,8 @@
       },
       "digest": {
         "cardTitle": "Informe de la brigada entregado en este chat",
+        "workerCount_one": "1 ejecutor",
+        "workerCount_other": "{{count}} ejecutores",
         "expand": "Ver informe",
         "collapse": "Ocultar informe",
         "deliveryFailed": "No se pudo entregar el informe de la brigada en este chat. Queda abajo para que no se pierda nada."
