@@ -148,6 +148,22 @@ export interface WaveState {
    * digest quotes it so the retry is not the same question twice.
    */
   verdictIssue?: WaveVerdictIssue;
+  /**
+   * App-measured count of files with uncommitted changes in the conductor's
+   * working folder when this wave was admitted (E3a, `waveGitProbe.ts`).
+   * Absent while the probe is in flight, when it failed, or when the folder
+   * is not a git repository.
+   */
+  gitDirtyAtAdmission?: number;
+  /** The same count, taken when the wave finished and before its digest. */
+  gitDirtyAtDigest?: number;
+  /**
+   * True once the digest-time probe has settled — with or without a number.
+   * The digest pass waits on this so the one non-model-authored fact makes it
+   * into the digest; a failed probe still sets it, so evidence can be missing
+   * but can never block the loop.
+   */
+  gitDigestProbed?: boolean;
 }
 
 /**

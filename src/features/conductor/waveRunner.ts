@@ -35,6 +35,7 @@ import {
   type WaveSpawnRequest,
   type WaveState,
 } from "./waveEngine";
+import { startWaveGitProbe } from "./waveGitProbe";
 import {
   processWaveDigests,
   processWaveVerdicts,
@@ -265,6 +266,14 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       wave,
     );
     setWaveEngineState(next);
+    // E3a baseline: what git saw in the working folder before any worker did
+    // anything. Fire-and-forget — nothing waits on it; a baseline that never
+    // lands just degrades the digest line to "not captured".
+    startWaveGitProbe({
+      waveId: wave.waveId,
+      conductorSessionId: candidate.conductorSessionId,
+      point: "admission",
+    });
   }
   return next;
 }
