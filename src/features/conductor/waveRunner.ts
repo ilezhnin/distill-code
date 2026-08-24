@@ -21,6 +21,7 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
+import { stopOrchestratorSession } from "./orchestratorControls";
 import { roleDisplayName } from "./roleLayers";
 import { spawnConductorChildSession } from "./spawnOrchestrator";
 import type { SessionNode } from "./types";
@@ -86,6 +87,15 @@ let ticking = false;
  * spawn that has not registered its node yet.
  */
 let hasResumedOrphanedSpawns = false;
+
+/**
+ * Hard ceiling on one child spawn: session creation plus prompt delivery,
+ * normally seconds. Without it a hung backend held the step in `spawning`
+ * forever and the wave never finished. On timeout the step fails per Q2 (no
+ * auto-retry, operator told why); a session that still materializes later is
+ * stopped rather than adopted — the step's failure was already announced.
+ */
+export const WAVE_SPAWN_TIMEOUT_MS = 120_000;
 
 function spawnKey(waveId: string, stepIndex: number): string {
   return `${waveId}:${stepIndex}`;
@@ -228,8 +238,10 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
   const key = spawnKey(wave.waveId, request.stepIndex);
   inFlightSpawns.add(key);
   void (async () => {
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const { sessionId, runId } = await spawnConductorChildSession({
+      const spawnPromise = spawnConductorChildSession({
         parentSessionId: wave.conductorSessionId,
         role: "worker",
         managedBy: "wave",
@@ -244,6 +256,28 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           totalSteps: request.totalSteps,
         }),
       });
+      // A spawn that beats the timeout after the step was already failed must
+      // not run as an orphan worker: stop it instead of adopting it.
+      spawnPromise
+        .then(({ sessionId }) => {
+          if (timedOut) void stopOrchestratorSession(sessionId);
+        })
+        .catch(() => {
+          // The main await below reports this rejection; nothing to do here.
+        });
+      const { sessionId, runId } = await Promise.race([
+        spawnPromise,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            reject(
+              new Error(
+                `the child session did not start within ${Math.round(WAVE_SPAWN_TIMEOUT_MS / 1000)}s`,
+              ),
+            );
+          }, WAVE_SPAWN_TIMEOUT_MS);
+        }),
+      ]);
       updateWaveEngineState((state) => {
         const current = state.waves.find(
           (candidate) => candidate.waveId === wave.waveId,
@@ -280,6 +314,7 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
         false,
       );
     } finally {
+      if (timer !== undefined) clearTimeout(timer);
       inFlightSpawns.delete(key);
       // The spawn's own store writes already re-entered this tick and were
       // rejected by the guard; run once more now that it has settled.

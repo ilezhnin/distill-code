@@ -12,9 +12,12 @@ const spawnConductorChildSession = vi.hoisted(() => vi.fn());
 
 vi.mock("./spawnOrchestrator", () => ({ spawnConductorChildSession }));
 
-const { resetWaveRunnerForTests, runWaveEngineTick } = await import(
-  "./waveRunner"
-);
+const stopOrchestratorSession = vi.hoisted(() => vi.fn(async () => undefined));
+
+vi.mock("./orchestratorControls", () => ({ stopOrchestratorSession }));
+
+const { WAVE_SPAWN_TIMEOUT_MS, resetWaveRunnerForTests, runWaveEngineTick } =
+  await import("./waveRunner");
 const {
   CONDUCTOR_WAVES_STORAGE_KEY,
   getWaveEngineState,
@@ -310,6 +313,42 @@ describe("waveRunner", () => {
     await vi.waitFor(() =>
       expect(spawnConductorChildSession).toHaveBeenCalledTimes(2),
     );
+  });
+
+  it("fails a spawn that exceeds the timeout, and stops a late arrival", async () => {
+    vi.useFakeTimers();
+    try {
+      useConductorGraphStore.getState().registerNode(conductorNode());
+      setTranscript([
+        assistant(
+          "plan-1",
+          fence('{"steps":[{"role":"scout","subtask":"Look","access":[]}]}'),
+        ),
+      ]);
+      let resolveSpawn!: (value: { sessionId: string; runId: string }) => void;
+      spawnConductorChildSession.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveSpawn = resolve;
+          }),
+      );
+      runWaveEngineTick();
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+      expect(getWaveEngineState().waves[0].steps[0].phase).toBe("spawning");
+
+      await vi.advanceTimersByTimeAsync(WAVE_SPAWN_TIMEOUT_MS + 1);
+      expect(getWaveEngineState().waves[0].steps[0].phase).toBe("failed");
+      expect(noticeTexts().join("\n")).toContain("did not start");
+
+      // The child that finally materializes is stopped, never adopted: the
+      // operator was already told this step died (Q2, no auto-retry).
+      resolveSpawn({ sessionId: "late-child", runId: "late-run" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(stopOrchestratorSession).toHaveBeenCalledWith("late-child");
+      expect(getWaveEngineState().waves[0].steps[0].phase).toBe("failed");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("marks a step failed and warns when its spawn throws", async () => {
