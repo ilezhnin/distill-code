@@ -99,3 +99,29 @@ export function roleDisplayName(roleId: string): string {
     ROLE_CATALOG.find((entry) => entry.id === normalized)?.displayName ?? roleId
   );
 }
+
+/**
+ * A short handle that tells one wave step apart from its same-role siblings —
+ * three parallel "Scout"s are indistinguishable in chips, tabs and digests
+ * without it. A file named in the subtask is the most distinctive anchor
+ * ("waveEngine"); failing that, the subtask's first words.
+ */
+export function waveStepShortLabel(subtask: string): string | undefined {
+  const file = subtask.match(
+    /([\w][\w-]*)\.(?:tsx?|jsx?|mjs|cjs|rs|py|go|cs|css|scss|html|md|json|ya?ml|toml)\b/,
+  );
+  if (file && file[1] !== "index") return file[1];
+  const words = subtask.trim().split(/\s+/).slice(0, 3).join(" ");
+  if (!words) return undefined;
+  return words.length > 28 ? `${words.slice(0, 27)}…` : words;
+}
+
+/**
+ * The display name a wave step's worker gets: "Scout · waveEngine". Falls back
+ * to the bare role name when the subtask yields no usable handle.
+ */
+export function waveStepDisplayName(roleId: string, subtask: string): string {
+  const base = roleDisplayName(roleId);
+  const label = waveStepShortLabel(subtask);
+  return label ? `${base} · ${label}` : base;
+}
