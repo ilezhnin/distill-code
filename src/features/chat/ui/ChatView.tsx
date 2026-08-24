@@ -740,8 +740,14 @@ export function ChatView({
       : shouldStageTranscript;
   const showTimelineLoading =
     controller.isLoadingHistory || isPreparingInitialTranscript;
+  // Conductor chats carry their own activity display, so the generic
+  // thinking/responding pill stays off there — but compaction has no other
+  // surface, and a silent multi-second stall reads as a hang, so that state
+  // is always shown.
   const shouldShowLoadingIndicator =
-    showIndicator && !showTimelineLoading && !isConductorChat;
+    showIndicator &&
+    !showTimelineLoading &&
+    (!isConductorChat || controller.isCompactingContext);
   const timelineMessages = useMemo(() => {
     const messages = isPreparingInitialTranscript ? [] : controller.messages;
     return isConductorChat
