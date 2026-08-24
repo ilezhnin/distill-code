@@ -62,8 +62,12 @@ export async function spawnConductorChildSession(args: {
   const usedNames = Object.values(
     useConductorGraphStore.getState().nodesById,
   ).map((node) => node.displayName);
+  // A caller-provided display name is still uniquified: two wave steps over
+  // the same file would otherwise produce two identical "Scout · foo" tabs.
   const displayName =
-    args.displayName?.trim() ||
+    (args.displayName?.trim()
+      ? pickUniqueDisplayName(args.displayName.trim(), usedNames)
+      : undefined) ||
     pickUniqueDisplayName(
       args.personaName?.trim() || DEFAULT_ORCHESTRATOR_NAME,
       usedNames,

@@ -226,6 +226,27 @@ describe("ChildChatPanel", () => {
     );
   });
 
+  it("shows an activity pill while the child is thinking, and hides it at idle", () => {
+    useChildChatTabsStore
+      .getState()
+      .open("host", { sessionId: "child-1", name: "Atlas" });
+    renderWithProviders(<ChildChatPanel hostSessionId="host" />);
+    // Idle: no pill — a finished worker's tab is quiet.
+    expect(screen.queryByTestId("child-chat-activity")).toBeNull();
+
+    // A synthesizing worker may produce no messages and no tool calls at all;
+    // the pill is the only sign it is alive rather than hung.
+    act(() => {
+      useChatStore.getState().setChatState("child-1", "thinking");
+    });
+    expect(screen.getByTestId("child-chat-activity")).toBeInTheDocument();
+
+    act(() => {
+      useChatStore.getState().setChatState("child-1", "idle");
+    });
+    expect(screen.queryByTestId("child-chat-activity")).toBeNull();
+  });
+
   it("shows the child's live run status in the strip", () => {
     useChildChatTabsStore
       .getState()

@@ -19,6 +19,8 @@ import { BrigadeStatusGlyph } from "@/features/conductor/ui/BrigadeChip";
 import { cn } from "@/shared/lib/cn";
 import type { Message } from "@/shared/types/messages";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
+import { ActiveChatBerdIndicator } from "@/shared/ui/SessionActivityIndicator";
+import { LoadingBerd } from "./LoadingBerd";
 import { MessageTimeline } from "./MessageTimeline";
 import { SidePanelShell } from "./SidePanelShell";
 import {
@@ -306,6 +308,17 @@ function ChildChatTranscript({ childSessionId }: { childSessionId: string }) {
   const streamingMessageId = useChatStore(
     (s) => s.sessionStateById[childSessionId]?.streamingMessageId ?? null,
   );
+  // The worker's live state. Between the prompt landing and the first visible
+  // output a synthesizing worker produces nothing at all — without this pill
+  // the tab is indistinguishable from a hung one.
+  const chatState = useChatStore(
+    (s) => s.sessionStateById[childSessionId]?.chatState ?? "idle",
+  );
+  const showActivity =
+    chatState === "thinking" ||
+    chatState === "streaming" ||
+    chatState === "waiting" ||
+    chatState === "compacting";
 
   // Re-hydration, not a poll. The store's message cache holds ten sessions and
   // `canEvictSessionMessages` treats a settled, non-streaming session as
@@ -341,13 +354,28 @@ function ChildChatTranscript({ childSessionId }: { childSessionId: string }) {
 
   return (
     <ConductorTranscriptProvider value={INERT_CONDUCTOR_TRANSCRIPT}>
-      <MessageTimeline
-        messages={messages}
-        streamingMessageId={streamingMessageId}
-        showPlaceholder={messages.length === 0}
-        placeholder={placeholder}
-        className="min-h-0 flex-1"
-      />
+      <div className="flex min-h-0 flex-1 flex-col">
+        <MessageTimeline
+          messages={messages}
+          streamingMessageId={streamingMessageId}
+          showPlaceholder={messages.length === 0}
+          placeholder={placeholder}
+          className="min-h-0 flex-1"
+        />
+        {showActivity ? (
+          <div
+            data-testid="child-chat-activity"
+            className="flex h-8 shrink-0 items-center gap-2 px-3"
+          >
+            <ActiveChatBerdIndicator size={14} />
+            <LoadingBerd
+              chatState={chatState}
+              className="mb-0 px-0"
+              motionPreset="responding"
+            />
+          </div>
+        ) : null}
+      </div>
     </ConductorTranscriptProvider>
   );
 }
