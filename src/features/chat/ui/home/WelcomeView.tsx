@@ -48,7 +48,7 @@ export function WelcomeView({
               type="button"
               variant="ghost"
               size="sm"
-              className="text-muted-foreground hover:text-foreground"
+              flush
               data-testid="home-new-project"
               onClick={() => onCreateProject?.()}
             >
