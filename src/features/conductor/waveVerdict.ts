@@ -76,7 +76,13 @@ export type WaveClosureReason =
    * (C3), not finished. Digesting it would spend a model call judging "unknown"
    * for every step.
    */
-  | "wave-interrupted";
+  | "wave-interrupted"
+  /**
+   * The operator pressed the stop control on a running wave (5b). Its
+   * executors were told to stop and nothing was digested or judged — the
+   * operator chose to cut the loop, and the loop obeyed.
+   */
+  | "operator-stopped";
 
 export interface WaveClosure {
   reason: WaveClosureReason;

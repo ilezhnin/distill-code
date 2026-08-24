@@ -534,7 +534,8 @@
           "revisionCapReached": "El conductor pidió otra revisión, pero esta petición ya agotó sus {{max}} revisiones.",
           "digestUndeliverable": "No se pudo entregar al conductor el informe de la brigada.",
           "acceptedWithoutEvidence": "El conductor aceptó el resultado, pero nada externo lo comprobó, así que no se respetó la aceptación.",
-          "waveInterrupted": "Esta ola se interrumpió antes de que ningún ejecutor informara, así que no hay nada que juzgar. Su trabajo no se completó."
+          "waveInterrupted": "Esta ola se interrumpió antes de que ningún ejecutor informara, así que no hay nada que juzgar. Su trabajo no se completó.",
+        "operatorStopped": "Detuviste esta ola. Se pidió a sus ejecutores que se detuvieran y nada se resumió ni se juzgó."
         },
         "prose": {
           "accept": "Aceptó el resultado de la brigada.",
@@ -542,6 +543,8 @@
           "needsOperator": "Devolvió esto al operador."
         }
       },
+      "reportDegraded": "El paso {{step}} ({{name}}) termin\u00f3 sin informe. La ola contin\u00faa con un comod\u00edn de \u00abresultado desconocido\u00bb: los pasos posteriores y el resumen ver\u00e1n ese comod\u00edn, no lo que ese ejecutor hizo realmente. Su propio chat es el \u00fanico registro.",
+      "stop": "Detener la ola",
       "digest": {
         "cardTitle": "Informe de la brigada entregado en este chat",
         "workerCount_one": "1 ejecutor",

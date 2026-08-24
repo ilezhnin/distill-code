@@ -86,6 +86,7 @@ export const WAVE_CLOSURE_REASON_KEYS: Record<WaveClosureReason, string> = {
   "digest-undeliverable": "digestUndeliverable",
   "accepted-without-evidence": "acceptedWithoutEvidence",
   "wave-interrupted": "waveInterrupted",
+  "operator-stopped": "operatorStopped",
 };
 
 /**
@@ -176,4 +177,25 @@ export function digestDeliveryFailureText(
  */
 export function conductorSelfExecutionBadgeText(): string {
   return i18n.t("chat:conductor.selfExecutingBadge");
+}
+
+/**
+ * Warning posted the moment a step goes terminal on the "result unknown"
+ * stub (5b). Once per step — the engine's persisted `reportDegraded` flag is
+ * the idempotency; this is only the wording.
+ *
+ * It names the step AND the consequence, because "finished without a report"
+ * alone sounds like an accounting detail: the digest the conductor will judge,
+ * and every later step's handoff, now contain a stub where that worker's
+ * account should have been. The stop control next to the wait indicator is
+ * the operator's lever if that is not acceptable.
+ */
+export function waveReportDegradedNoticeText(
+  stepIndex: number,
+  name: string,
+): string {
+  return i18n.t("chat:conductor.wave.reportDegraded", {
+    step: stepIndex + 1,
+    name,
+  });
 }

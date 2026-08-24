@@ -535,7 +535,8 @@
           "revisionCapReached": "The conductor asked for another revision, but this request has already used its {{max}} revisions.",
           "digestUndeliverable": "The brigade's report could not be delivered to the conductor.",
           "acceptedWithoutEvidence": "The conductor accepted the result, but nothing external checked it, so the acceptance was not honoured.",
-          "waveInterrupted": "This wave was interrupted before any executor reported back, so there is nothing to judge. Its work was not finished."
+          "waveInterrupted": "This wave was interrupted before any executor reported back, so there is nothing to judge. Its work was not finished.",
+        "operatorStopped": "You stopped this wave. Its executors were told to stop, and nothing was digested or judged."
         },
         "prose": {
           "accept": "Accepted the brigade's result.",
@@ -543,6 +544,8 @@
           "needsOperator": "Handed this back to the operator."
         }
       },
+      "reportDegraded": "Step {{step}} ({{name}}) finished without a report. The wave is continuing on a \u00abresult unknown\u00bb stub \u2014 later steps and the digest will see the stub, not what that worker actually did. Its own chat is the only record.",
+      "stop": "Stop the wave",
       "digest": {
         "cardTitle": "Brigade report delivered to this chat",
         "workerCount_one": "1 executor",
