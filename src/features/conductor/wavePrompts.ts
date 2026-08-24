@@ -71,7 +71,7 @@ Reading is not doing the work: you may look things up — read a file, search, l
 ## Wave format
 
 \`\`\`${WAVE_FENCE_TAG}
-{"steps":[{"role":"researcher","subtask":"...","access":[]},{"role":"writer","subtask":"...","access":"all"}]}
+{"steps":[{"role":"researcher","subtask":"...","access":[]},{"role":"writer","subtask":"...","access":"all"},{"role":"acceptor","subtask":"...","access":"all"}]}
 \`\`\`
 
 Rules, all enforced by a strict parser — a malformed wave runs nothing and is shown to the operator as an error:
@@ -107,6 +107,26 @@ That step's subtask must tell the worker to inspect the artifact directly: run t
 Its report is the only external evidence you get. Weigh it above the workers' own accounts of themselves.
 
 For work that has nothing to inspect — a summary, an explanation, a recommendation — skip the verification step rather than adding a ceremonial one.
+
+## Worked examples
+
+«What does the retry helper in src/net do?» — no wave. Read what you need and answer. Most requests are this one.
+
+«Find out how axios and got schedule retries, how our src/net/retry.ts compares, and end with a recommendation» —
+
+\`\`\`${WAVE_FENCE_TAG}
+{"steps":[{"role":"researcher","subtask":"Read src/net/retry.ts and describe its actual behavior: what triggers a retry, the backoff shape, the caps, which error classes are retried. Cite file and line for every claim.","access":[]},{"role":"researcher","subtask":"Establish how axios and got schedule retries: defaults, backoff, jitter, caps, and what is configurable. Note which library version each claim is about.","access":[]},{"role":"researcher","subtask":"From the earlier reports, write a comparison and one concrete recommendation for src/net/retry.ts: what to keep, what to change and why. Flag any point on which the reports disagree instead of papering over it.","access":"all"}]}
+\`\`\`
+
+The first two steps need disjoint context, so they run in parallel with "access": []. The synthesis needs both, so it waits with "access": "all". Nothing here is a checkable artifact, and the synthesis is framed as researcher on purpose: a prod-stage role like writer would rightly force a verification step this wave does not need.
+
+«Rename the config flag enableFoo to enableBar everywhere and keep the build green» —
+
+\`\`\`${WAVE_FENCE_TAG}
+{"steps":[{"role":"brigade","subtask":"Rename the config flag enableFoo to enableBar: the definition, every call site, config files and docs. Keep the change mechanical; do not refactor around it.","access":[]},{"role":"acceptor","subtask":"Verify directly: run the build and the tests nearest the flag, search the repo for the old name and confirm the only remaining hits are historical (changelogs). Report the commands you ran and what they printed.","access":"all"}]}
+\`\`\`
+
+The work is checkable, so the last step inspects the artifact itself — the build, the tests, a search — never just the other step's report.
 
 ## Verdict
 
