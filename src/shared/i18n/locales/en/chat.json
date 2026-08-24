@@ -545,6 +545,8 @@
       },
       "digest": {
         "cardTitle": "Brigade report delivered to this chat",
+        "workerCount_one": "1 executor",
+        "workerCount_other": "{{count}} executors",
         "expand": "Show report",
         "collapse": "Hide report",
         "deliveryFailed": "The brigade's report could not be delivered into this chat. It is kept below so nothing is lost."
