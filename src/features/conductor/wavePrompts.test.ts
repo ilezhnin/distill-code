@@ -157,6 +157,27 @@ describe("buildWaveStepPrompt", () => {
     expect(buildWaveStepPrompt(noAccessStep)).toContain("```distill-report");
   });
 
+  it("tells a verify-stage step that acceptance rides on its artifacts", () => {
+    const prompt = buildWaveStepPrompt({
+      role: "acceptor",
+      subtask: "Open the file and confirm the count",
+      access: "all",
+    });
+    expect(prompt).toContain("external evidence");
+    expect(prompt).toContain("empty artifacts list");
+  });
+
+  it("keeps the evidence clause off non-verify steps", () => {
+    // E2 only reads the verification step's report; nagging every researcher
+    // and writer about acceptance evidence would just dilute their subtask.
+    expect(buildWaveStepPrompt(noAccessStep)).not.toContain(
+      "external evidence",
+    );
+    expect(buildWaveStepPrompt(allAccessStep)).not.toContain(
+      "external evidence",
+    );
+  });
+
   it("never embeds reports for an access [] step", () => {
     const prompt = buildWaveStepPrompt(noAccessStep, [completedStep()]);
     expect(prompt).not.toContain("Found three candidate libraries");
