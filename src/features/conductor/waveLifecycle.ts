@@ -67,6 +67,11 @@ import {
 } from "./waveDigest";
 import { resetWaveGitProbeForTests, startWaveGitProbe } from "./waveGitProbe";
 import {
+  bumpWaveTelemetryCounter,
+  recordWaveClose,
+  resetWaveTelemetryForTests,
+} from "./waveTelemetryStore";
+import {
   digestDeliveryFailureText,
   waveClosureNoticeText,
 } from "./waveNotices";
@@ -254,6 +259,7 @@ function applyVerdictDecision(
         "needsOperator",
       );
       next = withWave(next, parked);
+      recordWaveClose(parked, "needs-operator", "verdict-invalid");
       appendNotice(
         wave.conductorSessionId,
         waveClosureNoticeText({
@@ -284,6 +290,7 @@ function applyVerdictDecision(
       ).map((entry) => ({ ...entry, fromPreviousWave: true })),
     });
     next = withWave(next, revision);
+    bumpWaveTelemetryCounter("admittedWaves");
     // E3a baseline for the revision wave. The probe settles through the
     // engine store, so it finds the wave once this tick's state is committed.
     startWaveGitProbe({
@@ -296,6 +303,17 @@ function applyVerdictDecision(
   next = isWaveRetired(closed)
     ? withoutWave(next, wave.waveId)
     : withWave(next, closed);
+  // The wave is leaving the live loop (retired now or parked for the
+  // operator); its record outlives it — the engine state will not.
+  recordWaveClose(
+    closed,
+    decision.phase === "accepted"
+      ? "accepted"
+      : decision.phase === "revised"
+        ? "revised"
+        : "needs-operator",
+    decision.closure?.reason,
+  );
 
   if (decision.closure && decision.phase === "needsOperator") {
     appendNotice(
@@ -354,8 +372,14 @@ export function processWaveDigests(
         // Park first, notice second — same discipline as every other
         // transition here: a persisted phase that a failing notice cannot
         // undo is what stops the refusal repeating on the next tick.
-        next = withWave(next, withWavePhase(wave, decision.phase));
+        const parked = withWavePhase(wave, decision.phase);
+        next = withWave(next, parked);
         setWaveEngineState(next);
+        recordWaveClose(
+          parked,
+          "needs-operator",
+          decision.closure?.reason ?? "wave-interrupted",
+        );
         appendNotice(
           wave.conductorSessionId,
           waveClosureNoticeText(
@@ -465,13 +489,22 @@ export function startDigestDispatch(
       );
       if (result.status === "failed") {
         const decision = digestUndeliverableDecision(result.detail ?? "");
+        let parked: WaveState | undefined;
         updateWaveEngineState((state) => {
           const current = state.waves.find(
             (candidate) => candidate.waveId === dispatch.waveId,
           );
           if (!current) return state;
-          return withWave(state, withWavePhase(current, decision.phase));
+          parked = withWavePhase(current, decision.phase);
+          return withWave(state, parked);
         });
+        if (parked) {
+          recordWaveClose(
+            parked,
+            "needs-operator",
+            decision.closure?.reason ?? "digest-undeliverable",
+          );
+        }
         // One notice, carrying the reason *and* the digest itself: the reports
         // are already flagged published, so this transcript entry is the only
         // remaining copy of what the workers said.
@@ -515,4 +548,5 @@ export function hasInFlightDigestForTests(
 export function resetWaveLifecycleForTests(): void {
   inFlightDigests.clear();
   resetWaveGitProbeForTests();
+  resetWaveTelemetryForTests();
 }

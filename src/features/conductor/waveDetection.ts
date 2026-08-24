@@ -49,9 +49,14 @@ export function detectWavePlanCandidates(args: {
    * Called once for every settled message that turned out to carry no plan.
    * The runner remembers those ids so the next tick — and the sync subscription
    * fires on every chat-store change, i.e. on every streamed token — can skip
-   * them without re-joining their text.
+   * them without re-joining their text. The context is for telemetry: a
+   * planless conductor turn is the wave-rate denominator, and its `created`
+   * time is what deduplicates the count across restarts.
    */
-  markScanned?: (messageId: string) => void;
+  markScanned?: (
+    messageId: string,
+    context: { conductorSessionId: string; createdAt: number },
+  ) => void;
 }): WavePlanCandidate[] {
   const candidates: WavePlanCandidate[] = [];
   for (const conductorSessionId of args.conductorSessionIds) {
@@ -63,12 +68,18 @@ export function detectWavePlanCandidates(args: {
       const text = getTextContent(message);
       // Cheap reject before the real parse: most conductor turns are prose.
       if (!text.includes(WAVE_FENCE_TAG)) {
-        args.markScanned?.(message.id);
+        args.markScanned?.(message.id, {
+          conductorSessionId,
+          createdAt: message.created,
+        });
         continue;
       }
       const parse = parseDistillWave(text);
       if (parse.kind === "none") {
-        args.markScanned?.(message.id);
+        args.markScanned?.(message.id, {
+          conductorSessionId,
+          createdAt: message.created,
+        });
         continue;
       }
       candidates.push({

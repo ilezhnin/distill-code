@@ -12,10 +12,14 @@ import {
   remapSessionWorkState,
 } from "@/features/stats/lib/usageLedger";
 import { syncConductorNodesIntoUsageLedger } from "@/features/stats/lib/usageRecorder";
+import { boundConductorGraph } from "./graphBounds";
+import { isTerminalRunStatus } from "./waveEngine";
 import {
+  getWaveEngineState,
   updateWaveEngineState,
   withRemappedConductorSessionId,
 } from "./waveStore";
+import { isWaveLive } from "./waveVerdict";
 
 export const CONDUCTOR_GRAPH_STORAGE_KEY = "goose:conductor-graph";
 
@@ -103,6 +107,7 @@ function parseNode(value: unknown): SessionNode | null {
     status: raw.status,
     task: typeof raw.task === "string" ? raw.task : undefined,
     createdAt: typeof raw.createdAt === "number" ? raw.createdAt : undefined,
+    finishedAt: typeof raw.finishedAt === "number" ? raw.finishedAt : undefined,
     anchorMessageId:
       typeof raw.anchorMessageId === "string" ? raw.anchorMessageId : undefined,
     waveId: typeof raw.waveId === "string" ? raw.waveId : undefined,
@@ -213,19 +218,45 @@ function remapId(
   return value === fromId ? toId : value;
 }
 
+/** Wave ids the bound must not touch: their children are still reconciled. */
+function liveWaveIds(): ReadonlySet<string> {
+  return new Set(
+    getWaveEngineState()
+      .waves.filter(isWaveLive)
+      .map((wave) => wave.waveId),
+  );
+}
+
+/**
+ * Applies the graph bound on a growth path, then persists.
+ *
+ * Bounding runs only where the store grows — `registerNode` and
+ * `attachReport` — never on patches, so the hot status-flip path stays a
+ * plain merge. The bound is hygiene: if it (or the wave-store read it needs)
+ * fails, the write goes through unbounded rather than not at all.
+ */
+function boundAndPersist(state: ConductorGraphState): ConductorGraphState {
+  let bounded = state;
+  try {
+    bounded = boundConductorGraph(state, liveWaveIds());
+  } catch {
+    // Fail open: an unreadable wave store must not fail the graph write.
+  }
+  persistGraph(bounded);
+  return bounded;
+}
+
 export const useConductorGraphStore = create<ConductorGraphStore>(
   (set, get) => ({
     ...loadPersistedGraph(),
 
     registerNode: (node) => {
-      set((state) => {
-        const next = {
+      set((state) =>
+        boundAndPersist({
           ...state,
           nodesById: { ...state.nodesById, [node.sessionId]: node },
-        };
-        persistGraph(next);
-        return next;
-      });
+        }),
+      );
       try {
         syncConductorNodesIntoUsageLedger([node]);
         if (node.role === "orchestrator" || node.role === "worker") {
@@ -241,11 +272,26 @@ export const useConductorGraphStore = create<ConductorGraphStore>(
       set((state) => {
         const current = state.nodesById[sessionId];
         if (!current) return state;
+        // First transition into a terminal status stamps `finishedAt` — the
+        // run's end time, which nothing else records. First only: later
+        // terminal-to-terminal patches (a reconcile demoting `completed` to
+        // `stopped`, say) must not move the end of a run that already ended.
+        const finishes =
+          patch.status !== undefined &&
+          isTerminalRunStatus(patch.status) &&
+          !isTerminalRunStatus(current.status) &&
+          patch.finishedAt === undefined &&
+          current.finishedAt === undefined;
         const next = {
           ...state,
           nodesById: {
             ...state.nodesById,
-            [sessionId]: { ...current, ...patch, sessionId },
+            [sessionId]: {
+              ...current,
+              ...patch,
+              ...(finishes ? { finishedAt: Date.now() } : {}),
+              sessionId,
+            },
           },
         };
         persistGraph(next);
@@ -299,14 +345,12 @@ export const useConductorGraphStore = create<ConductorGraphStore>(
     },
 
     attachReport: (report) => {
-      set((state) => {
-        const next = {
+      set((state) =>
+        boundAndPersist({
           ...state,
           reportsByRunId: { ...state.reportsByRunId, [report.runId]: report },
-        };
-        persistGraph(next);
-        return next;
-      });
+        }),
+      );
     },
 
     getNode: (sessionId) => get().nodesById[sessionId],

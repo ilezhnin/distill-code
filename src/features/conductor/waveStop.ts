@@ -30,9 +30,10 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
 import { stopOrchestratorSession } from "./orchestratorControls";
-import { withWavePhase } from "./waveEngine";
+import { withWavePhase, type WaveState } from "./waveEngine";
 import { waveClosureNoticeText } from "./waveNotices";
 import { updateWaveEngineState, withWave } from "./waveStore";
+import { recordWaveClose } from "./waveTelemetryStore";
 
 /**
  * Stops a running wave on the operator's order.
@@ -44,19 +45,20 @@ import { updateWaveEngineState, withWave } from "./waveStore";
  * honest response to that is "nothing happened", not a second notice.
  */
 export function stopWaveByOperator(sessionId: string, waveId: string): boolean {
-  let stopped = false;
+  let parked: WaveState | undefined;
   let childSessionIds: string[] = [];
   updateWaveEngineState((state) => {
     const wave = state.waves.find((candidate) => candidate.waveId === waveId);
     if (!wave || wave.conductorSessionId !== sessionId) return state;
     if (wave.phase !== "running") return state;
-    stopped = true;
     childSessionIds = wave.steps.flatMap((step) =>
       step.sessionId ? [step.sessionId] : [],
     );
-    return withWave(state, withWavePhase(wave, "needsOperator"));
+    parked = withWavePhase(wave, "needsOperator");
+    return withWave(state, parked);
   });
-  if (!stopped) return false;
+  if (!parked) return false;
+  recordWaveClose(parked, "needs-operator", "operator-stopped");
 
   for (const childSessionId of childSessionIds) {
     void stopOrchestratorSession(childSessionId);
