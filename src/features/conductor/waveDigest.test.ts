@@ -15,6 +15,7 @@ import {
   parseDigestEnvelope,
   stripProtocolFences,
   waveDigestMarker,
+  waveGitDeltaOf,
 } from "./waveDigest";
 
 function report(summary: string, over: Partial<StructuredReport> = {}) {
@@ -261,6 +262,43 @@ describe("buildWaveDigest", () => {
     });
     expect(retry).toContain("could not be read");
     expect(retry).toContain('Unknown verdict "looks-good".');
+  });
+
+  it("states the app's git measurement before any worker's account (E3a)", () => {
+    const digest = buildWaveDigest({
+      waveId: "wave-1",
+      attempt: 0,
+      entries,
+      gitDelta: { admissionDirty: 1, digestDirty: 3 },
+    });
+    expect(digest).toContain("APP MEASUREMENT");
+    expect(digest).toContain("(+2)");
+    expect(digest.indexOf("APP MEASUREMENT")).toBeGreaterThan(
+      digest.indexOf("WAVE REPORT DIGEST"),
+    );
+    expect(digest.indexOf("APP MEASUREMENT")).toBeLessThan(
+      digest.indexOf("Curie"),
+    );
+    // Without the measurement the digest reads exactly as before.
+    expect(
+      buildWaveDigest({ waveId: "wave-1", attempt: 0, entries }),
+    ).not.toContain("APP MEASUREMENT");
+  });
+});
+
+describe("waveGitDeltaOf", () => {
+  it("yields nothing until the digest-time count landed", () => {
+    expect(waveGitDeltaOf({})).toBeUndefined();
+    expect(waveGitDeltaOf({ gitDirtyAtAdmission: 3 })).toBeUndefined();
+  });
+
+  it("carries the baseline only when it was actually captured", () => {
+    expect(
+      waveGitDeltaOf({ gitDirtyAtAdmission: 1, gitDirtyAtDigest: 4 }),
+    ).toEqual({ admissionDirty: 1, digestDirty: 4 });
+    expect(waveGitDeltaOf({ gitDirtyAtDigest: 4 })).toEqual({
+      digestDirty: 4,
+    });
   });
 });
 

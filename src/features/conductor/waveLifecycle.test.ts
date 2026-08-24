@@ -5,9 +5,12 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import { i18n } from "@/shared/i18n";
 import type { Message } from "@/shared/types/messages";
 
+import type { GitState } from "@/shared/types/git";
+
 import { useConductorGraphStore } from "./conductorGraphStore";
 import type { SessionNode, StructuredReport } from "./types";
 import { waveDigestMarker } from "./waveDigest";
+import { setWaveGitProbeIoForTests } from "./waveGitProbe";
 
 const spawnConductorChildSession = vi.hoisted(() => vi.fn());
 vi.mock("./spawnOrchestrator", () => ({ spawnConductorChildSession }));
@@ -225,6 +228,63 @@ describe("wave closed loop", () => {
       useConductorGraphStore.getState().getReport("run-1")?.publishedToParent,
     ).toBe(true);
     expect(deliverEnvelope).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for the app's git probe and quotes its measurement in the digest (E3a)", async () => {
+    // A Tauri-like build: probes can run, and git answers only when told to,
+    // so the test can watch the wave hold its digest for the measurement.
+    const gitAnswers: Array<(state: GitState) => void> = [];
+    setWaveGitProbeIoForTests({
+      canProbe: () => true,
+      readGitState: () =>
+        new Promise<GitState>((resolve) => {
+          gitAnswers.push(resolve);
+        }),
+    });
+    useChatSessionStore.setState({
+      sessions: [
+        {
+          id: CONDUCTOR_ID,
+          title: "Conductor",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          messageCount: 0,
+          workingDir: "/repo",
+        },
+      ],
+    });
+    const gitState = (dirtyFileCount: number): GitState => ({
+      isGitRepo: true,
+      currentBranch: "main",
+      dirtyFileCount,
+      incomingCommitCount: 0,
+      worktrees: [],
+      isWorktree: false,
+      mainWorktreePath: null,
+      localBranches: [],
+    });
+
+    await settle();
+    // The admission baseline was requested when the plan was admitted.
+    expect(gitAnswers).toHaveLength(1);
+    gitAnswers[0](gitState(2));
+    completeAllSteps();
+    await settle();
+
+    // The wave finished, but its digest waits for the app's own measurement.
+    expect(gitAnswers).toHaveLength(2);
+    expect(deliverEnvelope).not.toHaveBeenCalled();
+    expect(getWaveEngineState().waves[0].phase).toBe("digestPending");
+
+    gitAnswers[1](gitState(5));
+    await settle();
+
+    expect(deliverEnvelope).toHaveBeenCalledTimes(1);
+    const digestText = deliverEnvelope.mock.calls[0][1] as string;
+    expect(digestText).toContain("APP MEASUREMENT");
+    expect(digestText).toContain("against 2 when the wave was admitted");
+    expect(digestText).toContain("(+3)");
+    expect(getWaveEngineState().waves[0].phase).toBe("awaitingVerdict");
   });
 
   it("closes the wave on accept and posts nothing extra", async () => {

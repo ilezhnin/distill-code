@@ -62,8 +62,10 @@ import {
   findDigestMessageIndex,
   findVerdictMessageAfter,
   waveDigestMarker,
+  waveGitDeltaOf,
   type DigestEntry,
 } from "./waveDigest";
+import { resetWaveGitProbeForTests, startWaveGitProbe } from "./waveGitProbe";
 import {
   digestDeliveryFailureText,
   waveClosureNoticeText,
@@ -282,6 +284,13 @@ function applyVerdictDecision(
       ).map((entry) => ({ ...entry, fromPreviousWave: true })),
     });
     next = withWave(next, revision);
+    // E3a baseline for the revision wave. The probe settles through the
+    // engine store, so it finds the wave once this tick's state is committed.
+    startWaveGitProbe({
+      waveId: revision.waveId,
+      conductorSessionId: revision.conductorSessionId,
+      point: "admission",
+    });
   }
 
   next = isWaveRetired(closed)
@@ -393,22 +402,43 @@ export function processWaveDigests(
       }
     }
 
-    markWaveReportsPublished(wave);
+    // E3a: before the digest is built, the app itself asks git what actually
+    // changed in the working folder. The wave waits for that answer — bounded
+    // by the probe's own timeout — because this is the only line of the
+    // digest no model authored. A probe that can never run (no Tauri, no
+    // working folder) settles inline, so tests and degraded builds never wait.
+    let live = wave;
+    if (!live.gitDigestProbed) {
+      if (
+        startWaveGitProbe({
+          waveId: live.waveId,
+          conductorSessionId: live.conductorSessionId,
+          point: "digest",
+          onSettled: onHydrated,
+        })
+      ) {
+        continue;
+      }
+      live = { ...live, gitDigestProbed: true };
+    }
+    markWaveReportsPublished(live);
+    const gitDelta = waveGitDeltaOf(live);
     const text = buildWaveDigest({
-      waveId: wave.waveId,
-      attempt: wave.digestAttempt,
-      entries: digestEntriesFor(wave),
+      waveId: live.waveId,
+      attempt: live.digestAttempt,
+      entries: digestEntriesFor(live),
+      ...(gitDelta ? { gitDelta } : {}),
       // Q5/M3: a re-asked digest says why it is being asked again. Re-sending
       // a byte-identical question to a model that already failed to answer it
       // is a model call spent on the same failure.
-      ...(wave.verdictIssue ? { verdictIssue: wave.verdictIssue } : {}),
+      ...(live.verdictIssue ? { verdictIssue: live.verdictIssue } : {}),
     });
-    next = withWave(next, withWavePhase(wave, "dispatchingDigest"));
+    next = withWave(next, withWavePhase(live, "dispatchingDigest"));
     inFlightDigests.add(key);
     pending.push({
-      waveId: wave.waveId,
-      attempt: wave.digestAttempt,
-      conductorSessionId: wave.conductorSessionId,
+      waveId: live.waveId,
+      attempt: live.digestAttempt,
+      conductorSessionId: live.conductorSessionId,
       text,
     });
   }
@@ -484,4 +514,5 @@ export function hasInFlightDigestForTests(
 /** Clears the process-local guards. Tests only. */
 export function resetWaveLifecycleForTests(): void {
   inFlightDigests.clear();
+  resetWaveGitProbeForTests();
 }

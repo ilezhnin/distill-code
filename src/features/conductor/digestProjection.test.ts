@@ -179,4 +179,20 @@ describe("projectDigestBody", () => {
       i18n.t("chat:conductor.status.cancelled"),
     );
   });
+
+  it("files the app's git measurement (E3a) under the preamble, not under a worker", () => {
+    const digest = buildWaveDigest({
+      waveId: "wave-1",
+      attempt: 0,
+      entries: [
+        { node: { displayName: "Curie" }, report: report("Edited two files") },
+      ],
+      gitDelta: { admissionDirty: 1, digestDirty: 3 },
+    });
+    const envelope = parseDigestEnvelope(digest);
+    const view = projectDigestBody(envelope?.body ?? "");
+    expect(view.preamble).toContain("APP MEASUREMENT");
+    expect(view.entries).toHaveLength(1);
+    expect(view.entries[0].body).not.toContain("APP MEASUREMENT");
+  });
 });
