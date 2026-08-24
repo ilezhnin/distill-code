@@ -1207,20 +1207,40 @@ export function useChatSessionController({
   }, [handlePickerOpen, refreshMissingReasoningEffort]);
 
   const resolvePersonaTarget = useCallback(
-    (persona: Persona) => {
+    (
+      persona: Persona,
+      options?: {
+        /**
+         * Apply the ranked model preference. Only pass this when the
+         * resolution ESTABLISHES a target — a new or pending session, or an
+         * explicit persona pick by the operator. Display-only resolutions
+         * (capability checks, previews) must leave it off so an existing
+         * chat's target is never re-routed as a side effect of rendering.
+         */
+        applyRanking?: boolean;
+        /** Surface a rank>0 fallback to the operator (D5). */
+        notify?: boolean;
+      },
+    ) => {
       // A ranked preference outranks the single saved model: the ranking is
       // how the operator asked models to be chosen by preference and limits.
       // A rank>0 pick is surfaced (D5 — no silent substitution); rank 0 is
       // the preference itself, not a downgrade.
-      const ranked = rankedPersonaExecutionTarget(persona, {
-        providers,
-        getModelsForHarness: getModelsForAgent,
-        rateLimits:
-          useProviderRateLimitsStore.getState().snapshot?.providers ?? [],
-      });
+      const ranked = options?.applyRanking
+        ? rankedPersonaExecutionTarget(persona, {
+            providers,
+            getModelsForHarness: getModelsForAgent,
+            rateLimits:
+              useProviderRateLimitsStore.getState().snapshot?.providers ?? [],
+          })
+        : undefined;
       if (ranked) {
         const { resolution } = ranked;
-        if (resolution.choice && resolution.choice.rankIndex > 0) {
+        if (
+          options?.notify &&
+          resolution.choice &&
+          resolution.choice.rankIndex > 0
+        ) {
           const skipped = resolution.skipped[0];
           toast.info(
             i18n.t(
@@ -1538,7 +1558,21 @@ export function useChatSessionController({
       }
 
       const persona = personas.find((candidate) => candidate.id === personaId);
-      const personaTarget = persona ? resolvePersonaTarget(persona) : undefined;
+      // The ranking only ESTABLISHES targets: a brand-new chat, a session
+      // still pending creation, or one with no target yet. An existing chat
+      // keeps the target the operator already has — switching personas there
+      // follows the persona's own saved model (legacy path) and never lets
+      // the ranking re-route a live session (D5: no surprise substitution).
+      const establishesTarget =
+        !sessionId ||
+        session?.creationState === "pending" ||
+        !session?.executionTarget;
+      const personaTarget = persona
+        ? resolvePersonaTarget(persona, {
+            applyRanking: establishesTarget,
+            notify: true,
+          })
+        : undefined;
 
       if (personaTarget) {
         const harnessId = personaTarget.harnessId;
