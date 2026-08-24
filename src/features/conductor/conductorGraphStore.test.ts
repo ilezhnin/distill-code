@@ -240,3 +240,55 @@ describe("promoting a draft conductor session", () => {
     resetWaveEngineStateCache();
   });
 });
+
+describe("finishedAt stamping", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  function worker(sessionId: string): SessionNode {
+    return {
+      sessionId,
+      projectId: "project",
+      role: "worker",
+      managedBy: "wave",
+      parentSessionId: "conductor-1",
+      rootConductorId: "conductor-1",
+      runId: `run-${sessionId}`,
+      harnessId: "goose",
+      displayName: sessionId,
+      status: "running",
+      createdAt: 1,
+    };
+  }
+
+  it("stamps the first transition into a terminal status, and only the first", async () => {
+    const store = await loadGraph();
+    store.getState().registerNode(worker("w1"));
+
+    store.getState().patchNode("w1", { status: "waiting" });
+    expect(store.getState().nodesById.w1?.finishedAt).toBeUndefined();
+
+    store.getState().patchNode("w1", { status: "completed" });
+    const stamped = store.getState().nodesById.w1?.finishedAt;
+    expect(typeof stamped).toBe("number");
+
+    // A later terminal-to-terminal patch (a reconcile demotion, say) must not
+    // move the end of a run that already ended.
+    store.getState().patchNode("w1", { status: "stopped" });
+    expect(store.getState().nodesById.w1?.finishedAt).toBe(stamped);
+
+    // And the stamp survives persistence.
+    const persisted = readPersistedNodes().find(
+      (node) => node.sessionId === "w1",
+    );
+    expect(persisted?.finishedAt).toBe(stamped);
+  });
+
+  it("respects an explicit finishedAt supplied by the caller", async () => {
+    const store = await loadGraph();
+    store.getState().registerNode(worker("w2"));
+    store.getState().patchNode("w2", { status: "completed", finishedAt: 42 });
+    expect(store.getState().nodesById.w2?.finishedAt).toBe(42);
+  });
+});

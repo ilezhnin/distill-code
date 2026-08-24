@@ -41,6 +41,12 @@ export interface SessionNode {
   status: RunStatus;
   task?: string;
   createdAt?: number;
+  /**
+   * First transition into a terminal run status, stamped by `patchNode`.
+   * With `createdAt` it is the run's wall-clock duration — the fact wave
+   * telemetry records and nothing else was keeping.
+   */
+  finishedAt?: number;
   anchorMessageId?: string;
   /** Wave that produced this node. Set only for `managedBy: "wave"` children. */
   waveId?: string;

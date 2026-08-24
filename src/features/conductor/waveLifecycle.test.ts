@@ -47,6 +47,7 @@ const { resetWaveRunnerForTests, runWaveEngineTick } = await import(
 const { getWaveEngineState, resetWaveEngineStateCache, hasWaveTombstone } =
   await import("./waveStore");
 const { retryWaveDigest } = await import("./waveRetry");
+const { getWaveTelemetry } = await import("./waveTelemetryStore");
 
 const CONDUCTOR_ID = "conductor-1";
 
@@ -298,6 +299,15 @@ describe("wave closed loop", () => {
     );
     await settle();
     expect(getWaveEngineState().waves).toHaveLength(0);
+    // The engine record is gone; the telemetry record is what remains of it.
+    const telemetry = getWaveTelemetry();
+    expect(telemetry.records).toHaveLength(1);
+    expect(telemetry.records[0]).toMatchObject({
+      outcome: "accepted",
+      stepCount: 1,
+      revisionIndex: 0,
+    });
+    expect(telemetry.counters.admittedWaves).toBe(1);
     expect(noticeTexts()).toHaveLength(noticesBefore);
     expect(deliverEnvelope).toHaveBeenCalledTimes(1);
   });

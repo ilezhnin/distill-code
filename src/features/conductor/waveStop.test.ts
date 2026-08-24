@@ -7,6 +7,9 @@ const stopOrchestratorSession = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("./orchestratorControls", () => ({ stopOrchestratorSession }));
 
 const { stopWaveByOperator } = await import("./waveStop");
+const { getWaveTelemetry, resetWaveTelemetryForTests } = await import(
+  "./waveTelemetryStore"
+);
 const { createWaveState, withWavePhase, withWaveStepPhase } = await import(
   "./waveEngine"
 );
@@ -59,6 +62,7 @@ describe("stopWaveByOperator", () => {
     await i18n.loadNamespaces("chat");
     window.localStorage.clear();
     resetWaveEngineStateCache();
+    resetWaveTelemetryForTests();
     stopOrchestratorSession.mockClear();
     useChatStore.setState({ messagesBySession: {} });
   });
@@ -84,6 +88,12 @@ describe("stopWaveByOperator", () => {
         i18n.t("chat:conductor.wave.verdict.reason.operatorStopped"),
       ),
     ]);
+    // The stop is a close like any other: it leaves a telemetry record.
+    expect(getWaveTelemetry().records[0]).toMatchObject({
+      waveId: "wave-1",
+      outcome: "needs-operator",
+      closureReason: "operator-stopped",
+    });
   });
 
   it("declines silently when the wave has already left running", () => {
