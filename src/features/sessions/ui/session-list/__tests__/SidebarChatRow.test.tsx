@@ -2,7 +2,6 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CHAT_TITLE } from "@/features/chat/lib/sessionTitle";
-import { resetHomeWidgetStoreForTests } from "@/features/home/stores/homeWidgetStore";
 import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import type { SessionNode } from "@/features/conductor/types";
@@ -62,7 +61,6 @@ describe("SidebarChatRow", () => {
     mocks.sessionWindowSupport.supported = true;
     mocks.sessionWindowSupport.reason = undefined;
     Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
-    resetHomeWidgetStoreForTests();
     localStorage.clear();
     // The conductor graph store hydrates from localStorage at module load and
     // is never reset by `localStorage.clear()`; without this any test that

@@ -12,16 +12,11 @@ import {
   type ChatSession,
   useChatSessionStore,
 } from "@/features/chat/stores/chatSessionStore";
-import { useHomeWidgetStore } from "@/features/home/stores/homeWidgetStore";
-import { getLayout, HOME_LAYOUT_ID } from "@/features/layout/api/layout";
 import {
   AUTO_ARCHIVE_CHANGED_EVENT,
   getAutoArchiveAfterMs,
 } from "@/features/settings/lib/autoArchivePreference";
-import {
-  getAutoArchiveSessionCandidates,
-  getPinnedChatSessionIds,
-} from "../lib/autoArchiveSessions";
+import { getAutoArchiveSessionCandidates } from "../lib/autoArchiveSessions";
 
 const AUTO_ARCHIVE_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -39,20 +34,7 @@ interface RunAutoArchiveSweepOptions {
   nowMs?: number;
 }
 
-interface PersistedChatPin {
-  type: "chatPin";
-  state: { sessionId: string };
-}
-
 let sweepPromise: Promise<void> | null = null;
-
-function persistedChatPins(
-  items: Awaited<ReturnType<typeof getLayout>>["items"],
-): PersistedChatPin[] {
-  return items
-    .filter((item) => item.kind === "session")
-    .map((item) => ({ type: "chatPin", state: { sessionId: item.targetId } }));
-}
 
 function hasLocalAutoArchiveBlocker(sessionId: string): boolean {
   const chatState = useChatStore.getState();
@@ -106,17 +88,6 @@ async function revalidateAutoArchiveCandidate(
     return null;
   }
 
-  // Re-read both durable and optimistic pin state immediately before the
-  // mutation. This closes the window where a user pins a later candidate while
-  // an earlier archive transaction is still running.
-  const latestHomeLayout = await getLayout(HOME_LAYOUT_ID);
-  if (getAutoArchiveAfterMs() === null) return null;
-  const pinnedSessionIds = getPinnedChatSessionIds([
-    ...persistedChatPins(latestHomeLayout.items),
-    ...useHomeWidgetStore.getState().instances,
-  ]);
-  if (pinnedSessionIds.has(originalSession.id)) return null;
-
   const latestSessionStore = useChatSessionStore.getState();
   if (
     latestSessionStore.activeSessionId === originalSession.id ||
@@ -136,13 +107,7 @@ export async function runAutoArchiveSweep({
   const afterMs = getAutoArchiveAfterMs();
   if (afterMs === null) return;
 
-  // Pins live in the Home layout rather than on session metadata. Read the
-  // durable layout so pins remain protected even when Home has not been opened
-  // during this app launch, then include any optimistic in-memory pins too.
-  const [sessions, homeLayout] = await Promise.all([
-    loadAllSessionsForWorkspaceCleanup(),
-    getLayout(HOME_LAYOUT_ID),
-  ]);
+  const sessions = await loadAllSessionsForWorkspaceCleanup();
   if (getAutoArchiveAfterMs() === null) return;
 
   if (!useChatStore.getState().hasHydratedMessageQueues) return;
@@ -157,10 +122,6 @@ export async function runAutoArchiveSweep({
         ? ({ ...session, ...localSession } satisfies ChatSession)
         : session;
     }),
-    homeWidgets: [
-      ...persistedChatPins(homeLayout.items),
-      ...useHomeWidgetStore.getState().instances,
-    ],
     afterMs,
     nowMs,
   });
