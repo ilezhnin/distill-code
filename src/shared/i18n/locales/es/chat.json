@@ -535,7 +535,7 @@
           "digestUndeliverable": "No se pudo entregar al conductor el informe de la brigada.",
           "acceptedWithoutEvidence": "El conductor aceptó el resultado, pero nada externo lo comprobó, así que no se respetó la aceptación.",
           "waveInterrupted": "Esta ola se interrumpió antes de que ningún ejecutor informara, así que no hay nada que juzgar. Su trabajo no se completó.",
-        "operatorStopped": "Detuviste esta ola. Se pidió a sus ejecutores que se detuvieran y nada se resumió ni se juzgó."
+          "operatorStopped": "Detuviste esta ola. Se pidió a sus ejecutores que se detuvieran y nada se resumió ni se juzgó."
         },
         "prose": {
           "accept": "Aceptó el resultado de la brigada.",

@@ -99,7 +99,8 @@ export function BrigadeWaitIndicator({
           type="button"
           variant="ghost"
           size="xxs"
-          className="shrink-0 text-destructive hover:text-destructive"
+          destructive
+          className="shrink-0"
           data-testid="brigade-stop-wave-button"
           onClick={() => stopWaveByOperator(sessionId, runningWaveId)}
         >
