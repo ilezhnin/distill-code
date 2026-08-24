@@ -284,17 +284,18 @@ function parseTombstone(value: unknown): WaveTombstone | null {
 /**
  * Strict parse of whatever the storage key holds. Never throws.
  *
- * Both v1 and v2 payloads are accepted and normalised to v2; anything else
- * (including a future version this build does not know) reads as empty.
+ * There is deliberately no version gate: wiping on an unknown (future or
+ * mangled) version erased the tombstones with the waves, and the same plan
+ * message was then admitted again after reload — spawning duplicate children
+ * beside the still-running originals (risk №5). Every wave and tombstone is
+ * instead validated field by field; entries this build understands survive
+ * any version stamp, and only genuinely unreadable ones drop.
  */
 export function parseWaveEngineState(value: unknown): WaveEngineState {
   if (!value || typeof value !== "object") return emptyWaveEngineState();
   const raw = value as Omit<Partial<WaveEngineState>, "version"> & {
     version?: unknown;
   };
-  if (raw.version !== 1 && raw.version !== WAVE_ENGINE_STATE_VERSION) {
-    return emptyWaveEngineState();
-  }
   const waves: WaveState[] = [];
   for (const wave of Array.isArray(raw.waves) ? raw.waves : []) {
     const parsed = parseWave(wave);
@@ -407,13 +408,23 @@ export function withRemappedConductorSessionId(
   return changed ? { ...state, waves, tombstones } : state;
 }
 
-/** Waves belonging to conductor sessions the graph no longer knows about. */
+/**
+ * Waves belonging to conductor sessions the graph no longer knows about.
+ *
+ * `confirmedWaveIds`, when given, limits the prune to waves the caller has
+ * already confirmed as orphaned (the runner requires two consecutive orphaned
+ * ticks) — an unconfirmed orphan survives so a transient graph gap cannot
+ * erase a live wave.
+ */
 export function pruneOrphanedWaves(
   state: WaveEngineState,
   knownConductorSessionIds: ReadonlySet<string>,
+  confirmedWaveIds?: ReadonlySet<string>,
 ): WaveEngineState {
-  const waves = state.waves.filter((wave) =>
-    knownConductorSessionIds.has(wave.conductorSessionId),
+  const waves = state.waves.filter(
+    (wave) =>
+      knownConductorSessionIds.has(wave.conductorSessionId) ||
+      (confirmedWaveIds !== undefined && !confirmedWaveIds.has(wave.waveId)),
   );
   return waves.length === state.waves.length ? state : { ...state, waves };
 }

@@ -89,6 +89,16 @@ let ticking = false;
 let hasResumedOrphanedSpawns = false;
 
 /**
+ * Wave ids whose conductor was missing from the graph on the previous tick.
+ * A wave is only pruned when it is orphaned on TWO consecutive ticks: the
+ * draft-id remap of a conductor session lands between ticks, so a live wave
+ * can legitimately be "orphaned" for exactly one of them, and pruning on the
+ * first sighting erased it — running children and all — with no digest and no
+ * notice (risk №3 of the wave audit).
+ */
+let onceOrphanedWaveIds = new Set<string>();
+
+/**
  * Hard ceiling on one child spawn: session creation plus prompt delivery,
  * normally seconds. Without it a hung backend held the step in `spawning`
  * forever and the wave never finished. On timeout the step fails per Q2 (no
@@ -96,6 +106,31 @@ let hasResumedOrphanedSpawns = false;
  * stopped rather than adopted — the step's failure was already announced.
  */
 export const WAVE_SPAWN_TIMEOUT_MS = 120_000;
+
+/**
+ * How long a completed step may stay reportless before its dependents (and
+ * the digest) proceed on a synthesized "result unknown" stub. The report
+ * parse routinely lands a tick after the status flip; the grace turns that
+ * race into a short wait for the real report instead of a stub the verdict
+ * would then be rendered on. A report that truly never comes (a worker that
+ * finished without emitting `distill-report`) still degrades to the stub —
+ * after the grace, not instead of it.
+ */
+export const WAVE_REPORT_GRACE_MS = 20_000;
+
+/** `waveId:stepIndex` → grace deadline for a completed-but-reportless step. */
+const reportGraceDeadlines = new Map<string, number>();
+
+/** Single pending wake-up so an expired grace re-ticks a quiet app. */
+let graceTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleGraceTick(delayMs: number): void {
+  if (graceTimer !== null) return;
+  graceTimer = setTimeout(() => {
+    graceTimer = null;
+    runWaveEngineTick();
+  }, delayMs + 50);
+}
 
 function spawnKey(waveId: string, stepIndex: number): string {
   return `${waveId}:${stepIndex}`;
@@ -338,10 +373,31 @@ function advanceWaves(state: WaveEngineState): {
   const resumeOrphanedSpawns = !hasResumedOrphanedSpawns;
   hasResumedOrphanedSpawns = true;
 
-  let next = pruneOrphanedWaves(
-    state,
-    new Set(conductorNodes(nodes).map((node) => node.sessionId)),
+  // Orphan cleanup, guarded twice. A graph that knows NO conductors while
+  // waves are on the books is a hydration gap or a corrupt graph key — not a
+  // world where every conductor chat vanished at once — so nothing is pruned
+  // there. And a wave is only pruned on its second consecutive orphaned tick,
+  // which rides out the conductor draft-id remap racing a tick.
+  let next = state;
+  const knownConductors = new Set(
+    conductorNodes(nodes).map((node) => node.sessionId),
   );
+  if (knownConductors.size > 0) {
+    const orphaned = state.waves.filter(
+      (wave) => !knownConductors.has(wave.conductorSessionId),
+    );
+    const prunable = new Set(
+      orphaned
+        .filter((wave) => onceOrphanedWaveIds.has(wave.waveId))
+        .map((wave) => wave.waveId),
+    );
+    onceOrphanedWaveIds = new Set(orphaned.map((wave) => wave.waveId));
+    if (prunable.size > 0) {
+      next = pruneOrphanedWaves(state, knownConductors, prunable);
+    }
+  } else {
+    onceOrphanedWaveIds = new Set();
+  }
   const pending: Array<{ wave: WaveState; request: WaveSpawnRequest }> = [];
 
   for (const wave of [...next.waves]) {
@@ -359,6 +415,21 @@ function advanceWaves(state: WaveEngineState): {
       reportOf: graph.getReport,
       inFlight,
       resumeOrphanedSpawns,
+      allowSyntheticReportFor: (stepIndex) => {
+        const key = spawnKey(wave.waveId, stepIndex);
+        const now = Date.now();
+        const deadline = reportGraceDeadlines.get(key);
+        if (deadline === undefined) {
+          reportGraceDeadlines.set(key, now + WAVE_REPORT_GRACE_MS);
+          scheduleGraceTick(WAVE_REPORT_GRACE_MS);
+          return false;
+        }
+        if (now < deadline) {
+          scheduleGraceTick(deadline - now);
+          return false;
+        }
+        return true;
+      },
     });
     let current = advanced.wave;
     if (advanced.complete) {
@@ -430,4 +501,10 @@ export function resetWaveRunnerForTests(): void {
   scannedWithoutPlan.clear();
   ticking = false;
   hasResumedOrphanedSpawns = false;
+  onceOrphanedWaveIds = new Set();
+  reportGraceDeadlines.clear();
+  if (graceTimer !== null) {
+    clearTimeout(graceTimer);
+    graceTimer = null;
+  }
 }

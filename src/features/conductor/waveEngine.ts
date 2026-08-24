@@ -533,6 +533,16 @@ export interface WaveAdvanceContext {
    * step is simply an awaited spawn that has not registered its node yet.
    */
   resumeOrphanedSpawns?: boolean;
+  /**
+   * Whether a step that completed WITHOUT a report may be treated as terminal
+   * now, handing dependents (and the digest) a synthesized "result unknown"
+   * stub. A completed run's status routinely lands one tick before its report
+   * parse, and the stub used to be handed out in that window — once, with no
+   * second chance — so the verdict was rendered on it (risk №4). The runner
+   * answers false while a short grace is running and true after it expires;
+   * absent means the old immediate behavior.
+   */
+  allowSyntheticReportFor?: (stepIndex: number) => boolean;
 }
 
 export interface WaveAdvance {
@@ -628,7 +638,20 @@ export function advanceWave(
     if (step.phase === "failed") return true;
     if (step.phase !== "spawned") return false;
     const status = statusByStepIndex.get(step.stepIndex);
-    return status !== undefined && isTerminalRunStatus(status);
+    if (status === undefined || !isTerminalRunStatus(status)) return false;
+    // Completed but reportless: the report parse usually lands one tick after
+    // the status flip. Holding terminality until the runner's grace expires
+    // means dependents and the digest get the real report instead of the
+    // "result unknown" stub whenever the report is merely late, not missing.
+    if (
+      status === "completed" &&
+      context.reportOf(step.runId) === undefined &&
+      context.allowSyntheticReportFor !== undefined &&
+      !context.allowSyntheticReportFor(step.stepIndex)
+    ) {
+      return false;
+    }
+    return true;
   };
 
   const reportForEarlierStep = (

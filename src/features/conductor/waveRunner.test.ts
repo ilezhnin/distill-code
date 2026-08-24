@@ -16,8 +16,12 @@ const stopOrchestratorSession = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("./orchestratorControls", () => ({ stopOrchestratorSession }));
 
-const { WAVE_SPAWN_TIMEOUT_MS, resetWaveRunnerForTests, runWaveEngineTick } =
-  await import("./waveRunner");
+const {
+  WAVE_REPORT_GRACE_MS,
+  WAVE_SPAWN_TIMEOUT_MS,
+  resetWaveRunnerForTests,
+  runWaveEngineTick,
+} = await import("./waveRunner");
 const {
   CONDUCTOR_WAVES_STORAGE_KEY,
   getWaveEngineState,
@@ -365,6 +369,143 @@ describe("waveRunner", () => {
     await vi.waitFor(() =>
       expect(spawnConductorChildSession).toHaveBeenCalledTimes(2),
     );
+  });
+
+  it("waits for a late report instead of handing dependents the unknown stub", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    // The run status flips to completed one tick before the report parse —
+    // the routine race. The access:"all" step must NOT start on the stub.
+    useConductorGraphStore
+      .getState()
+      .patchNode("child-0", { status: "completed" });
+    runWaveEngineTick();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+
+    // The report lands. The dependent starts with the real findings.
+    useConductorGraphStore.getState().attachReport({
+      runId: "run-1",
+      status: "completed",
+      summary: "Real findings from step 0",
+      decisions: [],
+      artifacts: [],
+      risks: [],
+      needsOperator: false,
+      nextSuggestedTask: null,
+    });
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2),
+    );
+    const [second] = spawnConductorChildSession.mock.calls[1];
+    expect(second.prompt).toContain("Real findings from step 0");
+    expect(second.prompt).not.toContain("Treat its result as unknown");
+  });
+
+  it("degrades to the unknown stub only after the report grace expires", async () => {
+    vi.useFakeTimers();
+    try {
+      useConductorGraphStore.getState().registerNode(conductorNode());
+      setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+      runWaveEngineTick();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+
+      // Completed, and the report never comes (a worker that finished without
+      // emitting distill-report). The wave must still make progress — on the
+      // stub, after the grace, with a wake-up the quiet app would not get
+      // from store traffic.
+      useConductorGraphStore
+        .getState()
+        .patchNode("child-0", { status: "completed" });
+      runWaveEngineTick();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(WAVE_REPORT_GRACE_MS + 200);
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2);
+      const [second] = spawnConductorChildSession.mock.calls[1];
+      expect(second.prompt).toContain("Treat its result as unknown");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never prunes waves while the graph knows no conductors at all", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+    expect(getWaveEngineState().waves).toHaveLength(1);
+
+    // A corrupt graph key or a hydration gap looks exactly like this: the
+    // graph store comes up empty while the wave store still has live waves.
+    // Treating it as "every conductor was deleted" erased them (risk №3).
+    useConductorGraphStore.setState({ nodesById: {} });
+    for (let index = 0; index < 3; index += 1) runWaveEngineTick();
+    expect(getWaveEngineState().waves).toHaveLength(1);
+  });
+
+  it("prunes an orphaned wave only on its second consecutive orphaned tick", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    // The conductor vanishes from the graph while OTHER conductors remain —
+    // the one shape where pruning is legitimate. First tick: survives (the
+    // draft-id remap can hide a conductor for exactly one tick). Second tick:
+    // pruned.
+    useConductorGraphStore.setState({
+      nodesById: {
+        other: { ...conductorNode(), sessionId: "other" },
+        "child-0": useConductorGraphStore.getState().nodesById["child-0"],
+      },
+    });
+    runWaveEngineTick();
+    expect(getWaveEngineState().waves).toHaveLength(1);
+    runWaveEngineTick();
+    expect(getWaveEngineState().waves).toHaveLength(0);
+  });
+
+  it("keeps an orphaned wave whose conductor reappears between ticks", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    const nodes = useConductorGraphStore.getState().nodesById;
+    // One orphaned tick (remap in flight)…
+    useConductorGraphStore.setState({
+      nodesById: {
+        other: { ...conductorNode(), sessionId: "other" },
+        "child-0": nodes["child-0"],
+      },
+    });
+    runWaveEngineTick();
+    // …then the conductor is back. The wave must still be there.
+    useConductorGraphStore.setState({
+      nodesById: {
+        ...useConductorGraphStore.getState().nodesById,
+        [CONDUCTOR_ID]: nodes[CONDUCTOR_ID],
+      },
+    });
+    runWaveEngineTick();
+    runWaveEngineTick();
+    expect(getWaveEngineState().waves).toHaveLength(1);
   });
 
   it("refuses a second wave while the first one is still live (§4.1)", async () => {
