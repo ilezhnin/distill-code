@@ -22,7 +22,7 @@ import { createSystemNotificationMessage } from "@/shared/types/messages";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
 import { stopOrchestratorSession } from "./orchestratorControls";
-import { roleDisplayName } from "./roleLayers";
+import { roleDisplayName, waveStepDisplayName } from "./roleLayers";
 import { spawnConductorChildSession } from "./spawnOrchestrator";
 import type { SessionNode } from "./types";
 import { detectWavePlanCandidates } from "./waveDetection";
@@ -249,6 +249,12 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
         stepIndex: request.stepIndex,
         anchorMessageId: wave.planMessageId,
         roleId: request.step.role,
+        // "Scout · waveEngine", not three identical "Scout"s: the subtask
+        // handle is what makes chips, tabs and digests tell siblings apart.
+        displayName: waveStepDisplayName(
+          request.step.role,
+          request.step.subtask,
+        ),
         personaName: roleDisplayName(request.step.role),
         task: request.step.subtask,
         prompt: buildWaveStepPrompt(request.step, request.previousReports, {

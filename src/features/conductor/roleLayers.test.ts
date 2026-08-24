@@ -6,6 +6,8 @@ import {
   resolveRoleInLayer,
   roleDisplayName,
   roleIdsForLayer,
+  waveStepDisplayName,
+  waveStepShortLabel,
   workerLayerRoleIds,
 } from "./roleLayers";
 
@@ -58,5 +60,39 @@ describe("roleLayers", () => {
   it("falls back to the raw id for an unknown display name", () => {
     expect(roleDisplayName("qa")).not.toBe("qa");
     expect(roleDisplayName("wizard")).toBe("wizard");
+  });
+});
+
+describe("waveStepDisplayName", () => {
+  it("anchors the label on a file named in the subtask", () => {
+    expect(
+      waveStepDisplayName(
+        "scout",
+        "Разбери один файл: E:/Unity/distill_code/distill-code/src/features/conductor/waveEngine.ts — модуль лежит под distill-code/",
+      ),
+    ).toBe("Scout · waveEngine");
+  });
+
+  it("tells three same-role siblings apart by their files", () => {
+    const names = ["waveEngine.ts", "waveRunner.ts", "waveStore.ts"].map(
+      (file) => waveStepDisplayName("scout", `Разбери один файл: src/${file}`),
+    );
+    expect(new Set(names).size).toBe(3);
+  });
+
+  it("skips a bare index filename in favor of real words", () => {
+    expect(waveStepShortLabel("Проверь index.ts на циклы")).toBe(
+      "Проверь index.ts на",
+    );
+  });
+
+  it("falls back to the first words when no file is named", () => {
+    expect(
+      waveStepDisplayName("architect", "Собери одну картину из отчётов"),
+    ).toBe("Architect · Собери одну картину");
+  });
+
+  it("keeps the bare role name for an empty subtask", () => {
+    expect(waveStepDisplayName("qa", "   ")).toBe(roleDisplayName("qa"));
   });
 });
