@@ -32,12 +32,49 @@ function wave(waveId: string, conductorSessionId = "conductor-1"): WaveState {
 }
 
 describe("parseWaveEngineState", () => {
-  it("rejects anything that is not a known version", () => {
+  it("rejects payloads that are not objects at all", () => {
     expect(parseWaveEngineState(null)).toEqual(emptyWaveEngineState());
-    expect(parseWaveEngineState({ version: 3 })).toEqual(
-      emptyWaveEngineState(),
-    );
     expect(parseWaveEngineState("nope")).toEqual(emptyWaveEngineState());
+  });
+
+  it("salvages readable entries from an unknown version instead of wiping", () => {
+    // A version-gated wipe erased the tombstones with the waves, and the same
+    // plan then respawned duplicate children after reload (risk №5). Entries
+    // this build can validate field-by-field must survive any version stamp.
+    const parsed = parseWaveEngineState({
+      version: 3,
+      futureField: { anything: true },
+      waves: [
+        {
+          waveId: "w1",
+          conductorSessionId: "conductor-1",
+          planMessageId: "plan-1",
+          createdAt: 7,
+          steps: [
+            {
+              stepIndex: 0,
+              role: "scout",
+              subtask: "Look",
+              access: [],
+              phase: "pending",
+            },
+          ],
+          phase: "running",
+          revisions: 0,
+        },
+      ],
+      tombstones: [
+        {
+          planMessageId: "plan-1",
+          conductorSessionId: "conductor-1",
+          outcome: "spawned",
+          at: 7,
+        },
+      ],
+    });
+    expect(parsed.version).toBe(2);
+    expect(parsed.waves).toHaveLength(1);
+    expect(parsed.tombstones).toHaveLength(1);
   });
 
   it("migrates a v1 wave into the closed loop without losing it", () => {
