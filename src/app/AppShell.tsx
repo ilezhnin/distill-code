@@ -106,7 +106,6 @@ import { ConductorAgentPickerDialog } from "@/features/conductor/ui/ConductorAge
 import { useAppStartup } from "./hooks/useAppStartup";
 import { useCompletionNotifications } from "@/shared/hooks/useCompletionNotifications";
 import { useHomeSessionStateSync } from "./hooks/useHomeSessionStateSync";
-import { useHomeWidgetStore } from "@/features/home/stores/homeWidgetStore";
 import { useProjectDialog } from "./hooks/useProjectDialog";
 import { useResizableSidebar } from "./hooks/useResizableSidebar";
 import {
@@ -158,7 +157,6 @@ import {
   activateSession as activateChatSession,
   loadSessionMessagesAndPrepare,
 } from "@/features/chat/lib/sessionActivation";
-import { hasConversationMessages } from "@/features/chat/lib/sessionReplayReplacement";
 import {
   focusSessionWindow,
   releaseSession,
@@ -198,7 +196,6 @@ import {
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
 import { useDefaultModelGate } from "@/features/migration/hooks/useDefaultModelGate";
-import { findBerdyPersonaId } from "@/features/agents/lib/berdyAgent";
 import { StartupDiagnosticView } from "./ui/StartupDiagnosticView";
 import { buildStartupDiagnosticIssue } from "./lib/startupDiagnostics";
 import { usePersistedState } from "@/shared/hooks/usePersistedState";
@@ -309,7 +306,6 @@ interface PendingSessionWorkspaceCleanupConfirmation {
 }
 
 const APP_NAVIGATION_HISTORY_LIMIT = 50;
-const PINNED_CHAT_HYDRATION_CONCURRENCY = 5;
 const DESIGN_SYSTEM_INSPECTOR_VISIBLE_STORAGE_KEY =
   "goose:design-system-inspector-visible:v2";
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
@@ -759,7 +755,6 @@ export function AppShell({
     useState<GlobalComposerPlacement>("docked");
   const [globalComposerStarterRequest, setGlobalComposerStarterRequest] =
     useState<GlobalComposerStarterRequest | null>(null);
-  const globalComposerStarterRequestIdRef = useRef(0);
   const [chatComposerHandoffRequest, setChatComposerHandoffRequest] =
     useState(0);
   const [chatComposerHandoffSessionId, setChatComposerHandoffSessionId] =
@@ -1107,78 +1102,6 @@ export function AppShell({
   const homeSessionRequestRef = useRef<Promise<ChatSession | null> | null>(
     null,
   );
-  const hydratingPinnedSessionIdsRef = useRef<Set<string>>(new Set());
-
-  const hydratePinnedChatSessions = useCallback(
-    async (sessionIds: string[]) => {
-      const uniqueSessionIds = [...new Set(sessionIds)].filter(Boolean);
-      const sessionStore = useChatSessionStore.getState();
-      const sessionsToLoad: string[] = [];
-
-      for (const sessionId of uniqueSessionIds) {
-        if (hydratingPinnedSessionIdsRef.current.has(sessionId)) {
-          continue;
-        }
-
-        const session = sessionStore.getSession(sessionId);
-        if (session?.creationState) {
-          continue;
-        }
-
-        const hasMessages = hasConversationMessages(
-          useChatStore.getState().messagesBySession[sessionId],
-        );
-        if (hasMessages) {
-          continue;
-        }
-
-        sessionsToLoad.push(sessionId);
-      }
-
-      if (sessionsToLoad.length === 0) {
-        return;
-      }
-
-      const pendingSessionIds: string[] = [];
-      for (const sessionId of sessionsToLoad) {
-        useChatSessionStore
-          .getState()
-          .ensurePinnedSessionPlaceholder(sessionId);
-        hydratingPinnedSessionIdsRef.current.add(sessionId);
-        pendingSessionIds.push(sessionId);
-      }
-
-      let nextIndex = 0;
-
-      async function worker(): Promise<void> {
-        while (nextIndex < pendingSessionIds.length) {
-          const sessionId = pendingSessionIds[nextIndex];
-          nextIndex += 1;
-          const ok = await loadSessionMessagesAndPrepare(sessionId);
-          if (!ok) {
-            useChatSessionStore.getState().patchSession(sessionId, {
-              pinnedLoadState: "failed",
-            });
-          }
-          hydratingPinnedSessionIdsRef.current.delete(sessionId);
-        }
-      }
-
-      await Promise.all(
-        Array.from(
-          {
-            length: Math.min(
-              PINNED_CHAT_HYDRATION_CONCURRENCY,
-              pendingSessionIds.length,
-            ),
-          },
-          () => worker(),
-        ),
-      );
-    },
-    [],
-  );
-
   useEffect(() => {
     fetchProjects();
   }, [fetchProjects]);
@@ -1882,9 +1805,6 @@ export function AppShell({
                   }
                 : {}),
             });
-            useHomeWidgetStore
-              .getState()
-              .replaceChatPinSessionId(session.id, sessionId);
             replaceNavigationSessionId(session.id, sessionId);
             if (shouldRemainActive) {
               setActiveSession(sessionId);
@@ -2478,22 +2398,6 @@ export function AppShell({
     [createNewProjectDraft, guardAppNavigation],
   );
 
-  const handleStartProjectChat = useCallback(
-    (projectId: string) => {
-      const project = projects.find((candidate) => candidate.id === projectId);
-      if (project) {
-        guardAppNavigation(() => {
-          void createNewProjectDraft(DEFAULT_CHAT_TITLE, project).catch(
-            (error) => {
-              logProjectChatStartError("Failed to start project chat:", error);
-            },
-          );
-        });
-      }
-    },
-    [createNewProjectDraft, projects, guardAppNavigation],
-  );
-
   const handleStartChatWithSkill = useCallback(
     (
       skill: SkillInfo,
@@ -2523,52 +2427,6 @@ export function AppShell({
       });
     },
     [createNewProjectDraft, createNewTab, projects, guardAppNavigation],
-  );
-
-  const primeGlobalComposerFromHomeStarter = useCallback(
-    (request: Omit<GlobalComposerStarterRequest, "id">) => {
-      guardAppNavigation(() => {
-        clearGlobalComposerHandoffTimer();
-        setChatComposerHandoffSessionId(null);
-        setGlobalComposerHandoffSourceRect(null);
-        setGlobalComposerHandoffTargetRect(null);
-        setGlobalComposerPlacement("docked");
-        globalComposerStarterRequestIdRef.current += 1;
-        setGlobalComposerStarterRequest({
-          ...request,
-          id: globalComposerStarterRequestIdRef.current,
-        });
-        setGlobalComposerFocusRequest((focusRequest) => focusRequest + 1);
-      });
-    },
-    [clearGlobalComposerHandoffTimer, guardAppNavigation],
-  );
-
-  const handleTagHomeComposerSkill = useCallback(
-    (skill: SkillInfo) => {
-      primeGlobalComposerFromHomeStarter({
-        skill: toChatSkillDraft(skill),
-      });
-    },
-    [primeGlobalComposerFromHomeStarter],
-  );
-
-  const handleTagHomeComposerAgent = useCallback(
-    (agentId: string) => {
-      primeGlobalComposerFromHomeStarter({
-        personaId: agentId,
-      });
-    },
-    [primeGlobalComposerFromHomeStarter],
-  );
-
-  const handleTagHomeComposerProject = useCallback(
-    (projectId: string) => {
-      primeGlobalComposerFromHomeStarter({
-        projectId,
-      });
-    },
-    [primeGlobalComposerFromHomeStarter],
   );
 
   const handleGlobalComposerStarterRequestConsumed = useCallback(
@@ -2951,60 +2809,6 @@ export function AppShell({
       enqueueWorkspaceNameRequest,
     ],
   );
-
-  const handleResolveBerdyAgent = useCallback(async (): Promise<
-    string | null
-  > => {
-    try {
-      const store = useAgentStore.getState();
-      let personaId = findBerdyPersonaId(store.personas);
-
-      if (!personaId) {
-        const { listPersonas, repairBundledAgent } = await import(
-          "@/shared/api/agents"
-        );
-        try {
-          await repairBundledAgent("berdy.md");
-        } catch (error) {
-          console.error("Failed to restore the bundled Berdy agent:", error);
-        }
-
-        try {
-          const personas = await listPersonas();
-          personaId = findBerdyPersonaId(personas);
-          const repairedBerdy = personaId
-            ? personas.find((persona) => persona.id === personaId)
-            : undefined;
-          if (repairedBerdy) {
-            useAgentStore.setState((current) => ({
-              personas: [
-                ...current.personas.filter(
-                  (persona) => persona.id !== repairedBerdy.id,
-                ),
-                repairedBerdy,
-              ],
-            }));
-          }
-        } catch (error) {
-          console.error(
-            "Failed to refresh personas after Berdy repair:",
-            error,
-          );
-        }
-      }
-
-      if (!personaId) {
-        toast.error(t("home:onboarding.callout.agentUnavailable"));
-        return null;
-      }
-
-      return personaId;
-    } catch (error) {
-      console.error("Failed to resolve the bundled Berdy agent:", error);
-      toast.error(t("home:onboarding.callout.agentUnavailable"));
-      return null;
-    }
-  }, [t]);
 
   const handleGlobalComposerExpand = useCallback(
     (payload: GlobalComposerExpandPayload): Promise<boolean> => {
@@ -3641,15 +3445,6 @@ export function AppShell({
           await useChatSessionStore
             .getState()
             .archiveSession(sessionId, fallbackSession);
-          const homeWidgetState = useHomeWidgetStore.getState();
-          const pinnedWidget = homeWidgetState.instances.find(
-            (instance) =>
-              instance.type === "chatPin" &&
-              instance.state?.sessionId === sessionId,
-          );
-          if (pinnedWidget) {
-            homeWidgetState.removeWidget(pinnedWidget.id);
-          }
         } catch (error) {
           if (cleanupPolicy === "confirm") {
             toast.error(
@@ -4836,9 +4631,6 @@ export function AppShell({
               chatComposerHandoffInProgress={isGlobalComposerHandoff}
               onChatComposerHandoffTarget={handleChatComposerHandoffTarget}
               onWorkspaceNameRequest={enqueueWorkspaceNameRequest}
-              homeViewportLeftOcclusionPx={
-                renderedLocation.view === "home" ? sidebarDockedOuterWidth : 0
-              }
               chatViewportLeftOcclusionPx={
                 renderedLocation.view === "chat" ? sidebarDockedOuterWidth : 0
               }
@@ -4864,20 +4656,13 @@ export function AppShell({
               onForkChat={handleForkChat}
               onSelectSession={handleSelectSession}
               onSelectSearchResult={handleSelectSearchResult}
-              onStartChatFromProjectId={handleStartProjectChat}
               onStartChatFromProject={handleStartChatFromProject}
-              onStartProjectChat={handleStartProjectChat}
               onStartChatWithSkill={handleStartChatWithSkill}
-              onResolveBerdyAgent={handleResolveBerdyAgent}
               onExitSearch={handleExitSearch}
               onOpenExtension={handleOpenExtensionFromSearch}
               onOpenAgent={handleStartChatWithAgent}
               onOpenAutomation={handleOpenAutomationFromSearch}
               onOpenSkill={handleStartChatWithSkill}
-              onTagHomeComposerAgent={handleTagHomeComposerAgent}
-              onTagHomeComposerProject={handleTagHomeComposerProject}
-              onTagHomeComposerSkill={handleTagHomeComposerSkill}
-              onHydratePinnedChatSessions={hydratePinnedChatSessions}
               onLoggedOut={onLoggedOut}
               onStartProviderTroubleshootingChat={
                 handleStartProviderTroubleshootingChat

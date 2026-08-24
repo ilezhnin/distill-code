@@ -16,7 +16,6 @@ import {
   TopBarActionsProvider,
   useTopBarActions,
 } from "@/app/contexts/TopBarActionsContext";
-import { resetHomeWidgetStoreForTests } from "@/features/home/stores/homeWidgetStore";
 import { AutomationsWorkbench as AutomationsView } from "./AutomationsView";
 import type { AutomationNavigationRoute } from "@/app/types/appNavigation";
 
@@ -106,7 +105,6 @@ async function renderDailyRevenueDigestDetails() {
 
 describe("AutomationsView", () => {
   beforeEach(() => {
-    resetHomeWidgetStoreForTests();
     vi.clearAllMocks();
     vi.mocked(getAutomationTiles).mockResolvedValue({
       tiles: [
