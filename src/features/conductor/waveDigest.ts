@@ -29,11 +29,13 @@ import { getTextContent } from "@/shared/types/messages";
 
 import { formatConductorAnswer } from "./orchestratorReport";
 import type { SessionNode, StructuredReport } from "./types";
-import type { WaveVerdictIssue } from "./waveEngine";
+import type { WaveState, WaveVerdictIssue } from "./waveEngine";
 import {
   AGENT_DIGEST_INSTRUCTION,
   buildWaveDigestInstruction,
+  buildWaveGitDeltaLine,
   buildWaveVerdictRetryInstruction,
+  type WaveGitDeltaFacts,
 } from "./wavePrompts";
 
 /** Opening of every digest marker. Also the cheap reject before a real parse. */
@@ -180,6 +182,23 @@ export interface DigestEntry {
   report: StructuredReport;
 }
 
+/**
+ * The E3a facts a wave holds, in the shape the digest builder takes — or
+ * `undefined` when the digest-time probe landed no number and there is
+ * nothing measured to state.
+ */
+export function waveGitDeltaOf(
+  wave: Pick<WaveState, "gitDirtyAtAdmission" | "gitDirtyAtDigest">,
+): WaveGitDeltaFacts | undefined {
+  if (wave.gitDirtyAtDigest === undefined) return undefined;
+  return {
+    digestDirty: wave.gitDirtyAtDigest,
+    ...(wave.gitDirtyAtAdmission !== undefined
+      ? { admissionDirty: wave.gitDirtyAtAdmission }
+      : {}),
+  };
+}
+
 function digestBody(entries: readonly DigestEntry[]): string {
   return stripProtocolFences(formatConductorAnswer([...entries]));
 }
@@ -201,6 +220,12 @@ export function buildWaveDigest(args: {
    * could not be read, because there was no last answer.
    */
   verdictIssue?: WaveVerdictIssue;
+  /**
+   * The app's own `git status` measurement (E3a), stated between the
+   * instruction and the workers' reports so the conductor reads the one
+   * non-model-authored fact before any model's account of itself.
+   */
+  gitDelta?: WaveGitDeltaFacts;
 }): string {
   return [
     waveDigestMarker(args.waveId, args.attempt),
@@ -208,6 +233,7 @@ export function buildWaveDigest(args: {
       ? buildWaveVerdictRetryInstruction(args.verdictIssue)
       : "",
     buildWaveDigestInstruction(args.entries.length),
+    args.gitDelta ? buildWaveGitDeltaLine(args.gitDelta) : "",
     digestBody(args.entries),
   ]
     .filter((part) => part.trim().length > 0)

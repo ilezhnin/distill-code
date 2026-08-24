@@ -315,6 +315,41 @@ export function buildWaveDigestInstruction(stepCount: number): string {
 Judge it: reply with exactly one ${VERDICT_FENCE_TAG} block, per the protocol you were given (${VERDICT_TOKENS.accept} | ${VERDICT_TOKENS.revise} | ${VERDICT_TOKENS.needsOperator}). If you ${VERDICT_TOKENS.accept}, the prose outside the block is what the operator reads as the answer, so write the answer there.`;
 }
 
+/** The E3a facts as the digest states them. */
+export interface WaveGitDeltaFacts {
+  /**
+   * Dirty-file count when the wave was admitted. Absent when that probe never
+   * landed — the line then says so instead of implying a baseline of zero.
+   */
+  admissionDirty?: number;
+  /** Dirty-file count when the wave finished. */
+  digestDirty: number;
+}
+
+function dirtyFiles(count: number): string {
+  return `${count} file${count === 1 ? "" : "s"} with uncommitted changes`;
+}
+
+/**
+ * The one line of a digest no model authored (E3a).
+ *
+ * Everything else the conductor judges is a worker's account of itself; this
+ * line is the app quoting `git status`. It says so explicitly, because inside
+ * a digest full of model prose the *provenance* is the point: a claim of work
+ * beside an unchanged folder, or changes beside no claim, is exactly what the
+ * verdict should stumble on.
+ */
+export function buildWaveGitDeltaLine(facts: WaveGitDeltaFacts): string {
+  const now = `APP MEASUREMENT — this line is written by the app from git status, not by any worker: the working folder now has ${dirtyFiles(facts.digestDirty)}`;
+  if (facts.admissionDirty === undefined) {
+    return `${now}; the count when the wave was admitted was not captured. Weigh the workers' claims against what git actually saw.`;
+  }
+  const delta = facts.digestDirty - facts.admissionDirty;
+  const change =
+    delta === 0 ? "no change" : delta > 0 ? `+${delta}` : `${delta}`;
+  return `${now}, against ${facts.admissionDirty} when the wave was admitted (${change}). Weigh the workers' claims against this: reported work that changed no files, or changed files nobody reported, are both worth questioning before you accept.`;
+}
+
 /**
  * Header of a digest for children that are not part of a wave (legacy
  * orchestrator trees, and agent-cli children under any chat).

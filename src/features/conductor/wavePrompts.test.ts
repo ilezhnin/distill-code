@@ -12,6 +12,7 @@ import {
   type CompletedWaveStepReport,
   WAVE_REPLAN_REQUEST_PROMPT,
   buildConductorProtocolPrompt,
+  buildWaveGitDeltaLine,
   buildWaveReplanRequest,
   buildWaveStepPrompt,
 } from "./wavePrompts";
@@ -339,5 +340,38 @@ describe("subtask string discipline and the replan request", () => {
   it("falls back to the plain request when there is no detail", () => {
     expect(buildWaveReplanRequest()).toBe(WAVE_REPLAN_REQUEST_PROMPT);
     expect(buildWaveReplanRequest("  ")).toBe(WAVE_REPLAN_REQUEST_PROMPT);
+  });
+});
+
+describe("buildWaveGitDeltaLine (E3a)", () => {
+  it("names its provenance and states both counts with the delta", () => {
+    const line = buildWaveGitDeltaLine({ admissionDirty: 3, digestDirty: 7 });
+    expect(line).toContain("APP MEASUREMENT");
+    expect(line).toContain("not by any worker");
+    expect(line).toContain("7 files with uncommitted changes");
+    expect(line).toContain("against 3 when the wave was admitted");
+    expect(line).toContain("(+4)");
+  });
+
+  it("says 'no change' rather than a mute zero", () => {
+    expect(
+      buildWaveGitDeltaLine({ admissionDirty: 2, digestDirty: 2 }),
+    ).toContain("(no change)");
+    // A negative delta (workers committed or reverted files) is stated as-is.
+    expect(
+      buildWaveGitDeltaLine({ admissionDirty: 5, digestDirty: 1 }),
+    ).toContain("(-4)");
+  });
+
+  it("speaks singular for one file", () => {
+    expect(
+      buildWaveGitDeltaLine({ admissionDirty: 0, digestDirty: 1 }),
+    ).toContain("1 file with uncommitted changes");
+  });
+
+  it("admits when the baseline was never captured instead of implying zero", () => {
+    const line = buildWaveGitDeltaLine({ digestDirty: 4 });
+    expect(line).toContain("was not captured");
+    expect(line).not.toMatch(/against \d/);
   });
 });

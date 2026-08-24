@@ -259,7 +259,19 @@ function parseWave(value: unknown): WaveState | null {
         : 0,
     ...(carriedReports.length > 0 ? { carriedReports } : {}),
     ...(verdictIssue ? { verdictIssue } : {}),
+    ...(isDirtyCount(raw.gitDirtyAtAdmission)
+      ? { gitDirtyAtAdmission: raw.gitDirtyAtAdmission }
+      : {}),
+    ...(isDirtyCount(raw.gitDirtyAtDigest)
+      ? { gitDirtyAtDigest: raw.gitDirtyAtDigest }
+      : {}),
+    ...(raw.gitDigestProbed === true ? { gitDigestProbed: true } : {}),
   };
+}
+
+/** A salvageable E3a git measurement: a non-negative integer. */
+function isDirtyCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 function parseTombstone(value: unknown): WaveTombstone | null {
