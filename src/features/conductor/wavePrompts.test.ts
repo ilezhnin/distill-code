@@ -59,6 +59,10 @@ describe("CONDUCTOR_PROTOCOL_PROMPT", () => {
     );
   });
 
+  it("warns about the missing-final-brace failure mode", () => {
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain("ends with `}]}`");
+  });
+
   it("teaches both access values and forbids fine-grained lists", () => {
     expect(CONDUCTOR_PROTOCOL_PROMPT).toContain('"access": []');
     expect(CONDUCTOR_PROTOCOL_PROMPT).toContain('"access": "all"');
