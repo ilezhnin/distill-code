@@ -23,7 +23,9 @@ When you finish, end with this report block and no extra commentary after it:
   "needsOperator": false,
   "nextSuggestedTask": null
 }
-\`\`\``;
+\`\`\`
+
+"artifacts" is your evidence trail: list every file you created, changed, ran, or inspected, each as an object like {"label": "x.md", "path": "src/x.md"} (use "url" instead of "path" for a link). Bare strings are dropped by the reader — always the object form. An empty list reads as "I never touched the work", so leave it empty only when that is literally true.`;
 }
 
 export function parseStructuredReport(

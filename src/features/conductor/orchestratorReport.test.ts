@@ -12,6 +12,15 @@ describe("orchestratorReport", () => {
     );
   });
 
+  it("explains the artifacts field and its object shape", () => {
+    const prompt = wrapOrchestratorTaskPrompt("Fix login");
+    // The parser drops bare strings (label is required), so the wrapper must
+    // teach the object form — otherwise E2 starves on well-meant reports.
+    expect(prompt).toContain('{"label": "x.md", "path": "src/x.md"}');
+    expect(prompt).toContain("created, changed, ran, or inspected");
+    expect(prompt).toContain("Bare strings are dropped");
+  });
+
   it("parses a fenced structured report", () => {
     const report = parseStructuredReport(
       "run-1",
