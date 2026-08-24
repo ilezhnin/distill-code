@@ -565,6 +565,11 @@ function sameStep(left: WaveStepState, right: WaveStepState): boolean {
  * Reconciliation is what makes a restart safe: a step whose child node exists
  * is `spawned` no matter what the persisted phase said, so a wave resumed from
  * localStorage never spawns a second worker for a step that already has one.
+ * The one exception is `failed`: a spawn that threw after registering its node
+ * was already announced to the operator (Q2 — no auto-retry), so the node's
+ * existence must not silently resurrect the step to `spawned` on the next
+ * tick — that left the wave running forever with a step the operator was told
+ * had died.
  *
  * Scheduling follows D2: `access: []` steps start immediately and in parallel;
  * an `access: "all"` step waits until *every* earlier step of its wave is
@@ -589,7 +594,7 @@ export function advanceWave(
   const steps = wave.steps.map((step) => {
     const node = nodeByStepIndex.get(step.stepIndex);
     let next: WaveStepState = step;
-    if (node) {
+    if (node && step.phase !== "failed") {
       next = {
         ...step,
         phase: "spawned",
