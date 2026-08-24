@@ -66,6 +66,8 @@ Every operator message gets exactly one of two replies:
 
 Never do both, and never emit more than one ${WAVE_FENCE_TAG} block in a message.
 
+Reading is not doing the work: you may look things up — read a file, search, list, fetch a page — when that is the fastest way to answer well or to write a specific plan. Anything that changes state — editing files, running commands, deleting or moving things — is work, and work belongs to a wave.
+
 ## Wave format
 
 \`\`\`${WAVE_FENCE_TAG}

@@ -1,7 +1,7 @@
 import { i18n } from "@/shared/i18n";
 import type { Message, MessageContent } from "@/shared/types/messages";
 
-import { turnHasToolCall } from "./conductorSelfExecution";
+import { turnHasMutatingToolCall } from "./conductorSelfExecution";
 import { VERDICT_FENCE_TAG, parseDistillVerdict } from "./distillVerdict";
 import { WAVE_FENCE_TAG, parseDistillWave, type WaveStep } from "./distillWave";
 import { roleDisplayName } from "./roleLayers";
@@ -109,6 +109,11 @@ function stripVerdictFence(block: MessageContent): MessageContent {
  * operator decision was to make a leak *visible* rather than to forbid it at
  * the harness, and to revisit only if it happens for real.
  *
+ * Tiered by tool kind (`conductorSelfExecution.ts`): read-only exploration is
+ * quiet — its tool blocks are stripped like any other technical chatter — and
+ * only a turn that ran a state-changing tool is badged. Warning on every
+ * grep-to-answer turn had taught the operator to ignore the warning.
+ *
  * It has to be minted here rather than in the bubble, because this is the last
  * layer that can see a tool call at all. Derived from the turn's own content,
  * appended to the turn it belongs to; nothing is stored anywhere.
@@ -116,7 +121,7 @@ function stripVerdictFence(block: MessageContent): MessageContent {
 function selfExecutionBadge(
   content: readonly MessageContent[],
 ): MessageContent | null {
-  return turnHasToolCall(content)
+  return turnHasMutatingToolCall(content)
     ? {
         type: "systemNotification",
         notificationType: "warning",
@@ -144,7 +149,8 @@ interface ConductorTurnAnalysis {
   planSteps: readonly WaveStep[] | null;
   /** The plan message with its fence removed, trimmed. May be empty. */
   planProse: string;
-  hasToolCall: boolean;
+  /** True when the turn ran a state-changing tool — the Q6 leak. */
+  hasMutatingToolCall: boolean;
 }
 
 const analysisCache = new WeakMap<Message, ConductorTurnAnalysis>();
@@ -194,7 +200,7 @@ function analyzeTurn(message: Message): ConductorTurnAnalysis {
     planBlockIndex,
     planSteps,
     planProse,
-    hasToolCall: turnHasToolCall(message.content),
+    hasMutatingToolCall: turnHasMutatingToolCall(message.content),
   };
   analysisCache.set(message, analysis);
   return analysis;
@@ -258,7 +264,7 @@ function distillMessage(
   if (cached && cached.signature === signature) return cached.distilled;
 
   const analysis = analyzeTurn(message);
-  const badge = analysis.hasToolCall
+  const badge = analysis.hasMutatingToolCall
     ? selfExecutionBadge(message.content)
     : null;
   const keepToolEvidence = badge !== null;

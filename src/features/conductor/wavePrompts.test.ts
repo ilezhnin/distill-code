@@ -52,6 +52,16 @@ describe("CONDUCTOR_PROTOCOL_PROMPT", () => {
     expect(CONDUCTOR_PROTOCOL_PROMPT).toContain("A direct answer");
   });
 
+  it("sanctions read-only lookups and reserves state changes for waves", () => {
+    // The Q6 badge is tiered the same way (`conductorSelfExecution.ts`):
+    // prompt and badge must draw the identical line, or the conductor is
+    // punished for doing what it was told it may do.
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain(
+      "Reading is not doing the work",
+    );
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain("work belongs to a wave");
+  });
+
   it("teaches the wave fence and the step cap", () => {
     expect(CONDUCTOR_PROTOCOL_PROMPT).toContain(`\`\`\`${WAVE_FENCE_TAG}`);
     expect(CONDUCTOR_PROTOCOL_PROMPT).toContain(

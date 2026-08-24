@@ -54,7 +54,7 @@ describe("distillConductorTranscript", () => {
       {
         type: "systemNotification",
         notificationType: "warning",
-        text: "The conductor ran a tool itself — it should only plan or answer.",
+        text: "The conductor changed something itself — it may read to answer, but work belongs to a wave.",
       },
       {
         type: "toolRequest",
@@ -407,11 +407,73 @@ describe("distillConductorTranscript", () => {
       expect(distilled[0]?.content[0]).toEqual({
         type: "systemNotification",
         notificationType: "warning",
-        text: "The conductor ran a tool itself — it should only plan or answer.",
+        text: "The conductor changed something itself — it may read to answer, but work belongs to a wave.",
       });
       expect(
         distilled[0]?.content.some((block) => block.type === "toolRequest"),
       ).toBe(true);
+    });
+
+    it("stays quiet on read-only exploration and strips its tool cards", () => {
+      const distilled = distillConductorTranscript([
+        message({
+          id: "a1",
+          role: "assistant",
+          content: [
+            {
+              type: "toolRequest",
+              id: "t1",
+              name: "grep",
+              arguments: {},
+              status: "completed",
+              toolKind: "search",
+            },
+            { type: "text", text: "Found it: the flag lives in config.ts." },
+          ],
+        }),
+      ]);
+
+      // Reading to answer is what the protocol allows (Q6 tiering): no
+      // warning, and the tool chatter is stripped like any other technical
+      // block — the answer stands alone. Warning here was the cry-wolf that
+      // taught the operator to ignore the badge.
+      expect(distilled[0]?.content).toEqual([
+        { type: "text", text: "Found it: the flag lives in config.ts." },
+      ]);
+    });
+
+    it("badges a mixed turn — one edit among reads is still the leak", () => {
+      const distilled = distillConductorTranscript([
+        message({
+          id: "a1",
+          role: "assistant",
+          content: [
+            {
+              type: "toolRequest",
+              id: "t1",
+              name: "read_file",
+              arguments: {},
+              status: "completed",
+              toolKind: "read",
+            },
+            {
+              type: "toolRequest",
+              id: "t2",
+              name: "text_editor",
+              arguments: {},
+              status: "completed",
+              toolKind: "edit",
+            },
+            { type: "text", text: "Fixed it myself." },
+          ],
+        }),
+      ]);
+
+      expect(distilled[0]?.content[0]?.type).toBe("systemNotification");
+      // On a badged turn every tool card is evidence, the read included.
+      expect(
+        distilled[0]?.content.filter((block) => block.type === "toolRequest"),
+      ).toHaveLength(2);
     });
 
     it("keeps a tool-only turn visible instead of dropping it", () => {
