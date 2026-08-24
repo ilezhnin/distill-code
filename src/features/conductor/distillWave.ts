@@ -256,12 +256,26 @@ export function parseWavePlanBody(
     parsed = JSON.parse(body);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    // V8 phrases an unescaped quote inside a string value as this complaint;
-    // long free-text subtasks make it the most likely malformed-json cause by
-    // far, so the detail names it instead of leaving a bare byte position.
-    const hint = /Expected ',' or '}' after property value/.test(message)
-      ? " A common cause is a raw double-quote inside a string value, such as a subtask that quotes something."
-      : "";
+    // Name the defect precisely where it is knowable. The one failure mode
+    // observed on every live malformed fence so far: a long minified plan
+    // whose root object is never closed — the body ends in \`}]\` and appending
+    // a single brace yields valid JSON. That completion is unambiguous, so
+    // saying exactly that beats a byte position. An unescaped quote inside a
+    // string value produces the same V8 complaint mid-body, so it stays the
+    // fallback hint.
+    let hint = "";
+    if (/Expected ',' or '\}' after property value/.test(message)) {
+      let missingBrace = false;
+      try {
+        JSON.parse(`${body}}`);
+        missingBrace = true;
+      } catch {
+        // Not the single-missing-brace case.
+      }
+      hint = missingBrace
+        ? " The block is missing its final closing brace: it ends with }] but the root object was never closed — it must end with }]}."
+        : " A common cause is a raw double-quote inside a string value, such as a subtask that quotes something.";
+    }
     return invalid(
       "malformed-json",
       `The ${WAVE_FENCE_TAG} block is not valid JSON: ${message}.${hint}`,

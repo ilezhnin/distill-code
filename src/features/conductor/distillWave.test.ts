@@ -376,4 +376,22 @@ describe("malformed-json hint", () => {
       expect(parsed.detail).toContain("raw double-quote");
     }
   });
+
+  it("names the missing final brace when the body parses with one appended", () => {
+    const parsed = parseDistillWave(
+      [
+        "```distill-wave",
+        // Valid JSON except the root object is never closed — the observed
+        // live failure mode on long single-line plans.
+        '{"steps":[{"role":"scout","subtask":"Survey the repo","access":[]}]',
+        "```",
+      ].join("\n"),
+    );
+    expect(parsed.kind).toBe("invalid");
+    if (parsed.kind === "invalid") {
+      expect(parsed.reason).toBe("malformed-json");
+      expect(parsed.detail).toContain("missing its final closing brace");
+      expect(parsed.detail).not.toContain("raw double-quote");
+    }
+  });
 });

@@ -78,6 +78,7 @@ Rules, all enforced by a strict parser — a malformed wave runs nothing and is 
 - "role" must be one of these worker roles: ${allowedWaveRoleIds().join(", ")}. The role is framing for the worker, not the reason a step exists — see "How to split the work".
 - "subtask" is a step-by-step instruction written for that worker. It must never be a copy of the operator's request: if every subtask could be replaced by "solve the user's question", the wave is not written yet.
 - "subtask" is a JSON string, and broken JSON runs nothing — so inside it never use the double-quote character. Quote with «guillemets» or 'single quotes' instead, and never paste JSON snippets, code, or fenced blocks into a subtask. Do not describe the report format either: every worker receives the report contract automatically, restating it only risks the plan.
+- The block is ONE JSON object. After the last step, close the steps array AND the object: the block always ends with \`}]}\` — a block ending in \`}]\` is missing its final brace and runs nothing.
 - "access" is either [] or "all". Nothing else — no lists of step indexes.
 - "model" is optional. Omit it and the step inherits the conductor's model.
 - Anything you want the operator to read goes outside the block, as ordinary prose.
