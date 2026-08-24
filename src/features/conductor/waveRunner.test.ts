@@ -31,6 +31,7 @@ const {
   withWave,
 } = await import("./waveStore");
 const { stopWaveByOperator } = await import("./waveStop");
+const { getWaveTelemetry } = await import("./waveTelemetryStore");
 
 const CONDUCTOR_ID = "conductor-1";
 
@@ -529,6 +530,8 @@ describe("waveRunner", () => {
     expect(getWaveEngineState().waves).toHaveLength(1);
     runWaveEngineTick();
     expect(getWaveEngineState().waves).toHaveLength(0);
+    // The prune erased the wave; its telemetry record is the only trace left.
+    expect(getWaveTelemetry().records[0]).toMatchObject({ outcome: "pruned" });
   });
 
   it("keeps an orphaned wave whose conductor reappears between ticks", async () => {

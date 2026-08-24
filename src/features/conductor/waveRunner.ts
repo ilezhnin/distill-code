@@ -37,6 +37,11 @@ import {
 } from "./waveEngine";
 import { startWaveGitProbe } from "./waveGitProbe";
 import {
+  bumpWaveTelemetryCounter,
+  countPlanlessConductorTurn,
+  recordWaveClose,
+} from "./waveTelemetryStore";
+import {
   processWaveDigests,
   processWaveVerdicts,
   resetWaveLifecycleForTests,
@@ -187,7 +192,12 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       scannedWithoutPlan.has(planMessageId) ||
       inFlightPlans.has(planMessageId) ||
       hasWaveTombstone(state, planMessageId),
-    markScanned: (messageId) => scannedWithoutPlan.add(messageId),
+    markScanned: (messageId, context) => {
+      scannedWithoutPlan.add(messageId);
+      // The wave-rate denominator: a settled conductor turn that answered
+      // directly. The telemetry store deduplicates re-scans after restarts.
+      countPlanlessConductorTurn(context.conductorSessionId, context.createdAt);
+    },
   });
 
   let next = state;
@@ -211,6 +221,7 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
         at: Date.now(),
       });
       setWaveEngineState(next);
+      bumpWaveTelemetryCounter("concurrentRefusals");
       appendConductorNotice(
         candidate.conductorSessionId,
         waveConcurrentPlanNoticeText(),
@@ -232,6 +243,7 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
         at: Date.now(),
       });
       setWaveEngineState(next);
+      bumpWaveTelemetryCounter("rejectedPlans");
       appendConductorNotice(
         candidate.conductorSessionId,
         waveRejectionNoticeText(admission),
@@ -267,6 +279,7 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       wave,
     );
     setWaveEngineState(next);
+    bumpWaveTelemetryCounter("admittedWaves");
     // E3a baseline: what git saw in the working folder before any worker did
     // anything. Fire-and-forget — nothing waits on it; a baseline that never
     // lands just degrades the digest line to "not captured".
@@ -411,6 +424,11 @@ function advanceWaves(state: WaveEngineState): {
     );
     onceOrphanedWaveIds = new Set(orphaned.map((wave) => wave.waveId));
     if (prunable.size > 0) {
+      // The prune erases these waves from the engine state; the telemetry
+      // record is the only trace that they ran at all.
+      for (const wave of orphaned) {
+        if (prunable.has(wave.waveId)) recordWaveClose(wave, "pruned");
+      }
       next = pruneOrphanedWaves(state, knownConductors, prunable);
     }
   } else {
