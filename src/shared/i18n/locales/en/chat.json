@@ -552,7 +552,7 @@
         "deliveryFailed": "The brigade's report could not be delivered into this chat. It is kept below so nothing is lost."
       }
     },
-    "selfExecutingBadge": "The conductor ran a tool itself — it should only plan or answer.",
+    "selfExecutingBadge": "The conductor changed something itself — it may read to answer, but work belongs to a wave.",
     "poke": {
       "ask": "Ask for a status",
       "pending": "Asking…"
