@@ -360,6 +360,23 @@ describe("advanceWave reconciliation", () => {
     });
   });
 
+  it("never resurrects a failed step, even when its node exists", () => {
+    // The spawn threw AFTER registering the graph node: the runner marked the
+    // step failed and told the operator (Q2). Reconciliation must not flip it
+    // back to spawned — that kept the wave running forever on a dead step.
+    const wave = withWaveStepPhase(waveOf([step("scout", "one")]), 0, {
+      phase: "failed",
+    });
+    const advanced = advanceWave(wave, {
+      nodes: [workerNode(0, "running")],
+      reportOf: noReports,
+      resumeOrphanedSpawns: true,
+    });
+    expect(advanced.spawn).toHaveLength(0);
+    expect(advanced.wave.steps[0].phase).toBe("failed");
+    expect(advanced.changed).toBe(false);
+  });
+
   it("resumes a spawn that died before its node existed", () => {
     const wave = withWaveStepPhase(waveOf([step("scout", "one")]), 0, {
       phase: "spawning",
