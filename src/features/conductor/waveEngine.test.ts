@@ -432,6 +432,98 @@ describe("advanceWave reconciliation", () => {
   });
 });
 
+describe("advanceWave stub degradation (5b)", () => {
+  const completedReportless = () =>
+    withWaveStepPhase(waveOf([step("scout", "one")]), 0, {
+      phase: "spawned",
+      sessionId: "child-0",
+      runId: "run-0",
+    });
+
+  it("marks a completed reportless step exactly once when the stub is allowed", () => {
+    const first = advanceWave(completedReportless(), {
+      nodes: [workerNode(0, "completed")],
+      reportOf: noReports,
+      allowSyntheticReportFor: () => true,
+    });
+    expect(first.degraded).toEqual([0]);
+    expect(first.changed).toBe(true);
+    expect(first.wave.steps[0].reportDegraded).toBe(true);
+    expect(first.complete).toBe(true);
+
+    // The mark is persisted state: re-advancing the marked wave announces
+    // nothing new, so the operator is told once and only once.
+    const second = advanceWave(first.wave, {
+      nodes: [workerNode(0, "completed")],
+      reportOf: noReports,
+      allowSyntheticReportFor: () => true,
+    });
+    expect(second.degraded).toEqual([]);
+  });
+
+  it("marks nothing while the grace still holds", () => {
+    const advanced = advanceWave(completedReportless(), {
+      nodes: [workerNode(0, "completed")],
+      reportOf: noReports,
+      allowSyntheticReportFor: () => false,
+    });
+    expect(advanced.degraded).toEqual([]);
+    expect(advanced.wave.steps[0].reportDegraded).toBeUndefined();
+    expect(advanced.complete).toBe(false);
+  });
+
+  it("marks nothing when the real report is there", () => {
+    const advanced = advanceWave(completedReportless(), {
+      nodes: [workerNode(0, "completed")],
+      reportOf: (runId) =>
+        runId === "run-0" ? report("run-0", "Real findings") : undefined,
+      allowSyntheticReportFor: () => true,
+    });
+    expect(advanced.degraded).toEqual([]);
+    expect(advanced.complete).toBe(true);
+  });
+
+  it("does not call a failed step degraded — its failure was already announced", () => {
+    const wave = withWaveStepPhase(waveOf([step("scout", "one")]), 0, {
+      phase: "failed",
+    });
+    const advanced = advanceWave(wave, {
+      nodes: [],
+      reportOf: noReports,
+      allowSyntheticReportFor: () => true,
+    });
+    expect(advanced.degraded).toEqual([]);
+    expect(advanced.complete).toBe(true);
+  });
+
+  it("marks nothing in the legacy no-grace mode, where the stub was always immediate", () => {
+    const advanced = advanceWave(completedReportless(), {
+      nodes: [workerNode(0, "completed")],
+      reportOf: noReports,
+    });
+    expect(advanced.degraded).toEqual([]);
+    expect(advanced.complete).toBe(true);
+  });
+
+  it("keeps a degraded step terminal across a restart whose fresh grace would wait", () => {
+    const first = advanceWave(completedReportless(), {
+      nodes: [workerNode(0, "completed")],
+      reportOf: noReports,
+      allowSyntheticReportFor: () => true,
+    });
+    // A new process has no deadline for this step, so its grace callback says
+    // "wait" — but the step already spent its grace and was announced, and
+    // waiting again would only delay the digest a second time.
+    const resumed = advanceWave(first.wave, {
+      nodes: [workerNode(0, "completed")],
+      reportOf: noReports,
+      allowSyntheticReportFor: () => false,
+    });
+    expect(resumed.complete).toBe(true);
+    expect(resumed.degraded).toEqual([]);
+  });
+});
+
 describe("the closed-loop fields on a wave", () => {
   it("starts a first wave running, at its own root, with no revisions spent", () => {
     const wave = waveOf([step("scout", "Look")]);

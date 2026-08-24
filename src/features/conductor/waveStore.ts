@@ -111,6 +111,7 @@ function parseStep(value: unknown): WaveStepState | null {
     phase: raw.phase,
     ...(typeof raw.sessionId === "string" ? { sessionId: raw.sessionId } : {}),
     ...(typeof raw.runId === "string" ? { runId: raw.runId } : {}),
+    ...(raw.reportDegraded === true ? { reportDegraded: true } : {}),
   };
 }
 

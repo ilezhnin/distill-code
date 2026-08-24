@@ -30,6 +30,7 @@ const {
   setWaveEngineState,
   withWave,
 } = await import("./waveStore");
+const { stopWaveByOperator } = await import("./waveStop");
 
 const CONDUCTOR_ID = "conductor-1";
 
@@ -433,9 +434,60 @@ describe("waveRunner", () => {
       expect(spawnConductorChildSession).toHaveBeenCalledTimes(2);
       const [second] = spawnConductorChildSession.mock.calls[1];
       expect(second.prompt).toContain("Treat its result as unknown");
+
+      // 5b: the downgrade is announced to the operator — once. The stub is
+      // otherwise invisible until the digest, by which point the wave has
+      // already spent every remaining step on top of it.
+      const degradedNotice = i18n.t("chat:conductor.wave.reportDegraded", {
+        step: 1,
+        name: "child-0",
+      });
+      expect(
+        noticeTexts().filter((text) => text === degradedNotice),
+      ).toHaveLength(1);
+      runWaveEngineTick();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(
+        noticeTexts().filter((text) => text === degradedNotice),
+      ).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("stops a child whose spawn resolves after the wave was stopped, instead of adopting it", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    stopOrchestratorSession.mockClear();
+    let resolveSpawn: (value: { sessionId: string; runId: string }) => void =
+      () => {};
+    spawnConductorChildSession.mockImplementation(
+      () =>
+        new Promise<{ sessionId: string; runId: string }>((resolve) => {
+          resolveSpawn = resolve;
+        }),
+    );
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    // The operator stops the wave while the spawn is still in flight. The
+    // child session materializes anyway — sessions cannot be un-asked-for —
+    // and must be stopped rather than adopted: an adopted child would run a
+    // real prompt under a wave nothing will ever advance again.
+    const { waveId } = getWaveEngineState().waves[0];
+    expect(stopWaveByOperator(CONDUCTOR_ID, waveId)).toBe(true);
+
+    resolveSpawn({ sessionId: "late-child", runId: "late-run" });
+    await vi.waitFor(() =>
+      expect(stopOrchestratorSession).toHaveBeenCalledWith("late-child"),
+    );
+    const wave = getWaveEngineState().waves.find(
+      (candidate) => candidate.waveId === waveId,
+    );
+    expect(wave?.phase).toBe("needsOperator");
+    expect(wave?.steps[0]?.phase).toBe("spawning");
   });
 
   it("never prunes waves while the graph knows no conductors at all", async () => {

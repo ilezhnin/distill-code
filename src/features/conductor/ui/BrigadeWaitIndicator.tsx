@@ -13,6 +13,8 @@ import {
   pokeSessionForInterimSummary,
   subscribeToPokeState,
 } from "../wavePoke";
+import { stopWaveByOperator } from "../waveStop";
+import { getWaveEngineState } from "../waveStore";
 
 /**
  * Persistent "this chat is waiting on external work" line above the composer,
@@ -51,6 +53,17 @@ export function BrigadeWaitIndicator({
     () => (sessionId ? isPokeInFlight(sessionId) : false),
     () => false,
   );
+  // The stop control (5b) targets THE WAVE, not one child: offered only while
+  // this session has a wave in `running` — past that, the workers are done
+  // and the loop is between the app and the conductor. Read at render time:
+  // the wave store has no subscriptions, but everything that changes this
+  // answer also patches the graph or the chat store, which re-renders here.
+  const runningWaveId = sessionId
+    ? getWaveEngineState().waves.find(
+        (wave) =>
+          wave.conductorSessionId === sessionId && wave.phase === "running",
+      )?.waveId
+    : undefined;
 
   if (!visible) return null;
 
@@ -79,6 +92,18 @@ export function BrigadeWaitIndicator({
           onClick={() => pokeSessionForInterimSummary(sessionId)}
         >
           {pokePending ? t("conductor.poke.pending") : t("conductor.poke.ask")}
+        </Button>
+      ) : null}
+      {sessionId && runningWaveId ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="xxs"
+          className="shrink-0 text-destructive hover:text-destructive"
+          data-testid="brigade-stop-wave-button"
+          onClick={() => stopWaveByOperator(sessionId, runningWaveId)}
+        >
+          {t("conductor.wave.stop")}
         </Button>
       ) : null}
     </div>

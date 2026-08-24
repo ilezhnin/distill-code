@@ -57,6 +57,13 @@ export interface WaveStepState {
   sessionId?: string;
   /** Child run id, once the spawn produced one. */
   runId?: string;
+  /**
+   * True once this completed-but-reportless step was allowed to go terminal
+   * on the synthesized "result unknown" stub after the runner's grace expired
+   * (risk №4's escape hatch, made visible — 5b). Persisted so the operator is
+   * told exactly once, restarts included.
+   */
+  reportDegraded?: boolean;
 }
 
 /**
@@ -570,6 +577,13 @@ export interface WaveAdvance {
   spawn: readonly WaveSpawnRequest[];
   /** Every step is spawned and terminal — the wave is over. */
   complete: boolean;
+  /**
+   * Step indexes that were downgraded to the synthetic stub by THIS advance
+   * (their `reportDegraded` flag was just set). The shell announces each one
+   * to the operator; the persisted flag is what keeps the announcement to
+   * exactly once.
+   */
+  degraded: readonly number[];
 }
 
 function stepToWaveStep(state: WaveStepState): WaveStep {
@@ -617,7 +631,7 @@ export function advanceWave(
   }
 
   let changed = false;
-  const steps = wave.steps.map((step) => {
+  const reconciled = wave.steps.map((step) => {
     const node = nodeByStepIndex.get(step.stepIndex);
     let next: WaveStepState = step;
     if (node && step.phase !== "failed") {
@@ -645,10 +659,26 @@ export function advanceWave(
   });
 
   const statusByStepIndex = new Map<number, RunStatus>();
-  for (const step of steps) {
+  for (const step of reconciled) {
     const node = nodeByStepIndex.get(step.stepIndex);
     if (node) statusByStepIndex.set(step.stepIndex, node.status);
   }
+
+  // Risk №4's escape hatch, made visible (5b): a completed step whose report
+  // never came may go terminal on the synthesized stub once the runner's
+  // grace has expired. The downgrade is recorded on the step — exactly once,
+  // and as persisted state — so the shell can announce it to the operator
+  // without a restart ever producing a second announcement.
+  const degraded: number[] = [];
+  const steps = reconciled.map((step) => {
+    if (step.reportDegraded || step.phase !== "spawned") return step;
+    if (statusByStepIndex.get(step.stepIndex) !== "completed") return step;
+    if (context.reportOf(step.runId) !== undefined) return step;
+    if (context.allowSyntheticReportFor?.(step.stepIndex) !== true) return step;
+    degraded.push(step.stepIndex);
+    changed = true;
+    return { ...step, reportDegraded: true };
+  });
 
   const isStepTerminal = (step: WaveStepState): boolean => {
     if (step.phase === "failed") return true;
@@ -659,8 +689,12 @@ export function advanceWave(
     // the status flip. Holding terminality until the runner's grace expires
     // means dependents and the digest get the real report instead of the
     // "result unknown" stub whenever the report is merely late, not missing.
+    // A step already marked `reportDegraded` is past all that: its grace was
+    // spent and announced, and re-waiting after a restart (whose fresh process
+    // has no deadline for it) would only delay the digest a second time.
     if (
       status === "completed" &&
+      !step.reportDegraded &&
       context.reportOf(step.runId) === undefined &&
       context.allowSyntheticReportFor !== undefined &&
       !context.allowSyntheticReportFor(step.stepIndex)
@@ -737,5 +771,6 @@ export function advanceWave(
     changed,
     spawn,
     complete,
+    degraded,
   };
 }
