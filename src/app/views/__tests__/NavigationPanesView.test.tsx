@@ -687,6 +687,9 @@ describe("NavigationPanesView", () => {
       name: /main navigation/i,
     });
     const home = within(mainNavigation).getByRole("button", { name: "Home" });
+    const planner = within(mainNavigation).getByRole("button", {
+      name: "Planner",
+    });
     const agents = within(mainNavigation).getByRole("button", {
       name: "Agents",
     });
@@ -696,6 +699,8 @@ describe("NavigationPanesView", () => {
 
     home.focus();
     fireEvent.keyDown(home, { key: "ArrowDown" });
+    expect(planner).toHaveFocus();
+    fireEvent.keyDown(planner, { key: "ArrowDown" });
     expect(agents).toHaveFocus();
     fireEvent.keyDown(agents, { key: "ArrowDown" });
     expect(skills).toHaveFocus();

@@ -1,5 +1,8 @@
 import {
   forwardRef,
+  useEffect,
+  useMemo,
+  useState,
   type CSSProperties,
   type ComponentProps,
   type KeyboardEventHandler,
@@ -16,7 +19,10 @@ import {
   type SETTINGS_SECTIONS,
   type SectionId,
 } from "@/features/settings/ui/settingsSections";
+import { countForTab } from "@/features/planner/lib/plannerTask";
+import { usePlannerStore } from "@/features/planner/stores/plannerStore";
 import { cn } from "@/shared/lib/cn";
+import { Badge } from "@/shared/ui/badge";
 import {
   SIDEBAR_PANEL_ELEVATED_SHADOW_CLASS,
   SIDEBAR_PRIMARY_NAV_TOP_INSET_CLASS,
@@ -27,6 +33,7 @@ import {
   SidebarNavAgentsIcon,
   SidebarNavAutomationsIcon,
   SidebarNavHomeIcon,
+  SidebarNavPlannerIcon,
   SidebarNavSettingsIcon,
   SidebarNavSkillsIcon,
 } from "./sidebarNavIcons";
@@ -100,6 +107,19 @@ export const PrimaryNavigationSurface = forwardRef<
   ref,
 ) {
   const { t } = useTranslation(["sidebar", "settings"]);
+  const plannerTasks = usePlannerStore((state) => state.tasks);
+  // The badge counts what is due, so it has to notice the day turning over
+  // while the window stays open. A minute is finer than anything the count
+  // can express and cheap enough to leave running.
+  const [plannerNowMs, setPlannerNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setPlannerNowMs(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const plannerDueCount = useMemo(
+    () => countForTab(plannerTasks, "today", plannerNowMs),
+    [plannerNowMs, plannerTasks],
+  );
   const mainNavItems: readonly {
     id: AppView;
     label: string;
@@ -180,6 +200,34 @@ export const PrimaryNavigationSurface = forwardRef<
                 labelVisible={navLabelVisible}
                 isActive={activeView === "home"}
                 onClick={() => onNavigate?.("home")}
+              />
+
+              <SidebarNavItem
+                testId="nav-planner"
+                navId="planner"
+                icon={SidebarNavPlannerIcon}
+                label={t("navigation.planner")}
+                collapsed={navCollapsed}
+                labelTransition={labelTransition}
+                labelVisible={navLabelVisible}
+                isActive={activeView === "planner"}
+                onClick={() => onNavigate?.("planner")}
+                trailingIcon={
+                  plannerDueCount > 0 ? (
+                    <Badge
+                      variant="secondary"
+                      className="tabular-nums"
+                      data-testid="nav-planner-count"
+                    >
+                      {plannerDueCount}
+                    </Badge>
+                  ) : undefined
+                }
+                trailingLabel={
+                  plannerDueCount > 0
+                    ? t("navigation.plannerDue", { count: plannerDueCount })
+                    : undefined
+                }
               />
 
               {mainNavItems.map((item) => {

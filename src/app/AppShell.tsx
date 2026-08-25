@@ -4259,6 +4259,8 @@ export function AppShell({
         return [current("search", "Search")];
       case "session-history":
         return [current("session-history", "Session History")];
+      case "planner":
+        return [current("planner", t("sidebar:navigation.planner"))];
       case "home":
         return [current("root", "Home")];
     }

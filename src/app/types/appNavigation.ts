@@ -3,6 +3,7 @@ import type { DesignSystemSection } from "@/features/design-system/ui/designSyst
 
 export type AppView =
   | "home"
+  | "planner"
   | "chat"
   | "automations"
   | "builderbot"
@@ -40,6 +41,7 @@ export type BuilderbotNavigationRoute =
 
 export type AppNavigationLocation =
   | { view: "home" }
+  | { view: "planner" }
   | { view: "chat"; sessionId: string | null }
   | { view: "automations"; route: AutomationNavigationRoute }
   | { view: "builderbot"; route: BuilderbotNavigationRoute }

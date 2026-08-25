@@ -1,7 +1,6 @@
 import { IconFolderPlus } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 
-import { PlannerPanel } from "@/features/planner/ui/PlannerPanel";
 import { ReviewQueuePanel } from "@/features/review/ui/ReviewQueuePanel";
 import { Button } from "@/shared/ui/button";
 
@@ -63,7 +62,6 @@ export function WelcomeView({
         </div>
         <div className="flex w-full max-w-[600px] flex-col gap-6">
           <ReviewQueuePanel onOpenSession={onActivateSession} />
-          <PlannerPanel />
         </div>
       </div>
     </div>

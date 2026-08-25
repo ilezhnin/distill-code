@@ -8,6 +8,7 @@ import type { AutomationBuilderLeaveAction } from "@/features/automations/ui/Aut
 import { BuilderbotView } from "@/features/builderbot/ui/BuilderbotView";
 import { SkillsView } from "@/features/skills/ui/SkillsView";
 import { AgentsView } from "@/features/agents/ui/AgentsView";
+import { PlannerView } from "@/features/planner/ui/PlannerView";
 import { ProjectsView } from "@/features/projects/ui/ProjectsView";
 import { SearchView } from "@/features/search/ui/SearchView";
 import { SessionHistoryView } from "@/features/sessions/ui/SessionHistoryView";
@@ -453,6 +454,8 @@ function renderRouteContent({
           }
         />
       );
+    case "planner":
+      return <PlannerView />;
     case "projects":
       return <ProjectsView onStartChat={onStartChatFromProject} />;
     case "search":
