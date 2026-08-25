@@ -39,10 +39,15 @@ export function parseStructuredReport(
   if (fenced?.[1]) {
     try {
       const parsed = JSON.parse(fenced[1]) as Partial<StructuredReport>;
+      // A worker whose whole reply is the report block leaves nothing behind
+      // once the fence is stripped. Falling back to the raw text (as the
+      // unfenced path already does) keeps every report's summary non-empty:
+      // an empty one reads as "no report yet" to every consumer, and one of
+      // them re-attached it on every graph pass until the renderer crashed.
       const summary =
         typeof parsed.summary === "string" && parsed.summary.trim()
           ? parsed.summary.trim()
-          : stripReportFence(assistantText);
+          : stripReportFence(assistantText) || assistantText.trim();
       return {
         runId,
         status:
