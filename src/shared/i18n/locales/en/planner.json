@@ -1,5 +1,6 @@
 {
   "title": "Planner",
+  "pageDescription": "What is due, what is scheduled, and what is done -- for you and for the agents working with you.",
   "tabs": {
     "today": "Today",
     "scheduled": "Scheduled",

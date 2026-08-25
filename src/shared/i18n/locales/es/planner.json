@@ -1,5 +1,6 @@
 {
   "title": "Planificador",
+  "pageDescription": "Lo que vence, lo que está programado y lo que ya está hecho, para ti y para los agentes que trabajan contigo.",
   "tabs": {
     "today": "Hoy",
     "scheduled": "Programadas",

@@ -56,6 +56,30 @@ export function SidebarNavHomeIcon({
   );
 }
 
+export function SidebarNavPlannerIcon({
+  className,
+  ...props
+}: SidebarNavIconProps) {
+  return (
+    <SidebarNavIcon className={className} {...props}>
+      <path
+        d="M6.71615 12.4816C9.6122 12.4816 11.9605 10.1333 11.9605 7.23726C11.9605 4.34121 9.6122 1.99292 6.71615 1.99292C3.8201 1.99292 1.47181 4.34121 1.47181 7.23726C1.47181 10.1333 3.8201 12.4816 6.71615 12.4816Z"
+        stroke="currentColor"
+        strokeWidth={STROKE_WIDTH}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4.62012 7.23731L6.19344 8.81063L9.34009 5.66399"
+        stroke="currentColor"
+        strokeWidth={STROKE_WIDTH}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </SidebarNavIcon>
+  );
+}
+
 export function SidebarNavAgentsIcon({
   className,
   ...props

@@ -85,6 +85,7 @@ const SCROLL_BOTTOM_EPSILON_PX = 1;
 const ACTIVE_SCROLL_TOP_OFFSET_PX = 40;
 const MAIN_NAV_SCROLL_TARGETS: ReadonlySet<AppView> = new Set([
   "home",
+  "planner",
   "agents",
   "skills",
   "automations",
