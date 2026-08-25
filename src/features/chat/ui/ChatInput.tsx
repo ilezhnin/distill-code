@@ -1898,6 +1898,18 @@ export function ChatInput({
                           ),
                         )}
                       </AnimatePresence>
+                      {isStreaming && !canSteerMessage ? (
+                        // Steering into a live turn is an extension only some
+                        // agents implement; on the rest a message can only
+                        // wait. Saying so is the difference between "queued on
+                        // purpose" and "my message was ignored".
+                        <p
+                          className="px-2 pb-0.5 text-[11px] opacity-80"
+                          data-slot="queued-message-no-steering"
+                        >
+                          {t("queue.noSteeringHere")}
+                        </p>
+                      ) : null}
                     </div>
                   </motion.div>
                 </div>
