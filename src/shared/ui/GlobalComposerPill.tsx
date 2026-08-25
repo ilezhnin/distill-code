@@ -773,7 +773,7 @@ export function GlobalComposerPill({
     fileMentionsLoading,
     fileMentionsError,
     detectMention,
-    closeMention,
+    dismissMention,
     navigateMention,
     setAtMentionCategory,
     handleMentionCategoryKey,
@@ -1395,7 +1395,7 @@ export function GlobalComposerPill({
                     if (event.key === "Escape") {
                       event.preventDefault();
                       event.stopPropagation();
-                      closeMention();
+                      dismissMention();
                       return;
                     }
                     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -1472,7 +1472,6 @@ export function GlobalComposerPill({
               atCategory={atMentionCategory}
               onAtCategoryChange={setAtMentionCategory}
               selectedIndex={mentionSelectedIndex}
-              onClose={closeMention}
               onSelectPersona={(persona) =>
                 handleMentionConfirm({ type: "persona", persona })
               }
@@ -1482,6 +1481,7 @@ export function GlobalComposerPill({
               onSelectFile={(file) =>
                 handleMentionConfirm({ type: "file", file })
               }
+              onDismiss={dismissMention}
               listboxId={mentionListboxId}
               pathsLoading={fileMentionsLoading}
               pathsError={fileMentionsError}
