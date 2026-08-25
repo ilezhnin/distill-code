@@ -4,6 +4,7 @@ import type { PlannerFenceRequest } from "../lib/plannerFence";
 import { startOfLocalDay, type PlannerTask } from "../lib/plannerTask";
 import {
   capTasks,
+  flushPlannerWrites,
   MAX_APPLIED_MESSAGE_IDS,
   MAX_PLANNER_TASKS,
   parseAppliedMessageIds,
@@ -32,13 +33,17 @@ function task(overrides: Partial<PlannerTask> = {}): PlannerTask {
 describe("plannerStore", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    // Hydration is what unlocks writing; outside the desktop app the document
+    // layer falls back to the same localStorage key these cases read.
+    usePlannerStore.setState({ hydrated: true });
     usePlannerStore.getState().replaceAll([]);
   });
 
-  it("keeps a task across a reload", () => {
+  it("keeps a task across a reload", async () => {
     usePlannerStore
       .getState()
       .addTask({ title: "Ship the planner", priority: "high" }, NOW);
+    await flushPlannerWrites();
 
     const stored = parsePlannerTasks(
       JSON.parse(window.localStorage.getItem(PLANNER_STORAGE_KEY) ?? "{}"),
@@ -163,7 +168,11 @@ function request(
 describe("applyAgentRequest", () => {
   beforeEach(() => {
     window.localStorage.clear();
-    usePlannerStore.setState({ tasks: [], appliedMessageIds: [] });
+    usePlannerStore.setState({
+      tasks: [],
+      appliedMessageIds: [],
+      hydrated: true,
+    });
   });
 
   it("files an agent's task and records where it came from", () => {
@@ -193,7 +202,7 @@ describe("applyAgentRequest", () => {
     });
   });
 
-  it("reads one message exactly once, even after a reload", () => {
+  it("reads one message exactly once, even after a reload", async () => {
     const req = request({
       add: [{ title: "Once", dueAt: null, priority: "normal", repeat: null }],
     });
@@ -201,6 +210,7 @@ describe("applyAgentRequest", () => {
     const second = usePlannerStore
       .getState()
       .applyAgentRequest("m-1", "s", req, NOW);
+    await flushPlannerWrites();
 
     expect(second).toEqual({ added: 0, completed: 0 });
     expect(usePlannerStore.getState().tasks).toHaveLength(1);

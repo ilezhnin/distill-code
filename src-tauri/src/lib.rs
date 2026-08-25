@@ -193,6 +193,24 @@ pub fn run() {
             // present even while a later step blocks the setup thread.
             let app_data_dir = app.path().app_data_dir()?;
 
+            // Resolved and exported before anything can spawn the goose child:
+            // `GOOSE_PATH_ROOT` is read once, at spawn, so a root set later
+            // would leave goose writing to the OS-blessed directories while
+            // the rest of the app wrote to the chosen folder.
+            match commands::distill_store::initialize(app) {
+                Ok(state) => {
+                    log::info!("Distill root: {}", state.root.display());
+                    app.manage(state);
+                }
+                Err(error) => {
+                    // Not fatal: without a root the app still runs on the
+                    // previous OS-scattered layout, which is worse but
+                    // working. Refusing to start over a folder would be a
+                    // cure worse than the disease.
+                    log::error!("Failed to resolve the Distill root: {error}");
+                }
+            }
+
             let bundled_runtime_config_path = app
                 .try_state::<services::e2e_mode::E2eMode>()
                 .and_then(|mode| mode.runtime_config_path().map(PathBuf::from))
@@ -618,6 +636,10 @@ pub fn run() {
             commands::system::inspect_attachment_paths,
             commands::system::search_file_mentions,
             commands::system::read_image_attachment,
+            commands::distill_store::get_distill_root,
+            commands::distill_store::set_distill_root,
+            commands::distill_store::read_distill_document,
+            commands::distill_store::write_distill_document,
             commands::system::read_text_file,
             commands::terminal::start_terminal,
             commands::terminal::write_terminal,

@@ -15,6 +15,7 @@ import { cn } from "@/shared/lib/cn";
 import { getPlatform } from "@/shared/lib/platform";
 import { SettingsPage } from "@/shared/ui/SettingsPage";
 import { SettingsRow } from "@/shared/ui/settings-row";
+import { DistillFolderRow } from "./DistillFolderRow";
 import {
   SettingsSection,
   SettingsSections,
@@ -407,6 +408,8 @@ export function SystemSettings({
               </SelectContent>
             </Select>
           </SettingsRow>
+
+          <DistillFolderRow />
 
           <SettingsRow
             label={t("general.artifacts.label")}

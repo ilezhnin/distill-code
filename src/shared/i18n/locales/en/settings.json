@@ -362,7 +362,18 @@
       "saveError": "Couldn't update the terminal fallback folder. Try again.",
       "saveSuccess": "Terminal fallback folder updated."
     },
-    "title": "General"
+    "title": "General",
+    "distillFolder": {
+      "label": "Distill folder",
+      "description": "Everything Distill owns — projects, chats, agents, skills, memory and settings — lives here. Back up this one folder and you have all of it.",
+      "chooseDialogTitle": "Choose the Distill folder",
+      "choose": "Change folder",
+      "saved": "New folder saved",
+      "savedDescription": "Nothing was moved. Copy the old folder's contents across, then restart Distill.",
+      "saveError": "Couldn't use that folder",
+      "restartRequired": "Takes effect after a restart.",
+      "forcedByEnvironment": "Set by DISTILL_ROOT for this run, so this setting is not in charge."
+    }
   },
   "nav": {
     "appearance": "Appearance",

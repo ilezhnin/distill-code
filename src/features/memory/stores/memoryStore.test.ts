@@ -4,6 +4,7 @@ import type { MemoryEntry } from "../lib/memoryEntry";
 import type { MemoryFenceRequest } from "../lib/memoryFence";
 import {
   capEntries,
+  flushMemoryWrites,
   MAX_MEMORY_ENTRIES,
   MEMORY_STORAGE_KEY,
   parseMemoryEntries,
@@ -29,13 +30,20 @@ function entry(overrides: Partial<MemoryEntry> & { id: string }): MemoryEntry {
 describe("useMemoryStore", () => {
   beforeEach(() => {
     window.localStorage.clear();
-    useMemoryStore.setState({ entries: [], appliedMessageIds: [] });
+    // Hydration is what unlocks writing; outside the desktop app the document
+    // layer falls back to the same localStorage key these cases read.
+    useMemoryStore.setState({
+      entries: [],
+      appliedMessageIds: [],
+      hydrated: true,
+    });
   });
 
-  it("keeps a memory across a reload", () => {
+  it("keeps a memory across a reload", async () => {
     useMemoryStore
       .getState()
       .remember({ text: "Ivan pushes", scope: "global" });
+    await flushMemoryWrites();
 
     const stored = parseMemoryEntries(
       JSON.parse(window.localStorage.getItem(MEMORY_STORAGE_KEY) ?? "{}"),
@@ -75,7 +83,13 @@ describe("useMemoryStore", () => {
 describe("memory applyAgentRequest", () => {
   beforeEach(() => {
     window.localStorage.clear();
-    useMemoryStore.setState({ entries: [], appliedMessageIds: [] });
+    // Hydration is what unlocks writing; outside the desktop app the document
+    // layer falls back to the same localStorage key these cases read.
+    useMemoryStore.setState({
+      entries: [],
+      appliedMessageIds: [],
+      hydrated: true,
+    });
   });
 
   it("keeps an agent's fact in the project the session belongs to", () => {
