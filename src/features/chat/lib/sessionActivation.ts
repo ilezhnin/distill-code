@@ -20,7 +20,14 @@ import {
 import { resolveSessionArtifactCwd } from "@/shared/artifacts/sessionArtifactLocation";
 import { perfLog } from "@/shared/lib/perfLog";
 import { isDefaultChatTitle } from "@/features/chat/lib/sessionTitle";
+import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import {
+  interruptedTurnNoticeId,
+  unansweredSendToReport,
+  type UnansweredSendContext,
+} from "@/features/chat/lib/unansweredSend";
 import { i18n } from "@/shared/i18n";
 import {
   createSystemNotificationMessage,
@@ -466,6 +473,22 @@ async function performSessionMessagesLoad(
     chatStore.setSessionLoading(sessionId, false);
     chatStore.setError(sessionId, null);
     clearIdleStreamingMessageAfterReplay(sessionId);
+    const runtimeAfterReplay =
+      useChatStore.getState().sessionStateById[sessionId];
+    reportInterruptedTurn(sessionId, replayMessages, {
+      // Both sources of "still working" are consulted. The ACP snapshot is
+      // only fetched for a pinned load, so on the ordinary path the local
+      // runtime is the only thing that knows a run is in flight.
+      isRunning:
+        (sessionInfo?.activeRunId ?? null) !== null ||
+        isSessionRunning(runtimeAfterReplay?.chatState ?? "idle") ||
+        Boolean(runtimeAfterReplay?.isRunCancellationPending),
+      hasError: (runtimeAfterReplay?.chatState ?? "idle") === "error",
+      hasQueuedSend:
+        (useChatStore.getState().queuedMessageBySession[sessionId]?.length ??
+          0) > 0,
+      isAgentManaged: isWaveManagedSession(sessionId),
+    });
     const t2 = performance.now();
     perfLog(
       `[perf:load] ${sid} replay: notifs=${replayStats?.count ?? 0} span=${replayStats?.spanMs.toFixed(1) ?? "0"}ms msgs=${replayMessages?.length ?? 0} flush=${(t2 - tFlush).toFixed(1)}ms total=${(t2 - t0).toFixed(1)}ms`,
@@ -495,6 +518,51 @@ async function performSessionMessagesLoad(
     // retries the load because the guard ignores system-only messages.
     return false;
   }
+}
+
+/**
+ * Says so when a loaded transcript ends on a message that never got an answer.
+ *
+ * The notice carries a fixed id, so re-opening the session replaces it rather
+ * than stacking a second copy, and the moment the message is answered — by
+ * the resend button or by anything else — the next load finds a reply at the
+ * end and the notice is simply not written again.
+ */
+/**
+ * True for a session the wave engine spawned and drives.
+ *
+ * Read through the graph store rather than the session store because
+ * `managedBy` is the graph's fact about a node, not the chat's about a
+ * session, and it is the only place that distinction is recorded.
+ */
+function isWaveManagedSession(sessionId: string): boolean {
+  return (
+    useConductorGraphStore.getState().nodesById[sessionId]?.managedBy === "wave"
+  );
+}
+
+function reportInterruptedTurn(
+  sessionId: string,
+  messages: readonly Message[] | undefined,
+  context: UnansweredSendContext,
+): void {
+  const chatStore = useChatStore.getState();
+  const noticeId = interruptedTurnNoticeId(sessionId);
+  chatStore.removeMessage(sessionId, noticeId);
+  const unanswered = unansweredSendToReport(messages, context);
+  if (!unanswered) return;
+  chatStore.addMessage(sessionId, {
+    ...createSystemNotificationMessage(
+      i18n.t("chat:interruptedTurn.notice"),
+      "warning",
+      {
+        type: "resendMessage",
+        sessionId,
+        text: getTextContent(unanswered),
+      },
+    ),
+    id: noticeId,
+  });
 }
 
 export function activateSession(sessionId: string): void {
