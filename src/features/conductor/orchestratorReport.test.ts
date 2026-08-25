@@ -46,6 +46,20 @@ describe("orchestratorReport", () => {
     expect(report.risks).toEqual(["No e2e"]);
   });
 
+  it("never leaves a fence-only reply with an empty summary", () => {
+    // Stripping the fence off a reply that was nothing but the fence used to
+    // leave "", which every consumer reads as "no report yet" — the graph sync
+    // then re-attached it on every pass until the renderer crashed.
+    const report = parseStructuredReport(
+      "run-1",
+      "completed",
+      '```distill-report\n{"status":"completed","decisions":[],"artifacts":[]}\n```',
+    );
+
+    expect(report.summary).not.toBe("");
+    expect(report.status).toBe("completed");
+  });
+
   it("strips the report fence from leftover prose", () => {
     expect(stripReportFence("Hello\n```distill-report\n{}\n```")).toBe("Hello");
   });

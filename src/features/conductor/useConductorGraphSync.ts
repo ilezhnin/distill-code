@@ -134,7 +134,44 @@ function deriveOrchestratorStatus(node: SessionNode): RunStatus {
   return node.status;
 }
 
+/**
+ * Re-entrancy guard for the sync pass.
+ *
+ * The pass writes to the graph store, and the graph store's own subscription
+ * calls the pass — so a write made inside a pass re-enters it. That was
+ * survivable only while every write was idempotent; a single report the pass
+ * kept re-attaching turned it into unbounded recursion and a renderer crash
+ * ("Maximum call stack size exceeded", 2026-08-25).
+ *
+ * Convergence is still the real contract — a pass must stop writing once it
+ * has nothing new to say — but the recursion must not be reachable at all, so
+ * nested calls are dropped and answered with at most ONE catch-up pass after
+ * the outer one finishes. Bounded on purpose: a loop that ran until the state
+ * settled would turn a non-converging write into a hang instead of a crash,
+ * which is not an improvement.
+ */
+let syncing = false;
+let syncRequestedWhileRunning = false;
+
 function syncChildStatuses(): void {
+  if (syncing) {
+    syncRequestedWhileRunning = true;
+    return;
+  }
+  syncing = true;
+  try {
+    runSyncPass();
+    if (syncRequestedWhileRunning) {
+      syncRequestedWhileRunning = false;
+      runSyncPass();
+    }
+  } finally {
+    syncing = false;
+    syncRequestedWhileRunning = false;
+  }
+}
+
+function runSyncPass(): void {
   const graph = useConductorGraphStore.getState();
   const chat = useChatStore.getState();
   for (const node of Object.values(graph.nodesById)) {
@@ -160,13 +197,6 @@ function syncChildStatuses(): void {
     const operatorIntervened = childHadOperatorIntervention(messages);
     if (existing?.publishedToParent) continue;
     if (
-      existing?.summary &&
-      existing.status === reportStatus &&
-      existing.operatorIntervened === operatorIntervened
-    ) {
-      continue;
-    }
-    if (
       !summary &&
       nextStatus === "completed" &&
       !seenRunningBySession.has(node.sessionId)
@@ -180,10 +210,26 @@ function syncChildStatuses(): void {
         : reportStatus === "cancelled"
           ? "The agent was cancelled."
           : "The agent finished.");
-    graph.attachReport({
+    const next = {
       ...parseStructuredReport(node.runId, reportStatus, fallback),
       operatorIntervened,
-    });
+    };
+    // Compare against the report this pass would write, not against the truth
+    // of what is already stored: an existing report whose summary parsed empty
+    // is still the same report, and treating it as absent re-attached it on
+    // every pass — each write waking the store subscription that runs this
+    // pass, until the stack gave out. Status, summary and the intervention
+    // flag are the whole derivation: they all come from the same run and the
+    // same message text, so equal values mean an identical report.
+    if (
+      existing &&
+      existing.status === next.status &&
+      existing.summary === next.summary &&
+      existing.operatorIntervened === next.operatorIntervened
+    ) {
+      continue;
+    }
+    graph.attachReport(next);
   }
   for (const node of Object.values(graph.nodesById)) {
     if (node.role !== "orchestrator") continue;
