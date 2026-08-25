@@ -78,12 +78,24 @@ export function rankedPersonaExecutionTarget(
   if (!resolution.choice) return undefined;
 
   const { harnessId, model } = resolution.choice;
-  return {
-    target: normalizeSessionExecutionTarget({
-      harnessId,
-      modelId: model.id,
-      modelName: model.displayName ?? model.name ?? model.id,
-    }),
-    resolution,
-  };
+  try {
+    return {
+      // A concrete model needs the provider that serves it; without this the
+      // normalizer refused every resolution the ranking made, so the feature
+      // could not retarget anything at all. The model's own provider id is
+      // the right one — for a harness that fans several providers into one
+      // list (goose), the harness id is not a provider.
+      target: normalizeSessionExecutionTarget({
+        harnessId,
+        modelProviderId: model.providerId ?? harnessId,
+        modelId: model.id,
+        modelName: model.displayName ?? model.name ?? model.id,
+      }),
+      resolution,
+    };
+  } catch {
+    // A preference must never stop a session from starting: fall back to the
+    // persona's single model exactly as an unresolvable ranking does.
+    return undefined;
+  }
 }
