@@ -80,6 +80,7 @@ function renderLocationPlaceholder(location: AppNavigationLocation): ReactNode {
       ) : (
         <AgentsPlaceholder />
       );
+    case "planner":
     case "projects":
       return <ProjectsPlaceholder />;
     case "session-history":
