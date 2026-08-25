@@ -554,6 +554,10 @@
         "expand": "Desplegar",
         "collapse": "Plegar",
         "deliveryFailed": "No se pudo entregar el informe de la brigada en este chat. Queda abajo para que no se pierda nada."
+      },
+      "stepModel": {
+        "fallback": "El paso {{step}} ({{name}}) se ejecuta en {{model}}: su modelo preferido no estaba disponible.",
+        "nearLimit": "El paso {{step}} ({{name}}) se ejecuta en {{model}}, que está cerca de su límite de uso. Todos los modelos de este rol están así de llenos, por lo que el paso puede cortarse antes de terminar."
       }
     },
     "selfExecutingBadge": "El conductor cambió algo él mismo: puede leer para responder, pero el trabajo pertenece a una ola.",

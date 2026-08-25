@@ -254,5 +254,24 @@
     "fallbackMissing": "{{agent}}: {{skipped}} is not installed — using {{picked}} instead",
     "fallbackNearLimit": "{{agent}}: {{skipped}} is close to its usage limit — using {{picked}} instead",
     "pickedNearLimit": "{{agent}}: every ranked model is close to its usage limit — running {{picked}} anyway"
+  },
+  "ranking": {
+    "label": "Model ranking",
+    "empty": "No ranking yet — this agent uses its single model, or its role's built-in order.",
+    "fillFromRole": "Fill from role",
+    "add": "Add model",
+    "remove": "Remove",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "effortDefault": "default",
+    "modelAria": "Model at position {{position}}",
+    "effortAria": "Reasoning effort at position {{position}}",
+    "previewPick": "Right now: {{model}} · {{effort}}",
+    "previewNone": "Right now: nothing in this ranking is usable",
+    "skip": {
+      "at-limit": "{{model}} is at its usage limit",
+      "near-limit": "{{model}} is close to its usage limit",
+      "not-installed": "{{model}} is not installed"
+    }
   }
 }
