@@ -21,6 +21,14 @@ describe("orchestratorReport", () => {
     expect(prompt).toContain("Bare strings are dropped");
   });
 
+  it("keeps the report block out of created files", () => {
+    // Seen live (T2, 2026-08-24): a writer pasted its distill-report JSON into
+    // poem.md, poisoning the artifact and the verifier's quote of it.
+    const prompt = wrapOrchestratorTaskPrompt("Fix login");
+    expect(prompt).toContain("belongs in your reply and nowhere else");
+    expect(prompt).toContain("never write it");
+  });
+
   it("parses a fenced structured report", () => {
     const report = parseStructuredReport(
       "run-1",
