@@ -25,7 +25,9 @@ When you finish, end with this report block and no extra commentary after it:
 }
 \`\`\`
 
-"artifacts" is your evidence trail: list every file you created, changed, ran, or inspected, each as an object like {"label": "x.md", "path": "src/x.md"} (use "url" instead of "path" for a link). Bare strings are dropped by the reader — always the object form. An empty list reads as "I never touched the work", so leave it empty only when that is literally true.`;
+"artifacts" is your evidence trail: list every file you created, changed, ran, or inspected, each as an object like {"label": "x.md", "path": "src/x.md"} (use "url" instead of "path" for a link). Bare strings are dropped by the reader — always the object form. An empty list reads as "I never touched the work", so leave it empty only when that is literally true.
+
+The report block belongs in your reply and nowhere else: never write it — or any other fenced protocol block — into the files you create or edit. A file that ends up holding your report is a defect the next step will have to clean up.`;
 }
 
 export function parseStructuredReport(
