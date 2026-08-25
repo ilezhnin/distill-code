@@ -1,0 +1,54 @@
+{
+  "title": "Planner",
+  "tabs": {
+    "today": "Today",
+    "scheduled": "Scheduled",
+    "all": "All",
+    "completed": "Completed"
+  },
+  "groups": {
+    "overdue": "Overdue",
+    "today": "Today",
+    "scheduled": "Scheduled",
+    "noDueDate": "No due date"
+  },
+  "add": {
+    "placeholder": "Add a task",
+    "submit": "Add",
+    "due": "Due date",
+    "repeat": "Repeat",
+    "priority": "High priority"
+  },
+  "repeat": {
+    "none": "Does not repeat",
+    "daily": "Every day",
+    "weekly": "Weekly"
+  },
+  "weekdays": {
+    "0": "Sun",
+    "1": "Mon",
+    "2": "Tue",
+    "3": "Wed",
+    "4": "Thu",
+    "5": "Fri",
+    "6": "Sat"
+  },
+  "badges": {
+    "high": "HIGH",
+    "agent": "From a chat",
+    "repeats": "Repeats",
+    "doneToday": "Done today"
+  },
+  "row": {
+    "complete": "Mark done",
+    "reopen": "Mark not done",
+    "remove": "Delete task",
+    "togglePriority": "Toggle high priority"
+  },
+  "empty": {
+    "today": "Nothing due today.",
+    "scheduled": "Nothing scheduled.",
+    "all": "No tasks yet. Add the first one above.",
+    "completed": "Nothing finished yet."
+  }
+}

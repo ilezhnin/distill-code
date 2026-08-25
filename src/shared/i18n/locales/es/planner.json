@@ -1,0 +1,54 @@
+{
+  "title": "Planificador",
+  "tabs": {
+    "today": "Hoy",
+    "scheduled": "Programadas",
+    "all": "Todas",
+    "completed": "Completadas"
+  },
+  "groups": {
+    "overdue": "Atrasadas",
+    "today": "Hoy",
+    "scheduled": "Programadas",
+    "noDueDate": "Sin fecha"
+  },
+  "add": {
+    "placeholder": "Añadir una tarea",
+    "submit": "Añadir",
+    "due": "Fecha límite",
+    "repeat": "Repetir",
+    "priority": "Prioridad alta"
+  },
+  "repeat": {
+    "none": "No se repite",
+    "daily": "Cada día",
+    "weekly": "Cada semana"
+  },
+  "weekdays": {
+    "0": "Dom",
+    "1": "Lun",
+    "2": "Mar",
+    "3": "Mié",
+    "4": "Jue",
+    "5": "Vie",
+    "6": "Sáb"
+  },
+  "badges": {
+    "high": "ALTA",
+    "agent": "Desde un chat",
+    "repeats": "Se repite",
+    "doneToday": "Hecha hoy"
+  },
+  "row": {
+    "complete": "Marcar como hecha",
+    "reopen": "Marcar como no hecha",
+    "remove": "Eliminar tarea",
+    "togglePriority": "Alternar prioridad alta"
+  },
+  "empty": {
+    "today": "Nada para hoy.",
+    "scheduled": "Nada programado.",
+    "all": "Aún no hay tareas. Añade la primera arriba.",
+    "completed": "Nada terminado todavía."
+  }
+}
