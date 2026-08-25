@@ -1,6 +1,7 @@
 import { IconFolderPlus } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 
+import { PlannerPanel } from "@/features/planner/ui/PlannerPanel";
 import { Button } from "@/shared/ui/button";
 
 import { HomeComposer } from "./HomeComposer";
@@ -26,7 +27,7 @@ export function WelcomeView({
   const { t } = useTranslation("home");
   return (
     <div className="h-full w-full overflow-y-auto" data-testid="home-welcome">
-      <div className="page-transition relative flex min-h-full flex-col items-center justify-center px-6 pb-4">
+      <div className="page-transition relative flex min-h-full flex-col items-center justify-center gap-8 px-6 py-8">
         <div className="flex w-full max-w-[600px] flex-col gap-6 antialiased">
           <div className="flex flex-col items-center gap-1.5 text-center">
             <h1 className="text-2xl font-semibold text-foreground">
@@ -56,6 +57,9 @@ export function WelcomeView({
               {t("welcome.newProject")}
             </Button>
           </div>
+        </div>
+        <div className="flex w-full max-w-[600px] flex-col">
+          <PlannerPanel />
         </div>
       </div>
     </div>
