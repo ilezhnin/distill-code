@@ -2,6 +2,7 @@ import { IconFolderPlus } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 
 import { PlannerPanel } from "@/features/planner/ui/PlannerPanel";
+import { ReviewQueuePanel } from "@/features/review/ui/ReviewQueuePanel";
 import { Button } from "@/shared/ui/button";
 
 import { HomeComposer } from "./HomeComposer";
@@ -14,8 +15,10 @@ import type { HomeScreenProps } from "./HomeScreen";
  * widgets were deliberately abandoned — and `features/home` went with it. What
  * home actually needs to offer is the two ways work begins here: a new chat
  * (the composer itself, wired to the persistent home session so typing simply
- * starts one) and a new project. The planner lands underneath this view as its
- * own feature; this component stays the header of that page, not a dashboard.
+ * starts one) and a new project. Underneath sit the two things a person wants
+ * on arriving: what finished while they were away, and their own list. Both
+ * are their own features; this component stays the header of that page, not a
+ * dashboard.
  */
 export function WelcomeView({
   sessionId,
@@ -58,7 +61,8 @@ export function WelcomeView({
             </Button>
           </div>
         </div>
-        <div className="flex w-full max-w-[600px] flex-col">
+        <div className="flex w-full max-w-[600px] flex-col gap-6">
+          <ReviewQueuePanel onOpenSession={onActivateSession} />
           <PlannerPanel />
         </div>
       </div>
