@@ -254,5 +254,24 @@
     "fallbackMissing": "{{agent}}: {{skipped}} no está instalado — se usará {{picked}}",
     "fallbackNearLimit": "{{agent}}: {{skipped}} está cerca de su límite de uso; se usa {{picked}} en su lugar",
     "pickedNearLimit": "{{agent}}: todos los modelos del ranking están cerca de su límite; se ejecuta {{picked}} de todos modos"
+  },
+  "ranking": {
+    "label": "Ranking de modelos",
+    "empty": "Sin ranking todavía: este agente usa su modelo único o el orden propio de su rol.",
+    "fillFromRole": "Rellenar por rol",
+    "add": "Añadir modelo",
+    "remove": "Quitar",
+    "moveUp": "Subir",
+    "moveDown": "Bajar",
+    "effortDefault": "por defecto",
+    "modelAria": "Modelo en la posición {{position}}",
+    "effortAria": "Esfuerzo de razonamiento en la posición {{position}}",
+    "previewPick": "Ahora mismo: {{model}} · {{effort}}",
+    "previewNone": "Ahora mismo: nada del ranking se puede usar",
+    "skip": {
+      "at-limit": "{{model}} está en su límite de uso",
+      "near-limit": "{{model}} está cerca de su límite de uso",
+      "not-installed": "{{model}} no está instalado"
+    }
   }
 }

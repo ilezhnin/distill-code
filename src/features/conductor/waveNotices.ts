@@ -141,6 +141,33 @@ export function waveConcurrentPlanNoticeText(refusedCount = 1): string {
   return lines.join("\n\n");
 }
 
+/**
+ * The notice posted when a wave step runs on something other than the first
+ * model its role ranked.
+ *
+ * D5 again: the ranking exists so the operator does not have to babysit which
+ * model is free, and the price of that is saying when the choice moved. It is
+ * a warning rather than an error — a fallback is the ranking working, not
+ * failing — and it is said once per spawn, where the wave is already watched.
+ */
+export function waveStepModelNoticeText(facts: {
+  stepIndex: number;
+  name: string;
+  model: string;
+  nearLimit: boolean;
+}): string {
+  return i18n.t(
+    facts.nearLimit
+      ? "chat:conductor.wave.stepModel.nearLimit"
+      : "chat:conductor.wave.stepModel.fallback",
+    {
+      step: facts.stepIndex + 1,
+      name: facts.name,
+      model: facts.model,
+    },
+  );
+}
+
 /** Label of the manual verdict re-ask (Q5). There is no auto-retry. */
 export function waveVerdictRetryLabel(): string {
   return i18n.t("chat:conductor.wave.verdict.retry");

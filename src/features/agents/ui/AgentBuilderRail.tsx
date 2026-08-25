@@ -31,6 +31,7 @@ import {
   PLACEHOLDER_AGENT_BODY,
   promoteDraft,
 } from "@/features/agents/lib/agentBuilderSession";
+import { ModelRankingField } from "./PersonaFields/ModelRankingField";
 import { ProviderModelFields } from "@/features/agents/ui/PersonaFields/ProviderModelFields";
 import { FORM_FIELD_CLASS } from "@/shared/ui/form-field-tokens";
 import { hasRealAgentDescription } from "@/shared/api/agents";
@@ -175,6 +176,8 @@ export function AgentBuilderRail({
   const modelProviderId =
     (data?.properties?.modelProviderId as string | undefined) ?? "";
   const model = (data?.properties?.model as string | undefined) ?? "";
+  const modelRanking =
+    (data?.properties?.model_ranking as string | undefined) ?? "";
 
   const writeProperties = useCallback(
     (properties: PersonaSourcePatch["properties"]) => {
@@ -250,6 +253,11 @@ export function AgentBuilderRail({
         modelProviderId: selection?.modelProviderId ?? null,
         model: selection?.modelId ?? null,
       }),
+    [writeProperties],
+  );
+
+  const onChangeModelRanking = useCallback(
+    (next: string | null) => writeProperties({ model_ranking: next }),
     [writeProperties],
   );
 
@@ -657,6 +665,16 @@ export function AgentBuilderRail({
         onProviderChange={onChangeProvider}
         onModelChange={onChangeModel}
         builderSessionId={sessionId}
+        classes={{
+          fieldLabel: FIELD_LABEL_CLASS,
+          selectTrigger: FIELD_CLASS,
+        }}
+      />
+
+      <ModelRankingField
+        value={modelRanking}
+        onChange={onChangeModelRanking}
+        displayName={nameFieldValue}
         classes={{
           fieldLabel: FIELD_LABEL_CLASS,
           selectTrigger: FIELD_CLASS,

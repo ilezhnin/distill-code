@@ -1,0 +1,173 @@
+import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { renderWithProviders } from "@/test/render";
+
+import { serializeAgentModelRanking } from "../../../lib/agentModelRanking";
+import { ModelRankingField } from "../ModelRankingField";
+
+if (!HTMLElement.prototype.hasPointerCapture) {
+  HTMLElement.prototype.hasPointerCapture = () => false;
+}
+
+if (!HTMLElement.prototype.scrollIntoView) {
+  HTMLElement.prototype.scrollIntoView = () => {};
+}
+
+const mocks = vi.hoisted(() => ({
+  acpProviders: [
+    { id: "claude-acp", label: "Claude Code" },
+    { id: "grok-acp", label: "Grok" },
+  ],
+  models: {
+    "claude-acp": [
+      { id: "claude-opus-5", displayName: "Claude Opus 5" },
+      { id: "claude-fable-5", displayName: "Claude Fable 5" },
+    ],
+    "grok-acp": [{ id: "grok-4-6", displayName: "Grok 4.6" }],
+  } as Record<string, { id: string; displayName: string }[]>,
+  rateLimits: [] as unknown[],
+}));
+
+vi.mock("@/features/agents/stores/agentStore", () => ({
+  useAgentStore: (selector: (state: { providers: unknown[] }) => unknown) =>
+    selector({ providers: mocks.acpProviders }),
+}));
+
+vi.mock("@/features/providers/hooks/useProviderModels", () => ({
+  useProviderModels: () => ({
+    getModelsForAgent: (platform: string) => mocks.models[platform] ?? [],
+    getError: () => null,
+  }),
+}));
+
+vi.mock("@/features/status/stores/providerRateLimitsStore", () => ({
+  useProviderRateLimitsStore: (
+    selector: (state: { snapshot?: { providers: unknown[] } }) => unknown,
+  ) => selector({ snapshot: { providers: mocks.rateLimits } }),
+}));
+
+function ranking(
+  entries: Array<{
+    platform: "claude-acp" | "grok-acp";
+    modelId: string;
+    label: string;
+    effort?: "xhigh";
+  }>,
+) {
+  return serializeAgentModelRanking({ version: 1, entries });
+}
+
+function renderField(
+  overrides: Omit<
+    Partial<Parameters<typeof ModelRankingField>[0]>,
+    "onChange"
+  > = {},
+) {
+  const onChange = vi.fn();
+  const props = {
+    value: "",
+    displayName: "Designer",
+    ...overrides,
+    onChange,
+  };
+  renderWithProviders(<ModelRankingField {...props} />);
+  return { ...props, onChange };
+}
+
+const OPUS_THEN_GROK = [
+  {
+    platform: "claude-acp" as const,
+    modelId: "claude-opus-5",
+    label: "Opus 5",
+    effort: "xhigh" as const,
+  },
+  { platform: "grok-acp" as const, modelId: "grok-4-6", label: "Grok 4.6" },
+];
+
+describe("ModelRankingField", () => {
+  beforeEach(() => {
+    mocks.rateLimits = [];
+  });
+
+  it("offers to fill an untuned agent from its role", async () => {
+    const user = userEvent.setup();
+    const { onChange } = renderField();
+
+    // An empty box teaches nothing; the role's built-in order is the start.
+    await user.click(screen.getByTestId("model-ranking-fill"));
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const written = JSON.parse(onChange.mock.calls[0][0] as string);
+    // "Designer" is a frontend-ui role: Opus, then Fable — Sol is not
+    // installed here, so it is not written into the list as a dead row.
+    expect(
+      written.entries.map((entry: { label: string }) => entry.label),
+    ).toEqual(["Opus 5", "Fable 5"]);
+    expect(written.entries[0].effort).toBe("xhigh");
+  });
+
+  it("shows what the ranking resolves to right now", () => {
+    renderField({ value: ranking(OPUS_THEN_GROK) });
+
+    expect(screen.getByTestId("model-ranking-preview")).toHaveTextContent(
+      "Opus 5",
+    );
+  });
+
+  it("names the skipped model when the top choice is out of room", () => {
+    mocks.rateLimits = [
+      {
+        provider: "claude-acp",
+        session: {
+          usedPercent: 100,
+          windowMinutes: 300,
+          resetsAt: null,
+          resetDescription: null,
+        },
+        weekly: null,
+        updatedAt: 1,
+        error: null,
+        status: "ok",
+        configured: true,
+      },
+    ];
+    renderField({ value: ranking(OPUS_THEN_GROK) });
+
+    const preview = screen.getByTestId("model-ranking-preview");
+    expect(preview).toHaveTextContent("Grok 4.6");
+    expect(preview).toHaveTextContent("Opus 5 is at its usage limit");
+  });
+
+  it("reorders on the operator's word, not on its own", async () => {
+    const user = userEvent.setup();
+    const { onChange } = renderField({ value: ranking(OPUS_THEN_GROK) });
+
+    const rows = screen.getAllByTestId("model-ranking-row");
+    expect(rows).toHaveLength(2);
+
+    // Row 1's own "move up" is disabled, so the enabled one belongs to row 2.
+    const moveUp = screen
+      .getAllByRole("button", { name: "Move up", hidden: true })
+      .find((button) => !button.hasAttribute("disabled"));
+    if (!moveUp) throw new Error("no enabled move-up control");
+    await user.click(moveUp);
+    const written = JSON.parse(onChange.mock.calls[0][0] as string);
+    expect(
+      written.entries.map((entry: { label: string }) => entry.label),
+    ).toEqual(["Grok 4.6", "Opus 5"]);
+  });
+
+  it("clears the property when the last entry goes", async () => {
+    const user = userEvent.setup();
+    const { onChange } = renderField({ value: ranking([OPUS_THEN_GROK[0]]) });
+
+    await user.click(
+      screen.getByRole("button", { name: "Remove", hidden: true }),
+    );
+    // A stored empty list would read as "ranked to nothing" rather than
+    // "never ranked", and would stop the role default from applying.
+    expect(onChange).toHaveBeenCalledWith(null);
+  });
+});

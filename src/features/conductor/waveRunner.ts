@@ -53,12 +53,14 @@ import {
 } from "./waveLifecycle";
 import {
   waveConcurrentPlanNoticeText,
+  waveStepModelNoticeText,
   waveRejectionNoticeText,
   waveReportDegradedNoticeText,
   waveSpawnFailureText,
 } from "./waveNotices";
 import { isWaveLive } from "./waveVerdict";
 import { buildWaveStepPrompt } from "./wavePrompts";
+import { resolveWaveStepTarget } from "./waveStepTarget";
 import { resetConductorTranscriptsForTests } from "./waveTranscripts";
 import {
   getWaveEngineState,
@@ -357,6 +359,22 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
 function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
   const key = spawnKey(wave.waveId, request.stepIndex);
   inFlightSpawns.add(key);
+  const stepTarget = resolveWaveStepTarget(request.step.role);
+  if (stepTarget && (stepTarget.fallback || stepTarget.nearLimit)) {
+    // D5: a step that is not running on its first choice says so, once, where
+    // the operator is already watching the wave.
+    appendConductorNotice(
+      wave.conductorSessionId,
+      waveStepModelNoticeText({
+        stepIndex: request.stepIndex,
+        name: roleDisplayName(request.step.role),
+        model: stepTarget.label,
+        nearLimit: stepTarget.nearLimit,
+      }),
+      false,
+      "warning",
+    );
+  }
   void (async () => {
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -376,6 +394,10 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           request.step.subtask,
         ),
         personaName: roleDisplayName(request.step.role),
+        // The role's own ranking picks the model, walked against the live
+        // limits; `undefined` means "inherit the conductor", which is what
+        // every wave child did before rankings reached this path.
+        ...(stepTarget ? { executionTarget: stepTarget.target } : {}),
         task: request.step.subtask,
         prompt: buildWaveStepPrompt(request.step, request.previousReports, {
           stepIndex: request.stepIndex,
