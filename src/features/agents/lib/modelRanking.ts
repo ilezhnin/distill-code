@@ -15,7 +15,12 @@
  * named that we cannot attribute to a tracked platform yet.
  */
 
-import type { AgentPlatformId } from "@/features/status/lib/rateLimitTypes";
+import type {
+  AgentPlatformId,
+  UsageSection,
+} from "@/features/status/lib/rateLimitTypes";
+import type { PlatformLimitState } from "@/features/status/lib/rateLimitWindows";
+import type { EmbeddedReasoningEffort } from "@/features/chat/lib/modelReasoningVariants";
 
 export type ModelPreferenceClassId =
   | "frontend-ui"
@@ -35,6 +40,18 @@ export interface RankedModelCandidate {
    * appear in the model's id or display name.
    */
   needles: string[][];
+  /**
+   * Reasoning effort this candidate is worth running at ("Opus 5 at xhigh").
+   * The ranking states the intent; composing it onto the session — an embedded
+   * `model[effort]` id for some harnesses, the ACP effort channel for others —
+   * belongs to the caller.
+   */
+  effort?: EmbeddedReasoningEffort;
+  /**
+   * Usage window that meters THIS model rather than the whole account (Fable's
+   * own weekly allowance). Windows scoped to other models never gate this one.
+   */
+  scopedWindow?: UsageSection["key"];
 }
 
 export interface ModelPreferenceClass {
@@ -46,16 +63,21 @@ const OPUS: RankedModelCandidate = {
   label: "Opus 5",
   platform: "claude-acp",
   needles: [["opus"]],
+  effort: "xhigh",
 };
 const FABLE: RankedModelCandidate = {
   label: "Fable 5",
   platform: "claude-acp",
   needles: [["fable"]],
+  effort: "xhigh",
+  // Fable spends its own weekly allowance on top of the account's windows.
+  scopedWindow: "fableWeekly",
 };
 const CODEX_SOL: RankedModelCandidate = {
   label: "Codex Sol",
   platform: "codex-acp",
   needles: [["sol"]],
+  effort: "xhigh",
 };
 const GROK_HEAVY: RankedModelCandidate = {
   label: "Grok 4.6 Heavy",
@@ -157,8 +179,15 @@ export interface RankedModelResolutionInput {
     harnessId: string;
     model: RankableModel;
   }>;
-  /** True when the platform's tightest rate-limit window is exhausted. */
-  isPlatformAtLimit: (platform: AgentPlatformId) => boolean;
+  /**
+   * How much room the platform has for THIS candidate. The candidate's own
+   * scoped window is passed through so a model is never blocked by an
+   * allowance it does not spend (Fable's window must not close Opus).
+   */
+  platformLimitState: (
+    platform: AgentPlatformId,
+    scopedWindow: UsageSection["key"] | undefined,
+  ) => PlatformLimitState;
 }
 
 export interface RankedModelChoice {
@@ -167,11 +196,15 @@ export interface RankedModelChoice {
   /** Zero-based rank of the picked candidate; >0 means a fallback happened. */
   rankIndex: number;
   label: string;
+  /** Effort the ranking asks for, when it names one. */
+  effort?: EmbeddedReasoningEffort;
+  /** True when only a near-limit candidate was left (see resolveRankedModel). */
+  nearLimit?: boolean;
 }
 
 export interface RankedModelSkip {
   label: string;
-  reason: "at-limit" | "not-installed";
+  reason: "at-limit" | "near-limit" | "not-installed";
 }
 
 export interface RankedModelResolution {
@@ -203,13 +236,56 @@ export function resolveRankedModel(
   classId: ModelPreferenceClassId,
   input: RankedModelResolutionInput,
 ): RankedModelResolution {
+  return resolveRankedCandidates(
+    MODEL_PREFERENCE_CLASSES[classId].ranking,
+    input,
+  );
+}
+
+/**
+ * The same resolution over any ordered list of candidates — a built-in class,
+ * or the list an operator wrote for one agent.
+ */
+export function resolveRankedCandidates(
+  ranking: readonly RankedModelCandidate[],
+  input: RankedModelResolutionInput,
+): RankedModelResolution {
+  // Two passes on purpose. The first refuses a platform that is merely close
+  // to its limit, because a run started at 97% of a weekly allowance is a run
+  // that gets cut off mid-flight. The second accepts one anyway when the whole
+  // ranking is that full: a near-limit model the operator ranked is a better
+  // answer than the untargeted default the caller would otherwise fall back
+  // to, and the choice says it settled so the caller can show that.
+  const strict = attemptRanking(ranking, input, false);
+  if (strict.choice) return strict;
+  const relaxed = attemptRanking(ranking, input, true);
+  if (relaxed.choice) {
+    return {
+      choice: { ...relaxed.choice, nearLimit: true },
+      skipped: strict.skipped,
+    };
+  }
+  return strict;
+}
+
+function attemptRanking(
+  ranking: readonly RankedModelCandidate[],
+  input: RankedModelResolutionInput,
+  acceptNearLimit: boolean,
+): RankedModelResolution {
   const skipped: RankedModelSkip[] = [];
-  const ranking = MODEL_PREFERENCE_CLASSES[classId].ranking;
 
   for (const [rankIndex, candidate] of ranking.entries()) {
     if (candidate.platform) {
-      if (input.isPlatformAtLimit(candidate.platform)) {
-        skipped.push({ label: candidate.label, reason: "at-limit" });
+      const limit = input.platformLimitState(
+        candidate.platform,
+        candidate.scopedWindow,
+      );
+      if (
+        limit === "at-limit" ||
+        (limit === "near-limit" && !acceptNearLimit)
+      ) {
+        skipped.push({ label: candidate.label, reason: limit });
         continue;
       }
       const model = input
@@ -222,6 +298,7 @@ export function resolveRankedModel(
             model,
             rankIndex,
             label: candidate.label,
+            ...(candidate.effort ? { effort: candidate.effort } : {}),
           },
           skipped,
         };
@@ -240,6 +317,7 @@ export function resolveRankedModel(
           model: entry.model,
           rankIndex,
           label: candidate.label,
+          ...(candidate.effort ? { effort: candidate.effort } : {}),
         },
         skipped,
       };

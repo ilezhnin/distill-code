@@ -6,6 +6,7 @@ import {
   getTightestUsageSection,
   getUsageSections,
   isProviderVisible,
+  platformLimitState,
   providerMaxUsed,
 } from "../rateLimitWindows";
 
@@ -91,5 +92,56 @@ describe("rateLimitWindows", () => {
     expect(formatDuration(5 * 24 * 60 * 60 * 1000 + 17 * 60 * 60 * 1000)).toBe(
       "5d 17h",
     );
+  });
+
+  describe("platformLimitState", () => {
+    const window = (usedPercent: number) => ({
+      usedPercent,
+      windowMinutes: 10080,
+      resetsAt: null,
+      resetDescription: null,
+    });
+
+    it("ignores a window scoped to another model", () => {
+      // Fable's weekly allowance is spent; the account's own windows are not.
+      const providers = [
+        limits({
+          session: window(10),
+          weekly: window(20),
+          fableWeekly: window(100),
+        }),
+      ];
+
+      expect(platformLimitState(providers, "claude-acp")).toBe("clear");
+      expect(
+        platformLimitState(providers, "claude-acp", {
+          scopedWindow: "fableWeekly",
+        }),
+      ).toBe("at-limit");
+    });
+
+    it("reports a shared window that is spent for every model on it", () => {
+      const providers = [limits({ session: window(100), weekly: window(20) })];
+
+      expect(platformLimitState(providers, "claude-acp")).toBe("at-limit");
+      expect(
+        platformLimitState(providers, "claude-acp", {
+          scopedWindow: "fableWeekly",
+        }),
+      ).toBe("at-limit");
+    });
+
+    it("calls a nearly-full window near-limit, not clear", () => {
+      const providers = [limits({ session: window(93), weekly: window(20) })];
+
+      expect(platformLimitState(providers, "claude-acp")).toBe("near-limit");
+      expect(
+        platformLimitState(providers, "claude-acp", { nearLimitPercent: 95 }),
+      ).toBe("clear");
+    });
+
+    it("treats an unknown platform as clear", () => {
+      expect(platformLimitState([], "grok-acp")).toBe("clear");
+    });
   });
 });

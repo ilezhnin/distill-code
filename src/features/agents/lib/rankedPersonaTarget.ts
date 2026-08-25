@@ -18,13 +18,17 @@ import {
   normalizeSessionExecutionTarget,
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
-import { isPlatformAtLimit } from "@/features/status/lib/rateLimitWindows";
+import { platformLimitState } from "@/features/status/lib/rateLimitWindows";
 import type { ProviderRateLimits } from "@/features/status/lib/rateLimitTypes";
 import type { Persona } from "@/shared/types/agents";
 
 import {
+  candidatesForRankingSource,
+  parseAgentRankingSource,
+} from "./agentModelRanking";
+import {
   modelPreferenceClassForPersona,
-  resolveRankedModel,
+  resolveRankedCandidates,
   type RankableModel,
   type RankedModelResolution,
 } from "./modelRanking";
@@ -45,22 +49,32 @@ export function rankedPersonaExecutionTarget(
   persona: Pick<Persona, "displayName" | "modelRanking">,
   context: RankedPersonaTargetContext,
 ): RankedPersonaTarget | undefined {
-  const classId = modelPreferenceClassForPersona(persona);
-  if (!classId) return undefined;
+  // The agent's own list wins; the bundled-slug class is the fallback, so an
+  // agent nobody has tuned still runs on the ranking its role deserves.
+  const source =
+    parseAgentRankingSource(persona.modelRanking) ??
+    (() => {
+      const classId = modelPreferenceClassForPersona(persona);
+      return classId ? ({ kind: "class", classId } as const) : undefined;
+    })();
+  if (!source) return undefined;
 
   const installed = new Set(context.providers.map((provider) => provider.id));
-  const resolution = resolveRankedModel(classId, {
-    modelsForPlatform: (platform) =>
-      installed.has(platform) ? context.getModelsForHarness(platform) : [],
-    allModels: () =>
-      context.providers.flatMap((provider) =>
-        context
-          .getModelsForHarness(provider.id)
-          .map((model) => ({ harnessId: provider.id, model })),
-      ),
-    isPlatformAtLimit: (platform) =>
-      isPlatformAtLimit(context.rateLimits, platform),
-  });
+  const resolution = resolveRankedCandidates(
+    candidatesForRankingSource(source),
+    {
+      modelsForPlatform: (platform) =>
+        installed.has(platform) ? context.getModelsForHarness(platform) : [],
+      allModels: () =>
+        context.providers.flatMap((provider) =>
+          context
+            .getModelsForHarness(provider.id)
+            .map((model) => ({ harnessId: provider.id, model })),
+        ),
+      platformLimitState: (platform, scopedWindow) =>
+        platformLimitState(context.rateLimits, platform, { scopedWindow }),
+    },
+  );
   if (!resolution.choice) return undefined;
 
   const { harnessId, model } = resolution.choice;

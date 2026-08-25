@@ -251,6 +251,8 @@
   },
   "modelRanking": {
     "fallbackAtLimit": "{{agent}}: {{skipped}} is at its usage limit — using {{picked}} instead",
-    "fallbackMissing": "{{agent}}: {{skipped}} is not installed — using {{picked}} instead"
+    "fallbackMissing": "{{agent}}: {{skipped}} is not installed — using {{picked}} instead",
+    "fallbackNearLimit": "{{agent}}: {{skipped}} is close to its usage limit — using {{picked}} instead",
+    "pickedNearLimit": "{{agent}}: every ranked model is close to its usage limit — running {{picked}} anyway"
   }
 }

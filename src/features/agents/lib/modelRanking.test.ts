@@ -36,7 +36,7 @@ function input(
       Object.entries(byPlatform).flatMap(([harnessId, models]) =>
         models.map((model) => ({ harnessId, model })),
       ),
-    isPlatformAtLimit: () => false,
+    platformLimitState: () => "clear",
     ...overrides,
   };
 }
@@ -54,12 +54,77 @@ describe("resolveRankedModel", () => {
   it("falls through a platform at its usage limit, and says so", () => {
     const result = resolveRankedModel(
       "one-shot",
-      input({ isPlatformAtLimit: (platform) => platform === "claude-acp" }),
+      input({
+        platformLimitState: (platform) =>
+          platform === "claude-acp" ? "at-limit" : "clear",
+      }),
     );
     // one-shot: Fable → Sol → Opus → Grok; both claude candidates are gated.
     expect(result.choice?.label).toBe("Codex Sol");
     expect(result.choice?.rankIndex).toBe(1);
     expect(result.skipped).toEqual([{ label: "Fable 5", reason: "at-limit" }]);
+  });
+
+  it("keeps Opus when only Fable's own weekly window is spent", () => {
+    // The operator's case, verbatim: "if Fable is in cooldown and the next
+    // choice is Opus and the Anthropic account still allows it, take Opus".
+    // Both live on claude-acp, so a per-platform verdict locked Opus out too.
+    const result = resolveRankedModel(
+      "one-shot",
+      input({
+        platformLimitState: (platform, scopedWindow) =>
+          platform === "claude-acp" && scopedWindow === "fableWeekly"
+            ? "at-limit"
+            : "clear",
+      }),
+    );
+
+    // one-shot: Fable → Sol → Opus → Grok. Fable is out on its own window;
+    // Sol is next and still clear, so it wins — but Opus was never gated.
+    expect(result.choice?.label).toBe("Codex Sol");
+    expect(result.skipped).toEqual([{ label: "Fable 5", reason: "at-limit" }]);
+  });
+
+  it("passes over a platform that is merely close to its limit", () => {
+    const result = resolveRankedModel(
+      "frontend-ui",
+      input({
+        platformLimitState: (platform) =>
+          platform === "claude-acp" ? "near-limit" : "clear",
+      }),
+    );
+
+    // frontend-ui: Opus → Fable → Sol. Both claude candidates are near their
+    // limit, so the work goes to Sol rather than being cut off mid-flight.
+    expect(result.choice?.label).toBe("Codex Sol");
+    expect(result.choice?.nearLimit).toBeUndefined();
+    expect(result.skipped).toEqual([
+      { label: "Opus 5", reason: "near-limit" },
+      { label: "Fable 5", reason: "near-limit" },
+    ]);
+  });
+
+  it("takes a near-limit model rather than nothing, and says it settled", () => {
+    const result = resolveRankedModel(
+      "frontend-ui",
+      input({ platformLimitState: () => "near-limit" }),
+    );
+
+    // Every candidate is close to its limit. Falling through to the caller's
+    // untargeted default would be worse than the model the operator ranked.
+    expect(result.choice?.label).toBe("Opus 5");
+    expect(result.choice?.nearLimit).toBe(true);
+    // The skips reported are the strict pass — what it would have used.
+    expect(result.skipped.map((skip) => skip.reason)).toEqual([
+      "near-limit",
+      "near-limit",
+      "near-limit",
+    ]);
+  });
+
+  it("carries the effort the ranking asks for", () => {
+    const result = resolveRankedModel("frontend-ui", input());
+    expect(result.choice?.effort).toBe("xhigh");
   });
 
   it("falls through a model that is not installed", () => {
