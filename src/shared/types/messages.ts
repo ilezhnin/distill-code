@@ -227,6 +227,16 @@ export type SystemNotificationAction =
       type: "retryWaveDigest";
       sessionId: string;
       waveId: string;
+    }
+  | {
+      /**
+       * Send again a message whose turn was killed in flight. Manual on
+       * purpose: the agent may have finished real work before it died, and
+       * re-running it unasked could repeat a commit or a deletion.
+       */
+      type: "resendMessage";
+      sessionId: string;
+      text: string;
     };
 
 export interface SystemNotificationContent {

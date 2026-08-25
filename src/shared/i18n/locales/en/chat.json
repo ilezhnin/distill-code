@@ -808,5 +808,9 @@
   },
   "agentBuilder": {
     "hideChat": "Hide chat"
+  },
+  "interruptedTurn": {
+    "notice": "This message was never answered — the run was interrupted before the agent replied. It was not sent again on its own: the agent may have finished real work before it stopped.",
+    "resend": "Send it again"
   }
 }
