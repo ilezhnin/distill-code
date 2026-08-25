@@ -88,6 +88,20 @@ describe("ReviewQueuePanel", () => {
     );
   });
 
+  it("shows a stopped agent quietly instead of as an alarm", () => {
+    seedGraph(
+      [node({ sessionId: "w1", status: "cancelled" })],
+      [report({ runId: "run-w1", status: "cancelled", needsOperator: true })],
+    );
+
+    renderWithProviders(<ReviewQueuePanel onOpenSession={vi.fn()} />);
+
+    expect(screen.getByTestId("review-item")).toHaveAttribute(
+      "data-outcome",
+      "stopped",
+    );
+  });
+
   it("marks a conductor that is waiting on a person", () => {
     seedGraph(
       [node({ sessionId: "w1" })],
