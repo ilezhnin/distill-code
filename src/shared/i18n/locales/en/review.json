@@ -5,6 +5,7 @@
   "outcome": {
     "needsOperator": "{{needsOperator}} waiting on you",
     "failed": "{{failed}} failed",
-    "completed": "{{completed}} finished"
+    "completed": "{{completed}} finished",
+    "stopped": "{{stopped}} stopped"
   }
 }
