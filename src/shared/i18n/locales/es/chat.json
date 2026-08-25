@@ -520,7 +520,9 @@
       },
       "concurrent": {
         "title": "Este chat ya tiene una ola en curso, así que el plan nuevo no se inició.",
-        "body": "Solo se ejecuta una ola por conductor a la vez: una segunda pondría más ejecutores en la misma carpeta de trabajo sin coordinación entre ellos. Espera a que termine la ola en curso, o pídele su estado; después vuelve a enviar esta petición."
+        "body": "Solo se ejecuta una ola por conductor a la vez: una segunda pondría más ejecutores en la misma carpeta de trabajo sin coordinación entre ellos. Espera a que termine la ola en curso, o pídele su estado; después vuelve a enviar esta petición.",
+        "refusedCount_one": "Se rechazó {{count}} plan mientras esta ola estaba en marcha.",
+        "refusedCount_other": "Se rechazaron {{count}} planes mientras esta ola estaba en marcha."
       },
       "verdict": {
         "needsOperatorTitle": "Esta ola se detuvo sin una decisión, así que queda en tus manos.",
@@ -543,14 +545,14 @@
           "needsOperator": "Devolvió esto al operador."
         }
       },
-      "reportDegraded": "El paso {{step}} ({{name}}) termin\u00f3 sin informe. La ola contin\u00faa con un comod\u00edn de \u00abresultado desconocido\u00bb: los pasos posteriores y el resumen ver\u00e1n ese comod\u00edn, no lo que ese ejecutor hizo realmente. Su propio chat es el \u00fanico registro.",
+      "reportDegraded": "El paso {{step}} ({{name}}) terminó sin informe. La ola continúa con un comodín de «resultado desconocido»: los pasos posteriores y el resumen verán ese comodín, no lo que ese ejecutor hizo realmente. Su propio chat es el único registro.",
       "stop": "Detener la ola",
       "digest": {
         "cardTitle": "Informe de la brigada entregado en este chat",
         "workerCount_one": "1 ejecutor",
         "workerCount_other": "{{count}} ejecutores",
-        "expand": "Ver informe",
-        "collapse": "Ocultar informe",
+        "expand": "Desplegar",
+        "collapse": "Plegar",
         "deliveryFailed": "No se pudo entregar el informe de la brigada en este chat. Queda abajo para que no se pierda nada."
       }
     },

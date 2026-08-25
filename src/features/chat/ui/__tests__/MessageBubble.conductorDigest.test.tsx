@@ -9,6 +9,7 @@ import { buildWaveDigest } from "@/features/conductor/waveDigest";
 import type { Message } from "@/shared/types/messages";
 
 import { MessageBubble } from "../MessageBubble";
+import { i18n } from "@/shared/i18n";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openPath: vi.fn(),
@@ -72,7 +73,11 @@ describe("digest messages render as a compact card", () => {
   it("still lets the operator read what the brigade actually said", () => {
     renderBubble(digestMessage);
 
-    fireEvent.click(screen.getByRole("button", { name: "Show report" }));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: i18n.t("chat:conductor.wave.digest.expand"),
+      }),
+    );
     expect(screen.getByTestId("conductor-digest-card")).toHaveTextContent(
       "Found three callers",
     );
