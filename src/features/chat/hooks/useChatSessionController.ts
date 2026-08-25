@@ -1236,24 +1236,31 @@ export function useChatSessionController({
         : undefined;
       if (ranked) {
         const { resolution } = ranked;
-        if (
-          options?.notify &&
-          resolution.choice &&
-          resolution.choice.rankIndex > 0
-        ) {
+        if (options?.notify && resolution.choice) {
           const skipped = resolution.skipped[0];
-          toast.info(
-            i18n.t(
-              skipped?.reason === "at-limit"
-                ? "agents:modelRanking.fallbackAtLimit"
-                : "agents:modelRanking.fallbackMissing",
-              {
+          const reasonKey =
+            skipped?.reason === "at-limit"
+              ? "agents:modelRanking.fallbackAtLimit"
+              : skipped?.reason === "near-limit"
+                ? "agents:modelRanking.fallbackNearLimit"
+                : "agents:modelRanking.fallbackMissing";
+          // Settling for a near-limit model is its own thing to say: nothing
+          // was skipped over, the whole ranking is simply that full, and the
+          // operator should know the run may be cut off (D5).
+          const key = resolution.choice.nearLimit
+            ? "agents:modelRanking.pickedNearLimit"
+            : resolution.choice.rankIndex > 0
+              ? reasonKey
+              : null;
+          if (key) {
+            toast.info(
+              i18n.t(key, {
                 agent: persona.displayName,
                 skipped: skipped?.label ?? "",
                 picked: resolution.choice.label,
-              },
-            ),
-          );
+              }),
+            );
+          }
         }
         return ranked.target;
       }

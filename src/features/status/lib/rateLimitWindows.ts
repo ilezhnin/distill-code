@@ -150,6 +150,63 @@ export function usageTextClass(usedPercent: number): string {
  * platform with no usage data is NOT at limit: unknown must never demote a
  * model silently.
  */
+/**
+ * Usage windows that meter ONE model rather than the whole account.
+ *
+ * Anthropic bills Fable against its own weekly allowance on top of the
+ * account's shared windows. Collapsing every window into one "is this platform
+ * at its limit" answer therefore locks Opus out the moment Fable's own window
+ * runs dry — which is exactly the case the operator called out: "if Fable is
+ * in cooldown and the next choice is Opus and the Anthropic account still
+ * allows it, take Opus".
+ */
+export const MODEL_SCOPED_WINDOW_KEYS: readonly UsageSection["key"][] = [
+  "fableWeekly",
+];
+
+/**
+ * How full a window has to be before new work should go elsewhere.
+ *
+ * Below 100 on purpose: a run started at 97% of a weekly allowance is a run
+ * that will be cut off mid-flight, and a wave step killed by a quota is worse
+ * than the same step running on the next model down the ranking.
+ */
+export const NEAR_LIMIT_PERCENT = 90;
+
+export type PlatformLimitState = "clear" | "near-limit" | "at-limit";
+
+/**
+ * How much room one candidate has on its platform.
+ *
+ * `scopedWindow` names the model-scoped window that meters this candidate (see
+ * MODEL_SCOPED_WINDOW_KEYS); windows scoped to OTHER models are ignored, so a
+ * model is never blocked by an allowance it does not spend.
+ */
+export function platformLimitState(
+  providers: readonly ProviderRateLimits[],
+  platform: string,
+  options: {
+    scopedWindow?: UsageSection["key"];
+    nearLimitPercent?: number;
+  } = {},
+): PlatformLimitState {
+  const entry = providers.find((provider) => provider.provider === platform);
+  if (!entry) return "clear";
+  const nearLimit = options.nearLimitPercent ?? NEAR_LIMIT_PERCENT;
+  const applicable = getUsageSections(entry).filter(
+    (section) =>
+      !MODEL_SCOPED_WINDOW_KEYS.includes(section.key) ||
+      section.key === options.scopedWindow,
+  );
+  const tightest = applicable.reduce(
+    (highest, section) =>
+      Math.max(highest, clampUsedPercent(section.window.usedPercent)),
+    0,
+  );
+  if (tightest >= 100) return "at-limit";
+  return tightest >= nearLimit ? "near-limit" : "clear";
+}
+
 export function isPlatformAtLimit(
   providers: readonly ProviderRateLimits[],
   platform: string,
