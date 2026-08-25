@@ -40,6 +40,7 @@ import {
 import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspaceContextPrompt";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import { composeMemorySection } from "@/features/memory/lib/memoryPrompt";
+import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import {
   type ChatSession,
@@ -352,16 +353,26 @@ export async function sendQueuedPromptToExistingSessionInBackground(
         return [];
       }),
     ]);
+    // A wave child is scheduled and reported by its conductor, and its own
+    // prompt already ends "with this report block and no extra commentary
+    // after it". Handing it the planner and memory protocols would ask it to
+    // contradict that, and would give a one-shot task runner write access to
+    // the operator's list and memory — both belong to the conductor's loop.
+    const operatorProtocols = isWaveManagedSession(sessionId)
+      ? undefined
+      : composeSystemPrompt(
+          composeMemorySection(
+            useMemoryStore.getState().entries,
+            session?.projectId ?? null,
+          ),
+          PLANNER_PROTOCOL_PROMPT,
+        );
     const workspaceContextPrompt = session
       ? composeSystemPrompt(
           formatIncludedWorkspacesPrompt(session),
           formatWorkspaceInstructionsPrompt(instructionFiles),
           formatAvailableSkillsCatalogPrompt(skills),
-          composeMemorySection(
-            useMemoryStore.getState().entries,
-            session.projectId ?? null,
-          ),
-          PLANNER_PROTOCOL_PROMPT,
+          operatorProtocols,
         )
       : undefined;
     const sessionBeforeSend = useChatSessionStore

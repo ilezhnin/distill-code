@@ -42,6 +42,7 @@ import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspace
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import { composeMemorySection } from "@/features/memory/lib/memoryPrompt";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { getSkillProviderCapabilities } from "@/features/chat/lib/skillProviderCapabilities";
 import {
   fetchBerdAppSkills,
@@ -741,9 +742,21 @@ export function useChatSessionController({
   // session's own project: a fact learned in one codebase must not follow the
   // operator into an unrelated chat.
   const memoryEntries = useMemoryStore((state) => state.entries);
-  const memorySection = useMemo(
-    () => composeMemorySection(memoryEntries, effectiveProjectId),
-    [memoryEntries, effectiveProjectId],
+  // A wave child answers to its conductor, not to the operator's list: its
+  // own prompt ends "with this report block and no extra commentary after
+  // it", and a one-shot task runner has no business writing to memory.
+  const isWaveChild = useConductorGraphStore((state) =>
+    sessionId ? state.nodesById[sessionId]?.managedBy === "wave" : false,
+  );
+  const operatorProtocols = useMemo(
+    () =>
+      isWaveChild
+        ? undefined
+        : composeSystemPrompt(
+            composeMemorySection(memoryEntries, effectiveProjectId),
+            PLANNER_PROTOCOL_PROMPT,
+          ),
+    [effectiveProjectId, isWaveChild, memoryEntries],
   );
   const effectiveSystemPrompt = useMemo(
     () =>
@@ -753,8 +766,7 @@ export function useChatSessionController({
         workspaceInstructionsPrompt,
         appSkillsCatalogPrompt,
         availableSkillsCatalogPrompt,
-        memorySection,
-        PLANNER_PROTOCOL_PROMPT,
+        operatorProtocols,
       ),
     [
       selectedPersona,
@@ -762,7 +774,7 @@ export function useChatSessionController({
       workspaceInstructionsPrompt,
       appSkillsCatalogPrompt,
       availableSkillsCatalogPrompt,
-      memorySection,
+      operatorProtocols,
     ],
   );
   const skillProviderCapabilities = useMemo(
