@@ -251,6 +251,8 @@
   },
   "modelRanking": {
     "fallbackAtLimit": "{{agent}}: {{skipped}} alcanzó su límite de uso — se usará {{picked}}",
-    "fallbackMissing": "{{agent}}: {{skipped}} no está instalado — se usará {{picked}}"
+    "fallbackMissing": "{{agent}}: {{skipped}} no está instalado — se usará {{picked}}",
+    "fallbackNearLimit": "{{agent}}: {{skipped}} está cerca de su límite de uso; se usa {{picked}} en su lugar",
+    "pickedNearLimit": "{{agent}}: todos los modelos del ranking están cerca de su límite; se ejecuta {{picked}} de todos modos"
   }
 }
