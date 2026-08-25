@@ -595,6 +595,35 @@ describe("waveRunner", () => {
     expect(noticeTexts()).toHaveLength(1);
   });
 
+  it("keeps one refusal card per wave and counts the plans it refused", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    // A message queue drained after a restart delivers several requests at
+    // once, and the conductor answers each of them with a plan.
+    for (const planId of ["plan-2", "plan-3", "plan-4"]) {
+      setTranscript([...conductorMessages(), assistant(planId, TWO_STEP_PLAN)]);
+      runWaveEngineTick();
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+
+    // Every plan is still refused and tombstoned — that is the audit fact…
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+    for (const planId of ["plan-2", "plan-3", "plan-4"]) {
+      expect(hasWaveTombstone(getWaveEngineState(), planId)).toBe(true);
+    }
+    // …but the operator reads one card, carrying the count, not three walls.
+    expect(noticeTexts()).toHaveLength(1);
+    expect(noticeTexts()[0]).toContain(
+      i18n.t("chat:conductor.wave.concurrent.refusedCount", { count: 3 }),
+    );
+  });
+
   it("admits a new plan once the conductor's wave is no longer live", async () => {
     useConductorGraphStore.getState().registerNode(conductorNode());
     setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);

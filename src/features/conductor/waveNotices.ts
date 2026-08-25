@@ -121,11 +121,24 @@ export function waveClosureNoticeText(closure: WaveClosure): string {
  * happened, that nothing was spawned, and what to do instead: wait for the
  * wave to close, or ask the running wave for a status.
  */
-export function waveConcurrentPlanNoticeText(): string {
-  return [
+export function waveConcurrentPlanNoticeText(refusedCount = 1): string {
+  const lines = [
     i18n.t("chat:conductor.wave.concurrent.title"),
     i18n.t("chat:conductor.wave.concurrent.body"),
-  ].join("\n\n");
+  ];
+  // One card per wave, not per refused plan: the rule is the same every time,
+  // and a drained message queue can turn "say it once per plan" into seven
+  // identical walls of text in a row. The count is what actually differs, and
+  // it is the part the operator needs — without it they cannot tell how many
+  // of their requests were dropped while the wave ran.
+  if (refusedCount > 1) {
+    lines.push(
+      i18n.t("chat:conductor.wave.concurrent.refusedCount", {
+        count: refusedCount,
+      }),
+    );
+  }
+  return lines.join("\n\n");
 }
 
 /** Label of the manual verdict re-ask (Q5). There is no auto-retry. */
