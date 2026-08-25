@@ -942,7 +942,16 @@ export const MessageBubble = memo(function MessageBubble({
           message.id,
         )
       : NO_BRIGADE_NODES;
-  const showConductorFooter = conductorFooterNodes.length > 0;
+  // A plan with nothing spawned yet still has a row to draw: the placeholder
+  // chips are the operator's only view of what they just agreed to, and the
+  // window where none of it has started is exactly when they look.
+  const conductorFooterPlanSteps =
+    conductorTranscript.wavePlanStepsByMessageId.get(message.id);
+  const showConductorFooter =
+    conductorFooterNodes.length > 0 ||
+    (conductorTranscript.enabled &&
+      canHostMessageActions &&
+      (conductorFooterPlanSteps?.length ?? 0) > 0);
   // In-harness subagents of this turn. They have no session and no graph node,
   // so they are read straight off the tool calls; `renderingContext` is the
   // whole assistant message even when this bubble renders only its answer.
@@ -1258,9 +1267,7 @@ export const MessageBubble = memo(function MessageBubble({
           <ConductorAgentFooter
             nodes={conductorFooterNodes}
             reportsByRunId={conductorTranscript.reportsByRunId}
-            planSteps={conductorTranscript.wavePlanStepsByMessageId.get(
-              message.id,
-            )}
+            planSteps={conductorFooterPlanSteps}
             onOpen={conductorTranscript.onOpenChild}
             onStop={conductorTranscript.onStopChild}
           />
