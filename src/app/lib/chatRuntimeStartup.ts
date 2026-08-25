@@ -1,5 +1,6 @@
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import { hydrateDistillStores } from "@/features/settings/lib/distillStoreHydration";
 import { loadPersistedMessageQueues } from "@/features/chat/stores/queuePersistence";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { getCuratedAgentProviders } from "@/features/providers/curatedProviders";
@@ -134,6 +135,11 @@ async function startChatRuntime(
   const tConn = performance.now();
   registerChatSessionConfigSnapshotHandlers();
   setNotificationHandler(notificationHandler);
+  // Not awaited: the planner and memory are read from disk, and nothing in the
+  // rest of startup depends on them. Each store stays empty and refuses to
+  // write until its own read lands, so a slow disk delays those panels rather
+  // than the chat.
+  void hydrateDistillStores();
   if (options.hydrateMessageQueues !== false) {
     const persistedMessageQueues = await loadPersistedMessageQueues();
     useChatStore.getState().replaceQueuedMessages(persistedMessageQueues);

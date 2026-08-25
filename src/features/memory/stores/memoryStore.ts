@@ -1,17 +1,21 @@
 /**
  * Where remembered facts live.
  *
- * localStorage, like the planner and the conductor's stores: this is the
- * operator's own state, it must survive a reload, and it must never be the
- * reason the app fails to start. Reading salvages rather than validates.
+ * A JSON document in the operator's Distill folder, beside their projects and
+ * sessions. It began in `localStorage` for want of a way to write a file, and
+ * that was the wrong home for the one thing in the app that is supposed to
+ * outlive everything: memory that a backup cannot see and a reinstall erases
+ * is not memory. An old browser copy is migrated on first read, then removed.
  *
- * Deliberately not a file on disk yet. A file would be editable outside the
- * app and would survive a reinstall, but writing one needs a backend command
- * the renderer does not have, and a memory the operator cannot see or delete
- * from the app would be worse than one that lives here.
+ * Reading salvages rather than validates. The store starts empty and is
+ * filled by `hydrateMemoryStore`; nothing is written back before that read
+ * lands, because an empty list persisted over a full one during startup would
+ * quietly forget everything.
  */
 
 import { create } from "zustand";
+
+import { distillDocument } from "@/shared/lib/distillDocument";
 
 import type { MemoryFenceRequest } from "../lib/memoryFence";
 import {
@@ -22,6 +26,10 @@ import {
   type MemoryScope,
 } from "../lib/memoryEntry";
 
+/** Path under the Distill root. */
+export const MEMORY_DOCUMENT_PATH = "memory.json";
+
+/** Where memory lived before the move; read once, then removed. */
 export const MEMORY_STORAGE_KEY = "goose:memory";
 
 /** Upper bound on stored memories. Oldest go first. */
@@ -33,6 +41,8 @@ export const MAX_APPLIED_MEMORY_MESSAGE_IDS = 2000;
 interface MemoryState {
   entries: MemoryEntry[];
   appliedMessageIds: string[];
+  /** False until the stored document has been read. Writes wait for it. */
+  hydrated: boolean;
 }
 
 export interface MemoryDraft {
@@ -133,17 +143,6 @@ export function capEntries(entries: MemoryEntry[]): MemoryEntry[] {
   return entries.filter((entry) => keep.has(entry.id));
 }
 
-function persist(state: MemoryState): void {
-  try {
-    window.localStorage.setItem(
-      MEMORY_STORAGE_KEY,
-      JSON.stringify({ version: 1, ...state }),
-    );
-  } catch {
-    // localStorage may be unavailable; memory still works for this session.
-  }
-}
-
 function commit(
   entries: MemoryEntry[],
   appliedMessageIds: string[],
@@ -151,23 +150,43 @@ function commit(
   const next = {
     entries: capEntries(entries),
     appliedMessageIds: appliedMessageIds.slice(-MAX_APPLIED_MEMORY_MESSAGE_IDS),
+    hydrated: true,
   };
-  persist(next);
+  if (useMemoryStore.getState().hydrated) document.write(next);
   return next;
 }
 
-function loadPersistedState(): MemoryState {
-  try {
-    const raw = window.localStorage.getItem(MEMORY_STORAGE_KEY);
-    if (!raw) return { entries: [], appliedMessageIds: [] };
-    const parsed = JSON.parse(raw);
-    return {
-      entries: capEntries(parseMemoryEntries(parsed)),
-      appliedMessageIds: parseAppliedMemoryMessageIds(parsed),
-    };
-  } catch {
-    return { entries: [], appliedMessageIds: [] };
-  }
+function stateFromDocument(parsed: unknown): MemoryState {
+  return {
+    entries: capEntries(parseMemoryEntries(parsed)),
+    appliedMessageIds: parseAppliedMemoryMessageIds(parsed),
+    hydrated: true,
+  };
+}
+
+const document = distillDocument<MemoryState>({
+  path: MEMORY_DOCUMENT_PATH,
+  legacyStorageKey: MEMORY_STORAGE_KEY,
+  parse: stateFromDocument,
+  serialize: (state) => ({
+    version: 1,
+    entries: state.entries,
+    appliedMessageIds: state.appliedMessageIds,
+  }),
+});
+
+/** Fills the store from disk. Called once at startup; a second call is a no-op. */
+export async function hydrateMemoryStore(): Promise<void> {
+  if (useMemoryStore.getState().hydrated) return;
+  const stored = await document.read();
+  useMemoryStore.setState(
+    stored ?? { entries: [], appliedMessageIds: [], hydrated: true },
+  );
+}
+
+/** Waits for a queued write to land. For tests and for shutdown. */
+export function flushMemoryWrites(): Promise<void> {
+  return document.flush();
 }
 
 function newMemoryId(): string {
@@ -190,7 +209,9 @@ function existingMatch(
 }
 
 export const useMemoryStore = create<MemoryStore>((set, get) => ({
-  ...loadPersistedState(),
+  entries: [],
+  appliedMessageIds: [],
+  hydrated: false,
 
   remember: (draft, nowMs = Date.now()) => {
     const text = normalizeMemoryText(draft.text);
