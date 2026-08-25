@@ -18,7 +18,10 @@
 
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
-import { createSystemNotificationMessage } from "@/shared/types/messages";
+import {
+  createSystemNotificationMessage,
+  type Message,
+} from "@/shared/types/messages";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
 import { stopOrchestratorSession } from "./orchestratorControls";
@@ -153,27 +156,86 @@ function appendConductorNotice(
   retryAction: boolean,
   type: "error" | "warning" = "error",
   retryDetail?: string,
+): string {
+  const message = createSystemNotificationMessage(
+    text,
+    type,
+    retryAction
+      ? { type: "retryWavePlan", sessionId, detail: retryDetail }
+      : undefined,
+  );
+  useChatStore.getState().addMessage(sessionId, message);
+  return message.id;
+}
+
+/**
+ * The concurrent-refusal card of one live wave, and how many plans it has
+ * refused so far.
+ *
+ * The refusal used to be posted per refused plan, which is right as an audit
+ * fact — every plan really was tombstoned — and wrong as something to read: a
+ * message queue drained after a restart turns "one card per plan" into seven
+ * identical walls of text in a row (seen 2026-08-25). One card per wave says
+ * the rule once and carries the only thing that changes, the count.
+ *
+ * In memory on purpose: after a restart the wave may still be live and a fresh
+ * card is the honest outcome — this process never posted the earlier one, and
+ * a stale message id would silently update nothing.
+ */
+const concurrentRefusalNotices = new Map<
+  string,
+  { sessionId: string; messageId: string; count: number }
+>();
+
+function withNoticeText(message: Message, text: string): Message {
+  return {
+    ...message,
+    content: message.content.map((part) =>
+      part.type === "systemNotification" ? { ...part, text } : part,
+    ),
+  };
+}
+
+/** Posts — or, for a wave that already refused one, updates — the card. */
+function noteConcurrentRefusal(
+  state: WaveEngineState,
+  sessionId: string,
+  waveId: string,
 ): void {
-  useChatStore
-    .getState()
-    .addMessage(
-      sessionId,
-      createSystemNotificationMessage(
-        text,
-        type,
-        retryAction
-          ? { type: "retryWavePlan", sessionId, detail: retryDetail }
-          : undefined,
-      ),
+  for (const knownWaveId of [...concurrentRefusalNotices.keys()]) {
+    const stillLive = state.waves.some(
+      (wave) => wave.waveId === knownWaveId && isWaveLive(wave),
     );
+    if (!stillLive) concurrentRefusalNotices.delete(knownWaveId);
+  }
+
+  const existing = concurrentRefusalNotices.get(waveId);
+  if (existing) {
+    const count = existing.count + 1;
+    concurrentRefusalNotices.set(waveId, { ...existing, count });
+    useChatStore
+      .getState()
+      .updateMessage(existing.sessionId, existing.messageId, (message) =>
+        withNoticeText(message, waveConcurrentPlanNoticeText(count)),
+      );
+    return;
+  }
+
+  const messageId = appendConductorNotice(
+    sessionId,
+    waveConcurrentPlanNoticeText(1),
+    false,
+    "warning",
+  );
+  concurrentRefusalNotices.set(waveId, { sessionId, messageId, count: 1 });
 }
 
 /** True when this conductor already has a wave that has not closed yet. */
-function hasLiveWaveFor(
+function liveWaveFor(
   state: WaveEngineState,
   conductorSessionId: string,
-): boolean {
-  return state.waves.some(
+): WaveState | undefined {
+  return state.waves.find(
     (wave) =>
       wave.conductorSessionId === conductorSessionId && isWaveLive(wave),
   );
@@ -213,7 +275,8 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
     // between the two waves. The refusal is tombstoned like any other, so it
     // is said once and not on every tick, and it is a warning rather than an
     // error because nobody did anything wrong.
-    if (hasLiveWaveFor(next, candidate.conductorSessionId)) {
+    const liveWave = liveWaveFor(next, candidate.conductorSessionId);
+    if (liveWave) {
       next = withWaveTombstone(next, {
         planMessageId: candidate.planMessageId,
         conductorSessionId: candidate.conductorSessionId,
@@ -222,11 +285,10 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       });
       setWaveEngineState(next);
       bumpWaveTelemetryCounter("concurrentRefusals");
-      appendConductorNotice(
+      noteConcurrentRefusal(
+        next,
         candidate.conductorSessionId,
-        waveConcurrentPlanNoticeText(),
-        false,
-        "warning",
+        liveWave.waveId,
       );
       next = getWaveEngineState();
       continue;
@@ -557,6 +619,7 @@ export function resetWaveRunnerForTests(): void {
   inFlightPlans.clear();
   inFlightSpawns.clear();
   scannedWithoutPlan.clear();
+  concurrentRefusalNotices.clear();
   ticking = false;
   hasResumedOrphanedSpawns = false;
   onceOrphanedWaveIds = new Set();

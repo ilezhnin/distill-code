@@ -357,7 +357,10 @@ export function admitWavePlan(
     const step = parse.steps[modelStepIndex];
     return rejected(
       "step-model-unsupported",
-      `Step ${modelStepIndex + 1} asks for model "${step.model}". Per-step models are not supported yet, and running the step on another model would be a silent substitution, so the whole wave was refused. Re-send the plan without "model".`,
+      // Detail carries only what the localized reason cannot know — the model
+      // the step named. The reason already states the rule and the refusal, so
+      // repeating it here printed the same explanation twice in one card.
+      `Step ${modelStepIndex + 1} named model "${step.model}".`,
       modelStepIndex,
     );
   }

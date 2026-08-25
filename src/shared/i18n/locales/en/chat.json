@@ -521,7 +521,9 @@
       },
       "concurrent": {
         "title": "This chat already has a wave running, so the new plan was not started.",
-        "body": "Only one wave runs per conductor at a time — a second one would put more executors into the same working folder with no coordination between them. Wait for the running wave to finish, or ask it for a status; then send this request again."
+        "body": "Only one wave runs per conductor at a time — a second one would put more executors into the same working folder with no coordination between them. Wait for the running wave to finish, or ask it for a status; then send this request again.",
+        "refusedCount_one": "{{count}} plan was refused while this wave has been running.",
+        "refusedCount_other": "{{count}} plans were refused while this wave has been running."
       },
       "verdict": {
         "needsOperatorTitle": "This wave stopped without a decision, so it is over to you.",
@@ -544,14 +546,14 @@
           "needsOperator": "Handed this back to the operator."
         }
       },
-      "reportDegraded": "Step {{step}} ({{name}}) finished without a report. The wave is continuing on a \u00abresult unknown\u00bb stub \u2014 later steps and the digest will see the stub, not what that worker actually did. Its own chat is the only record.",
+      "reportDegraded": "Step {{step}} ({{name}}) finished without a report. The wave is continuing on a «result unknown» stub — later steps and the digest will see the stub, not what that worker actually did. Its own chat is the only record.",
       "stop": "Stop the wave",
       "digest": {
         "cardTitle": "Brigade report delivered to this chat",
         "workerCount_one": "1 executor",
         "workerCount_other": "{{count}} executors",
-        "expand": "Show report",
-        "collapse": "Hide report",
+        "expand": "Expand",
+        "collapse": "Collapse",
         "deliveryFailed": "The brigade's report could not be delivered into this chat. It is kept below so nothing is lost."
       }
     },

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
+import { i18n } from "@/shared/i18n";
+
 import { parseDistillWave, type WaveStep } from "./distillWave";
+import { waveRejectionNoticeText } from "./waveNotices";
 import type { RunStatus, SessionNode, StructuredReport } from "./types";
 import {
   MISSING_STEP_REPORT_SUMMARY,
@@ -100,7 +103,7 @@ describe("admitWavePlan", () => {
     });
   });
 
-  it("refuses the whole plan when any step names a model (D5 gap-guard)", () => {
+  it("refuses the whole plan when any step names a model (D5 gap-guard)", async () => {
     const admission = admitWavePlan({
       kind: "plan",
       planText: "",
@@ -117,6 +120,17 @@ describe("admitWavePlan", () => {
     });
     if (admission.kind !== "rejected") return;
     expect(admission.detail).toContain("gpt-5");
+    // The card reads title + localized reason + this detail, so the detail
+    // carries only what the reason cannot know. It used to re-explain the rule
+    // as well, and the operator read the same paragraph twice in one card.
+    await i18n.loadNamespaces("chat");
+    const card = waveRejectionNoticeText({
+      reason: admission.reason,
+      detail: admission.detail,
+      stepIndex: admission.stepIndex,
+    });
+    expect(card.match(/Per-step models are not supported/g)).toHaveLength(1);
+    expect(card).toContain("gpt-5");
   });
 });
 
