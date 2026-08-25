@@ -1174,6 +1174,59 @@ describe("SessionHistoryView", () => {
     });
   });
 
+  it("offers the transcript formats goose can actually read", async () => {
+    // Goose sniffs the format from the content and already understands Claude
+    // Code, Codex and Pi transcripts — all `.jsonl`. A picker that only
+    // offered `.json` hid imports that worked end to end.
+    setSessionStoreState({ sessions: [], loadSessions: vi.fn() });
+    renderHistory();
+
+    const input =
+      document.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(input?.getAttribute("accept")).toBe(".json,.jsonl");
+  });
+
+  it("imports a .jsonl transcript the same way as a goose export", async () => {
+    const loadSessions = vi.fn().mockResolvedValue(undefined);
+    const rollout = '{"type":"session_meta","item":{"session_id":"abc"}}';
+    mocks.acpImportSession.mockResolvedValue({
+      sessionId: "imported-rollout",
+      title: "Fix the build",
+      updatedAt: "2026-04-09T12:02:00.000Z",
+      createdAt: "2026-04-09T12:02:00.000Z",
+      archivedAt: null,
+      userSetName: true,
+      messageCount: 2,
+      subtitle: null,
+      workingDir: null,
+      projectId: null,
+      providerId: null,
+      modelId: null,
+      personaId: null,
+    });
+    setSessionStoreState({ sessions: [], loadSessions });
+
+    renderHistory();
+
+    const input =
+      document.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("Missing file input");
+    const file = new File([rollout], "rollout-2026-08-01T10-00-00-abc.jsonl", {
+      type: "application/x-ndjson",
+    });
+    Object.defineProperty(file, "text", {
+      value: vi.fn().mockResolvedValue(rollout),
+    });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() => {
+      // The file goes to the backend untouched: detecting the format is its
+      // job, and guessing here would only be a second, worse detector.
+      expect(mocks.acpImportSession).toHaveBeenCalledWith(rollout);
+      expect(screen.getByRole("alert")).toHaveTextContent("Import complete");
+    });
+  });
+
   it("shows progress and success feedback while importing a session", async () => {
     const loadSessions = vi.fn().mockResolvedValue(undefined);
     let resolveImport!: (value: unknown) => void;
