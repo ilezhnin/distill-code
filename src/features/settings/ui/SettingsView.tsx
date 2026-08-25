@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { ArchiveSettings } from "./ArchiveSettings";
+import { MemorySettings } from "@/features/memory/ui/MemorySettings";
 import { BehaviorSettings } from "./BehaviorSettings";
 import { ProvidersSettings } from "./ProvidersSettings";
 import { NotificationSettings } from "./NotificationSettings";
@@ -93,6 +94,7 @@ export function SettingsView({
       {activeSection === "voice" && voiceConversationEnabled && (
         <VoiceSettings />
       )}
+      {activeSection === "memory" && <MemorySettings />}
       {activeSection === "archive" && <ArchiveSettings />}
       {activeSection === "security" && <SecuritySettings />}
       {activeSection === "system" && (
