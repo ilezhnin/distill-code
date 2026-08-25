@@ -12,6 +12,7 @@ export const TRANSLATION_NAMESPACES = [
   "memory",
   "planner",
   "projects",
+  "review",
   "search",
   "settings",
   "shortcuts",

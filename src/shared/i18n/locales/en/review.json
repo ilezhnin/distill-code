@@ -1,0 +1,10 @@
+{
+  "title": "While you were away",
+  "dismiss": "Mark as read",
+  "unknownConductor": "A conductor that is no longer open",
+  "outcome": {
+    "needsOperator": "{{needsOperator}} waiting on you",
+    "failed": "{{failed}} failed",
+    "completed": "{{completed}} finished"
+  }
+}
