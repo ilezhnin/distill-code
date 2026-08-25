@@ -486,7 +486,8 @@
       "completed": "completado",
       "failed": "falló",
       "cancelled": "cancelado",
-      "stopped": "detenido"
+      "stopped": "detenido",
+      "pending": "sin empezar"
     },
     "wave": {
       "planSummary": "Plan para la brigada de abajo.",

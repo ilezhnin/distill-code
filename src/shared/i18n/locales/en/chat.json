@@ -487,7 +487,8 @@
       "completed": "completed",
       "failed": "failed",
       "cancelled": "cancelled",
-      "stopped": "stopped"
+      "stopped": "stopped",
+      "pending": "not started"
     },
     "wave": {
       "planSummary": "Plan for the brigade below.",
