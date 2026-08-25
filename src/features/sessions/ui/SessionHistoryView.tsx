@@ -173,6 +173,16 @@ function isAbsoluteImportPath(path: string): boolean {
   );
 }
 
+/**
+ * File extensions the import picker offers.
+ *
+ * Goose's importer detects the format from the content, not the name
+ * (`session/import_formats/detect_format`), so this list is only about what
+ * the picker lets the operator reach: its own pretty-printed `.json` export,
+ * and the `.jsonl` transcripts of Claude Code, Codex and Pi.
+ */
+export const IMPORTABLE_SESSION_EXTENSIONS = ".json,.jsonl";
+
 function importCommandForFile(file: File): string | undefined {
   const path =
     "path" in file && typeof file.path === "string" ? file.path : file.name;
@@ -1605,7 +1615,11 @@ export function SessionHistoryView({
       <input
         ref={fileInputRef}
         type="file"
-        accept=".json"
+        /* Goose sniffs the format of whatever it is handed and already reads
+           Claude Code, Codex and Pi transcripts alongside its own export —
+           and all three of those are `.jsonl`. Offering only `.json` hid
+           working imports behind a file picker that would not show them. */
+        accept={IMPORTABLE_SESSION_EXTENSIONS}
         onChange={handleImportSession}
         className="hidden"
       />
