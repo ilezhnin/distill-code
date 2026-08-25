@@ -2516,6 +2516,57 @@ describe("ChatInput", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("says why a message only waits when the agent cannot be steered", () => {
+    render(
+      <ChatInput
+        onSend={vi.fn()}
+        isStreaming
+        queuedMessages={[
+          {
+            recordId: "head",
+            payload: { persona: { kind: "none" as const }, text: "queued msg" },
+          },
+        ]}
+        onEditQueue={vi.fn(() => true)}
+        onCancelQueueEdit={vi.fn(() => true)}
+        onDismissQueue={vi.fn()}
+        onUpdateQueue={vi.fn(() => true)}
+      />,
+    );
+
+    // Without this the operator reads a silent queue as "my message was
+    // ignored" rather than "this agent finishes its turn first".
+    expect(
+      screen.getByText(
+        "This agent picks the message up when its current turn ends — it cannot be interrupted mid-turn.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps that explanation out of the way where steering does work", () => {
+    render(
+      <ChatInput
+        onSend={vi.fn()}
+        isStreaming
+        canSteerMessage
+        queuedMessages={[
+          {
+            recordId: "head",
+            payload: { persona: { kind: "none" as const }, text: "queued msg" },
+          },
+        ]}
+        onEditQueue={vi.fn(() => true)}
+        onCancelQueueEdit={vi.fn(() => true)}
+        onDismissQueue={vi.fn()}
+        onUpdateQueue={vi.fn(() => true)}
+      />,
+    );
+
+    expect(
+      screen.queryByText(/cannot be interrupted mid-turn/),
+    ).not.toBeInTheDocument();
+  });
+
   it("hides queued-head steering while that record is being edited", async () => {
     const onSteerQueuedMessage = vi.fn();
     const user = userEvent.setup();
