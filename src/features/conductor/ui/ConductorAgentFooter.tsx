@@ -6,6 +6,7 @@ import { cn } from "@/shared/lib/cn";
 
 import type { ConductorOpenChildIntent } from "../ConductorTranscriptContext";
 import { summarizeBrigadeActivity } from "../brigadeActivity";
+import { pendingStepName, waveFooterRow } from "../waveFooterChips";
 import { waveStepAccessKey } from "../distillConductorTranscript";
 import type { WaveStep } from "../distillWave";
 import type { SessionNode, StructuredReport } from "../types";
@@ -114,31 +115,51 @@ export function ConductorAgentFooter({
     [onOpen],
   );
 
-  // SessionNode → the session-free chip view model; stage 2b feeds the same
-  // component ephemeral harness subagents that have no session at all.
-  const chips = useMemo<BrigadeChipViewModel[]>(
-    () =>
-      inPlanOrder(nodes).map((node) => {
-        const report = node.runId ? reportsByRunId[node.runId] : undefined;
-        const step =
-          typeof node.stepIndex === "number"
-            ? planSteps?.[node.stepIndex]
-            : undefined;
-        return {
-          id: node.sessionId,
-          name: node.displayName,
-          status: node.status,
-          title: report?.summary || node.task || undefined,
-          stepIndex: node.stepIndex,
-          accessLabel: step ? t(waveStepAccessKey(step)) : undefined,
-          onOpen: openInTab,
-          onStop,
-        };
-      }),
-    [nodes, onStop, openInTab, planSteps, reportsByRunId, t],
-  );
+  // The row is built from the plan when this message carried one, so every
+  // step the operator agreed to holds a place from the moment the plan lands
+  // — a four-step wave whose first step is slow to start is four chips, not
+  // one that the others appear beside as they spawn.
+  const chips = useMemo<BrigadeChipViewModel[]>(() => {
+    const chipForNode = (node: SessionNode): BrigadeChipViewModel => {
+      const report = node.runId ? reportsByRunId[node.runId] : undefined;
+      const step =
+        typeof node.stepIndex === "number"
+          ? planSteps?.[node.stepIndex]
+          : undefined;
+      return {
+        id: node.sessionId,
+        name: node.displayName,
+        status: node.status,
+        title: report?.summary || node.task || undefined,
+        stepIndex: node.stepIndex,
+        accessLabel: step ? t(waveStepAccessKey(step)) : undefined,
+        onOpen: openInTab,
+        onStop,
+      };
+    };
 
-  if (nodes.length === 0) {
+    const { slots, unplanned } = waveFooterRow(planSteps ?? [], nodes);
+    return [
+      ...slots.map((slot) =>
+        slot.node
+          ? chipForNode(slot.node)
+          : {
+              // Keyed on the step, since there is no session to key on yet.
+              id: `step-${slot.stepIndex}`,
+              name: pendingStepName(slot.step),
+              // Unused while `pending` is set; the chip reads its own label.
+              status: "starting" as const,
+              title: slot.step.subtask,
+              stepIndex: slot.stepIndex,
+              accessLabel: t(waveStepAccessKey(slot.step)),
+              pending: true,
+            },
+      ),
+      ...inPlanOrder(unplanned).map(chipForNode),
+    ];
+  }, [nodes, onStop, openInTab, planSteps, reportsByRunId, t]);
+
+  if (chips.length === 0) {
     return null;
   }
 

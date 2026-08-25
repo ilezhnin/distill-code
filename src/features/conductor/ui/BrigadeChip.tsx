@@ -49,6 +49,15 @@ export interface BrigadeChipViewModel {
   onOpen?: (id: string) => void;
   /** Omitted → no stop button, whatever the status. */
   onStop?: (id: string) => void;
+  /**
+   * True for a step the plan promised that nothing has spawned yet.
+   *
+   * Not a `RunStatus`: the run does not exist, and inventing a persisted
+   * status for "has not started" would put a value into the graph's
+   * vocabulary that no node will ever carry. The chip renders it as a hollow
+   * dot and a dimmed label — present, holding its place, plainly not running.
+   */
+  pending?: boolean;
 }
 
 export interface BrigadeChipProps extends BrigadeChipViewModel {
@@ -88,11 +97,14 @@ export function BrigadeChip({
   accessLabel,
   onOpen,
   onStop,
+  pending,
   className,
 }: BrigadeChipProps) {
   const { t } = useTranslation("chat");
-  const statusLabel = t(`conductor.status.${status}`);
-  const showStop = Boolean(onStop) && isWorkingStatus(status);
+  const statusLabel = pending
+    ? t("conductor.status.pending")
+    : t(`conductor.status.${status}`);
+  const showStop = Boolean(onStop) && !pending && isWorkingStatus(status);
   // Step number and access mode are diagnostic affordances, not decoration:
   // when a wave returns a wrong answer they are how the operator gets from
   // "this is wrong" to "that step", matching the plan list above the row.
@@ -112,8 +124,9 @@ export function BrigadeChip({
   return (
     <span
       data-testid="brigade-chip"
-      data-status={status}
+      data-status={pending ? "pending" : status}
       data-step={step}
+      data-pending={pending ? "true" : undefined}
       className={cn("inline-flex items-center gap-1", className)}
     >
       <button
@@ -121,8 +134,11 @@ export function BrigadeChip({
         data-testid="conductor-agent-chip"
         aria-label={label}
         title={title || statusLabel}
-        onClick={onOpen ? () => onOpen(id) : undefined}
-        className="inline-flex items-center gap-1.5 rounded-full text-xs text-muted-foreground hover:text-foreground"
+        onClick={onOpen && !pending ? () => onOpen(id) : undefined}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-full text-xs text-muted-foreground",
+          pending ? "cursor-default" : "hover:text-foreground",
+        )}
       >
         {step === undefined ? null : (
           <span
@@ -133,8 +149,23 @@ export function BrigadeChip({
             {step}
           </span>
         )}
-        <BrigadeStatusGlyph status={status} />
-        <span className="font-medium text-foreground">{name}</span>
+        {pending ? (
+          <span
+            aria-hidden="true"
+            data-testid="brigade-chip-pending-dot"
+            className="size-2 shrink-0 rounded-full border border-muted-foreground/60"
+          />
+        ) : (
+          <BrigadeStatusGlyph status={status} />
+        )}
+        <span
+          className={cn(
+            "font-medium",
+            pending ? "text-muted-foreground" : "text-foreground",
+          )}
+        >
+          {name}
+        </span>
         {accessLabel ? (
           <span
             aria-hidden="true"
