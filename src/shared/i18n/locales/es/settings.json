@@ -362,7 +362,18 @@
       "saveError": "No se pudo actualizar la carpeta de reserva del terminal. Inténtalo de nuevo.",
       "saveSuccess": "Carpeta de reserva del terminal actualizada."
     },
-    "title": "General"
+    "title": "General",
+    "distillFolder": {
+      "label": "Carpeta de Distill",
+      "description": "Todo lo que Distill guarda — proyectos, chats, agentes, habilidades, memoria y ajustes — vive aquí. Respalda esta carpeta y lo tienes todo.",
+      "chooseDialogTitle": "Elegir la carpeta de Distill",
+      "choose": "Cambiar carpeta",
+      "saved": "Nueva carpeta guardada",
+      "savedDescription": "No se movió nada. Copia el contenido de la carpeta anterior y reinicia Distill.",
+      "saveError": "No se pudo usar esa carpeta",
+      "restartRequired": "Se aplica tras reiniciar.",
+      "forcedByEnvironment": "Definida por DISTILL_ROOT en esta ejecución, así que este ajuste no manda."
+    }
   },
   "nav": {
     "appearance": "Apariencia",

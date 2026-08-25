@@ -1,15 +1,24 @@
 /**
  * Where the planner's tasks live.
  *
- * localStorage, like the conductor's graph and wave stores: this is operator
- * state that belongs to this machine, it must survive a reload, and it must
- * never be the reason the app fails to start. Reading is therefore salvaging
- * rather than validating — a task that cannot be read is dropped and the rest
- * of the list loads, because a list that refuses to open because one row is
- * malformed has lost everything the user put in it.
+ * A JSON document in the operator's Distill folder, beside their projects and
+ * sessions — not `localStorage`, which is where this started and which was the
+ * wrong home: invisible to a backup, unreadable by a person, and gone on a
+ * reinstall. An old browser copy is migrated on first read and then removed.
+ *
+ * Reading salvages rather than validates: a task that cannot be read is
+ * dropped and the rest of the list loads, because a list that refuses to open
+ * because one row is malformed has lost everything the operator put in it.
+ *
+ * The store starts empty and is filled by `hydratePlannerStore`, because
+ * reading a file is asynchronous and a store cannot block on it. Nothing is
+ * written back before that read lands — an empty list persisted over a full
+ * one during startup would delete the operator's tasks.
  */
 
 import { create } from "zustand";
+
+import { distillDocument } from "@/shared/lib/distillDocument";
 
 import type { PlannerFenceRequest } from "../lib/plannerFence";
 import {
@@ -23,6 +32,10 @@ import {
   type Weekday,
 } from "../lib/plannerTask";
 
+/** Path under the Distill root. */
+export const PLANNER_DOCUMENT_PATH = "planner.json";
+
+/** Where the list lived before the move; read once, then removed. */
 export const PLANNER_STORAGE_KEY = "goose:planner";
 
 /**
@@ -55,6 +68,8 @@ interface PlannerState {
   tasks: PlannerTask[];
   /** Assistant message ids whose `distill-todo` block has already been read. */
   appliedMessageIds: string[];
+  /** False until the stored document has been read. Writes wait for it. */
+  hydrated: boolean;
 }
 
 interface PlannerActions {
@@ -148,18 +163,52 @@ export function parseAppliedMessageIds(value: unknown): string[] {
     .slice(-MAX_APPLIED_MESSAGE_IDS);
 }
 
-function loadPersistedState(): PlannerState {
-  try {
-    const raw = window.localStorage.getItem(PLANNER_STORAGE_KEY);
-    if (!raw) return { tasks: [], appliedMessageIds: [] };
-    const parsed = JSON.parse(raw);
-    return {
-      tasks: capTasks(parsePlannerTasks(parsed)),
-      appliedMessageIds: parseAppliedMessageIds(parsed),
-    };
-  } catch {
-    return { tasks: [], appliedMessageIds: [] };
-  }
+/** Reads a stored payload into state, salvaging what it can. */
+function stateFromDocument(parsed: unknown): PlannerState {
+  return {
+    tasks: capTasks(parsePlannerTasks(parsed)),
+    appliedMessageIds: parseAppliedMessageIds(parsed),
+    hydrated: true,
+  };
+}
+
+const document = distillDocument<PlannerState>({
+  path: PLANNER_DOCUMENT_PATH,
+  legacyStorageKey: PLANNER_STORAGE_KEY,
+  parse: stateFromDocument,
+  serialize: (state) => ({
+    version: 1,
+    tasks: state.tasks,
+    appliedMessageIds: state.appliedMessageIds,
+  }),
+});
+
+/**
+ * Fills the store from disk. Called once at startup.
+ *
+ * A second call is a no-op: re-reading after the operator has already added a
+ * task would replace their work with what was on disk when the app opened.
+ */
+export async function hydratePlannerStore(): Promise<void> {
+  if (usePlannerStore.getState().hydrated) return;
+  const stored = await document.read();
+  usePlannerStore.setState(
+    stored ?? { tasks: [], appliedMessageIds: [], hydrated: true },
+  );
+}
+
+/** Waits for a queued write to land. For tests and for shutdown. */
+export function flushPlannerWrites(): Promise<void> {
+  return document.flush();
+}
+
+/** Test seam: forces the store back to its pre-hydration state. */
+export function resetPlannerHydrationForTests(): void {
+  usePlannerStore.setState({
+    tasks: [],
+    appliedMessageIds: [],
+    hydrated: false,
+  });
 }
 
 /** Trims to the bound, oldest completed first, then oldest open. */
@@ -179,17 +228,6 @@ export function capTasks(tasks: PlannerTask[]): PlannerTask[] {
   return tasks.filter((_, index) => !drop.has(index));
 }
 
-function persist(state: PlannerState): void {
-  try {
-    window.localStorage.setItem(
-      PLANNER_STORAGE_KEY,
-      JSON.stringify({ version: 1, ...state }),
-    );
-  } catch {
-    // localStorage may be unavailable; the list still works for this session.
-  }
-}
-
 function commit(
   tasks: PlannerTask[],
   appliedMessageIds: string[],
@@ -197,8 +235,11 @@ function commit(
   const next = {
     tasks: capTasks(tasks),
     appliedMessageIds: appliedMessageIds.slice(-MAX_APPLIED_MESSAGE_IDS),
+    hydrated: true,
   };
-  persist(next);
+  // Never before the read lands: an empty list written over a full one during
+  // startup would delete the operator's tasks, and they would not know why.
+  if (usePlannerStore.getState().hydrated) document.write(next);
   return next;
 }
 
@@ -217,7 +258,9 @@ function newTaskId(): string {
 }
 
 export const usePlannerStore = create<PlannerStore>((set, get) => ({
-  ...loadPersistedState(),
+  tasks: [],
+  appliedMessageIds: [],
+  hydrated: false,
 
   addTask: (draft, nowMs = Date.now()) => {
     const title = draft.title.trim();

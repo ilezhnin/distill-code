@@ -16,6 +16,7 @@ pub mod cli;
 #[cfg(feature = "block-managed-connections")]
 pub mod connections;
 pub mod diagnostics;
+pub mod distill_store;
 pub mod distro;
 #[cfg_attr(not(feature = "block-feedback"), allow(dead_code))]
 pub mod doctor;

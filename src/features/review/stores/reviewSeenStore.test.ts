@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  flushReviewSeenWrites,
   parseLastSeenAt,
   REVIEW_SEEN_STORAGE_KEY,
   useReviewSeenStore,
@@ -12,8 +13,9 @@ describe("useReviewSeenStore", () => {
     useReviewSeenStore.getState().reset(0);
   });
 
-  it("remembers when the operator last read the queue", () => {
+  it("remembers when the operator last read the queue", async () => {
     useReviewSeenStore.getState().markSeen(5_000);
+    await flushReviewSeenWrites();
 
     expect(useReviewSeenStore.getState().lastSeenAt).toBe(5_000);
     expect(
