@@ -22,7 +22,7 @@ import { perfLog } from "@/shared/lib/perfLog";
 import { isDefaultChatTitle } from "@/features/chat/lib/sessionTitle";
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
-import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
 import {
   interruptedTurnNoticeId,
   unansweredSendToReport,
@@ -528,19 +528,6 @@ async function performSessionMessagesLoad(
  * the resend button or by anything else — the next load finds a reply at the
  * end and the notice is simply not written again.
  */
-/**
- * True for a session the wave engine spawned and drives.
- *
- * Read through the graph store rather than the session store because
- * `managedBy` is the graph's fact about a node, not the chat's about a
- * session, and it is the only place that distinction is recorded.
- */
-function isWaveManagedSession(sessionId: string): boolean {
-  return (
-    useConductorGraphStore.getState().nodesById[sessionId]?.managedBy === "wave"
-  );
-}
-
 function reportInterruptedTurn(
   sessionId: string,
   messages: readonly Message[] | undefined,
