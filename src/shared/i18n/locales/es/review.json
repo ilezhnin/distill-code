@@ -1,0 +1,10 @@
+{
+  "title": "Mientras no estabas",
+  "dismiss": "Marcar como leído",
+  "unknownConductor": "Un conductor que ya no está abierto",
+  "outcome": {
+    "needsOperator": "{{needsOperator}} esperándote",
+    "failed": "{{failed}} con errores",
+    "completed": "{{completed}} terminados"
+  }
+}
