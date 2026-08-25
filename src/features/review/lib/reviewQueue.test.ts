@@ -105,14 +105,75 @@ describe("buildReviewQueue", () => {
     ]);
   });
 
-  it("counts a cancelled agent as a failure, not a finish", () => {
+  it("counts a cancelled agent as stopped, not as a failure", () => {
+    // Nothing went wrong; someone pressed stop. Calling it a failure puts a
+    // red mark on the operator's own action.
     const [item] = buildReviewQueue({
       nodes: [node({ sessionId: "w", status: "cancelled" })],
       reportOf: () => undefined,
       lastSeenAt: SEEN,
     });
 
-    expect(item).toMatchObject({ failed: 1, completed: 0, outcome: "failed" });
+    expect(item).toMatchObject({
+      stopped: 1,
+      failed: 0,
+      completed: 0,
+      outcome: "stopped",
+    });
+  });
+
+  it("does not read a stopped agent as waiting on a person", () => {
+    // The synthesized report marks every non-completed run `needsOperator`,
+    // so a conductor the operator stopped themselves used to come back as an
+    // alarm telling them their own action.
+    const [item] = buildReviewQueue({
+      nodes: [node({ sessionId: "w", status: "cancelled" })],
+      reportOf: reportsFrom([
+        report({ runId: "run-w", status: "cancelled", needsOperator: true }),
+      ]),
+      lastSeenAt: SEEN,
+    });
+
+    expect(item).toMatchObject({ needsOperator: 0, outcome: "stopped" });
+  });
+
+  it("ranks a stop below a failure and above a plain finish", () => {
+    const items = buildReviewQueue({
+      nodes: [
+        node({ sessionId: "a", rootConductorId: "c-done" }),
+        node({
+          sessionId: "b",
+          rootConductorId: "c-stopped",
+          status: "stopped",
+        }),
+        node({ sessionId: "c", rootConductorId: "c-failed", status: "failed" }),
+      ],
+      reportOf: () => undefined,
+      lastSeenAt: SEEN,
+    });
+
+    expect(items.map((item) => item.outcome)).toEqual([
+      "failed",
+      "stopped",
+      "completed",
+    ]);
+  });
+
+  it("leads with what finished when a conductor both stopped and finished agents", () => {
+    const [item] = buildReviewQueue({
+      nodes: [
+        node({ sessionId: "a" }),
+        node({ sessionId: "b", status: "cancelled" }),
+      ],
+      reportOf: () => undefined,
+      lastSeenAt: SEEN,
+    });
+
+    expect(item).toMatchObject({
+      completed: 1,
+      stopped: 1,
+      outcome: "completed",
+    });
   });
 
   it("says nothing about work the operator has already read", () => {

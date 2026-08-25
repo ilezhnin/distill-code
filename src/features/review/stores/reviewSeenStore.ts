@@ -10,6 +10,13 @@
  * A queue that clears itself the moment the home screen paints would be
  * empty by the time someone who glanced at it in passing came back to read
  * it properly, which is exactly when it matters most.
+ *
+ * The first run is the exception, and it has to be. "While you were away"
+ * means "since you last looked", and before the first look there is no such
+ * moment — reading zero would announce every run the graph still remembers,
+ * including the ones the operator watched finish themselves. So an unwritten
+ * document is seeded with the current time: the queue starts empty and fills
+ * with what happens next, which is the only thing it can honestly be about.
  */
 
 import { create } from "zustand";
@@ -49,10 +56,10 @@ const document = distillDocument<number>({
 
 export const useReviewSeenStore = create<ReviewSeenState & ReviewSeenActions>(
   (set) => ({
-    // Zero until the read lands, which shows everything rather than nothing:
-    // for a queue of news, over-reporting for a moment at startup is the safe
-    // direction, and hiding finished work is not.
-    lastSeenAt: 0,
+    // The far future until the read lands: for the fraction of a second
+    // before hydration, showing nothing beats flashing a list that is about
+    // to be replaced.
+    lastSeenAt: Number.POSITIVE_INFINITY,
 
     markSeen: (nowMs = Date.now()) => {
       document.write(nowMs);
@@ -66,10 +73,22 @@ export const useReviewSeenStore = create<ReviewSeenState & ReviewSeenActions>(
   }),
 );
 
-/** Fills the store from disk. Called once at startup. */
-export async function hydrateReviewSeenStore(): Promise<void> {
+/**
+ * Fills the store from disk, seeding the first run with "now".
+ *
+ * `nowMs` is an argument so the seeding can be tested without the clock.
+ */
+export async function hydrateReviewSeenStore(
+  nowMs: number = Date.now(),
+): Promise<void> {
   const stored = await document.read();
-  if (stored !== null) useReviewSeenStore.setState({ lastSeenAt: stored });
+  if (stored !== null) {
+    useReviewSeenStore.setState({ lastSeenAt: stored });
+    return;
+  }
+  // Recorded, not just held: a first run that ended without the operator
+  // pressing anything must not announce the same history on the next start.
+  useReviewSeenStore.getState().reset(nowMs);
 }
 
 /** Waits for a queued write to land. For tests and for shutdown. */

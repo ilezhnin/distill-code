@@ -12,7 +12,12 @@
 
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { IconAlertTriangle, IconCheck, IconX } from "@tabler/icons-react";
+import {
+  IconAlertTriangle,
+  IconCheck,
+  IconPlayerStop,
+  IconX,
+} from "@tabler/icons-react";
 
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
@@ -100,7 +105,9 @@ function ReviewRow({
       ? IconAlertTriangle
       : item.outcome === "failed"
         ? IconX
-        : IconCheck;
+        : item.outcome === "stopped"
+          ? IconPlayerStop
+          : IconCheck;
 
   return (
     <li data-testid="review-item" data-outcome={item.outcome}>
@@ -114,7 +121,8 @@ function ReviewRow({
             "mt-0.5 size-4 shrink-0",
             item.outcome === "needsOperator" && "text-warning",
             item.outcome === "failed" && "text-destructive",
-            item.outcome === "completed" && "opacity-60",
+            (item.outcome === "completed" || item.outcome === "stopped") &&
+              "opacity-60",
           )}
           aria-hidden
         />
@@ -127,6 +135,7 @@ function ReviewRow({
               {t(`outcome.${item.outcome}`, {
                 needsOperator: item.needsOperator,
                 failed: item.failed,
+                stopped: item.stopped,
                 completed: item.completed,
               })}
             </span>

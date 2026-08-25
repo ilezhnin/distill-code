@@ -21,7 +21,11 @@ import type {
   StructuredReport,
 } from "@/features/conductor/types";
 
-export type ReviewOutcome = "needsOperator" | "failed" | "completed";
+export type ReviewOutcome =
+  | "needsOperator"
+  | "failed"
+  | "stopped"
+  | "completed";
 
 export interface ReviewItem {
   /** Conductor session to open. */
@@ -31,6 +35,8 @@ export interface ReviewItem {
   outcome: ReviewOutcome;
   completed: number;
   failed: number;
+  /** Cancelled or orphaned — ended without finishing, and without failing. */
+  stopped: number;
   /** How many of this conductor's finished agents asked for a person. */
   needsOperator: number;
   /** Newest finish among the counted agents. */
@@ -60,9 +66,12 @@ function conductorOf(node: SessionNode): string | null {
   return node.rootConductorId ?? node.parentSessionId;
 }
 
-function rank(outcome: ReviewOutcome): number {
-  return outcome === "needsOperator" ? 0 : outcome === "failed" ? 1 : 2;
-}
+const RANK: Record<ReviewOutcome, number> = {
+  needsOperator: 0,
+  failed: 1,
+  stopped: 2,
+  completed: 3,
+};
 
 export interface ReviewQueueInput {
   nodes: Iterable<SessionNode>;
@@ -92,11 +101,16 @@ export function buildReviewQueue(input: ReviewQueueInput): ReviewItem[] {
     if (!sessionId) continue;
 
     const report = node.runId ? input.reportOf(node.runId) : undefined;
+    // A run that was stopped is its own thing. It did not fail — nothing went
+    // wrong — and it is usually the operator's own doing, so reporting it as
+    // an alarm tells them their own action back as if it were news.
+    const stopped = node.status === "cancelled" || node.status === "stopped";
     const failed =
-      node.status === "failed" ||
-      node.status === "cancelled" ||
-      report?.status === "failed";
-    const needsOperator = report?.needsOperator === true;
+      !stopped && (node.status === "failed" || report?.status === "failed");
+    // `needsOperator` on a stopped run is an artefact, not a request: the
+    // synthesized report marks every non-completed run that way, so a
+    // conductor the operator stopped themselves read as "waiting on you".
+    const needsOperator = !stopped && report?.needsOperator === true;
 
     const existing = byConductor.get(sessionId);
     const item: ReviewItem = existing ?? {
@@ -105,12 +119,14 @@ export function buildReviewQueue(input: ReviewQueueInput): ReviewItem[] {
       outcome: "completed",
       completed: 0,
       failed: 0,
+      stopped: 0,
       needsOperator: 0,
       latestAt: 0,
     };
 
     if (needsOperator) item.needsOperator += 1;
-    if (failed) item.failed += 1;
+    if (stopped) item.stopped += 1;
+    else if (failed) item.failed += 1;
     else item.completed += 1;
 
     item.outcome =
@@ -118,7 +134,9 @@ export function buildReviewQueue(input: ReviewQueueInput): ReviewItem[] {
         ? "needsOperator"
         : item.failed > 0
           ? "failed"
-          : "completed";
+          : item.stopped > 0 && item.completed === 0
+            ? "stopped"
+            : "completed";
 
     // The newest finish owns the row's timestamp and its words: what the
     // operator wants first is the latest state of this conductor's work.
@@ -133,7 +151,7 @@ export function buildReviewQueue(input: ReviewQueueInput): ReviewItem[] {
   const named = [...byConductor.values()];
   return named.sort(
     (left, right) =>
-      rank(left.outcome) - rank(right.outcome) ||
+      RANK[left.outcome] - RANK[right.outcome] ||
       right.latestAt - left.latestAt,
   );
 }
