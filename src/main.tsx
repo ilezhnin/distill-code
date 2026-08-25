@@ -17,6 +17,8 @@ import { LocalMediaCacheEvents } from "@/app/LocalMediaCacheEvents";
 import { RendererTelemetry } from "@/app/RendererTelemetry";
 import { BackgroundQueuedMessageDrain } from "@/features/chat/ui/BackgroundQueuedMessageDrain";
 import { ConductorGraphSync } from "@/features/conductor/ConductorGraphSync";
+import { PlannerAgentSync } from "@/features/planner/PlannerAgentSync";
+import { MemoryAgentSync } from "@/features/memory/MemoryAgentSync";
 import { UpdaterProvider } from "@/features/updates/hooks/useUpdater";
 import { I18nProvider } from "@/shared/i18n";
 import { initTelemetry, trackAppLaunched } from "@/shared/telemetry/client";
@@ -190,6 +192,8 @@ if (bootError) {
             <LocalMediaCacheEvents />
             <BackgroundQueuedMessageDrain />
             <ConductorGraphSync />
+            <PlannerAgentSync />
+            <MemoryAgentSync />
             <OptionalBerdctlBridge />
             <RendererTelemetry />
             <I18nProvider>

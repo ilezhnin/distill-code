@@ -145,6 +145,11 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     labelKey: "stats.totalTokens",
   },
   {
+    id: "memory",
+    sectionId: "memory",
+    labelKey: "nav.memory",
+  },
+  {
     id: "archive",
     sectionId: "archive",
     labelKey: "nav.archive",

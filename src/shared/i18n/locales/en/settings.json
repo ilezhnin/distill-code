@@ -382,7 +382,8 @@
     "stats": "Stats & Usage",
     "system": "System",
     "updates": "Updates",
-    "voice": "Voice"
+    "voice": "Voice",
+    "memory": "Memory"
   },
   "navigationLabel": "Settings navigation",
   "notifications": {

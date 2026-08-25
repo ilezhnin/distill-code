@@ -161,7 +161,7 @@ export function findVerdictMessageAfter(
 }
 
 const DISTILL_FENCE_PATTERN =
-  /```(?:distill-wave|distill-verdict|distill-report)[\s\S]*?```/gi;
+  /```(?:distill-wave|distill-verdict|distill-report|distill-todo)[\s\S]*?```/gi;
 
 /**
  * Removes protocol fences from text that is about to be quoted into a digest.
@@ -171,7 +171,9 @@ const DISTILL_FENCE_PATTERN =
  * message and the plan detector only ever scans assistant messages — but the
  * conductor reading the digest is a model, and a plan-shaped block inside a
  * report it is asked to judge is an invitation to echo it back. Ordinary code
- * fences are left exactly as they are; only the three protocol tags are cut.
+ * fences are left exactly as they are; only the protocol tags are cut — the
+ * planner's `distill-todo` among them, for the same reason: a digest cannot
+ * file a task itself, but a conductor that echoes one back can.
  */
 export function stripProtocolFences(text: string): string {
   return text.replace(DISTILL_FENCE_PATTERN, "[protocol block removed]").trim();
