@@ -19,6 +19,7 @@ import { resetAgentBuilderSourceLifecycleForTests } from "@/features/agents/lib/
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { ensureReplayBuffer } from "@/features/chat/hooks/replayBuffer";
+import { interruptedTurnNoticeId } from "@/features/chat/lib/unansweredSend";
 import { createUserMessage } from "@/shared/types/messages";
 import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
@@ -1718,8 +1719,13 @@ describe("AppShell global navigation", () => {
       );
     });
 
-    const messages =
-      useChatStore.getState().messagesBySession["missing-session"] ?? [];
+    // The replayed history is one unanswered user message, so the load also
+    // writes the interrupted-turn notice; this case is about the cwd warning.
+    const messages = (
+      useChatStore.getState().messagesBySession["missing-session"] ?? []
+    ).filter(
+      (message) => message.id !== interruptedTurnNoticeId("missing-session"),
+    );
     expect(messages).toHaveLength(2);
     expect(messages[1]?.content[0]).toMatchObject({
       type: "systemNotification",

@@ -11,6 +11,7 @@ import {
   loadSessionMessagesAndPrepare,
 } from "@/features/chat/lib/sessionActivation";
 import { DEFAULT_CHAT_TITLE } from "@/features/chat/lib/sessionTitle";
+import { interruptedTurnNoticeId } from "@/features/chat/lib/unansweredSend";
 import { setMultiWorkspaceEnabled } from "@/features/workspaces/multiWorkspacePreference";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
@@ -129,7 +130,20 @@ function deferred<T = void>() {
 }
 
 function messagesFor(sessionId: string): Message[] {
-  return useChatStore.getState().messagesBySession[sessionId] ?? [];
+  // The interrupted-turn notice is written by every load whose transcript
+  // ends on the operator, which most of these fixtures do — they are about
+  // cwd resolution and replay, not about that notice, and it has its own
+  // cases below. Filtered here so each assertion still reads as what the
+  // load produced for the thing it is testing.
+  return (useChatStore.getState().messagesBySession[sessionId] ?? []).filter(
+    (message) => message.id !== interruptedTurnNoticeId(sessionId),
+  );
+}
+
+function interruptedNoticeFor(sessionId: string): Message | undefined {
+  return (useChatStore.getState().messagesBySession[sessionId] ?? []).find(
+    (message) => message.id === interruptedTurnNoticeId(sessionId),
+  );
 }
 
 function notificationFromLastMessage(
@@ -553,6 +567,66 @@ describe("loadSessionMessages", () => {
       role: "assistant",
       metadata: { completionStatus: "completed" },
     });
+  });
+
+  it("says so when the loaded transcript ends on an unanswered message", async () => {
+    // The 2.10 gap: a turn killed in flight leaves the chat looking as if
+    // the agent ignored the operator, and nothing replays it.
+    seedSession({ id: "s-interrupted", workingDir: "/existing/session" });
+
+    await expect(loadSessionMessages("s-interrupted")).resolves.toBe(true);
+
+    const notice = interruptedNoticeFor("s-interrupted");
+    expect(notice?.content[0]).toMatchObject({
+      type: "systemNotification",
+      notificationType: "warning",
+      action: {
+        type: "resendMessage",
+        sessionId: "s-interrupted",
+        text: "hello",
+      },
+    });
+  });
+
+  it("does not stack a second notice when the session is loaded again", async () => {
+    seedSession({ id: "s-interrupted-twice", workingDir: "/existing/session" });
+    await expect(loadSessionMessages("s-interrupted-twice")).resolves.toBe(
+      true,
+    );
+    ensureReplayBuffer("s-interrupted-twice").push(replayUserMessage());
+
+    await expect(
+      loadSessionMessages("s-interrupted-twice", { force: true }),
+    ).resolves.toBe(true);
+
+    const notices = (
+      useChatStore.getState().messagesBySession["s-interrupted-twice"] ?? []
+    ).filter(
+      (message) =>
+        message.id === interruptedTurnNoticeId("s-interrupted-twice"),
+    );
+    expect(notices).toHaveLength(1);
+  });
+
+  it("stays quiet when the agent answered", async () => {
+    seedSession(
+      { id: "s-answered", workingDir: "/existing/session" },
+      {
+        replay: false,
+      },
+    );
+    ensureReplayBuffer("s-answered").push(replayUserMessage());
+    ensureReplayBuffer("s-answered").push({
+      id: "a1",
+      role: "assistant",
+      created: 2,
+      content: [{ type: "text", text: "here you go" }],
+      metadata: { completionStatus: "completed" },
+    });
+
+    await expect(loadSessionMessages("s-answered")).resolves.toBe(true);
+
+    expect(interruptedNoticeFor("s-answered")).toBeUndefined();
   });
 
   it("loads with the saved cwd and no warning when the directory exists", async () => {

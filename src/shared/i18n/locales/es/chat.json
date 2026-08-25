@@ -804,5 +804,9 @@
   },
   "agentBuilder": {
     "hideChat": "Ocultar chat"
+  },
+  "interruptedTurn": {
+    "notice": "Este mensaje nunca recibió respuesta: la ejecución se interrumpió antes de que el agente contestara. No se reenvió por su cuenta, porque el agente pudo haber terminado trabajo real antes de detenerse.",
+    "resend": "Enviarlo de nuevo"
   }
 }

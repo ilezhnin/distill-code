@@ -74,6 +74,7 @@ import {
   requestWaveReplan,
   retryWaveDigest,
 } from "@/features/conductor/waveRetry";
+import { resendUnansweredMessage } from "@/features/chat/lib/unansweredSend";
 import {
   isDigestMessage,
   parseDigestEnvelope,
@@ -494,6 +495,7 @@ function resolveNotificationAction(
     changeFolderLabel?: string;
     retryWavePlanLabel?: string;
     retryWaveDigestLabel?: string;
+    resendMessageLabel?: string;
   },
 ): { label?: string; onClick: () => void } | null {
   if (!action) {
@@ -515,6 +517,14 @@ function resolveNotificationAction(
     return {
       label: options.retryWaveDigestLabel,
       onClick: () => retryWaveDigest(action.sessionId, action.waveId),
+    };
+  }
+  // The interrupted-turn retry: the notice carries the session and the words,
+  // so pressing it needs no host wiring either.
+  if (action.type === "resendMessage") {
+    return {
+      label: options.resendMessageLabel,
+      onClick: () => resendUnansweredMessage(action.sessionId, action.text),
     };
   }
   if (action.type === "editProject" && onEditProject) {
@@ -562,6 +572,7 @@ function renderContentBlock(
     changeFolderLabel?: string;
     retryWavePlanLabel?: string;
     retryWaveDigestLabel?: string;
+    resendMessageLabel?: string;
     stateKey?: string;
     resolveProviderErrorNotice?: (text: string) => string | null;
   },
@@ -892,6 +903,7 @@ export const MessageBubble = memo(function MessageBubble({
               changeFolderLabel: t("toolbar.changeFolder"),
               retryWavePlanLabel: t("conductor.wave.retry"),
               retryWaveDigestLabel: t("conductor.wave.verdict.retry"),
+              resendMessageLabel: t("interruptedTurn.resend"),
               stateKey: `${c.type}-${i}`,
             }),
           )}
