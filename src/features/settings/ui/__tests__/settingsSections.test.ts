@@ -41,6 +41,18 @@ describe("settingsSections", () => {
     expect(resolveSettingsSection("experiments")).toBe("experiments");
   });
 
+  it("includes memory in settings navigation after behavior", () => {
+    const sectionIds = SETTINGS_SECTIONS.map((section) => section.id);
+
+    // What the agents remember is behavior the operator sets, so it sits
+    // beside Behavior rather than off with the install-level pages.
+    expect(sectionIds).toContain("memory");
+    expect(sectionIds.indexOf("memory")).toBe(
+      sectionIds.indexOf("behavior") + 1,
+    );
+    expect(resolveSettingsSection("memory")).toBe("memory");
+  });
+
   it("includes shortcuts in settings navigation after notifications", () => {
     const sectionIds = SETTINGS_SECTIONS.map((section) => section.id);
 

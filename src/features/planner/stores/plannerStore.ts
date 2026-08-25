@@ -11,6 +11,7 @@
 
 import { create } from "zustand";
 
+import type { PlannerFenceRequest } from "../lib/plannerFence";
 import {
   completeTask,
   isComplete,
@@ -30,6 +31,16 @@ export const PLANNER_STORAGE_KEY = "goose:planner";
  */
 export const MAX_PLANNER_TASKS = 500;
 
+/**
+ * How many "this message has already been filed" tombstones are kept.
+ *
+ * They exist so that reopening the app does not re-file every task an agent
+ * ever wrote, and they are bounded because a transcript is unbounded. Losing
+ * the oldest ones is safe in practice: the messages they name are far behind
+ * the live tail the sync ever re-reads.
+ */
+export const MAX_APPLIED_MESSAGE_IDS = 2000;
+
 export interface PlannerTaskDraft {
   title: string;
   dueAt?: number | null;
@@ -42,6 +53,8 @@ export interface PlannerTaskDraft {
 
 interface PlannerState {
   tasks: PlannerTask[];
+  /** Assistant message ids whose `distill-todo` block has already been read. */
+  appliedMessageIds: string[];
 }
 
 interface PlannerActions {
@@ -52,6 +65,18 @@ interface PlannerActions {
   ) => void;
   toggleComplete: (id: string, nowMs?: number) => void;
   removeTask: (id: string) => void;
+  /**
+   * Files one agent message's `distill-todo` block, once.
+   *
+   * Returns what actually changed so the caller can tell the operator; a
+   * message id already on file is a no-op and reports nothing.
+   */
+  applyAgentRequest: (
+    messageId: string,
+    sessionId: string,
+    request: PlannerFenceRequest,
+    nowMs?: number,
+  ) => { added: number; completed: number };
   /** Test seam and hard reset. */
   replaceAll: (tasks: PlannerTask[]) => void;
 }
@@ -113,13 +138,27 @@ export function parsePlannerTasks(value: unknown): PlannerTask[] {
     .filter((task): task is PlannerTask => task !== null);
 }
 
-function loadPersistedTasks(): PlannerTask[] {
+export function parseAppliedMessageIds(value: unknown): string[] {
+  const list = (value as { appliedMessageIds?: unknown })?.appliedMessageIds;
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter(
+      (entry): entry is string => typeof entry === "string" && entry !== "",
+    )
+    .slice(-MAX_APPLIED_MESSAGE_IDS);
+}
+
+function loadPersistedState(): PlannerState {
   try {
     const raw = window.localStorage.getItem(PLANNER_STORAGE_KEY);
-    if (!raw) return [];
-    return capTasks(parsePlannerTasks(JSON.parse(raw)));
+    if (!raw) return { tasks: [], appliedMessageIds: [] };
+    const parsed = JSON.parse(raw);
+    return {
+      tasks: capTasks(parsePlannerTasks(parsed)),
+      appliedMessageIds: parseAppliedMessageIds(parsed),
+    };
   } catch {
-    return [];
+    return { tasks: [], appliedMessageIds: [] };
   }
 }
 
@@ -140,21 +179,37 @@ export function capTasks(tasks: PlannerTask[]): PlannerTask[] {
   return tasks.filter((_, index) => !drop.has(index));
 }
 
-function persist(tasks: PlannerTask[]): void {
+function persist(state: PlannerState): void {
   try {
     window.localStorage.setItem(
       PLANNER_STORAGE_KEY,
-      JSON.stringify({ version: 1, tasks }),
+      JSON.stringify({ version: 1, ...state }),
     );
   } catch {
     // localStorage may be unavailable; the list still works for this session.
   }
 }
 
-function commit(tasks: PlannerTask[]): PlannerState {
-  const capped = capTasks(tasks);
-  persist(capped);
-  return { tasks: capped };
+function commit(
+  tasks: PlannerTask[],
+  appliedMessageIds: string[],
+): PlannerState {
+  const next = {
+    tasks: capTasks(tasks),
+    appliedMessageIds: appliedMessageIds.slice(-MAX_APPLIED_MESSAGE_IDS),
+  };
+  persist(next);
+  return next;
+}
+
+/** Titles match the way a person would read them: trimmed, case-insensitive. */
+function sameTitle(left: string, right: string): boolean {
+  return left.trim().toLowerCase() === right.trim().toLowerCase();
+}
+
+/** Commit new tasks, keeping the tombstones the state already carries. */
+function commitTasks(state: PlannerState, tasks: PlannerTask[]): PlannerState {
+  return commit(tasks, state.appliedMessageIds);
 }
 
 function newTaskId(): string {
@@ -162,7 +217,7 @@ function newTaskId(): string {
 }
 
 export const usePlannerStore = create<PlannerStore>((set, get) => ({
-  tasks: loadPersistedTasks(),
+  ...loadPersistedState(),
 
   addTask: (draft, nowMs = Date.now()) => {
     const title = draft.title.trim();
@@ -182,13 +237,14 @@ export const usePlannerStore = create<PlannerStore>((set, get) => ({
         : {}),
       ...(draft.notes ? { notes: draft.notes } : {}),
     };
-    set((state) => commit([...state.tasks, task]));
+    set((state) => commit([...state.tasks, task], state.appliedMessageIds));
     return id;
   },
 
   updateTask: (id, patch) => {
     set((state) =>
-      commit(
+      commitTasks(
+        state,
         state.tasks.map((task) =>
           task.id === id
             ? {
@@ -216,15 +272,76 @@ export const usePlannerStore = create<PlannerStore>((set, get) => ({
       ? reopenTask(current)
       : completeTask(current, nowMs);
     set((state) =>
-      commit(state.tasks.map((task) => (task.id === id ? next : task))),
+      commitTasks(
+        state,
+        state.tasks.map((task) => (task.id === id ? next : task)),
+      ),
     );
   },
 
   removeTask: (id) => {
-    set((state) => commit(state.tasks.filter((task) => task.id !== id)));
+    set((state) =>
+      commitTasks(
+        state,
+        state.tasks.filter((task) => task.id !== id),
+      ),
+    );
+  },
+
+  applyAgentRequest: (messageId, sessionId, request, nowMs = Date.now()) => {
+    const state = get();
+    if (!messageId || state.appliedMessageIds.includes(messageId)) {
+      return { added: 0, completed: 0 };
+    }
+
+    let tasks = state.tasks;
+    let added = 0;
+    for (const draft of request.add) {
+      // An agent that repeats itself across turns must not stack duplicates:
+      // an open task with the same title is already the task being asked for.
+      if (
+        tasks.some(
+          (task) => !isComplete(task) && sameTitle(task.title, draft.title),
+        )
+      ) {
+        continue;
+      }
+      tasks = [
+        ...tasks,
+        {
+          id: newTaskId(),
+          title: draft.title,
+          createdAt: nowMs,
+          dueAt: draft.dueAt,
+          completedAt: null,
+          priority: draft.priority,
+          repeat: draft.repeat,
+          createdBySessionId: sessionId,
+          ...(draft.notes ? { notes: draft.notes } : {}),
+        },
+      ];
+      added += 1;
+    }
+
+    let completed = 0;
+    for (const title of request.complete) {
+      const target = tasks.find(
+        (task) => !isComplete(task) && sameTitle(task.title, title),
+      );
+      if (!target) continue;
+      const next = completeTask(target, nowMs);
+      tasks = tasks.map((task) => (task.id === target.id ? next : task));
+      completed += 1;
+    }
+
+    // The tombstone is written even when nothing changed: the message has
+    // been read, and re-reading it on the next store tick would only find
+    // the same duplicates again.
+    set(() => commit(tasks, [...state.appliedMessageIds, messageId]));
+    return { added, completed };
   },
 
   replaceAll: (tasks) => {
-    set(() => commit(tasks));
+    set((state) => commit(tasks, state.appliedMessageIds));
   },
 }));

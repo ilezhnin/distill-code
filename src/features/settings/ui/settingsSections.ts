@@ -3,6 +3,7 @@ import {
   Archive,
   BarChart3,
   Bell,
+  Brain,
   FlaskConical,
   Headphones,
   Keyboard,
@@ -90,10 +91,17 @@ type SettingsSectionDefinition = {
 // old deep links (`/settings?section=doctor`) land on System, where the row
 // that opens the dialog now lives.
 //
+// Rev 6 (Aug 25): "memory" is a new section, placed directly after
+// "behavior". What the agents remember across sessions is behavior the
+// operator sets, not an install-level setting, and it belongs beside the
+// other rows that shape how work is done here rather than next to Stats or
+// Archive. It sits above "connections" so the two operator-owned surfaces
+// (how agents behave, what they remember) read as one pair.
 // Experiments stays a real top-level section, unchanged from main.
 export const SETTINGS_SECTIONS = [
   { id: "appearance", labelKey: "nav.appearance", icon: Palette },
   { id: "behavior", labelKey: "nav.behavior", icon: SlidersHorizontal },
+  { id: "memory", labelKey: "nav.memory", icon: Brain },
   { id: "connections", labelKey: "nav.connections", icon: IconPlug },
   { id: "providers", labelKey: "nav.providers", icon: IconServer },
   { id: "notifications", labelKey: "nav.notifications", icon: Bell },

@@ -38,6 +38,9 @@ import {
   getWorkspaceAttachments,
 } from "@/features/chat/lib/workspaceAttachments";
 import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspaceContextPrompt";
+import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
+import { composeMemorySection } from "@/features/memory/lib/memoryPrompt";
+import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import {
   type ChatSession,
   useChatSessionStore,
@@ -354,6 +357,11 @@ export async function sendQueuedPromptToExistingSessionInBackground(
           formatIncludedWorkspacesPrompt(session),
           formatWorkspaceInstructionsPrompt(instructionFiles),
           formatAvailableSkillsCatalogPrompt(skills),
+          composeMemorySection(
+            useMemoryStore.getState().entries,
+            session.projectId ?? null,
+          ),
+          PLANNER_PROTOCOL_PROMPT,
         )
       : undefined;
     const sessionBeforeSend = useChatSessionStore

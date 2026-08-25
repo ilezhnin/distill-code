@@ -39,6 +39,9 @@ import { formatIncludedWorkspacesPrompt } from "@/features/chat/lib/workspaceAtt
 import { useWorkspaceRepository } from "@/features/workspaces/workspaceRepository";
 import { loadWorkspaceInstructionFiles } from "@/features/chat/api/workspaceContext";
 import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspaceContextPrompt";
+import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
+import { composeMemorySection } from "@/features/memory/lib/memoryPrompt";
+import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { getSkillProviderCapabilities } from "@/features/chat/lib/skillProviderCapabilities";
 import {
   fetchBerdAppSkills,
@@ -734,6 +737,14 @@ export function useChatSessionController({
     skillProviderId,
     skillsCatalogKey,
   ]);
+  // What this session already knows, and how it keeps more. Scoped by the
+  // session's own project: a fact learned in one codebase must not follow the
+  // operator into an unrelated chat.
+  const memoryEntries = useMemoryStore((state) => state.entries);
+  const memorySection = useMemo(
+    () => composeMemorySection(memoryEntries, effectiveProjectId),
+    [memoryEntries, effectiveProjectId],
+  );
   const effectiveSystemPrompt = useMemo(
     () =>
       composeSystemPrompt(
@@ -742,6 +753,8 @@ export function useChatSessionController({
         workspaceInstructionsPrompt,
         appSkillsCatalogPrompt,
         availableSkillsCatalogPrompt,
+        memorySection,
+        PLANNER_PROTOCOL_PROMPT,
       ),
     [
       selectedPersona,
@@ -749,6 +762,7 @@ export function useChatSessionController({
       workspaceInstructionsPrompt,
       appSkillsCatalogPrompt,
       availableSkillsCatalogPrompt,
+      memorySection,
     ],
   );
   const skillProviderCapabilities = useMemo(
