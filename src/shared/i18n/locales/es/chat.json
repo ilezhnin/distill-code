@@ -431,7 +431,8 @@
     "cancelWorktree": "Cancelar",
     "createWorktree": "Guardar",
     "preparingWorkspaceTitle": "Preparando el espacio de trabajo del proyecto.",
-    "preparingWorkspaceBody": "Tu mensaje se enviará cuando esté listo."
+    "preparingWorkspaceBody": "Tu mensaje se enviará cuando esté listo.",
+    "noSteeringHere": "Este agente recogerá el mensaje cuando termine su turno actual: no se le puede interrumpir a mitad de turno."
   },
   "globalPill": {
     "ariaLabel": "Redacción rápida",

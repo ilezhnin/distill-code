@@ -432,7 +432,8 @@
     "cancelWorktree": "Cancel",
     "createWorktree": "Save",
     "preparingWorkspaceTitle": "Preparing your project workspace.",
-    "preparingWorkspaceBody": "Your messages will send when it’s ready."
+    "preparingWorkspaceBody": "Your messages will send when it’s ready.",
+    "noSteeringHere": "This agent picks the message up when its current turn ends — it cannot be interrupted mid-turn."
   },
   "globalPill": {
     "ariaLabel": "Quick compose",
