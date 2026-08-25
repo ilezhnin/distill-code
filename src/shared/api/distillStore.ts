@@ -17,6 +17,16 @@ export interface DistillRootInfo {
   root: string;
   /** True when `DISTILL_ROOT` forced it, so the setting is not in charge. */
   forcedByEnvironment: boolean;
+  /**
+   * True when chats, projects and settings live in the root as well.
+   *
+   * False on a machine that already had goose data when this landed: moving
+   * it without being asked would open the app with an empty history and no
+   * explanation, so it stays where it is until the operator picks a folder.
+   */
+  holdsEverything: boolean;
+  /** Where that older data still is, when it has not moved. */
+  legacyDataDir: string | null;
 }
 
 export function isDesktopRuntime(): boolean {

@@ -372,7 +372,8 @@
       "savedDescription": "Nothing was moved. Copy the old folder's contents across, then restart Distill.",
       "saveError": "Couldn't use that folder",
       "restartRequired": "Takes effect after a restart.",
-      "forcedByEnvironment": "Set by DISTILL_ROOT for this run, so this setting is not in charge."
+      "forcedByEnvironment": "Set by DISTILL_ROOT for this run, so this setting is not in charge.",
+      "legacyDataElsewhere": "Chats and projects are still in {{path}}. Pick a folder above, copy that folder's contents into it, and restart."
     }
   },
   "nav": {

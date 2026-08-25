@@ -29,6 +29,8 @@ describe("DistillFolderRow", () => {
     mocks.getDistillRoot.mockResolvedValue({
       root: "C:\\Users\\User\\.distill",
       forcedByEnvironment: false,
+      holdsEverything: true,
+      legacyDataDir: null,
     });
   });
 
@@ -88,11 +90,29 @@ describe("DistillFolderRow", () => {
     mocks.getDistillRoot.mockResolvedValue({
       root: "/tmp/forced",
       forcedByEnvironment: true,
+      holdsEverything: true,
+      legacyDataDir: null,
     });
     renderWithProviders(<DistillFolderRow />);
 
     expect(await screen.findByTestId("distill-folder-forced")).toBeVisible();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("says where the chats still are when they have not moved", async () => {
+    // Otherwise the row reads "everything lives here" while the operator's
+    // history sits somewhere else entirely.
+    mocks.getDistillRoot.mockResolvedValue({
+      root: "C:\\Users\\User\\.distill",
+      forcedByEnvironment: false,
+      holdsEverything: false,
+      legacyDataDir: "C:\\Users\\User\\AppData\\Roaming\\Block\\goose\\data",
+    });
+    renderWithProviders(<DistillFolderRow />);
+
+    expect(
+      await screen.findByTestId("distill-folder-legacy"),
+    ).toHaveTextContent("Block");
   });
 
   it("renders nothing outside the desktop app", async () => {

@@ -87,6 +87,19 @@ export function DistillFolderRow() {
             {t("general.distillFolder.restartRequired")}
           </p>
         ) : null}
+        {!info.holdsEverything && info.legacyDataDir ? (
+          // The operator would otherwise read "everything lives here" while
+          // their chats sat somewhere else entirely.
+          <p
+            className="max-w-80 text-right text-xs text-warning"
+            data-testid="distill-folder-legacy"
+            title={info.legacyDataDir}
+          >
+            {t("general.distillFolder.legacyDataElsewhere", {
+              path: info.legacyDataDir,
+            })}
+          </p>
+        ) : null}
         {info.forcedByEnvironment ? (
           // The setting is not in charge right now; saying otherwise would
           // have the operator changing a value that does nothing.
