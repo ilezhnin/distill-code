@@ -48,6 +48,18 @@ const createSessionSchema = z
 // never create a session the caller has already been told timed out.
 const CREATE_DEADLINE_MARGIN_MS = 3_000;
 
+// TODO(spawn-acl): this path cannot enforce the spawn ACL (spawnAcl.ts)
+// because the initiator is unknowable here. The berdctl wire protocol
+// (BridgeRequest: id/command/args/timeoutMs) carries no caller identity, and
+// it cannot be recovered from the environment either: BERDCTL_LOCK/BERDCTL_BIN
+// are set on the single shared goosed daemon, so every agent session — and
+// any operator terminal — runs the CLI with the same app-wide env. Telling a
+// worker's shell apart from the operator's shell needs a per-session identity
+// minted at harness spawn and threaded CLI → broker → renderer; until that
+// protocol change lands, this command stays initiator-blind and the spawn
+// ACL for agents is enforced only in the prompt (the generated spawn-policy
+// line) plus the in-app spawn chokepoint (spawnConductorChildSession).
+
 interface CreateSessionResult {
   session_id: string;
   title: string;

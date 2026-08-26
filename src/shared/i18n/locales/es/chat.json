@@ -565,6 +565,12 @@
         "nearLimit": "El paso {{step}} ({{name}}) se ejecuta en {{model}}, que está cerca de su límite de uso. Todos los modelos de este rol están así de llenos, por lo que el paso puede cortarse antes de terminar."
       }
     },
+    "spawnAcl": {
+      "deniedTitle": "Una sesión pidió iniciar un agente que no tiene permitido iniciar, así que no se inició nada.",
+      "deniedBody": "«{{initiator}}» corre en la capa {{initiatorLayer}} y pidió iniciar un agente de la capa {{targetLayer}}.",
+      "allowedLayers": "Sus permisos de inicio le permiten iniciar: {{layers}}.",
+      "allowedNone": "Sus permisos de inicio no le permiten iniciar nada."
+    },
     "selfExecutingBadge": "El conductor cambió algo él mismo: puede leer para responder, pero el trabajo pertenece a una ola.",
     "poke": {
       "ask": "Pedir estado",

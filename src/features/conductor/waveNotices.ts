@@ -65,6 +65,34 @@ export function waveRetryLabel(): string {
   return i18n.t("chat:conductor.wave.retry");
 }
 
+/**
+ * The notice posted when the spawn ACL refuses a programmatic spawn (D5:
+ * every refusal is visible, and it names the facts — who asked, on which
+ * layer it runs, which layer it asked for, and what it is actually allowed
+ * to start). Posted by the spawn chokepoint itself, so no path can refuse
+ * silently.
+ */
+export function spawnAclDeniedNoticeText(facts: {
+  initiatorName: string;
+  initiatorLayer: string;
+  targetLayer: string;
+  allowedLayers: readonly string[];
+}): string {
+  return [
+    i18n.t("chat:conductor.spawnAcl.deniedTitle"),
+    i18n.t("chat:conductor.spawnAcl.deniedBody", {
+      initiator: facts.initiatorName,
+      initiatorLayer: facts.initiatorLayer,
+      targetLayer: facts.targetLayer,
+    }),
+    facts.allowedLayers.length > 0
+      ? i18n.t("chat:conductor.spawnAcl.allowedLayers", {
+          layers: facts.allowedLayers.join(", "),
+        })
+      : i18n.t("chat:conductor.spawnAcl.allowedNone"),
+  ].join("\n\n");
+}
+
 /** Notice shown when a wave step could not be started at all. */
 export function waveSpawnFailureText(
   stepIndex: number,
