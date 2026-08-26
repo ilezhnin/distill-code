@@ -108,6 +108,7 @@ function parseStep(value: unknown): WaveStepState | null {
     role: raw.role,
     subtask: raw.subtask,
     access,
+    ...(typeof raw.label === "string" && raw.label ? { label: raw.label } : {}),
     phase: raw.phase,
     ...(typeof raw.sessionId === "string" ? { sessionId: raw.sessionId } : {}),
     ...(typeof raw.runId === "string" ? { runId: raw.runId } : {}),

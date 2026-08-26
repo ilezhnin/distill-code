@@ -517,6 +517,8 @@
         "subtaskNotAString": "Step {{step}} does not carry a subtask.",
         "subtaskEmpty": "Step {{step}} has an empty subtask.",
         "accessInvalid": "Step {{step}} has an unsupported \"access\" value.",
+        "labelNotAString": "Step {{step}} has a \"label\" field that is not a name.",
+        "labelTooLong": "Step {{step}} has a \"label\" that is too long to be a name.",
         "modelNotAString": "Step {{step}} has a \"model\" field that is not a model name.",
         "stepModelUnsupported": "Step {{step}} asks to run on a specific model. Per-step models are not supported yet, and the whole plan was refused rather than quietly running the step on another model.",
         "verificationStepMissing": "This plan builds something that can be checked, but its last step does not check it. A wave like this has to end with a verification step that inspects the result itself."

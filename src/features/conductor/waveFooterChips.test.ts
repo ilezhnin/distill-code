@@ -113,4 +113,10 @@ describe("pendingStepName", () => {
     // operator needs to read what it named.
     expect(pendingStepName(step({ role: "chandler" }))).toBe("chandler");
   });
+
+  it("carries the plan's label so the placeholder matches the spawned chip", () => {
+    expect(pendingStepName(step({ label: "audit the parser" }))).toBe(
+      "Brigade · audit the parser",
+    );
+  });
 });

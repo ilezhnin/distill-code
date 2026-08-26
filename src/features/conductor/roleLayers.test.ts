@@ -95,4 +95,20 @@ describe("waveStepDisplayName", () => {
   it("keeps the bare role name for an empty subtask", () => {
     expect(waveStepDisplayName("qa", "   ")).toBe(roleDisplayName("qa"));
   });
+
+  it("prefers the plan's explicit label over the derived handle", () => {
+    expect(
+      waveStepDisplayName(
+        "scout",
+        "Разбери один файл: src/waveEngine.ts",
+        "audit the engine",
+      ),
+    ).toBe("Scout · audit the engine");
+  });
+
+  it("falls back to the derived handle when the label is blank", () => {
+    expect(
+      waveStepDisplayName("scout", "Разбери один файл: src/waveEngine.ts", " "),
+    ).toBe("Scout · waveEngine");
+  });
 });

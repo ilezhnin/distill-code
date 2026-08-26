@@ -15,6 +15,7 @@
  */
 
 import {
+  MAX_WAVE_STEP_LABEL_LENGTH,
   MAX_WAVE_STEPS,
   WAVE_FENCE_TAG,
   type WaveStep,
@@ -82,6 +83,7 @@ Rules, all enforced by a strict parser — a malformed wave runs nothing and is 
 - "subtask" is a JSON string, and broken JSON runs nothing — so inside it never use the double-quote character. Quote with «guillemets» or 'single quotes' instead, and never paste JSON snippets, code, or fenced blocks into a subtask. Do not describe the report format either: every worker receives the report contract automatically, restating it only risks the plan.
 - The block is ONE JSON object. After the last step, close the steps array AND the object: the block always ends with \`}]}\` — a block ending in \`}]\` is missing its final brace and runs nothing.
 - "access" is either [] or "all". Nothing else — no lists of step indexes.
+- "label" is optional: a short human-readable name for the step, at most ${MAX_WAVE_STEP_LABEL_LENGTH} characters. It names the step's chip and its worker's tab, so give one when two steps share a role and their subtasks' first words would not tell them apart.
 - "model" is optional. Omit it and the step inherits the conductor's model.
 - Anything you want the operator to read goes outside the block, as ordinary prose.
 
@@ -123,7 +125,7 @@ The first two steps need disjoint context, so they run in parallel with "access"
 «Rename the config flag enableFoo to enableBar everywhere and keep the build green» —
 
 \`\`\`${WAVE_FENCE_TAG}
-{"steps":[{"role":"brigade","subtask":"Rename the config flag enableFoo to enableBar: the definition, every call site, config files and docs. Keep the change mechanical; do not refactor around it.","access":[]},{"role":"acceptor","subtask":"Verify directly: run the build and the tests nearest the flag, search the repo for the old name and confirm the only remaining hits are historical (changelogs). Report the commands you ran and what they printed.","access":"all"}]}
+{"steps":[{"role":"brigade","subtask":"Rename the config flag enableFoo to enableBar: the definition, every call site, config files and docs. Keep the change mechanical; do not refactor around it.","access":[],"label":"rename enableFoo"},{"role":"acceptor","subtask":"Verify directly: run the build and the tests nearest the flag, search the repo for the old name and confirm the only remaining hits are historical (changelogs). Report the commands you ran and what they printed.","access":"all","label":"verify the rename"}]}
 \`\`\`
 
 The work is checkable, so the last step inspects the artifact itself — the build, the tests, a search — never just the other step's report.

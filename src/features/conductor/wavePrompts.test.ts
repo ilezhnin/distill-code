@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 import {
+  MAX_WAVE_STEP_LABEL_LENGTH,
   MAX_WAVE_STEPS,
   WAVE_FENCE_TAG,
   type WaveStep,
@@ -83,6 +84,29 @@ describe("CONDUCTOR_PROTOCOL_PROMPT", () => {
     expect(CONDUCTOR_PROTOCOL_PROMPT).toContain('"access": "all"');
     expect(CONDUCTOR_PROTOCOL_PROMPT).toContain("no lists of step indexes");
     expect(CONDUCTOR_PROTOCOL_PROMPT).toContain("never transcripts");
+  });
+
+  it("teaches the optional step label with the parser's own cap", () => {
+    // Prompt and parser change together: the cap is interpolated, so the
+    // prompt can never promise a length the parser refuses.
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain('"label" is optional');
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain(
+      `at most ${MAX_WAVE_STEP_LABEL_LENGTH} characters`,
+    );
+  });
+
+  it("shows a labelled step in a worked example, and the parser keeps it", () => {
+    const fences =
+      CONDUCTOR_PROTOCOL_PROMPT.match(
+        new RegExp(`\`\`\`${WAVE_FENCE_TAG}[\\s\\S]*?\`\`\``, "g"),
+      ) ?? [];
+    const labelled = fences
+      .map((fence) => parseDistillWave(fence))
+      .filter(
+        (parsed) =>
+          parsed.kind === "plan" && parsed.steps.some((step) => step.label),
+      );
+    expect(labelled.length).toBeGreaterThanOrEqual(1);
   });
 
   it("lists only worker-layer roles as legal step roles", () => {

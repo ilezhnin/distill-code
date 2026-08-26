@@ -387,11 +387,13 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
         stepIndex: request.stepIndex,
         anchorMessageId: wave.planMessageId,
         roleId: request.step.role,
-        // "Scout · waveEngine", not three identical "Scout"s: the subtask
-        // handle is what makes chips, tabs and digests tell siblings apart.
+        // "Scout · waveEngine", not three identical "Scout"s: the handle is
+        // what makes chips, tabs and digests tell siblings apart. A label the
+        // plan gave wins over the derived subtask handle.
         displayName: waveStepDisplayName(
           request.step.role,
           request.step.subtask,
+          request.step.label,
         ),
         personaName: roleDisplayName(request.step.role),
         // The role's own ranking picks the model, walked against the live
