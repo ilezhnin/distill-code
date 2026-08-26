@@ -9,7 +9,11 @@
   },
   "groups": {
     "global": "En todas partes",
-    "unknownProject": "Un proyecto que ya no existe"
+    "unknownProject": "Un proyecto que ya no existe",
+    "forgetProject": "Olvidar las memorias de este proyecto",
+    "forgetProjectConfirmTitle": "¿Olvidar las memorias de este proyecto?",
+    "forgetProjectConfirmDescription": "El proyecto al que pertenecen estas memorias ya no existe, así que ninguna sesión las vuelve a ver. Esto no se puede deshacer.",
+    "forgetProjectConfirm": "Olvidarlas"
   },
   "empty": "Todavía no hay nada guardado.",
   "row": {

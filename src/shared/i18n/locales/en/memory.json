@@ -9,7 +9,11 @@
   },
   "groups": {
     "global": "Everywhere",
-    "unknownProject": "A project that no longer exists"
+    "unknownProject": "A project that no longer exists",
+    "forgetProject": "Forget this project's memories",
+    "forgetProjectConfirmTitle": "Forget this project's memories?",
+    "forgetProjectConfirmDescription": "The project these memories belong to no longer exists, so no session is ever shown them. This cannot be undone.",
+    "forgetProjectConfirm": "Forget them"
   },
   "empty": "Nothing kept yet.",
   "row": {
