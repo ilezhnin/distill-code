@@ -41,7 +41,7 @@ describe("MemorySettings", () => {
   beforeEach(() => {
     window.localStorage.clear();
     useMemoryStore.setState({ entries: [], appliedMessageIds: [] });
-    useProjectStore.setState({ projects: [] });
+    useProjectStore.setState({ projects: [], hasFetchedProjects: false });
   });
 
   it("says plainly when nothing has been kept", () => {
@@ -161,6 +161,73 @@ describe("MemorySettings", () => {
     expect(
       screen.getByRole("textbox", { name: "Edit this memory" }),
     ).toHaveValue("Corrected wording");
+  });
+
+  it("offers to forget an orphaned project's memories, behind a confirmation", async () => {
+    const user = userEvent.setup();
+    useProjectStore.setState({
+      projects: [project("p-live", "Still here")],
+      hasFetchedProjects: true,
+    });
+    useMemoryStore.setState({
+      entries: [
+        entry({ id: "g", text: "A global fact" }),
+        entry({
+          id: "live",
+          text: "A live project fact",
+          scope: "project",
+          projectId: "p-live",
+        }),
+        entry({
+          id: "dead-1",
+          text: "First orphan",
+          scope: "project",
+          projectId: "p-gone",
+        }),
+        entry({
+          id: "dead-2",
+          text: "Second orphan",
+          scope: "project",
+          projectId: "p-gone",
+        }),
+      ],
+      appliedMessageIds: [],
+    });
+    renderWithProviders(<MemorySettings />);
+
+    // Only the group whose project is gone offers the sweep.
+    const forgetButtons = screen.getAllByTestId("memory-forget-project");
+    expect(forgetButtons).toHaveLength(1);
+
+    await user.click(forgetButtons[0]);
+    // Nothing is deleted until the operator confirms.
+    expect(useMemoryStore.getState().entries).toHaveLength(4);
+
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      await within(dialog).findByRole("button", { name: "Forget them" }),
+    );
+
+    const remaining = useMemoryStore.getState().entries.map((e) => e.id);
+    expect(remaining).toEqual(["g", "live"]);
+  });
+
+  it("offers no orphan sweep before the project list has been fetched", () => {
+    useProjectStore.setState({ projects: [], hasFetchedProjects: false });
+    useMemoryStore.setState({
+      entries: [
+        entry({
+          id: "maybe",
+          text: "Might just not be loaded yet",
+          scope: "project",
+          projectId: "p-unknown",
+        }),
+      ],
+      appliedMessageIds: [],
+    });
+    renderWithProviders(<MemorySettings />);
+
+    expect(screen.queryByTestId("memory-forget-project")).toBeNull();
   });
 
   it("saves an edit when the field loses focus", async () => {
