@@ -85,14 +85,11 @@ describe("primary navigation planner slot", () => {
   });
 
   it("stays quiet when nothing is due", () => {
-    usePlannerStore
-      .getState()
-      .replaceAll([
-        task({
-          dueAt:
-            startOfLocalDay(Date.now()).valueOf() + 30 * 24 * 60 * 60 * 1000,
-        }),
-      ]);
+    usePlannerStore.getState().replaceAll([
+      task({
+        dueAt: startOfLocalDay(Date.now()).valueOf() + 30 * 24 * 60 * 60 * 1000,
+      }),
+    ]);
     renderSurface();
 
     expect(screen.queryByTestId("nav-planner-count")).not.toBeInTheDocument();
