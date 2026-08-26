@@ -245,6 +245,31 @@ describe("parseWaveEngineState", () => {
     expect(parsed.waves[0]?.steps[0]?.reportDegraded).toBeUndefined();
   });
 
+  it("round-trips a step's label, and drops a junk one", () => {
+    // A reload that lost the label would rename the step's placeholder chip
+    // mid-wave; a junk value must read as "no label", never crash the wave.
+    const base = wave("w1");
+    const state = withWave(emptyWaveEngineState(), {
+      ...base,
+      steps: [{ ...base.steps[0], label: "audit the parser" }],
+    });
+    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
+      state,
+    );
+
+    const parsed = parseWaveEngineState({
+      version: 2,
+      waves: [
+        {
+          ...JSON.parse(JSON.stringify(base)),
+          steps: [{ ...base.steps[0], label: 42 }],
+        },
+      ],
+      tombstones: [],
+    });
+    expect(parsed.waves[0]?.steps[0]?.label).toBeUndefined();
+  });
+
   it("survives every phase either union can hold", () => {
     // The C1 regression, as a property over the unions themselves: a phase
     // that exists in `waveEngine.ts` but not in this module's guard used to

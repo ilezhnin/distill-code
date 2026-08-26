@@ -52,6 +52,8 @@ export interface WaveStepState {
   role: string;
   subtask: string;
   access: WaveStepAccess;
+  /** The plan's human-readable step name, when it gave one. */
+  label?: string;
   phase: WaveStepPhase;
   /** Child session id, once the spawn produced one. */
   sessionId?: string;
@@ -413,6 +415,7 @@ export function createWaveState(args: {
       role: step.role,
       subtask: step.subtask,
       access: step.access,
+      ...(step.label ? { label: step.label } : {}),
       phase: "pending" as const,
     })),
   };
@@ -519,6 +522,7 @@ export function withWaveStepPhase(
       role: step.role,
       subtask: step.subtask,
       access: step.access,
+      ...(step.label ? { label: step.label } : {}),
       phase: patch.phase,
       ...((patch.sessionId ?? step.sessionId)
         ? { sessionId: patch.sessionId ?? step.sessionId }
@@ -590,7 +594,12 @@ export interface WaveAdvance {
 }
 
 function stepToWaveStep(state: WaveStepState): WaveStep {
-  return { role: state.role, subtask: state.subtask, access: state.access };
+  return {
+    role: state.role,
+    subtask: state.subtask,
+    access: state.access,
+    ...(state.label ? { label: state.label } : {}),
+  };
 }
 
 function sameStep(left: WaveStepState, right: WaveStepState): boolean {
@@ -654,6 +663,7 @@ export function advanceWave(
         role: step.role,
         subtask: step.subtask,
         access: step.access,
+        ...(step.label ? { label: step.label } : {}),
         phase: "pending",
       };
     }

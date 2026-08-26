@@ -4,7 +4,7 @@
  * Wire format — a fenced block in an assistant message:
  *
  * ```distill-wave
- * {"steps":[{"role":"qa","subtask":"...","access":[],"model":"gpt-5"}]}
+ * {"steps":[{"role":"qa","subtask":"...","access":[],"label":"...","model":"gpt-5"}]}
  * ```
  *
  * The parse is tri-state (decision Q2, strict-parse without fallback):
@@ -26,6 +26,17 @@ export const WAVE_FENCE_TAG = "distill-wave";
 export const MAX_WAVE_STEPS = 5;
 
 /**
+ * Hard cap on a step's `label`.
+ *
+ * The label is rendered verbatim into worker display names ("Scout · <label>"),
+ * chips and tab titles — surfaces sized for a name, not a sentence. The derived
+ * subtask handle truncates itself at 28 characters; an explicit name the
+ * conductor chose gets about double that room, and anything longer is a subtask
+ * pretending to be a name, refused so the plan says what it means.
+ */
+export const MAX_WAVE_STEP_LABEL_LENGTH = 60;
+
+/**
  * What a step may read from the wave so far.
  * - `[]` — the step sees nothing but its own subtask; it can start immediately.
  * - `"all"` — the step sees the JSON reports of the earlier steps of its wave.
@@ -40,6 +51,12 @@ export interface WaveStep {
   /** The instruction for this step. Never a copy of the operator request. */
   subtask: string;
   access: WaveStepAccess;
+  /**
+   * Human-readable name of the step, chosen by the conductor. Shown on the
+   * step's chip and in the worker's display name ("Scout · <label>"); absent
+   * means the handle is derived from the subtask instead.
+   */
+  label?: string;
   /** Explicit per-step model override (D5). Absent means "inherit". */
   model?: string;
 }
@@ -74,6 +91,10 @@ export type WaveInvalidReason =
   | "subtask-empty"
   /** A step's `access` is neither `[]` nor `"all"`. */
   | "access-invalid"
+  /** A step carries `label`, but not as a non-empty string. */
+  | "label-not-a-string"
+  /** A step's `label` is longer than `MAX_WAVE_STEP_LABEL_LENGTH`. */
+  | "label-too-long"
   /** A step carries `model`, but not as a non-empty string. */
   | "model-not-a-string";
 
@@ -223,6 +244,25 @@ export function parseWaveStep(
   }
 
   const step: WaveStep = { role: roleCheck.role.id, subtask, access };
+
+  if ("label" in raw && raw.label !== undefined) {
+    if (typeof raw.label !== "string" || !raw.label.trim()) {
+      return invalid(
+        "label-not-a-string",
+        `Step ${stepIndex + 1}: "label" must be a non-empty string when present.`,
+        stepIndex,
+      );
+    }
+    const label = raw.label.trim();
+    if (label.length > MAX_WAVE_STEP_LABEL_LENGTH) {
+      return invalid(
+        "label-too-long",
+        `Step ${stepIndex + 1}: "label" is ${label.length} characters; at most ${MAX_WAVE_STEP_LABEL_LENGTH} are allowed. A label is a name, not a second subtask.`,
+        stepIndex,
+      );
+    }
+    step.label = label;
+  }
 
   if ("model" in raw && raw.model !== undefined) {
     if (typeof raw.model !== "string" || !raw.model.trim()) {

@@ -516,6 +516,8 @@
         "subtaskNotAString": "El paso {{step}} no lleva ninguna subtarea.",
         "subtaskEmpty": "El paso {{step}} tiene la subtarea vacía.",
         "accessInvalid": "El paso {{step}} tiene un valor de \"access\" no admitido.",
+        "labelNotAString": "El paso {{step}} tiene un campo \"label\" que no es un nombre.",
+        "labelTooLong": "El paso {{step}} tiene un \"label\" demasiado largo para ser un nombre.",
         "modelNotAString": "El paso {{step}} tiene un campo \"model\" que no es un nombre de modelo.",
         "stepModelUnsupported": "El paso {{step}} pide ejecutarse en un modelo concreto. Todavía no se admiten modelos por paso, y se rechazó el plan entero en lugar de ejecutar el paso en otro modelo sin avisar.",
         "verificationStepMissing": "Este plan construye algo que se puede comprobar, pero su último paso no lo comprueba. Una ola así debe terminar con un paso de verificación que inspeccione el resultado."

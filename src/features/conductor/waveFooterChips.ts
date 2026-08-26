@@ -37,7 +37,11 @@ export interface WaveFooterSlot {
  * case where the operator needs to see what it named.
  */
 export function pendingStepName(step: WaveStep): string {
-  return roleById(step.role)?.displayName ?? step.role;
+  const base = roleById(step.role)?.displayName ?? step.role;
+  // A labelled step keeps its label from the placeholder on: the spawned
+  // chip will read "Scout · <label>" (the worker's display name), and a
+  // placeholder that says only "Scout" until then reads as a different step.
+  return step.label ? `${base} · ${step.label}` : base;
 }
 
 /**

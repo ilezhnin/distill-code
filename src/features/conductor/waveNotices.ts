@@ -32,6 +32,8 @@ export const WAVE_REJECTION_REASON_KEYS: Record<WaveRejectionReason, string> = {
   "subtask-not-a-string": "subtaskNotAString",
   "subtask-empty": "subtaskEmpty",
   "access-invalid": "accessInvalid",
+  "label-not-a-string": "labelNotAString",
+  "label-too-long": "labelTooLong",
   "model-not-a-string": "modelNotAString",
   "step-model-unsupported": "stepModelUnsupported",
   "verification-step-missing": "verificationStepMissing",
