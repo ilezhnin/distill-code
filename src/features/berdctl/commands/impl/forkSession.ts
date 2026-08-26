@@ -39,6 +39,10 @@ Result:
    "message_count": 7}
   The fork appears in the session list with a copy of the original history.`,
   schema: forkSessionSchema,
+  // TODO(spawn-acl): fork creates a session, so it is the same hole as
+  // `session create` and blocked on the same missing piece — see the traced
+  // note in createSession.ts. Nothing to enforce here until a per-session
+  // identity reaches the broker.
   // Fork is a real backend round-trip that copies the conversation history.
   bridgeTimeoutMs: 60_000,
   precheck: async (args) => {
