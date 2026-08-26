@@ -87,4 +87,17 @@ describe("AgentDetailPage", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toHaveTextContent("Fable 5");
   });
+
+  it("states the permissions the agent actually runs with", () => {
+    renderPage(makePersona({ spawns: ["worker"] }));
+
+    expect(screen.getByText("Permissions")).toBeInTheDocument();
+    // Explicit on one row, inherited on the other, each saying which.
+    expect(
+      screen.getByTestId("agent-permissions-summary-spawns-note"),
+    ).toHaveTextContent("Set on this agent");
+    expect(
+      screen.getByTestId("agent-permissions-summary-memory-note"),
+    ).toHaveTextContent("From its role");
+  });
 });
