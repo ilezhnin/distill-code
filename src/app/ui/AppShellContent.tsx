@@ -496,6 +496,7 @@ function renderRouteContent({
           onComposerHandoffTarget={onChatComposerHandoffTarget}
           onWorkspaceNameRequest={onWorkspaceNameRequest}
           onAgentBuilderCompleted={onAgentBuilderCompleted}
+          onOpenAgentLibrary={() => onNavigateAgents(null)}
           onSelectSession={onSelectSession}
         />
       ) : (

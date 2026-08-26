@@ -175,6 +175,11 @@ interface ChatViewProps {
   onComposerHandoffTarget?: (rect: GlobalComposerHandoffRect) => void;
   onWorkspaceNameRequest?: (request: WorkspaceNameRequest) => void;
   onAgentBuilderCompleted?: (agentId: string) => void;
+  /**
+   * Opens the agents library view. Surfaced as the full-page agent editor's
+   * back control, mirroring the agent profile page's back chevron.
+   */
+  onOpenAgentLibrary?: () => void;
   onSelectSession?: (sessionId: string) => void;
 }
 
@@ -194,6 +199,7 @@ export function ChatView({
   onComposerHandoffTarget,
   onWorkspaceNameRequest,
   onAgentBuilderCompleted,
+  onOpenAgentLibrary,
   onSelectSession,
 }: ChatViewProps) {
   const { t } = useTranslation("chat");
@@ -1455,6 +1461,7 @@ export function ChatView({
             builderRailSeparatorProps={builderRailSeparatorProps}
             onExpandAgentBuilderChat={toggleAgentBuilderChat}
             onAgentBuilderCompleted={onAgentBuilderCompleted}
+            onOpenAgentLibrary={onOpenAgentLibrary}
             builderColumnClassName={
               isAgentBuilderOpen ? "agent-builder-column-enter" : undefined
             }

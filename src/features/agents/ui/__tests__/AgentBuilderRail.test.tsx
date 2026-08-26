@@ -750,7 +750,7 @@ describe("AgentBuilderRail", () => {
     });
   });
 
-  it("does not show a back button in the agent editor", () => {
+  it("does not show a back button in the split (chat-side) editor", () => {
     mockHook({
       data: {
         ...baseSource,
@@ -764,12 +764,41 @@ describe("AgentBuilderRail", () => {
         sessionId="s1"
         targetAgentPath={baseSource.path}
         targetAgentSlug="code-reviewer"
+        onBackToLibrary={vi.fn()}
       />,
     );
 
+    // In the split layout the chat column carries navigation; the back
+    // chevron belongs to the full-page editor only.
     expect(
       screen.queryByRole("button", { name: /back to agent/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("shows the profile page's back chevron in the full-page editor", () => {
+    mockHook({
+      data: {
+        ...baseSource,
+        name: "Code Reviewer",
+        properties: {},
+      },
+    });
+    const onBackToLibrary = vi.fn();
+
+    renderWithProviders(
+      <AgentBuilderRail
+        sessionId="s1"
+        targetAgentPath={baseSource.path}
+        targetAgentSlug="code-reviewer"
+        fullPage
+        onBackToLibrary={onBackToLibrary}
+      />,
+    );
+
+    // Same control as AgentDetailPage: label "Back to agents", leading to
+    // the agents library.
+    fireEvent.click(screen.getByRole("button", { name: "Back to agents" }));
+    expect(onBackToLibrary).toHaveBeenCalledTimes(1);
   });
 
   it("shows a close affordance only when the source is a draft", () => {

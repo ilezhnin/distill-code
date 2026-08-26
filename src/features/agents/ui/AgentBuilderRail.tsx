@@ -7,6 +7,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { ChevronLeft } from "lucide-react";
 import {
   IconAlertTriangle,
   IconLayoutSidebarLeftExpand,
@@ -71,6 +72,12 @@ export interface AgentBuilderRailProps {
   fullPage?: boolean;
   /** Reopens chat from the full-page builder header. */
   onExpandChat?: () => void;
+  /**
+   * Back to the agents library, rendered in the full-page header as the same
+   * chevron the agent profile page uses. Only meaningful with `fullPage` —
+   * the split layout keeps its chat-side navigation.
+   */
+  onBackToLibrary?: () => void;
   onDraftPromoted?: (source: AgentSourceEntry) => void;
   onDraftTargetChanged?: (target: { path: string; slug: string }) => void;
   onRecoverMissingDraft?: () => void | Promise<void>;
@@ -88,6 +95,7 @@ export function AgentBuilderRail({
   className,
   fullPage = false,
   onExpandChat,
+  onBackToLibrary,
   onDraftPromoted,
   onDraftTargetChanged,
   onRecoverMissingDraft,
@@ -363,6 +371,22 @@ export function AgentBuilderRail({
       className={cn(STICKY_HEADER_CLASS, "flex items-center justify-between")}
     >
       <span className="flex min-w-0 items-center gap-2">
+        {fullPage && onBackToLibrary ? (
+          // Exactly the profile page's back control (AgentDetailPage): same
+          // chevron, size, and label, going to the same place — the library.
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="-ml-1 shrink-0"
+            aria-label={t("view.backToAgents")}
+            tooltip={t("view.backToAgents")}
+            onClick={onBackToLibrary}
+            data-testid="agent-builder-back"
+          >
+            <ChevronLeft />
+          </Button>
+        ) : null}
         {onExpandChat ? (
           <Button
             type="button"
