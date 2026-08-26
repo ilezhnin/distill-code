@@ -6,6 +6,7 @@ import { i18n } from "@/shared/i18n";
 import type { Message } from "@/shared/types/messages";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
+import { SpawnAclDeniedError } from "./spawnAcl";
 import type { SessionNode } from "./types";
 import {
   resetWaveStepTargetIoForTests,
@@ -416,6 +417,23 @@ describe("waveRunner", () => {
     await vi.waitFor(() =>
       expect(spawnConductorChildSession).toHaveBeenCalledTimes(2),
     );
+  });
+
+  it("does not repeat the ACL refusal the spawn chokepoint already posted", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    // The chokepoint (spawnConductorChildSession) posts the spawn-ACL notice
+    // itself before throwing; the runner must fail the step without adding a
+    // second, generic "could not be started" card on top of it.
+    spawnConductorChildSession.mockRejectedValue(
+      new SpawnAclDeniedError("spawn refused by ACL"),
+    );
+
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("failed"),
+    );
+    expect(noticeTexts().join("\n")).not.toContain("could not be started");
   });
 
   it("waits for a late report instead of handing dependents the unknown stub", async () => {

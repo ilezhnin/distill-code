@@ -13,10 +13,15 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 
+import { useAgentStore } from "@/features/agents/stores/agentStore";
+import { createSystemNotificationMessage } from "@/shared/types/messages";
+
 import { useConductorGraphStore } from "./conductorGraphStore";
 import { pickUniqueDisplayName } from "./pickUniqueDisplayName";
 import { wrapOrchestratorTaskPrompt } from "./orchestratorReport";
 import { pickUniqueScientistName } from "./scientistNames";
+import { checkSpawnAllowed, SpawnAclDeniedError } from "./spawnAcl";
+import { spawnAclDeniedNoticeText } from "./waveNotices";
 import {
   DEFAULT_ORCHESTRATOR_NAME,
   type SessionManagedBy,
@@ -54,6 +59,57 @@ export async function spawnConductorChildSession(args: {
   if (parent.creationState === "pending") {
     throw new Error("Wait for the conductor session to finish starting.");
   }
+
+  // Spawn ACL (see spawnAcl.ts): every programmatic spawn goes through this
+  // function, so this is the chokepoint where the initiator's permissions
+  // are enforced in code rather than trusted to prompt text. Checked before
+  // anything is created, so a refusal costs nothing to roll back.
+  const graph = useConductorGraphStore.getState();
+  const initiatorNode =
+    graph.getNode(args.parentSessionId) ??
+    (parent.clientSessionId
+      ? graph.getNode(parent.clientSessionId)
+      : undefined);
+  // A wave spawn whose conductor node is momentarily unmapped (the draft-id
+  // remap races the engine tick) is still conductor-initiated: waves are only
+  // ever admitted from a registered conductor node. Every other node-less
+  // parent is an ordinary chat, which spawns nothing programmatically.
+  const initiatorRole: SessionRole =
+    initiatorNode?.role ??
+    (args.managedBy === "wave" ? "conductor" : "plain-chat");
+  const initiatorPersonaId = initiatorNode?.personaId ?? parent.personaId;
+  // A persona the store has not hydrated yields no override and the layer
+  // default applies — the same permissions the session had before overrides
+  // existed, never a silently widened set.
+  const initiatorPersona = initiatorPersonaId
+    ? useAgentStore
+        .getState()
+        .personas.find((persona) => persona.id === initiatorPersonaId)
+    : undefined;
+  const aclCheck = checkSpawnAllowed({
+    initiatorRole,
+    initiatorPersona,
+    targetLayer: args.role,
+  });
+  if (!aclCheck.allowed) {
+    // D5: the refusal is posted where the operator is already looking (the
+    // initiator's own transcript) BEFORE the throw, so no caller can turn it
+    // into a silent failure.
+    const noticeText = spawnAclDeniedNoticeText({
+      initiatorName: initiatorNode?.displayName ?? parent.title,
+      initiatorLayer: aclCheck.initiatorRole,
+      targetLayer: aclCheck.targetLayer,
+      allowedLayers: aclCheck.allowedLayers,
+    });
+    useChatStore
+      .getState()
+      .addMessage(
+        args.parentSessionId,
+        createSystemNotificationMessage(noticeText, "error"),
+      );
+    throw new SpawnAclDeniedError(noticeText);
+  }
+
   const workingDir = parent.workingDir?.trim();
   if (!workingDir) {
     throw new Error("Conductor has no working folder yet.");
