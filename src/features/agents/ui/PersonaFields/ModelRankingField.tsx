@@ -264,7 +264,16 @@ export function ModelRankingField({
                   className={cn("min-w-0 flex-1", classes?.selectTrigger)}
                   aria-label={t("ranking.modelAria", { position: index + 1 })}
                 >
-                  <SelectValue placeholder={entry.label} />
+                  {/* The stored label renders as the value text directly: a
+                      Radix placeholder only shows for an empty value, so a row
+                      whose model id no longer matches the installed inventory
+                      (a renamed model, or the legacy single-model seed for a
+                      model that is not installed) would otherwise show a blank
+                      select — exactly the silent drift the stored label exists
+                      to survive. */}
+                  <SelectValue placeholder={entry.label}>
+                    {entry.label}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {inventory.map((model) => (
