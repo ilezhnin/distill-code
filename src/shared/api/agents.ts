@@ -9,6 +9,7 @@ import type {
   UpdatePersonaRequest,
   Avatar,
 } from "@/shared/types/agents";
+import { parseSpawnLayers } from "@/shared/lib/agentSpawns";
 import { normalizeAvatarUrl } from "@/shared/lib/avatarUrl";
 import { resolveAgentProviderCatalogIdStrict } from "@/features/providers/providerCatalog";
 import {
@@ -39,6 +40,7 @@ const PORTABLE_SPROUT_FRONTMATTER_KEYS = new Set([
   "avatar",
   "good_for",
   "vibes",
+  "spawns",
 ]);
 
 // The API layer requires a non-empty description on every source, so a
@@ -307,6 +309,26 @@ function agentCardMetadataProperty(
   );
 }
 
+/**
+ * The validated `spawns` ACL override of an agent source, or `undefined`
+ * when none was authored (or what was authored does not validate — see
+ * `parseSpawnLayers` for why a garbled value falls back to the layer
+ * default rather than being partially honoured). Reads the direct property
+ * first, then the preserved Sprout frontmatter of an imported persona.
+ */
+function agentSpawnsProperty(
+  properties: AgentSourceProperties | undefined,
+): ReturnType<typeof parseSpawnLayers> {
+  if (properties && "spawns" in properties) {
+    return parseSpawnLayers(properties.spawns);
+  }
+  const frontmatter = sproutFrontmatterFromProperties(properties);
+  if ("spawns" in frontmatter) {
+    return parseSpawnLayers(frontmatter.spawns);
+  }
+  return undefined;
+}
+
 function serializePersonaMarkdown(source: AgentSourceEntry): ExportResult {
   const properties = source.properties;
   const name = personaExportName(source);
@@ -332,6 +354,13 @@ function serializePersonaMarkdown(source: AgentSourceEntry): ExportResult {
   for (const key of ["good_for", "vibes"] as const) {
     const value = agentCardMetadataProperty(properties, key);
     if (value) frontmatter[key] = value;
+  }
+
+  // An empty array is exported too: it is a real override ("spawn nothing"),
+  // not an absent field.
+  const spawns = agentSpawnsProperty(properties);
+  if (spawns !== undefined) {
+    frontmatter.spawns = spawns;
   }
 
   Object.assign(
@@ -590,6 +619,11 @@ function personaMarkdownProperties(
   const vibes = normalizedAgentCardMetadata(parsed.vibes, "vibes");
   if (goodFor) properties.good_for = goodFor;
   if (vibes) properties.vibes = vibes;
+  // Stored only when it validates: a garbled `spawns` must not ride along as
+  // an opaque property that a later reader might interpret differently.
+  const spawns =
+    "spawns" in parsed ? parseSpawnLayers(parsed.spawns) : undefined;
+  if (spawns !== undefined) properties.spawns = spawns;
   applyOptionalProperty(
     properties,
     "avatar",
@@ -694,6 +728,7 @@ function agentSourceFromMarkdownFile(
 
 export function agentSourceToPersona(source: AgentSourceEntry): Persona {
   const writable = source.writable === true;
+  const spawns = agentSpawnsProperty(source.properties);
   return {
     id: source.path,
     displayName: source.name,
@@ -703,6 +738,9 @@ export function agentSourceToPersona(source: AgentSourceEntry): Persona {
     modelProviderId: propertyToString(source.properties?.modelProviderId),
     model: propertyToString(source.properties?.model),
     modelRanking: propertyToString(source.properties?.model_ranking),
+    // `?? undefined` would erase the meaningful empty-array override, so the
+    // field is spread in only when it validated to something.
+    ...(spawns !== undefined ? { spawns } : {}),
     isBuiltin: !writable,
     writable,
     sourceDescription: source.description,

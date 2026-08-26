@@ -1,6 +1,11 @@
-import type { Persona } from "@/shared/types/agents";
+import type { AgentSpawnLayer, Persona } from "@/shared/types/agents";
 
-export type RoleLayer = "conductor" | "orchestrator" | "worker";
+/**
+ * Alias of the shared spawn-layer union: the persona schema needs the same
+ * three layer names (for the `spawns` ACL field) and shared types cannot
+ * import feature modules, so the union is owned there and aliased here.
+ */
+export type RoleLayer = AgentSpawnLayer;
 export type RoleStage = "pre" | "prod" | "verify" | "release" | "post";
 
 export interface RoleDefinition {

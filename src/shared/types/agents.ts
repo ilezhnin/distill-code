@@ -7,6 +7,16 @@ export type ProviderType = string;
 // credential-free http(s) URLs or app-managed refs like app-avatar:gloopy-1.
 export type Avatar = string;
 
+/**
+ * A layer of the conductor graph an agent can be allowed to spawn.
+ *
+ * This is the same union as `RoleLayer` in the conductor feature's role
+ * catalog; it is defined here because the persona schema (a shared type) may
+ * not depend on a feature module. `roleCatalog.ts` aliases its `RoleLayer`
+ * to this type so the union has exactly one owner.
+ */
+export type AgentSpawnLayer = "conductor" | "orchestrator" | "worker";
+
 // Persona types (from sprout)
 export interface Persona {
   id: string;
@@ -18,6 +28,14 @@ export interface Persona {
   model?: string;
   /** Ranked model preference class id; overrides the single `model`. */
   modelRanking?: string;
+  /**
+   * Per-agent spawn ACL override from persona frontmatter: which conductor
+   * graph layers a session running this persona may start. Absent means "use
+   * the defaults of whatever layer the session runs on"; an empty array is a
+   * real override meaning "may spawn nothing". Enforced in code by the
+   * conductor feature's spawn ACL, not just stated in prompt text.
+   */
+  spawns?: AgentSpawnLayer[];
   isBuiltin: boolean;
   writable: boolean;
   sourceDescription?: string;
