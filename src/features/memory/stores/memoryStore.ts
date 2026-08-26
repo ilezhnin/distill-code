@@ -71,6 +71,15 @@ interface MemoryActions {
     request: MemoryFenceRequest,
     nowMs?: number,
   ) => { remembered: number; forgotten: number };
+  /**
+   * Records a message's fence as handled without applying any of it.
+   *
+   * For fences the memory ACL refuses (a worker's, an ungranted
+   * orchestrator's): the tombstone is what stops the scanner from
+   * re-reporting the same refusal on every store change, and writing it
+   * *instead of* the entries is the refusal.
+   */
+  dismissAgentRequest: (messageId: string) => void;
   replaceAll: (entries: MemoryEntry[]) => void;
 }
 
@@ -346,6 +355,12 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
 
     set(() => commit(entries, [...state.appliedMessageIds, messageId]));
     return { remembered, forgotten };
+  },
+
+  dismissAgentRequest: (messageId) => {
+    const state = get();
+    if (!messageId || state.appliedMessageIds.includes(messageId)) return;
+    set(() => commit(state.entries, [...state.appliedMessageIds, messageId]));
   },
 
   replaceAll: (entries) => {
