@@ -53,6 +53,7 @@ import {
 } from "./waveLifecycle";
 import {
   waveConcurrentPlanNoticeText,
+  waveStepExplicitModelNoticeText,
   waveStepModelNoticeText,
   waveRejectionNoticeText,
   waveReportDegradedNoticeText,
@@ -60,7 +61,11 @@ import {
 } from "./waveNotices";
 import { isWaveLive } from "./waveVerdict";
 import { buildWaveStepPrompt } from "./wavePrompts";
-import { resolveWaveStepTarget } from "./waveStepTarget";
+import {
+  checkExplicitWaveStepModel,
+  resolveExplicitWaveStepModel,
+  resolveWaveStepTarget,
+} from "./waveStepTarget";
 import { resetConductorTranscriptsForTests } from "./waveTranscripts";
 import {
   getWaveEngineState,
@@ -296,7 +301,12 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       continue;
     }
 
-    const admission = admitWavePlan(candidate.parse);
+    // 4a/D5: a step's explicit model is checked against the live inventory
+    // and limits HERE, while nothing is spawned — a refused plan costs the
+    // conductor a replan, not a half-started wave.
+    const admission = admitWavePlan(candidate.parse, {
+      checkStepModel: checkExplicitWaveStepModel,
+    });
     if (admission.kind === "rejected") {
       // Tombstone first: a rejected plan must never re-error, even if
       // appending the notice throws.
@@ -359,7 +369,14 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
 function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
   const key = spawnKey(wave.waveId, request.stepIndex);
   inFlightSpawns.add(key);
-  const stepTarget = resolveWaveStepTarget(request.step.role);
+  // 4a: an explicit step model wins over the role's ranking — the plan said
+  // exactly where this step runs; the ranking is the default for steps that
+  // did not. The ranking is not even consulted, so its fallback/near-limit
+  // notices cannot fire about a model that is not going to be used.
+  const explicitModel = request.step.model;
+  const stepTarget = explicitModel
+    ? undefined
+    : resolveWaveStepTarget(request.step.role);
   if (stepTarget && (stepTarget.fallback || stepTarget.nearLimit)) {
     // D5: a step that is not running on its first choice says so, once, where
     // the operator is already watching the wave.
@@ -379,6 +396,33 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      // Resolved at spawn, not carried from admission: an `access: "all"`
+      // step can start long after the plan was admitted, and the inventory is
+      // read fresh so the target names the model as it exists now. A model
+      // that vanished in between fails the step per Q2 — the throw lands in
+      // the catch below with the resolver's own explanation — never a silent
+      // inherit (D5). A window that merely filled up since admission does not
+      // fail a mid-flight wave: the instruction is honoured and the operator
+      // warned, because killing the step over a meter that moved is worse
+      // than the cut-off the meter predicts.
+      let executionTarget = stepTarget?.target;
+      if (explicitModel) {
+        const resolved = resolveExplicitWaveStepModel(explicitModel);
+        if (!resolved.ok) throw new Error(resolved.detail);
+        executionTarget = resolved.target;
+        if (resolved.limit !== "clear") {
+          appendConductorNotice(
+            wave.conductorSessionId,
+            waveStepExplicitModelNoticeText({
+              stepIndex: request.stepIndex,
+              name: roleDisplayName(request.step.role),
+              model: resolved.label,
+            }),
+            false,
+            "warning",
+          );
+        }
+      }
       const spawnPromise = spawnConductorChildSession({
         parentSessionId: wave.conductorSessionId,
         role: "worker",
@@ -396,10 +440,11 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           request.step.label,
         ),
         personaName: roleDisplayName(request.step.role),
-        // The role's own ranking picks the model, walked against the live
-        // limits; `undefined` means "inherit the conductor", which is what
-        // every wave child did before rankings reached this path.
-        ...(stepTarget ? { executionTarget: stepTarget.target } : {}),
+        // The plan's explicit model when the step named one, else the role's
+        // ranking walked against the live limits; `undefined` means "inherit
+        // the conductor", which is what every wave child did before rankings
+        // reached this path.
+        ...(executionTarget ? { executionTarget } : {}),
         task: request.step.subtask,
         prompt: buildWaveStepPrompt(request.step, request.previousReports, {
           stepIndex: request.stepIndex,

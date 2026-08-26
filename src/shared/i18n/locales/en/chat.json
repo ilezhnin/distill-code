@@ -520,7 +520,7 @@
         "labelNotAString": "Step {{step}} has a \"label\" field that is not a name.",
         "labelTooLong": "Step {{step}} has a \"label\" that is too long to be a name.",
         "modelNotAString": "Step {{step}} has a \"model\" field that is not a model name.",
-        "stepModelUnsupported": "Step {{step}} asks to run on a specific model. Per-step models are not supported yet, and the whole plan was refused rather than quietly running the step on another model.",
+        "stepModelUnavailable": "Step {{step}} names a model this build cannot run right now, and the whole plan was refused rather than quietly running the step on another model.",
         "verificationStepMissing": "This plan builds something that can be checked, but its last step does not check it. A wave like this has to end with a verification step that inspects the result itself."
       },
       "concurrent": {
@@ -561,6 +561,7 @@
         "deliveryFailed": "The brigade's report could not be delivered into this chat. It is kept below so nothing is lost."
       },
       "stepModel": {
+        "explicitNearLimit": "Step {{step}} ({{name}}) is running on {{model}} — the model the plan named — which is close to or at its usage limit, so the step may be cut off before it finishes.",
         "fallback": "Step {{step}} ({{name}}) is running on {{model}} — its first-choice model was not available.",
         "nearLimit": "Step {{step}} ({{name}}) is running on {{model}}, which is close to its usage limit. Every model this role ranks is that full, so the step may be cut off before it finishes."
       }

@@ -519,7 +519,7 @@
         "labelNotAString": "El paso {{step}} tiene un campo \"label\" que no es un nombre.",
         "labelTooLong": "El paso {{step}} tiene un \"label\" demasiado largo para ser un nombre.",
         "modelNotAString": "El paso {{step}} tiene un campo \"model\" que no es un nombre de modelo.",
-        "stepModelUnsupported": "El paso {{step}} pide ejecutarse en un modelo concreto. Todavía no se admiten modelos por paso, y se rechazó el plan entero en lugar de ejecutar el paso en otro modelo sin avisar.",
+        "stepModelUnavailable": "El paso {{step}} indica un modelo que esta instalación no puede ejecutar ahora mismo, y se rechazó el plan entero en lugar de ejecutar el paso en otro modelo sin avisar.",
         "verificationStepMissing": "Este plan construye algo que se puede comprobar, pero su último paso no lo comprueba. Una ola así debe terminar con un paso de verificación que inspeccione el resultado."
       },
       "concurrent": {
@@ -560,6 +560,7 @@
         "deliveryFailed": "No se pudo entregar el informe de la brigada en este chat. Queda abajo para que no se pierda nada."
       },
       "stepModel": {
+        "explicitNearLimit": "El paso {{step}} ({{name}}) se ejecuta en {{model}} —el modelo que indicó el plan—, que está cerca de su límite de uso o ya lo alcanzó, por lo que el paso puede cortarse antes de terminar.",
         "fallback": "El paso {{step}} ({{name}}) se ejecuta en {{model}}: su modelo preferido no estaba disponible.",
         "nearLimit": "El paso {{step}} ({{name}}) se ejecuta en {{model}}, que está cerca de su límite de uso. Todos los modelos de este rol están así de llenos, por lo que el paso puede cortarse antes de terminar."
       }

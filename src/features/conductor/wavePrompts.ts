@@ -84,7 +84,7 @@ Rules, all enforced by a strict parser — a malformed wave runs nothing and is 
 - The block is ONE JSON object. After the last step, close the steps array AND the object: the block always ends with \`}]}\` — a block ending in \`}]\` is missing its final brace and runs nothing.
 - "access" is either [] or "all". Nothing else — no lists of step indexes.
 - "label" is optional: a short human-readable name for the step, at most ${MAX_WAVE_STEP_LABEL_LENGTH} characters. It names the step's chip and its worker's tab, so give one when two steps share a role and their subtasks' first words would not tell them apart.
-- "model" is optional. Omit it and the step inherits the conductor's model.
+- "model" is optional. Omit it and the step runs on whatever its role's model ranking picks, or inherits the conductor's model. Name one — a model id or enough of its name to be unambiguous, like "opus" or "grok" — and the step runs on exactly that model. A plan naming a model this installation cannot run right now is refused whole and shown to the operator; nothing is ever silently substituted. Name a model only when the operator asked for one or the step demonstrably needs it.
 - Anything you want the operator to read goes outside the block, as ordinary prose.
 
 ## Access semantics
@@ -125,10 +125,10 @@ The first two steps need disjoint context, so they run in parallel with "access"
 «Rename the config flag enableFoo to enableBar everywhere and keep the build green» —
 
 \`\`\`${WAVE_FENCE_TAG}
-{"steps":[{"role":"brigade","subtask":"Rename the config flag enableFoo to enableBar: the definition, every call site, config files and docs. Keep the change mechanical; do not refactor around it.","access":[],"label":"rename enableFoo"},{"role":"acceptor","subtask":"Verify directly: run the build and the tests nearest the flag, search the repo for the old name and confirm the only remaining hits are historical (changelogs). Report the commands you ran and what they printed.","access":"all","label":"verify the rename"}]}
+{"steps":[{"role":"brigade","subtask":"Rename the config flag enableFoo to enableBar: the definition, every call site, config files and docs. Keep the change mechanical; do not refactor around it.","access":[],"label":"rename enableFoo","model":"opus"},{"role":"acceptor","subtask":"Verify directly: run the build and the tests nearest the flag, search the repo for the old name and confirm the only remaining hits are historical (changelogs). Report the commands you ran and what they printed.","access":"all","label":"verify the rename"}]}
 \`\`\`
 
-The work is checkable, so the last step inspects the artifact itself — the build, the tests, a search — never just the other step's report.
+The work is checkable, so the last step inspects the artifact itself — the build, the tests, a search — never just the other step's report. The first step names a model because (in this example) the operator asked for it by name; the verifier omits "model" and lets its role's ranking choose.
 
 ## Verdict
 

@@ -82,6 +82,7 @@ import {
   waveInterruptedDecision,
   type WaveVerdictDecision,
 } from "./waveVerdict";
+import { checkExplicitWaveStepModel } from "./waveStepTarget";
 import { readConductorTranscript } from "./waveTranscripts";
 import {
   setWaveEngineState,
@@ -242,15 +243,21 @@ function applyVerdictDecision(
   const closed = withWavePhase(judged, decision.phase);
 
   if (decision.revision) {
-    const admission = admitWavePlan({
-      kind: "plan",
-      steps: [...decision.revision.steps],
-      planText: "",
-      prose: "",
-    });
+    const admission = admitWavePlan(
+      {
+        kind: "plan",
+        steps: [...decision.revision.steps],
+        planText: "",
+        prose: "",
+      },
+      // A revision's explicit step models face the same live check as a fresh
+      // plan's — the verdict path must not be the door a silently unrunnable
+      // model walks in through.
+      { checkStepModel: checkExplicitWaveStepModel },
+    );
     if (admission.kind === "rejected") {
-      // The revision wave itself is unrunnable (a `model` field, say). No
-      // revision is spent and the operator sees why.
+      // The revision wave itself is unrunnable (a model nothing installed can
+      // run, say). No revision is spent and the operator sees why.
       const parked = withWavePhase(
         withVerdictIssue(judged, {
           reason: "invalid",

@@ -54,6 +54,8 @@ export interface WaveStepState {
   access: WaveStepAccess;
   /** The plan's human-readable step name, when it gave one. */
   label?: string;
+  /** The plan's explicit model for this step (4a), when it named one. */
+  model?: string;
   phase: WaveStepPhase;
   /** Child session id, once the spawn produced one. */
   sessionId?: string;
@@ -182,11 +184,13 @@ export interface WaveState {
 export type WaveRejectionReason =
   | WaveInvalidReason
   /**
-   * A step carries `model`. Per-step model resolution ships in 4a; until then
-   * honouring the field would silently run the step on the conductor's model,
-   * which D5 forbids. The whole plan is refused, before any spawn.
+   * A step's explicit `model` (4a) does not resolve to something this build
+   * can run right now — nothing installed matches it, or its usage window is
+   * already spent. D5: the whole plan is refused before any spawn, because
+   * quietly running the step on another model is the one substitution this
+   * system never makes.
    */
-  | "step-model-unsupported"
+  | "step-model-unavailable"
   /**
    * The plan builds something inspectable but never inspects it (E1). The
    * protocol prompt has asked for a closing verification step since `81b29ef`;
@@ -331,6 +335,24 @@ function rejected(
     : { kind: "rejected", reason, detail, stepIndex };
 }
 
+/** Verdict of the live check behind a step's explicit `model` (4a). */
+export type WaveStepModelCheck =
+  | { ok: true }
+  /** `detail` is operator-readable and rendered into the refusal card. */
+  | { ok: false; detail: string };
+
+export interface WaveAdmissionOptions {
+  /**
+   * Live check of a step's explicit `model` against the installed inventory
+   * and its usage window (`checkExplicitWaveStepModel` in production). Kept as
+   * an injected seam so this module stays pure. When absent, admission does
+   * not judge models at all and the spawn-time resolution is the enforcement:
+   * a model that cannot be resolved then fails its step honestly (Q2), so no
+   * caller path — with or without the checker — ever inherits silently.
+   */
+  checkStepModel?: (model: string) => WaveStepModelCheck;
+}
+
 /**
  * Decides whether a parsed conductor message may become a running wave.
  *
@@ -338,11 +360,13 @@ function rejected(
  * callers filter it out; passing it is treated as "nothing to admit" by
  * returning a rejection the caller can ignore, never by throwing.
  *
- * The D5 gap-guard is enforced here, before the caller has spawned anything:
- * a plan where *any* step carries `model` is refused whole.
+ * D5 for explicit step models is enforced here, before the caller has spawned
+ * anything: a plan naming a model the checker cannot honour is refused whole,
+ * so the conductor can replan while nothing is half-started.
  */
 export function admitWavePlan(
   parse: WavePlan | WaveInvalid | DistillWaveParse,
+  options?: WaveAdmissionOptions,
 ): WaveAdmission {
   if (parse.kind === "invalid") {
     return rejected(parse.reason, parse.detail, parse.stepIndex);
@@ -354,17 +378,16 @@ export function admitWavePlan(
     );
   }
 
-  const modelStepIndex = parse.steps.findIndex((step) => step.model);
-  if (modelStepIndex >= 0) {
-    const step = parse.steps[modelStepIndex];
-    return rejected(
-      "step-model-unsupported",
-      // Detail carries only what the localized reason cannot know — the model
-      // the step named. The reason already states the rule and the refusal, so
-      // repeating it here printed the same explanation twice in one card.
-      `Step ${modelStepIndex + 1} named model "${step.model}".`,
-      modelStepIndex,
-    );
+  if (options?.checkStepModel) {
+    for (const [stepIndex, step] of parse.steps.entries()) {
+      if (!step.model) continue;
+      const check = options.checkStepModel(step.model);
+      if (!check.ok) {
+        // The checker's detail carries what the localized reason cannot know —
+        // which model, and why it is unavailable.
+        return rejected("step-model-unavailable", check.detail, stepIndex);
+      }
+    }
   }
 
   if (
@@ -416,6 +439,7 @@ export function createWaveState(args: {
       subtask: step.subtask,
       access: step.access,
       ...(step.label ? { label: step.label } : {}),
+      ...(step.model ? { model: step.model } : {}),
       phase: "pending" as const,
     })),
   };
@@ -523,6 +547,7 @@ export function withWaveStepPhase(
       subtask: step.subtask,
       access: step.access,
       ...(step.label ? { label: step.label } : {}),
+      ...(step.model ? { model: step.model } : {}),
       phase: patch.phase,
       ...((patch.sessionId ?? step.sessionId)
         ? { sessionId: patch.sessionId ?? step.sessionId }
@@ -599,6 +624,7 @@ function stepToWaveStep(state: WaveStepState): WaveStep {
     subtask: state.subtask,
     access: state.access,
     ...(state.label ? { label: state.label } : {}),
+    ...(state.model ? { model: state.model } : {}),
   };
 }
 
@@ -664,6 +690,7 @@ export function advanceWave(
         subtask: step.subtask,
         access: step.access,
         ...(step.label ? { label: step.label } : {}),
+        ...(step.model ? { model: step.model } : {}),
         phase: "pending",
       };
     }

@@ -133,6 +133,10 @@ export function ConductorAgentFooter({
         title: report?.summary || node.task || undefined,
         stepIndex: node.stepIndex,
         accessLabel: step ? t(waveStepAccessKey(step)) : undefined,
+        // D5: a step the plan pinned to a model wears it on the chip. The raw
+        // plan string, deliberately — the chip states the instruction; what it
+        // resolved to is on the child tab and in the spawn notices.
+        modelLabel: step?.model,
         onOpen: openInTab,
         onStop,
       };
@@ -152,6 +156,7 @@ export function ConductorAgentFooter({
               title: slot.step.subtask,
               stepIndex: slot.stepIndex,
               accessLabel: t(waveStepAccessKey(slot.step)),
+              modelLabel: slot.step.model,
               pending: true,
             },
       ),
