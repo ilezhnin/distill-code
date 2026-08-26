@@ -694,6 +694,73 @@ describe("AgentBuilderRail", () => {
     expect(state).not.toHaveTextContent("Not set");
   });
 
+  it("writes a memory_write grant only once the operator picks one", () => {
+    const { update } = mockHook();
+
+    renderWithProviders(
+      <AgentBuilderRail
+        sessionId="s1"
+        targetAgentPath={baseSource.path}
+        targetAgentSlug="draft-1"
+      />,
+    );
+
+    expect(screen.getByTestId("agent-memory-write-state")).toHaveTextContent(
+      "Not set",
+    );
+    expect(update).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("agent-memory-write-granted"));
+
+    expect(update).toHaveBeenCalledWith({ properties: { memory_write: true } });
+  });
+
+  it("clears a stored memory_write grant with an explicit null", () => {
+    const { update } = mockHook({
+      data: {
+        ...baseSource,
+        properties: { ...baseSource.properties, memory_write: true },
+      },
+    });
+
+    renderWithProviders(
+      <AgentBuilderRail
+        sessionId="s1"
+        targetAgentPath={baseSource.path}
+        targetAgentSlug="draft-1"
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("agent-memory-write-inherit"));
+
+    expect(update).toHaveBeenCalledWith({ properties: { memory_write: null } });
+  });
+
+  it("keeps a stored refusal apart from an unset grant", () => {
+    mockHook({
+      data: {
+        ...baseSource,
+        properties: { ...baseSource.properties, memory_write: false },
+      },
+    });
+
+    renderWithProviders(
+      <AgentBuilderRail
+        sessionId="s1"
+        targetAgentPath={baseSource.path}
+        targetAgentSlug="draft-1"
+      />,
+    );
+
+    expect(screen.getByTestId("agent-memory-write-refused")).toHaveAttribute(
+      "data-state",
+      "checked",
+    );
+    expect(
+      screen.getByTestId("agent-memory-write-state"),
+    ).not.toHaveTextContent("Not set");
+  });
+
   describe("berd_agent Edit Completed", () => {
     const existingAgentSource: AgentSourceEntry = {
       ...baseSource,

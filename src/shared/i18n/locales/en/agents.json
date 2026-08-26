@@ -307,6 +307,21 @@
       "overrideNothing": "Set on this agent: starts nothing, whatever layer it runs on.",
       "setNothing": "Set to nothing",
       "clearOverride": "Clear override"
+    },
+    "memoryWrite": {
+      "label": "Can write to memory",
+      "groupAria": "Memory write grant",
+      "optionInherit": "Role default",
+      "optionGranted": "Granted",
+      "optionRefused": "Not granted",
+      "notSet": "Not set — this agent uses its role's default: {{defaults}}.",
+      "overrideGranted": "Set on this agent: granted. Only the orchestrator layer reads this grant; every other layer keeps its own default.",
+      "overrideRefused": "Set on this agent: not granted. An orchestrator running it does not write memory; every other layer keeps its own default.",
+      "default": {
+        "allowed": "writes",
+        "denied": "never writes",
+        "grant-required": "needs this grant"
+      }
     }
   }
 }
