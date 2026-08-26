@@ -240,6 +240,19 @@ describe("run status helpers", () => {
 });
 
 describe("advanceWave scheduling", () => {
+  it("carries a step's label from plan to state to spawn request", () => {
+    // The label reaches the worker's display name through the spawn request,
+    // so any rebuild that drops it silently renames the child mid-wave.
+    const wave = waveOf([
+      { ...step("scout", "Find the callers"), label: "map the callers" },
+    ]);
+    expect(wave.steps[0].label).toBe("map the callers");
+    const advanced = advanceWave(wave, { nodes: [], reportOf: noReports });
+    expect(advanced.spawn[0]?.step.label).toBe("map the callers");
+    const patched = withWaveStepPhase(wave, 0, { phase: "spawning" });
+    expect(patched.steps[0].label).toBe("map the callers");
+  });
+
   it("spawns every access:[] step at once", () => {
     const wave = waveOf([
       step("scout", "one"),

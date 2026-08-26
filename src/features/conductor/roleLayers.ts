@@ -119,9 +119,17 @@ export function waveStepShortLabel(subtask: string): string | undefined {
 /**
  * The display name a wave step's worker gets: "Scout · waveEngine". Falls back
  * to the bare role name when the subtask yields no usable handle.
+ *
+ * An explicit `label` from the plan wins over the derived handle: a name the
+ * conductor chose says what the step is *for*, where the heuristic can only
+ * guess at it from the subtask's wording.
  */
-export function waveStepDisplayName(roleId: string, subtask: string): string {
+export function waveStepDisplayName(
+  roleId: string,
+  subtask: string,
+  label?: string,
+): string {
   const base = roleDisplayName(roleId);
-  const label = waveStepShortLabel(subtask);
-  return label ? `${base} · ${label}` : base;
+  const handle = label?.trim() || waveStepShortLabel(subtask);
+  return handle ? `${base} · ${handle}` : base;
 }

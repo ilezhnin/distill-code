@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_WAVE_STEP_LABEL_LENGTH,
   MAX_WAVE_STEPS,
   WAVE_FENCE_TAG,
   type WaveInvalidReason,
@@ -89,6 +90,26 @@ describe("parseDistillWave — plan", () => {
       subtask: "Run the suite",
       access: [],
     });
+  });
+
+  it("keeps a trimmed explicit step label", () => {
+    const parsed = parseDistillWave(
+      fence(
+        '{"steps":[{"role":"qa","subtask":"Run the suite","access":[],"label":"  smoke the parser "}]}',
+      ),
+    );
+    expect(parsed.kind).toBe("plan");
+    if (parsed.kind !== "plan") return;
+    expect(parsed.steps[0].label).toBe("smoke the parser");
+  });
+
+  it("omits label when the field is absent", () => {
+    const parsed = parseDistillWave(
+      fence('{"steps":[{"role":"qa","subtask":"Run the suite","access":[]}]}'),
+    );
+    expect(parsed.kind).toBe("plan");
+    if (parsed.kind !== "plan") return;
+    expect(parsed.steps[0].label).toBeUndefined();
   });
 
   it("keeps an explicit per-step model", () => {
@@ -245,6 +266,44 @@ describe("parseDistillWave — invalid", () => {
       fence('{"steps":[{"role":"qa","subtask":"Run","access":"none"}]}'),
       "access-invalid",
     );
+  });
+
+  it("rejects a non-string label", () => {
+    expectInvalid(
+      fence('{"steps":[{"role":"qa","subtask":"Run","access":[],"label":42}]}'),
+      "label-not-a-string",
+    );
+  });
+
+  it("rejects a blank label string", () => {
+    expectInvalid(
+      fence(
+        '{"steps":[{"role":"qa","subtask":"Run","access":[],"label":"  "}]}',
+      ),
+      "label-not-a-string",
+    );
+  });
+
+  it("rejects a label longer than the cap, naming the limit", () => {
+    const label = "a".repeat(MAX_WAVE_STEP_LABEL_LENGTH + 1);
+    const parsed = expectInvalid(
+      fence(
+        `{"steps":[{"role":"qa","subtask":"Run","access":[],"label":"${label}"}]}`,
+      ),
+      "label-too-long",
+    );
+    expect(parsed?.detail).toContain(String(MAX_WAVE_STEP_LABEL_LENGTH));
+    expect(parsed?.stepIndex).toBe(0);
+  });
+
+  it("accepts a label of exactly the cap", () => {
+    const label = "a".repeat(MAX_WAVE_STEP_LABEL_LENGTH);
+    const parsed = parseDistillWave(
+      fence(
+        `{"steps":[{"role":"qa","subtask":"Run","access":[],"label":"${label}"}]}`,
+      ),
+    );
+    expect(parsed.kind).toBe("plan");
   });
 
   it("rejects a non-string model", () => {
