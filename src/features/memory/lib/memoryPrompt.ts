@@ -62,15 +62,23 @@ export function formatMemoryPrompt(
 }
 
 /**
- * The memory half of a session's system prompt: what is remembered, plus how
- * to add to it. The protocol always ships — an agent with nothing remembered
- * yet is exactly the one that needs to know it can start.
+ * The memory half of a session's system prompt: what is remembered, plus —
+ * when this session may write — how to add to it.
+ *
+ * For a writing session the protocol always ships: an agent with nothing
+ * remembered yet is exactly the one that needs to know it can start. A
+ * session the memory ACL keeps read-only (a worker node, an orchestrator
+ * without the `memory_write` grant) gets the facts without the protocol —
+ * teaching it a fence the scanner would refuse is worse than silence,
+ * because the model would keep "remembering" things into a void.
  */
 export function composeMemorySection(
   entries: readonly MemoryEntry[],
   projectId: string | null,
-): string {
+  writeAllowed: boolean,
+): string | undefined {
   const remembered = formatMemoryPrompt(entries, projectId);
+  if (!writeAllowed) return remembered;
   return remembered
     ? `${remembered}\n\n${MEMORY_PROTOCOL_PROMPT}`
     : MEMORY_PROTOCOL_PROMPT;

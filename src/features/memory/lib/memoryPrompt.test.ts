@@ -85,17 +85,30 @@ describe("formatMemoryPrompt", () => {
 });
 
 describe("composeMemorySection", () => {
-  it("always tells the agent how to remember, even with nothing on file", () => {
-    const section = composeMemorySection([], null);
+  it("always tells a writing agent how to remember, even with nothing on file", () => {
+    const section = composeMemorySection([], null, true);
     expect(section).toContain(MEMORY_FENCE_TAG);
     expect(section).not.toContain("<memory>");
   });
 
   it("puts what is known ahead of how to add to it", () => {
-    const section = composeMemorySection([entry({ id: "g" })], null);
+    const section =
+      composeMemorySection([entry({ id: "g" })], null, true) ?? "";
     expect(section.indexOf("<memory>")).toBeLessThan(
       section.indexOf("<memory-protocol>"),
     );
+  });
+
+  it("gives a read-only session the facts without the protocol", () => {
+    // Teaching a fence the scanner would refuse invites writes into a void.
+    const section = composeMemorySection([entry({ id: "g" })], null, false);
+    expect(section).toContain("<memory>");
+    expect(section).not.toContain("<memory-protocol>");
+    expect(section).not.toContain(MEMORY_FENCE_TAG);
+  });
+
+  it("says nothing at all to a read-only session with nothing on file", () => {
+    expect(composeMemorySection([], null, false)).toBeUndefined();
   });
 });
 
