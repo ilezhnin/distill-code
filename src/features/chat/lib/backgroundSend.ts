@@ -1,6 +1,7 @@
 import { dispatchPrompt } from "@/features/chat/lib/sendCore";
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
+import { sessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
 import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
 import { composeMemorySection } from "@/features/memory/lib/memoryPrompt";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
@@ -70,6 +71,10 @@ export function sendPromptInBackground(
     sendOptions.executionSystemPrompt ??
     composeSystemPrompt(
       formatPersonaSystemPrompt(persona),
+      // Right after the persona, where the handwritten sentence used to
+      // live in the agent files: the session's spawn permissions, generated
+      // from the same ACL the spawn chokepoint enforces.
+      sessionSpawnPolicyPrompt(sessionId, persona),
       sendOptions.systemPrompt,
       // Last, matching the foreground order: persona, workspace context,
       // then the operator protocols.

@@ -43,6 +43,7 @@ import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import { composeMemorySection } from "@/features/memory/lib/memoryPrompt";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import { formatSessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
 import { getSkillProviderCapabilities } from "@/features/chat/lib/skillProviderCapabilities";
 import {
   fetchBerdAppSkills,
@@ -748,6 +749,11 @@ export function useChatSessionController({
   const isWaveChild = useConductorGraphStore((state) =>
     sessionId ? state.nodesById[sessionId]?.managedBy === "wave" : false,
   );
+  // The session's conductor-graph layer, for the spawn-policy prompt insert.
+  // Undefined for a session outside the graph (an ordinary chat).
+  const sessionNodeRole = useConductorGraphStore((state) =>
+    sessionId ? state.nodesById[sessionId]?.role : undefined,
+  );
   const operatorProtocols = useMemo(
     () =>
       isWaveChild
@@ -762,6 +768,10 @@ export function useChatSessionController({
     () =>
       composeSystemPrompt(
         formatPersonaSystemPrompt(selectedPersona),
+        // The session's spawn permissions, generated from the same ACL the
+        // spawn chokepoint enforces (see spawnAcl.ts). Sits right after the
+        // persona, where the agent files used to hardcode the sentence.
+        formatSessionSpawnPolicyPrompt(sessionNodeRole, selectedPersona),
         includedWorkspacesPrompt,
         workspaceInstructionsPrompt,
         appSkillsCatalogPrompt,
@@ -770,6 +780,7 @@ export function useChatSessionController({
       ),
     [
       selectedPersona,
+      sessionNodeRole,
       includedWorkspacesPrompt,
       workspaceInstructionsPrompt,
       appSkillsCatalogPrompt,
@@ -2356,6 +2367,7 @@ export function useChatSessionController({
       const derivedExecutionSystemPrompt = composeSystemPrompt(
         sendOptions?.capturedPersonaSystemPrompt ??
           formatPersonaSystemPrompt(queuedPersona),
+        formatSessionSpawnPolicyPrompt(sessionNodeRole, queuedPersona),
         includedWorkspacesPrompt,
         workspaceInstructionsPrompt,
         appSkillsCatalogPrompt,
@@ -2384,6 +2396,7 @@ export function useChatSessionController({
       includedWorkspacesPrompt,
       selectedPersona,
       sendWithAutoCompact,
+      sessionNodeRole,
       workspaceInstructionsPrompt,
     ],
   );
@@ -2576,6 +2589,7 @@ export function useChatSessionController({
       const executionSystemPrompt = workspaceContextReady
         ? composeSystemPrompt(
             capturedPersonaSystemPrompt,
+            formatSessionSpawnPolicyPrompt(sessionNodeRole, queuedPersona),
             includedWorkspacesPrompt,
             workspaceInstructionsPrompt,
             appSkillsCatalogPrompt,
@@ -2614,6 +2628,7 @@ export function useChatSessionController({
       chatSourceSurface,
       includedWorkspacesPrompt,
       selectedPersona,
+      sessionNodeRole,
       workspaceContextReady,
       workspaceInstructionsPrompt,
     ],
