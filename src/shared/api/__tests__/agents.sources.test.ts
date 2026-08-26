@@ -17,6 +17,7 @@ vi.mock("@/shared/api/acpConnection", () => ({
 }));
 
 import {
+  agentSourceToPersona,
   createPersonaSource,
   deletePersonaSource,
   listPersonaSources,
@@ -122,6 +123,81 @@ describe("persona source helpers", () => {
         },
       }),
     );
+  });
+
+  it("a saved edit to a seeded bundled agent survives the next launch", async () => {
+    // Full circle of the operator's lost-ranking bug: the installed bundled
+    // file carries `metadata.berdBundled: true`; the startup reseeder
+    // overwrites any marked file whose bytes differ from the shipped copy
+    // (src-tauri bundled_agents.rs, should_install_agent). Saving an edit
+    // must therefore (1) keep the edit and (2) drop the ownership marker so
+    // the reseeder treats the file as user-owned and leaves it alone.
+    const bundledEntry = {
+      ...draftEntry,
+      path: "/Users/x/.agents/agents/acceptor.md",
+      name: "Acceptor",
+      description: "Verifies everything personally.",
+      properties: {
+        avatar: "app-avatar:gloopies-1",
+        good_for: "proving the claim yourself",
+        metadata: { berdBundled: true, berdBundledSource: "acceptor" },
+      },
+    };
+    const ranking = JSON.stringify({
+      version: 1,
+      entries: [
+        { platform: "claude-acp", modelId: "claude-fable-5", label: "Fable 5" },
+      ],
+    });
+    mockGooseSourcesList.mockResolvedValueOnce({ sources: [bundledEntry] });
+    mockGooseSourcesUpdate.mockImplementationOnce(
+      (request: { properties?: Record<string, unknown> }) =>
+        Promise.resolve({ source: { ...bundledEntry, ...request } }),
+    );
+
+    const saved = await updatePersonaSource(bundledEntry.path, {
+      properties: { model_ranking: ranking },
+    });
+
+    expect(mockGooseSourcesUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        properties: {
+          avatar: "app-avatar:gloopies-1",
+          good_for: "proving the claim yourself",
+          // The ownership flag is gone; the role attribution survives — the
+          // conductor still resolves this file as the acceptor role.
+          metadata: { berdBundledSource: "acceptor" },
+          model_ranking: ranking,
+        },
+      }),
+    );
+
+    // Hydration after "restart": the persona built from the stored source
+    // still carries the ranking.
+    expect(agentSourceToPersona(saved).modelRanking).toBe(ranking);
+  });
+
+  it("drops an emptied metadata container instead of writing metadata: {}", async () => {
+    const bundledEntry = {
+      ...draftEntry,
+      path: "/Users/x/.agents/agents/qa.md",
+      name: "QA",
+      properties: { metadata: { berdBundled: true } },
+    };
+    mockGooseSourcesList.mockResolvedValueOnce({ sources: [bundledEntry] });
+    mockGooseSourcesUpdate.mockImplementationOnce(
+      (request: { properties?: Record<string, unknown> }) =>
+        Promise.resolve({ source: { ...bundledEntry, ...request } }),
+    );
+
+    await updatePersonaSource(bundledEntry.path, {
+      properties: { model_ranking: null },
+    });
+
+    const request = mockGooseSourcesUpdate.mock.calls[0][0] as {
+      properties?: Record<string, unknown>;
+    };
+    expect(request.properties).not.toHaveProperty("metadata");
   });
 
   it("deletePersonaSource removes by path", async () => {

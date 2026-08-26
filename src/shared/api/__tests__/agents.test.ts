@@ -444,6 +444,36 @@ describe("agents API", () => {
     });
   });
 
+  it("updating a persona releases the bundled-agent ownership marker", async () => {
+    // A seeded bundled agent still marked `metadata.berdBundled: true` is
+    // overwritten with the shipped copy on the next launch whenever its bytes
+    // differ (startup reseeder, src-tauri bundled_agents.rs) — which is what
+    // an operator's saved edit looks like. An operator update therefore takes
+    // ownership: the flag goes, the role attribution stays.
+    mockGooseSourcesUpdate.mockResolvedValue({ source: agentSource });
+
+    const { updatePersona } = await import("../agents");
+    await updatePersona(
+      {
+        ...loadedPersona,
+        sourceProperties: {
+          ...loadedPersona.sourceProperties,
+          metadata: { berdBundled: true, berdBundledSource: "scout" },
+        },
+      },
+      { avatar: "https://example.test/scout-2.png" },
+    );
+
+    expect(mockGooseSourcesUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          avatar: "https://example.test/scout-2.png",
+          metadata: { berdBundledSource: "scout" },
+        }),
+      }),
+    );
+  });
+
   it("uses a new real description when updating a persona", async () => {
     mockGooseSourcesUpdate.mockResolvedValue({ source: agentSource });
 
