@@ -71,11 +71,7 @@ fn absolute(value: &str) -> Option<PathBuf> {
 ///
 /// `home_dir` and `os_config_dir` are arguments rather than looked up here so
 /// the resolution order is testable without touching the machine's real home.
-pub fn resolve_root(
-    env_value: Option<&str>,
-    os_config_dir: &Path,
-    home_dir: &Path,
-) -> PathBuf {
+pub fn resolve_root(env_value: Option<&str>, os_config_dir: &Path, home_dir: &Path) -> PathBuf {
     if let Some(from_env) = env_value.and_then(absolute) {
         return from_env;
     }
@@ -110,8 +106,11 @@ pub fn write_root_pointer(os_config_dir: &Path, root: &Path) -> Result<(), Strin
 
     fs::create_dir_all(os_config_dir)
         .map_err(|error| format!("Cannot create config dir: {error}"))?;
-    fs::write(pointer_file(os_config_dir), root.to_string_lossy().as_bytes())
-        .map_err(|error| format!("Cannot record the root: {error}"))
+    fs::write(
+        pointer_file(os_config_dir),
+        root.to_string_lossy().as_bytes(),
+    )
+    .map_err(|error| format!("Cannot record the root: {error}"))
 }
 
 /// goose's own data directory when nothing redirects it.
@@ -145,11 +144,7 @@ pub fn has_legacy_goose_data(data_dir: &Path) -> bool {
 /// `true` for an explicit choice (env var or a recorded pointer) and for a
 /// fresh install. `false` only when there is previous data and nobody has
 /// asked to move — the one case where switching would hide it.
-pub fn should_adopt_root(
-    forced_by_env: bool,
-    has_pointer: bool,
-    has_legacy_data: bool,
-) -> bool {
+pub fn should_adopt_root(forced_by_env: bool, has_pointer: bool, has_legacy_data: bool) -> bool {
     forced_by_env || has_pointer || !has_legacy_data
 }
 
@@ -229,11 +224,7 @@ mod tests {
         write_root_pointer(&config, &base.join("pointed")).unwrap();
 
         let forced = base.join("forced");
-        let resolved = resolve_root(
-            Some(forced.to_str().unwrap()),
-            &config,
-            &base.join("home"),
-        );
+        let resolved = resolve_root(Some(forced.to_str().unwrap()), &config, &base.join("home"));
         assert_eq!(resolved, forced);
     }
 

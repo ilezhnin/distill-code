@@ -144,9 +144,7 @@ pub fn initialize(app: &tauri::App) -> Result<DistillRootState, String> {
     ensure_root_layout(&root)?;
 
     let legacy_dir = legacy_goose_data_dir();
-    let legacy_has_data = legacy_dir
-        .as_deref()
-        .is_some_and(has_legacy_goose_data);
+    let legacy_has_data = legacy_dir.as_deref().is_some_and(has_legacy_goose_data);
     let adopt = should_adopt_root(
         env_value.is_some(),
         has_root_pointer(&os_config_dir),
@@ -156,10 +154,7 @@ pub fn initialize(app: &tauri::App) -> Result<DistillRootState, String> {
     if adopt {
         // Set before goose is spawned; `GooseServeProcess` inherits this
         // process's environment.
-        std::env::set_var(
-            crate::services::distill_root::GOOSE_PATH_ROOT_ENV,
-            &root,
-        );
+        std::env::set_var(crate::services::distill_root::GOOSE_PATH_ROOT_ENV, &root);
         // Recorded so the choice survives, including the fresh-install case
         // where nobody chose anything and the default was simply free to take.
         if env_value.is_none() {
@@ -168,9 +163,7 @@ pub fn initialize(app: &tauri::App) -> Result<DistillRootState, String> {
             }
         }
     } else {
-        log::info!(
-            "Keeping goose's existing data directory; choose a Distill folder to move it"
-        );
+        log::info!("Keeping goose's existing data directory; choose a Distill folder to move it");
     }
 
     Ok(DistillRootState {
