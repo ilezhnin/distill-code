@@ -21,24 +21,19 @@
 import { parseSpawnLayers } from "@/shared/lib/agentSpawns";
 import type { Persona } from "@/shared/types/agents";
 
+import { DEFAULT_SPAWNS_BY_ROLE } from "./aclDefaults";
 import { useConductorGraphStore } from "./conductorGraphStore";
 import type { RoleLayer } from "./roleCatalog";
 import type { SessionRole } from "./types";
 
 /**
- * What each layer may spawn when its persona does not say otherwise.
- *
- * `plain-chat` (an ordinary chat, in or out of the conductor graph) spawns
- * nothing programmatically — the operator keeps starting sessions through
- * the UI, which is not subject to this check.
+ * The per-layer defaults now live in `aclDefaults.ts`, a module with no store
+ * imports, so the agent editor can name a default without pulling the
+ * conductor graph (and the wave engine behind it) into the agents bundle.
+ * Re-exported here because this module is still where the spawn ACL is read
+ * from — the table only moved, it did not fork.
  */
-export const DEFAULT_SPAWNS_BY_ROLE: Record<SessionRole, readonly RoleLayer[]> =
-  {
-    conductor: ["orchestrator", "worker"],
-    orchestrator: ["worker"],
-    worker: [],
-    "plain-chat": [],
-  };
+export { DEFAULT_SPAWNS_BY_ROLE } from "./aclDefaults";
 
 /**
  * The persona's `spawns` override, re-validated at the point of use.
