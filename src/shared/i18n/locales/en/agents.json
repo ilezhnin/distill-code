@@ -278,5 +278,35 @@
     "viewSingleModel": "Saved single model — no ranking configured yet.",
     "viewLegacyFallback": "Falls back to its saved single model ({{model}}) when none of these are usable.",
     "viewNone": "No ranking — uses the app's default model."
+  },
+  "acl": {
+    "sectionLabel": "Permissions",
+    "nothing": "nothing",
+    "defaultsEntry": "{{role}}: {{value}}",
+    "role": {
+      "conductor": "conductor",
+      "orchestrator": "orchestrator",
+      "worker": "worker",
+      "plain-chat": "chat"
+    },
+    "layer": {
+      "conductor": "Conductors",
+      "orchestrator": "Orchestrators",
+      "worker": "Workers"
+    },
+    "layerInline": {
+      "conductor": "conductors",
+      "orchestrator": "orchestrators",
+      "worker": "workers"
+    },
+    "spawns": {
+      "label": "Can start agents",
+      "groupAria": "Layers this agent may start",
+      "notSet": "Not set — this agent uses its role's default: {{defaults}}.",
+      "overrideList": "Set on this agent: starts {{layers}}. Every other spawn is refused in code.",
+      "overrideNothing": "Set on this agent: starts nothing, whatever layer it runs on.",
+      "setNothing": "Set to nothing",
+      "clearOverride": "Clear override"
+    }
   }
 }

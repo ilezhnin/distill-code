@@ -613,6 +613,87 @@ describe("AgentBuilderRail", () => {
     expect(screen.getByTestId("model-ranking-empty")).toBeInTheDocument();
   });
 
+  it("offers the permissions section without touching the stored ACL", () => {
+    const { update } = mockHook();
+
+    renderWithProviders(
+      <AgentBuilderRail
+        sessionId="s1"
+        targetAgentPath={baseSource.path}
+        targetAgentSlug="draft-1"
+      />,
+    );
+
+    expect(screen.getByTestId("agent-permissions-fields")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-spawns-state")).toHaveTextContent(
+      "Not set",
+    );
+    // Mounting an agent that has no override must not make the form dirty:
+    // the ranking field taught us that a field which writes on render turns
+    // "opened the editor" into "saved a permission the operator never chose".
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("writes a spawn override only once the operator picks a layer", () => {
+    const { update } = mockHook();
+
+    renderWithProviders(
+      <AgentBuilderRail
+        sessionId="s1"
+        targetAgentPath={baseSource.path}
+        targetAgentSlug="draft-1"
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("agent-spawns-toggle-worker"));
+
+    expect(update).toHaveBeenCalledWith({ properties: { spawns: ["worker"] } });
+  });
+
+  it("clears a stored spawn override with an explicit null", () => {
+    const { update } = mockHook({
+      data: {
+        ...baseSource,
+        properties: { ...baseSource.properties, spawns: ["worker"] },
+      },
+    });
+
+    renderWithProviders(
+      <AgentBuilderRail
+        sessionId="s1"
+        targetAgentPath={baseSource.path}
+        targetAgentSlug="draft-1"
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("agent-spawns-clear"));
+
+    // Null, not an absent key: the patch has to REMOVE the stored override,
+    // and a merged patch that simply omits it would leave it in place.
+    expect(update).toHaveBeenCalledWith({ properties: { spawns: null } });
+  });
+
+  it("reads a stored empty override as a permission, not as unset", () => {
+    mockHook({
+      data: {
+        ...baseSource,
+        properties: { ...baseSource.properties, spawns: [] },
+      },
+    });
+
+    renderWithProviders(
+      <AgentBuilderRail
+        sessionId="s1"
+        targetAgentPath={baseSource.path}
+        targetAgentSlug="draft-1"
+      />,
+    );
+
+    const state = screen.getByTestId("agent-spawns-state");
+    expect(state).toHaveTextContent("starts nothing");
+    expect(state).not.toHaveTextContent("Not set");
+  });
+
   describe("berd_agent Edit Completed", () => {
     const existingAgentSource: AgentSourceEntry = {
       ...baseSource,
