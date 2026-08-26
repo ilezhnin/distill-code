@@ -36,6 +36,8 @@ export interface AgentBuilderCapabilityProps {
   fullPage?: boolean;
   /** Reopens the collapsed chat column while in full-page mode. */
   onExpandChat?: () => void;
+  /** Back control for the full-page editor: opens the agents library. */
+  onBackToLibrary?: () => void;
   onDraftPromoted?: (source: AgentSourceEntry) => void;
   onAgentBuilderCompleted?: (agentId: string) => void;
 }
@@ -45,6 +47,7 @@ export function AgentBuilderCapability({
   className,
   fullPage = false,
   onExpandChat,
+  onBackToLibrary,
   onDraftPromoted,
   onAgentBuilderCompleted,
 }: AgentBuilderCapabilityProps) {
@@ -180,6 +183,7 @@ export function AgentBuilderCapability({
       draftState={draftState}
       fullPage={fullPage}
       onExpandChat={fullPage ? onExpandChat : undefined}
+      onBackToLibrary={fullPage ? onBackToLibrary : undefined}
       onDraftPromoted={handleDraftPromoted}
       onDraftTargetChanged={handleDraftTargetChanged}
       onRecoverMissingDraft={handleRecoverMissingDraft}
