@@ -292,6 +292,25 @@ describe("buildWaveStepPrompt", () => {
     expect(prompt).toContain("Could not reach the registry");
   });
 
+  it("hands on a blocked earlier report with its reason", () => {
+    // The reader of the handoff is deciding what can still be salvaged; the
+    // blocked step's own account of why is the fact it needs.
+    const prompt = buildWaveStepPrompt(allAccessStep, [
+      completedStep({
+        report: report({
+          status: "blocked",
+          reason: "the config file the subtask names does not exist",
+          summary: "Could not start",
+          needsOperator: true,
+        }),
+      }),
+    ]);
+    expect(prompt).toContain('"status": "blocked"');
+    expect(prompt).toContain(
+      "the config file the subtask names does not exist",
+    );
+  });
+
   it("says so when an all-access step has no earlier reports", () => {
     const prompt = buildWaveStepPrompt(allAccessStep, []);
     expect(prompt).toContain("No earlier step of this wave produced a report");

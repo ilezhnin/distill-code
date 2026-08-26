@@ -165,6 +165,43 @@ describe("parseWaveEngineState", () => {
     );
   });
 
+  it("round-trips a blocked carried report with its reason", () => {
+    // A reload must not launder "the step could not be done" into a plain
+    // completed entry — the reason is what the reader of the handoff acts on.
+    const revision = createWaveState({
+      waveId: "w2",
+      conductorSessionId: "conductor-1",
+      planMessageId: "verdict-1",
+      steps: [{ role: "scout", subtask: "Look again", access: "all" }],
+      createdAt: 2,
+      rootRequestId: "plan-1",
+      revisionCount: 1,
+      carriedReports: [
+        {
+          stepIndex: 0,
+          role: "scout",
+          subtask: "Look",
+          fromPreviousWave: true,
+          report: {
+            runId: "run-0",
+            status: "blocked",
+            reason: "the named file does not exist",
+            summary: "Could not start",
+            decisions: [],
+            artifacts: [],
+            risks: [],
+            needsOperator: true,
+            nextSuggestedTask: null,
+          },
+        },
+      ],
+    });
+    const state = withWave(emptyWaveEngineState(), revision);
+    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
+      state,
+    );
+  });
+
   it("drops an unreadable carried report rather than the whole wave", () => {
     const parsed = parseWaveEngineState({
       version: 2,

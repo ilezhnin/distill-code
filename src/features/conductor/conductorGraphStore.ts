@@ -126,7 +126,8 @@ function parseReport(value: unknown): StructuredReport | null {
     !raw.runId ||
     (raw.status !== "completed" &&
       raw.status !== "failed" &&
-      raw.status !== "cancelled") ||
+      raw.status !== "cancelled" &&
+      raw.status !== "blocked") ||
     typeof raw.summary !== "string"
   ) {
     return null;
@@ -134,6 +135,9 @@ function parseReport(value: unknown): StructuredReport | null {
   return {
     runId: raw.runId,
     status: raw.status,
+    ...(typeof raw.reason === "string" && raw.reason
+      ? { reason: raw.reason }
+      : {}),
     summary: raw.summary,
     decisions: Array.isArray(raw.decisions)
       ? raw.decisions.filter((item): item is string => typeof item === "string")
