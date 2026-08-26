@@ -150,7 +150,9 @@ test.describe("Agents view", () => {
     ).toBeVisible();
     await expect(page.getByText(/^Source$/)).toBeVisible();
     await expect(page.getByText("File-backed")).toBeVisible();
-    await expect(page.getByText(/^Provider$/)).toBeVisible();
+    // The legacy Provider/Model pair gave way to the model-ranking summary;
+    // the saved single model still shows there as the list's only row.
+    await expect(page.getByText(/^Model ranking$/)).toBeVisible();
     await expect(page.getByText("claude-sonnet-4-20250514")).toBeVisible();
     await expect(page.getByRole("button", { name: "Edit" })).toBeVisible();
   });
