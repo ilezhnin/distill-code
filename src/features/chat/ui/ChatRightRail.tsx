@@ -59,6 +59,8 @@ interface ChatRightRailProps {
    */
   onExpandAgentBuilderChat?: () => void;
   onAgentBuilderCompleted?: (agentId: string) => void;
+  /** Back control target for the full-page agent editor: the agents library. */
+  onOpenAgentLibrary?: () => void;
   terminalOpen?: boolean;
   terminalController?: TerminalController;
   terminalDockPreview?: TerminalDockedPlacement | null;
@@ -91,6 +93,7 @@ export const ChatRightRail = forwardRef<HTMLDivElement, ChatRightRailProps>(
       builderRailSeparatorProps,
       onExpandAgentBuilderChat,
       onAgentBuilderCompleted,
+      onOpenAgentLibrary,
       terminalOpen = false,
       terminalController,
       terminalDockPreview,
@@ -316,6 +319,7 @@ export const ChatRightRail = forwardRef<HTMLDivElement, ChatRightRailProps>(
                 agentBuilderChatCollapsed ? onExpandAgentBuilderChat : undefined
               }
               onAgentBuilderCompleted={onAgentBuilderCompleted}
+              onBackToLibrary={onOpenAgentLibrary}
             />
           </div>
         ) : null}
