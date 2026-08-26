@@ -54,12 +54,14 @@ import {
 } from "./waveLifecycle";
 import {
   waveConcurrentPlanNoticeText,
+  waveStepBlockedNoticeText,
   waveStepExplicitModelNoticeText,
   waveStepModelNoticeText,
   waveRejectionNoticeText,
   waveReportDegradedNoticeText,
   waveSpawnFailureText,
 } from "./waveNotices";
+import { stopWaveChildSessions } from "./waveStop";
 import { isWaveLive } from "./waveVerdict";
 import { buildWaveStepPrompt } from "./wavePrompts";
 import {
@@ -625,6 +627,48 @@ function advanceWaves(state: WaveEngineState): {
         false,
         "warning",
       );
+    }
+    // A worker reported its step blocked: the wave dies the way the operator's
+    // stop kills it (5b) — parked on `needsOperator` FIRST, so a crash
+    // mid-stop resumes into a wave the scheduler never advances again, then
+    // the children are told to stop, then the operator is told why. The
+    // persisted phase is also the idempotency: the engine recomputes
+    // `blocked` on every advance, but a parked wave never reaches this loop
+    // again. No digest and no verdict (the engine already refused
+    // `complete`), and no auto-replan (Q2): the conductor learns of the stop
+    // the same way it does after 5b — from the operator's next message, which
+    // sweeps the parked wave when a new plan is admitted.
+    if (advanced.blocked.length > 0) {
+      const parked = withWavePhase(advanced.wave, "needsOperator");
+      next = withWave(next, parked);
+      setWaveEngineState(next);
+      recordWaveClose(parked, "needs-operator", "step-blocked");
+      stopWaveChildSessions(parked);
+      for (const blockedStep of advanced.blocked) {
+        const step = parked.steps.find(
+          (candidate) => candidate.stepIndex === blockedStep.stepIndex,
+        );
+        const child = nodes.find(
+          (candidate) =>
+            candidate.waveId === wave.waveId &&
+            candidate.stepIndex === blockedStep.stepIndex,
+        );
+        appendConductorNotice(
+          wave.conductorSessionId,
+          waveStepBlockedNoticeText({
+            stepIndex: blockedStep.stepIndex,
+            name:
+              child?.displayName ??
+              (step
+                ? roleDisplayName(step.role)
+                : `#${blockedStep.stepIndex + 1}`),
+            ...(blockedStep.reason ? { reason: blockedStep.reason } : {}),
+          }),
+          false,
+          "warning",
+        );
+      }
+      continue;
     }
     let current = advanced.wave;
     if (advanced.complete) {

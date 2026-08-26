@@ -374,6 +374,50 @@ describe("advanceWave scheduling", () => {
     expect(advanced.spawn[0].previousReports[0].report).toBe(failureReport);
   });
 
+  it("surfaces a blocked report and schedules nothing on top of it", () => {
+    // §5 risk 9: the cheapest response to "this step cannot be done" is to
+    // stop the wave. The engine finds the blocked step; the shell stops the
+    // wave the way the operator's stop does.
+    const wave = withWaveStepPhase(
+      waveOf([step("scout", "one"), step("qa", "two", "all")]),
+      0,
+      { phase: "spawned", sessionId: "child-0", runId: "run-0" },
+    );
+    const blockedReport: StructuredReport = {
+      ...report("run-0", "Could not start"),
+      status: "blocked",
+      reason: "the file the subtask names does not exist",
+      needsOperator: true,
+    };
+    const advanced = advanceWave(wave, {
+      nodes: [workerNode(0, "completed")],
+      reportOf: (runId) => (runId === "run-0" ? blockedReport : undefined),
+    });
+    expect(advanced.blocked).toEqual([
+      { stepIndex: 0, reason: "the file the subtask names does not exist" },
+    ]);
+    // The satisfied access:"all" successor is NOT requested…
+    expect(advanced.spawn).toEqual([]);
+    // …and the wave never declares itself complete: `digestPending` is the
+    // door to a digest and a verdict, and a blocked wave gets neither (5b).
+    expect(advanced.complete).toBe(false);
+  });
+
+  it("reports an empty blocked list on a wave with ordinary reports", () => {
+    const wave = withWaveStepPhase(
+      waveOf([step("scout", "one"), step("qa", "two", "all")]),
+      0,
+      { phase: "spawned", sessionId: "child-0", runId: "run-0" },
+    );
+    const advanced = advanceWave(wave, {
+      nodes: [workerNode(0, "completed")],
+      reportOf: (runId) =>
+        runId === "run-0" ? report("run-0", "Found them") : undefined,
+    });
+    expect(advanced.blocked).toEqual([]);
+    expect(advanced.spawn.map((request) => request.stepIndex)).toEqual([1]);
+  });
+
   it("synthesizes a report for a terminal step that produced none", () => {
     const wave = withWaveStepPhase(
       waveOf([step("scout", "one"), step("qa", "two", "all")]),

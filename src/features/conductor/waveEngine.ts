@@ -600,6 +600,13 @@ export interface WaveAdvanceContext {
   allowSyntheticReportFor?: (stepIndex: number) => boolean;
 }
 
+/** A step whose worker reported the step could not be done (§5 risk 9). */
+export interface WaveBlockedStep {
+  stepIndex: number;
+  /** The worker's own account of what stops it, when the report carried one. */
+  reason?: string;
+}
+
 export interface WaveAdvance {
   /** The wave with node facts folded back in. Replaces the stored state. */
   wave: WaveState;
@@ -616,6 +623,16 @@ export interface WaveAdvance {
    * exactly once.
    */
   degraded: readonly number[];
+  /**
+   * Steps whose report says the step could not be done, in step order. Never
+   * empty alongside a non-empty `spawn` or a true `complete`: a blocked wave
+   * schedules nothing and never finishes on its own — the shell stops it the
+   * way the operator's stop does (5b), and the wave goes to the operator.
+   * Recomputed on every advance; the shell's park to `needsOperator` (which
+   * is persisted before anything else happens) is what makes acting on it
+   * idempotent, restarts included.
+   */
+  blocked: readonly WaveBlockedStep[];
 }
 
 function stepToWaveStep(state: WaveStepState): WaveStep {
@@ -720,6 +737,23 @@ export function advanceWave(
     return { ...step, reportDegraded: true };
   });
 
+  // A worker's report saying "this step cannot be done" outranks scheduling:
+  // the cheapest response to a blocked step (§5 risk 9) is to stop the wave,
+  // not to spend every remaining step building on a gap the worker already
+  // named. The engine only *finds* the blocked steps; the shell stops the
+  // wave through the same path as the operator's stop (5b), and the phase it
+  // persists is what keeps this from firing twice.
+  const blocked: WaveBlockedStep[] = [];
+  for (const step of steps) {
+    if (step.phase !== "spawned") continue;
+    const report = context.reportOf(step.runId);
+    if (report?.status !== "blocked") continue;
+    blocked.push({
+      stepIndex: step.stepIndex,
+      ...(report.reason ? { reason: report.reason } : {}),
+    });
+  }
+
   const isStepTerminal = (step: WaveStepState): boolean => {
     if (step.phase === "failed") return true;
     if (step.phase !== "spawned") return false;
@@ -774,6 +808,9 @@ export function advanceWave(
 
   const spawn: WaveSpawnRequest[] = [];
   for (const step of steps) {
+    // No step starts under a blocked report: whatever this advance would have
+    // scheduled is work the shell is about to stop.
+    if (blocked.length > 0) break;
     if (step.phase !== "pending") continue;
     if (inFlight.has(step.stepIndex)) continue;
 
@@ -804,7 +841,10 @@ export function advanceWave(
     });
   }
 
-  const complete = steps.every(isStepTerminal);
+  // A blocked wave never completes on its own: `digestPending` is the door to
+  // a digest and a verdict, and a wave the shell is about to stop must reach
+  // the operator instead — the same "no digest, no verdict" rule as 5b.
+  const complete = blocked.length === 0 && steps.every(isStepTerminal);
 
   return {
     wave: changed ? { ...wave, steps } : wave,
@@ -812,5 +852,6 @@ export function advanceWave(
     spawn,
     complete,
     degraded,
+    blocked,
   };
 }
