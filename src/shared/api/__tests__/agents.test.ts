@@ -1958,8 +1958,11 @@ Research carefully.
       }),
     );
     // Portable key: it must not also be preserved under sprout.frontmatter.
+    // The sprout itself stays (the importer keeps the portable persona name
+    // there), so pin its exact shape rather than asserting it away.
     const request = mockGooseSourcesCreate.mock.calls[0][0];
-    expect(request.properties.sprout).toBeUndefined();
+    expect(request.properties.sprout).toEqual({ name: "scout" });
+    expect(request.properties.sprout?.frontmatter).toBeUndefined();
   });
 
   it("drops garbled frontmatter spawns at import", async () => {
@@ -1973,7 +1976,9 @@ Research carefully.
 
     const request = mockGooseSourcesCreate.mock.calls[0][0];
     expect(request.properties.spawns).toBeUndefined();
-    expect(request.properties.sprout).toBeUndefined();
+    // Dropped means gone: no reader-visible copy survives anywhere in the
+    // request, sprout.frontmatter included (spawns is a portable key).
+    expect(JSON.stringify(request.properties)).not.toContain("spawns");
   });
 
   it("exports the spawns override in persona markdown", async () => {
