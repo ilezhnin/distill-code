@@ -7,7 +7,15 @@ import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 import { isWorkingStatus } from "../brigadeActivity";
 import type { RunStatus } from "../types";
 
-const STATUS_DOT_CLASS: Record<RunStatus, string> = {
+/**
+ * Everything the glyph can be asked to show: run statuses, plus the one
+ * report-only status. `blocked` is never a run's state — the run completes,
+ * the *report* says the step could not be done — so it reaches this component
+ * only from surfaces that render reports, like the digest card.
+ */
+export type BrigadeGlyphStatus = RunStatus | "blocked";
+
+const STATUS_DOT_CLASS: Record<BrigadeGlyphStatus, string> = {
   starting: "bg-info",
   running: "bg-info",
   waiting: "bg-warning",
@@ -15,6 +23,10 @@ const STATUS_DOT_CLASS: Record<RunStatus, string> = {
   failed: "bg-destructive",
   cancelled: "bg-muted-foreground",
   stopped: "bg-muted-foreground",
+  // Deliberately not the failure red: nothing went wrong in the work — the
+  // work is waiting on the operator, which is what this app's warning tone
+  // already means (see `waiting`, whose glyph is the pause icon instead).
+  blocked: "bg-warning",
 };
 
 /**
@@ -76,7 +88,7 @@ export interface BrigadeChipProps extends BrigadeChipViewModel {
  * Exported so surfaces that show the same run statuses without a whole chip —
  * the child-chat tab strip — read from one status vocabulary.
  */
-export function BrigadeStatusGlyph({ status }: { status: RunStatus }) {
+export function BrigadeStatusGlyph({ status }: { status: BrigadeGlyphStatus }) {
   if (status === "running" || status === "starting") {
     return <ActiveChatPulseDot className="shrink-0" />;
   }

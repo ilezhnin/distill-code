@@ -479,12 +479,14 @@
     "needsOperator": "Necesita al operador.",
     "operatorIntervened": "El operador intervino en esta ejecución.",
     "nextTask": "Siguiente",
+    "blockedReason": "El ejecutor está bloqueado: {{reason}}",
     "status": {
       "starting": "iniciando",
       "running": "en curso",
       "waiting": "en espera",
       "completed": "completado",
       "failed": "falló",
+      "blocked": "bloqueado",
       "cancelled": "cancelado",
       "stopped": "detenido",
       "pending": "sin empezar"
