@@ -19,13 +19,21 @@ function runDefaultBundledAgents(buildKind: string) {
   });
 }
 
+// The fixture is a bash script invoked with an absolute path. On Windows,
+// bash (WSL/Git Bash) receives a `E:\...` path whose backslashes it eats, so
+// these shell-driven cases fail for path reasons that say nothing about the
+// release defaults. Release builds run this in CI on Linux; a local Windows
+// run skips only the bash-invoking cases — the pure-JS invariants below
+// still run everywhere.
+const skipShellFixture = process.platform === "win32";
+
 describe("release bundled-agent defaults", () => {
-  it.each([
-    "official",
-    "custom",
-  ])("does not add release-only agents to %s builds by default", (buildKind) => {
-    expect(runDefaultBundledAgents(buildKind)).toBe("");
-  });
+  it.skipIf(skipShellFixture).each(["official", "custom"])(
+    "does not add release-only agents to %s builds by default",
+    (buildKind) => {
+      expect(runDefaultBundledAgents(buildKind)).toBe("");
+    },
+  );
 
   it("always includes the valid public starter set", () => {
     const tauriConfig = JSON.parse(
@@ -73,7 +81,7 @@ describe("release bundled-agent defaults", () => {
     }
   });
 
-  it("rejects an invalid build kind", () => {
+  it.skipIf(skipShellFixture)("rejects an invalid build kind", () => {
     const result = spawnSync("bash", [releaseDefaultsRunner, "preview"], {
       encoding: "utf8",
     });
