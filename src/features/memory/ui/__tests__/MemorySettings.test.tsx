@@ -1,4 +1,4 @@
-import { act, screen, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -131,6 +131,14 @@ describe("MemorySettings", () => {
       await within(dialog).findByRole("button", { name: "Cancel" }),
     );
     expect(useMemoryStore.getState().entries).toHaveLength(1);
+
+    // Wait out the dialog's dismissal (the repo-wide pattern for Radix
+    // dialogs, see AppShell.navigation.test.tsx): while the closing dialog is
+    // still mounted, "Forget this" matches both the row's trash button and
+    // the dialog's confirm button.
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
 
     await user.click(screen.getByRole("button", { name: "Forget this" }));
     const reopened = await screen.findByRole("dialog");
