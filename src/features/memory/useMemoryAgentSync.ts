@@ -13,6 +13,10 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 
 import { detectMemoryFenceCandidates } from "./lib/memoryAgentScan";
+import {
+  memoryWriteDenialText,
+  sessionMemoryWriteAccess,
+} from "./lib/memoryWriteAccess";
 import { useMemoryStore } from "./stores/memoryStore";
 
 let draining = false;
@@ -29,6 +33,19 @@ function drainMemoryFences(): void {
     if (candidates.length === 0) return;
     const sessions = useChatSessionStore.getState();
     for (const candidate of candidates) {
+      // The memory ACL: a conductor-graph session only writes when its layer
+      // allows it. Refused fences are tombstoned — not applied — and said out
+      // loud, in the spirit of the digest's "[protocol block removed]": a
+      // request the app silently swallows looks to the operator like one it
+      // honored.
+      const access = sessionMemoryWriteAccess(candidate.sessionId);
+      if (!access.allowed) {
+        useMemoryStore.getState().dismissAgentRequest(candidate.messageId);
+        console.warn(
+          `[memory] distill-memory fence in session ${candidate.sessionId} was not applied: ${memoryWriteDenialText(access.denial)}`,
+        );
+        continue;
+      }
       const projectId =
         sessions.getSession(candidate.sessionId)?.projectId ?? null;
       useMemoryStore
