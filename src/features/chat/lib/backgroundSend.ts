@@ -1,5 +1,10 @@
 import { dispatchPrompt } from "@/features/chat/lib/sendCore";
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
+import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
+import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
+import { composeMemorySection } from "@/features/memory/lib/memoryPrompt";
+import { useMemoryStore } from "@/features/memory/stores/memoryStore";
+import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import {
   composeSystemPrompt,
   formatPersonaSystemPrompt,
@@ -7,6 +12,35 @@ import {
 import type { ChatAttachmentDraft } from "@/shared/types/messages";
 import type { Persona } from "@/shared/types/agents";
 import type { ChatSendOptions } from "../types";
+
+/**
+ * The memory and planner half of a background session's system prompt.
+ *
+ * The two callers that compose an `executionSystemPrompt` themselves (the
+ * foreground controller and the queued drain) already carry this; the
+ * fallback below did not, so a session driven only through here — a berdctl
+ * `sessions.create`/`sessions.send` — ran without the operator's memory and
+ * without the protocol to add to it. Nothing about this context forbids it:
+ * berdctl runs in the main window's renderer, where the memory store is
+ * hydrated at startup like everywhere else, and the entries are the
+ * operator's standing facts, not foreground UI state — they are scoped by
+ * the *target* session's own project, read from the store.
+ *
+ * Same exclusion as the other two paths: a wave child answers to its
+ * conductor, not to the operator's list — its prompt ends "with this report
+ * block and no extra commentary after it", and a one-shot task runner has no
+ * business writing to memory or the planner. berdctl can address a
+ * wave-managed session directly, so the guard is checked here too.
+ */
+function composeOperatorProtocols(sessionId: string): string | undefined {
+  if (isWaveManagedSession(sessionId)) return undefined;
+  const projectId =
+    useChatSessionStore.getState().getSession(sessionId)?.projectId ?? null;
+  return composeSystemPrompt(
+    composeMemorySection(useMemoryStore.getState().entries, projectId),
+    PLANNER_PROTOCOL_PROMPT,
+  );
+}
 
 /**
  * Sends a prompt to a session that has no mounted ChatView, fire-and-forget.
@@ -37,6 +71,9 @@ export function sendPromptInBackground(
     composeSystemPrompt(
       formatPersonaSystemPrompt(persona),
       sendOptions.systemPrompt,
+      // Last, matching the foreground order: persona, workspace context,
+      // then the operator protocols.
+      composeOperatorProtocols(sessionId),
     );
   return dispatchPrompt(sessionId, prompt, {
     persona: persona
@@ -48,8 +85,9 @@ export function sendPromptInBackground(
     chips: sendOptions.chips,
     userMessageMetadata: sendOptions.userMessageMetadata,
     acpGooseMetadata: sendOptions.acpGooseMetadata,
-    // Compose only caller-provided target-session context and the requested
-    // persona, never foreground UI state.
+    // Compose only caller-provided target-session context, the requested
+    // persona and the operator's memory/planner protocols (scoped to the
+    // target session) — never foreground UI state.
     systemPrompt,
     // Same isolation rule: the target session's provider, never the
     // foreground active agent's (dispatchPrompt's default).
