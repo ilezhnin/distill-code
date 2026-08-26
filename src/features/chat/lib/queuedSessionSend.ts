@@ -185,7 +185,9 @@ export async function prepareExistingSessionForBackgroundSend(
 ): Promise<{
   providerId: string;
   executionTarget: SessionExecutionTarget;
-  persona?: Pick<Persona, "id" | "displayName" | "systemPrompt">;
+  // `spawns` rides along so the drain's spawn-policy line reflects the
+  // persona's own ACL override, not just its layer default.
+  persona?: Pick<Persona, "id" | "displayName" | "systemPrompt" | "spawns">;
 }> {
   const session = useChatSessionStore.getState().getSession(sessionId);
   if (!session) {
