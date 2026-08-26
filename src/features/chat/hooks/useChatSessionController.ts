@@ -41,6 +41,7 @@ import { loadWorkspaceInstructionFiles } from "@/features/chat/api/workspaceCont
 import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspaceContextPrompt";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import { composeMemorySection } from "@/features/memory/lib/memoryPrompt";
+import { decideMemoryWrite } from "@/features/memory/lib/memoryWriteAccess";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { formatSessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
@@ -749,20 +750,46 @@ export function useChatSessionController({
   const isWaveChild = useConductorGraphStore((state) =>
     sessionId ? state.nodesById[sessionId]?.managedBy === "wave" : false,
   );
-  // The session's conductor-graph layer, for the spawn-policy prompt insert.
-  // Undefined for a session outside the graph (an ordinary chat).
+  // The session's conductor-graph layer, for the spawn-policy prompt insert
+  // and the memory write ACL below. Undefined for a session outside the
+  // graph (an ordinary chat). Primitive selectors on purpose — the node
+  // object itself changes on every status flip.
   const sessionNodeRole = useConductorGraphStore((state) =>
     sessionId ? state.nodesById[sessionId]?.role : undefined,
   );
+  // The memory ACL's other half: a conductor-graph session that may not
+  // *write* memory still reads the facts, but is not taught the fence the
+  // scanner would refuse.
+  const graphNodePersonaId = useConductorGraphStore((state) =>
+    sessionId ? state.nodesById[sessionId]?.personaId : undefined,
+  );
+  const memoryWriteAllowed = useMemo(() => {
+    if (sessionNodeRole === undefined) return true;
+    return decideMemoryWrite(
+      {
+        role: sessionNodeRole,
+        managedBy: isWaveChild ? "wave" : "ui",
+        ...(graphNodePersonaId ? { personaId: graphNodePersonaId } : {}),
+      },
+      (personaId) =>
+        personas.some(
+          (persona) => persona.id === personaId && persona.memoryWrite === true,
+        ),
+    ).allowed;
+  }, [sessionNodeRole, graphNodePersonaId, isWaveChild, personas]);
   const operatorProtocols = useMemo(
     () =>
       isWaveChild
         ? undefined
         : composeSystemPrompt(
-            composeMemorySection(memoryEntries, effectiveProjectId),
+            composeMemorySection(
+              memoryEntries,
+              effectiveProjectId,
+              memoryWriteAllowed,
+            ),
             PLANNER_PROTOCOL_PROMPT,
           ),
-    [effectiveProjectId, isWaveChild, memoryEntries],
+    [effectiveProjectId, isWaveChild, memoryEntries, memoryWriteAllowed],
   );
   const effectiveSystemPrompt = useMemo(
     () =>

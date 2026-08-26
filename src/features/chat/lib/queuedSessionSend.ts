@@ -41,6 +41,7 @@ import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspace
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import { composeMemorySection } from "@/features/memory/lib/memoryPrompt";
 import { sessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
+import { sessionMemoryWriteAccess } from "@/features/memory/lib/memoryWriteAccess";
 import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import {
@@ -365,6 +366,10 @@ export async function sendQueuedPromptToExistingSessionInBackground(
           composeMemorySection(
             useMemoryStore.getState().entries,
             session?.projectId ?? null,
+            // Read-only under the memory ACL (a worker node, an ungranted
+            // orchestrator) still sees the facts but is not taught the
+            // fence the scanner would refuse.
+            sessionMemoryWriteAccess(sessionId).allowed,
           ),
           PLANNER_PROTOCOL_PROMPT,
         );

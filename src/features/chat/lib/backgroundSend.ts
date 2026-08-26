@@ -4,6 +4,7 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { sessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
 import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
 import { composeMemorySection } from "@/features/memory/lib/memoryPrompt";
+import { sessionMemoryWriteAccess } from "@/features/memory/lib/memoryWriteAccess";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import {
@@ -38,7 +39,13 @@ function composeOperatorProtocols(sessionId: string): string | undefined {
   const projectId =
     useChatSessionStore.getState().getSession(sessionId)?.projectId ?? null;
   return composeSystemPrompt(
-    composeMemorySection(useMemoryStore.getState().entries, projectId),
+    composeMemorySection(
+      useMemoryStore.getState().entries,
+      projectId,
+      // A session the memory ACL keeps read-only still reads the facts but
+      // is not taught the fence the scanner would refuse.
+      sessionMemoryWriteAccess(sessionId).allowed,
+    ),
     PLANNER_PROTOCOL_PROMPT,
   );
 }
