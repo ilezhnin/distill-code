@@ -66,7 +66,9 @@ export function sendPromptInBackground(
   sessionId: string,
   prompt: string,
   providerId: string,
-  persona?: Pick<Persona, "id" | "displayName" | "systemPrompt">,
+  // `spawns` rides along so the spawn-policy line composed below reflects
+  // the persona's own ACL override, not just its layer default.
+  persona?: Pick<Persona, "id" | "displayName" | "systemPrompt" | "spawns">,
   sendOptions: ChatSendOptions = {},
   attachments?: ChatAttachmentDraft[],
   beforeUserMessageCommitted?: () => void,
