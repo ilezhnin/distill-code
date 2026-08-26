@@ -117,6 +117,7 @@ export const WAVE_CLOSURE_REASON_KEYS: Record<WaveClosureReason, string> = {
   "accepted-without-evidence": "acceptedWithoutEvidence",
   "wave-interrupted": "waveInterrupted",
   "operator-stopped": "operatorStopped",
+  "step-blocked": "stepBlocked",
 };
 
 /**
@@ -269,6 +270,35 @@ export function digestDeliveryFailureText(
  */
 export function conductorSelfExecutionBadgeText(): string {
   return i18n.t("chat:conductor.selfExecutingBadge");
+}
+
+/**
+ * The notice posted when a worker's blocked report stops its wave (§5 risk 9).
+ *
+ * Same anatomy as {@link waveClosureNoticeText} — the loop-stopped title, one
+ * line saying what happened and what it cost, and then the worker's own
+ * reason, attributed as the worker's so it is never read as the app's
+ * verdict on anything. It is a warning, not an error, for the same reason
+ * the operator's stop is: nothing malfunctioned — a worker said honestly
+ * that its step cannot be done, and the app took the cheapest exit.
+ */
+export function waveStepBlockedNoticeText(facts: {
+  stepIndex: number;
+  name: string;
+  reason?: string;
+}): string {
+  const lines = [
+    i18n.t("chat:conductor.wave.verdict.needsOperatorTitle"),
+    i18n.t("chat:conductor.wave.stepBlocked", {
+      step: facts.stepIndex + 1,
+      name: facts.name,
+    }),
+  ];
+  const reason = facts.reason?.trim();
+  if (reason) {
+    lines.push(i18n.t("chat:conductor.wave.stepBlockedReason", { reason }));
+  }
+  return lines.join("\n\n");
 }
 
 /**

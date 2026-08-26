@@ -209,6 +209,62 @@ describe("waveRunner", () => {
     expect(second.prompt).toContain("Three callers in src/");
   });
 
+  it("stops the wave the way the operator's stop does when a step reports blocked", async () => {
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    const graph = useConductorGraphStore.getState();
+    graph.patchNode("child-0", { status: "completed" });
+    graph.attachReport({
+      runId: "run-1",
+      status: "blocked",
+      reason: "the callers file the subtask names does not exist",
+      summary: "Could not start",
+      decisions: [],
+      artifacts: [],
+      risks: [],
+      needsOperator: true,
+      nextSuggestedTask: null,
+    });
+
+    runWaveEngineTick();
+
+    // Parked first, like 5b: the scheduler never advances this wave again,
+    // and no digest or verdict is ever produced for it.
+    expect(getWaveEngineState().waves[0]?.phase).toBe("needsOperator");
+    // The satisfied access:"all" successor was never spawned…
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+    // …the children were told to stop the same way the operator's stop tells
+    // them…
+    expect(stopOrchestratorSession).toHaveBeenCalledWith("child-0");
+    // …and the operator can read which step blocked and why, in the worker's
+    // own words.
+    const notice = noticeTexts().at(-1);
+    expect(notice).toContain(
+      i18n.t("chat:conductor.wave.stepBlocked", { step: 1, name: "child-0" }),
+    );
+    expect(notice).toContain(
+      "the callers file the subtask names does not exist",
+    );
+    // The close leaves the same kind of record as the operator's stop.
+    expect(getWaveTelemetry().records[0]).toMatchObject({
+      outcome: "needs-operator",
+      closureReason: "step-blocked",
+    });
+
+    // Re-ticking neither respawns nor re-announces: the persisted phase is
+    // the idempotency, exactly as it is for 5b.
+    const noticeCount = noticeTexts().length;
+    runWaveEngineTick();
+    runWaveEngineTick();
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+    expect(noticeTexts()).toHaveLength(noticeCount);
+  });
+
   it("shows the enumerated reason and spawns nothing for a broken fence", async () => {
     useConductorGraphStore.getState().registerNode(conductorNode());
     setTranscript([assistant("plan-1", fence("{not json}"))]);

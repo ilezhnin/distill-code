@@ -82,7 +82,17 @@ export type WaveClosureReason =
    * executors were told to stop and nothing was digested or judged — the
    * operator chose to cut the loop, and the loop obeyed.
    */
-  | "operator-stopped";
+  | "operator-stopped"
+  /**
+   * A worker reported its step `blocked` — it could not be done at all — and
+   * the app stopped the wave through the same path as the operator's stop
+   * (§5 risk 9): remaining steps were not started, running executors were
+   * told to stop, and nothing was digested or judged. Replanning is the
+   * operator's move (Q2 — no auto-retry), which the conductor learns of the
+   * same way it does after 5b: from the operator's next message, with the
+   * parked wave swept by the next admitted plan.
+   */
+  | "step-blocked";
 
 export interface WaveClosure {
   reason: WaveClosureReason;
