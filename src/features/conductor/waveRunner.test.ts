@@ -7,6 +7,10 @@ import type { Message } from "@/shared/types/messages";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
 import type { SessionNode } from "./types";
+import {
+  resetWaveStepTargetIoForTests,
+  setWaveStepTargetIoForTests,
+} from "./waveStepTarget";
 
 const spawnConductorChildSession = vi.hoisted(() => vi.fn());
 
@@ -225,7 +229,10 @@ describe("waveRunner", () => {
     expect(hasWaveTombstone(getWaveEngineState(), "plan-1")).toBe(true);
   });
 
-  it("refuses the whole plan when a step names a model, before any spawn", () => {
+  it("refuses the whole plan when a step's model resolves to nothing, before any spawn", () => {
+    // 4a/D5: no seams are installed here, so the live inventory is empty and
+    // the named model cannot be honoured — the honest outcome is a refusal of
+    // the whole plan while nothing has started, never a silent inherit.
     useConductorGraphStore.getState().registerNode(conductorNode());
     setTranscript([
       assistant(
@@ -240,8 +247,46 @@ describe("waveRunner", () => {
 
     expect(spawnConductorChildSession).not.toHaveBeenCalled();
     expect(noticeTexts()[0]).toContain(
-      i18n.t("chat:conductor.wave.reason.stepModelUnsupported", { step: 2 }),
+      i18n.t("chat:conductor.wave.reason.stepModelUnavailable", { step: 2 }),
     );
+    expect(noticeTexts()[0]).toContain('"gpt-5"');
+  });
+
+  it("spawns a step on the exact model the plan named (4a)", async () => {
+    setWaveStepTargetIoForTests({
+      personas: () => [],
+      providers: () => [{ id: "grok-acp", label: "Grok" }] as never,
+      modelsForHarness: (harnessId) =>
+        (harnessId === "grok-acp"
+          ? [{ id: "grok-4-6", displayName: "Grok 4.6" }]
+          : []) as never,
+      rateLimits: () => [] as never,
+    });
+    try {
+      useConductorGraphStore.getState().registerNode(conductorNode());
+      setTranscript([
+        assistant(
+          "plan-1",
+          fence(
+            '{"steps":[{"role":"scout","subtask":"Look","access":[],"model":"grok"}]}',
+          ),
+        ),
+      ]);
+
+      runWaveEngineTick();
+      await vi.waitFor(() =>
+        expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+      );
+
+      const [args] = spawnConductorChildSession.mock.calls[0];
+      expect(args.executionTarget).toMatchObject({
+        harnessId: "grok-acp",
+        modelProviderId: "grok-acp",
+        modelId: "grok-4-6",
+      });
+    } finally {
+      resetWaveStepTargetIoForTests();
+    }
   });
 
   it("never re-processes a plan message, however often the tick fires", async () => {

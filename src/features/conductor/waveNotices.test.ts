@@ -8,6 +8,7 @@ import {
   waveRejectionNoticeText,
   waveRetryLabel,
   waveSpawnFailureText,
+  waveStepExplicitModelNoticeText,
 } from "./waveNotices";
 
 const ALL_REASONS = Object.keys(
@@ -54,5 +55,18 @@ describe("waveNotices", () => {
     expect(waveSpawnFailureText(0, "boom")).not.toContain(
       "conductor.wave.spawnFailed",
     );
+  });
+
+  it("names the step, the worker and the model when an explicit model runs near its limit", async () => {
+    await i18n.loadNamespaces("chat");
+    const text = waveStepExplicitModelNoticeText({
+      stepIndex: 1,
+      name: "Brigade",
+      model: "Claude Opus 5",
+    });
+    expect(text).toContain("2");
+    expect(text).toContain("Brigade");
+    expect(text).toContain("Claude Opus 5");
+    expect(text).not.toContain("conductor.wave");
   });
 });

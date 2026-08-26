@@ -103,34 +103,75 @@ describe("admitWavePlan", () => {
     });
   });
 
-  it("refuses the whole plan when any step names a model (D5 gap-guard)", async () => {
-    const admission = admitWavePlan({
-      kind: "plan",
-      planText: "",
-      prose: "",
-      steps: [
-        step("scout", "Find the callers"),
-        step("qa", "Write the test plan", [], "gpt-5"),
-      ],
-    });
+  it("admits a plan whose step model passes the live check, keeping the model", () => {
+    const admission = admitWavePlan(
+      {
+        kind: "plan",
+        planText: "",
+        prose: "",
+        steps: [
+          step("scout", "Find the callers"),
+          step("qa", "Write the test plan", [], "grok"),
+        ],
+      },
+      { checkStepModel: () => ({ ok: true }) },
+    );
+    expect(admission.kind).toBe("accepted");
+    if (admission.kind !== "accepted") return;
+    // The model must survive admission untouched: the spawn re-resolves it.
+    expect(admission.steps[1].model).toBe("grok");
+  });
+
+  it("refuses the whole plan when a step's model fails the live check (D5)", async () => {
+    const admission = admitWavePlan(
+      {
+        kind: "plan",
+        planText: "",
+        prose: "",
+        steps: [
+          step("scout", "Find the callers"),
+          step("qa", "Write the test plan", [], "gpt-5"),
+        ],
+      },
+      {
+        checkStepModel: (model) => ({
+          ok: false,
+          detail: `No installed model matches "${model}".`,
+        }),
+      },
+    );
     expect(admission).toMatchObject({
       kind: "rejected",
-      reason: "step-model-unsupported",
+      reason: "step-model-unavailable",
       stepIndex: 1,
     });
     if (admission.kind !== "rejected") return;
     expect(admission.detail).toContain("gpt-5");
     // The card reads title + localized reason + this detail, so the detail
-    // carries only what the reason cannot know. It used to re-explain the rule
-    // as well, and the operator read the same paragraph twice in one card.
+    // carries only what the reason cannot know — which model and why.
     await i18n.loadNamespaces("chat");
     const card = waveRejectionNoticeText({
       reason: admission.reason,
       detail: admission.detail,
       stepIndex: admission.stepIndex,
     });
-    expect(card.match(/Per-step models are not supported/g)).toHaveLength(1);
     expect(card).toContain("gpt-5");
+    expect(card).toContain(
+      i18n.t("chat:conductor.wave.reason.stepModelUnavailable", { step: 2 }),
+    );
+  });
+
+  it("admits a model step without a checker; the spawn resolution enforces", () => {
+    // Callers that cannot read the live inventory (pure contexts, prompt
+    // pairing tests) admit the shape; the spawn-time resolver still fails the
+    // step honestly if the model cannot be run — never a silent inherit.
+    const admission = admitWavePlan({
+      kind: "plan",
+      planText: "",
+      prose: "",
+      steps: [step("qa", "Write the test plan", [], "gpt-5")],
+    });
+    expect(admission.kind).toBe("accepted");
   });
 });
 
@@ -240,17 +281,24 @@ describe("run status helpers", () => {
 });
 
 describe("advanceWave scheduling", () => {
-  it("carries a step's label from plan to state to spawn request", () => {
-    // The label reaches the worker's display name through the spawn request,
-    // so any rebuild that drops it silently renames the child mid-wave.
+  it("carries a step's label and model from plan to state to spawn request", () => {
+    // The label reaches the worker's display name and the model reaches the
+    // spawn-time resolver through the spawn request, so any rebuild that
+    // drops either silently renames — or retargets — the child mid-wave.
     const wave = waveOf([
-      { ...step("scout", "Find the callers"), label: "map the callers" },
+      {
+        ...step("scout", "Find the callers", [], "opus"),
+        label: "map the callers",
+      },
     ]);
     expect(wave.steps[0].label).toBe("map the callers");
+    expect(wave.steps[0].model).toBe("opus");
     const advanced = advanceWave(wave, { nodes: [], reportOf: noReports });
     expect(advanced.spawn[0]?.step.label).toBe("map the callers");
+    expect(advanced.spawn[0]?.step.model).toBe("opus");
     const patched = withWaveStepPhase(wave, 0, { phase: "spawning" });
     expect(patched.steps[0].label).toBe("map the callers");
+    expect(patched.steps[0].model).toBe("opus");
   });
 
   it("spawns every access:[] step at once", () => {

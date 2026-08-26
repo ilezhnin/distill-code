@@ -35,7 +35,7 @@ export const WAVE_REJECTION_REASON_KEYS: Record<WaveRejectionReason, string> = {
   "label-not-a-string": "labelNotAString",
   "label-too-long": "labelTooLong",
   "model-not-a-string": "modelNotAString",
-  "step-model-unsupported": "stepModelUnsupported",
+  "step-model-unavailable": "stepModelUnavailable",
   "verification-step-missing": "verificationStepMissing",
 };
 
@@ -168,6 +168,28 @@ export function waveStepModelNoticeText(facts: {
       model: facts.model,
     },
   );
+}
+
+/**
+ * The notice posted when a step runs on the model the plan explicitly named
+ * while that model's usage window is nearly or fully spent.
+ *
+ * Only the limit is news here: the model itself is already visible on the
+ * step's chip and the child tab, and admission refused an at-limit model
+ * while there was still time to replan. This covers the window that filled up
+ * between admission and a late spawn — the instruction is honoured, and the
+ * operator is told the step may be cut off rather than being surprised by it.
+ */
+export function waveStepExplicitModelNoticeText(facts: {
+  stepIndex: number;
+  name: string;
+  model: string;
+}): string {
+  return i18n.t("chat:conductor.wave.stepModel.explicitNearLimit", {
+    step: facts.stepIndex + 1,
+    name: facts.name,
+    model: facts.model,
+  });
 }
 
 /** Label of the manual verdict re-ask (Q5). There is no auto-retry. */

@@ -98,6 +98,31 @@ describe("failure attribution affordances on the chip row", () => {
     );
   });
 
+  it("wears the plan's explicit model on the step's chip (4a/D5)", () => {
+    const pinned: WaveStep[] = [
+      {
+        role: "researcher",
+        subtask: "Read the docs",
+        access: [],
+        model: "opus",
+      },
+      { role: "qa", subtask: "Verify", access: "all" },
+    ];
+    renderWithProviders(
+      <ConductorAgentFooter
+        nodes={[node({ sessionId: "a", displayName: "Curie", stepIndex: 0 })]}
+        reportsByRunId={{}}
+        planSteps={pinned}
+      />,
+    );
+
+    // One suffix: the spawned, pinned step. The pending unpinned step and any
+    // ranking-targeted chip stay bare — the suffix marks the instruction.
+    expect(
+      screen.getAllByTestId("brigade-chip-model").map((el) => el.textContent),
+    ).toEqual(["opus"]);
+  });
+
   it("shows the step number alone when the plan is not in this transcript", () => {
     // A historical wave whose plan message scrolled out of the loaded window:
     // the step index is on the node, the access mode is only in the plan.

@@ -245,13 +245,15 @@ describe("parseWaveEngineState", () => {
     expect(parsed.waves[0]?.steps[0]?.reportDegraded).toBeUndefined();
   });
 
-  it("round-trips a step's label, and drops a junk one", () => {
+  it("round-trips a step's label and model, and drops junk values", () => {
     // A reload that lost the label would rename the step's placeholder chip
-    // mid-wave; a junk value must read as "no label", never crash the wave.
+    // mid-wave, and one that lost the model would silently retarget a pending
+    // step onto inheritance — the exact substitution D5 forbids. Junk values
+    // must read as "not set", never crash the wave.
     const base = wave("w1");
     const state = withWave(emptyWaveEngineState(), {
       ...base,
-      steps: [{ ...base.steps[0], label: "audit the parser" }],
+      steps: [{ ...base.steps[0], label: "audit the parser", model: "opus" }],
     });
     expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
       state,
@@ -262,12 +264,13 @@ describe("parseWaveEngineState", () => {
       waves: [
         {
           ...JSON.parse(JSON.stringify(base)),
-          steps: [{ ...base.steps[0], label: 42 }],
+          steps: [{ ...base.steps[0], label: 42, model: false }],
         },
       ],
       tombstones: [],
     });
     expect(parsed.waves[0]?.steps[0]?.label).toBeUndefined();
+    expect(parsed.waves[0]?.steps[0]?.model).toBeUndefined();
   });
 
   it("survives every phase either union can hold", () => {
