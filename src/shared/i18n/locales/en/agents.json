@@ -272,6 +272,11 @@
       "at-limit": "{{model}} is at its usage limit",
       "near-limit": "{{model}} is close to its usage limit",
       "not-installed": "{{model}} is not installed"
-    }
+    },
+    "legacySeeded": "Shown from this agent's saved single model. It becomes the ranking only when you edit the list and save.",
+    "viewFromRole": "From this agent's role — built-in order.",
+    "viewSingleModel": "Saved single model — no ranking configured yet.",
+    "viewLegacyFallback": "Falls back to its saved single model ({{model}}) when none of these are usable.",
+    "viewNone": "No ranking — uses the app's default model."
   }
 }

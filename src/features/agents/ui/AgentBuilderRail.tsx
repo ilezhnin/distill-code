@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -32,7 +38,12 @@ import {
   promoteDraft,
 } from "@/features/agents/lib/agentBuilderSession";
 import { ModelRankingField } from "./PersonaFields/ModelRankingField";
-import { ProviderModelFields } from "@/features/agents/ui/PersonaFields/ProviderModelFields";
+import {
+  legacySingleModelRankingEntry,
+  serializeAgentModelRanking,
+} from "@/features/agents/lib/agentModelRanking";
+import { modelPreferenceClassForPersona } from "@/features/agents/lib/modelRanking";
+import { useProviderModels } from "@/features/providers/hooks/useProviderModels";
 import { FORM_FIELD_CLASS } from "@/shared/ui/form-field-tokens";
 import { hasRealAgentDescription } from "@/shared/api/agents";
 import { pickAgentAvatarImagePath } from "@/features/agents/lib/avatarFilePicker";
@@ -173,8 +184,6 @@ export function AgentBuilderRail({
   const normalizedAvatar = normalizeAvatarUrl(trimmedAvatar);
 
   const provider = (data?.properties?.provider as string | undefined) ?? "";
-  const modelProviderId =
-    (data?.properties?.modelProviderId as string | undefined) ?? "";
   const model = (data?.properties?.model as string | undefined) ?? "";
   const modelRanking =
     (data?.properties?.model_ranking as string | undefined) ?? "";
@@ -186,10 +195,7 @@ export function AgentBuilderRail({
     [update],
   );
   const writeProperty = useCallback(
-    (
-      key: "provider" | "modelProviderId" | "model" | "avatar",
-      value: string | null,
-    ) => writeProperties({ [key]: value }),
+    (key: "avatar", value: string | null) => writeProperties({ [key]: value }),
     [writeProperties],
   );
 
@@ -232,33 +238,25 @@ export function AgentBuilderRail({
   const effectiveAvatar = normalizedAvatar ?? null;
   const selectedAvatarMediaState = useAvatarMediaState(effectiveAvatar);
 
-  const onChangeProvider = useCallback(
-    (next: string) =>
-      writeProperties({
-        provider: next.length > 0 ? next : null,
-        modelProviderId: null,
-        model: null,
-      }),
-    [writeProperties],
+  // The ranking is the only model-selection UI in the form; the old separate
+  // Provider/Model selects wrote the legacy single-model fields and are gone.
+  // Those stored fields are untouched here: the runtime still reads them as
+  // the fallback when no ranking resolves, and the seed below keeps them
+  // visible instead of hidden.
+  const dataPath = data?.path ?? null;
+  const [rankingTouchedPath, setRankingTouchedPath] = useState<string | null>(
+    null,
   );
-
-  const onChangeModel = useCallback(
-    (
-      selection: {
-        modelId: string;
-        modelProviderId: string;
-      } | null,
-    ) =>
-      writeProperties({
-        modelProviderId: selection?.modelProviderId ?? null,
-        model: selection?.modelId ?? null,
-      }),
-    [writeProperties],
-  );
+  const rankingTouched = dataPath !== null && rankingTouchedPath === dataPath;
 
   const onChangeModelRanking = useCallback(
-    (next: string | null) => writeProperties({ model_ranking: next }),
-    [writeProperties],
+    (next: string | null) => {
+      // Once the operator edits (or clears) the list, the legacy seed stops
+      // standing in — otherwise deleting the seeded row would just respawn it.
+      setRankingTouchedPath(dataPath);
+      writeProperties({ model_ranking: next });
+    },
+    [dataPath, writeProperties],
   );
 
   const isDraft = data?.properties?.draft === true;
@@ -283,6 +281,42 @@ export function AgentBuilderRail({
       : null;
   const nameFieldValue =
     data && !isPlaceholderAgentName(data.name) ? data.name : "";
+
+  // An agent saved before rankings existed carries a single provider/model
+  // pair. When it has no ranking of its own — and no role class, which the
+  // runtime would prefer over the single model — that pair renders as the
+  // first (and only) row of the ranking list, so the old data stays visible
+  // where models are now chosen. Display-only until the operator edits the
+  // list: only their own Save writes `model_ranking` (D5 — no silent
+  // migration of stored data).
+  const { getModelsForAgent } = useProviderModels();
+  const legacySeedRanking = useMemo(() => {
+    if (rankingTouched || modelRanking.trim().length > 0) return null;
+    if (modelPreferenceClassForPersona({ displayName: nameFieldValue })) {
+      return null;
+    }
+    const installedModel = provider
+      ? getModelsForAgent(provider).find((entry) => entry.id === model)
+      : undefined;
+    const entry = legacySingleModelRankingEntry({
+      provider,
+      model,
+      label: installedModel?.displayName ?? installedModel?.name ?? null,
+    });
+    return entry
+      ? serializeAgentModelRanking({ version: 1, entries: [entry] })
+      : null;
+  }, [
+    getModelsForAgent,
+    model,
+    modelRanking,
+    nameFieldValue,
+    provider,
+    rankingTouched,
+  ]);
+  const rankingFieldValue = modelRanking || legacySeedRanking || "";
+  const rankingLegacySeeded = !modelRanking && legacySeedRanking !== null;
+
   const descriptionFieldValue =
     data && hasRealAgentDescription(data.description) ? data.description : "";
   const contentFieldValue = data?.content ?? "";
@@ -658,23 +692,11 @@ export function AgentBuilderRail({
         />
       </label>
 
-      <ProviderModelFields
-        provider={provider}
-        modelProviderId={modelProviderId}
-        model={model}
-        onProviderChange={onChangeProvider}
-        onModelChange={onChangeModel}
-        builderSessionId={sessionId}
-        classes={{
-          fieldLabel: FIELD_LABEL_CLASS,
-          selectTrigger: FIELD_CLASS,
-        }}
-      />
-
       <ModelRankingField
-        value={modelRanking}
+        value={rankingFieldValue}
         onChange={onChangeModelRanking}
         displayName={nameFieldValue}
+        legacySeeded={rankingLegacySeeded}
         classes={{
           fieldLabel: FIELD_LABEL_CLASS,
           selectTrigger: FIELD_CLASS,
