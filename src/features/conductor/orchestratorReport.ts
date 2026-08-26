@@ -4,10 +4,58 @@ import type { SessionNode, StructuredReport } from "./types";
 
 const REPORT_FENCE_PATTERN = /```distill-report\s*([\s\S]*?)```/i;
 
+/**
+ * Hard cap on a blocked report's `reason`, applied by truncation.
+ *
+ * The reason is rendered verbatim into an operator notice when a wave step
+ * blocks, so a worker that dumps its whole transcript into the field must not
+ * flood the conductor chat. Truncation rather than rejection, because the
+ * report parser is lenient by design — losing the tail of an oversized reason
+ * is recoverable, losing the blocked claim itself is not. The cap is a short
+ * paragraph: enough for a real explanation, an order of magnitude above the
+ * step-label cap (60), which is a name and not an account.
+ */
+export const MAX_BLOCKED_REASON_LENGTH = 500;
+
+/**
+ * Stand-in reason for a `blocked` report whose worker gave none.
+ *
+ * A blocked report with no reason still blocks — downgrading it to "done"
+ * because a field is missing would be the exact fabrication the status exists
+ * to prevent — but the operator card must never render an empty line.
+ */
+export const MISSING_BLOCKED_REASON =
+  "The worker reported it is blocked but gave no reason.";
+
+/**
+ * The visible trace of a report whose `status` field held a value the app
+ * does not recognize.
+ *
+ * The status falls back to the run's own outcome — a typo must not invent a
+ * `blocked` or un-invent a failure — but silently reading `"blocke"` as done
+ * is how a wave gets built on a step that said it could not be done. So the
+ * miss is recorded where every reader of the report will see it: as a risk,
+ * which the digest, the operator card and every `access: "all"` handoff all
+ * render.
+ */
+export function unrecognizedReportStatusRisk(value: unknown): string {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  const shown = (text ?? String(value)).slice(0, 40);
+  return `The report's "status" ("${shown}") is not one of completed, failed, cancelled or blocked; the run's own outcome was used instead.`;
+}
+
+function blockedReasonOf(value: unknown): string {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  if (!trimmed) return MISSING_BLOCKED_REASON;
+  return trimmed.length > MAX_BLOCKED_REASON_LENGTH
+    ? `${trimmed.slice(0, MAX_BLOCKED_REASON_LENGTH - 1)}…`
+    : trimmed;
+}
+
 export function wrapOrchestratorTaskPrompt(task: string): string {
   return `${task.trim()}
 
-Do this step and stop. Do not carry on into the next piece of work, and do not keep trying variations once you have an answer or once you are genuinely stuck. If you cannot finish — blocked, missing access, the task turns out to be impossible — that is a legitimate result: report it with "status": "failed" and "needsOperator": true instead of looping.
+Do this step and stop. Do not carry on into the next piece of work, and do not keep trying variations once you have an answer or once you are genuinely stuck. Failure is a legitimate result: if you did the work and it did not succeed, report it with "status": "failed" and "needsOperator": true instead of looping. And if you cannot do the step at all — a file or input it names does not exist, the instructions contradict each other, something only the operator can unblock — report "status": "blocked" and put what is stopping you in a "reason" field. Never invent a result just to have something to report: a blocked report is acted on, a fabricated one is built on.
 
 Put in "decisions" every choice and assumption you made that someone continuing from your report would otherwise have to guess. They get this report, never your conversation.
 
@@ -48,14 +96,29 @@ export function parseStructuredReport(
         typeof parsed.summary === "string" && parsed.summary.trim()
           ? parsed.summary.trim()
           : stripReportFence(assistantText) || assistantText.trim();
+      const claimedStatus = (parsed as { status?: unknown }).status;
+      const reportedStatus =
+        claimedStatus === "completed" ||
+        claimedStatus === "failed" ||
+        claimedStatus === "cancelled" ||
+        claimedStatus === "blocked"
+          ? claimedStatus
+          : status;
+      // A status field that is present but unreadable is announced, never
+      // swallowed: the fallback to the run's outcome is the safe *status*,
+      // and the risk line is what keeps it from being a silent "done".
+      const statusRisks =
+        claimedStatus === undefined ||
+        claimedStatus === null ||
+        claimedStatus === reportedStatus
+          ? []
+          : [unrecognizedReportStatusRisk(claimedStatus)];
       return {
         runId,
-        status:
-          parsed.status === "completed" ||
-          parsed.status === "failed" ||
-          parsed.status === "cancelled"
-            ? parsed.status
-            : status,
+        status: reportedStatus,
+        ...(reportedStatus === "blocked"
+          ? { reason: blockedReasonOf((parsed as { reason?: unknown }).reason) }
+          : {}),
         summary,
         decisions: Array.isArray(parsed.decisions)
           ? parsed.decisions.filter(
@@ -80,12 +143,18 @@ export function parseStructuredReport(
               ];
             })
           : [],
-        risks: Array.isArray(parsed.risks)
-          ? parsed.risks.filter(
-              (item): item is string => typeof item === "string",
-            )
-          : [],
-        needsOperator: parsed.needsOperator === true,
+        risks: [
+          ...(Array.isArray(parsed.risks)
+            ? parsed.risks.filter(
+                (item): item is string => typeof item === "string",
+              )
+            : []),
+          ...statusRisks,
+        ],
+        // A blocked step is by definition the operator's to unblock, whatever
+        // the worker set the flag to.
+        needsOperator:
+          parsed.needsOperator === true || reportedStatus === "blocked",
         nextSuggestedTask:
           typeof parsed.nextSuggestedTask === "string"
             ? parsed.nextSuggestedTask

@@ -199,6 +199,10 @@ function reportPayload(
     role: entry.role,
     subtask: entry.subtask,
     status: entry.report.status,
+    // A blocked earlier step hands on its own account of *why*: the reader is
+    // usually deciding what can still be salvaged, and the reason is the fact
+    // it needs.
+    ...(entry.report.reason ? { reason: entry.report.reason } : {}),
     summary: entry.report.summary,
     decisions: entry.report.decisions,
     artifacts: entry.report.artifacts,

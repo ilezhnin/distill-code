@@ -56,8 +56,22 @@ export interface SessionNode {
 
 export interface StructuredReport {
   runId: string;
-  status: "completed" | "failed" | "cancelled";
+  /**
+   * `completed`/`failed`/`cancelled` mirror the run's own terminal outcomes.
+   * `blocked` is different in kind: it is the worker's *claim*, made in its
+   * report fence, that the step could not be done at all — a missing input, a
+   * contradiction in the instructions, something only the operator can
+   * resolve — and that no result was produced or invented. It never comes
+   * from a run status; only the report parser writes it.
+   */
+  status: "completed" | "failed" | "cancelled" | "blocked";
   summary: string;
+  /**
+   * Why a `blocked` report is blocked, in the worker's own words. Present
+   * exactly when `status` is `"blocked"`: the parser synthesizes a stand-in
+   * when the worker forgot one, so a blocked report can always say why.
+   */
+  reason?: string;
   decisions: string[];
   artifacts: Array<{ label: string; path?: string; url?: string }>;
   risks: string[];

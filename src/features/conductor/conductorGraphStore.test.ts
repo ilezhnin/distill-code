@@ -128,6 +128,31 @@ describe("conductorGraphStore persistence", () => {
     expect(node?.stepIndex).toBe(2);
     expect(node?.anchorMessageId).toBe("plan-message-1");
   });
+
+  it("round-trips a blocked report with its reason through persist and load", async () => {
+    // The load guard whitelists statuses; a reload that dropped "blocked"
+    // would resurrect the step as reportless — and the wave with it.
+    const store = await loadGraph();
+    store.getState().attachReport({
+      runId: "run-blocked",
+      status: "blocked",
+      reason: "the migration the subtask names was never merged",
+      summary: "Could not start",
+      decisions: [],
+      artifacts: [],
+      risks: [],
+      needsOperator: true,
+      nextSuggestedTask: null,
+    });
+
+    const reloaded = await loadGraph();
+    const report = reloaded.getState().getReport("run-blocked");
+
+    expect(report?.status).toBe("blocked");
+    expect(report?.reason).toBe(
+      "the migration the subtask names was never merged",
+    );
+  });
 });
 
 describe("promoting a draft conductor session", () => {
