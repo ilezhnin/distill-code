@@ -503,6 +503,8 @@
       "invalidTitle": "No se pudo ejecutar el plan del conductor, así que no se inició nada.",
       "retry": "Pedir un plan nuevo",
       "spawnFailed": "No se pudo iniciar el paso {{step}} de esta ola.",
+      "stepBlocked": "El paso {{step}} ({{name}}) informó que está bloqueado, así que la ola se detuvo: los pasos restantes no se iniciaron, se pidió a los ejecutores en curso que se detuvieran y nada se resumió ni se juzgó.",
+      "stepBlockedReason": "El motivo del ejecutor: {{reason}}",
       "reason": {
         "multipleFences": "El mensaje contenía más de un bloque de plan, así que no hay un único plan que ejecutar.",
         "unterminatedFence": "El bloque del plan se abrió pero nunca se cerró.",
@@ -543,7 +545,8 @@
           "digestUndeliverable": "No se pudo entregar al conductor el informe de la brigada.",
           "acceptedWithoutEvidence": "El conductor aceptó el resultado, pero nada externo lo comprobó, así que no se respetó la aceptación.",
           "waveInterrupted": "Esta ola se interrumpió antes de que ningún ejecutor informara, así que no hay nada que juzgar. Su trabajo no se completó.",
-          "operatorStopped": "Detuviste esta ola. Se pidió a sus ejecutores que se detuvieran y nada se resumió ni se juzgó."
+          "operatorStopped": "Detuviste esta ola. Se pidió a sus ejecutores que se detuvieran y nada se resumió ni se juzgó.",
+          "stepBlocked": "Un ejecutor informó que no puede hacer su paso, así que la ola se detuvo."
         },
         "prose": {
           "accept": "Aceptó el resultado de la brigada.",

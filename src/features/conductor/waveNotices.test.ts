@@ -3,11 +3,14 @@ import { describe, expect, it } from "vitest";
 import { i18n } from "@/shared/i18n";
 
 import type { WaveRejectionReason } from "./waveEngine";
+import type { WaveClosureReason } from "./waveVerdict";
 import {
+  WAVE_CLOSURE_REASON_KEYS,
   WAVE_REJECTION_REASON_KEYS,
   waveRejectionNoticeText,
   waveRetryLabel,
   waveSpawnFailureText,
+  waveStepBlockedNoticeText,
   waveStepExplicitModelNoticeText,
 } from "./waveNotices";
 
@@ -67,6 +70,45 @@ describe("waveNotices", () => {
     expect(text).toContain("2");
     expect(text).toContain("Brigade");
     expect(text).toContain("Claude Opus 5");
+    expect(text).not.toContain("conductor.wave");
+  });
+
+  it("has an English string for every closure reason", async () => {
+    await i18n.loadNamespaces("chat");
+    for (const reason of Object.keys(
+      WAVE_CLOSURE_REASON_KEYS,
+    ) as WaveClosureReason[]) {
+      const key = `chat:conductor.wave.verdict.reason.${WAVE_CLOSURE_REASON_KEYS[reason]}`;
+      expect(i18n.exists(key), key).toBe(true);
+      expect(i18n.t(key)).not.toBe(key);
+    }
+  });
+
+  it("names the blocked step and quotes the worker's reason", async () => {
+    await i18n.loadNamespaces("chat");
+    const text = waveStepBlockedNoticeText({
+      stepIndex: 0,
+      name: "Scout · callers",
+      reason: "the callers file does not exist",
+    });
+    expect(text).toContain(
+      i18n.t("chat:conductor.wave.verdict.needsOperatorTitle"),
+    );
+    expect(text).toContain("1");
+    expect(text).toContain("Scout · callers");
+    expect(text).toContain("the callers file does not exist");
+    expect(text).not.toContain("conductor.wave");
+  });
+
+  it("omits the reason line when the report carried none", async () => {
+    await i18n.loadNamespaces("chat");
+    const text = waveStepBlockedNoticeText({
+      stepIndex: 2,
+      name: "Bohr",
+    });
+    expect(text).toContain("3");
+    expect(text).toContain("Bohr");
+    expect(text).not.toContain("{{reason}}");
     expect(text).not.toContain("conductor.wave");
   });
 });

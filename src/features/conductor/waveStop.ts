@@ -36,6 +36,21 @@ import { updateWaveEngineState, withWave } from "./waveStore";
 import { recordWaveClose } from "./waveTelemetryStore";
 
 /**
+ * Tells every spawned child of a wave to stop.
+ *
+ * The stop half of 5b, shared with the runner's blocked-step stop: whoever
+ * decides a wave is over, its children are told the same way. Fire-and-forget
+ * per child on purpose — one child that fails to stop must not keep the
+ * others running — and callers park the wave *before* calling this, so a
+ * crash mid-stop resumes into a wave the scheduler never advances again.
+ */
+export function stopWaveChildSessions(wave: WaveState): void {
+  for (const step of wave.steps) {
+    if (step.sessionId) void stopOrchestratorSession(step.sessionId);
+  }
+}
+
+/**
  * Stops a running wave on the operator's order.
  *
  * Returns `true` when the wave was stopped, `false` when there was nothing to
@@ -46,23 +61,17 @@ import { recordWaveClose } from "./waveTelemetryStore";
  */
 export function stopWaveByOperator(sessionId: string, waveId: string): boolean {
   let parked: WaveState | undefined;
-  let childSessionIds: string[] = [];
   updateWaveEngineState((state) => {
     const wave = state.waves.find((candidate) => candidate.waveId === waveId);
     if (!wave || wave.conductorSessionId !== sessionId) return state;
     if (wave.phase !== "running") return state;
-    childSessionIds = wave.steps.flatMap((step) =>
-      step.sessionId ? [step.sessionId] : [],
-    );
     parked = withWavePhase(wave, "needsOperator");
     return withWave(state, parked);
   });
   if (!parked) return false;
   recordWaveClose(parked, "needs-operator", "operator-stopped");
 
-  for (const childSessionId of childSessionIds) {
-    void stopOrchestratorSession(childSessionId);
-  }
+  stopWaveChildSessions(parked);
   useChatStore
     .getState()
     .addMessage(
