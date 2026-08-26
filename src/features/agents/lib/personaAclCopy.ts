@@ -16,6 +16,7 @@ import type { TFunction } from "i18next";
 
 import {
   ACL_ROLE_ORDER,
+  DEFAULT_MEMORY_WRITE_BY_ROLE,
   DEFAULT_SPAWNS_BY_ROLE,
 } from "@/features/conductor/aclDefaults";
 import { AGENT_SPAWN_LAYERS } from "@/shared/lib/agentSpawns";
@@ -63,6 +64,16 @@ export function formatSpawnDefaults(t: AgentsTranslate): string {
     t("acl.defaultsEntry", {
       role: t(`acl.role.${role}`),
       value: formatSpawnLayerList(t, DEFAULT_SPAWNS_BY_ROLE[role]),
+    }),
+  ).join(" · ");
+}
+
+/** Every layer's memory-write default, in one line. */
+export function formatMemoryWriteDefaults(t: AgentsTranslate): string {
+  return ACL_ROLE_ORDER.map((role) =>
+    t("acl.defaultsEntry", {
+      role: t(`acl.role.${role}`),
+      value: t(`acl.memoryWrite.default.${DEFAULT_MEMORY_WRITE_BY_ROLE[role]}`),
     }),
   ).join(" · ");
 }

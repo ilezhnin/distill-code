@@ -307,6 +307,21 @@
       "overrideNothing": "Definido en este agente: no inicia nada, sea cual sea la capa en la que se ejecute.",
       "setNothing": "Definir como nada",
       "clearOverride": "Quitar la anulación"
+    },
+    "memoryWrite": {
+      "label": "Puede escribir en la memoria",
+      "groupAria": "Permiso de escritura en la memoria",
+      "optionInherit": "Por defecto del rol",
+      "optionGranted": "Concedido",
+      "optionRefused": "No concedido",
+      "notSet": "Sin definir: este agente usa el valor por defecto de su rol: {{defaults}}.",
+      "overrideGranted": "Definido en este agente: concedido. Solo la capa de orquestador lee este permiso; las demás capas mantienen su valor por defecto.",
+      "overrideRefused": "Definido en este agente: no concedido. Un orquestador que lo ejecute no escribe en la memoria; las demás capas mantienen su valor por defecto.",
+      "default": {
+        "allowed": "escribe",
+        "denied": "nunca escribe",
+        "grant-required": "necesita este permiso"
+      }
     }
   }
 }
