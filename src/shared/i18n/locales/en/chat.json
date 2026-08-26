@@ -480,12 +480,14 @@
     "needsOperator": "Needs the operator.",
     "operatorIntervened": "The operator intervened in this run.",
     "nextTask": "Next",
+    "blockedReason": "The worker is blocked: {{reason}}",
     "status": {
       "starting": "starting",
       "running": "running",
       "waiting": "waiting",
       "completed": "completed",
       "failed": "failed",
+      "blocked": "blocked",
       "cancelled": "cancelled",
       "stopped": "stopped",
       "pending": "not started"

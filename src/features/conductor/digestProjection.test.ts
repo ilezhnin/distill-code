@@ -94,6 +94,31 @@ describe("projectDigestBody", () => {
     expect(entry.body).toContain(i18n.t("chat:conductor.needsOperator"));
   });
 
+  it("projects a blocked report with its status and its reason", () => {
+    const body = digestBodyOf([
+      {
+        node: { displayName: "Bohr" },
+        report: report("Could not start", {
+          status: "blocked",
+          reason: "the file the subtask names does not exist",
+          needsOperator: true,
+        }),
+      },
+    ]);
+
+    const view = projectDigestBody(body);
+    expect(view.entries).toHaveLength(1);
+    expect(view.entries[0]).toMatchObject({
+      displayName: "Bohr",
+      status: "blocked",
+      statusText: i18n.t("chat:conductor.status.blocked"),
+    });
+    // The reason is the one fact a blocked report exists to carry.
+    expect(view.entries[0].body).toContain(
+      "the file the subtask names does not exist",
+    );
+  });
+
   it("does not read a worker's own bold prose as a phantom worker", () => {
     const body = digestBodyOf([
       {

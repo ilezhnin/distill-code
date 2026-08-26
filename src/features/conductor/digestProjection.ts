@@ -47,6 +47,7 @@ const REPORT_STATUSES: readonly DigestEntryStatus[] = [
   "completed",
   "failed",
   "cancelled",
+  "blocked",
 ];
 
 /**
@@ -55,7 +56,7 @@ const REPORT_STATUSES: readonly DigestEntryStatus[] = [
  * A heading is only believed when its status half maps here. That is what
  * keeps a worker's own bold prose (`**Warning** — flaky`) from being read as
  * a phantom worker: an arbitrary clause after the em-dash is not one of the
- * three words `formatConductorAnswer` can write. The canonical tokens are
+ * four words `formatConductorAnswer` can write. The canonical tokens are
  * included alongside the current locale so an English digest still projects
  * when the catalog has not finished loading.
  */

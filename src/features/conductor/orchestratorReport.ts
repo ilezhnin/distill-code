@@ -199,6 +199,13 @@ export function formatConductorAnswer(
         `**${node.displayName}** — ${i18n.t(`chat:conductor.status.${report.status}`)}`,
         report.summary,
       ];
+      if (report.status === "blocked" && report.reason) {
+        // The reason is the one fact a blocked report exists to carry; the
+        // summary alone reads like any other unfinished step.
+        lines.push(
+          i18n.t("chat:conductor.blockedReason", { reason: report.reason }),
+        );
+      }
       if (report.decisions.length > 0) {
         lines.push(
           i18n.t("chat:conductor.decisions"),
