@@ -566,6 +566,12 @@
         "nearLimit": "Step {{step}} ({{name}}) is running on {{model}}, which is close to its usage limit. Every model this role ranks is that full, so the step may be cut off before it finishes."
       }
     },
+    "spawnAcl": {
+      "deniedTitle": "A session asked to start an agent it is not allowed to start, so nothing was started.",
+      "deniedBody": "“{{initiator}}” runs on the {{initiatorLayer}} layer and asked to start a {{targetLayer}}-layer agent.",
+      "allowedLayers": "Its spawn permissions allow starting: {{layers}}.",
+      "allowedNone": "Its spawn permissions allow starting nothing."
+    },
     "selfExecutingBadge": "The conductor changed something itself — it may read to answer, but work belongs to a wave.",
     "poke": {
       "ask": "Ask for a status",

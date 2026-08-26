@@ -26,6 +26,7 @@ import {
 import { useConductorGraphStore } from "./conductorGraphStore";
 import { stopOrchestratorSession } from "./orchestratorControls";
 import { roleDisplayName, waveStepDisplayName } from "./roleLayers";
+import { SpawnAclDeniedError } from "./spawnAcl";
 import { spawnConductorChildSession } from "./spawnOrchestrator";
 import type { SessionNode } from "./types";
 import { detectWavePlanCandidates } from "./waveDetection";
@@ -508,14 +509,19 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           withWaveStepPhase(current, request.stepIndex, { phase: "failed" }),
         );
       });
-      appendConductorNotice(
-        wave.conductorSessionId,
-        waveSpawnFailureText(
-          request.stepIndex,
-          error instanceof Error ? error.message : String(error),
-        ),
-        false,
-      );
+      // A spawn the ACL refused already posted its own notice at the
+      // chokepoint (spawnAcl.ts / spawnConductorChildSession); repeating it
+      // as a generic spawn failure would say the same thing twice.
+      if (!(error instanceof SpawnAclDeniedError)) {
+        appendConductorNotice(
+          wave.conductorSessionId,
+          waveSpawnFailureText(
+            request.stepIndex,
+            error instanceof Error ? error.message : String(error),
+          ),
+          false,
+        );
+      }
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       inFlightSpawns.delete(key);
