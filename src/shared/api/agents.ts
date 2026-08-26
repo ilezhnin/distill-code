@@ -424,7 +424,7 @@ function agentCardMetadataProperty(
  * default rather than being partially honoured). Reads the direct property
  * first, then the preserved Sprout frontmatter of an imported persona.
  */
-function agentSpawnsProperty(
+export function agentSpawnsProperty(
   properties: AgentSourceProperties | undefined,
 ): ReturnType<typeof parseSpawnLayers> {
   if (properties && "spawns" in properties) {
@@ -448,15 +448,25 @@ function memoryWriteFrontmatterValue(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
-/** The validated grant, read like the card metadata: properties first, then preserved Sprout frontmatter. */
-function memoryWriteProperty(
+/**
+ * The validated grant, read like the card metadata: properties first, then
+ * preserved Sprout frontmatter.
+ *
+ * A present-but-invalid property wins over the preserved frontmatter instead
+ * of falling through to it — same rule as {@link agentSpawnsProperty}, and
+ * for the same reason. The editor clears an override by writing
+ * `memory_write: null`; on an imported persona, whose original frontmatter
+ * is kept verbatim under `sprout.frontmatter`, a fallthrough would read the
+ * grant the operator just cleared straight back out of that copy.
+ */
+export function memoryWriteProperty(
   properties: AgentSourceProperties | undefined,
 ): boolean | undefined {
-  return (
-    memoryWriteFrontmatterValue(properties?.memory_write) ??
-    memoryWriteFrontmatterValue(
-      sproutFrontmatterFromProperties(properties).memory_write,
-    )
+  if (properties && "memory_write" in properties) {
+    return memoryWriteFrontmatterValue(properties.memory_write);
+  }
+  return memoryWriteFrontmatterValue(
+    sproutFrontmatterFromProperties(properties).memory_write,
   );
 }
 
