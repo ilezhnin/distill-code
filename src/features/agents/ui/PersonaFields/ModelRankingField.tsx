@@ -70,6 +70,13 @@ export interface ModelRankingFieldProps {
   onChange: (next: string | null) => void;
   /** Agent name, used to find the built-in class for its role. */
   displayName?: string;
+  /**
+   * True when `value` is a display seed built from the agent's legacy single
+   * provider/model pair rather than a stored ranking. Renders a note saying
+   * so: the row only becomes the stored ranking when the operator edits the
+   * list and saves (D5 — a migration the operator cannot see is a lie).
+   */
+  legacySeeded?: boolean;
   isReadOnly?: boolean;
   classes?: { fieldLabel?: string; selectTrigger?: string };
 }
@@ -78,6 +85,7 @@ export function ModelRankingField({
   value,
   onChange,
   displayName,
+  legacySeeded = false,
   isReadOnly = false,
   classes,
 }: ModelRankingFieldProps) {
@@ -343,6 +351,15 @@ export function ModelRankingField({
         >
           {t("ranking.add")}
         </Button>
+      ) : null}
+
+      {legacySeeded && entries.length > 0 ? (
+        <p
+          className="text-[11px] text-muted-foreground"
+          data-testid="model-ranking-legacy-note"
+        >
+          {t("ranking.legacySeeded")}
+        </p>
       ) : null}
 
       {entries.length === 0 ? (

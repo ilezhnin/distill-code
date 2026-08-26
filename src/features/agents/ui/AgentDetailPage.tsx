@@ -26,11 +26,9 @@ import {
 } from "@/shared/ui/dropdown-menu";
 import { useAvatarMedia } from "@/shared/hooks/useAvatarSrc";
 import type { Persona } from "@/shared/types/agents";
-import { useAgentStore } from "@/features/agents/stores/agentStore";
 import {
   canDeletePersona,
   canEditPersona,
-  getPersonaProviderLabel,
   getRealPersonaDescription,
 } from "@/features/agents/lib/personaPresentation";
 import {
@@ -39,7 +37,11 @@ import {
 } from "@/features/agents/lib/agentViewTransitions";
 import { resolveAgentIcon } from "@/features/agents/lib/resolveAgentIcon";
 import { AgentProfileLayout } from "@/features/agents/ui/AgentProfileLayout";
-import { AgentIdentityRail } from "@/features/agents/ui/AgentIdentityRail";
+import {
+  AgentIdentityRail,
+  type AgentIdentityMetadataItem,
+} from "@/features/agents/ui/AgentIdentityRail";
+import { AgentModelRankingSummary } from "@/features/agents/ui/AgentModelRankingSummary";
 import {
   AVATAR_CUSTOMIZE_LABEL_CLASS,
   AVATAR_CUSTOMIZE_SURFACE_CLASS,
@@ -97,7 +99,6 @@ export function AgentDetailPage({
   onAvatarUpdate,
 }: AgentDetailPageProps) {
   const { t } = useTranslation(["agents", "common"]);
-  const acpProviders = useAgentStore((s) => s.providers);
   const isEditable = canEditPersona(persona);
   const isDeletable = canDeletePersona(persona);
   const [avatarPreviewFailed, setAvatarPreviewFailed] = useState(false);
@@ -108,12 +109,6 @@ export function AgentDetailPage({
   const [previousPersonaId, setPreviousPersonaId] = useState(persona.id);
   const avatarMedia = useAvatarMedia(persona.avatar ?? null);
   const descriptionValue = getRealPersonaDescription(persona);
-  const providerLabel = getPersonaProviderLabel(
-    persona.provider,
-    acpProviders,
-    t("common:labels.default"),
-  );
-  const modelLabel = persona.model || t("common:labels.default");
   const createdLabel = persona.createdAt ? formatDate(persona.createdAt) : null;
   const updatedLabel = persona.updatedAt ? formatDate(persona.updatedAt) : null;
   const avatarTransitionName = getAgentAvatarTransitionName(persona.id);
@@ -126,15 +121,16 @@ export function AgentDetailPage({
           multiline: true,
         }
       : null,
-    { label: t("editor.provider"), value: providerLabel },
-    { label: t("editor.model"), value: modelLabel },
+    // Model ranking replaced the legacy Provider/Model pair as how this
+    // agent's model is chosen; the summary shows the ranking the runtime
+    // walks (and surfaces a lone legacy single model instead of hiding it).
+    {
+      label: t("ranking.label"),
+      content: <AgentModelRankingSummary persona={persona} />,
+    },
     createdLabel ? { label: t("view.created"), value: createdLabel } : null,
     updatedLabel ? { label: t("view.updated"), value: updatedLabel } : null,
-  ].filter(Boolean) as Array<{
-    label: string;
-    value: string;
-    multiline?: boolean;
-  }>;
+  ].filter(Boolean) as AgentIdentityMetadataItem[];
 
   if (previousPersonaAvatarValue !== (persona.avatar ?? "")) {
     setPreviousPersonaAvatarValue(persona.avatar ?? "");

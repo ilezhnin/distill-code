@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   candidateForEntry,
   candidatesForRankingSource,
+  legacySingleModelRankingEntry,
   parseAgentRankingSource,
   rankingFromClass,
   scopedWindowForModel,
@@ -207,5 +208,44 @@ describe("rankingFromClass", () => {
     const built = rankingFromClass("testing-light", [INSTALLED[3]]);
     // testing-light: Grok → Tera → Luna; only Grok exists on this machine.
     expect(built.entries.map((entry) => entry.label)).toEqual(["Grok 4.6"]);
+  });
+});
+
+describe("legacySingleModelRankingEntry", () => {
+  it("renders a saved provider/model pair as one ranking row", () => {
+    const entry = legacySingleModelRankingEntry({
+      provider: "grok-acp",
+      model: "grok-4-6",
+      label: "Grok 4.6",
+    });
+
+    expect(entry).toEqual({
+      platform: "grok-acp",
+      modelId: "grok-4-6",
+      label: "Grok 4.6",
+    });
+  });
+
+  it("falls back to the model id when no display label is known", () => {
+    const entry = legacySingleModelRankingEntry({
+      provider: "grok-acp",
+      model: "grok-4-6",
+    });
+
+    expect(entry?.label).toBe("grok-4-6");
+  });
+
+  it("refuses a provider that is not a ranked platform", () => {
+    // goose-routed models have no rate-limit meter, so a seed row would be a
+    // ranking entry the resolver could never honestly walk.
+    expect(
+      legacySingleModelRankingEntry({ provider: "goose", model: "gpt-5" }),
+    ).toBeNull();
+  });
+
+  it("refuses when no single model is saved", () => {
+    expect(
+      legacySingleModelRankingEntry({ provider: "grok-acp", model: "  " }),
+    ).toBeNull();
   });
 });
