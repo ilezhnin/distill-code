@@ -1061,6 +1061,57 @@ Research carefully.
     expect(result.contents).toContain("memory_write: true\n");
   });
 
+  it("keeps a cleared memory_write cleared on an imported persona", async () => {
+    // The editor clears an override by writing the property as null. An
+    // imported persona also keeps its original frontmatter verbatim under
+    // sprout.frontmatter, and reading THAT as the fallback would hand the
+    // grant straight back — a clear the operator saw would not be a clear.
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: {
+            ...agentSource.properties,
+            memory_write: null,
+            sprout: { frontmatter: { memory_write: true } },
+          },
+        },
+      ],
+    });
+
+    const { listPersonas } = await import("../agents");
+    const result = await listPersonas();
+
+    expect(result[0].memoryWrite).toBeUndefined();
+
+    const { exportPersona } = await import("../agents");
+    const exported = await exportPersona(agentSource.path);
+    expect(exported.contents).not.toContain("memory_write");
+  });
+
+  it("keeps a cleared spawns override cleared on an imported persona", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: {
+            ...agentSource.properties,
+            spawns: null,
+            sprout: { frontmatter: { spawns: ["worker"] } },
+          },
+        },
+      ],
+    });
+
+    const { listPersonas } = await import("../agents");
+    const result = await listPersonas();
+
+    // Cleared means unset, not "spawns nothing": the persona is back on its
+    // layer's default, which is what an absent key has always meant.
+    expect(result[0].spawns).toBeUndefined();
+    expect("spawns" in (result[0] ?? {})).toBe(false);
+  });
+
   it("round-trips model_ranking through portable persona markdown", async () => {
     // model_ranking is in PORTABLE_SPROUT_FRONTMATTER_KEYS, so the generic
     // unsupported-key passthrough never carries it: without the explicit
