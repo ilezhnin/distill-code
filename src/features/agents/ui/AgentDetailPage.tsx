@@ -42,6 +42,7 @@ import {
   type AgentIdentityMetadataItem,
 } from "@/features/agents/ui/AgentIdentityRail";
 import { AgentModelRankingSummary } from "@/features/agents/ui/AgentModelRankingSummary";
+import { AgentPermissionsSummary } from "@/features/agents/ui/AgentPermissionsSummary";
 import {
   AVATAR_CUSTOMIZE_LABEL_CLASS,
   AVATAR_CUSTOMIZE_SURFACE_CLASS,
@@ -127,6 +128,13 @@ export function AgentDetailPage({
     {
       label: t("ranking.label"),
       content: <AgentModelRankingSummary persona={persona} />,
+    },
+    // The two ACL fields are enforced in code, so the profile has to state
+    // what this agent may actually do — including when nothing is set on it
+    // and its layer's defaults are what apply.
+    {
+      label: t("acl.summary.label"),
+      content: <AgentPermissionsSummary persona={persona} />,
     },
     createdLabel ? { label: t("view.created"), value: createdLabel } : null,
     updatedLabel ? { label: t("view.updated"), value: updatedLabel } : null,
