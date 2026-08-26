@@ -10,6 +10,10 @@ import type {
   Avatar,
 } from "@/shared/types/agents";
 import { parseSpawnLayers } from "@/shared/lib/agentSpawns";
+import {
+  parseAgentRankingSource,
+  serializeAgentModelRanking,
+} from "@/features/agents/lib/agentModelRanking";
 import { normalizeAvatarUrl } from "@/shared/lib/avatarUrl";
 import { resolveAgentProviderCatalogIdStrict } from "@/features/providers/providerCatalog";
 import {
@@ -473,6 +477,14 @@ function serializePersonaMarkdown(source: AgentSourceEntry): ExportResult {
     frontmatter.model = model;
   }
 
+  // model_ranking is a portable key (see PORTABLE_SPROUT_FRONTMATTER_KEYS),
+  // so the unsupported-key passthrough below never carries it — without this
+  // explicit write an exported agent silently lost its ranking.
+  const modelRanking = propertyToString(properties?.model_ranking);
+  if (modelRanking) {
+    frontmatter.model_ranking = modelRanking;
+  }
+
   const avatar = normalizeAvatarUrl(properties?.avatar);
   if (avatar) {
     frontmatter.avatar = avatar;
@@ -756,6 +768,19 @@ function personaMarkdownProperties(
   const spawns =
     "spawns" in parsed ? parseSpawnLayers(parsed.spawns) : undefined;
   if (spawns !== undefined) properties.spawns = spawns;
+  // Same policy as `spawns`: the ranking is stored only when it parses to a
+  // meaning the app's readers share — a built-in class id, or a salvageable
+  // entry list (re-serialized so half-broken entries do not ride along).
+  // model_ranking is a portable key, so nothing else preserves it on import.
+  const rankingSource = parseAgentRankingSource(
+    propertyToString(parsed.model_ranking),
+  );
+  if (rankingSource) {
+    properties.model_ranking =
+      rankingSource.kind === "class"
+        ? rankingSource.classId
+        : serializeAgentModelRanking(rankingSource.ranking);
+  }
   const memoryWrite = memoryWriteFrontmatterValue(parsed.memory_write);
   if (memoryWrite !== undefined) properties.memory_write = memoryWrite;
   applyOptionalProperty(
