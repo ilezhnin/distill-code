@@ -161,7 +161,7 @@ export function findVerdictMessageAfter(
 }
 
 const DISTILL_FENCE_PATTERN =
-  /```(?:distill-wave|distill-verdict|distill-report|distill-todo)[\s\S]*?```/gi;
+  /```(?:distill-wave|distill-verdict|distill-report|distill-todo|distill-memory)[\s\S]*?```/gi;
 
 /**
  * Removes protocol fences from text that is about to be quoted into a digest.
@@ -174,6 +174,11 @@ const DISTILL_FENCE_PATTERN =
  * fences are left exactly as they are; only the protocol tags are cut — the
  * planner's `distill-todo` among them, for the same reason: a digest cannot
  * file a task itself, but a conductor that echoes one back can.
+ *
+ * `distill-memory` is cut for the sharpest version of that echo: the memory
+ * scanner refuses a worker's fence but honors the conductor's, so a memory
+ * request smuggled through a report and repeated back by the conductor would
+ * be laundered into exactly the write the ACL refused at the source.
  */
 export function stripProtocolFences(text: string): string {
   return text.replace(DISTILL_FENCE_PATTERN, "[protocol block removed]").trim();
