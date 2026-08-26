@@ -433,12 +433,14 @@ describe("agentBuilderSession", () => {
 
     expect(id).toBe("sess-1");
     expect(mocks.createPersonaSource).not.toHaveBeenCalled();
+    // Editing opens as one full-width page like the agent view page: the
+    // start-collapsed hint tells ChatView to keep the chat column closed.
     expect(mocks.patchSession).toHaveBeenCalledWith(
       id,
       expect.objectContaining({
         targetAgentPath: "/Users/x/.agents/agents/code-reviewer.md",
         targetAgentSlug: "code-reviewer",
-        agentBuilderChatStartCollapsed: false,
+        agentBuilderChatStartCollapsed: true,
       }),
     );
   });
@@ -465,7 +467,7 @@ describe("agentBuilderSession", () => {
       expect.objectContaining({
         targetAgentPath: "/Users/x/.agents/agents/code-reviewer.md",
         targetAgentSlug: "code-reviewer",
-        agentBuilderChatStartCollapsed: false,
+        agentBuilderChatStartCollapsed: true,
       }),
     );
   });
@@ -504,7 +506,7 @@ describe("agentBuilderSession", () => {
     expect(id).toBe("sess-old");
     expect(mocks.patchSession).toHaveBeenCalledWith("sess-old", {
       agentBuilderOpen: true,
-      agentBuilderChatStartCollapsed: false,
+      agentBuilderChatStartCollapsed: true,
     });
     expect(navigateChat).toHaveBeenCalledWith("sess-old");
   });
