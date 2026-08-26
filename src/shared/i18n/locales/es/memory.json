@@ -3,7 +3,8 @@
   "description": "Datos que tus agentes llevan a cada sesión futura. Las memorias globales se aplican en todas partes; las de proyecto solo se muestran dentro de su propio proyecto.",
   "add": {
     "title": "Recordar algo",
-    "placeholder": "Un dato breve para conservar en todas partes",
+    "placeholder": "Un dato breve para conservar",
+    "scope": "Dónde se aplica",
     "submit": "Recordar"
   },
   "groups": {
@@ -14,6 +15,8 @@
   "row": {
     "edit": "Editar esta memoria",
     "forget": "Olvidar esto",
+    "forgetConfirmTitle": "¿Olvidar esta memoria?",
+    "forgetConfirmDescription": "«{{text}}» ya no se llevará a sesiones futuras. Esto no se puede deshacer.",
     "fromAgent": "de un agente"
   }
 }
