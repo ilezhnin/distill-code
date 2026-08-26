@@ -1661,4 +1661,111 @@ Research carefully.
       },
     });
   });
+
+  it("maps a validated spawns override onto listed personas", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: { ...agentSource.properties, spawns: ["worker"] },
+        },
+      ],
+    });
+
+    const { listPersonas } = await import("../agents");
+    const result = await listPersonas();
+
+    expect(result[0]?.spawns).toEqual(["worker"]);
+  });
+
+  it("keeps the empty spawns override distinct from no override", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: { ...agentSource.properties, spawns: [] },
+        },
+      ],
+    });
+
+    const { listPersonas } = await import("../agents");
+    const result = await listPersonas();
+
+    // [] means "may spawn nothing"; a missing field means "layer default".
+    expect(result[0]?.spawns).toEqual([]);
+    expect("spawns" in (result[0] ?? {})).toBe(true);
+  });
+
+  it("drops a garbled spawns override instead of half-honouring it", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: {
+            ...agentSource.properties,
+            spawns: ["worker", "supervisor"],
+          },
+        },
+      ],
+    });
+
+    const { listPersonas } = await import("../agents");
+    const result = await listPersonas();
+
+    expect(result[0]?.spawns).toBeUndefined();
+  });
+
+  it("imports frontmatter spawns as a validated portable property", async () => {
+    mockGooseSourcesCreate.mockResolvedValue({ source: agentSource });
+
+    const { importPersonas } = await import("../agents");
+    await importPersonas(
+      `---\nname: scout\ndisplay_name: "Scout"\ndescription: "Agent"\nspawns: [worker]\n---\n\nResearch carefully.`,
+      "scout.persona.md",
+    );
+
+    expect(mockGooseSourcesCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        properties: expect.objectContaining({ spawns: ["worker"] }),
+      }),
+    );
+    // Portable key: it must not also be preserved under sprout.frontmatter.
+    const request = mockGooseSourcesCreate.mock.calls[0][0];
+    expect(request.properties.sprout).toBeUndefined();
+  });
+
+  it("drops garbled frontmatter spawns at import", async () => {
+    mockGooseSourcesCreate.mockResolvedValue({ source: agentSource });
+
+    const { importPersonas } = await import("../agents");
+    await importPersonas(
+      `---\nname: scout\ndisplay_name: "Scout"\ndescription: "Agent"\nspawns: everything\n---\n\nResearch carefully.`,
+      "scout.persona.md",
+    );
+
+    const request = mockGooseSourcesCreate.mock.calls[0][0];
+    expect(request.properties.spawns).toBeUndefined();
+    expect(request.properties.sprout).toBeUndefined();
+  });
+
+  it("exports the spawns override in persona markdown", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: {
+            ...agentSource.properties,
+            spawns: ["orchestrator", "worker"],
+          },
+        },
+      ],
+    });
+
+    const { exportPersona } = await import("../agents");
+    const result = await exportPersona(agentSource.path);
+
+    expect(result.contents).toContain(
+      "spawns:\n  - orchestrator\n  - worker\n",
+    );
+  });
 });
