@@ -775,6 +775,40 @@ describe("AgentBuilderRail", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("gives instructions the full page width, outside the identity band", () => {
+    mockHook({
+      data: {
+        ...baseSource,
+        name: "Code Reviewer",
+        properties: {},
+      },
+    });
+
+    renderWithProviders(
+      <AgentBuilderRail
+        sessionId="s1"
+        targetAgentPath={baseSource.path}
+        targetAgentSlug="code-reviewer"
+        fullPage
+      />,
+    );
+
+    // The instructions editor is the page's main surface: it must span the
+    // whole content width below the avatar/identity band, not sit squeezed
+    // into the identity column (the operator's screenshot showed two thirds
+    // of the window empty while the textarea hugged the right edge).
+    const identityBand = screen.getByTestId("builder-identity-band");
+    const instructionsRegion = screen.getByTestId(
+      "builder-instructions-region",
+    );
+    const textarea = screen.getByLabelText("Agent instructions");
+    expect(instructionsRegion).toContainElement(textarea);
+    expect(identityBand).not.toContainElement(textarea);
+    expect(identityBand).toContainElement(screen.getByLabelText("Agent Name"));
+    // Siblings in one column: identity band first, instructions below it.
+    expect(identityBand.parentElement).toBe(instructionsRegion.parentElement);
+  });
+
   it("shows the profile page's back chevron in the full-page editor", () => {
     mockHook({
       data: {
