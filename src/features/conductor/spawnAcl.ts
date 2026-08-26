@@ -10,9 +10,18 @@
  * - the per-layer defaults (conductors start orchestrators and workers,
  *   orchestrators start workers, workers and plain chats start nothing);
  * - the per-agent `spawns` frontmatter override (see `Persona.spawns`);
- * - the check every PROGRAMMATIC spawn path runs before creating a session;
+ * - the check the in-app spawn chokepoint (`spawnOrchestrator.ts`) runs
+ *   before creating a session — the one spawn path that knows who asked;
  * - the prompt insert that replaces the handwritten sentence, generated from
  *   the same effective ACL so the text can never disagree with the code.
+ *
+ * `berdctl session create` / `session fork` are the gap: they create sessions
+ * programmatically but arrive with no caller identity to check it against
+ * (the traced note in src/features/berdctl/commands/impl/createSession.ts),
+ * so the ACL reaches them through the prompt insert alone — which is why that
+ * text names both commands. Read the list above as the mechanism, not as a
+ * claim that every spawn is refused in code; it is not, and the insert no
+ * longer says so either.
  *
  * Operator-initiated actions (UI buttons, the composer) are exempt on
  * purpose: the ACL constrains agents, not the person running the app.
