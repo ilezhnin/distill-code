@@ -39,6 +39,7 @@ import {
   promoteDraft,
 } from "@/features/agents/lib/agentBuilderSession";
 import { ModelRankingField } from "./PersonaFields/ModelRankingField";
+import { SpawnsField } from "./PersonaFields/SpawnsField";
 import {
   legacySingleModelRankingEntry,
   serializeAgentModelRanking,
@@ -46,7 +47,11 @@ import {
 import { modelPreferenceClassForPersona } from "@/features/agents/lib/modelRanking";
 import { useProviderModels } from "@/features/providers/hooks/useProviderModels";
 import { FORM_FIELD_CLASS } from "@/shared/ui/form-field-tokens";
-import { hasRealAgentDescription } from "@/shared/api/agents";
+import {
+  agentSpawnsProperty,
+  hasRealAgentDescription,
+} from "@/shared/api/agents";
+import type { AgentSpawnLayer } from "@/shared/types/agents";
 import { pickAgentAvatarImagePath } from "@/features/agents/lib/avatarFilePicker";
 import { deleteUserAvatar, importAgentAvatarFile } from "@/shared/api/avatars";
 
@@ -265,6 +270,21 @@ export function AgentBuilderRail({
       writeProperties({ model_ranking: next });
     },
     [dataPath, writeProperties],
+  );
+
+  // Read through the same validator that maps a source onto a Persona, so
+  // the editor shows exactly the override the ACL will act on: a garbled
+  // hand-written value reads as "not set" here too, rather than as a list
+  // the enforcement would refuse to honour.
+  const spawns = agentSpawnsProperty(data?.properties);
+  const onChangeSpawns = useCallback(
+    (next: AgentSpawnLayer[] | null) => {
+      // Written on the operator's Save like every other field. `null` is the
+      // explicit "no override" that removes the key; `[]` is the override
+      // that says this agent starts nothing.
+      writeProperties({ spawns: next });
+    },
+    [writeProperties],
   );
 
   const isDraft = data?.properties?.draft === true;
@@ -729,6 +749,23 @@ export function AgentBuilderRail({
     </>
   );
 
+  const permissionsNode = (
+    <section
+      className="flex flex-col gap-3"
+      aria-labelledby="builder-rail-permissions"
+      data-testid="agent-permissions-fields"
+    >
+      <h3 id="builder-rail-permissions" className={FIELD_LABEL_CLASS}>
+        {t("acl.sectionLabel")}
+      </h3>
+      <SpawnsField
+        value={spawns}
+        onChange={onChangeSpawns}
+        classes={{ fieldLabel: FIELD_LABEL_CLASS }}
+      />
+    </section>
+  );
+
   const instructionsNode = (
     <>
       <label
@@ -797,6 +834,7 @@ export function AgentBuilderRail({
           <div className="flex min-h-0 flex-col">{avatarNode}</div>
           <div className="flex max-w-2xl flex-col gap-4">
             {identityFieldsNode}
+            {permissionsNode}
           </div>
         </div>
         <div
@@ -815,6 +853,7 @@ export function AgentBuilderRail({
     <div className="flex flex-col gap-4">
       {avatarNode}
       {identityFieldsNode}
+      {permissionsNode}
       {instructionsNode}
     </div>,
     footerNode,
