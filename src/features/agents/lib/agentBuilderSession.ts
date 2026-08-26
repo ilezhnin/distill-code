@@ -137,7 +137,11 @@ export async function startAgentBuilderSession(
     if (existing) {
       useChatSessionStore.getState().patchSession(existing.id, {
         agentBuilderOpen: true,
-        agentBuilderChatStartCollapsed: false,
+        // Editing opens as one full-width page, mirroring the agent view
+        // page: the chat column starts collapsed and stays opt-in via the
+        // builder header's expand control. Re-entering an existing edit
+        // session re-seeds the same full-page start.
+        agentBuilderChatStartCollapsed: true,
       });
       await deps.navigateChat(existing.id);
       return existing.id;
@@ -156,7 +160,11 @@ export async function startAgentBuilderSession(
         targetAgentSlug: target.slug,
         targetAgentDraftState: null,
         targetAgentDraftSaved: false,
-        agentBuilderChatStartCollapsed: false,
+        // Editing an existing agent is a form task, not a conversation: it
+        // opens full-page like the agent view page (ChatView reads this hint
+        // to collapse the chat column). The builder chat stays reachable
+        // through the header's expand control.
+        agentBuilderChatStartCollapsed: true,
       });
 
       await deps.navigateChat(sessionId);
