@@ -39,6 +39,7 @@ import {
   promoteDraft,
 } from "@/features/agents/lib/agentBuilderSession";
 import { ModelRankingField } from "./PersonaFields/ModelRankingField";
+import { MemoryWriteField } from "./PersonaFields/MemoryWriteField";
 import { SpawnsField } from "./PersonaFields/SpawnsField";
 import {
   legacySingleModelRankingEntry,
@@ -50,6 +51,7 @@ import { FORM_FIELD_CLASS } from "@/shared/ui/form-field-tokens";
 import {
   agentSpawnsProperty,
   hasRealAgentDescription,
+  memoryWriteProperty,
 } from "@/shared/api/agents";
 import type { AgentSpawnLayer } from "@/shared/types/agents";
 import { pickAgentAvatarImagePath } from "@/features/agents/lib/avatarFilePicker";
@@ -283,6 +285,17 @@ export function AgentBuilderRail({
       // explicit "no override" that removes the key; `[]` is the override
       // that says this agent starts nothing.
       writeProperties({ spawns: next });
+    },
+    [writeProperties],
+  );
+
+  const memoryWrite = memoryWriteProperty(data?.properties);
+  const onChangeMemoryWrite = useCallback(
+    (next: boolean | null) => {
+      // `null` removes the key (back to the layer default); `false` is a
+      // stored refusal, which reads differently in the editor even though
+      // the orchestrator layer treats both as "no grant".
+      writeProperties({ memory_write: next });
     },
     [writeProperties],
   );
@@ -761,6 +774,11 @@ export function AgentBuilderRail({
       <SpawnsField
         value={spawns}
         onChange={onChangeSpawns}
+        classes={{ fieldLabel: FIELD_LABEL_CLASS }}
+      />
+      <MemoryWriteField
+        value={memoryWrite}
+        onChange={onChangeMemoryWrite}
         classes={{ fieldLabel: FIELD_LABEL_CLASS }}
       />
     </section>
