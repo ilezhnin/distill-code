@@ -2,11 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QueuedSessionNotReadyError } from "./queuedMessageReadiness";
 import { QueuedMessageOwnershipLostError } from "./preCommitSendRejection";
 
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { MEMORY_PROTOCOL_PROMPT } from "@/features/memory/lib/memoryFence";
 import type { MemoryEntry } from "@/features/memory/lib/memoryEntry";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
-
-import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 
 import { sendPromptInBackground } from "./backgroundSend";
 
@@ -65,6 +64,7 @@ describe("sendPromptInBackground", () => {
     mocks.getSession.mockReturnValue(undefined);
     mocks.isWaveManagedSession.mockReturnValue(false);
     mocks.memoryEntries = [];
+    useConductorGraphStore.setState({ nodesById: {} });
   });
 
   it("prioritizes the captured execution prompt over current persona context", async () => {
@@ -175,6 +175,35 @@ describe("sendPromptInBackground", () => {
     });
 
     expect(dispatchedSystemPrompt()).not.toContain("spawn");
+  });
+
+  it("gives a read-only graph node the facts without the memory protocol", async () => {
+    mocks.getSession.mockReturnValue({ projectId: "p-1" });
+    mocks.memoryEntries = [memoryEntry({ id: "g", text: "A global fact" })];
+    useConductorGraphStore.setState({
+      nodesById: {
+        "session-1": {
+          sessionId: "session-1",
+          projectId: "p-1",
+          role: "worker",
+          managedBy: "agent-cli",
+          parentSessionId: null,
+          rootConductorId: null,
+          runId: null,
+          harnessId: "goose",
+          displayName: "Scout",
+          status: "running",
+        },
+      },
+    });
+
+    await sendPromptInBackground("session-1", "prompt", "goose");
+
+    const systemPrompt = dispatchedSystemPrompt();
+    // Reading stays broad; only the how-to-write half is withheld.
+    expect(systemPrompt).toContain("A global fact");
+    expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
+    expect(systemPrompt).toContain(PLANNER_PROTOCOL_PROMPT);
   });
 
   it("keeps memory and the protocols away from a wave-managed session", async () => {
