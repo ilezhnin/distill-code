@@ -278,5 +278,35 @@
     "viewSingleModel": "Modelo único guardado: aún sin ranking configurado.",
     "viewLegacyFallback": "Recurre a su modelo único guardado ({{model}}) cuando ninguno de estos se puede usar.",
     "viewNone": "Sin ranking: usa el modelo por defecto de la aplicación."
+  },
+  "acl": {
+    "sectionLabel": "Permisos",
+    "nothing": "nada",
+    "defaultsEntry": "{{role}}: {{value}}",
+    "role": {
+      "conductor": "conductor",
+      "orchestrator": "orquestador",
+      "worker": "trabajador",
+      "plain-chat": "chat"
+    },
+    "layer": {
+      "conductor": "Conductores",
+      "orchestrator": "Orquestadores",
+      "worker": "Trabajadores"
+    },
+    "layerInline": {
+      "conductor": "conductores",
+      "orchestrator": "orquestadores",
+      "worker": "trabajadores"
+    },
+    "spawns": {
+      "label": "Puede iniciar agentes",
+      "groupAria": "Capas que este agente puede iniciar",
+      "notSet": "Sin definir: este agente usa el valor por defecto de su rol: {{defaults}}.",
+      "overrideList": "Definido en este agente: inicia {{layers}}. Cualquier otro inicio se rechaza en el código.",
+      "overrideNothing": "Definido en este agente: no inicia nada, sea cual sea la capa en la que se ejecute.",
+      "setNothing": "Definir como nada",
+      "clearOverride": "Quitar la anulación"
+    }
   }
 }
