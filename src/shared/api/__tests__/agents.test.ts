@@ -917,6 +917,120 @@ describe("agents API", () => {
     expect(result.contents).toContain("vibes: curious, thorough\n");
   });
 
+  it("surfaces a boolean memory_write grant on the listed persona", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: {
+            ...agentSource.properties,
+            memory_write: true,
+          },
+        },
+      ],
+    });
+
+    const { listPersonas } = await import("../agents");
+    const result = await listPersonas();
+
+    expect(result[0].memoryWrite).toBe(true);
+  });
+
+  it("drops a non-boolean memory_write value instead of coercing a grant", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: {
+            ...agentSource.properties,
+            // The dangerous shapes: YAML "truthy" strings and numbers.
+            memory_write: "true",
+          },
+        },
+        {
+          ...agentSource,
+          path: "/Users/test/.agents/agents/scout-2.md",
+          properties: {
+            ...agentSource.properties,
+            memory_write: 1,
+          },
+        },
+      ],
+    });
+
+    const { listPersonas } = await import("../agents");
+    const result = await listPersonas();
+
+    expect(result[0].memoryWrite).toBeUndefined();
+    expect(result[1].memoryWrite).toBeUndefined();
+  });
+
+  it("imports memory_write from persona markdown frontmatter as a validated property", async () => {
+    mockGooseSourcesCreate.mockResolvedValue({ source: agentSource });
+
+    const { importPersonas } = await import("../agents");
+    const raw = `---
+name: scout
+display_name: "Scout"
+description: "Agent"
+memory_write: true
+---
+
+Research carefully.
+`;
+
+    await importPersonas(raw, "scout.persona.md");
+
+    expect(mockGooseSourcesCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        properties: expect.objectContaining({ memory_write: true }),
+      }),
+    );
+  });
+
+  it("discards garbage memory_write on import rather than preserving it", async () => {
+    mockGooseSourcesCreate.mockResolvedValue({ source: agentSource });
+
+    const { importPersonas } = await import("../agents");
+    const raw = `---
+name: scout
+display_name: "Scout"
+description: "Agent"
+memory_write: "yes please"
+---
+
+Research carefully.
+`;
+
+    await importPersonas(raw, "scout.persona.md");
+
+    const request = mockGooseSourcesCreate.mock.calls[0][0] as {
+      properties: Record<string, unknown>;
+    };
+    expect(request.properties.memory_write).toBeUndefined();
+    // Not smuggled through the preserved-frontmatter escape hatch either.
+    expect(JSON.stringify(request.properties)).not.toContain("memory_write");
+  });
+
+  it("exports memory_write for round trips", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: {
+            ...agentSource.properties,
+            memory_write: true,
+          },
+        },
+      ],
+    });
+
+    const { exportPersona } = await import("../agents");
+    const result = await exportPersona(agentSource.path);
+
+    expect(result.contents).toContain("memory_write: true\n");
+  });
+
   it("keeps direct card metadata precedence over stale Sprout values", async () => {
     mockGooseSourcesList.mockResolvedValue({
       sources: [

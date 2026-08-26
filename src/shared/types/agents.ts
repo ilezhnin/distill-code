@@ -42,6 +42,13 @@ export interface Persona {
   /** Optional share-card copy sourced from agent frontmatter. */
   goodFor?: string;
   vibes?: string;
+  /**
+   * Whether a conductor-graph orchestrator running this persona may write
+   * operator memory (`memory_write` in persona frontmatter). Only a literal
+   * boolean in the source counts; absent means "not granted" — the
+   * orchestrator layer defaults to read-only memory.
+   */
+  memoryWrite?: boolean;
   sourceProperties?: Record<string, unknown>;
   createdAt?: string;
   updatedAt?: string;

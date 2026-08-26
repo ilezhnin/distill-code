@@ -41,6 +41,7 @@ const PORTABLE_SPROUT_FRONTMATTER_KEYS = new Set([
   "good_for",
   "vibes",
   "spawns",
+  "memory_write",
 ]);
 
 // The API layer requires a non-empty description on every source, so a
@@ -69,6 +70,7 @@ export type AgentSourceProperties = {
   modelProviderId?: string | null;
   model?: string | null;
   model_ranking?: string | null;
+  memory_write?: boolean | null;
   avatar?: string | null;
   draft?: boolean;
   builderSessionId?: string;
@@ -329,6 +331,29 @@ function agentSpawnsProperty(
   return undefined;
 }
 
+/**
+ * `memory_write` is a capability grant, not display copy, so parsing is
+ * strict: only a literal YAML boolean counts. A "true" string, a number or
+ * any other shape is dropped rather than coerced — a grant the app has to
+ * guess at is not a grant, and guessing generously here would hand an
+ * orchestrator write access to the operator's memory.
+ */
+function memoryWriteFrontmatterValue(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+/** The validated grant, read like the card metadata: properties first, then preserved Sprout frontmatter. */
+function memoryWriteProperty(
+  properties: AgentSourceProperties | undefined,
+): boolean | undefined {
+  return (
+    memoryWriteFrontmatterValue(properties?.memory_write) ??
+    memoryWriteFrontmatterValue(
+      sproutFrontmatterFromProperties(properties).memory_write,
+    )
+  );
+}
+
 function serializePersonaMarkdown(source: AgentSourceEntry): ExportResult {
   const properties = source.properties;
   const name = personaExportName(source);
@@ -361,6 +386,11 @@ function serializePersonaMarkdown(source: AgentSourceEntry): ExportResult {
   const spawns = agentSpawnsProperty(properties);
   if (spawns !== undefined) {
     frontmatter.spawns = spawns;
+  }
+
+  const memoryWrite = memoryWriteProperty(properties);
+  if (memoryWrite !== undefined) {
+    frontmatter.memory_write = memoryWrite;
   }
 
   Object.assign(
@@ -624,6 +654,8 @@ function personaMarkdownProperties(
   const spawns =
     "spawns" in parsed ? parseSpawnLayers(parsed.spawns) : undefined;
   if (spawns !== undefined) properties.spawns = spawns;
+  const memoryWrite = memoryWriteFrontmatterValue(parsed.memory_write);
+  if (memoryWrite !== undefined) properties.memory_write = memoryWrite;
   applyOptionalProperty(
     properties,
     "avatar",
@@ -729,6 +761,7 @@ function agentSourceFromMarkdownFile(
 export function agentSourceToPersona(source: AgentSourceEntry): Persona {
   const writable = source.writable === true;
   const spawns = agentSpawnsProperty(source.properties);
+  const memoryWrite = memoryWriteProperty(source.properties);
   return {
     id: source.path,
     displayName: source.name,
@@ -750,6 +783,7 @@ export function agentSourceToPersona(source: AgentSourceEntry): Persona {
     ...(agentCardMetadataProperty(source.properties, "vibes")
       ? { vibes: agentCardMetadataProperty(source.properties, "vibes") }
       : {}),
+    ...(memoryWrite !== undefined ? { memoryWrite } : {}),
     sourceProperties: source.properties ? { ...source.properties } : undefined,
   };
 }
