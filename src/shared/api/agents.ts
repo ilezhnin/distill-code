@@ -250,6 +250,108 @@ function sproutNameFromProperties(
   return propertyToString(sprout?.name);
 }
 
+/**
+ * Frontmatter `metadata` flags that mark an installed agent file as owned by
+ * the app's bundle. `berdBundledSource` is NOT one of them: it only names the
+ * bundled role a file came from (the conductor resolves roles through it) and
+ * carries no ownership claim.
+ */
+const BUNDLED_AGENT_MARKER_KEYS = ["berdBundled", "gooseInternalBundled"];
+
+function withoutBundledMarkerRecord(
+  record: Record<string, unknown> | undefined,
+): Record<string, unknown> | null | undefined {
+  if (!record || !BUNDLED_AGENT_MARKER_KEYS.some((key) => key in record)) {
+    return record;
+  }
+  const next = { ...record };
+  for (const key of BUNDLED_AGENT_MARKER_KEYS) {
+    delete next[key];
+  }
+  // `null` tells the caller to drop the emptied container entirely, so a
+  // bare `metadata: {}` is not left behind in the frontmatter.
+  return hasEntries(next) ? next : null;
+}
+
+/**
+ * Removes the bundled-agent ownership marker from a properties bag, releasing
+ * the file from bundle ownership.
+ *
+ * Why: the desktop app reseeds bundled agents on every launch
+ * (src-tauri/src/services/bundled_agents.rs). A previously seeded file that
+ * still carries `metadata.berdBundled: true` and whose bytes differ from the
+ * shipped copy is OVERWRITTEN with that copy — which is exactly what a saved
+ * operator edit looks like, because the backend rewrites the file's
+ * frontmatter (model_ranking included) while preserving the marker. The edit
+ * survived the session and silently vanished on the next restart.
+ *
+ * So an operator-driven save takes ownership: the marker is stripped from the
+ * write, the reseeder then treats the file as user-owned and never touches
+ * it, and the explicit repair_bundled_agent command remains the way to
+ * restore the shipped copy. Background/system writes must NOT use this —
+ * a repair write does not make an agent the operator's.
+ *
+ * The marker can sit in two places depending on which reader produced the
+ * bag: the backend and the direct file parser keep frontmatter keys verbatim
+ * (`properties.metadata`), while the portable import parser tucks unknown
+ * keys under `properties.sprout.frontmatter`.
+ */
+export function withoutBundledAgentMarker(
+  properties: AgentSourceProperties | undefined,
+): AgentSourceProperties | undefined {
+  if (!properties) {
+    return properties;
+  }
+
+  let next: AgentSourceProperties | null = null;
+  const ensureNext = () => {
+    next ??= { ...properties };
+    return next;
+  };
+
+  const metadata = propertyToRecord(properties.metadata);
+  const strippedMetadata = withoutBundledMarkerRecord(metadata);
+  if (metadata && strippedMetadata !== metadata) {
+    const target = ensureNext();
+    if (strippedMetadata === null) {
+      delete target.metadata;
+    } else {
+      target.metadata = strippedMetadata;
+    }
+  }
+
+  const sprout = propertyToRecord(properties.sprout);
+  const sproutFrontmatter = propertyToRecord(sprout?.frontmatter);
+  const frontmatterMetadata = propertyToRecord(sproutFrontmatter?.metadata);
+  const strippedFrontmatterMetadata =
+    withoutBundledMarkerRecord(frontmatterMetadata);
+  if (
+    frontmatterMetadata &&
+    strippedFrontmatterMetadata !== frontmatterMetadata
+  ) {
+    const target = ensureNext();
+    const nextFrontmatter = { ...sproutFrontmatter };
+    if (strippedFrontmatterMetadata === null) {
+      delete nextFrontmatter.metadata;
+    } else {
+      nextFrontmatter.metadata = strippedFrontmatterMetadata;
+    }
+    const nextSprout = { ...sprout };
+    if (hasEntries(nextFrontmatter)) {
+      nextSprout.frontmatter = nextFrontmatter;
+    } else {
+      delete nextSprout.frontmatter;
+    }
+    if (hasEntries(nextSprout)) {
+      target.sprout = nextSprout;
+    } else {
+      delete target.sprout;
+    }
+  }
+
+  return next ?? properties;
+}
+
 function personaExportName(source: AgentSourceEntry): string {
   return (
     sproutNameFromProperties(source.properties) ??
@@ -903,9 +1005,14 @@ export async function updatePersonaSource(
   patch: PersonaSourcePatch,
 ): Promise<AgentSourceEntry> {
   const existing = await readExistingPersonaSource(path);
-  const properties = patch.properties
-    ? { ...(existing.properties ?? {}), ...patch.properties }
-    : existing.properties;
+  // Operator-driven edit path (the agent builder's save): editing a seeded
+  // bundled agent takes ownership of its file, or the startup reseeder would
+  // overwrite the edit with the shipped copy on the next launch.
+  const properties = withoutBundledAgentMarker(
+    patch.properties
+      ? { ...(existing.properties ?? {}), ...patch.properties }
+      : existing.properties,
+  );
   const client = await getClient();
   const response = await client.goose.GooseUnstableSourcesUpdate({
     type: AGENT_SOURCE_TYPE,
@@ -1026,7 +1133,12 @@ export async function updatePersona(
     name: request.displayName ?? persona.displayName,
     description,
     content: request.systemPrompt ?? persona.systemPrompt,
-    properties: mergedPersonaProperties(persona.sourceProperties, request),
+    // Operator-driven edit path (profile avatar change, direct updates):
+    // like the builder save, editing a seeded bundled agent takes ownership
+    // so the startup reseeder cannot revert the edit.
+    properties: withoutBundledAgentMarker(
+      mergedPersonaProperties(persona.sourceProperties, request),
+    ),
   });
 
   if (!isAgentSource(response.source)) {
