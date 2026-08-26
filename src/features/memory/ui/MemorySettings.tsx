@@ -32,23 +32,42 @@ interface MemoryGroup {
   key: string;
   title: string;
   entries: MemoryEntry[];
+  /**
+   * A project group whose project no longer exists. `parseEntry` keeps such
+   * entries on purpose — dropping them at read time would be the app silently
+   * deleting the operator's data — so the page names the situation and offers
+   * the one deliberate way out: a button, behind a confirmation.
+   */
+  orphaned: boolean;
 }
 
 export function MemorySettings() {
   const { t } = useTranslation("memory");
   const entries = useMemoryStore((state) => state.entries);
   const remember = useMemoryStore((state) => state.remember);
+  const replaceAll = useMemoryStore((state) => state.replaceAll);
   const projects = useProjectStore((state) => state.projects);
+  // Until the backend list has actually been fetched, "no such project" may
+  // just mean "not loaded yet" — no deletion is offered on that basis.
+  const projectsSettled = useProjectStore((state) => state.hasFetchedProjects);
 
   const [draft, setDraft] = useState("");
   const [draftScope, setDraftScope] = useState(GLOBAL_SCOPE_VALUE);
+  const [forgettingProjectId, setForgettingProjectId] = useState<string | null>(
+    null,
+  );
 
   const groups = useMemo<MemoryGroup[]>(() => {
     const byAge = (left: MemoryEntry, right: MemoryEntry) =>
       right.createdAt - left.createdAt;
     const global = entries.filter((entry) => entry.scope === "global");
     const result: MemoryGroup[] = [
-      { key: "global", title: t("groups.global"), entries: global.sort(byAge) },
+      {
+        key: "global",
+        title: t("groups.global"),
+        entries: global.sort(byAge),
+        orphaned: false,
+      },
     ];
     const projectIds = [
       ...new Set(
@@ -58,15 +77,14 @@ export function MemorySettings() {
       ),
     ];
     for (const projectId of projectIds) {
-      const name =
-        projects.find((project) => project.id === projectId)?.name ??
-        t("groups.unknownProject");
+      const name = projects.find((project) => project.id === projectId)?.name;
       result.push({
         key: projectId,
-        title: name,
+        title: name ?? t("groups.unknownProject"),
         entries: entries
           .filter((entry) => entry.projectId === projectId)
           .sort(byAge),
+        orphaned: name === undefined,
       });
     }
     return result;
@@ -149,10 +167,48 @@ export function MemorySettings() {
                   ))}
                 </ul>
               )}
+              {group.orphaned && projectsSettled ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  destructive
+                  data-testid="memory-forget-project"
+                  onClick={() => setForgettingProjectId(group.key)}
+                >
+                  {t("groups.forgetProject")}
+                </Button>
+              ) : null}
             </SettingsSection>
           ),
         )}
       </SettingsSections>
+
+      {/* No automatic sweep: entries whose project is gone are still the
+          operator's data, and the app deleting them quietly is exactly the
+          kind of silent substitution this codebase forbids. Deletion happens
+          only here, on an explicit click, behind a confirmation. */}
+      <ConfirmDialog
+        open={forgettingProjectId !== null}
+        onOpenChange={(open) => {
+          if (!open) setForgettingProjectId(null);
+        }}
+        title={t("groups.forgetProjectConfirmTitle")}
+        description={t("groups.forgetProjectConfirmDescription")}
+        cancelLabel={t("common:actions.cancel")}
+        confirmLabel={t("groups.forgetProjectConfirm")}
+        onConfirm={() => {
+          if (forgettingProjectId === null) return;
+          replaceAll(
+            useMemoryStore
+              .getState()
+              .entries.filter(
+                (entry) => entry.projectId !== forgettingProjectId,
+              ),
+          );
+          setForgettingProjectId(null);
+        }}
+      />
     </SettingsPage>
   );
 }
