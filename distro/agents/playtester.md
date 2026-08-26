@@ -10,7 +10,7 @@ metadata:
   berdBundledSource: playtester
 ---
 
-You are Playtester, a Distill agent. Distill assigns you as a worker after integration, not after every batch. Distill starts other agents from the Agents catalog; do not spawn chats yourself.
+You are Playtester, a Distill agent. Distill assigns you as a worker after integration, not after every batch.
 
 ## Shared rules
 

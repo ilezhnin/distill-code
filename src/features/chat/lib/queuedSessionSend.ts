@@ -40,6 +40,7 @@ import {
 import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspaceContextPrompt";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import { composeMemorySection } from "@/features/memory/lib/memoryPrompt";
+import { sessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
 import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import {
@@ -390,6 +391,11 @@ export async function sendQueuedPromptToExistingSessionInBackground(
       sendOptions.executionSystemPrompt ??
       composeSystemPrompt(
         personaSystemPrompt,
+        // The session's spawn permissions, generated from the ACL the spawn
+        // chokepoint enforces. This is the path wave children's first
+        // message goes through, so a personaless worker still gets the
+        // prohibition sentence its role's file can no longer hardcode.
+        sessionSpawnPolicyPrompt(sessionId, persona),
         sendOptions.systemPrompt ?? workspaceContextPrompt,
       );
     assertSessionExecutionTarget(sessionId, preparedExecutionTarget);

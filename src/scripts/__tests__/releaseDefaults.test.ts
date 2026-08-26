@@ -55,6 +55,24 @@ describe("release bundled-agent defaults", () => {
     }
   });
 
+  it("keeps handwritten spawn-policy prose out of the bundled agents", () => {
+    // The spawn rule is generated into the system prompt from the effective
+    // spawn ACL (src/features/conductor/spawnAcl.ts) and enforced in code; a
+    // handwritten copy in an agent file would be a second source of truth
+    // that drifts the moment the ACL or its wording changes.
+    const agentDirectory = resolve(repoRoot, "distro/agents");
+    for (const fileName of readdirSync(agentDirectory)) {
+      if (!fileName.endsWith(".md")) continue;
+      const body = readFileSync(resolve(agentDirectory, fileName), "utf8");
+      expect
+        .soft(body, `${fileName} hardcodes spawn-policy prose`)
+        .not.toMatch(/do not spawn chats yourself/i);
+      expect
+        .soft(body, `${fileName} hardcodes spawn-policy prose`)
+        .not.toMatch(/Distill starts other agents from the Agents catalog/i);
+    }
+  });
+
   it("rejects an invalid build kind", () => {
     const result = spawnSync("bash", [releaseDefaultsRunner, "preview"], {
       encoding: "utf8",
