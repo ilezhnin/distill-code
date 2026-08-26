@@ -45,6 +45,14 @@ export interface BrigadeChipViewModel {
    * reports"). Absent when the plan that named it is not in this transcript.
    */
   accessLabel?: string;
+  /**
+   * The model the plan explicitly named for this step (4a). Rendered as a
+   * suffix because D5 makes an explicit model's visibility a contract: the
+   * operator must be able to see, on the step itself, that the plan pinned it.
+   * Absent for steps the ranking or inheritance targets — those already have
+   * their own notices, and stamping every chip would drown the exception.
+   */
+  modelLabel?: string;
   /** Omitted → the chip is not clickable. */
   onOpen?: (id: string) => void;
   /** Omitted → no stop button, whatever the status. */
@@ -95,6 +103,7 @@ export function BrigadeChip({
   title,
   stepIndex,
   accessLabel,
+  modelLabel,
   onOpen,
   onStop,
   pending,
@@ -173,6 +182,15 @@ export function BrigadeChip({
             className="text-[11px] text-muted-foreground"
           >
             {accessLabel}
+          </span>
+        ) : null}
+        {modelLabel ? (
+          <span
+            aria-hidden="true"
+            data-testid="brigade-chip-model"
+            className="text-[11px] italic text-muted-foreground"
+          >
+            {modelLabel}
           </span>
         ) : null}
       </button>

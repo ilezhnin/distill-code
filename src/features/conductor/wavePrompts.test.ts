@@ -109,6 +109,31 @@ describe("CONDUCTOR_PROTOCOL_PROMPT", () => {
     expect(labelled.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("teaches the explicit step model: exact, refusable, never substituted", () => {
+    // 4a/D5 in the conductor's own contract: the prompt must promise exactly
+    // what the engine does — an unavailable model refuses the plan whole, and
+    // no silent substitution ever happens.
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain('"model" is optional');
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain("refused whole");
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain(
+      "nothing is ever silently substituted",
+    );
+  });
+
+  it("shows an explicit model in a worked example, and the parser keeps it", () => {
+    const fences =
+      CONDUCTOR_PROTOCOL_PROMPT.match(
+        new RegExp(`\`\`\`${WAVE_FENCE_TAG}[\\s\\S]*?\`\`\``, "g"),
+      ) ?? [];
+    const pinned = fences
+      .map((fence) => parseDistillWave(fence))
+      .filter(
+        (parsed) =>
+          parsed.kind === "plan" && parsed.steps.some((step) => step.model),
+      );
+    expect(pinned.length).toBeGreaterThanOrEqual(1);
+  });
+
   it("lists only worker-layer roles as legal step roles", () => {
     expect(CONDUCTOR_PROTOCOL_PROMPT).toContain("researcher");
     expect(CONDUCTOR_PROTOCOL_PROMPT).toContain("brigade");
