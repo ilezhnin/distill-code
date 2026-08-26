@@ -91,6 +91,33 @@ describe("ModelRankingField", () => {
     mocks.rateLimits = [];
   });
 
+  it("starts an empty ranking from a plain add control", async () => {
+    const user = userEvent.setup();
+    const { onChange } = renderField();
+
+    // The empty state is a list with an add button, not a clickable riddle:
+    // adding the first model must not require knowing about roles at all.
+    await user.click(screen.getByTestId("model-ranking-add"));
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const written = JSON.parse(onChange.mock.calls[0][0] as string);
+    expect(written.entries).toHaveLength(1);
+    expect(written.entries[0].modelId).toBe("claude-opus-5");
+  });
+
+  it("keeps the empty explanation as secondary text under the add control", () => {
+    renderField();
+
+    const add = screen.getByTestId("model-ranking-add");
+    const empty = screen.getByTestId("model-ranking-empty");
+    expect(empty).toHaveTextContent("No ranking yet");
+    // The helper follows the add control in the DOM, so the primary action
+    // reads first and the explanation stays secondary.
+    expect(
+      add.compareDocumentPosition(empty) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("offers to fill an untuned agent from its role", async () => {
     const user = userEvent.setup();
     const { onChange } = renderField();
