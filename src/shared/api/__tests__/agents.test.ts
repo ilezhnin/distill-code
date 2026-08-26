@@ -1061,6 +1061,90 @@ Research carefully.
     expect(result.contents).toContain("memory_write: true\n");
   });
 
+  it("round-trips model_ranking through portable persona markdown", async () => {
+    // model_ranking is in PORTABLE_SPROUT_FRONTMATTER_KEYS, so the generic
+    // unsupported-key passthrough never carries it: without the explicit
+    // serialize/parse pair, an exported agent silently lost its ranking.
+    const ranking = JSON.stringify({
+      version: 1,
+      entries: [
+        {
+          platform: "claude-acp",
+          modelId: "claude-fable-5",
+          label: "Fable 5",
+          effort: "xhigh",
+        },
+      ],
+    });
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: { ...agentSource.properties, model_ranking: ranking },
+        },
+      ],
+    });
+    mockGooseSourcesCreate.mockResolvedValue({ source: agentSource });
+
+    const { exportPersona, importPersonas } = await import("../agents");
+    const exported = await exportPersona(agentSource.path);
+    expect(exported.contents).toContain("model_ranking:");
+
+    await importPersonas(exported.contents, "scout.persona.md");
+
+    const request = mockGooseSourcesCreate.mock.calls[0][0] as {
+      properties: Record<string, unknown>;
+    };
+    expect(request.properties.model_ranking).toBe(ranking);
+  });
+
+  it("imports a built-in class id as the model_ranking value", async () => {
+    mockGooseSourcesCreate.mockResolvedValue({ source: agentSource });
+
+    const { importPersonas } = await import("../agents");
+    const raw = `---
+name: scout
+display_name: "Scout"
+description: "Agent"
+model_ranking: frontend-ui
+---
+
+Research carefully.
+`;
+
+    await importPersonas(raw, "scout.persona.md");
+
+    expect(mockGooseSourcesCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        properties: expect.objectContaining({ model_ranking: "frontend-ui" }),
+      }),
+    );
+  });
+
+  it("discards garbage model_ranking on import rather than preserving it", async () => {
+    mockGooseSourcesCreate.mockResolvedValue({ source: agentSource });
+
+    const { importPersonas } = await import("../agents");
+    const raw = `---
+name: scout
+display_name: "Scout"
+description: "Agent"
+model_ranking: "not a ranking"
+---
+
+Research carefully.
+`;
+
+    await importPersonas(raw, "scout.persona.md");
+
+    const request = mockGooseSourcesCreate.mock.calls[0][0] as {
+      properties: Record<string, unknown>;
+    };
+    expect(request.properties.model_ranking).toBeUndefined();
+    // Not smuggled through the preserved-frontmatter escape hatch either.
+    expect(JSON.stringify(request.properties)).not.toContain("model_ranking");
+  });
+
   it("keeps direct card metadata precedence over stale Sprout values", async () => {
     mockGooseSourcesList.mockResolvedValue({
       sources: [
