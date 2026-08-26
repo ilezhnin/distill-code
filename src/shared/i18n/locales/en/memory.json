@@ -3,7 +3,8 @@
   "description": "Facts your agents carry into every future session. Global memories apply everywhere; project memories are only ever shown inside their own project.",
   "add": {
     "title": "Remember something",
-    "placeholder": "One short fact to keep everywhere",
+    "placeholder": "One short fact to keep",
+    "scope": "Where this applies",
     "submit": "Remember"
   },
   "groups": {
@@ -14,6 +15,8 @@
   "row": {
     "edit": "Edit this memory",
     "forget": "Forget this",
+    "forgetConfirmTitle": "Forget this memory?",
+    "forgetConfirmDescription": "\"{{text}}\" will no longer be carried into future sessions. This cannot be undone.",
     "fromAgent": "from an agent"
   }
 }

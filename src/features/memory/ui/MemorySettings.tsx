@@ -14,6 +14,7 @@ import { IconTrash } from "@tabler/icons-react";
 
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 import { Button } from "@/shared/ui/button";
+import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
 import { Input } from "@/shared/ui/input";
 import { SettingsPage } from "@/shared/ui/SettingsPage";
 import {
@@ -23,6 +24,9 @@ import {
 
 import type { MemoryEntry } from "../lib/memoryEntry";
 import { useMemoryStore } from "../stores/memoryStore";
+
+/** The add form's scope select keeps "everywhere" apart from project ids. */
+const GLOBAL_SCOPE_VALUE = "global";
 
 interface MemoryGroup {
   key: string;
@@ -37,6 +41,7 @@ export function MemorySettings() {
   const projects = useProjectStore((state) => state.projects);
 
   const [draft, setDraft] = useState("");
+  const [draftScope, setDraftScope] = useState(GLOBAL_SCOPE_VALUE);
 
   const groups = useMemo<MemoryGroup[]>(() => {
     const byAge = (left: MemoryEntry, right: MemoryEntry) =>
@@ -77,9 +82,11 @@ export function MemorySettings() {
               event.preventDefault();
               const text = draft.trim();
               if (!text) return;
-              // Only global can be typed here: a project memory has to be
-              // written where the project is known, and this page is not.
-              remember({ text, scope: "global" });
+              remember(
+                draftScope === GLOBAL_SCOPE_VALUE
+                  ? { text, scope: "global" }
+                  : { text, scope: "project", projectId: draftScope },
+              );
               setDraft("");
             }}
           >
@@ -90,6 +97,23 @@ export function MemorySettings() {
               aria-label={t("add.placeholder")}
               data-testid="memory-add-input"
             />
+            {/* The projects the sidebar knows are the ones a memory can be
+                scoped to; "everywhere" stays the default so typing and
+                pressing Enter behaves exactly as before. */}
+            <select
+              value={draftScope}
+              onChange={(event) => setDraftScope(event.target.value)}
+              aria-label={t("add.scope")}
+              data-testid="memory-add-scope"
+              className="shrink-0 rounded-md border border-input bg-background px-2 py-1 text-sm text-foreground"
+            >
+              <option value={GLOBAL_SCOPE_VALUE}>{t("groups.global")}</option>
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
             <Button
               type="submit"
               variant="subtle"
@@ -114,7 +138,14 @@ export function MemorySettings() {
               ) : (
                 <ul className="flex list-none flex-col gap-1">
                   {group.entries.map((entry) => (
-                    <MemoryRow key={entry.id} entry={entry} />
+                    // Keyed by text as well as id: the row holds its draft in
+                    // local state, so when an agent rewrites the entry while
+                    // this page is open, remounting is what makes the change
+                    // visible instead of the stale draft.
+                    <MemoryRow
+                      key={`${entry.id}:${entry.text}`}
+                      entry={entry}
+                    />
                   ))}
                 </ul>
               )}
@@ -131,6 +162,7 @@ function MemoryRow({ entry }: { entry: MemoryEntry }) {
   const updateEntry = useMemoryStore((state) => state.updateEntry);
   const forget = useMemoryStore((state) => state.forget);
   const [text, setText] = useState(entry.text);
+  const [confirmingForget, setConfirmingForget] = useState(false);
 
   return (
     <li
@@ -160,11 +192,26 @@ function MemoryRow({ entry }: { entry: MemoryEntry }) {
         variant="ghost"
         size="icon-xs"
         destructive
-        onClick={() => forget(entry.id)}
+        onClick={() => setConfirmingForget(true)}
         aria-label={t("row.forget")}
       >
         <IconTrash />
       </Button>
+      {/* Deleting is irreversible — there is no undo and no trash — so it
+          gets the same confirmation every other destructive settings action
+          has. */}
+      <ConfirmDialog
+        open={confirmingForget}
+        onOpenChange={setConfirmingForget}
+        title={t("row.forgetConfirmTitle")}
+        description={t("row.forgetConfirmDescription", { text: entry.text })}
+        cancelLabel={t("common:actions.cancel")}
+        confirmLabel={t("row.forget")}
+        onConfirm={() => {
+          forget(entry.id);
+          setConfirmingForget(false);
+        }}
+      />
     </li>
   );
 }
