@@ -89,10 +89,23 @@ describe("checkSpawnAllowed", () => {
 });
 
 describe("spawn policy prompt", () => {
-  it("emits the exact legacy sentence when nothing may be spawned", () => {
-    expect(formatSpawnPolicyPrompt([])).toBe(
-      "Distill starts other agents from the Agents catalog; do not spawn chats yourself.",
+  it("opens with the exact legacy sentence when nothing may be spawned", () => {
+    expect(formatSpawnPolicyPrompt([])).toMatch(
+      /^Distill starts other agents from the Agents catalog; do not spawn chats yourself\. /,
     );
+  });
+
+  it("names the berdctl spawn commands the app cannot refuse", () => {
+    // The berdctl path carries no caller identity, so the ACL cannot be
+    // enforced on it (createSession.ts); the prompt is the only place the
+    // rule reaches it, and the app preamble advertises both commands.
+    for (const text of [
+      formatSpawnPolicyPrompt([]),
+      formatSpawnPolicyPrompt(["worker"]),
+    ]) {
+      expect(text).toContain("`berdctl session create`");
+      expect(text).toContain("`berdctl session fork`");
+    }
   });
 
   it("names the allowed layers when spawning is permitted", () => {
@@ -110,14 +123,12 @@ describe("spawn policy prompt", () => {
   it("gives a persona chat outside the graph the prohibition line", () => {
     expect(
       formatSessionSpawnPolicyPrompt(undefined, { spawns: undefined }),
-    ).toBe(
-      "Distill starts other agents from the Agents catalog; do not spawn chats yourself.",
-    );
+    ).toBe(formatSpawnPolicyPrompt([]));
   });
 
   it("gives a personaless wave worker the prohibition line", () => {
     expect(formatSessionSpawnPolicyPrompt("worker", undefined)).toBe(
-      "Distill starts other agents from the Agents catalog; do not spawn chats yourself.",
+      formatSpawnPolicyPrompt([]),
     );
   });
 

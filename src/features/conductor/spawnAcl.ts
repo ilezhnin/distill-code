@@ -108,21 +108,34 @@ export class SpawnAclDeniedError extends Error {
 }
 
 /**
- * The sentence every bundled agent used to carry by hand, verbatim. Kept
- * byte-identical so removing the handwritten copies changes where the text
- * comes from, not what the agents read.
+ * The sentence every bundled agent used to carry by hand, plus the clause the
+ * handwritten copies never had.
+ *
+ * The legacy wording is kept verbatim as the opening sentence (removing the
+ * handwritten copies changed where the text comes from, not what the agents
+ * read). The second sentence names the berdctl spawn commands, because the
+ * app preamble injected alongside this line advertises them
+ * (`src/features/berdctl/appPreamble.ts`) and that path is NOT covered by the
+ * in-app spawn chokepoint: `berdctl session create` / `session fork` arrive
+ * without a caller identity, so the ACL cannot be applied to them (see the
+ * note in src/features/berdctl/commands/impl/createSession.ts). Naming them
+ * here is the only place the rule reaches that path at all.
  */
 const SPAWN_FORBIDDEN_PROMPT_LINE =
-  "Distill starts other agents from the Agents catalog; do not spawn chats yourself.";
+  "Distill starts other agents from the Agents catalog; do not spawn chats yourself. " +
+  "That includes the `berdctl session create` and `berdctl session fork` commands " +
+  "the Distill app preamble lists.";
 
 /**
  * The prompt insert stating a session's effective spawn permissions.
  *
  * Generated from the same ACL the enforcement reads, so prompt and mechanism
- * cannot drift apart. Empty permissions produce the exact sentence the
+ * cannot drift apart. Empty permissions open with the exact sentence the
  * catalog files used to hardcode; non-empty permissions state what is
- * allowed and that everything else is refused by the app, not merely
- * discouraged.
+ * allowed and that everything else is refused by the app through those
+ * mechanisms, not merely discouraged. Both wordings then extend the rule to
+ * the berdctl spawn commands, which the app cannot refuse for want of a
+ * caller identity — the one part of the ACL that is still prompt-only.
  */
 export function formatSpawnPolicyPrompt(layers: readonly RoleLayer[]): string {
   if (layers.length === 0) {
@@ -130,7 +143,7 @@ export function formatSpawnPolicyPrompt(layers: readonly RoleLayer[]): string {
   }
   return `Through Distill's own mechanisms you may start agents on these layers: ${layers.join(
     ", ",
-  )}. Distill refuses any other spawn in code; do not try to start sessions outside those layers.`;
+  )}. Distill refuses any other spawn through those mechanisms in code; do not try to start sessions outside those layers. The same limit applies to \`berdctl session create\` and \`berdctl session fork\`.`;
 }
 
 /**
