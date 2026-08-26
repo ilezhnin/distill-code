@@ -322,6 +322,15 @@
         "denied": "nunca escribe",
         "grant-required": "necesita este permiso"
       }
+    },
+    "summary": {
+      "label": "Permisos",
+      "spawnsRow": "Inicia",
+      "memoryRow": "Memoria",
+      "fromRole": "De su rol: no está definido en este agente.",
+      "set": "Definido en este agente.",
+      "memoryGranted": "Escribe en la memoria del operador como orquestador.",
+      "memoryRefused": "Sin permiso de escritura en la memoria."
     }
   }
 }

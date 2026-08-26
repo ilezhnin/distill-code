@@ -322,6 +322,15 @@
         "denied": "never writes",
         "grant-required": "needs this grant"
       }
+    },
+    "summary": {
+      "label": "Permissions",
+      "spawnsRow": "Starts",
+      "memoryRow": "Memory",
+      "fromRole": "From its role — not set on this agent.",
+      "set": "Set on this agent.",
+      "memoryGranted": "Writes to the operator's memory as an orchestrator.",
+      "memoryRefused": "No memory-write grant."
     }
   }
 }
