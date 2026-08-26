@@ -688,7 +688,7 @@ export function AgentBuilderRail({
     </section>
   );
 
-  const fieldsNode = (
+  const identityFieldsNode = (
     <>
       <label className="block text-sm" htmlFor="builder-rail-name">
         <span className={FIELD_LABEL_CLASS}>{t("editor.displayName")}</span>
@@ -726,7 +726,11 @@ export function AgentBuilderRail({
           selectTrigger: FIELD_CLASS,
         }}
       />
+    </>
+  );
 
+  const instructionsNode = (
+    <>
       <label
         className="flex min-h-0 flex-1 flex-col text-sm"
         htmlFor="builder-rail-instructions"
@@ -748,7 +752,10 @@ export function AgentBuilderRail({
             FIELD_CLASS,
             "agent-builder-instructions-scrollbar min-h-32 overflow-y-scroll scrollbar-visible [scrollbar-gutter:stable]",
             fullPage
-              ? "flex-1 resize-none"
+              ? // The main editing surface of the full page: grows to fill
+                // the remaining viewport, never collapses below a workable
+                // height on short windows (the page scrolls instead).
+                "min-h-64 flex-1 resize-none"
               : "max-h-[min(20rem,calc(100vh-24rem))] resize-y",
           )}
         />
@@ -775,15 +782,28 @@ export function AgentBuilderRail({
     </>
   );
 
-  const fullPageLeftColumn = <div className="flex flex-col">{avatarNode}</div>;
-
   if (fullPage) {
+    // Full-page layout: a top band pairs the avatar with the compact
+    // identity fields (name, description, ranking — capped so single-line
+    // inputs stay readable), and the instructions editor — the main body of
+    // an agent — takes the whole remaining width and height below.
     return shell(
       headerNode,
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(24rem,1fr)_minmax(24rem,1fr)] gap-10">
-        <div className="flex min-h-0 flex-col">{fullPageLeftColumn}</div>
-        <div className="flex min-h-0 flex-col gap-4 overflow-y-auto px-4 py-6 xl:px-8 xl:py-8">
-          {fieldsNode}
+      <div className="flex min-h-0 flex-1 flex-col gap-6 px-4 py-6 xl:px-8">
+        <div
+          className="grid grid-cols-[minmax(16rem,24rem)_minmax(0,1fr)] gap-10"
+          data-testid="builder-identity-band"
+        >
+          <div className="flex min-h-0 flex-col">{avatarNode}</div>
+          <div className="flex max-w-2xl flex-col gap-4">
+            {identityFieldsNode}
+          </div>
+        </div>
+        <div
+          className="flex min-h-0 flex-1 flex-col gap-4"
+          data-testid="builder-instructions-region"
+        >
+          {instructionsNode}
         </div>
       </div>,
       footerNode,
@@ -794,7 +814,8 @@ export function AgentBuilderRail({
     headerNode,
     <div className="flex flex-col gap-4">
       {avatarNode}
-      {fieldsNode}
+      {identityFieldsNode}
+      {instructionsNode}
     </div>,
     footerNode,
   );
