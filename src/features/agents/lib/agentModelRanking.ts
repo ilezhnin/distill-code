@@ -155,6 +155,31 @@ export function serializeAgentModelRanking(ranking: AgentModelRanking): string {
 }
 
 /**
+ * The legacy single provider/model pair as a one-row ranking entry, or null
+ * when the pair cannot be represented: no saved model, or a provider that is
+ * not a ranked platform (goose-routed providers have no rate-limit meter for
+ * the ranking to walk).
+ *
+ * Used to show an agent saved before rankings existed inside the ranking UI
+ * instead of the old separate Provider/Model selects. This is a presentation
+ * seed only — nothing is migrated into `model_ranking` until the operator
+ * edits the list and saves (D5: no silent substitution of stored data).
+ */
+export function legacySingleModelRankingEntry(persona: {
+  provider?: string | null;
+  model?: string | null;
+  label?: string | null;
+}): AgentRankingEntry | null {
+  const modelId = persona.model?.trim();
+  if (!modelId || !isPlatformId(persona.provider)) return null;
+  return {
+    platform: persona.provider,
+    modelId,
+    label: persona.label?.trim() || modelId,
+  };
+}
+
+/**
  * An entry as a resolution candidate.
  *
  * Two needle sets, tried in order by the resolver's `some`: the exact id, then

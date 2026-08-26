@@ -1,9 +1,11 @@
 import type { ReactNode } from "react";
 import { cn } from "@/shared/lib/cn";
 
-interface AgentIdentityMetadataItem {
+export interface AgentIdentityMetadataItem {
   label: string;
-  value: string;
+  value?: string;
+  /** Rendered instead of `value` — for structured data like the model ranking. */
+  content?: ReactNode;
   /** Breaks anywhere, for unbroken strings like file paths. */
   wrap?: boolean;
   /** Wraps at word boundaries, for real prose like a description. */
@@ -65,14 +67,15 @@ export function AgentIdentityRail({
                 <dd
                   className={cn(
                     "text-[14px] leading-5 text-surface-agent-profile-fg-80",
-                    item.multiline
-                      ? "whitespace-pre-line break-words"
-                      : item.wrap
-                        ? "break-all"
-                        : "truncate",
+                    !item.content &&
+                      (item.multiline
+                        ? "whitespace-pre-line break-words"
+                        : item.wrap
+                          ? "break-all"
+                          : "truncate"),
                   )}
                 >
-                  {item.value}
+                  {item.content ?? item.value}
                 </dd>
               </div>
             ))}

@@ -510,6 +510,109 @@ describe("AgentBuilderRail", () => {
     });
   });
 
+  it("does not render the legacy Provider/Model selects", () => {
+    mockHook({
+      data: {
+        ...baseSource,
+        name: "Code Reviewer",
+        properties: { provider: "grok-acp", model: "grok-4-6" },
+      },
+    });
+
+    renderWithProviders(
+      <AgentBuilderRail
+        sessionId="s1"
+        targetAgentPath={baseSource.path}
+        targetAgentSlug="code-reviewer"
+      />,
+    );
+
+    // The ranking list is the only model-selection UI now; the old single
+    // provider/model pair surfaces through it instead of separate selects.
+    expect(screen.queryByText("Provider")).toBeNull();
+    expect(screen.queryByText("Model")).toBeNull();
+    expect(screen.getByTestId("model-ranking-field")).toBeInTheDocument();
+  });
+
+  it("seeds a legacy single model as the visible first ranking row", () => {
+    mockHook({
+      data: {
+        ...baseSource,
+        name: "Code Reviewer",
+        properties: { provider: "grok-acp", model: "grok-4-6" },
+      },
+    });
+
+    renderWithProviders(
+      <AgentBuilderRail
+        sessionId="s1"
+        targetAgentPath={baseSource.path}
+        targetAgentSlug="code-reviewer"
+      />,
+    );
+
+    const rows = screen.getAllByTestId("model-ranking-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent("grok-4-6");
+    // The seed is labeled as such — a migration the operator cannot see
+    // would be a silent substitution (D5).
+    expect(screen.getByTestId("model-ranking-legacy-note")).toBeInTheDocument();
+  });
+
+  it("does not seed the legacy model when the role's built-in order applies", () => {
+    // "Acceptor" maps to a bundled role class, which the runtime prefers
+    // over the single model — a seed row here would show a ranking that
+    // resolution would not actually walk first.
+    mockHook({
+      data: {
+        ...baseSource,
+        name: "Acceptor",
+        properties: { provider: "grok-acp", model: "grok-4-6" },
+      },
+    });
+
+    renderWithProviders(
+      <AgentBuilderRail
+        sessionId="s1"
+        targetAgentPath={baseSource.path}
+        targetAgentSlug="acceptor"
+      />,
+    );
+
+    expect(screen.queryAllByTestId("model-ranking-row")).toHaveLength(0);
+    expect(screen.getByTestId("model-ranking-empty")).toBeInTheDocument();
+  });
+
+  it("lets the operator remove the seeded legacy row without it respawning", () => {
+    const { update } = mockHook({
+      data: {
+        ...baseSource,
+        name: "Code Reviewer",
+        properties: { provider: "grok-acp", model: "grok-4-6" },
+      },
+    });
+
+    renderWithProviders(
+      <AgentBuilderRail
+        sessionId="s1"
+        targetAgentPath={baseSource.path}
+        targetAgentSlug="code-reviewer"
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove", hidden: true }),
+    );
+
+    // Clearing writes an explicit null so a stored ranking would be removed,
+    // and the display seed stands down instead of reappearing.
+    expect(update).toHaveBeenCalledWith({
+      properties: { model_ranking: null },
+    });
+    expect(screen.queryAllByTestId("model-ranking-row")).toHaveLength(0);
+    expect(screen.getByTestId("model-ranking-empty")).toBeInTheDocument();
+  });
+
   describe("berd_agent Edit Completed", () => {
     const existingAgentSource: AgentSourceEntry = {
       ...baseSource,

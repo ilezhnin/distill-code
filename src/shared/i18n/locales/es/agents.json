@@ -272,6 +272,11 @@
       "at-limit": "{{model}} está en su límite de uso",
       "near-limit": "{{model}} está cerca de su límite de uso",
       "not-installed": "{{model}} no está instalado"
-    }
+    },
+    "legacySeeded": "Se muestra a partir del modelo único guardado de este agente. Solo pasa a ser el ranking cuando editas la lista y guardas.",
+    "viewFromRole": "Del rol de este agente: orden integrado.",
+    "viewSingleModel": "Modelo único guardado: aún sin ranking configurado.",
+    "viewLegacyFallback": "Recurre a su modelo único guardado ({{model}}) cuando ninguno de estos se puede usar.",
+    "viewNone": "Sin ranking: usa el modelo por defecto de la aplicación."
   }
 }
