@@ -231,28 +231,12 @@ export function ModelRankingField({
 
   return (
     <div className="flex flex-col gap-2" data-testid="model-ranking-field">
-      <div className="flex items-center justify-between gap-2">
-        <Label className={classes?.fieldLabel}>{t("ranking.label")}</Label>
-        {entries.length === 0 && classId ? (
-          <Button
-            type="button"
-            variant="ghost"
-            size="xxs"
-            flush
-            disabled={isReadOnly || inventory.length === 0}
-            onClick={fillFromRole}
-            data-testid="model-ranking-fill"
-          >
-            {t("ranking.fillFromRole")}
-          </Button>
-        ) : null}
-      </div>
+      <Label className={classes?.fieldLabel}>{t("ranking.label")}</Label>
 
-      {entries.length === 0 ? (
-        <p className="text-[11px] text-muted-foreground">
-          {t("ranking.empty")}
-        </p>
-      ) : (
+      {/* The empty state is still a list — just one with no rows yet. The add
+          control renders below in both states, so starting a ranking never
+          requires discovering that a text placeholder hides the entry point. */}
+      {entries.length > 0 ? (
         <ol className="flex list-none flex-col gap-1.5">
           {keyedEntries.map(({ key, entry }, index) => (
             <li
@@ -344,9 +328,9 @@ export function ModelRankingField({
             </li>
           ))}
         </ol>
-      )}
+      ) : null}
 
-      {entries.length > 0 && entries.length < MAX_AGENT_RANKING_ENTRIES ? (
+      {entries.length < MAX_AGENT_RANKING_ENTRIES ? (
         <Button
           type="button"
           variant="ghost"
@@ -359,6 +343,33 @@ export function ModelRankingField({
         >
           {t("ranking.add")}
         </Button>
+      ) : null}
+
+      {entries.length === 0 ? (
+        // Secondary helper under the empty list: what an empty ranking means,
+        // and the role shortcut for agents whose role has a built-in order.
+        <p
+          className="text-[11px] text-muted-foreground"
+          data-testid="model-ranking-empty"
+        >
+          {t("ranking.empty")}
+          {classId ? (
+            <>
+              {" "}
+              <Button
+                type="button"
+                variant="ghost"
+                size="xxs"
+                flush
+                disabled={isReadOnly || inventory.length === 0}
+                onClick={fillFromRole}
+                data-testid="model-ranking-fill"
+              >
+                {t("ranking.fillFromRole")}
+              </Button>
+            </>
+          ) : null}
+        </p>
       ) : null}
 
       {preview ? (
