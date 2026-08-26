@@ -6,6 +6,8 @@ import { MEMORY_PROTOCOL_PROMPT } from "@/features/memory/lib/memoryFence";
 import type { MemoryEntry } from "@/features/memory/lib/memoryEntry";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+
 import { sendPromptInBackground } from "./backgroundSend";
 
 const mocks = vi.hoisted(() => ({
@@ -128,6 +130,51 @@ describe("sendPromptInBackground", () => {
     await sendPromptInBackground("session-1", "prompt", "goose");
 
     expect(dispatchedSystemPrompt()).toContain(MEMORY_PROTOCOL_PROMPT);
+  });
+
+  it("adds the generated spawn-policy line for a persona session", async () => {
+    await sendPromptInBackground("session-1", "prompt", "goose", {
+      id: "p-1",
+      displayName: "Scout",
+      systemPrompt: "persona prompt",
+    });
+
+    // The sentence the agent files used to hardcode now comes from the ACL.
+    expect(dispatchedSystemPrompt()).toContain("do not spawn chats yourself");
+  });
+
+  it("adds the spawn prohibition for a personaless graph worker", async () => {
+    useConductorGraphStore.setState({
+      nodesById: {
+        "session-1": {
+          sessionId: "session-1",
+          projectId: "p-1",
+          role: "worker",
+          managedBy: "wave",
+          parentSessionId: "conductor-1",
+          rootConductorId: "conductor-1",
+          runId: "run-1",
+          harnessId: "goose",
+          displayName: "Scout · step",
+          status: "running",
+        },
+      },
+      reportsByRunId: {},
+    });
+    try {
+      await sendPromptInBackground("session-1", "prompt", "goose");
+      expect(dispatchedSystemPrompt()).toContain("do not spawn chats yourself");
+    } finally {
+      useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
+    }
+  });
+
+  it("gives a plain personaless chat no spawn-policy line", async () => {
+    await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
+      systemPrompt: "workspace prompt",
+    });
+
+    expect(dispatchedSystemPrompt()).not.toContain("spawn");
   });
 
   it("keeps memory and the protocols away from a wave-managed session", async () => {
