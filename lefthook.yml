@@ -8,6 +8,11 @@ pre-commit:
       # ignoreUnknown is false and unknown types would cause biome to error.
       # --no-errors-on-unmatched keeps commits green when every staged file
       # is biome-ignored (e.g. generated src-tauri/gen JSON).
+      # Deliberately still a bare `pnpm`: lefthook expands {staged_files} into
+      # this command line, and routing it through scripts/hooks/dev-tool.* would
+      # add a second quoting layer over paths lefthook has already quoted. The
+      # pre-push lane, which needs no file list, is the one that goes through
+      # the launcher.
       glob: "*.{ts,tsx,js,jsx,json,css}"
       run: pnpm exec biome format --write --no-errors-on-unmatched {staged_files}
       stage_fixed: true
@@ -18,6 +23,21 @@ pre-commit:
     check:
       run: just check
 
+# Every command below is a just recipe, and the checks inside those recipes
+# resolve their tool through scripts/hooks/dev-tool.{sh,cmd}. A GUI git client
+# (Sourcetree, an IDE) starts hooks with a trimmed PATH, so a pnpm installed
+# through fnm is invisible here; the launcher finds it, and when a tool really
+# is missing it says so and lets the push through, because CI runs these same
+# checks on the pushed commits and a hook that blocks on a missing tool only
+# teaches --no-verify.
+#
+# One failure this cannot rescue from inside the repo: when the environment
+# handed to the hook holds the same name twice in different case (`home` and
+# `HOME`, which MSYS-derived shells and .NET launchers both produce), Windows
+# PowerShell refuses to start at all — "Item has already been added. Key in
+# dictionary: 'home'". That happens before any recipe of ours runs, so it has
+# to be fixed where the environment is built: drop the duplicate variable in
+# the client, or push from a terminal.
 pre-push:
   parallel: true
   commands:

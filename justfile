@@ -1,6 +1,16 @@
 # Cargo features for the full dev/CI posture of the app crate.
 app_features := "berdctl,app-test-driver"
 
+# Every hook- and CI-facing check reaches its tool through this launcher
+# instead of by bare name. A GUI git client (Sourcetree, an IDE) starts hooks
+# with a trimmed PATH, so a pnpm installed through fnm — which lives in a
+# per-shell directory keyed by pid — is invisible and every pre-push check died
+# on "pnpm is not recognized" before it had run. The launcher knows where to
+# look, and when a tool genuinely is not installed it warns and skips rather
+# than failing the push: CI runs the same checks on the pushed commits either
+# way, and a hook that blocks on a missing tool only teaches --no-verify.
+dev_tool := if os_family() == "windows" { "./scripts/hooks/dev-tool.cmd" } else { "./scripts/hooks/dev-tool.sh" }
+
 # Ordinary recipe lines run in native Windows PowerShell; shebang recipes keep
 # their explicit Unix interpreter and are unaffected.
 set windows-shell := ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"]
@@ -93,7 +103,7 @@ berdctl-contract-generate:
 
 # Check that the generated berdctl contract artifacts are up to date.
 berdctl-contract-check:
-    pnpm generate:berdctl-contract --check
+    {{ dev_tool }} pnpm generate:berdctl-contract --check
 
 # Format frontend and Tauri/Rust files.
 fmt:
@@ -116,27 +126,27 @@ design-system-check: design-system-manifest-check design-system-tokens design-sy
 
 # Check that the generated design-system component manifest is up to date.
 design-system-manifest-check:
-    pnpm design-system:manifest-check
+    {{ dev_tool }} pnpm design-system:manifest-check
 
 # Audit covered components for custom color styling and source-token drift.
 design-system-audit:
-    pnpm design-system:audit
+    {{ dev_tool }} pnpm design-system:audit
 
 # Check that app color usage follows the shadcn + Berd token contract.
 design-system-tokens:
-    pnpm design-system:tokens
+    {{ dev_tool }} pnpm design-system:tokens
 
 # Check that curated explorer component pages follow the page contract.
 design-system-coverage:
-    pnpm design-system:coverage -- --strict
+    {{ dev_tool }} pnpm design-system:coverage -- --strict
 
 # Check frontend formatting with Biome.
 frontend-fmt-check:
-    pnpm exec biome format .
+    {{ dev_tool }} pnpm exec biome format .
 
 # Lint frontend files with Biome.
 lint:
-    pnpm lint
+    {{ dev_tool }} pnpm lint
 
 # Run react-doctor static analysis as an advisory report (fully offline, no telemetry).
 # Forwards extra flags, e.g. `just react-doctor --verbose` or `just react-doctor --json`.
@@ -145,11 +155,11 @@ react-doctor *ARGS:
 
 # Check frontend i18n string conventions.
 i18n-check:
-    pnpm check:i18n
+    {{ dev_tool }} pnpm check:i18n
 
 # Type-check frontend TypeScript.
 typecheck:
-    pnpm typecheck
+    {{ dev_tool }} pnpm typecheck
 
 # Format Tauri/Rust files.
 tauri-fmt:
@@ -157,11 +167,11 @@ tauri-fmt:
 
 # Check Tauri/Rust formatting.
 tauri-fmt-check:
-    cargo fmt --manifest-path src-tauri/Cargo.toml --check
+    {{ dev_tool }} cargo fmt --manifest-path src-tauri/Cargo.toml --check
 
 [unix]
 _tauri-cargo-unix *ARGS:
-    TAURI_CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)" && cd src-tauri && CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo {{ ARGS }}
+    DEV_TOOL="$PWD/{{ dev_tool }}" && TAURI_CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)" && cd src-tauri && CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' "$DEV_TOOL" cargo {{ ARGS }}
 
 # Run as a generated PowerShell script, not a shebang recipe. just follows the
 # Unix shebang rule and hands the interpreter everything after its path as ONE
