@@ -169,7 +169,11 @@ describe("useCredentials", () => {
     });
 
     expect(mocks.deleteProviderConfig).toHaveBeenCalledWith("anthropic");
-    expect(mocks.invalidateProvider).toHaveBeenCalledWith("anthropic");
+    // Removing credentials makes the provider unreachable, so its cached list
+    // is dropped rather than kept as a stale-but-showable one.
+    expect(mocks.invalidateProvider).toHaveBeenCalledWith("anthropic", {
+      forget: true,
+    });
     expect(mocks.refreshDefaultProviderReadiness).toHaveBeenCalledTimes(1);
   });
 
@@ -201,7 +205,9 @@ describe("useCredentials", () => {
       await refreshPromise.catch(() => undefined);
     });
 
-    expect(mocks.invalidateProvider).toHaveBeenCalledWith("anthropic");
+    expect(mocks.invalidateProvider).toHaveBeenCalledWith("anthropic", {
+      forget: true,
+    });
     expect(result.current.modelWarnings.has("anthropic")).toBe(false);
     expect(result.current.syncingProviderIds.has("anthropic")).toBe(false);
   });

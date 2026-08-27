@@ -7,6 +7,30 @@ import { notifyProviderModelInventoryInvalidated } from "../lib/providerModelInv
 
 const MODEL_CACHE_STORAGE_KEY = "goose:providerModelCache:v1";
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
+/**
+ * Floor on how soon a provider whose last poll *failed* may be polled again.
+ *
+ * `isStale` calls any entry carrying an `error` stale, so a failing provider is
+ * re-polled every single time the model picker opens. On the goose side that is
+ * not a cheap request: `on_list_provider_supported_models` calls
+ * `create_provider(..., true)`, which starts a fresh ACP bridge child process
+ * for the very providers most likely to be in an error state.
+ *
+ * Thirty seconds is picked so that a burst of picker opens costs one probe
+ * instead of one each, while a provider repaired outside the app still comes
+ * back on its own within one interaction. Anything that knows the situation
+ * changed skips the floor rather than waiting it out: an explicit `force`
+ * refresh (which every manual/after-setup entry point already uses), and
+ * `bumpRefreshVersion`, which fires on re-login and on a runtime-config reseed.
+ *
+ * Successful and empty answers are deliberately not floored -- a success is
+ * already bounded by MODEL_CACHE_TTL_MS, and an empty answer keeps its
+ * immediate-retry contract. Concurrency needs nothing extra here: a second
+ * caller joins the promise in `inFlightRefreshes`, so a provider never has two
+ * polls in flight at once.
+ */
+const FAILED_REFRESH_RETRY_FLOOR_MS = 30 * 1000;
+const lastFailedRefreshAt = new Map<string, number>();
 const inFlightRefreshes = new Map<string, Promise<void>>();
 const queuedForceRefreshes = new Map<string, Promise<void>>();
 const providerRefreshVersions = new Map<string, number>();
@@ -60,7 +84,10 @@ interface ProviderModelCacheActions {
     providerIds: string[],
     options?: { force?: boolean },
   ) => Promise<void>;
-  invalidateProvider: (providerId: string) => void;
+  invalidateProvider: (
+    providerId: string,
+    options?: { forget?: boolean },
+  ) => void;
 }
 
 export type ProviderModelCacheStore = ProviderModelCacheState &
@@ -162,7 +189,18 @@ function refreshVersion(providerId: string): number {
 
 function bumpRefreshVersion(providerId: string): void {
   providerRefreshVersions.set(providerId, refreshVersion(providerId) + 1);
+  // The caller knows something changed for this provider (new credentials, new
+  // runtime config), so the previous failure says nothing about the next poll.
+  lastFailedRefreshAt.delete(providerId);
   notifyProviderModelInventoryInvalidated(providerId);
+}
+
+function isWithinFailedRefreshFloor(providerId: string): boolean {
+  const lastFailure = lastFailedRefreshAt.get(providerId);
+  return (
+    lastFailure != null &&
+    Date.now() - lastFailure < FAILED_REFRESH_RETRY_FLOOR_MS
+  );
 }
 
 export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
@@ -237,6 +275,14 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
         return;
       }
       if (!options.force && !isStale(existing)) {
+        return;
+      }
+      // Only an entry that failed is floored; see FAILED_REFRESH_RETRY_FLOOR_MS.
+      if (
+        !options.force &&
+        existing?.error &&
+        isWithinFailedRefreshFloor(providerId)
+      ) {
         return;
       }
 
@@ -365,6 +411,7 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
           if (versionAtStart !== refreshVersion(providerId)) {
             return;
           }
+          lastFailedRefreshAt.set(providerId, Date.now());
           set((state) => {
             const providers = new Map(state.providers);
             providers.set(providerId, {
@@ -405,7 +452,22 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
       );
     },
 
-    invalidateProvider: (providerId) => {
+    /**
+     * Mark a provider's model list as needing a fresh poll.
+     *
+     * `forget: true` additionally drops the list. Use it only when the
+     * provider itself is gone or has become a different backend -- a deleted
+     * credential, a deleted or re-pointed custom provider -- where the list we
+     * hold may describe something that no longer exists.
+     *
+     * The default keeps the list, because the common caller is a re-login and
+     * a re-login means "this may be out of date", not "there is nothing". The
+     * `cli_auth` ACP providers (codex-acp, grok-acp, claude-acp) route every
+     * sign-in through here, and deleting on each one wiped their whole model
+     * list until a poll succeeded -- with a bridge that would not start, it
+     * never came back.
+     */
+    invalidateProvider: (providerId, options = {}) => {
       bumpRefreshVersion(providerId);
       set((state) => {
         if (state.runtimeManagedProviderIds.has(providerId)) {
@@ -418,8 +480,40 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
           persistModels(providers);
           return { providers };
         }
+        const existing = state.providers.get(providerId);
+        if (!existing) {
+          return {};
+        }
         const providers = new Map(state.providers);
-        providers.delete(providerId);
+        if (options.forget) {
+          providers.delete(providerId);
+        } else {
+          // `fetchedAt: 0` is the store's existing spelling of "retryable
+          // non-answer": `isCachedModelInventoryAuthoritative` rejects it and
+          // `isStale` re-polls it, so nothing downstream treats the retained
+          // list as fact -- the picker just has something to show meanwhile.
+          //
+          // `outcome` is kept as-is: it still describes the last poll, which
+          // is the only poll that happened. Inventing one here would report a
+          // provider answer that was never given.
+          //
+          // `error` is dropped: it described the previous credentials and must
+          // not outlive them. That also keeps `getError` behaving exactly as
+          // the old delete did.
+          //
+          // `runtimeManaged` is dropped for the same reason the old delete
+          // dropped it: this branch is the non-runtime-managed path, and an
+          // entry that kept the flag would stay authoritative forever.
+          providers.set(providerId, {
+            providerId,
+            models: existing.models,
+            fetchedAt: 0,
+            ...(existing.configuredModels
+              ? { configuredModels: existing.configuredModels }
+              : {}),
+            ...(existing.outcome ? { outcome: existing.outcome } : {}),
+          });
+        }
         persistModels(providers);
         return { providers };
       });
