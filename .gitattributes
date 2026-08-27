@@ -10,3 +10,6 @@ src-tauri/tauri.windows.conf.json text eol=lf
 # sqlx migration checksums cover exact bytes; checkout conversion would make an
 # already-applied migration appear modified and abort application startup.
 src-tauri/migrations/*.sql text eol=lf
+# cmd.exe reads batch files byte by byte and mis-handles labels in an LF-only
+# file; scripts/hooks/dev-tool.cmd relies on them.
+*.cmd text eol=crlf
