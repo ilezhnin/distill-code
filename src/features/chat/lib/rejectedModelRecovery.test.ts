@@ -8,6 +8,7 @@ import type { SessionExecutionTarget } from "@/features/chat/lib/sessionExecutio
 import {
   harnessRejectedModelNotice,
   isHarnessRejectedModelError,
+  noticeForUndeclaredSessionModel,
   recoverSessionFromRejectedModel,
 } from "./rejectedModelRecovery";
 
@@ -108,5 +109,69 @@ describe("recoverSessionFromRejectedModel", () => {
     expect(notice).toContain("GPT 5.6 Sol (max)");
     expect(notice).toContain("Codex");
     expect(notice).toContain("model pill");
+  });
+});
+
+// The same repair before the send instead of after it. The registry has
+// already declined to forward the pin by the time this runs, so the session is
+// on the harness' current model either way; what is left is making the store
+// agree — otherwise the next prepare re-pins the same dead id — and saying so.
+describe("noticeForUndeclaredSessionModel", () => {
+  beforeEach(() => {
+    resetSessionTargetCoordinatorsForTests();
+    useChatSessionStore.setState({ sessions: [session(PINNED)] });
+    useAgentStore.setState({
+      providers: [{ id: "codex-acp", label: "Codex" }],
+    });
+  });
+
+  it("unpins the model the harness never offered", () => {
+    noticeForUndeclaredSessionModel({
+      sessionId: "s1",
+      providerId: "codex-acp",
+      modelId: "gpt-5.6-sol[max]",
+    });
+
+    expect(
+      useChatSessionStore.getState().getSession("s1")?.executionTarget,
+    ).toEqual({ harnessId: "codex-acp", modelProviderId: "codex-acp" });
+  });
+
+  it("names the model and the harness, in the operator's own words for both", () => {
+    const notice = noticeForUndeclaredSessionModel({
+      sessionId: "s1",
+      providerId: "codex-acp",
+      modelId: "gpt-5.6-sol[max]",
+    });
+
+    expect(notice).toContain("GPT 5.6 Sol (max)");
+    expect(notice).toContain("Codex");
+    expect(notice).toContain("model pill");
+  });
+
+  // The refusal is about a request that is no longer current; rewriting the
+  // target would throw away a choice the operator made after it.
+  it("leaves a target that has already moved on alone", () => {
+    noticeForUndeclaredSessionModel({
+      sessionId: "s1",
+      providerId: "codex-acp",
+      modelId: "some-other-model",
+    });
+
+    expect(
+      useChatSessionStore.getState().getSession("s1")?.executionTarget,
+    ).toEqual(PINNED);
+  });
+
+  // A pin can be refused before it ever reaches a target — a stored preference
+  // applied to a session being created. The card still has to name it.
+  it("still names a model the session target never carried", () => {
+    const notice = noticeForUndeclaredSessionModel({
+      sessionId: "s1",
+      providerId: "codex-acp",
+      modelId: "gpt-5.6-sol[ultra]",
+    });
+
+    expect(notice).toContain("gpt-5.6-sol[ultra]");
   });
 });
