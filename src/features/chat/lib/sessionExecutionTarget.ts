@@ -48,6 +48,36 @@ interface SessionExecutionModelSnapshot {
   modelName: string;
 }
 
+/**
+ * The one gate every session execution target passes through.
+ *
+ * PROVENANCE RULE for `modelId`. A concrete model id put on a session is not
+ * a preference the runtime is free to interpret — it is forwarded to the
+ * harness verbatim (goose sends it as
+ * `session/set_config_option("model", <id>)`). A harness that does not know
+ * the id answers `Invalid params`, and because that call happens inside
+ * `stream()` the failure lands on EVERY send: the chat is unusable and cannot
+ * be repaired from inside itself. That is the codex-acp P0.
+ *
+ * So a caller may only name a `modelId` here when it is one of:
+ *   (a) confirmed by the harness' own inventory — a model list the provider
+ *       actually reported, checked for authority
+ *       (`isCachedModelInventoryAuthoritative`), not the last list the cache
+ *       happens to still hold; or
+ *   (b) the operator's explicit choice in the composer's model pill (or the
+ *       equivalent explicit instruction, e.g. a berdctl `model_id`), which is
+ *       theirs to get wrong and theirs to change back; or
+ *   (c) the harness' own report of what the session is already running.
+ *
+ * When neither holds, omit `modelId` — the resulting target runs on the
+ * harness' current model, which always works. Substituting some OTHER
+ * concrete model instead is the silent substitution D5 forbids.
+ *
+ * `sessionExecutionTargetProvenance.test.ts` pins the list of modules allowed
+ * to mint a target, so a new one has to state which of (a)/(b)/(c) it is.
+ * This function cannot check provenance itself — it sees an id, not where the
+ * id came from — which is exactly why the rule is written down here.
+ */
 export function normalizeSessionExecutionTarget(
   target: SessionExecutionTargetInput,
 ): SessionExecutionTarget {
