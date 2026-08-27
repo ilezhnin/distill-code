@@ -9,7 +9,12 @@ import {
   type WaveStep,
   parseDistillWave,
 } from "./distillWave";
-import { VERDICT_FENCE_TAG, VERDICT_TOKENS } from "./distillVerdict";
+import {
+  VERDICT_FENCE_TAG,
+  VERDICT_TOKENS,
+  VERDICT_TOKEN_VALUES,
+  parseDistillVerdict,
+} from "./distillVerdict";
 import type { StructuredReport } from "./types";
 import { admitWavePlan } from "./waveEngine";
 import {
@@ -493,15 +498,19 @@ describe("buildWaveGitDeltaLine (E3a)", () => {
   });
 });
 
+function readSkill(): string {
+  return readFileSync(
+    resolve(__dirname, "../../../distro/skills/orchestrate/SKILL.md"),
+    "utf8",
+  );
+}
+
 describe("the orchestrate skill's wave examples (5d)", () => {
   it("every distill-wave fence in the skill is a plan the engine admits", () => {
     // The skill is prose, so nothing type-checks it; this is the pairing
     // test that keeps its examples from drifting away from the parser and
     // the E1 lint the way the protocol prompt's own format example once did.
-    const skill = readFileSync(
-      resolve(__dirname, "../../../distro/skills/orchestrate/SKILL.md"),
-      "utf8",
-    );
+    const skill = readSkill();
     const fences =
       skill.match(new RegExp(`\`\`\`${WAVE_FENCE_TAG}[\\s\\S]*?\`\`\``, "g")) ??
       [];
@@ -510,6 +519,39 @@ describe("the orchestrate skill's wave examples (5d)", () => {
       const parsed = parseDistillWave(fence);
       expect(parsed.kind).toBe("plan");
       expect(admitWavePlan(parsed).kind).toBe("accepted");
+    }
+  });
+
+  // P2: the skill used to teach a topology the engine does not have —
+  // "one orchestrator per task, each with a worker" — and said nothing about
+  // the verdict at all. Both are pairing bugs: prose the parser never sees.
+  it("teaches workers directly under the conductor, not an orchestrator layer", () => {
+    const skill = readSkill();
+    expect(skill).not.toMatch(/one orchestrator per task/i);
+    expect(skill).toMatch(/directly under you/i);
+  });
+
+  it("every distill-verdict fence in the skill parses", () => {
+    const skill = readSkill();
+    const fences =
+      skill.match(
+        new RegExp(`\`\`\`${VERDICT_FENCE_TAG}[\\s\\S]*?\`\`\``, "g"),
+      ) ?? [];
+    expect(fences.length).toBeGreaterThanOrEqual(1);
+    for (const fence of fences) {
+      expect(parseDistillVerdict(fence).kind).toBe("verdict");
+    }
+  });
+
+  it("names every verdict token and invents none", () => {
+    const skill = readSkill();
+    for (const token of VERDICT_TOKEN_VALUES) {
+      expect(skill).toContain(`\`${token}\``);
+    }
+    // A word the parser does not accept, taught as if it were a verdict, is
+    // how a conductor spends a wave on an answer that reads as needs-operator.
+    for (const invented of ["approve", "reject", "retry", "needsOperator"]) {
+      expect(skill).not.toContain(`"verdict":"${invented}"`);
     }
   });
 });
