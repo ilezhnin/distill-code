@@ -67,3 +67,7 @@ src-tauri/binaries/
 # Generated release config and catalog (created by scripts/release/build-tauri-release-config.mjs)
 src-tauri/tauri.release.conf.json
 src-tauri/resources/release-channels.json
+
+# Local lefthook overrides (per-machine, never committed)
+lefthook-local.yml
+lefthook.local.yml
