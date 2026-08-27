@@ -10,6 +10,7 @@ const mockUseAgentProviderStatus = vi.fn();
 vi.mock("@/features/providers/hooks/useProviderModels", () => ({
   useProviderModels: () => ({
     isModelInventoryAuthoritative: () => false,
+    getInstalledModelsForAgent: () => [],
     ...mockUseProviderModels(),
   }),
 }));

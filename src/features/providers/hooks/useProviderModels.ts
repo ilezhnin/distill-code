@@ -88,39 +88,85 @@ export function useProviderModels() {
     [providers],
   );
 
-  const getModelsForAgent = useCallback(
-    (agentId: string) => {
+  const modelsForAgent = useCallback(
+    (
+      agentId: string,
+      { authoritativeOnly }: { authoritativeOnly: boolean },
+    ) => {
       if (agentId !== "goose") {
+        if (authoritativeOnly && !isModelInventoryAuthoritative(agentId)) {
+          return EMPTY_MODELS;
+        }
         return getModelsForProvider(agentId);
       }
 
-      return configuredModelProviderIds.flatMap((providerId) => {
-        const models = providers.get(providerId)?.models ?? [];
-        if (isGooseModelProviderId(providerId)) {
-          return models;
-        }
+      return configuredModelProviderIds
+        .filter(
+          (providerId) =>
+            !authoritativeOnly || isModelInventoryAuthoritative(providerId),
+        )
+        .flatMap((providerId) => {
+          const models = providers.get(providerId)?.models ?? [];
+          if (isGooseModelProviderId(providerId)) {
+            return models;
+          }
 
-        // Goose combines every available provider into one searchable catalog.
-        // Only explicitly curated runtime models keep recommendation metadata;
-        // provider-local discovery must not expand the combined shortlist.
-        const runtimeModelMetadata =
-          runtimeModelMetadataByProviderId.get(providerId);
-        return models.map((model) => {
-          const curatedMetadata = runtimeModelMetadata?.get(model.id);
-          return {
-            ...model,
-            recommended: curatedMetadata?.recommended ?? false,
-            featured: curatedMetadata?.featured ?? false,
-          };
+          // Goose combines every available provider into one searchable
+          // catalog. Only explicitly curated runtime models keep recommendation
+          // metadata; provider-local discovery must not expand the combined
+          // shortlist.
+          const runtimeModelMetadata =
+            runtimeModelMetadataByProviderId.get(providerId);
+          return models.map((model) => {
+            const curatedMetadata = runtimeModelMetadata?.get(model.id);
+            return {
+              ...model,
+              recommended: curatedMetadata?.recommended ?? false,
+              featured: curatedMetadata?.featured ?? false,
+            };
+          });
         });
-      });
     },
     [
       configuredModelProviderIds,
       getModelsForProvider,
+      isModelInventoryAuthoritative,
       providers,
       runtimeModelMetadataByProviderId,
     ],
+  );
+
+  /** Everything the operator may see and pick, authoritative or not. */
+  const getModelsForAgent = useCallback(
+    (agentId: string) => modelsForAgent(agentId, { authoritativeOnly: false }),
+    [modelsForAgent],
+  );
+
+  /**
+   * Only models a provider has actually reported — for callers that PIN a
+   * session to a concrete model id.
+   *
+   * The two questions differ. A picker asks "what may the operator choose",
+   * and keeping the last known list on screen while a refresh is in flight is
+   * right there. Starting a session asks "what will the harness accept", and
+   * since the cache stopped clearing itself on an empty discovery result
+   * (a refresh that answers nothing now keeps the previous payload as a
+   * retryable non-answer) a stale list can name models the harness no longer
+   * serves. Goose forwards such an id to the ACP agent verbatim, the agent
+   * answers `Invalid params`, and every send in that chat dies on "Failed to
+   * set ACP model option" — from `stream()`, so the chat cannot be rescued
+   * from inside itself.
+   *
+   * `isCachedModelInventoryAuthoritative` is the cache's own word for "this
+   * payload is an answer, not a leftover", so a non-authoritative provider is
+   * reported here as one that lists nothing: unknown, not installed. The
+   * caller then starts the session on the harness' own current model, which
+   * always works, instead of on an id nothing can serve (D5 — the fallback is
+   * "no model named", never a different concrete model).
+   */
+  const getInstalledModelsForAgent = useCallback(
+    (agentId: string) => modelsForAgent(agentId, { authoritativeOnly: true }),
+    [modelsForAgent],
   );
 
   const isRefreshingProvider = useCallback(
@@ -140,6 +186,7 @@ export function useProviderModels() {
     configuredModelProviderIds,
     modelCacheRefreshProviderIds,
     getModelsForAgent,
+    getInstalledModelsForAgent,
     getModelsForProvider,
     isModelInventoryAuthoritative,
     refreshProviderModels,

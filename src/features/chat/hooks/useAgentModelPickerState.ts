@@ -26,6 +26,7 @@ export function useAgentModelPickerState({
     configuredModelProviderIds,
     modelCacheRefreshProviderIds,
     getModelsForAgent,
+    getInstalledModelsForAgent,
     isModelInventoryAuthoritative: isProviderModelInventoryAuthoritative,
     refreshAllModelProviders,
     isRefreshingProvider,
@@ -169,6 +170,9 @@ export function useAgentModelPickerState({
     pickerAgents,
     availableModels,
     getModelsForAgent,
+    // Forwarded unchanged for callers that pin a session to a model id; the
+    // picker itself keeps using the unfiltered list (see useProviderModels).
+    getInstalledModelsForAgent,
     isModelInventoryAuthoritative,
     modelsLoading,
     modelStatusMessage,
