@@ -1,250 +1,180 @@
-# Distill Code — production-first implementation plan
+# Distill Code — архитектура волны кондуктора
 
-Status: active
+Status: reference (описание того, что есть в коде, а не плана работ)
 
-Updated: 2026-08-23 (re-baseline: первый conductor-срез отгружен на main 2026-08-21,
-commit `3dc2fa78`; план объединяет трек «волны кондуктора» из `../conductor_handoff.md`
-и трек «прозрачность бригад» из `../combined_plan.md`; развилки Q2/Q3/Q5/Q6 утверждены
-оператором 2026-08-23 и в задачах не пересматриваются)
+Updated: 2026-08-27 (re-baseline P1: документ описывал удалённый код как
+реальность в шести местах и предписывался к чтению первым)
 
-## Рабочий принцип
+**План работ живёт не здесь.** Единственный источник планирования —
+`../PLAN.md` рядом с репозиторием (59 пунктов, 11 этапов), бухгалтерия
+сделанного — `../DONE.md` там же. Этот файл отвечает на один вопрос: как
+устроена волна сегодня, чтобы новый исполнитель не изобретал заново и не
+искал по коду то, что уже описано.
 
-Сначала появляется работающий продукт, который оператор может открыть и
-попробовать. Тесты, доказательные спайки, отчёты о спайках и подробная
-документация не являются входным условием разработки.
+---
 
-Первый агент должен сразу менять продукт и закончить работу видимым сквозным
-сценарием. Нельзя завершать задачу исследованием, планом, набором типов,
-макетом, тестами без интерфейса или документом о том, что когда-нибудь нужно
-реализовать. Исключения указаны явно (пункт 1b — библиотека с тестами без
-прошивки в рантайм; пункт 0 — контракты).
+## 1. Что такое волна
 
-## Реальность на 2026-08-23 (что уже в main)
+Conductor — тип чата. Сообщение оператора уходит в модель обычным ACP-сендом
+(`features/chat/lib/sendCore.ts`) с протокольным системным промптом
+(`composeConductorSystemPrompt` из `features/conductor/wavePrompts.ts`).
+Кондуктор отвечает одним из двух: обычным текстом (прямой ответ) или планом
+волны — фенсом `distill-wave` с JSON.
 
-- Conductor — тип чата; на каждое сообщение оператора UI-эвристика
-  (`planOrchestratorTasks` regex → `useConductorAutoSpawn`) спавнит пары
-  оркестратор+воркер. **Модель кондуктор не вызывает**: `sendCore.ts` обрывает
-  диспатч для graph-координаторов (`isGraphCoordinatorSession`).
-- Граф — `features/conductor/conductorGraphStore.ts`, localStorage
-  `goose:conductor-graph`. Чипы детей — `ConductorAgentFooter`, только под
-  последним сообщением, только в conductor/orchestrator-чатах.
-- Отчёты — `distill-report` fence; синтетическая публикация итога —
-  `publishCompletedTurns` в `useConductorGraphSync.ts`.
-- Дети скрыты из сайдбара/поиска/свитчера (`sessionVisibility.ts`).
-- Harness-субагенты (Goose delegate/load, Claude Code Task/Agent, Codex
-  spawn_agent…) классифицируются в `features/chat/lib/subagentToolCalls.ts`, но
-  видны только как строки инструментов в шагах.
-
-Авто-спавн — временная конструкция: удаляется в пункте 2a.
-
-## Зафиксированные решения (не пересматривать)
-
-1. **D1**: план кондуктора — fenced `distill-wave` JSON
-   `{"steps":[{"role","subtask","access":[]|"all","model"?}]}`, ≤5 шагов,
-   строгий парс.
-2. **D2**: первое сообщение ребёнка = роль + сабтаск + (при `"all"`) JSON-отчёты
-   завершённых предыдущих шагов. Отчёты, никогда не транскрипты.
-3. **D3**: гейт сложности — простое → прямой ответ; волна только для
-   многошагового (волна из 1 шага = «один ребёнок»).
-4. **D4**: замкнутый цикл — digest конвертов кондуктору → ровно одно из:
-   accept / одна ревизионная волна / needsOperator; кап 2 ревизии на корень,
-   в приложении.
-5. **D5**: per-step model — явное поле, видимое в UI; дефолт — наследование;
-   тихий даунгрейд запрещён.
-6. **Q2 (решено)**: strict-parse без fallback. Нет fence → обычный ответ; битый
-   fence → видимая ошибка с причиной + ручная кнопка «повторить». Без
-   авторетраев, regex-fallback не оставлять.
-7. **Q3 (решено)**: S2+S3 одним релизом, без experiment-flag.
-8. **Q5 (решено)**: битый verdict → сразу needsOperator, без авторетраев;
-   ретрай — ручной кнопкой.
-9. **Q6 (решено)**: кондуктор prompt-only («plan or answer only»); tool call
-   кондуктора → видимый бейдж «исполняет сам». Harness-запрет — только при
-   реальной протечке.
-10. **Прозрачность — свойство любого чата**; авто-поведение (волны) — только у
-    conductor-типа. Plain-чаты не меняют поведения.
-11. Не удалять `roleCatalog.ts` (нужен валидации слоёв) и
-    `subagentToolCalls.ts` (фундамент проекции 2b).
-12. Отчёт наверх = **реальное user-сообщение** (envelope) через berdctl-seam
-    (`session send`, `if_running=queue`) для родителя любого типа — вводится в
-    3a; до 3a живёт синтетический `publishCompletedTurns`.
-
-## Контракты Этапа 0 (обязательны для всех последующих пунктов)
-
-1. `SessionNode.managedBy: "ui" | "wave" | "agent-cli"` — wave-машина управляет
-   только `"wave"`; миграция localStorage: ноды без поля → `"ui"`. Для
-   wave-детей дополнительно `waveId`, `stepIndex`.
-2. `anchorMessageId` обязателен для wave-детей и равен `planMessageId`
-   (сообщению кондуктора с fence). Это же поле — ключ per-message футера.
-3. Навигация из чипа — intent `{openInTab | navigate | reveal}` в
-   `ConductorTranscriptContext`, не прямой `onSelectSession`.
-4. Один словарь `RunStatus`; эфемерные harness-субагенты мапятся из
-   tool-статусов: pending/in_progress → running, completed → completed,
-   failed → failed, stopped → cancelled; конец turn'а терминализирует висящие.
-5. Один модуль валидации ролей/слоёв (появляется в 1b, используется движком,
-   berdctl `--role` и валидатором few-shot примеров).
-
-## Порядок работ
-
-```text
-Этап 0: контракты                                  ← до всего
-Этап 1: 1a футер | 1b S1-библиотека | 1c reconcile | 1d индикатор   ← параллельно
-Этап 2: 2a S2+S3 волны (после 0,1a,1b)  ∥  2b harness-проекция (после 0)
-Этап 3: 3a digest/verdict + poke  →  3b вкладки дочерних чатов
-Этап 4: 4a per-step model → 4b berdctl --parent/--role → 4c скиллы
-Этап 5: 5a Agents-сайдбар | 5b hardening | 5c N1-research | 5d examples
-Этап 6: re-baseline, .distill, полировка
+```distill-wave
+{"steps":[{"role":"researcher","subtask":"…","access":[],"label":"…","model":"…"}]}
 ```
 
-Ветки: одна ветка на пункт от актуального main (`feat/stage0-contracts`,
-`feat/t1-footer`, `feat/s1-wave-lib`, `feat/t6-reconcile`, `feat/n1-indicator`,
-`feat/wave-engine`, `feat/harness-brigade`). 2a стартует только после мержа
-0, 1a и 1b.
+`role` — id роли worker-слоя из `roleCatalog.ts`; `label` и `model`
+необязательны. Не более 5 шагов (`MAX_WAVE_STEPS`). Парс строгий и
+трёхзначный (`distillWave.ts`): фенса нет →
+обычный ответ; фенс валиден → волна; фенс битый → видимая ошибка с
+перечисленной причиной, не спавнится ничего. Regex-fallback и второй путь
+спавна удалены осознанно (D1/Q2 в `../PLAN.md` §3) — восстанавливать их
+нельзя.
 
-## Спецификации ближайших пунктов
+`access` бинарен: `[]` — шаг стартует сразу, параллельно; `"all"` — шаг ждёт
+терминальности всех предыдущих шагов волны и получает их JSON-отчёты в своём
+первом сообщении. Наверх и вбок идут **отчёты, никогда транскрипты** (D2).
 
-### 0. Контракты [S]
+`model` — единственный легальный оверрайд модели шага (4a,
+`waveStepTarget.ts`). Недоступная модель — отказ всего плана с причиной
+`step-model-unavailable`, а не тихая подмена на доступную (D5).
 
-- `types.ts`: `managedBy`, `waveId?`, `stepIndex?` в `SessionNode`.
-- `conductorGraphStore.ts`: parse/persist новых полей; миграция default `"ui"`.
-- Существующие точки регистрации (`registerConductorSession`,
-  `spawnConductorChildSession`) ставят `managedBy:"ui"`.
-- `ConductorTranscriptContext`: `onOpenChild(sessionId, intent?)`, дефолт
-  `navigate` (поведение не меняется).
+---
 
-Готово когда: сборка зелёная, существующий conductor-флоу работает как раньше,
-старый localStorage-граф читается.
+## 2. Движок
 
-### 1a. Футер бригады per-message, ниже строки действий [S]
+Чистая логика решений — `waveEngine.ts` (`admitWavePlan`, `advanceWave`):
+ничего не спавнит, ничего не пишет. Эффектная оболочка — `waveRunner.ts`.
+Детект плана в сообщениях кондуктора — `waveDetection.ts`, глобальный цикл —
+`useConductorGraphSync.ts` / `ConductorGraphSync.tsx` (работает при закрытом
+чате).
 
-- `MessageBubble.tsx`: футер рендерится **после/ниже** строки действий и
-  времени (сейчас вставлен до absolute-блока actions и виден выше него).
-- Привязка per-message: сообщение показывает детей с
-  `anchorMessageId === message.id`; дети без anchor — фолбэк на текущий
-  `latestConductorFooterHostId`. Футеры исторических сообщений постоянны.
-- Компонент чипа выделить переиспользуемым (понадобится 2b и placeholder'ам 5b).
+Фазы шага (`WAVE_STEP_PHASES` в `waveEngine.ts` — единственный источник
+правды, персист-гард `waveStore.ts` читает этот же массив):
+`pending` → `spawning` → `spawned`, плюс терминальный `failed` (спавн бросил;
+авторетрая нет, и последующие шаги не ждут его вечно).
 
-Готово когда: две волны в conductor-чате видны каждая под своим сообщением,
-чипы ниже времени, живые статусы у активной.
+Фазы волны (`WAVE_PHASES`): `running` → `digestPending` →
+`dispatchingDigest` → `awaitingVerdict` → `accepted` | `revised` |
+`needsOperator`. Спавнит только `running`.
 
-### 1b. Протокольная библиотека S1 [M] (без прошивки в рантайм)
+Состояние волны (`WaveState`) несёт `rootRequestId` — идентичность корневого
+запроса оператора, наследуемую ревизиями без изменений; именно из-за неё кап
+ревизий считается на запрос, а не на волну. Плюс `revisionCount`,
+`digestAttempt`, `carriedReports` (отчёты предыдущей волны того же корня),
+`verdictIssue`, и две отметки git-грязи (`gitDirtyAtAdmission`,
+`gitDirtyAtDigest`, `waveGitProbe.ts`) — единственный факт в дайджесте,
+который не сочинила модель.
 
-- `distillWave.ts`: tri-state парс (нет fence / валиден / невалиден с
-  перечисленной причиной: JSON, >5 шагов, пустой subtask, access не
-  `[]`/`"all"`, роль не worker-layer, model не строка).
-- Парсер `distill-verdict` — токены вердикта фиксируются здесь один раз.
-- `wavePrompts.ts`: протокольный промпт кондуктора + `buildWaveStepPrompt`
-  (вставка отчётов при `"all"`).
-- Модуль валидации ролей/слоёв поверх `roleCatalog`.
-- Vitest на всё; в UI не подключать.
+Хранилища: граф сессий — `conductorGraphStore.ts` (localStorage
+`goose:conductor-graph`), волны — `waveStore.ts` (`goose:conductor-waves`),
+телеметрия — `waveTelemetryStore.ts`. Переезд на файлы `.distill` запланирован
+(P24 в `../PLAN.md`), в localStorage запись может тихо отказать.
 
-### 1c. Reconcile статусов при старте [S]
+Узел графа (`types.ts`, `SessionNode`) несёт `managedBy: "ui" | "wave" |
+"agent-cli"`: движок волн трогает только `"wave"`. Wave-дети дополнительно
+несут `waveId`, `stepIndex` и `anchorMessageId = planMessageId` — последнее
+и есть ключ per-message футера чипов.
 
-После гидрации сессий: orchestrator/worker-ноды со статусом
-starting/running/waiting, чья сессия реально не исполняется (нет runtime state,
-нет queued-отправки) → `stopped`. Закрывает «второй Atlas висит running
-навсегда».
+---
 
-### 1d. Индикатор «ждёт внешнюю работу» [S]
+## 3. Дайджест и вердикт (замкнутый цикл D4)
 
-Чат, у которого есть работающие graph-дети, а сам он idle — показывает
-индикатор у композера («N исполнителей работают, итог придёт сообщением»).
-**Кнопку-poke не делать**: до 2a сообщение в кондуктор перехватит авто-спавн и
-наспавнит новую бригаду; poke появляется в 3a вместе с digest-машиной.
+Терминальный ребёнок публикует отчёт фенсом `distill-report`
+(`orchestratorReport.ts`); статус отчёта — `completed` / `failed` /
+`cancelled` / `blocked`, где `blocked` — не исход рана, а заявление воркера,
+что шаг сделать нельзя, и результат не выдуман (`StructuredReport` в
+`types.ts`).
 
-### 2a. S2+S3 — модельный кондуктор + движок волн, одним релизом [L]
+Когда все шаги терминальны, `waveDigest.ts` собирает дайджест, а
+`digestDelivery.ts` / `waveLifecycle.ts` доставляют его кондуктору **реальным
+user-сообщением** через berdctl-seam (`session send`, `if_running=queue`,
+`digestPublisher.ts`). Синтетическая публикация итога, которую родитель читал
+и продолжал спать, удалена в 3a вместе со своим модулем.
 
-S2:
-- Сузить short-circuit в `sendCore.ts`: conductor-сессии диспатчатся в
-  `acpSendMessage` с протокольным промптом из `wavePrompts.ts`; short-circuit
-  остаётся только для legacy оркестраторных оболочек.
-- **Удалить**: `planOrchestratorTasks.ts`(+тест), `useConductorAutoSpawn.ts`,
-  `userMessagesNeedingOrchestrator.ts`(+тест),
-  `wrapOrchestratorCoordinationPrompt` (в `orchestratorReport.ts`),
-  `selectRoleForTask` (сам `roleCatalog` остаётся), мёртвые экспорты
-  `spawnOrchestratorSession`, `emptyStructuredReport`; вызов авто-спавна из
-  `ChatView.tsx`.
+Следующий устоявшийся ответ кондуктора читается как вердикт
+(`distillVerdict.ts`), фенс `distill-verdict`:
 
-S3 (движок в глобальном sync, работает при закрытом чате):
-- Детект `distill-wave` fence в assistant-сообщениях кондуктора; persisted
-  `planMessageId`; повторный парс не зацикливается (tombstone).
-- Валидный план → спавн воркеров напрямую под кондуктором:
-  `spawnConductorChildSession` c `role:"worker"`, `managedBy:"wave"`, `waveId`,
-  `stepIndex`, `anchorMessageId=planMessageId`; промпт шага —
-  `buildWaveStepPrompt`.
-- `access:[]` → спавн сразу, параллельно; `"all"` → ждать терминальности всех
-  предыдущих шагов волны, отчёты вложить в промпт; упавший предыдущий не
-  блокирует.
-- Битый fence → видимая ошибка с причиной + tombstone + ручная кнопка
-  «повторить» (Q2). Шаги с полем `model` → отклонять видимо до 4a (D5-щель).
-- Персистентное состояние волны (расширение graph store или соседний ключ).
-- Мост до 3a: `publishCompletedTurns` научить группе wave-воркеров по
-  `anchorMessageId` (сейчас фильтрует только role=orchestrator — иначе итог
-  волны не публикуется вовсе).
-- Миграция: старые ноды (`managedBy:"ui"`) движок не трогает.
+```distill-verdict
+{"verdict":"accept","note":"…"}
+```
 
-Готово когда: многочастный запрос кондуктору → модель отвечает планом → чипы
-под план-сообщением (per 1a) → воркеры исполняются и завершаются → один
-синтетический итог; битый fence показывает ошибку и ничего не спавнит;
-рестарт посреди волны не дублирует спавн.
+Токены — ровно три: `accept`, `revise`, `needs-operator`
+(`VERDICT_TOKENS`). `revise` требует `distill-wave` фенса в том же сообщении;
+голый wave-фенс без вердикт-фенса читается как `revise`; `accept` или
+`needs-operator` вместе с wave-фенсом — ошибка парса. Нет ни одного фенса →
+`needs-operator` (Q5). Битый вердикт не ретраится автоматически: ретрай —
+только ручной кнопкой, и повторный дайджест цитирует `verdictIssue`, чтобы не
+задавать тот же вопрос дважды.
 
-### 2b. Проекция harness-субагентов [M] (любой чат)
+Кап — **2 ревизии на корневой запрос**, проверяется в приложении, а не в
+промпте. Кап считается на план-сообщение: новое сообщение оператора после
+`needsOperator` возвращает полный бюджет (нотис об этом — P14).
 
-- Новый селектор/модуль (`features/chat/lib/harnessBrigade.ts`): из content
-  turn'а собрать эфемерные записи по subagent tool calls
-  (`getSubagentToolCallInfo`/уже проставленным `subagentAgentName` полям):
-  имя, задача, статус по контракту №4; Goose `load(task_id)` обновляет запись
-  своего delegate (связка `resolveDelegateContextForTask`).
-- Рендер: тем же чип-компонентом (1a) под host-сообщением в **любом** чате +
-  live-strip в зоне шагов, пока ответа нет.
-- Клик по эфемерному чипу — раскрыть/подскроллить его tool-карточку (своего
-  чата у in-harness агента нет — не имитировать).
-- Ничего не пишет в граф, сессий не создаёт.
+---
 
-Готово когда: Ultracode/Task-воркфлоу в plain-чате виден живыми чипами во
-время работы и остаётся под сообщением после.
+## 4. ACL
 
-### Этапы 3–6 — кратко (детальные спеки добавляются при re-baseline перед стартом этапа)
+`spawnAcl.ts` + `aclDefaults.ts`: кто какой слой ролей может спавнить
+(`DEFAULT_SPAWNS_BY_ROLE`, переопределяется персоной) и кто может писать в
+долговременную память (`DEFAULT_MEMORY_WRITE_BY_ROLE`, три честных состояния
+`allowed` / `denied` / `grant-required`). Энфорс — в
+`spawnConductorChildSession` (`spawnOrchestrator.ts`); строка политики
+генерируется в промпт из того же ACL (`formatSpawnPolicyPrompt`), так что
+модель и харнесс говорят одно и то же.
 
-- **3a** digest/verdict: терминальный ребёнок (любой `managedBy`) → envelope
-  реальным user-сообщением родителю (berdctl-seam, `if_running=queue`);
-  wave-надстройка: persisted стейт-машина, verdict accept / одна ревизия /
-  needsOperator, кап 2, битый verdict → needsOperator (Q5); ревизионная волна
-  с `"all"` видит отчёты предыдущей волны корня; удалить
-  `publishCompletedTurns`; кнопка-poke; digest-сообщения — компактной
-  карточкой; бейдж «кондуктор исполняет сам» при tool call (Q6).
-- **3b** вкладки дочерних чатов по образцу `ArtifactViewerPanel`; intent
-  `openInTab`; back-banner остаётся.
-- **4a** per-step model (`resolveWaveStepTarget`, ошибка до спавна, суффикс на
-  чипе); **4b** `berdctl session create --parent --role --name --task` +
-  `registerNode(managedBy:"agent-cli")`; **4c** скиллы
-  orchestrate/dispatch/providers по расписанию handoff §6 Track B.
-- **5a** Agents-секция сайдбара; **5b** hardening (degraded-report warning,
-  wave-stop, placeholder-чипы, стоимость кондуктора); **5c** research wake для
-  in-harness воркфлоу (адаптер / journal-watcher); **5d** orchestrate-examples
-  (OOD, abdication, валидация по JSON и слою ролей).
-- **6** `.distill`, группировка чипов по волнам, токены/стоимость на чип,
-  финальный re-baseline.
+Известная дыра: фоновый путь `berdctl session create` / `fork` анонимен —
+wire-протокол не несёт identity вызывающего, и агентские сессии между собой
+неразличимы. Держит их сегодня только строка промпта. Закрытие — P42.
 
-## Что запрещено делать вместо пунктов плана
+---
 
-- превращать plain-чаты в conductor-режим;
-- второй session manager (4b — только флаги к существующему `createSession`);
-- fine-grained access-графы; MoA-агрегация; свой RL; репутационные приоры
-  моделей; неограниченные ревизии;
-- авторетраи парса/вердикта (Q2/Q5);
-- `.distill`, SQL, relay/server-инфраструктура до этапа 6;
-- удалять `roleCatalog.ts` или `subagentToolCalls.ts`;
-- массовый rebrand;
-- завершать задачу без работающего UI (кроме 0 и 1b).
+## 5. Память
 
-## Быстрая проверка после каждого пункта
+Фенс `distill-memory` (`features/memory/lib/memoryFence.ts`) — тот же канал,
+что `distill-todo`, потому что он одинаково работает на goose и на мостах
+Claude / Grok / Codex. До 5 записей за ход. Сканер смотрит хвост последних
+сообщений (`memoryAgentScan.ts`), стор — `memoryStore.ts`, файл в корне
+`.distill`. Врезка в промпт — `<memory>`-блок,
+глобальные факты первыми, проектные вторыми, бюджет 4 000 символов по
+recency (`memoryPrompt.ts`); пустой блок не выводится вовсе. Право записи —
+из ACL (`memoryWriteAccess.ts`).
 
-Запустить приложение и пройти «Готово когда» своего пункта руками; чинить
-только сборку и ошибки этого сценария. Полное покрытие — после подтверждения
-оператором.
+Корень `.distill` — `src-tauri/src/services/distill_root.rs`: приоритет
+`DISTILL_ROOT` → файл-указатель в OS-config → `~/.distill`. Проектных
+оверрайдов и версионности пока нет (этап 4 в `../PLAN.md`).
 
-## Ссылки
+---
 
-- `../combined_plan.md` — объединённый план с обоснованием и сверкой треков.
-- `../conductor_handoff.md` — протокол волн, проверенные факты кода и статьи.
-- `../launch_prompts.md` — готовые промпты для implementation-агентов.
+## 6. Что видно оператору
+
+Чипы детей — `ConductorAgentFooter` / `waveFooterChips.ts`, под тем
+сообщением, чей id равен `anchorMessageId`. Дети скрыты из сайдбара, поиска и
+свитчера (`sessionVisibility.ts`). Harness-субагенты (Goose delegate/load,
+Claude Code Task/Agent, Codex spawn_agent) классифицируются в
+`features/chat/lib/subagentToolCalls.ts` и проецируются чипами в любом чате —
+прозрачность есть свойство любого чата, автоповедение (волны) — только у
+conductor-типа.
+
+Никаких молчаливых подмен (D5): явная модель шага, суффикс на чипе, бейдж
+«кондуктор исполняет сам» при мутирующем инструменте
+(`conductorSelfExecution.ts`), отказ вместо тихого даунгрейда.
+
+---
+
+## 7. Чего здесь нет и почему
+
+Полный список отказов — `../PLAN.md` §6. Коротко: произвольные DAG между
+шагами, fine-grained access-списки, MoA-агрегация, своё обучение кондуктора,
+репутационные приоры моделей, безлимитные ревизии, авторетраи любого рода,
+regex-fallback плана, второй session manager ради `berdctl --parent`,
+жёсткий harness-запрет инструментов кондуктору. Каждый пункт оплачен спором
+или измерением; переоткрывать без новых данных запрещено.
+
+## 8. Ссылки
+
+- `../PLAN.md` — единственный план работ, устоявшиеся решения, список отказов.
+- `../DONE.md` — что уже сделано, каким коммитом и проверено ли живьём.
+- `LAWS/` и `PRODUCT.md` — продуктовые инварианты репозитория.
