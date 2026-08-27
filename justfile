@@ -254,7 +254,7 @@ _tauri-test-windows:
     just _tauri-cargo-windows test --lib --features block-telemetry-enforced telemetry
 
 # Run the local CI gate.
-ci: release-version-check check tauri-fmt-check tauri-check tauri-test clippy test release-scripts-test build
+ci: release-version-check check tauri-fmt-check tauri-check tauri-test clippy test release-scripts-test agent-driver-test build
 
 # Native x64 MSVC CI gate for the managed Node runtime + ACP bridge.
 # Runs the managed_node / managed_acp_tools module tests (including the
@@ -266,6 +266,12 @@ ci-windows:
 # Run release/updater script tests.
 release-scripts-test:
     pnpm test:release-scripts
+
+# Run the agent driver relay tests. Plain `node --test`: the relay exists
+# because the toolchain is unreachable from the agent's side, so its own tests
+# must not need that toolchain.
+agent-driver-test:
+    pnpm test:agent-driver
 
 # Verify lockstep app, CLI, plugin, and Cargo.lock versions. An expected version
 # also requires the matching linked CHANGELOG.md entry.
