@@ -191,8 +191,14 @@ export async function syncRuntimeCustomProviders(
 // Restored from the pre-#291 provider flow, adapted to the current
 // providerModelCacheStore (the old inventory cache no longer exists).
 
+// Custom-provider CRUD is not a re-login: create/update can re-point the
+// provider at a different base URL or API format, and delete removes it
+// entirely. In all three cases the list we hold may describe a different
+// backend, so it is dropped rather than kept as a stale-but-showable list.
 function invalidateProviderModels(providerId: string) {
-  useProviderModelCacheStore.getState().invalidateProvider(providerId);
+  useProviderModelCacheStore
+    .getState()
+    .invalidateProvider(providerId, { forget: true });
 }
 
 export interface CustomProviderSummary {

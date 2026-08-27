@@ -576,6 +576,163 @@ describe("providerModelCacheStore", () => {
     ).toBe(false);
   });
 
+  it("keeps the last known model list when credentials are re-entered", async () => {
+    mocks.supportedModelsList.mockResolvedValueOnce({
+      models: ["goose-gpt-5-5"],
+    });
+    await useProviderModelCacheStore
+      .getState()
+      .refreshProviderModels("databricks_v2");
+
+    useProviderModelCacheStore.getState().invalidateProvider("databricks_v2");
+
+    // A re-login says "this may be out of date", not "there is nothing": the
+    // list stays visible to the picker while it is re-polled.
+    expect(
+      useProviderModelCacheStore
+        .getState()
+        .getModelsForProvider("databricks_v2")
+        .map((model) => model.id),
+    ).toEqual(["goose-gpt-5-5"]);
+    // ...but nothing downstream may treat it as fact until a poll confirms it.
+    expect(
+      useProviderModelCacheStore
+        .getState()
+        .isModelInventoryAuthoritative("databricks_v2"),
+    ).toBe(false);
+    expect(
+      useProviderModelCacheStore.getState().providers.get("databricks_v2")
+        ?.fetchedAt,
+    ).toBe(0);
+
+    mocks.supportedModelsList.mockResolvedValueOnce({
+      models: ["goose-gpt-5-5", "goose-claude-opus-4"],
+    });
+    await useProviderModelCacheStore
+      .getState()
+      .refreshProviderModels("databricks_v2");
+
+    expect(mocks.supportedModelsList).toHaveBeenCalledTimes(2);
+    expect(
+      useProviderModelCacheStore
+        .getState()
+        .getModelsForProvider("databricks_v2")
+        .map((model) => model.id),
+    ).toEqual(["goose-gpt-5-5", "goose-claude-opus-4"]);
+  });
+
+  it("clears a recorded error when the provider is invalidated", async () => {
+    mocks.supportedModelsList
+      .mockResolvedValueOnce({ models: ["goose-gpt-5-5"] })
+      .mockRejectedValueOnce(new Error("not authenticated"));
+    await useProviderModelCacheStore
+      .getState()
+      .refreshProviderModels("databricks_v2");
+    await useProviderModelCacheStore
+      .getState()
+      .refreshProviderModels("databricks_v2", { force: true });
+    expect(
+      useProviderModelCacheStore.getState().getError("databricks_v2"),
+    ).toBe("not authenticated");
+
+    useProviderModelCacheStore.getState().invalidateProvider("databricks_v2");
+
+    // The failure described the credentials that were just replaced.
+    expect(
+      useProviderModelCacheStore.getState().getError("databricks_v2"),
+    ).toBe(null);
+  });
+
+  it("drops the model list when the provider itself goes away", async () => {
+    mocks.supportedModelsList.mockResolvedValueOnce({
+      models: ["goose-gpt-5-5"],
+    });
+    await useProviderModelCacheStore
+      .getState()
+      .refreshProviderModels("databricks_v2");
+
+    useProviderModelCacheStore
+      .getState()
+      .invalidateProvider("databricks_v2", { forget: true });
+
+    expect(
+      useProviderModelCacheStore.getState().providers.has("databricks_v2"),
+    ).toBe(false);
+    expect(
+      useProviderModelCacheStore
+        .getState()
+        .getModelsForProvider("databricks_v2"),
+    ).toEqual([]);
+    expect(
+      JSON.parse(
+        window.localStorage.getItem("goose:providerModelCache:v1") ?? "[]",
+      ),
+    ).toEqual([]);
+  });
+
+  it("stops re-probing a failing provider on every picker open", async () => {
+    mocks.supportedModelsList
+      .mockRejectedValueOnce(new Error("bridge is not running"))
+      .mockResolvedValue({ models: ["gpt-5-codex"] });
+
+    await useProviderModelCacheStore
+      .getState()
+      .refreshProviderModels("codex-acp");
+    expect(mocks.supportedModelsList).toHaveBeenCalledTimes(1);
+
+    // Opening the picker lands here. An entry carrying an error is stale on
+    // every read, and each probe of an ACP provider starts a new bridge child
+    // process on the goose side.
+    await useProviderModelCacheStore
+      .getState()
+      .refreshProviderModels("codex-acp");
+    await useProviderModelCacheStore
+      .getState()
+      .refreshProviderModels("codex-acp");
+    expect(mocks.supportedModelsList).toHaveBeenCalledTimes(1);
+
+    // Asking for it explicitly is not throttled.
+    await useProviderModelCacheStore
+      .getState()
+      .refreshProviderModels("codex-acp", { force: true });
+
+    expect(mocks.supportedModelsList).toHaveBeenCalledTimes(2);
+    expect(
+      useProviderModelCacheStore
+        .getState()
+        .getModelsForProvider("codex-acp")
+        .map((model) => model.id),
+    ).toEqual(["gpt-5-codex"]);
+  });
+
+  it("re-probes a failing provider straight after signing in again", async () => {
+    mocks.supportedModelsList
+      .mockRejectedValueOnce(new Error("not signed in"))
+      .mockResolvedValueOnce({ models: ["gpt-5-codex"] });
+
+    await useProviderModelCacheStore
+      .getState()
+      .refreshProviderModels("codex-acp");
+    await useProviderModelCacheStore
+      .getState()
+      .refreshProviderModels("codex-acp");
+    expect(mocks.supportedModelsList).toHaveBeenCalledTimes(1);
+
+    // The sign-in is exactly the news the retry floor was waiting for.
+    useProviderModelCacheStore.getState().invalidateProvider("codex-acp");
+    await useProviderModelCacheStore
+      .getState()
+      .refreshProviderModels("codex-acp");
+
+    expect(mocks.supportedModelsList).toHaveBeenCalledTimes(2);
+    expect(
+      useProviderModelCacheStore
+        .getState()
+        .getModelsForProvider("codex-acp")
+        .map((model) => model.id),
+    ).toEqual(["gpt-5-codex"]);
+  });
+
   it("stores ACP error data when supported model refresh fails", async () => {
     const error = new Error("Internal error") as Error & { data: string };
     error.name = "RequestError";
