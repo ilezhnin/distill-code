@@ -1,21 +1,24 @@
 ---
 name: orchestrate
-description: Distill conductor loop — classify the operator request, pick roles from the Agents catalog, let Distill spawn orchestrators and workers, accept deliveries by evidence, and close the turn with a distill-report. Use when coordinating a stage, handing out work, or closing a turn.
+description: Distill conductor loop — classify the operator request, answer it directly or plan one distill-wave, let Distill spawn the workers, then read the digest and close the loop with a distill-verdict. Use when coordinating a stage, handing out work, or closing a turn.
 metadata:
   berdBundled: true
 ---
 
 # Orchestrate
 
-You decide and give verdicts. You do not execute product work. Distill starts child agents from the Agents catalog. Do not spawn chats yourself.
+You decide and give verdicts. You do not execute product work. You emit one
+`distill-wave` fence; Distill spawns the workers **directly under you** —
+there is no orchestrator layer between you and them — and brings their reports
+back to you as a digest. Do not spawn chats yourself.
 
 ## 0. Weight the request
 
 | Task | Path |
 |---|---|
-| One specialist, one zone | Distill starts that worker |
-| Several independent tasks | Distill starts one orchestrator per task, each with a worker |
-| A stage that needs a plan first | Distill starts Planner, then workers |
+| One specialist, one zone | A wave of exactly one step — that is what "one child" is |
+| Several independent tasks | One wave, one `access:[]` step per task |
+| A stage that needs a plan first | A planning step first, later steps `access:"all"` |
 | Unity map / unfamiliar area | Unity Explorer + `unity-orient` |
 | Unity C# change | Unity Worker + `unity-implement` |
 | Unity review | Unity Reviewer + `unity-review` |
@@ -72,17 +75,46 @@ green»:
 The work is checkable, so the last step inspects the artifact itself — the
 build, the tests, a search — never just the other step's report.
 
+## 2b. One child is a wave of one step
+
+There is no separate way to start a single agent. "Give this to a specialist"
+is a `distill-wave` fence with exactly one step. Everything else — the chip,
+the report, the digest, the verdict — works the same as for five steps.
+
 ## 3. Accepting a delivery
 
 - Diff the named zone. Anything forbidden touched?
 - Did a second owner of a fact appear?
 - Run the newest claim's negative control when the assignment requires it: break, show red, restore.
 
-## 4. Close the turn
+## 4. Close the loop with a verdict
 
-Evidence first. Distill collects worker `distill-report` blocks and shows the operator the answer, stats, and named agents. Do not narrate "started", "thinking", or "waiting" to the operator.
+When every step is terminal, Distill delivers you a digest of the workers'
+`distill-report` blocks as a real message. Answer it with exactly one
+`distill-verdict` fence:
 
-The loop ends with work launched or with a verdict. If there is no work, skip the loop — do not build instruments instead of the product.
+```distill-verdict
+{"verdict":"accept","note":"one line for the operator"}
+```
+
+The verdict word is exactly one of three, and no other word is accepted:
+
+- `accept` — the results answer the request. The prose outside the block is
+  what the operator reads as the answer, so write the answer there. If the
+  wave produced something checkable, accept only on the verification step's
+  evidence — a checkable wave that was not checked is `needs-operator`.
+- `revise` — one more wave is needed. Emit the `distill-verdict` block **and**
+  a `distill-wave` block with the revision wave in the same message. Revisions
+  are capped at two per operator request; do not plan on getting another.
+- `needs-operator` — the loop stops and the operator has to look. Say why in
+  the note.
+
+A malformed verdict is read as `needs-operator`. There is no auto-retry: a
+verdict that does not parse costs the operator a manual button press.
+
+Evidence first. Do not narrate "started", "thinking", or "waiting" to the
+operator. The loop ends with a wave launched or with a verdict. If there is no
+work, skip the loop — do not build instruments instead of the product.
 
 ## Long-running background work
 
