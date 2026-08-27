@@ -72,6 +72,7 @@
   },
   "errors": {
     "attachmentsTooLarge": "Attachments are too large to send ({{totalMb}} MB, limit {{limitMb}} MB). Remove some attachments and try again.",
+    "harnessRejectedModel": "{{harness}} does not accept the model “{{model}}”, so this message was not sent. This chat is now set to run on {{harness}}'s current model — send again, or pick another model in the composer's model pill.",
     "sessionPreparationSuperseded": "Session configuration changed while preparing. Try sending again.",
     "steeringBackendUnavailable": "Steering is not available in this Goose backend. Restart with the steering backend branch and try again.",
     "voiceInputFailedTitle": "Voice dictation failed",
