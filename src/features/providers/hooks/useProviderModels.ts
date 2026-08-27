@@ -6,6 +6,7 @@ import { getModelProvidersFromEntries } from "../providerCatalog";
 import { getModelCacheRefreshProviderIds } from "../modelCacheRefresh";
 import { getProviderModelSelectionHint } from "../modelSelectionHints";
 import { isGooseModelProviderId } from "../lib/modelRecommendations";
+import type { ProviderModelInventoryProblem } from "../lib/providerModelInventoryStatus";
 import { defaultModelInventoryModeForLoadResult } from "../runtimeProviderConfig";
 import { useProviderCatalogStore } from "../stores/providerCatalogStore";
 import {
@@ -182,6 +183,38 @@ export function useProviderModels() {
     [providers],
   );
 
+  /**
+   * Why this agent's model list is empty, when it is — the piece of the cache
+   * entry the picker needs to stop rendering three different situations as one
+   * blank list. A failed poll wins over an empty answer: a bridge that never
+   * came up explains more than a provider that answered nothing. A provider
+   * that manages its own model list is not a problem at all; `getError`
+   * already has a sentence for it.
+   */
+  const getModelInventoryProblem = useCallback(
+    (agentId: string): ProviderModelInventoryProblem | null => {
+      const providerIds =
+        agentId === "goose" ? configuredModelProviderIds : [agentId];
+      let reportedNone: ProviderModelInventoryProblem | null = null;
+
+      for (const providerId of providerIds) {
+        if (getProviderModelSelectionHint(providerId)) {
+          continue;
+        }
+        const entry = providers.get(providerId);
+        if (entry?.outcome === "failed") {
+          return { providerId, outcome: "failed", reason: entry.error };
+        }
+        if (entry?.outcome === "empty" && !reportedNone) {
+          reportedNone = { providerId, outcome: "empty" };
+        }
+      }
+
+      return reportedNone;
+    },
+    [configuredModelProviderIds, providers],
+  );
+
   return {
     configuredModelProviderIds,
     modelCacheRefreshProviderIds,
@@ -193,5 +226,6 @@ export function useProviderModels() {
     refreshAllModelProviders,
     isRefreshingProvider,
     getError,
+    getModelInventoryProblem,
   };
 }

@@ -1,8 +1,10 @@
 import { useCallback, useMemo, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import type { AcpProvider } from "@/shared/api/acp";
 import { useProviderModels } from "@/features/providers/hooks/useProviderModels";
 import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProviderStatus";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
+import { providerModelInventoryMessage } from "@/features/providers/lib/providerModelInventoryStatus";
 import { resolveSelectedAgentId } from "../lib/agentProviderResolution";
 import { listVisibleAgentPickerOptions } from "../lib/listVisibleAgentPickerOptions";
 import type { ModelOption } from "../types";
@@ -20,6 +22,7 @@ export function useAgentModelPickerState({
   onProviderSelected,
   onModelSelected,
 }: UseAgentModelPickerStateOptions) {
+  const { t } = useTranslation();
   const catalogEntries = useProviderCatalogStore((state) => state.entries);
   const catalogLoaded = useProviderCatalogStore((state) => state.loaded);
   const {
@@ -31,6 +34,7 @@ export function useAgentModelPickerState({
     refreshAllModelProviders,
     isRefreshingProvider,
     getError,
+    getModelInventoryProblem,
   } = useProviderModels();
   const {
     readyAgentIds,
@@ -105,11 +109,28 @@ export function useAgentModelPickerState({
       return null;
     }
 
+    // An empty list has three causes and used to look the same in all three.
+    // Say which one applies before falling back on whatever a provider says
+    // about itself (a provider that manages its own models is skipped by
+    // getModelInventoryProblem, so its own hint still wins here).
+    const problem = getModelInventoryProblem(selectedAgentId);
+    if (problem) {
+      const message = providerModelInventoryMessage(problem);
+      return t(message.key, message.values);
+    }
+
     return (
       providerIdsForSelectedAgent.map(getError).find((message) => message) ??
       null
     );
-  }, [availableModels.length, getError, providerIdsForSelectedAgent]);
+  }, [
+    availableModels.length,
+    getError,
+    getModelInventoryProblem,
+    providerIdsForSelectedAgent,
+    selectedAgentId,
+    t,
+  ]);
 
   const handleProviderChange = useCallback(
     (providerId: string) => {

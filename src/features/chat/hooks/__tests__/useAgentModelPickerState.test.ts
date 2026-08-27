@@ -11,6 +11,7 @@ vi.mock("@/features/providers/hooks/useProviderModels", () => ({
   useProviderModels: () => ({
     isModelInventoryAuthoritative: () => false,
     getInstalledModelsForAgent: () => [],
+    getModelInventoryProblem: () => null,
     ...mockUseProviderModels(),
   }),
 }));
@@ -50,6 +51,80 @@ describe("useAgentModelPickerState", () => {
       loading: false,
       refresh: mockRefreshAgentProviderStatus,
     });
+  });
+
+  // Three situations used to reach the pill as the same empty list: a poll
+  // that never came back, a provider that answered with no models, and a
+  // provider that has none. The pill now names which one it is looking at.
+  it.each([
+    {
+      what: "a poll that never came back",
+      problem: {
+        providerId: "openrouter",
+        outcome: "failed" as const,
+        reason: "bridge is not running",
+      },
+      expected: "Could not ask openrouter for models: bridge is not running",
+    },
+    {
+      what: "a poll that came back naming nothing",
+      problem: { providerId: "openrouter", outcome: "empty" as const },
+      expected: "openrouter reported no models",
+    },
+  ])("reports $what in the model status message", ({ problem, expected }) => {
+    mockUseProviderModels.mockReturnValue({
+      configuredModelProviderIds: ["openrouter"],
+      modelCacheRefreshProviderIds: ["openrouter"],
+      getModelsForAgent: () => [],
+      refreshAllModelProviders: vi.fn().mockResolvedValue(undefined),
+      isRefreshingProvider: () => false,
+      getError: () => null,
+      getModelInventoryProblem: () => problem,
+    });
+
+    const { result } = renderHook(() =>
+      useAgentModelPickerState({
+        providers: [],
+        selectedProvider: "goose",
+        onProviderSelected: vi.fn(),
+      }),
+    );
+
+    expect(result.current.modelStatusMessage).toBe(expected);
+  });
+
+  it("leaves the status message empty once models are listed", () => {
+    mockUseProviderModels.mockReturnValue({
+      configuredModelProviderIds: ["openrouter"],
+      modelCacheRefreshProviderIds: ["openrouter"],
+      getModelsForAgent: () => [
+        {
+          id: "openrouter-model",
+          name: "openrouter-model",
+          displayName: "OpenRouter Model",
+          providerId: "openrouter",
+          providerName: "OpenRouter",
+          recommended: false,
+        },
+      ],
+      refreshAllModelProviders: vi.fn().mockResolvedValue(undefined),
+      isRefreshingProvider: () => false,
+      getError: () => null,
+      getModelInventoryProblem: () => ({
+        providerId: "openrouter",
+        outcome: "empty" as const,
+      }),
+    });
+
+    const { result } = renderHook(() =>
+      useAgentModelPickerState({
+        providers: [],
+        selectedProvider: "goose",
+        onProviderSelected: vi.fn(),
+      }),
+    );
+
+    expect(result.current.modelStatusMessage).toBeNull();
   });
 
   it("switches to goose when requested", () => {
