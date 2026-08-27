@@ -22,7 +22,10 @@ import {
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
 import type { ModelOption } from "@/features/chat/types";
-import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
+import {
+  isCachedModelInventoryAuthoritative,
+  useProviderModelCacheStore,
+} from "@/features/providers/stores/providerModelCacheStore";
 import type { AgentPlatformId } from "@/features/status/lib/rateLimitTypes";
 import {
   platformLimitState,
@@ -60,9 +63,21 @@ export interface WaveStepTargetIo {
 const liveIo: WaveStepTargetIo = {
   personas: () => useAgentStore.getState().personas,
   providers: () => useAgentStore.getState().providers,
-  modelsForHarness: (harnessId) =>
-    useProviderModelCacheStore.getState().providers.get(harnessId)?.models ??
-    [],
+  modelsForHarness: (harnessId) => {
+    // Only an inventory the cache itself calls authoritative may name the
+    // model a wave child is spawned on. An empty discovery refresh no longer
+    // clears the cache — it keeps the previous payload as a retryable
+    // non-answer — so the raw entry can still list models the harness has
+    // stopped serving, and a step spawned on one of those ids dies on every
+    // send with "Failed to set ACP model option: Invalid params". Reporting
+    // nothing instead makes the step inherit the conductor, which runs.
+    const entry = useProviderModelCacheStore
+      .getState()
+      .providers.get(harnessId);
+    return entry && isCachedModelInventoryAuthoritative(entry)
+      ? entry.models
+      : [];
+  },
   rateLimits: () =>
     useProviderRateLimitsStore.getState().snapshot?.providers ?? [],
 };

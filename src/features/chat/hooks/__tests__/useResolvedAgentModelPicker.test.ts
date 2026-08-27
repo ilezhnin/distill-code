@@ -58,6 +58,7 @@ function renderModelPicker(overrides: Partial<ModelPickerOptions> = {}) {
 vi.mock("../useAgentModelPickerState", () => ({
   useAgentModelPickerState: (args: unknown) => ({
     getModelsForAgent: () => [],
+    getInstalledModelsForAgent: () => [],
     isModelInventoryAuthoritative: () => false,
     ...mockUseAgentModelPickerState(args),
   }),

@@ -64,6 +64,7 @@ const mockPickerState = {
   pickerAgents: [{ id: "goose", label: "Goose" }],
   availableModels: [] as ModelOption[],
   modelsByAgent: new Map<string, ModelOption[]>(),
+  installedModelsByAgent: new Map<string, ModelOption[]>(),
   modelsLoading: false,
   modelStatusMessage: null as string | null,
 };
@@ -253,6 +254,12 @@ vi.mock("../useAgentModelPickerState", () => ({
     pickerAgents: mockPickerState.pickerAgents,
     availableModels: mockPickerState.availableModels,
     getModelsForAgent: (agentId: string) =>
+      mockPickerState.modelsByAgent.get(agentId) ??
+      mockPickerState.availableModels,
+    // Defaults to the same list: only the tests that care about an inventory
+    // the cache no longer vouches for set the two apart.
+    getInstalledModelsForAgent: (agentId: string) =>
+      mockPickerState.installedModelsByAgent.get(agentId) ??
       mockPickerState.modelsByAgent.get(agentId) ??
       mockPickerState.availableModels,
     isModelInventoryAuthoritative: () => false,
@@ -545,6 +552,7 @@ describe("useChatSessionController", () => {
     mockPickerState.pickerAgents = [{ id: "goose", label: "Goose" }];
     mockPickerState.availableModels = [];
     mockPickerState.modelsByAgent.clear();
+    mockPickerState.installedModelsByAgent.clear();
     mockPickerState.modelsLoading = false;
     mockPickerState.modelStatusMessage = null;
     mockUseChatRuntime.chatState = "idle";

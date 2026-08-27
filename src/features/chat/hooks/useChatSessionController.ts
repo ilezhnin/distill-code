@@ -1161,6 +1161,7 @@ export function useChatSessionController({
     pickerAgents,
     availableModels,
     getModelsForAgent,
+    getInstalledModelsForAgent,
     modelsLoading,
     modelStatusMessage,
     handleProviderChange,
@@ -1293,7 +1294,13 @@ export function useChatSessionController({
       const ranked = options?.applyRanking
         ? rankedPersonaExecutionTarget(persona, {
             providers,
-            getModelsForHarness: getModelsForAgent,
+            // Deliberately the authority-filtered list, not the picker's.
+            // A ranking match hands the session a concrete model id, and the
+            // cache keeps serving a provider's last known models after a
+            // discovery refresh comes back empty. Matching "sol" against that
+            // leftover pins the chat to an id codex no longer advertises, and
+            // every send then dies on "Failed to set ACP model option".
+            getModelsForHarness: getInstalledModelsForAgent,
             rateLimits:
               useProviderRateLimitsStore.getState().snapshot?.providers ?? [],
           })
@@ -1341,7 +1348,7 @@ export function useChatSessionController({
         { requireInstalledModel: true },
       );
     },
-    [catalogEntries, getModelsForAgent, providers],
+    [catalogEntries, getInstalledModelsForAgent, getModelsForAgent, providers],
   );
   const prepareSessionForCurrentSelection = useCallback(
     async (
