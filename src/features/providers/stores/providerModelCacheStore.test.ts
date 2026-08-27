@@ -176,7 +176,9 @@ describe("providerModelCacheStore", () => {
       .getState()
       .refreshProviderModels("openrouter", { force });
 
-    const retryableEntry = { ...cachedEntry, fetchedAt: 0 };
+    // The empty answer is still recorded as an outcome: the entry says which
+    // kind of empty it is, and the retry timing is what stays unchanged.
+    const retryableEntry = { ...cachedEntry, fetchedAt: 0, outcome: "empty" };
     delete retryableEntry.error;
     expect(
       useProviderModelCacheStore.getState().providers.get("openrouter"),

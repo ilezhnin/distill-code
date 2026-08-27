@@ -111,12 +111,12 @@ describe("ModelRankingField", () => {
         outcome: "failed" as const,
         reason: "bridge is not running",
       },
-      expected: "Could not ask grok-acp for models: bridge is not running",
+      expected: "Could not ask Grok for models: bridge is not running",
     },
     {
       what: "a provider that named no models",
       problem: { providerId: "grok-acp", outcome: "empty" as const },
-      expected: "grok-acp reported no models",
+      expected: "Grok reported no models",
     },
   ])("says the inventory is empty because of $what", ({
     problem,
