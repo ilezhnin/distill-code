@@ -24,7 +24,19 @@ const apiMocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("@/shared/api/agents", () => apiMocks);
+// Partial mock: the calls this suite drives are stubbed, but the rail also
+// reads an agent's spawn and memory-write ACL off its properties, and those
+// two readers are pure property parsers. Handing back the real ones keeps the
+// rail rendering the permissions the app would actually show instead of a
+// second copy of the parsing rules that could drift from `agents.ts`.
+vi.mock("@/shared/api/agents", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/shared/api/agents")>();
+  return {
+    ...apiMocks,
+    agentSpawnsProperty: actual.agentSpawnsProperty,
+    memoryWriteProperty: actual.memoryWriteProperty,
+  };
+});
 
 vi.mock("@/features/agents/lib/agentTelemetry", () => telemetryMocks);
 
