@@ -95,6 +95,7 @@ vi.mock("@/features/providers/hooks/useProviderModels", () => ({
       mockRefreshAllModelProviders(...args),
     isRefreshingProvider: () => mockProviderModelsState.refreshing,
     getError: () => null,
+    getModelInventoryProblem: () => null,
   }),
 }));
 

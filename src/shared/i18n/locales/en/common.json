@@ -156,6 +156,11 @@
     "preparingContent": "Preparing content",
     "required": "Required"
   },
+  "modelInventory": {
+    "pollFailed": "Could not ask {{provider}} for models: {{reason}}",
+    "pollFailedUnknown": "Could not ask {{provider}} for models",
+    "reportedNone": "{{provider}} reported no models"
+  },
   "session": {
     "defaultTitle": "New chat"
   },

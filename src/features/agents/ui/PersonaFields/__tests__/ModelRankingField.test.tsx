@@ -28,7 +28,14 @@ const mocks = vi.hoisted(() => ({
     "grok-acp": [{ id: "grok-4-6", displayName: "Grok 4.6" }],
   } as Record<string, { id: string; displayName: string }[]>,
   rateLimits: [] as unknown[],
+  inventoryProblem: null as {
+    providerId: string;
+    outcome: "empty" | "failed";
+    reason?: string;
+  } | null,
 }));
+
+const INSTALLED_MODELS = { ...mocks.models };
 
 vi.mock("@/features/agents/stores/agentStore", () => ({
   useAgentStore: (selector: (state: { providers: unknown[] }) => unknown) =>
@@ -39,6 +46,7 @@ vi.mock("@/features/providers/hooks/useProviderModels", () => ({
   useProviderModels: () => ({
     getModelsForAgent: (platform: string) => mocks.models[platform] ?? [],
     getError: () => null,
+    getModelInventoryProblem: () => mocks.inventoryProblem,
   }),
 }));
 
@@ -89,6 +97,48 @@ const OPUS_THEN_GROK = [
 describe("ModelRankingField", () => {
   beforeEach(() => {
     mocks.rateLimits = [];
+    mocks.models = { ...INSTALLED_MODELS };
+    mocks.inventoryProblem = null;
+  });
+
+  // Nothing to rank has three causes, and a disabled "Add model" button told
+  // the operator none of them.
+  it.each([
+    {
+      what: "a poll that never came back",
+      problem: {
+        providerId: "grok-acp",
+        outcome: "failed" as const,
+        reason: "bridge is not running",
+      },
+      expected: "Could not ask grok-acp for models: bridge is not running",
+    },
+    {
+      what: "a provider that named no models",
+      problem: { providerId: "grok-acp", outcome: "empty" as const },
+      expected: "grok-acp reported no models",
+    },
+  ])("says the inventory is empty because of $what", ({
+    problem,
+    expected,
+  }) => {
+    mocks.models = {};
+    mocks.inventoryProblem = problem;
+
+    renderField();
+
+    expect(
+      screen.getByTestId("model-ranking-inventory-status"),
+    ).toHaveTextContent(expected);
+    expect(screen.getByTestId("model-ranking-add")).toBeDisabled();
+  });
+
+  it("stays quiet about the inventory when there are models to rank", () => {
+    renderField();
+
+    expect(
+      screen.queryByTestId("model-ranking-inventory-status"),
+    ).not.toBeInTheDocument();
   });
 
   it("starts an empty ranking from a plain add control", async () => {

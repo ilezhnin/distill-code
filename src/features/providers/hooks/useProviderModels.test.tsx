@@ -180,6 +180,57 @@ describe("useProviderModels", () => {
     ).toEqual(["goose-gpt-5-6-sol"]);
   });
 
+  it("names which provider left the Goose model list empty, and why", () => {
+    useProviderCatalogStore.getState().mergeEntries([
+      modelProvider("anthropic", [
+        {
+          key: "ANTHROPIC_API_KEY",
+          label: "API Key",
+          secret: true,
+          required: true,
+        },
+      ]),
+    ]);
+    useProviderModelCacheStore.setState({
+      providers: new Map([
+        [
+          "databricks_v2",
+          {
+            providerId: "databricks_v2",
+            fetchedAt: 0,
+            models: [],
+            outcome: "empty",
+          },
+        ],
+        [
+          "anthropic",
+          {
+            providerId: "anthropic",
+            fetchedAt: 0,
+            models: [],
+            error: "bridge is not running",
+            outcome: "failed",
+          },
+        ],
+      ]),
+    });
+
+    const { result } = renderHook(() => useProviderModels());
+
+    // Goose fans out over every configured model provider, and a poll that
+    // never came back explains more than one that answered nothing, so the
+    // failure is the one reported even though it is listed second.
+    expect(result.current.getModelInventoryProblem("goose")).toEqual({
+      providerId: "anthropic",
+      outcome: "failed",
+      reason: "bridge is not running",
+    });
+    expect(result.current.getModelInventoryProblem("databricks_v2")).toEqual({
+      providerId: "databricks_v2",
+      outcome: "empty",
+    });
+  });
+
   it("does not refresh unconfigured first-class providers from the picker", () => {
     useProviderCatalogStore.getState().mergeEntries([
       {
