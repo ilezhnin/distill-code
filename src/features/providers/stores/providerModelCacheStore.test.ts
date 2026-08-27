@@ -229,6 +229,7 @@ describe("providerModelCacheStore", () => {
       models: [configuredModel],
       configuredModels: [configuredModel],
       fetchedAt: 0,
+      outcome: "empty",
     });
     expect(
       useProviderModelCacheStore
@@ -257,9 +258,17 @@ describe("providerModelCacheStore", () => {
     await useProviderModelCacheStore
       .getState()
       .refreshProviderModels("openrouter");
+    // The provider answered with nothing, which is a fact worth keeping even
+    // with no models to cache: the entry exists solely to record the outcome,
+    // and lists nothing, so the retry below still happens.
     expect(
-      useProviderModelCacheStore.getState().providers.has("openrouter"),
-    ).toBe(false);
+      useProviderModelCacheStore.getState().providers.get("openrouter"),
+    ).toEqual({
+      providerId: "openrouter",
+      models: [],
+      fetchedAt: 0,
+      outcome: "empty",
+    });
 
     await useProviderModelCacheStore
       .getState()
@@ -526,6 +535,43 @@ describe("providerModelCacheStore", () => {
         .getState()
         .getModelsForProvider("databricks_v2"),
     ).toEqual([]);
+  });
+
+  it("records which of the three answers the last poll gave", async () => {
+    mocks.supportedModelsList
+      .mockResolvedValueOnce({ models: ["openrouter-model"] })
+      .mockResolvedValueOnce({ models: [] })
+      .mockRejectedValueOnce(new Error("bridge is not running"));
+
+    const pollOnce = async () => {
+      await useProviderModelCacheStore
+        .getState()
+        .refreshProviderModels("openrouter", { force: true });
+      return useProviderModelCacheStore.getState().providers.get("openrouter");
+    };
+
+    // Three different situations that all reach the UI as an empty list unless
+    // the entry says which one happened.
+    expect((await pollOnce())?.outcome).toBe("models");
+    expect((await pollOnce())?.outcome).toBe("empty");
+
+    const failed = await pollOnce();
+    expect(failed?.outcome).toBe("failed");
+    expect(failed?.error).toBe("bridge is not running");
+
+    // Recording the outcome must not change what the picker gets back: the
+    // last usable payload is still there, still not authoritative.
+    expect(
+      useProviderModelCacheStore
+        .getState()
+        .getModelsForProvider("openrouter")
+        .map((model) => model.id),
+    ).toEqual(["openrouter-model"]);
+    expect(
+      useProviderModelCacheStore
+        .getState()
+        .isModelInventoryAuthoritative("openrouter"),
+    ).toBe(false);
   });
 
   it("stores ACP error data when supported model refresh fails", async () => {

@@ -11,6 +11,21 @@ const inFlightRefreshes = new Map<string, Promise<void>>();
 const queuedForceRefreshes = new Map<string, Promise<void>>();
 const providerRefreshVersions = new Map<string, number>();
 
+/**
+ * What the last poll of this provider's model list actually said.
+ *
+ * Goose answers in three distinct ways -- `fetch_supported_models` returns
+ * `Err(RequestFailed(...))` when the agent never produced a model config, an
+ * empty vector when it answered with no models, and a populated one otherwise
+ * -- and all three used to arrive here as the same empty list, so the operator
+ * could not tell a bridge that never came up from a provider that genuinely
+ * serves nothing.
+ *
+ * This field is recorded for display only. Nothing about which models reach
+ * consumers, or when a refresh retries, reads it.
+ */
+export type ProviderModelFetchOutcome = "models" | "empty" | "failed";
+
 export interface CachedProviderModels {
   providerId: string;
   models: ModelOption[];
@@ -18,6 +33,8 @@ export interface CachedProviderModels {
   runtimeManaged?: boolean;
   configuredModels?: ModelOption[];
   error?: string;
+  /** Outcome of the last poll; absent on entries seeded from runtime config. */
+  outcome?: ProviderModelFetchOutcome;
 }
 
 interface ProviderModelCacheState {
@@ -263,16 +280,42 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
           const ids = await fetchProviderSupportedModels(providerId);
           const discoveredModels = providerModelOptionsFromIds(providerId, ids);
           if (discoveredModels.length === 0) {
+            if (versionAtStart !== refreshVersion(providerId)) {
+              return;
+            }
+            // Already recorded as a non-answer: nothing to write, exactly as
+            // before this outcome existed. Only the transition into the state
+            // touches the store, so a provider that keeps answering nothing
+            // does not re-render its consumers on every poll.
             if (
-              !existing ||
-              versionAtStart !== refreshVersion(providerId) ||
-              (existing.fetchedAt === 0 && !existing.error)
+              existing?.outcome === "empty" &&
+              existing.fetchedAt === 0 &&
+              !existing.error
             ) {
               return;
             }
-            const retryableEntry = { ...existing, fetchedAt: 0 };
-            delete retryableEntry.error;
-            notifyProviderModelInventoryInvalidated(providerId);
+            // The agent answered and named nothing. What consumers read back is
+            // unchanged -- the previous payload stays as a retryable non-answer
+            // with fetchedAt 0 -- but the entry now says *why* it is empty, so
+            // the picker can report "no models" instead of showing the same
+            // blank list a failed poll produces.
+            const retryableEntry: CachedProviderModels = {
+              providerId,
+              models: existing?.models ?? [],
+              fetchedAt: 0,
+              ...(existing?.configuredModels
+                ? { configuredModels: existing.configuredModels }
+                : {}),
+              outcome: "empty",
+            };
+            // Only a refresh that actually drops a usable payload invalidates
+            // downstream inventory. Recording the outcome on an entry that was
+            // already a non-answer, or on a provider with no entry at all, must
+            // not fire that event: it did not fire before, and every listener
+            // treats it as "the list you were holding is gone".
+            if (existing && !(existing.fetchedAt === 0 && !existing.error)) {
+              notifyProviderModelInventoryInvalidated(providerId);
+            }
             set((state) => {
               const providers = new Map(state.providers);
               providers.set(providerId, retryableEntry);
@@ -306,6 +349,7 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
             models,
             fetchedAt: Date.now(),
             ...(configuredModels.length > 0 ? { configuredModels } : {}),
+            outcome: "models",
           };
           if (versionAtStart !== refreshVersion(providerId)) {
             return;
@@ -331,6 +375,7 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
                 ? { configuredModels: existing.configuredModels }
                 : {}),
               error: formatAcpErrorMessage(error),
+              outcome: "failed",
             });
             persistModels(providers);
             return { providers };

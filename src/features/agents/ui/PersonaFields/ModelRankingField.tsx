@@ -24,6 +24,7 @@ import {
 
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useProviderModels } from "@/features/providers/hooks/useProviderModels";
+import { providerModelInventoryMessage } from "@/features/providers/lib/providerModelInventoryStatus";
 import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
 import { platformLimitState } from "@/features/status/lib/rateLimitWindows";
 import type { AgentPlatformId } from "@/features/status/lib/rateLimitTypes";
@@ -91,7 +92,7 @@ export function ModelRankingField({
 }: ModelRankingFieldProps) {
   const { t } = useTranslation(["agents", "common"]);
   const providers = useAgentStore((state) => state.providers);
-  const { getModelsForAgent } = useProviderModels();
+  const { getModelsForAgent, getModelInventoryProblem } = useProviderModels();
   const rateLimits = useProviderRateLimitsStore(
     (state) => state.snapshot?.providers,
   );
@@ -127,6 +128,25 @@ export function ModelRankingField({
       ),
     [getModelsForAgent, providers],
   );
+
+  /**
+   * Why there is nothing to rank, when there is nothing to rank. An empty
+   * inventory can mean a provider poll that failed, a provider that answered
+   * with no models, or genuinely nothing installed — and the field rendered
+   * all three as the same disabled "Add model" button.
+   */
+  const inventoryStatus = useMemo(() => {
+    if (inventory.length > 0) {
+      return null;
+    }
+    for (const provider of providers) {
+      const problem = getModelInventoryProblem(provider.id);
+      if (problem) {
+        return providerModelInventoryMessage(problem);
+      }
+    }
+    return null;
+  }, [getModelInventoryProblem, inventory.length, providers]);
 
   const classId = useMemo(
     () => modelPreferenceClassForPersona({ displayName }),
@@ -360,6 +380,16 @@ export function ModelRankingField({
         >
           {t("ranking.add")}
         </Button>
+      ) : null}
+
+      {inventoryStatus ? (
+        // Sits under the disabled add control and says why it is disabled.
+        <p
+          className="text-[11px] text-muted-foreground"
+          data-testid="model-ranking-inventory-status"
+        >
+          {t(inventoryStatus.key, inventoryStatus.values)}
+        </p>
       ) : null}
 
       {legacySeeded && entries.length > 0 ? (

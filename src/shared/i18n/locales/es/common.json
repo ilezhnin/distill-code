@@ -156,6 +156,11 @@
     "preparingContent": "Preparando contenido",
     "required": "Obligatorio"
   },
+  "modelInventory": {
+    "pollFailed": "No se pudieron consultar los modelos de {{provider}}: {{reason}}",
+    "pollFailedUnknown": "No se pudieron consultar los modelos de {{provider}}",
+    "reportedNone": "{{provider}} no informó ningún modelo"
+  },
   "session": {
     "defaultTitle": "Nuevo chat"
   },
