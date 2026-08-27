@@ -223,7 +223,14 @@ export function useCredentials(): UseCredentialsReturn {
         const result = await deleteProviderConfig(providerId);
         updateProviderStatus(result.status);
         setCredentialRevision((revision) => revision + 1);
-        useProviderModelCacheStore.getState().invalidateProvider(providerId);
+        // Unlike `save`/`completeNativeSetup`, this is not "the credentials
+        // changed" -- the provider has no credentials at all now, so it is
+        // genuinely unreachable, and whatever list we hold belongs to the
+        // account that was just removed. Keeping it would offer models from
+        // one account to whoever signs in next, so drop it outright.
+        useProviderModelCacheStore
+          .getState()
+          .invalidateProvider(providerId, { forget: true });
         cancelProviderModelRefresh(providerId);
         try {
           await useDefaultProviderReadinessStore.getState().refresh();

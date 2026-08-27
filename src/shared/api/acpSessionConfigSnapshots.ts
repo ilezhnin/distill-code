@@ -189,6 +189,30 @@ export function readSessionExecutionConfigSnapshot(
   return { providerId: provider.currentValue, modelId: model.modelId };
 }
 
+/**
+ * Read *which model this session is currently on* out of a session-config
+ * payload. Deliberately one identity, never a list.
+ *
+ * A session snapshot is not, and cannot become, a model inventory:
+ *
+ * - goose strips the child's own `model` option before it builds the snapshot
+ *   (`passthrough_config_options` in `crates/goose/src/acp/response_builder.rs`
+ *   drops the option whose id is `model` or whose category is Model), and
+ *   rebuilds the model option itself from `inventory.models`.
+ * - For ACP-backed providers that inventory is empty by construction --
+ *   `codex_acp.rs` registers `ProviderMetadata::new(..., ACP_CURRENT_MODEL,
+ *   vec![], ...)` -- so the option we receive carries the `current`
+ *   placeholder and no values at all.
+ *
+ * The one live source for a provider's model list is
+ * `GooseUnstableProvidersSupportedModelsList`, behind
+ * `providerModelCacheStore.refreshProviderModels`. Reading a list out of this
+ * snapshot instead has already caused one incident: an empty (or
+ * placeholder-only) option list was taken for the provider's inventory and
+ * every real model was rejected as unknown. Hence the return type carries no
+ * options array, and the contract test in
+ * `__tests__/acpSessionConfigSnapshots.test.ts` fails if one is added back.
+ */
 function getModelConfigSnapshot(
   source: unknown,
 ): AcpModelConfigSnapshot | null {
