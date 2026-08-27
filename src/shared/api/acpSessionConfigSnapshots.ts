@@ -8,16 +8,6 @@ import { normalizeConcreteModelId } from "@/shared/lib/modelIdentity";
 export interface AcpModelConfigSnapshot {
   modelId: string;
   modelName: string;
-  /**
-   * Every model id the LIVE harness listed in this session's model option.
-   *
-   * This is the only first-hand answer to "will this agent accept that id".
-   * Berd's inventories are caches of an earlier answer; the option on the
-   * session snapshot is what the process now running just said. Optional so
-   * hand-built snapshot literals (tests, mocks) stay valid — an absent list
-   * means "unknown", never "empty", and no caller may read it as a denial.
-   */
-  availableModelIds?: readonly string[];
 }
 
 interface AcpSessionConfigSelectOption {
@@ -218,11 +208,7 @@ function getModelConfigSnapshot(
   const modelName =
     modelOption.options.find((model) => model.id === modelId)?.name ?? modelId;
 
-  return {
-    modelId,
-    modelName,
-    availableModelIds: modelOption.options.map((model) => model.id),
-  };
+  return { modelId, modelName };
 }
 
 /**

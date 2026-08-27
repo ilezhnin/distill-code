@@ -72,7 +72,6 @@
   "errors": {
     "attachmentsTooLarge": "Los adjuntos son demasiado grandes para enviar ({{totalMb}} MB, límite {{limitMb}} MB). Elimina algunos adjuntos e inténtalo de nuevo.",
     "harnessRejectedModel": "{{harness}} no acepta el modelo «{{model}}», por lo que este mensaje no se envió. Este chat ahora usa el modelo actual de {{harness}}: vuelve a enviarlo o elige otro modelo en la píldora de modelo del compositor.",
-    "harnessUndeclaredModel": "{{harness}} no ofrece el modelo «{{model}}», por lo que no se aplicó a este chat. Este chat usa el modelo actual de {{harness}}: elige otro modelo en la píldora de modelo del compositor si quieres uno distinto.",
     "sessionPreparationSuperseded": "La configuración de la sesión cambió durante la preparación. Intenta enviar de nuevo.",
     "steeringBackendUnavailable": "La guía no está disponible en este backend de Goose. Reinicia con la rama del backend de guía e inténtalo de nuevo.",
     "voiceInputFailedTitle": "Falló el dictado por voz",

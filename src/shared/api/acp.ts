@@ -488,11 +488,6 @@ export async function acpCreateSession(
         providerId,
         workingDir,
         providerConfigSnapshot?.model?.modelId,
-        // The whole model option, not just its current value: the very next
-        // statement may pin a stored preference onto this session, and this
-        // snapshot is the only first-hand record of what the harness that
-        // would receive it actually offers.
-        providerConfigSnapshot?.model,
       );
     }
     if (options.modelId) {
