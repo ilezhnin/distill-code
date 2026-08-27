@@ -40,6 +40,11 @@ import {
   ownsSessionPrompt,
   releaseSessionPrompt,
 } from "@/features/chat/lib/sessionPromptOwnership";
+import {
+  harnessRejectedModelNotice,
+  isHarnessRejectedModelError,
+  recoverSessionFromRejectedModel,
+} from "@/features/chat/lib/rejectedModelRecovery";
 import { perfLog } from "@/shared/lib/perfLog";
 import { completeAssistantMessage } from "@/features/chat/lib/messageCompletion";
 import {
@@ -445,6 +450,26 @@ export async function dispatchPrompt(
           sessionId,
           createSystemNotificationMessage(errorMessage, "error"),
         );
+      }
+
+      // A model the harness refuses fails on the send path, so without this
+      // the chat is dead: the same error on every attempt, and nothing in the
+      // chat can clear it. Unpin the model, then SAY so — the raw ACP error
+      // card stays above this one because it is what actually happened, and
+      // this one is what the operator can act on. The prompt is not re-sent
+      // (Q2/D5): the operator chooses whether to run it on the harness'
+      // default.
+      if (isHarnessRejectedModelError(err)) {
+        const recovery = recoverSessionFromRejectedModel(sessionId);
+        if (recovery && userMessageCommitted) {
+          liveStore.addMessage(
+            sessionId,
+            createSystemNotificationMessage(
+              harnessRejectedModelNotice(recovery),
+              "warning",
+            ),
+          );
+        }
       }
       setError(sessionId, errorMessage);
       if (isCurrent()) {
