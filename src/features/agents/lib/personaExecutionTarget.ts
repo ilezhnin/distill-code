@@ -97,6 +97,26 @@ function persistedModelProviderId(
   return harnessId === "goose" ? undefined : harnessId;
 }
 
+export interface PersonaTargetOptions {
+  /**
+   * Refuse to name a model the harness does not report.
+   *
+   * Callers that ESTABLISH a session pass this. A model id the harness has
+   * never heard of is not a preference the runtime can honour: goose forwards
+   * it to the ACP agent verbatim, the agent answers `Invalid params`, and every
+   * send in that chat fails with "Failed to set ACP model option" — a chat the
+   * operator cannot rescue from inside the chat. Dropping to the harness'
+   * own current model is the honest fallback: the session runs, and the model
+   * pill shows what it actually runs on.
+   *
+   * Readers that only INTERPRET stored data (personaTargetMigration) must
+   * leave it off: for them an unmatched id means "inventory has not answered
+   * yet", and clearing the operator's saved model on that basis would be the
+   * silent substitution D5 forbids.
+   */
+  requireInstalledModel?: boolean;
+}
+
 /**
  * Convert canonical saved agent metadata into PR #1085's runtime target.
  * An incomplete legacy target is no override; callers must leave chat state alone.
@@ -112,6 +132,7 @@ export function personaExecutionTarget(
     getModelsForHarness,
     catalogEntries,
   }: PersonaTargetContext,
+  options: PersonaTargetOptions = {},
 ): SessionExecutionTarget | undefined {
   const harnessId = harnessIdForPersona(
     persona?.provider,
@@ -152,11 +173,21 @@ export function personaExecutionTarget(
           modelProviderId),
   );
 
+  // An empty list is "inventory has not answered", never "the model is gone" —
+  // so only a harness that reported models can disqualify one of them.
+  const inventoryDisownsModel =
+    options.requireInstalledModel &&
+    modelId != null &&
+    availableModels.length > 0 &&
+    !matchingModel;
+
   return normalizeSessionExecutionTarget({
     harnessId,
     modelProviderId,
-    modelId,
-    modelName: matchingModel?.displayName ?? matchingModel?.name ?? modelId,
+    modelId: inventoryDisownsModel ? undefined : modelId,
+    modelName: inventoryDisownsModel
+      ? undefined
+      : (matchingModel?.displayName ?? matchingModel?.name ?? modelId),
   });
 }
 
