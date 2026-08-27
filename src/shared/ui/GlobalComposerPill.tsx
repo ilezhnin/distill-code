@@ -501,12 +501,18 @@ export function GlobalComposerPill({
 
   const personaTarget = useMemo(
     () =>
-      personaExecutionTarget(selectedPersona, {
-        providers,
-        models: getModelsForAgent("goose"),
-        getModelsForHarness: getModelsForAgent,
-        catalogEntries,
-      }),
+      personaExecutionTarget(
+        selectedPersona,
+        {
+          providers,
+          models: getModelsForAgent("goose"),
+          getModelsForHarness: getModelsForAgent,
+          catalogEntries,
+        },
+        // The pill's target is applied to the session, so it may not name a
+        // model the harness has never reported.
+        { requireInstalledModel: true },
+      ),
     [catalogEntries, getModelsForAgent, providers, selectedPersona],
   );
 

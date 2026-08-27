@@ -1328,12 +1328,18 @@ export function useChatSessionController({
         }
         return ranked.target;
       }
-      return personaExecutionTarget(persona, {
-        providers,
-        models: getModelsForAgent("goose"),
-        getModelsForHarness: getModelsForAgent,
-        catalogEntries,
-      });
+      return personaExecutionTarget(
+        persona,
+        {
+          providers,
+          models: getModelsForAgent("goose"),
+          getModelsForHarness: getModelsForAgent,
+          catalogEntries,
+        },
+        // This resolution establishes a session target, so a saved model the
+        // harness does not report must not be forced onto it.
+        { requireInstalledModel: true },
+      );
     },
     [catalogEntries, getModelsForAgent, providers],
   );

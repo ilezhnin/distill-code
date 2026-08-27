@@ -2459,11 +2459,17 @@ export function AppShell({
             providerId: model.providerId ?? providerId,
           })),
         );
-        const executionTarget = personaExecutionTarget(persona, {
-          providers: agentState.providers,
-          models: cachedModels,
-          catalogEntries: getProviderCatalog(),
-        });
+        const executionTarget = personaExecutionTarget(
+          persona,
+          {
+            providers: agentState.providers,
+            models: cachedModels,
+            catalogEntries: getProviderCatalog(),
+          },
+          // The new tab starts on this target, so a model no provider reports
+          // must not be the one it starts on.
+          { requireInstalledModel: true },
+        );
 
         void createNewTab(DEFAULT_CHAT_TITLE, undefined, {
           executionTarget,
