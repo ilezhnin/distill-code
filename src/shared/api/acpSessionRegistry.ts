@@ -1,7 +1,9 @@
 import * as acpApi from "./acpApi";
 import { invalidateClientConnection } from "./acpConnection";
 import {
+  readSessionConfigOptionsSnapshots,
   readSessionExecutionConfigSnapshot,
+  type AcpModelConfigSnapshot,
   type AcpSessionConfigSnapshotContext,
   type AcpSessionConfigSnapshots,
 } from "./acpSessionConfigSnapshots";
@@ -18,14 +20,66 @@ export interface AcpSessionExecutionSelection {
   modelId?: string;
 }
 
+/**
+ * What the live harness said about models the last time it sent a snapshot for
+ * this session. Not a cache of Berd's inventories — those are what got the
+ * session into trouble in the first place.
+ */
+interface HarnessModelInventory {
+  /** The model the harness reports the session is running on right now. */
+  currentModelId: string;
+  /** Ids the harness listed. Empty means "it listed none", i.e. unknown. */
+  declaredModelIds: readonly string[];
+}
+
 interface PreparedSession {
   workingDir: string;
   executionSelection?: AcpSessionExecutionSelection;
+  harnessModels?: HarnessModelInventory;
 }
 
 interface SessionConfigMutationOptions {
   forceConfigRefresh?: boolean;
   requestId?: string;
+}
+
+/**
+ * A model pin the live harness does not list among its own models, caught
+ * before it is sent.
+ *
+ * Goose applies the session's model inside `stream()`, on the send path, so an
+ * id the ACP agent never advertised is not rejected when it is chosen — it is
+ * rejected on every message the operator sends afterwards, as
+ * "Failed to set ACP model option: Invalid params".
+ * `rejectedModelRecovery` is the net under that; this is the same judgement
+ * made one step earlier, while the session is being configured and no message
+ * is at stake.
+ */
+export interface UndeclaredSessionModel {
+  sessionId: string;
+  providerId: string;
+  /** The pin that was refused admission, never sent to the harness. */
+  modelId: string;
+  /** The model the session is left running on instead. */
+  fallbackModelId: string;
+  /** What the harness listed, for the operator-facing message and the log. */
+  declaredModelIds: readonly string[];
+}
+
+/**
+ * Lives here rather than in the chat feature for the same reason the config
+ * snapshot handlers do: this module is shared and must not import chat code,
+ * and the reaction — rewriting the session's target and telling the operator —
+ * is chat's to own. Registered once at startup.
+ */
+type UndeclaredSessionModelHandler = (event: UndeclaredSessionModel) => void;
+
+let undeclaredModelHandler: UndeclaredSessionModelHandler | undefined;
+
+export function setUndeclaredSessionModelHandler(
+  handler: UndeclaredSessionModelHandler | undefined,
+): void {
+  undeclaredModelHandler = handler;
 }
 
 const SESSION_MUTATION_TIMEOUT_MS = 60_000;
@@ -59,6 +113,47 @@ function replaceExecutionSelection(
     providerId,
     ...(modelId ? { modelId } : {}),
   };
+}
+
+/**
+ * Record what the harness says about models — but only from snapshots that
+ * describe the harness rather than our own request.
+ *
+ * `session/set_model` responses are excluded on purpose. Goose builds the model
+ * option by listing its inventory and prepending whatever the session currently
+ * runs when the inventory does not contain it, so the snapshot that comes back
+ * from applying a pin always contains that pin. Reading the inventory from
+ * there would mean asking the harness whether it accepts a model and hearing
+ * back the model we just named — the answer would confirm anything.
+ */
+function rememberHarnessModels(
+  entry: PreparedSession,
+  model: AcpModelConfigSnapshot | null | undefined,
+): void {
+  if (!model) {
+    return;
+  }
+  entry.harnessModels = {
+    currentModelId: model.modelId,
+    declaredModelIds: model.availableModelIds ?? [],
+  };
+}
+
+/**
+ * Whether the harness listed this id as one of its own.
+ *
+ * Silence is not refusal. A harness that sent no snapshot, or listed no
+ * models at all, has told us nothing, and refusing a pin on that basis would
+ * break every agent that does not publish an inventory. Only a non-empty list
+ * that omits the id is evidence, and it is first-hand evidence: it came from
+ * the process that would receive the id.
+ */
+function harnessDeclaresModel(
+  entry: PreparedSession,
+  modelId: string,
+): boolean {
+  const declared = entry.harnessModels?.declaredModelIds;
+  return !declared || declared.length === 0 || declared.includes(modelId);
 }
 
 async function runBoundedSessionMutation<T>(
@@ -177,11 +272,13 @@ async function prepareSessionNow(
         // response snapshot. The complete backend pair is unknown until the
         // UI selection is prepared again.
         existing.executionSelection = undefined;
+        existing.harnessModels = undefined;
         throw error;
       }
       perfLog(
         `[perf:prepare] ${sid} reuse setProvider(${providerId}) in ${(performance.now() - tProv).toFixed(1)}ms`,
       );
+      rememberHarnessModels(existing, snapshots?.model);
       replaceExecutionSelection(
         existing,
         providerId,
@@ -216,13 +313,14 @@ async function prepareSessionNow(
   const acknowledgedModelId = normalizeConcreteModelId(
     snapshots?.model?.modelId,
   );
-  const entry = {
+  const entry: PreparedSession = {
     workingDir,
     executionSelection: {
       providerId,
       ...(acknowledgedModelId ? { modelId: acknowledgedModelId } : {}),
     },
   };
+  rememberHarnessModels(entry, snapshots?.model);
   prepared.set(sessionId, entry);
 
   return snapshots;
@@ -258,6 +356,40 @@ async function applySessionModelNow(
     throw new Error(
       "Session not prepared. Prepare the provider before its model.",
     );
+  }
+  // Checked before the unchanged-skip, not after: a pin the harness never
+  // listed is exactly the value most likely to be sitting in the cache
+  // already, and "we sent this last time" is no evidence at all when the
+  // harness being talked to is a different process from the one that
+  // acknowledged it. Nothing is sent; the session keeps running on the model
+  // the harness itself reports, and the operator is told which model was
+  // dropped. Refusing here is the whole point — goose does not apply the model
+  // until the next prompt, so an id accepted at this stage does not fail now,
+  // it fails on every message the operator sends from then on.
+  if (!harnessDeclaresModel(entry, modelId)) {
+    const fallbackModelId =
+      entry.harnessModels?.currentModelId ?? executionSelection.modelId;
+    logReasoningEffortInfo("applySessionModel refused undeclared", {
+      sessionId: shortLogId(sessionId),
+      modelId,
+      providerId: executionSelection.providerId,
+      fallbackModelId: fallbackModelId ?? null,
+      declaredModelIds:
+        entry.harnessModels?.declaredModelIds.slice(0, 20).join(",") ?? null,
+    });
+    replaceExecutionSelection(
+      entry,
+      executionSelection.providerId,
+      fallbackModelId,
+    );
+    undeclaredModelHandler?.({
+      sessionId,
+      providerId: executionSelection.providerId,
+      modelId,
+      fallbackModelId: fallbackModelId ?? "",
+      declaredModelIds: entry.harnessModels?.declaredModelIds ?? [],
+    });
+    return;
   }
   if (executionSelection.modelId === modelId && !options.forceConfigRefresh) {
     logReasoningEffortInfo("applySessionModel skipped unchanged", {
@@ -394,10 +526,15 @@ export async function loadSession(
       const response = await acpApi.loadSession(sessionId, workingDir);
       const isCurrentResult = isLatest();
       const executionSnapshot = readSessionExecutionConfigSnapshot(response);
-      prepared.set(sessionId, {
+      const entry: PreparedSession = {
         workingDir,
         executionSelection: executionSnapshot ?? undefined,
-      });
+      };
+      rememberHarnessModels(
+        entry,
+        readSessionConfigOptionsSnapshots(response).model,
+      );
+      prepared.set(sessionId, entry);
       return {
         response,
         isCurrent: isCurrentResult,
@@ -413,6 +550,14 @@ export function registerPreparedSession(
   providerId: string,
   workingDir: string,
   modelId?: string,
+  /**
+   * The model option from the same snapshot `modelId` was read out of. Session
+   * creation prepares the provider through the direct ACP client rather than
+   * `prepareSession`, so without this the freshly created session — the one
+   * about to be handed a stored model preference — would be the only one with
+   * no record of what its harness actually offers.
+   */
+  harnessModel?: AcpModelConfigSnapshot | null,
 ): () => void {
   const previousEntry = clonePreparedSession(prepared.get(sessionId));
   const acknowledgedModelId = normalizeConcreteModelId(modelId);
@@ -423,6 +568,7 @@ export function registerPreparedSession(
       ...(acknowledgedModelId ? { modelId: acknowledgedModelId } : {}),
     },
   };
+  rememberHarnessModels(entry, harnessModel);
 
   prepared.set(sessionId, entry);
   logReasoningEffortInfo("registerPreparedSession", {

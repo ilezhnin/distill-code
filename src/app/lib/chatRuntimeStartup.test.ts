@@ -169,6 +169,10 @@ vi.mock("@/features/chat/acp/sessionConfigSnapshotAdapter", () => ({
   registerChatSessionConfigSnapshotHandlers: () => {},
 }));
 
+vi.mock("@/features/chat/acp/undeclaredSessionModelAdapter", () => ({
+  registerUndeclaredSessionModelHandler: () => {},
+}));
+
 vi.mock("@/shared/lib/perfLog", () => ({
   perfLog: () => {},
 }));

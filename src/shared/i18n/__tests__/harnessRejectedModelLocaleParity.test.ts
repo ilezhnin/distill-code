@@ -23,3 +23,33 @@ describe("harness-rejected-model locale parity", () => {
     }
   });
 });
+
+// Its pre-send twin, shown when the pin is refused while the session is being
+// configured rather than when a message fails.
+describe("harness-undeclared-model locale parity", () => {
+  it("provides translated Spanish copy for the pre-send card", () => {
+    expect(esChat.errors.harnessUndeclaredModel).toBeTruthy();
+    expect(esChat.errors.harnessUndeclaredModel).not.toBe(
+      enChat.errors.harnessUndeclaredModel,
+    );
+  });
+
+  it("keeps every fact the operator needs in both locales", () => {
+    for (const copy of [
+      enChat.errors.harnessUndeclaredModel,
+      esChat.errors.harnessUndeclaredModel,
+    ]) {
+      expect(copy).toContain("{{model}}");
+      expect(copy).toContain("{{harness}}");
+    }
+  });
+
+  // Two different situations: one says a message did not go out, the other
+  // says a model was never applied. Reusing one string for both would tell the
+  // operator their message was lost when nothing was sent yet.
+  it("does not reuse the post-send wording", () => {
+    expect(enChat.errors.harnessUndeclaredModel).not.toBe(
+      enChat.errors.harnessRejectedModel,
+    );
+  });
+});

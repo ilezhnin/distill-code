@@ -481,3 +481,152 @@ describe("applySessionModel", () => {
     expect(mockSetModel).toHaveBeenCalledTimes(2);
   });
 });
+
+// A model pin only fails when goose forwards it to the ACP agent, which it
+// does inside stream() — on the send path. So a pin the running agent does not
+// serve is not caught when it is applied; it is caught on every message the
+// operator sends afterwards. These cover catching it while the session is
+// being configured instead, using the one first-hand source available: the
+// model option the live harness put on this session's own snapshot.
+describe("model pins the harness never declared", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    mockSetModel.mockResolvedValue(undefined);
+    mockSetProvider.mockResolvedValue(undefined);
+    mockSetSessionConfigOption.mockResolvedValue(undefined);
+    mockUpdateWorkingDir.mockResolvedValue(undefined);
+    mockLoadSession.mockResolvedValue(undefined);
+    mockInvalidateClientConnection.mockResolvedValue(undefined);
+  });
+
+  function declaredModelsResponse(
+    currentModelId: string,
+    availableModelIds: string[],
+  ): AcpSessionConfigSnapshots {
+    return {
+      model: {
+        modelId: currentModelId,
+        modelName: currentModelId,
+        availableModelIds,
+      },
+      reasoningEffort: null,
+    };
+  }
+
+  async function importSessionOnDeclaredModels(
+    currentModelId = "current",
+    availableModelIds = ["current", "gpt-5.6-sol[xhigh]"],
+  ) {
+    const registry = await importRegistry();
+    mockSetProvider.mockResolvedValueOnce(
+      declaredModelsResponse(currentModelId, availableModelIds),
+    );
+    await registry.prepareSession("session-1", "codex-acp", "/project");
+    return registry;
+  }
+
+  it("never sends a pin the harness did not list", async () => {
+    const registry = await importSessionOnDeclaredModels();
+
+    await registry.applySessionModel("session-1", "gpt-5.6-sol[ultra]");
+
+    expect(mockSetModel).not.toHaveBeenCalled();
+  });
+
+  it("leaves the session on the model the harness reports", async () => {
+    const registry = await importSessionOnDeclaredModels();
+
+    await registry.applySessionModel("session-1", "gpt-5.6-sol[ultra]");
+
+    expect(
+      registry.requireSessionInvocationSelection("session-1"),
+    ).toMatchObject({ providerId: "codex-acp", modelId: "current" });
+  });
+
+  it("tells the operator's side which pin was refused and what runs instead", async () => {
+    const registry = await importSessionOnDeclaredModels();
+    const seen = vi.fn();
+    registry.setUndeclaredSessionModelHandler(seen);
+
+    await registry.applySessionModel("session-1", "gpt-5.6-sol[ultra]");
+
+    expect(seen).toHaveBeenCalledTimes(1);
+    expect(seen).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      providerId: "codex-acp",
+      modelId: "gpt-5.6-sol[ultra]",
+      fallbackModelId: "current",
+      declaredModelIds: ["current", "gpt-5.6-sol[xhigh]"],
+    });
+  });
+
+  // The cached value is exactly where a bad pin lives after a previous window,
+  // a reload, or a session created with it. "We already applied this" is not
+  // evidence when the harness answering now is a different process.
+  it("refuses a cached pin the harness no longer lists", async () => {
+    const registry = await importRegistry();
+    registry.registerPreparedSession(
+      "session-1",
+      "codex-acp",
+      "/project",
+      "gpt-5.6-sol[ultra]",
+      {
+        modelId: "current",
+        modelName: "current",
+        availableModelIds: ["current", "gpt-5.6-sol[xhigh]"],
+      },
+    );
+
+    await registry.applySessionModel("session-1", "gpt-5.6-sol[ultra]");
+
+    expect(mockSetModel).not.toHaveBeenCalled();
+    expect(
+      registry.requireSessionInvocationSelection("session-1"),
+    ).toMatchObject({ modelId: "current" });
+  });
+
+  it("sends a pin the harness did list", async () => {
+    const registry = await importSessionOnDeclaredModels();
+
+    await registry.applySessionModel("session-1", "gpt-5.6-sol[xhigh]");
+
+    expect(mockSetModel).toHaveBeenCalledWith(
+      "session-1",
+      "gpt-5.6-sol[xhigh]",
+      noRequestModelContext("codex-acp"),
+    );
+  });
+
+  // Silence is not refusal: an agent that publishes no inventory has said
+  // nothing about the id, and blocking on that would break every such agent.
+  it("sends the pin when the harness declared no models at all", async () => {
+    const registry = await importSessionOnDeclaredModels("current", []);
+
+    await registry.applySessionModel("session-1", "anything-at-all");
+
+    expect(mockSetModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not learn the inventory from the response to its own pin", async () => {
+    const registry = await importSessionOnDeclaredModels("current", [
+      "current",
+      "a",
+      "b",
+    ]);
+    // Goose prepends the session's current model to the option list when its
+    // inventory lacks it, so applying a pin echoes that pin back. Trusting
+    // that would let one accepted pin certify the next one.
+    mockSetModel.mockResolvedValueOnce(declaredModelsResponse("a", ["a"]));
+    await registry.applySessionModel("session-1", "a");
+
+    await registry.applySessionModel("session-1", "b");
+
+    expect(mockSetModel).toHaveBeenCalledTimes(2);
+    expect(mockSetModel).toHaveBeenLastCalledWith(
+      "session-1",
+      "b",
+      noRequestModelContext("codex-acp"),
+    );
+  });
+});
