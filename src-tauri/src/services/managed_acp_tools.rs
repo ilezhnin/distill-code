@@ -671,9 +671,16 @@ impl InstallTransaction {
                 .file_name()
                 .expect("managed artifact has a name")
                 .to_string_lossy();
+            // The backup carries the same per-transaction suffix as the stage.
+            // Under the previous fixed `.berd-backup` name, one backup Windows
+            // refused to delete blocked every later install for good: the next
+            // commit's `rename(live -> backup)` would land on an occupied path,
+            // and `prepare` treated the leftover as unrecoverable state. The
+            // journal records the exact path, so uniqueness costs recovery
+            // nothing and demotes a stuck backup to ordinary garbage.
             (
                 parent.join(format!(".{name}.berd-stage-{suffix}")),
-                parent.join(format!(".{name}.berd-backup")),
+                parent.join(format!(".{name}.berd-backup-{suffix}")),
             )
         };
         let (staged_tree, backup_tree) = paths(install_dir);
@@ -719,15 +726,16 @@ impl InstallTransaction {
         }
         recover_transaction(&self.journal)?;
         remove_transaction_journal_temp(&self.journal)?;
+        sweep_transaction_trash(&transaction_trash_dir(&self.journal));
         for artifact in &self.artifacts {
             prune_stale_transaction_stages(artifact)?;
             TransactionArtifact::remove(&artifact.staged, artifact.kind)?;
-            if artifact.backup.exists() {
-                return Err(std::io::Error::other(format!(
-                    "orphaned ACP backup without transaction journal: {}",
-                    artifact.backup.display()
-                )));
-            }
+            // A backup with no journal beside it carries no recovery
+            // information — the journal is the only thing that says what it
+            // was a backup of — so it is garbage, not a reason to refuse the
+            // install. Refusing was the old behaviour, and it turned a single
+            // undeletable leftover into a permanently unupgradable bridge.
+            prune_stale_transaction_backups(artifact, &transaction_trash_dir(&self.journal));
         }
         std::fs::create_dir_all(&self.staged_tree)
     }
@@ -767,8 +775,16 @@ impl InstallTransaction {
             self.cleanup_staged();
             return Err(commit_error);
         }
+        // Everything past this point is housekeeping over a bridge that is
+        // already live, so it cannot decide the install's outcome. Reporting a
+        // cleanup failure as a failed commit is what broke Windows operators:
+        // the upgrade had landed, the reconciler called it a failure, and the
+        // committed journal it left behind failed the same way on every later
+        // launch — so the bridge could never be upgraded again.
         if let Err(finalize) = recover_transaction(&self.journal) {
-            return Err(std::io::Error::other(format!("install committed but backup cleanup failed: {finalize}; committed journal remains at {}", self.journal.display())));
+            log::warn!(
+                "ACP install committed; post-commit cleanup did not finish: {finalize}. The new bridge is live and will be used; cleanup retries on the next launch"
+            );
         }
         Ok(())
     }
@@ -827,9 +843,16 @@ fn recover_transaction(path: &Path) -> std::io::Result<()> {
         .map_err(|error| journal_recovery_error(path, format!("invalid JSON: {error}")))?;
     validate_transaction_journal(path, &journal)
         .map_err(|error| journal_recovery_error(path, error))?;
+    let trash = transaction_trash_dir(path);
     if journal.committed {
+        // Best-effort by construction. A committed journal describes an
+        // install that already replaced the live artifacts; the backups are
+        // the previous version and nothing reads them any more. Propagating a
+        // deletion failure here is what made a Windows sharing violation
+        // permanent — the journal survived, so the next launch replayed the
+        // same doomed deletion instead of installing.
         for artifact in &journal.artifacts {
-            TransactionArtifact::remove(&artifact.backup, artifact.kind)?;
+            log_backup_disposal(&dispose_of_backup(&artifact.backup, artifact.kind, &trash));
         }
     } else {
         for artifact in journal.artifacts.iter().rev() {
@@ -843,10 +866,215 @@ fn recover_transaction(path: &Path) -> std::io::Result<()> {
             }
         }
     }
+    // Stages are garbage in both branches — a rollback abandoned them and a
+    // commit already promoted them — so the same rule applies: never let a
+    // stuck one keep the journal alive.
     for artifact in &journal.artifacts {
-        TransactionArtifact::remove(&artifact.staged, artifact.kind)?;
+        log_backup_disposal(&dispose_of_backup(&artifact.staged, artifact.kind, &trash));
     }
-    std::fs::remove_file(path)
+    // The journal itself is the one file that must go. While it exists the
+    // recovery replays, so failing here is a real failure and says so.
+    retry_transient_io(|| match std::fs::remove_file(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    })
+    .map_err(|error| journal_recovery_error(path, error))
+}
+
+/// Where artifacts that resisted deletion are parked. Lives beside the journal
+/// — i.e. in the packages root — so a later sweep finds it without knowing
+/// which bridge left it behind.
+fn transaction_trash_dir(journal: &Path) -> PathBuf {
+    journal
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(".berd-trash")
+}
+
+/// Attempts and backoff for a filesystem operation Windows can refuse for
+/// reasons that pass on their own: the npm/node process that just exited still
+/// holds handles for a moment, and an antivirus or the search indexer can keep
+/// a freshly written tree open for longer than that. Every retry is real
+/// latency on the install path, so the schedule is short and bounded —
+/// 20+40+80+160+320ms, under 0.7s in the worst case.
+const TRANSIENT_IO_ATTEMPTS: u32 = 6;
+const TRANSIENT_IO_INITIAL_DELAY: Duration = Duration::from_millis(20);
+
+fn retry_transient_io<T>(mut operation: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut delay = TRANSIENT_IO_INITIAL_DELAY;
+    for _ in 1..TRANSIENT_IO_ATTEMPTS {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(_) => {
+                transient_io_backoff(delay);
+                delay *= 2;
+            }
+        }
+    }
+    operation()
+}
+
+// Blocking, on purpose: the whole commit is synchronous filesystem work and
+// splitting only the sleep onto the async runtime would buy nothing. Tests
+// exercise the same retry counts without paying for them.
+#[cfg(not(test))]
+fn transient_io_backoff(delay: Duration) {
+    std::thread::sleep(delay);
+}
+
+#[cfg(test)]
+fn transient_io_backoff(_delay: Duration) {}
+
+/// What became of an artifact that a completed transaction no longer needs.
+#[derive(Debug)]
+enum BackupDisposal {
+    /// Nothing was there, or it was deleted (possibly after a retry).
+    Removed,
+    /// Undeletable, but moved aside; a later sweep deletes it.
+    Retired { from: PathBuf, to: PathBuf },
+    /// Neither deletable nor movable. The install still stands; the leftover
+    /// occupies disk until something outside Berd releases it.
+    Abandoned { path: PathBuf, detail: String },
+}
+
+/// Delete a finished transaction's leftover, or — when Windows will not let go
+/// of it — move it somewhere that does not collide with anything and leave it
+/// for a later sweep. Never fails: by the time this runs the decision the
+/// leftover belonged to has already been made and written to disk.
+fn dispose_of_backup(path: &Path, kind: ArtifactKind, trash: &Path) -> BackupDisposal {
+    if !path.exists() {
+        return BackupDisposal::Removed;
+    }
+    let remove_error = match retry_transient_io(|| remove_artifact(path, kind)) {
+        Ok(()) => return BackupDisposal::Removed,
+        Err(error) => error,
+    };
+
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "artifact".to_string());
+    let target = trash.join(format!("{}-{}", now_ms(), name));
+    let moved = std::fs::create_dir_all(trash)
+        .and_then(|()| retry_transient_io(|| move_artifact_aside(path, &target)));
+    match moved {
+        Ok(()) => BackupDisposal::Retired {
+            from: path.to_path_buf(),
+            to: target,
+        },
+        Err(move_error) => BackupDisposal::Abandoned {
+            path: path.to_path_buf(),
+            detail: format!("remove: {remove_error}; move aside: {move_error}"),
+        },
+    }
+}
+
+/// The log has to distinguish these three, because only one of them means an
+/// operator may find something of Berd's still on disk.
+fn log_backup_disposal(disposal: &BackupDisposal) {
+    match disposal {
+        BackupDisposal::Removed => {}
+        BackupDisposal::Retired { from, to } => log::info!(
+            "managed ACP leftover {} could not be deleted; moved to {} for later cleanup",
+            from.display(),
+            to.display()
+        ),
+        BackupDisposal::Abandoned { path, detail } => log::warn!(
+            "managed ACP leftover {} could not be deleted or moved aside ({detail}); the install is complete and in use, and the leftover is safe to delete by hand",
+            path.display()
+        ),
+    }
+}
+
+/// Delete what previous runs parked in the trash. Silent and best-effort: a
+/// file still held open simply waits for the next launch.
+fn sweep_transaction_trash(trash: &Path) {
+    let Ok(entries) = std::fs::read_dir(trash) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let _ = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+    }
+    let _ = std::fs::remove_dir(trash);
+}
+
+/// Backups from earlier transactions, matched by prefix so the pre-suffix
+/// `.{name}.berd-backup` written by older builds is swept too. Best-effort:
+/// see the comment at the call site in `prepare`.
+fn prune_stale_transaction_backups(artifact: &TransactionArtifact, trash: &Path) {
+    let Some(parent) = artifact.live.parent() else {
+        return;
+    };
+    let name = artifact
+        .live
+        .file_name()
+        .expect("managed artifact has a name")
+        .to_string_lossy();
+    let prefix = format!(".{name}.berd-backup");
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            log_backup_disposal(&dispose_of_backup(&entry.path(), artifact.kind, trash));
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn remove_artifact(path: &Path, kind: ArtifactKind) -> std::io::Result<()> {
+    TransactionArtifact::remove(path, kind)
+}
+
+#[cfg(not(test))]
+fn move_artifact_aside(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+#[cfg(test)]
+fn move_artifact_aside(from: &Path, to: &Path) -> std::io::Result<()> {
+    if TRASH_MOVE_FAILS.with(std::cell::Cell::get) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "injected move-aside failure",
+        ));
+    }
+    std::fs::rename(from, to)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many of the next `remove_artifact` calls must fail with
+    /// PermissionDenied. Injected because no portable test can produce a real
+    /// Windows sharing violation, and the whole point of this machinery is
+    /// what happens when removal keeps failing.
+    static REMOVE_FAILURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// When set, the move-aside fallback fails too — a directory whose open
+    /// handle blocks rename as well as delete.
+    static TRASH_MOVE_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn remove_artifact(path: &Path, kind: ArtifactKind) -> std::io::Result<()> {
+    let fail = REMOVE_FAILURES.with(|remaining| {
+        let left = remaining.get();
+        if left > 0 {
+            remaining.set(left - 1);
+        }
+        left > 0
+    });
+    if fail {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "injected artifact removal failure",
+        ));
+    }
+    TransactionArtifact::remove(path, kind)
 }
 
 fn validate_transaction_journal(path: &Path, journal: &TransactionJournal) -> std::io::Result<()> {
@@ -1455,10 +1683,15 @@ async fn finish_reconcile_at(
 ) {
     let all_installed = errors.is_empty();
     let _guard = tool_install_lock().lock().await;
-    if let Err(error) = recover_transaction(&packages_root.join(".managed-acp-transaction.json")) {
+    let journal = packages_root.join(".managed-acp-transaction.json");
+    if let Err(error) = recover_transaction(&journal) {
         log::error!("failed to recover interrupted managed ACP transaction: {error}");
         return;
     }
+    // Runs even when no bridge needed installing this launch, so leftovers a
+    // previous run could not delete get another chance without waiting for the
+    // next pin bump.
+    sweep_transaction_trash(&transaction_trash_dir(&journal));
     prune_stale_managed_tools(packages_root, managed);
     record_reconcile(packages_root, errors);
     // Success-gated Node prune: `errors` empty means every managed bridge
@@ -3342,6 +3575,154 @@ exit 0
                 .contains("injected transaction rename failure"));
             assert_artifacts(&paths, "old");
         }
+    }
+
+    // -- post-commit cleanup ------------------------------------------------
+    //
+    // The Windows failure these cover: `npm ci` finishes, the promotion
+    // succeeds, and deleting the previous tree comes back "Access is denied.
+    // (os error 5)" because something outside Berd still holds it. The install
+    // has already happened at that point, so the only question is what the
+    // cleanup does about it — and the answer must never be "call the install a
+    // failure", because that also left the committed journal on disk and every
+    // later launch replayed the same doomed deletion.
+
+    fn trash_entries(dir: &Path) -> Vec<PathBuf> {
+        let trash = dir.join(".berd-trash");
+        std::fs::read_dir(&trash)
+            .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_backup_held_briefly_is_deleted_by_the_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, paths) = transaction_fixture(dir.path());
+        let backups: Vec<PathBuf> = tx
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.backup.clone())
+            .collect();
+        // Two refusals, then the handle goes away — the common antivirus case.
+        REMOVE_FAILURES.with(|remaining| remaining.set(2));
+
+        tx.commit().unwrap();
+
+        assert_artifacts(&paths, "new");
+        assert!(backups.iter().all(|backup| !backup.exists()));
+        assert!(trash_entries(dir.path()).is_empty());
+        REMOVE_FAILURES.with(|remaining| remaining.set(0));
+    }
+
+    #[test]
+    fn an_undeletable_backup_is_retired_instead_of_failing_the_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, paths) = transaction_fixture(dir.path());
+        let journal = tx.journal.clone();
+        let backups: Vec<PathBuf> = tx
+            .artifacts
+            .iter()
+            .map(|artifact| artifact.backup.clone())
+            .collect();
+        REMOVE_FAILURES.with(|remaining| remaining.set(usize::MAX));
+
+        tx.commit().unwrap();
+
+        assert_artifacts(&paths, "new");
+        assert!(
+            backups.iter().all(|backup| !backup.exists()),
+            "an undeletable backup must at least be moved off its own path"
+        );
+        assert_eq!(
+            trash_entries(dir.path()).len(),
+            3,
+            "each retired artifact should be parked for a later sweep"
+        );
+        assert!(
+            !journal.exists(),
+            "the journal must not survive a cleanup that could not delete"
+        );
+        REMOVE_FAILURES.with(|remaining| remaining.set(0));
+    }
+
+    #[test]
+    fn a_backup_that_cannot_even_be_moved_still_leaves_the_install_committed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, paths) = transaction_fixture(dir.path());
+        let journal = tx.journal.clone();
+        let backup_tree = tx.artifacts[0].backup.clone();
+        REMOVE_FAILURES.with(|remaining| remaining.set(usize::MAX));
+        TRASH_MOVE_FAILS.with(|fails| fails.set(true));
+
+        tx.commit().unwrap();
+
+        assert_artifacts(&paths, "new");
+        assert!(backup_tree.exists(), "the leftover is genuinely stuck");
+        assert!(
+            !journal.exists(),
+            "a stuck leftover must not poison the next launch"
+        );
+        REMOVE_FAILURES.with(|remaining| remaining.set(0));
+        TRASH_MOVE_FAILS.with(|fails| fails.set(false));
+    }
+
+    #[test]
+    fn a_stuck_leftover_does_not_block_the_next_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let (first, paths) = transaction_fixture(dir.path());
+        REMOVE_FAILURES.with(|remaining| remaining.set(usize::MAX));
+        TRASH_MOVE_FAILS.with(|fails| fails.set(true));
+        first.commit().unwrap();
+        REMOVE_FAILURES.with(|remaining| remaining.set(0));
+        TRASH_MOVE_FAILS.with(|fails| fails.set(false));
+
+        // The next launch installs the next pin over the same live paths.
+        let second = InstallTransaction::new(&paths[0], &paths[1], &paths[2]);
+        second.prepare().unwrap();
+        std::fs::write(second.staged_tree.join("entrypoint.js"), "newer tree").unwrap();
+        write_staged_shim(&second.staged_shim, "newer shim").unwrap();
+        std::fs::write(&second.staged_state, "newer state").unwrap();
+        second.commit().unwrap();
+
+        assert_artifacts(&paths, "newer");
+    }
+
+    #[test]
+    fn a_backup_left_by_an_older_build_is_swept_not_treated_as_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let live_tree = dir.path().join("tools").join("claude-acp");
+        let live_shim = dir.path().join("bin").join("claude-agent-acp.cmd");
+        let live_state = dir.path().join("state.json");
+        std::fs::create_dir_all(&live_tree).unwrap();
+        std::fs::create_dir_all(live_shim.parent().unwrap()).unwrap();
+        // The fixed name older builds used, with no journal beside it.
+        let legacy_backup = dir.path().join("tools").join(".claude-acp.berd-backup");
+        std::fs::create_dir_all(&legacy_backup).unwrap();
+
+        let tx = InstallTransaction::new(&live_tree, &live_shim, &live_state);
+        tx.prepare().unwrap();
+
+        assert!(!legacy_backup.exists());
+        assert!(tx.staged_tree.is_dir());
+    }
+
+    #[test]
+    fn the_trash_is_emptied_on_the_next_prepare() {
+        let dir = tempfile::tempdir().unwrap();
+        let live_tree = dir.path().join("tools").join("claude-acp");
+        let live_shim = dir.path().join("bin").join("claude-agent-acp.cmd");
+        let live_state = dir.path().join("state.json");
+        std::fs::create_dir_all(&live_tree).unwrap();
+        std::fs::create_dir_all(live_shim.parent().unwrap()).unwrap();
+        let trash = dir.path().join(".berd-trash");
+        std::fs::create_dir_all(trash.join("123-old-tree")).unwrap();
+        std::fs::write(trash.join("123-old-tree").join("entrypoint.js"), "old").unwrap();
+
+        InstallTransaction::new(&live_tree, &live_shim, &live_state)
+            .prepare()
+            .unwrap();
+
+        assert!(!trash.exists());
     }
 
     // -- reconcile prune ----------------------------------------------------
