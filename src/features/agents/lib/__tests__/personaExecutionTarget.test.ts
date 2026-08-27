@@ -22,11 +22,13 @@ const context = (
   providers: [
     { id: "goose", label: "Goose" },
     { id: "claude-acp", label: "Claude Code" },
+    { id: "codex-acp", label: "Codex" },
   ],
   models,
   catalogEntries: [
     catalog("goose", "agent"),
     catalog("claude-acp", "agent", ["claude"]),
+    catalog("codex-acp", "agent", ["codex"]),
     catalog("openai", "model"),
     catalog("anthropic", "model"),
     catalog("databricks_v2", "model", ["databricks"]),
@@ -90,6 +92,77 @@ describe("personaExecutionTarget", () => {
         ]),
       ),
     ).toBeUndefined();
+  });
+
+  // The P0: the agent kept a codex model id the adapter no longer advertises.
+  // Goose forwards the id to codex-acp verbatim, codex answers `Invalid
+  // params`, and every send in the chat dies on "Failed to set ACP model
+  // option". Establishing callers must fall back to the harness' own current
+  // model instead of pinning the session to an id nothing can serve.
+  it("drops a saved model the harness no longer reports", () => {
+    expect(
+      personaExecutionTarget(
+        { provider: "codex-acp", model: "gpt-5.6-sol[max]" },
+        context([
+          { id: "gpt-5.6-sol[high]", providerId: "codex-acp" },
+          { id: "gpt-5.6-sol[ultra]", providerId: "codex-acp" },
+        ]),
+        { requireInstalledModel: true },
+      ),
+    ).toEqual({ harnessId: "codex-acp", modelProviderId: "codex-acp" });
+  });
+
+  it("keeps a saved model the harness still reports", () => {
+    expect(
+      personaExecutionTarget(
+        { provider: "codex-acp", model: "gpt-5.6-sol[ultra]" },
+        context([
+          {
+            id: "gpt-5.6-sol[ultra]",
+            providerId: "codex-acp",
+            displayName: "GPT 5.6 Sol",
+          },
+        ]),
+        { requireInstalledModel: true },
+      ),
+    ).toEqual({
+      harnessId: "codex-acp",
+      modelProviderId: "codex-acp",
+      modelId: "gpt-5.6-sol[ultra]",
+      modelName: "GPT 5.6 Sol",
+    });
+  });
+
+  // An empty list is a harness that has not answered yet, not a harness that
+  // disowns the model. Dropping the model there would retarget every session
+  // started before the first inventory refresh.
+  it("keeps a saved model while the harness reports nothing at all", () => {
+    expect(
+      personaExecutionTarget(
+        { provider: "codex-acp", model: "gpt-5.6-sol[ultra]" },
+        context(),
+        { requireInstalledModel: true },
+      ),
+    ).toEqual({
+      harnessId: "codex-acp",
+      modelProviderId: "codex-acp",
+      modelId: "gpt-5.6-sol[ultra]",
+      modelName: "gpt-5.6-sol[ultra]",
+    });
+  });
+
+  it("leaves an unmatched model alone for readers that only look", () => {
+    expect(
+      personaExecutionTarget(
+        { provider: "codex-acp", model: "gpt-5.6-sol[max]" },
+        context([{ id: "gpt-5.6-sol[ultra]", providerId: "codex-acp" }]),
+      ),
+    ).toEqual({
+      harnessId: "codex-acp",
+      modelProviderId: "codex-acp",
+      modelId: "gpt-5.6-sol[max]",
+      modelName: "gpt-5.6-sol[max]",
+    });
   });
 });
 
