@@ -545,6 +545,7 @@
           "revisionCapReached": "El conductor pidió otra revisión, pero esta petición ya agotó sus {{max}} revisiones.",
           "digestUndeliverable": "No se pudo entregar al conductor el informe de la brigada.",
           "acceptedWithoutEvidence": "El conductor aceptó el resultado, pero nada externo lo comprobó, así que no se respetó la aceptación.",
+          "acceptedWithMissingArtifacts": "El conductor aceptó el resultado, pero los informes nombraron archivos que no están en el disco, así que no se respetó la aceptación.",
           "waveInterrupted": "Esta ola se interrumpió antes de que ningún ejecutor informara, así que no hay nada que juzgar. Su trabajo no se completó.",
           "operatorStopped": "Detuviste esta ola. Se pidió a sus ejecutores que se detuvieran y nada se resumió ni se juzgó.",
           "stepBlocked": "Un ejecutor informó que no puede hacer su paso, así que la ola se detuvo."
