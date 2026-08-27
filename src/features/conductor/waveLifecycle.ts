@@ -65,6 +65,11 @@ import {
   waveGitDeltaOf,
   type DigestEntry,
 } from "./waveDigest";
+import {
+  resetWaveArtifactProbeForTests,
+  startWaveArtifactProbe,
+  waveArtifactFactsOf,
+} from "./waveArtifactProbe";
 import { resetWaveGitProbeForTests, startWaveGitProbe } from "./waveGitProbe";
 import {
   bumpWaveTelemetryCounter,
@@ -452,13 +457,31 @@ export function processWaveDigests(
       }
       live = { ...live, gitDigestProbed: true };
     }
+    // E3b, on the same terms as E3a: the app asks the filesystem whether the
+    // files the reports named are there, and the digest waits for the answer
+    // because it is the only fact in the loop a model cannot manufacture.
+    if (!live.artifactsProbed) {
+      if (
+        startWaveArtifactProbe({
+          waveId: live.waveId,
+          conductorSessionId: live.conductorSessionId,
+          reports: digestEntriesFor(live).map((entry) => entry.report),
+          onSettled: onHydrated,
+        })
+      ) {
+        continue;
+      }
+      live = { ...live, artifactsProbed: true };
+    }
     markWaveReportsPublished(live);
     const gitDelta = waveGitDeltaOf(live);
+    const artifacts = waveArtifactFactsOf(live);
     const text = buildWaveDigest({
       waveId: live.waveId,
       attempt: live.digestAttempt,
       entries: digestEntriesFor(live),
       ...(gitDelta ? { gitDelta } : {}),
+      ...(artifacts ? { artifacts } : {}),
       // Q5/M3: a re-asked digest says why it is being asked again. Re-sending
       // a byte-identical question to a model that already failed to answer it
       // is a model call spent on the same failure.
@@ -555,5 +578,6 @@ export function hasInFlightDigestForTests(
 export function resetWaveLifecycleForTests(): void {
   inFlightDigests.clear();
   resetWaveGitProbeForTests();
+  resetWaveArtifactProbeForTests();
   resetWaveTelemetryForTests();
 }

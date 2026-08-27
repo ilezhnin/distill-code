@@ -282,6 +282,37 @@ describe("parseWaveEngineState", () => {
     expect(parsed.waves[0]?.steps[0]?.reportDegraded).toBeUndefined();
   });
 
+  it("round-trips the E3b artifact check, and drops junk values", () => {
+    const base = wave("w1");
+    const state = withWave(emptyWaveEngineState(), {
+      ...base,
+      checkedArtifacts: 4,
+      missingArtifacts: ["src/ghost.ts"],
+      artifactsProbed: true,
+    });
+    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
+      state,
+    );
+
+    // A reload that resurrected a junk "missing" entry would refuse an accept
+    // over a path nobody ever reported.
+    const parsed = parseWaveEngineState({
+      version: 2,
+      waves: [
+        {
+          ...JSON.parse(JSON.stringify(base)),
+          checkedArtifacts: -2,
+          missingArtifacts: ["ok.ts", 7, "", null],
+          artifactsProbed: "yes",
+        },
+      ],
+      tombstones: [],
+    });
+    expect(parsed.waves[0]?.checkedArtifacts).toBeUndefined();
+    expect(parsed.waves[0]?.missingArtifacts).toEqual(["ok.ts"]);
+    expect(parsed.waves[0]?.artifactsProbed).toBeUndefined();
+  });
+
   it("round-trips a step's label and model, and drops junk values", () => {
     // A reload that lost the label would rename the step's placeholder chip
     // mid-wave, and one that lost the model would silently retarget a pending

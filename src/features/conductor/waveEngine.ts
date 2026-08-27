@@ -169,6 +169,24 @@ export interface WaveState {
   /** The same count, taken when the wave finished and before its digest. */
   gitDirtyAtDigest?: number;
   /**
+   * How many distinct artifact paths the app checked on disk before the
+   * digest (E3b, `waveArtifactProbe.ts`). Absent or `0` means the check never
+   * ran — no Tauri, no reported paths, or a probe that timed out — which is
+   * not the same answer as "every path was there" and must never be read as
+   * one.
+   */
+  checkedArtifacts?: number;
+  /**
+   * Those of the checked paths the backend said do not exist, as the workers
+   * wrote them. Present only when the check ran and found some.
+   */
+  missingArtifacts?: readonly string[];
+  /**
+   * True once the artifact check has settled, with or without a number. The
+   * digest pass waits on this the way it waits on the git probe.
+   */
+  artifactsProbed?: boolean;
+  /**
    * True once the digest-time probe has settled — with or without a number.
    * The digest pass waits on this so the one non-model-authored fact makes it
    * into the digest; a failed probe still sets it, so evidence can be missing

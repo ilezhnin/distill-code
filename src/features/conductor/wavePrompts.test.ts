@@ -19,6 +19,7 @@ import type { StructuredReport } from "./types";
 import { admitWavePlan } from "./waveEngine";
 import {
   CONDUCTOR_PROTOCOL_PROMPT,
+  buildWaveArtifactLine,
   type CompletedWaveStepReport,
   WAVE_REPLAN_REQUEST_PROMPT,
   buildConductorProtocolPrompt,
@@ -495,6 +496,38 @@ describe("buildWaveGitDeltaLine (E3a)", () => {
     const line = buildWaveGitDeltaLine({ digestDirty: 4 });
     expect(line).toContain("was not captured");
     expect(line).not.toMatch(/against \d/);
+  });
+});
+
+describe("buildWaveArtifactLine (E3b)", () => {
+  it("says the app wrote it, so the conductor can tell it from a report", () => {
+    const line = buildWaveArtifactLine({ checked: 4, missing: [] });
+    expect(line).toContain("APP MEASUREMENT");
+    expect(line).toContain("not by any worker");
+  });
+
+  it("states a clean check rather than staying silent about it", () => {
+    // Silence and "all four are there" are different answers, and only the
+    // second is evidence the conductor may accept on.
+    const line = buildWaveArtifactLine({ checked: 4, missing: [] });
+    expect(line).toContain("4 file paths");
+    expect(line).toContain("every one exists on disk");
+  });
+
+  it("names the missing paths and tells the conductor what they mean", () => {
+    const line = buildWaveArtifactLine({
+      checked: 3,
+      missing: ["src/ghost.ts", "docs/none.md"],
+    });
+    expect(line).toContain('"src/ghost.ts"');
+    expect(line).toContain('"docs/none.md"');
+    expect(line).toContain("did not produce it");
+  });
+
+  it("counts one path in the singular", () => {
+    const line = buildWaveArtifactLine({ checked: 1, missing: [] });
+    expect(line).toContain("1 file path the reports named");
+    expect(line).not.toContain("file paths");
   });
 });
 

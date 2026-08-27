@@ -273,7 +273,28 @@ function parseWave(value: unknown): WaveState | null {
       ? { gitDirtyAtDigest: raw.gitDirtyAtDigest }
       : {}),
     ...(raw.gitDigestProbed === true ? { gitDigestProbed: true } : {}),
+    ...(isDirtyCount(raw.checkedArtifacts)
+      ? { checkedArtifacts: raw.checkedArtifacts }
+      : {}),
+    ...(parseMissingArtifacts(raw.missingArtifacts).length > 0
+      ? { missingArtifacts: parseMissingArtifacts(raw.missingArtifacts) }
+      : {}),
+    ...(raw.artifactsProbed === true ? { artifactsProbed: true } : {}),
   };
+}
+
+/**
+ * The E3b paths a persisted wave was carrying, keeping only the readable ones.
+ *
+ * Same discipline as every other salvage in this module: a wave with one
+ * unreadable entry is still a wave, and dropping the whole record over it
+ * would orphan its children.
+ */
+function parseMissingArtifacts(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (entry): entry is string => typeof entry === "string" && entry.length > 0,
+  );
 }
 
 /** A salvageable E3a git measurement: a non-negative integer. */
