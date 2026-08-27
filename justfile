@@ -163,9 +163,18 @@ tauri-fmt-check:
 _tauri-cargo-unix *ARGS:
     TAURI_CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)" && cd src-tauri && CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' cargo {{ ARGS }}
 
+# Run as a generated PowerShell script, not a shebang recipe. just follows the
+# Unix shebang rule and hands the interpreter everything after its path as ONE
+# argument, so `#!powershell.exe -NoProfile -ExecutionPolicy Bypass` reached
+# powershell.exe as the single string "-NoProfile -ExecutionPolicy Bypass";
+# it matched no switch, was taken as the default -Command, and PowerShell tried
+# to run `-NoProfile` as a cmdlet. That is the operator's
+# "-NoProfile : The term '-NoProfile' is not recognized" and the exit code 1
+# this recipe reported from a GUI client. [script] passes each argument on its
+# own and names the temp file .ps1, which -File requires.
 [windows]
+[script("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File")]
 _tauri-cargo-windows *ARGS:
-    #!powershell.exe -NoProfile -ExecutionPolicy Bypass
     $ErrorActionPreference = "Stop"
     Import-Module (Join-Path (Get-Location) "scripts/windows/WindowsDev.psm1") -Force -DisableNameChecking
     Assert-WindowsHost
@@ -604,9 +613,10 @@ _clean-unix:
     just _tauri-cargo-unix clean
     rm -rf dist node_modules sdk/node_modules sdk/dist
 
+# Same broken multi-argument shebang as _tauri-cargo-windows; see there.
 [windows]
+[script("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File")]
 _clean-windows:
-    #!powershell.exe -NoProfile -ExecutionPolicy Bypass
     $ErrorActionPreference = "Stop"
     just _tauri-cargo-windows clean
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
