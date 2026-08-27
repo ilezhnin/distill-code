@@ -23,6 +23,64 @@ import type { Message } from "@/shared/types/messages";
 
 const COMPLETION_NOTIFICATION_CLICKED_EVENT = "completion-notification-clicked";
 
+/**
+ * Whether a Tauri call failed because the command is not in this build.
+ *
+ * The notification plugin's `onAction` registers a listener through the
+ * `notification.registerListener` command, which a build that ships the plugin
+ * without that permission — or without the plugin at all — answers with
+ * "not allowed. Command not found". That is a fact about the build, not a
+ * fault at runtime: the feature is simply unavailable here.
+ *
+ * Matched on the text because there is nothing else to match on. Tauri returns
+ * these as plain strings from the IPC layer, with no code or class to key off.
+ */
+export function isMissingTauriCommandError(error: unknown): boolean {
+  const message = (
+    typeof error === "string" ? error : (error as Error | null)?.message
+  )?.toLowerCase();
+  return Boolean(message?.includes("command not found"));
+}
+
+/**
+ * Said once per window, not once per mount.
+ *
+ * Both notification effects re-run on remount, and the app renders this hook
+ * in more than one place, so an unguarded log repeats the same non-event
+ * several times a launch — which is how it read as a fault in the first place.
+ */
+let loggedNotificationActionsUnavailable = false;
+
+function reportNotificationActionsUnavailable(error: unknown): void {
+  if (isMissingTauriCommandError(error)) {
+    if (!loggedNotificationActionsUnavailable) {
+      loggedNotificationActionsUnavailable = true;
+      console.info(
+        "Notification actions are unavailable in this build; completion notifications will still be shown.",
+      );
+    }
+    return;
+  }
+  console.warn("Failed to subscribe to notification actions:", error);
+}
+
+/**
+ * Every subscription in this hook is a nice-to-have: window focus tracking, a
+ * click handler, a mobile action handler. Losing one degrades notifications;
+ * none of them is worth an unhandled rejection at launch, which is all an
+ * un-caught `import(...).then(...)` chain can produce.
+ */
+function reportSubscriptionFailed(what: string) {
+  return (error: unknown): void => {
+    console.warn(`Failed to subscribe to ${what}:`, error);
+  };
+}
+
+/** Test seam: the once-per-window latch would otherwise leak between cases. */
+export function resetNotificationAvailabilityLogForTests(): void {
+  loggedNotificationActionsUnavailable = false;
+}
+
 function focusCurrentWindow(): void {
   import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
     const appWindow = getCurrentWindow();
@@ -88,7 +146,8 @@ export function useCompletionNotifications(
       .then((fn) => {
         if (cancelled) fn();
         else unlisten = fn;
-      });
+      })
+      .catch(reportSubscriptionFailed("window focus changes"));
     return () => {
       cancelled = true;
       unlisten?.();
@@ -115,7 +174,8 @@ export function useCompletionNotifications(
       .then((fn) => {
         if (cancelled) fn();
         else unlisten = fn;
-      });
+      })
+      .catch(reportSubscriptionFailed("notification clicks"));
     return () => {
       cancelled = true;
       unlisten?.();
@@ -144,7 +204,10 @@ export function useCompletionNotifications(
       .then((listener) => {
         if (cancelled) void listener.unregister();
         else unlisten = () => void listener.unregister();
-      });
+      })
+      // Without this the whole chain is an unhandled rejection on every launch
+      // — twice, once per mount — for a capability the build never had.
+      .catch(reportNotificationActionsUnavailable);
     return () => {
       cancelled = true;
       unlisten?.();

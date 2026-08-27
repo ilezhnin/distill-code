@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getCompletionOutcome,
   getNotificationBody,
+  isMissingTauriCommandError,
+  resetNotificationAvailabilityLogForTests,
   useCompletionNotifications,
 } from "../useCompletionNotifications";
 import type { Message } from "@/shared/types/messages";
@@ -492,5 +494,98 @@ describe("useCompletionNotifications", () => {
         },
       ),
     );
+  });
+});
+
+// A build without the notification plugin's registerListener permission
+// answered `onAction` with a rejection nobody caught, so every launch logged
+// two unhandled rejections for a feature that was simply not in the build.
+describe("notification actions the build does not provide", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetStores();
+    resetNotificationAvailabilityLogForTests();
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    mocks.invoke.mockResolvedValue(undefined);
+    mocks.listen.mockResolvedValue(vi.fn());
+    mocks.audioPlay.mockResolvedValue(undefined);
+    mocks.getPlatform.mockReturnValue("linux");
+    mocks.getCurrentWindow.mockReturnValue({
+      onFocusChanged: vi.fn().mockResolvedValue(vi.fn()),
+      unminimize: vi.fn().mockResolvedValue(undefined),
+      show: vi.fn().mockResolvedValue(undefined),
+      setFocus: vi.fn().mockResolvedValue(undefined),
+    });
+  });
+
+  it("reads a missing command as a missing command, not as a fault", () => {
+    expect(
+      isMissingTauriCommandError(
+        "notification.registerListener not allowed. Command not found",
+      ),
+    ).toBe(true);
+    expect(
+      isMissingTauriCommandError(
+        new Error(
+          "notification.registerListener not allowed. Command not found",
+        ),
+      ),
+    ).toBe(true);
+    expect(isMissingTauriCommandError(new Error("permission denied"))).toBe(
+      false,
+    );
+    expect(isMissingTauriCommandError(undefined)).toBe(false);
+  });
+
+  it("settles the rejection instead of leaving it unhandled", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mocks.onAction.mockRejectedValue(
+      "notification.registerListener not allowed. Command not found",
+    );
+
+    const { unmount } = renderHook(() => useCompletionNotifications(vi.fn()));
+
+    await waitFor(() => expect(info).toHaveBeenCalledTimes(1));
+    expect(info.mock.calls[0][0]).toContain("unavailable in this build");
+    expect(warn).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  // Both notification effects re-run on remount and the hook is rendered in
+  // more than one place, so an unguarded log repeats a non-event several times
+  // a launch — which is how it read as a fault to begin with.
+  it("says it once per window, however many times it is mounted", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    mocks.onAction.mockRejectedValue(
+      "notification.registerListener not allowed. Command not found",
+    );
+
+    const first = renderHook(() => useCompletionNotifications(vi.fn()));
+    await waitFor(() => expect(info).toHaveBeenCalledTimes(1));
+    first.unmount();
+    const second = renderHook(() => useCompletionNotifications(vi.fn()));
+    await waitFor(() => expect(mocks.onAction).toHaveBeenCalledTimes(2));
+
+    expect(info).toHaveBeenCalledTimes(1);
+    second.unmount();
+  });
+
+  // A real failure is still a real failure — silence there would hide a
+  // notification subsystem that broke rather than one that was never built.
+  it("still warns when the subscription fails for any other reason", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mocks.onAction.mockRejectedValue(new Error("plugin panicked"));
+
+    const { unmount } = renderHook(() => useCompletionNotifications(vi.fn()));
+
+    await waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+    expect(warn.mock.calls[0][0]).toContain("notification actions");
+    expect(info).not.toHaveBeenCalled();
+    unmount();
   });
 });
