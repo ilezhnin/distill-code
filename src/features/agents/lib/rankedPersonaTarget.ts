@@ -36,6 +36,21 @@ import {
 export interface RankedPersonaTargetContext {
   /** Available harnesses (agent providers) by id. */
   providers: readonly { id: string }[];
+  /**
+   * Models the harness is CONFIRMED to serve right now.
+   *
+   * Every id this returns can end up pinned on a session, so callers must not
+   * pass the picker's list. The model cache keeps a provider's last payload
+   * when a discovery refresh answers nothing (a retryable non-answer, not an
+   * empty inventory), and a ranking that matches against that leftover pins
+   * the chat to a model the harness has dropped — goose forwards the id
+   * verbatim and every send fails with "Failed to set ACP model option:
+   * Invalid params", out of `stream()`, where the chat cannot rescue itself.
+   * Filter by `isCachedModelInventoryAuthoritative` (or use the hook's
+   * `getInstalledModelsForAgent`) first; an unconfirmed harness must report an
+   * empty list, which reads here as "not installed" and lets the session start
+   * on the harness' own current model instead.
+   */
   getModelsForHarness: (harnessId: string) => readonly RankableModel[];
   rateLimits: readonly ProviderRateLimits[];
 }

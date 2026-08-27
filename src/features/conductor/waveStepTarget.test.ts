@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
 import type { Persona } from "@/shared/types/agents";
 
 import {
@@ -69,6 +70,7 @@ function install(
 describe("resolveWaveStepTarget", () => {
   afterEach(() => {
     resetWaveStepTargetIoForTests();
+    useProviderModelCacheStore.setState({ providers: new Map() });
   });
 
   it("runs the step on the role's own ranking, not the conductor's model", () => {
@@ -152,6 +154,49 @@ describe("resolveWaveStepTarget", () => {
 
   it("has no opinion when the role has no persona, so the child inherits", () => {
     install([]);
+    expect(resolveWaveStepTarget("writer")).toBeUndefined();
+  });
+
+  // A wave child spawned on a model its harness has dropped dies on every
+  // send with "Failed to set ACP model option: Invalid params". The cache
+  // keeps a provider's last payload when a discovery refresh answers nothing,
+  // so a populated entry is not proof the model is still served — only the
+  // cache's own authority flag is.
+  it("ignores a harness inventory the cache no longer calls authoritative", () => {
+    const ranking = JSON.stringify({
+      version: 1,
+      entries: [
+        { platform: "claude-acp", modelId: "claude-opus-5", label: "Opus 5" },
+      ],
+    });
+    const models = [
+      {
+        id: "claude-opus-5",
+        name: "Claude Opus 5",
+        displayName: "Claude Opus 5",
+        providerId: "claude-acp",
+      },
+    ];
+    const cacheEntry = (fetchedAt: number) =>
+      new Map([
+        ["claude-acp", { providerId: "claude-acp", models, fetchedAt }],
+      ]);
+
+    // Everything but the model inventory is injected, so this exercises the
+    // live store read the app actually uses.
+    setWaveStepTargetIoForTests({
+      personas: () => [persona({ modelRanking: ranking })] as never,
+      providers: () => PROVIDERS as never,
+      rateLimits: () => [] as never,
+    });
+
+    useProviderModelCacheStore.setState({ providers: cacheEntry(Date.now()) });
+    expect(resolveWaveStepTarget("writer")?.target.modelId).toBe(
+      "claude-opus-5",
+    );
+
+    // The empty-discovery shape: the payload survives, the timestamp does not.
+    useProviderModelCacheStore.setState({ providers: cacheEntry(0) });
     expect(resolveWaveStepTarget("writer")).toBeUndefined();
   });
 
