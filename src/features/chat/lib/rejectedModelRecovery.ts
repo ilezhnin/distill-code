@@ -107,69 +107,13 @@ export function recoverSessionFromRejectedModel(
 export function harnessRejectedModelNotice(
   recovery: RejectedModelRecovery,
 ): string {
-  return i18n.t("chat:errors.harnessRejectedModel", {
-    harness: harnessLabel(recovery.harnessId),
-    model: recovery.rejectedModelName,
-  });
-}
-
-function harnessLabel(harnessId: string): string {
-  return (
+  const harness =
     useAgentStore
       .getState()
-      .providers.find((provider) => provider.id === harnessId)?.label ||
-    harnessId
-  );
-}
-
-/**
- * The same repair, one step earlier.
- *
- * Everything above runs after the harness has already refused the model, which
- * is the only signal available once a bad pin is on a session. But a pin does
- * not have to get that far: while the session is being configured, the harness
- * has just told us — in the model option of its own session snapshot — exactly
- * which ids it serves. `acpSessionRegistry` checks the pin against that list
- * and refuses to send one that is missing from it; this is what the operator
- * sees when it does.
- *
- * The session is already running on the harness' current model by the time
- * this is called (the registry never sent the pin), so the work here is to
- * make the store agree — the target still names the model nobody accepted, and
- * leaving it there would re-pin it on the next prepare — and then to say so.
- * Nothing is re-sent and nothing is chosen on the operator's behalf beyond
- * falling back to the model the harness itself reports.
- */
-export function noticeForUndeclaredSessionModel(event: {
-  sessionId: string;
-  /** Wire provider the registry was talking to, used only as a fallback name. */
-  providerId: string;
-  modelId: string;
-}): string {
-  const session = useChatSessionStore.getState().getSession(event.sessionId);
-  const target = session?.executionTarget;
-  const pinnedHere =
-    target && isModelExecutionTarget(target) && target.modelId === event.modelId
-      ? target
-      : null;
-
-  // Only rewrite a target that still names the refused model. A session whose
-  // target has moved on already carries newer intent, and the refusal being
-  // reported is about a request that is no longer current.
-  if (pinnedHere) {
-    replaceSessionTargetAfterDispatch(
-      event.sessionId,
-      normalizeSessionExecutionTarget({
-        harnessId: pinnedHere.harnessId,
-        modelProviderId: pinnedHere.modelProviderId,
-      }),
-    );
-  }
-
-  return i18n.t("chat:errors.harnessUndeclaredModel", {
-    harness: harnessLabel(pinnedHere?.harnessId ?? event.providerId),
-    model: pinnedHere
-      ? pinnedHere.modelName || pinnedHere.modelId
-      : event.modelId,
+      .providers.find((provider) => provider.id === recovery.harnessId)
+      ?.label || recovery.harnessId;
+  return i18n.t("chat:errors.harnessRejectedModel", {
+    harness,
+    model: recovery.rejectedModelName,
   });
 }

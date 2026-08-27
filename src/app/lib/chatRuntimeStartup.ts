@@ -44,7 +44,6 @@ import {
 import { handleSecurityPermissionRequest } from "@/features/security/acp/securityPermissionHandler";
 import notificationHandler from "@/features/chat/acp/acpNotificationHandler";
 import { registerChatSessionConfigSnapshotHandlers } from "@/features/chat/acp/sessionConfigSnapshotAdapter";
-import { registerUndeclaredSessionModelHandler } from "@/features/chat/acp/undeclaredSessionModelAdapter";
 import { perfLog } from "@/shared/lib/perfLog";
 import { getBuildFeatureState } from "@/shared/profile/buildProfile";
 import { useRuntimeConfigStore } from "@/shared/runtime-config/runtimeConfigStore";
@@ -135,7 +134,6 @@ async function startChatRuntime(
 ): Promise<void> {
   const tConn = performance.now();
   registerChatSessionConfigSnapshotHandlers();
-  registerUndeclaredSessionModelHandler();
   setNotificationHandler(notificationHandler);
   // Not awaited: the planner and memory are read from disk, and nothing in the
   // rest of startup depends on them. Each store stays empty and refuses to
