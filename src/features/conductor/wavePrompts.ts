@@ -383,6 +383,30 @@ export function buildWaveGitDeltaLine(facts: WaveGitDeltaFacts): string {
 }
 
 /**
+ * The second line of a digest no model authored (E3b).
+ *
+ * The reports name the files they produced; this line is the app saying
+ * whether those files are on disk. It matters most when it is boring — a
+ * verifier that inspected nothing and invented three plausible paths clears
+ * the E2 evidence gate exactly as well as one that did the work, and this is
+ * the only thing in the loop that can tell them apart.
+ *
+ * States what was checked even when everything was found, because "checked 6,
+ * all there" is evidence and silence is not.
+ */
+export function buildWaveArtifactLine(facts: {
+  checked: number;
+  missing: readonly string[];
+}): string {
+  const head = `APP MEASUREMENT — this line is written by the app, not by any worker: of the ${facts.checked} file path${facts.checked === 1 ? "" : "s"} the reports named`;
+  if (facts.missing.length === 0) {
+    return `${head}, every one exists on disk.`;
+  }
+  const named = facts.missing.map((path) => `"${path}"`).join(", ");
+  return `${head}, ${facts.missing.length} do${facts.missing.length === 1 ? "es" : ""} not exist: ${named}. A report naming a file that is not there did not produce it, whatever the summary says. Do not accept on that report's evidence.`;
+}
+
+/**
  * Header of a digest for children that are not part of a wave (legacy
  * orchestrator trees, and agent-cli children under any chat).
  *

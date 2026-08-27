@@ -32,6 +32,7 @@ import type { SessionNode, StructuredReport } from "./types";
 import type { WaveState, WaveVerdictIssue } from "./waveEngine";
 import {
   AGENT_DIGEST_INSTRUCTION,
+  buildWaveArtifactLine,
   buildWaveDigestInstruction,
   buildWaveGitDeltaLine,
   buildWaveVerdictRetryInstruction,
@@ -233,6 +234,12 @@ export function buildWaveDigest(args: {
    * non-model-authored fact before any model's account of itself.
    */
   gitDelta?: WaveGitDeltaFacts;
+  /**
+   * The app's own answer to "are the files the reports named actually there"
+   * (E3b), stated beside the git delta for the same reason: both are facts
+   * the conductor should read before any model's account of itself.
+   */
+  artifacts?: { checked: number; missing: readonly string[] };
 }): string {
   return [
     waveDigestMarker(args.waveId, args.attempt),
@@ -241,6 +248,7 @@ export function buildWaveDigest(args: {
       : "",
     buildWaveDigestInstruction(args.entries.length),
     args.gitDelta ? buildWaveGitDeltaLine(args.gitDelta) : "",
+    args.artifacts ? buildWaveArtifactLine(args.artifacts) : "",
     digestBody(args.entries),
   ]
     .filter((part) => part.trim().length > 0)

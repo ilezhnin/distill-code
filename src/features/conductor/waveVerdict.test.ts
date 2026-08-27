@@ -184,6 +184,105 @@ describe("decideWaveVerdict", () => {
   });
 });
 
+describe("the E3b artifact check on accept (P11)", () => {
+  const ACCEPT = '{"verdict":"accept","note":"Shipped."}';
+
+  it("honours accept when the app found every named file", () => {
+    const wave = { ...uncheckableWave(), checkedArtifacts: 3 };
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      wave,
+    });
+    expect(decision.phase).toBe("accepted");
+  });
+
+  it("parks accept when a report named a file that is not on disk", () => {
+    // The whole point of E3b: this report passes E2 — a verification step
+    // that completed and listed artifacts — and is still lying about them.
+    const wave = {
+      ...uncheckableWave(),
+      checkedArtifacts: 2,
+      missingArtifacts: ["src/features/net/retry.ts"],
+    };
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      wave,
+    });
+    expect(decision.phase).toBe("needsOperator");
+    expect(decision.closure?.reason).toBe("accepted-with-missing-artifacts");
+    expect(decision.closure?.detail).toContain("src/features/net/retry.ts");
+    // Same reasoning as E2: the same conductor answers the same question the
+    // same way, so a retry would only spend a model call.
+    expect(decision.offerRetry).toBe(false);
+  });
+
+  it("keeps the conductor's note beside the refusal", () => {
+    const wave = {
+      ...uncheckableWave(),
+      checkedArtifacts: 1,
+      missingArtifacts: ["docs/report.md"],
+    };
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      wave,
+    });
+    expect(decision.closure?.note).toBe("Shipped.");
+  });
+
+  it("names a bounded number of missing paths and counts the rest", () => {
+    const missing = Array.from({ length: 8 }, (_, i) => `out/file-${i}.txt`);
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      wave: {
+        ...uncheckableWave(),
+        checkedArtifacts: 8,
+        missingArtifacts: missing,
+      },
+    });
+    expect(decision.closure?.detail).toContain("out/file-0.txt");
+    expect(decision.closure?.detail).toContain("and 3 more");
+    expect(decision.closure?.detail).not.toContain("out/file-7.txt");
+  });
+
+  it("changes nothing when the check never ran", () => {
+    // A probe that could not run (no Tauri, no reported paths, a timeout) is
+    // an infrastructure failure, and reading it as "the worker lied" would
+    // make every degraded build refuse every accept.
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      wave: uncheckableWave(),
+    });
+    expect(decision.phase).toBe("accepted");
+  });
+
+  it("does not rescue a wave that failed the evidence gate first", () => {
+    // Order matters: "nobody checked" is the bigger fact, and a passing path
+    // check must not explain it away.
+    const wave = createWaveState({
+      waveId: "w-build",
+      conductorSessionId: "c1",
+      planMessageId: "plan-1",
+      steps: [
+        { role: "writer", subtask: "Write the module", access: [] },
+        { role: "writer", subtask: "Write the other module", access: [] },
+      ],
+      createdAt: 1,
+    });
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      wave: { ...wave, checkedArtifacts: 4 },
+    });
+    expect(decision.phase).toBe("needsOperator");
+    expect(decision.closure?.reason).toBe("accepted-without-evidence");
+  });
+});
+
 describe("the E2 evidence gate on accept", () => {
   const ACCEPT = '{"verdict":"accept","note":"Shipped."}';
 

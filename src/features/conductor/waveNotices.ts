@@ -115,6 +115,7 @@ export const WAVE_CLOSURE_REASON_KEYS: Record<WaveClosureReason, string> = {
   "revision-cap-reached": "revisionCapReached",
   "digest-undeliverable": "digestUndeliverable",
   "accepted-without-evidence": "acceptedWithoutEvidence",
+  "accepted-with-missing-artifacts": "acceptedWithMissingArtifacts",
   "wave-interrupted": "waveInterrupted",
   "operator-stopped": "operatorStopped",
   "step-blocked": "stepBlocked",

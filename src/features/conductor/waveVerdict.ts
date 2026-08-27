@@ -72,6 +72,15 @@ export type WaveClosureReason =
    */
   | "accepted-without-evidence"
   /**
+   * The conductor accepted a wave whose reports named files that are not on
+   * disk (E3b). E2 asks whether a claim of verification was made; this asks
+   * whether it was true, and it is the only check in the loop a model cannot
+   * satisfy by writing something plausible. The conductor may still be right
+   * about the work — so this parks rather than fails — but nothing closes on
+   * a report that named a file which does not exist.
+   */
+  | "accepted-with-missing-artifacts"
+  /**
    * Every step went terminal without a single report: the run was interrupted
    * (C3), not finished. Digesting it would spend a model call judging "unknown"
    * for every step.
@@ -167,6 +176,9 @@ export function decideWaveVerdict(input: {
 
   const { verdict } = parse;
   if (verdict.outcome === "accept") {
+    // Order matters: "nobody checked" is a bigger fact than "what was
+    // checked does not exist", and reporting the smaller one first would let
+    // an unverified wave be explained away by a passing path check.
     const missing = missingVerificationEvidence(input.wave, input.reportOf);
     if (missing) {
       // Not a retry: asking the same conductor again produces the same accept.
@@ -176,6 +188,20 @@ export function decideWaveVerdict(input: {
         closure: {
           reason: "accepted-without-evidence",
           detail: missing,
+          ...(verdict.note ? { note: verdict.note } : {}),
+        },
+        offerRetry: false,
+      };
+    }
+    const absent = input.wave.missingArtifacts ?? [];
+    if (absent.length > 0) {
+      // Not a retry, for the same reason as E2: the same conductor asked the
+      // same question answers it the same way. The files are the operator's.
+      return {
+        phase: "needsOperator",
+        closure: {
+          reason: "accepted-with-missing-artifacts",
+          detail: missingArtifactsDetail(absent),
           ...(verdict.note ? { note: verdict.note } : {}),
         },
         offerRetry: false,
@@ -222,6 +248,20 @@ export function decideWaveVerdict(input: {
     },
     offerRetry: false,
   };
+}
+
+/**
+ * The paths, named as the workers wrote them, so the operator can go look.
+ *
+ * Capped: a report that named forty absent files has a different problem than
+ * one that named two, and the count says that better than forty lines would.
+ */
+function missingArtifactsDetail(missing: readonly string[]): string {
+  const shown = missing.slice(0, 5);
+  const rest = missing.length - shown.length;
+  const list = shown.map((path) => `"${path}"`).join(", ");
+  const tail = rest > 0 ? `, and ${rest} more` : "";
+  return `The reports named ${missing.length === 1 ? "a file that is not" : "files that are not"} on disk: ${list}${tail}.`;
 }
 
 /**

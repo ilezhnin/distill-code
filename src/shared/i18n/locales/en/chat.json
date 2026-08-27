@@ -546,6 +546,7 @@
           "revisionCapReached": "The conductor asked for another revision, but this request has already used its {{max}} revisions.",
           "digestUndeliverable": "The brigade's report could not be delivered to the conductor.",
           "acceptedWithoutEvidence": "The conductor accepted the result, but nothing external checked it, so the acceptance was not honoured.",
+          "acceptedWithMissingArtifacts": "The conductor accepted the result, but the reports named files that are not on disk, so the acceptance was not honoured.",
           "waveInterrupted": "This wave was interrupted before any executor reported back, so there is nothing to judge. Its work was not finished.",
           "operatorStopped": "You stopped this wave. Its executors were told to stop, and nothing was digested or judged.",
           "stepBlocked": "An executor reported it cannot do its step, so the wave was stopped."
