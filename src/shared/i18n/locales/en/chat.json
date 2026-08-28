@@ -603,6 +603,10 @@
       "hiddenWorking_other": "+{{count}} working",
       "treeTitle": "Agents at work",
       "openTree": "Show every agent at work"
+    },
+    "raw": {
+      "toggle": "Show the raw run events",
+      "empty": "Nothing was recorded for this step yet."
     }
   },
   "harnessBrigade": {

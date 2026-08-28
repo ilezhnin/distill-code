@@ -602,6 +602,10 @@
       "hiddenWorking_other": "+{{count}} trabajando",
       "treeTitle": "Agentes trabajando",
       "openTree": "Mostrar todos los agentes trabajando"
+    },
+    "raw": {
+      "toggle": "Mostrar los eventos brutos de la ejecución",
+      "empty": "Todavía no se ha registrado nada de este paso."
     }
   },
   "harnessBrigade": {

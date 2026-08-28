@@ -501,10 +501,36 @@ export function getWaveEngineState(): WaveEngineState {
   return cached;
 }
 
+/**
+ * In-process subscribers, notified after every real change.
+ *
+ * The run journal (P27) is derived from these transitions rather than emitted
+ * by the engine, so this is how it sees them. Deliberately not a window
+ * event: the wave state is written and read inside one renderer.
+ */
+const waveStateListeners = new Set<(state: WaveEngineState) => void>();
+
+/** Subscribes to wave-state changes. Returns the unsubscribe. */
+export function subscribeWaveEngineState(
+  listener: (state: WaveEngineState) => void,
+): () => void {
+  waveStateListeners.add(listener);
+  return () => {
+    waveStateListeners.delete(listener);
+  };
+}
+
 /** Replaces the live state and writes it through. A no-op change is skipped. */
 export function setWaveEngineState(next: WaveEngineState): void {
   if (cached === next) return;
   cached = next;
+  for (const listener of [...waveStateListeners]) {
+    try {
+      listener(next);
+    } catch {
+      // A reader that throws must not take the engine's write path with it.
+    }
+  }
   if (typeof window === "undefined") return;
   if (wavesDocument.active) {
     wavesDocument.write(next);
