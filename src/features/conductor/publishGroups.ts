@@ -6,7 +6,9 @@
  * orchestrator turn, keyed by `parentSessionId` + `anchorMessageId`, with the
  * orchestrator's workers as leaves — or the orchestrator itself when it has
  * none. These are the legacy `managedBy: "ui"` trees still in operators'
- * localStorage, plus anything registered from outside the UI.
+ * localStorage, plus `managedBy: "agent-cli"` sessions registered from
+ * outside the UI, which publish as their own single-leaf group because
+ * nothing gives them an orchestrator shell to hang under.
  *
  * **Wave children are deliberately not here.** Since 3a a wave publishes one
  * digest per `waveId` from `waveLifecycle.ts`, as part of its closed loop —
@@ -63,6 +65,7 @@ export function groupPublishableTurns(
   }
 
   const groups: PublishGroup[] = [];
+  const published = new Set<string>();
   for (const [key, shells] of orchestratorGroups) {
     const parentSessionId = shells[0]?.parentSessionId;
     if (!parentSessionId) continue;
@@ -70,7 +73,28 @@ export function groupPublishableTurns(
       const workers = workersOf(shell.sessionId);
       return workers.length > 0 ? [...workers] : [shell];
     });
+    for (const leaf of leaves) published.add(leaf.sessionId);
     groups.push({ parentSessionId, key, leaves: orderLeaves(leaves) });
+  }
+
+  // P19d. The header above has always claimed this covers "anything
+  // registered from outside the UI", and it did not: a session created by
+  // berdctl registers as a worker under its parent, not as an orchestrator
+  // shell, so the `role !== "orchestrator"` filter dropped it and its report
+  // never reached the parent at all. Latent only because nothing writes an
+  // `agent-cli` node yet — which is precisely the moment to fix it, before a
+  // caller exists to be surprised by it.
+  for (const node of nodes) {
+    if (node.managedBy !== "agent-cli") continue;
+    if (!node.parentSessionId) continue;
+    // Already a leaf of an orchestrator group: publishing it again here would
+    // put the same report into the parent twice.
+    if (published.has(node.sessionId)) continue;
+    groups.push({
+      parentSessionId: node.parentSessionId,
+      key: `${node.parentSessionId}::${turnKey(node)}`,
+      leaves: [node],
+    });
   }
   return groups;
 }

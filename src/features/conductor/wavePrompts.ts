@@ -299,7 +299,7 @@ Summarize what you dispatched, what you already know, and what is still outstand
  * not be read (Q5). The digest itself is re-delivered alongside it, so this
  * text only has to explain why it is arriving twice.
  */
-export const WAVE_VERDICT_RETRY_PROMPT = `Your previous answer to this digest could not be read as a verdict, so nothing was decided and the operator asked for another try.`;
+const WAVE_VERDICT_RETRY_PROMPT = `Your previous answer to this digest could not be read as a verdict, so nothing was decided and the operator asked for another try.`;
 
 /**
  * The header of a re-asked digest (Q5).

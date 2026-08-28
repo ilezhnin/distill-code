@@ -570,6 +570,7 @@
       "reportDegraded": "El paso {{step}} ({{name}}) terminó sin informe. La ola continúa con un comodín de «resultado desconocido»: los pasos posteriores y el resumen verán ese comodín, no lo que ese ejecutor hizo realmente. Su propio chat es el único registro.",
       "stop": "Detener la ola",
       "digest": {
+        "protocolText": "Texto de protocolo entregado al conductor",
         "cardTitle": "Informe de la brigada entregado en este chat",
         "workerCount_one": "1 ejecutor",
         "workerCount_other": "{{count}} ejecutores",

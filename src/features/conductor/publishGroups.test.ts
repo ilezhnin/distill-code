@@ -114,4 +114,49 @@ describe("groupPublishableTurns", () => {
       groupPublishableTurns([conductor, strayWaveOrchestrator], () => []),
     ).toEqual([]);
   });
+
+  it("publishes an agent-cli session to its parent as its own group (P19d)", () => {
+    // The module header always claimed it covered sessions registered from
+    // outside the UI. It did not: berdctl registers a worker under its
+    // parent, never an orchestrator shell, so the role filter dropped it and
+    // its report never reached the parent at all.
+    const cli = node({
+      sessionId: "cli-1",
+      role: "worker",
+      managedBy: "agent-cli",
+      parentSessionId: "conductor-1",
+    });
+    const groups = groupPublishableTurns([cli], () => []);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].parentSessionId).toBe("conductor-1");
+    expect(groups[0].leaves.map((leaf) => leaf.sessionId)).toEqual(["cli-1"]);
+  });
+
+  it("does not publish an agent-cli session twice when it is also a leaf", () => {
+    const orchestrator = node({
+      sessionId: "orch-1",
+      role: "orchestrator",
+      parentSessionId: "conductor-1",
+      anchorMessageId: "msg-1",
+    });
+    const cliWorker = node({
+      sessionId: "cli-1",
+      managedBy: "agent-cli",
+      parentSessionId: "orch-1",
+    });
+    const groups = groupPublishableTurns([orchestrator, cliWorker], (parent) =>
+      parent === "orch-1" ? [cliWorker] : [],
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0].leaves.map((leaf) => leaf.sessionId)).toEqual(["cli-1"]);
+  });
+
+  it("still leaves an agent-cli session with no parent alone", () => {
+    const orphan = node({
+      sessionId: "cli-orphan",
+      managedBy: "agent-cli",
+      parentSessionId: null,
+    });
+    expect(groupPublishableTurns([orphan], () => [])).toEqual([]);
+  });
 });
