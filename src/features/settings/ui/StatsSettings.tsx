@@ -35,7 +35,9 @@ import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import { SettingsPage } from "@/shared/ui/SettingsPage";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { StatCard } from "./stats/StatCard";
+import { useWaveTelemetry } from "@/features/conductor/waveTelemetryStore";
 import { UsageOverviewPane } from "./stats/UsageOverviewPane";
+import { WaveTelemetryPane } from "./stats/WaveTelemetryPane";
 
 const SESSION_PAGE_LOAD_LIMIT = 30;
 
@@ -64,6 +66,7 @@ async function refreshUsageSources(): Promise<void> {
 export function StatsSettings() {
   const { t } = useTranslation("settings");
   const ledger = useUsageLedger();
+  const telemetry = useWaveTelemetry();
   const sessions = useChatSessionStore((state) => state.sessions);
   const conductorNodes = useConductorGraphStore((state) => state.nodesById);
   const { readyAgentIds } = useAgentProviderStatus();
@@ -276,6 +279,8 @@ export function StatsSettings() {
           enabledProviderIds={enabledProviderIds}
           providerFilter={providerFilter}
         />
+
+        <WaveTelemetryPane telemetry={telemetry} />
       </div>
     </SettingsPage>
   );
