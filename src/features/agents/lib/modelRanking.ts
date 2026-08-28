@@ -213,6 +213,21 @@ export interface RankedModelResolution {
   skipped: RankedModelSkip[];
 }
 
+/**
+ * Where a model sits in a ranking, or `-1` when the ranking never names it.
+ *
+ * The only ordering of models this app is allowed to have. It is the
+ * operator's own list for a role, not a judgement about which model is
+ * better — reputational priors about models are a refused idea, and this is
+ * what makes "ranked lower" sayable without inventing one.
+ */
+export function rankIndexOfModel(
+  ranking: readonly RankedModelCandidate[],
+  model: RankableModel,
+): number {
+  return ranking.findIndex((candidate) => matchesCandidate(candidate, model));
+}
+
 function matchesCandidate(
   candidate: RankedModelCandidate,
   model: RankableModel,

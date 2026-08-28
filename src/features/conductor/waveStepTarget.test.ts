@@ -5,6 +5,7 @@ import type { Persona } from "@/shared/types/agents";
 
 import {
   checkExplicitWaveStepModel,
+  checkWaveStepModelDowngrade,
   resetWaveStepTargetIoForTests,
   resolveExplicitWaveStepModel,
   resolveWaveStepTarget,
@@ -316,5 +317,98 @@ describe("checkExplicitWaveStepModel (admission gate)", () => {
     // refusal.
     install([], spentClaude(95));
     expect(checkExplicitWaveStepModel("opus")).toEqual({ ok: true });
+  });
+});
+
+describe("checkWaveStepModelDowngrade (P12)", () => {
+  afterEach(() => {
+    resetWaveStepTargetIoForTests();
+  });
+
+  const RANKED = JSON.stringify({
+    version: 1,
+    entries: [
+      { platform: "claude-acp", modelId: "claude-opus-5", label: "Opus 5" },
+      { platform: "claude-acp", modelId: "claude-fable-5", label: "Fable 5" },
+    ],
+  });
+
+  function check(
+    step: { id: string; name: string },
+    inherited: { id: string; name: string } | undefined,
+  ) {
+    return checkWaveStepModelDowngrade({
+      roleId: "writer",
+      step,
+      inherited,
+      stepLabel: step.name,
+      inheritedLabel: inherited?.name ?? "",
+    });
+  }
+
+  it("reports a step pinned below the model it would have inherited", () => {
+    install([persona({ modelRanking: RANKED })]);
+    expect(
+      check(
+        { id: "claude-fable-5", name: "Fable 5" },
+        { id: "claude-opus-5", name: "Opus 5" },
+      ),
+    ).toEqual({ stepLabel: "Fable 5", inheritedLabel: "Opus 5" });
+  });
+
+  it("says nothing when the step is pinned above the inherited model", () => {
+    install([persona({ modelRanking: RANKED })]);
+    expect(
+      check(
+        { id: "claude-opus-5", name: "Opus 5" },
+        { id: "claude-fable-5", name: "Fable 5" },
+      ),
+    ).toBeNull();
+  });
+
+  it("says nothing when both are the same rank", () => {
+    install([persona({ modelRanking: RANKED })]);
+    expect(
+      check(
+        { id: "claude-opus-5", name: "Opus 5" },
+        { id: "claude-opus-5", name: "Opus 5" },
+      ),
+    ).toBeNull();
+  });
+
+  it("has no opinion about a model the ranking never names", () => {
+    // The operator's list is the only ordering this app is entitled to. A
+    // model outside it is not "weaker" — it is unranked, and inventing an
+    // order for it would be the reputational prior this product refuses.
+    install([persona({ modelRanking: RANKED })]);
+    expect(
+      check(
+        { id: "grok-4-6", name: "Grok 4.6" },
+        { id: "claude-opus-5", name: "Opus 5" },
+      ),
+    ).toBeNull();
+    expect(
+      check(
+        { id: "claude-fable-5", name: "Fable 5" },
+        { id: "grok-4-6", name: "Grok 4.6" },
+      ),
+    ).toBeNull();
+  });
+
+  it("says nothing when the step would not have inherited anything", () => {
+    install([persona({ modelRanking: RANKED })]);
+    expect(
+      check({ id: "claude-fable-5", name: "Fable 5" }, undefined),
+    ).toBeNull();
+  });
+
+  it("says nothing when the role has no persona to rank with", () => {
+    install([]);
+    expect(
+      check(
+        { id: "claude-fable-5", name: "Fable 5" },
+        { id: "claude-opus-5", name: "Opus 5" },
+      ),
+    ).toBeNull();
   });
 });

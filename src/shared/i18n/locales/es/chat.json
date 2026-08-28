@@ -579,6 +579,7 @@
         "deliveryFailed": "No se pudo entregar el informe de la brigada en este chat. Queda abajo para que no se pierda nada."
       },
       "stepModel": {
+        "downgrade": "El paso {{step}} ({{name}}) quedó fijado a {{model}}, que clasificaste por debajo de {{inherited}}, el modelo que habría heredado. Se ejecuta en {{model}} como pidió el plan; un modelo más pequeño mantiene peor el formato del informe, así que revisa su informe antes de aceptar.",
         "explicitNearLimit": "El paso {{step}} ({{name}}) se ejecuta en {{model}} —el modelo que indicó el plan—, que está cerca de su límite de uso o ya lo alcanzó, por lo que el paso puede cortarse antes de terminar.",
         "fallback": "El paso {{step}} ({{name}}) se ejecuta en {{model}}: su modelo preferido no estaba disponible.",
         "nearLimit": "El paso {{step}} ({{name}}) se ejecuta en {{model}}, que está cerca de su límite de uso. Todos los modelos de este rol están así de llenos, por lo que el paso puede cortarse antes de terminar."
