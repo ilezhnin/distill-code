@@ -1,4 +1,3 @@
-import { notePersistFailure } from "./persistHealth";
 import { create } from "zustand";
 
 import type {
@@ -21,6 +20,12 @@ import {
   withRemappedConductorSessionId,
 } from "./waveStore";
 import { isWaveLive } from "./waveVerdict";
+
+import {
+  CONDUCTOR_GRAPH_DOCUMENT,
+  conductorDocument,
+} from "./conductorDocuments";
+import { notePersistFailure } from "./persistHealth";
 
 export const CONDUCTOR_GRAPH_STORAGE_KEY = "goose:conductor-graph";
 
@@ -179,35 +184,59 @@ function loadPersistedGraph(): ConductorGraphState {
   try {
     const stored = window.localStorage.getItem(CONDUCTOR_GRAPH_STORAGE_KEY);
     if (!stored) return { nodesById: {}, reportsByRunId: {} };
-    const parsed = JSON.parse(stored) as PersistedConductorGraph;
-    if (parsed.version !== 1) return { nodesById: {}, reportsByRunId: {} };
-    const nodesById: Record<string, SessionNode> = {};
-    for (const node of parsed.nodes ?? []) {
-      const parsedNode = parseNode(node);
-      if (parsedNode) nodesById[parsedNode.sessionId] = parsedNode;
-    }
-    const reportsByRunId: Record<string, StructuredReport> = {};
-    for (const report of parsed.reports ?? []) {
-      const parsedReport = parseReport(report);
-      if (parsedReport) reportsByRunId[parsedReport.runId] = parsedReport;
-    }
-    return { nodesById, reportsByRunId };
+    return parsePersistedGraph(JSON.parse(stored));
   } catch {
     return { nodesById: {}, reportsByRunId: {} };
   }
 }
 
+function graphPayload(state: ConductorGraphState): PersistedConductorGraph {
+  return {
+    version: 1,
+    nodes: Object.values(state.nodesById),
+    reports: Object.values(state.reportsByRunId),
+  };
+}
+
+function parsePersistedGraph(raw: unknown): ConductorGraphState {
+  const parsed = raw as PersistedConductorGraph | null;
+  if (!parsed || parsed.version !== 1) {
+    return { nodesById: {}, reportsByRunId: {} };
+  }
+  const nodesById: Record<string, SessionNode> = {};
+  for (const node of parsed.nodes ?? []) {
+    const parsedNode = parseNode(node);
+    if (parsedNode) nodesById[parsedNode.sessionId] = parsedNode;
+  }
+  const reportsByRunId: Record<string, StructuredReport> = {};
+  for (const report of parsed.reports ?? []) {
+    const parsedReport = parseReport(report);
+    if (parsedReport) reportsByRunId[parsedReport.runId] = parsedReport;
+  }
+  return { nodesById, reportsByRunId };
+}
+
+const graphDocument = conductorDocument<ConductorGraphState>({
+  path: CONDUCTOR_GRAPH_DOCUMENT,
+  legacyStorageKey: CONDUCTOR_GRAPH_STORAGE_KEY,
+  scope: "graph",
+  parse: parsePersistedGraph,
+  serialize: graphPayload,
+});
+
 function persistGraph(state: ConductorGraphState): void {
   if (typeof window === "undefined") return;
+  if (graphDocument.active) {
+    // Debounced, atomic, and in the operator's own folder. A refused write
+    // still reaches `persistHealth` — through the document's error hook now
+    // rather than a `catch` here.
+    graphDocument.write(state);
+    return;
+  }
   try {
-    const payload: PersistedConductorGraph = {
-      version: 1,
-      nodes: Object.values(state.nodesById),
-      reports: Object.values(state.reportsByRunId),
-    };
     window.localStorage.setItem(
       CONDUCTOR_GRAPH_STORAGE_KEY,
-      JSON.stringify(payload),
+      JSON.stringify(graphPayload(state)),
     );
   } catch (error) {
     // Still swallowed — a quota error must not take a running wave with it —
@@ -215,6 +244,33 @@ function persistGraph(state: ConductorGraphState): void {
     // the graph has stopped being durable.
     notePersistFailure("graph", error);
   }
+}
+
+/**
+ * Reads the folder's copy and folds in whatever it knows and memory does not.
+ *
+ * Memory wins on every conflict. Between this module's synchronous
+ * `localStorage` load and this read landing, a session can already have
+ * registered a node — replacing the state wholesale would drop it, and the
+ * node the app just created is more certainly true than the file on disk.
+ */
+export async function hydrateConductorGraph(): Promise<void> {
+  if (!graphDocument.active) return;
+  const stored = await graphDocument.read();
+  if (!stored) return;
+  useConductorGraphStore.setState((current) => {
+    const nodesById = { ...stored.nodesById, ...current.nodesById };
+    const reportsByRunId = {
+      ...stored.reportsByRunId,
+      ...current.reportsByRunId,
+    };
+    return { nodesById, reportsByRunId };
+  });
+}
+
+/** Pushes a queued graph write to disk. Shutdown, and tests. */
+export function flushConductorGraphWrites(): Promise<void> {
+  return graphDocument.flush();
 }
 
 function remapId(
