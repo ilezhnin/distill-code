@@ -78,7 +78,12 @@ function getProductImportUsage(manifest) {
 
   for (const sourceFile of sourceFiles) {
     const sourceText = fs.readFileSync(sourceFile, "utf8");
-    const relativeSourceFile = path.relative(repoRoot, sourceFile);
+    // Forward slashes on every platform; the manifest it is matched
+    // against stores them that way.
+    const relativeSourceFile = path
+      .relative(repoRoot, sourceFile)
+      .split(path.sep)
+      .join("/");
 
     for (const component of manifest) {
       const importPath = component.source

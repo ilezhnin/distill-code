@@ -153,7 +153,11 @@ function findButtonStylingFindings() {
 
   for (const file of files) {
     const sourceText = fs.readFileSync(file, "utf8");
-    const relative = path.relative(repoRoot, file);
+    // Forward slashes on every platform: this is compared against a
+    // baseline of repo paths committed from a machine with `/`, so on
+    // Windows every entry read as both a new violation and a stale baseline
+    // row — a hundred and eighty lines of noise saying nothing.
+    const relative = path.relative(repoRoot, file).split(path.sep).join("/");
     for (const match of sourceText.matchAll(/<Button\b/g)) {
       // Walk to the real end of the opening tag: a `>` at brace depth 0.
       // A plain indexOf(">") stops early inside JSX-expression props like

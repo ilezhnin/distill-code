@@ -89,9 +89,13 @@ function render(fileName, contract) {
   // Format through the repo's biome so the bytes on disk are stable under
   // the pre-commit format hook. cwd pins biome's config discovery to the
   // repo's biome.json regardless of where the generator is invoked from.
+  // Through node, not the bin directly: `bin/biome` is a JavaScript file with
+  // a shebang, which Windows does not honour, so executing it there fails
+  // with ENOENT and takes the whole check down on the platform this project
+  // is developed on.
   return execFileSync(
-    biomeBinPath,
-    ["format", `--stdin-file-path=${fileName}`],
+    process.execPath,
+    [biomeBinPath, "format", `--stdin-file-path=${fileName}`],
     {
       input: `${JSON.stringify(contract, null, 2)}\n`,
       encoding: "utf8",
