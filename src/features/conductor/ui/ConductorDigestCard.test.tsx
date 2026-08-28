@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { i18n } from "@/shared/i18n";
 
@@ -133,5 +133,65 @@ describe("ConductorDigestCard", () => {
     expect(screen.getByTestId("conductor-digest-card")).toHaveTextContent(
       "Some unstructured text",
     );
+  });
+});
+
+describe("a report leads back to the agent that wrote it", () => {
+  const agents = [
+    {
+      sessionId: "s-scout",
+      projectId: "p1",
+      role: "worker" as const,
+      managedBy: "wave" as const,
+      parentSessionId: "c1",
+      rootConductorId: "c1",
+      runId: "run-1",
+      harnessId: "goose",
+      displayName: "Scout",
+      status: "completed" as const,
+    },
+  ];
+
+  it("opens the executor whose name matches the entry", () => {
+    const onOpen = vi.fn();
+    render(
+      <ConductorDigestCard
+        body={builtBody([
+          { node: { displayName: "Scout" }, report: report("Found it") },
+        ])}
+        agents={agents}
+        onOpen={onOpen}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("conductor-digest-entry-open"));
+    expect(onOpen).toHaveBeenCalledWith("s-scout");
+  });
+
+  it("leaves an entry unclickable when the name matches nothing", () => {
+    render(
+      <ConductorDigestCard
+        body={builtBody([
+          { node: { displayName: "Someone else" }, report: report("x") },
+        ])}
+        agents={agents}
+        onOpen={() => undefined}
+      />,
+    );
+    expect(screen.queryByTestId("conductor-digest-entry-open")).toBeNull();
+  });
+
+  it("refuses to guess when two live agents share a name", () => {
+    // Opening the wrong transcript is worse than not offering the link.
+    render(
+      <ConductorDigestCard
+        body={builtBody([
+          { node: { displayName: "Scout" }, report: report("x") },
+        ])}
+        agents={[agents[0], { ...agents[0], sessionId: "s-twin" }]}
+        onOpen={() => undefined}
+      />,
+    );
+    expect(screen.queryByTestId("conductor-digest-entry-open")).toBeNull();
   });
 });
