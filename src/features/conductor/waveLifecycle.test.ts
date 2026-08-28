@@ -706,13 +706,15 @@ describe("wave closed loop", () => {
       const waveId = getWaveEngineState().waves[0].waveId;
 
       // The affordance is not a no-op: the operator has read the notice and
-      // is saying "ask anyway", and the digest says every step is unknown.
+      // is saying "ask anyway", and the digest says every step ended without
+      // completing — not that it "finished without a report", which is what
+      // this used to claim about executors that were killed where they stood.
       retryWaveDigest(CONDUCTOR_ID, waveId);
       await settle();
 
       expect(deliverEnvelope).toHaveBeenCalledTimes(1);
       expect(deliverEnvelope.mock.calls[0][1]).toContain(
-        "Treat its result as unknown",
+        "ended without completing",
       );
       // …and it does not claim the conductor answered something unreadably:
       // there was never a first digest for it to answer.
@@ -746,7 +748,12 @@ describe("wave closed loop", () => {
       expect(deliverEnvelope).toHaveBeenCalledTimes(1);
       const digest = deliverEnvelope.mock.calls[0][1];
       expect(digest).toContain("Found three callers");
-      expect(digest).toContain("Treat its result as unknown");
+      // The step that died with the process is reported as what it is. It
+      // used to read "finished without a report", which beside a real report
+      // from step 1 made the wave look whole — the exact shape of the lie
+      // this pass exists to remove.
+      expect(digest).toContain("ended without completing");
+      expect(digest).not.toContain("Treat its result as unknown");
     });
   });
 

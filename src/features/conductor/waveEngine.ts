@@ -261,6 +261,24 @@ export const UNSTARTED_STEP_REPORT_SUMMARY =
   "This step could not be started, so it produced no result.";
 
 /**
+ * Summary for a step whose executor ended without completing.
+ *
+ * Different in kind from {@link MISSING_STEP_REPORT_SUMMARY}, and the
+ * difference is the point. "Finished without a report" says the work ran to
+ * the end and only the report went missing. A step whose child failed, was
+ * stopped, or died with the app may have done nothing at all, and calling
+ * that `completed` hands the conductor a success it can accept.
+ *
+ * Two ways this hides. The mixed restart (C3): some steps reported, some were
+ * still in flight, and the reports that did arrive make the wave look whole.
+ * And the one caught live on 2026-08-28: four executors died on their very
+ * first send with `Failed to set ACP model option`, produced no report, and
+ * every one of them read "completed" in the digest.
+ */
+export const INTERRUPTED_STEP_REPORT_SUMMARY =
+  "This step's executor ended without completing — it was stopped, it failed, or the app went down under it — so it never reported and may not have done any of its work. Treat it as not done.";
+
+/**
  * Stand-in report for a terminal step the graph has no report for.
  *
  * A wave must never wait forever on a report that is not coming: a step that is
@@ -522,12 +540,25 @@ export function hasAttestedWaveStepReport(
 export function collectWaveStepReports(
   wave: WaveState,
   reportOf: (runId: string | null | undefined) => StructuredReport | undefined,
+  /**
+   * The step's child terminal run status, when the caller can see the graph.
+   *
+   * C3's mixed case (P20) turns on this and nothing else. A reportless step
+   * whose child reached `completed` really did finish — the 5b stub is honest
+   * about it. A reportless step whose child is `stopped` or `cancelled` was
+   * killed, usually by the startup reconcile demoting a runtime that died
+   * with the process, and calling that `completed` is how a half-run wave
+   * gets accepted. Optional so the pure callers that have no graph keep
+   * working exactly as before.
+   */
+  statusOf?: (stepIndex: number) => RunStatus | undefined,
 ): CompletedWaveStepReport[] {
   return [...wave.steps]
     .sort((left, right) => left.stepIndex - right.stepIndex)
     .map((step) => {
       const fallbackRunId =
         step.runId ?? `${wave.waveId}:step:${step.stepIndex}`;
+      const childStatus = statusOf?.(step.stepIndex);
       const report =
         (step.runId ? reportOf(step.runId) : undefined) ??
         (step.phase === "failed"
@@ -536,7 +567,19 @@ export function collectWaveStepReports(
               "failed",
               UNSTARTED_STEP_REPORT_SUMMARY,
             )
-          : synthesizeMissingStepReport(fallbackRunId, "completed"));
+          : synthesizeMissingStepReport(
+              fallbackRunId,
+              // The child's own terminal status, whatever it was. Defaulting
+              // to `completed` is how a wave tells the conductor that four
+              // executors which died on their first send had succeeded —
+              // observed live, with all four reading "completed" in the
+              // digest. A step that produced no report is only "completed"
+              // when its child actually completed.
+              childStatus ?? "completed",
+              statusOf === undefined || childStatus === "completed"
+                ? MISSING_STEP_REPORT_SUMMARY
+                : INTERRUPTED_STEP_REPORT_SUMMARY,
+            ));
       return {
         stepIndex: step.stepIndex,
         role: step.role,
