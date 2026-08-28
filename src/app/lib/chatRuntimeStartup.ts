@@ -1,5 +1,6 @@
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import { installRunJournal } from "@/features/conductor/runJournal";
 import { hydrateDistillStores } from "@/features/settings/lib/distillStoreHydration";
 import { loadPersistedMessageQueues } from "@/features/chat/stores/queuePersistence";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
@@ -135,11 +136,18 @@ async function startChatRuntime(
   const tConn = performance.now();
   registerChatSessionConfigSnapshotHandlers();
   setNotificationHandler(notificationHandler);
-  // Not awaited: the planner and memory are read from disk, and nothing in the
-  // rest of startup depends on them. Each store stays empty and refuses to
-  // write until its own read lands, so a slow disk delays those panels rather
-  // than the chat.
+  // Not awaited: the planner, the memory and the conductor's own state are
+  // read from disk, and nothing in the rest of startup depends on them. Each
+  // store stays empty and refuses to write until its own read lands (the
+  // conductor's three merge instead, so a node created in that window is never
+  // dropped), so a slow disk delays those panels rather than the chat.
   void hydrateDistillStores();
+  // The run journal (P27) watches the wave and graph stores from here on, so
+  // every wave from this point has a trace in the folder. Installed after the
+  // hydration call and not before it: the merge that hydration performs is
+  // not something a run did, and a journal that opened with it would say the
+  // previous session's waves had just been admitted.
+  installRunJournal();
   if (options.hydrateMessageQueues !== false) {
     const persistedMessageQueues = await loadPersistedMessageQueues();
     useChatStore.getState().replaceQueuedMessages(persistedMessageQueues);
