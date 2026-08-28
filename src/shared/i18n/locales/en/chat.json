@@ -476,6 +476,7 @@
     "waitingOnChildren_other": "{{count}} executors are working — the result will arrive as a message",
     "stopChild": "Stop {{name}}",
     "decisions": "Decisions",
+    "noDecisions": "No decisions were listed for this step, which may mean the report degraded into prose rather than that nothing was decided.",
     "artifacts": "Artifacts",
     "risks": "Risks",
     "needsOperator": "Needs the operator.",

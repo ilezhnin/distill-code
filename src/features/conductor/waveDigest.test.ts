@@ -208,6 +208,55 @@ describe("buildWaveDigest", () => {
     expect(digest).toContain("Flaky in CI");
   });
 
+  it("flags a completed step that listed no decisions (P16)", () => {
+    // An empty decisions list on a step claiming success is the signature of
+    // a report that degraded into prose. Today it is indistinguishable from
+    // a step that genuinely decided nothing, and the conductor accepts both.
+    const digest = buildWaveDigest({
+      waveId: "wave-1",
+      attempt: 0,
+      entries: [
+        { node: { displayName: "Curie" }, report: report("Did the thing") },
+      ],
+    });
+    expect(digest).toContain("No decisions were listed");
+    expect(digest).toContain("degraded into prose");
+  });
+
+  it("says nothing about decisions when the step listed some", () => {
+    const digest = buildWaveDigest({
+      waveId: "wave-1",
+      attempt: 0,
+      entries: [
+        {
+          node: { displayName: "Curie" },
+          report: report("Did the thing", { decisions: ["Kept the old API"] }),
+        },
+      ],
+    });
+    expect(digest).toContain("Kept the old API");
+    expect(digest).not.toContain("No decisions were listed");
+  });
+
+  it("does not scold a step that failed for having no decisions", () => {
+    // A failed or blocked step having nothing to list is the normal case,
+    // not a sign the format broke; warning there would be noise on exactly
+    // the reports the conductor most needs to read plainly.
+    for (const status of ["failed", "cancelled", "blocked"] as const) {
+      const digest = buildWaveDigest({
+        waveId: "wave-1",
+        attempt: 0,
+        entries: [
+          {
+            node: { displayName: "Curie" },
+            report: report("Could not start", { status }),
+          },
+        ],
+      });
+      expect(digest).not.toContain("No decisions were listed");
+    }
+  });
+
   it("tells the reader this is a report to judge, not an operator request", () => {
     const digest = buildWaveDigest({ waveId: "wave-1", attempt: 0, entries });
     expect(digest).toContain("WAVE REPORT DIGEST");
