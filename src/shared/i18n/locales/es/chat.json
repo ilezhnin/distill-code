@@ -551,7 +551,7 @@
         "reason": {
           "accepted": "El conductor aceptó el resultado.",
           "conductorNeedsOperator": "El conductor dice que no puede terminar esto sin ti.",
-          "verdictMissing": "El conductor respondió sin un veredicto, así que no se decidió nada.",
+          "verdictMissing": "El conductor respondió al resumen sin veredicto, así que no se decidió nada. La causa habitual es que se puso a hacer el trabajo en lugar de juzgar los informes: volver a preguntarle abajo reenvía el mismo resumen y explica qué falló en la respuesta.",
           "verdictInvalid": "No se pudo leer el veredicto del conductor, así que no se decidió nada.",
           "revisionCapReached": "El conductor pidió otra revisión, pero esta petición ya agotó sus {{max}} revisiones.",
           "digestUndeliverable": "No se pudo entregar al conductor el informe de la brigada.",
