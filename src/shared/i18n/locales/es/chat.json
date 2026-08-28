@@ -528,6 +528,10 @@
         "stepModelUnavailable": "El paso {{step}} indica un modelo que esta instalación no puede ejecutar ahora mismo, y se rechazó el plan entero en lugar de ejecutar el paso en otro modelo sin avisar.",
         "verificationStepMissing": "Este plan construye algo que se puede comprobar, pero su último paso no lo comprueba. Una ola así debe terminar con un paso de verificación que inspeccione el resultado."
       },
+      "budgetReset": {
+        "title": "El presupuesto de revisiones empieza de cero con este plan.",
+        "body": "La petición anterior gastó sus {{max}} revisiones y te fue devuelta. Volver a preguntar inicia una petición nueva, así que el conductor puede gastar {{max}} revisiones más — el límite es por petición, no por conversación."
+      },
       "concurrent": {
         "title": "Este chat ya tiene una ola en curso, así que el plan nuevo no se inició.",
         "body": "Solo se ejecuta una ola por conductor a la vez: una segunda pondría más ejecutores en la misma carpeta de trabajo sin coordinación entre ellos. Espera a que termine la ola en curso, o pídele su estado; después vuelve a enviar esta petición.",

@@ -9,6 +9,7 @@ import {
   WAVE_REJECTION_REASON_KEYS,
   waveRejectionNoticeText,
   waveRetryLabel,
+  waveRevisionBudgetResetNoticeText,
   waveSpawnFailureText,
   waveStepBlockedNoticeText,
   waveStepExplicitModelNoticeText,
@@ -110,5 +111,19 @@ describe("waveNotices", () => {
     expect(text).toContain("Bohr");
     expect(text).not.toContain("{{reason}}");
     expect(text).not.toContain("conductor.wave");
+  });
+});
+
+describe("waveRevisionBudgetResetNoticeText (P14)", () => {
+  it("says the budget starts over and names the cap", async () => {
+    // The cap is counted per plan message, so any word after needsOperator
+    // silently restores it. The mechanic stays; the silence does not.
+    await i18n.loadNamespaces("chat");
+    const text = waveRevisionBudgetResetNoticeText();
+    expect(text).toContain("starts over");
+    expect(text).toContain("2");
+    expect(text).toContain("per request, not per conversation");
+    expect(text).not.toContain("conductor.wave");
+    expect(text).not.toContain("{{max}}");
   });
 });

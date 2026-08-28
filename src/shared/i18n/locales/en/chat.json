@@ -529,6 +529,10 @@
         "stepModelUnavailable": "Step {{step}} names a model this build cannot run right now, and the whole plan was refused rather than quietly running the step on another model.",
         "verificationStepMissing": "This plan builds something that can be checked, but its last step does not check it. A wave like this has to end with a verification step that inspects the result itself."
       },
+      "budgetReset": {
+        "title": "The revision budget starts over with this plan.",
+        "body": "The previous request used all {{max}} of its revisions and was handed back to you. Asking again starts a new request, so the conductor may spend {{max}} more revisions on it — the cap is per request, not per conversation."
+      },
       "concurrent": {
         "title": "This chat already has a wave running, so the new plan was not started.",
         "body": "Only one wave runs per conductor at a time — a second one would put more executors into the same working folder with no coordination between them. Wait for the running wave to finish, or ask it for a status; then send this request again.",

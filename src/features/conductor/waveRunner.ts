@@ -59,10 +59,11 @@ import {
   waveStepModelNoticeText,
   waveRejectionNoticeText,
   waveReportDegradedNoticeText,
+  waveRevisionBudgetResetNoticeText,
   waveSpawnFailureText,
 } from "./waveNotices";
 import { stopWaveChildSessions } from "./waveStop";
-import { isWaveLive } from "./waveVerdict";
+import { MAX_WAVE_REVISIONS, isWaveLive } from "./waveVerdict";
 import { buildWaveStepPrompt } from "./wavePrompts";
 import {
   checkExplicitWaveStepModel,
@@ -341,6 +342,16 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       steps: admission.steps,
       createdAt: Date.now(),
     });
+    // P14: the cap is counted per plan message, so this new plan silently
+    // restores a budget the previous request had spent to the last revision.
+    // Read it before the parked wave is dropped — a moment later there is
+    // nothing left to read it from.
+    const budgetReset = next.waves.some(
+      (parked) =>
+        parked.conductorSessionId === candidate.conductorSessionId &&
+        parked.phase === "needsOperator" &&
+        parked.revisionCount >= MAX_WAVE_REVISIONS,
+    );
     next = withWave(
       // A new plan is a new root request, so this conductor's wave parked on
       // `needsOperator` (and the retry it backed) is stale and goes away.
@@ -357,6 +368,14 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
     );
     setWaveEngineState(next);
     bumpWaveTelemetryCounter("admittedWaves");
+    if (budgetReset) {
+      appendConductorNotice(
+        candidate.conductorSessionId,
+        waveRevisionBudgetResetNoticeText(),
+        false,
+        "warning",
+      );
+    }
     // E3a baseline: what git saw in the working folder before any worker did
     // anything. Fire-and-forget — nothing waits on it; a baseline that never
     // lands just degrades the digest line to "not captured".
