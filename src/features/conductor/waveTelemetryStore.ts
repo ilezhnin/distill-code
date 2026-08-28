@@ -68,6 +68,17 @@ export interface WaveStepTelemetry {
   outcome: RunStatus | "never-ran";
   /** True when the step went terminal on the "result unknown" stub (5b). */
   reportDegraded: boolean;
+  /**
+   * The harness and model this step actually ran on.
+   *
+   * Recorded because "which model does which kind of step well here" is a
+   * question about this installation that only this installation can answer,
+   * and answering it from measurements is the one sanctioned alternative to
+   * reputational priors about models (P39). Absent for a step that never
+   * spawned, which is itself the fact worth keeping.
+   */
+  harnessId?: string;
+  modelId?: string;
   /** Child registration time — the spawn's completion. */
   startedAt?: number;
   /** First transition into a terminal run status. */
@@ -86,6 +97,9 @@ export interface WaveStepTelemetry {
 export interface WaveTelemetryRecord {
   waveId: string;
   conductorSessionId: string;
+  /** The harness and model the conductor itself was on when it planned. */
+  conductorHarnessId?: string;
+  conductorModelId?: string;
   rootRequestId: string;
   /** 0 on a first wave, n on the n-th revision of its root request. */
   revisionIndex: number;
@@ -179,6 +193,12 @@ function parseStep(value: unknown): WaveStepTelemetry | null {
     access: raw.access === "all" ? "all" : "none",
     outcome: typeof raw.outcome === "string" ? raw.outcome : "never-ran",
     reportDegraded: raw.reportDegraded === true,
+    ...(typeof raw.harnessId === "string" && raw.harnessId
+      ? { harnessId: raw.harnessId }
+      : {}),
+    ...(typeof raw.modelId === "string" && raw.modelId
+      ? { modelId: raw.modelId }
+      : {}),
     ...(isFiniteTime(raw.startedAt) ? { startedAt: raw.startedAt } : {}),
     ...(isFiniteTime(raw.finishedAt) ? { finishedAt: raw.finishedAt } : {}),
     ...(isCount(raw.durationMs) ? { durationMs: raw.durationMs } : {}),
@@ -209,6 +229,12 @@ function parseRecord(value: unknown): WaveTelemetryRecord | null {
   return {
     waveId: raw.waveId,
     conductorSessionId: raw.conductorSessionId,
+    ...(typeof raw.conductorHarnessId === "string" && raw.conductorHarnessId
+      ? { conductorHarnessId: raw.conductorHarnessId }
+      : {}),
+    ...(typeof raw.conductorModelId === "string" && raw.conductorModelId
+      ? { conductorModelId: raw.conductorModelId }
+      : {}),
     rootRequestId:
       typeof raw.rootRequestId === "string" && raw.rootRequestId
         ? raw.rootRequestId
@@ -431,6 +457,8 @@ function buildRecord(
       outcome:
         step.phase === "failed" ? "failed" : (node?.status ?? "never-ran"),
       reportDegraded: step.reportDegraded === true,
+      ...(node?.harnessId ? { harnessId: node.harnessId } : {}),
+      ...(node?.modelId ? { modelId: node.modelId } : {}),
       ...(startedAt !== undefined ? { startedAt } : {}),
       ...(finishedAt !== undefined ? { finishedAt } : {}),
       ...(durationMs !== undefined ? { durationMs } : {}),
@@ -446,9 +474,17 @@ function buildRecord(
   const costTotals = steps.flatMap((step) =>
     step.costUsd !== undefined ? [step.costUsd] : [],
   );
+  const conductor =
+    useConductorGraphStore.getState().nodesById[wave.conductorSessionId];
   return {
     waveId: wave.waveId,
     conductorSessionId: wave.conductorSessionId,
+    // The conductor's own model, so the facts ledger can say which model
+    // plans well here and which one keeps producing waves nothing accepts.
+    ...(conductor?.harnessId
+      ? { conductorHarnessId: conductor.harnessId }
+      : {}),
+    ...(conductor?.modelId ? { conductorModelId: conductor.modelId } : {}),
     rootRequestId: wave.rootRequestId,
     revisionIndex: wave.revisionCount,
     createdAt: wave.createdAt,
