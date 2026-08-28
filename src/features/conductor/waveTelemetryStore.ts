@@ -30,6 +30,10 @@ import { useSyncExternalStore } from "react";
 
 import { getUsageLedger } from "@/features/stats/lib/usageLedger";
 
+import {
+  WAVE_TELEMETRY_DOCUMENT,
+  conductorDocument,
+} from "./conductorDocuments";
 import { notePersistFailure } from "./persistHealth";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
@@ -316,9 +320,59 @@ export function subscribeWaveTelemetry(listener: () => void): () => void {
   };
 }
 
+const telemetryDocument = conductorDocument<WaveTelemetryState>({
+  path: WAVE_TELEMETRY_DOCUMENT,
+  legacyStorageKey: WAVE_TELEMETRY_STORAGE_KEY,
+  scope: "telemetry",
+  parse: parseWaveTelemetry,
+  serialize: (state) => state,
+});
+
+/**
+ * Folds the folder's history into the live counters (P24).
+ *
+ * Records are unioned by wave id — the file holds the previous runs, memory
+ * holds this one — and the lifetime counters are summed only when memory has
+ * not counted anything yet. Adding them unconditionally would double every
+ * number on a hydration that raced a wave, and telemetry that overstates
+ * itself is worse than telemetry that is late.
+ */
+export async function hydrateWaveTelemetry(): Promise<void> {
+  if (!telemetryDocument.active) return;
+  const stored = await telemetryDocument.read();
+  if (!stored) return;
+  const live = getWaveTelemetry();
+  const liveWaveIds = new Set(live.records.map((record) => record.waveId));
+  const liveCounted =
+    live.counters.planlessTurns +
+    live.counters.admittedWaves +
+    live.counters.rejectedPlans +
+    live.counters.concurrentRefusals;
+  save({
+    ...stored,
+    ...live,
+    counters: liveCounted === 0 ? stored.counters : live.counters,
+    planlessHighWater: {
+      ...stored.planlessHighWater,
+      ...live.planlessHighWater,
+    },
+    records: capRecords([
+      ...stored.records.filter((record) => !liveWaveIds.has(record.waveId)),
+      ...live.records,
+    ]),
+  });
+}
+
+/** Pushes a queued telemetry write to disk. Shutdown, and tests. */
+export function flushWaveTelemetryWrites(): Promise<void> {
+  return telemetryDocument.flush();
+}
+
 function save(next: WaveTelemetryState): void {
   cache = next;
-  if (typeof window !== "undefined") {
+  if (telemetryDocument.active) {
+    telemetryDocument.write(next);
+  } else if (typeof window !== "undefined") {
     try {
       window.localStorage.setItem(
         WAVE_TELEMETRY_STORAGE_KEY,

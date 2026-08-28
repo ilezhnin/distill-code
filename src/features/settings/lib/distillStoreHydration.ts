@@ -1,7 +1,7 @@
 /**
  * Filling the app's own documents from the Distill folder, once, at startup.
  *
- * Three stores read one file each. They are hydrated together because they
+ * Six stores read one file each. They are hydrated together because they
  * share one failure mode: until the read lands, each store is empty and must
  * not write — an empty planner persisted over a full one is a deleted list,
  * and an empty memory is a forgotten one. Doing it in one place makes that
@@ -12,6 +12,18 @@
  * changes stay in memory, and the next start tries again.
  */
 
+import {
+  flushConductorGraphWrites,
+  hydrateConductorGraph,
+} from "@/features/conductor/conductorGraphStore";
+import {
+  flushWaveEngineWrites,
+  hydrateWaveEngineState,
+} from "@/features/conductor/waveStore";
+import {
+  flushWaveTelemetryWrites,
+  hydrateWaveTelemetry,
+} from "@/features/conductor/waveTelemetryStore";
 import {
   flushMemoryWrites,
   hydrateMemoryStore,
@@ -35,6 +47,12 @@ export async function hydrateDistillStores(): Promise<void> {
     hydratePlannerStore(),
     hydrateMemoryStore(),
     hydrateReviewSeenStore(),
+    // The conductor's three (P24). They merge rather than replace, so a node
+    // or a wave created between module init and this read is never dropped —
+    // see `conductorDocuments.ts` for why that ordering is the design.
+    hydrateConductorGraph(),
+    hydrateWaveEngineState(),
+    hydrateWaveTelemetry(),
   ]);
   for (const result of results) {
     if (result.status === "rejected") {
@@ -70,6 +88,9 @@ export function flushDistillStores(): void {
     flushPlannerWrites,
     flushMemoryWrites,
     flushReviewSeenWrites,
+    flushConductorGraphWrites,
+    flushWaveEngineWrites,
+    flushWaveTelemetryWrites,
   ];
   for (const flush of flushes) {
     try {

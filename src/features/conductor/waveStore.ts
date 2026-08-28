@@ -10,6 +10,10 @@
  * keeps one in-memory copy and writes it through to localStorage.
  */
 
+import {
+  CONDUCTOR_WAVES_DOCUMENT,
+  conductorDocument,
+} from "./conductorDocuments";
 import { notePersistFailure } from "./persistHealth";
 import {
   WAVE_PHASES,
@@ -483,6 +487,14 @@ function readStorage(): WaveEngineState {
   }
 }
 
+const wavesDocument = conductorDocument<WaveEngineState>({
+  path: CONDUCTOR_WAVES_DOCUMENT,
+  legacyStorageKey: CONDUCTOR_WAVES_STORAGE_KEY,
+  scope: "waves",
+  parse: parseWaveEngineState,
+  serialize: (state) => state,
+});
+
 /** The live wave-engine state, hydrated from localStorage on first read. */
 export function getWaveEngineState(): WaveEngineState {
   cached ??= readStorage();
@@ -494,6 +506,10 @@ export function setWaveEngineState(next: WaveEngineState): void {
   if (cached === next) return;
   cached = next;
   if (typeof window === "undefined") return;
+  if (wavesDocument.active) {
+    wavesDocument.write(next);
+    return;
+  }
   try {
     window.localStorage.setItem(
       CONDUCTOR_WAVES_STORAGE_KEY,
@@ -504,6 +520,48 @@ export function setWaveEngineState(next: WaveEngineState): void {
     // from here a restart loses it, and P18 is what makes that sayable.
     notePersistFailure("waves", error);
   }
+}
+
+/**
+ * Folds the folder's waves into the live state (P24).
+ *
+ * A wave already in memory wins: it is the one this session is driving, and
+ * the file is at best a snapshot from before the app started. Everything else
+ * the file knows about — the waves of the previous run — is added, which is
+ * the whole point of persisting them.
+ *
+ * Tombstones merge the same way, because a tombstone the file holds and
+ * memory does not is exactly the record that stops a restart from re-admitting
+ * an old plan as a new root request.
+ */
+export async function hydrateWaveEngineState(): Promise<void> {
+  if (!wavesDocument.active) return;
+  const stored = await wavesDocument.read();
+  if (!stored) return;
+  const live = getWaveEngineState();
+  const liveWaveIds = new Set(live.waves.map((wave) => wave.waveId));
+  const liveTombstoneIds = new Set(
+    live.tombstones.map((tombstone) => tombstone.planMessageId),
+  );
+  setWaveEngineState({
+    ...stored,
+    ...live,
+    waves: [
+      ...stored.waves.filter((wave) => !liveWaveIds.has(wave.waveId)),
+      ...live.waves,
+    ],
+    tombstones: [
+      ...stored.tombstones.filter(
+        (tombstone) => !liveTombstoneIds.has(tombstone.planMessageId),
+      ),
+      ...live.tombstones,
+    ],
+  });
+}
+
+/** Pushes a queued wave write to disk. Shutdown, and tests. */
+export function flushWaveEngineWrites(): Promise<void> {
+  return wavesDocument.flush();
 }
 
 /** Applies a pure update to the live state. */
