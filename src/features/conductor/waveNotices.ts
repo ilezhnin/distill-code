@@ -35,6 +35,7 @@ export const WAVE_REJECTION_REASON_KEYS: Record<WaveRejectionReason, string> = {
   "label-not-a-string": "labelNotAString",
   "label-too-long": "labelTooLong",
   "model-not-a-string": "modelNotAString",
+  "budget-invalid": "budgetInvalid",
   "step-model-unavailable": "stepModelUnavailable",
   "verification-step-missing": "verificationStepMissing",
 };
@@ -381,4 +382,38 @@ export function waveReportDegradedNoticeText(
     step: stepIndex + 1,
     name,
   });
+}
+
+/**
+ * Warning posted when an executor was stopped for reaching its budget (P49).
+ *
+ * A warning, not an error: nothing malfunctioned, a limit the plan itself set
+ * was reached. It names the number rather than saying "the budget", because
+ * the operator's next decision is whether that number was right, and they
+ * cannot make it against the word "budget".
+ */
+export function waveBudgetStopNotice(
+  name: string,
+  breach: {
+    limit: "usd" | "tokens" | "minutes";
+    allowed: number;
+    spent: number;
+  },
+): string {
+  const spent =
+    breach.limit === "usd"
+      ? i18n.t("chat:conductor.wave.budgetStop.usd", {
+          spent: breach.spent.toFixed(2),
+          allowed: breach.allowed.toFixed(2),
+        })
+      : breach.limit === "tokens"
+        ? i18n.t("chat:conductor.wave.budgetStop.tokens", {
+            spent: Math.round(breach.spent),
+            allowed: Math.round(breach.allowed),
+          })
+        : i18n.t("chat:conductor.wave.budgetStop.minutes", {
+            spent: breach.spent.toFixed(1),
+            allowed: breach.allowed,
+          });
+  return i18n.t("chat:conductor.wave.budgetStop.body", { name, spent });
 }

@@ -45,12 +45,31 @@ export const MAX_WAVE_STEP_LABEL_LENGTH = 60;
  */
 export type WaveStepAccess = readonly [] | "all";
 
+/**
+ * What a step is allowed to spend before it is stopped.
+ *
+ * A wave's only brake used to be the operator's eye: a step that started
+ * looping cost whatever it cost until somebody noticed. Any of the three may
+ * be given, and the first one reached ends the step — a ceiling is a ceiling
+ * whether it is money, tokens or the clock.
+ */
+export interface WaveStepBudget {
+  /** Dollars, when the provider prices its tokens. */
+  usd?: number;
+  /** Total tokens across the step's run. */
+  tokens?: number;
+  /** Wall-clock minutes since the step spawned. */
+  minutes?: number;
+}
+
 export interface WaveStep {
   /** Worker-layer role id from `roleCatalog`, normalized to lowercase. */
   role: string;
   /** The instruction for this step. Never a copy of the operator request. */
   subtask: string;
   access: WaveStepAccess;
+  /** What this step may spend before the app stops it (P49). */
+  budget?: WaveStepBudget;
   /**
    * Human-readable name of the step, chosen by the conductor. Shown on the
    * step's chip and in the worker's display name ("Scout · <label>"); absent
@@ -96,7 +115,9 @@ export type WaveInvalidReason =
   /** A step's `label` is longer than `MAX_WAVE_STEP_LABEL_LENGTH`. */
   | "label-too-long"
   /** A step carries `model`, but not as a non-empty string. */
-  | "model-not-a-string";
+  | "model-not-a-string"
+  /** A step's `budget` is not an object of positive numbers. */
+  | "budget-invalid";
 
 export interface WaveInvalid {
   kind: "invalid";
@@ -275,7 +296,42 @@ export function parseWaveStep(
     step.model = raw.model.trim();
   }
 
+  if ("budget" in raw && raw.budget !== undefined) {
+    const budget = parseStepBudget(raw.budget);
+    if (!budget) {
+      return invalid(
+        "budget-invalid",
+        `Step ${stepIndex + 1}: "budget" must be an object with positive "usd", "tokens" or "minutes".`,
+        stepIndex,
+      );
+    }
+    step.budget = budget;
+  }
+
   return step;
+}
+
+/**
+ * A step's ceiling, or `null` when the plan wrote something that is not one.
+ *
+ * Every field is optional and every present field must be a positive number.
+ * An empty object is not a budget: a step that says `"budget":{}` has asked
+ * for a limit and named none, and honouring that as "no limit" would be the
+ * app agreeing with a mistake.
+ */
+function parseStepBudget(value: unknown): WaveStepBudget | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const budget: WaveStepBudget = {};
+  for (const key of ["usd", "tokens", "minutes"] as const) {
+    if (raw[key] === undefined) continue;
+    const amount = raw[key];
+    if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+      return null;
+    }
+    budget[key] = amount;
+  }
+  return Object.keys(budget).length > 0 ? budget : null;
 }
 
 function isInvalid(value: WaveStep | WaveInvalid): value is WaveInvalid {

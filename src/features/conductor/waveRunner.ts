@@ -63,6 +63,7 @@ import {
   waveRevisionBudgetResetNoticeText,
   waveSpawnFailureText,
   waveStepModelDowngradeNoticeText,
+  waveBudgetStopNotice,
 } from "./waveNotices";
 import { BoundedSet } from "./boundedSet";
 import {
@@ -71,6 +72,7 @@ import {
   totalPersistFailures,
 } from "./persistHealth";
 import { stopWaveChildSessions } from "./waveStop";
+import { enforceBudgets } from "./budgetGuard";
 import { MAX_WAVE_REVISIONS, isWaveLive } from "./waveVerdict";
 import { buildWaveStepPrompt } from "./wavePrompts";
 import {
@@ -516,6 +518,11 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
         managedBy: "wave",
         waveId: wave.waveId,
         stepIndex: request.stepIndex,
+        // The root request, not this wave: a revision is the same piece of
+        // work, and counting it as a second one is how a task's real cost
+        // gets split in half and stops looking like anything.
+        taskId: wave.rootRequestId,
+        ...(request.step.budget ? { budget: request.step.budget } : {}),
         anchorMessageId: wave.planMessageId,
         roleId: request.step.role,
         // "Scout · waveEngine", not three identical "Scout"s: the handle is
@@ -790,6 +797,21 @@ export function runWaveEngineTick(): void {
   let pending: Array<{ wave: WaveState; request: WaveSpawnRequest }> = [];
   let digests: PendingDigestDispatch[] = [];
   try {
+    // Budgets first, and before any of the phase machinery: an executor that
+    // has passed its ceiling should not be given another tick of runway while
+    // the engine decides what to do about everything else. Stopping it here
+    // means the same tick sees it terminal and carries it through digest and
+    // verdict exactly as any other stopped step.
+    for (const breach of enforceBudgets()) {
+      const node = useConductorGraphStore.getState().getNode(breach.sessionId);
+      if (!node?.parentSessionId) continue;
+      appendConductorNotice(
+        node.parentSessionId,
+        waveBudgetStopNotice(node.displayName, breach),
+        false,
+        "warning",
+      );
+    }
     // Verdicts first: a `revise` verdict is an assistant message with a wave
     // fence in it, and this pass tombstones that message id before the plan
     // detector below ever looks at it. Without this order the revision would be
