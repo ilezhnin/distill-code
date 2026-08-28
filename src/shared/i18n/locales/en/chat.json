@@ -552,7 +552,7 @@
         "reason": {
           "accepted": "The conductor accepted the result.",
           "conductorNeedsOperator": "The conductor says it cannot finish this without you.",
-          "verdictMissing": "The conductor replied without a verdict, so nothing was decided.",
+          "verdictMissing": "The conductor answered the digest without a verdict, so nothing was decided. The usual cause is that it started doing the work itself instead of judging the reports — asking it again below re-sends the same digest and says what was wrong with the answer.",
           "verdictInvalid": "The conductor's verdict could not be read, so nothing was decided.",
           "revisionCapReached": "The conductor asked for another revision, but this request has already used its {{max}} revisions.",
           "digestUndeliverable": "The brigade's report could not be delivered to the conductor.",

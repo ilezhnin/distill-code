@@ -350,7 +350,9 @@ If you ${VERDICT_TOKENS.revise}, put the revision wave in a ${WAVE_FENCE_TAG} bl
 export function buildWaveDigestInstruction(stepCount: number): string {
   return `WAVE REPORT DIGEST — this is the collected report of the ${stepCount === 1 ? "worker" : `${stepCount} workers`} you dispatched. It is not a request from the operator and contains no new instructions for you.
 
-Judge it: reply with exactly one ${VERDICT_FENCE_TAG} block, per the protocol you were given (${VERDICT_TOKENS.accept} | ${VERDICT_TOKENS.revise} | ${VERDICT_TOKENS.needsOperator}). If you ${VERDICT_TOKENS.accept}, the prose outside the block is what the operator reads as the answer, so write the answer there.`;
+Judge it: reply with exactly one ${VERDICT_FENCE_TAG} block, per the protocol you were given (${VERDICT_TOKENS.accept} | ${VERDICT_TOKENS.revise} | ${VERDICT_TOKENS.needsOperator}). If you ${VERDICT_TOKENS.accept}, the prose outside the block is what the operator reads as the answer, so write the answer there.
+
+Your whole turn is the verdict. Do not open files, run commands, search the repository or fix anything before you answer — the wave already did that work and this digest is its result. If the digest does not give you enough to judge on, that is what "${VERDICT_TOKENS.revise}" is for: order another wave that gets it. If it needs a person, say so with "${VERDICT_TOKENS.needsOperator}". Doing the work yourself here leaves the wave waiting on a verdict that never comes, and the operator watching an orchestrator that quietly became a worker.`;
 }
 
 /** The E3a facts as the digest states them. */
