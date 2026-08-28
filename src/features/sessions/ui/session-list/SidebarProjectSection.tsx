@@ -10,6 +10,7 @@ import type { AppView } from "@/app/AppShell";
 
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { ProjectIcon } from "@/features/projects/ui/ProjectIcon";
+import { SidebarAgentsSection } from "@/features/conductor/ui/SidebarAgentsSection";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { DisclosureButton } from "@/shared/ui/disclosure-button";
@@ -422,6 +423,15 @@ export function SidebarProjectSection({
       {renderProjectChats ? (
         <CollapseReveal open={showProjectChats}>
           <div data-sidebar-project-chat-list className="pb-2">
+            {/* The project's live agents, above its chats. An agent working on
+                the operator's behalf has to be visible from the place they
+                already look, not only from inside the chat that started it —
+                and every row here opens that agent's own transcript. */}
+            <SidebarAgentsSection
+              projectId={project.id}
+              activeSessionId={activeSessionId}
+              onSelectSession={onSelectSession}
+            />
             {emptyState ? (
               <div className="h-7 py-1 pl-[38px] pr-3 text-sm font-normal leading-normal text-muted-foreground">
                 {t("empty.noChats")}
