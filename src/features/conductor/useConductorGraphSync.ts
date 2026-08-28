@@ -16,9 +16,11 @@ import {
   reportStatusFromRun,
 } from "./runStatus";
 import type { RunStatus, SessionNode } from "./types";
+import { BoundedSet } from "./boundedSet";
 import { runWaveEngineTick } from "./waveRunner";
 
-const seenRunningBySession = new Set<string>();
+/** Sessions seen executing at least once. Bounded — see BoundedSet. */
+const seenRunningBySession = new BoundedSet(5_000);
 
 /**
  * The startup reconcile is one-shot per app start: module-level, so a remount of
@@ -270,21 +272,42 @@ function remapPromotedSessions(): void {
   }
 }
 
+/**
+ * Nodes ACP has already said it does not know about.
+ *
+ * Without this the loop below asks again for every one of them on every
+ * hydration pass, forever: an archived child is permanently missing from the
+ * session store, so "missing" is not a condition that ever clears. On a graph
+ * carrying a few dozen retired children that is a few dozen IPC round trips
+ * per pass, all of them known in advance to fail.
+ */
+const unknownSessions = new BoundedSet(5_000);
+
 async function hydrateMissingSessions(): Promise<void> {
   const graph = useConductorGraphStore.getState();
   const sessionStore = useChatSessionStore.getState();
   if (!sessionStore.hasHydratedSessions) return;
-  for (const node of Object.values(graph.nodesById)) {
-    if (sessionStore.getSession(node.sessionId)) continue;
-    try {
-      const session = await acpGetSessionInfo(node.sessionId);
-      useChatSessionStore.setState((state) =>
-        mergeAcpSessionInfo(state, session),
-      );
-    } catch {
-      // Session may have been archived or never persisted by ACP.
-    }
-  }
+  const missing = Object.values(graph.nodesById).filter(
+    (node) =>
+      !sessionStore.getSession(node.sessionId) &&
+      !unknownSessions.has(node.sessionId),
+  );
+  // In parallel: these are independent reads, and awaited one at a time they
+  // made startup wait out the sum of every child's round trip.
+  await Promise.all(
+    missing.map(async (node) => {
+      try {
+        const session = await acpGetSessionInfo(node.sessionId);
+        useChatSessionStore.setState((state) =>
+          mergeAcpSessionInfo(state, session),
+        );
+      } catch {
+        // Archived, or never persisted by ACP. Either way, asking again on
+        // the next pass would fail the same way.
+        unknownSessions.add(node.sessionId);
+      }
+    }),
+  );
 }
 
 export function useConductorGraphSync(): void {

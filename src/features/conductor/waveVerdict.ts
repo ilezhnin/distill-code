@@ -329,11 +329,6 @@ export function digestUndeliverableDecision(
   };
 }
 
-/** Phases the wave engine still spawns steps for. */
-export function isWaveRunning(wave: WaveState): boolean {
-  return wave.phase === "running";
-}
-
 /**
  * True while a wave still owes the operator something: it is spawning, waiting
  * on a digest, or waiting on a verdict.

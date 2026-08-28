@@ -63,6 +63,7 @@ import {
   waveRevisionBudgetResetNoticeText,
   waveSpawnFailureText,
 } from "./waveNotices";
+import { BoundedSet } from "./boundedSet";
 import {
   resetPersistHealthForTests,
   takeUnreportedPersistFailure,
@@ -90,10 +91,18 @@ import {
 } from "./waveStore";
 
 /**
+ * Cap on the in-memory "already looked at this message" marks.
+ *
+ * Comfortably more conductor turns than any session produces, and paired with
+ * the persisted tombstones, which cover what a restart would otherwise forget.
+ */
+const MAX_REMEMBERED_PLAN_MESSAGES = 5_000;
+
+/**
  * Plan messages taken up in this process. The tombstone is written in the same
  * synchronous block, so this only guards against re-entrancy inside one tick.
  */
-const inFlightPlans = new Set<string>();
+const inFlightPlans = new BoundedSet(MAX_REMEMBERED_PLAN_MESSAGES);
 
 /** `waveId:stepIndex` of spawns awaiting their child session. */
 const inFlightSpawns = new Set<string>();
@@ -103,7 +112,7 @@ const inFlightSpawns = new Set<string>();
  * sync subscription fires on every chat-store change, so without this the
  * engine would re-read every message of every conductor transcript per token.
  */
-const scannedWithoutPlan = new Set<string>();
+const scannedWithoutPlan = new BoundedSet(MAX_REMEMBERED_PLAN_MESSAGES);
 
 /** Re-entrancy guard: spawning writes stores, which call this again. */
 let ticking = false;
@@ -270,7 +279,12 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
     isProcessed: (planMessageId) =>
       scannedWithoutPlan.has(planMessageId) ||
       inFlightPlans.has(planMessageId) ||
-      hasWaveTombstone(state, planMessageId),
+      hasWaveTombstone(state, planMessageId) ||
+      // A wave that exists is proof its plan was admitted, and it is proof
+      // the tombstone cannot give once the tombstone list has evicted it
+      // (P19a). Without this an old plan message could be re-admitted as a
+      // second wave beside the one it already produced.
+      state.waves.some((wave) => wave.planMessageId === planMessageId),
     markScanned: (messageId, context) => {
       scannedWithoutPlan.add(messageId);
       // The wave-rate denominator: a settled conductor turn that answered
