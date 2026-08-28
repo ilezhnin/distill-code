@@ -10,6 +10,7 @@
  * keeps one in-memory copy and writes it through to localStorage.
  */
 
+import { notePersistFailure } from "./persistHealth";
 import {
   WAVE_PHASES,
   WAVE_STEP_PHASES,
@@ -498,8 +499,10 @@ export function setWaveEngineState(next: WaveEngineState): void {
       CONDUCTOR_WAVES_STORAGE_KEY,
       JSON.stringify(next),
     );
-  } catch {
-    // localStorage may be unavailable; the in-memory copy still drives the run.
+  } catch (error) {
+    // The in-memory copy still drives the run, so the wave finishes — but
+    // from here a restart loses it, and P18 is what makes that sayable.
+    notePersistFailure("waves", error);
   }
 }
 

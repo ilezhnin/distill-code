@@ -475,6 +475,12 @@
     "waitingOnChildren_one": "1 executor is working — the result will arrive as a message",
     "waitingOnChildren_other": "{{count}} executors are working — the result will arrive as a message",
     "stopChild": "Stop {{name}}",
+    "persist": {
+      "title": "This app can no longer save the conductor's state to disk.",
+      "body_one": "{{count}} write was refused by the browser, most likely because the storage quota is full. Waves already running will finish, and everything on screen is real — but it now lives only in memory, so restarting the app will lose the live waves, their executors and their reports.",
+      "body_other": "{{count}} writes were refused by the browser, most likely because the storage quota is full. Waves already running will finish, and everything on screen is real — but it now lives only in memory, so restarting the app will lose the live waves, their executors and their reports.",
+      "reason": "The browser called it: {{reason}}"
+    },
     "decisions": "Decisions",
     "noDecisions": "No decisions were listed for this step, which may mean the report degraded into prose rather than that nothing was decided.",
     "artifacts": "Artifacts",

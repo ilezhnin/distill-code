@@ -7,6 +7,7 @@ import type { WaveClosureReason } from "./waveVerdict";
 import {
   WAVE_CLOSURE_REASON_KEYS,
   WAVE_REJECTION_REASON_KEYS,
+  persistFailureNoticeText,
   waveRejectionNoticeText,
   waveRetryLabel,
   waveRevisionBudgetResetNoticeText,
@@ -125,5 +126,30 @@ describe("waveRevisionBudgetResetNoticeText (P14)", () => {
     expect(text).toContain("per request, not per conversation");
     expect(text).not.toContain("conductor.wave");
     expect(text).not.toContain("{{max}}");
+  });
+});
+
+describe("persistFailureNoticeText (P18)", () => {
+  it("says what stopped working and what a restart will cost", async () => {
+    await i18n.loadNamespaces("chat");
+    const text = persistFailureNoticeText({ failures: 4 });
+    expect(text).toContain("can no longer save");
+    expect(text).toContain("4");
+    expect(text).toContain("restarting the app will lose");
+    expect(text).not.toContain("{{count}}");
+  });
+
+  it("quotes the browser's own name for the failure when there is one", () => {
+    const text = persistFailureNoticeText({
+      failures: 1,
+      reason: "QuotaExceededError",
+    });
+    expect(text).toContain("QuotaExceededError");
+  });
+
+  it("says nothing about a reason it does not have", () => {
+    const text = persistFailureNoticeText({ failures: 1 });
+    expect(text).not.toContain("{{reason}}");
+    expect(text).not.toContain("The browser called it");
   });
 });

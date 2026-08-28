@@ -1,3 +1,4 @@
+import { notePersistFailure } from "./persistHealth";
 import { create } from "zustand";
 
 import type {
@@ -208,8 +209,11 @@ function persistGraph(state: ConductorGraphState): void {
       CONDUCTOR_GRAPH_STORAGE_KEY,
       JSON.stringify(payload),
     );
-  } catch {
-    // localStorage may be unavailable
+  } catch (error) {
+    // Still swallowed — a quota error must not take a running wave with it —
+    // but no longer silent: P18 records it so the engine can say once that
+    // the graph has stopped being durable.
+    notePersistFailure("graph", error);
   }
 }
 

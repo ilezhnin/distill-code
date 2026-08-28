@@ -14,6 +14,11 @@ import {
   type WaveTelemetryWindow,
 } from "@/features/conductor/waveTelemetryModel";
 import {
+  isPersistHealthy,
+  totalPersistFailures,
+  usePersistHealth,
+} from "@/features/conductor/persistHealth";
+import {
   MAX_WAVE_TELEMETRY_RECORDS,
   type WaveTelemetryState,
 } from "@/features/conductor/waveTelemetryStore";
@@ -54,6 +59,7 @@ export function WaveTelemetryPane({
     () => buildWaveTelemetrySummary(telemetry, { window }),
     [telemetry, window],
   );
+  const persist = usePersistHealth();
 
   const duration = (ms: number | null) =>
     ms === null
@@ -109,6 +115,19 @@ export function WaveTelemetryPane({
           thresholds are written against, and they do not move with the
           period — which the note says out loud rather than leaving the
           reader to assume the whole pane shares one clock. */}
+      {!isPersistHealthy(persist) && (
+        // The one standing surface for P18. The transcript notice is said
+        // once and scrolls away; this stays as long as the condition does.
+        <p
+          className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-foreground"
+          data-testid="wave-telemetry-persist-warning"
+        >
+          {t("stats.waves.persistBroken", {
+            count: totalPersistFailures(persist),
+          })}
+        </p>
+      )}
+
       <p className="mt-4 text-xs text-muted-foreground">
         {t("stats.waves.lifetimeNote")}
       </p>
