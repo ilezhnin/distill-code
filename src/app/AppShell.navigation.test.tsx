@@ -395,6 +395,20 @@ vi.mock("@/features/chat/hooks/useSessionWindowSupport", () => ({
   useSessionWindowSupport: () => mockSessionWindowSupport,
 }));
 
+// The real tracking hook reads `window.__TAURI_INTERNALS__` directly, and in
+// jsdom there is none — so on every effect flush it wipes the window snapshot
+// these tests set by hand. That is a race, not a constant: alone the wipe
+// lands before the test's own setSnapshot, and under a loaded full run it can
+// land after, which is why "focuses a detached chat selected from search"
+// failed in the suite and passed on its own for weeks.
+//
+// Stubbed rather than raced. Window support is already mocked one hook up, so
+// leaving the tracker live meant two sources of truth for the same fact
+// disagreeing; and nothing in a navigation test exercises the tracker itself.
+vi.mock("@/features/chat/hooks/useSessionWindowTracking", () => ({
+  useSessionWindowTracking: () => {},
+}));
+
 vi.mock("@/features/chat/lib/sessionWindowCommands", () => ({
   focusSessionWindow: (...args: unknown[]) => mockFocusSessionWindow(...args),
   releaseSession: vi.fn(),
