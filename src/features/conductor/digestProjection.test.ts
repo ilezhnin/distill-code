@@ -62,8 +62,11 @@ describe("projectDigestBody", () => {
     expect(view.entries[0]).toMatchObject({
       displayName: "Scout · waveEngine",
       status: "completed",
-      body: "Found three callers",
     });
+    // `toContain`, not equality: this suite is about splitting a digest into
+    // entries, and pinning the exact body made it fail whenever the report
+    // formatter gained a line (it did, twice).
+    expect(view.entries[0].body).toContain("Found three callers");
     expect(view.entries[1]).toMatchObject({
       displayName: "Architect",
       status: "failed",
@@ -180,8 +183,8 @@ describe("projectDigestBody", () => {
     expect(view.entries[0]).toMatchObject({
       displayName: "Atlas",
       status: "completed",
-      body: "Legacy work done",
     });
+    expect(view.entries[0].body).toContain("Legacy work done");
   });
 
   it("yields no entries for a body it cannot read, so the card can fall back", () => {
