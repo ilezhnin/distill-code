@@ -1,7 +1,7 @@
 /**
  * Filling the app's own documents from the Distill folder, once, at startup.
  *
- * Six stores read one file each. They are hydrated together because they
+ * Seven stores read one file each. They are hydrated together because they
  * share one failure mode: until the read lands, each store is empty and must
  * not write — an empty planner persisted over a full one is a deleted list,
  * and an empty memory is a forgotten one. Doing it in one place makes that
@@ -12,6 +12,10 @@
  * changes stay in memory, and the next start tries again.
  */
 
+import {
+  flushRoutingPolicyWrites,
+  hydrateRoutingPolicyStore,
+} from "@/features/agents/stores/routingPolicyStore";
 import {
   flushConductorGraphWrites,
   hydrateConductorGraph,
@@ -53,6 +57,10 @@ export async function hydrateDistillStores(): Promise<void> {
     hydrateConductorGraph(),
     hydrateWaveEngineState(),
     hydrateWaveTelemetry(),
+    // The routing policy (P36-P38). Read early because it decides which model
+    // a session starts on, and a session started before it lands would use the
+    // shipped defaults rather than the operator's thresholds.
+    hydrateRoutingPolicyStore(),
   ]);
   for (const result of results) {
     if (result.status === "rejected") {
@@ -91,6 +99,7 @@ export function flushDistillStores(): void {
     flushConductorGraphWrites,
     flushWaveEngineWrites,
     flushWaveTelemetryWrites,
+    flushRoutingPolicyWrites,
   ];
   for (const flush of flushes) {
     try {

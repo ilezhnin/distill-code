@@ -422,7 +422,7 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
   const explicitModel = request.step.model;
   const stepTarget = explicitModel
     ? undefined
-    : resolveWaveStepTarget(request.step.role);
+    : resolveWaveStepTarget(request.step.role, request.step.modelClass);
   if (stepTarget && (stepTarget.fallback || stepTarget.nearLimit)) {
     // D5: a step that is not running on its first choice says so, once, where
     // the operator is already watching the wave.

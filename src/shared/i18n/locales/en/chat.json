@@ -533,6 +533,7 @@
         "labelTooLong": "Step {{step}} has a \"label\" that is too long to be a name.",
         "modelNotAString": "Step {{step}} has a \"model\" field that is not a model name.",
         "budgetInvalid": "A step’s \"budget\" is not a limit the app can enforce.",
+        "classUnknown": "A step named a complexity \"class\" this app does not have.",
         "stepModelUnavailable": "Step {{step}} names a model this build cannot run right now, and the whole plan was refused rather than quietly running the step on another model.",
         "verificationStepMissing": "This plan builds something that can be checked, but its last step does not check it. A wave like this has to end with a verification step that inspects the result itself."
       },

@@ -29,6 +29,7 @@ import type {
 } from "@/features/status/lib/rateLimitTypes";
 
 import {
+  applyClassOverride,
   isModelPreferenceClassId,
   MODEL_PREFERENCE_CLASSES,
   type ModelPreferenceClassId,
@@ -213,9 +214,17 @@ export function candidateForEntry(
 /** The ordered candidates a persona's stored preference resolves to. */
 export function candidatesForRankingSource(
   source: AgentRankingSource,
+  /**
+   * The operator's own order per class (P36), when they have set one. Applies
+   * only to a class source: a list written for one agent is already theirs.
+   */
+  classOverrides?: Partial<Record<ModelPreferenceClassId, string[]>>,
 ): readonly RankedModelCandidate[] {
   return source.kind === "class"
-    ? MODEL_PREFERENCE_CLASSES[source.classId].ranking
+    ? applyClassOverride(
+        MODEL_PREFERENCE_CLASSES[source.classId].ranking,
+        classOverrides?.[source.classId],
+      )
     : source.ranking.entries.map(candidateForEntry);
 }
 

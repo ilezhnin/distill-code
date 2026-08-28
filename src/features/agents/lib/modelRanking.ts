@@ -113,6 +113,11 @@ export const MODEL_PREFERENCE_CLASSES: Record<
   "testing-light": { id: "testing-light", ranking: [GROK, TERA, LUNA] },
 };
 
+/** Every class id, in the order the settings pane and the prompt list them. */
+export function modelPreferenceClassIds(): ModelPreferenceClassId[] {
+  return Object.keys(MODEL_PREFERENCE_CLASSES) as ModelPreferenceClassId[];
+}
+
 export function isModelPreferenceClassId(
   value: unknown,
 ): value is ModelPreferenceClassId {
@@ -356,4 +361,50 @@ export function modelPreferenceClassForPersona(persona: {
   }
   const slug = persona.displayName?.trim().toLowerCase().replace(/\s+/g, "-");
   return slug ? MODEL_CLASS_BY_AGENT_SLUG[slug] : undefined;
+}
+
+/**
+ * Every candidate the built-in classes know about, unique by label.
+ *
+ * The pool an operator's own class ranking is written from. Deliberately not
+ * "every installed model": a candidate carries the platform whose meter guards
+ * it, the reasoning effort it is worth running at, and the needles that find
+ * it across provider renames — none of which a bare model id has. An operator
+ * who wants a model that appears in no class can still pin it per agent, which
+ * is what the per-agent ranking editor is for.
+ */
+export const KNOWN_MODEL_CANDIDATES: readonly RankedModelCandidate[] =
+  Object.values(MODEL_PREFERENCE_CLASSES).reduce<RankedModelCandidate[]>(
+    (pool, preferenceClass) => {
+      for (const candidate of preferenceClass.ranking) {
+        if (!pool.some((known) => known.label === candidate.label)) {
+          pool.push(candidate);
+        }
+      }
+      return pool;
+    },
+    [],
+  );
+
+/**
+ * A class's ranking with the operator's own order applied, when they set one.
+ *
+ * Labels that name no known candidate are dropped rather than guessed at, and
+ * an override that survives to nothing falls back to the built-in list: a
+ * class that resolves to no candidates would silently stop retargeting
+ * anything, which looks exactly like the feature being broken.
+ */
+export function applyClassOverride(
+  ranking: readonly RankedModelCandidate[],
+  labels: readonly string[] | undefined,
+): readonly RankedModelCandidate[] {
+  if (!labels || labels.length === 0) return ranking;
+  const chosen: RankedModelCandidate[] = [];
+  for (const label of labels) {
+    const candidate = KNOWN_MODEL_CANDIDATES.find(
+      (known) => known.label === label,
+    );
+    if (candidate && !chosen.includes(candidate)) chosen.push(candidate);
+  }
+  return chosen.length > 0 ? chosen : ranking;
 }
