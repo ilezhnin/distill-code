@@ -17,7 +17,14 @@ import { create } from "zustand";
 
 import { distillDocument } from "@/shared/lib/distillDocument";
 
+import { useProjectStore } from "@/features/projects/stores/projectStore";
+
 import type { MemoryFenceRequest } from "../lib/memoryFence";
+import {
+  mergeProjectMemories,
+  readProjectMemories,
+  writeProjectMemories,
+} from "../lib/projectMemoryDocuments";
 import {
   memoryRecency,
   normalizeMemoryText,
@@ -161,9 +168,49 @@ function commit(
     appliedMessageIds: appliedMessageIds.slice(-MAX_APPLIED_MEMORY_MESSAGE_IDS),
     hydrated: true,
   };
-  if (useMemoryStore.getState().hydrated) document.write(next);
+  if (useMemoryStore.getState().hydrated) {
+    document.write(next);
+    // And a copy into each project's own folder, so a project carries what
+    // was learned about it when it moves (P31). Fire-and-forget: the global
+    // document is the one that must not fail, and a folder that cannot be
+    // written costs that project's mirror and nothing else.
+    queueProjectMemoryMirror(next.entries);
+  }
   return next;
 }
+
+/**
+ * Mirrors project memories into their folders, coalesced.
+ *
+ * A `distill-memory` fence can remember several facts in one message, and the
+ * store commits once per fact; writing every project's file that many times
+ * would be a burst of disk writes for one logical change. One timer, the same
+ * debounce the global document uses.
+ */
+let mirrorTimer: ReturnType<typeof setTimeout> | null = null;
+let mirrorPending: MemoryEntry[] | null = null;
+
+function queueProjectMemoryMirror(entries: MemoryEntry[]): void {
+  mirrorPending = entries;
+  if (mirrorTimer !== null) clearTimeout(mirrorTimer);
+  mirrorTimer = setTimeout(() => {
+    void flushProjectMemoryMirror();
+  }, PROJECT_MEMORY_MIRROR_DEBOUNCE_MS);
+}
+
+/** Test seam and shutdown: pushes a queued mirror without waiting for it. */
+export async function flushProjectMemoryMirror(): Promise<void> {
+  if (mirrorTimer !== null) {
+    clearTimeout(mirrorTimer);
+    mirrorTimer = null;
+  }
+  const entries = mirrorPending;
+  mirrorPending = null;
+  if (!entries) return;
+  await writeProjectMemories(useProjectStore.getState().projects, entries);
+}
+
+const PROJECT_MEMORY_MIRROR_DEBOUNCE_MS = 250;
 
 function stateFromDocument(parsed: unknown): MemoryState {
   return {
@@ -188,14 +235,29 @@ const document = distillDocument<MemoryState>({
 export async function hydrateMemoryStore(): Promise<void> {
   if (useMemoryStore.getState().hydrated) return;
   const stored = await document.read();
-  useMemoryStore.setState(
-    stored ?? { entries: [], appliedMessageIds: [], hydrated: true },
-  );
+  const base = stored ?? { entries: [], appliedMessageIds: [], hydrated: true };
+  // Then whatever the project folders themselves know (P31). A project copied
+  // from another machine arrives with its memories in it, and this is where
+  // they join the list; entries already in memory win, so nothing the
+  // operator has edited in this session is reverted by a copy on disk.
+  let entries = base.entries;
+  try {
+    const fromFolders = await readProjectMemories(
+      useProjectStore.getState().projects,
+      parseMemoryEntries,
+    );
+    entries = capEntries(mergeProjectMemories(base.entries, fromFolders));
+  } catch (error) {
+    console.error("Failed to read project memories:", error);
+  }
+  useMemoryStore.setState({ ...base, entries, hydrated: true });
 }
 
 /** Waits for a queued write to land. For tests and for shutdown. */
 export function flushMemoryWrites(): Promise<void> {
-  return document.flush();
+  return Promise.all([document.flush(), flushProjectMemoryMirror()]).then(
+    () => undefined,
+  );
 }
 
 function newMemoryId(): string {
