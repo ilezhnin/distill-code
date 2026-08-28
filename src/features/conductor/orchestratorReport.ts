@@ -211,6 +211,13 @@ export function formatConductorAnswer(
           i18n.t("chat:conductor.decisions"),
           ...report.decisions.map((item) => `- ${item}`),
         );
+      } else if (report.status === "completed") {
+        // An empty decisions list on a step that claims success is the
+        // signature of a report that degraded into prose: the worker wrote a
+        // summary and skipped the structure, and nothing downstream could
+        // tell that apart from a step that genuinely decided nothing. Saying
+        // so costs one line and is the only warning the conductor gets.
+        lines.push(i18n.t("chat:conductor.noDecisions"));
       }
       if (report.artifacts.length > 0) {
         lines.push(

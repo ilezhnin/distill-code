@@ -475,6 +475,7 @@
     "waitingOnChildren_other": "{{count}} ejecutores están trabajando: el resultado llegará como mensaje",
     "stopChild": "Detener {{name}}",
     "decisions": "Decisiones",
+    "noDecisions": "No se listaron decisiones para este paso, lo que puede significar que el informe degeneró en prosa y no que no se decidiera nada.",
     "artifacts": "Artefactos",
     "risks": "Riesgos",
     "needsOperator": "Necesita al operador.",
