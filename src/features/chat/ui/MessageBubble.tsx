@@ -1280,6 +1280,7 @@ export const MessageBubble = memo(function MessageBubble({
             sibling after the reserved action space, so nothing overlaps it. */}
         {showConductorFooter ? (
           <ConductorAgentFooter
+            hostSessionId={conductorTranscript.hostSessionId}
             nodes={conductorFooterNodes}
             reportsByRunId={conductorTranscript.reportsByRunId}
             planSteps={conductorFooterPlanSteps}

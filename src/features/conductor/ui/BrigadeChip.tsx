@@ -65,6 +65,15 @@ export interface BrigadeChipViewModel {
    * their own notices, and stamping every chip would drown the exception.
    */
   modelLabel?: string;
+  /**
+   * What this step has spent so far, already formatted ("12.3k", "$0.41").
+   *
+   * On the chip rather than only in the row's total because the total answers
+   * "is this wave expensive" and this answers "which step is". A wave that
+   * runs away does so through one step, and the operator should not have to
+   * open four transcripts to find out which.
+   */
+  spendLabel?: string;
   /** Omitted → the chip is not clickable. */
   onOpen?: (id: string) => void;
   /** Omitted → no stop button, whatever the status. */
@@ -116,6 +125,7 @@ export function BrigadeChip({
   stepIndex,
   accessLabel,
   modelLabel,
+  spendLabel,
   onOpen,
   onStop,
   pending,
@@ -203,6 +213,15 @@ export function BrigadeChip({
             className="text-[11px] italic text-muted-foreground"
           >
             {modelLabel}
+          </span>
+        ) : null}
+        {spendLabel ? (
+          <span
+            aria-hidden="true"
+            data-testid="brigade-chip-spend"
+            className="text-[11px] tabular-nums text-muted-foreground"
+          >
+            {spendLabel}
           </span>
         ) : null}
       </button>
