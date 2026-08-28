@@ -14,6 +14,10 @@ import {
   type WaveTelemetryWindow,
 } from "@/features/conductor/waveTelemetryModel";
 import {
+  buildFactsLedger,
+  MIN_FACT_OBSERVATIONS,
+} from "@/features/conductor/factsLedger";
+import {
   isPersistHealthy,
   totalPersistFailures,
   usePersistHealth,
@@ -60,6 +64,12 @@ export function WaveTelemetryPane({
     [telemetry, window],
   );
   const persist = usePersistHealth();
+  // Over every record, not the selected window: these are the facts handed to
+  // the conductor, and it is handed all of them.
+  const facts = useMemo(
+    () => buildFactsLedger(telemetry.records),
+    [telemetry.records],
+  );
 
   const duration = (ms: number | null) =>
     ms === null
@@ -289,6 +299,46 @@ export function WaveTelemetryPane({
               </li>
             ))}
           </ul>
+
+          {/* The measured facts the conductor is handed (P39). Shown here as
+              well as in the prompt because a number that steers the work
+              should be one the operator can check — and disagree with. */}
+          {facts.steps.length > 0 || facts.conductors.length > 0 ? (
+            <>
+              <h4 className="mt-4 text-xs font-semibold text-foreground">
+                {t("stats.waves.facts")}
+              </h4>
+              <p className="mt-1 max-w-prose text-xs text-muted-foreground">
+                {t("stats.waves.factsDescription", {
+                  count: MIN_FACT_OBSERVATIONS,
+                })}
+              </p>
+              <ul
+                className="mt-1 space-y-0.5 text-xs text-muted-foreground"
+                data-testid="wave-telemetry-facts"
+              >
+                {facts.steps.map((fact) => (
+                  <li key={`${fact.role}:${fact.modelId}`}>
+                    {t("stats.waves.factStep", {
+                      model: fact.modelId,
+                      role: fact.role,
+                      completed: fact.completed,
+                      runs: fact.runs,
+                    })}
+                  </li>
+                ))}
+                {facts.conductors.map((fact) => (
+                  <li key={`conductor:${fact.modelId}`}>
+                    {t("stats.waves.factConductor", {
+                      model: fact.modelId,
+                      accepted: fact.accepted,
+                      waves: fact.waves,
+                    })}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
         </>
       )}
     </section>

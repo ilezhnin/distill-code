@@ -794,7 +794,11 @@
         "7": "Last 7 days",
         "30": "Last 30 days",
         "all": "Everything kept"
-      }
+      },
+      "facts": "What this installation has measured",
+      "factsDescription": "Counts from waves that ran here, shown once a model has at least {{count}} observations. These same lines are given to the conductor as facts, never as advice.",
+      "factStep": "{{model}} on \"{{role}}\" steps: {{completed}} of {{runs}} completed",
+      "factConductor": "Waves planned on {{model}}: {{accepted}} of {{waves}} accepted"
     }
   },
   "securityConfirmation": {

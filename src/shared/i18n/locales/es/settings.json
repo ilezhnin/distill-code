@@ -797,7 +797,11 @@
         "7": "Últimos 7 días",
         "30": "Últimos 30 días",
         "all": "Todo lo guardado"
-      }
+      },
+      "facts": "Lo que esta instalación ha medido",
+      "factsDescription": "Recuentos de olas ejecutadas aquí, mostrados cuando un modelo tiene al menos {{count}} observaciones. Estas mismas líneas se le dan al conductor como hechos, nunca como consejo.",
+      "factStep": "{{model}} en pasos «{{role}}»: {{completed}} de {{runs}} completados",
+      "factConductor": "Olas planificadas en {{model}}: {{accepted}} de {{waves}} aceptadas"
     }
   },
   "securityConfirmation": {
