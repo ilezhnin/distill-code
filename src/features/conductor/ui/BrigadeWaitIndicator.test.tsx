@@ -1,7 +1,11 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import userEvent from "@testing-library/user-event";
+
 import { useChatStore } from "@/features/chat/stores/chatStore";
+
+import { ConductorTranscriptProvider } from "../ConductorTranscriptContext";
 
 import type { SessionNode } from "../types";
 
@@ -81,6 +85,52 @@ describe("BrigadeWaitIndicator", () => {
     expect(screen.getByTestId("brigade-wait-indicator")).toHaveTextContent(
       "1 executor is working",
     );
+  });
+
+  it("offers each working executor as a way into its own chat (L4)", async () => {
+    // Transparency is the product's rule, not a nicety: an agent the operator
+    // can see working is an agent whose chat they can open. This line used to
+    // be the one place that said "someone is working" and gave no way in.
+    const onOpenChild = vi.fn();
+    render(
+      <ConductorTranscriptProvider
+        value={{
+          enabled: true,
+          children: [],
+          reportsByRunId: {},
+          brigadeNodesByMessageId: new Map(),
+          wavePlanStepsByMessageId: new Map(),
+          onOpenChild,
+        }}
+      >
+        <BrigadeWaitIndicator
+          chatState="idle"
+          nodes={[
+            node("a", "running", { displayName: "Scout · retry" }),
+            node("b", "completed", { displayName: "Bohr" }),
+          ]}
+        />
+      </ConductorTranscriptProvider>,
+    );
+
+    const entries = screen.getAllByTestId("brigade-wait-open-child");
+    // Only the ones actually working: a finished executor is reachable from
+    // its chip, and repeating it here would make the line lie about who is
+    // still running.
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toHaveTextContent("Scout · retry");
+
+    await userEvent.click(entries[0]);
+    // The same intent the chip row uses, so the child opens beside the
+    // conversation instead of replacing it.
+    expect(onOpenChild).toHaveBeenCalledWith("a", "openInTab");
+  });
+
+  it("says nothing clickable when there is nowhere to open a child", () => {
+    render(
+      <BrigadeWaitIndicator chatState="idle" nodes={[node("a", "running")]} />,
+    );
+    expect(screen.queryByTestId("brigade-wait-open-child")).toBeNull();
   });
 
   it("renders nothing while the chat itself is streaming", () => {
