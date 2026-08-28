@@ -14,7 +14,16 @@
  * before.
  */
 
-import { scopedWindowForModel } from "@/features/agents/lib/agentModelRanking";
+import {
+  candidatesForRankingSource,
+  parseAgentRankingSource,
+  scopedWindowForModel,
+} from "@/features/agents/lib/agentModelRanking";
+import {
+  modelPreferenceClassForPersona,
+  rankIndexOfModel,
+  type RankableModel,
+} from "@/features/agents/lib/modelRanking";
 import { rankedPersonaExecutionTarget } from "@/features/agents/lib/rankedPersonaTarget";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import {
@@ -123,6 +132,63 @@ export function resolveWaveStepTarget(
     };
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * A plan pinned a step to a model the operator ranked *below* the one it
+ * would otherwise have inherited.
+ */
+export interface WaveStepModelDowngrade {
+  /** The model the plan named. */
+  stepLabel: string;
+  /** The model the step would have inherited from the conductor. */
+  inheritedLabel: string;
+}
+
+/**
+ * Whether an explicit step model is a downgrade, by the only measure this app
+ * is entitled to use.
+ *
+ * "Weaker" is not something the app knows. Reputational priors about models
+ * are a refused idea here, and inventing an ordering to warn against would be
+ * exactly that idea wearing a warning's clothes. What the app does have is the
+ * operator's own ranking for the step's role — a list they wrote, in the order
+ * they wanted — and "the plan chose the one you put lower" is a fact about
+ * that list rather than an opinion about the models.
+ *
+ * So: both models are located in the role's ranking, and a downgrade is only
+ * reported when both are found and the step's sits later. Either one missing
+ * means the ranking has no opinion about this pair, and neither has this
+ * function. Never a refusal — 4a made the field legal and the operator may
+ * have a reason the ranking does not know.
+ */
+export function checkWaveStepModelDowngrade(args: {
+  roleId: string;
+  step: RankableModel;
+  inherited: RankableModel | undefined;
+  stepLabel: string;
+  inheritedLabel: string;
+}): WaveStepModelDowngrade | null {
+  if (!args.inherited) return null;
+  try {
+    const persona = resolvePersonaForRole(args.roleId, io.personas());
+    if (!persona) return null;
+    const source =
+      parseAgentRankingSource(persona.modelRanking) ??
+      (() => {
+        const classId = modelPreferenceClassForPersona(persona);
+        return classId ? ({ kind: "class", classId } as const) : undefined;
+      })();
+    if (!source) return null;
+    const ranking = candidatesForRankingSource(source);
+    const stepRank = rankIndexOfModel(ranking, args.step);
+    const inheritedRank = rankIndexOfModel(ranking, args.inherited);
+    if (stepRank < 0 || inheritedRank < 0) return null;
+    if (stepRank <= inheritedRank) return null;
+    return { stepLabel: args.stepLabel, inheritedLabel: args.inheritedLabel };
+  } catch {
+    return null;
   }
 }
 
