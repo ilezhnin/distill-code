@@ -537,7 +537,10 @@ export function startDigestDispatch(
         }
         // One notice, carrying the reason *and* the digest itself: the reports
         // are already flagged published, so this transcript entry is the only
-        // remaining copy of what the workers said.
+        // remaining copy of what the workers said. It also carries the retry
+        // (P17): a send that failed is the one failure asking again is likely
+        // to fix, and without the button the wave's whole result was lost to
+        // it.
         appendNotice(
           dispatch.conductorSessionId,
           digestDeliveryFailureText(
@@ -547,6 +550,13 @@ export function startDigestDispatch(
             dispatch.text,
           ),
           "error",
+          decision.offerRetry
+            ? {
+                type: "retryWaveDigest",
+                sessionId: dispatch.conductorSessionId,
+                waveId: dispatch.waveId,
+              }
+            : undefined,
         );
         return;
       }
