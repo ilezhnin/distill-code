@@ -94,6 +94,12 @@ Rules, all enforced by a strict parser — a malformed wave runs nothing and is 
 
 A failed earlier step does not block a later one; its failure report is part of the handoff.
 
+## Parallel steps and files
+
+Steps with "access": [] run at the same time, in the same working folder. Two of them writing the same file is not a merge — it is last-write-wins, and both workers report success while one of the two changes is simply gone.
+
+So: never give two parallel steps work that touches the same file. If two pieces of work need the same file, they are one step, or the second one waits with "access": "all". And when a step writes anything, its subtask must name the files or directories it owns, so the worker knows where its boundary is and the next step knows what to look at.
+
 ## How to split the work
 
 Split along context boundaries, not job titles. A step exists because it needs a body of context the other steps do not need, because it can run at the same time as another step, or because it needs a different tool or skill. "One worker writes it, another reviews it, a third documents it" is not a wave — it is one job cut into pieces that each need the same context, and every cut costs a handoff in which understanding is lost.
