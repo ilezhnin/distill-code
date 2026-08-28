@@ -87,12 +87,11 @@ describe("BrigadeWaitIndicator", () => {
     );
   });
 
-  it("offers each working executor as a way into its own chat (L4)", async () => {
-    // Transparency is the product's rule, not a nicety: an agent the operator
-    // can see working is an agent whose chat they can open. This line used to
-    // be the one place that said "someone is working" and gave no way in.
-    const onOpenChild = vi.fn();
-    render(
+  function withTranscript(
+    onOpenChild: (sessionId: string, intent?: string) => void,
+    nodes: SessionNode[],
+  ) {
+    return render(
       <ConductorTranscriptProvider
         value={{
           enabled: true,
@@ -103,17 +102,22 @@ describe("BrigadeWaitIndicator", () => {
           onOpenChild,
         }}
       >
-        <BrigadeWaitIndicator
-          chatState="idle"
-          nodes={[
-            node("a", "running", { displayName: "Scout · retry" }),
-            node("b", "completed", { displayName: "Bohr" }),
-          ]}
-        />
+        <BrigadeWaitIndicator chatState="idle" nodes={nodes} />
       </ConductorTranscriptProvider>,
     );
+  }
 
-    const entries = screen.getAllByTestId("brigade-wait-open-child");
+  it("offers each working executor as a way into its own chat (L4)", async () => {
+    // Transparency is the product's rule, not a nicety: an agent the operator
+    // can see working is an agent whose chat they can open. This line used to
+    // be the one place that said "someone is working" and gave no way in.
+    const onOpenChild = vi.fn();
+    withTranscript(onOpenChild, [
+      node("a", "running", { displayName: "Scout · retry" }),
+      node("b", "completed", { displayName: "Bohr" }),
+    ]);
+
+    const entries = screen.getAllByTestId("agent-tree-open");
     // Only the ones actually working: a finished executor is reachable from
     // its chip, and repeating it here would make the line lie about who is
     // still running.
@@ -126,11 +130,36 @@ describe("BrigadeWaitIndicator", () => {
     expect(onOpenChild).toHaveBeenCalledWith("a", "openInTab");
   });
 
+  it("nests a subagent under the executor that started it", async () => {
+    // The requirement this line kept failing: "N executors are working" has to
+    // lead to *every* agent it is counting, including the ones a step spawned
+    // for itself, and it has to say whose they are.
+    const onOpenChild = vi.fn();
+    withTranscript(onOpenChild, [
+      node("orch", "waiting", { role: "orchestrator", displayName: "Atlas" }),
+      node("sub", "running", {
+        parentSessionId: "orch",
+        displayName: "Curie",
+      }),
+    ]);
+
+    const rows = screen.getAllByTestId("agent-tree-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveAttribute("data-depth", "0");
+    expect(rows[1]).toHaveAttribute("data-depth", "1");
+    expect(rows[1]).toHaveAttribute("data-session-id", "sub");
+
+    await userEvent.click(
+      screen.getAllByTestId("agent-tree-open")[1] as HTMLElement,
+    );
+    expect(onOpenChild).toHaveBeenCalledWith("sub", "openInTab");
+  });
+
   it("says nothing clickable when there is nowhere to open a child", () => {
     render(
       <BrigadeWaitIndicator chatState="idle" nodes={[node("a", "running")]} />,
     );
-    expect(screen.queryByTestId("brigade-wait-open-child")).toBeNull();
+    expect(screen.queryByTestId("agent-tree-open")).toBeNull();
   });
 
   it("renders nothing while the chat itself is streaming", () => {

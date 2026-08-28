@@ -78,8 +78,9 @@ export function brigadeWaitIndicator(input: {
  * selection is `isAgentChildOfRoot` — the same rule `footerAgentNodes` uses —
  * so the sidebar and the composer indicator can never disagree.
  *
- * Returns 0 when the session has no node, is not a conductor/orchestrator, or
- * has no working children. Says nothing about the session's *own* run state;
+ * Returns 0 when the session has no node or no working children. Any role can
+ * have children — a worker that started agents of its own is exactly the case
+ * the sidebar must not hide. Says nothing about the session's *own* run state;
  * callers decide that (the sidebar row lets its own running state win).
  */
 export function workingChildCountForSession(
@@ -97,7 +98,6 @@ export function workingChildCountForSession(
     }
   }
   if (!root) return 0;
-  if (root.role !== "conductor" && root.role !== "orchestrator") return 0;
 
   const rootIds = rootSessionIdSet(root, [sessionId, ...aliases]);
   let working = 0;

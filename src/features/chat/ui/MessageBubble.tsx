@@ -1134,7 +1134,22 @@ export const MessageBubble = memo(function MessageBubble({
               </div>
             ) : null}
             {digestEnvelope ? (
-              <ConductorDigestCard body={digestEnvelope.body} />
+              /* Each report leads back to the agent that wrote it — a digest
+                 that names four executors and offers no way to any of them is
+                 the same dead end the wait line used to be. */
+              <ConductorDigestCard
+                body={digestEnvelope.body}
+                agents={conductorTranscript.children}
+                onOpen={
+                  conductorTranscript.onOpenChild
+                    ? (sessionId) =>
+                        conductorTranscript.onOpenChild?.(
+                          sessionId,
+                          "openInTab",
+                        )
+                    : undefined
+                }
+              />
             ) : null}
             {!digestEnvelope && isUser && messageChips.length > 0 && (
               <div className="mb-1.5 flex flex-wrap gap-1.5">

@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/shared/lib/cn";
@@ -6,6 +6,7 @@ import type { ChatState } from "@/shared/types/chat";
 import { Button } from "@/shared/ui/button";
 import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 
+import { buildAgentForest } from "../agentTree";
 import { brigadeWaitIndicator } from "../brigadeActivity";
 import { useConductorTranscript } from "../ConductorTranscriptContext";
 import type { SessionNode } from "../types";
@@ -16,6 +17,8 @@ import {
 } from "../wavePoke";
 import { stopWaveByOperator } from "../waveStop";
 import { getWaveEngineState } from "../waveStore";
+import { AgentTreeView } from "./AgentTreeView";
+import { stopOrchestratorSession } from "../orchestratorControls";
 
 /**
  * Persistent "this chat is waiting on external work" line above the composer,
@@ -45,11 +48,21 @@ export function BrigadeWaitIndicator({
   className?: string;
 }) {
   const { t } = useTranslation("chat");
-  const { visible, workingCount, working } = brigadeWaitIndicator({
+  const { visible, workingCount } = brigadeWaitIndicator({
     chatState,
     children: nodes,
   });
   const { onOpenChild } = useConductorTranscript();
+  const [treeOpen, setTreeOpen] = useState(true);
+  // The brigade as a tree rather than a row of names. `nodes` is this
+  // session's whole brigade, flat — including the workers an orchestrator
+  // step started — so nesting it by parent is the only way the line can say
+  // *whose* subagent is still running rather than just how many there are.
+  const forest = useMemo(() => {
+    const byId: Record<string, SessionNode> = {};
+    for (const node of nodes) byId[node.sessionId] = node;
+    return buildAgentForest(byId, { include: "live" });
+  }, [nodes]);
   const pokePending = useSyncExternalStore(
     subscribeToPokeState,
     () => (sessionId ? isPokeInFlight(sessionId) : false),
@@ -72,63 +85,62 @@ export function BrigadeWaitIndicator({
   return (
     <div
       aria-live="polite"
-      className={cn(
-        "flex min-w-0 items-center gap-2 px-1 pb-1.5 text-xs text-muted-foreground",
-        className,
-      )}
+      className={cn("min-w-0 px-1 pb-1.5", className)}
       data-testid="brigade-wait-indicator"
       role="status"
     >
-      <ActiveChatPulseDot className="shrink-0" />
-      <span className="truncate">
-        {t("conductor.waitingOnChildren", { count: workingCount })}
-      </span>
-      {/* The executors themselves, not just their number. An agent the
-          operator can see working is an agent whose chat they can open —
-          the same "open beside the conversation" intent the chip row uses,
-          so a subagent tree is reachable from here exactly as it is from a
-          chip. */}
-      {onOpenChild
-        ? working.map((node) => (
-            <Button
-              key={node.sessionId}
-              type="button"
-              variant="ghost"
-              size="xxs"
-              className="max-w-40 shrink-0 truncate"
-              data-testid="brigade-wait-open-child"
-              title={node.task || node.displayName}
-              onClick={() => onOpenChild(node.sessionId, "openInTab")}
-            >
-              {node.displayName}
-            </Button>
-          ))
-        : null}
-      {sessionId ? (
-        <Button
+      <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+        <ActiveChatPulseDot className="shrink-0" />
+        {/* The count is the disclosure. Every agent it is counting is one row
+          below, at its own depth, and every row opens that agent's chat —
+          which is what the line claiming they exist owes the operator. */}
+        <button
           type="button"
-          variant="ghost"
-          size="xxs"
-          className="shrink-0"
-          data-testid="brigade-poke-button"
-          disabled={pokePending}
-          onClick={() => pokeSessionForInterimSummary(sessionId)}
+          data-testid="brigade-wait-toggle"
+          aria-expanded={treeOpen}
+          onClick={() => setTreeOpen((open) => !open)}
+          className="min-w-0 truncate text-left underline-offset-2 hover:text-foreground hover:underline"
         >
-          {pokePending ? t("conductor.poke.pending") : t("conductor.poke.ask")}
-        </Button>
-      ) : null}
-      {sessionId && runningWaveId ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="xxs"
-          destructive
-          className="shrink-0"
-          data-testid="brigade-stop-wave-button"
-          onClick={() => stopWaveByOperator(sessionId, runningWaveId)}
-        >
-          {t("conductor.wave.stop")}
-        </Button>
+          {t("conductor.waitingOnChildren", { count: workingCount })}
+        </button>
+        {sessionId ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xxs"
+            className="shrink-0"
+            data-testid="brigade-poke-button"
+            disabled={pokePending}
+            onClick={() => pokeSessionForInterimSummary(sessionId)}
+          >
+            {pokePending
+              ? t("conductor.poke.pending")
+              : t("conductor.poke.ask")}
+          </Button>
+        ) : null}
+        {sessionId && runningWaveId ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xxs"
+            destructive
+            className="shrink-0"
+            data-testid="brigade-stop-wave-button"
+            onClick={() => stopWaveByOperator(sessionId, runningWaveId)}
+          >
+            {t("conductor.wave.stop")}
+          </Button>
+        ) : null}
+      </div>
+      {treeOpen && onOpenChild ? (
+        <AgentTreeView
+          forest={forest}
+          className="mt-0.5"
+          onOpen={(childSessionId) => onOpenChild(childSessionId, "openInTab")}
+          onStop={(childSessionId) => {
+            void stopOrchestratorSession(childSessionId);
+          }}
+        />
       ) : null}
     </div>
   );
