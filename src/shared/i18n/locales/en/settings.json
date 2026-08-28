@@ -962,5 +962,27 @@
     "title": "Voice conversation",
     "useSelected": "Use selected voice",
     "voiceLabel": "Pocket TTS voice"
+  },
+  "routing": {
+    "title": "Routing",
+    "waveThreshold": "Move wave steps off a platform at",
+    "waveThresholdDescription": "A wave's steps run unattended and several at once against the same allowance, so they leave earlier than your own chats do. Below this much of a window spent, a step prefers the next model down its ranking — and says so on its chip.",
+    "chatThreshold": "Move your own chats off a platform at",
+    "chatThresholdDescription": "You are in front of a chat and can react, so it may run closer to a limit than a wave step.",
+    "classesDescription": "Which models each class of work prefers, in order. A wave step can name its class, and an agent with no list of its own uses its role's class — so changing the order here changes what runs, without editing a single agent.",
+    "classOverridden": "Changed from the built-in order.",
+    "classes": {
+      "frontend-ui": "Frontend and UI",
+      "coding-simple": "Simple coding",
+      "coding-complex": "Complex coding",
+      "one-shot": "One-shot work",
+      "testing-heavy": "Heavy testing and audit",
+      "testing-light": "Light testing"
+    },
+    "moveUp": "Move {{label}} up",
+    "moveDown": "Move {{label}} down",
+    "remove": "Remove {{label}}",
+    "add": "Add a model",
+    "reset": "Reset routing to the built-in settings"
   }
 }
