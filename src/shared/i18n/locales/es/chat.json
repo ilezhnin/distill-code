@@ -583,6 +583,11 @@
         "explicitNearLimit": "El paso {{step}} ({{name}}) se ejecuta en {{model}} —el modelo que indicó el plan—, que está cerca de su límite de uso o ya lo alcanzó, por lo que el paso puede cortarse antes de terminar.",
         "fallback": "El paso {{step}} ({{name}}) se ejecuta en {{model}}: su modelo preferido no estaba disponible.",
         "nearLimit": "El paso {{step}} ({{name}}) se ejecuta en {{model}}, que está cerca de su límite de uso. Todos los modelos de este rol están así de llenos, por lo que el paso puede cortarse antes de terminar."
+      },
+      "group": {
+        "first": "Brigada",
+        "revision_one": "Revisión",
+        "revision_other": "Revisión {{count}}"
       }
     },
     "spawnAcl": {

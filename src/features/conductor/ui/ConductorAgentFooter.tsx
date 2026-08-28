@@ -119,7 +119,7 @@ export function ConductorAgentFooter({
   // step the operator agreed to holds a place from the moment the plan lands
   // — a four-step wave whose first step is slow to start is four chips, not
   // one that the others appear beside as they spawn.
-  const chips = useMemo<BrigadeChipViewModel[]>(() => {
+  const groups = useMemo<ChipGroup[]>(() => {
     const chipForNode = (node: SessionNode): BrigadeChipViewModel => {
       const report = node.runId ? reportsByRunId[node.runId] : undefined;
       const step =
@@ -142,29 +142,50 @@ export function ConductorAgentFooter({
       };
     };
 
-    const { slots, unplanned } = waveFooterRow(planSteps ?? [], nodes);
-    return [
-      ...slots.map((slot) =>
-        slot.node
-          ? chipForNode(slot.node)
-          : {
-              // Keyed on the step, since there is no session to key on yet.
-              id: `step-${slot.stepIndex}`,
-              name: pendingStepName(slot.step),
-              // Unused while `pending` is set; the chip reads its own label.
-              status: "starting" as const,
-              title: slot.step.subtask,
-              stepIndex: slot.stepIndex,
-              accessLabel: t(waveStepAccessKey(slot.step)),
-              modelLabel: slot.step.model,
-              pending: true,
-            },
-      ),
-      ...inPlanOrder(unplanned).map(chipForNode),
-    ];
+    const rowFor = (
+      forNodes: readonly SessionNode[],
+      steps: readonly WaveStep[] | undefined,
+    ): BrigadeChipViewModel[] => {
+      const { slots, unplanned } = waveFooterRow(steps ?? [], forNodes);
+      return [
+        ...slots.map((slot) =>
+          slot.node
+            ? chipForNode(slot.node)
+            : {
+                // Keyed on the step, since there is no session to key on yet.
+                id: `step-${slot.stepIndex}`,
+                name: pendingStepName(slot.step),
+                // Unused while `pending` is set; the chip reads its own label.
+                status: "starting" as const,
+                title: slot.step.subtask,
+                stepIndex: slot.stepIndex,
+                accessLabel: t(waveStepAccessKey(slot.step)),
+                modelLabel: slot.step.model,
+                pending: true,
+              },
+        ),
+        ...inPlanOrder(unplanned).map(chipForNode),
+      ];
+    };
+
+    // One message can host more than one wave: a revision spawns against the
+    // same plan message its predecessor did, and until now its executors
+    // simply joined the earlier row, so eight chips claimed to be one brigade
+    // of eight. Grouped by wave, the second row reads as what it is — the
+    // revision — and the plan's own slots stay with the wave the plan
+    // described.
+    const waves = groupNodesByWave(nodes);
+    if (waves.length <= 1) {
+      return [{ waveId: waves[0]?.waveId, chips: rowFor(nodes, planSteps) }];
+    }
+    return waves.map((group, index) => ({
+      waveId: group.waveId,
+      revisionIndex: index,
+      chips: rowFor(group.nodes, index === 0 ? planSteps : undefined),
+    }));
   }, [nodes, onStop, openInTab, planSteps, reportsByRunId, t]);
 
-  if (chips.length === 0) {
+  if (groups.every((group) => group.chips.length === 0)) {
     return null;
   }
 
@@ -184,11 +205,76 @@ export function ConductorAgentFooter({
           {stats}
         </p>
       ) : null}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        {chips.map((chip) => (
-          <BrigadeChip key={chip.id} {...chip} />
-        ))}
-      </div>
+      {groups.map((group, index) => (
+        <div
+          key={group.waveId ?? `group-${index}`}
+          data-testid="conductor-agent-footer-wave"
+          data-wave-id={group.waveId}
+          className="flex w-full min-w-0 flex-col items-start gap-0.5"
+        >
+          {typeof group.revisionIndex === "number" ? (
+            <p
+              className="text-[11px] text-muted-foreground"
+              data-testid="conductor-agent-footer-wave-label"
+            >
+              {group.revisionIndex === 0
+                ? t("conductor.wave.group.first")
+                : t("conductor.wave.group.revision", {
+                    count: group.revisionIndex,
+                  })}
+            </p>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            {group.chips.map((chip) => (
+              <BrigadeChip key={chip.id} {...chip} />
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
+}
+
+interface ChipGroup {
+  waveId?: string;
+  /** Set only when this message hosts more than one wave. */
+  revisionIndex?: number;
+  chips: BrigadeChipViewModel[];
+}
+
+/**
+ * Nodes split by the wave that spawned them, oldest wave first.
+ *
+ * Order is by the first node each wave produced, so the rows read down the
+ * message in the order the operator watched them appear. Nodes with no
+ * `waveId` — legacy hand-started orchestrators — share one trailing group,
+ * because they belong to no wave and inventing one for each would turn a row
+ * of three into three rows of one.
+ */
+function groupNodesByWave(
+  nodes: readonly SessionNode[],
+): Array<{ waveId?: string; nodes: SessionNode[] }> {
+  const byWave = new Map<string, SessionNode[]>();
+  const unowned: SessionNode[] = [];
+  for (const node of nodes) {
+    if (!node.waveId) {
+      unowned.push(node);
+      continue;
+    }
+    const bucket = byWave.get(node.waveId);
+    if (bucket) bucket.push(node);
+    else byWave.set(node.waveId, [node]);
+  }
+  const firstSeen = (group: readonly SessionNode[]) =>
+    group.reduce(
+      (earliest, node) => Math.min(earliest, node.createdAt ?? 0),
+      Number.POSITIVE_INFINITY,
+    );
+  const groups: Array<{ waveId?: string; nodes: SessionNode[] }> = [
+    ...byWave.entries(),
+  ]
+    .map(([waveId, waveNodes]) => ({ waveId, nodes: waveNodes }))
+    .sort((left, right) => firstSeen(left.nodes) - firstSeen(right.nodes));
+  if (unowned.length > 0) groups.push({ waveId: undefined, nodes: unowned });
+  return groups;
 }

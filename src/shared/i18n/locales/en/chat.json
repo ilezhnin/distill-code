@@ -584,6 +584,11 @@
         "explicitNearLimit": "Step {{step}} ({{name}}) is running on {{model}} — the model the plan named — which is close to or at its usage limit, so the step may be cut off before it finishes.",
         "fallback": "Step {{step}} ({{name}}) is running on {{model}} — its first-choice model was not available.",
         "nearLimit": "Step {{step}} ({{name}}) is running on {{model}}, which is close to its usage limit. Every model this role ranks is that full, so the step may be cut off before it finishes."
+      },
+      "group": {
+        "first": "Brigade",
+        "revision_one": "Revision",
+        "revision_other": "Revision {{count}}"
       }
     },
     "spawnAcl": {
