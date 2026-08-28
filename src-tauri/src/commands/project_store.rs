@@ -141,6 +141,61 @@ pub fn list_project_documents(project_root: String, path: String) -> Result<Vec<
     Ok(names)
 }
 
+/// Where a run's closeout is written, inside the project.
+///
+/// Deliberately outside `.distill`, and the only thing this module writes
+/// there. `.distill` is excluded from git on purpose — it is this tool's own
+/// state and does not belong in someone's history — but a closeout is the
+/// opposite kind of file: a short record of what a request changed and why,
+/// meant to be read by a person in six months and therefore meant to be
+/// committed with the work it describes. A folder of tool state that git
+/// ignores cannot serve that, so the closeout lives beside the project's own
+/// documentation and is committed like any other file.
+pub const PROJECT_RUNS_DIR: &str = "docs/runs";
+
+/// Writes one run closeout into `docs/runs/`.
+///
+/// `name` is a file name and nothing else: no separators, no traversal, and
+/// `.md` enforced. A narrow command rather than a general file write, because
+/// "the app may write anywhere in your repository" is not a capability this
+/// tool should have for the sake of one feature.
+#[tauri::command]
+pub fn write_project_run_closeout(
+    project_root: String,
+    name: String,
+    contents: String,
+) -> Result<String, String> {
+    let root = PathBuf::from(project_root.trim());
+    if !root.is_absolute() {
+        return Err("Project path must be absolute".into());
+    }
+    let file = name.trim();
+    if file.is_empty()
+        || file.contains('/')
+        || file.contains('\\')
+        || file.contains("..")
+        || !file.ends_with(".md")
+    {
+        return Err("A closeout file name must be a plain '.md' name".into());
+    }
+    let dir = PROJECT_RUNS_DIR
+        .split('/')
+        .fold(root.clone(), |path, part| path.join(part));
+    fs::create_dir_all(&dir)
+        .map_err(|error| format!("Cannot create '{}': {error}", dir.display()))?;
+    let target = dir.join(file);
+    let temporary = target.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
+    fs::write(&temporary, contents.as_bytes())
+        .map_err(|error| format!("Cannot write '{}': {error}", temporary.display()))?;
+    match fs::rename(&temporary, &target) {
+        Ok(()) => Ok(target.to_string_lossy().to_string()),
+        Err(error) => {
+            let _ = fs::remove_file(&temporary);
+            Err(format!("Cannot replace '{}': {error}", target.display()))
+        }
+    }
+}
+
 /// Tells this project's git to ignore what agent tools leave in it.
 ///
 /// `.git/info/exclude` and deliberately not `.gitignore`: the second is a
@@ -263,6 +318,35 @@ mod tests {
             list_project_documents(root.to_string_lossy().to_string(), "memory".into()).unwrap(),
             vec!["facts.json".to_string()]
         );
+    }
+
+    #[test]
+    fn writes_a_closeout_where_git_will_see_it() {
+        let root = temp();
+        let written = write_project_run_closeout(
+            root.to_string_lossy().to_string(),
+            "2026-08-29-rename-the-flag.md".into(),
+            "# What changed".into(),
+        )
+        .unwrap();
+        assert!(written.ends_with("2026-08-29-rename-the-flag.md"));
+        assert!(root.join("docs").join("runs").is_dir());
+        // Not in `.distill`: that folder is excluded from git, and a closeout
+        // nobody can commit is a closeout nobody will ever read.
+        assert!(!written.contains(".distill"));
+    }
+
+    #[test]
+    fn refuses_a_closeout_name_that_is_a_path() {
+        let root = temp();
+        for name in ["../escape.md", "sub/dir.md", "notes.txt", ""] {
+            assert!(write_project_run_closeout(
+                root.to_string_lossy().to_string(),
+                name.into(),
+                "x".into(),
+            )
+            .is_err());
+        }
     }
 
     #[test]

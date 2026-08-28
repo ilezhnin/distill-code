@@ -597,7 +597,8 @@
         "usd": "${{spent}} of ${{allowed}}",
         "tokens": "{{spent}} of {{allowed}} tokens",
         "minutes": "{{spent}} of {{allowed}} minutes"
-      }
+      },
+      "closeout": "The summary of this request was written to {{path}}. It is an ordinary file — commit it with the work so the next person has it."
     },
     "spawnAcl": {
       "deniedTitle": "A session asked to start an agent it is not allowed to start, so nothing was started.",

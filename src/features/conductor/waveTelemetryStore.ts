@@ -37,6 +37,7 @@ import {
 import { notePersistFailure } from "./persistHealth";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
+import { writeRunCloseout } from "./runCloseoutWriter";
 import type { RunStatus, SessionNode } from "./types";
 import type { WaveState } from "./waveEngine";
 import type { WaveClosureReason } from "./waveVerdict";
@@ -527,6 +528,13 @@ export function recordWaveClose(
   try {
     const record = buildRecord(wave, outcome, closureReason, closedAt);
     const current = getWaveTelemetry();
+    // A finished root request leaves a closeout in the project (P55). Hooked
+    // to the close rather than to each verdict path for the same reason the
+    // run journal is derived: a close path that forgot to write one would be
+    // indistinguishable from a request that produced nothing worth recording.
+    // Fire-and-forget, and it refuses itself for anything that is not the end
+    // of a root request.
+    void writeRunCloseout(record, current.records);
     save({
       ...current,
       records: capRecords([

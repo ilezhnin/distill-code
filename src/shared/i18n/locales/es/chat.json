@@ -596,7 +596,8 @@
         "usd": "{{spent}} $ de {{allowed}} $",
         "tokens": "{{spent}} de {{allowed}} tokens",
         "minutes": "{{spent}} de {{allowed}} minutos"
-      }
+      },
+      "closeout": "El resumen de esta petición se escribió en {{path}}. Es un archivo normal: haz commit junto con el trabajo para que lo tenga la siguiente persona."
     },
     "spawnAcl": {
       "deniedTitle": "Una sesión pidió iniciar un agente que no tiene permitido iniciar, así que no se inició nada.",
