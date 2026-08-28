@@ -16,6 +16,9 @@
 
 import { modelPreferenceClassIds } from "@/features/agents/lib/modelRanking";
 
+import { buildFactsLedger, renderFactsForPrompt } from "./factsLedger";
+import { getWaveTelemetry } from "./waveTelemetryStore";
+
 import {
   MAX_WAVE_STEP_LABEL_LENGTH,
   MAX_WAVE_STEPS,
@@ -168,9 +171,30 @@ export function composeConductorSystemPrompt(
   systemPrompt: string | undefined,
 ): string {
   const base = systemPrompt?.trim();
-  return base
-    ? `${CONDUCTOR_PROTOCOL_PROMPT}\n\n${base}`
+  // The facts this installation has measured about its own models (P39),
+  // appended after the protocol and before the session's own prompt. Composed
+  // here rather than baked into the constant because they change as waves
+  // run: the protocol is fixed for the process, the measurements are not.
+  const facts = conductorFactsBlock();
+  const protocol = facts
+    ? `${CONDUCTOR_PROTOCOL_PROMPT}\n\n${facts}`
     : CONDUCTOR_PROTOCOL_PROMPT;
+  return base ? `${protocol}\n\n${base}` : protocol;
+}
+
+/**
+ * The measured facts, or nothing at all.
+ *
+ * Never allowed to fail a session: a prompt that could not be decorated with
+ * statistics is a prompt, and a conductor that cannot start because telemetry
+ * threw would be a far worse trade than one planning without the numbers.
+ */
+function conductorFactsBlock(): string {
+  try {
+    return renderFactsForPrompt(buildFactsLedger(getWaveTelemetry().records));
+  } catch {
+    return "";
+  }
 }
 
 /**
