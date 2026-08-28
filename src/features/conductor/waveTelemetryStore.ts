@@ -26,6 +26,8 @@
  * waves" stays countable.
  */
 
+import { useSyncExternalStore } from "react";
+
 import { getUsageLedger } from "@/features/stats/lib/usageLedger";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
@@ -67,6 +69,12 @@ export interface WaveStepTelemetry {
   durationMs?: number;
   /** The child session's lifetime token total, from the usage ledger. */
   totalTokens?: number;
+  /**
+   * The child session's estimated cost, from the same ledger row. Absent when
+   * the provider gave no price — which is a different fact from "free", so
+   * the reader must keep them apart rather than summing a missing price as 0.
+   */
+  costUsd?: number;
 }
 
 export interface WaveTelemetryRecord {
@@ -89,6 +97,8 @@ export interface WaveTelemetryRecord {
   gitDirtyAtDigest?: number;
   /** Sum of the steps' token totals; absent when no step had one. */
   totalTokens?: number;
+  /** Sum of the steps' costs; absent when no step had a priced provider. */
+  costUsd?: number;
   steps: WaveStepTelemetry[];
 }
 
@@ -141,6 +151,11 @@ function isFiniteTime(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+/** A salvageable money amount: finite and not negative. Not an integer. */
+function isMoney(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 const OUTCOMES: readonly WaveTelemetryOutcome[] = [
   "accepted",
   "revised",
@@ -162,6 +177,7 @@ function parseStep(value: unknown): WaveStepTelemetry | null {
     ...(isFiniteTime(raw.finishedAt) ? { finishedAt: raw.finishedAt } : {}),
     ...(isCount(raw.durationMs) ? { durationMs: raw.durationMs } : {}),
     ...(isCount(raw.totalTokens) ? { totalTokens: raw.totalTokens } : {}),
+    ...(isMoney(raw.costUsd) ? { costUsd: raw.costUsd } : {}),
   };
 }
 
@@ -211,6 +227,7 @@ function parseRecord(value: unknown): WaveTelemetryRecord | null {
       ? { gitDirtyAtDigest: raw.gitDirtyAtDigest }
       : {}),
     ...(isCount(raw.totalTokens) ? { totalTokens: raw.totalTokens } : {}),
+    ...(isMoney(raw.costUsd) ? { costUsd: raw.costUsd } : {}),
     steps,
   };
 }
@@ -279,16 +296,42 @@ export function getWaveTelemetry(): WaveTelemetryState {
   return cache;
 }
 
+/**
+ * In-process subscribers, so a reader can re-render when a wave closes.
+ *
+ * Deliberately not a window event: telemetry is written and read inside one
+ * renderer, and the storage event would fire for other tabs the app does not
+ * have. `save` is a cold path — once per wave close — so notifying here costs
+ * nothing on any hot path.
+ */
+const listeners = new Set<() => void>();
+
+/** Subscribes to wave-close writes. Returns the unsubscribe. */
+export function subscribeWaveTelemetry(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 function save(next: WaveTelemetryState): void {
   cache = next;
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(
-      WAVE_TELEMETRY_STORAGE_KEY,
-      JSON.stringify(next),
-    );
-  } catch {
-    // Telemetry is never load-bearing; a failed persist loses history only.
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.setItem(
+        WAVE_TELEMETRY_STORAGE_KEY,
+        JSON.stringify(next),
+      );
+    } catch {
+      // Telemetry is never load-bearing; a failed persist loses history only.
+    }
+  }
+  for (const listener of [...listeners]) {
+    try {
+      listener();
+    } catch {
+      // A reader that throws must not take the wave's close path with it.
+    }
   }
 }
 
@@ -336,10 +379,14 @@ function buildRecord(
       ...(usage && isCount(usage.totalTokens) && usage.totalTokens > 0
         ? { totalTokens: usage.totalTokens }
         : {}),
+      ...(usage && isMoney(usage.costUsd) ? { costUsd: usage.costUsd } : {}),
     };
   });
   const tokenTotals = steps.flatMap((step) =>
     step.totalTokens !== undefined ? [step.totalTokens] : [],
+  );
+  const costTotals = steps.flatMap((step) =>
+    step.costUsd !== undefined ? [step.costUsd] : [],
   );
   return {
     waveId: wave.waveId,
@@ -362,6 +409,9 @@ function buildRecord(
       : {}),
     ...(tokenTotals.length > 0
       ? { totalTokens: tokenTotals.reduce((sum, value) => sum + value, 0) }
+      : {}),
+    ...(costTotals.length > 0
+      ? { costUsd: costTotals.reduce((sum, value) => sum + value, 0) }
       : {}),
     steps,
   };
@@ -450,6 +500,15 @@ export function countPlanlessConductorTurn(
 }
 
 /** Clears the cache and the persisted payload. Tests only. */
+/** Live telemetry for a React reader. Re-renders when a wave closes. */
+export function useWaveTelemetry(): WaveTelemetryState {
+  return useSyncExternalStore(
+    subscribeWaveTelemetry,
+    getWaveTelemetry,
+    emptyWaveTelemetryState,
+  );
+}
+
 export function resetWaveTelemetryForTests(): void {
   cache = null;
   if (typeof window !== "undefined") {
