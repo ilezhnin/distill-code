@@ -22,5 +22,11 @@
     "forgetConfirmTitle": "Forget this memory?",
     "forgetConfirmDescription": "\"{{text}}\" will no longer be carried into future sessions. This cannot be undone.",
     "fromAgent": "from an agent"
+  },
+  "search": {
+    "title": "Find a memory",
+    "placeholder": "What did we decide about…",
+    "empty": "Nothing remembered matches that.",
+    "provenance": "{{scope}} · {{date}}"
   }
 }

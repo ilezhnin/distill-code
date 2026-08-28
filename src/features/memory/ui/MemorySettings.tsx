@@ -23,6 +23,7 @@ import {
 } from "@/shared/ui/settings-section";
 
 import type { MemoryEntry } from "../lib/memoryEntry";
+import { searchMemories } from "../lib/memorySearch";
 import { useMemoryStore } from "../stores/memoryStore";
 
 /** The add form's scope select keeps "everywhere" apart from project ids. */
@@ -51,6 +52,7 @@ export function MemorySettings() {
   // just mean "not loaded yet" — no deletion is offered on that basis.
   const projectsSettled = useProjectStore((state) => state.hasFetchedProjects);
 
+  const [query, setQuery] = useState("");
   const [draft, setDraft] = useState("");
   const [draftScope, setDraftScope] = useState(GLOBAL_SCOPE_VALUE);
   const [forgettingProjectId, setForgettingProjectId] = useState<string | null>(
@@ -90,9 +92,69 @@ export function MemorySettings() {
     return result;
   }, [entries, projects, t]);
 
+  // Searching the store, not the prompt block. The block is budgeted and
+  // recency-ordered, so a fact that is still true but old is not in it — and
+  // "what did we decide about X" is usually a question about exactly that
+  // fact, quite possibly decided in another project (P32).
+  const hits = useMemo(
+    () => (query.trim() ? searchMemories(entries, query) : []),
+    [entries, query],
+  );
+  const projectNameOf = (projectId: string | null) =>
+    projectId
+      ? (projects.find((project) => project.id === projectId)?.name ??
+        t("groups.unknownProject"))
+      : t("groups.global");
+
   return (
     <SettingsPage title={t("title")} description={t("description")}>
       <SettingsSections>
+        <SettingsSection title={t("search.title")}>
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={t("search.placeholder")}
+            aria-label={t("search.placeholder")}
+            data-testid="memory-search-input"
+          />
+          {query.trim() ? (
+            hits.length === 0 ? (
+              <p
+                className="text-xs text-muted-foreground"
+                data-testid="memory-search-empty"
+              >
+                {t("search.empty")}
+              </p>
+            ) : (
+              <ul
+                className="flex list-none flex-col gap-1"
+                data-testid="memory-search-results"
+              >
+                {hits.map((hit) => (
+                  <li
+                    key={hit.entry.id}
+                    data-testid="memory-search-result"
+                    className="rounded-md bg-accent/50 px-2 py-1.5"
+                  >
+                    <p className="text-sm text-foreground">{hit.entry.text}</p>
+                    {/* Where and when, because a fact that is true in one
+                        project and stale in another is the whole reason
+                        memories are scoped. */}
+                    <p className="text-[11px] text-muted-foreground">
+                      {t("search.provenance", {
+                        scope: projectNameOf(hit.entry.projectId),
+                        date: new Date(
+                          hit.entry.createdAt,
+                        ).toLocaleDateString(),
+                      })}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )
+          ) : null}
+        </SettingsSection>
+
         <SettingsSection title={t("add.title")}>
           <form
             className="flex items-center gap-2"
