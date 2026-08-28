@@ -427,7 +427,11 @@ export function buildDesignSystemManifest() {
 
     return {
       name: displayNameFromFile(file, exportEntries),
-      source: path.relative(repoRoot, absolutePath),
+      // Forward slashes on every platform. `path.relative` answers in the
+      // host's separator, so a manifest regenerated on Windows differed from
+      // the committed one in every entry — which made the check impossible to
+      // satisfy there rather than telling anyone anything.
+      source: path.relative(repoRoot, absolutePath).split(path.sep).join("/"),
       description: getLeadingDocComment(sourceText),
       exports,
       slots: getDataSlots(sourceText),
@@ -467,9 +471,15 @@ export type DesignSystemComponentManifestItem = {
 export const designSystemComponentManifest = ${JSON.stringify(manifest, null, 2)} as const satisfies readonly DesignSystemComponentManifestItem[];
 `;
 
+  // Run through node rather than executing the bin directly. `bin/biome` is a
+  // JavaScript file with a shebang, which Windows does not honour, so
+  // `execFileSync(biomeBinPath, …)` fails there with ENOENT and takes the
+  // whole `just check` down with it — on the one platform this project is
+  // developed on.
   return execFileSync(
-    biomeBinPath,
+    process.execPath,
     [
+      biomeBinPath,
       "format",
       "--stdin-file-path",
       "src/features/design-system/generated/componentManifest.ts",

@@ -246,9 +246,11 @@ const biomeBinPath = path.join(
   path.dirname(biomePackagePath),
   biomePackage.bin.biome,
 );
+// Through node, not the bin directly: `bin/biome` is a JavaScript file with a
+// shebang, which Windows does not honour.
 execFileSync(
-  biomeBinPath,
-  ["format", "--write", modulePath, registryPath, testPath],
+  process.execPath,
+  [biomeBinPath, "format", "--write", modulePath, registryPath, testPath],
   { cwd: repoRoot, stdio: "pipe" },
 );
 
