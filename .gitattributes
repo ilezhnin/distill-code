@@ -1,3 +1,15 @@
+# Line endings are LF in the repository and LF in every working tree.
+#
+# Without a rule here, only `.ts` and `.tsx` were normalized, so any Windows
+# tool that rewrote a `.md`, `.json`, `.rs` or `.yml` file with CRLF left it
+# permanently "modified" in `git status` — 486 files at once, on 2026-08-29,
+# none of them actually changed. That noise is worse than a wrong default: it
+# hides the files that really are modified.
+#
+# `text=auto` still leaves binaries alone; the more specific rules below win,
+# because for any attribute the last matching pattern is the one that applies.
+* text=auto eol=lf
+
 *.ts text diff
 *.tsx text diff
 
