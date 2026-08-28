@@ -69,7 +69,7 @@ describe("brigadeWaitIndicator", () => {
           node("d", "completed"),
         ],
       }),
-    ).toEqual({ visible: true, workingCount: 3 });
+    ).toMatchObject({ visible: true, workingCount: 3 });
   });
 
   it("counts children of any managedBy and either executor role", () => {
@@ -82,7 +82,7 @@ describe("brigadeWaitIndicator", () => {
           node("cli", "starting", { managedBy: "agent-cli" }),
         ],
       }),
-    ).toEqual({ visible: true, workingCount: 3 });
+    ).toMatchObject({ visible: true, workingCount: 3 });
   });
 
   it("hides while the session itself is running", () => {
@@ -97,7 +97,7 @@ describe("brigadeWaitIndicator", () => {
           chatState,
           children: [node("a", "running")],
         }),
-      ).toEqual({ visible: false, workingCount: 1 });
+      ).toMatchObject({ visible: false, workingCount: 1 });
     }
   });
 
@@ -112,11 +112,13 @@ describe("brigadeWaitIndicator", () => {
           node("d", "stopped"),
         ],
       }),
-    ).toEqual({ visible: false, workingCount: 0 });
+    ).toMatchObject({ visible: false, workingCount: 0 });
   });
 
   it("hides when the session has no children", () => {
-    expect(brigadeWaitIndicator({ chatState: "idle", children: [] })).toEqual({
+    expect(
+      brigadeWaitIndicator({ chatState: "idle", children: [] }),
+    ).toMatchObject({
       visible: false,
       workingCount: 0,
     });
@@ -128,7 +130,7 @@ describe("brigadeWaitIndicator", () => {
         chatState: "error",
         children: [node("a", "running")],
       }),
-    ).toEqual({ visible: true, workingCount: 1 });
+    ).toMatchObject({ visible: true, workingCount: 1 });
   });
 });
 
@@ -279,5 +281,22 @@ describe("workingChildCountForSession", () => {
     expect(
       workingChildCountForSession(nodes, "real-1", [undefined, "client-1"]),
     ).toBe(1);
+  });
+
+  it("hands back the executors the count is about (L4)", () => {
+    // The line is an entrance, not just a number: the indicator needs the
+    // nodes themselves to offer each one's chat, and only the working ones —
+    // a finished executor is reachable from its chip, and repeating it here
+    // would make the line lie about who is still running.
+    const result = brigadeWaitIndicator({
+      chatState: "idle",
+      children: [
+        node("a", "running"),
+        node("b", "completed"),
+        node("c", "waiting"),
+      ],
+    });
+    expect(result.working.map((entry) => entry.sessionId)).toEqual(["a", "c"]);
+    expect(result.workingCount).toBe(2);
   });
 });

@@ -34,6 +34,16 @@ export function summarizeBrigadeActivity(
 export interface BrigadeWaitIndicator {
   visible: boolean;
   workingCount: number;
+  /**
+   * The executors the count is about, so the line can be an entrance to them
+   * rather than only a number.
+   *
+   * Transparency is the product's own rule: an agent the operator can see
+   * working is an agent whose chat they can open. The chip row already does
+   * that for a wave's steps under its plan message, and this line was the one
+   * place that said "someone is working" and gave no way in.
+   */
+  working: readonly SessionNode[];
 }
 
 /**
@@ -50,10 +60,11 @@ export function brigadeWaitIndicator(input: {
   chatState: ChatState;
   children: readonly SessionNode[];
 }): BrigadeWaitIndicator {
-  const workingCount = summarizeBrigadeActivity(input.children).working;
+  const working = input.children.filter((node) => isWorkingStatus(node.status));
   return {
-    visible: workingCount > 0 && !isSessionRunning(input.chatState),
-    workingCount,
+    visible: working.length > 0 && !isSessionRunning(input.chatState),
+    workingCount: working.length,
+    working,
   };
 }
 
