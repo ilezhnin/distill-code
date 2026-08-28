@@ -241,6 +241,31 @@ export function waveStepModelNoticeText(facts: {
 }
 
 /**
+ * The notice posted when a plan pins a step to a model the operator ranked
+ * below the one it would have inherited (P12).
+ *
+ * A warning, not a refusal: 4a made the field legal, and the conductor may
+ * have a reason the ranking does not know. What it must not do is happen
+ * quietly — a small model under a JSON format constraint is where this whole
+ * protocol loses the most, and that trade belongs in front of the operator
+ * while the wave is still worth stopping. Both models are named, because
+ * "ranked lower" means nothing without the pair.
+ */
+export function waveStepModelDowngradeNoticeText(facts: {
+  stepIndex: number;
+  name: string;
+  stepModel: string;
+  inheritedModel: string;
+}): string {
+  return i18n.t("chat:conductor.wave.stepModel.downgrade", {
+    step: facts.stepIndex + 1,
+    name: facts.name,
+    model: facts.stepModel,
+    inherited: facts.inheritedModel,
+  });
+}
+
+/**
  * The notice posted when a step runs on the model the plan explicitly named
  * while that model's usage window is nearly or fully spent.
  *

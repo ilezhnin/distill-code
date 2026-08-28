@@ -62,6 +62,7 @@ import {
   waveReportDegradedNoticeText,
   waveRevisionBudgetResetNoticeText,
   waveSpawnFailureText,
+  waveStepModelDowngradeNoticeText,
 } from "./waveNotices";
 import { BoundedSet } from "./boundedSet";
 import {
@@ -74,6 +75,7 @@ import { MAX_WAVE_REVISIONS, isWaveLive } from "./waveVerdict";
 import { buildWaveStepPrompt } from "./wavePrompts";
 import {
   checkExplicitWaveStepModel,
+  checkWaveStepModelDowngrade,
   resolveExplicitWaveStepModel,
   resolveWaveStepTarget,
 } from "./waveStepTarget";
@@ -459,6 +461,49 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
               stepIndex: request.stepIndex,
               name: roleDisplayName(request.step.role),
               model: resolved.label,
+            }),
+            false,
+            "warning",
+          );
+        }
+        // P12: a warning, never a refusal. 4a made the field legal and the
+        // conductor may have a reason the ranking does not know — but a small
+        // model under a JSON format constraint is where this protocol loses
+        // the most, so the operator gets to see the trade being made.
+        const inherited = useChatSessionStore
+          .getState()
+          .getSession(wave.conductorSessionId)?.executionTarget;
+        // The target is a discriminated union whose model-less variants type
+        // these as `never`, so read them by shape rather than by truthiness.
+        const inheritedId =
+          typeof inherited?.modelId === "string"
+            ? inherited.modelId
+            : undefined;
+        const inheritedName =
+          typeof inherited?.modelName === "string"
+            ? inherited.modelName
+            : inheritedId;
+        const stepModelId =
+          typeof resolved.target.modelId === "string"
+            ? resolved.target.modelId
+            : "";
+        const downgrade = checkWaveStepModelDowngrade({
+          roleId: request.step.role,
+          step: { id: stepModelId, name: resolved.label },
+          inherited: inheritedId
+            ? { id: inheritedId, name: inheritedName ?? inheritedId }
+            : undefined,
+          stepLabel: resolved.label,
+          inheritedLabel: inheritedName ?? "",
+        });
+        if (downgrade) {
+          appendConductorNotice(
+            wave.conductorSessionId,
+            waveStepModelDowngradeNoticeText({
+              stepIndex: request.stepIndex,
+              name: roleDisplayName(request.step.role),
+              stepModel: downgrade.stepLabel,
+              inheritedModel: downgrade.inheritedLabel,
             }),
             false,
             "warning",

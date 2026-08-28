@@ -580,6 +580,7 @@
         "deliveryFailed": "The brigade's report could not be delivered into this chat. It is kept below so nothing is lost."
       },
       "stepModel": {
+        "downgrade": "Step {{step}} ({{name}}) was pinned to {{model}}, which you ranked below {{inherited}} — the model it would otherwise have inherited. It is running on {{model}} as the plan asked; a smaller model has more trouble holding the fenced report format, so check its report before accepting.",
         "explicitNearLimit": "Step {{step}} ({{name}}) is running on {{model}} — the model the plan named — which is close to or at its usage limit, so the step may be cut off before it finishes.",
         "fallback": "Step {{step}} ({{name}}) is running on {{model}} — its first-choice model was not available.",
         "nearLimit": "Step {{step}} ({{name}}) is running on {{model}}, which is close to its usage limit. Every model this role ranks is that full, so the step may be cut off before it finishes."
