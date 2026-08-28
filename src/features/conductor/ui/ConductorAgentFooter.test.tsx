@@ -229,3 +229,52 @@ describe("the shape of the wave, before it has one", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("two waves under one message (P58)", () => {
+  it("keeps a revision's executors in their own labelled row", () => {
+    // A revision spawns against the same plan message its predecessor did.
+    // Until they were grouped, eight chips claimed to be one brigade of
+    // eight, and the plan's own slots were shared out between two waves.
+    renderWithProviders(
+      <ConductorAgentFooter
+        nodes={[
+          node({
+            sessionId: "a",
+            displayName: "Bohr",
+            waveId: "w1",
+            createdAt: 1,
+            status: "completed",
+          }),
+          node({
+            sessionId: "b",
+            displayName: "Curie",
+            waveId: "w2",
+            createdAt: 5,
+          }),
+        ]}
+        reportsByRunId={{}}
+      />,
+    );
+
+    const rows = screen.getAllByTestId("conductor-agent-footer-wave");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveAttribute("data-wave-id", "w1");
+    expect(rows[1]).toHaveAttribute("data-wave-id", "w2");
+    const labels = screen
+      .getAllByTestId("conductor-agent-footer-wave-label")
+      .map((label) => label.textContent);
+    expect(labels).toEqual(["Brigade", "Revision"]);
+  });
+
+  it("says nothing about waves when there is only one", () => {
+    renderWithProviders(
+      <ConductorAgentFooter
+        nodes={[node({ sessionId: "a", displayName: "Bohr", waveId: "w1" })]}
+        reportsByRunId={{}}
+      />,
+    );
+    expect(
+      screen.queryByTestId("conductor-agent-footer-wave-label"),
+    ).toBeNull();
+  });
+});
