@@ -24,6 +24,7 @@ import { checkSpawnAllowed, SpawnAclDeniedError } from "./spawnAcl";
 import { spawnAclDeniedNoticeText } from "./waveNotices";
 import {
   DEFAULT_ORCHESTRATOR_NAME,
+  type NodeBudget,
   type SessionManagedBy,
   type SessionRole,
 } from "./types";
@@ -45,6 +46,10 @@ export async function spawnConductorChildSession(args: {
   waveId?: string;
   /** Zero-based wave step the child executes. */
   stepIndex?: number;
+  /** What the child may spend before the app stops it (P49). */
+  budget?: NodeBudget;
+  /** The root request this child's work belongs to (P49). */
+  taskId?: string;
 }): Promise<{ sessionId: string; runId: string }> {
   const task = args.task.trim();
   if (!task) {
@@ -187,6 +192,8 @@ export async function spawnConductorChildSession(args: {
     task,
     createdAt: Date.now(),
     anchorMessageId: args.anchorMessageId?.trim() || undefined,
+    ...(args.budget ? { budget: args.budget } : {}),
+    ...(args.taskId ? { taskId: args.taskId } : {}),
     ...(args.waveId ? { waveId: args.waveId } : {}),
     ...(typeof args.stepIndex === "number"
       ? { stepIndex: args.stepIndex }

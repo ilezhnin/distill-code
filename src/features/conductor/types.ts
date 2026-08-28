@@ -52,7 +52,53 @@ export interface SessionNode {
   waveId?: string;
   /** Zero-based index of the wave step this node executes. */
   stepIndex?: number;
+  /**
+   * What this agent may spend before the app stops it (P49).
+   *
+   * Until this existed the only brake on a wave was the operator noticing.
+   * A step that started looping cost whatever it cost, and the operator found
+   * out from the bill. Whichever ceiling is reached first ends the run, and
+   * the run says why in its report rather than simply stopping.
+   */
+  budget?: NodeBudget;
+  /**
+   * When this agent is expected to report upwards.
+   *
+   * `on-completion` is the protocol as built: one report, at the end.
+   * `on-milestone` asks for an interim report at each meaningful step, for
+   * long-running work whose parent should not wait blind. `on-request` means
+   * it reports only when asked — the poke, or a parent that comes looking.
+   */
+  reportPolicy?: ReportPolicy;
+  /**
+   * The root request this agent's work belongs to, carried down the tree.
+   *
+   * The graph already links a node to its parent and to its conductor; this
+   * is the identifier that stays the same across a revision, so the work of
+   * one operator request can be counted as one thing however many waves it
+   * took.
+   */
+  taskId?: string;
+  /**
+   * True once the parent has taken the operator's intervention into account.
+   *
+   * The operator can stop, steer or answer a child directly. Its parent finds
+   * out from the report, and until it has said so, "the operator intervened"
+   * is a fact about the child that nothing above it has acted on.
+   */
+  parentAcknowledged?: boolean;
 }
+
+export interface NodeBudget {
+  /** Dollars, when the provider prices its tokens. */
+  usd?: number;
+  /** Total tokens across this agent's run. */
+  tokens?: number;
+  /** Wall-clock minutes since the agent was registered. */
+  minutes?: number;
+}
+
+export type ReportPolicy = "on-completion" | "on-milestone" | "on-request";
 
 export interface StructuredReport {
   runId: string;
