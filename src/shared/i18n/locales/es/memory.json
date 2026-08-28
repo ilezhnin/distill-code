@@ -22,5 +22,11 @@
     "forgetConfirmTitle": "¿Olvidar esta memoria?",
     "forgetConfirmDescription": "«{{text}}» ya no se llevará a sesiones futuras. Esto no se puede deshacer.",
     "fromAgent": "de un agente"
+  },
+  "search": {
+    "title": "Buscar un recuerdo",
+    "placeholder": "Qué decidimos sobre…",
+    "empty": "Nada de lo recordado coincide.",
+    "provenance": "{{scope}} · {{date}}"
   }
 }
