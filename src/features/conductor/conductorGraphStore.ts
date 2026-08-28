@@ -1,6 +1,8 @@
 import { create } from "zustand";
 
 import type {
+  NodeBudget,
+  ReportPolicy,
   RunStatus,
   SessionManagedBy,
   SessionNode,
@@ -121,7 +123,43 @@ function parseNode(value: unknown): SessionNode | null {
       typeof raw.stepIndex === "number" && Number.isInteger(raw.stepIndex)
         ? raw.stepIndex
         : undefined,
+    budget: parseNodeBudget(raw.budget),
+    reportPolicy: isReportPolicy(raw.reportPolicy)
+      ? raw.reportPolicy
+      : undefined,
+    taskId: typeof raw.taskId === "string" ? raw.taskId : undefined,
+    parentAcknowledged: raw.parentAcknowledged === true ? true : undefined,
   };
+}
+
+function isReportPolicy(value: unknown): value is ReportPolicy {
+  return (
+    value === "on-completion" ||
+    value === "on-milestone" ||
+    value === "on-request"
+  );
+}
+
+/**
+ * A persisted budget, keeping only the limits that are still limits.
+ *
+ * A field that came back as a string, a zero or a NaN is dropped rather than
+ * repaired: this decides when a running agent is killed, and a ceiling nobody
+ * can read is not one to guess at.
+ */
+function parseNodeBudget(value: unknown): NodeBudget | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const raw = value as Record<string, unknown>;
+  const budget: NodeBudget = {};
+  for (const key of ["usd", "tokens", "minutes"] as const) {
+    const amount = raw[key];
+    if (typeof amount === "number" && Number.isFinite(amount) && amount > 0) {
+      budget[key] = amount;
+    }
+  }
+  return Object.keys(budget).length > 0 ? budget : undefined;
 }
 
 function parseReport(value: unknown): StructuredReport | null {

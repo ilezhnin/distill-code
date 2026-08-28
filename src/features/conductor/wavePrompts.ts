@@ -85,6 +85,7 @@ Rules, all enforced by a strict parser — a malformed wave runs nothing and is 
 - "access" is either [] or "all". Nothing else — no lists of step indexes.
 - "label" is optional: a short human-readable name for the step, at most ${MAX_WAVE_STEP_LABEL_LENGTH} characters. It names the step's chip and its worker's tab, so give one when two steps share a role and their subtasks' first words would not tell them apart.
 - "model" is optional. Omit it and the step runs on whatever its role's model ranking picks, or inherits the conductor's model. Name one — a model id or enough of its name to be unambiguous, like "opus" or "grok" — and the step runs on exactly that model. A plan naming a model this installation cannot run right now is refused whole and shown to the operator; nothing is ever silently substituted. Name a model only when the operator asked for one or the step demonstrably needs it.
+- "budget" is optional: an object with any of "usd", "tokens" or "minutes", all positive numbers. The step is stopped the moment it passes the first of them, and the wave carries on with what it has. Give one when a step could plausibly loop or run long — a broad search, an open-ended refactor — and leave it out for work whose size you can see from here. It is a ceiling, not an estimate: set it where stopping is better than continuing, not where you expect the step to land.
 - Anything you want the operator to read goes outside the block, as ordinary prose.
 
 ## Access semantics
