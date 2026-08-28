@@ -209,7 +209,10 @@ describe("workingChildCountForSession", () => {
     ).toBe(0);
   });
 
-  it("returns 0 for a plain chat that somehow has children pointed at it", () => {
+  it("counts the children of a session whatever role it carries", () => {
+    // Ownership is the parent link, not the parent's title. A plain chat that
+    // started an agent has an agent running for the operator, and a rule that
+    // returned 0 here made exactly those agents the invisible ones.
     const plain = node("plain-1", "waiting", {
       role: "plain-chat",
       parentSessionId: null,
@@ -226,7 +229,7 @@ describe("workingChildCountForSession", () => {
         ),
         "plain-1",
       ),
-    ).toBe(0);
+    ).toBe(1);
   });
 
   it("counts an orchestrator's direct workers", () => {
