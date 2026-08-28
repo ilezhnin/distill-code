@@ -18,6 +18,15 @@ export const DEFAULT_OPEN_CHILD_INTENT: ConductorOpenChildIntent = "navigate";
 
 export interface ConductorTranscriptContextValue {
   enabled: boolean;
+  /**
+   * The conversation these agents belong to.
+   *
+   * Carried because the brigade footer's totals have to include the conductor
+   * itself: it is a real model call that reads every report and judges every
+   * digest, and leaving it out of the one number the operator watches hid the
+   * most likely source of a runaway spend.
+   */
+  hostSessionId?: string;
   children: SessionNode[];
   reportsByRunId: Record<string, StructuredReport>;
   /**

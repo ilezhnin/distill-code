@@ -12,6 +12,32 @@ import type { WaveStep } from "../distillWave";
 import type { SessionNode, StructuredReport } from "../types";
 import { BrigadeChip, type BrigadeChipViewModel } from "./BrigadeChip";
 
+/**
+ * What one step has spent, or nothing at all.
+ *
+ * Cost wins when the provider prices its tokens, because money is the number
+ * the operator is actually deciding about; tokens are the fallback for a
+ * provider that reports none, and a step that has reported neither shows
+ * nothing rather than a zero it has not earned.
+ */
+function spendLabelFor(
+  tokenState:
+    | { accumulatedTotal: number; accumulatedCost?: number | null }
+    | undefined,
+): string | undefined {
+  if (!tokenState) return undefined;
+  if (
+    typeof tokenState.accumulatedCost === "number" &&
+    tokenState.accumulatedCost > 0
+  ) {
+    return `$${tokenState.accumulatedCost.toFixed(2)}`;
+  }
+  if (tokenState.accumulatedTotal > 0) {
+    return formatTokenCount(tokenState.accumulatedTotal);
+  }
+  return undefined;
+}
+
 function formatTokenCount(value: number): string {
   if (value >= 1000) {
     const thousands = value / 1000;
@@ -40,6 +66,7 @@ function inPlanOrder(nodes: readonly SessionNode[]): readonly SessionNode[] {
 }
 
 export function ConductorAgentFooter({
+  hostSessionId,
   nodes,
   reportsByRunId,
   planSteps,
@@ -47,6 +74,17 @@ export function ConductorAgentFooter({
   onStop,
   className,
 }: {
+  /**
+   * The conversation this row hangs under — the conductor itself.
+   *
+   * The totals used to count only the executors, which stopped being true the
+   * moment the conductor became a real model call of its own: it reads every
+   * report, judges every digest and plans every revision, and on a long root
+   * request it is often the largest single line in the bill. A footer that
+   * silently omitted it hid the most likely source of a runaway spend from
+   * the one number the operator watches.
+   */
+  hostSessionId?: string;
   nodes: readonly SessionNode[];
   reportsByRunId: Record<string, StructuredReport>;
   /**
@@ -65,17 +103,19 @@ export function ConductorAgentFooter({
     let accumulatedTotal = 0;
     let accumulatedCost = 0;
     let hasCost = false;
-    for (const node of nodes) {
-      const tokenState = sessionStateById[node.sessionId]?.tokenState;
-      if (!tokenState) continue;
+    const add = (sessionId: string) => {
+      const tokenState = sessionStateById[sessionId]?.tokenState;
+      if (!tokenState) return;
       accumulatedTotal += tokenState.accumulatedTotal;
       if (typeof tokenState.accumulatedCost === "number") {
         accumulatedCost += tokenState.accumulatedCost;
         hasCost = true;
       }
-    }
+    };
+    if (hostSessionId) add(hostSessionId);
+    for (const node of nodes) add(node.sessionId);
     return { accumulatedTotal, accumulatedCost, hasCost };
-  }, [nodes, sessionStateById]);
+  }, [hostSessionId, nodes, sessionStateById]);
 
   const stats = useMemo(() => {
     const { working, done } = summarizeBrigadeActivity(nodes);
@@ -131,6 +171,7 @@ export function ConductorAgentFooter({
         name: node.displayName,
         status: node.status,
         title: report?.summary || node.task || undefined,
+        spendLabel: spendLabelFor(sessionStateById[node.sessionId]?.tokenState),
         stepIndex: node.stepIndex,
         accessLabel: step ? t(waveStepAccessKey(step)) : undefined,
         // D5: a step the plan pinned to a model wears it on the chip. The raw
@@ -183,7 +224,15 @@ export function ConductorAgentFooter({
       revisionIndex: index,
       chips: rowFor(group.nodes, index === 0 ? planSteps : undefined),
     }));
-  }, [nodes, onStop, openInTab, planSteps, reportsByRunId, t]);
+  }, [
+    nodes,
+    onStop,
+    openInTab,
+    planSteps,
+    reportsByRunId,
+    sessionStateById,
+    t,
+  ]);
 
   if (groups.every((group) => group.chips.length === 0)) {
     return null;
