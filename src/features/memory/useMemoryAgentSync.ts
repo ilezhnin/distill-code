@@ -12,6 +12,8 @@ import { useEffect } from "react";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 
+import { BoundedSet } from "@/features/conductor/boundedSet";
+
 import { detectMemoryFenceCandidates } from "./lib/memoryAgentScan";
 import {
   memoryWriteDenialText,
@@ -21,6 +23,26 @@ import { useMemoryStore } from "./stores/memoryStore";
 
 let draining = false;
 
+/**
+ * Sessions this process has already read in full.
+ *
+ * Bounded, and losing an entry only costs one extra deep pass — the applied
+ * tombstones are what stop a fence being honoured twice, not this. See
+ * `MEMORY_DEEP_SCAN_LIMIT` for why the first pass has to be deep at all.
+ */
+const deeplyScanned = new BoundedSet(200);
+
+function takeFirstScan(sessionId: string): boolean {
+  if (deeplyScanned.has(sessionId)) return false;
+  deeplyScanned.add(sessionId);
+  return true;
+}
+
+/** Test seam: lets a case run the first-scan path again. */
+export function resetMemoryDeepScanForTests(): void {
+  deeplyScanned.clear();
+}
+
 function drainMemoryFences(): void {
   if (draining) return;
   draining = true;
@@ -29,6 +51,7 @@ function drainMemoryFences(): void {
     const candidates = detectMemoryFenceCandidates({
       messagesBySession: useChatStore.getState().messagesBySession,
       isApplied: (messageId) => memory.appliedMessageIds.includes(messageId),
+      isFirstScan: takeFirstScan,
     });
     if (candidates.length === 0) return;
     const sessions = useChatSessionStore.getState();
