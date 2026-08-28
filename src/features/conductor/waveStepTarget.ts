@@ -102,6 +102,26 @@ export function resetWaveStepTargetIoForTests() {
 }
 
 /**
+ * True when the harness is currently advertising this target's model id.
+ *
+ * A target with no concrete model is not a claim about any model, so it
+ * passes: those inherit anyway. A target naming a model the harness does not
+ * list is the one shape that cannot work, because the very first `setModel`
+ * of the child session refuses it.
+ */
+export function isAdvertisedModel(target: SessionExecutionTarget): boolean {
+  const modelId = typeof target.modelId === "string" ? target.modelId : "";
+  if (!modelId) return true;
+  const advertised = io.modelsForHarness(target.harnessId);
+  // An empty list is "we do not know", not "the model is gone" — the cache
+  // guard above already refuses to answer from a non-authoritative inventory,
+  // and refusing every ranking on an empty answer would disable the feature
+  // exactly when discovery is briefly down.
+  if (advertised.length === 0) return true;
+  return advertised.some((model) => model.id === modelId);
+}
+
+/**
  * Resolves the target for one wave step, or `undefined` to inherit.
  *
  * Fail-open by construction: a missing persona, an empty inventory or a store
@@ -122,6 +142,20 @@ export function resolveWaveStepTarget(
       rateLimits: io.rateLimits(),
     });
     if (!ranked?.resolution.choice) return undefined;
+
+    // L1, observed live on 2026-08-28: a whole wave of four executors was
+    // spawned on `gpt-5.6-sol[low]` while codex advertised only
+    // `gpt-5.6-sol[ultra]`. Every one of them died on its first send with
+    // "Failed to set ACP model option: Invalid params" before doing any work,
+    // and the operator paid for four empty sessions.
+    //
+    // Whatever composes an id the harness does not serve, this is the last
+    // place that can refuse to act on it, and the check is cheap: the target
+    // must name a model the harness is currently advertising. Inheriting the
+    // conductor's model is a preference not applied — which is what the
+    // ranking already does whenever it has nothing to say — while spawning on
+    // an unserved id is a session that cannot run at all.
+    if (!isAdvertisedModel(ranked.target)) return undefined;
 
     const { choice } = ranked.resolution;
     return {

@@ -6,6 +6,7 @@ import type { Persona } from "@/shared/types/agents";
 import {
   checkExplicitWaveStepModel,
   checkWaveStepModelDowngrade,
+  isAdvertisedModel,
   resetWaveStepTargetIoForTests,
   resolveExplicitWaveStepModel,
   resolveWaveStepTarget,
@@ -410,5 +411,86 @@ describe("checkWaveStepModelDowngrade (P12)", () => {
         { id: "claude-opus-5", name: "Opus 5" },
       ),
     ).toBeNull();
+  });
+});
+
+describe("the advertised-model guard (L1)", () => {
+  afterEach(() => {
+    resetWaveStepTargetIoForTests();
+  });
+
+  const RANKED = JSON.stringify({
+    version: 1,
+    entries: [
+      { platform: "claude-acp", modelId: "claude-opus-5", label: "Opus 5" },
+    ],
+  });
+
+  it("inherits instead of spawning on a model the harness does not serve", () => {
+    // Observed live: a wave of four executors was spawned on
+    // `gpt-5.6-sol[low]` while codex advertised only `gpt-5.6-sol[ultra]`.
+    // All four died on their first send with "Invalid params" before doing
+    // any work. Inheriting is a preference not applied; spawning on an
+    // unserved id is a session that cannot run at all.
+    setWaveStepTargetIoForTests({
+      personas: () => [persona({ modelRanking: RANKED })] as never,
+      providers: () => PROVIDERS as never,
+      // The ranking will match "claude-opus-5" out of this list, and then the
+      // guard is asked about it against a list that no longer has it.
+      modelsForHarness: (harnessId) =>
+        (harnessId === "claude-acp"
+          ? [{ id: "claude-opus-5", displayName: "Claude Opus 5" }]
+          : []) as never,
+      rateLimits: () => [] as never,
+    });
+    expect(resolveWaveStepTarget("writer")).toBeDefined();
+
+    setWaveStepTargetIoForTests({
+      personas: () => [persona({ modelRanking: RANKED })] as never,
+      providers: () => PROVIDERS as never,
+      modelsForHarness: () => [] as never,
+      rateLimits: () => [] as never,
+    });
+    // Nothing installed at all: the ranking itself has nothing to match, so
+    // the step inherits for the older reason.
+    expect(resolveWaveStepTarget("writer")).toBeUndefined();
+  });
+
+  it("treats an empty inventory as unknown, not as absent", () => {
+    // Discovery being briefly down must not disable the ranking; the cache
+    // guard upstream already refuses to answer from a stale inventory.
+    expect(
+      isAdvertisedModel({
+        harnessId: "codex-acp",
+        modelProviderId: "codex-acp",
+        modelId: "gpt-5.6-sol[ultra]",
+        modelName: "GPT 5.6 Sol",
+      }),
+    ).toBe(true);
+  });
+
+  it("passes a target that names no model at all", () => {
+    expect(isAdvertisedModel({ harnessId: "goose" })).toBe(true);
+  });
+
+  it("refuses exactly the id that is missing from the list", () => {
+    setWaveStepTargetIoForTests({
+      modelsForHarness: () =>
+        [{ id: "gpt-5.6-sol[ultra]", displayName: "GPT 5.6 Sol" }] as never,
+    });
+    const target = {
+      harnessId: "codex-acp",
+      modelProviderId: "codex-acp",
+      modelName: "GPT 5.6 Sol",
+    } as const;
+    expect(
+      isAdvertisedModel({ ...target, modelId: "gpt-5.6-sol[ultra]" }),
+    ).toBe(true);
+    expect(isAdvertisedModel({ ...target, modelId: "gpt-5.6-sol[low]" })).toBe(
+      false,
+    );
+    expect(isAdvertisedModel({ ...target, modelId: "gpt-5.6-sol" })).toBe(
+      false,
+    );
   });
 });
