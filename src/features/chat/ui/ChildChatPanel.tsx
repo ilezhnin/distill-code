@@ -452,6 +452,7 @@ function ChildChatTranscript({
       if (grandchildren.length === 0) return NO_CONDUCTOR_TRANSCRIPT;
       return {
         enabled: true,
+        hostSessionId: childSessionId,
         children: grandchildren,
         reportsByRunId,
         brigadeNodesByMessageId: groupBrigadeNodesByHostMessage(
@@ -474,6 +475,7 @@ function ChildChatTranscript({
         },
       };
     }, [
+      childSessionId,
       grandchildren,
       hostSessionId,
       messages,

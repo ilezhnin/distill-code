@@ -845,6 +845,7 @@ export function ChatView({
   const conductorTranscriptValue = useMemo(
     () => ({
       enabled: showsNestedAgentFooter,
+      hostSessionId: sessionId,
       children: conductorChildren,
       reportsByRunId: conductorReportsByRunId,
       brigadeNodesByMessageId,
@@ -858,6 +859,7 @@ export function ChatView({
       conductorReportsByRunId,
       handleOpenChild,
       handleStopChild,
+      sessionId,
       showsNestedAgentFooter,
       wavePlanStepsByMessageId,
     ],
