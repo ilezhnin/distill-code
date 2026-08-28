@@ -174,6 +174,32 @@ export function waveConcurrentPlanNoticeText(refusedCount = 1): string {
 }
 
 /**
+ * The notice posted the first time the browser refuses to persist state.
+ *
+ * The stores swallow the error so a quota failure cannot take a running wave
+ * with it, which leaves the worst possible surface: the app keeps rendering
+ * the live wave from memory and looks entirely healthy, while the next
+ * restart comes up with nothing and no explanation. Said once — a full origin
+ * refuses every write, and one warning per refused write would bury the
+ * transcript it is trying to warn in.
+ */
+export function persistFailureNoticeText(facts: {
+  failures: number;
+  reason?: string;
+}): string {
+  const lines = [
+    i18n.t("chat:conductor.persist.title"),
+    i18n.t("chat:conductor.persist.body", { count: facts.failures }),
+  ];
+  if (facts.reason) {
+    lines.push(
+      i18n.t("chat:conductor.persist.reason", { reason: facts.reason }),
+    );
+  }
+  return lines.join("\n\n");
+}
+
+/**
  * The notice posted when a fresh plan follows a request that spent its cap.
  *
  * The cap is counted per *plan message*, not per conversation, so any word

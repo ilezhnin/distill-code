@@ -57,11 +57,17 @@ import {
   waveStepBlockedNoticeText,
   waveStepExplicitModelNoticeText,
   waveStepModelNoticeText,
+  persistFailureNoticeText,
   waveRejectionNoticeText,
   waveReportDegradedNoticeText,
   waveRevisionBudgetResetNoticeText,
   waveSpawnFailureText,
 } from "./waveNotices";
+import {
+  resetPersistHealthForTests,
+  takeUnreportedPersistFailure,
+  totalPersistFailures,
+} from "./persistHealth";
 import { stopWaveChildSessions } from "./waveStop";
 import { MAX_WAVE_REVISIONS, isWaveLive } from "./waveVerdict";
 import { buildWaveStepPrompt } from "./wavePrompts";
@@ -748,10 +754,39 @@ export function runWaveEngineTick(): void {
   for (const dispatch of digests) {
     startDigestDispatch(dispatch, runWaveEngineTick);
   }
+  reportPersistFailureOnce();
+}
+
+/**
+ * Tells the operator, once, that the browser has stopped persisting state.
+ *
+ * Said after the tick's own work, in the conductor chats that have something
+ * to lose — a live wave is exactly the state a restart would now drop, and a
+ * conductor with none has nothing at risk to be warned about. When no wave is
+ * live the report is left unclaimed, so the warning lands on the next wave
+ * rather than being spent on an empty screen.
+ */
+function reportPersistFailureOnce(): void {
+  const conductors = new Set(
+    getWaveEngineState()
+      .waves.filter(isWaveLive)
+      .map((wave) => wave.conductorSessionId),
+  );
+  if (conductors.size === 0) return;
+  const health = takeUnreportedPersistFailure();
+  if (!health) return;
+  const text = persistFailureNoticeText({
+    failures: totalPersistFailures(health),
+    ...(health.reason ? { reason: health.reason } : {}),
+  });
+  for (const sessionId of conductors) {
+    appendConductorNotice(sessionId, text, false, "error");
+  }
 }
 
 /** Clears the process-local guards. Tests only. */
 export function resetWaveRunnerForTests(): void {
+  resetPersistHealthForTests();
   resetWaveLifecycleForTests();
   resetConductorTranscriptsForTests();
   inFlightPlans.clear();
