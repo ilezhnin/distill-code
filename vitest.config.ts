@@ -31,5 +31,13 @@ export default defineConfig({
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
     css: true,
     restoreMocks: true,
+    // The 5s default is not a budget, it is a coin flip on a cold Windows
+    // disk: contractImport and three useConductorGraphSync specs failed on
+    // it under a full run and passed alone, twice, while nothing about them
+    // had changed. A timeout that fires on machine speed rather than on a
+    // hung test is worse than no timeout, because every red run then has to
+    // be re-run before it can be believed — which is exactly the habit that
+    // lets a real regression through. 30s still catches a genuine hang.
+    testTimeout: 30_000,
   },
 });
