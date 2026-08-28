@@ -474,6 +474,12 @@
     "waitingOnChildren_one": "1 ejecutor está trabajando: el resultado llegará como mensaje",
     "waitingOnChildren_other": "{{count}} ejecutores están trabajando: el resultado llegará como mensaje",
     "stopChild": "Detener {{name}}",
+    "persist": {
+      "title": "Esta app ya no puede guardar en disco el estado del conductor.",
+      "body_one": "El navegador rechazó {{count}} escritura, probablemente porque la cuota de almacenamiento está llena. Las olas en curso terminarán y todo lo que ves es real, pero ahora solo vive en memoria: al reiniciar la app se perderán las olas vivas, sus ejecutores y sus informes.",
+      "body_other": "El navegador rechazó {{count}} escrituras, probablemente porque la cuota de almacenamiento está llena. Las olas en curso terminarán y todo lo que ves es real, pero ahora solo vive en memoria: al reiniciar la app se perderán las olas vivas, sus ejecutores y sus informes.",
+      "reason": "El navegador lo llamó: {{reason}}"
+    },
     "decisions": "Decisiones",
     "noDecisions": "No se listaron decisiones para este paso, lo que puede significar que el informe degeneró en prosa y no que no se decidiera nada.",
     "artifacts": "Artefactos",

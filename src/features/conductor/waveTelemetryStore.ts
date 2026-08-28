@@ -30,6 +30,8 @@ import { useSyncExternalStore } from "react";
 
 import { getUsageLedger } from "@/features/stats/lib/usageLedger";
 
+import { notePersistFailure } from "./persistHealth";
+
 import { useConductorGraphStore } from "./conductorGraphStore";
 import type { RunStatus, SessionNode } from "./types";
 import type { WaveState } from "./waveEngine";
@@ -322,8 +324,10 @@ function save(next: WaveTelemetryState): void {
         WAVE_TELEMETRY_STORAGE_KEY,
         JSON.stringify(next),
       );
-    } catch {
+    } catch (error) {
       // Telemetry is never load-bearing; a failed persist loses history only.
+      // It is still the same quota, and the same warning is owed.
+      notePersistFailure("telemetry", error);
     }
   }
   for (const listener of [...listeners]) {
