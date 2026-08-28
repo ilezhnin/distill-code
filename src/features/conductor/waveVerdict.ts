@@ -308,14 +308,24 @@ export function waveInterruptedDecision(): WaveVerdictDecision {
   };
 }
 
-/** The decision for a digest that could not be delivered at all. */
+/**
+ * The decision for a digest that could not be delivered at all.
+ *
+ * The retry is offered, and of all the retries this is the one that most
+ * deserves to be: nothing here is the conductor's mistake or the workers'. A
+ * send failed. The wave is finished, its reports exist, and pressing the
+ * button re-delivers exactly the same digest under a new attempt marker. A
+ * transient delivery failure is the single case where asking again is likely
+ * to simply work — refusing to offer it was the only reason a whole wave's
+ * work could be lost to one bad send.
+ */
 export function digestUndeliverableDecision(
   detail: string,
 ): WaveVerdictDecision {
   return {
     phase: "needsOperator",
     closure: { reason: "digest-undeliverable", detail },
-    offerRetry: false,
+    offerRetry: true,
   };
 }
 
