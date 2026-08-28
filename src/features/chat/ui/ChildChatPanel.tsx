@@ -1,9 +1,10 @@
 import { AnimatePresence } from "motion/react";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   IconArrowUpRight,
   IconLayoutSidebarLeftExpand,
+  IconTerminal2,
   IconX,
 } from "@tabler/icons-react";
 
@@ -23,6 +24,7 @@ import { stopOrchestratorSession } from "@/features/conductor/orchestratorContro
 import { footerAgentNodes } from "@/features/conductor/sessionVisibility";
 import type { RunStatus } from "@/features/conductor/types";
 import { BrigadeStatusGlyph } from "@/features/conductor/ui/BrigadeChip";
+import { RawEventRail } from "@/features/conductor/ui/RawEventRail";
 import { cn } from "@/shared/lib/cn";
 import type { Message } from "@/shared/types/messages";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
@@ -114,6 +116,14 @@ function ChildChatPanelBody({
   const tabs = useOpenChildChatTabs(hostSessionId);
   const activate = useChildChatTabsStore((s) => s.activate);
   const closeTab = useChildChatTabsStore((s) => s.closeTab);
+  // "Polished by default, raw on demand" (P28). The polished view is the
+  // child's transcript; raw is what the app itself recorded about the step —
+  // the spawn, the model it landed on, every status change and the report —
+  // which is the part no rendering of the conversation can show.
+  const [showRaw, setShowRaw] = useState(false);
+  const waveId = useConductorGraphStore(
+    (state) => state.nodesById[activeTab.sessionId]?.waveId,
+  );
 
   return (
     <SidePanelShell
@@ -134,12 +144,21 @@ function ChildChatPanelBody({
             ? () => onNavigateToChild(activeTab.sessionId)
             : undefined
         }
+        rawAvailable={Boolean(waveId)}
+        showRaw={showRaw}
+        onToggleRaw={() => setShowRaw((open) => !open)}
       />
-      <ChildChatTranscript
-        key={activeTab.sessionId}
-        hostSessionId={hostSessionId}
-        childSessionId={activeTab.sessionId}
-      />
+      {showRaw && waveId ? (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <RawEventRail waveId={waveId} sessionId={activeTab.sessionId} />
+        </div>
+      ) : (
+        <ChildChatTranscript
+          key={activeTab.sessionId}
+          hostSessionId={hostSessionId}
+          childSessionId={activeTab.sessionId}
+        />
+      )}
     </SidePanelShell>
   );
 }
@@ -176,6 +195,9 @@ function ChildChatTabBar({
   onActivate,
   onCloseTab,
   onOpenFully,
+  rawAvailable,
+  showRaw,
+  onToggleRaw,
 }: {
   tabs: readonly ChildChatTab[];
   activeChildId: string;
@@ -184,6 +206,10 @@ function ChildChatTabBar({
   onActivate: (childSessionId: string) => void;
   onCloseTab: (childSessionId: string) => void;
   onOpenFully?: () => void;
+  /** False for a child that belongs to no wave, so there is no trace to show. */
+  rawAvailable: boolean;
+  showRaw: boolean;
+  onToggleRaw: () => void;
 }) {
   const { t } = useTranslation("chat");
   const liveById = useChildTabStatuses(tabs);
@@ -271,6 +297,27 @@ function ChildChatTabBar({
           );
         })}
       </div>
+      {rawAvailable ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              data-testid="child-chat-raw-toggle"
+              aria-pressed={showRaw}
+              aria-label={t("conductor.raw.toggle")}
+              title={t("conductor.raw.toggle")}
+              onClick={onToggleRaw}
+              className={cn(
+                "inline-flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-muted hover:text-foreground",
+                showRaw ? "bg-muted text-foreground" : "text-muted-foreground",
+              )}
+            >
+              <IconTerminal2 className="size-4" aria-hidden="true" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{t("conductor.raw.toggle")}</TooltipContent>
+        </Tooltip>
+      ) : null}
       {onOpenFully ? (
         <Tooltip>
           <TooltipTrigger asChild>
