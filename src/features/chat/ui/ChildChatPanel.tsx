@@ -14,6 +14,13 @@ import {
   type ConductorTranscriptContextValue,
 } from "@/features/conductor/ConductorTranscriptContext";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import { groupBrigadeNodesByHostMessage } from "@/features/conductor/brigadeAnchors";
+import {
+  collectWavePlanSteps,
+  distillConductorTranscript,
+} from "@/features/conductor/distillConductorTranscript";
+import { stopOrchestratorSession } from "@/features/conductor/orchestratorControls";
+import { footerAgentNodes } from "@/features/conductor/sessionVisibility";
 import type { RunStatus } from "@/features/conductor/types";
 import { BrigadeStatusGlyph } from "@/features/conductor/ui/BrigadeChip";
 import { cn } from "@/shared/lib/cn";
@@ -34,12 +41,11 @@ const CHILD_CHAT_WIDTH_STORAGE_KEY = "goose:child-chat-panel-width";
 const EMPTY_MESSAGES: Message[] = [];
 
 /**
- * The panel mounts inside the host conversation's `ConductorTranscriptProvider`.
- * Overriding it with an inert value keeps the host's per-message brigade map
- * from being consulted for the child's messages, which belong to a different
- * transcript entirely.
+ * The panel mounts inside the host conversation's `ConductorTranscriptProvider`,
+ * whose per-message brigade map belongs to a different transcript entirely.
+ * This is the floor the child's own value is built on: never the host's.
  */
-const INERT_CONDUCTOR_TRANSCRIPT: ConductorTranscriptContextValue = {
+const NO_CONDUCTOR_TRANSCRIPT: ConductorTranscriptContextValue = {
   enabled: false,
   children: [],
   reportsByRunId: {},
@@ -131,6 +137,7 @@ function ChildChatPanelBody({
       />
       <ChildChatTranscript
         key={activeTab.sessionId}
+        hostSessionId={hostSessionId}
         childSessionId={activeTab.sessionId}
       />
     </SidePanelShell>
@@ -297,7 +304,13 @@ function ChildChatTabBar({
  * evicted), `loadSessionMessages` replays it; that call is deduplicated and
  * no-ops when messages are already present.
  */
-function ChildChatTranscript({ childSessionId }: { childSessionId: string }) {
+function ChildChatTranscript({
+  hostSessionId,
+  childSessionId,
+}: {
+  hostSessionId: string;
+  childSessionId: string;
+}) {
   const { t } = useTranslation("chat");
   const messages = useChatStore(
     (s) => s.messagesBySession[childSessionId] ?? EMPTY_MESSAGES,
@@ -352,11 +365,82 @@ function ChildChatTranscript({ childSessionId }: { childSessionId: string }) {
     [isLoading, t],
   );
 
+  // This child's own agents.
+  //
+  // The panel used to mount an inert context on purpose, and the purpose was
+  // right — the host's brigade map is about the host's messages — but the
+  // conclusion was wrong: it meant that opening a worker showed its words and
+  // hid the agents it had started. The operator was told "4 executors are
+  // working", clicked one, and the three it spawned did not exist anywhere in
+  // the app. So the panel builds the child's own value instead: the child's
+  // graph children, anchored to the child's messages, and a chip click opens
+  // *that* agent as another tab in this same strip. The recursion has no
+  // special case — a subagent's subagents open the same way.
+  const nodesById = useConductorGraphStore((state) => state.nodesById);
+  const reportsByRunId = useConductorGraphStore(
+    (state) => state.reportsByRunId,
+  );
+  const openChildChatTab = useChildChatTabsStore((s) => s.open);
+  const childNode = nodesById[childSessionId];
+  const grandchildren = useMemo(
+    () => footerAgentNodes(nodesById, childNode, [childSessionId]),
+    [childNode, childSessionId, nodesById],
+  );
+  // A child that runs waves of its own writes plan fences into its transcript
+  // exactly as the conductor does; showing them raw here would be the only
+  // place in the app that does.
+  const timelineMessages = useMemo(
+    () =>
+      grandchildren.length > 0 ||
+      childNode?.role === "conductor" ||
+      childNode?.role === "orchestrator"
+        ? distillConductorTranscript(messages, {
+            wavePlanLabel: t("conductor.wave.planSummary"),
+          })
+        : messages,
+    [childNode?.role, grandchildren.length, messages, t],
+  );
+  const conductorTranscriptValue =
+    useMemo<ConductorTranscriptContextValue>(() => {
+      if (grandchildren.length === 0) return NO_CONDUCTOR_TRANSCRIPT;
+      return {
+        enabled: true,
+        children: grandchildren,
+        reportsByRunId,
+        brigadeNodesByMessageId: groupBrigadeNodesByHostMessage(
+          grandchildren,
+          timelineMessages,
+        ),
+        // Read from the raw transcript: distillation replaces the plan fence
+        // with its rendered step list, so the machine-readable plan is only
+        // in `messages`.
+        wavePlanStepsByMessageId: collectWavePlanSteps(messages),
+        onOpenChild: (grandchildSessionId) => {
+          const node = nodesById[grandchildSessionId];
+          openChildChatTab(hostSessionId, {
+            sessionId: grandchildSessionId,
+            name: node?.displayName ?? grandchildSessionId,
+          });
+        },
+        onStopChild: (grandchildSessionId) => {
+          void stopOrchestratorSession(grandchildSessionId);
+        },
+      };
+    }, [
+      grandchildren,
+      hostSessionId,
+      messages,
+      nodesById,
+      openChildChatTab,
+      reportsByRunId,
+      timelineMessages,
+    ]);
+
   return (
-    <ConductorTranscriptProvider value={INERT_CONDUCTOR_TRANSCRIPT}>
+    <ConductorTranscriptProvider value={conductorTranscriptValue}>
       <div className="flex min-h-0 flex-1 flex-col">
         <MessageTimeline
-          messages={messages}
+          messages={timelineMessages}
           streamingMessageId={streamingMessageId}
           showPlaceholder={messages.length === 0}
           placeholder={placeholder}

@@ -310,9 +310,13 @@ export function ChatView({
     (state) => state.reportsByRunId,
   );
   const isConductorChat = conductorNode?.role === "conductor";
+  // Any session that has agents under it shows them, not only the two roles
+  // that were expected to. A worker that spawned its own subagents is the
+  // case that made this matter: its chat knew about them and drew nothing.
   const showsNestedAgentFooter =
     conductorNode?.role === "conductor" ||
-    conductorNode?.role === "orchestrator";
+    conductorNode?.role === "orchestrator" ||
+    conductorChildren.length > 0;
   const isReadOnly = Boolean(readOnlyStatus);
   // While the viewer panel is open it occupies row width much like the
   // sidebar occludes the viewport: include its floor allowance in the

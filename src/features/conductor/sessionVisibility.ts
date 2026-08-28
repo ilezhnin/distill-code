@@ -45,15 +45,20 @@ export function rootSessionIdSet(
  * (brigade footer, sidebar indicator).
  *
  * A conductor root owns the orchestrator/worker nodes that point at it by
- * `rootConductorId` or directly by `parentSessionId`; an orchestrator root owns
- * its direct workers. Any other root role owns nothing. `managedBy` is
- * deliberately irrelevant — UI, wave and CLI children all count.
+ * `rootConductorId` or directly by `parentSessionId` — its whole brigade,
+ * including the workers an orchestrator step started. Every other root owns
+ * the nodes that name it as their direct parent, whatever role either of them
+ * carries: a worker that spawns agents of its own has agents of its own, and
+ * a rule that said otherwise would make them unreachable from the one chat
+ * that knows about them. `managedBy` is deliberately irrelevant — UI, wave and
+ * CLI children all count.
  */
 export function isAgentChildOfRoot(
   node: SessionNode,
   rootRole: SessionRole,
   rootIds: ReadonlySet<string>,
 ): boolean {
+  if (node.sessionId && rootIds.has(node.sessionId)) return false;
   if (rootRole === "conductor") {
     return (
       (node.role === "orchestrator" || node.role === "worker") &&
@@ -63,13 +68,7 @@ export function isAgentChildOfRoot(
       )
     );
   }
-  if (rootRole === "orchestrator") {
-    return (
-      node.role === "worker" &&
-      Boolean(node.parentSessionId && rootIds.has(node.parentSessionId))
-    );
-  }
-  return false;
+  return Boolean(node.parentSessionId && rootIds.has(node.parentSessionId));
 }
 
 export function footerAgentNodes(

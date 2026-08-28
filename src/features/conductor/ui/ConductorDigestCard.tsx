@@ -5,6 +5,7 @@ import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 
 import { type DigestEntryView, projectDigestBody } from "../digestProjection";
+import type { SessionNode } from "../types";
 import { BrigadeStatusGlyph } from "./BrigadeChip";
 
 /**
@@ -26,9 +27,20 @@ import { BrigadeStatusGlyph } from "./BrigadeChip";
  */
 export function ConductorDigestCard({
   body,
+  agents,
+  onOpen,
   className,
 }: {
   body: string;
+  /**
+   * The conductor's own agents, so a report can lead back to the agent that
+   * wrote it. The digest is frozen text and carries no session ids, so the
+   * link is made on the display name — which the spawner keeps unique per
+   * conductor (`pickUniqueDisplayName`) precisely so a name identifies one
+   * agent. A name that matches nothing simply stays unclickable.
+   */
+  agents?: readonly SessionNode[];
+  onOpen?: (sessionId: string) => void;
   className?: string;
 }) {
   const { t } = useTranslation("chat");
@@ -47,6 +59,19 @@ export function ConductorDigestCard({
     return { preamble: projected.preamble, entries };
   }, [body]);
   const hasEntries = view.entries.length > 0;
+  // Ambiguity disqualifies: two live agents sharing a display name means we
+  // cannot say which one wrote the report, and guessing would open the wrong
+  // transcript — worse than not offering the link.
+  const sessionIdByName = useMemo(() => {
+    const byName = new Map<string, string | null>();
+    for (const agent of agents ?? []) {
+      byName.set(
+        agent.displayName,
+        byName.has(agent.displayName) ? null : agent.sessionId,
+      );
+    }
+    return byName;
+  }, [agents]);
 
   return (
     <div
@@ -84,7 +109,13 @@ export function ConductorDigestCard({
           data-testid="conductor-digest-entries"
         >
           {view.entries.map(({ key, entry }) => (
-            <DigestEntryRow key={key} entry={entry} expanded={expanded} />
+            <DigestEntryRow
+              key={key}
+              entry={entry}
+              expanded={expanded}
+              sessionId={sessionIdByName.get(entry.displayName)}
+              onOpen={onOpen}
+            />
           ))}
         </ul>
       ) : null}
@@ -133,10 +164,24 @@ export function ConductorDigestCard({
 function DigestEntryRow({
   entry,
   expanded,
+  sessionId,
+  onOpen,
 }: {
   entry: DigestEntryView;
   expanded: boolean;
+  /** The agent that wrote this report, when it could be identified. */
+  sessionId?: string | null;
+  onOpen?: (sessionId: string) => void;
 }) {
+  const canOpen = Boolean(sessionId && onOpen);
+  const identity = (
+    <>
+      <WorkerAvatar name={entry.displayName} />
+      <span className="truncate font-medium text-foreground">
+        {entry.displayName}
+      </span>
+    </>
+  );
   return (
     <li
       className="rounded-md bg-background p-2"
@@ -144,10 +189,18 @@ function DigestEntryRow({
       data-status={entry.status}
     >
       <div className="flex min-w-0 items-center gap-1.5">
-        <WorkerAvatar name={entry.displayName} />
-        <span className="truncate font-medium text-foreground">
-          {entry.displayName}
-        </span>
+        {canOpen ? (
+          <button
+            type="button"
+            data-testid="conductor-digest-entry-open"
+            className="flex min-w-0 items-center gap-1.5 rounded-sm text-left hover:underline"
+            onClick={() => onOpen?.(sessionId as string)}
+          >
+            {identity}
+          </button>
+        ) : (
+          identity
+        )}
         <BrigadeStatusGlyph status={entry.status} />
         <span className="shrink-0" data-testid="conductor-digest-entry-status">
           {entry.statusText}
