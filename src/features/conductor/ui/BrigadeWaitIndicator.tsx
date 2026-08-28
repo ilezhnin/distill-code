@@ -7,6 +7,7 @@ import { Button } from "@/shared/ui/button";
 import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 
 import { brigadeWaitIndicator } from "../brigadeActivity";
+import { useConductorTranscript } from "../ConductorTranscriptContext";
 import type { SessionNode } from "../types";
 import {
   isPokeInFlight,
@@ -44,10 +45,11 @@ export function BrigadeWaitIndicator({
   className?: string;
 }) {
   const { t } = useTranslation("chat");
-  const { visible, workingCount } = brigadeWaitIndicator({
+  const { visible, workingCount, working } = brigadeWaitIndicator({
     chatState,
     children: nodes,
   });
+  const { onOpenChild } = useConductorTranscript();
   const pokePending = useSyncExternalStore(
     subscribeToPokeState,
     () => (sessionId ? isPokeInFlight(sessionId) : false),
@@ -81,6 +83,27 @@ export function BrigadeWaitIndicator({
       <span className="truncate">
         {t("conductor.waitingOnChildren", { count: workingCount })}
       </span>
+      {/* The executors themselves, not just their number. An agent the
+          operator can see working is an agent whose chat they can open —
+          the same "open beside the conversation" intent the chip row uses,
+          so a subagent tree is reachable from here exactly as it is from a
+          chip. */}
+      {onOpenChild
+        ? working.map((node) => (
+            <Button
+              key={node.sessionId}
+              type="button"
+              variant="ghost"
+              size="xxs"
+              className="max-w-40 shrink-0 truncate"
+              data-testid="brigade-wait-open-child"
+              title={node.task || node.displayName}
+              onClick={() => onOpenChild(node.sessionId, "openInTab")}
+            >
+              {node.displayName}
+            </Button>
+          ))
+        : null}
       {sessionId ? (
         <Button
           type="button"
