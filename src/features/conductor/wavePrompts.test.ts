@@ -499,6 +499,25 @@ describe("buildWaveGitDeltaLine (E3a)", () => {
   });
 });
 
+describe("the protocol prompt on parallel writes (P15)", () => {
+  it("forbids two parallel steps from touching the same file", () => {
+    // Parallel steps share one working folder. Two of them writing one file
+    // is last-write-wins, and both workers report success while one change is
+    // simply gone — the cheap half of the collision, made visible in the
+    // prompt because the expensive half (a worktree per step) is not built.
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toMatch(/last-write-wins/i);
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toMatch(
+      /never give two parallel steps work that touches the same file/i,
+    );
+  });
+
+  it("asks a writing step's subtask to name the files it owns", () => {
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toMatch(
+      /name the files or directories it owns/i,
+    );
+  });
+});
+
 describe("buildWaveArtifactLine (E3b)", () => {
   it("says the app wrote it, so the conductor can tell it from a report", () => {
     const line = buildWaveArtifactLine({ checked: 4, missing: [] });
