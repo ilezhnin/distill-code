@@ -91,6 +91,7 @@ import {
 } from "@/features/agents/lib/agentBuilderSession";
 import { personaExecutionTarget } from "@/features/agents/lib/personaExecutionTarget";
 import { rankedPersonaExecutionTarget } from "@/features/agents/lib/rankedPersonaTarget";
+import { getRoutingPolicy } from "@/features/agents/stores/routingPolicyStore";
 import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
 import { toast } from "sonner";
 import { i18n } from "@/shared/i18n";
@@ -1303,6 +1304,11 @@ export function useChatSessionController({
             getModelsForHarness: getInstalledModelsForAgent,
             rateLimits:
               useProviderRateLimitsStore.getState().snapshot?.providers ?? [],
+            // The operator's own class order and their chat threshold — a
+            // chat is one session with a person in front of it, so it may run
+            // closer to a limit than an unattended wave step (P36/P38).
+            classOverrides: getRoutingPolicy().classOverrides,
+            nearLimitPercent: getRoutingPolicy().chatNearLimitPercent,
           })
         : undefined;
       if (ranked) {

@@ -532,6 +532,7 @@
         "labelTooLong": "El paso {{step}} tiene un \"label\" demasiado largo para ser un nombre.",
         "modelNotAString": "El paso {{step}} tiene un campo \"model\" que no es un nombre de modelo.",
         "budgetInvalid": "El \"budget\" de un paso no es un límite que la aplicación pueda aplicar.",
+        "classUnknown": "Un paso indicó una \"class\" de complejidad que esta aplicación no tiene.",
         "stepModelUnavailable": "El paso {{step}} indica un modelo que esta instalación no puede ejecutar ahora mismo, y se rechazó el plan entero en lugar de ejecutar el paso en otro modelo sin avisar.",
         "verificationStepMissing": "Este plan construye algo que se puede comprobar, pero su último paso no lo comprueba. Una ola así debe terminar con un paso de verificación que inspeccione el resultado."
       },

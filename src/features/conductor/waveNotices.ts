@@ -36,6 +36,7 @@ export const WAVE_REJECTION_REASON_KEYS: Record<WaveRejectionReason, string> = {
   "label-too-long": "labelTooLong",
   "model-not-a-string": "modelNotAString",
   "budget-invalid": "budgetInvalid",
+  "class-unknown": "classUnknown",
   "step-model-unavailable": "stepModelUnavailable",
   "verification-step-missing": "verificationStepMissing",
 };

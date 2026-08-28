@@ -29,6 +29,7 @@ import {
 import {
   modelPreferenceClassForPersona,
   resolveRankedCandidates,
+  type ModelPreferenceClassId,
   type RankableModel,
   type RankedModelResolution,
 } from "./modelRanking";
@@ -53,6 +54,28 @@ export interface RankedPersonaTargetContext {
    */
   getModelsForHarness: (harnessId: string) => readonly RankableModel[];
   rateLimits: readonly ProviderRateLimits[];
+  /**
+   * The operator's own order per class (P36). Applies only where the ranking
+   * comes from a class; an agent's own list is already the operator's.
+   */
+  classOverrides?: Partial<Record<ModelPreferenceClassId, string[]>>;
+  /**
+   * Window fullness at which a platform should be passed over (P37/P38).
+   *
+   * Omitted keeps the shipped default. Waves pass a stricter number than
+   * chats do, because a wave runs unattended and spawns several sessions at
+   * once against the same meter.
+   */
+  nearLimitPercent?: number;
+  /**
+   * Ranking to use instead of the persona's own (P36).
+   *
+   * A wave step may name its complexity class, which is a statement about the
+   * work rather than about the agent: the same `brigade` role can be a
+   * one-line rename or a week of refactoring, and the operator asked to route
+   * those differently without maintaining two agents.
+   */
+  classId?: ModelPreferenceClassId;
 }
 
 export interface RankedPersonaTarget {
@@ -66,17 +89,20 @@ export function rankedPersonaExecutionTarget(
 ): RankedPersonaTarget | undefined {
   // The agent's own list wins; the bundled-slug class is the fallback, so an
   // agent nobody has tuned still runs on the ranking its role deserves.
-  const source =
-    parseAgentRankingSource(persona.modelRanking) ??
-    (() => {
-      const classId = modelPreferenceClassForPersona(persona);
-      return classId ? ({ kind: "class", classId } as const) : undefined;
-    })();
+  // A class named by the caller wins over both: it is a statement about the
+  // work in hand, which the agent's standing preference cannot know about.
+  const source = context.classId
+    ? ({ kind: "class", classId: context.classId } as const)
+    : (parseAgentRankingSource(persona.modelRanking) ??
+      (() => {
+        const classId = modelPreferenceClassForPersona(persona);
+        return classId ? ({ kind: "class", classId } as const) : undefined;
+      })());
   if (!source) return undefined;
 
   const installed = new Set(context.providers.map((provider) => provider.id));
   const resolution = resolveRankedCandidates(
-    candidatesForRankingSource(source),
+    candidatesForRankingSource(source, context.classOverrides),
     {
       modelsForPlatform: (platform) =>
         installed.has(platform) ? context.getModelsForHarness(platform) : [],
@@ -87,7 +113,12 @@ export function rankedPersonaExecutionTarget(
             .map((model) => ({ harnessId: provider.id, model })),
         ),
       platformLimitState: (platform, scopedWindow) =>
-        platformLimitState(context.rateLimits, platform, { scopedWindow }),
+        platformLimitState(context.rateLimits, platform, {
+          scopedWindow,
+          ...(typeof context.nearLimitPercent === "number"
+            ? { nearLimitPercent: context.nearLimitPercent }
+            : {}),
+        }),
     },
   );
   if (!resolution.choice) return undefined;

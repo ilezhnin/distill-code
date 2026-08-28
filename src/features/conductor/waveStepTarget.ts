@@ -22,10 +22,13 @@ import {
 import {
   modelPreferenceClassForPersona,
   rankIndexOfModel,
+  type ModelPreferenceClassId,
   type RankableModel,
 } from "@/features/agents/lib/modelRanking";
 import { rankedPersonaExecutionTarget } from "@/features/agents/lib/rankedPersonaTarget";
+import type { RoutingPolicy } from "@/features/agents/lib/routingPolicy";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
+import { getRoutingPolicy } from "@/features/agents/stores/routingPolicyStore";
 import {
   normalizeSessionExecutionTarget,
   type SessionExecutionTarget,
@@ -57,6 +60,7 @@ export interface WaveStepTarget {
 
 /** Test seam: everything about the world this resolution reads. */
 export interface WaveStepTargetIo {
+  routingPolicy: () => RoutingPolicy;
   personas: () => ReturnType<typeof useAgentStore.getState>["personas"];
   providers: () => ReturnType<typeof useAgentStore.getState>["providers"];
   modelsForHarness: (harnessId: string) => readonly ModelOption[];
@@ -70,6 +74,7 @@ export interface WaveStepTargetIo {
 }
 
 const liveIo: WaveStepTargetIo = {
+  routingPolicy: () => getRoutingPolicy(),
   personas: () => useAgentStore.getState().personas,
   providers: () => useAgentStore.getState().providers,
   modelsForHarness: (harnessId) => {
@@ -131,15 +136,28 @@ export function isAdvertisedModel(target: SessionExecutionTarget): boolean {
  */
 export function resolveWaveStepTarget(
   roleId: string,
+  /**
+   * The complexity class the plan named for this step (P36), when it named
+   * one. It overrides the agent's own preference: the class is a statement
+   * about the work in hand, which a standing preference cannot know about.
+   */
+  classId?: ModelPreferenceClassId,
 ): WaveStepTarget | undefined {
   try {
     const persona = resolvePersonaForRole(roleId, io.personas());
     if (!persona) return undefined;
 
+    const policy = io.routingPolicy();
     const ranked = rankedPersonaExecutionTarget(persona, {
       providers: io.providers(),
       getModelsForHarness: io.modelsForHarness,
       rateLimits: io.rateLimits(),
+      classOverrides: policy.classOverrides,
+      // A wave's own threshold, stricter than a chat's by default: its steps
+      // run unattended and several at once against the same meter, so a step
+      // cut off mid-flight is work lost with nobody watching (P37/P38).
+      nearLimitPercent: policy.waveNearLimitPercent,
+      ...(classId ? { classId } : {}),
     });
     if (!ranked?.resolution.choice) return undefined;
 

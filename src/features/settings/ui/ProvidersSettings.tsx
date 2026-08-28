@@ -62,6 +62,8 @@ import { useProviderCatalogStore } from "@/features/providers/stores/providerCat
 import { AgentProviderCard } from "./AgentProviderCard";
 import { ModelProviderRow } from "@/features/providers/ui/ModelProviderRow";
 import { SettingsPage } from "@/shared/ui/SettingsPage";
+
+import { RoutingPolicySection } from "./RoutingPolicySection";
 import { useRuntimeConfigStore } from "@/shared/runtime-config/runtimeConfigStore";
 import type { AgentSetupTroubleshootingRequest } from "@/features/providers/lib/agentSetupTroubleshooting";
 import type {
@@ -829,6 +831,11 @@ export function ProvidersSettings({
           />
         </>
       ) : null}
+      {/* Which provider gets the work when one is running low, and which
+          models each class of work prefers. Here rather than in a section of
+          its own: this page already answers "which provider", and routing is
+          the same question asked automatically. */}
+      <RoutingPolicySection />
     </SettingsPage>
   );
 }

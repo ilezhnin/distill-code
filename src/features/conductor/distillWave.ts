@@ -17,6 +17,12 @@
  * spawns nothing and surfaces its reason to the operator.
  */
 
+import {
+  MODEL_PREFERENCE_CLASSES,
+  isModelPreferenceClassId,
+  type ModelPreferenceClassId,
+} from "@/features/agents/lib/modelRanking";
+
 import { resolveRoleInLayer, workerLayerRoleIds } from "./roleLayers";
 
 /** Fence info-string that carries a wave plan. */
@@ -71,6 +77,15 @@ export interface WaveStep {
   /** What this step may spend before the app stops it (P49). */
   budget?: WaveStepBudget;
   /**
+   * How hard this step's work is, in the operator's own vocabulary (P36).
+   *
+   * A statement about the work, not about the worker: the same `brigade` role
+   * can be a one-line rename or a week of refactoring, and the operator asked
+   * to route those differently without maintaining two agents. Absent means
+   * the step's role decides, exactly as before.
+   */
+  modelClass?: ModelPreferenceClassId;
+  /**
    * Human-readable name of the step, chosen by the conductor. Shown on the
    * step's chip and in the worker's display name ("Scout · <label>"); absent
    * means the handle is derived from the subtask instead.
@@ -117,7 +132,9 @@ export type WaveInvalidReason =
   /** A step carries `model`, but not as a non-empty string. */
   | "model-not-a-string"
   /** A step's `budget` is not an object of positive numbers. */
-  | "budget-invalid";
+  | "budget-invalid"
+  /** A step's `class` is not one of the complexity classes. */
+  | "class-unknown";
 
 export interface WaveInvalid {
   kind: "invalid";
@@ -294,6 +311,17 @@ export function parseWaveStep(
       );
     }
     step.model = raw.model.trim();
+  }
+
+  if ("class" in raw && raw.class !== undefined) {
+    if (!isModelPreferenceClassId(raw.class)) {
+      return invalid(
+        "class-unknown",
+        `Step ${stepIndex + 1}: "class" must be one of ${Object.keys(MODEL_PREFERENCE_CLASSES).join(", ")}.`,
+        stepIndex,
+      );
+    }
+    step.modelClass = raw.class;
   }
 
   if ("budget" in raw && raw.budget !== undefined) {

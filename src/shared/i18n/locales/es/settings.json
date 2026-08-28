@@ -965,5 +965,27 @@
     "title": "Conversación por voz",
     "useSelected": "Usar la voz seleccionada",
     "voiceLabel": "Voz de Pocket TTS"
+  },
+  "routing": {
+    "title": "Enrutado",
+    "waveThreshold": "Sacar los pasos de una ola de una plataforma al",
+    "waveThresholdDescription": "Los pasos de una ola se ejecutan sin supervisión y varios a la vez contra la misma cuota, así que salen antes que tus propios chats. Por encima de este gasto de una ventana, un paso prefiere el siguiente modelo de su lista, y lo indica en su chip.",
+    "chatThreshold": "Sacar tus chats de una plataforma al",
+    "chatThresholdDescription": "Estás delante de un chat y puedes reaccionar, así que puede acercarse más al límite que un paso de una ola.",
+    "classesDescription": "Qué modelos prefiere cada clase de trabajo, en orden. Un paso de una ola puede indicar su clase, y un agente sin lista propia usa la clase de su rol: cambiar el orden aquí cambia lo que se ejecuta, sin editar ningún agente.",
+    "classOverridden": "Modificado respecto al orden original.",
+    "classes": {
+      "frontend-ui": "Frontend e interfaz",
+      "coding-simple": "Programación sencilla",
+      "coding-complex": "Programación compleja",
+      "one-shot": "Trabajo de una sola pasada",
+      "testing-heavy": "Pruebas y auditoría exhaustivas",
+      "testing-light": "Pruebas ligeras"
+    },
+    "moveUp": "Subir {{label}}",
+    "moveDown": "Bajar {{label}}",
+    "remove": "Quitar {{label}}",
+    "add": "Añadir un modelo",
+    "reset": "Restablecer el enrutado original"
   }
 }
