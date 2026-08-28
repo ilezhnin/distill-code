@@ -155,6 +155,22 @@ export function MemorySettings() {
           ) : null}
         </SettingsSection>
 
+        {/* Who is allowed to write here at all (P35). The rule lives in
+            `memoryWriteAccess` and was enforced everywhere and stated
+            nowhere — so the operator could see facts appear and had no way to
+            know which agents could have put them there. */}
+        <SettingsSection title={t("access.title")}>
+          <ul
+            className="flex list-none flex-col gap-0.5 text-xs text-muted-foreground"
+            data-testid="memory-access-summary"
+          >
+            <li>{t("access.operator")}</li>
+            <li>{t("access.conductor")}</li>
+            <li>{t("access.orchestrator")}</li>
+            <li>{t("access.worker")}</li>
+          </ul>
+        </SettingsSection>
+
         <SettingsSection title={t("add.title")}>
           <form
             className="flex items-center gap-2"

@@ -28,5 +28,12 @@
     "placeholder": "Qué decidimos sobre…",
     "empty": "Nada de lo recordado coincide.",
     "provenance": "{{scope}} · {{date}}"
+  },
+  "access": {
+    "title": "Quién puede escribir aquí",
+    "operator": "Tú, en cualquier chat normal: siempre.",
+    "conductor": "Un conductor: siempre. Su trabajo es justamente retener lo que le enseñó una petición.",
+    "orchestrator": "Un orquestador: solo si su agente tiene el permiso de escritura en memoria.",
+    "worker": "Un trabajador y todo ejecutor que lance una ola: nunca. Su informe pasa por el conductor, y ahí es donde pertenece lo que haya aprendido."
   }
 }

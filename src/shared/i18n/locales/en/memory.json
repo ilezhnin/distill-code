@@ -28,5 +28,12 @@
     "placeholder": "What did we decide about…",
     "empty": "Nothing remembered matches that.",
     "provenance": "{{scope}} · {{date}}"
+  },
+  "access": {
+    "title": "Who can write here",
+    "operator": "You, in any ordinary chat — always.",
+    "conductor": "A conductor — always. Its whole job is to hold what a request taught it.",
+    "orchestrator": "An orchestrator — only when its agent carries the memory-write permission.",
+    "worker": "A worker, and every executor a wave spawns — never. Its report goes through the conductor, and that loop is where anything it learned belongs."
   }
 }
