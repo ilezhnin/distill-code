@@ -147,7 +147,11 @@ function nodesByWave(waveId: string): Map<number, SessionNode> {
 function digestEntriesFor(wave: WaveState): DigestEntry[] {
   const graph = useConductorGraphStore.getState();
   const byStep = nodesByWave(wave.waveId);
-  return collectWaveStepReports(wave, graph.getReport).map((entry) => ({
+  return collectWaveStepReports(
+    wave,
+    graph.getReport,
+    (stepIndex) => byStep.get(stepIndex)?.status,
+  ).map((entry) => ({
     node: {
       displayName:
         byStep.get(entry.stepIndex)?.displayName ??
@@ -296,9 +300,13 @@ function applyVerdictDecision(
       rootRequestId: wave.rootRequestId,
       revisionCount: decision.revision.revisionIndex,
       // Q4: the revision's `"all"` steps see the previous wave of this root.
+      // Q4: the same statuses as the digest, for the same reason — a
+      // revision must not inherit "completed / result unknown" for a step
+      // that was actually killed, or it plans around work nobody did.
       carriedReports: collectWaveStepReports(
         wave,
         useConductorGraphStore.getState().getReport,
+        (stepIndex) => nodesByWave(wave.waveId).get(stepIndex)?.status,
       ).map((entry) => ({ ...entry, fromPreviousWave: true })),
     });
     next = withWave(next, revision);
