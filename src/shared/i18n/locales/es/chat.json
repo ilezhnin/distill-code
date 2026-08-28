@@ -595,6 +595,13 @@
     "poke": {
       "ask": "Pedir estado",
       "pending": "Preguntando…"
+    },
+    "agents": {
+      "toggle": "Mostrar u ocultar los agentes de {{name}}",
+      "hiddenWorking_one": "+1 trabajando",
+      "hiddenWorking_other": "+{{count}} trabajando",
+      "treeTitle": "Agentes trabajando",
+      "openTree": "Mostrar todos los agentes trabajando"
     }
   },
   "harnessBrigade": {

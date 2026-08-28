@@ -97,5 +97,9 @@
     "tooltip": "What are projects?",
     "title": "Projects",
     "body": "Projects keep related chats together, and can share folders and instructions."
+  },
+  "agents": {
+    "title_one": "1 agent working",
+    "title_other": "{{count}} agents working"
   }
 }
