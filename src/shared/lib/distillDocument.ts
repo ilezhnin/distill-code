@@ -38,6 +38,15 @@ export interface DistillDocumentOptions<T> {
   parse: (raw: unknown) => T;
   /** The value to store. */
   serialize: (value: T) => unknown;
+  /**
+   * Called when a queued write could not be made durable.
+   *
+   * The write is swallowed either way — a full disk must not take a running
+   * wave down with it — but a caller that has somewhere to record the failure
+   * (the conductor's `persistHealth`) can no longer only find out by reading
+   * the console.
+   */
+  onWriteError?: (error: unknown) => void;
 }
 
 export interface DistillDocument<T> {
@@ -90,6 +99,11 @@ export function distillDocument<T>(
       JSON.stringify(payload),
     ).catch((error: unknown) => {
       console.error(`Failed to write ${options.path}:`, error);
+      try {
+        options.onWriteError?.(error);
+      } catch {
+        // A reporter that throws must not reach the caller's write path.
+      }
     });
     return inFlight;
   };
