@@ -441,14 +441,22 @@ describe("the E2 evidence gate on accept", () => {
 });
 
 describe("digestUndeliverableDecision", () => {
-  it("parks the wave with the dispatch reason and no retry", () => {
+  it("parks the wave with the dispatch reason", () => {
     const decision = digestUndeliverableDecision('No session "c-1".');
     expect(decision.phase).toBe("needsOperator");
     expect(decision.closure).toEqual({
       reason: "digest-undeliverable",
       detail: 'No session "c-1".',
     });
-    expect(decision.offerRetry).toBe(false);
+  });
+
+  it("offers the retry (P17)", () => {
+    // Of every failure that parks a wave this is the one most worth asking
+    // again about: nothing went wrong with the reasoning, a send failed. The
+    // wave is finished and its reports exist, so the button re-delivers the
+    // same digest under a new attempt marker. Without it, a whole wave's work
+    // was lost to one bad send.
+    expect(digestUndeliverableDecision("socket closed").offerRetry).toBe(true);
   });
 });
 
