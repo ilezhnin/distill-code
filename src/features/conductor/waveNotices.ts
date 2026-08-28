@@ -174,6 +174,25 @@ export function waveConcurrentPlanNoticeText(refusedCount = 1): string {
 }
 
 /**
+ * The notice posted when a fresh plan follows a request that spent its cap.
+ *
+ * The cap is counted per *plan message*, not per conversation, so any word
+ * the operator says after `needsOperator` silently restores the full budget
+ * of two revisions. That mechanic is right — it is human-gated, and the
+ * operator asking again is the gate — but it is invisible, and an invisible
+ * budget reset is how a request quietly costs six waves instead of three.
+ *
+ * So the machinery is untouched and only the fact is said, once, on the plan
+ * that resets it.
+ */
+export function waveRevisionBudgetResetNoticeText(): string {
+  return [
+    i18n.t("chat:conductor.wave.budgetReset.title"),
+    i18n.t("chat:conductor.wave.budgetReset.body", { max: MAX_WAVE_REVISIONS }),
+  ].join("\n\n");
+}
+
+/**
  * The notice posted when a wave step runs on something other than the first
  * model its role ranked.
  *
