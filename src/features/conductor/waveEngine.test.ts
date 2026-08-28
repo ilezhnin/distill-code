@@ -10,6 +10,7 @@ import {
   UNSTARTED_STEP_REPORT_SUMMARY,
   admitWavePlan,
   advanceWave,
+  INTERRUPTED_STEP_REPORT_SUMMARY,
   collectWaveStepReports,
   createWaveState,
   isTerminalRunStatus,
@@ -748,5 +749,94 @@ describe("collectWaveStepReports", () => {
     const [entry] = collectWaveStepReports(wave, () => undefined);
     expect(entry.report.summary).toBe(UNSTARTED_STEP_REPORT_SUMMARY);
     expect(entry.report.status).toBe("failed");
+  });
+
+  describe("the mixed restart (C3 / P20)", () => {
+    /** One step reported; one was still running when the app died. */
+    function mixedWave() {
+      let wave = waveOf([step("scout", "Look"), step("brigade", "Build")]);
+      wave = withWaveStepPhase(wave, 0, {
+        phase: "spawned",
+        sessionId: "child-0",
+        runId: "run-0",
+      });
+      return withWaveStepPhase(wave, 1, {
+        phase: "spawned",
+        sessionId: "child-1",
+        runId: "run-1",
+      });
+    }
+
+    const reportOf = (runId: string | null | undefined) =>
+      runId === "run-0" ? report("run-0", "Found three") : undefined;
+
+    it("does not call a killed step completed", () => {
+      // The whole failure this closes: the reports that did arrive make the
+      // wave look whole, and a "completed / result unknown" stub for the step
+      // that was killed is a success the conductor can accept.
+      const reports = collectWaveStepReports(mixedWave(), reportOf, (index) =>
+        index === 1 ? "stopped" : "completed",
+      );
+      expect(reports[0].report.summary).toBe("Found three");
+      // `stopped` has no word of its own in the report vocabulary, so it
+      // lands on `failed` — which is the honest end of the scale. What
+      // matters is that it is not `completed`.
+      expect(reports[1].report.status).toBe("failed");
+      expect(reports[1].report.summary).toBe(INTERRUPTED_STEP_REPORT_SUMMARY);
+      expect(reports[1].report.needsOperator).toBe(true);
+    });
+
+    it("treats a cancelled child the same as a stopped one", () => {
+      const reports = collectWaveStepReports(
+        mixedWave(),
+        reportOf,
+        () => "cancelled",
+      );
+      expect(reports[1].report.summary).toBe(INTERRUPTED_STEP_REPORT_SUMMARY);
+      expect(reports[1].report.status).toBe("cancelled");
+    });
+
+    it("does not call a failed child completed either", () => {
+      // Caught live: four executors died on their first send with "Failed to
+      // set ACP model option", produced no report, and every one of them read
+      // "completed" in the digest. The conductor was handed four successes
+      // that had done nothing at all.
+      const reports = collectWaveStepReports(mixedWave(), reportOf, (index) =>
+        index === 1 ? "failed" : "completed",
+      );
+      expect(reports[1].report.status).toBe("failed");
+      expect(reports[1].report.summary).toBe(INTERRUPTED_STEP_REPORT_SUMMARY);
+      expect(reports[1].report.needsOperator).toBe(true);
+    });
+
+    it("keeps the honest 5b stub for a step that really did finish", () => {
+      // A child that reached `completed` ran to the end and only its report
+      // went missing. Calling that interrupted would be the opposite lie.
+      const reports = collectWaveStepReports(
+        mixedWave(),
+        reportOf,
+        () => "completed",
+      );
+      expect(reports[1].report.status).toBe("completed");
+      expect(reports[1].report.summary).toBe(MISSING_STEP_REPORT_SUMMARY);
+    });
+
+    it("behaves exactly as before when the caller has no graph to ask", () => {
+      const reports = collectWaveStepReports(mixedWave(), reportOf);
+      expect(reports[1].report.status).toBe("completed");
+      expect(reports[1].report.summary).toBe(MISSING_STEP_REPORT_SUMMARY);
+    });
+
+    it("still reports a never-started step as unstarted, not interrupted", () => {
+      const wave = withWaveStepPhase(waveOf([step("scout", "Look")]), 0, {
+        phase: "failed",
+      });
+      const [entry] = collectWaveStepReports(
+        wave,
+        () => undefined,
+        () => "stopped",
+      );
+      expect(entry.report.summary).toBe(UNSTARTED_STEP_REPORT_SUMMARY);
+    });
   });
 });
