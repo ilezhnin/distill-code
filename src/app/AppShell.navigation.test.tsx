@@ -4294,13 +4294,26 @@ describe("AppShell global navigation", () => {
     await user.click(screen.getByRole("button", { name: "Search" }));
     const search = screen.getByRole("textbox", { name: "Universal search" });
     await user.type(search, "detached planning");
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Open chat Detached planning",
-      }),
-    );
-
+    // Re-queried and dispatched in the same tick, and retried until it takes.
+    //
+    // This failed in the full suite for weeks while passing alone, and the
+    // preconditions were never the problem: with the window support on, the
+    // session recorded as open in a window, the dialog open and the result
+    // row present, the click simply reached no handler. That is what a click
+    // on a node React has already replaced looks like — `user.click` runs
+    // pointerdown, mousedown, pointerup, mouseup and click as separate steps,
+    // and the results list re-renders as the session search settles, so under
+    // enough load a render lands between them and the rest of the sequence
+    // goes to a detached node. A browser hit-tests at click time and cannot
+    // have this problem; only a test can.
+    await screen.findByRole("button", {
+      name: "Open chat Detached planning",
+    });
     await waitFor(() => {
+      const result = screen.queryByRole("button", {
+        name: "Open chat Detached planning",
+      });
+      if (result) fireEvent.click(result);
       expect(mockFocusSessionWindow).toHaveBeenCalledWith("session-1");
     });
     expect(screen.getByTestId("active-view")).toHaveTextContent("home");
