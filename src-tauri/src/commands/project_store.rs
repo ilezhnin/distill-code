@@ -255,7 +255,10 @@ mod tests {
     fn resolves_inside_the_project_store() {
         let root = temp();
         let resolved = resolve_project_document_path(&root, "memory/facts.json").unwrap();
-        assert_eq!(resolved, root.join(".distill").join("memory").join("facts.json"));
+        assert_eq!(
+            resolved,
+            root.join(".distill").join("memory").join("facts.json")
+        );
     }
 
     #[test]
@@ -288,7 +291,10 @@ mod tests {
         // Second call has nothing to add and must not append again.
         assert!(!exclude_agent_folders(&root).unwrap());
         assert_eq!(
-            fs::read_to_string(info.join("exclude")).unwrap().matches(".distill/").count(),
+            fs::read_to_string(info.join("exclude"))
+                .unwrap()
+                .matches(".distill/")
+                .count(),
             1
         );
     }
