@@ -60,11 +60,6 @@ export function waveRejectionNoticeText(notice: WaveRejectionNotice): string {
   return lines.join("\n\n");
 }
 
-/** Label of the manual retry affordance. There is no auto-retry (Q2). */
-export function waveRetryLabel(): string {
-  return i18n.t("chat:conductor.wave.retry");
-}
-
 /**
  * The notice posted when the spawn ACL refuses a programmatic spawn (D5:
  * every refusal is visible, and it names the facts — who asked, on which
@@ -265,11 +260,6 @@ export function waveStepExplicitModelNoticeText(facts: {
     name: facts.name,
     model: facts.model,
   });
-}
-
-/** Label of the manual verdict re-ask (Q5). There is no auto-retry. */
-export function waveVerdictRetryLabel(): string {
-  return i18n.t("chat:conductor.wave.verdict.retry");
 }
 
 /**

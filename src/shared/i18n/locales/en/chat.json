@@ -571,6 +571,7 @@
       "reportDegraded": "Step {{step}} ({{name}}) finished without a report. The wave is continuing on a «result unknown» stub — later steps and the digest will see the stub, not what that worker actually did. Its own chat is the only record.",
       "stop": "Stop the wave",
       "digest": {
+        "protocolText": "Protocol text the conductor was given",
         "cardTitle": "Brigade report delivered to this chat",
         "workerCount_one": "1 executor",
         "workerCount_other": "{{count}} executors",

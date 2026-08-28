@@ -9,7 +9,6 @@ import {
   WAVE_REJECTION_REASON_KEYS,
   persistFailureNoticeText,
   waveRejectionNoticeText,
-  waveRetryLabel,
   waveRevisionBudgetResetNoticeText,
   waveSpawnFailureText,
   waveStepBlockedNoticeText,
@@ -55,7 +54,6 @@ describe("waveNotices", () => {
 
   it("never renders a bare key", async () => {
     await i18n.loadNamespaces("chat");
-    expect(waveRetryLabel()).not.toContain("conductor.wave");
     expect(waveSpawnFailureText(0, "boom")).toContain("boom");
     expect(waveSpawnFailureText(0, "boom")).not.toContain(
       "conductor.wave.spawnFailed",

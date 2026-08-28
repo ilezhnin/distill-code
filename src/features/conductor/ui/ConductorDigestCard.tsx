@@ -89,14 +89,28 @@ export function ConductorDigestCard({
         </ul>
       ) : null}
       {expanded && hasEntries && view.preamble ? (
-        // The machine-facing instruction the conductor was handed. Chrome, but
-        // part of what was actually delivered — so readable, never prominent.
-        <p
-          className="mt-2 whitespace-pre-wrap break-words text-[11px] text-muted-foreground/80"
-          data-testid="conductor-digest-preamble"
+        // The machine-facing instruction the conductor was handed — "reply
+        // with exactly one distill-verdict block", and on a retry the
+        // parser's complaint. It is part of what was actually delivered, so
+        // the card must be able to show it; but expanding a digest is the
+        // operator asking to read the *workers*, and answering that with a
+        // paragraph addressed to a model is how the reports get skimmed past.
+        // Its own disclosure, named for what it is: nothing hidden, nothing
+        // in the way.
+        <details
+          className="mt-2"
+          data-testid="conductor-digest-preamble-disclosure"
         >
-          {view.preamble}
-        </p>
+          <summary className="cursor-pointer text-[11px] text-muted-foreground/70">
+            {t("conductor.wave.digest.protocolText")}
+          </summary>
+          <p
+            className="mt-1 whitespace-pre-wrap break-words text-[11px] text-muted-foreground/80"
+            data-testid="conductor-digest-preamble"
+          >
+            {view.preamble}
+          </p>
+        </details>
       ) : null}
       {expanded && !hasEntries && body ? (
         <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words font-sans">
