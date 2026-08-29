@@ -1879,9 +1879,13 @@ mod tests {
         let paths = StatePaths::for_key(&key, "test-session");
         ensure_private_directory(&paths.root).unwrap();
         let owner = claim_owner(&paths, "owner-a").unwrap();
+        // A contended lock does not look the same everywhere: Unix returns
+        // EWOULDBLOCK, which std maps to WouldBlock, while Windows returns
+        // ERROR_LOCK_VIOLATION, which std leaves uncategorized. Ask fs2 what
+        // contention looks like here rather than pinning the Unix answer.
         assert_eq!(
             claim_owner(&paths, "owner-b").unwrap_err().kind(),
-            io::ErrorKind::WouldBlock
+            fs2::lock_contended_error().kind()
         );
         drop(owner);
         claim_owner(&paths, "owner-b").unwrap();
