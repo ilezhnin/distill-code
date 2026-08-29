@@ -2,7 +2,7 @@
 name: playtester
 display_name: Playtester
 description: Accepts by playing one scenario after integration and files defects with evidence.
-avatar: app-avatar:gloopies-20
+avatar: agent-avatar:playtester
 good_for: playing the claim, not the diff
 vibes: what a player sees
 metadata:

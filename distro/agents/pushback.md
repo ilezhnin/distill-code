@@ -2,7 +2,7 @@
 name: pushback
 display_name: Pushback
 description: The critical eye you need to make things better. Hand it your draft or add it to a chat.
-avatar: app-avatar:gloopies-5
+avatar: agent-avatar:pushback
 good_for: catching what "great idea!" glosses over
 vibes: blunt, precise, no sugarcoating
 metadata:

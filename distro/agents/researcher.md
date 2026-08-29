@@ -2,7 +2,7 @@
 name: researcher
 display_name: Researcher
 description: Open-ended research that ends in a short source-backed brief, not a verified order.
-avatar: app-avatar:gloopies-25
+avatar: agent-avatar:researcher
 good_for: mapping a space before deciding
 vibes: source-backed, brief
 metadata:

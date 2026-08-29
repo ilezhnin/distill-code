@@ -2,7 +2,7 @@
 name: unity-asset-integrator
 display_name: Asset Integrator
 description: Imports approved assets into Unity, preserves GUIDs, and validates editor state.
-avatar: app-avatar:gloopies-35
+avatar: agent-avatar:unity-asset-integrator
 good_for: landing approved art in Unity
 vibes: metas stay, then validate
 metadata:

@@ -2,7 +2,7 @@
 name: designer
 display_name: Designer
 description: Owns the design contract — loop, rules, tunables, and playable scope — never code.
-avatar: app-avatar:gloopies-10
+avatar: agent-avatar:designer
 good_for: writing the design before code
 vibes: observable, scope-boxed
 metadata:

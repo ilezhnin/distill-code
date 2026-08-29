@@ -2,7 +2,7 @@
 name: security
 display_name: Security
 description: Traces untrusted input to its sink and reports concrete trust-boundary failures.
-avatar: app-avatar:gloopies-27
+avatar: agent-avatar:security
 good_for: sandbox and trust boundaries
 vibes: concrete, reproducible
 metadata:

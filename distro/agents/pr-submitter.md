@@ -2,7 +2,7 @@
 name: pr-submitter
 display_name: Submitter
 description: Verifies the task diff and delivers only the git actions the operator authorized.
-avatar: app-avatar:gloopies-37
+avatar: agent-avatar:pr-submitter
 good_for: commits and PRs when asked
 vibes: no inferred remotes
 metadata:

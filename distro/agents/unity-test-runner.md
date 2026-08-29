@@ -2,7 +2,7 @@
 name: unity-test-runner
 display_name: Test Runner
 description: Runs the cheapest Unity validation that proves the change — compile, EditMode, PlayMode, logs.
-avatar: app-avatar:gloopies-33
+avatar: agent-avatar:unity-test-runner
 good_for: proving a Unity change
 vibes: cheapest check that counts
 metadata:

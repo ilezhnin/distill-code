@@ -2,7 +2,7 @@
 name: marketer
 display_name: Marketer
 description: Writes store copy, patch notes, and announcements from shipped evidence only.
-avatar: app-avatar:gloopies-16
+avatar: agent-avatar:marketer
 good_for: patch notes and store copy
 vibes: evidence first, no hype
 metadata:

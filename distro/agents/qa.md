@@ -2,7 +2,7 @@
 name: qa
 display_name: QA
 description: Designs measurable tests and regression lists. Never executes acceptance and never patches product code.
-avatar: app-avatar:gloopies-24
+avatar: agent-avatar:qa
 good_for: tests that can actually fail
 vibes: binary, scoped, no padding
 metadata:

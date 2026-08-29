@@ -2,7 +2,7 @@
 name: unity-explorer
 display_name: Unity Explorer
 description: Maps a Unity project before anyone edits — assemblies, assets, tests, and risks.
-avatar: app-avatar:gloopies-30
+avatar: agent-avatar:unity-explorer
 good_for: mapping Unity before coding
 vibes: read-only, targeted
 metadata:

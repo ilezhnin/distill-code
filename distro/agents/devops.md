@@ -2,7 +2,7 @@
 name: devops
 display_name: DevOps
 description: Owns CI, packaging, versioning, and release artifacts. Ships only after gates.
-avatar: app-avatar:gloopies-11
+avatar: agent-avatar:devops
 good_for: CI, packaging, and tags
 vibes: gates then bump then tag
 metadata:

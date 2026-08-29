@@ -2,7 +2,7 @@
 name: unity-worker
 display_name: Unity Worker
 description: Implements focused Unity C# changes without breaking serialization, metas, or lifecycle.
-avatar: app-avatar:gloopies-31
+avatar: agent-avatar:unity-worker
 good_for: Unity C# in a bounded zone
 vibes: narrow, meta-safe
 metadata:

@@ -832,6 +832,20 @@ fn cached_agent_avatar_for_id(
     app: &AppHandle,
     avatar_id: &str,
 ) -> Result<Option<CachedAvatar>, String> {
+    // Prefer the installed agents directory. Those files live under $HOME,
+    // which the webview asset protocol can actually load. Distro copies on
+    // E:\ or in Program Files are outside that scope, so looking there first
+    // would resolve a path the UI cannot display.
+    if let Some(home_dir) = dirs::home_dir() {
+        let user_avatars = home_dir
+            .join(".agents")
+            .join("agents")
+            .join(".avatars");
+        if let Some(avatar) = cached_agent_avatar_for_id_at(&user_avatars, avatar_id)? {
+            return Ok(Some(avatar));
+        }
+    }
+
     let Some(distro_state) = app.try_state::<crate::services::distro_bundle::DistroBundleState>()
     else {
         return Ok(None);

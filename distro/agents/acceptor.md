@@ -2,7 +2,7 @@
 name: acceptor
 display_name: Acceptor
 description: Personally executes every acceptance criterion and negative control. Trusts no report.
-avatar: app-avatar:gloopies-1
+avatar: agent-avatar:acceptor
 good_for: proving the claim yourself
 vibes: no borrowed greens
 metadata:

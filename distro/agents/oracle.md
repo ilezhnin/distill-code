@@ -2,7 +2,7 @@
 name: oracle
 display_name: Oracle
 description: Checks the current trajectory against accepted decisions and reports drift.
-avatar: app-avatar:gloopies-17
+avatar: agent-avatar:oracle
 good_for: catching silent drift
 vibes: fresh context, read-only
 metadata:

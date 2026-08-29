@@ -2,7 +2,7 @@
 name: context-builder
 display_name: Context Builder
 description: Prepares a scoped handoff when Distill work must cross sessions or platforms.
-avatar: app-avatar:gloopies-36
+avatar: agent-avatar:context-builder
 good_for: packing a handoff, not deciding
 vibes: bounded, no extra opinions
 metadata:

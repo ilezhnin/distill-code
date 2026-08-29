@@ -2,7 +2,7 @@
 name: integrator
 display_name: Integrator
 description: Merges stopped crews into one tree and turns the first stage build green.
-avatar: app-avatar:gloopies-12
+avatar: agent-avatar:integrator
 good_for: joining zones without rewriting them
 vibes: seams only, then green
 metadata:
