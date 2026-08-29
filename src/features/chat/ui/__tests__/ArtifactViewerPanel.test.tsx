@@ -5,6 +5,7 @@ import { ArtifactViewerPanel } from "../ArtifactViewerPanel";
 import { useArtifactViewerStore } from "../../stores/artifactViewerStore";
 
 const mockReadTextFile = vi.fn();
+const mockStatFile = vi.fn();
 
 vi.mock("@/features/chat/hooks/ArtifactPolicyContext", () => ({
   useArtifactActionsContext: () => ({
@@ -15,9 +16,14 @@ vi.mock("@/features/chat/hooks/ArtifactPolicyContext", () => ({
   }),
 }));
 
-vi.mock("@/shared/api/system", () => ({
-  readTextFile: (path: string) => mockReadTextFile(path),
-}));
+vi.mock("@/shared/api/system", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/shared/api/system")>();
+  return {
+    ...actual,
+    readTextFile: (path: string) => mockReadTextFile(path),
+    statFile: (path: string) => mockStatFile(path),
+  };
+});
 
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => `asset://localhost/${path}`,
@@ -39,6 +45,8 @@ describe("ArtifactViewerPanel tabs", () => {
       contents: "hello",
       truncated: false,
     });
+    mockStatFile.mockReset();
+    mockStatFile.mockResolvedValue({ byteSize: "5", modifiedAtNs: "1" });
   });
 
   afterEach(resetStore);

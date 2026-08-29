@@ -283,6 +283,21 @@
       "changes_one": "{{count}} change",
       "changes_other": "{{count}} changes"
     },
+    "pullRequests": {
+      "fallbackTitle": "Pull request #{{number}}",
+      "open": "Open {{repo}} pull request #{{number}} on GitHub",
+      "state": {
+        "OPEN": "Open",
+        "CLOSED": "Closed",
+        "MERGED": "Merged",
+        "DRAFT": "Draft"
+      },
+      "checks": {
+        "SUCCESS": "Checks passed",
+        "PENDING": "Checks running",
+        "FAILURE": "Checks failed"
+      }
+    },
     "tabs": {
       "details": "Context",
       "changes": "Changes",
@@ -293,6 +308,7 @@
       "changes": "Changes",
       "changesOnBranch": "on",
       "includedWorkspaces": "Included workspaces",
+      "pullRequests": "Pull requests",
       "workspace": "Active worktree"
     }
   },
@@ -390,6 +406,7 @@
       "anthropicThinkingHistory": "This chat can't continue with a Claude model because its earlier reasoning history is no longer in a form Claude will accept. Start a new chat, or switch this chat to a non-Claude model to keep going."
     },
     "berdctlCrossSessionLabel": "Sent by Distill from another session",
+    "berdctlCrossSessionNamedLabel": "Sent by Distill from another session · source: {{sender}}",
     "steerLabel": "Steered",
     "viewMore": "View more",
     "viewLess": "View less",
@@ -846,6 +863,9 @@
     "loading": "Loading file…",
     "loadError": "Couldn't load this file.",
     "truncated": "Showing the first part of this file.",
+    "fileDeleted": "File deleted from disk.",
+    "fileUnreadable": "File changed but can't be read.",
+    "reload": "Reload",
     "imageAlt": "Preview of {{filename}}"
   },
   "childChat": {

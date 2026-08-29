@@ -143,6 +143,8 @@ export function AgentBuilderRail({
     });
   const [isPromoting, setIsPromoting] = useState(false);
   const [avatarImportPending, setAvatarImportPending] = useState(false);
+  const saveAttemptKey = `${sessionId}:${targetAgentPath ?? "pending"}`;
+  const [attemptedSaveKey, setAttemptedSaveKey] = useState<string | null>(null);
   const [recoveringMissingDraftKey, setRecoveringMissingDraftKey] = useState<
     string | null
   >(null);
@@ -369,12 +371,22 @@ export function AgentBuilderRail({
     contentFieldValue.trim().length > 0 &&
     contentFieldValue !== PLACEHOLDER_AGENT_BODY;
   const missingRequiredFields = [
-    !nameRequired ? t("builderRail.requiredName") : null,
-    !descriptionRequired ? t("builderRail.requiredDescription") : null,
-    requiresNewDraftFields && !instructionsRequired
-      ? t("builderRail.requiredInstructions")
+    !nameRequired
+      ? { label: t("builderRail.requiredName"), blocksSaveAttempt: true }
       : null,
-  ].filter((field): field is string => field !== null);
+    !descriptionRequired
+      ? {
+          label: t("builderRail.requiredDescription"),
+          blocksSaveAttempt: false,
+        }
+      : null,
+    requiresNewDraftFields && !instructionsRequired
+      ? {
+          label: t("builderRail.requiredInstructions"),
+          blocksSaveAttempt: true,
+        }
+      : null,
+  ].filter((field) => field !== null);
   useEffect(() => {
     if (!data) {
       onSaveDraftHandlerChange?.(null);
@@ -469,6 +481,7 @@ export function AgentBuilderRail({
         : "idle";
 
   const handleSaveChanges = useCallback(async () => {
+    setAttemptedSaveKey(saveAttemptKey);
     if (!canPromoteDraft) {
       return;
     }
@@ -501,11 +514,16 @@ export function AgentBuilderRail({
     canPromoteDraft,
     onDraftPromoted,
     requiresNewDraftFields,
+    saveAttemptKey,
     saveNow,
     sessionId,
   ]);
 
-  const saveButtonUnavailable = !canPromoteDraft;
+  const saveButtonUnavailable =
+    missingRequiredFields.some((field) => field.blocksSaveAttempt) ||
+    saveStatus === "saving" ||
+    isPromoting ||
+    blockingError;
   const footerNode = data ? (
     <div className="mt-4 border-t border-border/70 pt-4">
       <Button
@@ -533,7 +551,9 @@ export function AgentBuilderRail({
       >
         {missingRequiredFields.length > 0
           ? t("builderRail.completeRequiredFields", {
-              fields: missingRequiredFields.join(", "),
+              fields: missingRequiredFields
+                .map((field) => field.label)
+                .join(", "),
             })
           : saveStatus === "unsaved"
             ? t("builderRail.unsavedChanges")
@@ -742,7 +762,9 @@ export function AgentBuilderRail({
           id="builder-rail-description"
           value={descriptionFieldValue}
           required
-          aria-invalid={!descriptionRequired}
+          aria-invalid={
+            attemptedSaveKey === saveAttemptKey && !descriptionRequired
+          }
           placeholder={t("builderRail.descriptionPlaceholder")}
           onChange={(event) => update({ description: event.target.value })}
           className={FIELD_CLASS}
