@@ -691,6 +691,7 @@ fn run_foreground(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_foreground_after_claim(
     state_key: &str,
     label: &str,
@@ -716,17 +717,15 @@ fn run_foreground_after_claim(
         remove_active_stop(&paths)?;
         return Ok(());
     }
-    let result = (|| {
-        run_producer(
-            &paths,
-            label,
-            instructions,
-            session_id,
-            if_running,
-            producer_command,
-            launch_token,
-        )
-    })();
+    let result = run_producer(
+        &paths,
+        label,
+        instructions,
+        session_id,
+        if_running,
+        producer_command,
+        launch_token,
+    );
     if let Err(error) = &result {
         let _ = log_line(&paths, &format!("monitor failed: {error}"));
         write_launch_status(&paths, launch_token, &format!("error: {error}"));
@@ -1058,6 +1057,7 @@ fn deliver_to_session(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn deliver_with_candidates(
     paths: &StatePaths,
     session_id: &str,
