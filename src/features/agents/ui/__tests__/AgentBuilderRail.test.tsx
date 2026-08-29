@@ -984,6 +984,7 @@ describe("AgentBuilderRail", () => {
     // into the identity column (the operator's screenshot showed two thirds
     // of the window empty while the textarea hugged the right edge).
     const identityBand = screen.getByTestId("builder-identity-band");
+    const fieldsBand = screen.getByTestId("builder-fields-band");
     const instructionsRegion = screen.getByTestId(
       "builder-instructions-region",
     );
@@ -991,7 +992,20 @@ describe("AgentBuilderRail", () => {
     expect(instructionsRegion).toContainElement(textarea);
     expect(identityBand).not.toContainElement(textarea);
     expect(identityBand).toContainElement(screen.getByLabelText("Agent Name"));
-    // Siblings in one column: identity band first, instructions below it.
+    // Ranking and permissions sit beside each other, not stacked under a
+    // stretched avatar column that left most of the window empty.
+    expect(fieldsBand).toContainElement(
+      screen.getByTestId("model-ranking-field"),
+    );
+    expect(fieldsBand).toContainElement(
+      screen.getByTestId("agent-permissions-fields"),
+    );
+    expect(identityBand).not.toContainElement(
+      screen.getByTestId("model-ranking-field"),
+    );
+    // Siblings in one column: identity, then the parallel fields, then
+    // instructions.
+    expect(identityBand.parentElement).toBe(fieldsBand.parentElement);
     expect(identityBand.parentElement).toBe(instructionsRegion.parentElement);
   });
 

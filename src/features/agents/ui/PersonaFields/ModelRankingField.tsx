@@ -27,7 +27,6 @@ import { useProviderModels } from "@/features/providers/hooks/useProviderModels"
 import { providerModelInventoryMessage } from "@/features/providers/lib/providerModelInventoryStatus";
 import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
 import { platformLimitState } from "@/features/status/lib/rateLimitWindows";
-import type { AgentPlatformId } from "@/features/status/lib/rateLimitTypes";
 import type { EmbeddedReasoningEffort } from "@/features/chat/lib/modelReasoningVariants";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
@@ -42,9 +41,11 @@ import {
 
 import {
   candidatesForRankingSource,
+  isAgentRankingPlatform,
   MAX_AGENT_RANKING_ENTRIES,
   parseAgentRankingSource,
   rankingFromClass,
+  rankingInventoryFromProviders,
   serializeAgentModelRanking,
   type AgentModelRanking,
   type AgentRankingEntry,
@@ -115,17 +116,13 @@ export function ModelRankingField({
     });
   }, [entries]);
 
-  /** Every installed model, flattened, as the row pickers see it. */
+  /**
+   * Models the picker may write. Goose is first in the catalog and holds the
+   * combined list; its harness id cannot be stored, so each model is mapped
+   * onto a metered platform or omitted.
+   */
   const inventory = useMemo(
-    () =>
-      providers.flatMap((provider) =>
-        getModelsForAgent(provider.id).map((model) => ({
-          platform: provider.id as AgentPlatformId,
-          providerLabel: provider.label,
-          modelId: model.id,
-          label: model.displayName ?? model.name ?? model.id,
-        })),
-      ),
+    () => rankingInventoryFromProviders(providers, getModelsForAgent),
     [getModelsForAgent, providers],
   );
 
@@ -140,6 +137,7 @@ export function ModelRankingField({
       return null;
     }
     for (const provider of providers) {
+      if (!isAgentRankingPlatform(provider.id)) continue;
       const problem = getModelInventoryProblem(provider.id);
       if (problem) {
         return providerModelInventoryMessage(problem);
@@ -152,6 +150,11 @@ export function ModelRankingField({
     () => modelPreferenceClassForPersona({ displayName }),
     [displayName],
   );
+  const roleFill = useMemo(() => {
+    if (!classId) return null;
+    const built = rankingFromClass(classId, inventory);
+    return built.entries.length > 0 ? built : null;
+  }, [classId, inventory]);
 
   const commit = useCallback(
     (next: AgentRankingEntry[]) => {
@@ -181,11 +184,9 @@ export function ModelRankingField({
   }, [commit, entries, inventory]);
 
   const fillFromRole = useCallback(() => {
-    if (!classId) return;
-    const built = rankingFromClass(classId, inventory);
-    if (built.entries.length === 0) return;
-    commit(built.entries);
-  }, [classId, commit, inventory]);
+    if (!roleFill) return;
+    commit(roleFill.entries);
+  }, [commit, roleFill]);
 
   const move = useCallback(
     (index: number, delta: number) => {
@@ -372,7 +373,6 @@ export function ModelRankingField({
           type="button"
           variant="ghost"
           size="xxs"
-          flush
           disabled={isReadOnly || inventory.length === 0}
           onClick={addEntry}
           leftIcon={<IconPlus />}
@@ -417,7 +417,7 @@ export function ModelRankingField({
                 variant="ghost"
                 size="xxs"
                 flush
-                disabled={isReadOnly || inventory.length === 0}
+                disabled={isReadOnly || !roleFill}
                 onClick={fillFromRole}
                 data-testid="model-ranking-fill"
               >
