@@ -121,7 +121,21 @@ pub fn run() {
             .unwrap_or_else(|error| panic!("failed to initialize isolated E2E mode: {error}"));
     }
 
-    let builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // Single-instance enforcement: on Windows, a second launch exits early
+    // and focuses the existing window instead of starting a duplicate app
+    // (log files, db connections, goose serve, etc.). macOS handles this
+    // via RunEvent::Reopen further below.
+    #[cfg(target_os = "windows")]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }));
+
+    let builder = builder
         .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -475,6 +489,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::pr_tracker::open_pr_tracker_url,
+            commands::pr_tracker::resolve_pr_tracker_projects,
+            commands::pr_tracker::list_pr_tracker_pull_requests,
             commands::agents::read_import_persona_file,
             commands::agents::read_import_agent_file,
             commands::agents::read_import_agent_image,
@@ -579,6 +596,7 @@ pub fn run() {
             commands::git::git_delete_branch,
             commands::git::git_create_worktree,
             commands::git::git_remove_worktree,
+            commands::pull_requests::get_pull_request_summaries,
             commands::home_widget_media::import_home_widget_photo,
             commands::installation::get_installation_cohort,
             commands::layout::get_layout,
@@ -645,6 +663,7 @@ pub fn run() {
             commands::project_store::list_project_documents,
             commands::project_store::write_project_run_closeout,
             commands::system::read_text_file,
+            commands::system::stat_file,
             commands::terminal::start_terminal,
             commands::terminal::write_terminal,
             commands::terminal::resize_terminal,

@@ -57,6 +57,7 @@ export const TRANSCRIPT_VIRTUAL_RENDERER_EXPERIMENT_ID =
 
 export const SKILL_DISCOVERY_EXPERIMENT_ID = "skill-discovery";
 
+export const RELATED_PULL_REQUESTS_EXPERIMENT_ID = "related-pull-requests";
 export const EXPERIMENT_DEFINITIONS = [
   {
     id: BUILDERBOT_SURFACE_EXPERIMENT_ID,
@@ -82,5 +83,10 @@ export const EXPERIMENT_DEFINITIONS = [
     titleKey: "experiments.voiceConversation.title",
     descriptionKey: "experiments.voiceConversation.description",
     defaultEnabled: true,
+  },
+  {
+    id: RELATED_PULL_REQUESTS_EXPERIMENT_ID,
+    titleKey: "experiments.relatedPullRequests.title",
+    descriptionKey: "experiments.relatedPullRequests.description",
   },
 ] as const satisfies readonly ExperimentDefinition[];

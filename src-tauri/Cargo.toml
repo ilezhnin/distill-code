@@ -14,7 +14,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # <plugin> --features ...` only works for workspace members. app-test-driver
 # stays excluded (a plain path dependency, as before this workspace existed).
 [workspace]
-members = ["crates/berd-voice", "crates/berdctl", "plugins/berdctl"]
+members = [
+  "crates/berd-monitor",
+  "crates/berd-voice",
+  "crates/berdctl",
+  "plugins/berdctl",
+]
 exclude = ["plugins/app-test-driver"]
 
 [build-dependencies]
@@ -87,6 +92,7 @@ tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-window-state = "2"
 time = { version = "0.3", features = ["formatting"] }
@@ -99,6 +105,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Globalization",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Threading",
     "Win32_UI_Shell",
