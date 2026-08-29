@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +15,11 @@ if (!HTMLElement.prototype.hasPointerCapture) {
 if (!HTMLElement.prototype.scrollIntoView) {
   HTMLElement.prototype.scrollIntoView = () => {};
 }
+
+const RANKABLE_PROVIDERS = [
+  { id: "claude-acp", label: "Claude Code" },
+  { id: "grok-acp", label: "Grok" },
+] as const;
 
 const mocks = vi.hoisted(() => ({
   acpProviders: [
@@ -98,6 +104,7 @@ describe("ModelRankingField", () => {
   beforeEach(() => {
     mocks.rateLimits = [];
     mocks.models = { ...INSTALLED_MODELS };
+    mocks.acpProviders = [...RANKABLE_PROVIDERS];
     mocks.inventoryProblem = null;
   });
 
@@ -153,6 +160,97 @@ describe("ModelRankingField", () => {
     const written = JSON.parse(onChange.mock.calls[0][0] as string);
     expect(written.entries).toHaveLength(1);
     expect(written.entries[0].modelId).toBe("claude-opus-5");
+  });
+
+  it("adds the next rankable model when Goose leads the provider list", async () => {
+    // Goose is first in the curated agent catalog and its combined model
+    // list is huge. Parse drops any row whose platform has no rate-limit
+    // meter, so adding Goose's first unused model used to round-trip back
+    // to the same list — the Add button looked dead.
+    mocks.acpProviders = [
+      { id: "goose", label: "Goose" },
+      { id: "claude-acp", label: "Claude Code" },
+      { id: "grok-acp", label: "Grok" },
+    ];
+    mocks.models = {
+      goose: [
+        { id: "gpt-4.1", displayName: "GPT-4.1" },
+        { id: "claude-opus-5", displayName: "Opus 5 via Goose" },
+      ],
+      ...INSTALLED_MODELS,
+    };
+
+    const initial = ranking([
+      {
+        platform: "claude-acp",
+        modelId: "claude-opus-5",
+        label: "Opus 5",
+        effort: "xhigh",
+      },
+      {
+        platform: "claude-acp",
+        modelId: "claude-fable-5",
+        label: "Fable 5",
+        effort: "xhigh",
+      },
+    ]);
+
+    function Harness() {
+      const [value, setValue] = useState(initial);
+      return (
+        <ModelRankingField
+          value={value}
+          onChange={(next) => setValue(next ?? "")}
+          displayName="Acceptor"
+        />
+      );
+    }
+
+    const user = userEvent.setup();
+    renderWithProviders(<Harness />);
+
+    expect(screen.getAllByTestId("model-ranking-row")).toHaveLength(2);
+    await user.click(screen.getByTestId("model-ranking-add"));
+
+    const rows = screen.getAllByTestId("model-ranking-row");
+    expect(rows).toHaveLength(3);
+    expect(rows[2]).toHaveTextContent("Grok 4.6");
+    expect(screen.queryByText("GPT-4.1")).not.toBeInTheDocument();
+  });
+
+  it("keeps Add enabled when only Goose has the rankable models", async () => {
+    // Live inventory often lives on Goose's combined catalog while the ACP
+    // harness caches are empty. Skipping Goose entirely disabled Add.
+    mocks.acpProviders = [{ id: "goose", label: "Goose" }];
+    mocks.models = {
+      goose: [
+        { id: "gpt-4.1", displayName: "GPT-4.1" },
+        { id: "claude-opus-5", displayName: "Opus 5" },
+        { id: "grok-4-6", displayName: "Grok 4.6" },
+      ],
+    };
+
+    function Harness() {
+      const [value, setValue] = useState("");
+      return (
+        <ModelRankingField
+          value={value}
+          onChange={(next) => setValue(next ?? "")}
+        />
+      );
+    }
+
+    const user = userEvent.setup();
+    renderWithProviders(<Harness />);
+
+    const add = screen.getByTestId("model-ranking-add");
+    expect(add).toBeEnabled();
+    await user.click(add);
+
+    const rows = screen.getAllByTestId("model-ranking-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent("Opus 5");
+    expect(screen.queryByText("GPT-4.1")).not.toBeInTheDocument();
   });
 
   it("keeps the empty explanation as secondary text under the add control", () => {

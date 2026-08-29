@@ -5,7 +5,9 @@ import {
   candidatesForRankingSource,
   legacySingleModelRankingEntry,
   parseAgentRankingSource,
+  platformForRankingModel,
   rankingFromClass,
+  rankingInventoryFromProviders,
   scopedWindowForModel,
   serializeAgentModelRanking,
   type AgentModelRanking,
@@ -118,6 +120,25 @@ describe("parseAgentRankingSource", () => {
     expect(source.ranking.entries[0].modelId).toBe("grok-4-6");
   });
 
+  it("drops a Goose-platform row rather than keeping a dead preference", () => {
+    // Goose has no rate-limit meter. A ranking that stored it would look
+    // chosen and then vanish at resolution — the same silent miss as a
+    // row whose platform id was never in the tracked set.
+    const source = parseAgentRankingSource(
+      JSON.stringify({
+        version: 1,
+        entries: [
+          { platform: "goose", modelId: "gpt-4.1", label: "GPT-4.1" },
+          { platform: "grok-acp", modelId: "grok-4-6", label: "Grok 4.6" },
+        ],
+      }),
+    );
+    expect(source?.kind).toBe("list");
+    if (source?.kind !== "list") return;
+    expect(source.ranking.entries).toHaveLength(1);
+    expect(source.ranking.entries[0].modelId).toBe("grok-4-6");
+  });
+
   it("has no opinion on nothing, junk, or an empty list", () => {
     expect(parseAgentRankingSource(undefined)).toBeUndefined();
     expect(parseAgentRankingSource("  ")).toBeUndefined();
@@ -208,6 +229,54 @@ describe("rankingFromClass", () => {
     const built = rankingFromClass("testing-light", [INSTALLED[3]]);
     // testing-light: Grok → Tera → Luna; only Grok exists on this machine.
     expect(built.entries.map((entry) => entry.label)).toEqual(["Grok 4.6"]);
+  });
+});
+
+describe("rankingInventoryFromProviders", () => {
+  it("maps Goose-catalog names onto metered platforms and skips the rest", () => {
+    const items = rankingInventoryFromProviders(
+      [{ id: "goose", label: "Goose" }],
+      () => [
+        { id: "gpt-4.1", displayName: "GPT-4.1" },
+        { id: "claude-opus-5", displayName: "Opus 5" },
+        { id: "grok-4-6", displayName: "Grok 4.6" },
+      ],
+    );
+
+    expect(items.map((item) => [item.platform, item.modelId])).toEqual([
+      ["claude-acp", "claude-opus-5"],
+      ["grok-acp", "grok-4-6"],
+    ]);
+  });
+
+  it("lets a native ACP list win the label over the same Goose id", () => {
+    const byProvider: Record<
+      string,
+      Array<{ id: string; displayName: string }>
+    > = {
+      "claude-acp": [{ id: "claude-opus-5", displayName: "Claude Opus 5" }],
+      goose: [{ id: "claude-opus-5", displayName: "Opus 5 via Goose" }],
+    };
+    const items = rankingInventoryFromProviders(
+      [
+        { id: "goose", label: "Goose" },
+        { id: "claude-acp", label: "Claude Code" },
+      ],
+      (id) => byProvider[id] ?? [],
+    );
+
+    expect(items).toHaveLength(1);
+    expect(items[0]?.providerLabel).toBe("Claude Code");
+    expect(items[0]?.label).toBe("Claude Opus 5");
+  });
+
+  it("does not treat a Goose harness id as a stored platform", () => {
+    expect(
+      platformForRankingModel("goose", {
+        id: "gpt-4.1",
+        displayName: "GPT-4.1",
+      }),
+    ).toBeNull();
   });
 });
 
