@@ -282,6 +282,21 @@
       "changes_one": "{{count}} cambio",
       "changes_other": "{{count}} cambios"
     },
+    "pullRequests": {
+      "fallbackTitle": "Pull request #{{number}}",
+      "open": "Abrir el pull request #{{number}} de {{repo}} en GitHub",
+      "state": {
+        "OPEN": "Abierto",
+        "CLOSED": "Cerrado",
+        "MERGED": "Fusionado",
+        "DRAFT": "Borrador"
+      },
+      "checks": {
+        "SUCCESS": "Verificaciones aprobadas",
+        "PENDING": "Verificaciones en curso",
+        "FAILURE": "Verificaciones fallidas"
+      }
+    },
     "tabs": {
       "details": "Contexto",
       "changes": "Cambios",
@@ -292,6 +307,7 @@
       "changes": "Cambios",
       "changesOnBranch": "en",
       "includedWorkspaces": "Espacios de trabajo incluidos",
+      "pullRequests": "Pull requests",
       "workspace": "Espacio de trabajo"
     }
   },
@@ -389,6 +405,7 @@
       "anthropicThinkingHistory": "Este chat no puede continuar con un modelo Claude porque su historial de razonamiento previo ya no tiene una forma que Claude acepte. Inicia un chat nuevo o cambia este chat a un modelo que no sea Claude para continuar."
     },
     "berdctlCrossSessionLabel": "Enviado por Distill desde otra sesión",
+    "berdctlCrossSessionNamedLabel": "Enviado por Distill desde otra sesión · fuente: {{sender}}",
     "steerLabel": "Guiado",
     "viewMore": "Ver más",
     "viewLess": "Ver menos",
@@ -842,6 +859,9 @@
     "loading": "Cargando archivo…",
     "loadError": "No se pudo cargar este archivo.",
     "truncated": "Se muestra la primera parte de este archivo.",
+    "fileDeleted": "Archivo eliminado del disco.",
+    "fileUnreadable": "El archivo cambió pero no se puede leer.",
+    "reload": "Volver a cargar",
     "imageAlt": "Vista previa de {{filename}}"
   },
   "childChat": {

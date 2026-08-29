@@ -195,6 +195,10 @@
       "description": "Muestra la superficie de tareas y automatizaciones de Builderbot.",
       "title": "Builderbot"
     },
+    "relatedPullRequests": {
+      "description": "Muestra PR Inbox y el estado actual de las solicitudes de incorporación enlazadas en un chat.",
+      "title": "PR Inbox"
+    },
     "defaultLabel": "predeterminado",
     "description": "Activa funciones de Distill en desarrollo en este dispositivo. Los experimentos pueden cambiar, fallar o desaparecer.",
     "emptyDescription": "Los nuevos experimentos aparecerán aquí cuando estén listos para probarse.",

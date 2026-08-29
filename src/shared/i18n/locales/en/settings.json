@@ -195,6 +195,10 @@
       "description": "Show the Builderbot tasks and automations surface.",
       "title": "Builderbot"
     },
+    "relatedPullRequests": {
+      "description": "Show the PR Inbox and the current status of pull requests linked in a chat.",
+      "title": "PR Inbox"
+    },
     "defaultLabel": "default",
     "description": "Opt into in-progress Distill features on this device. Experiments can change, break, or disappear.",
     "emptyDescription": "New experiments will appear here when they are ready for opt-in testing.",
