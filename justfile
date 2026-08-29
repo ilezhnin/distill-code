@@ -205,6 +205,7 @@ _clippy-unix:
     just _tauri-cargo-unix clippy -- -D warnings
     just _tauri-cargo-unix clippy --features {{ app_features }} -- -D warnings
     just _tauri-cargo-unix clippy -p berdctl -- -D warnings
+    just _tauri-cargo-unix clippy -p berd-monitor -- -D warnings
     just _tauri-cargo-unix clippy -p tauri-plugin-berdctl --features server -- -D warnings
 
 [windows]
@@ -212,6 +213,7 @@ _clippy-windows:
     just _tauri-cargo-windows clippy -- -D warnings
     just _tauri-cargo-windows clippy --features {{ app_features }} -- -D warnings
     just _tauri-cargo-windows clippy -p berdctl -- -D warnings
+    just _tauri-cargo-windows clippy -p berd-monitor -- -D warnings
     just _tauri-cargo-windows clippy -p tauri-plugin-berdctl --features server -- -D warnings
 
 # Build the frontend.
@@ -227,6 +229,7 @@ _tauri-check-unix:
     just _tauri-cargo-unix check
     just _tauri-cargo-unix check --features {{ app_features }}
     just _tauri-cargo-unix check -p berdctl
+    just _tauri-cargo-unix check -p berd-monitor
 
 [windows]
 _tauri-check-windows:
@@ -243,6 +246,7 @@ tauri-test:
 _tauri-test-unix:
     just _tauri-cargo-unix test -p tauri-plugin-berdctl --features server
     just _tauri-cargo-unix test -p berdctl
+    just _tauri-cargo-unix test -p berd-monitor
     just _tauri-cargo-unix test --lib telemetry
     just _tauri-cargo-unix test --lib --features block-telemetry-enforced telemetry
 
@@ -250,6 +254,7 @@ _tauri-test-unix:
 _tauri-test-windows:
     just _tauri-cargo-windows test -p tauri-plugin-berdctl --features server
     just _tauri-cargo-windows test -p berdctl
+    just _tauri-cargo-windows test -p berd-monitor
     just _tauri-cargo-windows test --lib telemetry
     just _tauri-cargo-windows test --lib --features block-telemetry-enforced telemetry
 
