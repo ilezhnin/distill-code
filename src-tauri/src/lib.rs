@@ -659,6 +659,7 @@ pub fn run() {
             commands::project_store::list_project_documents,
             commands::project_store::write_project_run_closeout,
             commands::system::read_text_file,
+            commands::system::stat_file,
             commands::terminal::start_terminal,
             commands::terminal::write_terminal,
             commands::terminal::resize_terminal,

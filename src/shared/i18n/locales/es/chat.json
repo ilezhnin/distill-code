@@ -842,6 +842,9 @@
     "loading": "Cargando archivo…",
     "loadError": "No se pudo cargar este archivo.",
     "truncated": "Se muestra la primera parte de este archivo.",
+    "fileDeleted": "Archivo eliminado del disco.",
+    "fileUnreadable": "El archivo cambió pero no se puede leer.",
+    "reload": "Volver a cargar",
     "imageAlt": "Vista previa de {{filename}}"
   },
   "childChat": {
