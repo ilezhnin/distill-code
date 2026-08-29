@@ -1152,14 +1152,18 @@ fn lock_candidates_for(explicit: &Path) -> Vec<PathBuf> {
                 }
             })
             .collect::<Vec<_>>();
-        siblings.sort_by(|left, right| right.0.cmp(&left.0));
+        siblings.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+        // Drop the explicit lock before taking, not after: it is already the
+        // first candidate, and read_dir hands it back among the siblings. On a
+        // filesystem where the whole directory shares one mtime the sort keeps
+        // read_dir's order, so the explicit entry can fall inside the window
+        // and cost the list one real candidate.
         for (_, sibling) in siblings
             .into_iter()
+            .filter(|(_, sibling)| sibling != explicit)
             .take(MAX_LOCK_CANDIDATES.saturating_sub(1))
         {
-            if sibling != explicit {
-                candidates.push(sibling);
-            }
+            candidates.push(sibling);
         }
     }
     candidates
