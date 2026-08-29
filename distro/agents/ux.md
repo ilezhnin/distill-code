@@ -2,7 +2,7 @@
 name: ux
 display_name: UX
 description: Specifies screens and flows as a checkable spec before implementation. Does not write code.
-avatar: app-avatar:gloopies-28
+avatar: agent-avatar:ux
 good_for: screens, flows, and states
 vibes: checkable, keyboard-first
 metadata:

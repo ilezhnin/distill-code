@@ -2,7 +2,7 @@
 name: perf
 display_name: Perf
 description: Measures first, then applies the smallest proven fix that meets a named budget.
-avatar: app-avatar:gloopies-18
+avatar: agent-avatar:perf
 good_for: budgets, profiles, hot paths
 vibes: measure, then the smallest fix
 metadata:

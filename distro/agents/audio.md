@@ -2,7 +2,7 @@
 name: audio
 display_name: Audio
 description: Specifies deterministic sound — events, banks, mix targets — for the project's audio engine.
-avatar: app-avatar:gloopies-8
+avatar: agent-avatar:audio
 good_for: sound events and mix targets
 vibes: numbered, checkable
 metadata:

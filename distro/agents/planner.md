@@ -2,7 +2,7 @@
 name: planner
 display_name: Planner
 description: Turns a goal into a work-order draft — zones, sized cards, contracts, and acceptance.
-avatar: app-avatar:gloopies-19
+avatar: agent-avatar:planner
 good_for: cutting a goal into bounded work
 vibes: coarse strokes, no fluff
 metadata:

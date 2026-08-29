@@ -2,7 +2,7 @@
 name: asset-scout
 display_name: Asset Scout
 description: Finds existing, public, or generated Unity asset candidates with license and provenance checks.
-avatar: app-avatar:gloopies-34
+avatar: agent-avatar:asset-scout
 good_for: finding art before making it
 vibes: license first, then style
 metadata:

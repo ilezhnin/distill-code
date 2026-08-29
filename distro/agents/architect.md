@@ -2,7 +2,7 @@
 name: architect
 display_name: Architect
 description: Decides how before a batch is written — ownership, seams, and one ADR per decision.
-avatar: app-avatar:gloopies-4
+avatar: agent-avatar:architect
 good_for: deciding how, not building it
 vibes: smallest structure that works
 metadata:

@@ -2,7 +2,7 @@
 name: localizer
 display_name: Localizer
 description: Owns glossary, string tables, and translations. Keeps one owner per source string.
-avatar: app-avatar:gloopies-15
+avatar: agent-avatar:localizer
 good_for: strings, glossary, locales
 vibes: one term per concept
 metadata:

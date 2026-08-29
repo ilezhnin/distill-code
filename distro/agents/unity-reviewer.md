@@ -2,7 +2,7 @@
 name: unity-reviewer
 display_name: Unity Reviewer
 description: Reviews Unity diffs for correctness, serialization, lifecycle, and missing validation.
-avatar: app-avatar:gloopies-32
+avatar: agent-avatar:unity-reviewer
 good_for: reviewing a Unity change
 vibes: findings first, file:line
 metadata:

@@ -2,7 +2,7 @@
 name: writer
 display_name: Writer
 description: Owns shipped prose and verifies every behavioural claim against code or tests.
-avatar: app-avatar:gloopies-29
+avatar: agent-avatar:writer
 good_for: README, copy, and changelogs
 vibes: claimed only if proven
 metadata:

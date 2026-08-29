@@ -49,6 +49,7 @@
           "$APPDATA/artifacts/media/**/*",
           "$APPDATA/project-artifacts/media/**/*",
           "$APPDATA/home-widget-media/**/*",
+          "$RESOURCE/distro/agents/.avatars/**/*",
           "$HOME/**/*",
           "$TEMP/**/*"
         ]

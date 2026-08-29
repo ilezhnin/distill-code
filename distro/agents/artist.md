@@ -2,7 +2,7 @@
 name: artist
 display_name: Artist
 description: Produces sprites, tiles, icons, and exact generation prompts that stay readable at target size.
-avatar: app-avatar:gloopies-7
+avatar: agent-avatar:artist
 good_for: sprites, tiles, and icons
 vibes: readable at 1x
 metadata:

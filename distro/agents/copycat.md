@@ -2,7 +2,7 @@
 name: copycat
 display_name: Copycat
 description: Helps you write without sounding like it helped you write. Learns your style over time.
-avatar: app-avatar:gloopies-21
+avatar: agent-avatar:copycat
 good_for: not sounding like everyone else
 vibes: observant, a little uncanny
 metadata:

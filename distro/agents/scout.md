@@ -2,7 +2,7 @@
 name: scout
 display_name: Scout
 description: Verifies factual claims against primary sources before anyone builds on them.
-avatar: app-avatar:gloopies-26
+avatar: agent-avatar:scout
 good_for: checking facts before a plan
 vibes: primary sources only
 metadata:

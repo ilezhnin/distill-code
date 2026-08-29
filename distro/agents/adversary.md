@@ -2,7 +2,7 @@
 name: adversary
 display_name: Adversary
 description: Hunts residual defects other stages missed — unfailable checks and second owners of facts.
-avatar: app-avatar:gloopies-2
+avatar: agent-avatar:adversary
 good_for: the last read-only hunt
 vibes: blockers first, proof required
 metadata:

@@ -2,7 +2,7 @@
 name: brigade
 display_name: Brigade
 description: Implements a bounded batch — code, tests, and documents — and reports with proof.
-avatar: app-avatar:gloopies-9
+avatar: agent-avatar:brigade
 good_for: shipping a bounded batch of cards
 vibes: blind to other zones
 metadata:
