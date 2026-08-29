@@ -23,14 +23,16 @@
  */
 
 import type { EmbeddedReasoningEffort } from "@/features/chat/lib/modelReasoningVariants";
-import type {
-  AgentPlatformId,
-  UsageSection,
+import {
+  TRACKED_AGENT_PLATFORM_IDS,
+  type AgentPlatformId,
+  type UsageSection,
 } from "@/features/status/lib/rateLimitTypes";
 
 import {
   applyClassOverride,
   isModelPreferenceClassId,
+  KNOWN_MODEL_CANDIDATES,
   MODEL_PREFERENCE_CLASSES,
   type ModelPreferenceClassId,
   type RankedModelCandidate,
@@ -66,10 +68,99 @@ export type AgentRankingSource =
   | { kind: "list"; ranking: AgentModelRanking }
   | { kind: "class"; classId: ModelPreferenceClassId };
 
-const PLATFORM_IDS: readonly string[] = ["claude-acp", "grok-acp", "codex-acp"];
+/**
+ * Platforms a ranking entry may name. Goose (and other unmetered harnesses)
+ * are not in this set: a stored row with no rate-limit meter cannot be
+ * walked, so parse drops it rather than keeping a dead preference.
+ */
+export function isAgentRankingPlatform(
+  value: unknown,
+): value is AgentPlatformId {
+  return (
+    typeof value === "string" &&
+    (TRACKED_AGENT_PLATFORM_IDS as readonly string[]).includes(value)
+  );
+}
 
-function isPlatformId(value: unknown): value is AgentPlatformId {
-  return typeof value === "string" && PLATFORM_IDS.includes(value);
+export interface RankingInventoryModel {
+  id: string;
+  name?: string;
+  displayName?: string;
+  providerId?: string;
+  provider?: string;
+}
+
+export interface RankingInventoryItem {
+  platform: AgentPlatformId;
+  providerLabel: string;
+  modelId: string;
+  label: string;
+}
+
+/**
+ * Platform a ranking row may store for this model. Parse drops anything else,
+ * so the editor must never offer a Goose (or Copilot/Amp) harness id.
+ *
+ * Native ACP lists already carry the meter. Goose's combined catalog does not,
+ * but the same Opus/Fable/Sol/Grok names still belong on those meters — match
+ * the known candidates rather than skipping the whole Goose list, which left
+ * Add disabled whenever only Goose had models.
+ */
+export function platformForRankingModel(
+  sourceProviderId: string,
+  model: RankingInventoryModel,
+): AgentPlatformId | null {
+  if (isAgentRankingPlatform(sourceProviderId)) return sourceProviderId;
+  if (isAgentRankingPlatform(model.providerId)) return model.providerId;
+  if (isAgentRankingPlatform(model.provider)) return model.provider;
+
+  const haystack =
+    `${model.id} ${model.displayName ?? ""} ${model.name ?? ""}`.toLowerCase();
+  for (const candidate of KNOWN_MODEL_CANDIDATES) {
+    if (!candidate.platform) continue;
+    if (
+      candidate.needles.some((set) =>
+        set.every((needle) => haystack.includes(needle)),
+      )
+    ) {
+      return candidate.platform;
+    }
+  }
+  return null;
+}
+
+/**
+ * Flattened picker list. Rankable harnesses first so a live Claude Code list
+ * wins the label over the same id coming through Goose.
+ */
+export function rankingInventoryFromProviders(
+  providers: ReadonlyArray<{ id: string; label: string }>,
+  modelsForProvider: (id: string) => readonly RankingInventoryModel[],
+): RankingInventoryItem[] {
+  const rankable = providers.filter((provider) =>
+    isAgentRankingPlatform(provider.id),
+  );
+  const other = providers.filter(
+    (provider) => !isAgentRankingPlatform(provider.id),
+  );
+  const items: RankingInventoryItem[] = [];
+  const seen = new Set<string>();
+  for (const provider of [...rankable, ...other]) {
+    for (const model of modelsForProvider(provider.id)) {
+      const platform = platformForRankingModel(provider.id, model);
+      if (!platform) continue;
+      const key = `${platform}:${model.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push({
+        platform,
+        providerLabel: provider.label,
+        modelId: model.id,
+        label: model.displayName ?? model.name ?? model.id,
+      });
+    }
+  }
+  return items;
 }
 
 /**
@@ -93,7 +184,7 @@ export function scopedWindowForModel(
 function parseEntry(value: unknown): AgentRankingEntry | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Partial<AgentRankingEntry>;
-  if (!isPlatformId(raw.platform)) return null;
+  if (!isAgentRankingPlatform(raw.platform)) return null;
   const modelId = typeof raw.modelId === "string" ? raw.modelId.trim() : "";
   if (!modelId) return null;
   const label =
@@ -172,7 +263,7 @@ export function legacySingleModelRankingEntry(persona: {
   label?: string | null;
 }): AgentRankingEntry | null {
   const modelId = persona.model?.trim();
-  if (!modelId || !isPlatformId(persona.provider)) return null;
+  if (!modelId || !isAgentRankingPlatform(persona.provider)) return null;
   return {
     platform: persona.provider,
     modelId,

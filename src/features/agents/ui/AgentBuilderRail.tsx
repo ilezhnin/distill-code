@@ -688,8 +688,8 @@ export function AgentBuilderRail({
       <button
         type="button"
         className={cn(
-          "group relative flex min-h-48 w-full items-center justify-center overflow-hidden rounded-md bg-card/40 p-5 transition-colors hover:bg-card/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          fullPage && "min-h-[20rem]",
+          "group relative flex w-full items-center justify-center overflow-hidden rounded-md bg-card/40 transition-colors hover:bg-card/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          fullPage ? "aspect-square p-3" : "min-h-48 p-5",
         )}
         aria-label={
           normalizedAvatar
@@ -703,8 +703,8 @@ export function AgentBuilderRail({
             to the full-width button, where it drifted into the far corner. */}
         <div
           className={cn(
-            "relative flex size-40 shrink-0 items-center justify-center overflow-hidden",
-            fullPage && "size-56",
+            "relative flex shrink-0 items-center justify-center overflow-hidden",
+            fullPage ? "size-full" : "size-40",
           )}
         >
           {avatarImportPending ? (
@@ -741,47 +741,49 @@ export function AgentBuilderRail({
     </section>
   );
 
-  const identityFieldsNode = (
-    <>
-      <label className="block text-sm" htmlFor="builder-rail-name">
-        <span className={FIELD_LABEL_CLASS}>{t("editor.displayName")}</span>
-        <Input
-          id="builder-rail-name"
-          value={nameFieldValue}
-          placeholder={t("editor.displayNamePlaceholder")}
-          onChange={(event) => update({ name: event.target.value })}
-          className={FIELD_CLASS}
-        />
-      </label>
-
-      <label className="block text-sm" htmlFor="builder-rail-description">
-        <span className={FIELD_LABEL_CLASS}>
-          {t("builderRail.descriptionLabel")}
-        </span>
-        <Input
-          id="builder-rail-description"
-          value={descriptionFieldValue}
-          required
-          aria-invalid={
-            attemptedSaveKey === saveAttemptKey && !descriptionRequired
-          }
-          placeholder={t("builderRail.descriptionPlaceholder")}
-          onChange={(event) => update({ description: event.target.value })}
-          className={FIELD_CLASS}
-        />
-      </label>
-
-      <ModelRankingField
-        value={rankingFieldValue}
-        onChange={onChangeModelRanking}
-        displayName={nameFieldValue}
-        legacySeeded={rankingLegacySeeded}
-        classes={{
-          fieldLabel: FIELD_LABEL_CLASS,
-          selectTrigger: FIELD_CLASS,
-        }}
+  const nameField = (
+    <label className="block text-sm" htmlFor="builder-rail-name">
+      <span className={FIELD_LABEL_CLASS}>{t("editor.displayName")}</span>
+      <Input
+        id="builder-rail-name"
+        value={nameFieldValue}
+        placeholder={t("editor.displayNamePlaceholder")}
+        onChange={(event) => update({ name: event.target.value })}
+        className={FIELD_CLASS}
       />
-    </>
+    </label>
+  );
+
+  const descriptionField = (
+    <label className="block text-sm" htmlFor="builder-rail-description">
+      <span className={FIELD_LABEL_CLASS}>
+        {t("builderRail.descriptionLabel")}
+      </span>
+      <Input
+        id="builder-rail-description"
+        value={descriptionFieldValue}
+        required
+        aria-invalid={
+          attemptedSaveKey === saveAttemptKey && !descriptionRequired
+        }
+        placeholder={t("builderRail.descriptionPlaceholder")}
+        onChange={(event) => update({ description: event.target.value })}
+        className={FIELD_CLASS}
+      />
+    </label>
+  );
+
+  const rankingField = (
+    <ModelRankingField
+      value={rankingFieldValue}
+      onChange={onChangeModelRanking}
+      displayName={nameFieldValue}
+      legacySeeded={rankingLegacySeeded}
+      classes={{
+        fieldLabel: FIELD_LABEL_CLASS,
+        selectTrigger: FIELD_CLASS,
+      }}
+    />
   );
 
   const permissionsNode = (
@@ -860,22 +862,29 @@ export function AgentBuilderRail({
   );
 
   if (fullPage) {
-    // Full-page layout: a top band pairs the avatar with the compact
-    // identity fields (name, description, ranking — capped so single-line
-    // inputs stay readable), and the instructions editor — the main body of
-    // an agent — takes the whole remaining width and height below.
+    // Full-page layout: a compact identity row (avatar + name/description),
+    // then ranking and permissions side by side so the avatar column does
+    // not stretch to the height of every stacked field, then instructions
+    // as the remaining full-width surface.
     return shell(
       headerNode,
       <div className="flex min-h-0 flex-1 flex-col gap-6 px-4 py-6 xl:px-8">
         <div
-          className="grid grid-cols-[minmax(16rem,24rem)_minmax(0,1fr)] gap-10"
+          className="grid grid-cols-[10rem_minmax(0,1fr)] items-start gap-6"
           data-testid="builder-identity-band"
         >
-          <div className="flex min-h-0 flex-col">{avatarNode}</div>
-          <div className="flex max-w-2xl flex-col gap-4">
-            {identityFieldsNode}
-            {permissionsNode}
+          <div className="w-40 shrink-0">{avatarNode}</div>
+          <div className="flex min-w-0 max-w-2xl flex-col gap-4">
+            {nameField}
+            {descriptionField}
           </div>
+        </div>
+        <div
+          className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2"
+          data-testid="builder-fields-band"
+        >
+          <div className="min-w-0">{rankingField}</div>
+          <div className="min-w-0">{permissionsNode}</div>
         </div>
         <div
           className="flex min-h-0 flex-1 flex-col gap-4"
@@ -892,7 +901,9 @@ export function AgentBuilderRail({
     headerNode,
     <div className="flex flex-col gap-4">
       {avatarNode}
-      {identityFieldsNode}
+      {nameField}
+      {descriptionField}
+      {rankingField}
       {permissionsNode}
       {instructionsNode}
     </div>,
