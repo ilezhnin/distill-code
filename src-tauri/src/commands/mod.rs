@@ -43,6 +43,7 @@ pub mod pocket_voice;
 pub mod project_icons;
 pub mod project_store;
 pub mod provider_rate_limits;
+pub mod pull_requests;
 pub mod renderer;
 pub mod runtime_config;
 pub mod security_threshold;
