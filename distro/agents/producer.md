@@ -8,6 +8,37 @@ vibes: honest, paced, unflustered
 when_to_call: "the request needs several agents coordinated toward one deliverable"
 required_input: "the operator's goal, constraints, and what done means"
 expected_output: "a wave plan or verdict; blockers named with owners"
+spawns_agents:
+  - producer
+  - planner
+  - integrator
+  - architect
+  - brigade
+  - unity-explorer
+  - unity-worker
+  - unity-reviewer
+  - unity-test-runner
+  - asset-scout
+  - unity-asset-integrator
+  - context-builder
+  - pr-submitter
+  - scout
+  - researcher
+  - oracle
+  - designer
+  - ux
+  - artist
+  - audio
+  - writer
+  - localizer
+  - marketer
+  - devops
+  - perf
+  - security
+  - qa
+  - acceptor
+  - adversary
+  - playtester
 memory_write: true
 metadata:
   berdBundled: true

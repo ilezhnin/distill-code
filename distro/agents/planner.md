@@ -8,6 +8,12 @@ vibes: coarse strokes, no fluff
 when_to_call: "a goal needs decomposing into a reviewable work order before anyone builds"
 required_input: "the goal, known constraints, and the repo or docs to plan against"
 expected_output: "a step-by-step work order with zones, dependencies, and open questions"
+spawns_agents:
+  - scout
+  - researcher
+  - oracle
+  - context-builder
+  - unity-explorer
 memory_write: true
 metadata:
   berdBundled: true

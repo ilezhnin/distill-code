@@ -8,6 +8,11 @@ vibes: smallest structure that works
 when_to_call: "a batch needs its module boundaries, APIs, or ownership decided before implementation"
 required_input: "the requirement and the code areas it touches"
 expected_output: "an ADR-style decision with boundaries, contracts, and rejected alternatives"
+spawns_agents:
+  - unity-explorer
+  - scout
+  - researcher
+  - oracle
 metadata:
   berdBundled: true
   berdBundledSource: architect
