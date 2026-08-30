@@ -195,6 +195,20 @@ describe("modelPreferenceClassForPersona", () => {
     ).toBe("coding-complex");
   });
 
+  it("resolves bundled agents whose display name differs from the file stem", () => {
+    // The lookup slugs a display name, so "Submitter" (file: pr-submitter.md)
+    // used to fall through the map and get no ranking at all.
+    expect(modelPreferenceClassForPersona({ displayName: "Submitter" })).toBe(
+      "coding-simple",
+    );
+    expect(
+      modelPreferenceClassForPersona({ displayName: "Asset Integrator" }),
+    ).toBe("coding-simple");
+    expect(modelPreferenceClassForPersona({ displayName: "Test Runner" })).toBe(
+      "testing-light",
+    );
+  });
+
   it("gives an unknown agent no ranking at all", () => {
     expect(
       modelPreferenceClassForPersona({ displayName: "My Custom Agent" }),
