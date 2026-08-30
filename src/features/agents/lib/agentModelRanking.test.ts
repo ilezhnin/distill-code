@@ -230,6 +230,29 @@ describe("rankingFromClass", () => {
     // testing-light: Grok → Tera → Luna; only Grok exists on this machine.
     expect(built.entries.map((entry) => entry.label)).toEqual(["Grok 4.6"]);
   });
+
+  it("seeds the effort-tier variant the class asks for, not the first match", () => {
+    // Codex serves each tier as its own id, ascending. Seeding used to pin
+    // an xhigh candidate to [low] — the acceptor persona shipped that way.
+    const built = rankingFromClass("coding-complex", [
+      INSTALLED[1],
+      {
+        platform: "codex-acp" as const,
+        modelId: "gpt-5.6-sol[low]",
+        label: "GPT 5.6 Sol[low]",
+      },
+      {
+        platform: "codex-acp" as const,
+        modelId: "gpt-5.6-sol[xhigh]",
+        label: "GPT 5.6 Sol[xhigh]",
+      },
+    ]);
+    // coding-complex: Fable → Sol.
+    expect(built.entries.map((entry) => entry.modelId)).toEqual([
+      "claude-fable-5",
+      "gpt-5.6-sol[xhigh]",
+    ]);
+  });
 });
 
 describe("rankingInventoryFromProviders", () => {
