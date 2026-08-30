@@ -9,7 +9,7 @@ import type {
   UpdatePersonaRequest,
   Avatar,
 } from "@/shared/types/agents";
-import { parseSpawnLayers } from "@/shared/lib/agentSpawns";
+import { parseSpawnAgents, parseSpawnLayers } from "@/shared/lib/agentSpawns";
 import {
   parseAgentRankingSource,
   serializeAgentModelRanking,
@@ -45,7 +45,11 @@ const PORTABLE_SPROUT_FRONTMATTER_KEYS = new Set([
   "good_for",
   "vibes",
   "spawns",
+  "spawns_agents",
   "memory_write",
+  "when_to_call",
+  "required_input",
+  "expected_output",
 ]);
 
 // The API layer requires a non-empty description on every source, so a
@@ -438,6 +442,53 @@ export function agentSpawnsProperty(
 }
 
 /**
+ * The validated `spawns_agents` named allowlist of an agent source, read
+ * with the same precedence and the same all-or-nothing policy as
+ * {@link agentSpawnsProperty}.
+ */
+export function agentSpawnAgentsProperty(
+  properties: AgentSourceProperties | undefined,
+): ReturnType<typeof parseSpawnAgents> {
+  if (properties && "spawns_agents" in properties) {
+    return parseSpawnAgents(properties.spawns_agents);
+  }
+  const frontmatter = sproutFrontmatterFromProperties(properties);
+  if ("spawns_agents" in frontmatter) {
+    return parseSpawnAgents(frontmatter.spawns_agents);
+  }
+  return undefined;
+}
+
+const AGENT_CONTRACT_KEYS = [
+  "when_to_call",
+  "required_input",
+  "expected_output",
+] as const;
+export type AgentContractKey = (typeof AGENT_CONTRACT_KEYS)[number];
+const AGENT_CONTRACT_MAX_LENGTH = 2_000;
+
+/**
+ * A contract-card field (`when_to_call` / `required_input` /
+ * `expected_output`): free prose shown to allowed callers as this agent's
+ * calling contract. Trimmed, length-capped, and dropped when empty or not a
+ * string — an unreadable contract is worse than none, because callers plan
+ * around it.
+ */
+export function agentContractProperty(
+  properties: AgentSourceProperties | undefined,
+  key: AgentContractKey,
+): string | undefined {
+  const raw =
+    properties && key in properties
+      ? properties[key]
+      : sproutFrontmatterFromProperties(properties)[key];
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, AGENT_CONTRACT_MAX_LENGTH);
+}
+
+/**
  * `memory_write` is a capability grant, not display copy, so parsing is
  * strict: only a literal YAML boolean counts. A "true" string, a number or
  * any other shape is dropped rather than coerced — a grant the app has to
@@ -512,9 +563,21 @@ function serializePersonaMarkdown(source: AgentSourceEntry): ExportResult {
     frontmatter.spawns = spawns;
   }
 
+  // An empty array is exported for the same reason `spawns` exports one: a
+  // real "start no agents by name" override, not an absent field.
+  const spawnsAgents = agentSpawnAgentsProperty(properties);
+  if (spawnsAgents !== undefined) {
+    frontmatter.spawns_agents = spawnsAgents;
+  }
+
   const memoryWrite = memoryWriteProperty(properties);
   if (memoryWrite !== undefined) {
     frontmatter.memory_write = memoryWrite;
+  }
+
+  for (const key of AGENT_CONTRACT_KEYS) {
+    const value = agentContractProperty(properties, key);
+    if (value) frontmatter[key] = value;
   }
 
   Object.assign(
@@ -791,8 +854,19 @@ function personaMarkdownProperties(
         ? rankingSource.classId
         : serializeAgentModelRanking(rankingSource.ranking);
   }
+  const spawnsAgents =
+    "spawns_agents" in parsed
+      ? parseSpawnAgents(parsed.spawns_agents)
+      : undefined;
+  if (spawnsAgents !== undefined) properties.spawns_agents = spawnsAgents;
   const memoryWrite = memoryWriteFrontmatterValue(parsed.memory_write);
   if (memoryWrite !== undefined) properties.memory_write = memoryWrite;
+  for (const key of AGENT_CONTRACT_KEYS) {
+    const value = parsed[key];
+    if (typeof value === "string" && value.trim()) {
+      properties[key] = value;
+    }
+  }
   applyOptionalProperty(
     properties,
     "avatar",
@@ -898,7 +972,17 @@ function agentSourceFromMarkdownFile(
 export function agentSourceToPersona(source: AgentSourceEntry): Persona {
   const writable = source.writable === true;
   const spawns = agentSpawnsProperty(source.properties);
+  const spawnsAgents = agentSpawnAgentsProperty(source.properties);
   const memoryWrite = memoryWriteProperty(source.properties);
+  const whenToCall = agentContractProperty(source.properties, "when_to_call");
+  const requiredInput = agentContractProperty(
+    source.properties,
+    "required_input",
+  );
+  const expectedOutput = agentContractProperty(
+    source.properties,
+    "expected_output",
+  );
   return {
     id: source.path,
     displayName: source.name,
@@ -911,6 +995,10 @@ export function agentSourceToPersona(source: AgentSourceEntry): Persona {
     // `?? undefined` would erase the meaningful empty-array override, so the
     // field is spread in only when it validated to something.
     ...(spawns !== undefined ? { spawns } : {}),
+    ...(spawnsAgents !== undefined ? { spawnsAgents } : {}),
+    ...(whenToCall ? { whenToCall } : {}),
+    ...(requiredInput ? { requiredInput } : {}),
+    ...(expectedOutput ? { expectedOutput } : {}),
     isBuiltin: !writable,
     writable,
     sourceDescription: source.description,

@@ -27,6 +27,8 @@
  */
 
 import { useAgentStore } from "@/features/agents/stores/agentStore";
+import { personaAgentRefs } from "@/shared/lib/agentSpawns";
+import type { Persona } from "@/shared/types/agents";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { checkSpawnAllowed } from "@/features/conductor/spawnAcl";
@@ -60,6 +62,23 @@ export function forkTargetLayer(sourceSessionId: string): RoleLayer {
 }
 
 /**
+ * The persona a fork of `sourceSessionId` will run: the source node's
+ * persona, which the fork inherits with the history. A source without a
+ * node or persona forks persona-less.
+ */
+export function forkTargetPersona(
+  sourceSessionId: string,
+): Persona | undefined {
+  const personaId = useConductorGraphStore
+    .getState()
+    .getNode(sourceSessionId)?.personaId;
+  if (!personaId) return undefined;
+  return useAgentStore
+    .getState()
+    .personas.find((candidate) => candidate.id === personaId);
+}
+
+/**
  * Enforces the spawn ACL for one berdctl-created session. Resolves the
  * actor, and when it is a registered agent session, refuses layers outside
  * its effective ACL — posting the refusal into the actor's transcript before
@@ -68,6 +87,8 @@ export function forkTargetLayer(sourceSessionId: string): RoleLayer {
 export function enforceBerdctlSpawnAcl(args: {
   actor: string | null | undefined;
   targetLayer: RoleLayer;
+  /** Persona the new session will run, when the call named one. */
+  targetPersona?: Persona | null;
 }): void {
   const node = actorNode(args.actor);
   if (!node) return;
@@ -80,6 +101,10 @@ export function enforceBerdctlSpawnAcl(args: {
     initiatorRole: node.role,
     initiatorPersona: persona,
     targetLayer: args.targetLayer,
+    targetAgentRefs: args.targetPersona
+      ? personaAgentRefs(args.targetPersona)
+      : [],
+    targetAgentName: args.targetPersona?.displayName,
   });
   if (check.allowed) return;
   const noticeText = spawnAclDeniedNoticeText({
@@ -87,6 +112,9 @@ export function enforceBerdctlSpawnAcl(args: {
     initiatorLayer: check.initiatorRole,
     targetLayer: check.targetLayer,
     allowedLayers: check.allowedLayers,
+    refusal: check.refusal,
+    allowedAgents: check.allowedAgents,
+    targetAgent: check.targetAgent,
   });
   useChatStore
     .getState()
@@ -96,9 +124,13 @@ export function enforceBerdctlSpawnAcl(args: {
     );
   throw new CommandError(
     "spawn_not_allowed",
-    `Sessions on the "${check.initiatorRole}" layer may start: ` +
-      `${check.allowedLayers.length > 0 ? check.allowedLayers.join(", ") : "nothing"}. ` +
-      `Starting a "${check.targetLayer}"-layer session was refused by the spawn ACL.`,
+    check.refusal === "agent"
+      ? `This session's named allowlist permits starting: ` +
+          `${check.allowedAgents && check.allowedAgents.length > 0 ? check.allowedAgents.join(", ") : "no agents"}. ` +
+          `Starting "${check.targetAgent ?? "an unnamed agent"}" was refused by the spawn ACL.`
+      : `Sessions on the "${check.initiatorRole}" layer may start: ` +
+          `${check.allowedLayers.length > 0 ? check.allowedLayers.join(", ") : "nothing"}. ` +
+          `Starting a "${check.targetLayer}"-layer session was refused by the spawn ACL.`,
   );
 }
 

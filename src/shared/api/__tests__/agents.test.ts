@@ -947,6 +947,74 @@ describe("agents API", () => {
     expect(result.contents).toContain("vibes: curious, thorough\n");
   });
 
+  it("surfaces the named allowlist and contract card on the listed persona", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: {
+            ...agentSource.properties,
+            spawns_agents: ["Scout", "asset_integrator", "scout"],
+            when_to_call: "a factual claim needs verifying",
+            required_input: "the claim and where it came from",
+            expected_output: "a source-backed confirm/refute",
+          },
+        },
+      ],
+    });
+
+    const { listPersonas } = await import("../agents");
+    const result = await listPersonas();
+
+    // Normalized, de-duplicated, author order kept.
+    expect(result[0].spawnsAgents).toEqual(["scout", "asset-integrator"]);
+    expect(result[0].whenToCall).toBe("a factual claim needs verifying");
+    expect(result[0].requiredInput).toBe("the claim and where it came from");
+    expect(result[0].expectedOutput).toBe("a source-backed confirm/refute");
+  });
+
+  it("drops a garbled spawns_agents whole rather than half-honouring it", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: {
+            ...agentSource.properties,
+            spawns_agents: ["scout", 7],
+          },
+        },
+      ],
+    });
+
+    const { listPersonas } = await import("../agents");
+    const result = await listPersonas();
+
+    expect(result[0].spawnsAgents).toBeUndefined();
+  });
+
+  it("exports spawns_agents and the contract card for round trips", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: {
+            ...agentSource.properties,
+            spawns_agents: ["scout"],
+            when_to_call: "a factual claim needs verifying",
+          },
+        },
+      ],
+    });
+
+    const { exportPersona } = await import("../agents");
+    const result = await exportPersona(agentSource.path);
+
+    expect(result.contents).toContain("spawns_agents:\n  - scout\n");
+    expect(result.contents).toContain(
+      "when_to_call: a factual claim needs verifying\n",
+    );
+  });
+
   it("surfaces a boolean memory_write grant on the listed persona", async () => {
     mockGooseSourcesList.mockResolvedValue({
       sources: [

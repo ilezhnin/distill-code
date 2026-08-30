@@ -622,7 +622,11 @@
       "deniedTitle": "A session asked to start an agent it is not allowed to start, so nothing was started.",
       "deniedBody": "“{{initiator}}” runs on the {{initiatorLayer}} layer and asked to start a {{targetLayer}}-layer agent.",
       "allowedLayers": "Its spawn permissions allow starting: {{layers}}.",
-      "allowedNone": "Its spawn permissions allow starting nothing."
+      "allowedNone": "Its spawn permissions allow starting nothing.",
+      "deniedAgentBody": "“{{initiator}}” asked to start “{{targetAgent}}”, which its named allowlist does not include.",
+      "allowedAgents": "Its named allowlist permits starting: {{agents}}.",
+      "allowedAgentsNone": "Its named allowlist permits starting no agents.",
+      "unnamedAgent": "an unnamed agent"
     },
     "selfExecutingBadge": "The conductor changed something itself — it may read to answer, but work belongs to a wave.",
     "poke": {
