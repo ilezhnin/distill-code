@@ -29,8 +29,15 @@
  * same reason.
  */
 
-import { parseSpawnLayers } from "@/shared/lib/agentSpawns";
+import {
+  normalizeAgentRef,
+  parseSpawnAgents,
+  parseSpawnLayers,
+} from "@/shared/lib/agentSpawns";
 import type { Persona } from "@/shared/types/agents";
+
+import { useAgentStore } from "@/features/agents/stores/agentStore";
+import { personaAgentRefs } from "@/shared/lib/agentSpawns";
 
 import { DEFAULT_SPAWNS_BY_ROLE } from "./aclDefaults";
 import { useConductorGraphStore } from "./conductorGraphStore";
@@ -62,6 +69,19 @@ export function personaSpawnsOverride(
 }
 
 /**
+ * The persona's `spawns_agents` named allowlist, re-validated at the point
+ * of use for the same reason {@link personaSpawnsOverride} re-parses:
+ * hand-built persona stand-ins must not smuggle an unvalidated list into an
+ * enforcement decision. `undefined` means no name restriction was authored.
+ */
+export function personaSpawnAgentsOverride(
+  persona: Pick<Persona, "spawnsAgents"> | null | undefined,
+): readonly string[] | undefined {
+  if (!persona || persona.spawnsAgents === undefined) return undefined;
+  return parseSpawnAgents(persona.spawnsAgents);
+}
+
+/**
  * The layers a session may spawn: its persona's override when one was
  * authored, otherwise its layer's default.
  */
@@ -76,32 +96,68 @@ export type SpawnCheck =
   | { allowed: true }
   | {
       allowed: false;
+      /** Which axis refused: the layer ACL, or the named-agent allowlist. */
+      refusal: "layer" | "agent";
       /** Layer of the session that asked for the spawn. */
       initiatorRole: SessionRole;
       /** Layer it asked to spawn. */
       targetLayer: RoleLayer;
       /** What it was actually allowed to spawn, for the operator notice. */
       allowedLayers: readonly RoleLayer[];
+      /** Named allowlist in force, when the refusal came from it. */
+      allowedAgents?: readonly string[];
+      /** Name the spawn asked for, when it named one. */
+      targetAgent?: string;
     };
 
-/** Checks one programmatic spawn attempt against the effective ACL. */
+/**
+ * Checks one programmatic spawn attempt against the effective ACL.
+ *
+ * Two axes, both must pass: the layer (as always), and — when the initiator
+ * persona authored `spawns_agents` — the target's name. The named axis is
+ * deny-by-default once authored: a target matching none of the list's
+ * entries is refused, and so is a spawn that names no agent at all, because
+ * an allowlist of named agents with an unnamed escape hatch is not an
+ * allowlist. `targetAgentRefs` carries every name the target answers to
+ * (file stem, display name, bundled source); absent means the spawn runs no
+ * persona.
+ */
 export function checkSpawnAllowed(args: {
   initiatorRole: SessionRole;
-  initiatorPersona?: Pick<Persona, "spawns"> | null;
+  initiatorPersona?: Pick<Persona, "spawns" | "spawnsAgents"> | null;
   targetLayer: RoleLayer;
+  targetAgentRefs?: readonly string[];
+  targetAgentName?: string;
 }): SpawnCheck {
   const allowedLayers = effectiveSpawnLayers(
     args.initiatorRole,
     args.initiatorPersona,
   );
-  if (allowedLayers.includes(args.targetLayer)) {
+  if (!allowedLayers.includes(args.targetLayer)) {
+    return {
+      allowed: false,
+      refusal: "layer",
+      initiatorRole: args.initiatorRole,
+      targetLayer: args.targetLayer,
+      allowedLayers,
+    };
+  }
+  const allowedAgents = personaSpawnAgentsOverride(args.initiatorPersona);
+  if (allowedAgents === undefined) {
+    return { allowed: true };
+  }
+  const targetRefs = (args.targetAgentRefs ?? []).map(normalizeAgentRef);
+  if (targetRefs.some((ref) => allowedAgents.includes(ref))) {
     return { allowed: true };
   }
   return {
     allowed: false,
+    refusal: "agent",
     initiatorRole: args.initiatorRole,
     targetLayer: args.targetLayer,
     allowedLayers,
+    allowedAgents,
+    targetAgent: args.targetAgentName ?? args.targetAgentRefs?.[0],
   };
 }
 
@@ -146,15 +202,78 @@ const SPAWN_FORBIDDEN_PROMPT_LINE =
  * mechanisms, not merely discouraged. Both wordings then extend the rule to
  * the berdctl spawn commands, refused in code the same way since P42.
  */
-export function formatSpawnPolicyPrompt(layers: readonly RoleLayer[]): string {
+export interface SpawnAgentMenuEntry {
+  /** The allowlist entry, as authored (normalized). */
+  ref: string;
+  /** Display name when the ref resolved to a persona; the ref otherwise. */
+  name: string;
+  whenToCall?: string;
+  requiredInput?: string;
+  expectedOutput?: string;
+}
+
+/**
+ * The named-allowlist menu for one persona: each allowed agent with its
+ * contract card, resolved against the live persona catalog. Entries that
+ * resolve to no persona still appear by ref — the allowlist names them, and
+ * hiding an entry the author wrote would misstate the permission — they
+ * just carry no contract.
+ */
+export function spawnAgentsMenu(
+  persona: Pick<Persona, "spawnsAgents"> | null | undefined,
+): SpawnAgentMenuEntry[] | undefined {
+  const allowed = personaSpawnAgentsOverride(persona);
+  if (allowed === undefined) return undefined;
+  const personas = useAgentStore.getState().personas;
+  return allowed.map((ref) => {
+    const match = personas.find((candidate) =>
+      personaAgentRefs(candidate).includes(ref),
+    );
+    if (!match) return { ref, name: ref };
+    return {
+      ref,
+      name: match.displayName,
+      ...(match.whenToCall ? { whenToCall: match.whenToCall } : {}),
+      ...(match.requiredInput ? { requiredInput: match.requiredInput } : {}),
+      ...(match.expectedOutput ? { expectedOutput: match.expectedOutput } : {}),
+    };
+  });
+}
+
+function formatAgentMenuLine(entry: SpawnAgentMenuEntry): string {
+  const parts = [`- ${entry.name}`];
+  if (entry.whenToCall) parts.push(`  When to call: ${entry.whenToCall}`);
+  if (entry.requiredInput) {
+    parts.push(`  The task you delegate must include: ${entry.requiredInput}`);
+  }
+  if (entry.expectedOutput) {
+    parts.push(`  It returns: ${entry.expectedOutput}`);
+  }
+  return parts.join("\n");
+}
+
+export function formatSpawnPolicyPrompt(
+  layers: readonly RoleLayer[],
+  agentMenu?: readonly SpawnAgentMenuEntry[],
+): string {
   if (layers.length === 0) {
     return SPAWN_FORBIDDEN_PROMPT_LINE;
   }
-  return `Through Distill's own mechanisms you may start agents on these layers: ${layers.join(
+  const layersLine = `Through Distill's own mechanisms you may start agents on these layers: ${layers.join(
     ", ",
   )}. Distill refuses any other spawn through those mechanisms in code; do not try to start sessions outside those layers. The same limit applies to \`berdctl session create\` and \`berdctl session fork\`, refused in code the same way.`;
+  if (agentMenu === undefined) {
+    return layersLine;
+  }
+  if (agentMenu.length === 0) {
+    return `${layersLine}\nBy name you may start no agents at all: your named allowlist is empty, so every programmatic spawn is refused in code.`;
+  }
+  return [
+    layersLine,
+    "You may start only these agents, by name — any other agent, and any spawn that names no agent, is refused in code:",
+    ...agentMenu.map(formatAgentMenuLine),
+  ].join("\n");
 }
-
 /**
  * The spawn-policy insert for one session, or `undefined` when the session
  * gets none.
@@ -169,7 +288,7 @@ export function formatSpawnPolicyPrompt(layers: readonly RoleLayer[]): string {
  */
 export function sessionSpawnPolicyPrompt(
   sessionId: string | null | undefined,
-  persona: Pick<Persona, "spawns"> | null | undefined,
+  persona: Pick<Persona, "spawns" | "spawnsAgents"> | null | undefined,
 ): string | undefined {
   const nodeRole = sessionId
     ? useConductorGraphStore.getState().nodesById[sessionId]?.role
@@ -181,13 +300,17 @@ export function sessionSpawnPolicyPrompt(
  * Pure core of {@link sessionSpawnPolicyPrompt}: the caller supplies the
  * session's conductor-graph role (undefined when the session has no node),
  * which is how the React path keeps this reactive via a store selector.
+ * The named-agent menu is resolved against the persona catalog at build
+ * time — prompts are assembled per send, so a catalog edit lands on the
+ * next message, which is when it can matter.
  */
 export function formatSessionSpawnPolicyPrompt(
   nodeRole: SessionRole | undefined,
-  persona: Pick<Persona, "spawns"> | null | undefined,
+  persona: Pick<Persona, "spawns" | "spawnsAgents"> | null | undefined,
 ): string | undefined {
   if (nodeRole === undefined && !persona) return undefined;
   return formatSpawnPolicyPrompt(
     effectiveSpawnLayers(nodeRole ?? "plain-chat", persona),
+    spawnAgentsMenu(persona),
   );
 }

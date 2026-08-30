@@ -74,7 +74,26 @@ export function spawnAclDeniedNoticeText(facts: {
   initiatorLayer: string;
   targetLayer: string;
   allowedLayers: readonly string[];
+  /** Which axis refused. Absent reads as the layer axis (older callers). */
+  refusal?: "layer" | "agent";
+  allowedAgents?: readonly string[];
+  targetAgent?: string;
 }): string {
+  if (facts.refusal === "agent") {
+    return [
+      i18n.t("chat:conductor.spawnAcl.deniedTitle"),
+      i18n.t("chat:conductor.spawnAcl.deniedAgentBody", {
+        initiator: facts.initiatorName,
+        targetAgent:
+          facts.targetAgent ?? i18n.t("chat:conductor.spawnAcl.unnamedAgent"),
+      }),
+      facts.allowedAgents && facts.allowedAgents.length > 0
+        ? i18n.t("chat:conductor.spawnAcl.allowedAgents", {
+            agents: facts.allowedAgents.join(", "),
+          })
+        : i18n.t("chat:conductor.spawnAcl.allowedAgentsNone"),
+    ].join("\n\n");
+  }
   return [
     i18n.t("chat:conductor.spawnAcl.deniedTitle"),
     i18n.t("chat:conductor.spawnAcl.deniedBody", {

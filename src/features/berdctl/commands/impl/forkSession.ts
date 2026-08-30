@@ -50,7 +50,12 @@ Result:
   },
   execute: async (args, ctx): Promise<ForkSessionResult> => {
     const [
-      { enforceBerdctlSpawnAcl, forkTargetLayer, registerBerdctlChildNode },
+      {
+        enforceBerdctlSpawnAcl,
+        forkTargetLayer,
+        forkTargetPersona,
+        registerBerdctlChildNode,
+      },
       { acpDuplicateSession },
       { acpSessionToChatSession },
       { useChatSessionStore },
@@ -63,7 +68,11 @@ Result:
       import("../runtime/sessions"),
     ]);
     const targetLayer = forkTargetLayer(args.session_id);
-    enforceBerdctlSpawnAcl({ actor: ctx.actor, targetLayer });
+    enforceBerdctlSpawnAcl({
+      actor: ctx.actor,
+      targetLayer,
+      targetPersona: forkTargetPersona(args.session_id),
+    });
     await loadSessionForBerdctl(args.session_id);
     const source = requireSession(args.session_id);
     const forked = await acpDuplicateSession(

@@ -62,6 +62,7 @@ describe("checkSpawnAllowed", () => {
       checkSpawnAllowed({ initiatorRole: "worker", targetLayer: "worker" }),
     ).toEqual({
       allowed: false,
+      refusal: "layer",
       initiatorRole: "worker",
       targetLayer: "worker",
       allowedLayers: [],
@@ -95,10 +96,10 @@ describe("spawn policy prompt", () => {
     );
   });
 
-  it("names the berdctl spawn commands the app cannot refuse", () => {
-    // The berdctl path carries no caller identity, so the ACL cannot be
-    // enforced on it (createSession.ts); the prompt is the only place the
-    // rule reaches it, and the app preamble advertises both commands.
+  it("names the berdctl spawn commands, enforced since P42", () => {
+    // The berdctl path now carries the caller's identity and is refused in
+    // code too (runtime/spawnGate.ts); the prompt states the enforcement
+    // because the app preamble advertises both commands.
     for (const text of [
       formatSpawnPolicyPrompt([]),
       formatSpawnPolicyPrompt(["worker"]),
@@ -136,5 +137,114 @@ describe("spawn policy prompt", () => {
     expect(formatSessionSpawnPolicyPrompt("conductor", undefined)).toContain(
       "orchestrator, worker",
     );
+  });
+});
+
+describe("named spawn allowlist (spawns_agents)", () => {
+  it("does not restrict by name when no allowlist was authored", () => {
+    expect(
+      checkSpawnAllowed({
+        initiatorRole: "conductor",
+        targetLayer: "worker",
+        targetAgentRefs: ["scout"],
+      }),
+    ).toEqual({ allowed: true });
+  });
+
+  it("allows a named target on the list, however the author spelled it", () => {
+    expect(
+      checkSpawnAllowed({
+        initiatorRole: "conductor",
+        initiatorPersona: { spawnsAgents: ["Asset Integrator", "scout"] },
+        targetLayer: "worker",
+        targetAgentRefs: ["asset-integrator", "unity-asset-integrator"],
+      }),
+    ).toEqual({ allowed: true });
+  });
+
+  it("refuses a named target off the list, naming both sides", () => {
+    const check = checkSpawnAllowed({
+      initiatorRole: "conductor",
+      initiatorPersona: { spawnsAgents: ["scout"] },
+      targetLayer: "worker",
+      targetAgentRefs: ["writer"],
+      targetAgentName: "Writer",
+    });
+    expect(check).toEqual({
+      allowed: false,
+      refusal: "agent",
+      initiatorRole: "conductor",
+      targetLayer: "worker",
+      allowedLayers: ["orchestrator", "worker"],
+      allowedAgents: ["scout"],
+      targetAgent: "Writer",
+    });
+  });
+
+  it("refuses a spawn that names no agent once an allowlist exists", () => {
+    // An allowlist of named agents with an unnamed escape hatch is not an
+    // allowlist.
+    const check = checkSpawnAllowed({
+      initiatorRole: "conductor",
+      initiatorPersona: { spawnsAgents: ["scout"] },
+      targetLayer: "worker",
+    });
+    expect(check.allowed).toBe(false);
+    expect(!check.allowed && check.refusal).toBe("agent");
+  });
+
+  it("checks the layer before the name — a layer refusal stays a layer refusal", () => {
+    const check = checkSpawnAllowed({
+      initiatorRole: "worker",
+      initiatorPersona: { spawnsAgents: ["scout"] },
+      targetLayer: "worker",
+      targetAgentRefs: ["scout"],
+    });
+    expect(!check.allowed && check.refusal).toBe("layer");
+  });
+
+  it("an empty allowlist refuses every named spawn", () => {
+    const check = checkSpawnAllowed({
+      initiatorRole: "conductor",
+      initiatorPersona: { spawnsAgents: [] },
+      targetLayer: "worker",
+      targetAgentRefs: ["scout"],
+    });
+    expect(!check.allowed && check.refusal).toBe("agent");
+  });
+});
+
+describe("spawn policy prompt with a named allowlist", () => {
+  it("renders the menu with each agent's contract card", () => {
+    const text = formatSpawnPolicyPrompt(
+      ["worker"],
+      [
+        {
+          ref: "scout",
+          name: "Scout",
+          whenToCall: "a factual claim needs verifying",
+          requiredInput: "the claim and where it came from",
+          expectedOutput: "a source-backed confirm/refute",
+        },
+        { ref: "mystery-agent", name: "mystery-agent" },
+      ],
+    );
+    expect(text).toContain("only these agents, by name");
+    expect(text).toContain("- Scout");
+    expect(text).toContain("When to call: a factual claim needs verifying");
+    expect(text).toContain(
+      "The task you delegate must include: the claim and where it came from",
+    );
+    expect(text).toContain("It returns: a source-backed confirm/refute");
+    expect(text).toContain("- mystery-agent");
+  });
+
+  it("says plainly when the named allowlist is empty", () => {
+    const text = formatSpawnPolicyPrompt(["worker"], []);
+    expect(text).toContain("no agents at all");
+  });
+
+  it("renders no menu when no allowlist was authored", () => {
+    expect(formatSpawnPolicyPrompt(["worker"])).not.toContain("by name");
   });
 });
