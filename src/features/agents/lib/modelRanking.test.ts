@@ -244,6 +244,20 @@ describe("modelPreferenceClassForPersona", () => {
     expect(modelPreferenceClassForPersona({ displayName: "Test Runner" })).toBe(
       "testing-light",
     );
+    // The companion agents (calibration 2026-08-30): conversations with a
+    // strong generalist, so every one of them resolves to one-shot — before
+    // this they had no class at all and silently took whatever model the
+    // session held.
+    for (const displayName of [
+      "Agt. Builder",
+      "Distill",
+      "Choosey",
+      "Copycat",
+      "Pushback",
+      "Wildcard",
+    ]) {
+      expect(modelPreferenceClassForPersona({ displayName })).toBe("one-shot");
+    }
   });
 
   it("gives an unknown agent no ranking at all", () => {
