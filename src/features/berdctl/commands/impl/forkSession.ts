@@ -39,28 +39,31 @@ Result:
    "message_count": 7}
   The fork appears in the session list with a copy of the original history.`,
   schema: forkSessionSchema,
-  // TODO(spawn-acl): fork creates a session, so it is the same hole as
-  // `session create` and blocked on the same missing piece — see the traced
-  // note in createSession.ts. Nothing to enforce here until a per-session
-  // identity reaches the broker.
+  // Spawn ACL (P42): enforced in execute against the wire `actor`, like
+  // `session create` (runtime/spawnGate.ts). A fork reproduces a session of
+  // the source's own rank, so the target layer is the source node's role.
   // Fork is a real backend round-trip that copies the conversation history.
   bridgeTimeoutMs: 60_000,
   precheck: async (args) => {
     const { refuseRunningTarget } = await import("../runtime/sessions");
     refuseRunningTarget(args.session_id, "fork");
   },
-  execute: async (args): Promise<ForkSessionResult> => {
+  execute: async (args, ctx): Promise<ForkSessionResult> => {
     const [
+      { enforceBerdctlSpawnAcl, forkTargetLayer, registerBerdctlChildNode },
       { acpDuplicateSession },
       { acpSessionToChatSession },
       { useChatSessionStore },
       { loadSessionForBerdctl, requireSession },
     ] = await Promise.all([
+      import("../runtime/spawnGate"),
       import("@/shared/api/acp"),
       import("@/features/chat/lib/acpSessionMapping"),
       import("@/features/chat/stores/chatSessionStore"),
       import("../runtime/sessions"),
     ]);
+    const targetLayer = forkTargetLayer(args.session_id);
+    enforceBerdctlSpawnAcl({ actor: ctx.actor, targetLayer });
     await loadSessionForBerdctl(args.session_id);
     const source = requireSession(args.session_id);
     const forked = await acpDuplicateSession(
@@ -70,6 +73,14 @@ Result:
     );
     const chatSession = acpSessionToChatSession(forked);
     useChatSessionStore.getState().addSession(chatSession);
+    registerBerdctlChildNode({
+      actor: ctx.actor,
+      sessionId: forked.sessionId,
+      role: targetLayer,
+      harnessId: chatSession.executionTarget?.harnessId ?? "goose",
+      displayName: chatSession.title,
+      task: `fork of ${args.session_id}`,
+    });
     return {
       session_id: forked.sessionId,
       title: chatSession.title,

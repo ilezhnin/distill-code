@@ -85,6 +85,24 @@ pub fn build_cli(contract: &Contract) -> Command {
                      the app sets BERDCTL_LOCK in every agent session it spawns)",
                 ),
         )
+        // Hidden like lock_path, and env-sourced on purpose: argv is visible
+        // to every process on the machine (`ps`), the environment of the
+        // session's own shell is not. goose injects AGENT_SESSION_ID into
+        // each session's shell (upstream `apply_session_environment`), so a
+        // call made by an agent carries which session made it, and a call
+        // from the operator's own terminal — which never gets the variable —
+        // stays anonymous. The app treats anonymous as the operator.
+        .arg(
+            Arg::new("actor")
+                .long("actor")
+                .global(true)
+                .env("AGENT_SESSION_ID")
+                .hide(true)
+                .help(
+                    "Session identity of the calling agent (internal plumbing; \
+                     read from AGENT_SESSION_ID, set by the harness)",
+                ),
+        )
         // display_order pushes the propagated globals below each
         // subcommand's own flags in help output.
         .arg(

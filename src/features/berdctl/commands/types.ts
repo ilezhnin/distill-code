@@ -5,6 +5,9 @@ export interface CommandContext {
    *  Commands with slow pre-mutation work must not mutate state past it —
    *  the agent has already been told the call failed. */
   deadlineMs?: number;
+  /** Calling agent session's identity (goose session id), when the call came
+   *  from inside an agent session's shell. Absent means the operator. */
+  actor?: string;
 }
 
 export type CommandEffect = "read" | "create" | "update" | "archive";
@@ -87,6 +90,7 @@ export const COMMAND_ERROR_CODES = [
   "feedback_disabled",
   "feedback_form_busy",
   "feedback_submission_failed",
+  "spawn_not_allowed",
   "timed_out",
   "internal_error",
 ] as const;

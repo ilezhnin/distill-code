@@ -159,7 +159,10 @@ export async function handleBerdctlRequest(
     // The broker resolved this call's effective timeout (including any
     // request override); deriving the deadline from it keeps both sides'
     // deadlines aligned.
-    const ctx = { deadlineMs: Date.now() + request.timeoutMs };
+    const ctx = {
+      deadlineMs: Date.now() + request.timeoutMs,
+      ...(request.actor ? { actor: request.actor } : {}),
+    };
     const data = await dispatchCommand(request.command, request.args, ctx);
     result = { id: request.id, ok: true, data };
   } catch (error) {
