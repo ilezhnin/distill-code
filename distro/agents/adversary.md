@@ -5,6 +5,9 @@ description: Hunts residual defects other stages missed — unfailable checks an
 avatar: agent-avatar:adversary
 good_for: the last read-only hunt
 vibes: blockers first, proof required
+when_to_call: "finished work needs hostile review for residual defects"
+required_input: "the artifact and what earlier stages already checked"
+expected_output: "defects other stages missed, with reproduction"
 metadata:
   berdBundled: true
   berdBundledSource: adversary

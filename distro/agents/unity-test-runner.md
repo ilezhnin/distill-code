@@ -5,6 +5,9 @@ description: Runs the cheapest Unity validation that proves the change — compi
 avatar: agent-avatar:unity-test-runner
 good_for: proving a Unity change
 vibes: cheapest check that counts
+when_to_call: "the cheapest Unity validation must prove a change"
+required_input: "what changed and which behavior must hold"
+expected_output: "test or batchmode results as artifacts, pass or fail"
 metadata:
   berdBundled: true
   berdBundledSource: unity-test-runner

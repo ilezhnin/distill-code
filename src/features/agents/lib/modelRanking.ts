@@ -153,7 +153,17 @@ export const MODEL_CLASS_BY_AGENT_SLUG: Record<string, ModelPreferenceClassId> =
     "unity-asset-integrator": "coding-simple",
     "asset-integrator": "coding-simple",
     tinker: "coding-simple",
-    // one-shot capability (research, synthesis, coordination)
+    // one-shot capability (research, synthesis, coordination) — including
+    // the companion agents, which are conversations with a strong generalist
+    // rather than pipeline steps: the class is the strongest available
+    // model, not a coding specialist.
+    "agt.-builder": "one-shot",
+    "agt-builder": "one-shot",
+    distill: "one-shot",
+    choosey: "one-shot",
+    copycat: "one-shot",
+    pushback: "one-shot",
+    wildcard: "one-shot",
     producer: "one-shot",
     planner: "one-shot",
     scout: "one-shot",

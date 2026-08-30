@@ -5,6 +5,9 @@ description: Specifies screens and flows as a checkable spec before implementati
 avatar: agent-avatar:ux
 good_for: screens, flows, and states
 vibes: checkable, keyboard-first
+when_to_call: "screens or flows need specifying before any code"
+required_input: "the user goal and the states the flow must handle"
+expected_output: "a checkable spec of screens, states, and transitions — no code"
 metadata:
   berdBundled: true
   berdBundledSource: ux

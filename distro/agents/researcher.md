@@ -5,6 +5,9 @@ description: Open-ended research that ends in a short source-backed brief, not a
 avatar: agent-avatar:researcher
 good_for: mapping a space before deciding
 vibes: source-backed, brief
+when_to_call: "an open question needs surveyed options rather than a verified fact"
+required_input: "the question and how deep to go"
+expected_output: "a short source-backed brief with options and tradeoffs"
 metadata:
   berdBundled: true
   berdBundledSource: researcher

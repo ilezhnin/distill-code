@@ -5,6 +5,9 @@ description: Maps a Unity project before anyone edits — assemblies, assets, te
 avatar: agent-avatar:unity-explorer
 good_for: mapping Unity before coding
 vibes: read-only, targeted
+when_to_call: "a Unity project is unfamiliar and needs mapping before edits"
+required_input: "the project path and the question the map must answer"
+expected_output: "a read-only map: scenes, asmdefs, entry points, risks"
 metadata:
   berdBundled: true
   berdBundledSource: unity-explorer

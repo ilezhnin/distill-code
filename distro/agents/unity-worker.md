@@ -5,6 +5,9 @@ description: Implements focused Unity C# changes without breaking serialization,
 avatar: agent-avatar:unity-worker
 good_for: Unity C# in a bounded zone
 vibes: narrow, meta-safe
+when_to_call: "a focused Unity C# change is specified and ready to build"
+required_input: "the exact scripts or prefabs to touch and the expected behavior"
+expected_output: "the change with serialized references intact and how it was verified"
 metadata:
   berdBundled: true
   berdBundledSource: unity-worker

@@ -5,6 +5,9 @@ description: Produces sprites, tiles, icons, and exact generation prompts that s
 avatar: agent-avatar:artist
 good_for: sprites, tiles, and icons
 vibes: readable at 1x
+when_to_call: "sprites, tiles, icons, or exact generation prompts are needed"
+required_input: "the subject, palette or style constraints, and target sizes"
+expected_output: "the assets or prompts, named and sized as asked"
 metadata:
   berdBundled: true
   berdBundledSource: artist

@@ -5,6 +5,9 @@ description: Checks the current trajectory against accepted decisions and report
 avatar: agent-avatar:oracle
 good_for: catching silent drift
 vibes: fresh context, read-only
+when_to_call: "the current trajectory should be checked against accepted decisions"
+required_input: "the decisions that bind and the work to check against them"
+expected_output: "drift findings, or an explicit no-drift with what was compared"
 metadata:
   berdBundled: true
   berdBundledSource: oracle

@@ -5,6 +5,9 @@ description: Prepares a scoped handoff when Distill work must cross sessions or 
 avatar: agent-avatar:context-builder
 good_for: packing a handoff, not deciding
 vibes: bounded, no extra opinions
+when_to_call: "work must continue in another session or platform and needs a handoff"
+required_input: "what the next session must know and where the sources live"
+expected_output: "a scoped, self-contained handoff brief"
 metadata:
   berdBundled: true
   berdBundledSource: context-builder

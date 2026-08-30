@@ -5,6 +5,9 @@ description: Implements a bounded batch — code, tests, and documents — and r
 avatar: agent-avatar:brigade
 good_for: shipping a bounded batch of cards
 vibes: blind to other zones
+when_to_call: "a bounded, specified batch needs implementing — code, tests, docs"
+required_input: "the exact zone, the spec or task list, and the acceptance criteria"
+expected_output: "the diff, passing checks, and decisions taken while implementing"
 metadata:
   berdBundled: true
   berdBundledSource: brigade

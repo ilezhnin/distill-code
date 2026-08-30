@@ -5,6 +5,9 @@ description: Owns glossary, string tables, and translations. Keeps one owner per
 avatar: agent-avatar:localizer
 good_for: strings, glossary, locales
 vibes: one term per concept
+when_to_call: "strings need translating against the glossary"
+required_input: "the strings or tables and the target locales"
+expected_output: "translations with glossary terms kept consistent"
 metadata:
   berdBundled: true
   berdBundledSource: localizer

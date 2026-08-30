@@ -5,6 +5,9 @@ description: Decides how before a batch is written — ownership, seams, and one
 avatar: agent-avatar:architect
 good_for: deciding how, not building it
 vibes: smallest structure that works
+when_to_call: "a batch needs its module boundaries, APIs, or ownership decided before implementation"
+required_input: "the requirement and the code areas it touches"
+expected_output: "an ADR-style decision with boundaries, contracts, and rejected alternatives"
 metadata:
   berdBundled: true
   berdBundledSource: architect

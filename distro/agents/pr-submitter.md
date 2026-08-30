@@ -5,6 +5,9 @@ description: Verifies the task diff and delivers only the git actions the operat
 avatar: agent-avatar:pr-submitter
 good_for: commits and PRs when asked
 vibes: no inferred remotes
+when_to_call: "a verified diff is ready to leave the machine as authorized git actions"
+required_input: "the exact branch or diff and the authorized push or PR target"
+expected_output: "the delivered PR or push, or the refusal with its reason"
 metadata:
   berdBundled: true
   berdBundledSource: pr-submitter
