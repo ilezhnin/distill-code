@@ -837,10 +837,7 @@ fn cached_agent_avatar_for_id(
     // E:\ or in Program Files are outside that scope, so looking there first
     // would resolve a path the UI cannot display.
     if let Some(home_dir) = dirs::home_dir() {
-        let user_avatars = home_dir
-            .join(".agents")
-            .join("agents")
-            .join(".avatars");
+        let user_avatars = home_dir.join(".agents").join("agents").join(".avatars");
         if let Some(avatar) = cached_agent_avatar_for_id_at(&user_avatars, avatar_id)? {
             return Ok(Some(avatar));
         }
