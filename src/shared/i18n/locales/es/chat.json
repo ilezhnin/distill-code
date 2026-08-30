@@ -711,6 +711,7 @@
     "selectProject": "Seleccionar proyecto",
     "sendMessage": "Enviar mensaje",
     "steer": "Guiar",
+    "steerNow": "Guiar el turno en curso con esto",
     "steerQueued": "Guiar mensaje en cola",
     "agentBuilderPrepareFailed": "No se pudo preparar el borrador del agente.",
     "agentBuilderPreparing": "Preparando borrador de agente...",
