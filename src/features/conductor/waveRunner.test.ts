@@ -24,6 +24,8 @@ vi.mock("./orchestratorControls", () => ({ stopOrchestratorSession }));
 const {
   WAVE_REPORT_GRACE_MS,
   WAVE_SPAWN_TIMEOUT_MS,
+  WAVE_STALL_SAMPLE_MS,
+  WAVE_STALL_THRESHOLD,
   resetWaveRunnerForTests,
   runWaveEngineTick,
 } = await import("./waveRunner");
@@ -792,5 +794,105 @@ describe("waveRunner", () => {
     expect(spawnConductorChildSession).not.toHaveBeenCalled();
     expect(getWaveEngineState().waves).toHaveLength(0);
     expect(noticeTexts()).toEqual([]);
+  });
+});
+
+describe("wave stall detector (P61)", () => {
+  beforeEach(async () => {
+    await i18n.loadNamespaces("chat");
+    window.localStorage.clear();
+    resetWaveEngineStateCache();
+    resetWaveRunnerForTests();
+    resetWaveStepTargetIoForTests();
+    useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
+    useChatStore.setState({ messagesBySession: {} });
+    useChatSessionStore.setState({ hasHydratedSessions: true } as never);
+    spawnConductorChildSession.mockReset();
+    spawnConductorChildSession.mockImplementation(
+      async (args: { waveId?: string; stepIndex?: number }) => {
+        const sessionId = `child-${args.stepIndex ?? 0}`;
+        const runId = `run-${args.stepIndex ?? 0}`;
+        registerSpawnedChild({
+          sessionId,
+          waveId: args.waveId ?? "",
+          stepIndex: args.stepIndex ?? 0,
+          runId,
+        });
+        return { sessionId, runId };
+      },
+    );
+    stopOrchestratorSession.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("ends a silently wedged wave into the digest cycle, saying why", async () => {
+    vi.useFakeTimers();
+    try {
+      useConductorGraphStore.getState().registerNode(conductorNode());
+      setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+      runWaveEngineTick();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+
+      // The child neither streams nor changes status: total silence. Each
+      // full sample window adds one stall count; at the threshold the wave
+      // is cut into digestPending — not parked, not retried.
+      for (let i = 0; i < WAVE_STALL_THRESHOLD; i += 1) {
+        await vi.advanceTimersByTimeAsync(WAVE_STALL_SAMPLE_MS + 200);
+      }
+      const wave = getWaveEngineState().waves[0];
+      // Out of `running` and marked stalled. The digest machinery advances
+      // further within the same tick; in this harness its dispatch has no
+      // transport, so the exact terminal phase is the lifecycle's business
+      // (waveLifecycle.test.ts) — what P61 owns is the cut itself.
+      expect(wave?.stalled).toBe(true);
+      expect(wave?.phase).not.toBe("running");
+      // The wedged child was told to stop, and the operator was told why.
+      expect(stopOrchestratorSession).toHaveBeenCalled();
+      expect(
+        noticeTexts().some((text) => text.includes("stopped making progress")),
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("any movement resets the stall count", async () => {
+    vi.useFakeTimers();
+    try {
+      useConductorGraphStore.getState().registerNode(conductorNode());
+      setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+      runWaveEngineTick();
+      await vi.advanceTimersByTimeAsync(0);
+
+      // One silent window — one stall sample.
+      await vi.advanceTimersByTimeAsync(WAVE_STALL_SAMPLE_MS + 200);
+      expect(getWaveEngineState().waves[0]?.stallCount).toBe(1);
+
+      // Movement: the step completes and reports; the dependent step spawns.
+      useConductorGraphStore
+        .getState()
+        .patchNode("child-0", { status: "completed" });
+      useConductorGraphStore.getState().attachReport({
+        runId: "run-0",
+        status: "completed",
+        summary: "found them",
+        decisions: [],
+        artifacts: [],
+        risks: [],
+        needsOperator: false,
+        nextSuggestedTask: null,
+      });
+      runWaveEngineTick();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(getWaveEngineState().waves[0]?.stallCount).toBe(0);
+      expect(getWaveEngineState().waves[0]?.phase).toBe("running");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

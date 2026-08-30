@@ -643,6 +643,10 @@
     "raw": {
       "toggle": "Show the raw run events",
       "empty": "Nothing was recorded for this step yet."
+    },
+    "stall": {
+      "title": "This wave stopped making progress, so Distill ended it and collected what exists.",
+      "body": "Nothing moved for {{count}} consecutive checks — no step changed state, nothing new started. Running steps were stopped; steps without a report appear in the digest as “result unknown”. The digest below says the wave stalled, so judge it with that in mind."
     }
   },
   "harnessBrigade": {

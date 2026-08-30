@@ -109,6 +109,19 @@ export function spawnAclDeniedNoticeText(facts: {
   ].join("\n\n");
 }
 
+/**
+ * Notice posted when the stall detector cuts a wave short (P61): two silent
+ * sample windows in a row with nothing moving. Names the mechanism and what
+ * happens next — the digest — so the operator reads the shortened digest as
+ * a deliberate stop, not a glitch.
+ */
+export function waveStalledNoticeText(stallCount: number): string {
+  return [
+    i18n.t("chat:conductor.stall.title"),
+    i18n.t("chat:conductor.stall.body", { count: stallCount }),
+  ].join("\n\n");
+}
+
 /** Notice shown when a wave step could not be started at all. */
 export function waveSpawnFailureText(
   stepIndex: number,

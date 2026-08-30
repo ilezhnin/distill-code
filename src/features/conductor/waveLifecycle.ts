@@ -488,6 +488,7 @@ export function processWaveDigests(
       waveId: live.waveId,
       attempt: live.digestAttempt,
       entries: digestEntriesFor(live),
+      ...(live.stalled ? { stalled: true } : {}),
       ...(gitDelta ? { gitDelta } : {}),
       ...(artifacts ? { artifacts } : {}),
       // Q5/M3: a re-asked digest says why it is being asked again. Re-sending

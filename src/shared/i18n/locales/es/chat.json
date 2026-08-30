@@ -642,6 +642,10 @@
     "raw": {
       "toggle": "Mostrar los eventos brutos de la ejecución",
       "empty": "Todavía no se ha registrado nada de este paso."
+    },
+    "stall": {
+      "title": "Esta ola dejó de avanzar, así que Distill la terminó y recogió lo que existe.",
+      "body": "Nada se movió durante {{count}} comprobaciones seguidas: ningún paso cambió de estado y no arrancó nada nuevo. Los pasos en ejecución se detuvieron; los pasos sin informe aparecen en el resumen como «resultado desconocido». El resumen indica que la ola se atascó; júzgala teniéndolo en cuenta."
     }
   },
   "harnessBrigade": {
