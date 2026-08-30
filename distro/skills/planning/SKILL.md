@@ -25,7 +25,7 @@ Planning must expose uncertainty early. Do not implement while using this skill 
 2. For Unity projects, use `unity-orient` (`unity-explorer` role) only when the project or feature area is unfamiliar or ownership/boundaries must be mapped; otherwise inspect the known target directly. Always respect `.meta` files, assembly boundaries, serialization, lifecycle, and validation constraints.
 3. Backend repositories use their own agent kit; stop and say so.
 4. Identify decisions that materially affect scope, architecture, data migration, tests, public API, dependencies, generated assets, asset licenses/provenance, import settings, or delivery risk.
-5. For Unity asset-heavy tasks, route the sourcing/generation/import slice through `asset-pipeline` and name the expected asset-scout, asset-creator, or unity-asset-integrator handoff in the plan.
+5. For Unity asset-heavy tasks, route the sourcing/generation/import slice through `asset-pipeline` and name the expected asset-scout, artist, or unity-asset-integrator handoff in the plan.
 6. Ask concise questions only when the answer changes the plan in a meaningful way. If the work can proceed with a safe assumption, state the assumption in the plan instead of blocking.
 7. Create `.agents/plans/` when missing. If `.agents/plans/.gitignore` is missing, create it with exactly two lines - `*` and `!.gitignore` - so transient plan files stay out of commits unless the project already tracks them intentionally.
 8. Write or replace `.agents/plans/active_plan.md` and `.agents/plans/task_list.md`.

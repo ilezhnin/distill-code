@@ -26,7 +26,7 @@ Use this skill for asset work only. Code behavior still routes through `unity-im
    - **Integrate**: import, configure, wire, and validate an already approved asset.
 3. Default to inline execution by the current agent. Delegate to a matching role only for multi-asset batches or license-research-heavy sourcing:
    - `asset-scout` for local/public search, license checks, and candidate comparison.
-   - `asset-creator` for generation prompts and generated raster/source outputs.
+   - `artist` for generation prompts and generated raster/source outputs.
    - `unity-asset-integrator` for Unity import settings, materials, prefabs, scene wiring, Addressables labels, and validation.
    - `researcher` only when asset sourcing depends on current external source behavior, marketplace terms, or documentation.
 4. The parent owns `.agents/plans/asset-brief.md` and records role results there when the work is non-trivial, delegated, or affects a milestone. Delegated roles return proposals/evidence instead of concurrently editing the shared brief.
