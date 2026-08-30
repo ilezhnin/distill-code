@@ -27,7 +27,19 @@ import {
 } from "@/features/conductor/conductorGraphStore";
 import { composeConductorSystemPrompt } from "@/features/conductor/wavePrompts";
 import { acpSendMessage } from "@/shared/api/acp";
-import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
+import {
+  formatAcpErrorMessage,
+  isProviderNotSetError,
+} from "@/shared/api/acpErrors";
+import {
+  CHAT_TURN_ERROR_KIND,
+  CHAT_TURN_OUTCOME,
+  trackChatTurnEnded,
+} from "@/features/chat/lib/chatTelemetry";
+import type {
+  DistillChatTurnErrorKind,
+  DistillChatTurnOutcome,
+} from "@/shared/telemetry/events";
 import {
   formatAttachmentsTooLargeMessage,
   MAX_PROMPT_ATTACHMENT_BYTES,
@@ -192,6 +204,38 @@ export function resolveAssistantCancellation(
 }
 
 /**
+ * The closed error kind for a failed turn. Only the classifications the send
+ * path already makes for its own recovery are reported; everything else is
+ * OTHER rather than a parsed message, because the message is harness output
+ * and can carry paths and prompt fragments.
+ */
+function reportTurnEnded(
+  params: Parameters<typeof trackChatTurnEnded>[0],
+): void {
+  // One of the two call sites is a `finally`, where a throw would replace the
+  // error on its way out and turn a harness failure into a telemetry stack
+  // trace. Never let reporting decide what the caller sees.
+  try {
+    trackChatTurnEnded(params);
+  } catch {
+    // Telemetry is not load-bearing.
+  }
+}
+
+function turnErrorKind(error: unknown): DistillChatTurnErrorKind {
+  if (error instanceof PromptPayloadTooLargeError) {
+    return CHAT_TURN_ERROR_KIND.PAYLOAD_TOO_LARGE;
+  }
+  if (isHarnessRejectedModelError(error)) {
+    return CHAT_TURN_ERROR_KIND.REJECTED_MODEL;
+  }
+  if (isProviderNotSetError(error)) {
+    return CHAT_TURN_ERROR_KIND.PROVIDER_NOT_SET;
+  }
+  return CHAT_TURN_ERROR_KIND.OTHER;
+}
+
+/**
  * Foreground send core: commits the user message, drives the
  * thinking-to-streaming-to-idle chat-state transitions, patches the session
  * title, and dispatches the prompt over ACP.
@@ -236,13 +280,28 @@ export async function dispatchPrompt(
   if (attachmentBytes > MAX_PROMPT_ATTACHMENT_BYTES) {
     const errorMessage = formatAttachmentsTooLargeMessage(attachmentBytes);
     useChatStore.getState().setError(sessionId, errorMessage);
-    throw new PromptPayloadTooLargeError(errorMessage);
+    const tooLarge = new PromptPayloadTooLargeError(errorMessage);
+    // Thrown before the prompt is even claimed, so it never reaches the
+    // `finally` below; reported here so an oversized attachment is a failed
+    // turn on the wire rather than a send that never happened.
+    reportTurnEnded({
+      sessionId,
+      outcome: CHAT_TURN_OUTCOME.ERROR,
+      messageCommitted: false,
+      hasPersona: Boolean(persona),
+      durationMs: performance.now() - tSendStart,
+      errorKind: turnErrorKind(tooLarge),
+      provider: providerId,
+    });
+    throw tooLarge;
   }
 
   const promptOwner = claimSessionPrompt(sessionId);
   const isCurrent = () => ownsSessionPrompt(sessionId, promptOwner);
   let userMessageCommitted = false;
   let preCommitRejected = false;
+  let turnOutcome: DistillChatTurnOutcome = CHAT_TURN_OUTCOME.COMPLETED;
+  let turnErrorKindForOutcome: DistillChatTurnErrorKind | undefined;
 
   const { addMessage, setChatState, setError, setPendingAssistantProvider } =
     useChatStore.getState();
@@ -414,6 +473,14 @@ export async function dispatchPrompt(
         recordAssistantPromptOutcome(promptOwner, "error");
       }
     }
+    // Classified before the recovery branches so the outcome does not depend
+    // on which of them the ownership checks let run.
+    if (err instanceof DOMException && err.name === "AbortError") {
+      turnOutcome = CHAT_TURN_OUTCOME.CANCELLED;
+    } else if (!preCommitRejected) {
+      turnOutcome = CHAT_TURN_OUTCOME.ERROR;
+      turnErrorKindForOutcome = turnErrorKind(err);
+    }
     if (preCommitRejected) {
       // Ownership/readiness changed at the last reversible boundary. This
       // prompt committed nothing, so leave the newer owner's runtime intact.
@@ -481,6 +548,20 @@ export async function dispatchPrompt(
     }
     throw err;
   } finally {
+    // Every way a turn can end passes through here. A pre-commit rejection is
+    // the one exception: it hands the session to a newer owner having changed
+    // nothing, so counting it would report a turn that never ran.
+    if (!preCommitRejected) {
+      reportTurnEnded({
+        sessionId,
+        outcome: turnOutcome,
+        messageCommitted: userMessageCommitted,
+        hasPersona: Boolean(persona),
+        durationMs: performance.now() - tSendStart,
+        errorKind: turnErrorKindForOutcome,
+        provider: pendingAssistantProvider,
+      });
+    }
     if (!isCurrent()) {
       clearBufferedStreamingUpdatesForSession(sessionId, {
         owner: promptOwner,

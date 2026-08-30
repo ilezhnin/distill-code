@@ -8,6 +8,7 @@ import {
 } from "./berd_agent";
 import { berdAppLifecycleLaunched } from "./berd_app";
 import { berdChatMessageSent, berdChatSessionStarted } from "./berd_chat";
+import { distillChatTurnEnded } from "./distill_chat";
 import { berdHomePinPinned, berdHomeUnpinUnpinned } from "./berd_home";
 import {
   berdProjectCreateCompleted,
@@ -161,5 +162,58 @@ describe("optional event params", () => {
 
     expect(ev.parameters.provider).toBe("goose");
     expect(ev.parameters.model).toBe("goose-claude-4-5-sonnet");
+  });
+});
+
+// `distill_chat` is Distill's own event module, not a vendored one, so nothing
+// upstream pins its shape. These stand in for that missing schema.
+describe("distill_chat_turn_ended", () => {
+  it("omits absent error_kind and provider", () => {
+    const ev = distillChatTurnEnded({
+      session_id: "session-1",
+      outcome: "TURN_OUTCOME_COMPLETED",
+      message_committed: true,
+      has_persona: false,
+      duration_ms: 1200,
+    });
+
+    expect(ev.name).toBe("distill_chat_turn_ended");
+    expect("error_kind" in ev.parameters).toBe(false);
+    expect("provider" in ev.parameters).toBe(false);
+  });
+
+  it("keeps error_kind and provider when they are present", () => {
+    const ev = distillChatTurnEnded({
+      session_id: "session-1",
+      outcome: "TURN_OUTCOME_ERROR",
+      message_committed: true,
+      has_persona: true,
+      duration_ms: 340,
+      error_kind: "TURN_ERROR_KIND_REJECTED_MODEL",
+      provider: "codex-acp",
+    });
+
+    expect(ev.parameters.error_kind).toBe("TURN_ERROR_KIND_REJECTED_MODEL");
+    expect(ev.parameters.provider).toBe("codex-acp");
+  });
+
+  // The error message is assembled from harness output — paths, prompt
+  // fragments, whatever the model echoed — so only the closed kind ships.
+  it("carries no error message and no identifier but session_id", () => {
+    const ev = distillChatTurnEnded({
+      session_id: "session-1",
+      outcome: "TURN_OUTCOME_CANCELLED",
+      message_committed: true,
+      has_persona: true,
+      duration_ms: 90,
+    });
+
+    expect(Object.keys(ev.parameters).sort()).toEqual([
+      "duration_ms",
+      "has_persona",
+      "message_committed",
+      "outcome",
+      "session_id",
+    ]);
   });
 });
