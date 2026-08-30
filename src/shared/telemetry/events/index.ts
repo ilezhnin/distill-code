@@ -27,9 +27,16 @@
 // event survives when its count is the signal: deletions against creations are
 // net agent adoption per install, derivable from nothing else.
 
+// `./distill_chat` is the one module here that is not vendored: it holds
+// events Distill defines for itself, which the schema repo does not model and
+// never will. Everything above describes the vendored set and does not govern
+// it; the wire discipline — no user content, no user-derived ids, closed enums,
+// `session_id` as the only join key — does.
+
 export type { Event } from "./event";
 export * from "./berd_agent";
 export * from "./berd_app";
 export * from "./berd_chat";
 export * from "./berd_home";
 export * from "./berd_project";
+export * from "./distill_chat";

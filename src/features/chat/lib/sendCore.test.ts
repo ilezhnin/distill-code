@@ -11,12 +11,29 @@ import { dispatchPrompt } from "./sendCore";
 const mocks = vi.hoisted(() => ({
   acpSendMessage: vi.fn(),
   acpPrepareSession: vi.fn(),
+  track: vi.fn(),
 }));
 
 vi.mock("@/shared/api/acp", () => ({
   acpSendMessage: (...args: unknown[]) => mocks.acpSendMessage(...args),
   acpPrepareSession: (...args: unknown[]) => mocks.acpPrepareSession(...args),
 }));
+
+// Mocked at the telemetry chokepoint rather than at the feature wrapper, so
+// these tests run the real wrapper and the real event factory and would catch a
+// param that stopped reaching the wire.
+vi.mock("@/shared/telemetry/client", () => ({
+  track: (...args: unknown[]) => mocks.track(...args),
+}));
+
+function turnEvents() {
+  return mocks.track.mock.calls
+    .map(
+      ([event]) =>
+        event as { name: string; parameters: Record<string, unknown> },
+    )
+    .filter((event) => event.name === "distill_chat_turn_ended");
+}
 
 describe("dispatchPrompt pre-commit rejection", () => {
   beforeEach(() => {
@@ -170,5 +187,138 @@ describe("dispatchPrompt model rejection recovery", () => {
       useChatSessionStore.getState().getSession("session-1")?.executionTarget,
     ).toEqual(PINNED);
     expect(notices("session-1")).toHaveLength(1);
+  });
+});
+
+// A turn that errors or is cancelled used to leave the same trace as one that
+// answered: none. These pin that all three ways out report, and that a
+// pre-commit rejection — which hands the session on having changed nothing —
+// still does not.
+describe("dispatchPrompt turn-outcome telemetry", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetSessionTargetCoordinatorsForTests();
+    useChatStore.setState({
+      messagesBySession: {},
+      sessionStateById: {},
+      queuedMessageBySession: {},
+      draftsBySession: {},
+      activeSessionId: null,
+      isConnected: false,
+    });
+    useAgentStore.setState({ providers: [] });
+    useChatSessionStore.setState({ sessions: [] });
+  });
+
+  it("reports a completed turn with its provider and a duration", async () => {
+    mocks.acpSendMessage.mockImplementationOnce(
+      (
+        _sessionId: string,
+        _prompt: string,
+        options: { onPromptDispatching(): void },
+      ) => {
+        options.onPromptDispatching();
+        return Promise.resolve();
+      },
+    );
+
+    await dispatchPrompt("session-1", "hello", { providerId: "codex-acp" });
+
+    const [event] = turnEvents();
+    expect(event?.parameters.outcome).toBe("TURN_OUTCOME_COMPLETED");
+    expect(event?.parameters.message_committed).toBe(true);
+    expect(event?.parameters.provider).toBe("codex-acp");
+    expect(typeof event?.parameters.duration_ms).toBe("number");
+    expect("error_kind" in (event?.parameters ?? {})).toBe(false);
+  });
+
+  it("reports a cancelled turn rather than a failed one", async () => {
+    mocks.acpSendMessage.mockImplementationOnce(
+      (
+        _sessionId: string,
+        _prompt: string,
+        options: { onPromptDispatching(): void },
+      ) => {
+        options.onPromptDispatching();
+        return Promise.reject(
+          new DOMException("The operation was aborted.", "AbortError"),
+        );
+      },
+    );
+
+    await expect(dispatchPrompt("session-1", "hello", {})).rejects.toThrow();
+
+    const [event] = turnEvents();
+    expect(event?.parameters.outcome).toBe("TURN_OUTCOME_CANCELLED");
+    expect("error_kind" in (event?.parameters ?? {})).toBe(false);
+  });
+
+  it("reports a failed turn by kind, never by message", async () => {
+    mocks.acpSendMessage.mockImplementationOnce(
+      (
+        _sessionId: string,
+        _prompt: string,
+        options: { onPromptDispatching(): void },
+      ) => {
+        options.onPromptDispatching();
+        return Promise.reject(
+          new Error("Failed to get provider: Provider not set"),
+        );
+      },
+    );
+
+    await expect(dispatchPrompt("session-1", "hello", {})).rejects.toThrow();
+
+    const [event] = turnEvents();
+    expect(event?.parameters.outcome).toBe("TURN_OUTCOME_ERROR");
+    expect(event?.parameters.error_kind).toBe(
+      "TURN_ERROR_KIND_PROVIDER_NOT_SET",
+    );
+    expect(JSON.stringify(event?.parameters)).not.toContain("Provider not set");
+  });
+
+  it("reports nothing for a pre-commit rejection", async () => {
+    mocks.acpSendMessage.mockImplementationOnce(
+      (
+        _sessionId: string,
+        _prompt: string,
+        options: { onPromptDispatching(): void },
+      ) => {
+        options.onPromptDispatching();
+        return Promise.resolve();
+      },
+    );
+
+    await expect(
+      dispatchPrompt("session-1", "stale queued turn", {
+        beforeUserMessageCommitted: () => {
+          throw new QueuedMessageOwnershipLostError();
+        },
+      }),
+    ).rejects.toBeInstanceOf(QueuedMessageOwnershipLostError);
+
+    expect(turnEvents()).toEqual([]);
+  });
+
+  // The reporter sits in a `finally`; a throw there would replace the error on
+  // its way out and rename a harness failure after the telemetry stack.
+  it("lets the original error out when reporting throws", async () => {
+    mocks.track.mockImplementationOnce(() => {
+      throw new Error("telemetry exploded");
+    });
+    mocks.acpSendMessage.mockImplementationOnce(
+      (
+        _sessionId: string,
+        _prompt: string,
+        options: { onPromptDispatching(): void },
+      ) => {
+        options.onPromptDispatching();
+        return Promise.reject(new Error("harness said no"));
+      },
+    );
+
+    await expect(dispatchPrompt("session-1", "hello", {})).rejects.toThrow(
+      "harness said no",
+    );
   });
 });
