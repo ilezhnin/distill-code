@@ -990,6 +990,11 @@ export const MessageBubble = memo(function MessageBubble({
       (assistantDisplayName || hasPersonaAvatar || assistantProviderIcon),
   );
   const isSteeredMessage = isUser && message.metadata?.delivery === "steer";
+  // "steering" is the accepted-but-not-yet-collected state: Goose has the
+  // message and hands it to the agent at its next step. Saying so is the
+  // difference between a steer that looks ignored and one that is waiting.
+  const isPendingSteerMessage =
+    isUser && message.metadata?.delivery === "steering";
   const isBerdctlCrossSessionMessage =
     isUser && message.metadata?.origin === "berdctl_cross_session";
   // A brigade digest is a real cross-session user message; contract 3 says it
@@ -1119,7 +1124,9 @@ export const MessageBubble = memo(function MessageBubble({
             )}
             onClick={handleContentClick}
           >
-            {isBerdctlCrossSessionMessage || isSteeredMessage ? (
+            {isBerdctlCrossSessionMessage ||
+            isSteeredMessage ||
+            isPendingSteerMessage ? (
               <div className="mb-1 flex flex-col items-start gap-0.5 text-xs font-normal leading-4 text-muted-foreground">
                 {isBerdctlCrossSessionMessage ? (
                   <span
@@ -1136,6 +1143,14 @@ export const MessageBubble = memo(function MessageBubble({
                 {isSteeredMessage ? (
                   <span data-role="steer-message-label" className="leading-4">
                     {t("message.steerLabel")}
+                  </span>
+                ) : null}
+                {isPendingSteerMessage ? (
+                  <span
+                    data-role="steer-pending-message-label"
+                    className="leading-4"
+                  >
+                    {t("message.steerPendingLabel")}
                   </span>
                 ) : null}
               </div>
