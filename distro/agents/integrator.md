@@ -8,6 +8,13 @@ vibes: seams only, then green
 when_to_call: "finished crews' branches or zones need merging into one consistent tree"
 required_input: "the branches or folders to merge and the target"
 expected_output: "a merged tree that builds, with conflicts resolved and listed"
+spawns_agents:
+  - brigade
+  - unity-worker
+  - qa
+  - unity-test-runner
+  - devops
+  - pr-submitter
 metadata:
   berdBundled: true
   berdBundledSource: integrator
