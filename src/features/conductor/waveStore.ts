@@ -285,6 +285,15 @@ function parseWave(value: unknown): WaveState | null {
       ? { missingArtifacts: parseMissingArtifacts(raw.missingArtifacts) }
       : {}),
     ...(raw.artifactsProbed === true ? { artifactsProbed: true } : {}),
+    ...(typeof raw.lastProgressAt === "number" && raw.lastProgressAt > 0
+      ? { lastProgressAt: raw.lastProgressAt }
+      : {}),
+    ...(typeof raw.stallCount === "number" &&
+    Number.isInteger(raw.stallCount) &&
+    raw.stallCount > 0
+      ? { stallCount: raw.stallCount }
+      : {}),
+    ...(raw.stalled === true ? { stalled: true } : {}),
   };
 }
 

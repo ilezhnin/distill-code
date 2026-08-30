@@ -202,6 +202,28 @@ describe("parseWaveEngineState", () => {
     );
   });
 
+  it("keeps the stall detector's fields across a reload (P61)", () => {
+    // Losing stallCount on restart would hand a wedged wave a fresh grace
+    // it did nothing to earn; losing `stalled` would let a cut-short digest
+    // read as a finished wave.
+    const wave = {
+      ...createWaveState({
+        waveId: "w-stall",
+        conductorSessionId: "conductor-1",
+        planMessageId: "plan-1",
+        steps: [{ role: "scout", subtask: "Look", access: [] as const }],
+        createdAt: 3,
+      }),
+      lastProgressAt: 4_000,
+      stallCount: 1,
+      stalled: true,
+    };
+    const state = withWave(emptyWaveEngineState(), wave);
+    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
+      state,
+    );
+  });
+
   it("drops an unreadable carried report rather than the whole wave", () => {
     const parsed = parseWaveEngineState({
       version: 2,

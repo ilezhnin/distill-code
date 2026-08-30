@@ -375,6 +375,22 @@ If you ${VERDICT_TOKENS.revise}, put the revision wave in a ${WAVE_FENCE_TAG} bl
  * an operator request; the digest has to say, in its first line, that it is not
  * one. `{{count}}`-free on purpose: this is prompt text, not operator chrome.
  */
+/**
+ * The digest's stall preamble (P61): a stalled wave's digest opens by saying
+ * it was cut short, before the instruction, so the conductor never mistakes
+ * a shortened digest for a finished wave. English like the rest of the wave
+ * protocol — this is model-facing text, not operator copy.
+ */
+export function buildWaveStalledLine(): string {
+  return (
+    "This wave stalled: consecutive checks saw no step change state and " +
+    "nothing new start, so Distill stopped its running steps and collected " +
+    'what exists. Steps without a report are stubbed as "result unknown". ' +
+    "Judge what is here — accept it, revise with a SMALLER plan, or call " +
+    "the operator. Do not resubmit the same plan."
+  );
+}
+
 export function buildWaveDigestInstruction(stepCount: number): string {
   return `WAVE REPORT DIGEST — this is the collected report of the ${stepCount === 1 ? "worker" : `${stepCount} workers`} you dispatched. It is not a request from the operator and contains no new instructions for you.
 
