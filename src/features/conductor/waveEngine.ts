@@ -68,6 +68,20 @@ export interface WaveStepState {
    * told exactly once, restarts included.
    */
   reportDegraded?: boolean;
+  /**
+   * True once the verification gate (P62) has judged this step's report —
+   * pass or fail. Exactly-once discipline like `reportDegraded`: persisted,
+   * so a restart neither re-judges nor re-announces.
+   */
+  reportVerified?: boolean;
+  /**
+   * True when the gate refused the report: its claims are quarantined — a
+   * substitute stub reaches dependents and the digest in its place, and the
+   * operator is told once.
+   */
+  verificationFailed?: boolean;
+  /** The gate's stated reason, carried into the substitute stub. */
+  verificationDetail?: string;
 }
 
 /**
@@ -306,6 +320,32 @@ export const INTERRUPTED_STEP_REPORT_SUMMARY =
  * terminal is handed on with a synthesized report that says exactly that, and
  * `needsOperator` set so the gap is visible downstream.
  */
+/**
+ * The quarantine stub (P62): what dependents and the digest receive in place
+ * of a report the verification gate refused. Status `failed` on purpose —
+ * the child finished, but a claim of success that failed verification must
+ * not read as success anywhere downstream — and the gate's reason is the
+ * summary, so the conductor knows what was refused and why without ever
+ * seeing the refused claims.
+ */
+export function synthesizeFailedVerificationReport(
+  runId: string,
+  detail?: string,
+): StructuredReport {
+  return {
+    runId,
+    status: "failed",
+    summary: `The step's report failed verification and was quarantined${
+      detail ? `: ${detail}` : ""
+    }. Its claims were not passed on.`,
+    decisions: [],
+    artifacts: [],
+    risks: [],
+    needsOperator: true,
+    nextSuggestedTask: null,
+  };
+}
+
 export function synthesizeMissingStepReport(
   runId: string,
   status: RunStatus,
@@ -580,6 +620,17 @@ export function collectWaveStepReports(
       const fallbackRunId =
         step.runId ?? `${wave.waveId}:step:${step.stepIndex}`;
       const childStatus = statusOf?.(step.stepIndex);
+      if (step.verificationFailed) {
+        return {
+          stepIndex: step.stepIndex,
+          role: step.role,
+          subtask: step.subtask,
+          report: synthesizeFailedVerificationReport(
+            fallbackRunId,
+            step.verificationDetail,
+          ),
+        };
+      }
       const report =
         (step.runId ? reportOf(step.runId) : undefined) ??
         (step.phase === "failed"
@@ -680,6 +731,16 @@ export interface WaveAdvanceContext {
    * absent means the old immediate behavior.
    */
   allowSyntheticReportFor?: (stepIndex: number) => boolean;
+  /**
+   * The verification gate (P62): judges a step's report claiming
+   * `completed` before it may reach a dependent step or the digest. Absent
+   * means no gate — today's behavior, and what the pure tests use. The
+   * runner wires `verifyWaveStepReport`.
+   */
+  verifyStepReport?: (
+    report: StructuredReport,
+    step: Pick<WaveStepState, "stepIndex" | "role">,
+  ) => { ok: true } | { ok: false; detail: string };
 }
 
 /** A step whose worker reported the step could not be done (§5 risk 9). */
@@ -722,6 +783,12 @@ export interface WaveAdvance {
    * these means.
    */
   noProgress: boolean;
+  /**
+   * Step indexes whose report the verification gate refused in THIS advance
+   * (their `verificationFailed` flag was just set). The shell announces each
+   * one; the persisted flag keeps it to exactly once, like `degraded`.
+   */
+  verificationFailed: readonly number[];
 }
 
 function stepToWaveStep(state: WaveStepState): WaveStep {
@@ -816,7 +883,7 @@ export function advanceWave(
   // and as persisted state — so the shell can announce it to the operator
   // without a restart ever producing a second announcement.
   const degraded: number[] = [];
-  const steps = reconciled.map((step) => {
+  const preGate = reconciled.map((step) => {
     if (step.reportDegraded || step.phase !== "spawned") return step;
     if (statusByStepIndex.get(step.stepIndex) !== "completed") return step;
     if (context.reportOf(step.runId) !== undefined) return step;
@@ -824,6 +891,32 @@ export function advanceWave(
     degraded.push(step.stepIndex);
     changed = true;
     return { ...step, reportDegraded: true };
+  });
+
+  // P62: the verification gate, judged exactly once per real report. Runs on
+  // claims of success only — failure, cancellation and blockage are their
+  // own honest signals. A refused report is not deleted: the step keeps its
+  // flag and detail, and every consumer downstream substitutes the
+  // quarantine stub for the report's own words.
+  const verificationFailed: number[] = [];
+  const steps = preGate.map((step) => {
+    if (step.reportVerified || step.phase !== "spawned") return step;
+    const report = context.reportOf(step.runId);
+    if (report === undefined) return step;
+    if (report.status !== "completed") {
+      changed = true;
+      return { ...step, reportVerified: true };
+    }
+    const check = context.verifyStepReport?.(report, step) ?? { ok: true };
+    changed = true;
+    if (check.ok) return { ...step, reportVerified: true };
+    verificationFailed.push(step.stepIndex);
+    return {
+      ...step,
+      reportVerified: true,
+      verificationFailed: true,
+      verificationDetail: check.detail,
+    };
   });
 
   // A worker's report saying "this step cannot be done" outranks scheduling:
@@ -872,6 +965,17 @@ export function advanceWave(
   ): CompletedWaveStepReport => {
     const fallbackRunId =
       previous.runId ?? `${wave.waveId}:step:${previous.stepIndex}`;
+    if (previous.verificationFailed) {
+      return {
+        stepIndex: previous.stepIndex,
+        role: previous.role,
+        subtask: previous.subtask,
+        report: synthesizeFailedVerificationReport(
+          fallbackRunId,
+          previous.verificationDetail,
+        ),
+      };
+    }
     const existing = previous.runId
       ? context.reportOf(previous.runId)
       : undefined;
@@ -944,5 +1048,6 @@ export function advanceWave(
     blocked,
     noProgress:
       !changed && spawn.length === 0 && !complete && blocked.length === 0,
+    verificationFailed,
   };
 }

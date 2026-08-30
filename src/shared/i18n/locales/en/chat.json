@@ -647,6 +647,11 @@
     "stall": {
       "title": "This wave stopped making progress, so Distill ended it and collected what exists.",
       "body": "Nothing moved for {{count}} consecutive checks — no step changed state, nothing new started. Running steps were stopped; steps without a report appear in the digest as “result unknown”. The digest below says the wave stalled, so judge it with that in mind."
+    },
+    "reportVerification": {
+      "title": "Step {{step}} ({{name}}) reported success, but its report failed verification and was quarantined.",
+      "detail": "Reason: {{detail}} The digest and later steps receive a stub instead of its claims.",
+      "noDetail": "The digest and later steps receive a stub instead of its claims."
     }
   },
   "harnessBrigade": {
