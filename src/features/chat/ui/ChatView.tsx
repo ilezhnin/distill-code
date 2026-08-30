@@ -85,11 +85,11 @@ import { PocketVoiceSetupDialog } from "@/features/voice-conversation/ui/PocketV
 import { useProfileCapabilities } from "@/shared/profile/capabilities";
 import { consumePendingVoiceStart } from "@/features/voice-conversation/lib/pendingVoiceStart";
 import { useVoiceConversationStore } from "@/features/voice-conversation/stores/voiceConversationStore";
+import { SecurityConfirmationPanel } from "@/features/security/ui/SecurityConfirmationPanel";
 import {
-  SecurityConfirmationPanel,
   useHasPendingSecurityConfirmation,
   useRegisterSecurityConfirmationSurface,
-} from "@/features/security/ui/SecurityConfirmationPanel";
+} from "@/features/security/ui/securityConfirmationSurface";
 import {
   type ConductorOpenChildIntent,
   ConductorTranscriptProvider,

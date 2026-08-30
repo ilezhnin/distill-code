@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { Loader2, ShieldAlert, TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/shared/ui/button";
@@ -36,26 +36,6 @@ function parseAlert(alertText: string): ParsedAlert {
     confidence: extractConfidence(alertText),
     findingId,
   };
-}
-
-export function useHasPendingSecurityConfirmation(sessionId: string): boolean {
-  return useSecurityConfirmationStore(
-    (state) => (state.pendingBySessionId[sessionId]?.length ?? 0) > 0,
-  );
-}
-
-export function useRegisterSecurityConfirmationSurface(sessionId: string) {
-  const mountSurface = useSecurityConfirmationStore(
-    (state) => state.mountSurface,
-  );
-  const unmountSurface = useSecurityConfirmationStore(
-    (state) => state.unmountSurface,
-  );
-
-  useLayoutEffect(() => {
-    mountSurface(sessionId);
-    return () => unmountSurface(sessionId);
-  }, [mountSurface, sessionId, unmountSurface]);
 }
 
 export function SecurityConfirmationPanel({

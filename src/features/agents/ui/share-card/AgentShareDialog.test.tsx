@@ -15,7 +15,8 @@ import {
   encodeAgentImage,
   personaToSnapshot,
 } from "@/features/agents/agent-snapshot";
-import { AgentShareDialog, createAgentZip } from "./AgentShareDialog";
+import { AgentShareDialog } from "./AgentShareDialog";
+import { createAgentZip } from "./agentZipClient";
 import { downloadBlob, renderAgentShareCard } from "./agentShareCard";
 
 const workerMocks = vi.hoisted(() => ({

@@ -5,8 +5,8 @@ import {
   MentionAutocomplete,
   type FileMentionItem,
   type SkillMentionItem,
-  fuzzyMatch,
 } from "../MentionAutocomplete";
+import { fuzzyMatch } from "../mentionDetection";
 import { Popover, PopoverAnchor } from "@/shared/ui/popover";
 import type { Persona } from "@/shared/types/agents";
 

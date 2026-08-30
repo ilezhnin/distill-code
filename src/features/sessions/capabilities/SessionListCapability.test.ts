@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateDisplayOptions } from "./SessionListCapability";
+import { validateDisplayOptions } from "./sessionListDisplayOptions";
 
 const defaults = {
   projectShowChatIcons: false,

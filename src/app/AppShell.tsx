@@ -253,6 +253,10 @@ import type {
 import type { TopBarBreadcrumb } from "./ui/TopBar";
 import { STARTUP_LOADING_MIN_DISPLAY_MS } from "./lib/startupLoading";
 import { StartupLoadingView } from "./ui/StartupLoadingView";
+import {
+  shouldStopVoiceConversationOnExperimentChange,
+  shouldStopVoiceConversationOnSessionChange,
+} from "./lib/voiceConversationLifecycle";
 export type { AppView } from "./types/appNavigation";
 
 type AppNavigationHistory = {
@@ -337,25 +341,6 @@ function getSessionArchiveInterruptionReason(
 
 type GlobalComposerPlacement = "docked" | "centered" | "handoff";
 
-export function shouldStopVoiceConversationOnSessionChange({
-  previousSessionId,
-  nextSessionId,
-  boundSessionId,
-  lifecycle,
-}: {
-  previousSessionId: string | null;
-  nextSessionId: string | null;
-  boundSessionId: string | null;
-  lifecycle: string;
-}): boolean {
-  return (
-    previousSessionId !== null &&
-    previousSessionId !== nextSessionId &&
-    boundSessionId === previousSessionId &&
-    lifecycle !== "stopped" &&
-    lifecycle !== "unavailable"
-  );
-}
 const current = (id: string, label: string): TopBarBreadcrumb => ({
   id,
   label,
@@ -596,16 +581,6 @@ function getTopBarChromeInsets(
   }
 
   return { leading: "compact" };
-}
-
-export function shouldStopVoiceConversationOnExperimentChange({
-  wasEnabled,
-  isEnabled,
-}: {
-  wasEnabled: boolean;
-  isEnabled: boolean;
-}): boolean {
-  return wasEnabled && !isEnabled;
 }
 
 export function AppShell({
