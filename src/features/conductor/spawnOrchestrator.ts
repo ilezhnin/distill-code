@@ -14,6 +14,7 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 
 import { useAgentStore } from "@/features/agents/stores/agentStore";
+import { personaAgentRefs } from "@/shared/lib/agentSpawns";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
@@ -91,10 +92,26 @@ export async function spawnConductorChildSession(args: {
         .getState()
         .personas.find((persona) => persona.id === initiatorPersonaId)
     : undefined;
+  // The target's identity for the named allowlist: the persona the spawn
+  // names, or — when it names only a catalog role — that role's id, which is
+  // what an allowlist author writes for a persona-less step.
+  const targetPersona = args.personaId
+    ? useAgentStore
+        .getState()
+        .personas.find((persona) => persona.id === args.personaId)
+    : undefined;
+  const targetAgentRefs = targetPersona
+    ? personaAgentRefs(targetPersona)
+    : [args.roleId, args.personaName]
+        .filter((ref): ref is string => Boolean(ref?.trim()))
+        .map((ref) => ref.trim());
   const aclCheck = checkSpawnAllowed({
     initiatorRole,
     initiatorPersona,
     targetLayer: args.role,
+    targetAgentRefs,
+    targetAgentName:
+      targetPersona?.displayName ?? args.personaName ?? args.roleId,
   });
   if (!aclCheck.allowed) {
     // D5: the refusal is posted where the operator is already looking (the
@@ -105,6 +122,9 @@ export async function spawnConductorChildSession(args: {
       initiatorLayer: aclCheck.initiatorRole,
       targetLayer: aclCheck.targetLayer,
       allowedLayers: aclCheck.allowedLayers,
+      refusal: aclCheck.refusal,
+      allowedAgents: aclCheck.allowedAgents,
+      targetAgent: aclCheck.targetAgent,
     });
     useChatStore
       .getState()
@@ -200,7 +220,13 @@ export async function spawnConductorChildSession(args: {
       : {}),
   });
 
-  const childPrompt = args.prompt?.trim() || wrapOrchestratorTaskPrompt(task);
+  const baseChildPrompt =
+    args.prompt?.trim() || wrapOrchestratorTaskPrompt(task);
+  // The agent's own contract card travels with the task: what it promised
+  // to return is part of the delegation, not a fact only its caller knows.
+  const childPrompt = targetPersona?.expectedOutput
+    ? `${baseChildPrompt}\n\nYour agent card promises this output; deliver it:\n${targetPersona.expectedOutput}`
+    : baseChildPrompt;
   const persona = args.personaId
     ? {
         kind: "persona" as const,

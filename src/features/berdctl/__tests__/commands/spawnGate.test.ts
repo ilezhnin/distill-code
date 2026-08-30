@@ -102,6 +102,37 @@ describe("enforceBerdctlSpawnAcl", () => {
     ).toThrow(CommandError);
   });
 
+  it("enforces a named allowlist: listed persona passes, unlisted and unnamed refuse", () => {
+    useConductorGraphStore
+      .getState()
+      .registerNode(node({ role: "conductor", personaId: "producer" }));
+    useAgentStore.setState({
+      personas: [
+        { ...persona("producer"), spawnsAgents: ["scout"] },
+        persona("scout"),
+        persona("writer"),
+      ],
+    });
+
+    expect(() =>
+      enforceBerdctlSpawnAcl({
+        actor: ACTOR_ID,
+        targetLayer: "worker",
+        targetPersona: persona("scout"),
+      }),
+    ).not.toThrow();
+    expect(() =>
+      enforceBerdctlSpawnAcl({
+        actor: ACTOR_ID,
+        targetLayer: "worker",
+        targetPersona: persona("writer"),
+      }),
+    ).toThrow(CommandError);
+    expect(() =>
+      enforceBerdctlSpawnAcl({ actor: ACTOR_ID, targetLayer: "worker" }),
+    ).toThrow(CommandError);
+  });
+
   it("lets a conductor start workers, per the layer default", () => {
     useConductorGraphStore.getState().registerNode(node({ role: "conductor" }));
     expect(() =>

@@ -36,6 +36,21 @@ export interface Persona {
    * conductor feature's spawn ACL, not just stated in prompt text.
    */
   spawns?: AgentSpawnLayer[];
+  /**
+   * Per-agent named spawn allowlist from persona frontmatter
+   * (`spawns_agents`): which agents, by name, a session running this
+   * persona may start. Absent means "no name restriction — the layer ACL
+   * alone decides"; an empty array is a real override meaning "may start
+   * no agents by name". Deny-by-default once authored: a spawn naming an
+   * agent outside the list, or naming no agent at all, is refused.
+   */
+  spawnsAgents?: string[];
+  /** Contract card (`when_to_call`): when a caller should start this agent. */
+  whenToCall?: string;
+  /** Contract card (`required_input`): what a caller must include in the task. */
+  requiredInput?: string;
+  /** Contract card (`expected_output`): what this agent returns when done. */
+  expectedOutput?: string;
   isBuiltin: boolean;
   writable: boolean;
   sourceDescription?: string;

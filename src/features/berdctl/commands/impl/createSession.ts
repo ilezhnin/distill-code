@@ -129,9 +129,6 @@ Result:
       import("../runtime/projects"),
       import("../runtime/providers"),
     ]);
-    // Refused before any validation I/O: a refusal must cost nothing to
-    // roll back. A berdctl-created session is worker-rank work.
-    enforceBerdctlSpawnAcl({ actor: ctx.actor, targetLayer: "worker" });
     const harnessId = args.harness_id ?? GOOSE_PROVIDER_ID;
     // The validation legs are independent I/O; overlap them.
     const [project, , models, persona] = await Promise.all([
@@ -145,6 +142,14 @@ Result:
         : null,
       args.agent_id ? findPersonaOrThrow(args.agent_id) : null,
     ]);
+    // Enforced after validation resolved the target persona (the named
+    // allowlist needs to know WHO is being started) and before anything is
+    // created, so a refusal still costs nothing to roll back.
+    enforceBerdctlSpawnAcl({
+      actor: ctx.actor,
+      targetLayer: "worker",
+      targetPersona: persona,
+    });
     // Soft model validation: only reject when the harness's model list is
     // known and the id is not in it. On goose a model belongs to a model
     // provider (anthropic, openai, ...), so a match also resolves the
