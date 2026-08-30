@@ -6,7 +6,8 @@ import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import type { SessionNode } from "@/features/conductor/types";
 import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
-import { formatSidebarChatTimestamp, SidebarChatRow } from "../SidebarChatRow";
+import { SidebarChatRow } from "../SidebarChatRow";
+import { formatSidebarChatTimestamp } from "../sidebarChatTimestamp";
 import {
   focusSessionWindow,
   getSessionWindowSupport,

@@ -65,6 +65,10 @@ import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
 import type { SidebarSessionItem } from "@/features/sessions/ui/session-list/SidebarProjectSection";
 import type { SidebarProjectsSectionProps } from "@/features/sessions/ui/session-list/SidebarProjectsSection";
 import { SessionListSurface } from "./SessionListSurface";
+import {
+  validateDisplayOptions,
+  type SessionListDisplayOptions,
+} from "./sessionListDisplayOptions";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { isNestedExecutorSession } from "@/features/conductor/sessionVisibility";
 
@@ -78,13 +82,6 @@ const FLAT_CHAT_GROUP_REFRESH_INTERVAL_MS = 60 * 1000;
 type SessionListSectionVisibility = {
   projects: boolean;
   recents: boolean;
-};
-
-type SessionListDisplayOptions = {
-  projectShowChatIcons: boolean;
-  projectShowTimestamps: boolean;
-  chatShowChatIcons: boolean;
-  chatShowTimestamps: boolean;
 };
 
 const DEFAULT_SECTION_VISIBILITY: SessionListSectionVisibility = {
@@ -353,56 +350,6 @@ function validateSectionVisibility(
         : defaults.projects,
     recents:
       typeof parsed.recents === "boolean" ? parsed.recents : defaults.recents,
-  };
-}
-
-export function validateDisplayOptions(
-  value: unknown,
-  defaults: SessionListDisplayOptions,
-): SessionListDisplayOptions {
-  if (!value || typeof value !== "object") return defaults;
-  const parsed = value as Partial<
-    Record<keyof SessionListDisplayOptions, unknown>
-  > & {
-    showChatIcons?: unknown;
-    showTimestamps?: unknown;
-    showProjectChatIcons?: unknown;
-    showProjectTimestamps?: unknown;
-  };
-  const legacyShowChatIcons =
-    typeof parsed.showChatIcons === "boolean" ? parsed.showChatIcons : null;
-  const legacyShowTimestamps =
-    typeof parsed.showTimestamps === "boolean" ? parsed.showTimestamps : null;
-  const booleanOption = (
-    value: unknown,
-    legacy: boolean | null,
-    fallback: boolean,
-  ) => (typeof value === "boolean" ? value : (legacy ?? fallback));
-  return {
-    projectShowChatIcons: booleanOption(
-      parsed.projectShowChatIcons,
-      typeof parsed.showProjectChatIcons === "boolean"
-        ? parsed.showProjectChatIcons
-        : legacyShowChatIcons,
-      defaults.projectShowChatIcons,
-    ),
-    projectShowTimestamps: booleanOption(
-      parsed.projectShowTimestamps,
-      typeof parsed.showProjectTimestamps === "boolean"
-        ? parsed.showProjectTimestamps
-        : legacyShowTimestamps,
-      defaults.projectShowTimestamps,
-    ),
-    chatShowChatIcons: booleanOption(
-      parsed.chatShowChatIcons,
-      legacyShowChatIcons,
-      defaults.chatShowChatIcons,
-    ),
-    chatShowTimestamps: booleanOption(
-      parsed.chatShowTimestamps,
-      legacyShowTimestamps,
-      defaults.chatShowTimestamps,
-    ),
   };
 }
 
