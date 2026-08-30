@@ -31,7 +31,9 @@ export type ModelPreferenceClassId =
   | "coding-complex"
   | "one-shot"
   | "testing-heavy"
-  | "testing-light";
+  | "testing-light"
+  | "general-medium"
+  | "general-light";
 
 export interface RankedModelCandidate {
   /** Operator-facing name of the candidate ("Opus 5"). */
@@ -82,38 +84,52 @@ const CODEX_SOL: RankedModelCandidate = {
   needles: [["sol"]],
   effort: "xhigh",
 };
-const GROK_HEAVY: RankedModelCandidate = {
-  label: "Grok 4.6 Heavy",
-  platform: "grok-acp",
-  needles: [["grok", "heavy"], ["grok-4-6-heavy"]],
-};
 const GROK: RankedModelCandidate = {
   label: "Grok 4.6",
   platform: "grok-acp",
   needles: [["grok"]],
 };
-const TERA: RankedModelCandidate = { label: "Tera", needles: [["tera"]] };
-const LUNA: RankedModelCandidate = { label: "Luna", needles: [["luna"]] };
+// Tera and Luna carry an effort so a harness that serves each tier as its
+// own id seeds the middle of its range, not the `[low]` the inventory lists
+// first (the same trap pickCandidateMatch closes for Sol). On a harness with
+// one id per model the effort is ignored and the first match wins as before.
+const TERA: RankedModelCandidate = {
+  label: "Tera",
+  needles: [["tera"]],
+  effort: "high",
+};
+const LUNA: RankedModelCandidate = {
+  label: "Luna",
+  needles: [["luna"]],
+  effort: "medium",
+};
 
 /**
- * The operator's rankings, verbatim (2026-08-23):
- * frontend/UI-UX Opus → Fable → Sol; simple coding Grok Heavy → Opus;
- * complex coding Fable → Sol; one-shot Fable → Sol → Opus → Grok;
- * heavy testing/audit Fable → Sol → Opus; light testing Grok → Tera → Luna.
+ * The operator's rankings, verbatim (2026-08-30), as three profiles:
+ * very heavy / research / design work runs Fable → Opus 5 → Sol; medium
+ * work runs Grok 4.6 → Opus 5 → Tera; light work with no serious coding or
+ * design runs Grok 4.6 → Luna → Opus 5. The six original class ids keep
+ * working — persona frontmatter references them — and each now carries the
+ * profile its kind of work falls under; `general-medium` / `general-light`
+ * exist so non-testing roles of those weights stop borrowing the testing
+ * classes' names. (Superseded rankings of 2026-08-23 kept in git history.)
  */
+const HEAVY_PROFILE = [FABLE, OPUS, CODEX_SOL];
+const MEDIUM_PROFILE = [GROK, OPUS, TERA];
+const LIGHT_PROFILE = [GROK, LUNA, OPUS];
+
 export const MODEL_PREFERENCE_CLASSES: Record<
   ModelPreferenceClassId,
   ModelPreferenceClass
 > = {
-  "frontend-ui": { id: "frontend-ui", ranking: [OPUS, FABLE, CODEX_SOL] },
-  "coding-simple": { id: "coding-simple", ranking: [GROK_HEAVY, OPUS] },
-  "coding-complex": { id: "coding-complex", ranking: [FABLE, CODEX_SOL] },
-  "one-shot": { id: "one-shot", ranking: [FABLE, CODEX_SOL, OPUS, GROK] },
-  "testing-heavy": {
-    id: "testing-heavy",
-    ranking: [FABLE, CODEX_SOL, OPUS],
-  },
-  "testing-light": { id: "testing-light", ranking: [GROK, TERA, LUNA] },
+  "frontend-ui": { id: "frontend-ui", ranking: [...HEAVY_PROFILE] },
+  "coding-simple": { id: "coding-simple", ranking: [...MEDIUM_PROFILE] },
+  "coding-complex": { id: "coding-complex", ranking: [...HEAVY_PROFILE] },
+  "one-shot": { id: "one-shot", ranking: [...HEAVY_PROFILE] },
+  "testing-heavy": { id: "testing-heavy", ranking: [...HEAVY_PROFILE] },
+  "testing-light": { id: "testing-light", ranking: [...LIGHT_PROFILE] },
+  "general-medium": { id: "general-medium", ranking: [...MEDIUM_PROFILE] },
+  "general-light": { id: "general-light", ranking: [...LIGHT_PROFILE] },
 };
 
 /** Every class id, in the order the settings pane and the prompt list them. */
@@ -166,16 +182,21 @@ export const MODEL_CLASS_BY_AGENT_SLUG: Record<string, ModelPreferenceClassId> =
     wildcard: "one-shot",
     producer: "one-shot",
     planner: "one-shot",
-    scout: "one-shot",
     researcher: "one-shot",
     oracle: "one-shot",
-    "context-builder": "one-shot",
-    "asset-scout": "one-shot",
-    "unity-explorer": "one-shot",
-    writer: "one-shot",
-    localizer: "one-shot",
-    marketer: "one-shot",
-    audio: "one-shot",
+    // medium weight: careful reading, structured output, no deep design
+    // decisions — mapping a project, packaging a handoff, sourcing assets,
+    // spec'ing audio (gamedev recalibration 2026-08-30)
+    "unity-explorer": "general-medium",
+    "context-builder": "general-medium",
+    "asset-scout": "general-medium",
+    audio: "general-medium",
+    // light weight: no serious coding or design — fact checks, prose,
+    // translations, store copy
+    scout: "general-light",
+    writer: "general-light",
+    localizer: "general-light",
+    marketer: "general-light",
     // heavy testing / audit
     acceptor: "testing-heavy",
     adversary: "testing-heavy",
