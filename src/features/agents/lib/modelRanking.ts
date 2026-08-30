@@ -127,6 +127,10 @@ export function isModelPreferenceClassId(
 /**
  * Default class per bundled agent slug. A persona's own `modelRanking`
  * property overrides this; user agents without either get no ranking.
+ *
+ * Lookup slugs come from the persona's *display name*
+ * (`modelPreferenceClassForPersona`), which for a few bundled agents differs
+ * from the file stem — those carry both spellings so neither route misses.
  */
 export const MODEL_CLASS_BY_AGENT_SLUG: Record<string, ModelPreferenceClassId> =
   {
@@ -142,7 +146,9 @@ export const MODEL_CLASS_BY_AGENT_SLUG: Record<string, ModelPreferenceClassId> =
     // coding, simple mechanical work
     devops: "coding-simple",
     "pr-submitter": "coding-simple",
+    submitter: "coding-simple",
     "unity-asset-integrator": "coding-simple",
+    "asset-integrator": "coding-simple",
     tinker: "coding-simple",
     // one-shot capability (research, synthesis, coordination)
     producer: "one-shot",
@@ -167,6 +173,7 @@ export const MODEL_CLASS_BY_AGENT_SLUG: Record<string, ModelPreferenceClassId> =
     qa: "testing-light",
     playtester: "testing-light",
     "unity-test-runner": "testing-light",
+    "test-runner": "testing-light",
   };
 
 export interface RankableModel {
