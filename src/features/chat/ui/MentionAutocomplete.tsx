@@ -14,7 +14,6 @@ import type {
   MentionItem,
   SkillMentionItem,
 } from "./mentionDetection";
-export { fuzzyMatch, useMentionDetection } from "./mentionDetection";
 export type {
   AtMentionCategory,
   FileMentionItem,

@@ -20,12 +20,12 @@ import {
   type FileMentionPathEntry,
 } from "@/shared/api/system";
 import type { Persona } from "@/shared/types/agents";
-import {
-  useMentionDetection,
-  type FileMentionItem,
-  type MentionItem,
-  type SkillMentionItem,
+import type {
+  FileMentionItem,
+  MentionItem,
+  SkillMentionItem,
 } from "../ui/MentionAutocomplete";
+import { useMentionDetection } from "../ui/mentionDetection";
 import { useSessionArtifacts } from "./ArtifactPolicyContext";
 
 interface MentionHandlersOptions {

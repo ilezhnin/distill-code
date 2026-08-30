@@ -45,11 +45,11 @@ import {
   DEFAULT_RUNTIME_CONFIG,
   type RuntimeConfig,
 } from "@/shared/runtime-config/schema";
+import { AppShell } from "./AppShell";
 import {
-  AppShell,
   shouldStopVoiceConversationOnExperimentChange,
   shouldStopVoiceConversationOnSessionChange,
-} from "./AppShell";
+} from "./lib/voiceConversationLifecycle";
 import type { NavigationPanesViewProps } from "@/app/views/NavigationPanesView";
 import type { AppShellContent as AppShellContentType } from "./ui/AppShellContent";
 

@@ -13,9 +13,11 @@ import { renderWithProviders } from "@/test/render";
 import {
   SecurityConfirmationFallback,
   SecurityConfirmationPanel,
+} from "./SecurityConfirmationPanel";
+import {
   useHasPendingSecurityConfirmation,
   useRegisterSecurityConfirmationSurface,
-} from "./SecurityConfirmationPanel";
+} from "./securityConfirmationSurface";
 
 const command = 'python3 -c "import base64; exec(base64.b64decode(payload))"';
 
