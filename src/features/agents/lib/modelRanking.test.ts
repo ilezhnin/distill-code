@@ -150,6 +150,43 @@ describe("resolveRankedModel", () => {
     expect(light.choice?.harnessId).toBe("grok-acp");
   });
 
+  it("prefers the effort-tier variant the candidate asks for", () => {
+    // Codex serves every tier as its own id, ascending — first-match used to
+    // hand an xhigh candidate the [low] variant (L1, 2026-08-28).
+    const tiers: RankableModel[] = [
+      { id: "gpt-5.6-sol[low]", displayName: "GPT 5.6 Sol[low]" },
+      { id: "gpt-5.6-sol[medium]", displayName: "GPT 5.6 Sol[medium]" },
+      { id: "gpt-5.6-sol[xhigh]", displayName: "GPT 5.6 Sol[xhigh]" },
+    ];
+    const result = resolveRankedModel(
+      "coding-complex",
+      input({
+        modelsForPlatform: (platform) =>
+          platform === "codex-acp" ? tiers : [],
+      }),
+    );
+    // coding-complex: Fable → Sol; Fable is not installed here.
+    expect(result.choice?.label).toBe("Codex Sol");
+    expect(result.choice?.model.id).toBe("gpt-5.6-sol[xhigh]");
+  });
+
+  it("keeps the first match when no variant embeds the asked effort", () => {
+    const tiers: RankableModel[] = [
+      { id: "gpt-5.6-sol[low]", displayName: "GPT 5.6 Sol[low]" },
+      { id: "gpt-5.6-sol[ultra]", displayName: "GPT 5.6 Sol[ultra]" },
+    ];
+    const result = resolveRankedModel(
+      "coding-complex",
+      input({
+        modelsForPlatform: (platform) =>
+          platform === "codex-acp" ? tiers : [],
+      }),
+    );
+    // The preference cannot be honoured, so behavior stays what it was —
+    // the first advertised match — rather than resolving to nothing.
+    expect(result.choice?.model.id).toBe("gpt-5.6-sol[low]");
+  });
+
   it("searches every harness for a platformless candidate", () => {
     const result = resolveRankedModel(
       "testing-light",

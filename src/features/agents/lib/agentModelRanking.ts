@@ -34,6 +34,7 @@ import {
   isModelPreferenceClassId,
   KNOWN_MODEL_CANDIDATES,
   MODEL_PREFERENCE_CLASSES,
+  pickCandidateMatch,
   type ModelPreferenceClassId,
   type RankedModelCandidate,
 } from "./modelRanking";
@@ -337,15 +338,17 @@ export function rankingFromClass(
 ): AgentModelRanking {
   const entries: AgentRankingEntry[] = [];
   for (const candidate of MODEL_PREFERENCE_CLASSES[classId].ranking) {
-    const match = installed.find((model) => {
-      if (candidate.platform && model.platform !== candidate.platform) {
-        return false;
-      }
-      const haystack = `${model.modelId} ${model.label}`.toLowerCase();
-      return candidate.needles.some((set) =>
-        set.every((needle) => haystack.includes(needle)),
-      );
-    });
+    // pickCandidateMatch so a harness that serves each effort tier as its own
+    // id seeds the tier the class asks for, not the `[low]` the inventory
+    // happens to list first — a seeded low tier is a silent downgrade the
+    // operator then has to notice and hand-fix.
+    const match = pickCandidateMatch(
+      candidate,
+      installed.filter(
+        (model) => !candidate.platform || model.platform === candidate.platform,
+      ),
+      (model) => ({ id: model.modelId, displayName: model.label }),
+    );
     if (!match) continue;
     entries.push({
       platform: match.platform,
