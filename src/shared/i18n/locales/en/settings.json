@@ -985,7 +985,9 @@
       "coding-complex": "Complex coding",
       "one-shot": "One-shot work",
       "testing-heavy": "Heavy testing and audit",
-      "testing-light": "Light testing"
+      "testing-light": "Light testing",
+      "general-medium": "Medium general work",
+      "general-light": "Light general work"
     },
     "moveUp": "Move {{label}} up",
     "moveDown": "Move {{label}} down",

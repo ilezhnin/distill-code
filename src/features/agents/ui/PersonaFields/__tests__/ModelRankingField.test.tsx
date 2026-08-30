@@ -275,11 +275,11 @@ describe("ModelRankingField", () => {
 
     expect(onChange).toHaveBeenCalledTimes(1);
     const written = JSON.parse(onChange.mock.calls[0][0] as string);
-    // "Designer" is a frontend-ui role: Opus, then Fable — Sol is not
-    // installed here, so it is not written into the list as a dead row.
+    // "Designer" is a frontend-ui role (heavy profile): Fable, then Opus —
+    // Sol is not installed here, so it is not written as a dead row.
     expect(
       written.entries.map((entry: { label: string }) => entry.label),
-    ).toEqual(["Opus 5", "Fable 5"]);
+    ).toEqual(["Fable 5", "Opus 5"]);
     expect(written.entries[0].effort).toBe("xhigh");
   });
 

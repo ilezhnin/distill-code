@@ -44,9 +44,10 @@ function input(
 describe("resolveRankedModel", () => {
   it("picks the top preference when everything is available", () => {
     const result = resolveRankedModel("frontend-ui", input());
-    expect(result.choice?.label).toBe("Opus 5");
+    // Design work is heavy-profile: Fable → Opus 5 → Sol (2026-08-30).
+    expect(result.choice?.label).toBe("Fable 5");
     expect(result.choice?.harnessId).toBe("claude-acp");
-    expect(result.choice?.model.id).toBe("claude-opus-5");
+    expect(result.choice?.model.id).toBe("claude-fable-5");
     expect(result.choice?.rankIndex).toBe(0);
     expect(result.skipped).toEqual([]);
   });
@@ -59,10 +60,13 @@ describe("resolveRankedModel", () => {
           platform === "claude-acp" ? "at-limit" : "clear",
       }),
     );
-    // one-shot: Fable → Sol → Opus → Grok; both claude candidates are gated.
+    // one-shot: Fable → Opus 5 → Sol; both claude candidates are gated.
     expect(result.choice?.label).toBe("Codex Sol");
-    expect(result.choice?.rankIndex).toBe(1);
-    expect(result.skipped).toEqual([{ label: "Fable 5", reason: "at-limit" }]);
+    expect(result.choice?.rankIndex).toBe(2);
+    expect(result.skipped).toEqual([
+      { label: "Fable 5", reason: "at-limit" },
+      { label: "Opus 5", reason: "at-limit" },
+    ]);
   });
 
   it("keeps Opus when only Fable's own weekly window is spent", () => {
@@ -79,9 +83,10 @@ describe("resolveRankedModel", () => {
       }),
     );
 
-    // one-shot: Fable → Sol → Opus → Grok. Fable is out on its own window;
-    // Sol is next and still clear, so it wins — but Opus was never gated.
-    expect(result.choice?.label).toBe("Codex Sol");
+    // one-shot: Fable → Opus 5 → Sol. Fable is out on its own window; Opus
+    // is next on the same platform and was never gated — exactly the
+    // operator's case, and the ranking now says it directly.
+    expect(result.choice?.label).toBe("Opus 5");
     expect(result.skipped).toEqual([{ label: "Fable 5", reason: "at-limit" }]);
   });
 
@@ -94,13 +99,14 @@ describe("resolveRankedModel", () => {
       }),
     );
 
-    // frontend-ui: Opus → Fable → Sol. Both claude candidates are near their
-    // limit, so the work goes to Sol rather than being cut off mid-flight.
+    // frontend-ui: Fable → Opus 5 → Sol. Both claude candidates are near
+    // their limit, so the work goes to Sol rather than being cut off
+    // mid-flight.
     expect(result.choice?.label).toBe("Codex Sol");
     expect(result.choice?.nearLimit).toBeUndefined();
     expect(result.skipped).toEqual([
-      { label: "Opus 5", reason: "near-limit" },
       { label: "Fable 5", reason: "near-limit" },
+      { label: "Opus 5", reason: "near-limit" },
     ]);
   });
 
@@ -112,7 +118,7 @@ describe("resolveRankedModel", () => {
 
     // Every candidate is close to its limit. Falling through to the caller's
     // untargeted default would be worse than the model the operator ranked.
-    expect(result.choice?.label).toBe("Opus 5");
+    expect(result.choice?.label).toBe("Fable 5");
     expect(result.choice?.nearLimit).toBe(true);
     // The skips reported are the strict pass — what it would have used.
     expect(result.skipped.map((skip) => skip.reason)).toEqual([
@@ -135,18 +141,17 @@ describe("resolveRankedModel", () => {
           platform === "claude-acp" ? CLAUDE_MODELS : [],
       }),
     );
-    // coding-simple: Grok Heavy → Opus.
+    // coding-simple (medium profile): Grok 4.6 → Opus 5 → Tera.
     expect(result.choice?.label).toBe("Opus 5");
     expect(result.skipped).toEqual([
-      { label: "Grok 4.6 Heavy", reason: "not-installed" },
+      { label: "Grok 4.6", reason: "not-installed" },
     ]);
   });
 
-  it("matches Grok Heavy before plain Grok, never the other way", () => {
-    const heavy = resolveRankedModel("coding-simple", input());
-    expect(heavy.choice?.model.id).toBe("grok-4-6-heavy");
+  it("starts every medium and light class at Grok 4.6", () => {
+    const medium = resolveRankedModel("coding-simple", input());
+    expect(medium.choice?.harnessId).toBe("grok-acp");
     const light = resolveRankedModel("testing-light", input());
-    // testing-light starts at plain Grok; the first grok match wins.
     expect(light.choice?.harnessId).toBe("grok-acp");
   });
 
@@ -193,11 +198,11 @@ describe("resolveRankedModel", () => {
       input({
         modelsForPlatform: () => [],
         allModels: () => [
-          { harnessId: "goose", model: { id: "tera-1", displayName: "Tera" } },
+          { harnessId: "goose", model: { id: "luna-1", displayName: "Luna" } },
         ],
       }),
     );
-    expect(result.choice?.label).toBe("Tera");
+    expect(result.choice?.label).toBe("Luna");
     expect(result.choice?.harnessId).toBe("goose");
   });
 
