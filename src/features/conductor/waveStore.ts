@@ -119,6 +119,11 @@ function parseStep(value: unknown): WaveStepState | null {
     ...(typeof raw.sessionId === "string" ? { sessionId: raw.sessionId } : {}),
     ...(typeof raw.runId === "string" ? { runId: raw.runId } : {}),
     ...(raw.reportDegraded === true ? { reportDegraded: true } : {}),
+    ...(raw.reportVerified === true ? { reportVerified: true } : {}),
+    ...(raw.verificationFailed === true ? { verificationFailed: true } : {}),
+    ...(typeof raw.verificationDetail === "string" && raw.verificationDetail
+      ? { verificationDetail: raw.verificationDetail }
+      : {}),
   };
 }
 

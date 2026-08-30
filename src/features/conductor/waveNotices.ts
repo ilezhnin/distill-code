@@ -122,6 +122,30 @@ export function waveStalledNoticeText(stallCount: number): string {
   ].join("\n\n");
 }
 
+/**
+ * Notice posted when the verification gate (P62) refuses a step's report:
+ * the claims were quarantined, the digest will carry the stub, and the
+ * operator learns it now rather than from a digest that quietly lost a
+ * step's account of itself.
+ */
+export function waveReportVerificationFailedNoticeText(facts: {
+  stepIndex: number;
+  name: string;
+  detail?: string;
+}): string {
+  return [
+    i18n.t("chat:conductor.reportVerification.title", {
+      step: facts.stepIndex + 1,
+      name: facts.name,
+    }),
+    facts.detail
+      ? i18n.t("chat:conductor.reportVerification.detail", {
+          detail: facts.detail,
+        })
+      : i18n.t("chat:conductor.reportVerification.noDetail"),
+  ].join("\n\n");
+}
+
 /** Notice shown when a wave step could not be started at all. */
 export function waveSpawnFailureText(
   stepIndex: number,
