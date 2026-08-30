@@ -2482,7 +2482,7 @@ describe("ChatInput", () => {
     expect(onSend).toHaveBeenCalledWith("follow up", null, undefined);
   });
 
-  it("queues on plain enter during streaming", async () => {
+  it("steers on plain enter during streaming by default", async () => {
     const onSend = vi.fn();
     const onSteerMessage = vi.fn();
     const user = userEvent.setup();
@@ -2498,11 +2498,18 @@ describe("ChatInput", () => {
     await user.type(screen.getByRole("textbox"), "follow up");
     await user.keyboard("{Enter}");
 
-    expect(onSend).toHaveBeenCalledWith("follow up", null, undefined);
-    expect(onSteerMessage).not.toHaveBeenCalled();
+    expect(onSteerMessage).toHaveBeenCalledWith(
+      "follow up",
+      undefined,
+      undefined,
+    );
+    expect(onSend).not.toHaveBeenCalled();
   });
 
-  it("steers on cmd-enter during streaming by default", async () => {
+  it.each([
+    ["cmd", "{Meta>}{Enter}{/Meta}"],
+    ["ctrl", "{Control>}{Enter}{/Control}"],
+  ])("queues on %s-enter during streaming", async (_label, keys) => {
     const onSend = vi.fn();
     const onSteerMessage = vi.fn();
     const user = userEvent.setup();
@@ -2516,7 +2523,27 @@ describe("ChatInput", () => {
     );
 
     await user.type(screen.getByRole("textbox"), "follow up");
-    await user.keyboard("{Meta>}{Enter}{/Meta}");
+    await user.keyboard(keys);
+
+    expect(onSend).toHaveBeenCalledWith("follow up", null, undefined);
+    expect(onSteerMessage).not.toHaveBeenCalled();
+  });
+
+  it("offers a steer button in the composer while a turn is running", async () => {
+    const onSend = vi.fn();
+    const onSteerMessage = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <ChatInput
+        onSend={onSend}
+        onSteerMessage={onSteerMessage}
+        canSteerMessage
+        isStreaming
+      />,
+    );
+
+    await user.type(screen.getByRole("textbox"), "follow up");
+    await user.click(screen.getByRole("button", { name: /^steer$/i }));
 
     expect(onSteerMessage).toHaveBeenCalledWith(
       "follow up",
@@ -2524,6 +2551,17 @@ describe("ChatInput", () => {
       undefined,
     );
     expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("shows no steer button where the harness cannot take one", async () => {
+    const user = userEvent.setup();
+    render(<ChatInput onSend={vi.fn()} onSteerMessage={vi.fn()} isStreaming />);
+
+    await user.type(screen.getByRole("textbox"), "follow up");
+
+    expect(
+      screen.queryByRole("button", { name: /^steer$/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("steers queued message from the queue bar", async () => {

@@ -5,8 +5,12 @@ export type StreamingShortcutAction = "queue" | "steer";
 
 export const STREAMING_SHORTCUT_MODE_STORAGE_KEY =
   "goose:streaming-shortcut-mode";
+// Enter steers by default. Typing into a running turn is the moment a
+// correction is worth the most, and every other agent surface people use
+// treats the primary key as "say this now". Queueing is still one modifier
+// away, and the whole choice is a switch in behavior settings.
 export const DEFAULT_STREAMING_SHORTCUT_MODE: StreamingShortcutMode =
-  "cmd-enter-steers";
+  "enter-steers";
 
 const STREAMING_SHORTCUT_MODE_CHANGED_EVENT =
   "goose:streaming-shortcut-mode-changed";

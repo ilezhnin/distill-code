@@ -13,7 +13,7 @@ import { useTranslation } from "react-i18next";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { useSessionCostPreference } from "@/features/chat/lib/sessionCostPreference";
 import { useAnyVoiceDictationActive } from "@/features/chat/hooks/useVoiceDictation";
-import { IconPlayerStopFilled } from "@tabler/icons-react";
+import { IconCornerDownLeft, IconPlayerStopFilled } from "@tabler/icons-react";
 import { cn } from "@/shared/lib/cn";
 import { ContextRing } from "./ContextRing";
 import { Button } from "@/shared/ui/button";
@@ -54,6 +54,9 @@ interface ChatInputToolbarComposerActions {
   isStreaming: boolean;
   onSend: () => void;
   onStop?: () => void;
+  /** Drops the composed message into the turn that is already running. */
+  onSteer?: () => void;
+  canSteer?: boolean;
   onAttachFiles?: () => void;
   onAttachFolders?: () => void;
   attachmentsEnabled?: boolean;
@@ -174,6 +177,8 @@ export function ChatInputToolbar({
     isStreaming,
     onSend,
     onStop,
+    onSteer,
+    canSteer,
     onAttachFiles,
     onAttachFolders,
     attachmentsEnabled = true,
@@ -640,7 +645,23 @@ export function ChatInputToolbar({
           )}
         </div>
 
-        <div>
+        <div className="flex items-center gap-1">
+          {isStreaming && canSteer && onSteer ? (
+            // While a turn is running the send button is a stop button, which
+            // leaves no way to say the next thing without first parking it in
+            // the queue. This is that way: it puts the composed message into
+            // the running turn, and it is only offered where the harness can
+            // actually take one.
+            <ComposerActionButton
+              type="button"
+              onClick={onSteer}
+              size="icon-pill-sm"
+              aria-label={t("toolbar.steer")}
+              tooltip={t("toolbar.steerNow")}
+            >
+              <IconCornerDownLeft className="size-3.5" aria-hidden="true" />
+            </ComposerActionButton>
+          ) : null}
           {isStreaming && onStop ? (
             <ComposerActionButton
               type="button"

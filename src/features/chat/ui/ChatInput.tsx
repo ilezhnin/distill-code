@@ -1312,7 +1312,7 @@ export function ChatInput({
       if (isStreaming) {
         const action = getStreamingShortcutAction(
           streamingShortcutPreference.mode,
-          event.metaKey,
+          event.metaKey || event.ctrlKey,
         );
         if (action === "steer" && canSteerCurrentMessage) {
           void handleSteerCurrentMessage();
@@ -2007,6 +2007,8 @@ export function ChatInput({
                   sendDisabledReason,
                   onSend: handleSend,
                   onStop,
+                  onSteer: handleSteerCurrentMessage,
+                  canSteer: canSteerCurrentMessage,
                   voiceEnabled: scopedControls.voice && dictation.isEnabled,
                   voiceStarting: scopedControls.voice && dictation.isStarting(),
                   voiceRecording: scopedControls.voice && dictation.isRecording,

@@ -714,6 +714,7 @@
     "selectProject": "Select project",
     "sendMessage": "Send message",
     "steer": "Steer",
+    "steerNow": "Steer this into the running turn",
     "steerQueued": "Steer queued message",
     "agentBuilderPrepareFailed": "Couldn't prepare agent draft.",
     "agentBuilderPreparing": "Preparing agent draft...",
