@@ -2454,8 +2454,9 @@ describe("useChatSessionController", () => {
     expect(result.current.canSteerQueuedMessage).toBe(true);
   });
 
-  it("does not offer steering for external agent harnesses", async () => {
+  it("offers steering on an agent harness", async () => {
     mockUseChatRuntime.chatState = "streaming";
+    mockUseChatSteerMessage.mockResolvedValue(true);
     mockPickerState.selectedAgentId = "codex-acp";
     useAgentStore.setState({ selectedProvider: "codex-acp" });
     useChatSessionStore.getState().replaceSessionExecutionTarget("session-1", {
@@ -2464,31 +2465,26 @@ describe("useChatSessionController", () => {
       modelId: "gpt-5.4",
       modelName: "GPT-5.4",
     });
-    const dismiss = vi.fn();
     mockUseMessageQueue.mockImplementation(() => ({
       queuedMessage: { text: "a little shorter" },
       enqueue: vi.fn(),
-      dismiss,
+      dismiss: vi.fn(),
     }));
 
     const { result } = renderHook(() =>
       useChatSessionController({ sessionId: "session-1" }),
     );
 
-    expect(result.current.canSteerMessage).toBe(false);
-    expect(result.current.canSteerQueuedMessage).toBe(false);
+    expect(result.current.canSteerMessage).toBe(true);
+    expect(result.current.canSteerQueuedMessage).toBe(true);
 
     let draftAccepted: boolean | undefined;
-    let queuedAccepted: boolean | undefined;
     await act(async () => {
       draftAccepted = await result.current.steerDraftMessage("make it shorter");
-      queuedAccepted = await result.current.steerQueuedMessage();
     });
 
-    expect(draftAccepted).toBe(false);
-    expect(queuedAccepted).toBe(false);
-    expect(mockUseChatSteerMessage).not.toHaveBeenCalled();
-    expect(dismiss).not.toHaveBeenCalled();
+    expect(draftAccepted).toBe(true);
+    expect(mockUseChatSteerMessage).toHaveBeenCalled();
   });
 
   it("handleCreatePersona calls the AppShell-provided callback", () => {

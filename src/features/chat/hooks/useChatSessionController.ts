@@ -46,6 +46,7 @@ import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { formatSessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
 import { getSkillProviderCapabilities } from "@/features/chat/lib/skillProviderCapabilities";
+import { supportsSteeringHarness } from "@/features/chat/lib/steeringSupport";
 import {
   fetchBerdAppSkills,
   fetchSkillsList,
@@ -153,7 +154,6 @@ const PENDING_HOME_SESSION_ID = "__home_pending__";
 const EMPTY_SKILL_DRAFTS: ChatSkillDraft[] = [];
 const EMPTY_ATTACHMENT_DRAFTS: ChatAttachmentDraft[] = [];
 const AGENT_BUILDER_MENTION_INVOCATION = /^@agent-builder\s*$/i;
-const STEERING_SUPPORTED_AGENT_ID = "goose";
 const EMPTY_PROMPT_STATE: { key: string; prompt: string | undefined } = {
   key: "",
   prompt: undefined,
@@ -1417,7 +1417,7 @@ export function useChatSessionController({
     },
     [prepareCurrentSessionTarget, project, stateSessionId],
   );
-  const supportsSteering = selectedAgentId === STEERING_SUPPORTED_AGENT_ID;
+  const supportsSteering = supportsSteeringHarness(selectedAgentId);
 
   const prevWorkspaceRef = useRef(activeWorkspace);
   useEffect(() => {
