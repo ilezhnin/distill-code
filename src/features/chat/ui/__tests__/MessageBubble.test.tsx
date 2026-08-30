@@ -565,7 +565,7 @@ describe("MessageBubble", () => {
     expect(screen.getByText("Here is the summary.")).toBeInTheDocument();
   });
 
-  it("does not label a steering user message before delivery", () => {
+  it("labels a steering user message as waiting, not as delivered", () => {
     const message = userMessage("adjust course");
     message.metadata = {
       ...message.metadata,
@@ -575,6 +575,10 @@ describe("MessageBubble", () => {
     render(<MessageBubble message={message} />);
 
     expect(screen.queryByText("Steered")).not.toBeInTheDocument();
+    const label = screen.getByText(
+      "Steering — waiting for the agent's next step",
+    );
+    expect(label).toHaveAttribute("data-role", "steer-pending-message-label");
   });
 
   it("labels delivered steer user messages", () => {
