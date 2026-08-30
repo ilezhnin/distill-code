@@ -46,8 +46,13 @@ function assistant(id: string, text: string): Message {
 
 const PLAN = `Working on it.\n\n\`\`\`distill-wave\n{"steps":[{"role":"scout","subtask":"Find every caller","access":[]},{"role":"qa","subtask":"Write the test plan","access":"all"}]}\n\`\`\``;
 
-function reportBlock(summary: string): string {
-  return `Done.\n\n\`\`\`distill-report\n{"status":"completed","summary":"${summary}","decisions":[],"artifacts":[],"risks":[],"needsOperator":false,"nextSuggestedTask":null}\n\`\`\``;
+function reportBlock(summary: string, artifactPath?: string): string {
+  // P62: a completed verify-stage report must name evidence artifacts, or
+  // the gate quarantines it — so the qa step's fixture carries one.
+  const artifacts = artifactPath
+    ? `[{"label":"evidence","path":"${artifactPath}"}]`
+    : "[]";
+  return `Done.\n\n\`\`\`distill-report\n{"status":"completed","summary":"${summary}","decisions":[],"artifacts":${artifacts},"risks":[],"needsOperator":false,"nextSuggestedTask":null}\n\`\`\``;
 }
 
 /** Module-level guards live in the modules, so each case reloads them. */
@@ -184,7 +189,12 @@ describe("useConductorGraphSync wave bridge", () => {
       useChatStore.setState((state) => ({
         messagesBySession: {
           ...state.messagesBySession,
-          "child-1": [assistant("c1", reportBlock("Test plan written"))],
+          "child-1": [
+            assistant(
+              "c1",
+              reportBlock("Test plan written", "docs/test-plan.md"),
+            ),
+          ],
         },
       }));
       useConductorGraphStore
