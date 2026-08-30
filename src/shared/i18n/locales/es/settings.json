@@ -988,7 +988,9 @@
       "coding-complex": "Programación compleja",
       "one-shot": "Trabajo de una sola pasada",
       "testing-heavy": "Pruebas y auditoría exhaustivas",
-      "testing-light": "Pruebas ligeras"
+      "testing-light": "Pruebas ligeras",
+      "general-medium": "Trabajo general medio",
+      "general-light": "Trabajo general ligero"
     },
     "moveUp": "Subir {{label}}",
     "moveDown": "Bajar {{label}}",

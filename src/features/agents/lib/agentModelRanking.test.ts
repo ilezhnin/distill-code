@@ -215,19 +215,19 @@ describe("an agent's own list, resolved", () => {
 describe("rankingFromClass", () => {
   it("renders a class against what is actually installed", () => {
     const built = rankingFromClass("frontend-ui", INSTALLED);
-    // frontend-ui: Opus → Fable → Sol, and all three are installed here.
+    // frontend-ui is heavy-profile: Fable → Opus 5 → Sol, all installed here.
     expect(built.entries.map((entry) => entry.label)).toEqual([
-      "Opus 5",
       "Fable 5",
+      "Opus 5",
       "Codex Sol",
     ]);
-    expect(built.entries[0].modelId).toBe("claude-opus-5");
+    expect(built.entries[0].modelId).toBe("claude-fable-5");
     expect(built.entries[0].effort).toBe("xhigh");
   });
 
   it("drops a candidate nothing installed can serve", () => {
     const built = rankingFromClass("testing-light", [INSTALLED[3]]);
-    // testing-light: Grok → Tera → Luna; only Grok exists on this machine.
+    // testing-light: Grok → Luna → Opus 5; only Grok exists on this machine.
     expect(built.entries.map((entry) => entry.label)).toEqual(["Grok 4.6"]);
   });
 
