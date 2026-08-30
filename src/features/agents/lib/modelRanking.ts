@@ -20,7 +20,10 @@ import type {
   UsageSection,
 } from "@/features/status/lib/rateLimitTypes";
 import type { PlatformLimitState } from "@/features/status/lib/rateLimitWindows";
-import type { EmbeddedReasoningEffort } from "@/features/chat/lib/modelReasoningVariants";
+import {
+  splitEmbeddedReasoning,
+  type EmbeddedReasoningEffort,
+} from "@/features/chat/lib/modelReasoningVariants";
 
 export type ModelPreferenceClassId =
   | "frontend-ui"
@@ -252,6 +255,34 @@ function matchesCandidate(
 }
 
 /**
+ * The candidate's match among `items`, honouring its stated effort.
+ *
+ * Some harnesses serve every effort tier as its own model id
+ * (`gpt-5.6-sol[low]` … `[ultra]`), and all of them contain the candidate's
+ * needles. "First match wins" then silently resolves an xhigh candidate to the
+ * `[low]` variant — the inventory lists tiers ascending — which is how a whole
+ * wave of executors once ran at low reasoning (L1, 2026-08-28). When the
+ * candidate names an effort and several models match, the variant embedding
+ * exactly that effort wins; the first match stays the answer everywhere else.
+ */
+export function pickCandidateMatch<T>(
+  candidate: RankedModelCandidate,
+  items: readonly T[],
+  modelOf: (item: T) => RankableModel,
+): T | undefined {
+  const matches = items.filter((item) =>
+    matchesCandidate(candidate, modelOf(item)),
+  );
+  if (matches.length <= 1 || !candidate.effort) return matches[0];
+  return (
+    matches.find(
+      (item) =>
+        splitEmbeddedReasoning(modelOf(item).id)?.effort === candidate.effort,
+    ) ?? matches[0]
+  );
+}
+
+/**
  * Picks the highest-ranked candidate that is installed and not rate-limited.
  *
  * Deterministic and pure: all liveness comes in through the input callbacks.
@@ -315,9 +346,11 @@ function attemptRanking(
         skipped.push({ label: candidate.label, reason: limit });
         continue;
       }
-      const model = input
-        .modelsForPlatform(candidate.platform)
-        .find((entry) => matchesCandidate(candidate, entry));
+      const model = pickCandidateMatch(
+        candidate,
+        input.modelsForPlatform(candidate.platform),
+        (entry) => entry,
+      );
       if (model) {
         return {
           choice: {
@@ -334,9 +367,11 @@ function attemptRanking(
       continue;
     }
 
-    const entry = input
-      .allModels()
-      .find(({ model }) => matchesCandidate(candidate, model));
+    const entry = pickCandidateMatch(
+      candidate,
+      input.allModels(),
+      ({ model }) => model,
+    );
     if (entry) {
       return {
         choice: {
