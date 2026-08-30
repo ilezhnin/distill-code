@@ -646,6 +646,11 @@
     "stall": {
       "title": "Esta ola dejó de avanzar, así que Distill la terminó y recogió lo que existe.",
       "body": "Nada se movió durante {{count}} comprobaciones seguidas: ningún paso cambió de estado y no arrancó nada nuevo. Los pasos en ejecución se detuvieron; los pasos sin informe aparecen en el resumen como «resultado desconocido». El resumen indica que la ola se atascó; júzgala teniéndolo en cuenta."
+    },
+    "reportVerification": {
+      "title": "El paso {{step}} ({{name}}) informó éxito, pero su informe no superó la verificación y quedó en cuarentena.",
+      "detail": "Motivo: {{detail}} El resumen y los pasos posteriores reciben un sustituto en lugar de sus afirmaciones.",
+      "noDetail": "El resumen y los pasos posteriores reciben un sustituto en lugar de sus afirmaciones."
     }
   },
   "harnessBrigade": {

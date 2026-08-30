@@ -52,8 +52,10 @@ import {
   startDigestDispatch,
   type PendingDigestDispatch,
 } from "./waveLifecycle";
+import { verifyWaveStepReport } from "./waveReportVerification";
 import {
   waveConcurrentPlanNoticeText,
+  waveReportVerificationFailedNoticeText,
   waveStalledNoticeText,
   waveStepBlockedNoticeText,
   waveStepExplicitModelNoticeText,
@@ -709,6 +711,7 @@ function advanceWaves(state: WaveEngineState): {
       reportOf: graph.getReport,
       inFlight,
       resumeOrphanedSpawns,
+      verifyStepReport: verifyWaveStepReport,
       allowSyntheticReportFor: (stepIndex) => {
         const key = spawnKey(wave.waveId, stepIndex);
         const now = Date.now();
@@ -743,6 +746,32 @@ function advanceWaves(state: WaveEngineState): {
           child?.displayName ??
             (step ? roleDisplayName(step.role) : `#${stepIndex + 1}`),
         ),
+        false,
+        "warning",
+      );
+    }
+    // P62: a report the gate refused is announced where the operator is
+    // looking, once — the persisted flag is the idempotency, this loop is
+    // only the messenger, exactly like the degraded loop above.
+    for (const stepIndex of advanced.verificationFailed) {
+      const step = advanced.wave.steps.find(
+        (candidate) => candidate.stepIndex === stepIndex,
+      );
+      const child = nodes.find(
+        (candidate) =>
+          candidate.waveId === wave.waveId && candidate.stepIndex === stepIndex,
+      );
+      appendConductorNotice(
+        wave.conductorSessionId,
+        waveReportVerificationFailedNoticeText({
+          stepIndex,
+          name:
+            child?.displayName ??
+            (step ? roleDisplayName(step.role) : `#${stepIndex + 1}`),
+          ...(step?.verificationDetail
+            ? { detail: step.verificationDetail }
+            : {}),
+        }),
         false,
         "warning",
       );

@@ -840,3 +840,108 @@ describe("collectWaveStepReports", () => {
     });
   });
 });
+
+describe("advanceWave verification gate (P62)", () => {
+  const spawnedPair = () =>
+    withWaveStepPhase(
+      withWaveStepPhase(
+        waveOf([step("brigade", "build it"), step("qa", "check it", "all")]),
+        0,
+        {
+          phase: "spawned",
+          sessionId: "child-0",
+          runId: "run-0",
+        },
+      ),
+      1,
+      { phase: "pending" },
+    );
+
+  const evidenceFree = (runId: string): StructuredReport => ({
+    runId,
+    status: "completed",
+    summary: "All done, trust me",
+    decisions: [],
+    artifacts: [],
+    risks: [],
+    needsOperator: false,
+    nextSuggestedTask: null,
+  });
+
+  it("judges a completed report exactly once, and quarantines a refusal", () => {
+    const first = advanceWave(spawnedPair(), {
+      nodes: [workerNode(0, "completed")],
+      reportOf: (runId) =>
+        runId === "run-0" ? evidenceFree("run-0") : undefined,
+      verifyStepReport: () => ({ ok: false, detail: "no evidence" }),
+    });
+    expect(first.verificationFailed).toEqual([0]);
+    expect(first.wave.steps[0].reportVerified).toBe(true);
+    expect(first.wave.steps[0].verificationFailed).toBe(true);
+
+    // Exactly once: re-advancing the marked wave announces nothing new.
+    const second = advanceWave(first.wave, {
+      nodes: [workerNode(0, "completed")],
+      reportOf: (runId) =>
+        runId === "run-0" ? evidenceFree("run-0") : undefined,
+      verifyStepReport: () => ({ ok: false, detail: "no evidence" }),
+    });
+    expect(second.verificationFailed).toEqual([]);
+
+    // The dependent access:"all" step receives the quarantine stub, never
+    // the refused claims.
+    const handoff = second.spawn.find((request) => request.stepIndex === 1);
+    expect(handoff).toBeDefined();
+    const carried = handoff?.previousReports[0]?.report;
+    expect(carried?.status).toBe("failed");
+    expect(carried?.summary).toContain("failed verification");
+    expect(carried?.summary).not.toContain("trust me");
+  });
+
+  it("substitutes the stub in the digest collection too", () => {
+    const judged = advanceWave(spawnedPair(), {
+      nodes: [workerNode(0, "completed")],
+      reportOf: (runId) =>
+        runId === "run-0" ? evidenceFree("run-0") : undefined,
+      verifyStepReport: () => ({ ok: false, detail: "no evidence" }),
+    });
+    const collected = collectWaveStepReports(judged.wave, (runId) =>
+      runId === "run-0" ? evidenceFree("run-0") : undefined,
+    );
+    expect(collected[0].report.status).toBe("failed");
+    expect(collected[0].report.summary).toContain("no evidence");
+    expect(collected[0].report.summary).not.toContain("trust me");
+  });
+
+  it("passes everything untouched when no gate is wired — the pure default", () => {
+    const advanced = advanceWave(spawnedPair(), {
+      nodes: [workerNode(0, "completed")],
+      reportOf: (runId) =>
+        runId === "run-0" ? evidenceFree("run-0") : undefined,
+    });
+    expect(advanced.verificationFailed).toEqual([]);
+    expect(advanced.wave.steps[0].verificationFailed).toBeUndefined();
+    const handoff = advanced.spawn.find((request) => request.stepIndex === 1);
+    expect(handoff?.previousReports[0]?.report.summary).toContain("trust me");
+  });
+
+  it("never judges failure, cancellation or blockage", () => {
+    let called = 0;
+    const failedReport: StructuredReport = {
+      ...evidenceFree("run-0"),
+      status: "failed",
+    };
+    const advanced = advanceWave(spawnedPair(), {
+      nodes: [workerNode(0, "failed")],
+      reportOf: (runId) => (runId === "run-0" ? failedReport : undefined),
+      verifyStepReport: () => {
+        called += 1;
+        return { ok: false, detail: "must not run" };
+      },
+    });
+    expect(called).toBe(0);
+    expect(advanced.verificationFailed).toEqual([]);
+    // Judged-and-passed is still recorded, so it is never re-judged.
+    expect(advanced.wave.steps[0].reportVerified).toBe(true);
+  });
+});
