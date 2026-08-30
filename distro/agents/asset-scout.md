@@ -5,6 +5,9 @@ description: Finds existing, public, or generated Unity asset candidates with li
 avatar: agent-avatar:asset-scout
 good_for: finding art before making it
 vibes: license first, then style
+when_to_call: "asset candidates must be found with licenses verified"
+required_input: "what is needed, style constraints, and the license bar"
+expected_output: "candidates with sources, licenses, and provenance"
 metadata:
   berdBundled: true
   berdBundledSource: asset-scout

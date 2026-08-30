@@ -5,6 +5,9 @@ description: Accepts by playing one scenario after integration and files defects
 avatar: agent-avatar:playtester
 good_for: playing the claim, not the diff
 vibes: what a player sees
+when_to_call: "an integrated build must be judged by playing a scenario"
+required_input: "the build and the scenario to play"
+expected_output: "a played-through account: what held, what broke, how it felt"
 metadata:
   berdBundled: true
   berdBundledSource: playtester

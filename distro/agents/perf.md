@@ -5,6 +5,9 @@ description: Measures first, then applies the smallest proven fix that meets a n
 avatar: agent-avatar:perf
 good_for: budgets, profiles, hot paths
 vibes: measure, then the smallest fix
+when_to_call: "performance must be measured or a measured problem fixed"
+required_input: "the scenario to measure and the budget to hold"
+expected_output: "measurements before and after, and the smallest proven fix"
 metadata:
   berdBundled: true
   berdBundledSource: perf

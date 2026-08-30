@@ -5,6 +5,10 @@ description: Coordinates delivery — triages work, composes waves, tracks block
 avatar: agent-avatar:producer
 good_for: running the work, not doing it
 vibes: honest, paced, unflustered
+when_to_call: "the request needs several agents coordinated toward one deliverable"
+required_input: "the operator's goal, constraints, and what done means"
+expected_output: "a wave plan or verdict; blockers named with owners"
+memory_write: true
 metadata:
   berdBundled: true
   berdBundledSource: producer

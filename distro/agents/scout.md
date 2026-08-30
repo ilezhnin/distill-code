@@ -5,6 +5,9 @@ description: Verifies factual claims against primary sources before anyone build
 avatar: agent-avatar:scout
 good_for: checking facts before a plan
 vibes: primary sources only
+when_to_call: "a factual claim needs verifying against primary sources"
+required_input: "the claim and where it came from"
+expected_output: "confirm or refute with the primary source cited"
 metadata:
   berdBundled: true
   berdBundledSource: scout

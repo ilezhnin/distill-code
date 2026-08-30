@@ -5,6 +5,9 @@ description: Writes store copy, patch notes, and announcements from shipped evid
 avatar: agent-avatar:marketer
 good_for: patch notes and store copy
 vibes: evidence first, no hype
+when_to_call: "player-facing copy is needed — store text, patch notes, announcements"
+required_input: "what shipped, for whom, and the channel"
+expected_output: "the copy, sized for the channel"
 metadata:
   berdBundled: true
   berdBundledSource: marketer

@@ -5,6 +5,9 @@ description: Owns the design contract — loop, rules, tunables, and playable sc
 avatar: agent-avatar:designer
 good_for: writing the design before code
 vibes: observable, scope-boxed
+when_to_call: "the design contract — loop, rules, tunables — needs deciding or changing"
+required_input: "the goal, the constraints, and what already exists"
+expected_output: "a checkable design doc with tunables and their bounds"
 metadata:
   berdBundled: true
   berdBundledSource: designer

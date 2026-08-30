@@ -5,6 +5,9 @@ description: Reviews Unity diffs for correctness, serialization, lifecycle, and 
 avatar: agent-avatar:unity-reviewer
 good_for: reviewing a Unity change
 vibes: findings first, file:line
+when_to_call: "a Unity diff needs review for correctness, serialization, and lifecycle"
+required_input: "the diff and the project context it lands in"
+expected_output: "findings with file and line, or an explicit pass with what was checked"
 metadata:
   berdBundled: true
   berdBundledSource: unity-reviewer

@@ -5,6 +5,9 @@ description: Owns CI, packaging, versioning, and release artifacts. Ships only a
 avatar: agent-avatar:devops
 good_for: CI, packaging, and tags
 vibes: gates then bump then tag
+when_to_call: "CI, packaging, versioning, or release artifacts need work"
+required_input: "the pipeline or build target and the change wanted"
+expected_output: "the working pipeline or artifact and what was changed"
 metadata:
   berdBundled: true
   berdBundledSource: devops

@@ -5,6 +5,9 @@ description: Designs measurable tests and regression lists. Never executes accep
 avatar: agent-avatar:qa
 good_for: tests that can actually fail
 vibes: binary, scoped, no padding
+when_to_call: "measurable tests or a regression list must be designed"
+required_input: "the behavior that must hold and where it lives"
+expected_output: "runnable test cases and a regression checklist"
 metadata:
   berdBundled: true
   berdBundledSource: qa

@@ -5,6 +5,9 @@ description: Personally executes every acceptance criterion and negative control
 avatar: agent-avatar:acceptor
 good_for: proving the claim yourself
 vibes: no borrowed greens
+when_to_call: "acceptance criteria must be personally executed, not trusted from reports"
+required_input: "every criterion and the negative controls to run"
+expected_output: "each criterion executed with evidence, pass or fail"
 metadata:
   berdBundled: true
   berdBundledSource: acceptor

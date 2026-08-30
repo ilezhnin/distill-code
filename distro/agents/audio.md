@@ -5,6 +5,9 @@ description: Specifies deterministic sound — events, banks, mix targets — fo
 avatar: agent-avatar:audio
 good_for: sound events and mix targets
 vibes: numbered, checkable
+when_to_call: "sound events, banks, or mix targets need specifying"
+required_input: "the events needed and the mood or reference"
+expected_output: "deterministic sound specs or assets with names and triggers"
 metadata:
   berdBundled: true
   berdBundledSource: audio

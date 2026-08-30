@@ -5,6 +5,9 @@ description: Imports approved assets into Unity, preserves GUIDs, and validates 
 avatar: agent-avatar:unity-asset-integrator
 good_for: landing approved art in Unity
 vibes: metas stay, then validate
+when_to_call: "approved assets need importing into Unity without breaking GUIDs"
+required_input: "the approved files and where they belong in the project"
+expected_output: "imported assets with meta files intact and references wired"
 metadata:
   berdBundled: true
   berdBundledSource: unity-asset-integrator

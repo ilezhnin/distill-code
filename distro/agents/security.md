@@ -5,6 +5,9 @@ description: Traces untrusted input to its sink and reports concrete trust-bound
 avatar: agent-avatar:security
 good_for: sandbox and trust boundaries
 vibes: concrete, reproducible
+when_to_call: "a trust boundary needs review — untrusted input traced to its sink"
+required_input: "the entry points and what must not happen"
+expected_output: "traced findings with severity, or a pass naming what was traced"
 metadata:
   berdBundled: true
   berdBundledSource: security
