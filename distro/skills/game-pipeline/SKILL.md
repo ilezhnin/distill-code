@@ -30,14 +30,14 @@ Check before any stage:
 | --- | --- | --- | --- | --- |
 | 1 | Define | `$gdd` | game-designer | Selected GDD grilled and approved by the user |
 | 2 | Plan | `planning`; `grill` only for unresolved risk | planner | No blocking questions |
-| 3 | Assets | `asset-pipeline` when required | asset-scout, asset-creator, unity-asset-integrator | Approved assets/brief or explicit no-asset result |
+| 3 | Assets | `asset-pipeline` when required | asset-scout, artist, unity-asset-integrator | Approved assets/brief or explicit no-asset result |
 | 4 | Execute | one `crossworking` run | unity-worker, unity-test-runner, unity-reviewer, qa | Post-simplification focused recheck, validation, review/fix, and acceptance subgates green on one final git tree SHA; the earlier baseline is simplification entry evidence |
 | 5 | Prepare delivery | `create-mr` to finalize the local task branch; `unity-build` only for an explicitly requested player build | pr-submitter; devops only for the requested build | User-style commits remain on the agent's own local task branch; no unauthorized remote action |
 
 `simplify-change` is mandatory inside Execute after the focused baseline and before final validation/review. A recorded no-op passes when no safe evidence-backed simplification exists.
 Every accepted review or validation fix scales its rerun to the fix: re-enter simplification only if the fix added code, and revalidate only the affected checks.
 
-During Assets, the parent owns the asset brief and schedules scout, creator, and integrator sequentially for persistent writes as required by `asset-pipeline`; the listed roles are not concurrent writers.
+During Assets, the parent owns the asset brief and schedules asset-scout, artist, and unity-asset-integrator sequentially for persistent writes as required by `asset-pipeline`; the listed roles are not concurrent writers.
 
 The producer updates state and enforces gates but cannot change approved scope. Scope cuts are proposals until the user approves the revised GDD.
 
