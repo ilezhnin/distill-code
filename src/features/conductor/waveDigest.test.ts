@@ -208,6 +208,21 @@ describe("buildWaveDigest", () => {
     expect(digest).toContain("Flaky in CI");
   });
 
+  it("opens a stalled wave's digest by saying it stalled (P61)", () => {
+    const digest = buildWaveDigest({
+      waveId: "wave-1",
+      attempt: 0,
+      entries,
+      stalled: true,
+    });
+    expect(digest).toContain("This wave stalled");
+    expect(digest).toContain("SMALLER plan");
+    // And an ordinary digest never carries the line.
+    expect(
+      buildWaveDigest({ waveId: "wave-1", attempt: 0, entries }),
+    ).not.toContain("This wave stalled");
+  });
+
   it("flags a completed step that listed no decisions (P16)", () => {
     // An empty decisions list on a step claiming success is the signature of
     // a report that degraded into prose. Today it is indistinguishable from

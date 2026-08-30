@@ -193,6 +193,27 @@ export interface WaveState {
    * but can never block the loop.
    */
   gitDigestProbed?: boolean;
+  /**
+   * Wall clock of the last advance that saw real movement on this wave —
+   * a state change, a spawn scheduled, a completion, a block (P61). Absent
+   * until the detector first samples; `createdAt` stands in for it then.
+   */
+  lastProgressAt?: number;
+  /**
+   * Consecutive stall samples since movement (P61). A sample is taken at
+   * most once per {@link WAVE_STALL_SAMPLE_MS}-sized window of no progress;
+   * any movement resets it to 0. At the threshold the shell cuts the wave
+   * short into the existing digest/verdict cycle rather than letting it sit
+   * forever — step repetition and silent wedging are the most common
+   * measured multi-agent failure, and nothing else watches a running wave.
+   */
+  stallCount?: number;
+  /**
+   * True when the stall detector ended this wave: its digest was collected
+   * early, still-running steps were stopped and stubbed, and the digest says
+   * so — the conductor judges a stalled wave knowingly, not blind.
+   */
+  stalled?: boolean;
 }
 
 /**
@@ -694,6 +715,13 @@ export interface WaveAdvance {
    * idempotent, restarts included.
    */
   blocked: readonly WaveBlockedStep[];
+  /**
+   * This advance found nothing to do: no state change, nothing to spawn,
+   * not complete, nothing blocked — the wave sat still (P61). A derived
+   * fact, not a verdict; the shell's stall detector decides what a run of
+   * these means.
+   */
+  noProgress: boolean;
 }
 
 function stepToWaveStep(state: WaveStepState): WaveStep {
@@ -914,5 +942,7 @@ export function advanceWave(
     complete,
     degraded,
     blocked,
+    noProgress:
+      !changed && spawn.length === 0 && !complete && blocked.length === 0,
   };
 }

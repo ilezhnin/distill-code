@@ -54,6 +54,7 @@ import {
 } from "./waveLifecycle";
 import {
   waveConcurrentPlanNoticeText,
+  waveStalledNoticeText,
   waveStepBlockedNoticeText,
   waveStepExplicitModelNoticeText,
   waveStepModelNoticeText,
@@ -157,6 +158,33 @@ export const WAVE_SPAWN_TIMEOUT_MS = 120_000;
  * after the grace, not instead of it.
  */
 export const WAVE_REPORT_GRACE_MS = 20_000;
+
+/**
+ * One stall sample per this much wall clock without progress (P61). Sized so
+ * an honest long tool call — a build, a big search — never counts as a
+ * stall on its own: two full silent minutes have to pass before the wave is
+ * cut short, and any movement resets the count.
+ */
+export const WAVE_STALL_SAMPLE_MS = 60_000;
+
+/**
+ * Consecutive stall samples that end the wave (P61). Two, following
+ * Magentic-One's stall counter: one silent window is routine, two in a row
+ * with literally nothing moving is a wedge — and the cheapest exit is the
+ * digest/verdict cycle that already exists, with the conductor told why.
+ */
+export const WAVE_STALL_THRESHOLD = 2;
+
+/** Single pending wake-up so a silent wave still gets its stall samples. */
+let stallTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleStallTick(delayMs: number): void {
+  if (stallTimer !== null) return;
+  stallTimer = setTimeout(() => {
+    stallTimer = null;
+    runWaveEngineTick();
+  }, delayMs + 50);
+}
 
 /** `waveId:stepIndex` → grace deadline for a completed-but-reportless step. */
 const reportGraceDeadlines = new Map<string, number>();
@@ -762,6 +790,43 @@ function advanceWaves(state: WaveEngineState): {
       continue;
     }
     let current = advanced.wave;
+    // P61: the stall detector. An advance that moved anything resets the
+    // count; a run of sample-sized silent windows ends the wave through the
+    // existing digest/verdict cycle — never a bigger plan, never a retry.
+    if (advanced.noProgress) {
+      const now = Date.now();
+      const lastProgressAt = current.lastProgressAt ?? current.createdAt;
+      if (now - lastProgressAt >= WAVE_STALL_SAMPLE_MS) {
+        current = {
+          ...current,
+          stallCount: (current.stallCount ?? 0) + 1,
+          lastProgressAt: now,
+        };
+      }
+    } else if ((current.stallCount ?? 0) > 0 || !current.lastProgressAt) {
+      current = { ...current, stallCount: 0, lastProgressAt: Date.now() };
+    }
+    if ((current.stallCount ?? 0) >= WAVE_STALL_THRESHOLD) {
+      // Phase first (crash-safe, same discipline as the blocked path), then
+      // the wedged children are stopped, then the operator is told. The wave
+      // is not parked: it goes to digest, where still-running steps stub as
+      // "result unknown" and the digest says the wave stalled — the
+      // conductor spends its verdict knowingly, inside the D4 cap.
+      const stalledWave = withWavePhase(
+        { ...current, stalled: true },
+        "digestPending",
+      );
+      next = withWave(next, stalledWave);
+      setWaveEngineState(next);
+      stopWaveChildSessions(stalledWave);
+      appendConductorNotice(
+        wave.conductorSessionId,
+        waveStalledNoticeText(current.stallCount ?? WAVE_STALL_THRESHOLD),
+        false,
+        "warning",
+      );
+      continue;
+    }
     if (advanced.complete) {
       // The wave is no longer *running*, but it is far from over: its reports
       // now have to reach the conductor and come back as a verdict. The record
@@ -824,6 +889,12 @@ export function runWaveEngineTick(): void {
     const advanced = advanceWaves(admitted);
     const digested = processWaveDigests(advanced.state, runWaveEngineTick);
     setWaveEngineState(digested.state);
+    // P61's heartbeat: a wedged child streams nothing, and nothing else
+    // re-ticks a quiet engine — so as long as any wave is running, the next
+    // stall sample is guaranteed a wake-up. One timer, self-rearming.
+    if (digested.state.waves.some((wave) => wave.phase === "running")) {
+      scheduleStallTick(WAVE_STALL_SAMPLE_MS);
+    }
     pending = advanced.pending;
     digests = digested.pending;
   } finally {
@@ -881,5 +952,9 @@ export function resetWaveRunnerForTests(): void {
   if (graceTimer !== null) {
     clearTimeout(graceTimer);
     graceTimer = null;
+  }
+  if (stallTimer !== null) {
+    clearTimeout(stallTimer);
+    stallTimer = null;
   }
 }

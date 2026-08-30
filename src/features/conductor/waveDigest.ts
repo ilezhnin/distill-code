@@ -34,6 +34,7 @@ import {
   AGENT_DIGEST_INSTRUCTION,
   buildWaveArtifactLine,
   buildWaveDigestInstruction,
+  buildWaveStalledLine,
   buildWaveGitDeltaLine,
   buildWaveVerdictRetryInstruction,
   type WaveGitDeltaFacts,
@@ -240,9 +241,15 @@ export function buildWaveDigest(args: {
    * the conductor should read before any model's account of itself.
    */
   artifacts?: { checked: number; missing: readonly string[] };
+  /**
+   * The wave was cut short by the stall detector (P61). The digest opens by
+   * saying so — the conductor must judge a shortened digest knowingly.
+   */
+  stalled?: boolean;
 }): string {
   return [
     waveDigestMarker(args.waveId, args.attempt),
+    args.stalled ? buildWaveStalledLine() : "",
     args.verdictIssue
       ? buildWaveVerdictRetryInstruction(args.verdictIssue)
       : "",
