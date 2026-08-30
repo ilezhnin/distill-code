@@ -229,6 +229,12 @@ struct CallBody {
     args: Value,
     #[serde(default)]
     timeout_ms: Option<u64>,
+    /// Calling agent session's identity. Transport-opaque: the broker never
+    /// reads it, never logs it, and never validates it — policy on who may
+    /// do what lives in the renderer commands, keeping this crate free of
+    /// command knowledge.
+    #[serde(default)]
+    actor: Option<String>,
 }
 
 fn empty_object() -> Value {
@@ -285,6 +291,7 @@ async fn handle_call<D: CommandDispatcher>(
         // The renderer derives its deadline from the same resolved timeout
         // the broker waits on, so a request override cannot skew them apart.
         timeout_ms: timeout.as_millis() as u64,
+        actor: call.actor,
     };
     let outcome = ctx.dispatcher.dispatch(request, timeout).await;
 
@@ -394,6 +401,7 @@ mod tests {
                             "args": req.args,
                             "timeoutMs": timeout.as_millis() as u64,
                             "requestTimeoutMs": req.timeout_ms,
+                            "actor": req.actor,
                         })),
                         error: None,
                     }),
@@ -563,6 +571,33 @@ mod tests {
         assert_eq!(body["result"]["command"], "sessions");
         assert_eq!(body["result"]["args"]["action"], "list");
         assert_eq!(body["result"]["args"]["limit"], 5);
+    }
+
+    /// The actor envelope field is forwarded verbatim and absent means
+    /// absent — the broker neither invents nor strips caller identity.
+    #[tokio::test]
+    async fn actor_passes_through_untouched() {
+        let server = spawn_server(StubBehavior::Echo, Limits::default()).await;
+        let response = post_call(
+            &server.base,
+            &json!({
+                "command": "sessions",
+                "args": { "action": "list" },
+                "actor": "20260830_7",
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["result"]["actor"], "20260830_7");
+
+        let response = post_call(
+            &server.base,
+            &call_body("sessions", json!({ "action": "list" })),
+        )
+        .await;
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["result"]["actor"], Value::Null);
     }
 
     #[tokio::test]

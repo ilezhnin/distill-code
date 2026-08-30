@@ -116,6 +116,9 @@ mod plugin {
             command,
             args,
             timeout_ms: timeout.as_millis() as u64,
+            // App-internal dispatches (deep links) are the operator acting,
+            // not an agent session — anonymous by construction.
+            actor: None,
         };
         resolve_dispatch_result(state.bridge.dispatch(&app, req, timeout).await)
     }

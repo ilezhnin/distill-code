@@ -99,6 +99,9 @@ Required command properties:
 - one-way verbs are limited to visible product actions the caller explicitly
   asked for, such as creating a session or sending a prompt
 - broker protects app availability with in-flight caps and timeouts
+- session-creating verbs enforce the spawn ACL against the envelope's
+  optional `actor` (the calling session's `AGENT_SESSION_ID`); anonymous
+  calls are the operator and stay allowed (`runtime/spawnGate.ts`)
 
 Delete, bulk, silent, invisible, or broadly destructive verbs require
 reopening the auth/confirmation design before implementation. A visible command
@@ -136,6 +139,7 @@ bump. Adding a command or optional field is not a wire reshape.
 | rendered help reviewed | inline `EXPECTED_*_HELP` pins |
 | broker command-agnostic | `broker_source_stays_free_of_command_literals` |
 | safety metadata complete | berdctl command tests |
+| spawn ACL on create/fork | `spawnGate.test.ts` + `commands.test.ts` |
 
 Review-only rules: single renderer dispatch point, detecting breaking wire
 reshapes, and product judgment for no-auth command eligibility.

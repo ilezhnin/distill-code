@@ -15,16 +15,18 @@
  * - the prompt insert that replaces the handwritten sentence, generated from
  *   the same effective ACL so the text can never disagree with the code.
  *
- * `berdctl session create` / `session fork` are the gap: they create sessions
- * programmatically but arrive with no caller identity to check it against
- * (the traced note in src/features/berdctl/commands/impl/createSession.ts),
- * so the ACL reaches them through the prompt insert alone — which is why that
- * text names both commands. Read the list above as the mechanism, not as a
- * claim that every spawn is refused in code; it is not, and the insert no
- * longer says so either.
+ * `berdctl session create` / `session fork` are enforced too (P42): the CLI
+ * reads AGENT_SESSION_ID from the shell env goose injects per session and
+ * sends it as `actor` on the call envelope; the commands resolve it to a
+ * graph node and run this same check (berdctl runtime/spawnGate.ts). The
+ * residue is stated there: the id is guessable, so a deliberately forged
+ * env var can still impersonate a session until goose mints a nonce — the
+ * gate covers every honest call, not a determined adversary.
  *
  * Operator-initiated actions (UI buttons, the composer) are exempt on
- * purpose: the ACL constrains agents, not the person running the app.
+ * purpose: the ACL constrains agents, not the person running the app — and
+ * an anonymous or graph-unknown berdctl call reads as the operator for the
+ * same reason.
  */
 
 import { parseSpawnLayers } from "@/shared/lib/agentSpawns";
@@ -124,16 +126,15 @@ export class SpawnAclDeniedError extends Error {
  * handwritten copies changed where the text comes from, not what the agents
  * read). The second sentence names the berdctl spawn commands, because the
  * app preamble injected alongside this line advertises them
- * (`src/features/berdctl/appPreamble.ts`) and that path is NOT covered by the
- * in-app spawn chokepoint: `berdctl session create` / `session fork` arrive
- * without a caller identity, so the ACL cannot be applied to them (see the
- * note in src/features/berdctl/commands/impl/createSession.ts). Naming them
- * here is the only place the rule reaches that path at all.
+ * (`src/features/berdctl/appPreamble.ts`) — and since P42 those commands are
+ * refused in code too, against the `actor` identity the CLI now sends
+ * (berdctl runtime/spawnGate.ts), so the sentence states enforcement rather
+ * than substituting for it.
  */
 const SPAWN_FORBIDDEN_PROMPT_LINE =
   "Distill starts other agents from the Agents catalog; do not spawn chats yourself. " +
   "That includes the `berdctl session create` and `berdctl session fork` commands " +
-  "the Distill app preamble lists.";
+  "the Distill app preamble lists — Distill refuses those in code as well.";
 
 /**
  * The prompt insert stating a session's effective spawn permissions.
@@ -143,8 +144,7 @@ const SPAWN_FORBIDDEN_PROMPT_LINE =
  * catalog files used to hardcode; non-empty permissions state what is
  * allowed and that everything else is refused by the app through those
  * mechanisms, not merely discouraged. Both wordings then extend the rule to
- * the berdctl spawn commands, which the app cannot refuse for want of a
- * caller identity — the one part of the ACL that is still prompt-only.
+ * the berdctl spawn commands, refused in code the same way since P42.
  */
 export function formatSpawnPolicyPrompt(layers: readonly RoleLayer[]): string {
   if (layers.length === 0) {
@@ -152,7 +152,7 @@ export function formatSpawnPolicyPrompt(layers: readonly RoleLayer[]): string {
   }
   return `Through Distill's own mechanisms you may start agents on these layers: ${layers.join(
     ", ",
-  )}. Distill refuses any other spawn through those mechanisms in code; do not try to start sessions outside those layers. The same limit applies to \`berdctl session create\` and \`berdctl session fork\`.`;
+  )}. Distill refuses any other spawn through those mechanisms in code; do not try to start sessions outside those layers. The same limit applies to \`berdctl session create\` and \`berdctl session fork\`, refused in code the same way.`;
 }
 
 /**

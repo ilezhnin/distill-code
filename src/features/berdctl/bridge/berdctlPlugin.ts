@@ -16,6 +16,10 @@ export interface BridgeRequest {
    *  derives its deadline from this so a request `timeout_ms` override cannot
    *  skew the two sides' deadlines apart. */
   timeoutMs: number;
+  /** Calling agent session's identity (goose session id), forwarded verbatim
+   *  from the wire envelope. Absent for operator calls and app-internal
+   *  dispatches. */
+  actor?: string;
 }
 
 /** Renderer → Rust response, submitted via plugin:berdctl|submit_result. */

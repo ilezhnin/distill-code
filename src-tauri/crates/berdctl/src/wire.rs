@@ -16,6 +16,9 @@ pub struct Globals {
     pub lock_path: Option<PathBuf>,
     pub json: bool,
     pub timeout_ms: Option<u64>,
+    /// The calling agent session's identity, from AGENT_SESSION_ID. Empty
+    /// values are dropped here so the wire never carries an empty actor.
+    pub actor: Option<String>,
 }
 
 pub fn globals(matches: &ArgMatches) -> Globals {
@@ -23,6 +26,11 @@ pub fn globals(matches: &ArgMatches) -> Globals {
         lock_path: matches.get_one::<PathBuf>("lock_path").cloned(),
         json: matches.get_flag("json"),
         timeout_ms: matches.get_one::<u64>("timeout_ms").copied(),
+        actor: matches
+            .get_one::<String>("actor")
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
     }
 }
 
