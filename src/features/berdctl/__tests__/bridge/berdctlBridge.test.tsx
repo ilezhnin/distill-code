@@ -239,6 +239,39 @@ describe("BerdctlBridge request handling", () => {
     nowSpy.mockRestore();
   });
 
+  it("forwards the wire actor into the command context, and only then", async () => {
+    // The actor is the calling agent session's identity; commands enforce
+    // the spawn ACL against it. Absent must stay absent — an anonymous call
+    // is the operator, and inventing an actor would subject the operator to
+    // the agent ACL.
+    mocks.dispatchCommand.mockResolvedValue({ ok: true });
+
+    await handleBerdctlRequest({
+      id: "req-actor",
+      command: "sessions",
+      args: { action: "create", prompt: "hi" },
+      timeoutMs: 5_000,
+      actor: "20260830_7",
+    });
+    expect(mocks.dispatchCommand).toHaveBeenCalledWith(
+      "sessions",
+      { action: "create", prompt: "hi" },
+      expect.objectContaining({ actor: "20260830_7" }),
+    );
+
+    mocks.dispatchCommand.mockClear();
+    await handleBerdctlRequest({
+      id: "req-anon",
+      command: "sessions",
+      args: { action: "create", prompt: "hi" },
+      timeoutMs: 5_000,
+    });
+    const ctx = mocks.dispatchCommand.mock.calls[0]?.[2] as
+      | Record<string, unknown>
+      | undefined;
+    expect(ctx && "actor" in ctx).toBe(false);
+  });
+
   it("maps a CommandError to ok:false with its stable code", async () => {
     renderBridge();
     await flushAsync();

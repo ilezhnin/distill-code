@@ -58,46 +58,10 @@ const createSessionSchema = z
 // never create a session the caller has already been told timed out.
 const CREATE_DEADLINE_MARGIN_MS = 3_000;
 
-// TODO(spawn-acl): this path cannot enforce the spawn ACL (spawnAcl.ts)
-// because no caller identity exists to enforce it against, and the missing
-// piece is upstream of this file. Traced end to end:
-//
-//   goosed is a singleton (GooseServeProcess::get, a OnceCell). Its spawn
-//   sets BERDCTL_LOCK/BERDCTL_BIN and puts the berdctl PATH shim in front of
-//   the harness PATH (goose_serve.rs apply_berdctl_env /
-//   resolve_berdctl_spawn_paths). Sessions are then created *inside* that one
-//   daemon over ACP (`session/new`, acpApi.ts) — the app never spawns a
-//   process per session, so every session's shell tool is a child of the same
-//   goosed with the same app-wide environment. The CLI reads only that env
-//   (crates/berdctl discovery.rs), POSTs /v1/call, and the broker forwards
-//   command/args verbatim (plugins/berdctl server.rs → BridgeRequest:
-//   id/command/args/timeoutMs). Nothing in that chain is session-scoped.
-//
-// The env is not shared with an operator terminal, as an earlier note here
-// claimed: start_terminal (commands/terminal.rs) clears the env, rebuilds it
-// from the user's shell, and uses build_terminal_path, which prepends no shim
-// dir and sets no BERDCTL_LOCK. So the calls this command actually receives
-// are agent-session shells that are indistinguishable *from each other* — a
-// worker and its conductor look identical — which is what the ACL would need
-// to tell apart.
-//
-// Minimal protocol step, in order: (1) a per-session identity has to be
-// minted where a session's shell is spawned — today that is inside goosed,
-// so it needs a goose-side per-session env var (or a per-session MCP/tool
-// surface configured through `session/new`, whose args and env the app does
-// control); (2) the CLI reads it from the env — never argv, which `ps`
-// exposes — and sends it as an optional `actor` field on /v1/call; (3) the
-// broker passes `actor` through into BridgeRequest untouched (an added
-// optional field, not a wire reshape, so no PROTOCOL_VERSION bump); (4) this
-// command resolves actor → conductor-graph node role + persona and calls
-// checkSpawnAllowed exactly as spawnConductorChildSession does, refusing with
-// a CommandError plus a notice in the actor's transcript (D5). Absent actor
-// stays allowed, so the operator's own invocations keep working.
-//
-// Until step (1) exists there is nothing honest to enforce on, and the spawn
-// ACL for this path is carried only by the generated spawn-policy line, which
-// names `berdctl session create`/`session fork` for that reason. `session
-// fork` (forkSession.ts) has the same hole for the same reason.
+// Spawn ACL (P42): the wire now carries an optional `actor` — the calling
+// session's AGENT_SESSION_ID, read from the shell env goose injects — and
+// this command enforces the same ACL as the in-app chokepoint against it
+// (runtime/spawnGate.ts). Anonymous calls are the operator and stay allowed.
 
 interface CreateSessionResult {
   session_id: string;
@@ -136,6 +100,7 @@ Result:
   bridgeTimeoutMs: 900_000,
   execute: async (args, ctx): Promise<CreateSessionResult> => {
     const [
+      { enforceBerdctlSpawnAcl, registerBerdctlChildNode },
       { acceptFirstSend },
       { useChatSessionStore },
       { resolveSessionCwd },
@@ -152,6 +117,7 @@ Result:
       { findProjectOrThrow },
       { findReadyHarnessOrThrow, gooseModelOptions, harnessModelOptions },
     ] = await Promise.all([
+      import("../runtime/spawnGate"),
       import("@/features/chat/lib/firstWorkspaceSend"),
       import("@/features/chat/stores/chatSessionStore"),
       import("@/features/projects/lib/sessionCwdSelection"),
@@ -163,6 +129,9 @@ Result:
       import("../runtime/projects"),
       import("../runtime/providers"),
     ]);
+    // Refused before any validation I/O: a refusal must cost nothing to
+    // roll back. A berdctl-created session is worker-rank work.
+    enforceBerdctlSpawnAcl({ actor: ctx.actor, targetLayer: "worker" });
     const harnessId = args.harness_id ?? GOOSE_PROVIDER_ID;
     // The validation legs are independent I/O; overlap them.
     const [project, , models, persona] = await Promise.all([
@@ -257,6 +226,15 @@ Result:
       await rollbackProjectChatWorkspacePlan(workspacePlan);
       throw error;
     }
+    registerBerdctlChildNode({
+      actor: ctx.actor,
+      sessionId: session.id,
+      role: "worker",
+      harnessId,
+      displayName: session.title,
+      personaId: persona?.id,
+      task: args.prompt.slice(0, 200),
+    });
     const accepted = acceptFirstSend(
       session.id,
       createDeferredQueuedMessagePayload({

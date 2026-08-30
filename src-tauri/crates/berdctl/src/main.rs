@@ -56,7 +56,13 @@ fn main() -> ExitCode {
 fn run(command: &str, args: Map<String, Value>, globals: &wire::Globals) -> Result<(), Failure> {
     let lock_path = discovery::resolve_lock_path(globals.lock_path.clone())?;
     let endpoint = client::handshake(&lock_path)?;
-    let result = client::call(&endpoint, command, args, globals.timeout_ms)?;
+    let result = client::call(
+        &endpoint,
+        command,
+        args,
+        globals.timeout_ms,
+        globals.actor.as_deref(),
+    )?;
     let rendered = if globals.json {
         serde_json::to_string(&result)
     } else {
@@ -132,6 +138,31 @@ mod tests {
     #[test]
     fn cli_passes_clap_debug_assert() {
         cli().debug_assert();
+    }
+
+    /// The actor global is transport identity, not a command flag: it rides
+    /// the envelope, so it must parse anywhere, never reach the wire `args`,
+    /// and an empty value (an unset-but-exported variable) must read as
+    /// anonymous rather than as an actor named "".
+    #[test]
+    fn actor_global_parses_and_stays_out_of_wire_args() {
+        let matches = try_parse(&["berdctl", "session", "list", "--actor", "20260830_7"])
+            .expect("actor global parses");
+        let globals = wire::globals(&matches);
+        assert_eq!(globals.actor.as_deref(), Some("20260830_7"));
+
+        let (_, body) = wire_of(&["berdctl", "session", "list", "--actor", "20260830_7"]);
+        assert!(
+            !body.contains_key("actor"),
+            "actor must ride the envelope, not the command args"
+        );
+    }
+
+    #[test]
+    fn empty_actor_reads_as_anonymous() {
+        let matches =
+            try_parse(&["berdctl", "session", "list", "--actor", ""]).expect("empty parses");
+        assert_eq!(wire::globals(&matches).actor, None);
     }
 
     #[test]

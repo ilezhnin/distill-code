@@ -19,6 +19,10 @@ pub struct BridgeRequest {
     /// The renderer derives its deadline from this so a request `timeout_ms`
     /// override cannot skew the two sides' deadlines apart.
     pub timeout_ms: u64,
+    /// Calling agent session's identity from the wire envelope, forwarded
+    /// verbatim. Absent for operator calls and app-internal dispatches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,6 +134,7 @@ mod tests {
             command: "sessions".to_string(),
             args: json!({ "action": "list" }),
             timeout_ms: 30_000,
+            actor: None,
         }
     }
 
