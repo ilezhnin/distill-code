@@ -84,7 +84,9 @@
   "archive": {
     "title": "Archivo ({{total}})",
     "description": "Memorias que la aplicación dejó de llevar. Nada de esto entra por sí solo en un mensaje, y a la sesión que pregunta por una se le dice que está archivada.",
+    "full": "El archivo guarda {{total}} memorias, por encima de las {{max}} previstas. No se descarta nada para hacer sitio: borra lo que ya no necesites.",
     "restore": "Restaurar",
+    "secretRefused": "Esta línea parece contener una clave, un token o una contraseña, así que no se restauró. Sigue aquí, y eres tú quien decide borrarla definitivamente.",
     "delete": "Borrar para siempre",
     "deleteConfirmTitle": "¿Borrar esta memoria definitivamente?",
     "deleteConfirmDescription": "«{{text}}» desaparecerá del archivo y de la lista. Esto no se puede deshacer.",

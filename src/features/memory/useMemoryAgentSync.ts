@@ -78,9 +78,6 @@ export function resetMemoryDeepScan(): void {
   deeplyScanned.clear();
 }
 
-/** Test seam: lets a case run the first-scan path again. */
-export const resetMemoryDeepScanForTests = resetMemoryDeepScan;
-
 function drainMemoryFences(): void {
   // Writing is paused. The return has to come before the scan, not before
   // `applyAgentRequest`: a candidate this drain looks at is tombstoned

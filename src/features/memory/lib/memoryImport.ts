@@ -207,13 +207,3 @@ export function scanMemoryImport(text: string): MemoryImportScan {
 
   return { candidates, refusedSecrets };
 }
-
-/**
- * Just the statements, for a caller that has no use for the refusal count.
- *
- * The signature the panel's list is built from; `scanMemoryImport` is the same
- * pass with the number the panel says out loud underneath it.
- */
-export function extractCandidates(text: string): string[] {
-  return scanMemoryImport(text).candidates;
-}
