@@ -26,9 +26,12 @@ import {
   writeProjectMemories,
 } from "../lib/projectMemoryDocuments";
 import {
+  isMemoryArchiveReason,
+  MAX_ARCHIVED_ENTRIES,
   memoryRecency,
   normalizeMemoryText,
   sameMemoryText,
+  type ArchivedMemoryEntry,
   type MemoryEntry,
   type MemoryScope,
 } from "../lib/memoryEntry";
@@ -47,6 +50,8 @@ export const MAX_APPLIED_MEMORY_MESSAGE_IDS = 2000;
 
 interface MemoryState {
   entries: MemoryEntry[];
+  /** Displaced memories, kept because the app may not destroy one. */
+  archived: ArchivedMemoryEntry[];
   appliedMessageIds: string[];
   /** False until the stored document has been read. Writes wait for it. */
   hydrated: boolean;
@@ -131,6 +136,42 @@ export function parseMemoryEntries(value: unknown): MemoryEntry[] {
     .filter((entry): entry is MemoryEntry => entry !== null);
 }
 
+/**
+ * An archived row, read the same salvaging way a live one is.
+ *
+ * A row whose reason is missing or unknown is read as `capacity` rather than
+ * dropped: why a memory was displaced is worth less than the memory itself,
+ * and a document written by a newer build must not cost the operator lines.
+ */
+function parseArchivedEntry(value: unknown): ArchivedMemoryEntry | null {
+  const entry = parseEntry(value);
+  if (!entry) return null;
+  const raw = value as Partial<ArchivedMemoryEntry>;
+  return {
+    ...entry,
+    archivedAt: typeof raw.archivedAt === "number" ? raw.archivedAt : 0,
+    archiveReason: isMemoryArchiveReason(raw.archiveReason)
+      ? raw.archiveReason
+      : "capacity",
+    ...(typeof raw.replacedById === "string" && raw.replacedById
+      ? { replacedById: raw.replacedById }
+      : {}),
+  };
+}
+
+/** The archive of a stored document. A v1 document simply has none. */
+export function parseArchivedMemoryEntries(
+  value: unknown,
+): ArchivedMemoryEntry[] {
+  const list = Array.isArray(value)
+    ? value
+    : ((value as { archived?: unknown })?.archived ?? null);
+  if (!Array.isArray(list)) return [];
+  return list
+    .map(parseArchivedEntry)
+    .filter((entry): entry is ArchivedMemoryEntry => entry !== null);
+}
+
 export function parseAppliedMemoryMessageIds(value: unknown): string[] {
   const list = (value as { appliedMessageIds?: unknown })?.appliedMessageIds;
   if (!Array.isArray(list)) return [];
@@ -142,29 +183,87 @@ export function parseAppliedMemoryMessageIds(value: unknown): string[] {
 }
 
 /**
- * Trims to the bound, least recently useful first.
+ * Trims to the bound, least recently useful first, and says what it took.
  *
  * By recency rather than age: a standing fact the agents keep restating is
  * the one worth the space, and evicting it because it was written first would
- * throw away exactly what memory is for.
+ * throw away exactly what memory is for. What changed is not which memory
+ * leaves the list but where it goes — `evicted` is what the caller archives,
+ * because a memory displaced by a bound must not be destroyed.
  */
-export function capEntries(entries: MemoryEntry[]): MemoryEntry[] {
-  if (entries.length <= MAX_MEMORY_ENTRIES) return entries;
+export function capWithArchive(entries: MemoryEntry[]): {
+  kept: MemoryEntry[];
+  evicted: MemoryEntry[];
+} {
+  if (entries.length <= MAX_MEMORY_ENTRIES)
+    return { kept: entries, evicted: [] };
   const keep = new Set(
     [...entries]
       .sort((left, right) => memoryRecency(right) - memoryRecency(left))
       .slice(0, MAX_MEMORY_ENTRIES)
       .map((entry) => entry.id),
   );
-  return entries.filter((entry) => keep.has(entry.id));
+  const kept: MemoryEntry[] = [];
+  const evicted: MemoryEntry[] = [];
+  for (const entry of entries) {
+    if (keep.has(entry.id)) kept.push(entry);
+    else evicted.push(entry);
+  }
+  return { kept, evicted };
+}
+
+/**
+ * Trims the archive to its bound, oldest displacement first.
+ *
+ * The one place the app does drop a memory outright, and it is stated rather
+ * than hidden: an archive that grows without end is written to disk and
+ * mirrored into every project folder on every commit. Order is preserved so
+ * the file stays readable as a history.
+ */
+export function capArchived(
+  archived: ArchivedMemoryEntry[],
+): ArchivedMemoryEntry[] {
+  if (archived.length <= MAX_ARCHIVED_ENTRIES) return archived;
+  const keep = new Set(
+    archived
+      .map((_, index) => index)
+      .sort(
+        (left, right) =>
+          archived[right].archivedAt - archived[left].archivedAt ||
+          right - left,
+      )
+      .slice(0, MAX_ARCHIVED_ENTRIES),
+  );
+  return archived.filter((_, index) => keep.has(index));
+}
+
+/** The archive with capacity-displaced entries folded in, bounded. */
+function withCapacityEvictions(
+  archived: ArchivedMemoryEntry[],
+  evicted: readonly MemoryEntry[],
+  nowMs: number,
+): ArchivedMemoryEntry[] {
+  if (evicted.length === 0) return capArchived(archived);
+  return capArchived([
+    ...archived,
+    ...evicted.map((entry) => ({
+      ...entry,
+      archivedAt: nowMs,
+      archiveReason: "capacity" as const,
+    })),
+  ]);
 }
 
 function commit(
   entries: MemoryEntry[],
+  archived: ArchivedMemoryEntry[],
   appliedMessageIds: string[],
+  nowMs: number = Date.now(),
 ): MemoryState {
-  const next = {
-    entries: capEntries(entries),
+  const { kept, evicted } = capWithArchive(entries);
+  const next: MemoryState = {
+    entries: kept,
+    archived: withCapacityEvictions(archived, evicted, nowMs),
     appliedMessageIds: appliedMessageIds.slice(-MAX_APPLIED_MEMORY_MESSAGE_IDS),
     hydrated: true,
   };
@@ -174,7 +273,7 @@ function commit(
     // was learned about it when it moves (P31). Fire-and-forget: the global
     // document is the one that must not fail, and a folder that cannot be
     // written costs that project's mirror and nothing else.
-    queueProjectMemoryMirror(next.entries);
+    queueProjectMemoryMirror(next.entries, next.archived);
   }
   return next;
 }
@@ -188,10 +287,16 @@ function commit(
  * debounce the global document uses.
  */
 let mirrorTimer: ReturnType<typeof setTimeout> | null = null;
-let mirrorPending: MemoryEntry[] | null = null;
+let mirrorPending: {
+  entries: MemoryEntry[];
+  archived: ArchivedMemoryEntry[];
+} | null = null;
 
-function queueProjectMemoryMirror(entries: MemoryEntry[]): void {
-  mirrorPending = entries;
+function queueProjectMemoryMirror(
+  entries: MemoryEntry[],
+  archived: ArchivedMemoryEntry[],
+): void {
+  mirrorPending = { entries, archived };
   if (mirrorTimer !== null) clearTimeout(mirrorTimer);
   mirrorTimer = setTimeout(() => {
     void flushProjectMemoryMirror();
@@ -204,17 +309,29 @@ export async function flushProjectMemoryMirror(): Promise<void> {
     clearTimeout(mirrorTimer);
     mirrorTimer = null;
   }
-  const entries = mirrorPending;
+  const pending = mirrorPending;
   mirrorPending = null;
-  if (!entries) return;
-  await writeProjectMemories(useProjectStore.getState().projects, entries);
+  if (!pending) return;
+  await writeProjectMemories(
+    useProjectStore.getState().projects,
+    pending.entries,
+    pending.archived,
+  );
 }
 
 const PROJECT_MEMORY_MIRROR_DEBOUNCE_MS = 250;
 
 function stateFromDocument(parsed: unknown): MemoryState {
+  // A document written over a larger bound is capped on the way in, and the
+  // overflow is archived here too: reading a file is not an operator action.
+  const { kept, evicted } = capWithArchive(parseMemoryEntries(parsed));
   return {
-    entries: capEntries(parseMemoryEntries(parsed)),
+    entries: kept,
+    archived: withCapacityEvictions(
+      parseArchivedMemoryEntries(parsed),
+      evicted,
+      Date.now(),
+    ),
     appliedMessageIds: parseAppliedMemoryMessageIds(parsed),
     hydrated: true,
   };
@@ -224,9 +341,12 @@ const document = distillDocument<MemoryState>({
   path: MEMORY_DOCUMENT_PATH,
   legacyStorageKey: MEMORY_STORAGE_KEY,
   parse: stateFromDocument,
+  // v2 adds `archived`. A v1 document reads back whole: it simply has no
+  // archive yet, which is the same thing as an empty one.
   serialize: (state) => ({
-    version: 1,
+    version: 2,
     entries: state.entries,
+    archived: state.archived,
     appliedMessageIds: state.appliedMessageIds,
   }),
 });
@@ -235,22 +355,37 @@ const document = distillDocument<MemoryState>({
 export async function hydrateMemoryStore(): Promise<void> {
   if (useMemoryStore.getState().hydrated) return;
   const stored = await document.read();
-  const base = stored ?? { entries: [], appliedMessageIds: [], hydrated: true };
+  const base = stored ?? {
+    entries: [],
+    archived: [],
+    appliedMessageIds: [],
+    hydrated: true,
+  };
   // Then whatever the project folders themselves know (P31). A project copied
   // from another machine arrives with its memories in it, and this is where
   // they join the list; entries already in memory win, so nothing the
   // operator has edited in this session is reverted by a copy on disk.
   let entries = base.entries;
+  let archived = base.archived;
   try {
     const fromFolders = await readProjectMemories(
       useProjectStore.getState().projects,
       parseMemoryEntries,
+      parseArchivedMemoryEntries,
     );
-    entries = capEntries(mergeProjectMemories(base.entries, fromFolders));
+    const capped = capWithArchive(
+      mergeProjectMemories(base.entries, fromFolders.entries),
+    );
+    entries = capped.kept;
+    archived = withCapacityEvictions(
+      mergeProjectMemories(base.archived, fromFolders.archived),
+      capped.evicted,
+      Date.now(),
+    );
   } catch (error) {
     console.error("Failed to read project memories:", error);
   }
-  useMemoryStore.setState({ ...base, entries, hydrated: true });
+  useMemoryStore.setState({ ...base, entries, archived, hydrated: true });
 }
 
 /** Waits for a queued write to land. For tests and for shutdown. */
@@ -281,6 +416,7 @@ function existingMatch(
 
 export const useMemoryStore = create<MemoryStore>((set, get) => ({
   entries: [],
+  archived: [],
   appliedMessageIds: [],
   hydrated: false,
 
@@ -306,7 +442,9 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
               ? { ...entry, reinforcedAt: nowMs }
               : entry,
           ),
+          state.archived,
           state.appliedMessageIds,
+          nowMs,
         ),
       );
       return duplicate.id;
@@ -327,7 +465,9 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
               : {}),
           },
         ],
+        state.archived,
         state.appliedMessageIds,
+        nowMs,
       ),
     );
     return id;
@@ -341,15 +481,27 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
         state.entries.map((entry) =>
           entry.id === id ? { ...entry, text: normalized } : entry,
         ),
+        state.archived,
         state.appliedMessageIds,
       ),
     );
   },
 
+  /**
+   * The operator deleting a memory. A real deletion, with no copy left in the
+   * archive.
+   *
+   * The archive exists because the *app* may not destroy what the operator
+   * kept (LAWS/MEMORY.md, Sovereignty); it says nothing about the operator,
+   * for whom delete has to mean delete. A "deleted" line still readable in a
+   * panel — or still mirrored into a project folder — would make the one
+   * control that removes a mistaken or private fact a lie.
+   */
   forget: (id) => {
     set((state) =>
       commit(
         state.entries.filter((entry) => entry.id !== id),
+        state.archived,
         state.appliedMessageIds,
       ),
     );
@@ -372,22 +524,31 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
     // remember the new one — cannot have its new line eaten by a `forget`
     // that happens to read the same way.
     let forgotten = 0;
+    // Position by position, so a correction can be recognised below: an
+    // agent's retraction is a displacement, not the operator's delete, and
+    // what it displaced is archived rather than destroyed.
+    const retired: (MemoryEntry | null)[] = [];
     for (const text of request.forget) {
       const target = entries.find(
         (entry) =>
           sameMemoryText(entry.text, text) &&
           (entry.scope === "global" || entry.projectId === projectId),
       );
+      retired.push(target ?? null);
       if (!target) continue;
       entries = entries.filter((entry) => entry.id !== target.id);
       forgotten += 1;
     }
 
     let remembered = 0;
+    const rememberedIds: (string | null)[] = [];
     for (const item of request.remember) {
       // A session with no project cannot keep a project fact; keeping it
       // globally instead would be the app inventing a scope nobody asked for.
-      if (item.scope === "project" && !projectId) continue;
+      if (item.scope === "project" && !projectId) {
+        rememberedIds.push(null);
+        continue;
+      }
       const scopedProjectId = item.scope === "project" ? projectId : null;
       const duplicate = existingMatch(
         entries,
@@ -399,12 +560,14 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
         entries = entries.map((entry) =>
           entry.id === duplicate.id ? { ...entry, reinforcedAt: nowMs } : entry,
         );
+        rememberedIds.push(duplicate.id);
         continue;
       }
+      const id = newMemoryId();
       entries = [
         ...entries,
         {
-          id: newMemoryId(),
+          id,
           text: item.text,
           scope: item.scope,
           projectId: scopedProjectId,
@@ -412,20 +575,50 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
           createdBySessionId: sessionId,
         },
       ];
+      rememberedIds.push(id);
       remembered += 1;
     }
 
-    set(() => commit(entries, [...state.appliedMessageIds, messageId]));
+    // A correction is read by position, the shape the protocol asks for:
+    // `forget[i]` together with `remember[i]` is the same fact restated, so
+    // the retired line points at the one that took its place. A `remember`
+    // the store refused leaves nothing to point at, and the pair is then
+    // only a retirement.
+    const archivedNow: ArchivedMemoryEntry[] = [];
+    for (const [index, target] of retired.entries()) {
+      if (!target) continue;
+      const replacedById = rememberedIds[index] ?? null;
+      archivedNow.push({
+        ...target,
+        archivedAt: nowMs,
+        archiveReason: replacedById ? "superseded" : "forgotten",
+        ...(replacedById ? { replacedById } : {}),
+      });
+    }
+
+    set(() =>
+      commit(
+        entries,
+        [...state.archived, ...archivedNow],
+        [...state.appliedMessageIds, messageId],
+        nowMs,
+      ),
+    );
     return { remembered, forgotten };
   },
 
   dismissAgentRequest: (messageId) => {
     const state = get();
     if (!messageId || state.appliedMessageIds.includes(messageId)) return;
-    set(() => commit(state.entries, [...state.appliedMessageIds, messageId]));
+    set(() =>
+      commit(state.entries, state.archived, [
+        ...state.appliedMessageIds,
+        messageId,
+      ]),
+    );
   },
 
   replaceAll: (entries) => {
-    set((state) => commit(entries, state.appliedMessageIds));
+    set((state) => commit(entries, state.archived, state.appliedMessageIds));
   },
 }));
