@@ -29,24 +29,35 @@ import { MEMORY_RECALL_PROMPT, RECALL_FENCE_TAG } from "./memoryRecall";
  */
 export const MAX_MEMORY_PROMPT_CHARS = 4000;
 
-function withinBudget(entries: MemoryEntry[]): MemoryEntry[] {
-  let used = 0;
-  const kept: MemoryEntry[] = [];
-  // Most recently useful first while measuring, then restored to the stable
-  // order. Recency, not age: a fact the agents keep restating is the live one
-  // even if it was first written down months ago, and it is the stale ones
-  // nobody has touched since that should fall out of a full prompt.
-  const byRecency = [...entries].sort(
+/**
+ * Which memories one session's block actually carries, and what they cost.
+ *
+ * The same answer the prompt builder needs and the settings panel needs: a
+ * line in the list is not a line in the block, and the operator who cannot
+ * see the difference concludes the agent ignored what they wrote down. Two
+ * copies of this arithmetic would drift, and the copy that drifts is the one
+ * shown to the operator — so there is one, and the prompt is built from it.
+ */
+export function selectPromptEntries(
+  entries: readonly MemoryEntry[],
+  projectId: string | null,
+): { ids: Set<string>; usedChars: number } {
+  let usedChars = 0;
+  const ids = new Set<string>();
+  // Most recently useful first while measuring; the caller restores the
+  // stable order. Recency, not age: a fact the agents keep restating is the
+  // live one even if it was first written down months ago, and it is the
+  // stale ones nobody has touched since that should fall out of a full prompt.
+  const byRecency = [...entriesForProject(entries, projectId)].sort(
     (left, right) => memoryRecency(right) - memoryRecency(left),
   );
   for (const entry of byRecency) {
     const cost = entry.text.length + 3;
-    if (used + cost > MAX_MEMORY_PROMPT_CHARS) break;
-    used += cost;
-    kept.push(entry);
+    if (usedChars + cost > MAX_MEMORY_PROMPT_CHARS) break;
+    usedChars += cost;
+    ids.add(entry.id);
   }
-  const keptIds = new Set(kept.map((entry) => entry.id));
-  return entries.filter((entry) => keptIds.has(entry.id));
+  return { ids, usedChars };
 }
 
 /**
@@ -79,7 +90,8 @@ export function formatMemoryPrompt(
   projectId: string | null,
 ): string | undefined {
   const reachable = entriesForProject(entries, projectId);
-  const relevant = withinBudget(reachable);
+  const { ids } = selectPromptEntries(entries, projectId);
+  const relevant = reachable.filter((entry) => ids.has(entry.id));
   if (relevant.length === 0) return undefined;
   const stored = Math.max(0, archivedCount);
   const beyond = reachable.length - relevant.length + stored;
