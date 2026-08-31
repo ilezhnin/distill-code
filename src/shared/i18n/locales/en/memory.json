@@ -5,7 +5,8 @@
     "title": "Remember something",
     "placeholder": "One short fact to keep",
     "scope": "Where this applies",
-    "submit": "Remember"
+    "submit": "Remember",
+    "secretRefused": "That looks like it carries a key, token or password, so it was not saved. Memory goes into every later prompt and into your project folders."
   },
   "groups": {
     "global": "Everywhere",

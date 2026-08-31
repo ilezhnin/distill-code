@@ -230,6 +230,46 @@ describe("useMemoryAgentSync", () => {
     expect(useMemoryStore.getState().appliedMessageIds).toContain("m-2");
   });
 
+  it("refuses a statement that carries a secret, by kind only", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    putSession("s-1", "p-1");
+    renderHook(() => useMemoryAgentSync());
+
+    // A synthetic prefix plus placeholder characters — nothing here is a key.
+    const looksLikeAKey = `AKIA${"Q".repeat(16)}`;
+    putMessages("s-1", [
+      assistant(
+        "m-1",
+        JSON.stringify({
+          remember: [
+            { text: `The deploy key is ${looksLikeAKey}`, scope: "global" },
+            { text: "Deploys run from CI", scope: "global" },
+          ],
+        }),
+      ),
+    ]);
+
+    const state = useMemoryStore.getState();
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0].text).toBe("Deploys run from CI");
+    expect(warn).toHaveBeenCalledWith(
+      "[memory] statement refused: looks like a secret (aws-key)",
+    );
+    // The warning names the shape and nothing else; the statement itself must
+    // not end up in a log either.
+    for (const call of warn.mock.calls) {
+      expect(String(call[0])).not.toContain(looksLikeAKey);
+    }
+
+    // Tombstoned like any other read fence: a later store change is silent.
+    warn.mockClear();
+    act(() => {
+      useChatStore.setState({ activeSessionId: "s-1" });
+    });
+    expect(warn).not.toHaveBeenCalled();
+    expect(useMemoryStore.getState().appliedMessageIds).toContain("m-1");
+  });
+
   it("stops listening once it unmounts", () => {
     putSession("s-1", "p-1");
     const { unmount } = renderHook(() => useMemoryAgentSync());
