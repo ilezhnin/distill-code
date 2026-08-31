@@ -199,6 +199,10 @@
       "description": "Show the PR Inbox and the current status of pull requests linked in a chat.",
       "title": "PR Inbox"
     },
+    "memoryWikiGraph": {
+      "description": "Draw a project's .distill/wiki/ as a graph at the bottom of the Memory panel: a node per page, an edge per [[link]], and a warning colour for a page nothing links to.",
+      "title": "Wiki graph"
+    },
     "defaultLabel": "default",
     "description": "Opt into in-progress Distill features on this device. Experiments can change, break, or disappear.",
     "emptyDescription": "New experiments will appear here when they are ready for opt-in testing.",

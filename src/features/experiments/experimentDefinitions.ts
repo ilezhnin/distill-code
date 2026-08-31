@@ -58,6 +58,8 @@ export const TRANSCRIPT_VIRTUAL_RENDERER_EXPERIMENT_ID =
 export const SKILL_DISCOVERY_EXPERIMENT_ID = "skill-discovery";
 
 export const RELATED_PULL_REQUESTS_EXPERIMENT_ID = "related-pull-requests";
+
+export const MEMORY_WIKI_GRAPH_EXPERIMENT_ID = "memory-wiki-graph";
 export const EXPERIMENT_DEFINITIONS = [
   {
     id: BUILDERBOT_SURFACE_EXPERIMENT_ID,
@@ -88,5 +90,14 @@ export const EXPERIMENT_DEFINITIONS = [
     id: RELATED_PULL_REQUESTS_EXPERIMENT_ID,
     titleKey: "experiments.relatedPullRequests.title",
     descriptionKey: "experiments.relatedPullRequests.description",
+  },
+  {
+    id: MEMORY_WIKI_GRAPH_EXPERIMENT_ID,
+    titleKey: "experiments.memoryWikiGraph.title",
+    descriptionKey: "experiments.memoryWikiGraph.description",
+    // Off unless asked for: the section reads every page of a project's wiki
+    // off disk to draw one picture, and a wiki is a thing most projects do
+    // not have yet.
+    defaultEnabled: false,
   },
 ] as const satisfies readonly ExperimentDefinition[];

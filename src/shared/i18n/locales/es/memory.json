@@ -84,5 +84,25 @@
     "conductor": "Un conductor: siempre. Su trabajo es justamente retener lo que le enseñó una petición.",
     "orchestrator": "Un orquestador: solo si su agente tiene el permiso de escritura en memoria.",
     "worker": "Un trabajador y todo ejecutor que lance una ola: nunca. Su informe pasa por el conductor, y ahí es donde pertenece lo que haya aprendido."
+  },
+  "graph": {
+    "title": "Grafo del wiki",
+    "description": "Las p\u00e1ginas del .distill/wiki/ de este proyecto y los [[enlaces]] entre ellas. Solo lectura: una p\u00e1gina la escribes t\u00fa o un conductor, nunca desde aqu\u00ed.",
+    "project": "Wiki de qu\u00e9 proyecto",
+    "reading": "Leyendo el wiki\u2026",
+    "failed": "No se pudo leer el wiki de este proyecto.",
+    "empty": "Este wiki tiene \u00edndice pero todav\u00eda no tiene p\u00e1ginas.",
+    "node_one": "{{title}} \u2014 {{type}}, {{count}} p\u00e1gina enlaza aqu\u00ed",
+    "node_other": "{{title}} \u2014 {{type}}, {{count}} p\u00e1ginas enlazan aqu\u00ed",
+    "orphan": "nada enlaza aqu\u00ed",
+    "close": "Cerrar",
+    "pageUnreadable": "No se pudo leer esta p\u00e1gina desde la carpeta del proyecto.",
+    "types": {
+      "entity": "entidad",
+      "concept": "concepto",
+      "decision": "decisi\u00f3n",
+      "report": "informe",
+      "unknown": "sin tipo"
+    }
   }
 }
