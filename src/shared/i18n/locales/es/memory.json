@@ -6,7 +6,9 @@
     "placeholder": "Un dato breve para conservar",
     "scope": "Dónde se aplica",
     "submit": "Recordar",
-    "secretRefused": "Esto parece contener una clave, un token o una contraseña, así que no se guardó. La memoria entra en cada mensaje posterior y en las carpetas de tus proyectos."
+    "secretRefused": "Esto parece contener una clave, un token o una contraseña, así que no se guardó. La memoria entra en cada mensaje posterior y en las carpetas de tus proyectos.",
+    "noProjectRefused": "Esta memoria pertenece a un proyecto y no se eligió ninguno, así que no se guardó. Elige un proyecto o consérvala en todas partes.",
+    "blankRefused": "Aquí todavía no hay nada que recordar."
   },
   "groups": {
     "global": "En todas partes",
@@ -22,7 +24,11 @@
     "forget": "Olvidar esto",
     "forgetConfirmTitle": "¿Olvidar esta memoria?",
     "forgetConfirmDescription": "«{{text}}» ya no se llevará a sesiones futuras. Esto no se puede deshacer.",
-    "fromAgent": "de un agente"
+    "fromAgent": "de un agente",
+    "meta": "{{scope}} · creada el {{created}}",
+    "metaReinforced": "{{scope}} · creada el {{created}} · confirmada el {{reinforced}}",
+    "openAgentChat": "Abrir el chat que la escribió",
+    "sessionGone": "El chat que la escribió ya no existe."
   },
   "search": {
     "title": "Buscar un recuerdo",
