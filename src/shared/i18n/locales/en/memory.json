@@ -26,7 +26,7 @@
     "unknownProject": "A project that no longer exists",
     "forgetProject": "Forget this project's memories",
     "forgetProjectConfirmTitle": "Forget this project's memories?",
-    "forgetProjectConfirmDescription": "The project these memories belong to no longer exists, so no session is ever shown them. This cannot be undone.",
+    "forgetProjectConfirmDescription": "The project these memories belong to no longer exists, so no session is ever shown them. Their archived copies go with them. This cannot be undone.",
     "forgetProjectConfirm": "Forget them",
     "budget": "prompt block: {{used}} / {{total}} characters",
     "count_one": "{{count}} memory",
@@ -45,13 +45,31 @@
     "meta": "{{scope}} · created {{created}}",
     "metaReinforced": "{{scope}} · created {{created}} · confirmed {{reinforced}}",
     "openAgentChat": "Open the chat that wrote this",
-    "sessionGone": "The chat that wrote this is no longer here."
+    "sessionGone": "The chat that wrote this is no longer here.",
+    "forgetConfirmSuperseded_one": "Its {{count}} earlier wording, kept in the archive, goes with it.",
+    "forgetConfirmSuperseded_other": "Its {{count}} earlier wordings, kept in the archive, go with it."
   },
   "search": {
     "title": "Find a memory",
     "placeholder": "What did we decide about…",
     "empty": "Nothing remembered matches that.",
-    "provenance": "{{scope}} · {{date}}"
+    "provenance": "{{scope}} · {{date}}",
+    "archived": "in the archive"
+  },
+  "archive": {
+    "title": "Archive ({{total}})",
+    "description": "Memories the app stopped carrying. Nothing here is mixed into a prompt on its own, and a session that asks for one is told it is archived.",
+    "restore": "Restore",
+    "delete": "Delete forever",
+    "deleteConfirmTitle": "Delete this memory for good?",
+    "deleteConfirmDescription": "“{{text}}” will be gone from the archive as well as from the list. This cannot be undone.",
+    "meta": "{{reason}} · {{scope}} · archived {{date}}",
+    "showReplacement": "See what replaced it",
+    "reason": {
+      "capacity": "displaced to make room",
+      "forgotten": "retired by an agent",
+      "superseded": "replaced"
+    }
   },
   "access": {
     "title": "Who can write here",
