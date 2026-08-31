@@ -40,9 +40,10 @@ import {
 import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspaceContextPrompt";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import {
-  archivedCountForProject,
-  composeMemorySection,
-} from "@/features/memory/lib/memoryPrompt";
+  composeGatedMemorySection,
+  getMemoryPreferences,
+} from "@/features/memory/lib/memoryPreferences";
+import { archivedCountForProject } from "@/features/memory/lib/memoryPrompt";
 import { sessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
 import { sessionMemoryWriteAccess } from "@/features/memory/lib/memoryWriteAccess";
 import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
@@ -369,7 +370,8 @@ export async function sendQueuedPromptToExistingSessionInBackground(
     const operatorProtocols = isWaveManagedSession(sessionId)
       ? undefined
       : composeSystemPrompt(
-          composeMemorySection(
+          composeGatedMemorySection(
+            getMemoryPreferences(),
             memory.entries,
             archivedCountForProject(
               memory.archived,

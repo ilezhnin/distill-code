@@ -19,6 +19,7 @@ vi.mock("@/features/sessions/lib/openSessionDeepLink", () => ({
 }));
 
 import type { MemoryEntry } from "../../lib/memoryEntry";
+import { getMemoryPreferences } from "../../lib/memoryPreferences";
 import { MAX_MEMORY_PROMPT_CHARS } from "../../lib/memoryPrompt";
 import { useMemoryStore } from "../../stores/memoryStore";
 import { MemorySettings } from "../MemorySettings";
@@ -453,6 +454,55 @@ describe("MemorySettings", () => {
     expect(screen.queryByTestId("memory-add-refusal")).toBeNull();
     expect(field).toHaveValue("");
     expect(useMemoryStore.getState().entries).toHaveLength(1);
+  });
+
+  describe("the pause switches", () => {
+    it("starts with memory travelling both ways", () => {
+      renderWithProviders(<MemorySettings />);
+
+      expect(screen.getByTestId("memory-write-switch")).toBeChecked();
+      expect(screen.getByTestId("memory-read-switch")).toBeChecked();
+    });
+
+    it("stops agents writing without touching what is already kept", async () => {
+      const user = userEvent.setup();
+      useMemoryStore.setState({
+        entries: [entry({ id: "kept", text: "A kept fact" })],
+        appliedMessageIds: [],
+      });
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByTestId("memory-write-switch"));
+
+      expect(getMemoryPreferences()).toEqual({ write: false, read: true });
+      // A pause is not a deletion (LAWS/MEMORY.md, Sovereignty): the list
+      // below the switches is untouched.
+      expect(useMemoryStore.getState().entries).toHaveLength(1);
+      expect(screen.getByTestId("memory-entry")).toBeInTheDocument();
+    });
+
+    it("stops memory reaching prompts on its own switch", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByTestId("memory-read-switch"));
+
+      expect(getMemoryPreferences()).toEqual({ write: true, read: false });
+      expect(screen.getByTestId("memory-read-switch")).not.toBeChecked();
+      expect(screen.getByTestId("memory-write-switch")).toBeChecked();
+    });
+
+    it("switches back on again", async () => {
+      const user = userEvent.setup();
+      renderWithProviders(<MemorySettings />);
+
+      const writeSwitch = screen.getByTestId("memory-write-switch");
+      await user.click(writeSwitch);
+      await user.click(writeSwitch);
+
+      expect(getMemoryPreferences().write).toBe(true);
+      expect(writeSwitch).toBeChecked();
+    });
   });
 
   describe("what the prompt block actually carries", () => {

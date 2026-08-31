@@ -1,6 +1,17 @@
 {
   "title": "Memoria",
   "description": "Datos que tus agentes llevan a cada sesión futura. Las memorias globales se aplican en todas partes; las de proyecto solo se muestran dentro de su propio proyecto.",
+  "controls": {
+    "title": "Lectura y escritura",
+    "write": {
+      "label": "Los agentes pueden escribir memorias",
+      "description": "Mientras esté desactivado, no se guarda nada de lo que los agentes piden recordar. Sus peticiones siguen en los chats donde se escribieron y se aplican al volver a activarlo: la pausa retrasa la memoria, no la pierde."
+    },
+    "read": {
+      "label": "Incluir la memoria en los mensajes",
+      "description": "Mientras esté desactivado, a ninguna sesión se le cuenta lo recordado, ni se le enseña a añadir nada, ni se le responde cuando pregunta. Todo lo guardado sigue aquí, listado y localizable."
+    }
+  },
   "add": {
     "title": "Recordar algo",
     "placeholder": "Un dato breve para conservar",
