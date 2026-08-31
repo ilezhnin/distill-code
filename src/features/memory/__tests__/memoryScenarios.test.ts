@@ -189,6 +189,26 @@ describe("C.3 — a fact added to one project by hand", () => {
     // scoped block rather than a missing one.
     expect(blockElsewhere).toContain("no credentials");
   });
+
+  it("writes the project's row even when the same line is already global", () => {
+    // The operator types a fact they already keep everywhere, with the scope
+    // selector on the sandbox project. Reinforcing the global row instead
+    // clears the form and adds nothing — the click looks lost, and C.3.2
+    // fails with no error to explain it.
+    const text = "The release branch here is release/2026.9";
+    const everywhere = useMemoryStore
+      .getState()
+      .remember({ text, scope: "global" }, NOW + 1);
+    const inProject = useMemoryStore
+      .getState()
+      .remember({ text, scope: "project", projectId: SANDBOX }, NOW + 2);
+
+    expect(inProject).not.toBe(everywhere);
+    expect(live().find((entry) => entry.id === inProject)).toMatchObject({
+      scope: "project",
+      projectId: SANDBOX,
+    });
+  });
 });
 
 describe("C.4 — the agent remembers and corrects", () => {
@@ -239,6 +259,38 @@ describe("C.4 — the agent remembers and corrects", () => {
     expect(storedTexts()).toContain(corrected);
     expect(storedTexts()).not.toContain(old);
     expect(storedArchivedTexts()).toContain(old);
+  });
+
+  it("keeps the old line when the same correction comes from a chat with no project", () => {
+    // C.4 done in a chat outside any project. `project` is the fence's
+    // default scope, so the replacement cannot be kept — and a correction is
+    // one fact restated, so the retirement is refused with it. Applying only
+    // the `forget` would archive the fact and store nothing in its place:
+    // the operator loses it and is shown nothing that says so.
+    const old = "The release branch here is release/2026.9";
+    const corrected = "The release branch here is release/2026.10";
+    useMemoryStore.getState().remember({ text: old, scope: "global" }, NOW);
+
+    const request = parseMemoryFences(
+      [
+        "```distill-memory",
+        JSON.stringify({
+          remember: [{ text: corrected, scope: "project" }],
+          forget: [old],
+        }),
+        "```",
+      ].join("\n"),
+    );
+    if (!request)
+      throw new Error("the reply's distill-memory fence did not parse");
+
+    const applied = useMemoryStore
+      .getState()
+      .applyAgentRequest("m-1", "s-agent", null, request, NOW + 1);
+
+    expect(applied).toEqual({ remembered: 0, forgotten: 0 });
+    expect(live().map((entry) => entry.text)).toEqual([old]);
+    expect(archive()).toEqual([]);
   });
 });
 

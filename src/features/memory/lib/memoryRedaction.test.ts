@@ -180,7 +180,7 @@ describe("the store refuses a statement that carries a secret", () => {
     expect(state.appliedMessageIds).toContain("m-1");
   });
 
-  it("still archives the line a refused correction was meant to replace", () => {
+  it("keeps the line a refused correction was meant to replace", () => {
     useMemoryStore
       .getState()
       .remember({ text: "The old fact", scope: "global" }, NOW);
@@ -196,14 +196,12 @@ describe("the store refuses a statement that carries a secret", () => {
       NOW + 1,
     );
 
+    // Refusing the secret must not cost the operator the fact it was offered
+    // as a correction to: a correction is one statement restated, so the
+    // retirement is refused with the replacement rather than left to run on
+    // its own and take the line with it.
     const state = useMemoryStore.getState();
-    expect(state.entries).toHaveLength(0);
-    // A retirement, not a supersession: nothing took the old line's place.
-    expect(state.archived).toHaveLength(1);
-    expect(state.archived[0]).toMatchObject({
-      text: "The old fact",
-      archiveReason: "forgotten",
-    });
-    expect(state.archived[0].replacedById).toBeUndefined();
+    expect(state.entries.map((e) => e.text)).toEqual(["The old fact"]);
+    expect(state.archived).toEqual([]);
   });
 });

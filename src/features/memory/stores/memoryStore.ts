@@ -19,8 +19,11 @@ import { distillDocument } from "@/shared/lib/distillDocument";
 
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 
-import type { MemoryFenceRequest } from "../lib/memoryFence";
-import { findSecret } from "../lib/memoryRedaction";
+import type {
+  MemoryFenceRemember,
+  MemoryFenceRequest,
+} from "../lib/memoryFence";
+import { findSecret, type SecretKind } from "../lib/memoryRedaction";
 import {
   mergeProjectMemories,
   readProjectMemories,
@@ -84,6 +87,10 @@ interface MemoryActions {
    * a message sent from a session with no project can only keep global facts,
    * because a project memory with no project is a memory nothing will ever
    * read back.
+   *
+   * A correction is applied whole or not at all: when the store refuses
+   * `remember[i]`, the `forget[i]` paired with it is left unapplied, so a
+   * refused replacement costs the operator nothing rather than the fact.
    */
   applyAgentRequest: (
     messageId: string,
@@ -436,7 +443,17 @@ function newMemoryId(): string {
   return `mem_${crypto.randomUUID()}`;
 }
 
-/** Finds an entry the given statement would duplicate, in the same reach. */
+/**
+ * Finds an entry the given statement would duplicate, inside its own scope.
+ *
+ * Scope-exact on purpose. A global line reads the same way in a project's
+ * block, but it is not the row the operator asked for: treating it as one
+ * meant that picking a project in the selector and pressing Remember only
+ * reinforced the global entry and added nothing, so the panel looked as if
+ * the click had never happened (checklist C.3). The reverse is left alone —
+ * widening a fact to everywhere writes the global row and does not touch the
+ * project row, because removing a line the operator can see is theirs to do.
+ */
 function existingMatch(
   entries: readonly MemoryEntry[],
   text: string,
@@ -446,9 +463,43 @@ function existingMatch(
   return entries.find(
     (entry) =>
       sameMemoryText(entry.text, text) &&
-      (entry.scope === "global" ||
-        (scope === "project" && entry.projectId === projectId)),
+      entry.scope === scope &&
+      (scope === "global" || entry.projectId === projectId),
   );
+}
+
+/**
+ * Why a statement an agent asked to keep was not kept.
+ *
+ * Named rather than boolean because the sync says the refusal out loud, and
+ * "nothing was kept" tells the operator nothing about what to do next. The
+ * shape of a secret is the only thing that may be spoken about one — never
+ * the value, never the statement.
+ */
+export type MemoryRefusal =
+  | { reason: "secret"; shape: SecretKind }
+  | { reason: "no-project" }
+  | { reason: "blank" };
+
+/**
+ * The store's verdict on one `remember` item, before anything is written.
+ *
+ * Decided ahead of the write and exported so the sync can report the same
+ * verdict it acts on: a refusal the app makes twice, in two places, drifts.
+ * Secrets come first, so a statement that is both a secret and unscopeable
+ * is refused for the reason that matters.
+ */
+export function memoryRememberRefusal(
+  item: MemoryFenceRemember,
+  projectId: string | null,
+): MemoryRefusal | null {
+  const shape = findSecret(item.text);
+  if (shape) return { reason: "secret", shape };
+  // A session with no project cannot keep a project fact; keeping it globally
+  // instead would be the app inventing a scope nobody asked for.
+  if (item.scope === "project" && !projectId) return { reason: "no-project" };
+  if (!normalizeMemoryText(item.text)) return { reason: "blank" };
+  return null;
 }
 
 export const useMemoryStore = create<MemoryStore>((set, get) => ({
@@ -567,8 +618,17 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
       return { remembered: 0, forgotten: 0 };
     }
 
+    // Every refusal is decided before a single line moves. A correction is
+    // `forget[i]` and `remember[i]` — one fact restated — so applying the
+    // retirement while refusing the replacement loses the fact altogether,
+    // and loses it quietly: the operator sees a row disappear and no row
+    // arrive. Refusing the pair whole leaves them with what they had.
+    const refusals = request.remember.map((item) =>
+      memoryRememberRefusal(item, projectId),
+    );
+
     let entries = state.entries;
-    // Forgetting runs first so that a correction — forget the old line,
+    // Forgetting still runs first so that a correction — forget the old line,
     // remember the new one — cannot have its new line eaten by a `forget`
     // that happens to read the same way.
     let forgotten = 0;
@@ -576,7 +636,14 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
     // agent's retraction is a displacement, not the operator's delete, and
     // what it displaced is archived rather than destroyed.
     const retired: (MemoryEntry | null)[] = [];
-    for (const text of request.forget) {
+    for (const [index, text] of request.forget.entries()) {
+      // The replacement was refused, so this half of the pair does not run.
+      // A `forget` with no `remember` behind it is a plain retirement and is
+      // unaffected: `refusals` is only as long as the remember list.
+      if (refusals[index]) {
+        retired.push(null);
+        continue;
+      }
       const target = entries.find(
         (entry) =>
           sameMemoryText(entry.text, text) &&
@@ -590,27 +657,22 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
 
     let remembered = 0;
     const rememberedIds: (string | null)[] = [];
-    for (const item of request.remember) {
-      // A session with no project cannot keep a project fact; keeping it
-      // globally instead would be the app inventing a scope nobody asked for.
-      if (item.scope === "project" && !projectId) {
+    for (const [index, item] of request.remember.entries()) {
+      // Refused silently here: a fence is not a conversation, and the store
+      // has no way to answer one. The sync is what says it out loud, by kind
+      // and never by value. Skipping is all that happens — the message is
+      // still tombstoned below, because a refusal that left the message
+      // unread would be re-refused on every store change for the life of the
+      // session.
+      if (refusals[index]) {
         rememberedIds.push(null);
         continue;
       }
-      // Same refusal the manual form gets, silently: a fence is not a
-      // conversation, and the store has no way to answer one. The sync is
-      // what says it out loud, by kind and never by value. Skipping is all
-      // that happens — the message is still tombstoned below, because a
-      // refusal that left the message unread would be re-refused on every
-      // store change for the life of the session.
-      if (findSecret(item.text)) {
-        rememberedIds.push(null);
-        continue;
-      }
+      const text = normalizeMemoryText(item.text);
       const scopedProjectId = item.scope === "project" ? projectId : null;
       const duplicate = existingMatch(
         entries,
-        item.text,
+        text,
         item.scope,
         scopedProjectId,
       );
@@ -626,7 +688,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
         ...entries,
         {
           id,
-          text: item.text,
+          text,
           scope: item.scope,
           projectId: scopedProjectId,
           createdAt: nowMs,
