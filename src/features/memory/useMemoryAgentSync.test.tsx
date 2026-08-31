@@ -18,6 +18,11 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import type { SessionManagedBy, SessionRole } from "@/features/conductor/types";
 
+import { MEMORY_SCAN_TAIL } from "./lib/memoryAgentScan";
+import {
+  setMemoryReadEnabled,
+  setMemoryWriteEnabled,
+} from "./lib/memoryPreferences";
 import { useMemoryStore } from "./stores/memoryStore";
 import { useMemoryAgentSync } from "./useMemoryAgentSync";
 
@@ -32,6 +37,17 @@ function assistant(id: string, body: string): Message {
         text: ["Noted.", "```distill-memory", body, "```"].join("\n"),
       },
     ],
+    metadata: { completionStatus: "completed" },
+  };
+}
+
+/** Settled assistant chatter with no fence in it — used to bury one. */
+function filler(id: string): Message {
+  return {
+    id,
+    role: "assistant",
+    created: 1,
+    content: [{ type: "text", text: "Working on it." }],
     metadata: { completionStatus: "completed" },
   };
 }
@@ -348,6 +364,80 @@ describe("useMemoryAgentSync", () => {
     expect(warn).toHaveBeenCalledWith(
       "[memory] statement refused: looks like a secret (aws-key)",
     );
+  });
+
+  describe("while the operator has writing switched off", () => {
+    it("neither keeps a fence nor spends it", () => {
+      setMemoryWriteEnabled(false);
+      putSession("s-1", "p-1");
+      renderHook(() => useMemoryAgentSync());
+
+      putMessages("s-1", [assistant("m-1", '{"remember":["Uses pnpm"]}')]);
+
+      expect(useMemoryStore.getState().entries).toHaveLength(0);
+      // The half that makes the pause reversible: a fence this drain looks
+      // at is tombstoned whether or not it was applied, so a paused drain
+      // must not look at all.
+      expect(useMemoryStore.getState().appliedMessageIds).not.toContain("m-1");
+    });
+
+    it("keeps the fence, and applies it once writing comes back", () => {
+      setMemoryWriteEnabled(false);
+      putSession("s-1", "p-1");
+      renderHook(() => useMemoryAgentSync());
+      putMessages("s-1", [
+        assistant(
+          "m-1",
+          '{"remember":[{"text":"Uses pnpm","scope":"project"}]}',
+        ),
+      ]);
+      expect(useMemoryStore.getState().entries).toHaveLength(0);
+
+      act(() => {
+        setMemoryWriteEnabled(true);
+      });
+
+      expect(useMemoryStore.getState().entries[0]).toMatchObject({
+        text: "Uses pnpm",
+        projectId: "p-1",
+      });
+    });
+
+    it("still reaches a fence the pause left far behind", () => {
+      // The reason turning the switch back on re-arms the deep pass: while
+      // it was off nothing was scanned, so the request never counted as
+      // seen — but by now it is well past the tail this drain normally
+      // reads, and a tail scan would leave it there forever.
+      setMemoryWriteEnabled(false);
+      putSession("s-1", "p-1");
+      renderHook(() => useMemoryAgentSync());
+      putMessages("s-1", [
+        assistant("m-1", '{"remember":["Written during the pause"]}'),
+        ...Array.from({ length: MEMORY_SCAN_TAIL + 5 }, (_, index) =>
+          filler(`f-${index}`),
+        ),
+      ]);
+
+      act(() => {
+        setMemoryWriteEnabled(true);
+      });
+
+      expect(useMemoryStore.getState().entries.map((e) => e.text)).toEqual([
+        "Written during the pause",
+      ]);
+    });
+
+    it("is not the read switch: reading off still lets a fence land", () => {
+      // Two switches, two jobs. Not mixing memory into prompts says nothing
+      // about honouring a request an agent makes anyway.
+      setMemoryReadEnabled(false);
+      putSession("s-1", "p-1");
+      renderHook(() => useMemoryAgentSync());
+
+      putMessages("s-1", [assistant("m-1", '{"remember":["Still kept"]}')]);
+
+      expect(useMemoryStore.getState().entries).toHaveLength(1);
+    });
   });
 
   it("stops listening once it unmounts", () => {

@@ -41,9 +41,10 @@ import { loadWorkspaceInstructionFiles } from "@/features/chat/api/workspaceCont
 import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspaceContextPrompt";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import {
-  archivedCountForProject,
-  composeMemorySection,
-} from "@/features/memory/lib/memoryPrompt";
+  composeGatedMemorySection,
+  useMemoryPreferences,
+} from "@/features/memory/lib/memoryPreferences";
+import { archivedCountForProject } from "@/features/memory/lib/memoryPrompt";
 import { decideMemoryWrite } from "@/features/memory/lib/memoryWriteAccess";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
@@ -782,12 +783,17 @@ export function useChatSessionController({
         ),
     ).allowed;
   }, [sessionNodeRole, graphNodePersonaId, isWaveChild, personas]);
+  // The operator's read switch. Subscribed rather than read inside the
+  // composer below, because this prompt is memoised: a switch flipped in
+  // settings has to reach an open chat's next send, not the one after it.
+  const memoryPreferences = useMemoryPreferences();
   const operatorProtocols = useMemo(
     () =>
       isWaveChild
         ? undefined
         : composeSystemPrompt(
-            composeMemorySection(
+            composeGatedMemorySection(
+              memoryPreferences,
               memoryEntries,
               archivedCountForProject(memoryArchived, effectiveProjectId),
               effectiveProjectId,
@@ -800,6 +806,7 @@ export function useChatSessionController({
       isWaveChild,
       memoryArchived,
       memoryEntries,
+      memoryPreferences,
       memoryWriteAllowed,
     ],
   );

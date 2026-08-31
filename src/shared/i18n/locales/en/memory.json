@@ -1,6 +1,17 @@
 {
   "title": "Memory",
   "description": "Facts your agents carry into every future session. Global memories apply everywhere; project memories are only ever shown inside their own project.",
+  "controls": {
+    "title": "Reading and writing",
+    "write": {
+      "label": "Agents can write memories",
+      "description": "While this is off, nothing agents ask to remember is kept. Their requests stay in the chats they were written in, and switching this back on applies them — a pause delays memory, it does not lose it."
+    },
+    "read": {
+      "label": "Mix memory into prompts",
+      "description": "While this is off, no session is told what is remembered, taught how to add to it, or answered when it asks. Everything kept stays here, listed and searchable."
+    }
+  },
   "add": {
     "title": "Remember something",
     "placeholder": "One short fact to keep",

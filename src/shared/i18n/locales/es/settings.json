@@ -380,6 +380,14 @@
       "legacyDataElsewhere": "Los chats y proyectos siguen en {{path}}. Elige una carpeta arriba, copia allí el contenido y reinicia."
     }
   },
+  "memory": {
+    "agentWrites": {
+      "label": "Los agentes pueden escribir memorias"
+    },
+    "promptMemory": {
+      "label": "Incluir la memoria en los mensajes"
+    }
+  },
   "nav": {
     "appearance": "Apariencia",
     "archive": "Archivo",

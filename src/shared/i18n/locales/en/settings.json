@@ -380,6 +380,14 @@
       "legacyDataElsewhere": "Chats and projects are still in {{path}}. Pick a folder above, copy that folder's contents into it, and restart."
     }
   },
+  "memory": {
+    "agentWrites": {
+      "label": "Agents can write memories"
+    },
+    "promptMemory": {
+      "label": "Mix memory into prompts"
+    }
+  },
   "nav": {
     "appearance": "Appearance",
     "archive": "Archive",

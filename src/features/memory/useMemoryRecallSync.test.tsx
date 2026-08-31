@@ -19,6 +19,10 @@ import type { SessionManagedBy } from "@/features/conductor/types";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 
 import type { ArchivedMemoryEntry, MemoryEntry } from "./lib/memoryEntry";
+import {
+  setMemoryReadEnabled,
+  setMemoryWriteEnabled,
+} from "./lib/memoryPreferences";
 import { RECALL_LIMIT_REACHED_TEXT } from "./lib/memoryRecall";
 import { useMemoryStore } from "./stores/memoryStore";
 import { useMemoryRecallSync } from "./useMemoryRecallSync";
@@ -276,6 +280,41 @@ describe("useMemoryRecallSync", () => {
     putMessages("s-r", [assistant("m-1", '{"query":"Rust"}')]);
 
     expect(delivered()).toHaveLength(1);
+    expect(delivered()[0].text).toContain("Ivan reviews Rust himself");
+  });
+
+  it("answers nothing once the operator switches memory out of prompts", () => {
+    // An answer is memory reaching a session's context, which is the exact
+    // thing that switch turns off — so recall follows `read`, not `write`.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    setMemoryReadEnabled(false);
+    putSession("s-1", "p-1");
+    useMemoryStore.setState({
+      entries: [entry({ id: "g", text: "Ivan reviews Rust himself" })],
+    });
+    renderHook(() => useMemoryRecallSync());
+
+    putMessages("s-1", [assistant("m-1", '{"query":"Rust"}')]);
+
+    expect(mocks.deliverEnvelope).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("was not answered"),
+    );
+    // Refused, not deferred: an answer that turned up later would land in a
+    // conversation that has moved on.
+    expect(useMemoryStore.getState().recallAnsweredMessageIds).toContain("m-1");
+  });
+
+  it("still answers when only writing is paused", () => {
+    setMemoryWriteEnabled(false);
+    putSession("s-1", "p-1");
+    useMemoryStore.setState({
+      entries: [entry({ id: "g", text: "Ivan reviews Rust himself" })],
+    });
+    renderHook(() => useMemoryRecallSync());
+
+    putMessages("s-1", [assistant("m-1", '{"query":"Rust"}')]);
+
     expect(delivered()[0].text).toContain("Ivan reviews Rust himself");
   });
 
