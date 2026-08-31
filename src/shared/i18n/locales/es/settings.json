@@ -199,6 +199,10 @@
       "description": "Muestra PR Inbox y el estado actual de las solicitudes de incorporación enlazadas en un chat.",
       "title": "PR Inbox"
     },
+    "memoryWikiGraph": {
+      "description": "Dibuja el .distill/wiki/ de un proyecto como un grafo al final del panel de Memoria: un nodo por página, una arista por [[enlace]] y un color de aviso para la página a la que nada enlaza.",
+      "title": "Grafo del wiki"
+    },
     "defaultLabel": "predeterminado",
     "description": "Activa funciones de Distill en desarrollo en este dispositivo. Los experimentos pueden cambiar, fallar o desaparecer.",
     "emptyDescription": "Los nuevos experimentos aparecerán aquí cuando estén listos para probarse.",
