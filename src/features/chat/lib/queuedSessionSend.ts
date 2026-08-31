@@ -44,6 +44,7 @@ import {
   getMemoryPreferences,
 } from "@/features/memory/lib/memoryPreferences";
 import { archivedCountForProject } from "@/features/memory/lib/memoryPrompt";
+import { sessionProjectWikiPrompt } from "@/features/memory/lib/projectWikiPrompt";
 import { sessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
 import { sessionMemoryWriteAccess } from "@/features/memory/lib/memoryWriteAccess";
 import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
@@ -389,6 +390,11 @@ export async function sendQueuedPromptToExistingSessionInBackground(
       ? composeSystemPrompt(
           formatIncludedWorkspacesPrompt(session),
           formatWorkspaceInstructionsPrompt(instructionFiles),
+          // Beside the AGENTS.md files and for the same reason: what this
+          // repository already knows about itself. Outside `operatorProtocols`
+          // deliberately — a wave child is cut off from the operator's memory
+          // but not from the project's own knowledge.
+          sessionProjectWikiPrompt(sessionId),
           formatAvailableSkillsCatalogPrompt(skills),
           operatorProtocols,
         )
