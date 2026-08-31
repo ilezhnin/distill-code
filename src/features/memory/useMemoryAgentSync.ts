@@ -15,6 +15,7 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import { BoundedSet } from "@/features/conductor/boundedSet";
 
 import { detectMemoryFenceCandidates } from "./lib/memoryAgentScan";
+import { findSecret } from "./lib/memoryRedaction";
 import {
   memoryWriteDenialText,
   sessionMemoryWriteAccess,
@@ -68,6 +69,19 @@ function drainMemoryFences(): void {
           `[memory] distill-memory fence in session ${candidate.sessionId} was not applied: ${memoryWriteDenialText(access.denial)}`,
         );
         continue;
+      }
+      // A statement that carries a secret is refused by the store; saying so
+      // here is the same courtesy a refused fence already gets, and for the
+      // same reason — silence looks to the operator like the app agreed. The
+      // kind only: the statement is what must not be written down, and a
+      // console line is written down too.
+      for (const item of candidate.request.remember) {
+        const kind = findSecret(item.text);
+        if (kind) {
+          console.warn(
+            `[memory] statement refused: looks like a secret (${kind})`,
+          );
+        }
       }
       const projectId =
         sessions.getSession(candidate.sessionId)?.projectId ?? null;
