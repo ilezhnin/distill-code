@@ -10,7 +10,7 @@
 
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { IconTrash } from "@tabler/icons-react";
+import { IconChevronDown, IconTrash } from "@tabler/icons-react";
 
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
@@ -19,6 +19,11 @@ import { createSessionDeepLink } from "@/features/sessions/lib/sessionDeepLink";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/shared/ui/collapsible";
 import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
 import { Input } from "@/shared/ui/input";
 import { SettingsPage } from "@/shared/ui/SettingsPage";
@@ -62,6 +67,17 @@ const MEMORY_DATE_OPTIONS: Intl.DateTimeFormatOptions = {
 };
 
 /**
+ * How many memories an area may hold and still open by itself.
+ *
+ * An area the operator can take in at a glance should be readable without a
+ * click; past that the list stops being a card and starts being the page, and
+ * the other areas below it become unreachable without scrolling past it. The
+ * bound is a default, never a decision — one click reopens the area, and the
+ * choice is remembered for as long as the page is.
+ */
+const AUTO_EXPANDED_ENTRY_LIMIT = 15;
+
+/**
  * What the operator is told when the store refuses their draft.
  *
  * One line per reason the store can give, so a refusal never reaches them as
@@ -99,10 +115,30 @@ interface MemoryGroup {
    * the one deliberate way out: a button, behind a confirmation.
    */
   orphaned: boolean;
+  /**
+   * When this area last changed, as the newest `createdAt` or `reinforcedAt`
+   * in it — null while it holds nothing.
+   *
+   * A restatement counts as a change on purpose: an agent saying a fact again
+   * is the operator's evidence that it is still true, which is exactly what
+   * "updated" is being asked about.
+   */
+  updatedAt: number | null;
+}
+
+/** The newest moment anything in the group was written down or restated. */
+function lastTouchedAt(entries: MemoryEntry[]): number | null {
+  let newest: number | null = null;
+  for (const entry of entries) {
+    const touched = Math.max(entry.createdAt, entry.reinforcedAt ?? 0);
+    if (newest === null || touched > newest) newest = touched;
+  }
+  return newest;
 }
 
 export function MemorySettings() {
   const { t } = useTranslation("memory");
+  const { formatRelativeTimeToNow } = useLocaleFormatting();
   const preferences = useMemoryPreferences();
   const entries = useMemoryStore((state) => state.entries);
   const remember = useMemoryStore((state) => state.remember);
@@ -119,6 +155,13 @@ export function MemorySettings() {
   const [forgettingProjectId, setForgettingProjectId] = useState<string | null>(
     null,
   );
+  // Only the areas the operator has actually opened or shut are recorded, so
+  // an area they never touched keeps following the size default as memories
+  // come and go. Nothing about which card is open belongs in the store — it is
+  // how this page is being read right now, not something the agents carry.
+  const [areaOpenState, setAreaOpenState] = useState<Record<string, boolean>>(
+    {},
+  );
 
   const groups = useMemo<MemoryGroup[]>(() => {
     const byAge = (left: MemoryEntry, right: MemoryEntry) =>
@@ -133,6 +176,7 @@ export function MemorySettings() {
         promptIds: globalBudget.ids,
         usedChars: globalBudget.usedChars,
         orphaned: false,
+        updatedAt: lastTouchedAt(global),
       },
     ];
     const projectIds = [
@@ -145,15 +189,17 @@ export function MemorySettings() {
     for (const projectId of projectIds) {
       const name = projects.find((project) => project.id === projectId)?.name;
       const budget = selectPromptEntries(entries, projectId);
+      const owned = entries
+        .filter((entry) => entry.projectId === projectId)
+        .sort(byAge);
       result.push({
         key: projectId,
         title: name ?? t("groups.unknownProject"),
-        entries: entries
-          .filter((entry) => entry.projectId === projectId)
-          .sort(byAge),
+        entries: owned,
         promptIds: budget.ids,
         usedChars: budget.usedChars,
         orphaned: name === undefined,
+        updatedAt: lastTouchedAt(owned),
       });
     }
     return result;
@@ -167,6 +213,9 @@ export function MemorySettings() {
     () => (query.trim() ? searchMemories(entries, query) : []),
     [entries, query],
   );
+  const isAreaOpen = (group: MemoryGroup) =>
+    areaOpenState[group.key] ??
+    group.entries.length <= AUTO_EXPANDED_ENTRY_LIMIT;
   const projectNameOf = (projectId: string | null) =>
     projectId
       ? (projects.find((project) => project.id === projectId)?.name ??
@@ -348,61 +397,111 @@ export function MemorySettings() {
           ) : null}
         </SettingsSection>
 
+        {/* One card per area, the way the operator thinks about their
+            memory: everywhere first, then a card per project. The heading
+            stays the area's name and nothing else — it is what the page is
+            navigated by — so the size of the area and when it last changed
+            go on their own line underneath it. */}
         {groups.map((group) =>
           group.entries.length === 0 && group.key !== "global" ? null : (
-            <SettingsSection key={group.key} title={group.title}>
-              {group.entries.length === 0 ? (
-                <p
-                  className="text-xs text-muted-foreground"
-                  data-testid="memory-empty"
-                >
-                  {t("empty")}
-                </p>
-              ) : (
+            <Collapsible
+              key={group.key}
+              className="group/area"
+              open={isAreaOpen(group)}
+              onOpenChange={(open) =>
+                setAreaOpenState((previous) => ({
+                  ...previous,
+                  [group.key]: open,
+                }))
+              }
+            >
+              <SettingsSection
+                title={
+                  <CollapsibleTrigger
+                    className="flex w-full items-center gap-2 text-left"
+                    data-testid="memory-group-toggle"
+                  >
+                    <IconChevronDown
+                      aria-hidden="true"
+                      className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=closed]/area:-rotate-90"
+                    />
+                    {group.title}
+                  </CollapsibleTrigger>
+                }
+              >
                 <div className="flex flex-col gap-1.5">
-                  {/* What a session in this scope actually carries, against
-                      the budget it is carried in. Without it a long list
-                      reads as a long prompt. It sits under the heading
-                      rather than in it: the heading names the group, and a
-                      number that changes with every edit is not its name. */}
+                  {/* How much is in here and how long since any of it moved.
+                      A shut card still says both, because the reason to shut
+                      one is that its contents are settled — and "settled" is
+                      a claim about exactly these two numbers. */}
                   <p
                     className="text-[11px] text-muted-foreground"
-                    data-testid="memory-group-budget"
+                    data-testid="memory-group-meta"
                   >
-                    {t("groups.budget", {
-                      used: group.usedChars,
-                      total: MAX_MEMORY_PROMPT_CHARS,
-                    })}
+                    {group.updatedAt === null
+                      ? t("groups.count", { count: group.entries.length })
+                      : `${t("groups.count", {
+                          count: group.entries.length,
+                        })} · ${t("groups.updated", {
+                          time: formatRelativeTimeToNow(group.updatedAt),
+                        })}`}
                   </p>
-                  <ul className="flex list-none flex-col gap-1">
-                    {group.entries.map((entry) => (
-                      // Keyed by text as well as id: the row holds its draft in
-                      // local state, so when an agent rewrites the entry while
-                      // this page is open, remounting is what makes the change
-                      // visible instead of the stale draft.
-                      <MemoryRow
-                        key={`${entry.id}:${entry.text}`}
-                        entry={entry}
-                        scopeLabel={projectNameOf(entry.projectId)}
-                        inPrompt={group.promptIds.has(entry.id)}
-                      />
-                    ))}
-                  </ul>
+                  <CollapsibleContent className="flex flex-col gap-1.5">
+                    {group.entries.length === 0 ? (
+                      <p
+                        className="text-xs text-muted-foreground"
+                        data-testid="memory-empty"
+                      >
+                        {t("empty")}
+                      </p>
+                    ) : (
+                      <>
+                        {/* What a session in this scope actually carries,
+                            against the budget it is carried in. Without it a
+                            long list reads as a long prompt. */}
+                        <p
+                          className="text-[11px] text-muted-foreground"
+                          data-testid="memory-group-budget"
+                        >
+                          {t("groups.budget", {
+                            used: group.usedChars,
+                            total: MAX_MEMORY_PROMPT_CHARS,
+                          })}
+                        </p>
+                        <ul className="flex list-none flex-col gap-1">
+                          {group.entries.map((entry) => (
+                            // Keyed by text as well as id: the row holds its
+                            // draft in local state, so when an agent rewrites
+                            // the entry while this page is open, remounting is
+                            // what makes the change visible instead of the
+                            // stale draft.
+                            <MemoryRow
+                              key={`${entry.id}:${entry.text}`}
+                              entry={entry}
+                              scopeLabel={projectNameOf(entry.projectId)}
+                              inPrompt={group.promptIds.has(entry.id)}
+                            />
+                          ))}
+                        </ul>
+                      </>
+                    )}
+                    {group.orphaned && projectsSettled ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        destructive
+                        className="w-fit"
+                        data-testid="memory-forget-project"
+                        onClick={() => setForgettingProjectId(group.key)}
+                      >
+                        {t("groups.forgetProject")}
+                      </Button>
+                    ) : null}
+                  </CollapsibleContent>
                 </div>
-              )}
-              {group.orphaned && projectsSettled ? (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  destructive
-                  data-testid="memory-forget-project"
-                  onClick={() => setForgettingProjectId(group.key)}
-                >
-                  {t("groups.forgetProject")}
-                </Button>
-              ) : null}
-            </SettingsSection>
+              </SettingsSection>
+            </Collapsible>
           ),
         )}
       </SettingsSections>

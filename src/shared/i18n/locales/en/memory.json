@@ -28,7 +28,10 @@
     "forgetProjectConfirmTitle": "Forget this project's memories?",
     "forgetProjectConfirmDescription": "The project these memories belong to no longer exists, so no session is ever shown them. This cannot be undone.",
     "forgetProjectConfirm": "Forget them",
-    "budget": "prompt block: {{used}} / {{total}} characters"
+    "budget": "prompt block: {{used}} / {{total}} characters",
+    "count_one": "{{count}} memory",
+    "count_other": "{{count}} memories",
+    "updated": "updated {{time}}"
   },
   "empty": "Nothing kept yet.",
   "row": {
