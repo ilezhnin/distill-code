@@ -16,6 +16,10 @@ import { BoundedSet } from "@/features/conductor/boundedSet";
 
 import { detectMemoryFenceCandidates } from "./lib/memoryAgentScan";
 import {
+  getMemoryPreferences,
+  subscribeToMemoryPreferenceChanges,
+} from "./lib/memoryPreferences";
+import {
   memoryWriteDenialText,
   sessionMemoryWriteAccess,
 } from "./lib/memoryWriteAccess";
@@ -60,12 +64,30 @@ function takeFirstScan(sessionId: string): boolean {
   return true;
 }
 
-/** Test seam: lets a case run the first-scan path again. */
-export function resetMemoryDeepScanForTests(): void {
+/**
+ * Arms the deep pass again for every session.
+ *
+ * Called when writing is switched back on, and that is the whole reason it
+ * is not test-only any more: while the switch was off nothing was scanned
+ * and nothing was tombstoned, so the fences agents wrote during the pause
+ * are still sitting in their transcripts — but by now they are usually
+ * further back than `MEMORY_SCAN_TAIL` reaches. Re-arming the deep pass is
+ * what makes the pause a delay rather than a loss.
+ */
+export function resetMemoryDeepScan(): void {
   deeplyScanned.clear();
 }
 
+/** Test seam: lets a case run the first-scan path again. */
+export const resetMemoryDeepScanForTests = resetMemoryDeepScan;
+
 function drainMemoryFences(): void {
+  // Writing is paused. The return has to come before the scan, not before
+  // `applyAgentRequest`: a candidate this drain looks at is tombstoned
+  // whether or not it is applied, and a tombstoned fence never comes back.
+  // Reading nothing means marking nothing, so the requests stay in their
+  // transcripts and land when the operator switches writing back on.
+  if (!getMemoryPreferences().write) return;
   if (draining) return;
   draining = true;
   try {
@@ -121,8 +143,21 @@ function drainMemoryFences(): void {
 export function useMemoryAgentSync(): void {
   useEffect(() => {
     drainMemoryFences();
-    return useChatStore.subscribe(() => {
+    const stopWatchingMessages = useChatStore.subscribe(() => {
       drainMemoryFences();
     });
+    // The catch-up. Subscribed rather than wired into the switch itself so
+    // it runs wherever the switch is flipped from, and re-armed on any
+    // preference change while writing is on — an extra deep pass costs one
+    // scan, a missed one costs the operator a memory.
+    const stopWatchingPreferences = subscribeToMemoryPreferenceChanges(() => {
+      if (!getMemoryPreferences().write) return;
+      resetMemoryDeepScan();
+      drainMemoryFences();
+    });
+    return () => {
+      stopWatchingMessages();
+      stopWatchingPreferences();
+    };
   }, []);
 }

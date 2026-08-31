@@ -4,6 +4,7 @@ import { QueuedMessageOwnershipLostError } from "./preCommitSendRejection";
 
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { MEMORY_PROTOCOL_PROMPT } from "@/features/memory/lib/memoryFence";
+import { setMemoryReadEnabled } from "@/features/memory/lib/memoryPreferences";
 import { MEMORY_RECALL_PROMPT } from "@/features/memory/lib/memoryRecall";
 import type {
   ArchivedMemoryEntry,
@@ -73,6 +74,9 @@ describe("sendPromptInBackground", () => {
     mocks.isWaveManagedSession.mockReturnValue(false);
     mocks.memoryEntries = [];
     mocks.memoryArchived = [];
+    // The operator's read/write switches live here; a case that flips one
+    // must not decide the next case's prompt.
+    window.localStorage.clear();
     useConductorGraphStore.setState({ nodesById: {} });
   });
 
@@ -139,6 +143,27 @@ describe("sendPromptInBackground", () => {
     await sendPromptInBackground("session-1", "prompt", "goose");
 
     expect(dispatchedSystemPrompt()).toContain(MEMORY_PROTOCOL_PROMPT);
+  });
+
+  it("sends nothing remembered once the operator switches the block off", async () => {
+    mocks.getSession.mockReturnValue({ projectId: "p-1" });
+    mocks.memoryEntries = [memoryEntry({ id: "g", text: "A global fact" })];
+    setMemoryReadEnabled(false);
+
+    await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
+      systemPrompt: "workspace prompt",
+    });
+
+    const systemPrompt = dispatchedSystemPrompt();
+    expect(systemPrompt).not.toContain("A global fact");
+    // The whole section goes, protocols included: an agent taught to write
+    // or to ask about a block it will never be shown has been promised
+    // something the app is not going to do.
+    expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
+    expect(systemPrompt).not.toContain(MEMORY_RECALL_PROMPT);
+    // Everything else about the prompt is unchanged.
+    expect(systemPrompt).toContain(PLANNER_PROTOCOL_PROMPT);
+    expect(systemPrompt.startsWith("workspace prompt")).toBe(true);
   });
 
   it("adds the generated spawn-policy line for a persona session", async () => {

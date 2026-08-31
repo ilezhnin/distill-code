@@ -7,7 +7,12 @@
  *
  * - Writing is gated by the memory ACL; reading is not. A read-only worker
  *   still gets the block, so it still has to be able to ask for what the
- *   block left out (LAWS/MEMORY.md, Reading back).
+ *   block left out (LAWS/MEMORY.md, Reading back). The operator's own read
+ *   switch is the exception, and it belongs here rather than with writing:
+ *   an answer is memory reaching a session's context, which is exactly what
+ *   that switch turns off. The law's premise goes with it — a session that
+ *   receives no memories, and was never taught the fence, has nothing this
+ *   answer would complete.
  * - A wave child gets no answer. It never received the block or the protocol
  *   in the first place, and everything it learns goes up through its report
  *   to the conductor's loop.
@@ -28,6 +33,7 @@ import { deliverEnvelope } from "@/features/conductor/digestDelivery";
 import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 
+import { getMemoryPreferences } from "./lib/memoryPreferences";
 import {
   detectRecallFenceCandidates,
   formatRecallAnswer,
@@ -84,6 +90,17 @@ function drainRecallFences(): void {
       // still marked unanswered when the next pass runs is a question asked
       // twice.
       useMemoryStore.getState().markRecallAnswered(candidate.messageId);
+      // Refused rather than deferred, which is where this parts company with
+      // the write pause: a write held back is applied later and the fact
+      // survives, while an answer held back would arrive in a conversation
+      // that has long since moved on. Said out loud for the same reason
+      // every other unanswered fence is.
+      if (!getMemoryPreferences().read) {
+        console.warn(
+          `[memory] distill-recall fence in session ${candidate.sessionId} was not answered: mixing memory into prompts is switched off`,
+        );
+        continue;
+      }
       if (isWaveManagedSession(candidate.sessionId)) {
         // Said out loud, like a refused write fence: a request the app
         // silently swallows looks to the operator like one it honoured.

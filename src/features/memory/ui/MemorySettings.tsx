@@ -22,12 +22,19 @@ import { Button } from "@/shared/ui/button";
 import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
 import { Input } from "@/shared/ui/input";
 import { SettingsPage } from "@/shared/ui/SettingsPage";
+import { SettingsRow } from "@/shared/ui/settings-row";
 import {
   SettingsSection,
   SettingsSections,
 } from "@/shared/ui/settings-section";
+import { Switch } from "@/shared/ui/switch";
 
 import type { MemoryEntry } from "../lib/memoryEntry";
+import {
+  setMemoryReadEnabled,
+  setMemoryWriteEnabled,
+  useMemoryPreferences,
+} from "../lib/memoryPreferences";
 import {
   MAX_MEMORY_PROMPT_CHARS,
   selectPromptEntries,
@@ -96,6 +103,7 @@ interface MemoryGroup {
 
 export function MemorySettings() {
   const { t } = useTranslation("memory");
+  const preferences = useMemoryPreferences();
   const entries = useMemoryStore((state) => state.entries);
   const remember = useMemoryStore((state) => state.remember);
   const replaceAll = useMemoryStore((state) => state.replaceAll);
@@ -168,6 +176,38 @@ export function MemorySettings() {
   return (
     <SettingsPage title={t("title")} description={t("description")}>
       <SettingsSections>
+        {/* First, above everything the switches govern: the page's other
+            sections all describe memory that is travelling, and an operator
+            who wants it to stop should not have to read past the list to
+            find out that they can. Neither switch deletes anything — the
+            entries below stay exactly where they are. */}
+        <SettingsSection title={t("controls.title")}>
+          <SettingsRow
+            label={t("controls.write.label")}
+            description={t("controls.write.description")}
+            action={
+              <Switch
+                checked={preferences.write}
+                onCheckedChange={setMemoryWriteEnabled}
+                aria-label={t("controls.write.label")}
+                data-testid="memory-write-switch"
+              />
+            }
+          />
+          <SettingsRow
+            label={t("controls.read.label")}
+            description={t("controls.read.description")}
+            action={
+              <Switch
+                checked={preferences.read}
+                onCheckedChange={setMemoryReadEnabled}
+                aria-label={t("controls.read.label")}
+                data-testid="memory-read-switch"
+              />
+            }
+          />
+        </SettingsSection>
+
         <SettingsSection title={t("search.title")}>
           <Input
             value={query}

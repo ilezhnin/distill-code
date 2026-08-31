@@ -4,9 +4,10 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { sessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
 import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
 import {
-  archivedCountForProject,
-  composeMemorySection,
-} from "@/features/memory/lib/memoryPrompt";
+  composeGatedMemorySection,
+  getMemoryPreferences,
+} from "@/features/memory/lib/memoryPreferences";
+import { archivedCountForProject } from "@/features/memory/lib/memoryPrompt";
 import { sessionMemoryWriteAccess } from "@/features/memory/lib/memoryWriteAccess";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
@@ -43,7 +44,8 @@ function composeOperatorProtocols(sessionId: string): string | undefined {
     useChatSessionStore.getState().getSession(sessionId)?.projectId ?? null;
   const memory = useMemoryStore.getState();
   return composeSystemPrompt(
-    composeMemorySection(
+    composeGatedMemorySection(
+      getMemoryPreferences(),
       memory.entries,
       archivedCountForProject(memory.archived, projectId),
       projectId,

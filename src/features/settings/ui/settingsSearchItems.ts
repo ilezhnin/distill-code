@@ -149,6 +149,20 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     sectionId: "memory",
     labelKey: "nav.memory",
   },
+  // The two memory switches. Their own labels live in the memory namespace
+  // with the panel that renders them; search resolves every labelKey through
+  // `settings:`, so the searchable wording is mirrored here (the same
+  // arrangement `nav.memory` already has with the page title).
+  {
+    id: "memory-agent-writes",
+    sectionId: "memory",
+    labelKey: "memory.agentWrites.label",
+  },
+  {
+    id: "memory-in-prompts",
+    sectionId: "memory",
+    labelKey: "memory.promptMemory.label",
+  },
   {
     id: "archive",
     sectionId: "archive",
