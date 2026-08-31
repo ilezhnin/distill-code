@@ -1,10 +1,22 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderWithProviders } from "@/test/render";
+import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
+
+const mocks = vi.hoisted(() => ({
+  openSessionDeepLink: vi.fn<(href: string) => Promise<boolean>>(),
+}));
+
+// The same door every other surface uses to get into an agent's chat
+// (`berd://session/<id>` → the sessions open command); mocked here so the
+// click can be asserted without the berdctl registry behind it.
+vi.mock("@/features/sessions/lib/openSessionDeepLink", () => ({
+  openSessionDeepLink: mocks.openSessionDeepLink,
+}));
 
 import type { MemoryEntry } from "../../lib/memoryEntry";
 import { useMemoryStore } from "../../stores/memoryStore";
@@ -40,8 +52,15 @@ function project(id: string, name: string): ProjectInfo {
 describe("MemorySettings", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    mocks.openSessionDeepLink.mockReset();
+    mocks.openSessionDeepLink.mockResolvedValue(true);
     useMemoryStore.setState({ entries: [], appliedMessageIds: [] });
     useProjectStore.setState({ projects: [], hasFetchedProjects: false });
+    useChatSessionStore.setState({
+      sessions: [],
+      hasHydratedSessions: false,
+      hasMoreSessions: false,
+    });
   });
 
   it("says plainly when nothing has been kept", () => {
@@ -252,5 +271,186 @@ describe("MemorySettings", () => {
     await user.tab();
 
     expect(useMemoryStore.getState().entries[0].text).toBe("New wording");
+  });
+  it("dates every row, and says when an agent last confirmed it", () => {
+    const created = new Date("2026-03-04T10:00:00Z").getTime();
+    const reinforced = new Date("2026-07-19T10:00:00Z").getTime();
+    useMemoryStore.setState({
+      entries: [
+        entry({
+          id: "plain",
+          text: "Only ever written once",
+          createdAt: created,
+        }),
+        entry({
+          id: "restated",
+          text: "Said again later",
+          createdAt: created,
+          reinforcedAt: reinforced,
+        }),
+      ],
+      appliedMessageIds: [],
+    });
+    renderWithProviders(<MemorySettings />);
+
+    const rowOf = (id: string) => {
+      const row = document.querySelector(`[data-entry-id="${id}"]`);
+      if (!row) throw new Error(`no row for ${id}`);
+      return row as HTMLElement;
+    };
+    const plainRow = rowOf("plain");
+    const restatedRow = rowOf("restated");
+    expect(within(plainRow).getByTestId("memory-entry-meta")).toHaveTextContent(
+      "Everywhere · created Mar 4, 2026",
+    );
+    expect(
+      within(restatedRow).getByTestId("memory-entry-meta"),
+    ).toHaveTextContent(
+      "Everywhere · created Mar 4, 2026 · confirmed Jul 19, 2026",
+    );
+  });
+
+  it("names the project a scoped memory belongs to in its own row", () => {
+    useProjectStore.setState({
+      projects: [project("p-1", "Distill Code")],
+      hasFetchedProjects: true,
+    });
+    useMemoryStore.setState({
+      entries: [
+        entry({
+          id: "p",
+          text: "A project fact",
+          scope: "project",
+          projectId: "p-1",
+          createdAt: new Date("2026-01-02T10:00:00Z").getTime(),
+        }),
+      ],
+      appliedMessageIds: [],
+    });
+    renderWithProviders(<MemorySettings />);
+
+    expect(screen.getByTestId("memory-entry-meta")).toHaveTextContent(
+      "Distill Code · created Jan 2, 2026",
+    );
+  });
+
+  it("offers no way into a chat for a memory the operator wrote", () => {
+    useMemoryStore.setState({
+      entries: [entry({ id: "mine", text: "I wrote this" })],
+      appliedMessageIds: [],
+    });
+    renderWithProviders(<MemorySettings />);
+
+    expect(screen.queryByTestId("memory-from-agent")).toBeNull();
+    expect(
+      screen.queryByRole("link", { name: "Open the chat that wrote this" }),
+    ).toBeNull();
+  });
+
+  it("opens the writing agent's own chat from the badge", async () => {
+    const user = userEvent.setup();
+    useChatSessionStore.setState({
+      sessions: [{ id: "s-1" } as never],
+      hasHydratedSessions: true,
+      hasMoreSessions: false,
+    });
+    useMemoryStore.setState({
+      entries: [entry({ id: "a", createdBySessionId: "s-1" })],
+      appliedMessageIds: [],
+    });
+    renderWithProviders(<MemorySettings />);
+
+    const link = screen.getByRole("link", {
+      name: "Open the chat that wrote this",
+    });
+    expect(link).toHaveAttribute("href", "berd://session/s-1");
+
+    await user.click(link);
+
+    await waitFor(() => {
+      expect(mocks.openSessionDeepLink).toHaveBeenCalledWith(
+        "berd://session/s-1",
+      );
+    });
+  });
+
+  it("keeps the badge as plain text once the writing chat is gone", () => {
+    useChatSessionStore.setState({
+      sessions: [{ id: "s-other" } as never],
+      hasHydratedSessions: true,
+      hasMoreSessions: false,
+    });
+    useMemoryStore.setState({
+      entries: [entry({ id: "a", createdBySessionId: "s-gone" })],
+      appliedMessageIds: [],
+    });
+    renderWithProviders(<MemorySettings />);
+
+    const badge = screen.getByTestId("memory-from-agent");
+    expect(badge.tagName).toBe("SPAN");
+    expect(badge).toHaveAttribute(
+      "title",
+      "The chat that wrote this is no longer here.",
+    );
+    expect(
+      screen.queryByRole("link", { name: "Open the chat that wrote this" }),
+    ).toBeNull();
+  });
+
+  it("still offers the way in while the session list is only half loaded", () => {
+    // "Not in the list" would be a lie here: the sidebar pages sessions in, so
+    // the chat may simply not have been fetched yet.
+    useChatSessionStore.setState({
+      sessions: [],
+      hasHydratedSessions: true,
+      hasMoreSessions: true,
+    });
+    useMemoryStore.setState({
+      entries: [entry({ id: "a", createdBySessionId: "s-unfetched" })],
+      appliedMessageIds: [],
+    });
+    renderWithProviders(<MemorySettings />);
+
+    expect(
+      screen.getByRole("link", { name: "Open the chat that wrote this" }),
+    ).toHaveAttribute("href", "berd://session/s-unfetched");
+  });
+
+  it("says why a draft carrying a key was refused, and keeps it in the field", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<MemorySettings />);
+
+    const field = screen.getByTestId("memory-add-input");
+    // A shape the redaction rules refuse; never a real credential.
+    await user.type(field, "deploy token: abcdefghijklmnop");
+    await user.click(screen.getByRole("button", { name: "Remember" }));
+
+    expect(useMemoryStore.getState().entries).toHaveLength(0);
+    expect(screen.getByTestId("memory-add-refusal")).toHaveTextContent(
+      /not saved/,
+    );
+    // The operator can rephrase what they wrote instead of retyping it.
+    expect(field).toHaveValue("deploy token: abcdefghijklmnop");
+
+    await user.type(field, "!");
+    expect(screen.queryByTestId("memory-add-refusal")).toBeNull();
+  });
+
+  it("clears the field and the objection once a draft is kept", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<MemorySettings />);
+
+    const field = screen.getByTestId("memory-add-input");
+    await user.type(field, "password: hunter2hunter2");
+    await user.click(screen.getByRole("button", { name: "Remember" }));
+    expect(screen.getByTestId("memory-add-refusal")).toBeInTheDocument();
+
+    await user.clear(field);
+    await user.type(field, "Ivan reviews Rust changes himself");
+    await user.click(screen.getByRole("button", { name: "Remember" }));
+
+    expect(screen.queryByTestId("memory-add-refusal")).toBeNull();
+    expect(field).toHaveValue("");
+    expect(useMemoryStore.getState().entries).toHaveLength(1);
   });
 });

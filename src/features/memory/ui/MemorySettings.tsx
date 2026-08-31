@@ -12,7 +12,11 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconTrash } from "@tabler/icons-react";
 
+import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
+import { openSessionDeepLink } from "@/features/sessions/lib/openSessionDeepLink";
+import { createSessionDeepLink } from "@/features/sessions/lib/sessionDeepLink";
+import { useLocaleFormatting } from "@/shared/i18n";
 import { Button } from "@/shared/ui/button";
 import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
 import { Input } from "@/shared/ui/input";
@@ -24,10 +28,39 @@ import {
 
 import type { MemoryEntry } from "../lib/memoryEntry";
 import { searchMemories } from "../lib/memorySearch";
-import { useMemoryStore } from "../stores/memoryStore";
+import {
+  memoryRememberRefusal,
+  useMemoryStore,
+  type MemoryRefusal,
+} from "../stores/memoryStore";
 
 /** The add form's scope select keeps "everywhere" apart from project ids. */
 const GLOBAL_SCOPE_VALUE = "global";
+
+/**
+ * Dates on this page read as dates, not as timestamps: the operator asks
+ * "when did we decide this", not "at which minute". Same options the other
+ * settings surfaces use, through the shared formatter so the app's language
+ * decides the locale rather than the browser's.
+ */
+const MEMORY_DATE_OPTIONS: Intl.DateTimeFormatOptions = {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+};
+
+/**
+ * What the operator is told when the store refuses their draft.
+ *
+ * One line per reason the store can give, so a refusal never reaches them as
+ * silence — a typed line that simply fails to appear is the app losing an
+ * action the operator took, which is worse than saying no.
+ */
+const REFUSAL_MESSAGE_KEY: Record<MemoryRefusal["reason"], string> = {
+  secret: "add.secretRefused",
+  "no-project": "add.noProjectRefused",
+  blank: "add.blankRefused",
+};
 
 interface MemoryGroup {
   key: string;
@@ -55,6 +88,7 @@ export function MemorySettings() {
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState("");
   const [draftScope, setDraftScope] = useState(GLOBAL_SCOPE_VALUE);
+  const [refusal, setRefusal] = useState<MemoryRefusal | null>(null);
   const [forgettingProjectId, setForgettingProjectId] = useState<string | null>(
     null,
   );
@@ -177,18 +211,37 @@ export function MemorySettings() {
             onSubmit={(event) => {
               event.preventDefault();
               const text = draft.trim();
-              if (!text) return;
+              const scope =
+                draftScope === GLOBAL_SCOPE_VALUE ? "global" : "project";
+              const projectId = scope === "project" ? draftScope : null;
+              // The store's own verdict, asked before the write rather than
+              // guessed at here: a refusal decided twice, in two places,
+              // drifts, and the operator is the one who pays for the drift.
+              const verdict = memoryRememberRefusal({ text, scope }, projectId);
+              if (verdict) {
+                // The draft stays in the field. A refused statement is one the
+                // operator will want to rephrase, and clearing it would make
+                // them retype the very sentence the app just objected to.
+                setRefusal(verdict);
+                return;
+              }
               remember(
-                draftScope === GLOBAL_SCOPE_VALUE
+                projectId === null
                   ? { text, scope: "global" }
-                  : { text, scope: "project", projectId: draftScope },
+                  : { text, scope: "project", projectId },
               );
+              setRefusal(null);
               setDraft("");
             }}
           >
             <Input
               value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => {
+                setDraft(event.target.value);
+                // The objection was to what was typed; the moment it changes,
+                // the objection is stale.
+                setRefusal(null);
+              }}
               placeholder={t("add.placeholder")}
               aria-label={t("add.placeholder")}
               data-testid="memory-add-input"
@@ -219,6 +272,15 @@ export function MemorySettings() {
               {t("add.submit")}
             </Button>
           </form>
+          {refusal ? (
+            <p
+              className="text-xs text-destructive"
+              data-testid="memory-add-refusal"
+              role="alert"
+            >
+              {t(REFUSAL_MESSAGE_KEY[refusal.reason])}
+            </p>
+          ) : null}
         </SettingsSection>
 
         {groups.map((group) =>
@@ -241,6 +303,7 @@ export function MemorySettings() {
                     <MemoryRow
                       key={`${entry.id}:${entry.text}`}
                       entry={entry}
+                      scopeLabel={projectNameOf(entry.projectId)}
                     />
                   ))}
                 </ul>
@@ -291,46 +354,110 @@ export function MemorySettings() {
   );
 }
 
-function MemoryRow({ entry }: { entry: MemoryEntry }) {
+function MemoryRow({
+  entry,
+  scopeLabel,
+}: {
+  entry: MemoryEntry;
+  scopeLabel: string;
+}) {
   const { t } = useTranslation("memory");
+  const { formatDate } = useLocaleFormatting();
   const updateEntry = useMemoryStore((state) => state.updateEntry);
   const forget = useMemoryStore((state) => state.forget);
   const [text, setText] = useState(entry.text);
   const [confirmingForget, setConfirmingForget] = useState(false);
 
+  const agentSessionId = entry.createdBySessionId;
+  // "Not in the list" is not the same as "deleted": the sidebar loads sessions
+  // a page at a time, so an old chat can simply not have been fetched. The
+  // badge only stops being a way in once the app has the whole list and this
+  // session is not in it — until then the operator keeps the affordance
+  // (LAWS/WAVES.md, Transparency) and the deep link says so itself if the
+  // chat turns out to be gone.
+  const sessionGone = useChatSessionStore(
+    (state) =>
+      agentSessionId !== undefined &&
+      state.hasHydratedSessions &&
+      !state.hasMoreSessions &&
+      !state.sessions.some((session) => session.id === agentSessionId),
+  );
+
   return (
     <li
-      className="flex items-center gap-2"
+      className="flex flex-col gap-1 py-1"
       data-testid="memory-entry"
       data-entry-id={entry.id}
     >
-      <Input
-        value={text}
-        onChange={(event) => setText(event.target.value)}
-        onBlur={() => {
-          if (text.trim() && text !== entry.text) updateEntry(entry.id, text);
-          else setText(entry.text);
-        }}
-        aria-label={t("row.edit")}
-      />
-      {entry.createdBySessionId ? (
-        <span
-          className="shrink-0 rounded-full bg-accent px-1.5 py-0.5 text-[10px]"
-          data-testid="memory-from-agent"
+      <div className="flex items-center gap-2">
+        <Input
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          onBlur={() => {
+            if (text.trim() && text !== entry.text) updateEntry(entry.id, text);
+            else setText(entry.text);
+          }}
+          aria-label={t("row.edit")}
+        />
+        {agentSessionId === undefined ? null : sessionGone ? (
+          // Still says an agent wrote it — that much the operator must always
+          // see (LAWS/MEMORY.md, Sovereignty) — but there is no chat left to
+          // open, and a link that goes nowhere is worse than a plain word.
+          <span
+            className="shrink-0 rounded-full bg-accent px-1.5 py-0.5 text-[10px] text-muted-foreground"
+            data-testid="memory-from-agent"
+            title={t("row.sessionGone")}
+          >
+            {t("row.fromAgent")}
+          </span>
+        ) : (
+          <a
+            className="shrink-0 rounded-full bg-accent px-1.5 py-0.5 text-[10px] underline hover:text-foreground"
+            data-testid="memory-from-agent"
+            href={createSessionDeepLink(agentSessionId)}
+            rel="noreferrer"
+            aria-label={t("row.openAgentChat")}
+            onClick={(event) => {
+              event.preventDefault();
+              void openSessionDeepLink(
+                createSessionDeepLink(agentSessionId),
+              ).catch((error: unknown) => {
+                console.error("[memory] open writing session failed:", error);
+              });
+            }}
+          >
+            {t("row.fromAgent")}
+          </a>
+        )}
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          destructive
+          onClick={() => setConfirmingForget(true)}
+          aria-label={t("row.forget")}
         >
-          {t("row.fromAgent")}
-        </span>
-      ) : null}
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-xs"
-        destructive
-        onClick={() => setConfirmingForget(true)}
-        aria-label={t("row.forget")}
+          <IconTrash />
+        </Button>
+      </div>
+      {/* Where it applies and when it was last true. A memory with no date
+          reads as timeless, and the operator's first question about a fact
+          they no longer recognise is when it was written down. */}
+      <p
+        className="text-[11px] text-muted-foreground"
+        data-testid="memory-entry-meta"
       >
-        <IconTrash />
-      </Button>
+        {entry.reinforcedAt
+          ? t("row.metaReinforced", {
+              scope: scopeLabel,
+              created: formatDate(entry.createdAt, MEMORY_DATE_OPTIONS),
+              reinforced: formatDate(entry.reinforcedAt, MEMORY_DATE_OPTIONS),
+            })
+          : t("row.meta", {
+              scope: scopeLabel,
+              created: formatDate(entry.createdAt, MEMORY_DATE_OPTIONS),
+            })}
+      </p>
       {/* Deleting is irreversible — there is no undo and no trash — so it
           gets the same confirmation every other destructive settings action
           has. */}
