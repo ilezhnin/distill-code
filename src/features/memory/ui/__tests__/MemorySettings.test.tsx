@@ -9,6 +9,8 @@ import { useProjectStore } from "@/features/projects/stores/projectStore";
 
 const mocks = vi.hoisted(() => ({
   openSessionDeepLink: vi.fn<(href: string) => Promise<boolean>>(),
+  dispatchCommand:
+    vi.fn<(name: string, args: unknown, ctx: unknown) => Promise<unknown>>(),
 }));
 
 // The same door every other surface uses to get into an agent's chat
@@ -16,6 +18,14 @@ const mocks = vi.hoisted(() => ({
 // click can be asserted without the berdctl registry behind it.
 vi.mock("@/features/sessions/lib/openSessionDeepLink", () => ({
   openSessionDeepLink: mocks.openSessionDeepLink,
+}));
+
+// The review chat is created and opened through the berdctl registry, the
+// same surface every other "start a chat with this in it" goes through. The
+// registry itself pulls in half the app, so the two commands are asserted
+// against a mock of it rather than run for real.
+vi.mock("@/features/berdctl/commands/registry", () => ({
+  dispatchCommand: mocks.dispatchCommand,
 }));
 
 import type { ArchivedMemoryEntry, MemoryEntry } from "../../lib/memoryEntry";
@@ -71,6 +81,8 @@ describe("MemorySettings", () => {
     window.localStorage.clear();
     mocks.openSessionDeepLink.mockReset();
     mocks.openSessionDeepLink.mockResolvedValue(true);
+    mocks.dispatchCommand.mockReset();
+    mocks.dispatchCommand.mockResolvedValue({ session_id: "review-1" });
     useMemoryStore.setState({
       entries: [],
       archived: [],
@@ -1145,6 +1157,87 @@ describe("MemorySettings", () => {
       expect(useMemoryStore.getState().archived.map((e) => e.id)).toEqual([
         "unrelated",
       ]);
+    });
+  });
+  describe("the review", () => {
+    it("has nothing to review while nothing is kept", () => {
+      renderWithProviders(<MemorySettings />);
+      expect(screen.getByTestId("memory-review-run")).toBeDisabled();
+    });
+
+    it("opens a projectless chat carrying the whole record", async () => {
+      const user = userEvent.setup();
+      useProjectStore.setState({
+        projects: [project("p-1", "Distill Code")],
+        hasFetchedProjects: true,
+      });
+      useMemoryStore.setState({
+        entries: [
+          entry({ id: "g", text: "Ivan reviews Rust himself" }),
+          entry({
+            id: "p",
+            text: "The release branch is release/2026.9",
+            scope: "project",
+            projectId: "p-1",
+          }),
+        ],
+        archived: [archivedEntry({ id: "old", text: "A retired fact" })],
+        appliedMessageIds: [],
+      });
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByTestId("memory-review-run"));
+
+      await waitFor(() => {
+        expect(mocks.dispatchCommand).toHaveBeenCalledTimes(2);
+      });
+      const [name, rawArgs] = mocks.dispatchCommand.mock.calls[0];
+      const args = rawArgs as {
+        action: string;
+        prompt: string;
+        project_id?: string;
+      };
+      expect(name).toBe("sessions");
+      expect(args.action).toBe("create");
+      // No project on the chat: a review ranges over every area, and a chat
+      // inside one project would only ever be shown that project's memories.
+      expect(args.project_id).toBeUndefined();
+      expect(args.prompt).toContain("Ivan reviews Rust himself");
+      expect(args.prompt).toContain("The release branch is release/2026.9");
+      expect(args.prompt).toContain("## Everywhere");
+      expect(args.prompt).toContain("## Distill Code");
+      expect(args.prompt).toContain("1 memory is archived");
+      expect(args.prompt).toContain("Apply nothing yet");
+      // And then the operator is taken to it — a review chat they have to go
+      // find is a review that does not happen.
+      expect(mocks.dispatchCommand).toHaveBeenLastCalledWith(
+        "sessions",
+        { action: "open", session_id: "review-1" },
+        {},
+      );
+    });
+
+    it("says so when the chat could not be opened", async () => {
+      const user = userEvent.setup();
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      mocks.dispatchCommand.mockRejectedValue(new Error("no backend"));
+      useMemoryStore.setState({
+        entries: [entry({ id: "g", text: "Ivan reviews Rust himself" })],
+        appliedMessageIds: [],
+      });
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByTestId("memory-review-run"));
+
+      expect(
+        await screen.findByTestId("memory-review-failed"),
+      ).toBeInTheDocument();
+      // Still clickable: the failure was the backend's, and the operator has
+      // no other way to start the pass.
+      expect(screen.getByTestId("memory-review-run")).not.toBeDisabled();
+      consoleError.mockRestore();
     });
   });
 });

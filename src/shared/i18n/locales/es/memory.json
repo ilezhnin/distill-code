@@ -21,6 +21,13 @@
     "noProjectRefused": "Esta memoria pertenece a un proyecto y no se eligió ninguno, así que no se guardó. Elige un proyecto o consérvala en todas partes.",
     "blankRefused": "Aquí todavía no hay nada que recordar."
   },
+  "review": {
+    "title": "Revisar lo que se recuerda",
+    "description": "Abre un chat nuevo con todo lo anterior dentro. Propone duplicados que fusionar, contradicciones que resolver, l\u00edneas caducas que quitar y demasiado largas que dividir \u2014 en forma de lista, y no cambia nada hasta que confirmes cada una.",
+    "run": "Hacer una revisi\u00f3n",
+    "starting": "Abriendo la revisi\u00f3n\u2026",
+    "failed": "No se pudo abrir el chat de revisi\u00f3n. Si se lleg\u00f3 a crear, est\u00e1 en tu lista de chats."
+  },
   "groups": {
     "global": "En todas partes",
     "unknownProject": "Un proyecto que ya no existe",

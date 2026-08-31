@@ -381,6 +381,9 @@
     }
   },
   "memory": {
+    "review": {
+      "label": "Hacer una revisión"
+    },
     "agentWrites": {
       "label": "Los agentes pueden escribir memorias"
     },

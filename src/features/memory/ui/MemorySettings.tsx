@@ -53,6 +53,10 @@ import {
   MAX_MEMORY_PROMPT_CHARS,
   selectPromptEntries,
 } from "../lib/memoryPrompt";
+import {
+  composeReviewMessage,
+  startMemoryReviewChat,
+} from "../lib/memoryReview";
 import { searchMemories } from "../lib/memorySearch";
 import {
   memoryRememberRefusal,
@@ -196,6 +200,11 @@ export function MemorySettings() {
   const [forgettingProjectId, setForgettingProjectId] = useState<string | null>(
     null,
   );
+  // The review is one click and then a session create over ACP, so the button
+  // says it is working. Without that the operator clicks twice and gets two
+  // review chats, each proposing edits to the same list.
+  const [reviewStarting, setReviewStarting] = useState(false);
+  const [reviewFailed, setReviewFailed] = useState(false);
   // Only the areas the operator has actually opened or shut are recorded, so
   // an area they never touched keeps following the size default as memories
   // come and go. Nothing about which card is open belongs in the store — it is
@@ -339,6 +348,22 @@ export function MemorySettings() {
       ? (projects.find((project) => project.id === projectId)?.name ??
         t("groups.unknownProject"))
       : t("groups.global");
+
+  // The record is composed at the click, not held in state: the list moves
+  // while this page is open, and a review of the list as it stood ten minutes
+  // ago proposes merges for lines that are no longer there.
+  const runReview = () => {
+    setReviewFailed(false);
+    setReviewStarting(true);
+    void startMemoryReviewChat(
+      composeReviewMessage(entries, archived.length, projectNameOf),
+    )
+      .catch((error: unknown) => {
+        console.error("[memory] could not start the review chat:", error);
+        setReviewFailed(true);
+      })
+      .finally(() => setReviewStarting(false));
+  };
 
   return (
     <SettingsPage title={t("title")} description={t("description")}>
@@ -525,6 +550,39 @@ export function MemorySettings() {
               role="alert"
             >
               {t(REFUSAL_MESSAGE_KEY[refusal.reason])}
+            </p>
+          ) : null}
+        </SettingsSection>
+
+        {/* Consolidation, and deliberately not a background one. The store
+            catches an exact duplicate; twins and contradictions it cannot see,
+            and neither can a session, which is shown the prompt block and
+            never the list. So the pass is the operator's: the whole record
+            goes into an ordinary chat as a message, that chat proposes, and
+            nothing changes until they say so — through the same
+            `distill-memory` fence every other agent writes with. */}
+        <SettingsSection title={t("review.title")}>
+          <p className="text-xs text-muted-foreground">
+            {t("review.description")}
+          </p>
+          <Button
+            type="button"
+            variant="subtle"
+            size="sm"
+            className="w-fit"
+            data-testid="memory-review-run"
+            disabled={entries.length === 0 || reviewStarting}
+            onClick={runReview}
+          >
+            {reviewStarting ? t("review.starting") : t("review.run")}
+          </Button>
+          {reviewFailed ? (
+            <p
+              className="text-xs text-destructive"
+              data-testid="memory-review-failed"
+              role="alert"
+            >
+              {t("review.failed")}
             </p>
           ) : null}
         </SettingsSection>
