@@ -45,7 +45,11 @@ vi.mock("@/shared/api/system", async (importOriginal) => {
   };
 });
 
-import type { ArchivedMemoryEntry, MemoryEntry } from "../../lib/memoryEntry";
+import {
+  MAX_ARCHIVED_ENTRIES,
+  type ArchivedMemoryEntry,
+  type MemoryEntry,
+} from "../../lib/memoryEntry";
 import { getMemoryPreferences } from "../../lib/memoryPreferences";
 import { MAX_MEMORY_PROMPT_CHARS } from "../../lib/memoryPrompt";
 import { useMemoryStore } from "../../stores/memoryStore";
@@ -323,6 +327,36 @@ describe("MemorySettings", () => {
     await user.tab();
 
     expect(useMemoryStore.getState().entries[0].text).toBe("New wording");
+  });
+
+  it("refuses an edit that pastes a key in, says so, and keeps the text", async () => {
+    // The other half of the add form's refusal, on the door that had none:
+    // an existing row's field wrote straight to the store, so a token pasted
+    // over a fact was kept and carried (LAWS/MEMORY.md, Writing). A shape the
+    // rules refuse; never a real credential.
+    const user = userEvent.setup();
+    useMemoryStore.setState({
+      entries: [entry({ id: "a", text: "The deploy runs on Fridays" })],
+      appliedMessageIds: [],
+    });
+    renderWithProviders(<MemorySettings />);
+
+    const field = screen.getByRole("textbox", { name: "Edit this memory" });
+    await user.clear(field);
+    await user.type(field, "deploy token: abcdefghijklmnop");
+    await user.tab();
+
+    expect(useMemoryStore.getState().entries[0].text).toBe(
+      "The deploy runs on Fridays",
+    );
+    expect(screen.getByTestId("memory-row-refusal")).toHaveTextContent(
+      /not saved/,
+    );
+    // The refused wording stays where it is, to be rephrased and not retyped.
+    expect(field).toHaveValue("deploy token: abcdefghijklmnop");
+
+    await user.type(field, "!");
+    expect(screen.queryByTestId("memory-row-refusal")).toBeNull();
   });
   it("dates every row, and says when an agent last confirmed it", () => {
     const created = new Date("2026-03-04T10:00:00Z").getTime();
@@ -740,6 +774,28 @@ describe("MemorySettings", () => {
       expect(screen.getAllByTestId("memory-entry")).toHaveLength(15);
     });
 
+    it("says what the block costs even while the area is folded", async () => {
+      // The number is about crowding out, and the card that crowds lines out
+      // is exactly the one that starts shut — so inside the fold it was
+      // hidden precisely where it was wanted.
+      const user = userEvent.setup();
+      useMemoryStore.setState({ entries: facts(16), appliedMessageIds: [] });
+      renderWithProviders(<MemorySettings />);
+
+      expect(screen.getByTestId("memory-group-toggle")).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
+      expect(screen.getByTestId("memory-group-budget")).toHaveTextContent(
+        `/ ${MAX_MEMORY_PROMPT_CHARS} characters`,
+      );
+
+      await user.click(screen.getByTestId("memory-group-toggle"));
+
+      // And still exactly one of it once the card is open.
+      expect(screen.getAllByTestId("memory-group-budget")).toHaveLength(1);
+    });
+
     it("keeps a larger area folded until it is asked for", async () => {
       const user = userEvent.setup();
       useMemoryStore.setState({ entries: facts(16), appliedMessageIds: [] });
@@ -911,6 +967,58 @@ describe("MemorySettings", () => {
       ).toHaveValue("The branch is main");
     });
 
+    it("refuses to restore a line carrying a key, out loud", async () => {
+      // The archive can hold one without `remember` ever having seen it — an
+      // older document, a project folder from another machine — and Restore
+      // is what would put it into every prompt. A refusal nobody can see is
+      // a button that does nothing.
+      const user = userEvent.setup();
+      archivedStore([
+        archivedEntry({ id: "leaky", text: "password: hunter2hunter2" }),
+      ]);
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByTestId("memory-archive-toggle"));
+      await user.click(screen.getByTestId("memory-archive-restore"));
+
+      expect(screen.getByTestId("memory-archive-refusal")).toHaveTextContent(
+        /not brought back/,
+      );
+      const state = useMemoryStore.getState();
+      expect(state.entries).toEqual([]);
+      // Refused, not destroyed: the row is still there to read or delete.
+      expect(state.archived.map((line) => line.id)).toEqual(["leaky"]);
+    });
+
+    it("asks the operator to clear an archive that has outgrown its bound", async () => {
+      // The store used to drop the oldest displacements here. It no longer
+      // does anything of the kind (LAWS/MEMORY.md, Sovereignty), so the panel
+      // has to say what the bound now means — and say it outside the fold,
+      // because the archive opens shut.
+      archivedStore(
+        Array.from({ length: MAX_ARCHIVED_ENTRIES + 1 }, (_, index) =>
+          archivedEntry({ id: `a-${index}`, archivedAt: index }),
+        ),
+      );
+      renderWithProviders(<MemorySettings />);
+
+      const notice = screen.getByTestId("memory-archive-full");
+      expect(notice).toHaveTextContent(`${MAX_ARCHIVED_ENTRIES + 1} memories`);
+      expect(notice).toHaveTextContent(/delete what you no longer need/);
+      // Said before anything is opened: the section is still shut.
+      expect(screen.getByTestId("memory-archive-toggle")).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
+    });
+
+    it("says nothing about the bound while the archive is under it", () => {
+      archivedStore([archivedEntry({ id: "a" })]);
+      renderWithProviders(<MemorySettings />);
+
+      expect(screen.queryByTestId("memory-archive-full")).toBeNull();
+    });
+
     it("destroys a line for good only once the operator confirms", async () => {
       const user = userEvent.setup();
       archivedStore([
@@ -1029,6 +1137,35 @@ describe("MemorySettings", () => {
       expect(
         within(results[1]).getByTestId("memory-search-archived"),
       ).toHaveTextContent("in the archive");
+    });
+
+    it("says in a search hit whether an agent or the operator wrote it", async () => {
+      // Search is a surface that shows memories, so it owes the same answer
+      // the list and the archive give (LAWS/MEMORY.md, Sovereignty). It used
+      // to show scope and date only, under a key called `provenance`.
+      const user = userEvent.setup();
+      useMemoryStore.setState({
+        entries: [
+          entry({
+            id: "by-agent",
+            text: "The branch is release/2026.10",
+            createdBySessionId: "s-1",
+          }),
+          entry({ id: "by-operator", text: "The branch is protected" }),
+        ],
+        archived: [],
+        appliedMessageIds: [],
+      });
+      renderWithProviders(<MemorySettings />);
+
+      await user.type(screen.getByTestId("memory-search-input"), "branch");
+
+      const results = screen.getAllByTestId("memory-search-result");
+      expect(results).toHaveLength(2);
+      expect(
+        within(results[0]).getByTestId("memory-from-agent"),
+      ).toHaveTextContent("from an agent");
+      expect(within(results[1]).queryByTestId("memory-from-agent")).toBeNull();
     });
 
     it("sweeps a dead project's archive along with its live rows", async () => {

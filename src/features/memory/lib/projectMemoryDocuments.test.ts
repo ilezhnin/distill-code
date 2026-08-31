@@ -195,6 +195,46 @@ describe("readProjectMemories", () => {
     expect(read.archived).toEqual([]);
   });
 
+  it("drops a folder line carrying a secret, and only that line", async () => {
+    // A project folder is an entrance, not a backup: the file may come from a
+    // cloned repository, a colleague's machine, or a build that had no secret
+    // check at all, and everything read here goes straight into the prompt
+    // block (LAWS/MEMORY.md, Writing). Refusal is per line, so one bad
+    // statement does not cost the project its whole record. Shapes the rules
+    // refuse; never real credentials.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    readProjectDocument.mockResolvedValue(
+      JSON.stringify({
+        version: 2,
+        projectId: "p1",
+        entries: [
+          entry({ id: "safe", text: "Uses pnpm" }),
+          entry({ id: "leaky", text: `api_key=${"b".repeat(20)}` }),
+        ],
+        archived: [
+          archived({ id: "safe-archived", text: "Used to use npm" }),
+          archived({ id: "leaky-archived", text: `AKIA${"Q".repeat(16)}` }),
+        ],
+      }),
+    );
+
+    const read = await readProjectMemories(
+      [project()],
+      parseEntries,
+      parseArchived,
+    );
+
+    expect(read.entries.map((memory) => memory.id)).toEqual(["safe"]);
+    // The archive half too: "Restore" is one click from the prompt block.
+    expect(read.archived.map((memory) => memory.id)).toEqual(["safe-archived"]);
+    // What was refused is said by shape and never by value.
+    for (const [message] of warn.mock.calls) {
+      expect(message).not.toContain("AKIA");
+      expect(message).not.toContain("api_key");
+    }
+    warn.mockRestore();
+  });
+
   it("costs one folder, not the read, when a folder cannot be read", async () => {
     readProjectDocument.mockRejectedValue(new Error("drive not mounted"));
     vi.spyOn(console, "error").mockImplementation(() => {});

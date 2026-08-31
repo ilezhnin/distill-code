@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   appliesToProject,
   entriesForProject,
+  isArchiveOverfull,
   isMemoryArchiveReason,
   MAX_ARCHIVED_ENTRIES,
   MAX_MEMORY_TEXT,
@@ -107,6 +108,15 @@ describe("the archive contract", () => {
     // The bound exists because the archive is written to disk, not because
     // the app wants to be rid of what it displaced.
     expect(MAX_ARCHIVED_ENTRIES).toBe(2000);
+  });
+
+  it("calls the archive full one past the bound, and never trims it", () => {
+    // The bound is a line the panel says out loud, not one the store cuts on:
+    // clearing the archive out is the operator's action, and only theirs
+    // (LAWS/MEMORY.md, Sovereignty).
+    expect(isArchiveOverfull(0)).toBe(false);
+    expect(isArchiveOverfull(MAX_ARCHIVED_ENTRIES)).toBe(false);
+    expect(isArchiveOverfull(MAX_ARCHIVED_ENTRIES + 1)).toBe(true);
   });
 
   it("keeps an archived memory usable as the memory it was", () => {

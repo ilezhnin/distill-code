@@ -84,7 +84,9 @@
   "archive": {
     "title": "Archive ({{total}})",
     "description": "Memories the app stopped carrying. Nothing here is mixed into a prompt on its own, and a session that asks for one is told it is archived.",
+    "full": "The archive holds {{total}} memories, past the {{max}} it is meant to. Nothing is thrown away to make room — delete what you no longer need.",
     "restore": "Restore",
+    "secretRefused": "This line looks like it carries a key, token or password, so it was not brought back. It stays here, and it is yours to delete for good.",
     "delete": "Delete forever",
     "deleteConfirmTitle": "Delete this memory for good?",
     "deleteConfirmDescription": "“{{text}}” will be gone from the archive as well as from the list. This cannot be undone.",

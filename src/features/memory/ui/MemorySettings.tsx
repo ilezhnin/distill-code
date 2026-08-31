@@ -50,10 +50,12 @@ import {
 } from "@/shared/ui/settings-section";
 import { Switch } from "@/shared/ui/switch";
 
-import type {
-  ArchivedMemoryEntry,
-  MemoryArchiveReason,
-  MemoryEntry,
+import {
+  isArchiveOverfull,
+  MAX_ARCHIVED_ENTRIES,
+  type ArchivedMemoryEntry,
+  type MemoryArchiveReason,
+  type MemoryEntry,
 } from "../lib/memoryEntry";
 import { scanMemoryImport, type MemoryImportScan } from "../lib/memoryImport";
 import {
@@ -115,6 +117,18 @@ const REFUSAL_MESSAGE_KEY: Record<MemoryRefusal["reason"], string> = {
   secret: "add.secretRefused",
   "no-project": "add.noProjectRefused",
   blank: "add.blankRefused",
+};
+
+/**
+ * The same refusals, said where the act was "bring this back".
+ *
+ * Only the wording of the secret line differs, and it has to: the archived
+ * row is still on screen after the click, so "it was not saved" would read as
+ * a claim about a line the operator can see sitting right there.
+ */
+const ARCHIVE_REFUSAL_MESSAGE_KEY: Record<MemoryRefusal["reason"], string> = {
+  ...REFUSAL_MESSAGE_KEY,
+  secret: "archive.secretRefused",
 };
 
 /**
@@ -545,15 +559,24 @@ export function MemorySettings() {
                     </p>
                     {/* Where and when, because a fact that is true in one
                         project and stale in another is the whole reason
-                        memories are scoped. */}
-                    <p className="text-[11px] text-muted-foreground">
-                      {t("search.provenance", {
-                        scope: projectNameOf(hit.entry.projectId),
-                        date: new Date(
-                          hit.entry.createdAt,
-                        ).toLocaleDateString(),
-                      })}
-                    </p>
+                        memories are scoped — and who wrote it, because a
+                        memory shown anywhere must say that much
+                        (LAWS/MEMORY.md, Sovereignty). Search is a surface
+                        like the list and the archive: a hit that arrives
+                        without the badge reads as the operator's own words. */}
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-[11px] text-muted-foreground">
+                        {t("search.provenance", {
+                          scope: projectNameOf(hit.entry.projectId),
+                          date: new Date(
+                            hit.entry.createdAt,
+                          ).toLocaleDateString(),
+                        })}
+                      </p>
+                      <AgentProvenanceBadge
+                        sessionId={hit.entry.createdBySessionId}
+                      />
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -782,6 +805,23 @@ export function MemorySettings() {
                           time: formatRelativeTimeToNow(group.updatedAt),
                         })}`}
                   </p>
+                  {/* What a session in this scope actually carries, against
+                      the budget it is carried in. Outside the fold, beside
+                      the count: a card past the auto-open size starts shut,
+                      and that is exactly the card where lines are being
+                      crowded out — so the one number that says so was hidden
+                      precisely where it was needed. */}
+                  {group.entries.length === 0 ? null : (
+                    <p
+                      className="text-[11px] text-muted-foreground"
+                      data-testid="memory-group-budget"
+                    >
+                      {t("groups.budget", {
+                        used: group.usedChars,
+                        total: MAX_MEMORY_PROMPT_CHARS,
+                      })}
+                    </p>
+                  )}
                   <CollapsibleContent className="flex flex-col gap-1.5">
                     {group.entries.length === 0 ? (
                       <p
@@ -791,35 +831,21 @@ export function MemorySettings() {
                         {t("empty")}
                       </p>
                     ) : (
-                      <>
-                        {/* What a session in this scope actually carries,
-                            against the budget it is carried in. Without it a
-                            long list reads as a long prompt. */}
-                        <p
-                          className="text-[11px] text-muted-foreground"
-                          data-testid="memory-group-budget"
-                        >
-                          {t("groups.budget", {
-                            used: group.usedChars,
-                            total: MAX_MEMORY_PROMPT_CHARS,
-                          })}
-                        </p>
-                        <ul className="flex list-none flex-col gap-1">
-                          {group.entries.map((entry) => (
-                            // Keyed by text as well as id: the row holds its
-                            // draft in local state, so when an agent rewrites
-                            // the entry while this page is open, remounting is
-                            // what makes the change visible instead of the
-                            // stale draft.
-                            <MemoryRow
-                              key={`${entry.id}:${entry.text}`}
-                              entry={entry}
-                              scopeLabel={projectNameOf(entry.projectId)}
-                              inPrompt={group.promptIds.has(entry.id)}
-                            />
-                          ))}
-                        </ul>
-                      </>
+                      <ul className="flex list-none flex-col gap-1">
+                        {group.entries.map((entry) => (
+                          // Keyed by text as well as id: the row holds its
+                          // draft in local state, so when an agent rewrites
+                          // the entry while this page is open, remounting is
+                          // what makes the change visible instead of the
+                          // stale draft.
+                          <MemoryRow
+                            key={`${entry.id}:${entry.text}`}
+                            entry={entry}
+                            scopeLabel={projectNameOf(entry.projectId)}
+                            inPrompt={group.promptIds.has(entry.id)}
+                          />
+                        ))}
+                      </ul>
                     )}
                     {group.orphaned && projectsSettled ? (
                       <Button
@@ -874,6 +900,24 @@ export function MemorySettings() {
                 >
                   {t("archive.description")}
                 </p>
+                {/* The bound, said instead of enforced. The app used to drop
+                    the oldest displacements here, which is a deletion no
+                    operator asked for (LAWS/MEMORY.md, Sovereignty). It now
+                    keeps every one of them and says the archive wants
+                    clearing out — outside the fold, because the archive is
+                    shut by default and a warning nobody opens is silence. */}
+                {isArchiveOverfull(archived.length) ? (
+                  <p
+                    className="text-xs text-destructive"
+                    data-testid="memory-archive-full"
+                    role="alert"
+                  >
+                    {t("archive.full", {
+                      total: archived.length,
+                      max: MAX_ARCHIVED_ENTRIES,
+                    })}
+                  </p>
+                ) : null}
                 <CollapsibleContent className="flex flex-col gap-3">
                   {archiveGroups.map((group) => (
                     <div
@@ -1164,6 +1208,10 @@ function MemoryRow({
   const updateEntry = useMemoryStore((state) => state.updateEntry);
   const forget = useMemoryStore((state) => state.forget);
   const [text, setText] = useState(entry.text);
+  // Why the last edit was not written. The store decides it, the row says it
+  // — the same shape the add form has, because a refusal the operator cannot
+  // see is indistinguishable from the app quietly dropping what they typed.
+  const [refusal, setRefusal] = useState<MemoryRefusal | null>(null);
   const [confirmingForget, setConfirmingForget] = useState(false);
   // The earlier wordings that go with this row when it is deleted. Counted
   // here so the dialog can say how many, rather than promising "this cannot be
@@ -1181,10 +1229,22 @@ function MemoryRow({
       <div className="flex items-center gap-2">
         <Input
           value={text}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => {
+            setText(event.target.value);
+            // The objection was to what was typed; it goes stale the moment
+            // the text does.
+            setRefusal(null);
+          }}
           onBlur={() => {
-            if (text.trim() && text !== entry.text) updateEntry(entry.id, text);
-            else setText(entry.text);
+            if (!text.trim() || text === entry.text) {
+              setText(entry.text);
+              setRefusal(null);
+              return;
+            }
+            // The refused wording stays in the field: it is the sentence the
+            // operator is about to rephrase, and clearing it would make them
+            // retype the very line the app just objected to.
+            setRefusal(updateEntry(entry.id, text));
           }}
           aria-label={t("row.edit")}
         />
@@ -1200,6 +1260,15 @@ function MemoryRow({
           <IconTrash />
         </Button>
       </div>
+      {refusal ? (
+        <p
+          className="text-xs text-destructive"
+          data-testid="memory-row-refusal"
+          role="alert"
+        >
+          {t(REFUSAL_MESSAGE_KEY[refusal.reason])}
+        </p>
+      ) : null}
       {/* Kept or crowded out. A memory the operator wrote down and the block
           cannot carry is the app's most confusing state — "I told you this"
           against an agent that never saw it — so the row says which it is,
@@ -1353,6 +1422,10 @@ function ArchivedMemoryRow({
   const { formatDate } = useLocaleFormatting();
   const restoreArchived = useMemoryStore((state) => state.restoreArchived);
   const deleteArchived = useMemoryStore((state) => state.deleteArchived);
+  // A restore the store refused. Said here rather than left as a click that
+  // does nothing: a button that silently declines is the app deciding for the
+  // operator without telling them it did.
+  const [refusal, setRefusal] = useState<MemoryRefusal | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   return (
@@ -1372,7 +1445,7 @@ function ArchivedMemoryRow({
           size="sm"
           className="shrink-0"
           data-testid="memory-archive-restore"
-          onClick={() => restoreArchived(entry.id)}
+          onClick={() => setRefusal(restoreArchived(entry.id))}
         >
           {t("archive.restore")}
         </Button>
@@ -1387,6 +1460,15 @@ function ArchivedMemoryRow({
           <IconTrash />
         </Button>
       </div>
+      {refusal ? (
+        <p
+          className="text-xs text-destructive"
+          data-testid="memory-archive-refusal"
+          role="alert"
+        >
+          {t(ARCHIVE_REFUSAL_MESSAGE_KEY[refusal.reason])}
+        </p>
+      ) : null}
       <p
         className="text-[11px] text-muted-foreground"
         data-testid="memory-archive-meta"
