@@ -10,6 +10,7 @@ import {
   MAX_MEMORY_ENTRIES,
   MEMORY_STORAGE_KEY,
   MAX_APPLIED_MEMORY_MESSAGE_IDS,
+  memoryRememberRefusal,
   parseArchivedMemoryEntries,
   parseMemoryEntries,
   parseRecallAnsweredMessageIds,
@@ -95,6 +96,105 @@ describe("useMemoryStore", () => {
     useMemoryStore.getState().forget(id);
     expect(useMemoryStore.getState().entries).toHaveLength(0);
   });
+
+  it("narrowing a fact to a project writes the project's own row", () => {
+    // Checklist C.3 with a statement the operator already keeps everywhere:
+    // the global row is not the row they asked for, and reinforcing it
+    // instead would clear the form and show nothing new.
+    const text = "The release branch is release/2026.9";
+    const globalId = useMemoryStore
+      .getState()
+      .remember({ text, scope: "global" }, NOW);
+    const projectId = useMemoryStore
+      .getState()
+      .remember({ text, scope: "project", projectId: "p-1" }, NOW + 5);
+
+    expect(projectId).not.toBe("");
+    expect(projectId).not.toBe(globalId);
+    const state = useMemoryStore.getState();
+    expect(state.entries).toHaveLength(2);
+    expect(state.entries[1]).toMatchObject({
+      scope: "project",
+      projectId: "p-1",
+    });
+    // And the global row is untouched: nothing was restated.
+    expect(state.entries[0].reinforcedAt).toBeUndefined();
+  });
+
+  it("widening a project fact leaves that project's row alone", () => {
+    // The other direction of the same rule. Removing the project row here
+    // would be the app deleting a line the operator can see, which is theirs
+    // to do (LAWS/MEMORY.md, Sovereignty).
+    const text = "The release branch is release/2026.9";
+    useMemoryStore
+      .getState()
+      .remember({ text, scope: "project", projectId: "p-1" }, NOW);
+    useMemoryStore.getState().remember({ text, scope: "global" }, NOW + 5);
+
+    const state = useMemoryStore.getState();
+    expect(state.entries.map((e) => e.scope)).toEqual(["project", "global"]);
+    expect(state.entries[0].reinforcedAt).toBeUndefined();
+  });
+
+  it("still reinforces a restatement inside one project", () => {
+    const text = "The release branch is release/2026.9";
+    const first = useMemoryStore
+      .getState()
+      .remember({ text, scope: "project", projectId: "p-1" }, NOW);
+    const second = useMemoryStore
+      .getState()
+      .remember({ text, scope: "project", projectId: "p-1" }, NOW + 5);
+
+    expect(second).toBe(first);
+    expect(useMemoryStore.getState().entries).toHaveLength(1);
+    expect(useMemoryStore.getState().entries[0].reinforcedAt).toBe(NOW + 5);
+  });
+
+  it("keeps one project's row out of another project's way", () => {
+    const text = "The release branch is release/2026.9";
+    useMemoryStore
+      .getState()
+      .remember({ text, scope: "project", projectId: "p-1" }, NOW);
+    useMemoryStore
+      .getState()
+      .remember({ text, scope: "project", projectId: "p-2" }, NOW + 5);
+
+    expect(useMemoryStore.getState().entries.map((e) => e.projectId)).toEqual([
+      "p-1",
+      "p-2",
+    ]);
+  });
+});
+
+describe("memoryRememberRefusal", () => {
+  it("names a secret by its shape and nothing else", () => {
+    const refusal = memoryRememberRefusal(
+      { text: `AKIA${"Q".repeat(16)}`, scope: "global" },
+      "p-1",
+    );
+    expect(refusal).toEqual({ reason: "secret", shape: "aws-key" });
+  });
+
+  it("refuses a project fact when the session has no project", () => {
+    expect(
+      memoryRememberRefusal({ text: "Uses pnpm", scope: "project" }, null),
+    ).toEqual({ reason: "no-project" });
+  });
+
+  it("refuses a statement that normalizes to nothing", () => {
+    expect(
+      memoryRememberRefusal({ text: "   ", scope: "global" }, null),
+    ).toEqual({ reason: "blank" });
+  });
+
+  it("keeps a fact its session can hold", () => {
+    expect(
+      memoryRememberRefusal({ text: "Uses pnpm", scope: "project" }, "p-1"),
+    ).toBeNull();
+    expect(
+      memoryRememberRefusal({ text: "Ivan pushes", scope: "global" }, null),
+    ).toBeNull();
+  });
 });
 
 describe("memory applyAgentRequest", () => {
@@ -177,6 +277,31 @@ describe("memory applyAgentRequest", () => {
     expect(useMemoryStore.getState().entries.map((e) => e.text)).toEqual([
       "The branch is release/2026.9",
     ]);
+  });
+
+  it("files an agent's project fact even when the same line is global", () => {
+    // The global row does not stand in for the project one: the fence asked
+    // for a fact about this project, and the panel has to show one.
+    useMemoryStore
+      .getState()
+      .remember({ text: "Uses pnpm", scope: "global" }, NOW);
+
+    const result = useMemoryStore
+      .getState()
+      .applyAgentRequest(
+        "m-1",
+        "s-1",
+        "p-1",
+        request({ remember: [{ text: "Uses pnpm", scope: "project" }] }),
+        NOW + 1,
+      );
+
+    expect(result.remembered).toBe(1);
+    expect(useMemoryStore.getState().entries).toHaveLength(2);
+    expect(useMemoryStore.getState().entries[1]).toMatchObject({
+      scope: "project",
+      projectId: "p-1",
+    });
   });
 
   it("will not forget another project's memory", () => {
@@ -394,9 +519,11 @@ describe("the memory archive", () => {
     ]);
   });
 
-  it("does not call it a correction when the replacement was refused", () => {
-    // A project fact from a session with no project is dropped, so there is
-    // nothing for the retired line to point at.
+  it("keeps the line a refused replacement was meant to correct", () => {
+    // A project fact from a session with no project is refused, and a
+    // correction is one fact restated: applying the retirement anyway would
+    // leave the operator with neither the old line nor the new one, and no
+    // way to tell it had happened.
     useMemoryStore.setState({
       entries: [entry({ id: "old", text: "The branch is main" })],
       archived: [],
@@ -404,7 +531,7 @@ describe("the memory archive", () => {
       hydrated: true,
     });
 
-    useMemoryStore.getState().applyAgentRequest(
+    const result = useMemoryStore.getState().applyAgentRequest(
       "m-1",
       "s",
       null,
@@ -415,10 +542,43 @@ describe("the memory archive", () => {
       NOW,
     );
 
+    expect(result).toEqual({ remembered: 0, forgotten: 0 });
     const state = useMemoryStore.getState();
-    expect(state.entries).toHaveLength(0);
-    expect(state.archived[0]).toMatchObject({ archiveReason: "forgotten" });
-    expect(state.archived[0].replacedById).toBeUndefined();
+    expect(state.entries.map((e) => e.id)).toEqual(["old"]);
+    expect(state.archived).toEqual([]);
+    // Still read once: the fence is not retried on every later store change.
+    expect(state.appliedMessageIds).toContain("m-1");
+  });
+
+  it("holds back only the retirement whose own replacement was refused", () => {
+    // The pairing is by index, so an unpaired `forget` — a plain retirement —
+    // is not held hostage by another item's refusal.
+    useMemoryStore.setState({
+      entries: [
+        entry({ id: "old", text: "The branch is main" }),
+        entry({ id: "stale", text: "Ivan is on holiday" }),
+      ],
+      archived: [],
+      appliedMessageIds: [],
+      hydrated: true,
+    });
+
+    useMemoryStore.getState().applyAgentRequest(
+      "m-1",
+      "s",
+      null,
+      request({
+        forget: ["The branch is main", "Ivan is on holiday"],
+        remember: [{ text: "The branch is release/2026.9", scope: "project" }],
+      }),
+      NOW,
+    );
+
+    const state = useMemoryStore.getState();
+    expect(state.entries.map((e) => e.id)).toEqual(["old"]);
+    expect(state.archived.map((e) => [e.id, e.archiveReason])).toEqual([
+      ["stale", "forgotten"],
+    ]);
   });
 
   it("leaves no copy behind when the operator deletes a memory", () => {
