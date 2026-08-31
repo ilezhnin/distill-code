@@ -12,7 +12,7 @@ The role comes from the Distill Agents catalog. The agent already has its instru
 ## Skeleton — order matters
 
 1. **Header**: project or working folder, role, and whether this is a coordinator or a worker.
-2. **Read first — by name.** An agent does not read a document nobody named.
+2. **Read first — by name.** An agent does not read a document nobody named. Start with `.distill/wiki/index.md` when it exists, then the pages whose rows touch the zone.
 3. **Zone**: owns / does not touch — a table by file. Parallel crews never share files.
 4. **Batch**: cards with sizes (XS 1 · S 2 · M 3 · L 5 · XL 8). Budget 15–20 points. Coarse strokes: zone, result, bounds. The mechanism is the worker's.
 5. **Decisions closed in advance**, each with a reason. The order is not truth — verify against primary sources, report mismatches, do not execute a false fact literally.
