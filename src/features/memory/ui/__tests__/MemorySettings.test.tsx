@@ -19,6 +19,7 @@ vi.mock("@/features/sessions/lib/openSessionDeepLink", () => ({
 }));
 
 import type { MemoryEntry } from "../../lib/memoryEntry";
+import { MAX_MEMORY_PROMPT_CHARS } from "../../lib/memoryPrompt";
 import { useMemoryStore } from "../../stores/memoryStore";
 import { MemorySettings } from "../MemorySettings";
 
@@ -452,5 +453,82 @@ describe("MemorySettings", () => {
     expect(screen.queryByTestId("memory-add-refusal")).toBeNull();
     expect(field).toHaveValue("");
     expect(useMemoryStore.getState().entries).toHaveLength(1);
+  });
+
+  describe("what the prompt block actually carries", () => {
+    // Two lines this size cannot both fit in the budget, so the store holds
+    // one memory the agents are told and one they are not.
+    const halfBlock = "y".repeat(Math.floor(MAX_MEMORY_PROMPT_CHARS * 0.55));
+
+    function crowdedStore() {
+      useMemoryStore.setState({
+        entries: [
+          entry({ id: "kept", text: `Kept ${halfBlock}`, createdAt: 2 }),
+          entry({ id: "dropped", text: `Dropped ${halfBlock}`, createdAt: 1 }),
+        ],
+        appliedMessageIds: [],
+      });
+    }
+
+    const rowOf = (id: string) => {
+      const row = document.querySelector(`[data-entry-id="${id}"]`);
+      if (!row) throw new Error(`no row for ${id}`);
+      return row as HTMLElement;
+    };
+
+    it("says of every line whether a session is told it", () => {
+      crowdedStore();
+      renderWithProviders(<MemorySettings />);
+
+      expect(
+        within(rowOf("kept")).getByTestId("memory-prompt-state"),
+      ).toHaveTextContent("in the prompt");
+      // Displaced, not lost — and the row says where it can still be reached
+      // (LAWS/MEMORY.md, Reading back).
+      expect(
+        within(rowOf("dropped")).getByTestId("memory-prompt-state"),
+      ).toHaveTextContent("crowded out — still found by search and recall");
+    });
+
+    it("counts the group's block against the budget it lives in", () => {
+      crowdedStore();
+      renderWithProviders(<MemorySettings />);
+
+      const used = `Kept ${halfBlock}`.length + 3;
+      expect(screen.getByTestId("memory-group-budget")).toHaveTextContent(
+        `prompt block: ${used} / ${MAX_MEMORY_PROMPT_CHARS} characters`,
+      );
+    });
+
+    it("judges a project's memories inside that project's own block", () => {
+      useProjectStore.setState({
+        projects: [project("p-1", "Distill Code")],
+        hasFetchedProjects: true,
+      });
+      useMemoryStore.setState({
+        entries: [
+          entry({ id: "g", text: `Global ${halfBlock}`, createdAt: 5 }),
+          entry({
+            id: "scoped",
+            text: `Scoped ${halfBlock}`,
+            scope: "project",
+            projectId: "p-1",
+            createdAt: 1,
+          }),
+        ],
+        appliedMessageIds: [],
+      });
+      renderWithProviders(<MemorySettings />);
+
+      // In a p-1 session the global line is the newer one and takes the
+      // block, so the project's own memory is the one left out.
+      expect(
+        within(rowOf("scoped")).getByTestId("memory-prompt-state"),
+      ).toHaveTextContent("crowded out");
+      // The global group is measured on its own, where nothing competes.
+      expect(
+        within(rowOf("g")).getByTestId("memory-prompt-state"),
+      ).toHaveTextContent("in the prompt");
+    });
   });
 });

@@ -7,6 +7,7 @@ import {
   composeMemorySection,
   formatMemoryPrompt,
   MAX_MEMORY_PROMPT_CHARS,
+  selectPromptEntries,
 } from "./memoryPrompt";
 import { RECALL_FENCE_TAG } from "./memoryRecall";
 
@@ -234,5 +235,136 @@ describe("memory prompt recency", () => {
 
     const prompt = formatMemoryPrompt(entries, 0, null) ?? "";
     expect(prompt).toContain("standing");
+  });
+});
+
+describe("the block as the provider's cache sees it", () => {
+  it("is byte-for-byte what it has always been on a non-trivial store", () => {
+    // A golden copy of the block, written out here rather than derived from
+    // the code that builds it: the block heads a cached prompt, so any change
+    // to its wording, order or spacing is a cache miss on every send and has
+    // to be a decision, not a side effect of a refactor.
+    const filler = "y".repeat(1200);
+    const alpha = `alpha ${filler}`;
+    const beta = `beta ${filler}`;
+    const gamma = `gamma ${filler}`;
+    const delta = `delta ${filler}`;
+
+    const prompt = formatMemoryPrompt(
+      [
+        entry({ id: "g-alpha", text: alpha, createdAt: 1 }),
+        entry({ id: "g-beta", text: beta, createdAt: 5 }),
+        entry({
+          id: "p-gamma",
+          text: gamma,
+          scope: "project",
+          projectId: "p-1",
+          createdAt: 2,
+        }),
+        entry({
+          id: "p-delta",
+          text: delta,
+          scope: "project",
+          projectId: "p-1",
+          createdAt: 9,
+          reinforcedAt: 10_000,
+        }),
+        entry({
+          id: "x",
+          text: "Another codebase entirely",
+          scope: "project",
+          projectId: "p-2",
+          createdAt: 3,
+        }),
+      ],
+      1,
+      "p-1",
+    );
+
+    expect(prompt).toBe(
+      [
+        "<memory>",
+        "Facts the operator has kept from earlier sessions. Treat them as true unless this conversation shows otherwise — and when it does, say so and correct the record with the protocol below.",
+        "",
+        `- ${beta}`,
+        `- ${gamma}`,
+        `- ${delta}`,
+        "…and 2 older memories are stored beyond this block (1 archived). Ask with the distill-recall fence.",
+        "</memory>",
+      ].join("\n"),
+    );
+  });
+});
+
+describe("selectPromptEntries", () => {
+  const shortText = (index: number) =>
+    `${String(index).padStart(3, "0")} ${"y".repeat(56)}`;
+
+  function many(): MemoryEntry[] {
+    return Array.from({ length: 100 }, (_, index) =>
+      entry({ id: `e-${index}`, text: shortText(index), createdAt: index }),
+    );
+  }
+
+  it("carries what fits and leaves the rest out", () => {
+    const entries = many();
+    const { ids, usedChars } = selectPromptEntries(entries, null);
+
+    expect(usedChars).toBeLessThanOrEqual(MAX_MEMORY_PROMPT_CHARS);
+    // A hundred sixty-character lines do not fit in four thousand characters:
+    // the operator has to be able to see that some of them are not carried.
+    expect(ids.size).toBeGreaterThan(0);
+    expect(ids.size).toBeLessThan(entries.length);
+    // The newest are the ones kept, the oldest the ones displaced.
+    expect(ids.has("e-99")).toBe(true);
+    expect(ids.has("e-0")).toBe(false);
+  });
+
+  it("lets a restatement buy an old line its place back", () => {
+    const entries = many();
+    expect(selectPromptEntries(entries, null).ids.has("e-0")).toBe(false);
+
+    const reinforced = entries.map((candidate) =>
+      candidate.id === "e-0"
+        ? { ...candidate, reinforcedAt: 10_000 }
+        : candidate,
+    );
+    const before = selectPromptEntries(entries, null);
+    const after = selectPromptEntries(reinforced, null);
+    expect(after.ids.has("e-0")).toBe(true);
+    // It took someone's place rather than growing the block: the same count
+    // of lines, and the oldest one that used to fit no longer does.
+    expect(after.ids.size).toBe(before.ids.size);
+    const oldestCarried = [...entries]
+      .filter((candidate) => before.ids.has(candidate.id))
+      .sort((left, right) => left.createdAt - right.createdAt)[0];
+    expect(after.ids.has(oldestCarried.id)).toBe(false);
+    expect(after.usedChars).toBeLessThanOrEqual(MAX_MEMORY_PROMPT_CHARS);
+  });
+
+  it("answers for the project it was asked about", () => {
+    const entries = [
+      entry({ id: "g" }),
+      entry({ id: "mine", scope: "project", projectId: "p-1" }),
+      entry({ id: "theirs", scope: "project", projectId: "p-2" }),
+    ];
+
+    expect([...selectPromptEntries(entries, "p-1").ids].sort()).toEqual([
+      "g",
+      "mine",
+    ]);
+    expect([...selectPromptEntries(entries, null).ids]).toEqual(["g"]);
+  });
+
+  it("is the same selection the block is built from", () => {
+    // The panel's badge and the prompt must never disagree about a line.
+    const entries = many();
+    const prompt = formatMemoryPrompt(entries, 0, null) ?? "";
+    const { ids } = selectPromptEntries(entries, null);
+    for (const candidate of entries) {
+      expect(prompt.includes(`- ${candidate.text}`)).toBe(
+        ids.has(candidate.id),
+      );
+    }
   });
 });
