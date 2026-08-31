@@ -81,6 +81,28 @@ interface MemoryActions {
   updateEntry: (id: string, text: string) => void;
   forget: (id: string) => void;
   /**
+   * Puts an archived memory back in the live list.
+   *
+   * The operator overruling a displacement, so the line comes back as itself
+   * — same id, same date, same provenance — rather than as a new memory
+   * written today. Overflow is left to the cap, which is the only thing that
+   * knows what is now the least useful line.
+   */
+  restoreArchived: (id: string, nowMs?: number) => void;
+  /** The operator destroying an archived memory. No copy is left. */
+  deleteArchived: (id: string) => void;
+  /**
+   * Everything one project ever taught the app, live and archived.
+   *
+   * The panel's sweep for a project that no longer exists. It is a store
+   * action rather than a filter in the page because the archive is half of
+   * what the operator is deleting and the page cannot see all of it: rows
+   * left behind here are unreachable by recall, invisible in the panel, and
+   * still travel into every backup — which is not what "this cannot be
+   * undone" promised.
+   */
+  forgetProject: (projectId: string) => void;
+  /**
    * Applies one agent message's `distill-memory` block, once.
    *
    * `projectId` scopes everything the message asks to keep at project level;
@@ -116,6 +138,14 @@ interface MemoryActions {
    * would ask the same question again.
    */
   markRecallAnswered: (messageId: string) => void;
+  /**
+   * Swaps the live list wholesale, leaving the archive as it is.
+   *
+   * For a caller that is replacing what is remembered rather than deleting
+   * it. Removing a set of memories is `forgetProject` or `forget`, both of
+   * which reach the archive too — a sweep written as a filter here leaves the
+   * archived halves behind.
+   */
   replaceAll: (entries: MemoryEntry[]) => void;
 }
 
@@ -502,6 +532,37 @@ export function memoryRememberRefusal(
   return null;
 }
 
+/**
+ * The archived lines that exist only because this live one replaced them.
+ *
+ * Follows `replacedById` back through the chain, so a statement corrected
+ * three times names all three of its earlier wordings. They are not separate
+ * memories the operator kept: they are older drafts of the one line the panel
+ * shows, and the panel shows exactly one row and offers exactly one "forget"
+ * for them (G2/F3). Leaving them behind made that button a half-truth — the
+ * row vanished, and the next recall answer handed the old wording straight
+ * back to the agent, marked `archived`.
+ */
+export function supersededChain(
+  archived: readonly ArchivedMemoryEntry[],
+  id: string,
+): Set<string> {
+  const chain = new Set<string>();
+  let frontier = new Set([id]);
+  while (frontier.size > 0) {
+    const next = new Set<string>();
+    for (const entry of archived) {
+      if (chain.has(entry.id)) continue;
+      if (entry.replacedById && frontier.has(entry.replacedById)) {
+        chain.add(entry.id);
+        next.add(entry.id);
+      }
+    }
+    frontier = next;
+  }
+  return chain;
+}
+
 export const useMemoryStore = create<MemoryStore>((set, get) => ({
   entries: [],
   archived: [],
@@ -594,12 +655,90 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
    * for whom delete has to mean delete. A "deleted" line still readable in a
    * panel — or still mirrored into a project folder — would make the one
    * control that removes a mistaken or private fact a lie.
+   *
+   * The earlier wordings this line replaced go with it, for the same reason.
+   * They are not memories the operator chose to keep — they are this row's
+   * own history, reachable only through it — so deleting the row and leaving
+   * them would answer the next recall question with the very statement that
+   * was just deleted. The panel says how many go, and every one of them is
+   * listed under Archive first, so nothing leaves unseen.
    */
   forget: (id) => {
+    set((state) => {
+      const chain = supersededChain(state.archived, id);
+      return commit(
+        state.entries.filter((entry) => entry.id !== id),
+        chain.size === 0
+          ? state.archived
+          : state.archived.filter((entry) => !chain.has(entry.id)),
+        state.appliedMessageIds,
+        state.recallAnsweredMessageIds,
+      );
+    });
+  },
+
+  restoreArchived: (id, nowMs = Date.now()) => {
+    const state = get();
+    const target = state.archived.find((entry) => entry.id === id);
+    if (!target) return;
+    const archived = state.archived.filter((entry) => entry.id !== id);
+    const duplicate = existingMatch(
+      state.entries,
+      target.text,
+      target.scope,
+      target.projectId,
+    );
+    // Asking for a line back is the strongest evidence there is that it is
+    // still true, so it re-enters at the top of the recency order the cap
+    // reads. Without that a restore into a full store would be undone by the
+    // very next commit — the operator clicks, and the row returns to the
+    // archive it came from.
+    const entries = duplicate
+      ? state.entries.map((entry) =>
+          entry.id === duplicate.id ? { ...entry, reinforcedAt: nowMs } : entry,
+        )
+      : [
+          ...state.entries,
+          {
+            id: target.id,
+            text: target.text,
+            scope: target.scope,
+            projectId: target.projectId,
+            createdAt: target.createdAt,
+            ...(target.createdBySessionId
+              ? { createdBySessionId: target.createdBySessionId }
+              : {}),
+            reinforcedAt: nowMs,
+          },
+        ];
+    set(() =>
+      commit(
+        entries,
+        archived,
+        state.appliedMessageIds,
+        state.recallAnsweredMessageIds,
+        nowMs,
+      ),
+    );
+  },
+
+  deleteArchived: (id) => {
     set((state) =>
       commit(
-        state.entries.filter((entry) => entry.id !== id),
-        state.archived,
+        state.entries,
+        state.archived.filter((entry) => entry.id !== id),
+        state.appliedMessageIds,
+        state.recallAnsweredMessageIds,
+      ),
+    );
+  },
+
+  forgetProject: (projectId) => {
+    if (!projectId) return;
+    set((state) =>
+      commit(
+        state.entries.filter((entry) => entry.projectId !== projectId),
+        state.archived.filter((entry) => entry.projectId !== projectId),
         state.appliedMessageIds,
         state.recallAnsweredMessageIds,
       ),
