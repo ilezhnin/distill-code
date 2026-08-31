@@ -11,6 +11,12 @@ import { useConductorGraphStore } from "./conductorGraphStore";
 import type { SessionNode, StructuredReport } from "./types";
 import { waveDigestMarker } from "./waveDigest";
 import { setWaveGitProbeIoForTests } from "./waveGitProbe";
+import {
+  FAILED_ATTEMPTS_HEADING,
+  setTaskMemoryIoForTests,
+  taskMemoryDocumentPath,
+  type TaskMemoryDocument,
+} from "./taskMemory";
 
 const spawnConductorChildSession = vi.hoisted(() => vi.fn());
 vi.mock("./spawnOrchestrator", () => ({ spawnConductorChildSession }));
@@ -335,6 +341,86 @@ describe("wave closed loop", () => {
     // The root request identity is inherited, which is what makes the cap
     // "per root request" rather than "per wave".
     expect(revision.rootRequestId).toBe("plan-1");
+  });
+
+  /**
+   * P33: what one wave of a root request already tried and lost has to reach
+   * the next wave of that request, or a revision spends its budget rediscovering
+   * the same dead end. The record is written where the digest is built and read
+   * where the revision's steps spawn; this drives both ends through the real
+   * loop.
+   */
+  it("hands a revision what the previous wave of the same root already failed", async () => {
+    const files = new Map<string, string>();
+    setTaskMemoryIoForTests({
+      projectRootFor: () => "/repo",
+      read: async (_root, path) => files.get(path) ?? null,
+      write: async (_root, path, contents) => {
+        files.set(path, contents);
+      },
+    });
+
+    await settle();
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+    // The first wave loses: the worker reports `failed` with a risk that says
+    // why, which is what the next wave must not walk into again.
+    const graph = useConductorGraphStore.getState();
+    graph.attachReport({
+      ...report("run-1", "rewrote the caller list by hand"),
+      status: "failed",
+      risks: ["the generated file is overwritten on every build"],
+    });
+    graph.patchNode("child-1", { status: "failed" });
+    await settle();
+
+    const document = JSON.parse(
+      files.get(taskMemoryDocumentPath("plan-1")) ?? "{}",
+    ) as TaskMemoryDocument;
+    expect(document.version).toBe(1);
+    expect(document.rootRequestId).toBe("plan-1");
+    expect(document.waves[0]).toMatchObject({ attempt: 1 });
+    expect(document.failedAttempts).toEqual([
+      {
+        wave: 1,
+        role: "scout",
+        what: "rewrote the caller list by hand",
+        why: "the generated file is overwritten on every build",
+      },
+    ]);
+
+    appendConductorMessage(
+      assistant(
+        "verdict-1",
+        `Not quite.\n\n\`\`\`distill-verdict\n{"verdict":"revise"}\n\`\`\`\n\n${REVISION_PLAN}`,
+      ),
+    );
+    await settle();
+
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(2);
+    const revisionPrompt = spawnConductorChildSession.mock.calls[1][0].prompt;
+    expect(revisionPrompt).toContain(FAILED_ATTEMPTS_HEADING);
+    expect(revisionPrompt).toContain(
+      "- wave 1 (scout): rewrote the caller list by hand — why it failed: the generated file is overwritten on every build",
+    );
+    // The judged wave's own record now says what the conductor decided.
+    const judged = JSON.parse(
+      files.get(taskMemoryDocumentPath("plan-1")) ?? "{}",
+    ) as TaskMemoryDocument;
+    expect(judged.waves[0].verdict).toBe("revise");
+  });
+
+  it("puts no failed-attempts block in a first wave's steps", async () => {
+    setTaskMemoryIoForTests({
+      projectRootFor: () => "/repo",
+      read: async () => null,
+      write: async () => undefined,
+    });
+    await settle();
+    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+    const prompt = spawnConductorChildSession.mock.calls[0][0].prompt;
+    // Not an empty heading either: a first wave has tried nothing.
+    expect(prompt).not.toContain(FAILED_ATTEMPTS_HEADING);
+    expect(prompt).not.toContain("Already tried and failed");
   });
 
   it("never lets a revise verdict be admitted again as a new root wave", async () => {
