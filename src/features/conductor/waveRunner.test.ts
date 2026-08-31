@@ -12,6 +12,11 @@ import {
   resetWaveStepTargetIoForTests,
   setWaveStepTargetIoForTests,
 } from "./waveStepTarget";
+import {
+  FAILED_ATTEMPTS_HEADING,
+  setTaskMemoryIoForTests,
+  taskMemoryDocumentPath,
+} from "./taskMemory";
 
 const spawnConductorChildSession = vi.hoisted(() => vi.fn());
 
@@ -37,6 +42,7 @@ const {
   setWaveEngineState,
   withWave,
 } = await import("./waveStore");
+const { createWaveState } = await import("./waveEngine");
 const { stopWaveByOperator } = await import("./waveStop");
 const { getWaveTelemetry } = await import("./waveTelemetryStore");
 
@@ -771,6 +777,87 @@ describe("waveRunner", () => {
     const waves = getWaveEngineState().waves;
     expect(waves).toHaveLength(1);
     expect(waves[0].planMessageId).toBe("plan-2");
+  });
+
+  /**
+   * P33's read side, at the one point that decides what a worker is told. The
+   * block goes into the subtask rather than the report handoff because a
+   * revision step with `access: []` receives no handoff at all.
+   */
+  it("puts the root request's failed attempts into every revision step's subtask", async () => {
+    setTaskMemoryIoForTests({
+      projectRootFor: () => "/repo",
+      read: async (_root, path) =>
+        path === taskMemoryDocumentPath("plan-1")
+          ? JSON.stringify({
+              version: 1,
+              rootRequestId: "plan-1",
+              goal: "make the parser accept trailing commas",
+              waves: [],
+              failedAttempts: [
+                {
+                  wave: 1,
+                  role: "brigade",
+                  what: "patched the tokenizer",
+                  why: "the lexer rejects it earlier",
+                },
+              ],
+            })
+          : null,
+      write: async () => undefined,
+    });
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setWaveEngineState(
+      withWave(
+        getWaveEngineState(),
+        createWaveState({
+          waveId: "wave-2",
+          conductorSessionId: CONDUCTOR_ID,
+          planMessageId: "verdict-1",
+          steps: [{ role: "qa", subtask: "Re-check the callers", access: [] }],
+          createdAt: Date.now(),
+          rootRequestId: "plan-1",
+          revisionCount: 1,
+        }),
+      ),
+    );
+
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    const [args] = spawnConductorChildSession.mock.calls[0];
+    expect(args.prompt).toContain("Re-check the callers");
+    expect(args.prompt).toContain(FAILED_ATTEMPTS_HEADING);
+    expect(args.prompt).toContain(
+      "- wave 1 (brigade): patched the tokenizer — why it failed: the lexer rejects it earlier",
+    );
+    // The operator-facing task stays the plan's own words; the warning is for
+    // the worker's prompt, not for the chip that names the step.
+    expect(args.task).toBe("Re-check the callers");
+  });
+
+  it("reads no task memory at all for a first wave", async () => {
+    const reads: string[] = [];
+    setTaskMemoryIoForTests({
+      projectRootFor: () => "/repo",
+      read: async (_root, path) => {
+        reads.push(path);
+        return null;
+      },
+      write: async () => undefined,
+    });
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+    expect(reads).toEqual([]);
+    expect(spawnConductorChildSession.mock.calls[0][0].prompt).not.toContain(
+      FAILED_ATTEMPTS_HEADING,
+    );
   });
 
   it('leaves old managedBy:"ui" children alone', () => {

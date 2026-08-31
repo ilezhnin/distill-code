@@ -41,6 +41,7 @@
  * `admitCandidates` looks, that message id is already spent.
  */
 
+import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
@@ -55,6 +56,7 @@ import {
   hasAttestedWaveStepReport,
   withVerdictIssue,
   withWavePhase,
+  type WavePhase,
   type WaveState,
 } from "./waveEngine";
 import {
@@ -88,6 +90,14 @@ import {
   type WaveVerdictDecision,
 } from "./waveVerdict";
 import { checkExplicitWaveStepModel } from "./waveStepTarget";
+import {
+  recordTaskMemoryVerdict,
+  recordWaveInTaskMemory,
+  resetTaskMemoryIoForTests,
+  taskMemoryGoal,
+  taskMemoryStepOf,
+  type TaskMemoryVerdict,
+} from "./taskMemory";
 import { readConductorTranscript } from "./waveTranscripts";
 import {
   setWaveEngineState,
@@ -159,6 +169,63 @@ function digestEntriesFor(wave: WaveState): DigestEntry[] {
     },
     report: entry.report,
   }));
+}
+
+/**
+ * Records a finished wave in its root request's task memory (P33).
+ *
+ * Fire-and-forget beside the digest, and deliberately at that point: the
+ * revision this wave may earn is created inside the verdict pass and starts
+ * spawning in the same tick, so a write that waited for the verdict would race
+ * the readers it exists for. `recordWaveInTaskMemory` never throws — a request
+ * with no project folder simply keeps no record.
+ */
+function recordWaveInMemory(wave: WaveState): void {
+  const graph = useConductorGraphStore.getState();
+  const byStep = nodesByWave(wave.waveId);
+  const labels = new Map(
+    wave.steps.map((step) => [step.stepIndex, step.label]),
+  );
+  const steps = collectWaveStepReports(
+    wave,
+    graph.getReport,
+    (stepIndex) => byStep.get(stepIndex)?.status,
+  ).map((entry) =>
+    taskMemoryStepOf({
+      role: entry.role,
+      ...(labels.get(entry.stepIndex)
+        ? { label: labels.get(entry.stepIndex) }
+        : {}),
+      report: entry.report,
+    }),
+  );
+  void recordWaveInTaskMemory({
+    conductorSessionId: wave.conductorSessionId,
+    rootRequestId: wave.rootRequestId,
+    goal: taskMemoryGoal(
+      // Whatever the transcript cache already holds. This must not hydrate:
+      // the goal is a nicety for a person reading the file, and no wave waits
+      // on it.
+      useChatStore.getState().messagesBySession[wave.conductorSessionId] ?? [],
+      wave.rootRequestId,
+      useChatSessionStore.getState().getSession(wave.conductorSessionId)
+        ?.title ?? "",
+    ),
+    wave: {
+      waveId: wave.waveId,
+      attempt: wave.revisionCount + 1,
+      verdict: "undecided",
+      steps,
+    },
+  });
+}
+
+/** The document's verdict vocabulary for a phase the wave just moved to. */
+function taskMemoryVerdictOf(phase: WavePhase): TaskMemoryVerdict {
+  if (phase === "accepted") return "accept";
+  if (phase === "revised") return "revise";
+  if (phase === "needsOperator") return "needs-operator";
+  return "undecided";
 }
 
 /**
@@ -250,6 +317,14 @@ function applyVerdictDecision(
   // the answer *was* readable, so a later retry never quotes a stale failure.
   const judged = withVerdictIssue(wave, decision.verdictIssue);
   const closed = withWavePhase(judged, decision.phase);
+  // P33: the record already holds this wave's steps; this is the one fact it
+  // could not know when it was written.
+  void recordTaskMemoryVerdict({
+    conductorSessionId: wave.conductorSessionId,
+    rootRequestId: wave.rootRequestId,
+    waveId: wave.waveId,
+    verdict: taskMemoryVerdictOf(decision.phase),
+  });
 
   if (decision.revision) {
     const admission = admitWavePlan(
@@ -482,6 +557,9 @@ export function processWaveDigests(
       live = { ...live, artifactsProbed: true };
     }
     markWaveReportsPublished(live);
+    // P33: the request's own record of what it has already tried, written
+    // before the verdict can turn this wave into another one.
+    recordWaveInMemory(live);
     const gitDelta = waveGitDeltaOf(live);
     const artifacts = waveArtifactFactsOf(live);
     const text = buildWaveDigest({
@@ -599,4 +677,5 @@ export function resetWaveLifecycleForTests(): void {
   resetWaveGitProbeForTests();
   resetWaveArtifactProbeForTests();
   resetWaveTelemetryForTests();
+  resetTaskMemoryIoForTests();
 }
