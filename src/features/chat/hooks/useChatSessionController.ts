@@ -45,6 +45,12 @@ import {
   useMemoryPreferences,
 } from "@/features/memory/lib/memoryPreferences";
 import { archivedCountForProject } from "@/features/memory/lib/memoryPrompt";
+import { projectMemoryRoot } from "@/features/memory/lib/projectMemoryDocuments";
+import {
+  formatProjectWikiPrompt,
+  knownProjectWikiPresence,
+  refreshProjectWikiPresence,
+} from "@/features/memory/lib/projectWikiPrompt";
 import { decideMemoryWrite } from "@/features/memory/lib/memoryWriteAccess";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
@@ -745,6 +751,52 @@ export function useChatSessionController({
     skillProviderId,
     skillsCatalogKey,
   ]);
+  // The project's own wiki (M12), carried beside the AGENTS.md files and for
+  // the same reason: what this repository already knows about itself. Only
+  // the pointer travels — the pages stay on disk.
+  const projectWikiRoot = useMemo(
+    () => (project ? projectMemoryRoot(project) : null),
+    [project],
+  );
+  const [projectWikiPromptState, setProjectWikiPromptState] =
+    useState(EMPTY_PROMPT_STATE);
+  // Every committed turn moves the session's `updatedAt`, so the look-up below
+  // runs once per turn: a wiki written mid-session starts being advertised on
+  // the next one, and a deleted one stops. The listing is coalesced per root
+  // with the two send paths that share this cache.
+  const sessionTurnStamp = session?.updatedAt;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sessionTurnStamp is the per-turn re-look trigger, not a value read inside.
+  useEffect(() => {
+    if (!projectWikiRoot) {
+      setProjectWikiPromptState((current) =>
+        nextPromptState(current, { key: "", prompt: undefined }),
+      );
+      return;
+    }
+    let cancelled = false;
+    // Never rejects; a folder that cannot be listed is recorded as "no wiki".
+    void refreshProjectWikiPresence(projectWikiRoot).then((present) => {
+      if (cancelled) return;
+      setProjectWikiPromptState((current) =>
+        nextPromptState(current, {
+          key: projectWikiRoot,
+          prompt: formatProjectWikiPrompt(present),
+        }),
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectWikiRoot, sessionTurnStamp]);
+  // Composing a prompt never waits on that listing: until the answer for this
+  // root lands, the line comes from what the shared cache already knows — a
+  // project the operator has been in before is pointed at its wiki from the
+  // first render, and a root nobody has asked about yet simply gets no line
+  // this turn.
+  const projectWikiPrompt =
+    projectWikiPromptState.key === (projectWikiRoot ?? "")
+      ? projectWikiPromptState.prompt
+      : formatProjectWikiPrompt(knownProjectWikiPresence(projectWikiRoot));
   // What this session already knows, and how it keeps more. Scoped by the
   // session's own project: a fact learned in one codebase must not follow the
   // operator into an unrelated chat.
@@ -820,6 +872,11 @@ export function useChatSessionController({
         formatSessionSpawnPolicyPrompt(sessionNodeRole, selectedPersona),
         includedWorkspacesPrompt,
         workspaceInstructionsPrompt,
+        // Beside the instruction files and outside `operatorProtocols`: the
+        // project's knowledge is not the operator's memory, so a wave child
+        // reading this session's context is welcome to it. Same position the
+        // queued and background send paths give it.
+        projectWikiPrompt,
         appSkillsCatalogPrompt,
         availableSkillsCatalogPrompt,
         operatorProtocols,
@@ -829,6 +886,7 @@ export function useChatSessionController({
       sessionNodeRole,
       includedWorkspacesPrompt,
       workspaceInstructionsPrompt,
+      projectWikiPrompt,
       appSkillsCatalogPrompt,
       availableSkillsCatalogPrompt,
       operatorProtocols,
@@ -2434,6 +2492,7 @@ export function useChatSessionController({
         formatSessionSpawnPolicyPrompt(sessionNodeRole, queuedPersona),
         includedWorkspacesPrompt,
         workspaceInstructionsPrompt,
+        projectWikiPrompt,
         appSkillsCatalogPrompt,
         availableSkillsCatalogPrompt,
       );
@@ -2458,6 +2517,7 @@ export function useChatSessionController({
       appSkillsCatalogPrompt,
       availableSkillsCatalogPrompt,
       includedWorkspacesPrompt,
+      projectWikiPrompt,
       selectedPersona,
       sendWithAutoCompact,
       sessionNodeRole,
@@ -2656,6 +2716,10 @@ export function useChatSessionController({
             formatSessionSpawnPolicyPrompt(sessionNodeRole, queuedPersona),
             includedWorkspacesPrompt,
             workspaceInstructionsPrompt,
+            // A captured payload replaces the queued send path's own compose
+            // wholesale, so the pointer has to ride along here or the project
+            // loses it exactly on the sends that were captured.
+            projectWikiPrompt,
             appSkillsCatalogPrompt,
             availableSkillsCatalogPrompt,
           )
@@ -2691,6 +2755,7 @@ export function useChatSessionController({
       availableSkillsCatalogPrompt,
       chatSourceSurface,
       includedWorkspacesPrompt,
+      projectWikiPrompt,
       selectedPersona,
       sessionNodeRole,
       workspaceContextReady,
