@@ -163,13 +163,21 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     sectionId: "memory",
     labelKey: "memory.promptMemory.label",
   },
-  // The one action on this page that is not a switch or a row: an operator
-  // who remembers there is a way to tidy the list, and not where it lives,
-  // finds it the same way they find the switches.
+  // The two actions on this page that are not a switch or a row: an operator
+  // who remembers there is a way to tidy the list, or to bring a CLAUDE.md
+  // in, and not where either lives, finds them the way they find the
+  // switches. "Import" especially — it is the word someone arriving from
+  // another assistant types, and the memory panel is the last place they
+  // would look for it.
   {
     id: "memory-review",
     sectionId: "memory",
     labelKey: "memory.review.label",
+  },
+  {
+    id: "memory-import",
+    sectionId: "memory",
+    labelKey: "memory.import.label",
   },
   {
     id: "archive",

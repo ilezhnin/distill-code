@@ -21,6 +21,24 @@
     "noProjectRefused": "This memory is scoped to a project, and no project was chosen, so it was not saved. Pick a project or keep it everywhere.",
     "blankRefused": "There is nothing to remember here yet."
   },
+  "import": {
+    "title": "Import from a file",
+    "description": "Reads a CLAUDE.md, an AGENTS.md or a Codex memory file and offers what reads like a fact. Headings and code are skipped, and nothing is kept until you tick it.",
+    "open": "Import…",
+    "reading": "Reading the file…",
+    "readFailed": "That file could not be read.",
+    "dialogTitle": "Import from {{file}}",
+    "dialogDescription": "Tick what should be remembered and say where it applies. These are kept as yours, exactly like anything you type on this page.",
+    "empty": "Nothing in this file reads like a memory.",
+    "truncated": "The file is long, so only its beginning was read.",
+    "secretsDropped_one": "{{count}} line is not listed: it looks like it carries a key, a token or a password.",
+    "secretsDropped_other": "{{count}} lines are not listed: they look like they carry a key, a token or a password.",
+    "selectAll": "Tick everything",
+    "selectNone": "Untick everything",
+    "scope": "Where these apply",
+    "submit": "Remember the ticked lines",
+    "result": "Kept {{added}} of {{total}}: {{duplicate}} already remembered, {{refused}} not kept."
+  },
   "review": {
     "title": "Review what is remembered",
     "description": "Opens a new chat holding everything above. It proposes duplicates to merge, contradictions to settle, stale lines to drop and long ones to split \u2014 as a list, and changes nothing until you confirm each one.",

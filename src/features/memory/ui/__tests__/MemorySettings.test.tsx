@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   openSessionDeepLink: vi.fn<(href: string) => Promise<boolean>>(),
   dispatchCommand:
     vi.fn<(name: string, args: unknown, ctx: unknown) => Promise<unknown>>(),
+  openFileDialog: vi.fn<(options: unknown) => Promise<string | null>>(),
+  readTextFile: vi.fn<(path: string) => Promise<unknown>>(),
 }));
 
 // The same door every other surface uses to get into an agent's chat
@@ -27,6 +29,21 @@ vi.mock("@/features/sessions/lib/openSessionDeepLink", () => ({
 vi.mock("@/features/berdctl/commands/registry", () => ({
   dispatchCommand: mocks.dispatchCommand,
 }));
+
+// The import picks a file the way the rest of Settings picks one — the Tauri
+// dialog plugin, then the app's own text read. Neither exists under jsdom, so
+// both are mocked and the parser and the store run for real.
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: (options: unknown) => mocks.openFileDialog(options),
+}));
+
+vi.mock("@/shared/api/system", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/shared/api/system")>();
+  return {
+    ...actual,
+    readTextFile: (path: string) => mocks.readTextFile(path),
+  };
+});
 
 import type { ArchivedMemoryEntry, MemoryEntry } from "../../lib/memoryEntry";
 import { getMemoryPreferences } from "../../lib/memoryPreferences";
@@ -83,6 +100,8 @@ describe("MemorySettings", () => {
     mocks.openSessionDeepLink.mockResolvedValue(true);
     mocks.dispatchCommand.mockReset();
     mocks.dispatchCommand.mockResolvedValue({ session_id: "review-1" });
+    mocks.openFileDialog.mockReset();
+    mocks.readTextFile.mockReset();
     useMemoryStore.setState({
       entries: [],
       archived: [],
@@ -1238,6 +1257,221 @@ describe("MemorySettings", () => {
       // no other way to start the pass.
       expect(screen.getByTestId("memory-review-run")).not.toBeDisabled();
       consoleError.mockRestore();
+    });
+  });
+
+  describe("importing a memory file", () => {
+    const CLAUDE_MD = [
+      "# Project memory",
+      "",
+      "## Conventions",
+      "",
+      "- Ivan reviews every Rust change himself",
+      "- The release branch is release/2026.9",
+      "- Never push straight to main",
+      "- The CI token is ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+      "",
+      "```bash",
+      "just test",
+      "```",
+    ].join("\n");
+
+    function offerFile(contents: string, truncated = false) {
+      mocks.openFileDialog.mockResolvedValue("/home/ivan/repo/CLAUDE.md");
+      mocks.readTextFile.mockResolvedValue({
+        contents,
+        byteSize: contents.length,
+        truncated,
+      });
+    }
+
+    /** Opens the picker and waits for the candidate list it produces. */
+    async function openImportDialog(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByTestId("memory-import-open"));
+      return await screen.findByTestId("memory-import-dialog");
+    }
+
+    it("offers the file's bullets and keeps its scaffolding out", async () => {
+      const user = userEvent.setup();
+      offerFile(CLAUDE_MD);
+      renderWithProviders(<MemorySettings />);
+
+      const dialog = await openImportDialog(user);
+
+      const candidates = within(dialog).getAllByTestId(
+        "memory-import-candidate",
+      );
+      expect(candidates.map((row) => row.textContent)).toEqual([
+        "Ivan reviews every Rust change himself",
+        "The release branch is release/2026.9",
+        "Never push straight to main",
+      ]);
+      // A heading is a title and a fenced block is a snippet; neither is a
+      // fact anyone asked to carry into every later prompt.
+      expect(dialog).not.toHaveTextContent("Project memory");
+      expect(dialog).not.toHaveTextContent("just test");
+    });
+
+    it("never shows a line that carries a token, only how many there were", async () => {
+      const user = userEvent.setup();
+      offerFile(CLAUDE_MD);
+      renderWithProviders(<MemorySettings />);
+
+      const dialog = await openImportDialog(user);
+
+      expect(dialog).not.toHaveTextContent("ghp_");
+      expect(
+        within(dialog).getByTestId("memory-import-secrets"),
+      ).toHaveTextContent(
+        "1 line is not listed: it looks like it carries a key, a token or a password.",
+      );
+    });
+
+    it("keeps the two ticked lines as the operator's own", async () => {
+      const user = userEvent.setup();
+      offerFile(CLAUDE_MD);
+      renderWithProviders(<MemorySettings />);
+
+      const dialog = await openImportDialog(user);
+      await user.click(
+        within(dialog).getByRole("checkbox", {
+          name: "Ivan reviews every Rust change himself",
+        }),
+      );
+      await user.click(
+        within(dialog).getByRole("checkbox", {
+          name: "Never push straight to main",
+        }),
+      );
+      await user.click(within(dialog).getByTestId("memory-import-confirm"));
+
+      await waitFor(() => {
+        expect(useMemoryStore.getState().entries).toHaveLength(2);
+      });
+      const entries = useMemoryStore.getState().entries;
+      expect(entries.map((item) => item.text)).toEqual([
+        "Ivan reviews every Rust change himself",
+        "Never push straight to main",
+      ]);
+      // The provenance that matters: these came from a file the operator
+      // chose and ticked line by line, so no session wrote them and the panel
+      // must not badge them as an agent's.
+      for (const item of entries) {
+        expect(item.createdBySessionId).toBeUndefined();
+        expect(item.scope).toBe("global");
+      }
+      expect(screen.queryAllByTestId("memory-from-agent")).toHaveLength(0);
+      // And nothing that was left unticked was kept.
+      expect(entries.map((item) => item.text)).not.toContain(
+        "The release branch is release/2026.9",
+      );
+    });
+
+    it("keeps ticked lines inside the chosen project", async () => {
+      const user = userEvent.setup();
+      useProjectStore.setState({ projects: [project("p-1", "Distill Code")] });
+      offerFile("- Deploys go out on Tuesdays");
+      renderWithProviders(<MemorySettings />);
+
+      const dialog = await openImportDialog(user);
+      await user.click(within(dialog).getByTestId("memory-import-select-all"));
+      await user.selectOptions(
+        within(dialog).getByTestId("memory-import-scope"),
+        within(dialog).getByRole("option", { name: "Distill Code" }),
+      );
+      await user.click(within(dialog).getByTestId("memory-import-confirm"));
+
+      await waitFor(() => {
+        expect(useMemoryStore.getState().entries).toHaveLength(1);
+      });
+      expect(useMemoryStore.getState().entries[0]).toMatchObject({
+        text: "Deploys go out on Tuesdays",
+        scope: "project",
+        projectId: "p-1",
+      });
+    });
+
+    it("counts what was already remembered rather than claiming it kept it", async () => {
+      const user = userEvent.setup();
+      useMemoryStore.setState({
+        entries: [entry({ id: "known", text: "Never push straight to main" })],
+        archived: [],
+        appliedMessageIds: [],
+      });
+      offerFile(
+        ["- Never push straight to main", "- Tags are signed"].join("\n"),
+      );
+      renderWithProviders(<MemorySettings />);
+
+      const dialog = await openImportDialog(user);
+      await user.click(within(dialog).getByTestId("memory-import-select-all"));
+      await user.click(within(dialog).getByTestId("memory-import-confirm"));
+
+      expect(
+        await screen.findByTestId("memory-import-result"),
+      ).toHaveTextContent("Kept 1 of 2: 1 already remembered, 0 not kept.");
+      expect(useMemoryStore.getState().entries).toHaveLength(2);
+    });
+
+    it("writes nothing while the operator has ticked nothing", async () => {
+      const user = userEvent.setup();
+      offerFile(CLAUDE_MD);
+      renderWithProviders(<MemorySettings />);
+
+      const dialog = await openImportDialog(user);
+
+      // Nothing is ticked to begin with: a memory travels into every later
+      // prompt, so the operator says yes rather than failing to say no.
+      expect(
+        within(dialog).getByTestId("memory-import-confirm"),
+      ).toBeDisabled();
+      expect(useMemoryStore.getState().entries).toHaveLength(0);
+    });
+
+    it("says so when the file holds nothing that reads like a memory", async () => {
+      const user = userEvent.setup();
+      offerFile(["# Notes", "", "```", "cargo build", "```"].join("\n"));
+      renderWithProviders(<MemorySettings />);
+
+      const dialog = await openImportDialog(user);
+
+      expect(
+        within(dialog).getByTestId("memory-import-empty"),
+      ).toBeInTheDocument();
+      expect(
+        within(dialog).getByTestId("memory-import-confirm"),
+      ).toBeDisabled();
+    });
+
+    it("says so when the file could not be read", async () => {
+      const user = userEvent.setup();
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      mocks.openFileDialog.mockResolvedValue("/home/ivan/repo/CLAUDE.md");
+      mocks.readTextFile.mockRejectedValue(new Error("no such file"));
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByTestId("memory-import-open"));
+
+      expect(
+        await screen.findByTestId("memory-import-failed"),
+      ).toBeInTheDocument();
+      consoleError.mockRestore();
+    });
+
+    it("treats a cancelled picker as nothing having happened", async () => {
+      const user = userEvent.setup();
+      mocks.openFileDialog.mockResolvedValue(null);
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByTestId("memory-import-open"));
+
+      await waitFor(() => {
+        expect(mocks.openFileDialog).toHaveBeenCalledTimes(1);
+      });
+      expect(screen.queryByTestId("memory-import-dialog")).toBeNull();
+      expect(screen.queryByTestId("memory-import-failed")).toBeNull();
     });
   });
 });

@@ -52,4 +52,11 @@ describe("SETTINGS_SEARCH_ITEMS", () => {
     expect(idsFor("review")).toContain("memory-review");
     expect(idsFor("run a review")).toContain("memory-review");
   });
+
+  // The word someone arriving with a CLAUDE.md types first, into a panel they
+  // have no reason to know exists.
+  it("finds the memory import", () => {
+    expect(idsFor("import")).toContain("memory-import");
+    expect(idsFor("import memories")).toContain("memory-import");
+  });
 });
