@@ -21,6 +21,13 @@
     "noProjectRefused": "This memory is scoped to a project, and no project was chosen, so it was not saved. Pick a project or keep it everywhere.",
     "blankRefused": "There is nothing to remember here yet."
   },
+  "review": {
+    "title": "Review what is remembered",
+    "description": "Opens a new chat holding everything above. It proposes duplicates to merge, contradictions to settle, stale lines to drop and long ones to split \u2014 as a list, and changes nothing until you confirm each one.",
+    "run": "Run a review",
+    "starting": "Opening the review\u2026",
+    "failed": "The review chat could not be opened. If one was created, it is in your chat list."
+  },
   "groups": {
     "global": "Everywhere",
     "unknownProject": "A project that no longer exists",
