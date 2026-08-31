@@ -58,6 +58,7 @@ import {
   startMemoryReviewChat,
 } from "../lib/memoryReview";
 import { searchMemories } from "../lib/memorySearch";
+import { WikiGraph } from "./WikiGraph";
 import {
   memoryRememberRefusal,
   supersededChain,
@@ -780,6 +781,12 @@ export function MemorySettings() {
             </SettingsSection>
           </Collapsible>
         )}
+
+        {/* Last on the page, and only when a project actually has a wiki: what
+            a project knows is not what the operator is remembered as saying,
+            and the graph is a reading of another store entirely. Behind the
+            `memory-wiki-graph` experiment. */}
+        <WikiGraph />
       </SettingsSections>
 
       {/* No automatic sweep: entries whose project is gone are still the

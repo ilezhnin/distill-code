@@ -84,5 +84,25 @@
     "conductor": "A conductor — always. Its whole job is to hold what a request taught it.",
     "orchestrator": "An orchestrator — only when its agent carries the memory-write permission.",
     "worker": "A worker, and every executor a wave spawns — never. Its report goes through the conductor, and that loop is where anything it learned belongs."
+  },
+  "graph": {
+    "title": "Wiki graph",
+    "description": "The pages in this project's .distill/wiki/ and the [[links]] between them. Read-only: a page is written by you or by a conductor, never from here.",
+    "project": "Which project's wiki",
+    "reading": "Reading the wiki\u2026",
+    "failed": "This project's wiki could not be read.",
+    "empty": "This wiki has an index but no pages yet.",
+    "node_one": "{{title}} \u2014 {{type}}, {{count}} page links here",
+    "node_other": "{{title}} \u2014 {{type}}, {{count}} pages link here",
+    "orphan": "nothing links here",
+    "close": "Close",
+    "pageUnreadable": "This page could not be read from the project folder.",
+    "types": {
+      "entity": "entity",
+      "concept": "concept",
+      "decision": "decision",
+      "report": "report",
+      "unknown": "no type"
+    }
   }
 }
