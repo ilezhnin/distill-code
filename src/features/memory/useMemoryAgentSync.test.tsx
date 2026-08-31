@@ -104,7 +104,11 @@ function putSession(sessionId: string, projectId: string | null) {
 describe("useMemoryAgentSync", () => {
   beforeEach(() => {
     window.localStorage.clear();
-    useMemoryStore.setState({ entries: [], appliedMessageIds: [] });
+    useMemoryStore.setState({
+      entries: [],
+      archived: [],
+      appliedMessageIds: [],
+    });
     useChatStore.setState({ messagesBySession: {} });
     useChatSessionStore.setState({ sessions: [] } as never);
     useConductorGraphStore.setState({ nodesById: {} });
@@ -268,6 +272,82 @@ describe("useMemoryAgentSync", () => {
     });
     expect(warn).not.toHaveBeenCalled();
     expect(useMemoryStore.getState().appliedMessageIds).toContain("m-1");
+  });
+
+  it("says why a project fact from a chat with no project was refused", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    putSession("s-1", null);
+    renderHook(() => useMemoryAgentSync());
+
+    putMessages("s-1", [
+      assistant("m-1", '{"remember":[{"text":"Uses pnpm","scope":"project"}]}'),
+    ]);
+
+    expect(useMemoryStore.getState().entries).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(
+      "[memory] statement refused: a project fact needs a project, and this chat has none",
+    );
+    expect(useMemoryStore.getState().appliedMessageIds).toContain("m-1");
+  });
+
+  it("keeps the fact when a correction's replacement cannot be kept", () => {
+    // The checklist's C.4 correction, sent from a chat with no project. The
+    // replacement is refused, so the retirement does not run either: losing
+    // both halves would lose the fact, and quietly.
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    putSession("s-1", null);
+    useMemoryStore.setState({
+      entries: [
+        {
+          id: "old",
+          text: "The branch is release/2026.9",
+          scope: "global",
+          projectId: null,
+          createdAt: 1,
+        },
+      ],
+    });
+    renderHook(() => useMemoryAgentSync());
+
+    putMessages("s-1", [
+      assistant(
+        "m-1",
+        JSON.stringify({
+          forget: ["The branch is release/2026.9"],
+          remember: [
+            { text: "The branch is release/2026.10", scope: "project" },
+          ],
+        }),
+      ),
+    ]);
+
+    const state = useMemoryStore.getState();
+    expect(state.entries.map((e) => e.id)).toEqual(["old"]);
+    expect(state.archived).toEqual([]);
+  });
+
+  it("gives a refused secret one reason, not two", () => {
+    // A project-scoped secret from a chat with no project trips both rules;
+    // the operator gets the one that matters, once.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    putSession("s-1", null);
+    renderHook(() => useMemoryAgentSync());
+
+    putMessages("s-1", [
+      assistant(
+        "m-1",
+        JSON.stringify({
+          remember: [
+            { text: `The key is AKIA${"Q".repeat(16)}`, scope: "project" },
+          ],
+        }),
+      ),
+    ]);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      "[memory] statement refused: looks like a secret (aws-key)",
+    );
   });
 
   it("stops listening once it unmounts", () => {

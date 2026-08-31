@@ -15,12 +15,33 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import { BoundedSet } from "@/features/conductor/boundedSet";
 
 import { detectMemoryFenceCandidates } from "./lib/memoryAgentScan";
-import { findSecret } from "./lib/memoryRedaction";
 import {
   memoryWriteDenialText,
   sessionMemoryWriteAccess,
 } from "./lib/memoryWriteAccess";
-import { useMemoryStore } from "./stores/memoryStore";
+import {
+  memoryRememberRefusal,
+  useMemoryStore,
+  type MemoryRefusal,
+} from "./stores/memoryStore";
+
+/**
+ * What the operator is told about a refused statement.
+ *
+ * By kind only: the statement is what must not be written down, and a console
+ * line is written down too. Each reason says what would make the same request
+ * work next time, because "refused" on its own is a dead end.
+ */
+function refusalText(refusal: MemoryRefusal): string {
+  switch (refusal.reason) {
+    case "secret":
+      return `looks like a secret (${refusal.shape})`;
+    case "no-project":
+      return "a project fact needs a project, and this chat has none";
+    case "blank":
+      return "nothing was left of it once it was trimmed";
+  }
+}
 
 let draining = false;
 
@@ -70,21 +91,19 @@ function drainMemoryFences(): void {
         );
         continue;
       }
-      // A statement that carries a secret is refused by the store; saying so
-      // here is the same courtesy a refused fence already gets, and for the
-      // same reason — silence looks to the operator like the app agreed. The
-      // kind only: the statement is what must not be written down, and a
-      // console line is written down too.
-      for (const item of candidate.request.remember) {
-        const kind = findSecret(item.text);
-        if (kind) {
-          console.warn(
-            `[memory] statement refused: looks like a secret (${kind})`,
-          );
-        }
-      }
       const projectId =
         sessions.getSession(candidate.sessionId)?.projectId ?? null;
+      // A statement the store will not keep is said out loud here, the same
+      // courtesy a refused fence already gets and for the same reason —
+      // silence looks to the operator like the app agreed. One line per
+      // refused item, from the store's own verdict, so what is reported is
+      // exactly what was acted on. The `forget` paired with it was not
+      // applied either, so nothing was lost while this was refused.
+      for (const item of candidate.request.remember) {
+        const refusal = memoryRememberRefusal(item, projectId);
+        if (!refusal) continue;
+        console.warn(`[memory] statement refused: ${refusalText(refusal)}`);
+      }
       useMemoryStore
         .getState()
         .applyAgentRequest(
