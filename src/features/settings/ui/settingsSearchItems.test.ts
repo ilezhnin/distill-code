@@ -47,4 +47,9 @@ describe("SETTINGS_SEARCH_ITEMS", () => {
     expect(idsFor("prompts")).toContain("memory-in-prompts");
     expect(idsFor("mix memory")).toContain("memory-in-prompts");
   });
+
+  it("finds the memory review", () => {
+    expect(idsFor("review")).toContain("memory-review");
+    expect(idsFor("run a review")).toContain("memory-review");
+  });
 });

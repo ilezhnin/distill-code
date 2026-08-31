@@ -163,6 +163,14 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     sectionId: "memory",
     labelKey: "memory.promptMemory.label",
   },
+  // The one action on this page that is not a switch or a row: an operator
+  // who remembers there is a way to tidy the list, and not where it lives,
+  // finds it the same way they find the switches.
+  {
+    id: "memory-review",
+    sectionId: "memory",
+    labelKey: "memory.review.label",
+  },
   {
     id: "archive",
     sectionId: "archive",

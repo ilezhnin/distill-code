@@ -381,6 +381,9 @@
     }
   },
   "memory": {
+    "review": {
+      "label": "Run a review"
+    },
     "agentWrites": {
       "label": "Agents can write memories"
     },
