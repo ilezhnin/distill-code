@@ -385,6 +385,9 @@
     }
   },
   "memory": {
+    "import": {
+      "label": "Import memories from a file"
+    },
     "review": {
       "label": "Run a review"
     },

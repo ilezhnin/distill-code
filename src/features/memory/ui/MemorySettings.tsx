@@ -21,15 +21,26 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 import { openSessionDeepLink } from "@/features/sessions/lib/openSessionDeepLink";
 import { createSessionDeepLink } from "@/features/sessions/lib/sessionDeepLink";
+import { readTextFile } from "@/shared/api/system";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { cn } from "@/shared/lib/cn";
+import { normalizeDialogSelection } from "@/shared/lib/dialogSelection";
 import { Button } from "@/shared/ui/button";
+import { Checkbox } from "@/shared/ui/checkbox";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/shared/ui/collapsible";
 import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/shared/ui/dialog";
 import { Input } from "@/shared/ui/input";
 import { SettingsPage } from "@/shared/ui/SettingsPage";
 import { SettingsRow } from "@/shared/ui/settings-row";
@@ -44,6 +55,7 @@ import type {
   MemoryArchiveReason,
   MemoryEntry,
 } from "../lib/memoryEntry";
+import { scanMemoryImport, type MemoryImportScan } from "../lib/memoryImport";
 import {
   setMemoryReadEnabled,
   setMemoryWriteEnabled,
@@ -218,6 +230,17 @@ export function MemorySettings() {
   // on a list of things that are no longer being told to anyone would bury the
   // list that is.
   const [archiveOpen, setArchiveOpen] = useState(false);
+  // An import in flight. It is a proposal until the last step: the file is
+  // read, the parser offers, and nothing reaches the store until the operator
+  // ticks lines and presses the button. `importScan !== null` is the dialog
+  // being open, because a dialog with nothing to show is not a state this page
+  // has.
+  const [importScan, setImportScan] = useState<MemoryImportScan | null>(null);
+  const [importFileName, setImportFileName] = useState("");
+  const [importTruncated, setImportTruncated] = useState(false);
+  const [importReading, setImportReading] = useState(false);
+  const [importFailed, setImportFailed] = useState(false);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
   // The live row a "what replaced it" link is on its way to. Kept as state
   // rather than scrolled at the click, because the row may be inside a folded
   // area — the click opens the area, and the node only exists to scroll to
@@ -349,6 +372,83 @@ export function MemorySettings() {
       ? (projects.find((project) => project.id === projectId)?.name ??
         t("groups.unknownProject"))
       : t("groups.global");
+
+  /**
+   * Picks a file and reads it. The app's own file picker and the app's own
+   * text read — the two the rest of Settings already choose folders and open
+   * documents with — rather than a hidden `<input type="file">` this page
+   * would be alone in having.
+   */
+  const openImport = async () => {
+    setImportFailed(false);
+    setImportResult(null);
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        title: t("import.open"),
+        filters: [
+          { name: "Markdown", extensions: ["md", "markdown", "mdx", "txt"] },
+        ],
+      });
+      const [path] = normalizeDialogSelection(selected);
+      // Nothing was chosen. Not a failure, and saying so would turn every
+      // cancelled picker into an error message.
+      if (!path) return;
+      setImportReading(true);
+      const file = await readTextFile(path);
+      setImportFileName(path.split(/[/\\]/).pop() ?? path);
+      setImportTruncated(file.truncated);
+      setImportScan(scanMemoryImport(file.contents));
+    } catch (error) {
+      console.error("[memory] the import file could not be read:", error);
+      setImportFailed(true);
+    } finally {
+      setImportReading(false);
+    }
+  };
+
+  /**
+   * Writes what was ticked, through `remember` and nothing else.
+   *
+   * No `createdBySessionId`: these are the operator's lines. They came out of
+   * a file the operator chose and were ticked one by one, so marking them as
+   * an agent's would put a badge on the page pointing at a chat that never
+   * existed — and provenance the operator cannot trust is worse than none
+   * (LAWS/MEMORY.md, Sovereignty).
+   *
+   * `remember` answers with the id it kept, `""` when it kept nothing, and the
+   * id of an existing line when the statement was already there. All three are
+   * counted and all three are said: an import that reports "12 imported" over
+   * four silent refusals is the panel lying about what it holds.
+   */
+  const runImport = (texts: readonly string[], scopeValue: string) => {
+    const projectId = scopeValue === GLOBAL_SCOPE_VALUE ? null : scopeValue;
+    const before = new Set(
+      useMemoryStore.getState().entries.map((entry) => entry.id),
+    );
+    const result: ImportResult = {
+      total: texts.length,
+      added: 0,
+      duplicate: 0,
+      refused: 0,
+    };
+    for (const text of texts) {
+      const id =
+        projectId === null
+          ? remember({ text, scope: "global" })
+          : remember({ text, scope: "project", projectId });
+      if (!id) result.refused += 1;
+      else if (before.has(id)) result.duplicate += 1;
+      else {
+        result.added += 1;
+        before.add(id);
+      }
+    }
+    setImportResult(result);
+    setImportScan(null);
+  };
 
   // The record is composed at the click, not held in state: the list moves
   // while this page is open, and a review of the list as it stood ten minutes
@@ -551,6 +651,51 @@ export function MemorySettings() {
               role="alert"
             >
               {t(REFUSAL_MESSAGE_KEY[refusal.reason])}
+            </p>
+          ) : null}
+        </SettingsSection>
+
+        {/* The same act as the field above it, in bulk: an operator arriving
+            with a CLAUDE.md or a Codex memories file already wrote these
+            facts down once, and retyping thirty bullets is the reason they
+            would not bring them. Markdown only, and a proposal only — the
+            parser offers, the ticks are the decision, and the writing goes
+            through `remember` with every check that path makes. */}
+        <SettingsSection title={t("import.title")}>
+          <p className="text-xs text-muted-foreground">
+            {t("import.description")}
+          </p>
+          <Button
+            type="button"
+            variant="subtle"
+            size="sm"
+            className="w-fit"
+            data-testid="memory-import-open"
+            disabled={importReading}
+            onClick={() => void openImport()}
+          >
+            {importReading ? t("import.reading") : t("import.open")}
+          </Button>
+          {importFailed ? (
+            <p
+              className="text-xs text-destructive"
+              data-testid="memory-import-failed"
+              role="alert"
+            >
+              {t("import.readFailed")}
+            </p>
+          ) : null}
+          {importResult ? (
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="memory-import-result"
+            >
+              {t("import.result", {
+                total: importResult.total,
+                added: importResult.added,
+                duplicate: importResult.duplicate,
+                refused: importResult.refused,
+              })}
             </p>
           ) : null}
         </SettingsSection>
@@ -813,7 +958,195 @@ export function MemorySettings() {
           setForgettingProjectId(null);
         }}
       />
+
+      {importScan === null ? null : (
+        <MemoryImportDialog
+          scan={importScan}
+          fileName={importFileName}
+          truncated={importTruncated}
+          onCancel={() => setImportScan(null)}
+          onImport={runImport}
+        />
+      )}
     </SettingsPage>
+  );
+}
+
+/** What one import actually did, counted so the panel can say all of it. */
+interface ImportResult {
+  total: number;
+  added: number;
+  duplicate: number;
+  refused: number;
+}
+
+/**
+ * The candidates a file offered, one checkbox each.
+ *
+ * Nothing is ticked to begin with. A memory is carried into every later
+ * prompt and mirrored into project folders, so "import everything unless you
+ * object" is the wrong default for a file the app has only guessed the shape
+ * of — the operator says yes, line by line, and the one click that says yes to
+ * all of it is right there when the file is a good one.
+ *
+ * Mounted only while a file is open, which is what resets the ticks: the
+ * choices belong to this file and mean nothing about the next one.
+ */
+function MemoryImportDialog({
+  scan,
+  fileName,
+  truncated,
+  onCancel,
+  onImport,
+}: {
+  scan: MemoryImportScan;
+  fileName: string;
+  truncated: boolean;
+  onCancel: () => void;
+  onImport: (texts: readonly string[], scope: string) => void;
+}) {
+  const { t } = useTranslation("memory");
+  const projects = useProjectStore((state) => state.projects);
+  const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
+  const [scope, setScope] = useState(GLOBAL_SCOPE_VALUE);
+  const allChecked =
+    scan.candidates.length > 0 && checked.size === scan.candidates.length;
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onCancel();
+      }}
+    >
+      <DialogContent
+        size="lg"
+        closeLabel={t("common:actions.close")}
+        data-testid="memory-import-dialog"
+      >
+        <DialogHeader>
+          <DialogTitle>
+            {t("import.dialogTitle", { file: fileName })}
+          </DialogTitle>
+          <DialogDescription>{t("import.dialogDescription")}</DialogDescription>
+        </DialogHeader>
+
+        {/* Said as a number and never as text. A refused line is refused
+            because of what is in it, and repeating it here to explain the
+            refusal would put the key on screen — which is the whole thing
+            being avoided. */}
+        {scan.refusedSecrets > 0 ? (
+          <p
+            className="text-xs text-muted-foreground"
+            data-testid="memory-import-secrets"
+          >
+            {t("import.secretsDropped", { count: scan.refusedSecrets })}
+          </p>
+        ) : null}
+        {truncated ? (
+          <p
+            className="text-xs text-muted-foreground"
+            data-testid="memory-import-truncated"
+          >
+            {t("import.truncated")}
+          </p>
+        ) : null}
+
+        {scan.candidates.length === 0 ? (
+          <p
+            className="text-sm text-muted-foreground"
+            data-testid="memory-import-empty"
+          >
+            {t("import.empty")}
+          </p>
+        ) : (
+          <>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="w-fit"
+              data-testid="memory-import-select-all"
+              onClick={() =>
+                setChecked(allChecked ? new Set() : new Set(scan.candidates))
+              }
+            >
+              {allChecked ? t("import.selectNone") : t("import.selectAll")}
+            </Button>
+            <ul
+              className="flex max-h-72 list-none flex-col gap-1.5 overflow-y-auto"
+              data-testid="memory-import-candidates"
+            >
+              {scan.candidates.map((candidate) => (
+                <li
+                  key={candidate}
+                  className="flex items-start gap-2"
+                  data-testid="memory-import-candidate"
+                >
+                  <Checkbox
+                    className="mt-0.5"
+                    aria-label={candidate}
+                    checked={checked.has(candidate)}
+                    onCheckedChange={(next) =>
+                      setChecked((previous) => {
+                        const updated = new Set(previous);
+                        if (next === true) updated.add(candidate);
+                        else updated.delete(candidate);
+                        return updated;
+                      })
+                    }
+                  />
+                  <span className="min-w-0 flex-1 text-sm text-foreground">
+                    {candidate}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+
+        <DialogFooter>
+          {/* The same scope choice the add form makes, and made once for the
+              file rather than per line: a file is one person's notes about one
+              thing, and thirty selects would be thirty chances to misfile a
+              fact. */}
+          <select
+            value={scope}
+            onChange={(event) => setScope(event.target.value)}
+            aria-label={t("import.scope")}
+            data-testid="memory-import-scope"
+            className="mr-auto shrink-0 rounded-md border border-input bg-background px-2 py-1 text-sm text-foreground"
+          >
+            <option value={GLOBAL_SCOPE_VALUE}>{t("groups.global")}</option>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+          <Button type="button" variant="outline" onClick={onCancel}>
+            {t("common:actions.cancel")}
+          </Button>
+          <Button
+            type="button"
+            variant="primary"
+            destructive={false}
+            data-testid="memory-import-confirm"
+            disabled={checked.size === 0}
+            onClick={() =>
+              onImport(
+                // In the file's own order, not the order they were ticked:
+                // what is stored should read the way the file read.
+                scan.candidates.filter((candidate) => checked.has(candidate)),
+                scope,
+              )
+            }
+          >
+            {t("import.submit")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

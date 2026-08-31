@@ -385,6 +385,9 @@
     }
   },
   "memory": {
+    "import": {
+      "label": "Importar memorias desde un archivo"
+    },
     "review": {
       "label": "Hacer una revisión"
     },
