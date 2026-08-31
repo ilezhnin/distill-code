@@ -10,7 +10,14 @@ import type {
   ArchivedMemoryEntry,
   MemoryEntry,
 } from "@/features/memory/lib/memoryEntry";
+import {
+  PROJECT_WIKI_POINTER_PROMPT,
+  refreshProjectWikiPresence,
+  resetProjectWikiPresenceForTests,
+} from "@/features/memory/lib/projectWikiPrompt";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
+import type { ProjectInfo } from "@/features/projects/api/projects";
+import { useProjectStore } from "@/features/projects/stores/projectStore";
 
 import { sendPromptInBackground } from "./backgroundSend";
 
@@ -18,8 +25,16 @@ const mocks = vi.hoisted(() => ({
   dispatchPrompt: vi.fn(),
   getSession: vi.fn(),
   isWaveManagedSession: vi.fn(),
+  listProjectDocuments: vi.fn(),
   memoryEntries: [] as unknown[],
   memoryArchived: [] as unknown[],
+}));
+
+vi.mock("@/shared/api/projectStore", () => ({
+  listProjectDocuments: (...args: unknown[]) =>
+    mocks.listProjectDocuments(...args),
+  readProjectDocument: vi.fn(),
+  writeProjectDocument: vi.fn(),
 }));
 
 vi.mock("@/features/chat/lib/sendCore", () => ({
@@ -45,6 +60,28 @@ vi.mock("@/features/memory/stores/memoryStore", () => ({
     }),
   },
 }));
+
+const WIKI_PROJECT: ProjectInfo = {
+  id: "p-1",
+  path: "/projects/quarp",
+  name: "Quarp",
+  description: "",
+  prompt: "",
+  icon: "",
+  color: "",
+  projectWorkspaces: [],
+  workingDirs: ["/work/quarp"],
+  useWorktrees: false,
+  order: 0,
+  archivedAt: null,
+};
+
+/** Puts a wiki on disk for `WIKI_PROJECT` and waits for the send path to know. */
+async function seedProjectWiki(names: string[]): Promise<void> {
+  useProjectStore.setState({ projects: [WIKI_PROJECT] });
+  mocks.listProjectDocuments.mockResolvedValue(names);
+  await refreshProjectWikiPresence("/work/quarp");
+}
 
 function memoryEntry(
   overrides: Partial<MemoryEntry> & { id: string; text: string },
@@ -78,6 +115,9 @@ describe("sendPromptInBackground", () => {
     // must not decide the next case's prompt.
     window.localStorage.clear();
     useConductorGraphStore.setState({ nodesById: {} });
+    useProjectStore.setState({ projects: [] });
+    mocks.listProjectDocuments.mockResolvedValue([]);
+    resetProjectWikiPresenceForTests();
   });
 
   it("prioritizes the captured execution prompt over current persona context", async () => {
@@ -282,6 +322,82 @@ describe("sendPromptInBackground", () => {
     const systemPrompt = dispatchedSystemPrompt();
     expect(systemPrompt).toBe("workspace prompt");
     expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
+  });
+
+  it("points a project session at the wiki its folder holds", async () => {
+    mocks.getSession.mockReturnValue({ projectId: "p-1" });
+    await seedProjectWiki(["index.md", "log.md"]);
+
+    await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
+      systemPrompt: "workspace prompt",
+    });
+
+    expect(dispatchedSystemPrompt()).toContain(PROJECT_WIKI_POINTER_PROMPT);
+  });
+
+  it("says nothing about a wiki the project does not have", async () => {
+    mocks.getSession.mockReturnValue({ projectId: "p-1" });
+    await seedProjectWiki(["log.md"]);
+
+    await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
+      systemPrompt: "workspace prompt",
+    });
+
+    expect(dispatchedSystemPrompt()).not.toContain("knowledge wiki");
+  });
+
+  it("says nothing about a wiki to a session with no project", async () => {
+    mocks.getSession.mockReturnValue({ projectId: null });
+    await seedProjectWiki(["index.md"]);
+
+    await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
+      systemPrompt: "workspace prompt",
+    });
+
+    expect(dispatchedSystemPrompt()).not.toContain("knowledge wiki");
+  });
+
+  // The line that divides this from memory: an executor may not write the
+  // wiki, but reading it is exactly what keeps it from re-exploring a
+  // repository the project has already mapped.
+  it("gives a wave child the wiki pointer while still withholding memory", async () => {
+    mocks.isWaveManagedSession.mockReturnValue(true);
+    mocks.getSession.mockReturnValue({ projectId: "p-1" });
+    mocks.memoryEntries = [memoryEntry({ id: "g", text: "A global fact" })];
+    await seedProjectWiki(["index.md"]);
+
+    await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
+      systemPrompt: "workspace prompt",
+    });
+
+    const systemPrompt = dispatchedSystemPrompt();
+    expect(systemPrompt).toContain(PROJECT_WIKI_POINTER_PROMPT);
+    expect(systemPrompt).not.toContain("A global fact");
+    expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
+    expect(systemPrompt).not.toContain(PLANNER_PROTOCOL_PROMPT);
+  });
+
+  // The prompt's cached prefix: the pointer must be the same bytes on every
+  // turn, whatever the project or the session is called.
+  it("sends the same pointer bytes on every turn", async () => {
+    mocks.getSession.mockReturnValue({ projectId: "p-1" });
+    await seedProjectWiki(["index.md"]);
+
+    await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
+      systemPrompt: "workspace prompt",
+    });
+    await sendPromptInBackground("session-1", "second prompt", "goose");
+
+    const prompts = mocks.dispatchPrompt.mock.calls.map(
+      (call) => (call[2] as { systemPrompt?: string }).systemPrompt ?? "",
+    );
+    const pointers = prompts.map((prompt) =>
+      prompt
+        .split("\n\n")
+        .find((section) => section.includes("knowledge wiki")),
+    );
+    expect(pointers[0]).toBe(PROJECT_WIKI_POINTER_PROMPT);
+    expect(pointers[1]).toBe(pointers[0]);
   });
 
   it.each([

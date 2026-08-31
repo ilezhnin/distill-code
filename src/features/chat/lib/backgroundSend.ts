@@ -8,6 +8,7 @@ import {
   getMemoryPreferences,
 } from "@/features/memory/lib/memoryPreferences";
 import { archivedCountForProject } from "@/features/memory/lib/memoryPrompt";
+import { sessionProjectWikiPrompt } from "@/features/memory/lib/projectWikiPrompt";
 import { sessionMemoryWriteAccess } from "@/features/memory/lib/memoryWriteAccess";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
@@ -92,6 +93,11 @@ export function sendPromptInBackground(
       // from the same ACL the spawn chokepoint enforces.
       sessionSpawnPolicyPrompt(sessionId, persona),
       sendOptions.systemPrompt,
+      // With the workspace context, not with the protocols below: the wiki
+      // pointer is what the project knows, and a wave child — cut off from
+      // the operator's memory — still profits from reading it before it
+      // re-explores the repository.
+      sessionProjectWikiPrompt(sessionId),
       // Last, matching the foreground order: persona, workspace context,
       // then the operator protocols.
       composeOperatorProtocols(sessionId),
