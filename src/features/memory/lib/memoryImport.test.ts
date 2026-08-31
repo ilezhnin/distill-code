@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 
 import { MAX_MEMORY_TEXT } from "./memoryEntry";
-import { extractCandidates, scanMemoryImport } from "./memoryImport";
+import { scanMemoryImport } from "./memoryImport";
 
 /**
  * A `CLAUDE.md` of the ordinary kind, with one line in it that must never
@@ -53,7 +53,7 @@ describe("scanMemoryImport", () => {
   });
 
   it("keeps headings, fenced code and indented code out of the list", () => {
-    const candidates = extractCandidates(CLAUDE_MD);
+    const candidates = scanMemoryImport(CLAUDE_MD).candidates;
 
     expect(candidates).not.toContain("Project memory");
     expect(candidates).not.toContain("Conventions");
@@ -91,11 +91,11 @@ describe("scanMemoryImport", () => {
   });
 
   it("strips a task list's checkbox, which is state and not statement", () => {
-    expect(extractCandidates("- [x] Ship the release notes")).toEqual([
-      "Ship the release notes",
-    ]);
+    expect(scanMemoryImport("- [x] Ship the release notes").candidates).toEqual(
+      ["Ship the release notes"],
+    );
     // A box with nothing after it is not a fact at all.
-    expect(extractCandidates("- [ ]")).toEqual([]);
+    expect(scanMemoryImport("- [ ]").candidates).toEqual([]);
   });
 
   it("leaves quoted material, tables and raw HTML alone", () => {

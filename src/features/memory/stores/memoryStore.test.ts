@@ -4,7 +4,6 @@ import type { ArchivedMemoryEntry, MemoryEntry } from "../lib/memoryEntry";
 import { MAX_ARCHIVED_ENTRIES } from "../lib/memoryEntry";
 import type { MemoryFenceRequest } from "../lib/memoryFence";
 import {
-  capArchived,
   capWithArchive,
   flushMemoryWrites,
   MAX_MEMORY_ENTRIES,
@@ -385,20 +384,47 @@ describe("capWithArchive recency", () => {
   });
 });
 
-describe("capArchived", () => {
-  it("keeps the newest displacements when the archive is full", () => {
-    const list = Array.from({ length: MAX_ARCHIVED_ENTRIES + 2 }, (_, index) =>
-      archived({ id: `a-${index}`, archivedAt: index }),
-    );
-    const capped = capArchived(list);
-    expect(capped).toHaveLength(MAX_ARCHIVED_ENTRIES);
-    expect(capped[0].id).toBe("a-2");
-    expect(capped.at(-1)?.id).toBe(`a-${MAX_ARCHIVED_ENTRIES + 1}`);
+describe("the archive past its bound", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    useMemoryStore.setState({
+      entries: [],
+      archived: [],
+      appliedMessageIds: [],
+      recallAnsweredMessageIds: [],
+      hydrated: true,
+    });
   });
 
-  it("leaves an archive under the bound exactly as it is", () => {
-    const list = [archived({ id: "a" })];
-    expect(capArchived(list)).toBe(list);
+  // This case used to assert the opposite — that the oldest displacements
+  // were dropped to hold the archive at its bound. That was the app deleting
+  // a memory with no operator behind it, and the law states the rule without
+  // an exception for the app's own convenience (LAWS/MEMORY.md, Sovereignty).
+  // The bound stayed; what it does is warn the panel, not cut.
+  it("takes a new displacement without dropping the oldest one it holds", () => {
+    useMemoryStore.setState({
+      entries: Array.from({ length: MAX_MEMORY_ENTRIES }, (_, index) =>
+        entry({
+          id: `e-${index}`,
+          text: `Fact ${index}`,
+          createdAt: 100 + index,
+        }),
+      ),
+      archived: Array.from({ length: MAX_ARCHIVED_ENTRIES }, (_, index) =>
+        archived({ id: `a-${index}`, archivedAt: index }),
+      ),
+    });
+
+    useMemoryStore
+      .getState()
+      .remember({ text: "One more fact", scope: "global" }, NOW);
+
+    const { archived: after } = useMemoryStore.getState();
+    expect(after).toHaveLength(MAX_ARCHIVED_ENTRIES + 1);
+    // The first displacement ever made is still there, and the live line the
+    // cap just pushed out joined it rather than taking its place.
+    expect(after[0].id).toBe("a-0");
+    expect(after.at(-1)?.id).toBe("e-0");
   });
 });
 
@@ -739,6 +765,60 @@ describe("parseArchivedMemoryEntries", () => {
   });
 });
 
+describe("updateEntry", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    useMemoryStore.setState({
+      entries: [],
+      archived: [],
+      appliedMessageIds: [],
+      recallAnsweredMessageIds: [],
+      hydrated: true,
+    });
+  });
+
+  it("refuses an edit that pastes a key into a line already kept", () => {
+    // The edit field was the one way into the store that asked nothing, so a
+    // token typed over an existing memory travelled into every later prompt
+    // and into the project mirror (LAWS/MEMORY.md, Writing). A shape the
+    // rules refuse; never a real credential.
+    useMemoryStore.setState({
+      entries: [entry({ id: "a", text: "The deploy runs on Fridays" })],
+    });
+
+    const verdict = useMemoryStore
+      .getState()
+      .updateEntry("a", `The deploy token is ghp_${"a".repeat(36)}`);
+
+    expect(verdict).toEqual({ reason: "secret", shape: "github-token" });
+    // And no edited version of it is kept in its place.
+    expect(useMemoryStore.getState().entries[0].text).toBe(
+      "The deploy runs on Fridays",
+    );
+  });
+
+  it("writes an ordinary correction and says there was nothing to object to", () => {
+    useMemoryStore.setState({
+      entries: [entry({ id: "a", text: "The branch is main" })],
+    });
+
+    expect(
+      useMemoryStore
+        .getState()
+        .updateEntry("a", "The branch is release/2026.9"),
+    ).toBeNull();
+    expect(useMemoryStore.getState().entries[0].text).toBe(
+      "The branch is release/2026.9",
+    );
+  });
+
+  it("has nothing to say about a row that is no longer there", () => {
+    expect(
+      useMemoryStore.getState().updateEntry("gone", "Anything"),
+    ).toBeNull();
+  });
+});
+
 describe("the archive the operator acts on", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -817,6 +897,35 @@ describe("the archive the operator acts on", () => {
       expect(state.entries.map((e) => e.id)).toEqual(["live"]);
       expect(state.entries[0].reinforcedAt).toBe(NOW);
       expect(state.archived).toEqual([]);
+    });
+
+    it("refuses to put a line carrying a secret back into the prompts", () => {
+      // The archive has entrances `remember` never saw: a document written by
+      // a build with no secret check, a project folder copied from another
+      // machine. Restore is the click that would put such a line into every
+      // prompt, so it answers to the same rule (LAWS/MEMORY.md, Writing).
+      useMemoryStore.setState({
+        archived: [
+          archived({
+            id: "leaky",
+            text: `password: ${"z".repeat(12)}`,
+            archivedAt: 20,
+          }),
+        ],
+      });
+
+      const verdict = useMemoryStore.getState().restoreArchived("leaky", NOW);
+
+      expect(verdict).toEqual({
+        reason: "secret",
+        shape: "password-assignment",
+      });
+      expect(useMemoryStore.getState().entries).toEqual([]);
+      // Refused, not destroyed: the row is still the operator's to read and
+      // to delete for good.
+      expect(useMemoryStore.getState().archived.map((e) => e.id)).toEqual([
+        "leaky",
+      ]);
     });
 
     it("does nothing for a line that is not in the archive", () => {

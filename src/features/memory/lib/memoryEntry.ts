@@ -67,14 +67,22 @@ export interface ArchivedMemoryEntry extends MemoryEntry {
 }
 
 /**
- * Upper bound on the archive.
+ * The size past which the archive is too big to be useful.
  *
- * An honest limit rather than a promise the app cannot keep: the archive is
- * read back by a scan and mirrored into project folders, so it cannot grow
- * without end. Past this, the oldest displacements go — and only ever the
- * oldest, so what was archived a moment ago is always still there.
+ * A line the panel says out loud, not one the app enforces by throwing
+ * memories away. It used to be the second: past this the oldest displacements
+ * were dropped, which is the app deleting a memory with no operator behind
+ * it, and the law allows no such exception (LAWS/MEMORY.md, Sovereignty). The
+ * pressure the bound answered is real — the archive is read back by a scan
+ * and mirrored into every project folder — so it stays, visible, and the
+ * clearing out becomes the operator's, on rows they can read and choose.
  */
 export const MAX_ARCHIVED_ENTRIES = 2000;
+
+/** True once the archive is past its bound and wants the operator's broom. */
+export function isArchiveOverfull(archivedCount: number): boolean {
+  return archivedCount > MAX_ARCHIVED_ENTRIES;
+}
 
 /** Longest statement kept. Longer ones are cut rather than dropped. */
 export const MAX_MEMORY_TEXT = 280;

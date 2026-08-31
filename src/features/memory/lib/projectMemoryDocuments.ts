@@ -27,6 +27,7 @@ import {
 } from "@/shared/api/projectStore";
 
 import type { ArchivedMemoryEntry, MemoryEntry } from "./memoryEntry";
+import { findSecret } from "./memoryRedaction";
 
 /** Path inside a project's own `.distill` folder. */
 export const PROJECT_MEMORY_DOCUMENT = "memory.json";
@@ -152,6 +153,15 @@ async function hasProjectMemoryFile(root: string): Promise<boolean> {
  * project id, and honouring it would file the memories under a project that
  * does not exist here — which `parseEntry` then drops as orphaned. The folder
  * the file was found in is the fact; the id inside it is a memento.
+ *
+ * A folder is an entrance, not a backup. The file may have been written by a
+ * cloned repository, by a colleague's machine, by an older build with no
+ * secret check at all — and everything read here goes straight into the
+ * prompt block and back out into every other mirror. So each line answers to
+ * the same rule a typed one does (LAWS/MEMORY.md, Writing), and it answers
+ * line by line: one bad statement costs that statement, not the file, because
+ * dropping the folder whole would lose a project's whole record over someone
+ * else's mistake.
  */
 export async function readProjectMemories(
   projects: readonly ProjectInfo[],
@@ -175,8 +185,9 @@ export async function readProjectMemories(
         // A v1 file has no `archived` key, which reads as an empty archive.
         const parsed: unknown = JSON.parse(raw);
         return {
-          entries: parse(parsed).map(own(project)),
-          archived: parseArchived(parsed).map(own(project)),
+          entries: withoutSecrets(parse(parsed).map(own(project))),
+          // The archive too: "Restore" is one click away from the prompts.
+          archived: withoutSecrets(parseArchived(parsed).map(own(project))),
         };
       } catch (error) {
         console.error(
@@ -191,6 +202,20 @@ export async function readProjectMemories(
     entries: lists.flatMap((list) => list.entries),
     archived: lists.flatMap((list) => list.archived),
   };
+}
+
+/** The lines of a folder's file that may be kept, in the file's own order. */
+function withoutSecrets<T extends MemoryEntry>(entries: T[]): T[] {
+  return entries.filter((entry) => {
+    const shape = findSecret(entry.text);
+    if (!shape) return true;
+    // The shape and nothing else. The statement is what carries the key, so
+    // logging it to explain the refusal would be the leak all over again.
+    console.warn(
+      `[memory] a line from a project folder was not read: ${shape}`,
+    );
+    return false;
+  });
 }
 
 /**

@@ -31,7 +31,6 @@ import {
 } from "../lib/projectMemoryDocuments";
 import {
   isMemoryArchiveReason,
-  MAX_ARCHIVED_ENTRIES,
   memoryRecency,
   normalizeMemoryText,
   sameMemoryText,
@@ -78,7 +77,17 @@ export interface MemoryDraft {
 
 interface MemoryActions {
   remember: (draft: MemoryDraft, nowMs?: number) => string;
-  updateEntry: (id: string, text: string) => void;
+  /**
+   * Rewrites one live memory, or says why it was not rewritten.
+   *
+   * An edit is a write, and it goes through the same verdict `remember` does:
+   * the field on a row was the one door into the store that asked nothing, so
+   * a token pasted over an existing line was kept, carried into every later
+   * prompt and mirrored into the project folder (LAWS/MEMORY.md, Writing).
+   * The verdict is returned rather than swallowed because a refusal the row
+   * cannot show is the app losing an action the operator took.
+   */
+  updateEntry: (id: string, text: string) => MemoryRefusal | null;
   forget: (id: string) => void;
   /**
    * Puts an archived memory back in the live list.
@@ -87,8 +96,13 @@ interface MemoryActions {
    * — same id, same date, same provenance — rather than as a new memory
    * written today. Overflow is left to the cap, which is the only thing that
    * knows what is now the least useful line.
+   *
+   * Refused, out loud, when the line carries a secret: the archive has
+   * entrances `remember` never saw — a document written by an older build, a
+   * project folder copied from another machine — and restoring is what would
+   * put such a line back into every prompt.
    */
-  restoreArchived: (id: string, nowMs?: number) => void;
+  restoreArchived: (id: string, nowMs?: number) => MemoryRefusal | null;
   /** The operator destroying an archived memory. No copy is left. */
   deleteArchived: (id: string) => void;
   /**
@@ -279,45 +293,31 @@ export function capWithArchive(entries: MemoryEntry[]): {
 }
 
 /**
- * Trims the archive to its bound, oldest displacement first.
+ * The archive with capacity-displaced entries folded in. Nothing leaves.
  *
- * The one place the app does drop a memory outright, and it is stated rather
- * than hidden: an archive that grows without end is written to disk and
- * mirrored into every project folder on every commit. Order is preserved so
- * the file stays readable as a history.
+ * The archive used to be trimmed here, oldest displacement first, and that
+ * was the app deleting a memory on nobody's instruction — which the law
+ * allows no exception for (LAWS/MEMORY.md, Sovereignty). The pressure the
+ * trim answered is real: the archive is written to disk and mirrored into
+ * every project folder. So `MAX_ARCHIVED_ENTRIES` stayed and stopped being a
+ * knife — past it the panel asks the operator to clear the archive out, on
+ * rows they can read and choose between, and the app keeps holding all of it
+ * until they do.
  */
-export function capArchived(
-  archived: ArchivedMemoryEntry[],
-): ArchivedMemoryEntry[] {
-  if (archived.length <= MAX_ARCHIVED_ENTRIES) return archived;
-  const keep = new Set(
-    archived
-      .map((_, index) => index)
-      .sort(
-        (left, right) =>
-          archived[right].archivedAt - archived[left].archivedAt ||
-          right - left,
-      )
-      .slice(0, MAX_ARCHIVED_ENTRIES),
-  );
-  return archived.filter((_, index) => keep.has(index));
-}
-
-/** The archive with capacity-displaced entries folded in, bounded. */
 function withCapacityEvictions(
   archived: ArchivedMemoryEntry[],
   evicted: readonly MemoryEntry[],
   nowMs: number,
 ): ArchivedMemoryEntry[] {
-  if (evicted.length === 0) return capArchived(archived);
-  return capArchived([
+  if (evicted.length === 0) return archived;
+  return [
     ...archived,
     ...evicted.map((entry) => ({
       ...entry,
       archivedAt: nowMs,
       archiveReason: "capacity" as const,
     })),
-  ]);
+  ];
 }
 
 function commit(
@@ -571,17 +571,18 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
   hydrated: false,
 
   remember: (draft, nowMs = Date.now()) => {
-    // A statement that carries a secret is refused before anything else looks
-    // at it (LAWS/MEMORY.md, Writing). The raw draft is what is scanned, not
-    // the normalized one: trimming to the store's bound can cut away the very
-    // marker that gives a key away. Refusal, not repair — the caller is told
-    // nothing was kept, and no edited version is stored in its place.
-    if (findSecret(draft.text)) return "";
-    const text = normalizeMemoryText(draft.text);
-    if (!text) return "";
     const projectId =
       draft.scope === "project" ? (draft.projectId ?? null) : null;
-    if (draft.scope === "project" && !projectId) return "";
+    // One verdict, asked here and reported by the panel and the sync from the
+    // same function: this path had grown its own copy of the checks, and the
+    // copies had already drifted in what they look at first. Refusal, not
+    // repair — the caller is told nothing was kept, and no edited version of
+    // a refused statement is stored in its place (LAWS/MEMORY.md, Writing).
+    if (
+      memoryRememberRefusal({ text: draft.text, scope: draft.scope }, projectId)
+    )
+      return "";
+    const text = normalizeMemoryText(draft.text);
     const state = get();
     const duplicate = existingMatch(
       state.entries,
@@ -632,8 +633,18 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
   },
 
   updateEntry: (id, text) => {
+    const target = get().entries.find((entry) => entry.id === id);
+    if (!target) return null;
+    // The text as the operator typed it, before it is trimmed to the store's
+    // bound: cutting a long line can take away the marker that gives a key
+    // away. The row's own scope is what the verdict is asked against — an
+    // edit changes the wording, never where the line applies.
+    const verdict = memoryRememberRefusal(
+      { text, scope: target.scope },
+      target.projectId,
+    );
+    if (verdict) return verdict;
     const normalized = normalizeMemoryText(text);
-    if (!normalized) return;
     set((state) =>
       commit(
         state.entries.map((entry) =>
@@ -644,6 +655,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
         state.recallAnsweredMessageIds,
       ),
     );
+    return null;
   },
 
   /**
@@ -680,7 +692,16 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
   restoreArchived: (id, nowMs = Date.now()) => {
     const state = get();
     const target = state.archived.find((entry) => entry.id === id);
-    if (!target) return;
+    if (!target) return null;
+    // Restoring is a write into the live list, so it answers to the same
+    // verdict every other write does. The row itself is left in the archive:
+    // it is still the operator's to read and to delete, it may only not go
+    // back into the prompts.
+    const verdict = memoryRememberRefusal(
+      { text: target.text, scope: target.scope },
+      target.projectId,
+    );
+    if (verdict) return verdict;
     const archived = state.archived.filter((entry) => entry.id !== id);
     const duplicate = existingMatch(
       state.entries,
@@ -720,6 +741,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
         nowMs,
       ),
     );
+    return null;
   },
 
   deleteArchived: (id) => {
