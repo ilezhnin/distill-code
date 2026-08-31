@@ -14,6 +14,7 @@ import {
   parseArchivedMemoryEntries,
   parseMemoryEntries,
   parseRecallAnsweredMessageIds,
+  supersededChain,
   useMemoryStore,
 } from "./memoryStore";
 
@@ -735,5 +736,274 @@ describe("parseArchivedMemoryEntries", () => {
   it("has no opinion on junk", () => {
     expect(parseArchivedMemoryEntries(null)).toEqual([]);
     expect(parseArchivedMemoryEntries("nope")).toEqual([]);
+  });
+});
+
+describe("the archive the operator acts on", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    useMemoryStore.setState({
+      entries: [],
+      archived: [],
+      appliedMessageIds: [],
+      recallAnsweredMessageIds: [],
+      hydrated: true,
+    });
+  });
+
+  describe("restoreArchived", () => {
+    it("brings the line back as itself, not as a memory written today", () => {
+      useMemoryStore.setState({
+        archived: [
+          archived({
+            id: "old",
+            text: "The branch is main",
+            createdAt: 10,
+            createdBySessionId: "s-1",
+            archivedAt: 20,
+          }),
+        ],
+      });
+
+      useMemoryStore.getState().restoreArchived("old", NOW);
+
+      const state = useMemoryStore.getState();
+      expect(state.archived).toEqual([]);
+      expect(state.entries).toHaveLength(1);
+      expect(state.entries[0]).toMatchObject({
+        id: "old",
+        text: "The branch is main",
+        createdAt: 10,
+        createdBySessionId: "s-1",
+        // Asked for back, which is what recency is a proxy for.
+        reinforcedAt: NOW,
+      });
+      // And nothing of the archive's own bookkeeping travels with it.
+      expect(state.entries[0]).not.toHaveProperty("archiveReason");
+      expect(state.entries[0]).not.toHaveProperty("replacedById");
+    });
+
+    it("keeps a restored line in a full store instead of bouncing it back", () => {
+      // Without the restore counting as a restatement, the cap would read the
+      // returning line as the least recently useful one and archive it again
+      // on the very same commit: the operator clicks and nothing happens.
+      useMemoryStore.setState({
+        entries: Array.from({ length: MAX_MEMORY_ENTRIES }, (_, index) =>
+          entry({ id: `e-${index}`, text: `Fact ${index}`, createdAt: index }),
+        ),
+        archived: [
+          archived({ id: "old", text: "An older fact", createdAt: 0 }),
+        ],
+      });
+
+      useMemoryStore.getState().restoreArchived("old", NOW);
+
+      const state = useMemoryStore.getState();
+      expect(state.entries.some((e) => e.id === "old")).toBe(true);
+      expect(state.entries).toHaveLength(MAX_MEMORY_ENTRIES);
+      // The line the cap pushed out to make room is archived, not destroyed.
+      expect(state.archived.map((e) => e.id)).toEqual(["e-0"]);
+    });
+
+    it("restates the live row instead of doubling a statement already kept", () => {
+      useMemoryStore.setState({
+        entries: [entry({ id: "live", text: "The branch is main" })],
+        archived: [archived({ id: "old", text: "the BRANCH is main" })],
+      });
+
+      useMemoryStore.getState().restoreArchived("old", NOW);
+
+      const state = useMemoryStore.getState();
+      expect(state.entries.map((e) => e.id)).toEqual(["live"]);
+      expect(state.entries[0].reinforcedAt).toBe(NOW);
+      expect(state.archived).toEqual([]);
+    });
+
+    it("does nothing for a line that is not in the archive", () => {
+      useMemoryStore.setState({
+        entries: [entry({ id: "live" })],
+        archived: [archived({ id: "old" })],
+      });
+
+      useMemoryStore.getState().restoreArchived("no-such-id", NOW);
+
+      const state = useMemoryStore.getState();
+      expect(state.entries.map((e) => e.id)).toEqual(["live"]);
+      expect(state.archived.map((e) => e.id)).toEqual(["old"]);
+    });
+  });
+
+  describe("deleteArchived", () => {
+    it("destroys one archived line and leaves the rest of the archive", () => {
+      useMemoryStore.setState({
+        archived: [
+          archived({ id: "doomed", text: "My home address" }),
+          archived({ id: "keeper", text: "Something harmless" }),
+        ],
+      });
+
+      useMemoryStore.getState().deleteArchived("doomed");
+
+      expect(useMemoryStore.getState().archived.map((e) => e.id)).toEqual([
+        "keeper",
+      ]);
+    });
+
+    it("keeps it gone across a reload", async () => {
+      useMemoryStore.setState({
+        archived: [
+          archived({ id: "doomed", text: "My home address" }),
+          archived({ id: "keeper", text: "Something harmless" }),
+        ],
+      });
+
+      useMemoryStore.getState().deleteArchived("doomed");
+      await flushMemoryWrites();
+
+      const stored = JSON.parse(
+        window.localStorage.getItem(MEMORY_STORAGE_KEY) ?? "{}",
+      );
+      expect(parseArchivedMemoryEntries(stored).map((e) => e.text)).toEqual([
+        "Something harmless",
+      ]);
+    });
+  });
+
+  describe("supersededChain", () => {
+    it("follows a statement back through every wording it replaced", () => {
+      const list = [
+        archived({ id: "first", replacedById: "second" }),
+        archived({ id: "second", replacedById: "live" }),
+        archived({ id: "unrelated", archiveReason: "capacity" }),
+      ];
+
+      expect([...supersededChain(list, "live")]).toEqual(["second", "first"]);
+    });
+
+    it("names nothing for a line no archived wording points at", () => {
+      expect(supersededChain([archived({ id: "a" })], "live").size).toBe(0);
+    });
+  });
+
+  describe("the operator's delete and the archive behind it", () => {
+    it("takes the earlier wordings of the deleted line with it", () => {
+      // G2/F3: the row vanished and its predecessor stayed archived, so the
+      // next recall answer handed the deleted statement straight back to the
+      // agent. One row, one "forget", one outcome.
+      useMemoryStore.setState({
+        entries: [entry({ id: "live", text: "The branch is release/2026.10" })],
+        archived: [
+          archived({
+            id: "second",
+            text: "The branch is release/2026.9",
+            archiveReason: "superseded",
+            replacedById: "live",
+          }),
+          archived({
+            id: "first",
+            text: "The branch is main",
+            archiveReason: "superseded",
+            replacedById: "second",
+          }),
+        ],
+      });
+
+      useMemoryStore.getState().forget("live");
+
+      const state = useMemoryStore.getState();
+      expect(state.entries).toEqual([]);
+      expect(state.archived).toEqual([]);
+    });
+
+    it("leaves archived lines the deleted one never replaced", () => {
+      useMemoryStore.setState({
+        entries: [entry({ id: "live", text: "The branch is release/2026.10" })],
+        archived: [
+          archived({
+            id: "mine",
+            text: "The branch is release/2026.9",
+            archiveReason: "superseded",
+            replacedById: "live",
+          }),
+          archived({
+            id: "other",
+            text: "Ivan is on holiday",
+            archiveReason: "forgotten",
+          }),
+          archived({
+            id: "displaced",
+            text: "A fact pushed out to make room",
+            archiveReason: "capacity",
+          }),
+        ],
+      });
+
+      useMemoryStore.getState().forget("live");
+
+      expect(useMemoryStore.getState().archived.map((e) => e.id)).toEqual([
+        "other",
+        "displaced",
+      ]);
+    });
+  });
+
+  describe("forgetProject", () => {
+    it("sweeps the project's live rows and its archive together", () => {
+      // G2/F4: the panel filtered the live list and handed the rest to
+      // `replaceAll`, which carries the archive across untouched — so a dead
+      // project's archived rows stayed in the document for good, invisible and
+      // unreachable, under a dialog promising the deletion could not be undone.
+      useMemoryStore.setState({
+        entries: [
+          entry({ id: "g", text: "A global fact" }),
+          entry({
+            id: "live",
+            text: "A live project fact",
+            scope: "project",
+            projectId: "p-live",
+          }),
+          entry({
+            id: "dead",
+            text: "A dead project fact",
+            scope: "project",
+            projectId: "p-gone",
+          }),
+        ],
+        archived: [
+          archived({ id: "g-old", text: "An old global fact" }),
+          archived({
+            id: "dead-old",
+            text: "An old dead-project fact",
+            scope: "project",
+            projectId: "p-gone",
+          }),
+          archived({
+            id: "live-old",
+            text: "An old live-project fact",
+            scope: "project",
+            projectId: "p-live",
+          }),
+        ],
+      });
+
+      useMemoryStore.getState().forgetProject("p-gone");
+
+      const state = useMemoryStore.getState();
+      expect(state.entries.map((e) => e.id)).toEqual(["g", "live"]);
+      expect(state.archived.map((e) => e.id)).toEqual(["g-old", "live-old"]);
+    });
+
+    it("leaves everything alone when asked to sweep no project at all", () => {
+      useMemoryStore.setState({
+        entries: [entry({ id: "g" })],
+        archived: [archived({ id: "g-old" })],
+      });
+
+      useMemoryStore.getState().forgetProject("");
+
+      const state = useMemoryStore.getState();
+      expect(state.entries).toHaveLength(1);
+      expect(state.archived).toHaveLength(1);
+    });
   });
 });

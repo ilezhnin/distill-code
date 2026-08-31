@@ -18,7 +18,7 @@ vi.mock("@/features/sessions/lib/openSessionDeepLink", () => ({
   openSessionDeepLink: mocks.openSessionDeepLink,
 }));
 
-import type { MemoryEntry } from "../../lib/memoryEntry";
+import type { ArchivedMemoryEntry, MemoryEntry } from "../../lib/memoryEntry";
 import { getMemoryPreferences } from "../../lib/memoryPreferences";
 import { MAX_MEMORY_PROMPT_CHARS } from "../../lib/memoryPrompt";
 import { useMemoryStore } from "../../stores/memoryStore";
@@ -30,6 +30,17 @@ function entry(overrides: Partial<MemoryEntry> & { id: string }): MemoryEntry {
     scope: "global",
     projectId: null,
     createdAt: 0,
+    ...overrides,
+  };
+}
+
+function archivedEntry(
+  overrides: Partial<ArchivedMemoryEntry> & { id: string },
+): ArchivedMemoryEntry {
+  return {
+    ...entry(overrides),
+    archivedAt: 0,
+    archiveReason: "capacity",
     ...overrides,
   };
 }
@@ -51,12 +62,20 @@ function project(id: string, name: string): ProjectInfo {
   };
 }
 
+if (!HTMLElement.prototype.scrollIntoView) {
+  HTMLElement.prototype.scrollIntoView = () => {};
+}
+
 describe("MemorySettings", () => {
   beforeEach(() => {
     window.localStorage.clear();
     mocks.openSessionDeepLink.mockReset();
     mocks.openSessionDeepLink.mockResolvedValue(true);
-    useMemoryStore.setState({ entries: [], appliedMessageIds: [] });
+    useMemoryStore.setState({
+      entries: [],
+      archived: [],
+      appliedMessageIds: [],
+    });
     useProjectStore.setState({ projects: [], hasFetchedProjects: false });
     useChatSessionStore.setState({
       sessions: [],
@@ -705,6 +724,427 @@ describe("MemorySettings", () => {
       await user.click(toggle);
 
       expect(screen.getAllByTestId("memory-entry")).toHaveLength(16);
+    });
+  });
+  describe("the archive", () => {
+    function archivedStore(entries: ArchivedMemoryEntry[]) {
+      useMemoryStore.setState({
+        entries: [],
+        archived: entries,
+        appliedMessageIds: [],
+      });
+    }
+
+    it("stays shut until it is asked for, and says how much is in it", () => {
+      archivedStore([
+        archivedEntry({ id: "a", text: "A displaced fact" }),
+        archivedEntry({ id: "b", text: "A retired fact" }),
+      ]);
+      renderWithProviders(<MemorySettings />);
+
+      expect(
+        screen.getByRole("heading", { name: "Archive (2)" }),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("memory-archive-toggle")).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
+      expect(screen.queryByTestId("memory-archive-entry")).toBeNull();
+    });
+
+    it("says nothing at all while nothing has been displaced", () => {
+      useMemoryStore.setState({
+        entries: [entry({ id: "a" })],
+        archived: [],
+        appliedMessageIds: [],
+      });
+      renderWithProviders(<MemorySettings />);
+
+      expect(screen.queryByTestId("memory-archive-toggle")).toBeNull();
+    });
+
+    it("groups what it holds the way the live list is grouped", async () => {
+      const user = userEvent.setup();
+      useProjectStore.setState({
+        projects: [project("p-1", "Distill Code")],
+        hasFetchedProjects: true,
+      });
+      archivedStore([
+        archivedEntry({ id: "g", text: "An everywhere fact" }),
+        archivedEntry({
+          id: "p",
+          text: "A project fact",
+          scope: "project",
+          projectId: "p-1",
+        }),
+      ]);
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByTestId("memory-archive-toggle"));
+
+      const groups = screen.getAllByTestId("memory-archive-group");
+      expect(groups).toHaveLength(2);
+      expect(within(groups[0]).getByText("Everywhere")).toBeInTheDocument();
+      expect(within(groups[1]).getByText("Distill Code")).toBeInTheDocument();
+      expect(screen.getAllByTestId("memory-archive-entry")).toHaveLength(2);
+    });
+
+    it("says of every line why it left, in all three of its ways", async () => {
+      const user = userEvent.setup();
+      archivedStore([
+        archivedEntry({
+          id: "capacity",
+          text: "Pushed out to make room",
+          archiveReason: "capacity",
+          archivedAt: new Date("2026-03-04T10:00:00Z").getTime(),
+        }),
+        archivedEntry({
+          id: "forgotten",
+          text: "Retired by an agent",
+          archiveReason: "forgotten",
+          archivedAt: new Date("2026-03-04T10:00:00Z").getTime(),
+        }),
+        archivedEntry({
+          id: "superseded",
+          text: "Replaced by a correction",
+          archiveReason: "superseded",
+          archivedAt: new Date("2026-03-04T10:00:00Z").getTime(),
+        }),
+      ]);
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByTestId("memory-archive-toggle"));
+
+      const rowOf = (id: string) => {
+        const row = document.querySelector(`[data-archived-id="${id}"]`);
+        if (!row) throw new Error(`no archived row for ${id}`);
+        return row as HTMLElement;
+      };
+      expect(
+        within(rowOf("capacity")).getByTestId("memory-archive-meta"),
+      ).toHaveTextContent(
+        "displaced to make room · Everywhere · archived Mar 4, 2026",
+      );
+      expect(
+        within(rowOf("forgotten")).getByTestId("memory-archive-meta"),
+      ).toHaveTextContent("retired by an agent");
+      expect(
+        within(rowOf("superseded")).getByTestId("memory-archive-meta"),
+      ).toHaveTextContent("replaced");
+    });
+
+    it("still says which lines an agent wrote", async () => {
+      const user = userEvent.setup();
+      archivedStore([
+        archivedEntry({
+          id: "a",
+          text: "An agent wrote this",
+          createdBySessionId: "s-1",
+        }),
+        archivedEntry({ id: "b", text: "The operator wrote this" }),
+      ]);
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByTestId("memory-archive-toggle"));
+
+      expect(screen.getAllByTestId("memory-from-agent")).toHaveLength(1);
+    });
+
+    it("puts a line back in the list when the operator asks", async () => {
+      const user = userEvent.setup();
+      archivedStore([
+        archivedEntry({
+          id: "old",
+          text: "The branch is main",
+          createdAt: 10,
+          createdBySessionId: "s-1",
+        }),
+      ]);
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByTestId("memory-archive-toggle"));
+      await user.click(screen.getByTestId("memory-archive-restore"));
+
+      const state = useMemoryStore.getState();
+      expect(state.archived).toHaveLength(0);
+      // As itself: same id, same date, same provenance.
+      expect(state.entries).toHaveLength(1);
+      expect(state.entries[0]).toMatchObject({
+        id: "old",
+        text: "The branch is main",
+        createdAt: 10,
+        createdBySessionId: "s-1",
+      });
+      expect(
+        screen.getByRole("textbox", { name: "Edit this memory" }),
+      ).toHaveValue("The branch is main");
+    });
+
+    it("destroys a line for good only once the operator confirms", async () => {
+      const user = userEvent.setup();
+      archivedStore([
+        archivedEntry({ id: "doomed", text: "My home address" }),
+        archivedEntry({ id: "keeper", text: "Something harmless" }),
+      ]);
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByTestId("memory-archive-toggle"));
+      const row = document.querySelector('[data-archived-id="doomed"]');
+      await user.click(
+        within(row as HTMLElement).getByRole("button", {
+          name: "Delete forever",
+        }),
+      );
+
+      // The trash button alone destroys nothing.
+      expect(useMemoryStore.getState().archived).toHaveLength(2);
+      const dialog = await screen.findByRole("dialog");
+      expect(dialog).toHaveTextContent("My home address");
+
+      await user.click(
+        within(dialog).getByRole("button", { name: "Delete forever" }),
+      );
+
+      await waitFor(() => {
+        expect(useMemoryStore.getState().archived.map((e) => e.id)).toEqual([
+          "keeper",
+        ]);
+      });
+    });
+
+    it("scrolls to what replaced a corrected line, opening its area on the way", async () => {
+      const user = userEvent.setup();
+      const scrollIntoView = vi.fn();
+      const original = HTMLElement.prototype.scrollIntoView;
+      HTMLElement.prototype.scrollIntoView = scrollIntoView;
+      try {
+        // Sixteen live memories, so the area holding the replacement is folded
+        // away: a link that scrolls to an unmounted row goes nowhere.
+        useMemoryStore.setState({
+          entries: Array.from({ length: 16 }, (_, index) =>
+            entry({
+              id: `e-${index}`,
+              text: `Fact number ${index}`,
+              createdAt: index,
+            }),
+          ),
+          archived: [
+            archivedEntry({
+              id: "old",
+              text: "The branch is main",
+              archiveReason: "superseded",
+              replacedById: "e-3",
+            }),
+          ],
+          appliedMessageIds: [],
+        });
+        renderWithProviders(<MemorySettings />);
+
+        expect(screen.getByTestId("memory-group-toggle")).toHaveAttribute(
+          "aria-expanded",
+          "false",
+        );
+        await user.click(screen.getByTestId("memory-archive-toggle"));
+        await user.click(screen.getByTestId("memory-archive-replacement"));
+
+        expect(screen.getByTestId("memory-group-toggle")).toHaveAttribute(
+          "aria-expanded",
+          "true",
+        );
+        expect(scrollIntoView).toHaveBeenCalled();
+      } finally {
+        HTMLElement.prototype.scrollIntoView = original;
+      }
+    });
+
+    it("offers no way to a replacement that is no longer there", async () => {
+      const user = userEvent.setup();
+      archivedStore([
+        archivedEntry({
+          id: "old",
+          text: "The branch is main",
+          archiveReason: "superseded",
+          replacedById: "gone",
+        }),
+      ]);
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByTestId("memory-archive-toggle"));
+
+      expect(screen.queryByTestId("memory-archive-replacement")).toBeNull();
+    });
+
+    it("finds archived lines in the search and marks them as archived", async () => {
+      const user = userEvent.setup();
+      useMemoryStore.setState({
+        entries: [entry({ id: "live", text: "The branch is release/2026.10" })],
+        archived: [
+          archivedEntry({ id: "old", text: "The branch is release/2026.9" }),
+        ],
+        appliedMessageIds: [],
+      });
+      renderWithProviders(<MemorySettings />);
+
+      await user.type(screen.getByTestId("memory-search-input"), "branch");
+
+      const results = screen.getAllByTestId("memory-search-result");
+      expect(results).toHaveLength(2);
+      // The live one first, and only the archived one carries the badge.
+      expect(results[0]).toHaveAttribute("data-archived", "false");
+      expect(
+        within(results[0]).queryByTestId("memory-search-archived"),
+      ).toBeNull();
+      expect(results[1]).toHaveAttribute("data-archived", "true");
+      expect(
+        within(results[1]).getByTestId("memory-search-archived"),
+      ).toHaveTextContent("in the archive");
+    });
+
+    it("sweeps a dead project's archive along with its live rows", async () => {
+      const user = userEvent.setup();
+      useProjectStore.setState({
+        projects: [project("p-live", "Still here")],
+        hasFetchedProjects: true,
+      });
+      useMemoryStore.setState({
+        entries: [
+          entry({
+            id: "dead",
+            text: "A dead project fact",
+            scope: "project",
+            projectId: "p-gone",
+          }),
+        ],
+        archived: [
+          archivedEntry({
+            id: "dead-old",
+            text: "An older dead project fact",
+            scope: "project",
+            projectId: "p-gone",
+          }),
+          archivedEntry({ id: "g-old", text: "An older global fact" }),
+        ],
+        appliedMessageIds: [],
+      });
+      renderWithProviders(<MemorySettings />);
+
+      // One button, on the live card: the archive does not offer a second one
+      // for a project that still has a card of its own.
+      const sweep = screen.getAllByTestId("memory-forget-project");
+      expect(sweep).toHaveLength(1);
+      await user.click(sweep[0]);
+      const dialog = await screen.findByRole("dialog");
+      await user.click(
+        within(dialog).getByRole("button", { name: "Forget them" }),
+      );
+
+      await waitFor(() => {
+        expect(useMemoryStore.getState().entries).toHaveLength(0);
+      });
+      // The half the panel could not see before is gone too (G2/F4).
+      expect(useMemoryStore.getState().archived.map((e) => e.id)).toEqual([
+        "g-old",
+      ]);
+    });
+
+    it("offers the sweep here when a dead project's only trace is archived", async () => {
+      const user = userEvent.setup();
+      useProjectStore.setState({
+        projects: [project("p-live", "Still here")],
+        hasFetchedProjects: true,
+      });
+      archivedStore([
+        archivedEntry({
+          id: "dead-old",
+          text: "All that is left of a deleted project",
+          scope: "project",
+          projectId: "p-gone",
+        }),
+      ]);
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByTestId("memory-archive-toggle"));
+      const sweep = screen.getAllByTestId("memory-forget-project");
+      expect(sweep).toHaveLength(1);
+
+      await user.click(sweep[0]);
+      const dialog = await screen.findByRole("dialog");
+      await user.click(
+        within(dialog).getByRole("button", { name: "Forget them" }),
+      );
+
+      await waitFor(() => {
+        expect(useMemoryStore.getState().archived).toHaveLength(0);
+      });
+    });
+  });
+
+  describe("deleting a line that replaced earlier wordings", () => {
+    it("counts them in the question and takes them with it", async () => {
+      const user = userEvent.setup();
+      useMemoryStore.setState({
+        entries: [entry({ id: "live", text: "The branch is release/2026.10" })],
+        archived: [
+          archivedEntry({
+            id: "second",
+            text: "The branch is release/2026.9",
+            archiveReason: "superseded",
+            replacedById: "live",
+          }),
+          archivedEntry({
+            id: "first",
+            text: "The branch is main",
+            archiveReason: "superseded",
+            replacedById: "second",
+          }),
+        ],
+        appliedMessageIds: [],
+      });
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByRole("button", { name: "Forget this" }));
+      const dialog = await screen.findByRole("dialog");
+      // The cascade is stated rather than silent: "this cannot be undone" has
+      // to cover everything the click actually removes (G2/F3).
+      expect(dialog).toHaveTextContent(
+        "Its 2 earlier wordings, kept in the archive, go with it.",
+      );
+
+      await user.click(
+        within(dialog).getByRole("button", { name: "Forget this" }),
+      );
+
+      await waitFor(() => {
+        expect(useMemoryStore.getState().entries).toHaveLength(0);
+      });
+      expect(useMemoryStore.getState().archived).toHaveLength(0);
+    });
+
+    it("asks the plain question when nothing in the archive hangs off it", async () => {
+      const user = userEvent.setup();
+      useMemoryStore.setState({
+        entries: [entry({ id: "live", text: "A fact with no history" })],
+        archived: [
+          archivedEntry({ id: "unrelated", text: "Something else entirely" }),
+        ],
+        appliedMessageIds: [],
+      });
+      renderWithProviders(<MemorySettings />);
+
+      await user.click(screen.getByRole("button", { name: "Forget this" }));
+      const dialog = await screen.findByRole("dialog");
+      expect(dialog).not.toHaveTextContent("earlier wording");
+
+      await user.click(
+        within(dialog).getByRole("button", { name: "Forget this" }),
+      );
+
+      await waitFor(() => {
+        expect(useMemoryStore.getState().entries).toHaveLength(0);
+      });
+      expect(useMemoryStore.getState().archived.map((e) => e.id)).toEqual([
+        "unrelated",
+      ]);
     });
   });
 });

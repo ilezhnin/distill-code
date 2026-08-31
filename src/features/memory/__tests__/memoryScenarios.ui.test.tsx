@@ -136,6 +136,71 @@ describe("C.5 — deleting takes a confirmation", () => {
     ).toEqual(["A fact worth keeping"]);
     expect(useMemoryStore.getState().archived).toHaveLength(0);
   });
+
+  it("clears the archive the deleted line left behind it", async () => {
+    // G2/F3 through the panel. The line the operator deletes is the third
+    // wording of one fact; the two the agent replaced are in the archive, and
+    // the archive is now a section on this page — so the operator can see
+    // exactly what the question is about before answering it.
+    const user = userEvent.setup();
+    useMemoryStore.setState({
+      entries: [
+        {
+          id: "live",
+          text: "The release branch is release/2026.10",
+          scope: "global",
+          projectId: null,
+          createdAt: 3,
+          createdBySessionId: "s-agent",
+        },
+      ],
+      archived: [
+        {
+          id: "second",
+          text: "The release branch is release/2026.9",
+          scope: "global",
+          projectId: null,
+          createdAt: 2,
+          archivedAt: 3,
+          archiveReason: "superseded",
+          replacedById: "live",
+        },
+        {
+          id: "first",
+          text: "The release branch is main",
+          scope: "global",
+          projectId: null,
+          createdAt: 1,
+          archivedAt: 2,
+          archiveReason: "superseded",
+          replacedById: "second",
+        },
+      ],
+      appliedMessageIds: [],
+      recallAnsweredMessageIds: [],
+      hydrated: true,
+    });
+    renderWithProviders(<MemorySettings />);
+
+    // Both earlier wordings are readable before anything is deleted.
+    await user.click(screen.getByTestId("memory-archive-toggle"));
+    expect(screen.getAllByTestId("memory-archive-entry")).toHaveLength(2);
+
+    await user.click(screen.getByRole("button", { name: "Forget this" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("earlier wordings");
+    await user.click(
+      within(dialog).getByRole("button", { name: "Forget this" }),
+    );
+
+    await waitFor(() => {
+      expect(useMemoryStore.getState().entries).toHaveLength(0);
+    });
+    // Nothing of the fact is left anywhere the operator can look, which is
+    // what "this cannot be undone" promised.
+    expect(useMemoryStore.getState().archived).toHaveLength(0);
+    expect(screen.queryByTestId("memory-archive-toggle")).toBeNull();
+  });
 });
 
 describe("C.6 — forgetting a project that no longer exists", () => {
@@ -203,5 +268,60 @@ describe("C.6 — forgetting a project that no longer exists", () => {
         "A fact about the project that still exists",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("sweeps the dead project's archived lines with the rest of it", async () => {
+    // G2/F4. Before this, the sweep filtered the live list and handed what was
+    // left to `replaceAll`, which carries the archive across untouched: the
+    // dead project's archived rows stayed in the document, in every mirror and
+    // every backup, with no surface that named them.
+    const user = userEvent.setup();
+    useProjectStore.setState({
+      projects: [project("p-live", "Still here")],
+      hasFetchedProjects: true,
+    });
+    useMemoryStore.setState({
+      entries: [
+        {
+          id: "dead-live",
+          text: "The temporary project used pnpm",
+          scope: "project",
+          projectId: "p-gone",
+          createdAt: 2,
+        },
+      ],
+      archived: [
+        {
+          id: "dead-archived",
+          text: "The temporary project was on Windows",
+          scope: "project",
+          projectId: "p-gone",
+          createdAt: 1,
+          archivedAt: 2,
+          archiveReason: "forgotten",
+        },
+      ],
+      appliedMessageIds: [],
+      recallAnsweredMessageIds: [],
+      hydrated: true,
+    });
+    renderWithProviders(<MemorySettings />);
+
+    await user.click(screen.getByTestId("memory-archive-toggle"));
+    expect(
+      screen.getByText("The temporary project was on Windows"),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("memory-forget-project"));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(
+      within(dialog).getByRole("button", { name: "Forget them" }),
+    );
+
+    await waitFor(() => {
+      expect(useMemoryStore.getState().entries).toHaveLength(0);
+    });
+    expect(useMemoryStore.getState().archived).toHaveLength(0);
+    expect(screen.queryByTestId("memory-archive-toggle")).toBeNull();
   });
 });

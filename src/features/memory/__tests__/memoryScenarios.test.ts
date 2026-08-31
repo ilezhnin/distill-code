@@ -26,6 +26,7 @@ import {
   formatMemoryPrompt,
 } from "../lib/memoryPrompt";
 import { parseMemoryFences } from "../lib/memoryFence";
+import { searchMemories } from "../lib/memorySearch";
 import type { ArchivedMemoryEntry, MemoryEntry } from "../lib/memoryEntry";
 import {
   flushMemoryWrites,
@@ -328,6 +329,54 @@ describe("C.5 — the operator's delete is a real delete", () => {
     expect(live().map((entry) => entry.text)).toEqual([keeper]);
     expect(archive()).toHaveLength(0);
   });
+
+  it("takes the wordings the deleted line replaced with it", async () => {
+    // G2/F3. The agent corrects a fact twice, so the live row has two earlier
+    // wordings in the archive. The operator then deletes the row. Before this,
+    // the row vanished and the archived wordings stayed: the panel showed no
+    // archive at all, so the operator could neither see nor remove them, and
+    // the next `distill-recall` answer handed the deleted statement back to
+    // the agent marked `archived` — the app keeping what the operator had
+    // just told it to forget (LAWS/MEMORY.md, Sovereignty).
+    const first = "The release branch here is release/2026.8";
+    const second = "The release branch here is release/2026.9";
+    const third = "The release branch here is release/2026.10";
+    useMemoryStore
+      .getState()
+      .remember({ text: first, scope: "project", projectId: SANDBOX }, NOW);
+    for (const [index, [before, after]] of [
+      [first, second],
+      [second, third],
+    ].entries()) {
+      useMemoryStore.getState().applyAgentRequest(
+        `m-${index}`,
+        "s-agent",
+        SANDBOX,
+        {
+          remember: [{ text: after, scope: "project" }],
+          forget: [before],
+        },
+        NOW + index + 1,
+      );
+    }
+    expect(archive().map((entry) => entry.text)).toEqual([first, second]);
+
+    const liveId = live().find((entry) => entry.text === third)?.id;
+    if (!liveId) throw new Error("the corrected line is not in the live list");
+    useMemoryStore.getState().forget(liveId);
+
+    expect(live()).toHaveLength(0);
+    expect(archive()).toHaveLength(0);
+    // And nothing is left for a recall question to find: the same search the
+    // recall fence answers from, over the same two lists.
+    expect(
+      searchMemories(live(), "release branch", { archived: archive() }),
+    ).toEqual([]);
+
+    await flushMemoryWrites();
+    expect(storedTexts()).toEqual([]);
+    expect(storedArchivedTexts()).toEqual([]);
+  });
 });
 
 describe("C.6 — forgetting a project that no longer exists", () => {
@@ -365,16 +414,32 @@ describe("C.6 — forgetting a project that no longer exists", () => {
       2,
     );
 
-    // C.6.4: "Forget them". The panel's sweep is a replaceAll without that
-    // project's rows.
+    // The dead project also left a line behind in the archive: an agent
+    // retired it while the project was still alive.
     useMemoryStore
       .getState()
-      .replaceAll(live().filter((entry) => entry.projectId !== "p-gone"));
+      .applyAgentRequest(
+        "m-1",
+        "s-agent",
+        "p-gone",
+        { remember: [], forget: [orphanTwo] },
+        NOW + 4,
+      );
+    expect(archive().map((entry) => entry.text)).toEqual([orphanTwo]);
+
+    // C.6.4: "Forget them". The panel's sweep is the store's own, and it
+    // reaches both halves — a filter over the live list alone left the dead
+    // project's archived rows in the document for good, unreachable by recall
+    // and unnamed by any panel, under a dialog that said the deletion could
+    // not be undone (G2/F4).
+    useMemoryStore.getState().forgetProject("p-gone");
 
     expect(live().map((entry) => entry.text)).toEqual([globalText, liveText]);
+    expect(archive()).toEqual([]);
 
     await flushMemoryWrites();
     expect(storedTexts()).toEqual([globalText, liveText]);
+    expect(storedArchivedTexts()).toEqual([]);
   });
 });
 

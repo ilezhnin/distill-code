@@ -26,7 +26,7 @@
     "unknownProject": "Un proyecto que ya no existe",
     "forgetProject": "Olvidar las memorias de este proyecto",
     "forgetProjectConfirmTitle": "¿Olvidar las memorias de este proyecto?",
-    "forgetProjectConfirmDescription": "El proyecto al que pertenecen estas memorias ya no existe, así que ninguna sesión las vuelve a ver. Esto no se puede deshacer.",
+    "forgetProjectConfirmDescription": "El proyecto al que pertenecen estas memorias ya no existe, así que ninguna sesión las vuelve a ver. Sus copias archivadas se van con ellas. Esto no se puede deshacer.",
     "forgetProjectConfirm": "Olvidarlas",
     "budget": "bloque del mensaje: {{used}} / {{total}} caracteres",
     "count_one": "{{count}} memoria",
@@ -45,13 +45,31 @@
     "meta": "{{scope}} · creada el {{created}}",
     "metaReinforced": "{{scope}} · creada el {{created}} · confirmada el {{reinforced}}",
     "openAgentChat": "Abrir el chat que la escribió",
-    "sessionGone": "El chat que la escribió ya no existe."
+    "sessionGone": "El chat que la escribió ya no existe.",
+    "forgetConfirmSuperseded_one": "Su {{count}} redacción anterior, guardada en el archivo, se va con ella.",
+    "forgetConfirmSuperseded_other": "Sus {{count}} redacciones anteriores, guardadas en el archivo, se van con ella."
   },
   "search": {
     "title": "Buscar un recuerdo",
     "placeholder": "Qué decidimos sobre…",
     "empty": "Nada de lo recordado coincide.",
-    "provenance": "{{scope}} · {{date}}"
+    "provenance": "{{scope}} · {{date}}",
+    "archived": "en el archivo"
+  },
+  "archive": {
+    "title": "Archivo ({{total}})",
+    "description": "Memorias que la aplicación dejó de llevar. Nada de esto entra por sí solo en un mensaje, y a la sesión que pregunta por una se le dice que está archivada.",
+    "restore": "Restaurar",
+    "delete": "Borrar para siempre",
+    "deleteConfirmTitle": "¿Borrar esta memoria definitivamente?",
+    "deleteConfirmDescription": "«{{text}}» desaparecerá del archivo y de la lista. Esto no se puede deshacer.",
+    "meta": "{{reason}} · {{scope}} · archivada el {{date}}",
+    "showReplacement": "Ver qué la reemplazó",
+    "reason": {
+      "capacity": "desplazada para hacer sitio",
+      "forgotten": "retirada por un agente",
+      "superseded": "reemplazada"
+    }
   },
   "access": {
     "title": "Quién puede escribir aquí",
