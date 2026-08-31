@@ -6,7 +6,9 @@
     "placeholder": "One short fact to keep",
     "scope": "Where this applies",
     "submit": "Remember",
-    "secretRefused": "That looks like it carries a key, token or password, so it was not saved. Memory goes into every later prompt and into your project folders."
+    "secretRefused": "That looks like it carries a key, token or password, so it was not saved. Memory goes into every later prompt and into your project folders.",
+    "noProjectRefused": "This memory is scoped to a project, and no project was chosen, so it was not saved. Pick a project or keep it everywhere.",
+    "blankRefused": "There is nothing to remember here yet."
   },
   "groups": {
     "global": "Everywhere",
@@ -22,7 +24,11 @@
     "forget": "Forget this",
     "forgetConfirmTitle": "Forget this memory?",
     "forgetConfirmDescription": "\"{{text}}\" will no longer be carried into future sessions. This cannot be undone.",
-    "fromAgent": "from an agent"
+    "fromAgent": "from an agent",
+    "meta": "{{scope}} · created {{created}}",
+    "metaReinforced": "{{scope}} · created {{created}} · confirmed {{reinforced}}",
+    "openAgentChat": "Open the chat that wrote this",
+    "sessionGone": "The chat that wrote this is no longer here."
   },
   "search": {
     "title": "Find a memory",
