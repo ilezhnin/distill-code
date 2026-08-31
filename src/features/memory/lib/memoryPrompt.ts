@@ -11,11 +11,14 @@
  */
 
 import {
+  appliesToProject,
   entriesForProject,
   memoryRecency,
+  type ArchivedMemoryEntry,
   type MemoryEntry,
 } from "./memoryEntry";
 import { MEMORY_PROTOCOL_PROMPT } from "./memoryFence";
+import { MEMORY_RECALL_PROMPT, RECALL_FENCE_TAG } from "./memoryRecall";
 
 /**
  * Ceiling on how much remembered text one prompt carries.
@@ -46,40 +49,82 @@ function withinBudget(entries: MemoryEntry[]): MemoryEntry[] {
   return entries.filter((entry) => keptIds.has(entry.id));
 }
 
+/**
+ * How many archived memories this session is allowed to be told about.
+ *
+ * Counted through the same project gate the entries themselves pass: another
+ * project's archive is none of this session's business, and even the number
+ * of them is a fact about work it cannot see.
+ */
+export function archivedCountForProject(
+  archived: readonly ArchivedMemoryEntry[],
+  projectId: string | null,
+): number {
+  return archived.filter((entry) => appliesToProject(entry, projectId)).length;
+}
+
+/**
+ * The block, plus — when there is more behind it — one line saying so.
+ *
+ * A budget the model cannot see is a budget it reads as the whole truth: the
+ * store may hold three hundred memories and the block twenty, and the model
+ * answers "you never told me" in perfect good faith. The count is the pointer
+ * to the recall fence, and it goes last, after the entries: the block heads a
+ * cached prompt, and a line inserted anywhere earlier would move every line
+ * below it and cost a cache miss on every send.
+ */
 export function formatMemoryPrompt(
   entries: readonly MemoryEntry[],
+  archivedCount: number,
   projectId: string | null,
 ): string | undefined {
-  const relevant = withinBudget(entriesForProject(entries, projectId));
+  const reachable = entriesForProject(entries, projectId);
+  const relevant = withinBudget(reachable);
   if (relevant.length === 0) return undefined;
+  const stored = Math.max(0, archivedCount);
+  const beyond = reachable.length - relevant.length + stored;
   return [
     "<memory>",
     "Facts the operator has kept from earlier sessions. Treat them as true unless this conversation shows otherwise — and when it does, say so and correct the record with the protocol below.",
     "",
     ...relevant.map((entry) => `- ${entry.text}`),
+    ...(beyond > 0
+      ? [
+          `…and ${beyond} older memories are stored beyond this block (${stored} archived). Ask with the ${RECALL_FENCE_TAG} fence.`,
+        ]
+      : []),
     "</memory>",
   ].join("\n");
 }
 
 /**
- * The memory half of a session's system prompt: what is remembered, plus —
- * when this session may write — how to add to it.
+ * The memory half of a session's system prompt: what is remembered, how to
+ * ask for the rest, and — when this session may write — how to add to it.
  *
- * For a writing session the protocol always ships: an agent with nothing
- * remembered yet is exactly the one that needs to know it can start. A
- * session the memory ACL keeps read-only (a worker node, an orchestrator
- * without the `memory_write` grant) gets the facts without the protocol —
- * teaching it a fence the scanner would refuse is worse than silence,
- * because the model would keep "remembering" things into a void.
+ * For a writing session the write protocol always ships: an agent with
+ * nothing remembered yet is exactly the one that needs to know it can start.
+ * A session the memory ACL keeps read-only (a worker node, an orchestrator
+ * without the `memory_write` grant) gets the facts without it — teaching it a
+ * fence the scanner would refuse is worse than silence, because the model
+ * would keep "remembering" things into a void.
+ *
+ * Recall is the other way round: it is a read, and reading is what every
+ * session carrying the block already does, so a read-only session is taught
+ * it too. It ships with the block and not without one — a session that was
+ * told nothing is remembered has nothing to ask about, and the block is where
+ * the count of what it is missing lives.
  */
 export function composeMemorySection(
   entries: readonly MemoryEntry[],
+  archivedCount: number,
   projectId: string | null,
   writeAllowed: boolean,
 ): string | undefined {
-  const remembered = formatMemoryPrompt(entries, projectId);
-  if (!writeAllowed) return remembered;
-  return remembered
-    ? `${remembered}\n\n${MEMORY_PROTOCOL_PROMPT}`
-    : MEMORY_PROTOCOL_PROMPT;
+  const remembered = formatMemoryPrompt(entries, archivedCount, projectId);
+  if (!remembered) return writeAllowed ? MEMORY_PROTOCOL_PROMPT : undefined;
+  return [
+    remembered,
+    ...(writeAllowed ? [MEMORY_PROTOCOL_PROMPT] : []),
+    MEMORY_RECALL_PROMPT,
+  ].join("\n\n");
 }
