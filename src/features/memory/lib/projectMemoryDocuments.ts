@@ -26,7 +26,7 @@ import {
   writeProjectDocument,
 } from "@/shared/api/projectStore";
 
-import type { MemoryEntry } from "./memoryEntry";
+import type { ArchivedMemoryEntry, MemoryEntry } from "./memoryEntry";
 
 /** Path inside a project's own `.distill` folder. */
 export const PROJECT_MEMORY_DOCUMENT = "memory.json";
@@ -44,13 +44,30 @@ export function projectMemoryRoot(project: ProjectInfo): string | null {
 }
 
 interface StoredProjectMemory {
-  version: 1;
+  version: 2;
   projectId: string;
   entries: MemoryEntry[];
+  /** Displaced memories travel with the project too; see `LAWS/MEMORY.md`. */
+  archived: ArchivedMemoryEntry[];
 }
 
-function serialize(projectId: string, entries: MemoryEntry[]): string {
-  const payload: StoredProjectMemory = { version: 1, projectId, entries };
+/** What one project's folder holds, both lists. */
+export interface ProjectMemories {
+  entries: MemoryEntry[];
+  archived: ArchivedMemoryEntry[];
+}
+
+function serialize(
+  projectId: string,
+  entries: MemoryEntry[],
+  archived: ArchivedMemoryEntry[],
+): string {
+  const payload: StoredProjectMemory = {
+    version: 2,
+    projectId,
+    entries,
+    archived,
+  };
   return JSON.stringify(payload);
 }
 
@@ -68,28 +85,31 @@ function serialize(projectId: string, entries: MemoryEntry[]): string {
 export async function writeProjectMemories(
   projects: readonly ProjectInfo[],
   entries: readonly MemoryEntry[],
+  archived: readonly ArchivedMemoryEntry[] = [],
 ): Promise<void> {
-  const byProject = new Map<string, MemoryEntry[]>();
-  for (const entry of entries) {
-    if (entry.scope !== "project" || !entry.projectId) continue;
-    const bucket = byProject.get(entry.projectId);
-    if (bucket) bucket.push(entry);
-    else byProject.set(entry.projectId, [entry]);
-  }
+  const byProject = bucketByProject(entries);
+  const archivedByProject = bucketByProject(archived);
 
   await Promise.all(
     projects.map(async (project) => {
       const root = projectMemoryRoot(project);
       if (!root) return;
       const own = byProject.get(project.id) ?? [];
+      const ownArchived = archivedByProject.get(project.id) ?? [];
       // A project that has never had a memory gets no file at all: creating
       // one would put a `.distill` folder into a repository for nothing.
-      if (own.length === 0 && !(await hasProjectMemoryFile(root))) return;
+      if (
+        own.length === 0 &&
+        ownArchived.length === 0 &&
+        !(await hasProjectMemoryFile(root))
+      ) {
+        return;
+      }
       try {
         await writeProjectDocument(
           root,
           PROJECT_MEMORY_DOCUMENT,
-          serialize(project.id, own),
+          serialize(project.id, own, ownArchived),
         );
       } catch (error) {
         console.error(
@@ -99,6 +119,19 @@ export async function writeProjectMemories(
       }
     }),
   );
+}
+
+function bucketByProject<T extends MemoryEntry>(
+  entries: readonly T[],
+): Map<string, T[]> {
+  const byProject = new Map<string, T[]>();
+  for (const entry of entries) {
+    if (entry.scope !== "project" || !entry.projectId) continue;
+    const bucket = byProject.get(entry.projectId);
+    if (bucket) bucket.push(entry);
+    else byProject.set(entry.projectId, [entry]);
+  }
+  return byProject;
 }
 
 async function hasProjectMemoryFile(root: string): Promise<boolean> {
@@ -123,29 +156,41 @@ async function hasProjectMemoryFile(root: string): Promise<boolean> {
 export async function readProjectMemories(
   projects: readonly ProjectInfo[],
   parse: (raw: unknown) => MemoryEntry[],
-): Promise<MemoryEntry[]> {
+  parseArchived: (raw: unknown) => ArchivedMemoryEntry[] = () => [],
+): Promise<ProjectMemories> {
+  const own =
+    (project: ProjectInfo) =>
+    <T extends MemoryEntry>(entry: T): T => ({
+      ...entry,
+      scope: "project" as const,
+      projectId: project.id,
+    });
   const lists = await Promise.all(
-    projects.map(async (project) => {
+    projects.map(async (project): Promise<ProjectMemories> => {
       const root = projectMemoryRoot(project);
-      if (!root) return [];
+      if (!root) return { entries: [], archived: [] };
       try {
         const raw = await readProjectDocument(root, PROJECT_MEMORY_DOCUMENT);
-        if (!raw) return [];
-        return parse(JSON.parse(raw)).map((entry) => ({
-          ...entry,
-          scope: "project" as const,
-          projectId: project.id,
-        }));
+        if (!raw) return { entries: [], archived: [] };
+        // A v1 file has no `archived` key, which reads as an empty archive.
+        const parsed: unknown = JSON.parse(raw);
+        return {
+          entries: parse(parsed).map(own(project)),
+          archived: parseArchived(parsed).map(own(project)),
+        };
       } catch (error) {
         console.error(
           `Failed to read memories from ${project.name}'s folder:`,
           error,
         );
-        return [];
+        return { entries: [], archived: [] };
       }
     }),
   );
-  return lists.flat();
+  return {
+    entries: lists.flatMap((list) => list.entries),
+    archived: lists.flatMap((list) => list.archived),
+  };
 }
 
 /**
@@ -157,10 +202,10 @@ export async function readProjectMemories(
  * folder knows about is new here — which is exactly the project that arrived
  * from somewhere else.
  */
-export function mergeProjectMemories(
-  base: readonly MemoryEntry[],
-  fromFolders: readonly MemoryEntry[],
-): MemoryEntry[] {
+export function mergeProjectMemories<T extends MemoryEntry>(
+  base: readonly T[],
+  fromFolders: readonly T[],
+): T[] {
   const known = new Set(base.map((entry) => entry.id));
   const added = fromFolders.filter((entry) => !known.has(entry.id));
   return added.length === 0 ? [...base] : [...base, ...added];

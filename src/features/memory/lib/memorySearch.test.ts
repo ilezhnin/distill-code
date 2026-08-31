@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { MemoryEntry } from "./memoryEntry";
+import type { ArchivedMemoryEntry, MemoryEntry } from "./memoryEntry";
 import { memorySearchTerms, searchMemories } from "./memorySearch";
 
 function entry(over: Partial<MemoryEntry> & { text: string }): MemoryEntry {
@@ -27,6 +27,17 @@ describe("memorySearchTerms", () => {
     expect(memorySearchTerms("  ??  ")).toEqual([]);
   });
 });
+
+function archivedEntry(
+  over: Partial<ArchivedMemoryEntry> & { text: string },
+): ArchivedMemoryEntry {
+  return {
+    ...entry(over),
+    archivedAt: 0,
+    archiveReason: "capacity",
+    ...over,
+  };
+}
 
 describe("searchMemories", () => {
   const entries = [
@@ -84,5 +95,57 @@ describe("searchMemories", () => {
 
   it("honours a limit", () => {
     expect(searchMemories(entries, "the", { limit: 1 })).toHaveLength(1);
+  });
+});
+
+describe("searchMemories over the archive", () => {
+  const live = [entry({ text: "The release branch is main", createdAt: 10 })];
+  const archive = [
+    archivedEntry({
+      text: "The release branch is release/2026.8",
+      createdAt: 20,
+      archivedAt: 30,
+      archiveReason: "superseded",
+    }),
+  ];
+
+  it("leaves the archive alone unless the caller passes it", () => {
+    // Searching the panel's list must not start answering with lines the app
+    // has stopped standing behind.
+    const hits = searchMemories(live, "2026.8");
+    expect(hits).toEqual([]);
+  });
+
+  it("finds a displaced memory and says it is archived", () => {
+    const hits = searchMemories(live, "2026.8", { archived: archive });
+    expect(hits).toHaveLength(1);
+    expect(hits[0].entry.text).toContain("release/2026.8");
+    expect(hits[0].archived).toBe(true);
+  });
+
+  it("puts the live memory above the archived one at the same rank", () => {
+    // The archived line is the more recent of the two; still, what the app
+    // stands behind today answers first.
+    const hits = searchMemories(live, "release branch", {
+      archived: archive,
+    });
+    expect(hits.map((hit) => Boolean(hit.archived))).toEqual([false, true]);
+    expect(hits[0].archived).toBeUndefined();
+  });
+
+  it("still ranks a better match first, archived or not", () => {
+    const hits = searchMemories(
+      [entry({ text: "The branch", createdAt: 100 })],
+      "release branch",
+      { archived: archive },
+    );
+    expect(hits[0].archived).toBe(true);
+    expect(hits[0].matched).toEqual(["release", "branch"]);
+  });
+
+  it("honours a limit across both lists", () => {
+    expect(
+      searchMemories(live, "release", { archived: archive, limit: 1 }),
+    ).toHaveLength(1);
   });
 });

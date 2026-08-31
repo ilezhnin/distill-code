@@ -1,12 +1,25 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ProjectInfo } from "@/features/projects/api/projects";
 
-import type { MemoryEntry } from "./memoryEntry";
+import type { ArchivedMemoryEntry, MemoryEntry } from "./memoryEntry";
 import {
   mergeProjectMemories,
+  PROJECT_MEMORY_DOCUMENT,
   projectMemoryRoot,
+  readProjectMemories,
+  writeProjectMemories,
 } from "./projectMemoryDocuments";
+
+const readProjectDocument = vi.hoisted(() => vi.fn());
+const writeProjectDocument = vi.hoisted(() => vi.fn());
+const listProjectDocuments = vi.hoisted(() => vi.fn());
+
+vi.mock("@/shared/api/projectStore", () => ({
+  readProjectDocument,
+  writeProjectDocument,
+  listProjectDocuments,
+}));
 
 function project(over: Partial<ProjectInfo> = {}): ProjectInfo {
   return {
@@ -35,6 +48,24 @@ function entry(over: Partial<MemoryEntry> & { id: string }): MemoryEntry {
     ...over,
   };
 }
+
+function archived(
+  over: Partial<ArchivedMemoryEntry> & { id: string },
+): ArchivedMemoryEntry {
+  return {
+    ...entry(over),
+    archivedAt: 0,
+    archiveReason: "capacity",
+    ...over,
+  };
+}
+
+/** The two parsers the store hands in, kept simple on purpose. */
+const parseEntries = (raw: unknown): MemoryEntry[] =>
+  ((raw as { entries?: MemoryEntry[] })?.entries ?? []) as MemoryEntry[];
+const parseArchived = (raw: unknown): ArchivedMemoryEntry[] =>
+  ((raw as { archived?: ArchivedMemoryEntry[] })?.archived ??
+    []) as ArchivedMemoryEntry[];
 
 describe("projectMemoryRoot", () => {
   it("takes the folder the operator thinks of as the project", () => {
@@ -70,5 +101,121 @@ describe("mergeProjectMemories", () => {
   it("returns the base unchanged when the folders add nothing", () => {
     const base = [entry({ id: "a" })];
     expect(mergeProjectMemories(base, [])).toEqual(base);
+  });
+});
+
+describe("writeProjectMemories", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listProjectDocuments.mockResolvedValue([]);
+    writeProjectDocument.mockResolvedValue(undefined);
+  });
+
+  it("sends a project's archive along with its live memories", () => {
+    // A project that moves carries what was learned about it, including what
+    // was displaced: an archive left behind is a deletion by another name.
+    return writeProjectMemories(
+      [project()],
+      [entry({ id: "live" })],
+      [archived({ id: "gone", archiveReason: "forgotten", archivedAt: 5 })],
+    ).then(() => {
+      const [root, path, contents] = writeProjectDocument.mock.calls[0];
+      expect(root).toBe("/work/quarp");
+      expect(path).toBe(PROJECT_MEMORY_DOCUMENT);
+      expect(JSON.parse(contents)).toEqual({
+        version: 2,
+        projectId: "p1",
+        entries: [entry({ id: "live" })],
+        archived: [
+          archived({ id: "gone", archiveReason: "forgotten", archivedAt: 5 }),
+        ],
+      });
+    });
+  });
+
+  it("writes a folder that only has an archive left", async () => {
+    // Everything live was retired; the file still has to be written, or the
+    // folder keeps a copy of what is no longer current.
+    await writeProjectMemories(
+      [project()],
+      [],
+      [archived({ id: "gone", archiveReason: "forgotten" })],
+    );
+    expect(writeProjectDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a project that has never had a memory without a file", async () => {
+    await writeProjectMemories([project()], [], []);
+    expect(writeProjectDocument).not.toHaveBeenCalled();
+  });
+});
+
+describe("readProjectMemories", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("files both lists under the project the folder belongs to", async () => {
+    readProjectDocument.mockResolvedValue(
+      JSON.stringify({
+        version: 2,
+        projectId: "from-another-machine",
+        entries: [entry({ id: "live", projectId: "elsewhere" })],
+        archived: [archived({ id: "gone", projectId: "elsewhere" })],
+      }),
+    );
+
+    const read = await readProjectMemories(
+      [project()],
+      parseEntries,
+      parseArchived,
+    );
+
+    expect(read.entries.map((memory) => memory.projectId)).toEqual(["p1"]);
+    expect(read.archived.map((memory) => memory.projectId)).toEqual(["p1"]);
+    expect(read.archived[0].archiveReason).toBe("capacity");
+  });
+
+  it("reads a v1 folder file without losing its memories", async () => {
+    readProjectDocument.mockResolvedValue(
+      JSON.stringify({
+        version: 1,
+        projectId: "p1",
+        entries: [entry({ id: "live" })],
+      }),
+    );
+
+    const read = await readProjectMemories(
+      [project()],
+      parseEntries,
+      parseArchived,
+    );
+
+    expect(read.entries.map((memory) => memory.id)).toEqual(["live"]);
+    expect(read.archived).toEqual([]);
+  });
+
+  it("costs one folder, not the read, when a folder cannot be read", async () => {
+    readProjectDocument.mockRejectedValue(new Error("drive not mounted"));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      readProjectMemories([project()], parseEntries, parseArchived),
+    ).resolves.toEqual({ entries: [], archived: [] });
+  });
+});
+
+describe("mergeProjectMemories over an archive", () => {
+  it("adds what only the folder knows and keeps what this session holds", () => {
+    const merged = mergeProjectMemories(
+      [archived({ id: "a", text: "archived here" })],
+      [
+        archived({ id: "a", text: "the copy on disk" }),
+        archived({ id: "b", archiveReason: "forgotten" }),
+      ],
+    );
+
+    expect(merged.map((memory) => memory.text)).toEqual(["archived here", "b"]);
+    expect(merged[1].archiveReason).toBe("forgotten");
   });
 });
