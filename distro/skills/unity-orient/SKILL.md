@@ -16,13 +16,14 @@ Build the smallest useful map of a Unity project before editing. Default role: `
 
 ## Workflow
 
-1. Confirm the Unity root by checking for `Assets/`, `Packages/`, and `ProjectSettings/`.
-2. Read `ProjectSettings/ProjectVersion.txt`, `Packages/manifest.json`, and `Packages/packages-lock.json` when present.
-3. Find assembly boundaries with `rg --files -g "*.asmdef" -g "*.asmref"` and inspect only relevant assemblies.
-4. Identify runtime, editor, tests, generated code, and third-party folders before opening many files.
-5. Use `rg` for domain names, class names, scene names, serialized field names, and asset GUIDs.
-6. Identify the cheapest meaningful validation path: Unity Test Framework, compile-only batchmode, package tests, or project-specific scripts.
-7. Report a short orientation: Unity version, packages that matter, candidate files, architectural boundaries, risks, and recommended next command.
+1. Read `.distill/wiki/index.md` when it exists and open only the pages whose rows touch the zone; where they already cover it, check them against the code and report discrepancies instead of re-scanning the tree.
+2. Confirm the Unity root by checking for `Assets/`, `Packages/`, and `ProjectSettings/`.
+3. Read `ProjectSettings/ProjectVersion.txt`, `Packages/manifest.json`, and `Packages/packages-lock.json` when present.
+4. Find assembly boundaries with `rg --files -g "*.asmdef" -g "*.asmref"` and inspect only relevant assemblies.
+5. Identify runtime, editor, tests, generated code, and third-party folders before opening many files.
+6. Use `rg` for domain names, class names, scene names, serialized field names, and asset GUIDs.
+7. Identify the cheapest meaningful validation path: Unity Test Framework, compile-only batchmode, package tests, or project-specific scripts.
+8. Report a short orientation: Unity version, packages that matter, candidate files, architectural boundaries, risks, and recommended next command.
 
 ## Reading Boundaries
 

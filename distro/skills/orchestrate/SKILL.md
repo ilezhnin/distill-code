@@ -116,6 +116,15 @@ Evidence first. Do not narrate "started", "thinking", or "waiting" to the
 operator. The loop ends with a wave launched or with a verdict. If there is no
 work, skip the loop — do not build instruments instead of the product.
 
+## 5. After an accept
+
+- Compile what the wave taught into the project wiki with the `project-wiki`
+  skill: 1–3 pages plus `index.md` plus `log.md`, and only on `accept`.
+- The wiki is written from this loop or by the operator. An executor never
+  writes it — its findings reach you in its report.
+- A durable lesson about the operator is a memory, kept through a
+  `distill-memory` fence. How the project works is a wiki page, not a memory.
+
 ## Long-running background work
 
 Never end a turn with a promise to report later ("I'll assemble the summary
