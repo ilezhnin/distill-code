@@ -5,7 +5,8 @@
     "title": "Recordar algo",
     "placeholder": "Un dato breve para conservar",
     "scope": "Dónde se aplica",
-    "submit": "Recordar"
+    "submit": "Recordar",
+    "secretRefused": "Esto parece contener una clave, un token o una contraseña, así que no se guardó. La memoria entra en cada mensaje posterior y en las carpetas de tus proyectos."
   },
   "groups": {
     "global": "En todas partes",

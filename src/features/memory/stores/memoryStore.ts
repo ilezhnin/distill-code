@@ -20,6 +20,7 @@ import { distillDocument } from "@/shared/lib/distillDocument";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 
 import type { MemoryFenceRequest } from "../lib/memoryFence";
+import { findSecret } from "../lib/memoryRedaction";
 import {
   mergeProjectMemories,
   readProjectMemories,
@@ -421,6 +422,12 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
   hydrated: false,
 
   remember: (draft, nowMs = Date.now()) => {
+    // A statement that carries a secret is refused before anything else looks
+    // at it (LAWS/MEMORY.md, Writing). The raw draft is what is scanned, not
+    // the normalized one: trimming to the store's bound can cut away the very
+    // marker that gives a key away. Refusal, not repair — the caller is told
+    // nothing was kept, and no edited version is stored in its place.
+    if (findSecret(draft.text)) return "";
     const text = normalizeMemoryText(draft.text);
     if (!text) return "";
     const projectId =
@@ -546,6 +553,16 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
       // A session with no project cannot keep a project fact; keeping it
       // globally instead would be the app inventing a scope nobody asked for.
       if (item.scope === "project" && !projectId) {
+        rememberedIds.push(null);
+        continue;
+      }
+      // Same refusal the manual form gets, silently: a fence is not a
+      // conversation, and the store has no way to answer one. The sync is
+      // what says it out loud, by kind and never by value. Skipping is all
+      // that happens — the message is still tombstoned below, because a
+      // refusal that left the message unread would be re-refused on every
+      // store change for the life of the session.
+      if (findSecret(item.text)) {
         rememberedIds.push(null);
         continue;
       }
