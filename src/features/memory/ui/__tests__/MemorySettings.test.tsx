@@ -581,4 +581,130 @@ describe("MemorySettings", () => {
       ).toHaveTextContent("in the prompt");
     });
   });
+
+  describe("the area cards", () => {
+    const DAY = 86_400_000;
+
+    /** A group large enough to make the size default matter. */
+    function facts(count: number) {
+      return Array.from({ length: count }, (_, index) =>
+        entry({
+          id: `e-${index}`,
+          text: `Fact number ${index}`,
+          createdAt: index,
+        }),
+      );
+    }
+
+    it("counts an area and says when it last changed", () => {
+      const now = Date.now();
+      useMemoryStore.setState({
+        entries: [
+          entry({
+            id: "old",
+            text: "Written long ago",
+            createdAt: now - 40 * DAY,
+          }),
+          // Restated three days ago, which is what "updated" is about: the
+          // area changed then, even though nothing in it was created then.
+          entry({
+            id: "restated",
+            text: "Said again recently",
+            createdAt: now - 40 * DAY,
+            reinforcedAt: now - 3 * DAY,
+          }),
+        ],
+        appliedMessageIds: [],
+      });
+      renderWithProviders(<MemorySettings />);
+
+      expect(screen.getByTestId("memory-group-meta")).toHaveTextContent(
+        "2 memories · updated 3 days ago",
+      );
+    });
+
+    it("counts a single memory as one", () => {
+      useMemoryStore.setState({
+        entries: [entry({ id: "only", createdAt: Date.now() - DAY })],
+        appliedMessageIds: [],
+      });
+      renderWithProviders(<MemorySettings />);
+
+      expect(screen.getByTestId("memory-group-meta")).toHaveTextContent(
+        /^1 memory · /,
+      );
+    });
+
+    it("leaves the area's own name as the whole heading", () => {
+      // The page is navigated by these headings — here and in
+      // `memoryScenarios.ui.test.tsx` — so the count and the date stay out of
+      // the heading's accessible name.
+      useMemoryStore.setState({
+        entries: [entry({ id: "a", text: "A kept fact" })],
+        appliedMessageIds: [],
+      });
+      renderWithProviders(<MemorySettings />);
+
+      expect(
+        screen.getByRole("heading", { name: "Everywhere" }),
+      ).toBeInTheDocument();
+    });
+
+    it("folds an area away and back, from the keyboard too", async () => {
+      const user = userEvent.setup();
+      useMemoryStore.setState({
+        entries: [entry({ id: "a", text: "A kept fact" })],
+        appliedMessageIds: [],
+      });
+      renderWithProviders(<MemorySettings />);
+
+      const toggle = screen.getByTestId("memory-group-toggle");
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByTestId("memory-entry")).toBeInTheDocument();
+
+      await user.click(toggle);
+
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByTestId("memory-entry")).toBeNull();
+      // A shut card still says what it holds, so folding one is never the
+      // page losing track of it.
+      expect(screen.getByTestId("memory-group-meta")).toHaveTextContent(
+        "1 memory",
+      );
+
+      toggle.focus();
+      await user.keyboard("{Enter}");
+
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByTestId("memory-entry")).toBeInTheDocument();
+    });
+
+    it("opens an area the operator can take in at a glance", () => {
+      useMemoryStore.setState({ entries: facts(15), appliedMessageIds: [] });
+      renderWithProviders(<MemorySettings />);
+
+      expect(screen.getByTestId("memory-group-toggle")).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
+      expect(screen.getAllByTestId("memory-entry")).toHaveLength(15);
+    });
+
+    it("keeps a larger area folded until it is asked for", async () => {
+      const user = userEvent.setup();
+      useMemoryStore.setState({ entries: facts(16), appliedMessageIds: [] });
+      renderWithProviders(<MemorySettings />);
+
+      const toggle = screen.getByTestId("memory-group-toggle");
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByTestId("memory-entry")).toBeNull();
+      expect(screen.getByTestId("memory-group-meta")).toHaveTextContent(
+        "16 memories",
+      );
+
+      await user.click(toggle);
+
+      expect(screen.getAllByTestId("memory-entry")).toHaveLength(16);
+    });
+  });
 });
