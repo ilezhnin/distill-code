@@ -77,6 +77,7 @@ import {
 import { stopWaveChildSessions } from "./waveStop";
 import { enforceBudgets } from "./budgetGuard";
 import { MAX_WAVE_REVISIONS, isWaveLive } from "./waveVerdict";
+import { loadFailedAttemptsBlock } from "./taskMemory";
 import { buildWaveStepPrompt } from "./wavePrompts";
 import {
   checkExplicitWaveStepModel,
@@ -472,6 +473,30 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      // P33: a revision's workers are told what this same request already
+      // tried and lost. It rides in the subtask rather than in the report
+      // handoff because an `access: []` step gets no handoff at all, and the
+      // step most likely to repeat a dead end is the one that cannot see the
+      // previous wave.
+      //
+      // The `revisionCount` test is repeated here, and not left to the loader
+      // that also makes it, so a first wave never awaits anything: everything
+      // before the first `await` in this block runs in the caller's own tick,
+      // and a request with no history must not pay a round-trip to learn it.
+      const failedAttempts =
+        wave.revisionCount > 0
+          ? await loadFailedAttemptsBlock({
+              conductorSessionId: wave.conductorSessionId,
+              rootRequestId: wave.rootRequestId,
+              revisionCount: wave.revisionCount,
+            })
+          : null;
+      const step = failedAttempts
+        ? {
+            ...request.step,
+            subtask: `${request.step.subtask}\n\n${failedAttempts}`,
+          }
+        : request.step;
       // Resolved at spawn, not carried from admission: an `access: "all"`
       // step can start long after the plan was admitted, and the inventory is
       // read fresh so the target names the model as it exists now. A model
@@ -570,7 +595,7 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
         // reached this path.
         ...(executionTarget ? { executionTarget } : {}),
         task: request.step.subtask,
-        prompt: buildWaveStepPrompt(request.step, request.previousReports, {
+        prompt: buildWaveStepPrompt(step, request.previousReports, {
           stepIndex: request.stepIndex,
           totalSteps: request.totalSteps,
         }),
