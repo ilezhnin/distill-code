@@ -19,6 +19,7 @@ import { createUserMessage } from "@/shared/types/messages";
 
 const mocks = vi.hoisted(() => ({
   acpGetSessionInfo: vi.fn(),
+  listProjectDocuments: vi.fn(),
   acpLoadSession: vi.fn(),
   acpPrepareSession: vi.fn(),
   acpSendMessage: vi.fn(),
@@ -63,6 +64,13 @@ vi.mock("@/features/skills/api/skills", () => ({
   listSkills: (...args: unknown[]) => mocks.listSkills(...args),
 }));
 
+vi.mock("@/shared/api/projectStore", () => ({
+  listProjectDocuments: (...args: unknown[]) =>
+    mocks.listProjectDocuments(...args),
+  readProjectDocument: vi.fn(),
+  writeProjectDocument: vi.fn(),
+}));
+
 // Wrappers are mocked so the tests can pin the fire points; CHAT_SOURCE_SURFACE
 // and the rest of the module stay real.
 vi.mock("@/features/chat/lib/chatTelemetry", async (importOriginal) => ({
@@ -76,6 +84,13 @@ vi.mock("@/features/chat/lib/chatTelemetry", async (importOriginal) => ({
 }));
 
 import { CHAT_SOURCE_SURFACE } from "@/features/chat/lib/chatTelemetry";
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import { MEMORY_PROTOCOL_PROMPT } from "@/features/memory/lib/memoryFence";
+import {
+  PROJECT_WIKI_POINTER_PROMPT,
+  refreshProjectWikiPresence,
+  resetProjectWikiPresenceForTests,
+} from "@/features/memory/lib/projectWikiPrompt";
 import { sendQueuedPromptToExistingSessionInBackground } from "./queuedSessionSend";
 
 const SESSION_ID = "deferred-release-session";
@@ -194,6 +209,9 @@ describe("sendQueuedPromptToExistingSessionInBackground telemetry", () => {
     mocks.resolveSessionCwd.mockResolvedValue("/tmp/project");
     mocks.loadWorkspaceInstructionFiles.mockResolvedValue([]);
     mocks.listSkills.mockResolvedValue([]);
+    mocks.listProjectDocuments.mockResolvedValue([]);
+    useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
+    resetProjectWikiPresenceForTests();
   });
 
   it("emits Session Started and Message Sent exactly once, at the user-message commit", async () => {
@@ -366,5 +384,116 @@ describe("sendQueuedPromptToExistingSessionInBackground telemetry", () => {
     expect(mocks.acpSendMessage).toHaveBeenCalledTimes(1);
     expect(mocks.trackChatSessionStarted).not.toHaveBeenCalled();
     expect(mocks.trackChatMessageSent).not.toHaveBeenCalled();
+  });
+
+  // The drain composes the workspace context every session gets, so this is
+  // where the pointer to `.distill/wiki/` has to land.
+  describe("project wiki pointer", () => {
+    function sentSystemPrompt(): string {
+      const [, , options] = mocks.acpSendMessage.mock.calls[0] as [
+        string,
+        string,
+        { systemPrompt?: string },
+      ];
+      return options.systemPrompt ?? "";
+    }
+
+    function markSessionWaveManaged(): void {
+      useConductorGraphStore.setState({
+        nodesById: {
+          [SESSION_ID]: {
+            sessionId: SESSION_ID,
+            projectId: PROJECT.id,
+            role: "worker",
+            managedBy: "wave",
+            parentSessionId: "conductor-1",
+            rootConductorId: "conductor-1",
+            runId: "run-1",
+            harnessId: "goose",
+            displayName: "Scout · step",
+            status: "running",
+          },
+        },
+        reportsByRunId: {},
+      });
+    }
+
+    it("points a project session at the wiki its folder holds", async () => {
+      mocks.listProjectDocuments.mockResolvedValue(["index.md", "log.md"]);
+      await refreshProjectWikiPresence("/tmp/project");
+
+      await sendQueuedPromptToExistingSessionInBackground(
+        SESSION_ID,
+        releasedRecord(),
+      );
+
+      expect(sentSystemPrompt()).toContain(PROJECT_WIKI_POINTER_PROMPT);
+    });
+
+    it("says nothing about a wiki the project does not have", async () => {
+      mocks.listProjectDocuments.mockResolvedValue(["log.md"]);
+      await refreshProjectWikiPresence("/tmp/project");
+
+      await sendQueuedPromptToExistingSessionInBackground(
+        SESSION_ID,
+        releasedRecord(),
+      );
+
+      expect(sentSystemPrompt()).not.toContain("knowledge wiki");
+    });
+
+    // The send never waits on the listing: a root nobody has looked at yet
+    // costs this turn its line, not the operator a slower dispatch.
+    it("dispatches without the line while the folder has not been read yet", async () => {
+      mocks.listProjectDocuments.mockResolvedValue(["index.md"]);
+
+      await sendQueuedPromptToExistingSessionInBackground(
+        SESSION_ID,
+        releasedRecord(),
+      );
+
+      expect(sentSystemPrompt()).not.toContain("knowledge wiki");
+      // The look it scheduled is what makes the next turn carry it.
+      await vi.waitFor(() =>
+        expect(mocks.listProjectDocuments).toHaveBeenCalledWith(
+          "/tmp/project",
+          "wiki",
+        ),
+      );
+    });
+
+    // What separates the wiki from memory: the operator's record stops at the
+    // wave boundary, the project's own knowledge does not.
+    it("gives a wave child the pointer while still withholding memory", async () => {
+      markSessionWaveManaged();
+      mocks.listProjectDocuments.mockResolvedValue(["index.md"]);
+      await refreshProjectWikiPresence("/tmp/project");
+
+      await sendQueuedPromptToExistingSessionInBackground(
+        SESSION_ID,
+        releasedRecord(),
+      );
+
+      const systemPrompt = sentSystemPrompt();
+      expect(systemPrompt).toContain(PROJECT_WIKI_POINTER_PROMPT);
+      expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
+    });
+
+    it("sends the pointer as its own unchanged section", async () => {
+      mocks.listProjectDocuments.mockResolvedValue(["index.md"]);
+      await refreshProjectWikiPresence("/tmp/project");
+
+      await sendQueuedPromptToExistingSessionInBackground(
+        SESSION_ID,
+        releasedRecord(),
+      );
+
+      const section = sentSystemPrompt()
+        .split("\n\n")
+        .find((part) => part.includes("knowledge wiki"));
+      // Byte-for-byte: the pointer shares the cached prefix with the rest of
+      // the workspace context, and must not carry a path, a count or a date.
+      expect(section).toBe(PROJECT_WIKI_POINTER_PROMPT);
+    });
   });
 });
