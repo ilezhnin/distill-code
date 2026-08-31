@@ -1,4 +1,8 @@
-import { memoryRecency, type MemoryEntry } from "./memoryEntry";
+import {
+  memoryRecency,
+  type ArchivedMemoryEntry,
+  type MemoryEntry,
+} from "./memoryEntry";
 
 /**
  * Finding a fact the prompt no longer carries (P32).
@@ -19,6 +23,11 @@ import { memoryRecency, type MemoryEntry } from "./memoryEntry";
  * question outranks a more recent one that matches some of them. Recency
  * decides which memories are *shown by default*; when the operator has typed a
  * question, how well the answer fits it is the better signal.
+ *
+ * The archive is searched only when the caller passes it, and its hits are
+ * marked. A memory displaced by the cap is still the operator's and must be
+ * findable, but a line the app stopped standing behind should not be handed
+ * back as if it were current — so at equal rank the live one comes first.
  */
 
 export interface MemorySearchHit {
@@ -27,6 +36,8 @@ export interface MemorySearchHit {
   matched: string[];
   /** True when the entry contains the query as one phrase. */
   phrase: boolean;
+  /** True when the hit came from the archive. Absent for a live memory. */
+  archived?: boolean;
 }
 
 /** Words a query is split into, lowercased, punctuation stripped. */
@@ -48,28 +59,39 @@ export function memorySearchTerms(query: string): string[] {
 export function searchMemories(
   entries: readonly MemoryEntry[],
   query: string,
-  options: { limit?: number } = {},
+  options: {
+    limit?: number;
+    archived?: readonly ArchivedMemoryEntry[];
+  } = {},
 ): MemorySearchHit[] {
   const terms = memorySearchTerms(query);
   if (terms.length === 0) return [];
   const phrase = query.trim().toLowerCase();
 
   const hits: MemorySearchHit[] = [];
-  for (const entry of entries) {
-    const haystack = entry.text.toLowerCase();
-    const matched = terms.filter((term) => haystack.includes(term));
-    if (matched.length === 0) continue;
-    hits.push({
-      entry,
-      matched,
-      phrase: phrase.length > 0 && haystack.includes(phrase),
-    });
-  }
+  const collect = (list: readonly MemoryEntry[], archived: boolean) => {
+    for (const entry of list) {
+      const haystack = entry.text.toLowerCase();
+      const matched = terms.filter((term) => haystack.includes(term));
+      if (matched.length === 0) continue;
+      hits.push({
+        entry,
+        matched,
+        phrase: phrase.length > 0 && haystack.includes(phrase),
+        ...(archived ? { archived: true } : {}),
+      });
+    }
+  };
+  collect(entries, false);
+  if (options.archived) collect(options.archived, true);
 
   hits.sort((left, right) => {
     if (left.phrase !== right.phrase) return left.phrase ? -1 : 1;
     if (left.matched.length !== right.matched.length) {
       return right.matched.length - left.matched.length;
+    }
+    if (Boolean(left.archived) !== Boolean(right.archived)) {
+      return left.archived ? 1 : -1;
     }
     return memoryRecency(right.entry) - memoryRecency(left.entry);
   });

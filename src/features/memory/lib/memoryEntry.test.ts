@@ -3,9 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   appliesToProject,
   entriesForProject,
+  isMemoryArchiveReason,
+  MAX_ARCHIVED_ENTRIES,
   MAX_MEMORY_TEXT,
+  MEMORY_ARCHIVE_REASONS,
   normalizeMemoryText,
   sameMemoryText,
+  type ArchivedMemoryEntry,
   type MemoryEntry,
 } from "./memoryEntry";
 
@@ -81,5 +85,38 @@ describe("entriesForProject", () => {
       entry({ id: "p", scope: "project", projectId: "p-1" }),
     ];
     expect(entriesForProject(entries, null).map((e) => e.id)).toEqual(["g"]);
+  });
+});
+
+describe("the archive contract", () => {
+  it("names every way a memory can leave the live list", () => {
+    expect([...MEMORY_ARCHIVE_REASONS]).toEqual([
+      "capacity",
+      "forgotten",
+      "superseded",
+    ]);
+  });
+
+  it("reads a reason a stored document may not have", () => {
+    expect(isMemoryArchiveReason("forgotten")).toBe(true);
+    expect(isMemoryArchiveReason("deleted")).toBe(false);
+    expect(isMemoryArchiveReason(undefined)).toBe(false);
+  });
+
+  it("holds room for far more displacements than live memories", () => {
+    // The bound exists because the archive is written to disk, not because
+    // the app wants to be rid of what it displaced.
+    expect(MAX_ARCHIVED_ENTRIES).toBe(2000);
+  });
+
+  it("keeps an archived memory usable as the memory it was", () => {
+    // It extends `MemoryEntry`, so scope still decides who may read it back.
+    const archived: ArchivedMemoryEntry = {
+      ...entry({ id: "a", scope: "project", projectId: "p-1" }),
+      archivedAt: 10,
+      archiveReason: "capacity",
+    };
+    expect(appliesToProject(archived, "p-1")).toBe(true);
+    expect(appliesToProject(archived, "p-2")).toBe(false);
   });
 });

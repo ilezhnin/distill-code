@@ -29,6 +29,53 @@ export interface MemoryEntry {
   reinforcedAt?: number;
 }
 
+/**
+ * Why a memory left the live list.
+ *
+ * `capacity` is the store's own bound pushing out the least recently useful
+ * line; `forgotten` is an agent retiring a statement through the fence;
+ * `superseded` is the same fence replacing it with a corrected one.
+ */
+export const MEMORY_ARCHIVE_REASONS = [
+  "capacity",
+  "forgotten",
+  "superseded",
+] as const;
+
+export type MemoryArchiveReason = (typeof MEMORY_ARCHIVE_REASONS)[number];
+
+/** True for a stored value that names one of the reasons above. */
+export function isMemoryArchiveReason(
+  value: unknown,
+): value is MemoryArchiveReason {
+  return (MEMORY_ARCHIVE_REASONS as readonly unknown[]).includes(value);
+}
+
+/**
+ * A memory that left the live list but was not destroyed.
+ *
+ * Displacement is not deletion: the operator's record is theirs, and the app
+ * may only stop putting a line in the prompt, never decide the line is gone
+ * (LAWS/MEMORY.md, Sovereignty). Everything the entry was is kept as it was,
+ * plus when it was displaced and what displaced it.
+ */
+export interface ArchivedMemoryEntry extends MemoryEntry {
+  archivedAt: number;
+  archiveReason: MemoryArchiveReason;
+  /** Set when a correction replaced this entry in the same fence. */
+  replacedById?: string;
+}
+
+/**
+ * Upper bound on the archive.
+ *
+ * An honest limit rather than a promise the app cannot keep: the archive is
+ * read back by a scan and mirrored into project folders, so it cannot grow
+ * without end. Past this, the oldest displacements go — and only ever the
+ * oldest, so what was archived a moment ago is always still there.
+ */
+export const MAX_ARCHIVED_ENTRIES = 2000;
+
 /** Longest statement kept. Longer ones are cut rather than dropped. */
 export const MAX_MEMORY_TEXT = 280;
 
