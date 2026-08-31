@@ -39,7 +39,10 @@ import {
 } from "@/features/chat/lib/workspaceAttachments";
 import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspaceContextPrompt";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
-import { composeMemorySection } from "@/features/memory/lib/memoryPrompt";
+import {
+  archivedCountForProject,
+  composeMemorySection,
+} from "@/features/memory/lib/memoryPrompt";
 import { sessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
 import { sessionMemoryWriteAccess } from "@/features/memory/lib/memoryWriteAccess";
 import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
@@ -362,11 +365,16 @@ export async function sendQueuedPromptToExistingSessionInBackground(
     // after it". Handing it the planner and memory protocols would ask it to
     // contradict that, and would give a one-shot task runner write access to
     // the operator's list and memory — both belong to the conductor's loop.
+    const memory = useMemoryStore.getState();
     const operatorProtocols = isWaveManagedSession(sessionId)
       ? undefined
       : composeSystemPrompt(
           composeMemorySection(
-            useMemoryStore.getState().entries,
+            memory.entries,
+            archivedCountForProject(
+              memory.archived,
+              session?.projectId ?? null,
+            ),
             session?.projectId ?? null,
             // Read-only under the memory ACL (a worker node, an ungranted
             // orchestrator) still sees the facts but is not taught the

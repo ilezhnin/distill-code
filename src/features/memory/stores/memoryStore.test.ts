@@ -9,8 +9,10 @@ import {
   flushMemoryWrites,
   MAX_MEMORY_ENTRIES,
   MEMORY_STORAGE_KEY,
+  MAX_APPLIED_MEMORY_MESSAGE_IDS,
   parseArchivedMemoryEntries,
   parseMemoryEntries,
+  parseRecallAnsweredMessageIds,
   useMemoryStore,
 } from "./memoryStore";
 
@@ -454,6 +456,63 @@ describe("the memory archive", () => {
     expect(parseArchivedMemoryEntries(stored).map((e) => e.text)).toEqual([
       "The branch is main",
     ]);
+  });
+});
+
+describe("answered recall questions", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    useMemoryStore.setState({
+      entries: [],
+      archived: [],
+      appliedMessageIds: [],
+      recallAnsweredMessageIds: [],
+      hydrated: true,
+    });
+  });
+
+  it("remembers an answered question across a reload", async () => {
+    useMemoryStore.getState().markRecallAnswered("m-1");
+    await flushMemoryWrites();
+
+    const stored = JSON.parse(
+      window.localStorage.getItem(MEMORY_STORAGE_KEY) ?? "{}",
+    );
+    expect(stored.version).toBe(2);
+    expect(parseRecallAnsweredMessageIds(stored)).toEqual(["m-1"]);
+  });
+
+  it("records one question once", () => {
+    useMemoryStore.getState().markRecallAnswered("m-1");
+    useMemoryStore.getState().markRecallAnswered("m-1");
+    expect(useMemoryStore.getState().recallAnsweredMessageIds).toEqual(["m-1"]);
+  });
+
+  it("keeps the newest tombstones when it runs out of room", () => {
+    useMemoryStore.setState({
+      recallAnsweredMessageIds: Array.from(
+        { length: MAX_APPLIED_MEMORY_MESSAGE_IDS },
+        (_, index) => `old-${index}`,
+      ),
+    });
+    useMemoryStore.getState().markRecallAnswered("newest");
+
+    const kept = useMemoryStore.getState().recallAnsweredMessageIds;
+    expect(kept).toHaveLength(MAX_APPLIED_MEMORY_MESSAGE_IDS);
+    expect(kept.at(-1)).toBe("newest");
+    expect(kept).not.toContain("old-0");
+  });
+
+  it("does not disturb the write side's tombstones", () => {
+    useMemoryStore.setState({ appliedMessageIds: ["w-1"] });
+    useMemoryStore.getState().markRecallAnswered("m-1");
+    expect(useMemoryStore.getState().appliedMessageIds).toEqual(["w-1"]);
+  });
+
+  it("reads a v1 document as having answered nothing", () => {
+    expect(parseRecallAnsweredMessageIds({ version: 1, entries: [] })).toEqual(
+      [],
+    );
   });
 });
 
