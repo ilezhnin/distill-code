@@ -54,6 +54,14 @@ interface MemoryState {
   /** Displaced memories, kept because the app may not destroy one. */
   archived: ArchivedMemoryEntry[];
   appliedMessageIds: string[];
+  /**
+   * Messages whose `distill-recall` question has already been answered.
+   *
+   * Kept beside the write side's tombstones, and for the same reason: the
+   * scanner re-reads the tail on every store change, and one question must
+   * cost the session one answer, not one per keystroke of the next reply.
+   */
+  recallAnsweredMessageIds: string[];
   /** False until the stored document has been read. Writes wait for it. */
   hydrated: boolean;
 }
@@ -93,6 +101,14 @@ interface MemoryActions {
    * *instead of* the entries is the refusal.
    */
   dismissAgentRequest: (messageId: string) => void;
+  /**
+   * Records that a message's recall question has been dealt with.
+   *
+   * Written before the answer is delivered, not after: delivery is async and
+   * goes through the session queue, and a second pass that ran in between
+   * would ask the same question again.
+   */
+  markRecallAnswered: (messageId: string) => void;
   replaceAll: (entries: MemoryEntry[]) => void;
 }
 
@@ -173,14 +189,26 @@ export function parseArchivedMemoryEntries(
     .filter((entry): entry is ArchivedMemoryEntry => entry !== null);
 }
 
-export function parseAppliedMemoryMessageIds(value: unknown): string[] {
-  const list = (value as { appliedMessageIds?: unknown })?.appliedMessageIds;
+function parseMessageIds(list: unknown): string[] {
   if (!Array.isArray(list)) return [];
   return list
     .filter(
       (entry): entry is string => typeof entry === "string" && entry !== "",
     )
     .slice(-MAX_APPLIED_MEMORY_MESSAGE_IDS);
+}
+
+export function parseAppliedMemoryMessageIds(value: unknown): string[] {
+  return parseMessageIds(
+    (value as { appliedMessageIds?: unknown })?.appliedMessageIds,
+  );
+}
+
+/** The answered-recall tombstones. A v1 document has none, which is empty. */
+export function parseRecallAnsweredMessageIds(value: unknown): string[] {
+  return parseMessageIds(
+    (value as { recallAnsweredMessageIds?: unknown })?.recallAnsweredMessageIds,
+  );
 }
 
 /**
@@ -259,6 +287,7 @@ function commit(
   entries: MemoryEntry[],
   archived: ArchivedMemoryEntry[],
   appliedMessageIds: string[],
+  recallAnsweredMessageIds: string[],
   nowMs: number = Date.now(),
 ): MemoryState {
   const { kept, evicted } = capWithArchive(entries);
@@ -266,6 +295,9 @@ function commit(
     entries: kept,
     archived: withCapacityEvictions(archived, evicted, nowMs),
     appliedMessageIds: appliedMessageIds.slice(-MAX_APPLIED_MEMORY_MESSAGE_IDS),
+    recallAnsweredMessageIds: recallAnsweredMessageIds.slice(
+      -MAX_APPLIED_MEMORY_MESSAGE_IDS,
+    ),
     hydrated: true,
   };
   if (useMemoryStore.getState().hydrated) {
@@ -334,6 +366,7 @@ function stateFromDocument(parsed: unknown): MemoryState {
       Date.now(),
     ),
     appliedMessageIds: parseAppliedMemoryMessageIds(parsed),
+    recallAnsweredMessageIds: parseRecallAnsweredMessageIds(parsed),
     hydrated: true,
   };
 }
@@ -342,13 +375,15 @@ const document = distillDocument<MemoryState>({
   path: MEMORY_DOCUMENT_PATH,
   legacyStorageKey: MEMORY_STORAGE_KEY,
   parse: stateFromDocument,
-  // v2 adds `archived`. A v1 document reads back whole: it simply has no
-  // archive yet, which is the same thing as an empty one.
+  // v2 adds `archived` and the answered-recall tombstones. A v1 document
+  // reads back whole: it simply has neither, which is the same thing as two
+  // empty lists.
   serialize: (state) => ({
     version: 2,
     entries: state.entries,
     archived: state.archived,
     appliedMessageIds: state.appliedMessageIds,
+    recallAnsweredMessageIds: state.recallAnsweredMessageIds,
   }),
 });
 
@@ -360,6 +395,7 @@ export async function hydrateMemoryStore(): Promise<void> {
     entries: [],
     archived: [],
     appliedMessageIds: [],
+    recallAnsweredMessageIds: [],
     hydrated: true,
   };
   // Then whatever the project folders themselves know (P31). A project copied
@@ -419,6 +455,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
   entries: [],
   archived: [],
   appliedMessageIds: [],
+  recallAnsweredMessageIds: [],
   hydrated: false,
 
   remember: (draft, nowMs = Date.now()) => {
@@ -451,6 +488,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
           ),
           state.archived,
           state.appliedMessageIds,
+          state.recallAnsweredMessageIds,
           nowMs,
         ),
       );
@@ -474,6 +512,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
         ],
         state.archived,
         state.appliedMessageIds,
+        state.recallAnsweredMessageIds,
         nowMs,
       ),
     );
@@ -490,6 +529,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
         ),
         state.archived,
         state.appliedMessageIds,
+        state.recallAnsweredMessageIds,
       ),
     );
   },
@@ -510,6 +550,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
         state.entries.filter((entry) => entry.id !== id),
         state.archived,
         state.appliedMessageIds,
+        state.recallAnsweredMessageIds,
       ),
     );
   },
@@ -618,6 +659,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
         entries,
         [...state.archived, ...archivedNow],
         [...state.appliedMessageIds, messageId],
+        state.recallAnsweredMessageIds,
         nowMs,
       ),
     );
@@ -628,14 +670,36 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
     const state = get();
     if (!messageId || state.appliedMessageIds.includes(messageId)) return;
     set(() =>
-      commit(state.entries, state.archived, [
-        ...state.appliedMessageIds,
+      commit(
+        state.entries,
+        state.archived,
+        [...state.appliedMessageIds, messageId],
+        state.recallAnsweredMessageIds,
+      ),
+    );
+  },
+
+  markRecallAnswered: (messageId) => {
+    const state = get();
+    if (!messageId || state.recallAnsweredMessageIds.includes(messageId)) {
+      return;
+    }
+    set(() =>
+      commit(state.entries, state.archived, state.appliedMessageIds, [
+        ...state.recallAnsweredMessageIds,
         messageId,
       ]),
     );
   },
 
   replaceAll: (entries) => {
-    set((state) => commit(entries, state.archived, state.appliedMessageIds));
+    set((state) =>
+      commit(
+        entries,
+        state.archived,
+        state.appliedMessageIds,
+        state.recallAnsweredMessageIds,
+      ),
+    );
   },
 }));

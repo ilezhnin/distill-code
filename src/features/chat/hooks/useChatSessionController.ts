@@ -40,7 +40,10 @@ import { useWorkspaceRepository } from "@/features/workspaces/workspaceRepositor
 import { loadWorkspaceInstructionFiles } from "@/features/chat/api/workspaceContext";
 import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspaceContextPrompt";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
-import { composeMemorySection } from "@/features/memory/lib/memoryPrompt";
+import {
+  archivedCountForProject,
+  composeMemorySection,
+} from "@/features/memory/lib/memoryPrompt";
 import { decideMemoryWrite } from "@/features/memory/lib/memoryWriteAccess";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
@@ -745,6 +748,7 @@ export function useChatSessionController({
   // session's own project: a fact learned in one codebase must not follow the
   // operator into an unrelated chat.
   const memoryEntries = useMemoryStore((state) => state.entries);
+  const memoryArchived = useMemoryStore((state) => state.archived);
   // A wave child answers to its conductor, not to the operator's list: its
   // own prompt ends "with this report block and no extra commentary after
   // it", and a one-shot task runner has no business writing to memory.
@@ -785,12 +789,19 @@ export function useChatSessionController({
         : composeSystemPrompt(
             composeMemorySection(
               memoryEntries,
+              archivedCountForProject(memoryArchived, effectiveProjectId),
               effectiveProjectId,
               memoryWriteAllowed,
             ),
             PLANNER_PROTOCOL_PROMPT,
           ),
-    [effectiveProjectId, isWaveChild, memoryEntries, memoryWriteAllowed],
+    [
+      effectiveProjectId,
+      isWaveChild,
+      memoryArchived,
+      memoryEntries,
+      memoryWriteAllowed,
+    ],
   );
   const effectiveSystemPrompt = useMemo(
     () =>

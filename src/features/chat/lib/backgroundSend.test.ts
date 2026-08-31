@@ -4,7 +4,11 @@ import { QueuedMessageOwnershipLostError } from "./preCommitSendRejection";
 
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { MEMORY_PROTOCOL_PROMPT } from "@/features/memory/lib/memoryFence";
-import type { MemoryEntry } from "@/features/memory/lib/memoryEntry";
+import { MEMORY_RECALL_PROMPT } from "@/features/memory/lib/memoryRecall";
+import type {
+  ArchivedMemoryEntry,
+  MemoryEntry,
+} from "@/features/memory/lib/memoryEntry";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 
 import { sendPromptInBackground } from "./backgroundSend";
@@ -14,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
   isWaveManagedSession: vi.fn(),
   memoryEntries: [] as unknown[],
+  memoryArchived: [] as unknown[],
 }));
 
 vi.mock("@/features/chat/lib/sendCore", () => ({
@@ -33,7 +38,10 @@ vi.mock("@/features/conductor/waveManagedSession", () => ({
 
 vi.mock("@/features/memory/stores/memoryStore", () => ({
   useMemoryStore: {
-    getState: () => ({ entries: mocks.memoryEntries }),
+    getState: () => ({
+      entries: mocks.memoryEntries,
+      archived: mocks.memoryArchived,
+    }),
   },
 }));
 
@@ -64,6 +72,7 @@ describe("sendPromptInBackground", () => {
     mocks.getSession.mockReturnValue(undefined);
     mocks.isWaveManagedSession.mockReturnValue(false);
     mocks.memoryEntries = [];
+    mocks.memoryArchived = [];
     useConductorGraphStore.setState({ nodesById: {} });
   });
 
@@ -203,7 +212,37 @@ describe("sendPromptInBackground", () => {
     // Reading stays broad; only the how-to-write half is withheld.
     expect(systemPrompt).toContain("A global fact");
     expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
+    // Recall is a read, and reading is exactly what this session still does.
+    expect(systemPrompt).toContain(MEMORY_RECALL_PROMPT);
     expect(systemPrompt).toContain(PLANNER_PROTOCOL_PROMPT);
+  });
+
+  it("tells the session what its block is missing, this project only", async () => {
+    mocks.getSession.mockReturnValue({ projectId: "p-1" });
+    mocks.memoryEntries = [memoryEntry({ id: "g", text: "A global fact" })];
+    mocks.memoryArchived = [
+      {
+        ...memoryEntry({ id: "a-1", text: "Displaced here" }),
+        scope: "project",
+        projectId: "p-1",
+        archivedAt: 0,
+        archiveReason: "capacity",
+      } satisfies ArchivedMemoryEntry,
+      {
+        ...memoryEntry({ id: "a-2", text: "Displaced elsewhere" }),
+        scope: "project",
+        projectId: "p-2",
+        archivedAt: 0,
+        archiveReason: "capacity",
+      } satisfies ArchivedMemoryEntry,
+    ];
+
+    await sendPromptInBackground("session-1", "prompt", "goose");
+
+    // One archived line is reachable; the other project's is not counted.
+    expect(dispatchedSystemPrompt()).toContain(
+      "…and 1 older memories are stored beyond this block (1 archived).",
+    );
   });
 
   it("keeps memory and the protocols away from a wave-managed session", async () => {

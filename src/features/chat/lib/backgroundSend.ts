@@ -3,7 +3,10 @@ import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRej
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { sessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
 import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
-import { composeMemorySection } from "@/features/memory/lib/memoryPrompt";
+import {
+  archivedCountForProject,
+  composeMemorySection,
+} from "@/features/memory/lib/memoryPrompt";
 import { sessionMemoryWriteAccess } from "@/features/memory/lib/memoryWriteAccess";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
@@ -38,9 +41,11 @@ function composeOperatorProtocols(sessionId: string): string | undefined {
   if (isWaveManagedSession(sessionId)) return undefined;
   const projectId =
     useChatSessionStore.getState().getSession(sessionId)?.projectId ?? null;
+  const memory = useMemoryStore.getState();
   return composeSystemPrompt(
     composeMemorySection(
-      useMemoryStore.getState().entries,
+      memory.entries,
+      archivedCountForProject(memory.archived, projectId),
       projectId,
       // A session the memory ACL keeps read-only still reads the facts but
       // is not taught the fence the scanner would refuse.
