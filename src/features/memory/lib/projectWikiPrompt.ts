@@ -126,6 +126,21 @@ export function projectWikiPromptForRoot(
 }
 
 /**
+ * What is already known about a root, without asking about it.
+ *
+ * The synchronous half of the contract above, for a caller that schedules its
+ * own refresh — the open chat's controller does it from an effect, once per
+ * turn, and must not have that listing coalesced away by a read that happened
+ * to run first during render.
+ */
+export function knownProjectWikiPresence(
+  root: string | null | undefined,
+): boolean {
+  const key = root?.trim();
+  return key ? (presenceByRoot.get(key) ?? false) : false;
+}
+
+/**
  * The pointer for a session, wired to the stores the send paths run outside
  * React. A session with no project has no wiki to point at.
  */

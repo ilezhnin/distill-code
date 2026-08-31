@@ -6,6 +6,7 @@ import { useProjectStore } from "@/features/projects/stores/projectStore";
 
 import {
   formatProjectWikiPrompt,
+  knownProjectWikiPresence,
   PROJECT_WIKI_DIR,
   PROJECT_WIKI_INDEX_DOCUMENT,
   PROJECT_WIKI_POINTER_PROMPT,
@@ -170,6 +171,30 @@ describe("projectWikiPromptForRoot", () => {
         PROJECT_WIKI_POINTER_PROMPT,
       ),
     );
+  });
+});
+
+describe("knownProjectWikiPresence", () => {
+  it("answers from the cache without scheduling a listing of its own", () => {
+    listProjectDocuments.mockResolvedValue([PROJECT_WIKI_INDEX_DOCUMENT]);
+
+    // A caller that owns its own refresh (the open chat's controller) must be
+    // able to read the cache during render without stealing that refresh:
+    // a coalesced listing would resolve the owner's call with the stale answer.
+    expect(knownProjectWikiPresence("/work/quarp")).toBe(false);
+    expect(listProjectDocuments).not.toHaveBeenCalled();
+  });
+
+  it("reports the wiki once a refresh has recorded it", async () => {
+    listProjectDocuments.mockResolvedValue([PROJECT_WIKI_INDEX_DOCUMENT]);
+    await refreshProjectWikiPresence("/work/quarp");
+
+    expect(knownProjectWikiPresence("/work/quarp")).toBe(true);
+  });
+
+  it("has nothing to report without a root", () => {
+    expect(knownProjectWikiPresence(null)).toBe(false);
+    expect(knownProjectWikiPresence("   ")).toBe(false);
   });
 });
 

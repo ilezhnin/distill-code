@@ -16,6 +16,13 @@ import {
   type ChatAttachmentDraft,
   createUserMessage,
 } from "@/shared/types/messages";
+import {
+  PROJECT_WIKI_DIR,
+  PROJECT_WIKI_INDEX_DOCUMENT,
+  PROJECT_WIKI_POINTER_PROMPT,
+  refreshProjectWikiPresence,
+  resetProjectWikiPresenceForTests,
+} from "@/features/memory/lib/projectWikiPrompt";
 import { useChatStore } from "../../stores/chatStore";
 import {
   type ChatSession,
@@ -59,6 +66,9 @@ const mockListSkills = vi.fn();
 const mockListBerdAppSkills = vi.fn();
 const mockListGooseSourceSkills = vi.fn();
 const mockLoadWorkspaceInstructionFiles = vi.fn();
+const mockListProjectDocuments = vi.fn();
+const mockReadProjectDocument = vi.fn();
+const mockWriteProjectDocument = vi.fn();
 const mockPickerState = {
   selectedAgentId: "goose",
   pickerAgents: [{ id: "goose", label: "Goose" }],
@@ -216,6 +226,18 @@ vi.mock("@/features/skills/api/skills", () => ({
 vi.mock("@/features/chat/api/workspaceContext", () => ({
   loadWorkspaceInstructionFiles: (...args: unknown[]) =>
     mockLoadWorkspaceInstructionFiles(...args),
+}));
+
+// The project folder's own documents, which is where the wiki pointer's
+// presence check looks. Outside the desktop runtime these are no-ops, so the
+// mock only makes the answer steerable.
+vi.mock("@/shared/api/projectStore", () => ({
+  PROJECT_STORE_DIR: ".distill",
+  listProjectDocuments: (...args: unknown[]) =>
+    mockListProjectDocuments(...args),
+  readProjectDocument: (...args: unknown[]) => mockReadProjectDocument(...args),
+  writeProjectDocument: (...args: unknown[]) =>
+    mockWriteProjectDocument(...args),
 }));
 
 vi.mock("@/features/agents/hooks/useProviderSelection", () => ({
@@ -492,6 +514,10 @@ describe("useChatSessionController", () => {
     mockLoadWorkspaceInstructionFiles.mockImplementation(() =>
       immediatelyResolved([]),
     );
+    resetProjectWikiPresenceForTests();
+    mockListProjectDocuments.mockReset().mockResolvedValue([]);
+    mockReadProjectDocument.mockReset().mockResolvedValue(null);
+    mockWriteProjectDocument.mockReset().mockResolvedValue(undefined);
     useProviderCatalogStore.getState().reset();
     useProviderCatalogStore.getState().setEntries([
       {
@@ -1564,6 +1590,159 @@ describe("useChatSessionController", () => {
     expect(systemPrompt).toContain("path: /tmp/project-worktrees/phase-3");
     expect(systemPrompt).toContain("branch: phase-3");
     expect(systemPrompt).not.toContain("<active-working-context>");
+  });
+
+  // M12b: the pointer to the project's own wiki has to reach the path the
+  // operator actually uses — a chat sent from an open window — not only the
+  // queued and background send paths.
+  describe("project wiki pointer", () => {
+    function seedProjectSession(): void {
+      useProjectStore.setState({
+        projects: [
+          {
+            id: "project-1",
+            path: "/tmp/project.md",
+            name: "Project",
+            description: "",
+            prompt: "",
+            icon: "",
+            color: "#22c55e",
+            projectWorkspaces: [],
+            workingDirs: ["/tmp/project"],
+            useWorktrees: false,
+            order: 0,
+            archivedAt: null,
+            artifact: null,
+          },
+        ],
+        loading: false,
+        activeProjectId: "project-1",
+      });
+      useChatSessionStore.setState({
+        sessions: [{ ...singleWorkspaceSession(), projectId: "project-1" }],
+      });
+    }
+
+    function latestSystemPrompt(): string {
+      return (
+        (mockUseChatHook.mock.calls.at(-1)?.[2] as string | undefined) ?? ""
+      );
+    }
+
+    function wikiListings(): unknown[][] {
+      return mockListProjectDocuments.mock.calls.filter(
+        (call) => call[1] === PROJECT_WIKI_DIR,
+      );
+    }
+
+    it("points a project session with a wiki at it, once", async () => {
+      mockListProjectDocuments.mockResolvedValue([
+        PROJECT_WIKI_INDEX_DOCUMENT,
+        "log.md",
+      ]);
+      seedProjectSession();
+
+      renderHook(() => useChatSessionController({ sessionId: "session-1" }));
+
+      await waitFor(() =>
+        expect(latestSystemPrompt()).toContain(PROJECT_WIKI_POINTER_PROMPT),
+      );
+      // Byte-for-byte the shared sentence, exactly once: the line rides in the
+      // cached prefix of every turn this project sends.
+      expect(
+        latestSystemPrompt().split(PROJECT_WIKI_POINTER_PROMPT),
+      ).toHaveLength(2);
+      expect(wikiListings()[0]).toEqual(["/tmp/project", PROJECT_WIKI_DIR]);
+    });
+
+    it("says nothing for a project that has no wiki", async () => {
+      mockListProjectDocuments.mockResolvedValue(["notes.md"]);
+      seedProjectSession();
+
+      renderHook(() => useChatSessionController({ sessionId: "session-1" }));
+
+      await waitFor(() => expect(wikiListings().length).toBeGreaterThan(0));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(latestSystemPrompt()).not.toContain(PROJECT_WIKI_POINTER_PROMPT);
+    });
+
+    it("says nothing for a session outside a project", async () => {
+      mockListProjectDocuments.mockResolvedValue([PROJECT_WIKI_INDEX_DOCUMENT]);
+      useChatSessionStore.setState({ sessions: [singleWorkspaceSession()] });
+
+      renderHook(() => useChatSessionController({ sessionId: "session-1" }));
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(latestSystemPrompt()).not.toContain(PROJECT_WIKI_POINTER_PROMPT);
+      // A session with no project has no folder to ask about, so nothing is
+      // asked.
+      expect(wikiListings()).toHaveLength(0);
+    });
+
+    // The presence answer is a directory listing over the Tauri bridge. A
+    // send that waited for it would put an IPC round trip between the
+    // operator pressing enter and the turn leaving.
+    it("composes and sends without waiting for the listing", () => {
+      mockListProjectDocuments.mockReturnValue(new Promise<string[]>(() => {}));
+      seedProjectSession();
+      const enqueue = vi.fn();
+      mockUseMessageQueue.mockImplementation(() => ({
+        queuedMessage: null,
+        enqueue,
+        dismiss: vi.fn(),
+      }));
+
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: "session-1" }),
+      );
+      act(() => {
+        result.current.handleSend("hello");
+      });
+
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(latestSystemPrompt()).not.toContain(PROJECT_WIKI_POINTER_PROMPT);
+    });
+
+    // A captured payload replaces the queued send path's own compose, so the
+    // pointer that path adds would be lost if it did not ride along here.
+    it("carries the pointer into a captured queued payload", async () => {
+      mockListProjectDocuments.mockResolvedValue([PROJECT_WIKI_INDEX_DOCUMENT]);
+      // The root this operator has been in before is already known, so the
+      // very first render composes with the line.
+      await refreshProjectWikiPresence("/tmp/project");
+      seedProjectSession();
+      const enqueue = vi.fn();
+      mockUseMessageQueue.mockImplementation(() => ({
+        queuedMessage: null,
+        enqueue,
+        dismiss: vi.fn(),
+      }));
+
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: "session-1" }),
+      );
+      // The synchronous half of the contract: the line is already in the
+      // first render's prompt, before this mount's own listing resolves.
+      expect(latestSystemPrompt()).toContain(PROJECT_WIKI_POINTER_PROMPT);
+      // The rest of the workspace context has to land before a captured
+      // payload carries any of it.
+      await act(async () => {
+        await Promise.resolve();
+      });
+      act(() => {
+        result.current.handleSend("hello");
+      });
+
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(
+        (enqueue.mock.calls[0]?.[3] as ChatSendOptions | undefined)
+          ?.executionSystemPrompt,
+      ).toContain(PROJECT_WIKI_POINTER_PROMPT);
+    });
   });
 
   it("omits multi-workspace context when the setting is disabled", () => {
