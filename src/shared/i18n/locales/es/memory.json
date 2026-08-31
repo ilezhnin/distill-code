@@ -28,7 +28,10 @@
     "forgetProjectConfirmTitle": "¿Olvidar las memorias de este proyecto?",
     "forgetProjectConfirmDescription": "El proyecto al que pertenecen estas memorias ya no existe, así que ninguna sesión las vuelve a ver. Esto no se puede deshacer.",
     "forgetProjectConfirm": "Olvidarlas",
-    "budget": "bloque del mensaje: {{used}} / {{total}} caracteres"
+    "budget": "bloque del mensaje: {{used}} / {{total}} caracteres",
+    "count_one": "{{count}} memoria",
+    "count_other": "{{count}} memorias",
+    "updated": "última actualización {{time}}"
   },
   "empty": "Todavía no hay nada guardado.",
   "row": {
