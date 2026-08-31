@@ -16,7 +16,8 @@
     "forgetProject": "Olvidar las memorias de este proyecto",
     "forgetProjectConfirmTitle": "¿Olvidar las memorias de este proyecto?",
     "forgetProjectConfirmDescription": "El proyecto al que pertenecen estas memorias ya no existe, así que ninguna sesión las vuelve a ver. Esto no se puede deshacer.",
-    "forgetProjectConfirm": "Olvidarlas"
+    "forgetProjectConfirm": "Olvidarlas",
+    "budget": "bloque del mensaje: {{used}} / {{total}} caracteres"
   },
   "empty": "Todavía no hay nada guardado.",
   "row": {
@@ -25,6 +26,8 @@
     "forgetConfirmTitle": "¿Olvidar esta memoria?",
     "forgetConfirmDescription": "«{{text}}» ya no se llevará a sesiones futuras. Esto no se puede deshacer.",
     "fromAgent": "de un agente",
+    "inPrompt": "en el bloque",
+    "crowdedOut": "desplazada: se sigue encontrando con la búsqueda y con recall",
     "meta": "{{scope}} · creada el {{created}}",
     "metaReinforced": "{{scope}} · creada el {{created}} · confirmada el {{reinforced}}",
     "openAgentChat": "Abrir el chat que la escribió",

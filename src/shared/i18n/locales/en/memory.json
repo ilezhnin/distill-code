@@ -16,7 +16,8 @@
     "forgetProject": "Forget this project's memories",
     "forgetProjectConfirmTitle": "Forget this project's memories?",
     "forgetProjectConfirmDescription": "The project these memories belong to no longer exists, so no session is ever shown them. This cannot be undone.",
-    "forgetProjectConfirm": "Forget them"
+    "forgetProjectConfirm": "Forget them",
+    "budget": "prompt block: {{used}} / {{total}} characters"
   },
   "empty": "Nothing kept yet.",
   "row": {
@@ -25,6 +26,8 @@
     "forgetConfirmTitle": "Forget this memory?",
     "forgetConfirmDescription": "\"{{text}}\" will no longer be carried into future sessions. This cannot be undone.",
     "fromAgent": "from an agent",
+    "inPrompt": "in the prompt",
+    "crowdedOut": "crowded out — still found by search and recall",
     "meta": "{{scope}} · created {{created}}",
     "metaReinforced": "{{scope}} · created {{created}} · confirmed {{reinforced}}",
     "openAgentChat": "Open the chat that wrote this",

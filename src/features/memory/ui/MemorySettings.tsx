@@ -17,6 +17,7 @@ import { useProjectStore } from "@/features/projects/stores/projectStore";
 import { openSessionDeepLink } from "@/features/sessions/lib/openSessionDeepLink";
 import { createSessionDeepLink } from "@/features/sessions/lib/sessionDeepLink";
 import { useLocaleFormatting } from "@/shared/i18n";
+import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
 import { Input } from "@/shared/ui/input";
@@ -27,6 +28,10 @@ import {
 } from "@/shared/ui/settings-section";
 
 import type { MemoryEntry } from "../lib/memoryEntry";
+import {
+  MAX_MEMORY_PROMPT_CHARS,
+  selectPromptEntries,
+} from "../lib/memoryPrompt";
 import { searchMemories } from "../lib/memorySearch";
 import {
   memoryRememberRefusal,
@@ -67,6 +72,20 @@ interface MemoryGroup {
   title: string;
   entries: MemoryEntry[];
   /**
+   * The ids this group's entries would have in a session's prompt block, and
+   * what that block costs.
+   *
+   * Each group is measured with its own project's reach, and the global group
+   * with `null`. That is an approximation, and deliberately the optimistic
+   * one: inside a project the global lines compete with that project's, so a
+   * global memory shown here as carried may still be crowded out in a project
+   * session. The panel says the best case rather than inventing a project to
+   * judge it in — and the honest badge for the other direction ("crowded
+   * out") is never shown to something that is in fact carried.
+   */
+  promptIds: Set<string>;
+  usedChars: number;
+  /**
    * A project group whose project no longer exists. `parseEntry` keeps such
    * entries on purpose — dropping them at read time would be the app silently
    * deleting the operator's data — so the page names the situation and offers
@@ -97,11 +116,14 @@ export function MemorySettings() {
     const byAge = (left: MemoryEntry, right: MemoryEntry) =>
       right.createdAt - left.createdAt;
     const global = entries.filter((entry) => entry.scope === "global");
+    const globalBudget = selectPromptEntries(entries, null);
     const result: MemoryGroup[] = [
       {
         key: "global",
         title: t("groups.global"),
         entries: global.sort(byAge),
+        promptIds: globalBudget.ids,
+        usedChars: globalBudget.usedChars,
         orphaned: false,
       },
     ];
@@ -114,12 +136,15 @@ export function MemorySettings() {
     ];
     for (const projectId of projectIds) {
       const name = projects.find((project) => project.id === projectId)?.name;
+      const budget = selectPromptEntries(entries, projectId);
       result.push({
         key: projectId,
         title: name ?? t("groups.unknownProject"),
         entries: entries
           .filter((entry) => entry.projectId === projectId)
           .sort(byAge),
+        promptIds: budget.ids,
+        usedChars: budget.usedChars,
         orphaned: name === undefined,
       });
     }
@@ -294,19 +319,36 @@ export function MemorySettings() {
                   {t("empty")}
                 </p>
               ) : (
-                <ul className="flex list-none flex-col gap-1">
-                  {group.entries.map((entry) => (
-                    // Keyed by text as well as id: the row holds its draft in
-                    // local state, so when an agent rewrites the entry while
-                    // this page is open, remounting is what makes the change
-                    // visible instead of the stale draft.
-                    <MemoryRow
-                      key={`${entry.id}:${entry.text}`}
-                      entry={entry}
-                      scopeLabel={projectNameOf(entry.projectId)}
-                    />
-                  ))}
-                </ul>
+                <div className="flex flex-col gap-1.5">
+                  {/* What a session in this scope actually carries, against
+                      the budget it is carried in. Without it a long list
+                      reads as a long prompt. It sits under the heading
+                      rather than in it: the heading names the group, and a
+                      number that changes with every edit is not its name. */}
+                  <p
+                    className="text-[11px] text-muted-foreground"
+                    data-testid="memory-group-budget"
+                  >
+                    {t("groups.budget", {
+                      used: group.usedChars,
+                      total: MAX_MEMORY_PROMPT_CHARS,
+                    })}
+                  </p>
+                  <ul className="flex list-none flex-col gap-1">
+                    {group.entries.map((entry) => (
+                      // Keyed by text as well as id: the row holds its draft in
+                      // local state, so when an agent rewrites the entry while
+                      // this page is open, remounting is what makes the change
+                      // visible instead of the stale draft.
+                      <MemoryRow
+                        key={`${entry.id}:${entry.text}`}
+                        entry={entry}
+                        scopeLabel={projectNameOf(entry.projectId)}
+                        inPrompt={group.promptIds.has(entry.id)}
+                      />
+                    ))}
+                  </ul>
+                </div>
               )}
               {group.orphaned && projectsSettled ? (
                 <Button
@@ -357,9 +399,11 @@ export function MemorySettings() {
 function MemoryRow({
   entry,
   scopeLabel,
+  inPrompt,
 }: {
   entry: MemoryEntry;
   scopeLabel: string;
+  inPrompt: boolean;
 }) {
   const { t } = useTranslation("memory");
   const { formatDate } = useLocaleFormatting();
@@ -440,6 +484,24 @@ function MemoryRow({
           <IconTrash />
         </Button>
       </div>
+      {/* Kept or crowded out. A memory the operator wrote down and the block
+          cannot carry is the app's most confusing state — "I told you this"
+          against an agent that never saw it — so the row says which it is,
+          and says the same thing the prompt does because both read the one
+          selection. Crowded out is not lost: search finds it here, and a
+          session can ask for it through the recall fence. */}
+      <span
+        className={cn(
+          "w-fit shrink-0 rounded-full px-1.5 py-0.5 text-[10px]",
+          inPrompt
+            ? "bg-accent text-muted-foreground"
+            : "border border-dashed border-border text-muted-foreground",
+        )}
+        data-testid="memory-prompt-state"
+        data-in-prompt={inPrompt}
+      >
+        {inPrompt ? t("row.inPrompt") : t("row.crowdedOut")}
+      </span>
       {/* Where it applies and when it was last true. A memory with no date
           reads as timeless, and the operator's first question about a fact
           they no longer recognise is when it was written down. */}
