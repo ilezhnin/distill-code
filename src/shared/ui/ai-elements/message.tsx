@@ -367,17 +367,20 @@ function isBareLocalMarkdownPath(value: string): boolean {
 
 /**
  * `C:/repo/report.md` and `C:\repo\report.md`: absolute Windows paths, which
- * the sanitizer would otherwise read as a `c:` URL scheme and block.
+ * the sanitizer would otherwise read as a `c:` URL scheme and block. Markdown
+ * hands backslashes over percent-encoded (`C:%5Crepo`), so the separator may
+ * arrive encoded.
  */
 function isWindowsAbsoluteMarkdownPath(value: string): boolean {
   const trimmed = value.trim();
-  return /^[a-zA-Z]:[\\/]/.test(trimmed) && !hasControlCharacter(trimmed);
+  return (
+    /^[a-zA-Z]:(?:[\\/]|%5[cC]|%2[fF])/.test(trimmed) &&
+    !hasControlCharacter(trimmed)
+  );
 }
 
 function isLocalMarkdownPath(value: string): boolean {
-  return (
-    isBareLocalMarkdownPath(value) || isWindowsAbsoluteMarkdownPath(value)
-  );
+  return isBareLocalMarkdownPath(value) || isWindowsAbsoluteMarkdownPath(value);
 }
 
 function isValidBerdSessionDeepLink(value: string): boolean {
