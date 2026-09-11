@@ -10,12 +10,12 @@ const nextConfig: RuntimeConfig = {
 vi.mock("@/shared/api/runtimeConfig", () => ({
   getRuntimeConfig: vi.fn(async () => ({
     status: "ready",
-    source: "endpoint",
+    source: "bundledFile",
     config: nextConfig,
   })),
   refreshRuntimeConfig: vi.fn(async () => ({
     status: "ready",
-    source: "endpoint",
+    source: "bundledFile",
     config: nextConfig,
   })),
   setFakeRuntimeConfig: vi.fn(async (config: RuntimeConfig) => ({
@@ -51,7 +51,7 @@ describe("runtimeConfigStore", () => {
   it("falls back to default config for unavailable results", () => {
     useRuntimeConfigStore.getState().setResult({
       status: "unavailable",
-      source: "endpoint",
+      source: "bundledFile",
       reason: "missing",
       message: "missing",
     });

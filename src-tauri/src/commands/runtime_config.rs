@@ -47,15 +47,12 @@ pub struct RuntimeDoctorConfig {
 pub enum RuntimeConfigSource {
     AppDefault,
     BundledFile,
-    CachedEndpoint,
-    Endpoint,
     FakeEndpoint,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum RuntimeConfigUnavailableReason {
-    EndpointUnavailable,
     Invalid,
     Missing,
     ReadFailed,
@@ -212,7 +209,6 @@ async fn load_runtime_config_from_source(
 
 /// Read the bundled `runtime-config.json` staged into the Tauri resource dir.
 /// Used as the runtime config source of truth.
-/// feature is disabled.
 fn load_bundled_runtime_config_from_source(
     bundled_config_path: Option<&Path>,
     allow_default_fallback: bool,
@@ -509,8 +505,8 @@ mod tests {
     fn restricted_bundled_config() -> RuntimeConfig {
         let mut config = default_runtime_config();
         config.feature_toggles = Some(HashMap::from([
-            ("voiceDictation".to_string(), false),
-            ("telemetry".to_string(), false),
+            ("sampleFeature".to_string(), false),
+            ("otherFeature".to_string(), false),
         ]));
         config
     }
@@ -590,9 +586,8 @@ mod tests {
         validate_runtime_config(&config).expect("bundled runtime config must validate");
 
         // The official default disables nothing: all features ship ON. Feature
-        // disabling (e.g. voice dictation / telemetry, which commits b8a95e90 /
-        // 71d19399 made runtimeFeature capabilities) is supplied only at
-        // custom-build time and is not committed here.
+        // disabling is supplied only at custom-build time and is not committed
+        // here.
         let toggles = config.feature_toggles.clone().unwrap_or_default();
         assert!(
             toggles.is_empty(),
@@ -700,8 +695,8 @@ mod tests {
         assert_eq!(
             config.feature_toggles,
             Some(HashMap::from([
-                ("voiceDictation".to_string(), false),
-                ("telemetry".to_string(), false),
+                ("sampleFeature".to_string(), false),
+                ("otherFeature".to_string(), false),
             ]))
         );
     }
