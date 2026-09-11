@@ -18,10 +18,7 @@ import {
   recordAssistiveMomentShown,
   shouldShowAssistiveMoment,
 } from "@/shared/assistive-ux/runtime";
-import { getPlatform } from "@/shared/lib/platform";
 import type { Message } from "@/shared/types/messages";
-
-const COMPLETION_NOTIFICATION_CLICKED_EVENT = "completion-notification-clicked";
 
 /**
  * Whether a Tauri call failed because the command is not in this build.
@@ -65,8 +62,8 @@ function reportNotificationActionsUnavailable(error: unknown): void {
 }
 
 /**
- * Every subscription in this hook is a nice-to-have: window focus tracking, a
- * click handler, a mobile action handler. Losing one degrades notifications;
+ * Every subscription in this hook is a nice-to-have: window focus tracking and
+ * the notification action handler. Losing one degrades notifications;
  * none of them is worth an unhandled rejection at launch, which is all an
  * un-caught `import(...).then(...)` chain can produce.
  */
@@ -154,38 +151,9 @@ export function useCompletionNotifications(
     };
   }, []);
 
-  // Handle native notification clicks from the Tauri shell.
+  // Keep notification actions working where the plugin exposes them.
   useEffect(() => {
     if (!window.__TAURI_INTERNALS__) return;
-    let unlisten: (() => void) | null = null;
-    let cancelled = false;
-    import("@tauri-apps/api/event")
-      .then(({ listen }) =>
-        listen<{ sessionId?: string }>(
-          COMPLETION_NOTIFICATION_CLICKED_EVENT,
-          (event) => {
-            const sessionId = event.payload.sessionId;
-            if (!sessionId) return;
-            focusCurrentWindow();
-            navigateRef.current(sessionId);
-          },
-        ),
-      )
-      .then((fn) => {
-        if (cancelled) fn();
-        else unlisten = fn;
-      })
-      .catch(reportSubscriptionFailed("notification clicks"));
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
-
-  // Keep mobile notification actions working where the plugin exposes them.
-  useEffect(() => {
-    if (!window.__TAURI_INTERNALS__) return;
-    if (getPlatform() === "mac") return;
 
     let unlisten: (() => void) | null = null;
     let cancelled = false;

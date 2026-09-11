@@ -25,7 +25,6 @@ const mocks = vi.hoisted(() => ({
   getCurrentWindow: vi.fn(),
   sendNotification: vi.fn(),
   onAction: vi.fn(),
-  getPlatform: vi.fn(),
   audioPlay: vi.fn(),
   toast: vi.fn(),
   toastCustom: vi.fn(),
@@ -54,10 +53,6 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("@tauri-apps/plugin-notification", () => ({
   sendNotification: (...args: unknown[]) => mocks.sendNotification(...args),
   onAction: (...args: unknown[]) => mocks.onAction(...args),
-}));
-
-vi.mock("@/shared/lib/platform", () => ({
-  getPlatform: () => mocks.getPlatform(),
 }));
 
 function resetStores() {
@@ -166,7 +161,6 @@ describe("useCompletionNotifications", () => {
     mocks.listen.mockResolvedValue(vi.fn());
     mocks.onAction.mockResolvedValue({ unregister: vi.fn() });
     mocks.audioPlay.mockResolvedValue(undefined);
-    mocks.getPlatform.mockReturnValue("linux");
     vi.stubGlobal(
       "Audio",
       vi.fn(function MockAudio() {
@@ -181,24 +175,10 @@ describe("useCompletionNotifications", () => {
     });
   });
 
-  it("does not register plugin action listeners on macOS desktop", async () => {
-    mocks.getPlatform.mockReturnValue("mac");
-
-    renderHook(() => useCompletionNotifications(vi.fn()));
-
-    await waitFor(() =>
-      expect(mocks.listen).toHaveBeenCalledWith(
-        "completion-notification-clicked",
-        expect.any(Function),
-      ),
-    );
-    expect(mocks.onAction).not.toHaveBeenCalled();
-  });
-
-  it("supports native desktop notification click-through", async () => {
+  it("shows a native notification when unfocused and navigates from its action", async () => {
     let focusChanged: ((event: { payload: boolean }) => void) | null = null;
-    let notificationClicked:
-      | ((event: { payload: { sessionId?: string } }) => void)
+    let notificationAction:
+      | ((notification: { extra?: Record<string, unknown> }) => void)
       | null = null;
 
     const appWindow = {
@@ -211,18 +191,16 @@ describe("useCompletionNotifications", () => {
       setFocus: vi.fn().mockResolvedValue(undefined),
     };
     mocks.getCurrentWindow.mockReturnValue(appWindow);
-    mocks.listen.mockImplementation((event, handler) => {
-      if (event === "completion-notification-clicked") {
-        notificationClicked = handler;
-      }
-      return Promise.resolve(vi.fn());
+    mocks.onAction.mockImplementation((handler) => {
+      notificationAction = handler;
+      return Promise.resolve({ unregister: vi.fn() });
     });
 
     const navigate = vi.fn();
     renderHook(() => useCompletionNotifications(navigate));
 
     await waitFor(() => expect(focusChanged).toBeTruthy());
-    await waitFor(() => expect(notificationClicked).toBeTruthy());
+    await waitFor(() => expect(notificationAction).toBeTruthy());
 
     useChatSessionStore.getState().addSession({
       id: "session-1",
@@ -251,7 +229,7 @@ describe("useCompletionNotifications", () => {
     );
 
     act(() => {
-      notificationClicked?.({ payload: { sessionId: "session-1" } });
+      notificationAction?.({ extra: { sessionId: "session-1" } });
     });
 
     expect(navigate).toHaveBeenCalledWith("session-1");
@@ -512,7 +490,6 @@ describe("notification actions the build does not provide", () => {
     mocks.invoke.mockResolvedValue(undefined);
     mocks.listen.mockResolvedValue(vi.fn());
     mocks.audioPlay.mockResolvedValue(undefined);
-    mocks.getPlatform.mockReturnValue("linux");
     mocks.getCurrentWindow.mockReturnValue({
       onFocusChanged: vi.fn().mockResolvedValue(vi.fn()),
       unminimize: vi.fn().mockResolvedValue(undefined),

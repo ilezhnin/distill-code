@@ -64,29 +64,12 @@ describe("KeyboardShortcutsSettings", () => {
     expect(screen.getByRole("button", { name: "Reset all" })).toBeDisabled();
   });
 
-  it("renders the global shortcut toggle on mac, reflecting and updating the preference", async () => {
-    const user = userEvent.setup();
-    renderWithProviders(<KeyboardShortcutsSettings />);
-
-    const toggle = screen.getByRole("switch", {
-      name: "Enable global shortcut",
-    });
-    expect(toggle).not.toBeChecked();
-
-    await user.click(toggle);
-
-    expect(toggle).toBeChecked();
-    expect(localStorage.getItem("distill:global-shortcut-enabled")).toBe(
-      "true",
-    );
-  });
-
   it("shows shortcut buttons with content-hugging padding and flat keycaps", () => {
     renderWithProviders(<KeyboardShortcutsSettings />);
 
-    expect(screen.getByText("Global shortcut")).toBeInTheDocument();
-    const button = getShortcutButton("Global shortcut");
-    expect(button).toHaveTextContent("⌥Space");
+    expect(screen.getByText("Open search")).toBeInTheDocument();
+    const button = getShortcutButton("Open search");
+    expect(button).toHaveTextContent("⌘K");
     expect(button).toHaveClass("w-fit", "px-1.5");
     expect(button).not.toHaveClass("min-w-24");
     for (const keycap of button.querySelectorAll('[data-slot="kbd"]')) {

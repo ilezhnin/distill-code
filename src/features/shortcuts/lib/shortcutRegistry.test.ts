@@ -659,48 +659,6 @@ describe("pane-jump", () => {
   });
 });
 
-describe("global shortcut", () => {
-  it("is visible and configurable only on macOS", () => {
-    expect(
-      flattenGroups().find(
-        (shortcut) => shortcut.id === "navigation.globalShortcut",
-      )?.shortcut,
-    ).toBe("alt+space");
-    expect(getShortcutBindings("navigation.globalShortcut")).toEqual([
-      { shortcut: "alt+space" },
-    ]);
-
-    getPlatformMock.mockReturnValue("windows");
-
-    expect(flattenGroups().map((shortcut) => shortcut.id)).not.toContain(
-      "navigation.globalShortcut",
-    );
-    expect(
-      eventMatchesShortcutCommand(
-        keyEvent({ key: " ", altKey: true }),
-        "navigation.globalShortcut",
-      ),
-    ).toBe(false);
-  });
-
-  it("uses a configured global shortcut on macOS", () => {
-    expect(
-      setShortcutOverride("navigation.globalShortcut", "ctrl+alt+c"),
-    ).toEqual({
-      ok: true,
-    });
-
-    expect(getShortcutBindings("navigation.globalShortcut")).toEqual([
-      { shortcut: "ctrl+alt+c" },
-    ]);
-    expect(
-      flattenGroups().find(
-        (shortcut) => shortcut.id === "navigation.globalShortcut",
-      )?.shortcut,
-    ).toBe("ctrl+alt+c");
-  });
-});
-
 describe("eventMatchesShortcutCommand", () => {
   it("matches the default combo", () => {
     expect(

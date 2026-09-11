@@ -5,7 +5,6 @@
     "closeSession": "Cerrar sesión actual",
     "findInConversation": "Buscar en la conversación",
     "forward": "Avanzar",
-    "globalShortcut": "Atajo global",
     "toggleVoiceDictation": "Iniciar o detener el dictado por voz",
     "insertNewline": "Insertar salto de línea",
     "mentionAcceptSuggestion": "Aceptar la sugerencia seleccionada",
@@ -53,10 +52,6 @@
     "description": "Personaliza los atajos de teclado",
     "editLabel": "Cambiar el atajo de {{command}}",
     "empty": "Ningún atajo coincide con tu búsqueda",
-    "globalShortcut": {
-      "description": "Usa tu atajo global configurado para crear y buscar chats desde cualquier lugar en macOS.",
-      "label": "Activar atajo global"
-    },
     "invalid": "Los atajos necesitan una tecla modificadora como Cmd, Ctrl o Alt",
     "invalidUnmodified": "Esa tecla no puede usarse sola: añade una tecla modificadora o usa Enter o una flecha",
     "label": "Atajos de teclado",
