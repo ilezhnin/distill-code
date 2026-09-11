@@ -126,7 +126,12 @@ fn display_name_for_path(path: &Path) -> String {
 }
 
 fn skill_frontmatter(contents: &str) -> Option<(&str, &str)> {
-    let contents = contents.strip_prefix("---\n")?;
+    // SKILL.md files checked out on Windows usually have CRLF line endings
+    // (core.autocrlf) and editors there may add a BOM; both are still skills.
+    let contents = contents.strip_prefix('\u{feff}').unwrap_or(contents);
+    let contents = contents
+        .strip_prefix("---\n")
+        .or_else(|| contents.strip_prefix("---\r\n"))?;
     let end = contents.find("\n---")?;
     let frontmatter = &contents[..end];
     let body_start = end + "\n---".len();
@@ -482,6 +487,32 @@ mod tests {
             format!("---\nname: {name}\ndescription: {description}\n---\n\nUse it."),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn reads_skills_written_with_windows_line_endings_and_a_bom() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("skills");
+        let skill_dir = root.join("crlf");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "\u{feff}---\r\nname: crlf\r\ndescription: Checked out on Windows\r\n---\r\n\r\nUse it.\r\n",
+        )
+        .unwrap();
+
+        let skills = collect_skills_from_roots(
+            vec![SkillRoot {
+                path: root,
+                source_label: "Personal".to_string(),
+                scope: SkillRootScope::User,
+            }],
+            None,
+        );
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "crlf");
+        assert_eq!(skills[0].description, "Checked out on Windows");
     }
 
     #[test]
