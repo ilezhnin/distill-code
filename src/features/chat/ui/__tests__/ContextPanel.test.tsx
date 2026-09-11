@@ -729,6 +729,90 @@ describe("ContextPanel", () => {
     ).toBeUndefined();
   });
 
+  it("selects an event-attributed worktree whose Windows path git spells differently", async () => {
+    // The session keeps the folder picker's spelling; git reports forward
+    // slashes and its own case for the same directories.
+    const projectDir = "C:\\Users\\test\\goose2";
+    const createdWorktreeDir = "C:\\Users\\test\\goose2-win";
+    const sessionId = "test-session-win-worktree";
+    let gitState: GitState = {
+      isGitRepo: true,
+      currentBranch: "main",
+      dirtyFileCount: 0,
+      incomingCommitCount: 0,
+      worktrees: [
+        {
+          path: "C:/Users/test/goose2",
+          branch: "main",
+          isMain: true,
+        },
+      ],
+      isWorktree: false,
+      mainWorktreePath: "C:/Users/test/goose2",
+      localBranches: ["main"],
+    };
+    mockUseGitState.mockImplementation(() => ({
+      data: gitState,
+      error: null,
+      isLoading: false,
+      isFetching: false,
+      refetch: mockRefetch,
+    }));
+    useChatStore.getState().setChatState(sessionId, "streaming");
+    useChatStore.getState().setStreamingMessageId(sessionId, "message-1");
+
+    const renderTracker = () => (
+      <QueryClientProvider client={new QueryClient()}>
+        <ContextPanelWorktreeTracker
+          sessionId={sessionId}
+          projectWorkingDirs={[projectDir]}
+        />
+      </QueryClientProvider>
+    );
+    const view = render(renderTracker());
+
+    await waitFor(() => {
+      expect(gitStateChangedHandlers).toHaveLength(1);
+    });
+    act(() => {
+      for (const handler of gitStateChangedHandlers) {
+        handler({
+          operation: "create_worktree",
+          path: "c:/users/test/goose2/",
+          affectedPaths: [createdWorktreeDir],
+          branch: "tulsi/win",
+        });
+      }
+    });
+
+    gitState = {
+      ...gitState,
+      worktrees: [
+        ...gitState.worktrees,
+        {
+          path: "C:/Users/Test/goose2-win",
+          branch: "tulsi/win",
+          isMain: false,
+        },
+      ],
+      localBranches: ["tulsi/win", "main"],
+    };
+    act(() => {
+      useChatStore.getState().setChatState(sessionId, "idle");
+      useChatStore.getState().setStreamingMessageId(sessionId, null);
+    });
+    view.rerender(renderTracker());
+
+    await waitFor(() => {
+      expect(
+        useChatSessionStore.getState().activeWorkspaceBySession[sessionId],
+      ).toEqual({
+        path: "C:/Users/Test/goose2-win",
+        branch: "tulsi/win",
+      });
+    });
+  });
+
   it("renders included workspaces and workspace actions", async () => {
     const user = userEvent.setup();
 
