@@ -1,10 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
-import {
-  cleanup,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MessageBubble } from "../MessageBubble";
 import { useAgentStore } from "@/features/agents/stores/agentStore";

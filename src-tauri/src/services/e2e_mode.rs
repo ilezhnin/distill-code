@@ -129,7 +129,7 @@ impl E2eMode {
         self.agents_root().join("skills")
     }
 
-    #[cfg(any(feature = "app-test-driver", test))]
+    #[cfg(feature = "app-test-driver")]
     pub(crate) fn driver_token(&self) -> &str {
         &self.driver_token
     }
