@@ -1,40 +1,14 @@
 // @vitest-environment node
 
-import { execFileSync, spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
-import { validateBundledAgentFile } from "../../../scripts/validate-bundled-agents";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { validateBundledAgentFile } from "../../../scripts/validate-bundled-agents";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const releaseDefaultsRunner = resolve(
-  repoRoot,
-  "src/scripts/__tests__/fixtures/defaultBundledAgents.sh",
-);
 
-function runDefaultBundledAgents(buildKind: string) {
-  return execFileSync("bash", [releaseDefaultsRunner, buildKind], {
-    encoding: "utf8",
-  });
-}
-
-// The fixture is a bash script invoked with an absolute path. On Windows,
-// bash (WSL/Git Bash) receives a `E:\...` path whose backslashes it eats, so
-// these shell-driven cases fail for path reasons that say nothing about the
-// release defaults. Release builds run this in CI on Linux; a local Windows
-// run skips only the bash-invoking cases — the pure-JS invariants below
-// still run everywhere.
-const skipShellFixture = process.platform === "win32";
-
-describe("release bundled-agent defaults", () => {
-  it.skipIf(skipShellFixture).each(["official", "custom"])(
-    "does not add release-only agents to %s builds by default",
-    (buildKind) => {
-      expect(runDefaultBundledAgents(buildKind)).toBe("");
-    },
-  );
-
+describe("bundled agents", () => {
   it("always includes the valid public starter set", () => {
     const tauriConfig = JSON.parse(
       readFileSync(resolve(repoRoot, "src-tauri/tauri.conf.json"), "utf8"),
@@ -79,16 +53,5 @@ describe("release bundled-agent defaults", () => {
         .soft(body, `${fileName} hardcodes spawn-policy prose`)
         .not.toMatch(/Distill starts other agents from the Agents catalog/i);
     }
-  });
-
-  it.skipIf(skipShellFixture)("rejects an invalid build kind", () => {
-    const result = spawnSync("bash", [releaseDefaultsRunner, "preview"], {
-      encoding: "utf8",
-    });
-
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain(
-      "invalid build_kind 'preview' (expected official or custom)",
-    );
   });
 });

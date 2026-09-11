@@ -263,8 +263,10 @@ bundle-debug:
 
 # ── Test ─────────────────────────────────────────────────────
 
+# Unit tests, plus the hook launcher's plain `node --test` cases.
 test:
     pnpm test
+    pnpm test:hooks
 
 test-watch:
     pnpm test:watch
