@@ -522,11 +522,24 @@ export function getWaveEngineState(): WaveEngineState {
  * by the engine, so this is how it sees them. Deliberately not a window
  * event: the wave state is written and read inside one renderer.
  */
-const waveStateListeners = new Set<(state: WaveEngineState) => void>();
+const waveStateListeners = new Set<
+  (state: WaveEngineState, change: WaveStateChange) => void
+>();
+
+/** What kind of change a listener is being told about. */
+export interface WaveStateChange {
+  /**
+   * True when the change is the folder's waves joining memory at startup.
+   * Nothing moved: those waves were already in that state before this
+   * process began, and a reader that diffs transitions must not report them
+   * as newly admitted.
+   */
+  hydration: boolean;
+}
 
 /** Subscribes to wave-state changes. Returns the unsubscribe. */
 export function subscribeWaveEngineState(
-  listener: (state: WaveEngineState) => void,
+  listener: (state: WaveEngineState, change: WaveStateChange) => void,
 ): () => void {
   waveStateListeners.add(listener);
   return () => {
@@ -535,12 +548,16 @@ export function subscribeWaveEngineState(
 }
 
 /** Replaces the live state and writes it through. A no-op change is skipped. */
-export function setWaveEngineState(next: WaveEngineState): void {
+export function setWaveEngineState(
+  next: WaveEngineState,
+  change: Partial<WaveStateChange> = {},
+): void {
   if (cached === next) return;
   cached = next;
+  const notice: WaveStateChange = { hydration: change.hydration === true };
   for (const listener of [...waveStateListeners]) {
     try {
-      listener(next);
+      listener(next, notice);
     } catch {
       // A reader that throws must not take the engine's write path with it.
     }
@@ -631,20 +648,23 @@ async function mergeStoredWaveEngineState(): Promise<void> {
   const liveTombstoneIds = new Set(
     live.tombstones.map((tombstone) => tombstone.planMessageId),
   );
-  setWaveEngineState({
-    ...stored,
-    ...live,
-    waves: [
-      ...stored.waves.filter((wave) => !liveWaveIds.has(wave.waveId)),
-      ...live.waves,
-    ],
-    tombstones: [
-      ...stored.tombstones.filter(
-        (tombstone) => !liveTombstoneIds.has(tombstone.planMessageId),
-      ),
-      ...live.tombstones,
-    ],
-  });
+  setWaveEngineState(
+    {
+      ...stored,
+      ...live,
+      waves: [
+        ...stored.waves.filter((wave) => !liveWaveIds.has(wave.waveId)),
+        ...live.waves,
+      ],
+      tombstones: [
+        ...stored.tombstones.filter(
+          (tombstone) => !liveTombstoneIds.has(tombstone.planMessageId),
+        ),
+        ...live.tombstones,
+      ],
+    },
+    { hydration: true },
+  );
 }
 
 /** Pushes a queued wave write to disk. Shutdown, and tests. */
