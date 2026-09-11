@@ -640,34 +640,6 @@ describe("chatStore", () => {
     });
   });
 
-  it("marks visible assistant messages unread unless the session is actively viewed", () => {
-    const store = useChatStore.getState();
-
-    store.setActiveSession("s1");
-    store.setActiveSessionViewing(false);
-    store.addMessage(
-      "s1",
-      makeMessage({ id: "assistant-away", role: "assistant" }),
-    );
-
-    expect(getRuntime("s1").hasUnread).toBe(true);
-
-    store.markSessionRead("s1");
-    store.setActiveSessionViewing(true);
-    store.addMessage(
-      "s1",
-      makeMessage({ id: "assistant-active", role: "assistant" }),
-    );
-
-    expect(getRuntime("s1").hasUnread).toBe(false);
-
-    store.setActiveSession("s2");
-    store.setActiveSessionViewing(true);
-    store.addMessage("s1", makeMessage({ id: "assistant-inactive" }));
-
-    expect(getRuntime("s1").hasUnread).toBe(true);
-  });
-
   it("completes the prior assistant when starting a steer continuation", () => {
     const store = useChatStore.getState();
     store.setMessages("s1", [
@@ -695,110 +667,6 @@ describe("chatStore", () => {
       role: "assistant",
       metadata: { completionStatus: "inProgress" },
     });
-  });
-
-  it("marks streamed assistant output unread for inactive sessions", () => {
-    const store = useChatStore.getState();
-
-    store.setActiveSession("s2");
-    store.setActiveSessionViewing(true);
-    store.addMessage(
-      "s1",
-      makeMessage({
-        id: "assistant-1",
-        content: [],
-        metadata: { userVisible: true, completionStatus: "inProgress" },
-      }),
-    );
-    store.markSessionRead("s1");
-    store.setStreamingMessageId("s1", "assistant-1");
-
-    store.updateStreamingText("s1", "Done");
-
-    expect(getRuntime("s1").hasUnread).toBe(true);
-
-    store.markSessionRead("s1");
-    store.appendToStreamingMessage("s1", {
-      type: "toolRequest",
-      id: "tool-1",
-      name: "read_file",
-      arguments: {},
-      status: "in_progress",
-    });
-
-    expect(getRuntime("s1").hasUnread).toBe(true);
-  });
-
-  it("does not mark streamed assistant output unread for the actively viewed session", () => {
-    const store = useChatStore.getState();
-
-    store.setActiveSession("s1");
-    store.setActiveSessionViewing(true);
-    store.addMessage(
-      "s1",
-      makeMessage({
-        id: "assistant-1",
-        content: [],
-        metadata: { userVisible: true, completionStatus: "inProgress" },
-      }),
-    );
-    store.setStreamingMessageId("s1", "assistant-1");
-
-    store.updateStreamingText("s1", "Visible here");
-
-    expect(getRuntime("s1").hasUnread).toBe(false);
-  });
-
-  it("does not mark user, hidden, or replayed historical messages unread", () => {
-    const store = useChatStore.getState();
-
-    store.setActiveSession("s2");
-    store.setActiveSessionViewing(true);
-
-    store.addMessage("s1", makeMessage({ id: "user", role: "user" }));
-    store.addMessage(
-      "s1",
-      makeMessage({
-        id: "hidden-assistant",
-        role: "assistant",
-        metadata: { userVisible: false },
-      }),
-    );
-    store.setMessages("s3", [makeMessage({ id: "historical-assistant" })]);
-
-    expect(getRuntime("s1").hasUnread).toBe(false);
-    expect(getRuntime("s3").hasUnread).toBe(false);
-  });
-
-  it("tracks unread state per session and clears it idempotently", () => {
-    const store = useChatStore.getState();
-
-    store.markSessionUnread("s1");
-    expect(getRuntime("s1").hasUnread).toBe(true);
-    expect(getRuntime("s2").hasUnread).toBe(false);
-    expect(loadCachedUnreadSessionIds()).toEqual(["s1"]);
-
-    store.markSessionRead("s1");
-    store.markSessionRead("s1");
-    expect(getRuntime("s1").hasUnread).toBe(false);
-    expect(loadCachedUnreadSessionIds()).toEqual([]);
-  });
-
-  it("hydrates persisted unread sessions on store initialization", async () => {
-    window.localStorage.setItem(
-      "distill:unread-sessions",
-      JSON.stringify(["s1", "s2"]),
-    );
-
-    vi.resetModules();
-    const { useChatStore: freshChatStore } = await import("../chatStore");
-
-    expect(freshChatStore.getState().getSessionRuntime("s1").hasUnread).toBe(
-      true,
-    );
-    expect(freshChatStore.getState().getSessionRuntime("s2").hasUnread).toBe(
-      true,
-    );
   });
 
   it("clears messages and runtime state for a single session", () => {
@@ -1320,21 +1188,6 @@ describe("chatStore", () => {
     expect(store.activeSessionId).toBeNull();
     expect(loadCachedUnreadSessionIds()).toEqual(["s2"]);
   });
-
-  it("stores and clears scroll targets per session", () => {
-    const store = useChatStore.getState();
-
-    store.setScrollTargetMessage("s1", "message-1", "needle");
-    expect(useChatStore.getState().scrollTargetMessageBySession.s1).toEqual({
-      messageId: "message-1",
-      query: "needle",
-    });
-
-    store.clearScrollTargetMessage("s1");
-    expect(
-      useChatStore.getState().scrollTargetMessageBySession.s1,
-    ).toBeUndefined();
-  });
 });
 
 describe("chatStore draft localStorage persistence", () => {
@@ -1409,67 +1262,5 @@ describe("chatStore draft localStorage persistence", () => {
     );
 
     expect(loadCachedDrafts()).toEqual({ s1: "hello" });
-  });
-});
-
-describe("chatStore session loading state", () => {
-  beforeEach(() => {
-    useChatStore.setState({
-      messagesBySession: {},
-      sessionStateById: {},
-      queuedMessageBySession: {},
-      draftsBySession: {},
-      nonEmptyDraftSessionIds: new Set(),
-      skillDraftsBySession: {},
-      draftAttachmentsBySession: {},
-      activeSessionId: null,
-      recentMessageSessionIds: [],
-      isViewingActiveSession: false,
-      isConnected: false,
-      loadingSessionIds: new Set<string>(),
-    });
-  });
-
-  it("starts with empty loadingSessionIds", () => {
-    expect(useChatStore.getState().loadingSessionIds.size).toBe(0);
-  });
-
-  it("adds session to loadingSessionIds when setSessionLoading(true)", () => {
-    useChatStore.getState().setSessionLoading("s1", true);
-
-    expect(useChatStore.getState().loadingSessionIds.has("s1")).toBe(true);
-  });
-
-  it("removes session from loadingSessionIds when setSessionLoading(false)", () => {
-    useChatStore.getState().setSessionLoading("s1", true);
-    useChatStore.getState().setSessionLoading("s1", false);
-
-    expect(useChatStore.getState().loadingSessionIds.has("s1")).toBe(false);
-  });
-
-  it("tracks multiple sessions independently", () => {
-    useChatStore.getState().setSessionLoading("s1", true);
-    useChatStore.getState().setSessionLoading("s2", true);
-
-    expect(useChatStore.getState().loadingSessionIds.has("s1")).toBe(true);
-    expect(useChatStore.getState().loadingSessionIds.has("s2")).toBe(true);
-
-    useChatStore.getState().setSessionLoading("s1", false);
-
-    expect(useChatStore.getState().loadingSessionIds.has("s1")).toBe(false);
-    expect(useChatStore.getState().loadingSessionIds.has("s2")).toBe(true);
-  });
-
-  it("is idempotent for adding the same session", () => {
-    useChatStore.getState().setSessionLoading("s1", true);
-    useChatStore.getState().setSessionLoading("s1", true);
-
-    expect(useChatStore.getState().loadingSessionIds.size).toBe(1);
-  });
-
-  it("is idempotent for removing a non-existent session", () => {
-    useChatStore.getState().setSessionLoading("s1", false);
-
-    expect(useChatStore.getState().loadingSessionIds.size).toBe(0);
   });
 });

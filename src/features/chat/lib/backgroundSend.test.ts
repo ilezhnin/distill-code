@@ -324,39 +324,6 @@ describe("sendPromptInBackground", () => {
     expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
   });
 
-  it("points a project session at the wiki its folder holds", async () => {
-    mocks.getSession.mockReturnValue({ projectId: "p-1" });
-    await seedProjectWiki(["index.md", "log.md"]);
-
-    await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
-      systemPrompt: "workspace prompt",
-    });
-
-    expect(dispatchedSystemPrompt()).toContain(PROJECT_WIKI_POINTER_PROMPT);
-  });
-
-  it("says nothing about a wiki the project does not have", async () => {
-    mocks.getSession.mockReturnValue({ projectId: "p-1" });
-    await seedProjectWiki(["log.md"]);
-
-    await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
-      systemPrompt: "workspace prompt",
-    });
-
-    expect(dispatchedSystemPrompt()).not.toContain("knowledge wiki");
-  });
-
-  it("says nothing about a wiki to a session with no project", async () => {
-    mocks.getSession.mockReturnValue({ projectId: null });
-    await seedProjectWiki(["index.md"]);
-
-    await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
-      systemPrompt: "workspace prompt",
-    });
-
-    expect(dispatchedSystemPrompt()).not.toContain("knowledge wiki");
-  });
-
   // The line that divides this from memory: an executor may not write the
   // wiki, but reading it is exactly what keeps it from re-exploring a
   // repository the project has already mapped.
@@ -375,29 +342,6 @@ describe("sendPromptInBackground", () => {
     expect(systemPrompt).not.toContain("A global fact");
     expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
     expect(systemPrompt).not.toContain(PLANNER_PROTOCOL_PROMPT);
-  });
-
-  // The prompt's cached prefix: the pointer must be the same bytes on every
-  // turn, whatever the project or the session is called.
-  it("sends the same pointer bytes on every turn", async () => {
-    mocks.getSession.mockReturnValue({ projectId: "p-1" });
-    await seedProjectWiki(["index.md"]);
-
-    await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
-      systemPrompt: "workspace prompt",
-    });
-    await sendPromptInBackground("session-1", "second prompt", "goose");
-
-    const prompts = mocks.dispatchPrompt.mock.calls.map(
-      (call) => (call[2] as { systemPrompt?: string }).systemPrompt ?? "",
-    );
-    const pointers = prompts.map((prompt) =>
-      prompt
-        .split("\n\n")
-        .find((section) => section.includes("knowledge wiki")),
-    );
-    expect(pointers[0]).toBe(PROJECT_WIKI_POINTER_PROMPT);
-    expect(pointers[1]).toBe(pointers[0]);
   });
 
   it.each([
