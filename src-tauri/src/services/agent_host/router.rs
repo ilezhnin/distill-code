@@ -33,11 +33,13 @@ const SNIPPET_CHARS: usize = 200;
 pub const EXT_PREFIX: &str = "_distill/";
 
 /// The ids one user turn is recorded under: `message_id` is the user
-/// prompt's message, `run_id` the turn.
+/// prompt's message, `assistant_message_id` the agent's reply to it, and
+/// `run_id` the turn.
 #[derive(Clone)]
 struct TurnIds {
     run_id: String,
     message_id: String,
+    assistant_message_id: String,
 }
 
 impl TurnIds {
@@ -45,6 +47,7 @@ impl TurnIds {
         Self {
             run_id: uuid::Uuid::new_v4().to_string(),
             message_id: uuid::Uuid::new_v4().to_string(),
+            assistant_message_id: uuid::Uuid::new_v4().to_string(),
         }
     }
 }
@@ -52,6 +55,7 @@ impl TurnIds {
 struct RunState {
     run_id: String,
     message_id: String,
+    assistant_message_id: String,
     agent_text: String,
     saw_agent_message: bool,
 }
@@ -61,6 +65,7 @@ impl RunState {
         Self {
             run_id: ids.run_id.clone(),
             message_id: ids.message_id.clone(),
+            assistant_message_id: ids.assistant_message_id.clone(),
             agent_text: String::new(),
             saw_agent_message: false,
         }
@@ -545,33 +550,7 @@ impl Inner {
                 }
                 persist = true;
                 if let Some(run) = runtime.run.as_mut() {
-                    let update = params.get("update").cloned().unwrap_or(Value::Null);
-                    let kind = update
-                        .get("sessionUpdate")
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    if kind == "agent_message_chunk" {
-                        run.saw_agent_message = true;
-                        if let Some(text) = update.pointer("/content/text").and_then(Value::as_str)
-                        {
-                            if run.agent_text.chars().count() < SNIPPET_CHARS * 2 {
-                                run.agent_text.push_str(text);
-                            }
-                        }
-                    }
-                    let meta = params["update"]
-                        .get("_meta")
-                        .and_then(Value::as_object)
-                        .cloned()
-                        .unwrap_or_default();
-                    let mut meta = meta;
-                    meta.insert(
-                        "distill".to_string(),
-                        json!({ "messageId": run.message_id, "runId": run.run_id, "created": now_iso() }),
-                    );
-                    if let Some(update) = params.get_mut("update").and_then(Value::as_object_mut) {
-                        update.insert("_meta".to_string(), Value::Object(meta));
-                    }
+                    Self::stamp_run_update(&mut params, run, &now_iso());
                 }
             }
         }
@@ -582,6 +561,46 @@ impl Inner {
             }
         }
         self.notify_frontend("session/update", params);
+    }
+
+    /// Note what a running turn's update adds to the chat snippet and stamp
+    /// it with the host's bookkeeping. `messageId` is the user prompt's id,
+    /// as it always was; everything but a user chunk also names the reply's
+    /// own message, `assistantMessageId`, so a consumer can keep the prompt
+    /// and the reply (and consecutive turns) apart.
+    fn stamp_run_update(params: &mut Value, run: &mut RunState, created: &str) {
+        let Some(update) = params.get_mut("update").and_then(Value::as_object_mut) else {
+            return;
+        };
+        let kind = update
+            .get("sessionUpdate")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if kind == "agent_message_chunk" {
+            run.saw_agent_message = true;
+            if let Some(text) = update
+                .get("content")
+                .and_then(|content| content.get("text"))
+                .and_then(Value::as_str)
+            {
+                if run.agent_text.chars().count() < SNIPPET_CHARS * 2 {
+                    run.agent_text.push_str(text);
+                }
+            }
+        }
+        let mut distill =
+            json!({ "messageId": run.message_id, "runId": run.run_id, "created": created });
+        if kind != "user_message_chunk" {
+            distill["assistantMessageId"] = json!(run.assistant_message_id);
+        }
+        let mut meta = update
+            .get("_meta")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        meta.insert("distill".to_string(), distill);
+        update.insert("_meta".to_string(), Value::Object(meta));
     }
 
     async fn on_bridge_request(&self, harness: &str, id: Value, method: &str, mut params: Value) {
@@ -1581,7 +1600,11 @@ impl Inner {
                 }
             });
         }
-        Ok(json!({ "runId": ids.run_id, "messageId": ids.message_id }))
+        Ok(json!({
+            "runId": ids.run_id,
+            "messageId": ids.message_id,
+            "assistantMessageId": ids.assistant_message_id,
+        }))
     }
 
     /// Session ids of every live session on `harness` (used to answer
@@ -1651,6 +1674,7 @@ mod tests {
         TurnIds {
             run_id: "run-1".to_string(),
             message_id: "user-1".to_string(),
+            assistant_message_id: "reply-1".to_string(),
         }
     }
 
@@ -1698,5 +1722,51 @@ mod tests {
         assert!(events[0]["update"]["_meta"]["distill"]
             .get("steer")
             .is_none());
+    }
+
+    #[test]
+    fn agent_updates_of_a_turn_name_the_reply_apart_from_the_prompt() {
+        let mut run = RunState::start(&ids());
+        let mut chunk = json!({
+            "sessionId": "bridge-1",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": "hello" },
+                "_meta": { "claudeCode": { "parentToolUseId": null } },
+            }
+        });
+        Inner::stamp_run_update(&mut chunk, &mut run, "2026-09-11T00:00:00.000Z");
+        let meta = &chunk["update"]["_meta"];
+        assert_eq!(meta["distill"]["messageId"], "user-1");
+        assert_eq!(meta["distill"]["assistantMessageId"], "reply-1");
+        assert_eq!(meta["distill"]["runId"], "run-1");
+        assert!(meta.get("claudeCode").is_some());
+        assert!(run.saw_agent_message);
+        assert_eq!(run.agent_text, "hello");
+
+        let mut tool = json!({
+            "update": { "sessionUpdate": "tool_call", "toolCallId": "t1" }
+        });
+        Inner::stamp_run_update(&mut tool, &mut run, "2026-09-11T00:00:00.000Z");
+        assert_eq!(
+            tool["update"]["_meta"]["distill"]["assistantMessageId"],
+            "reply-1"
+        );
+    }
+
+    #[test]
+    fn a_user_chunk_of_a_turn_keeps_only_the_prompt_id() {
+        let mut run = RunState::start(&ids());
+        let mut echo = json!({
+            "update": {
+                "sessionUpdate": "user_message_chunk",
+                "content": { "type": "text", "text": "hi" },
+            }
+        });
+        Inner::stamp_run_update(&mut echo, &mut run, "2026-09-11T00:00:00.000Z");
+        let distill = &echo["update"]["_meta"]["distill"];
+        assert_eq!(distill["messageId"], "user-1");
+        assert!(distill.get("assistantMessageId").is_none());
+        assert!(!run.saw_agent_message);
     }
 }
