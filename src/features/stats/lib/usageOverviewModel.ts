@@ -263,9 +263,15 @@ export function buildUsageOverview({
   const hasKnownCost = providers.some(
     (provider) => provider.estimatedCostUsd !== null,
   );
-  const hasPartialCost = providers.some(
-    (provider) => provider.hasData && provider.estimatedCostUsd === null,
-  );
+  // Partial when a provider with data has no cost at all, or when some of
+  // its sessions carry tokens without a cost (its sum then undercounts).
+  const hasPartialCost =
+    providers.some(
+      (provider) => provider.hasData && provider.estimatedCostUsd === null,
+    ) ||
+    [...byProvider.values()].some(
+      (provider) => provider.hasKnownCost && provider.hasMissingCost,
+    );
   const estimatedCostUsd = hasKnownCost
     ? providers.reduce(
         (sum, provider) => sum + (provider.estimatedCostUsd ?? 0),
