@@ -63,22 +63,6 @@ bundle-windows bundle="nsis":
 test-windows-dev:
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Test-WindowsDev.ps1
 
-# ── Dev Environment ──────────────────────────────────────────
-
-# Install dependencies.
-[unix]
-_setup-dev-deps:
-    pnpm install
-
-[unix]
-_install-lefthook:
-    ./scripts/install-lefthook.sh
-
-# Install dependencies and prepare local development hooks.
-[unix]
-setup: _setup-dev-deps
-    just _install-lefthook
-
 # ── Build & Check ────────────────────────────────────────────
 
 # Run the frontend non-test checks: design-system guardrails, berdctl contract freshness, formatting, lint, i18n, and TypeScript.
@@ -151,10 +135,6 @@ tauri-fmt:
 tauri-fmt-check:
     {{ dev_tool }} cargo fmt --manifest-path src-tauri/Cargo.toml --check
 
-[unix]
-_tauri-cargo-unix *ARGS:
-    DEV_TOOL="$PWD/{{ dev_tool }}" && TAURI_CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)" && cd src-tauri && CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[]}}' "$DEV_TOOL" cargo {{ ARGS }}
-
 # Run as a generated PowerShell script, not a shebang recipe. just follows the
 # Unix shebang rule and hands the interpreter everything after its path as ONE
 # argument, so `#!powershell.exe -NoProfile -ExecutionPolicy Bypass` reached
@@ -179,19 +159,8 @@ _tauri-cargo-windows *ARGS:
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # Run Rust clippy with warnings denied.
-clippy:
-    just _clippy-{{ os_family() }}
-
-[unix]
-_clippy-unix:
-    just _tauri-cargo-unix clippy -- -D warnings
-    just _tauri-cargo-unix clippy --features {{ app_features }} -- -D warnings
-    just _tauri-cargo-unix clippy -p berdctl -- -D warnings
-    just _tauri-cargo-unix clippy -p berd-monitor -- -D warnings
-    just _tauri-cargo-unix clippy -p tauri-plugin-berdctl --features server -- -D warnings
-
 [windows]
-_clippy-windows:
+clippy:
     just _tauri-cargo-windows clippy -- -D warnings
     just _tauri-cargo-windows clippy --features {{ app_features }} -- -D warnings
     just _tauri-cargo-windows clippy -p berdctl -- -D warnings
@@ -203,32 +172,13 @@ build:
     pnpm build
 
 # Check the Tauri/Rust crate with external sidecars disabled.
-tauri-check:
-    just _tauri-check-{{ os_family() }}
-
-[unix]
-_tauri-check-unix:
-    just _tauri-cargo-unix check
-    just _tauri-cargo-unix check --features {{ app_features }}
-    just _tauri-cargo-unix check -p berdctl
-    just _tauri-cargo-unix check -p berd-monitor
-
 [windows]
-_tauri-check-windows:
+tauri-check:
     just tauri-check-windows
 
 # Run the Rust workspace crate tests with external sidecars disabled.
-tauri-test:
-    just _tauri-test-{{ os_family() }}
-
-[unix]
-_tauri-test-unix:
-    just _tauri-cargo-unix test -p tauri-plugin-berdctl --features server
-    just _tauri-cargo-unix test -p berdctl
-    just _tauri-cargo-unix test -p berd-monitor
-
 [windows]
-_tauri-test-windows:
+tauri-test:
     just _tauri-cargo-windows test -p tauri-plugin-berdctl --features server
     just _tauri-cargo-windows test -p berdctl
     just _tauri-cargo-windows test -p berd-monitor
@@ -276,90 +226,8 @@ test-coverage:
 
 # ── Run ──────────────────────────────────────────────────────
 
-[unix]
-dev:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    just setup
-
-    VITE_PORT="$(python3 -c "import hashlib,os; h=int(hashlib.sha256(os.getcwd().encode()).hexdigest(),16); print(10000 + h % 55000)")"
-    export VITE_PORT
-    # ACP bridges install at runtime onto the Berd-managed Node runtime, the
-    # same path dev and release share; set BERD_ACP_TOOLS_DIR by hand to point
-    # the host at a locally built bridge dir instead.
-    export VITE_DESIGN_SYSTEM_EXPLORER=1
-    export RUST_LOG="${RUST_LOG:-perf=debug,info}"
-    export CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)"
-    echo "Using Tauri Cargo target dir: ${CARGO_TARGET_DIR}"
-
-    # Derive a git-based version so dev builds don't report the 0.1.0
-    # placeholder. The rich string is the version agents see in their context;
-    # the numeric one is injected into Tauri's config below.
-    eval "$(./scripts/resolve-app-version.sh)"
-    export VITE_APP_VERSION="$BERD_APP_VERSION_RICH"
-    echo "Using app version: ${BERD_APP_VERSION} (${BERD_APP_VERSION_RICH})"
-
-    # tauri dev only builds the root package; the agent-facing CLI workspace
-    # members need explicit builds because tauri.dev.conf.json blanks externalBin.
-    (cd src-tauri && cargo build -p berdctl)
-    (cd src-tauri && cargo build -p berd-monitor)
-    export BERDCTL_BIN="${CARGO_TARGET_DIR}/debug/berdctl"
-    export BERD_MONITOR_BIN="${CARGO_TARGET_DIR}/debug/berd-monitor"
-    echo "Using berdctl CLI: ${BERDCTL_BIN}"
-    echo "Using berd-monitor CLI: ${BERD_MONITOR_BIN}"
-
-
-    DISTRO_DIR="$(pwd)/distro"
-    if [[ -z "${DISTILL_DISTRO_DIR:-}" && -d "$DISTRO_DIR" ]]; then
-        export DISTILL_DISTRO_DIR="$DISTRO_DIR"
-        echo "Using distro dir: ${DISTILL_DISTRO_DIR}"
-    fi
-
-    EXTRA_CONFIG_ARGS=(--config src-tauri/tauri.dev.conf.json --config "{\"build\":{\"devUrl\":\"http://localhost:${VITE_PORT}\",\"beforeDevCommand\":{\"script\":\"exec pnpm exec vite --port ${VITE_PORT} --strictPort\",\"cwd\":\"..\",\"wait\":false}}}")
-    EXTRA_CONFIG_ARGS+=(--config "{\"version\":\"${BERD_APP_VERSION}\"}")
-
-    ICON_DIR="${CARGO_TARGET_DIR}/dev-icons"
-    mkdir -p "$ICON_DIR"
-    DEV_ICON_LABEL="${BERD_DEV_LABEL:-$(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")}"
-    DEV_ICON_LABEL="$(node -e 'const raw = process.argv[1] || ""; const strip = /^(?:(?:squareup|berd)(?=$|[^a-zA-Z0-9])|[^a-zA-Z0-9]+)/i; let label = raw, prev; do { prev = label; label = label.replace(strip, ""); } while (label !== prev); process.stdout.write(label || raw);' "$DEV_ICON_LABEL")"
-    if [[ -z "$DEV_ICON_LABEL" || "$DEV_ICON_LABEL" == "HEAD" ]]; then
-        DEV_ICON_LABEL="local"
-    fi
-    DEV_ICON_SLUG="$(node -e 'const label = process.argv[1] || "local"; process.stdout.write(label.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "local");' "$DEV_ICON_LABEL")"
-    DEV_ICON_CACHE_KEY="$(node -e 'const { createHash } = require("node:crypto"); const { readFileSync } = require("node:fs"); const [label, ...files] = process.argv.slice(1); const hash = createHash("sha256"); hash.update(label); for (const file of files) hash.update(readFileSync(file)); process.stdout.write(hash.digest("hex").slice(0, 12));' "$DEV_ICON_LABEL" scripts/generate-dev-icon.mjs src-tauri/icons/icon.icns)"
-    DEV_ICON_PNG="$ICON_DIR/icon-${DEV_ICON_SLUG}-${DEV_ICON_CACHE_KEY}.png"
-    DEV_APP_ICON="$ICON_DIR/icon-${DEV_ICON_SLUG}-${DEV_ICON_CACHE_KEY}.icns"
-    if node scripts/generate-dev-icon.mjs src-tauri/icons/icon.icns "$DEV_ICON_PNG" "$DEV_ICON_LABEL" && \
-       node scripts/generate-dev-icon.mjs src-tauri/icons/icon.icns "$DEV_APP_ICON" "$DEV_ICON_LABEL"; then
-        DEV_ICON_CONFIG="$(node -e 'const [label, icns, png] = process.argv.slice(1); process.stdout.write(JSON.stringify({ productName: `Berd (${label})`, bundle: { icon: [icns, png] } }));' "$DEV_ICON_LABEL" "$DEV_APP_ICON" "$DEV_ICON_PNG")"
-        echo "Using badged dev icon: ${DEV_ICON_PNG} (${DEV_ICON_LABEL})"
-        EXTRA_CONFIG_ARGS+=(--config "$DEV_ICON_CONFIG")
-    fi
-
-    CARGO_FEATURES="{{ app_features }}"
-    pnpm tauri dev --features "$CARGO_FEATURES" "${EXTRA_CONFIG_ARGS[@]}"
-
-[unix]
-dev-debug: dev
-
 dev-frontend:
     pnpm dev
-
-# Run the Tauri dev app with the legacy local driver by default. Pass
-# `isolated=1` to opt into authenticated, per-run state isolation.
-[unix]
-dev-e2e mode="":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    case "{{ mode }}" in
-      "") exec just dev ;;
-      isolated=1) exec ./scripts/dev-e2e.sh ;;
-      *)
-        echo "dev-e2e: expected isolated=1, got: {{ mode }}" >&2
-        exit 2
-        ;;
-    esac
 
 # Fetch official Node.js release checksums and update node-runtime.lock.json (e.g. `just bump-node-runtime v24.12.0`).
 bump-node-runtime *ARGS:
@@ -371,30 +239,15 @@ bump-node-runtime *ARGS:
 new-command noun verb:
     node scripts/new-berdctl-command.mjs {{ noun }} {{ verb }}
 
-clean:
-    just _clean-{{ os_family() }}
-
-[unix]
-_clean-unix:
-    just _tauri-cargo-unix clean
-    rm -rf dist node_modules
-
 # Same broken multi-argument shebang as _tauri-cargo-windows; see there.
 [windows]
 [script("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File")]
-_clean-windows:
+clean:
     $ErrorActionPreference = "Stop"
     just _tauri-cargo-windows clean
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist,node_modules
 
-stage-sidecar:
-    just _stage-sidecar-{{ os_family() }}
-
-[unix]
-_stage-sidecar-unix:
-    TAURI_CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)" && CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" ./scripts/prepare-berdctl-sidecar.sh
-
 [windows]
-_stage-sidecar-windows:
+stage-sidecar:
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Invoke-Stage-Sidecar-Windows.ps1
