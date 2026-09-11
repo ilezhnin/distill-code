@@ -1186,8 +1186,13 @@ impl Inner {
             .await?;
         let new_id = protocol::session_id(&created)
             .ok_or_else(|| protocol::internal("fork produced no session"))?;
+        // "Fork from this message": the renderer sends the Unix second the
+        // copy must stop before.
+        let before = params
+            .pointer("/_meta/conversationBefore")
+            .and_then(Value::as_i64);
         self.store
-            .copy_events(&session_id, &new_id)
+            .copy_events(&session_id, &new_id, before)
             .await
             .map_err(protocol::internal)?;
         if let Some(title) = &record.title {
