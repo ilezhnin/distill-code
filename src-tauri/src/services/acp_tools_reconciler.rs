@@ -14,7 +14,7 @@
 //! the meantime, so an offline launch or a tampered registry never removes a
 //! working bridge. Superseded
 //! managed Node runtimes are pruned only in the epilogue of a fully-successful
-//! run — every bridge shim execs its Node by absolute versioned path, so the
+//! run — every bridge shim execs its Node by versioned path, so the
 //! old runtime must outlive the last shim that references it.
 //!
 //! Silent when there is nothing to manage: the `BERD_ACP_TOOLS_DIR` dev

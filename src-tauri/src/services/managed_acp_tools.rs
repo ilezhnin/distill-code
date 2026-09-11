@@ -20,7 +20,7 @@
 //!   every `^` range from the registry and being graded after the fact. It
 //!   then re-reads the replayed `package-lock.json` as a post-condition,
 //!   requires the target's native executable to physically exist, and only
-//!   then writes an absolute-path shim into `packages/bin` (no host `node` on
+//!   then writes a fixed-path shim into `packages/bin` (no host `node` on
 //!   PATH required) and records the installed version in `packages/state.json`.
 //!   The startup reconciler (`acp_tools_reconciler`) runs this for every
 //!   managed bridge on launch, so a new bridge release ships to users — after
@@ -457,7 +457,7 @@ pub fn install_lock() -> &'static tokio::sync::Mutex<()> {
 /// release-controlled `package.json` + `package-lock.json` from
 /// `acp-tools.lock.json` and replay them with `npm ci --prefix`, re-read the
 /// replayed lockfile and require the target's native executable to exist,
-/// write the absolute-path shim, and record the installed version in
+/// write the fixed-path shim, and record the installed version in
 /// `state.json`. Safe to call concurrently — provider installs, doctor fixes,
 /// and the startup reconciler all serialize on one process-wide install mutex.
 /// A failed or rejected install leaves any previously installed version in
@@ -579,6 +579,7 @@ async fn install_npm_tool(
     // under a bridge trying to start.
     let expected_shim = shim_contents(
         layout,
+        &shim_bin_dir(packages_root),
         &node_binary(layout, node_install_dir),
         &npm_entrypoint(&install_dir, tool.package),
     );
@@ -644,6 +645,7 @@ async fn install_npm_tool(
         &transaction.staged_shim,
         &shim_contents(
             layout,
+            &shim_bin_dir(packages_root),
             &node_binary(layout, node_install_dir),
             &live_entrypoint,
         ),
@@ -1689,19 +1691,26 @@ async fn run_pinned_npm_install(
     }
 }
 
-/// Shim body for a managed bridge. Both paths are absolute, so the shim needs
-/// no `node` on PATH and cannot hit the old wrapper's exit-127 mode. On
-/// Windows the launcher is a `.cmd` batch script (resolved by bare name via
-/// `PATHEXT`); elsewhere it is a `#!/bin/sh` script.
-fn shim_contents(layout: &managed_node::RuntimeLayout, node: &Path, entrypoint: &Path) -> String {
+/// Shim body for a managed bridge written into `shim_dir`. The shim names node
+/// and the entrypoint by fixed location, so it needs no `node` on PATH and
+/// cannot hit the old wrapper's exit-127 mode. On Windows the launcher is a
+/// `.cmd` batch script (resolved by bare name via `PATHEXT`) that locates both
+/// relative to itself — see [`cmd_launcher_path`]; elsewhere it is a
+/// `#!/bin/sh` script with absolute paths.
+fn shim_contents(
+    layout: &managed_node::RuntimeLayout,
+    shim_dir: &Path,
+    node: &Path,
+    entrypoint: &Path,
+) -> String {
     if layout.is_windows() {
         // `@echo off` suppresses command echo; `%*` forwards every argument
         // verbatim; the bare final invocation propagates node's exit code as
         // the batch script's exit code.
         format!(
             "@echo off\r\nREM Written by Berd's managed ACP tools installer; do not edit.\r\n{} {} %*\r\n",
-            cmd_quote(node),
-            cmd_quote(entrypoint)
+            cmd_launcher_path(shim_dir, node),
+            cmd_launcher_path(shim_dir, entrypoint)
         )
     } else {
         format!(
@@ -1716,10 +1725,42 @@ fn sh_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
 }
 
-/// Double-quote a path for a `.cmd` batch script. Windows paths cannot contain
-/// `"`, so wrapping in double quotes is sufficient to tolerate spaces.
-fn cmd_quote(path: &Path) -> String {
-    format!("\"{}\"", path.to_string_lossy())
+/// A double-quoted path for a `.cmd` launcher living in `shim_dir`.
+///
+/// cmd.exe decodes batch files in the console's OEM code page, not UTF-8, so
+/// an absolute path with any non-ASCII character (a Cyrillic or accented
+/// Windows user name in `%APPDATA%`) would be read back as mojibake and the
+/// bridge would never start. Everything the shim points at lives under the
+/// packages root (`shim_dir`'s parent), so the path is written relative to
+/// `%~dp0` — which cmd expands from its own Unicode view of the launcher's
+/// location — and the file itself stays ASCII. A path outside the packages
+/// root falls back to its absolute spelling. Either way `%` is doubled so cmd
+/// does not expand it, and Windows paths cannot contain `"`, so the quotes
+/// only need to tolerate spaces.
+fn cmd_launcher_path(shim_dir: &Path, path: &Path) -> String {
+    let relative = shim_dir
+        .parent()
+        .and_then(|packages_root| path.strip_prefix(packages_root).ok())
+        .filter(|relative| {
+            !relative.as_os_str().is_empty()
+                && relative
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_)))
+        });
+    match relative {
+        Some(relative) => {
+            let parts: Vec<String> = relative
+                .components()
+                .map(|component| cmd_escape_percent(&component.as_os_str().to_string_lossy()))
+                .collect();
+            format!("\"%~dp0..\\{}\"", parts.join("\\"))
+        }
+        None => format!("\"{}\"", cmd_escape_percent(&path.to_string_lossy())),
+    }
+}
+
+fn cmd_escape_percent(text: &str) -> String {
+    text.replace('%', "%%")
 }
 
 /// Reconcile epilogue: drop installs for ids no longer in the managed set
@@ -2304,8 +2345,12 @@ mod tests {
             .join("v9.9.9")
             .join("plat")
             .join("node");
-        let expected_shim =
-            shim_contents(&layout, &node, &npm_entrypoint(&install_dir, tool.package));
+        let expected_shim = shim_contents(
+            &layout,
+            &shim_bin_dir(&packages_root),
+            &node,
+            &npm_entrypoint(&install_dir, tool.package),
+        );
         let current = || {
             pinned_install_is_current(
                 &packages_root,
@@ -2359,6 +2404,7 @@ mod tests {
         let unix = managed_node::RuntimeLayout::for_platform("linux-x64");
         let contents = shim_contents(
             &unix,
+            Path::new("/data/Application Support/packages/bin"),
             Path::new("/data/Application Support/packages/node/v1/plat/bin/node"),
             Path::new("/data/Application Support/packages/tools/claude-acp/node_modules/@scope/claude-acp/dist/index.js"),
         );
@@ -2371,24 +2417,42 @@ mod tests {
     #[test]
     fn windows_shim_contents_is_a_cmd_launcher_forwarding_args() {
         let win = managed_node::RuntimeLayout::for_platform("win-x64");
-        let contents = shim_contents(
-            &win,
-            Path::new(r"C:\Users\Me\AppData\packages\node\v1\win-x64\node.exe"),
-            Path::new(
-                r"C:\Users\Me\AppData\packages\tools\claude-acp\node_modules\@scope\claude-acp\dist\index.js",
-            ),
+        // A profile path cmd.exe would mangle if it were written into the
+        // launcher: non-ASCII (read back in the OEM code page) and a `%`.
+        let profile = Path::new("C:\\Users\\Иван 100%\\AppData");
+        let packages_root = profile.join("packages");
+        let node = packages_root
+            .join("node")
+            .join("v1")
+            .join("win-x64")
+            .join("node.exe");
+        let entrypoint = npm_entrypoint(
+            &tool_install_dir(&packages_root, "claude-acp"),
+            "@scope/claude-acp",
         );
+        let contents = shim_contents(&win, &shim_bin_dir(&packages_root), &node, &entrypoint);
         assert!(contents.starts_with("@echo off\r\n"), "{contents}");
-        // Both paths double-quoted (tolerating spaces), `%*` forwards args,
-        // CRLF line endings for cmd.exe.
+        // Both paths resolved relative to the launcher and double-quoted
+        // (tolerating spaces), `%*` forwards args, CRLF line endings for
+        // cmd.exe, and nothing outside ASCII for cmd to misdecode.
+        assert!(contents.is_ascii(), "{contents}");
         assert!(contents.ends_with(
-            "\"C:\\Users\\Me\\AppData\\packages\\node\\v1\\win-x64\\node.exe\" \"C:\\Users\\Me\\AppData\\packages\\tools\\claude-acp\\node_modules\\@scope\\claude-acp\\dist\\index.js\" %*\r\n"
+            "\"%~dp0..\\node\\v1\\win-x64\\node.exe\" \"%~dp0..\\tools\\claude-acp\\node_modules\\@scope\\claude-acp\\dist\\index.js\" %*\r\n"
         ), "{contents}");
         // The shim file name carries the `.cmd` extension so bare-name launch
         // resolves it through PATHEXT.
         assert_eq!(
             shim_file_name(&win, "claude-agent-acp"),
             "claude-agent-acp.cmd"
+        );
+    }
+
+    #[test]
+    fn windows_launcher_path_outside_the_packages_root_stays_absolute() {
+        let shim_dir = Path::new("C:\\Data").join("packages").join("bin");
+        assert_eq!(
+            cmd_launcher_path(&shim_dir, Path::new("D:\\100%\\node.exe")),
+            "\"D:\\100%%\\node.exe\""
         );
     }
 
@@ -2750,6 +2814,7 @@ exit 0
             std::fs::read_to_string(&shim).unwrap(),
             shim_contents(
                 &test_layout(),
+                &shim_bin_dir(&packages_root),
                 &node_binary(&test_layout(), &node_install_dir),
                 &entrypoint
             )
@@ -3869,6 +3934,7 @@ exit 0
             &shim_file_name(&test_layout(), tool.binary),
             &shim_contents(
                 &test_layout(),
+                &shim_bin_dir(packages_root),
                 &node_binary(&test_layout(), node_install_dir),
                 &entrypoint,
             ),
@@ -3991,7 +4057,9 @@ exit 0
             shim_bin_dir(&packages_root).join(shim_file_name(&test_layout(), tool.binary)),
         )
         .unwrap();
-        assert!(shim.contains(&superseded_dir.to_string_lossy().into_owned()));
+        // The Windows launcher names the runtime relative to itself, the Unix
+        // one by absolute path; both spell out the superseded version dir.
+        assert!(shim.contains("v0.0.1"), "{shim}");
         assert!(!read_state(&packages_root).last_reconcile.unwrap().ok);
     }
 
