@@ -249,81 +249,17 @@ ci-windows:
 agent-driver-test:
     pnpm test:agent-driver
 
-# Stage the sidecars and build bundles.
-bundle:
-    just _bundle-{{ os_family() }}
-
-# Windows staging is native (real *-<triple>.exe, PE-validated, no Catch stub)
-# and drives `tauri build --bundles nsis` with a shared explicit target triple.
+# Stage the sidecars and build the Windows installer. Staging is native
+# (real *-<triple>.exe, PE-validated) and drives `tauri build --bundles nsis`
+# with a shared explicit target triple.
 [windows]
-_bundle-windows:
+bundle:
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Bundle-Windows.ps1
 
-[unix]
-_bundle-unix:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    TAURI_CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)"
-    CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" ./scripts/prepare-berdctl-sidecar.sh
-    ./scripts/prepare-catch-sidecar.sh
-
-    CARGO_FEATURES_CSV="berdctl"
-
-    # Derive a git-based version so non-release bundles don't ship the 0.1.0
-    # placeholder. Injected via a temp --config overlay to keep the tree clean.
-    eval "$(./scripts/resolve-app-version.sh)"
-    echo "Building Berd ${BERD_APP_VERSION} (${BERD_APP_VERSION_RICH})"
-    VERSION_CONFIG="$(mktemp -t berd-tauri-version.XXXXXX.json)"
-    trap 'rm -f "$VERSION_CONFIG"' EXIT
-    jq -n \
-      --arg v "$BERD_APP_VERSION" \
-      '{ version: $v }' \
-      > "$VERSION_CONFIG"
-
-    TAURI_BUILD_ARGS=(pnpm tauri build --features "$CARGO_FEATURES_CSV" --config "$VERSION_CONFIG")
-
-    CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" \
-      BERD_APP_VERSION="$BERD_APP_VERSION" \
-      VITE_APP_VERSION="$BERD_APP_VERSION_RICH" \
-      "${TAURI_BUILD_ARGS[@]}"
-
-
-# Build a release bundle with WebView devtools enabled.
-bundle-debug:
-    just _bundle-debug-{{ os_family() }}
-
+# Build the Windows installer with WebView devtools enabled.
 [windows]
-_bundle-debug-windows:
+bundle-debug:
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Bundle-Windows.ps1 -Debug
-
-[unix]
-_bundle-debug-unix:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    TAURI_CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)"
-    CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" ./scripts/prepare-berdctl-sidecar.sh
-    ./scripts/prepare-catch-sidecar.sh
-
-    CARGO_FEATURES_CSV="berdctl,devtools"
-
-    # Use a temporary config overlay so normal release bundles keep devtools
-    # disabled, and fold in the git-derived version so the bundle doesn't ship
-    # the 0.1.0 placeholder.
-    eval "$(./scripts/resolve-app-version.sh)"
-    echo "Building Berd ${BERD_APP_VERSION} (${BERD_APP_VERSION_RICH})"
-    DEBUG_CONFIG="$(mktemp -t berd-tauri-debug.XXXXXX.json)"
-    trap 'rm -f "$DEBUG_CONFIG"' EXIT
-    jq \
-      --arg v "$BERD_APP_VERSION" \
-      '.version = $v | .app.windows[0].devtools = true' \
-      src-tauri/tauri.conf.json > "$DEBUG_CONFIG"
-
-    CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" \
-      BERD_APP_VERSION="$BERD_APP_VERSION" \
-      VITE_APP_VERSION="$BERD_APP_VERSION_RICH" \
-      pnpm tauri build --features "$CARGO_FEATURES_CSV" --config "$DEBUG_CONFIG"
 
 # ── Test ─────────────────────────────────────────────────────
 
@@ -400,8 +336,6 @@ dev:
     DEV_APP_ICON="$ICON_DIR/icon-${DEV_ICON_SLUG}-${DEV_ICON_CACHE_KEY}.icns"
     if node scripts/generate-dev-icon.mjs src-tauri/icons/icon.icns "$DEV_ICON_PNG" "$DEV_ICON_LABEL" && \
        node scripts/generate-dev-icon.mjs src-tauri/icons/icon.icns "$DEV_APP_ICON" "$DEV_ICON_LABEL"; then
-        export BERD_DEV_APP_NAME="Berd (${DEV_ICON_LABEL})"
-        export BERD_DEV_APP_ICON="$DEV_ICON_PNG"
         DEV_ICON_CONFIG="$(node -e 'const [label, icns, png] = process.argv.slice(1); process.stdout.write(JSON.stringify({ productName: `Berd (${label})`, bundle: { icon: [icns, png] } }));' "$DEV_ICON_LABEL" "$DEV_APP_ICON" "$DEV_ICON_PNG")"
         echo "Using badged dev icon: ${DEV_ICON_PNG} (${DEV_ICON_LABEL})"
         EXTRA_CONFIG_ARGS+=(--config "$DEV_ICON_CONFIG")
@@ -465,7 +399,7 @@ stage-sidecar:
 
 [unix]
 _stage-sidecar-unix:
-    TAURI_CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)" && CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" ./scripts/prepare-berdctl-sidecar.sh && ./scripts/prepare-catch-sidecar.sh
+    TAURI_CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)" && CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" ./scripts/prepare-berdctl-sidecar.sh
 
 [windows]
 _stage-sidecar-windows:

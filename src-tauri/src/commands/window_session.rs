@@ -10,9 +10,6 @@ use tauri::{
     WindowEvent,
 };
 
-#[cfg(target_os = "macos")]
-use crate::attach_traffic_light_management;
-
 const SESSION_WINDOWS_CHANGED: &str = "session-windows-changed";
 const SESSION_HANDOFF_SNAPSHOT_AVAILABLE: &str = "session-handoff-snapshot-available";
 
@@ -119,20 +116,9 @@ pub fn label_for_session(session_id: &str) -> String {
 }
 
 fn session_window_support() -> SessionWindowSupport {
-    #[cfg(target_os = "macos")]
-    {
-        SessionWindowSupport {
-            supported: true,
-            reason: None,
-        }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        SessionWindowSupport {
-            supported: false,
-            reason: Some("session windows are currently supported on macOS only".to_string()),
-        }
+    SessionWindowSupport {
+        supported: false,
+        reason: Some("session windows are not supported".to_string()),
     }
 }
 
@@ -659,20 +645,12 @@ pub fn open_session_window(
         .inner_size(900.0, 700.0)
         .min_inner_size(608.0, 600.0);
 
-    #[cfg(target_os = "macos")]
-    let builder = builder
-        .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .hidden_title(true);
-
     let window = builder.build().map_err(|error| {
         reg.release_label(&label);
         format!("failed to build session window: {error}")
     })?;
 
     crate::apply_window_icon(&window);
-
-    #[cfg(target_os = "macos")]
-    attach_traffic_light_management(&window);
 
     let app_for_close = app.clone();
     let reg_for_close = reg.inner().clone();
@@ -957,11 +935,7 @@ mod tests {
     }
 
     #[test]
-    fn support_helper_is_cfg_backed() {
-        let support = session_window_support();
-        #[cfg(target_os = "macos")]
-        assert!(support.supported);
-        #[cfg(not(target_os = "macos"))]
-        assert!(!support.supported);
+    fn session_windows_are_reported_unsupported() {
+        assert!(!session_window_support().supported);
     }
 }

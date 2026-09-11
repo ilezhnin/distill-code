@@ -34,9 +34,6 @@
           "path": "$TEMP/**"
         },
         {
-          "path": "/Volumes/**"
-        },
-        {
           "path": "/mnt/**"
         },
         {

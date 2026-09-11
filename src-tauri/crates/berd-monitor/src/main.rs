@@ -178,15 +178,7 @@ fn state_base_dir() -> PathBuf {
     if let Some(local) = env::var_os("LOCALAPPDATA") {
         return PathBuf::from(local).join("Berd").join("monitor");
     }
-    #[cfg(target_os = "macos")]
-    if let Some(home) = env::var_os("HOME") {
-        return PathBuf::from(home)
-            .join("Library")
-            .join("Caches")
-            .join("Berd")
-            .join("monitor");
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     {
         if let Some(runtime) = env::var_os("XDG_RUNTIME_DIR") {
             return PathBuf::from(runtime).join("berd-monitor");

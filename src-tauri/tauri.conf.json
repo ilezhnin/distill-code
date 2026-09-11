@@ -22,13 +22,7 @@
         "minWidth": 608,
         "minHeight": 600,
         "visible": false,
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true,
-        "dragDropEnabled": true,
-        "trafficLightPosition": {
-          "x": 14,
-          "y": 28
-        }
+        "dragDropEnabled": true
       }
     ],
     "security": {
@@ -66,7 +60,6 @@
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
-      "icons/icon.icns",
       "icons/icon.ico"
     ],
     "resources": {
@@ -80,10 +73,6 @@
       "../resources/berd-sounds-5.mp3": "berd-sounds-5.mp3",
       "../resources/berd-sounds-6.mp3": "berd-sounds-6.mp3"
     },
-    "externalBin": [
-      "binaries/berdctl",
-      "binaries/berd-monitor",
-      "binaries/catch"
-    ]
+    "externalBin": ["binaries/berdctl", "binaries/berd-monitor"]
   }
 }

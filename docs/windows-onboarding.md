@@ -159,9 +159,6 @@ just dev-windows
 - managed `goose.exe`
 - built `berdctl.exe`
 
-The bb CLI resource is not staged because the app only maps and resolves `bb`
-on macOS today.
-
 Expected result:
 
 - Vite starts

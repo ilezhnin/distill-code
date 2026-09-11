@@ -13,11 +13,6 @@ pub(super) fn push_tool_manager_dirs(paths: &mut Vec<PathBuf>) {
         paths.push(home.join(".asdf/shims"));
     }
     paths.push(PathBuf::from("/usr/local/bin"));
-    #[cfg(target_os = "macos")]
-    {
-        paths.push(PathBuf::from("/opt/homebrew/bin"));
-        paths.push(PathBuf::from("/opt/local/bin"));
-    }
     if let Some(home) = dirs::home_dir() {
         push_latest_versioned_bin(paths, &home.join(".nvm/versions/node"), "bin");
         push_latest_versioned_bin(

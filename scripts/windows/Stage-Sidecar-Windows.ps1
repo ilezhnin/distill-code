@@ -2,10 +2,7 @@
 #
 # Mirrors the Unix scripts/prepare-*-sidecar.sh flow, but stages real
 # `<stem>-<triple>.exe` files and validates each as a PE image of the target
-# architecture instead of relying on chmod/-x (a no-op on Windows). Catch is
-# intentionally absent: it is macOS-only and is excluded from the Windows
-# externalBin contract via src-tauri/tauri.windows.conf.json, so staging a
-# fake shell-script "binary" here is forbidden and unnecessary.
+# architecture instead of relying on chmod/-x (a no-op on Windows).
 #
 # The same script is invoked by dev and release. -Triple makes the target an
 # explicit shared input: the caller passes the exact triple it hands Tauri via
@@ -69,6 +66,3 @@ Write-WindowsDevInfo "Staged berdctl sidecar: $staged"
 $monitorSource = Join-Path $berdctlReleaseDir (Get-WindowsExeName "berd-monitor")
 $staged = Stage-WindowsSidecar -SourcePath $monitorSource -Triple $Triple -Stem "berd-monitor" -BinDir $binDir
 Write-WindowsDevInfo "Staged berd-monitor sidecar: $staged"
-
-# Catch is deliberately not staged on Windows (see header).
-Write-WindowsDevInfo "Skipping Catch sidecar: unsupported on Windows (excluded from externalBin)."

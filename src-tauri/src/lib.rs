@@ -12,23 +12,11 @@ pub(crate) mod test_support {
     }
 }
 
-#[cfg(target_os = "macos")]
-use objc2::AnyThread;
-#[cfg(target_os = "macos")]
-use objc2_app_kit::{NSApplication, NSImage};
-#[cfg(target_os = "macos")]
-use objc2_foundation::{MainThreadMarker, NSProcessInfo, NSString};
 use services::{bundled_agents, bundled_skills, distro_bundle::DistroBundleState};
 use std::path::PathBuf;
-#[cfg(target_os = "macos")]
-use tauri::menu::{AboutMetadataBuilder, MenuBuilder, SubmenuBuilder};
-#[cfg(target_os = "macos")]
-use tauri::WindowEvent;
 use tauri::{include_image, Manager, RunEvent, WebviewWindow};
 use tauri_plugin_window_state::StateFlags;
 
-#[cfg(target_os = "macos")]
-const TRAFFIC_LIGHT_POSITION: (f64, f64) = (14.0, 28.0);
 const APP_LOG_MAX_FILE_SIZE_BYTES: u128 = 10 * 1024 * 1024;
 /// Archived log files kept once `berd.log` hits the size cap. `KeepSome`
 /// counts archives only — the active `berd.log` is always kept on top, so
@@ -37,12 +25,6 @@ const APP_LOG_MAX_FILE_SIZE_BYTES: u128 = 10 * 1024 * 1024;
 /// would wipe the captured agent-bridge stderr and panic backtraces
 /// mid-incident.
 const APP_LOG_ARCHIVES_KEPT: usize = 2;
-#[cfg(target_os = "macos")]
-const APP_DISPLAY_NAME: &str = "Distill";
-#[cfg(target_os = "macos")]
-const DEV_APP_NAME_ENV: &str = "BERD_DEV_APP_NAME";
-#[cfg(target_os = "macos")]
-const DEV_APP_ICON_ENV: &str = "BERD_DEV_APP_ICON";
 
 fn install_panic_logging_hook() {
     std::panic::set_hook(Box::new(|info| {
@@ -54,17 +36,6 @@ fn install_panic_logging_hook() {
         eprintln!("{message}");
         log::error!("{message}");
     }));
-}
-
-#[cfg(target_os = "macos")]
-fn set_process_name() {
-    let app_name = std::env::var(DEV_APP_NAME_ENV).unwrap_or_else(|_| APP_DISPLAY_NAME.to_string());
-    let app_name = app_name.trim();
-    if app_name.is_empty() {
-        return;
-    }
-
-    NSProcessInfo::processInfo().setProcessName(&NSString::from_str(app_name));
 }
 
 pub(crate) fn apply_window_icon(window: &WebviewWindow) {
@@ -79,38 +50,9 @@ fn apply_app_window_icons(app: &tauri::AppHandle) {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn set_dev_dock_icon() {
-    let Ok(icon_path) = std::env::var(DEV_APP_ICON_ENV) else {
-        return;
-    };
-    let icon_path = icon_path.trim();
-    if icon_path.is_empty() {
-        return;
-    }
-
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
-
-    let Some(icon) =
-        NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(icon_path))
-    else {
-        log::warn!("Failed to load dev app icon from {icon_path}");
-        return;
-    };
-
-    let ns_app = NSApplication::sharedApplication(mtm);
-    unsafe {
-        ns_app.setApplicationIconImage(Some(&icon));
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     install_panic_logging_hook();
-    #[cfg(target_os = "macos")]
-    set_process_name();
 
     let context = tauri::generate_context!();
     let e2e_mode = services::e2e_mode::E2eMode::from_process_env(&context.config().identifier)
@@ -124,8 +66,7 @@ pub fn run() {
 
     // Single-instance enforcement: on Windows, a second launch exits early
     // and focuses the existing window instead of starting a duplicate app
-    // (log files, db connections, agent host, etc.). macOS handles this
-    // via RunEvent::Reopen further below.
+    // (log files, db connections, agent host, etc.).
     #[cfg(target_os = "windows")]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
         if let Some(window) = app.get_webview_window("main") {
@@ -135,7 +76,6 @@ pub fn run() {
     }));
 
     let builder = builder
-        .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
@@ -258,21 +198,13 @@ pub fn run() {
                 std::collections::BTreeMap::new(),
             );
 
-            #[cfg(target_os = "macos")]
-            {
-                if let Err(error) =
-                    commands::notifications::init_completion_notifications(app.handle())
-                {
-                    log::warn!("Failed to initialize completion notifications: {error}");
-                }
-            }
-
             deep_links::install(app);
 
             services::berdctl_discovery::sweep_stale_discovery_files(&app_data_dir);
 
             // Seed bundled skills and agents from the distro bundle registered
-            // above. This touches the filesystem, so it runs after the prompt.
+            // above. This touches the filesystem, so it runs after the state
+            // registration.
             let e2e_agents_dir = app
                 .try_state::<services::e2e_mode::E2eMode>()
                 .map(|mode| mode.agents_dir());
@@ -311,7 +243,6 @@ pub fn run() {
                     bundled_skills_state.mark_ready();
                 }
             }
-            app.manage(commands::global_shortcut::GlobalShortcutHandlerState::default());
 
             // Install or upgrade the Berd-managed ACP bridges (claude, codex)
             // to the latest published version in the background: each floats
@@ -321,71 +252,6 @@ pub fn run() {
             services::acp_tools_reconciler::spawn_startup_reconcile(app.handle());
 
             apply_app_window_icons(app.handle());
-
-            // Build a custom macOS application menu so that the app submenu,
-            // "About" item, and "Quit" item use the product name "Distill"
-            // instead of the Cargo binary name.
-            #[cfg(target_os = "macos")]
-            {
-                set_dev_dock_icon();
-                refresh_traffic_light_position_on_window_changes(app);
-                attach_main_window_lifecycle(app);
-
-                let app_menu = SubmenuBuilder::new(app, "Distill")
-                    .about_with_text(
-                        "About Distill",
-                        Some(AboutMetadataBuilder::new().name(Some("Distill")).build()),
-                    )
-                    .separator()
-                    .services()
-                    .separator()
-                    .hide_with_text("Hide Distill")
-                    .hide_others()
-                    .show_all()
-                    .separator()
-                    .quit_with_text("Quit Distill")
-                    .build()?;
-                let edit_menu = SubmenuBuilder::new(app, "Edit")
-                    .undo()
-                    .redo()
-                    .separator()
-                    .cut()
-                    .copy()
-                    .paste()
-                    .select_all()
-                    .build()?;
-                let view_menu = SubmenuBuilder::new(app, "View").fullscreen().build()?;
-                let window_menu = SubmenuBuilder::new(app, "Window")
-                    .minimize()
-                    .maximize_with_text("Zoom")
-                    .separator()
-                    .close_window()
-                    .build()?;
-                let menu = MenuBuilder::new(app)
-                    .item(&app_menu)
-                    .item(&edit_menu)
-                    .item(&view_menu)
-                    .item(&window_menu)
-                    .build()?;
-                app.set_menu(menu)?;
-
-                // Register the Window submenu as macOS's windowsMenu so that
-                // the system injects standard window management items (Fill,
-                // Center, Move & Resize, Full Screen Tile, Bring All to Front,
-                // etc.) automatically.
-                //
-                if let Some(mtm) = MainThreadMarker::new() {
-                    let ns_app = NSApplication::sharedApplication(mtm);
-                    if let Some(main_menu) = ns_app.mainMenu() {
-                        let window_title = NSString::from_str("Window");
-                        if let Some(window_item) = main_menu.itemWithTitle(&window_title) {
-                            if let Some(window_ns_menu) = window_item.submenu() {
-                                ns_app.setWindowsMenu(Some(&window_ns_menu));
-                            }
-                        }
-                    }
-                }
-            }
 
             Ok(())
         })
@@ -397,8 +263,6 @@ pub fn run() {
             commands::avatars::import_agent_avatar_file,
             commands::avatars::delete_user_avatar,
             commands::cache::clear_local_media_caches,
-            commands::global_shortcut::launch_global_shortcut_handler,
-            commands::global_shortcut::stop_global_shortcut_handler,
             commands::agent_host::get_agent_host_url,
             commands::project_icons::scan_project_icons,
             commands::project_icons::read_project_icon,
@@ -478,149 +342,12 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| match event {
             RunEvent::Exit => {
-                app.state::<commands::global_shortcut::GlobalShortcutHandlerState>()
-                    .stop();
                 app.state::<commands::terminal::TerminalState>().stop_all();
                 app.state::<services::agent_host::AgentHost>().shutdown();
-            }
-            #[cfg(target_os = "macos")]
-            RunEvent::Reopen { .. } => {
-                if let Some(main) = app.get_webview_window("main") {
-                    let _ = main.show();
-                    let _ = main.set_focus();
-                }
             }
             RunEvent::Ready => {
                 apply_app_window_icons(app);
             }
             _ => {}
         });
-}
-
-#[cfg(target_os = "macos")]
-fn refresh_traffic_light_position_on_window_changes(app: &tauri::App) {
-    if let Some(window) = app.get_webview_window("main") {
-        attach_traffic_light_management(&window);
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn attach_main_window_lifecycle(app: &tauri::App) {
-    let Some(main) = app.get_webview_window("main") else {
-        return;
-    };
-
-    let app_handle = app.handle().clone();
-    main.on_window_event(move |event| {
-        if let WindowEvent::CloseRequested { api, .. } = event {
-            let has_secondary_window = app_handle
-                .webview_windows()
-                .keys()
-                .any(|label| label != "main");
-
-            if has_secondary_window {
-                api.prevent_close();
-                if let Some(main) = app_handle.get_webview_window("main") {
-                    let _ = main.hide();
-                }
-            }
-        }
-    });
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn attach_traffic_light_management(window: &WebviewWindow) {
-    use std::sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    };
-
-    schedule_traffic_light_position_refresh(window);
-
-    let window_for_events = window.clone();
-    let resize_generation = Arc::new(AtomicU64::new(0));
-    window.on_window_event(move |event| match event {
-        WindowEvent::Resized(_) => {
-            let generation = resize_generation.fetch_add(1, Ordering::Relaxed) + 1;
-            let delayed_window = window_for_events.clone();
-            let delayed_generation = resize_generation.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(120)).await;
-                if delayed_generation.load(Ordering::Relaxed) == generation {
-                    schedule_traffic_light_position_refresh(&delayed_window);
-                }
-            });
-        }
-        WindowEvent::ScaleFactorChanged { .. } | WindowEvent::Focused(true) => {
-            resize_generation.fetch_add(1, Ordering::Relaxed);
-            schedule_traffic_light_position_refresh(&window_for_events);
-
-            let delayed_window = window_for_events.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                schedule_traffic_light_position_refresh(&delayed_window);
-            });
-        }
-        _ => {}
-    });
-}
-
-#[cfg(target_os = "macos")]
-fn schedule_traffic_light_position_refresh(window: &WebviewWindow) {
-    let window_for_main_thread = window.clone();
-    let window_for_refresh = window.clone();
-    let _ = window_for_main_thread.run_on_main_thread(move || {
-        apply_traffic_light_position(&window_for_refresh);
-    });
-}
-
-#[cfg(target_os = "macos")]
-fn apply_traffic_light_position(window: &WebviewWindow) {
-    let Ok(ns_window) = window.ns_window() else {
-        return;
-    };
-
-    unsafe {
-        let ns_window = &*ns_window.cast::<objc2_app_kit::NSWindow>();
-        inset_traffic_lights(
-            ns_window,
-            TRAFFIC_LIGHT_POSITION.0,
-            TRAFFIC_LIGHT_POSITION.1,
-        );
-    }
-}
-
-#[cfg(target_os = "macos")]
-unsafe fn inset_traffic_lights(window: &objc2_app_kit::NSWindow, x: f64, y: f64) {
-    use objc2_app_kit::{NSView, NSWindowButton};
-
-    let Some(close) = window.standardWindowButton(NSWindowButton::CloseButton) else {
-        return;
-    };
-    let Some(miniaturize) = window.standardWindowButton(NSWindowButton::MiniaturizeButton) else {
-        return;
-    };
-
-    let Some(title_bar_container_view) = close.superview().and_then(|view| view.superview()) else {
-        return;
-    };
-
-    let close_rect = NSView::frame(&close);
-    let title_bar_frame_height = close_rect.size.height + y;
-    let mut title_bar_rect = NSView::frame(&title_bar_container_view);
-    title_bar_rect.size.height = title_bar_frame_height;
-    title_bar_rect.origin.y = window.frame().size.height - title_bar_frame_height;
-    title_bar_container_view.setFrame(title_bar_rect);
-
-    let space_between = NSView::frame(&miniaturize).origin.x - close_rect.origin.x;
-    let mut window_buttons = vec![close, miniaturize];
-    if let Some(zoom) = window.standardWindowButton(NSWindowButton::ZoomButton) {
-        window_buttons.push(zoom);
-    }
-
-    for (index, button) in window_buttons.into_iter().enumerate() {
-        let mut rect = NSView::frame(&button);
-        rect.origin.x = x + (index as f64 * space_between);
-        button.setFrameOrigin(rect.origin);
-    }
 }

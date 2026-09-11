@@ -1,13 +1,12 @@
 # Build a native Windows Berd bundle with real sidecars staged.
 #
-# This is the Windows counterpart to the Unix `just bundle` / `bundle-debug`
-# recipes. Those recipes run the POSIX prepare-*-sidecar.sh scripts directly,
-# which on Windows would look for an extensionless berdctl, stage the sidecars
-# without the .exe suffix, and emit the forbidden Catch shell stub — none of
-# which match the tauri.windows.conf.json externalBin contract. This driver
+# This is what `just bundle` / `bundle-debug` run; bundling exists only on
+# Windows. The POSIX prepare-*-sidecar.sh scripts would look for an
+# extensionless berdctl and stage the sidecars without the .exe suffix, which
+# does not match the tauri.windows.conf.json externalBin contract. This driver
 # instead stages through Stage-Sidecar-Windows.ps1 (real *-<triple>.exe files,
-# PE-validated, no Catch) and hands Tauri the same explicit target triple so
-# the staged names and Tauri's externalBin resolution cannot diverge.
+# PE-validated) and hands Tauri the same explicit target triple so the staged
+# names and Tauri's externalBin resolution cannot diverge.
 param(
     [ValidateSet("nsis", "msi")][string]$Bundle = "nsis",
     [AllowNull()][AllowEmptyString()][string]$Version,
@@ -48,8 +47,7 @@ if (-not $SkipDependencyInstall) {
     Invoke-CheckedCommand -FilePath $pnpm -ArgumentList @("install", "--frozen-lockfile") -Label "pnpm install --frozen-lockfile"
 }
 
-# Stage berdctl/berd-monitor as validated *-<triple>.exe. Catch is macOS-only and is
-# excluded from the Windows externalBin overlay rather than replaced by a stub.
+# Stage berdctl/berd-monitor as validated *-<triple>.exe.
 Invoke-WindowsChildScript -ScriptPath (Join-Path $PSScriptRoot "Stage-Sidecar-Windows.ps1") `
     -ArgumentList @("-Triple", $targetTriple) -Label "Stage Windows sidecars"
 
@@ -77,11 +75,10 @@ if ($Debug) {
     }
     # Tauri merges overlays with json_patch (RFC 7386), which REPLACES arrays
     # wholesale. Setting devtools on app.windows[0] therefore requires carrying
-    # the full base app.windows array (as the Unix recipe does), or the other
-    # window props would be dropped. But carrying the full base config also
-    # carries its bundle.externalBin (which includes catch) and would REPLACE
-    # the Windows overlay's catch-free array — re-breaking the Windows contract.
-    # So pin externalBin to the Windows contract in the same overlay.
+    # the full base app.windows array, or the other window props would be
+    # dropped. Carrying the full base config also carries its
+    # bundle.externalBin, so pin that to the Windows contract in the same
+    # overlay.
     $baseConfig = Read-JsonFile (Join-Path (Join-Path (Get-BerdRepoRoot) "src-tauri") "tauri.conf.json")
     $baseConfig.version = $resolvedVersion.RichVersion
     $baseConfig.app.windows[0] | Add-Member -NotePropertyName devtools -NotePropertyValue $true -Force
@@ -89,11 +86,10 @@ if ($Debug) {
     $baseConfig.bundle.externalBin = (Get-ObjectValue (Get-ObjectValue $windowsConf "bundle") "externalBin")
     $configJson = $baseConfig | ConvertTo-Json -Depth 32
 } else {
-        $configJson = ([pscustomobject]@{
-            version = $resolvedVersion.RichVersion
-            bundle = @{ targets = @($Bundle) }
-        } | ConvertTo-Json -Depth 5)
-    }
+    $configJson = ([pscustomobject]@{
+        version = $resolvedVersion.RichVersion
+        bundle = @{ targets = @($Bundle) }
+    } | ConvertTo-Json -Depth 5)
 }
 [System.IO.File]::WriteAllText($configPath, $configJson, [System.Text.UTF8Encoding]::new($false))
 

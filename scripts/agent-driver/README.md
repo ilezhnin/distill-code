@@ -56,7 +56,8 @@ block a snapshot.
 
 Forwarded verbatim to the plugin, whose supported actions are `snapshot`,
 `active`, `click`, `fill`, `keypress`, `getText`, `waitForText`, `count`,
-`scroll` and `screenshot` (macOS only). The answer comes back as
+`scroll` and `screenshot` (listed, but it always fails: screenshots are not
+supported). The answer comes back as
 `{ ok, success, data, error }`.
 
 ### `exec` envelopes
