@@ -1969,7 +1969,7 @@ mod tests {
                 entry
                     .package_lock
                     .pointer("/packages/")
-                    .and_then(|root| dependency(root))
+                    .and_then(dependency)
                     .as_deref(),
                 Some(tool.version),
                 "{} packageLock root dependency",

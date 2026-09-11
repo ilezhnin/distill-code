@@ -149,7 +149,7 @@ impl E2eMode {
         &self.driver_token
     }
 
-    #[cfg(any(feature = "app-test-driver", test))]
+    #[cfg(feature = "app-test-driver")]
     pub(crate) fn driver_run_root(&self) -> &Path {
         &self.run_root
     }
