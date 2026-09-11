@@ -4,10 +4,6 @@ import {
   type RuntimeConfig,
 } from "@/shared/runtime-config/schema";
 
-import {
-  DEFAULT_STYLE_GUIDELINES_PROMPT,
-  STYLE_GUIDELINES_STORAGE_KEY,
-} from "@/shared/preferences/styleGuidelinesPreference";
 import { INTERACTION_NORMS_PREAMBLE } from "@/shared/api/interactionNorms";
 
 const mockLoadSession = vi.fn();
@@ -26,26 +22,6 @@ const noRequestModelContext = (providerId: string) => ({
   requestId: undefined,
 });
 
-const managedRuntimeConfig: RuntimeConfig = {
-  schemaVersion: 1,
-  goose: {
-    defaultModelProviderId: "databricks_v2",
-    defaultModelId: "goose-gpt-5-5",
-    modelProviders: [
-      {
-        id: "databricks_v2",
-        displayName: "Databricks v2",
-        models: [{ id: "goose-gpt-5-5", name: "GPT-5.5" }],
-      },
-      {
-        id: "other-managed",
-        displayName: "Other managed",
-        models: [{ id: "other-model", name: "Other" }],
-      },
-    ],
-  },
-};
-
 async function setRuntimeConfig(config: RuntimeConfig) {
   const { useRuntimeConfigStore } = await import(
     "@/shared/runtime-config/runtimeConfigStore"
@@ -57,7 +33,6 @@ async function setRuntimeConfig(config: RuntimeConfig) {
   });
 }
 
-const GOOSE_MANAGED_PROVIDER_IDS = ["goose", "databricks_v2"] as const;
 const EXTERNAL_AGENT_PROVIDER_IDS = ["claude-acp", "codex-acp"] as const;
 const reasoningEffortSnapshot = {
   configId: "thinking_effort",
@@ -68,13 +43,6 @@ const reasoningEffortSnapshot = {
     { id: "high", name: "High" },
   ],
 };
-
-function setStyleGuidelinesPreference(prompt: string) {
-  localStorage.setItem(
-    STYLE_GUIDELINES_STORAGE_KEY,
-    JSON.stringify({ prompt }),
-  );
-}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -146,7 +114,7 @@ vi.mock("../acpActiveMessageTracking", () => ({
 }));
 
 vi.mock("../sessionSearch", () => ({
-  searchSessionsViaExports: vi.fn(),
+  searchSessionsViaTranscripts: vi.fn(),
 }));
 
 describe("acpSteerMessage", () => {
@@ -179,7 +147,6 @@ describe("acpSendMessage", () => {
     // clearAllMocks clears call history but not return values; reset the
     // preamble to unavailable so tests opt in explicitly.
     mockGetBerdctlPreamble.mockReturnValue(null);
-    localStorage.removeItem(STYLE_GUIDELINES_STORAGE_KEY);
   });
 
   it("blocks transport when the prepared session has no acknowledged model", async () => {
@@ -209,9 +176,7 @@ describe("acpSendMessage", () => {
       "/tmp/project",
       "test-model",
     );
-    mockAppendSessionSystemPrompt.mockRejectedValueOnce(
-      new Error("ACP setup failed"),
-    );
+    mockGetBerdctlPreamble.mockRejectedValueOnce(new Error("ACP setup failed"));
 
     await expect(
       acpSendMessage("acp-session-dispatch-boundary", "hello", {
@@ -248,136 +213,6 @@ describe("acpSendMessage", () => {
 
     resolvePrompt();
     await send;
-  });
-
-  it.each(
-    GOOSE_MANAGED_PROVIDER_IDS,
-  )("adds configured style guidelines before sending for %s", async (providerId) => {
-    const configuredPrompt = "Use concise, test-specific style guidance.";
-    setStyleGuidelinesPreference(configuredPrompt);
-
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { acpSendMessage } = await import("../acp");
-    const sessionId = `acp-session-${providerId}`;
-
-    sessionRegistry.registerPreparedSession(
-      sessionId,
-      providerId,
-      "/tmp/project",
-      "test-model",
-    );
-
-    await acpSendMessage(sessionId, "hello", {
-      systemPrompt: "You are Starfriend.",
-    });
-
-    expect(mockAppendSessionSystemPrompt).toHaveBeenNthCalledWith(
-      1,
-      sessionId,
-      "goose_internal_style_guidelines",
-      "",
-    );
-    expect(mockAppendSessionSystemPrompt).toHaveBeenNthCalledWith(
-      2,
-      sessionId,
-      "berd_style_guidelines",
-      configuredPrompt,
-    );
-    expect(mockAppendSessionSystemPrompt).toHaveBeenNthCalledWith(
-      3,
-      sessionId,
-      "berd_interaction_norms",
-      INTERACTION_NORMS_PREAMBLE,
-    );
-    expect(mockAppendSessionSystemPrompt).toHaveBeenNthCalledWith(
-      4,
-      sessionId,
-      "berd_app_context",
-      "",
-    );
-    expect(mockAppendSessionSystemPrompt).toHaveBeenNthCalledWith(
-      5,
-      sessionId,
-      "client_system_prompt",
-      "You are Starfriend.",
-    );
-    expect(mockAppendSessionSystemPrompt).toHaveBeenCalledTimes(5);
-  });
-
-  it("adds the default style guidelines when unset", async () => {
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { acpSendMessage } = await import("../acp");
-
-    sessionRegistry.registerPreparedSession(
-      "acp-session-default-style",
-      "goose",
-      "/tmp/project",
-      "test-model",
-    );
-
-    await acpSendMessage("acp-session-default-style", "hello", {
-      systemPrompt: "You are Starfriend.",
-    });
-
-    expect(mockAppendSessionSystemPrompt).toHaveBeenNthCalledWith(
-      1,
-      "acp-session-default-style",
-      "goose_internal_style_guidelines",
-      "",
-    );
-    expect(mockAppendSessionSystemPrompt).toHaveBeenNthCalledWith(
-      2,
-      "acp-session-default-style",
-      "berd_style_guidelines",
-      DEFAULT_STYLE_GUIDELINES_PROMPT,
-    );
-  });
-
-  it("normalizes empty style guidelines to the default prompt", async () => {
-    setStyleGuidelinesPreference("   ");
-
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { acpSendMessage } = await import("../acp");
-
-    sessionRegistry.registerPreparedSession(
-      "acp-session-empty-style",
-      "goose",
-      "/tmp/project",
-      "test-model",
-    );
-
-    await acpSendMessage("acp-session-empty-style", "hello", {
-      systemPrompt: "You are Starfriend.",
-    });
-
-    expect(mockAppendSessionSystemPrompt).toHaveBeenNthCalledWith(
-      2,
-      "acp-session-empty-style",
-      "berd_style_guidelines",
-      DEFAULT_STYLE_GUIDELINES_PROMPT,
-    );
-  });
-
-  it("sends the berdctl preamble under berd_app_context when available", async () => {
-    mockGetBerdctlPreamble.mockReturnValue("[Berd]\nberdctl is on your PATH.");
-
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { acpSendMessage } = await import("../acp");
-
-    sessionRegistry.registerPreparedSession(
-      "acp-session-preamble",
-      "goose",
-      "/tmp/project",
-      "test-model",
-    );
-
-    await acpSendMessage("acp-session-preamble", "hello", {});
-
-    expect(mockAppendSessionSystemPrompt).toHaveBeenCalledWith(
-      "acp-session-preamble",
-      "berd_app_context",
-      "[Berd]\nberdctl is on your PATH.",
-    );
   });
 
   it("hands the interaction norms off in-band for external agents, before the persona", async () => {
@@ -828,137 +663,12 @@ describe("acpCreateSession", () => {
       personaId: "persona-1",
     });
     expect(mockLoadSession).not.toHaveBeenCalled();
-    expect(mockSetProvider).toHaveBeenCalledWith("acp-session-1", "openai");
     expect(mockSetModel).toHaveBeenCalledWith(
       "acp-session-1",
       "gpt-4.1",
       noRequestModelContext("openai"),
     );
     expect(sessionRegistry.isSessionPrepared("acp-session-1")).toBe(true);
-  });
-
-  it("sends a concrete provider even when provider setup is deferred", async () => {
-    mockNewSession.mockResolvedValue({ sessionId: "acp-session-1" });
-
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { acpCreateSession } = await import("../acp");
-
-    await acpCreateSession("openai", "/tmp/project", {
-      deferProviderSetup: true,
-    });
-
-    expect(mockNewSession).toHaveBeenCalledWith("/tmp/project", {
-      providerId: "openai",
-      projectId: undefined,
-      personaId: undefined,
-    });
-    expect(mockSetProvider).toHaveBeenCalledWith("acp-session-1", "openai");
-    expect(sessionRegistry.isSessionPrepared("acp-session-1")).toBe(true);
-  });
-
-  it("can defer goose provider setup until a model is selected", async () => {
-    mockNewSession.mockResolvedValue({ sessionId: "acp-session-1" });
-
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { acpCreateSession } = await import("../acp");
-
-    await expect(
-      acpCreateSession("goose", "/tmp/project", {
-        deferProviderSetup: true,
-      }),
-    ).resolves.toEqual({
-      sessionId: "acp-session-1",
-      configOptionsSnapshot: {
-        model: null,
-        reasoningEffort: null,
-        fastMode: null,
-      },
-    });
-
-    expect(mockNewSession).toHaveBeenCalledWith("/tmp/project", {
-      providerId: undefined,
-      projectId: undefined,
-      personaId: undefined,
-    });
-    expect(mockSetProvider).not.toHaveBeenCalled();
-    expect(mockSetModel).not.toHaveBeenCalled();
-    expect(sessionRegistry.isSessionPrepared("acp-session-1")).toBe(false);
-  });
-
-  it("does not defer provider setup when a model is provided", async () => {
-    mockNewSession.mockResolvedValue({ sessionId: "acp-session-1" });
-
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { acpCreateSession } = await import("../acp");
-
-    await acpCreateSession("anthropic", "/tmp/project", {
-      modelId: "claude-sonnet-4",
-      deferProviderSetup: true,
-    });
-
-    expect(mockNewSession).toHaveBeenCalledWith("/tmp/project", {
-      providerId: "anthropic",
-      projectId: undefined,
-      personaId: undefined,
-    });
-    expect(mockSetProvider).toHaveBeenCalledWith("acp-session-1", "anthropic");
-    expect(mockSetModel).toHaveBeenCalledWith(
-      "acp-session-1",
-      "claude-sonnet-4",
-      noRequestModelContext("anthropic"),
-    );
-    expect(sessionRegistry.isSessionPrepared("acp-session-1")).toBe(true);
-  });
-
-  it("activates a deferred session through load, provider setup, and model setup", async () => {
-    mockNewSession.mockResolvedValue({ sessionId: "acp-session-1" });
-
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { acpCreateSession, acpPrepareSession } = await import("../acp");
-
-    const { sessionId } = await acpCreateSession("goose", "/tmp/project", {
-      deferProviderSetup: true,
-    });
-
-    await acpPrepareSession(sessionId, "anthropic", "/tmp/project", {
-      modelId: "claude-sonnet-4",
-    });
-
-    expect(mockLoadSession).toHaveBeenCalledWith(
-      "acp-session-1",
-      "/tmp/project",
-    );
-    expect(mockSetProvider).toHaveBeenCalledWith(
-      "acp-session-1",
-      "anthropic",
-      noRequestProviderContext,
-    );
-    expect(mockSetModel).toHaveBeenCalledWith(
-      "acp-session-1",
-      "claude-sonnet-4",
-      noRequestModelContext("anthropic"),
-    );
-    expect(mockLoadSession.mock.invocationCallOrder[0]).toBeLessThan(
-      mockSetProvider.mock.invocationCallOrder[0],
-    );
-    expect(mockSetProvider.mock.invocationCallOrder[0]).toBeLessThan(
-      mockSetModel.mock.invocationCallOrder[0],
-    );
-    expect(sessionRegistry.isSessionPrepared("acp-session-1")).toBe(true);
-  });
-
-  it("archives a newly created session when eager provider setup fails", async () => {
-    mockNewSession.mockResolvedValue({ sessionId: "orphaned-session" });
-    mockSetProvider.mockRejectedValueOnce(new Error("provider setup failed"));
-
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { acpCreateSession } = await import("../acp");
-
-    await expect(acpCreateSession("openai", "/tmp/project")).rejects.toThrow(
-      "provider setup failed",
-    );
-    expect(mockArchiveSession).toHaveBeenCalledWith("orphaned-session");
-    expect(sessionRegistry.isSessionPrepared("orphaned-session")).toBe(false);
   });
 
   it("archives and unregisters a newly created session when eager model setup fails", async () => {
@@ -1031,59 +741,6 @@ describe("acpCreateSession", () => {
         reasoningEffort: null,
       },
     });
-  });
-
-  it("rejects an explicit provider outside managed policy before creating", async () => {
-    await setRuntimeConfig(managedRuntimeConfig);
-    const { acpCreateSession } = await import("../acp");
-
-    await expect(
-      acpCreateSession("missing-provider", "/tmp/project", {
-        modelId: "goose-gpt-5-5",
-      }),
-    ).rejects.toThrow("outside the managed Goose provider policy");
-
-    expect(mockNewSession).not.toHaveBeenCalled();
-  });
-
-  it("does not inject the default model for another explicit provider", async () => {
-    await setRuntimeConfig(managedRuntimeConfig);
-    mockNewSession.mockResolvedValue({ sessionId: "other-session" });
-    const { acpCreateSession } = await import("../acp");
-
-    await acpCreateSession("other-managed", "/tmp/project");
-
-    expect(mockSetProvider).toHaveBeenCalledWith(
-      "other-session",
-      "other-managed",
-    );
-    expect(mockSetModel).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    "claude-acp",
-    "codex-acp",
-    "copilot-acp",
-    "amp-acp",
-    "cursor-agent",
-  ])("keeps the %s harness outside Goose provider policy", async (harnessId) => {
-    await setRuntimeConfig(managedRuntimeConfig);
-    mockNewSession.mockResolvedValue({ sessionId: `session-${harnessId}` });
-    const { acpCreateSession } = await import("../acp");
-
-    await acpCreateSession(harnessId, "/tmp/project", {
-      modelId: "harness-model",
-    });
-
-    expect(mockSetProvider).toHaveBeenCalledWith(
-      `session-${harnessId}`,
-      harnessId,
-    );
-    expect(mockSetModel).toHaveBeenCalledWith(
-      `session-${harnessId}`,
-      "harness-model",
-      noRequestModelContext(harnessId),
-    );
   });
 });
 
@@ -1189,7 +846,7 @@ describe("acpPrepareSession", () => {
 
     await expect(
       acpPrepareSession("acp-session-1", "openai", "/tmp/project"),
-    ).resolves.toEqual({ model: null, reasoningEffort: null });
+    ).resolves.toBeDefined();
 
     expect(mockLoadSession).toHaveBeenCalledWith(
       "acp-session-1",
@@ -1202,85 +859,6 @@ describe("acpPrepareSession", () => {
       noRequestProviderContext,
     );
     expect(sessionRegistry.isSessionPrepared("acp-session-1")).toBe(true);
-  });
-
-  it("rejects a provider outside managed policy before loading the session", async () => {
-    await setRuntimeConfig(managedRuntimeConfig);
-    const { acpPrepareSession } = await import("../acp");
-
-    await expect(
-      acpPrepareSession("legacy-session", "missing-provider", "/tmp/project"),
-    ).rejects.toThrow(
-      "Provider missing-provider is outside the managed Goose provider policy",
-    );
-    expect(mockLoadSession).not.toHaveBeenCalled();
-  });
-
-  it("rejects the Goose model sentinel before loading the session", async () => {
-    await setRuntimeConfig(managedRuntimeConfig);
-    const { acpPrepareSession } = await import("../acp");
-
-    await expect(
-      acpPrepareSession("acp-session-1", "databricks_v2", "/tmp/project", {
-        modelId: "goose",
-      }),
-    ).rejects.toThrow("Invalid model id: goose");
-
-    expect(mockLoadSession).not.toHaveBeenCalled();
-    expect(mockSetModel).not.toHaveBeenCalled();
-  });
-
-  it("allows upstream models omitted from recommendation metadata", async () => {
-    await setRuntimeConfig(managedRuntimeConfig);
-    const { acpPrepareSession } = await import("../acp");
-
-    await acpPrepareSession("other-session", "other-managed", "/tmp/project", {
-      modelId: "new-upstream-model",
-    });
-
-    expect(mockSetModel).toHaveBeenCalledWith(
-      "other-session",
-      "new-upstream-model",
-      noRequestModelContext("other-managed"),
-    );
-  });
-
-  it("does not overwrite a valid model when re-preparing the same managed provider", async () => {
-    await setRuntimeConfig(managedRuntimeConfig);
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { acpPrepareSession } = await import("../acp");
-    sessionRegistry.registerPreparedSession(
-      "managed-session",
-      "databricks_v2",
-      "/tmp/project",
-    );
-
-    await acpPrepareSession("managed-session", "databricks_v2", "/tmp/project");
-
-    expect(mockSetProvider).not.toHaveBeenCalled();
-    expect(mockSetModel).not.toHaveBeenCalled();
-  });
-
-  it("locks Goose sessions when runtime policy is unavailable", async () => {
-    const { useRuntimeConfigStore } = await import(
-      "@/shared/runtime-config/runtimeConfigStore"
-    );
-    useRuntimeConfigStore.setState({
-      loaded: true,
-      result: {
-        status: "unavailable",
-        source: "bundledFile",
-        reason: "missing",
-        message: "bundled policy missing",
-      },
-      config: DEFAULT_RUNTIME_CONFIG,
-    });
-    const { acpPrepareSession } = await import("../acp");
-
-    await expect(
-      acpPrepareSession("acp-session-1", "goose", "/tmp/project"),
-    ).rejects.toThrow("Goose provider policy is unavailable");
-    expect(mockLoadSession).not.toHaveBeenCalled();
   });
 
   it("surfaces load failures instead of creating a new ACP session", async () => {

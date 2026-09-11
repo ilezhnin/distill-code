@@ -11,7 +11,6 @@ interface DistroState {
 
 const EMPTY_DISTRO: DistroBundleInfo = {
   present: false,
-  kgooseConfigured: false,
 };
 
 export const useDistroStore = create<DistroState>((set) => {
@@ -22,10 +21,7 @@ export const useDistroStore = create<DistroState>((set) => {
     manifest: EMPTY_DISTRO,
     refresh: async () => {
       const generation = ++refreshGeneration;
-      set((state) => ({
-        manifest: { ...state.manifest, kgooseConfigured: false },
-        loaded: true,
-      }));
+      set({ loaded: true });
       try {
         const manifest = await getDistroBundle();
         if (generation === refreshGeneration) {

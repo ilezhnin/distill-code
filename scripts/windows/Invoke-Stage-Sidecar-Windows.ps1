@@ -12,5 +12,4 @@ trap {
 }
 
 Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChecking
-$env:GOOSE_BUILD_PROFILE = "debug"
 Invoke-WindowsChildScript -ScriptPath $StageScriptPath -Label "Stage-Sidecar-Windows.ps1"

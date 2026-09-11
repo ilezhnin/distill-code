@@ -2,10 +2,6 @@ import { useEffect, type ReactNode } from "react";
 import { HomeScreen } from "@/features/chat/ui/home/HomeScreen";
 import { WelcomeView } from "@/features/chat/ui/home/WelcomeView";
 import { ChatView } from "@/features/chat/ui/ChatView";
-import { ProviderSetupRequired } from "@/features/providers/ui/ProviderSetupRequired";
-import { AutomationsWorkbench } from "@/features/automations/ui/AutomationsView";
-import type { AutomationBuilderLeaveAction } from "@/features/automations/ui/AutomationBuilderView";
-import { BuilderbotView } from "@/features/builderbot/ui/BuilderbotView";
 import { SkillsView } from "@/features/skills/ui/SkillsView";
 import { AgentsView } from "@/features/agents/ui/AgentsView";
 import { PlannerView } from "@/features/planner/ui/PlannerView";
@@ -13,7 +9,6 @@ import { ProjectsView } from "@/features/projects/ui/ProjectsView";
 import { SearchView } from "@/features/search/ui/SearchView";
 import { SessionHistoryView } from "@/features/sessions/ui/SessionHistoryView";
 import { SettingsView } from "@/features/settings/ui/SettingsView";
-import type { AuthStatus } from "@/features/auth/api/auth";
 import { DesignSystemView } from "@/features/design-system/ui/DesignSystemView";
 import { isDesignSystemExplorerEnabled } from "@/features/design-system/lib/designSystemEnabled";
 import type { DesignSystemSection } from "@/features/design-system/ui/designSystemSections";
@@ -23,15 +18,12 @@ import type { SkillInfo } from "@/features/skills/api/skills";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import type { WorkspaceNameRequest } from "@/features/chat/hooks/useChatSessionController";
 import type { ExtensionEntry } from "@/features/extensions/types";
-import type { SetupChatRequest } from "@/features/chat/lib/setupChatRequest";
 import type { AgentSetupTroubleshootingRequest } from "@/features/providers/lib/agentSetupTroubleshooting";
 import type { ForkSessionHandler } from "@/features/sessions/hooks/useForkSession";
 import type { CommandOutcome } from "@/features/berdctl/navigation";
 import type {
   AppNavigationLocation,
   AppNavigationUpdateOptions,
-  AutomationNavigationRoute,
-  BuilderbotNavigationRoute,
 } from "../types/appNavigation";
 import { perfLog } from "@/shared/lib/perfLog";
 import { cn } from "@/shared/lib/cn";
@@ -45,11 +37,7 @@ interface AppShellContentProps {
   onCloseDesignSystem?: () => void;
   onDesignSystemInspectorVisibleChange?: (visible: boolean) => void;
   onDesignSystemSectionChange?: (section: DesignSystemSection) => void;
-  authStatus?: AuthStatus;
-  onLoggedOut?: (status: AuthStatus) => void;
   isPreparingContent: boolean;
-  automationsEnabled: boolean;
-  builderbotEnabled: boolean;
   renderedSession?: ChatSession;
   homeSessionId: string | null;
   chatComposerHandoffRequest?: number;
@@ -67,21 +55,8 @@ interface AppShellContentProps {
     personaId: string | null,
     options?: AppNavigationUpdateOptions,
   ) => void;
-  onNavigateAutomations: (
-    route: AutomationNavigationRoute,
-    options?: AppNavigationUpdateOptions,
-  ) => void;
-  onNavigateBuilderbot: (
-    route: BuilderbotNavigationRoute,
-    options?: AppNavigationUpdateOptions,
-  ) => void;
   onSkillsBreadcrumbLabelChange?: (label: string | null) => void;
   onAgentsBreadcrumbLabelChange?: (label: string | null) => void;
-  onAutomationsBreadcrumbLabelChange?: (label: string | null) => void;
-  onBuilderbotBreadcrumbLabelChange?: (label: string | null) => void;
-  onAutomationBuilderLeaveActionChange?: (
-    action: AutomationBuilderLeaveAction | null,
-  ) => void;
   onCreatePersona: () => void;
   onAgentBuilderCompleted: (agentId: string) => void;
   onStartAgentBuilderSession: (args?: { path?: string; slug?: string }) => void;
@@ -105,24 +80,16 @@ interface AppShellContentProps {
   onExitSearch: () => void;
   onOpenExtension: (entry: ExtensionEntry) => void;
   onOpenAgent: (agentId: string) => void;
-  onOpenAutomation: (automationId: string) => void;
   onOpenSkill: (skill: SkillInfo) => void;
   onStartProviderTroubleshootingChat: (
     request: AgentSetupTroubleshootingRequest,
   ) => void;
-  onStartConnectionSetupChat: (request: SetupChatRequest) => void;
-  onReturnToAgentDraft?: () => void;
-  onOpenProvidersSettings: () => void;
-  homeProviderSetupRequired?: boolean;
 }
 
 export function AppShellContent({
   targetLocation,
   renderedLocation,
-  authStatus,
   isPreparingContent,
-  automationsEnabled,
-  builderbotEnabled,
   designSystemInspectorVisible,
   onCloseDesignSystem,
   onDesignSystemInspectorVisibleChange,
@@ -138,13 +105,8 @@ export function AppShellContent({
   chatViewportLeftOcclusionPx = 0,
   onNavigateSkills,
   onNavigateAgents,
-  onNavigateAutomations,
-  onNavigateBuilderbot,
   onSkillsBreadcrumbLabelChange,
   onAgentsBreadcrumbLabelChange,
-  onAutomationsBreadcrumbLabelChange,
-  onBuilderbotBreadcrumbLabelChange,
-  onAutomationBuilderLeaveActionChange,
   onCreatePersona,
   onAgentBuilderCompleted,
   onStartAgentBuilderSession,
@@ -161,14 +123,8 @@ export function AppShellContent({
   onExitSearch,
   onOpenExtension,
   onOpenAgent,
-  onOpenAutomation,
   onOpenSkill,
-  onLoggedOut,
   onStartProviderTroubleshootingChat,
-  onStartConnectionSetupChat,
-  onReturnToAgentDraft,
-  onOpenProvidersSettings,
-  homeProviderSetupRequired = false,
 }: AppShellContentProps) {
   useNavigationPerfLogging({
     isPreparingContent,
@@ -176,15 +132,10 @@ export function AppShellContent({
     targetLocation,
   });
 
-  const setupRequiredContent = homeProviderSetupRequired ? (
-    <div className="flex h-full w-full items-center justify-center p-6">
-      <ProviderSetupRequired onOpenProviders={onOpenProvidersSettings} />
-    </div>
-  ) : null;
   // The widget desktop is gone (features/home with it): home is the
   // invitation to start — the composer is the new chat, the button the new
   // project. The planner arrives underneath this as its own feature.
-  const homeContent = setupRequiredContent ?? (
+  const homeContent = (
     <WelcomeView
       sessionId={homeSessionId}
       onActivateSession={onActivateHomeSession}
@@ -195,9 +146,6 @@ export function AppShellContent({
   );
 
   const routeContent = renderRouteContent({
-    authStatus,
-    automationsEnabled,
-    builderbotEnabled,
     chatComposerHandoffActive,
     chatComposerHandoffInProgress,
     chatComposerHandoffRequest,
@@ -213,9 +161,6 @@ export function AppShellContent({
     onActivateHomeSession,
     onAgentsBreadcrumbLabelChange,
     onArchiveChat,
-    onAutomationBuilderLeaveActionChange,
-    onAutomationsBreadcrumbLabelChange,
-    onBuilderbotBreadcrumbLabelChange,
     onChatComposerHandoffTarget,
     onWorkspaceNameRequest,
     onCreatePersona,
@@ -223,18 +168,13 @@ export function AppShellContent({
     onCreateProject,
     onExitSearch,
     onNavigateAgents,
-    onNavigateAutomations,
-    onNavigateBuilderbot,
     onNavigateSkills,
     onOpenAgent,
-    onOpenAutomation,
     onOpenExtension,
     onOpenProjectSettings,
-    onLoggedOut,
     onOpenSkill,
     onRenameChat,
     onForkChat,
-    onReturnToAgentDraft,
     onSelectSearchResult,
     onSelectSession,
     onSkillsBreadcrumbLabelChange,
@@ -242,9 +182,7 @@ export function AppShellContent({
     onStartChatFromProject,
     onStartChatWithSkill,
     onStartProviderTroubleshootingChat,
-    onStartConnectionSetupChat,
     renderedSession,
-    setupRequiredContent,
   });
 
   return (
@@ -262,9 +200,6 @@ export function AppShellContent({
 }
 
 interface RenderRouteContentOptions {
-  authStatus?: AuthStatus;
-  automationsEnabled: boolean;
-  builderbotEnabled: boolean;
   chatComposerHandoffActive: boolean;
   chatComposerHandoffInProgress: boolean;
   chatComposerHandoffRequest: number;
@@ -285,23 +220,10 @@ interface RenderRouteContentOptions {
     personaId: string | null,
     options?: AppNavigationUpdateOptions,
   ) => void;
-  onNavigateAutomations: (
-    route: AutomationNavigationRoute,
-    options?: AppNavigationUpdateOptions,
-  ) => void;
-  onNavigateBuilderbot: (
-    route: BuilderbotNavigationRoute,
-    options?: AppNavigationUpdateOptions,
-  ) => void;
   onSkillsBreadcrumbLabelChange?: (label: string | null) => void;
   onAgentsBreadcrumbLabelChange?: (label: string | null) => void;
-  onAutomationsBreadcrumbLabelChange?: (label: string | null) => void;
-  onBuilderbotBreadcrumbLabelChange?: (label: string | null) => void;
   onChatComposerHandoffTarget?: (rect: GlobalComposerHandoffRect) => void;
   onWorkspaceNameRequest?: (request: WorkspaceNameRequest) => void;
-  onAutomationBuilderLeaveActionChange?: (
-    action: AutomationBuilderLeaveAction | null,
-  ) => void;
   onCreatePersona: () => void;
   onAgentBuilderCompleted: (agentId: string) => void;
   onStartAgentBuilderSession: (args?: { path?: string; slug?: string }) => void;
@@ -325,25 +247,17 @@ interface RenderRouteContentOptions {
   onExitSearch: () => void;
   onOpenExtension: (entry: ExtensionEntry) => void;
   onOpenAgent: (agentId: string) => void;
-  onOpenAutomation: (automationId: string) => void;
   onOpenSkill: (skill: SkillInfo) => void;
-  onLoggedOut?: (status: AuthStatus) => void;
   onStartProviderTroubleshootingChat: (
     request: AgentSetupTroubleshootingRequest,
   ) => void;
-  onStartConnectionSetupChat: (request: SetupChatRequest) => void;
-  onReturnToAgentDraft?: () => void;
   renderedSession?: ChatSession;
-  setupRequiredContent: ReactNode | null;
 }
 
 function renderRouteContent({
-  automationsEnabled,
-  builderbotEnabled,
   chatComposerHandoffActive,
   chatComposerHandoffInProgress,
   chatComposerHandoffRequest,
-  authStatus,
   chatComposerHandoffSessionId,
   chatViewportLeftOcclusionPx,
   designSystemInspectorVisible,
@@ -353,9 +267,6 @@ function renderRouteContent({
   onActivateHomeSession,
   onAgentsBreadcrumbLabelChange,
   onArchiveChat,
-  onAutomationBuilderLeaveActionChange,
-  onAutomationsBreadcrumbLabelChange,
-  onBuilderbotBreadcrumbLabelChange,
   onChatComposerHandoffTarget,
   onWorkspaceNameRequest,
   onCloseDesignSystem,
@@ -366,18 +277,13 @@ function renderRouteContent({
   onDesignSystemSectionChange,
   onExitSearch,
   onNavigateAgents,
-  onNavigateAutomations,
-  onNavigateBuilderbot,
   onNavigateSkills,
   onOpenAgent,
-  onOpenAutomation,
   onOpenExtension,
   onOpenProjectSettings,
-  onLoggedOut,
   onOpenSkill,
   onRenameChat,
   onForkChat,
-  onReturnToAgentDraft,
   onSelectSearchResult,
   onSelectSession,
   onSkillsBreadcrumbLabelChange,
@@ -385,8 +291,6 @@ function renderRouteContent({
   onStartChatFromProject,
   onStartChatWithSkill,
   onStartProviderTroubleshootingChat,
-  onStartConnectionSetupChat,
-  setupRequiredContent,
   renderedSession,
 }: RenderRouteContentOptions) {
   switch (location.view) {
@@ -404,33 +308,8 @@ function renderRouteContent({
       return (
         <SettingsView
           activeSection={location.settingsSection}
-          authStatus={authStatus}
-          onLoggedOut={onLoggedOut}
           onStartTroubleshootingChat={onStartProviderTroubleshootingChat}
-          onStartConnectionSetupChat={onStartConnectionSetupChat}
-          onReturnToAgentDraft={onReturnToAgentDraft}
         />
-      );
-    case "automations":
-      return automationsEnabled ? (
-        <AutomationsWorkbench
-          route={location.route}
-          onRouteChange={onNavigateAutomations}
-          onBreadcrumbLabelChange={onAutomationsBreadcrumbLabelChange}
-          onBuilderLeaveActionChange={onAutomationBuilderLeaveActionChange}
-        />
-      ) : (
-        homeContent
-      );
-    case "builderbot":
-      return builderbotEnabled ? (
-        <BuilderbotView
-          route={location.route}
-          onRouteChange={onNavigateBuilderbot}
-          onBreadcrumbLabelChange={onBuilderbotBreadcrumbLabelChange}
-        />
-      ) : (
-        homeContent
       );
     case "skills":
       return (
@@ -465,7 +344,6 @@ function renderRouteContent({
           onSelectSearchResult={onSelectSearchResult}
           onOpenExtension={onOpenExtension}
           onOpenAgent={onOpenAgent}
-          onOpenAutomation={onOpenAutomation}
           onOpenSkill={onOpenSkill}
         />
       );
@@ -500,15 +378,13 @@ function renderRouteContent({
           onSelectSession={onSelectSession}
         />
       ) : (
-        (setupRequiredContent ?? (
-          <HomeScreen
-            sessionId={homeSessionId}
-            onActivateSession={onActivateHomeSession}
-            onCreatePersona={onCreatePersona}
-            onCreateProject={onCreateProject}
-            onWorkspaceNameRequest={onWorkspaceNameRequest}
-          />
-        ))
+        <HomeScreen
+          sessionId={homeSessionId}
+          onActivateSession={onActivateHomeSession}
+          onCreatePersona={onCreatePersona}
+          onCreateProject={onCreateProject}
+          onWorkspaceNameRequest={onWorkspaceNameRequest}
+        />
       );
     case "home":
       return homeContent;

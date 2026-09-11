@@ -971,10 +971,9 @@ export function MemorySettings() {
           </Collapsible>
         )}
 
-        {/* Last on the page, and only when a project actually has a wiki: what
-            a project knows is not what the operator is remembered as saying,
-            and the graph is a reading of another store entirely. Behind the
-            `memory-wiki-graph` experiment. */}
+        {/* Last on the page: what a project knows is not what the operator is
+            remembered as saying, and the graph is a reading of another store
+            entirely. Off until switched on from the section itself. */}
         <WikiGraph />
       </SettingsSections>
 

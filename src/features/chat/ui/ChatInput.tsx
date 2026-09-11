@@ -6,10 +6,9 @@ import {
   useMemo,
   useLayoutEffect,
   useId,
-  type ReactNode,
 } from "react";
 import { Pencil, X } from "lucide-react";
-import { IconCheck, IconCornerDownLeft } from "@tabler/icons-react";
+import { IconCornerDownLeft } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
@@ -24,29 +23,8 @@ import {
   getChatInputAgentLabel,
   getChatInputPlaceholder,
 } from "../lib/chatInputPlaceholder";
-import {
-  type Connection,
-  type ListConnectionsResponse,
-  listConnections,
-} from "@/features/connections/api/connections";
-import {
-  type ConnectionStatus,
-  resolveConnectionStatus,
-} from "@/features/connections/lib/connectionStatus";
-import { requestOpenSettings } from "@/features/settings/lib/settingsEvents";
-import { useProfileCapability } from "@/shared/profile/capabilities";
-import { ASSISTIVE_UX_RULES } from "@/shared/assistive-ux/registry";
-import {
-  recordAssistiveMomentDismissed,
-  recordAssistiveMomentRetired,
-} from "@/shared/assistive-ux/runtime";
-import {
-  eventMatchesShortcutCommand,
-  useShortcutBindings,
-} from "@/features/shortcuts/lib/shortcutRegistry";
-import { keyboardShortcutDisplayParts } from "@/shared/keyboard/keyboardShortcut";
+import { eventMatchesShortcutCommand } from "@/features/shortcuts/lib/shortcutRegistry";
 import { cn } from "@/shared/lib/cn";
-import { getPlatform } from "@/shared/lib/platform";
 import { Badge } from "@/shared/ui/badge";
 import { Popover, PopoverAnchor } from "@/shared/ui/popover";
 import { MentionAutocomplete } from "./MentionAutocomplete";
@@ -60,45 +38,26 @@ import { useChatInputFilePicker } from "../hooks/useChatInputFilePicker";
 import { ChatInputAttachments } from "./ChatInputAttachments";
 import { ChatInputSelectionChips } from "./ChatInputSelectionChips";
 import { useChatInputSubmit } from "../hooks/useChatInputSubmit";
-import { useVoiceDictation } from "../hooks/useVoiceDictation";
 import { resolveDisplayModelLabel } from "../lib/modelDisplayLabel";
 import {
   personaIntentFromComposer,
   type PersonaIntent,
 } from "../lib/admittedSend";
-import { resolveAgentToolsCapabilityTips } from "../lib/agentToolsCapabilities";
-import { useAgentToolsTipsPreference } from "../lib/agentToolsTipPreferences";
 import { getImageFilesFromClipboardItems } from "../lib/clipboardAttachments";
 import { rejectsOversizedComposerPayload } from "../lib/submitComposerMessage";
 import type { ChatInputProps, ChatSendOptions, ChatSkillDraft } from "../types";
-import { ContextualTip } from "@/shared/ui/contextual-tip";
 import {
   getStreamingShortcutAction,
   useStreamingShortcutPreference,
 } from "../lib/streamingShortcutPreference";
 import type { ChatAttachmentDraft, MessageChip } from "@/shared/types/messages";
 import { useTextareaAutosize } from "@/shared/hooks/useTextareaAutosize";
-import { useVoiceDictationShortcutTarget } from "../lib/voiceDictationShortcutController";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
 const DOCKED_TEXTAREA_MIN_HEIGHT_PX = 140;
 const DOCKED_TEXTAREA_MAX_HEIGHT_PX = 300;
 const DOCKED_TEXTAREA_VIEWPORT_RATIO = 0.24;
-const AGENT_TOOLS_TIP_AUTO_DISABLE_DISMISSALS = 3;
-const AGENT_TOOLS_TIP_AUTO_DISMISS_MS = 4_500;
-const AGENT_TOOLS_TIP_EXIT_ANIMATION_MS = 200;
-const AGENT_TOOLS_CONNECTION_TIPS_MOMENT_ID =
-  ASSISTIVE_UX_RULES.chatAgentToolsConnectionTips.id;
 const BERDCTL_CROSS_SESSION_ORIGIN = "berdctl_cross_session";
-
-type AgentToolsTipResolutionMode = "latest" | "aggregate";
-
-interface AgentToolsTipPresentation {
-  message: string;
-  actionLabel?: string;
-  icon?: ReactNode;
-  iconClassName?: string;
-  onAction?: () => void;
-}
 
 function stripCrossSessionOrigin<T extends Record<string, unknown>>(
   metadata: T | undefined,
@@ -125,20 +84,22 @@ function getManualEditQueuedSendOptions(
 
   const {
     userMessageMetadata,
-    acpGooseMetadata,
+    acpPromptMetadata,
     executionSystemPrompt: _executionSystemPrompt,
     capturedPersonaSystemPrompt: _capturedPersonaSystemPrompt,
     ...rest
   } = sendOptions;
   const nextUserMessageMetadata = stripCrossSessionOrigin(userMessageMetadata);
-  const nextAcpGooseMetadata = stripCrossSessionOrigin(acpGooseMetadata);
+  const nextAcpGooseMetadata = stripCrossSessionOrigin(acpPromptMetadata);
 
   return {
     ...rest,
     ...(nextUserMessageMetadata
       ? { userMessageMetadata: nextUserMessageMetadata }
       : {}),
-    ...(nextAcpGooseMetadata ? { acpGooseMetadata: nextAcpGooseMetadata } : {}),
+    ...(nextAcpGooseMetadata
+      ? { acpPromptMetadata: nextAcpGooseMetadata }
+      : {}),
   };
 }
 
@@ -152,53 +113,6 @@ function refreshRestoredQueuedChips(
   const { chips: _chips, ...rest } = sendOptions;
 
   return chips.length > 0 ? { ...rest, chips } : rest;
-}
-
-function formatAgentToolsList(
-  labels: string[],
-  locale: string | undefined,
-): string {
-  return new Intl.ListFormat(locale, {
-    style: "long",
-    type: "conjunction",
-  }).format(labels);
-}
-
-function getAgentToolsTipPresentation({
-  disconnectedTools,
-  locale,
-  status,
-  t,
-  tool,
-}: {
-  disconnectedTools: string[];
-  locale: string | undefined;
-  status: ConnectionStatus | null;
-  t: ReturnType<typeof useTranslation>["t"];
-  tool: string | null;
-}): AgentToolsTipPresentation | null {
-  const openConnections = () => requestOpenSettings("connections");
-
-  if (disconnectedTools.length > 0) {
-    return {
-      message: t("agentToolsTip.disconnected", {
-        count: disconnectedTools.length,
-        tools: formatAgentToolsList(disconnectedTools, locale),
-      }),
-      actionLabel: t("agentToolsTip.connect"),
-      onAction: openConnections,
-    };
-  }
-
-  if (status === null || tool === null) {
-    return null;
-  }
-
-  return {
-    message: t("agentToolsTip.connected", { tool }),
-    icon: <IconCheck className="size-4" />,
-    iconClassName: "bg-transparent text-success",
-  };
 }
 
 const QUEUED_MESSAGE_VISIBILITY_DELAY_MS = 200;
@@ -299,15 +213,6 @@ export function ChatInput({
   innerBareSurface = false,
   surface = "pill",
 }: ChatInputProps) {
-  const voiceDictationBindings = useShortcutBindings(
-    "chat.toggleVoiceDictation",
-  );
-  const voiceDictationShortcutDisplayParts = voiceDictationBindings[0]
-    ? keyboardShortcutDisplayParts(
-        voiceDictationBindings[0].shortcut,
-        getPlatform() === "mac",
-      )
-    : undefined;
   const {
     onSend,
     onSteerMessage,
@@ -335,7 +240,7 @@ export function ChatInput({
   const {
     providers = [],
     providersLoading = false,
-    selectedProvider = "goose",
+    selectedProvider = DEFAULT_HARNESS_ID,
     onProviderChange,
     currentModelId = null,
     currentModelProviderId = null,
@@ -363,7 +268,7 @@ export function ChatInput({
     isCompactingContext = false,
     supportsCompactionControls,
   } = contextUsage ?? {};
-  const { i18n, t } = useTranslation("chat");
+  const { t } = useTranslation("chat");
   const streamingShortcutPreference = useStreamingShortcutPreference();
   const scopedControls = {
     agentModelPicker: controls?.agentModelPicker ?? true,
@@ -372,7 +277,6 @@ export function ChatInput({
     fileMentions: controls?.fileMentions ?? true,
     projectPicker: controls?.projectPicker ?? true,
     skills: controls?.skills ?? true,
-    voice: controls?.voice ?? true,
   };
   const [text, setTextRaw] = useState(initialValue);
   const [editingQueuedRecordId, setEditingQueuedRecordId] = useState<
@@ -395,19 +299,6 @@ export function ChatInput({
     editingQueuedRecordIdRef.current = recordId;
     setEditingQueuedRecordId(recordId);
   }, []);
-  const [dismissedAgentToolsTipIds, setDismissedAgentToolsTipIds] = useState<
-    Set<string>
-  >(() => new Set());
-  const [exitingAgentToolsTipId, setExitingAgentToolsTipId] = useState<
-    string | null
-  >(null);
-  const [agentToolsTipResolutionMode, setAgentToolsTipResolutionMode] =
-    useState<AgentToolsTipResolutionMode>("latest");
-  const {
-    enabled: agentToolsTipsEnabled,
-    setEnabled: setAgentToolsTipsEnabled,
-  } = useAgentToolsTipsPreference();
-  const kgooseConnectionsEnabled = useProfileCapability("managedConnections");
   const [internalSelectedSkills, setInternalSelectedSkills] = useState<
     ChatSkillDraft[]
   >([]);
@@ -417,18 +308,12 @@ export function ChatInput({
     ? (onSkillsChange ?? setInternalSelectedSkills)
     : () => {};
   const textRef = useRef(initialValue);
-  const pendingAggregateAgentToolsTipRef = useRef(false);
-  const previousAgentToolsTipDismissIdRef = useRef<string | null>(null);
   useEffect(() => {
     setTextRaw(initialValue);
     textRef.current = initialValue;
   }, [initialValue]);
   const setText = useCallback(
-    (
-      value: string,
-      tipResolutionMode: AgentToolsTipResolutionMode = "latest",
-    ) => {
-      setAgentToolsTipResolutionMode(tipResolutionMode);
+    (value: string) => {
       textRef.current = value;
       setTextRaw(value);
       onDraftChange?.(value);
@@ -521,10 +406,7 @@ export function ChatInput({
     );
   }, [surface]);
 
-  const {
-    resetHeight: resetTextarea,
-    scheduleAutosize: scheduleResizeTextarea,
-  } = useTextareaAutosize({
+  const { scheduleAutosize: scheduleResizeTextarea } = useTextareaAutosize({
     textareaRef,
     value: text,
     getMaxHeightPx: getTextareaMaxHeightPx,
@@ -719,7 +601,6 @@ export function ChatInput({
     handleSkillMentionSelect,
     handleFileMentionSelect,
     handleMentionConfirm,
-    skillMentionItems,
   } = useMentionHandlers({
     personas,
     skillProjectDirs: skillMentionProjectDirs,
@@ -777,14 +658,11 @@ export function ChatInput({
     }
   }, [scopedControls.autoFocus]);
 
-  const { submitChatInputMessage, handleVoiceAutoSubmit } = useChatInputSubmit({
-    attachmentsRef,
-    selectedSkillsRef,
+  const { submitChatInputMessage } = useChatInputSubmit({
     selectedChipsRef: selectedMessageChipsRef,
     selectedPersonaId,
     skillProviderId,
     onSend,
-    setSelectedSkills,
     resolveSkillSlashCommand,
   });
   const [restoredQueuedSendOptions, setRestoredQueuedSendOptions] =
@@ -813,14 +691,6 @@ export function ChatInput({
       setRestoredQueuedSendOptions(null);
     }
   }, [editingQueuedRecordId, queuedMessages, setEditingQueuedRecord]);
-
-  const setTextFromDictation = useCallback(
-    (value: string) => setText(value, "aggregate"),
-    [setText],
-  );
-  const dictationRef = useRef<ReturnType<typeof useVoiceDictation> | null>(
-    null,
-  );
 
   const submitRestoredQueuedMessage = useCallback(
     async (
@@ -860,17 +730,6 @@ export function ChatInput({
     ) => {
       if (!canSubmitCurrentMessage) {
         return false;
-      }
-
-      // Stop without flushing so Send uses the text already in the composer.
-      // This also cancels an in-flight microphone startup.
-      if (
-        scopedControls.voice &&
-        (dictationRef.current?.isRecording ||
-          dictationRef.current?.isTranscribing ||
-          dictationRef.current?.isStarting())
-      ) {
-        dictationRef.current?.stopRecording();
       }
 
       const submittedText = submittedTextOverride ?? text;
@@ -949,7 +808,6 @@ export function ChatInput({
       editingQueuedRecordId,
       onUpdateQueue,
       scopedControls.attachments,
-      scopedControls.voice,
       setEditingQueuedRecord,
       setSelectedSkills,
       setText,
@@ -961,53 +819,6 @@ export function ChatInput({
       text,
       visibleSelectedSkills,
     ],
-  );
-
-  const handleVoiceAutoSubmitCurrentMessage = useCallback(
-    async (submittedText: string) => {
-      if (!editingQueuedRecordId) {
-        return handleVoiceAutoSubmit(submittedText);
-      }
-      const canSubmitDictatedEdit =
-        (submittedText.trim().length > 0 || hasDraftContext) &&
-        !disabled &&
-        !sendDisabled &&
-        !attachmentWorkPending;
-      return submitCurrentMessage(onSend, canSubmitDictatedEdit, submittedText);
-    },
-    [
-      attachmentWorkPending,
-      disabled,
-      editingQueuedRecordId,
-      handleVoiceAutoSubmit,
-      hasDraftContext,
-      onSend,
-      sendDisabled,
-      submitCurrentMessage,
-    ],
-  );
-
-  const dictation = useVoiceDictation({
-    text,
-    setText: setTextFromDictation,
-    attachments,
-    clearAttachments,
-    selectedPersonaId,
-    onSend,
-    onAutoSubmit: handleVoiceAutoSubmitCurrentMessage,
-    resetTextarea,
-    isSendLocked: disabled || sendDisabled || attachmentWorkPending,
-  });
-  dictationRef.current = dictation;
-
-  const handleVoiceDictationShortcut = useVoiceDictationShortcutTarget(
-    textareaRef,
-    {
-      surface: "selected-chat",
-      canStart: scopedControls.voice && dictation.isEnabled && !disabled,
-      isRecording: scopedControls.voice && dictation.isRecording,
-      toggle: dictation.toggleRecording,
-    },
   );
 
   const handleSend = useCallback(async () => {
@@ -1037,15 +848,6 @@ export function ChatInput({
       restoredQueuedSendOptions && submittedSkills.length === 0
         ? restoredQueuedSendOptions
         : null;
-
-    if (
-      scopedControls.voice &&
-      (dictation.isRecording ||
-        dictation.isTranscribing ||
-        dictation.isStarting())
-    ) {
-      dictation.stopRecording();
-    }
 
     const steerMessage: typeof onSteerMessage = (
       submittedText,
@@ -1097,13 +899,11 @@ export function ChatInput({
   }, [
     canSteerCurrentMessage,
     clearAttachments,
-    dictation,
     editingQueuedRecordId,
     onCancelQueueEdit,
     onSteerMessage,
     restoredQueuedSendOptions,
     scopedControls.attachments,
-    scopedControls.voice,
     setEditingQueuedRecord,
     setSelectedSkills,
     setText,
@@ -1258,10 +1058,6 @@ export function ChatInput({
     if (isComposing) {
       return;
     }
-    if (handleVoiceDictationShortcut(event.nativeEvent)) {
-      event.stopPropagation();
-      return;
-    }
     if (event.key === "Escape" && isStreaming && onStop) {
       event.preventDefault();
       event.stopPropagation();
@@ -1330,27 +1126,13 @@ export function ChatInput({
 
   const handleInput = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = event.target.value;
-    const nativeInputEvent = event.nativeEvent as InputEvent;
-    const insertedLength = Math.max(0, value.length - textRef.current.length);
-    const insertedTextLength = nativeInputEvent.data?.length ?? insertedLength;
-    const isBulkInput =
-      pendingAggregateAgentToolsTipRef.current ||
-      nativeInputEvent.inputType === "insertFromPaste" ||
-      nativeInputEvent.inputType === "insertFromDrop" ||
-      insertedTextLength > 1 ||
-      insertedLength > 8;
-
-    pendingAggregateAgentToolsTipRef.current = false;
-    setText(value, isBulkInput ? "aggregate" : "latest");
+    setText(value);
     const cursorPosition = event.target.selectionStart ?? value.length;
     detectMention(value, cursorPosition);
   };
 
   const handlePaste = useCallback(
     (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-      const pastedText = event.clipboardData.getData?.("text") ?? "";
-      pendingAggregateAgentToolsTipRef.current = pastedText.length > 0;
-
       if (!scopedControls.attachments) {
         return;
       }
@@ -1360,7 +1142,6 @@ export function ChatInput({
         return;
       }
 
-      pendingAggregateAgentToolsTipRef.current = false;
       event.preventDefault();
       void runAttachmentWork(() => addBrowserFiles(files));
     },
@@ -1419,215 +1200,8 @@ export function ChatInput({
   const inputPlaceholder = getChatInputPlaceholder(
     t,
     agentDisplayName,
-    scopedControls.voice && dictation.isRecording,
-    scopedControls.voice && dictation.isTranscribing,
     placeholder,
   );
-  const agentToolsTips = useMemo(
-    () =>
-      scopedControls.skills
-        ? resolveAgentToolsCapabilityTips(text, skillMentionItems)
-        : [],
-    [scopedControls.skills, skillMentionItems, text],
-  );
-  const latestAgentToolsTip = agentToolsTips.at(-1) ?? null;
-  const shouldLoadAgentToolsConnectionStatus =
-    agentToolsTipsEnabled &&
-    kgooseConnectionsEnabled &&
-    agentToolsTips.length > 0;
-  const [agentToolsConnectionsData, setAgentToolsConnectionsData] =
-    useState<ListConnectionsResponse | null>(null);
-  const availableAgentToolsConnectionsData = kgooseConnectionsEnabled
-    ? agentToolsConnectionsData
-    : null;
-
-  useEffect(() => {
-    if (!shouldLoadAgentToolsConnectionStatus) {
-      setAgentToolsConnectionsData(null);
-      return;
-    }
-
-    let cancelled = false;
-
-    async function refreshConnections() {
-      try {
-        const response = await listConnections();
-        if (!cancelled) {
-          setAgentToolsConnectionsData(response);
-        }
-      } catch (error) {
-        console.warn("Failed to load Agent Tools connection status:", error);
-        if (!cancelled) {
-          setAgentToolsConnectionsData(null);
-        }
-      }
-    }
-
-    void refreshConnections();
-    const intervalId = window.setInterval(refreshConnections, 5_000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [shouldLoadAgentToolsConnectionStatus]);
-
-  const agentToolsConnectionsByName = useMemo(() => {
-    const map = new Map<string, Connection>();
-    const connections = availableAgentToolsConnectionsData?.connections ?? [];
-    for (const connection of connections) {
-      map.set(connection.name, connection);
-    }
-    return map;
-  }, [availableAgentToolsConnectionsData?.connections]);
-  const agentToolsStatuses = useMemo(() => {
-    if (!availableAgentToolsConnectionsData) {
-      return new Map<string, ConnectionStatus>();
-    }
-
-    const map = new Map<string, ConnectionStatus>();
-    for (const tip of agentToolsTips) {
-      map.set(
-        tip.id,
-        resolveConnectionStatus(agentToolsConnectionsByName.get(tip.provider)),
-      );
-    }
-    return map;
-  }, [
-    agentToolsConnectionsByName,
-    availableAgentToolsConnectionsData,
-    agentToolsTips,
-  ]);
-  const disconnectedAgentToolsTips = availableAgentToolsConnectionsData
-    ? agentToolsTips.filter((tip) => {
-        const status = agentToolsStatuses.get(tip.id);
-        return status?.kind === "disconnected" || status?.kind === "expired";
-      })
-    : [];
-  const latestAgentToolsStatus = latestAgentToolsTip
-    ? (agentToolsStatuses.get(latestAgentToolsTip.id) ?? null)
-    : null;
-  const latestDisconnectedAgentToolsTips =
-    latestAgentToolsTip &&
-    (latestAgentToolsStatus?.kind === "disconnected" ||
-      latestAgentToolsStatus?.kind === "expired")
-      ? [latestAgentToolsTip]
-      : [];
-  const presentedDisconnectedAgentToolsTips =
-    agentToolsTipResolutionMode === "aggregate"
-      ? disconnectedAgentToolsTips
-      : latestDisconnectedAgentToolsTips;
-  const presentedDisconnectedAgentToolsLabels =
-    presentedDisconnectedAgentToolsTips.map((tip) => tip.label);
-  const agentToolsTipDismissId = availableAgentToolsConnectionsData
-    ? presentedDisconnectedAgentToolsTips.length > 0
-      ? `disconnected:${presentedDisconnectedAgentToolsTips
-          .map((tip) => tip.id)
-          .join(",")}`
-      : latestAgentToolsTip && latestAgentToolsStatus
-        ? `${latestAgentToolsTip.id}:${latestAgentToolsStatus.kind}`
-        : null
-    : null;
-  const agentToolsTipPresentation = getAgentToolsTipPresentation({
-    disconnectedTools: presentedDisconnectedAgentToolsLabels,
-    locale: i18n.resolvedLanguage ?? i18n.language,
-    status: latestAgentToolsStatus,
-    t,
-    tool: latestAgentToolsTip?.label ?? null,
-  });
-  const showAgentToolsTip =
-    agentToolsTipsEnabled &&
-    !mentionOpen &&
-    latestAgentToolsTip !== null &&
-    (agentToolsTipDismissId === null ||
-      !dismissedAgentToolsTipIds.has(agentToolsTipDismissId));
-  const markAgentToolsTipDismissed = useCallback((tipId: string) => {
-    setDismissedAgentToolsTipIds((current) => {
-      if (current.has(tipId)) return current;
-      const next = new Set(current);
-      next.add(tipId);
-      return next;
-    });
-  }, []);
-
-  useEffect(() => {
-    const previousTipId = previousAgentToolsTipDismissIdRef.current;
-    if (
-      previousTipId &&
-      previousTipId !== agentToolsTipDismissId &&
-      !previousTipId.startsWith("disconnected:")
-    ) {
-      markAgentToolsTipDismissed(previousTipId);
-    }
-    previousAgentToolsTipDismissIdRef.current = agentToolsTipDismissId;
-  }, [agentToolsTipDismissId, markAgentToolsTipDismissed]);
-  const shouldAutoDismissAgentToolsTip =
-    presentedDisconnectedAgentToolsTips.length === 0 &&
-    (latestAgentToolsStatus?.kind === "active" ||
-      latestAgentToolsStatus?.kind === "expiring");
-  const isAgentToolsTipExiting =
-    exitingAgentToolsTipId !== null &&
-    exitingAgentToolsTipId === agentToolsTipDismissId;
-
-  useEffect(() => {
-    if (
-      !showAgentToolsTip ||
-      !shouldAutoDismissAgentToolsTip ||
-      !agentToolsTipDismissId
-    ) {
-      return;
-    }
-
-    const exitTimeoutId = window.setTimeout(() => {
-      setExitingAgentToolsTipId(agentToolsTipDismissId);
-    }, AGENT_TOOLS_TIP_AUTO_DISMISS_MS);
-    const dismissTimeoutId = window.setTimeout(() => {
-      markAgentToolsTipDismissed(agentToolsTipDismissId);
-      setExitingAgentToolsTipId((current) =>
-        current === agentToolsTipDismissId ? null : current,
-      );
-    }, AGENT_TOOLS_TIP_AUTO_DISMISS_MS + AGENT_TOOLS_TIP_EXIT_ANIMATION_MS);
-
-    return () => {
-      window.clearTimeout(exitTimeoutId);
-      window.clearTimeout(dismissTimeoutId);
-    };
-  }, [
-    agentToolsTipDismissId,
-    markAgentToolsTipDismissed,
-    shouldAutoDismissAgentToolsTip,
-    showAgentToolsTip,
-  ]);
-
-  useEffect(() => {
-    if (text.trim().length === 0 && dismissedAgentToolsTipIds.size > 0) {
-      setDismissedAgentToolsTipIds(new Set());
-    }
-  }, [dismissedAgentToolsTipIds.size, text]);
-
-  useEffect(() => {
-    if (agentToolsTips.length === 0 && exitingAgentToolsTipId !== null) {
-      setExitingAgentToolsTipId(null);
-    }
-  }, [agentToolsTips.length, exitingAgentToolsTipId]);
-
-  const handleAgentToolsTipDismiss = () => {
-    if (agentToolsTipDismissId) {
-      markAgentToolsTipDismissed(agentToolsTipDismissId);
-    }
-
-    const dismissedCount = recordAssistiveMomentDismissed(
-      AGENT_TOOLS_CONNECTION_TIPS_MOMENT_ID,
-    );
-    if (dismissedCount >= AGENT_TOOLS_TIP_AUTO_DISABLE_DISMISSALS) {
-      setAgentToolsTipsEnabled(false);
-      recordAssistiveMomentRetired(
-        AGENT_TOOLS_CONNECTION_TIPS_MOMENT_ID,
-        "autoApplied",
-      );
-    }
-  };
-
   const handleRemovePersona = useCallback(
     (_personaId: string) => {
       handleEffectivePersonaChange(null);
@@ -1657,33 +1231,6 @@ export function ChatInput({
           className,
         )}
       >
-        {showAgentToolsTip &&
-        latestAgentToolsTip &&
-        agentToolsTipPresentation ? (
-          <div className="pointer-events-none absolute inset-x-0 bottom-full z-20 flex justify-center px-2 pb-3 sm:px-4">
-            <div
-              className={cn(
-                "flex justify-center",
-                surface === "bare"
-                  ? "w-full"
-                  : "max-w-[var(--chat-composer-max-width)]",
-              )}
-            >
-              <ContextualTip
-                className="pointer-events-auto"
-                actionLabel={agentToolsTipPresentation.actionLabel}
-                dismissLabel={t("agentToolsTip.dismiss")}
-                icon={agentToolsTipPresentation.icon}
-                iconClassName={agentToolsTipPresentation.iconClassName}
-                onAction={agentToolsTipPresentation.onAction}
-                onDismiss={handleAgentToolsTipDismiss}
-                state={isAgentToolsTipExiting ? "closed" : "open"}
-              >
-                {agentToolsTipPresentation.message}
-              </ContextualTip>
-            </div>
-          </div>
-        ) : null}
         <div
           className={cn(
             surface === "bare"
@@ -2009,16 +1556,6 @@ export function ChatInput({
                   onStop,
                   onSteer: handleSteerCurrentMessage,
                   canSteer: canSteerCurrentMessage,
-                  voiceEnabled: scopedControls.voice && dictation.isEnabled,
-                  voiceStarting: scopedControls.voice && dictation.isStarting(),
-                  voiceRecording: scopedControls.voice && dictation.isRecording,
-                  voiceTranscribing:
-                    scopedControls.voice && dictation.isTranscribing,
-                  voiceShortcutDisplayParts: voiceDictationShortcutDisplayParts,
-                  onVoiceToggle: scopedControls.voice
-                    ? dictation.toggleRecording
-                    : undefined,
-                  voiceConversation: composerActions.voiceConversation,
                 }}
                 isCompact={isCompact}
               />

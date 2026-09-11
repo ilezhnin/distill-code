@@ -3,13 +3,13 @@
  * empty state can be inspected without deleting real agents.
  *
  * Enable from the devtools console:
- *   localStorage.setItem("goose:dev:emptyAgentsGallery", "1")
+ *   localStorage.setItem("distill:dev:emptyAgentsGallery", "1")
  * Disable:
- *   localStorage.removeItem("goose:dev:emptyAgentsGallery")
+ *   localStorage.removeItem("distill:dev:emptyAgentsGallery")
  *
  * Has no effect in production builds.
  */
-const EMPTY_AGENTS_GALLERY_SIMULATION_KEY = "goose:dev:emptyAgentsGallery";
+const EMPTY_AGENTS_GALLERY_SIMULATION_KEY = "distill:dev:emptyAgentsGallery";
 
 export function isEmptyAgentsGallerySimulated(): boolean {
   if (!import.meta.env.DEV || typeof window === "undefined") {

@@ -1,48 +1,12 @@
-export type BuildFeature =
-  | "authGate"
-  | "agentTools"
-  | "automations"
-  | "builderbot"
-  | "byoKeyProviders"
-  | "feedback"
-  | "managedConnections"
-  | "telemetry"
-  | "telemetryEnforced"
-  | "voiceConversation"
-  | "voiceDictation"
-  | "securityMl"
-  | "updater";
+export type BuildFeature = "securityMl";
 
 /**
- * Product families backed by Block-only services are positive opt-ins. A
- * normal public build has no value for these variables and therefore cannot
- * expose a path that depends on KGoose, G2, or Builderbot. Distributions may
- * restore each family independently by setting exactly its variable to `1`.
+ * Product families backed by external services are positive opt-ins: a normal
+ * build has no value for the variable and therefore cannot expose the path.
  */
 function readBuildFeatures(): Record<BuildFeature, boolean> {
   return {
-    authGate:
-      import.meta.env.VITE_AUTH_GATE === "1" &&
-      import.meta.env.VITE_BUILDERBOT === "1",
-    agentTools: import.meta.env.VITE_AGENT_TOOLS === "1",
-    automations: import.meta.env.VITE_AUTOMATIONS === "1",
-    builderbot: import.meta.env.VITE_BUILDERBOT === "1",
-    byoKeyProviders: import.meta.env.VITE_BYO_KEY_PROVIDERS !== "0",
-    feedback: import.meta.env.VITE_FEEDBACK === "1",
-    managedConnections: import.meta.env.VITE_MANAGED_CONNECTIONS === "1",
-    telemetry: import.meta.env.VITE_TELEMETRY === "1",
-    // Managed internal distributions force telemetry consent ON: the user
-    // setting is skipped and the settings toggle is hidden. A positive opt-in
-    // like the Block-service gates; public builds leave it unset. Paired with
-    // the `block-telemetry-enforced` Cargo feature (see
-    // scripts/block-feature-gates.sh) so the native export gate agrees.
-    telemetryEnforced: import.meta.env.VITE_TELEMETRY_ENFORCED === "1",
-    // Native Voice Conversation is public functionality and deliberately does
-    // not share dictation's KGoose-backed build gate.
-    voiceConversation: true,
-    voiceDictation: import.meta.env.VITE_VOICE_DICTATION === "1",
     securityMl: import.meta.env.VITE_SECURITY_ML === "1",
-    updater: import.meta.env.VITE_UPDATER_ENABLED !== "false",
   };
 }
 

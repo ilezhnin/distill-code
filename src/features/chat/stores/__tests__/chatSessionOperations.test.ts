@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { useChatSessionStore, type ChatSession } from "../chatSessionStore";
 import {
   moveSessionToProject,
@@ -34,6 +35,7 @@ function resetStore() {
     hasHydratedSessions: false,
     activeWorkspaceBySession: {},
   });
+  useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
 }
 
 function seedSession(overrides: Partial<ChatSession> = {}) {
@@ -74,6 +76,29 @@ describe("chatSessionOperations", () => {
         title: "Manual Title",
         userSetName: true,
       });
+    });
+
+    it("renames a conductor graph label with the chat title", async () => {
+      seedSession({ userSetName: false });
+      mockRenameSession.mockResolvedValue(undefined);
+      useConductorGraphStore.getState().registerNode({
+        sessionId: "session-1",
+        projectId: "project",
+        role: "conductor",
+        managedBy: "ui",
+        parentSessionId: null,
+        rootConductorId: "session-1",
+        runId: null,
+        harnessId: "goose",
+        displayName: "Producer",
+        status: "stopped",
+      });
+
+      await updateSessionTitle("session-1", "Manual Title");
+
+      expect(
+        useConductorGraphStore.getState().getNode("session-1")?.displayName,
+      ).toBe("Manual Title");
     });
 
     it("does not patch local state when backend rename fails", async () => {

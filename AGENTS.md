@@ -10,15 +10,11 @@ UI can handle operations that are not yet in ACP or are client specific.
 ## Layout
 
 - `src/` — React UI/features/shared code
-- `src-tauri/` — Tauri shell that starts or resolves `goose serve`
-- `sdk/` — vendored `@aaif/goose-sdk` package and generated ACP types
+- `src-tauri/` — Tauri shell; `src-tauri/src/services/agent_host/` is the
+  built-in ACP host that spawns the harness bridges and stores sessions
 - `distro/` — bundled app defaults and packaged distribution assets
-- `goose-backend.lock.json` — pinned upstream Goose backend used by dev and bundles
 - `acp-tools.lock.json` — release-controlled `package.json` + `package-lock.json`
   the managed ACP bridges are installed from with `npm ci`
-- `scripts/ensure-local-goose.sh` — managed local Goose checkout for dev
-- `scripts/prepare-goose-sidecar.sh` — stages the pinned or explicit Goose binary for Tauri bundling
-- `scripts/update-goose-backend-lock.sh` — resolves and records a new Goose backend pin
 - `scripts/update-acp-tools-lock.mjs` — resolves and records a new managed ACP bridge pin
 - `src/features/berdctl/` — berdctl command registry
 - `src-tauri/plugins/berdctl/` — berdctl broker
@@ -43,19 +39,9 @@ paths through `convertFileSrc(..., "asset")` before rendering media. Do not
 vendor startup media, fetch catalogs in the renderer, or construct CDN
 URLs in UI code.
 
-## Experimental features
-
-Experiments are opt-in, user-local switches for in-progress UI or workflow
-behavior. Use `.agents/skills/experimental-features/SKILL.md` before adding,
-reviewing, graduating, or removing an experiment.
-
-Do not create one-off localStorage keys, distro flags, Tauri commands, or
-capabilities for per-user experiments unless the skill says the use case
-requires it.
-
 ## Common commands
 
-- `just setup` — install pnpm deps, build SDK, build managed local Goose
+- `just setup` — install pnpm deps and git hooks
 - `just dev` — run the Tauri app in dev mode
 - `just fmt` — format frontend and Tauri/Rust files
 - `just fmt-check` — check frontend and Tauri/Rust formatting
@@ -66,7 +52,7 @@ requires it.
 - `just tauri-check` — Rust check with external sidecars disabled
 - `just clippy` — Rust clippy with warnings denied
 - `just ci` — local validation gate: frontend checks, Tauri/Rust checks, clippy, tests, build
-- `just bundle` — stage the pinned Goose backend and run `pnpm tauri build`
+- `just bundle` — stage the berdctl sidecars and run `pnpm tauri build`
 
 ## When to validate
 
@@ -112,22 +98,19 @@ consistency via the crate's tests). Never hand-edit the contract JSONs.
 
 ## Sidecar rule
 
-Release builds should use the Goose backend pinned in `goose-backend.lock.json`:
+Release builds stage the workspace CLIs (`berdctl`, `berd-monitor`) as Tauri
+`externalBin` sidecars:
 
 ```bash
 just setup
 just bundle
 ```
 
-The Tauri config uses `"externalBin": ["binaries/goosed"]`; the staging script
-copies to `src-tauri/binaries/goosed-$(rustc -vV | sed -n 's|host: ||p')`, which
-is the filename Tauri expects. Use `GOOSE_BIN=/path/to/goose` only as an explicit
-local override.
+The ACP harness bridges are not bundled; the app installs them at runtime
+from `acp-tools.lock.json`.
 
 ## Conventions
 
 - Use `@/` imports for frontend code.
 - Use `cn()` from `@/shared/lib/cn` for Tailwind class merging.
 - All `<button>` elements need `type="button"` unless intentionally submitting.
-- Do not hand-edit generated SDK files unless this repo intentionally freezes a
-  generated snapshot; prefer updating `sdk/schema/*` and regenerating.

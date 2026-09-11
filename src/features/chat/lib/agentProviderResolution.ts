@@ -1,3 +1,4 @@
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 import { resolveAgentProviderCatalogIdStrictFromEntries } from "@/features/providers/providerCatalog";
 import type { ProviderCatalogEntry } from "@/shared/types/providers";
 
@@ -13,7 +14,7 @@ export function resolveSelectedAgentId({
   catalogLoaded = true,
 }: ResolveSelectedAgentIdOptions): string {
   if (!selectedProvider) {
-    return "goose";
+    return DEFAULT_HARNESS_ID;
   }
 
   const resolvedAgentId = resolveAgentProviderCatalogIdStrictFromEntries(
@@ -28,5 +29,5 @@ export function resolveSelectedAgentId({
     return selectedProvider;
   }
 
-  return "goose";
+  return DEFAULT_HARNESS_ID;
 }

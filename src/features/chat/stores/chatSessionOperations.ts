@@ -1,3 +1,4 @@
+import { syncConductorDisplayNameFromTitle } from "@/features/conductor/syncConductorDisplayName";
 import {
   renameSession,
   updateSessionProject as updateSessionProjectApi,
@@ -14,6 +15,7 @@ export async function updateSessionTitle(
     title,
     userSetName: true,
   });
+  syncConductorDisplayNameFromTitle(sessionId, title);
 }
 
 export async function updateSessionProject(

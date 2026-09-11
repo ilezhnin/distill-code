@@ -8,7 +8,7 @@ import {
 } from "../lib/admittedSend";
 import type { DeferredWorkspaceSend } from "../lib/firstWorkspaceSend";
 
-const QUEUES_STORAGE_KEY = "goose:chat-message-queues:v1";
+const QUEUES_STORAGE_KEY = "distill:chat-message-queues:v1";
 let nativeWriteChain = Promise.resolve();
 
 type PersistedQueues = Record<string, QueuedMessageRecord[]>;

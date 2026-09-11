@@ -5,12 +5,12 @@
  * Two things this row must be honest about, and both are the reason it exists
  * as its own component rather than a line in a list:
  *
- * - **Changing it does not move anything.** Copying gigabytes while goose
+ * - **Changing it does not move anything.** Copying gigabytes while the app
  *   holds files open is how people lose a folder. The operator moves it, the
  *   app picks it up. Saying so is not a caveat, it is the instruction.
- * - **It takes effect on restart.** goose is told where to live once, when it
- *   starts. Half the app pointing at a new folder while the other half still
- *   holds the old one is the exact split a single root exists to prevent.
+ * - **It takes effect on restart.** The root is read once, at startup. Half
+ *   the app pointing at a new folder while the other half still holds the old
+ *   one is the exact split a single root exists to prevent.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -85,19 +85,6 @@ export function DistillFolderRow() {
             data-testid="distill-folder-restart"
           >
             {t("general.distillFolder.restartRequired")}
-          </p>
-        ) : null}
-        {!info.holdsEverything && info.legacyDataDir ? (
-          // The operator would otherwise read "everything lives here" while
-          // their chats sat somewhere else entirely.
-          <p
-            className="max-w-80 text-right text-xs text-warning"
-            data-testid="distill-folder-legacy"
-            title={info.legacyDataDir}
-          >
-            {t("general.distillFolder.legacyDataElsewhere", {
-              path: info.legacyDataDir,
-            })}
           </p>
         ) : null}
         {info.forcedByEnvironment ? (

@@ -27,7 +27,7 @@ import {
 import type { CompletedWaveStepReport } from "./wavePrompts";
 import type { StructuredReport } from "./types";
 
-export const CONDUCTOR_WAVES_STORAGE_KEY = "goose:conductor-waves";
+export const CONDUCTOR_WAVES_STORAGE_KEY = "distill:conductor-waves";
 
 /**
  * Cap on remembered plan messages. Tombstones are tiny and only grow one entry

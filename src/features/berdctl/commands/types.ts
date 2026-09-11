@@ -5,7 +5,7 @@ export interface CommandContext {
    *  Commands with slow pre-mutation work must not mutate state past it —
    *  the agent has already been told the call failed. */
   deadlineMs?: number;
-  /** Calling agent session's identity (goose session id), when the call came
+  /** Calling agent session's identity (AGENT_SESSION_ID), when the call came
    *  from inside an agent session's shell. Absent means the operator. */
   actor?: string;
 }

@@ -17,8 +17,6 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { INITIAL_SESSION_CHAT_RUNTIME } from "@/shared/types/chat";
 import type { ProjectInfo } from "@/features/projects/api/projects";
-import { BUILDERBOT_SURFACE_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
-import { setExperimentEnabled } from "@/features/experiments/experimentPreferences";
 import { setSidebarGroupChatsByProjectEnabled } from "@/features/sidebar/lib/sidebarChatGroupingPreference";
 import { SIDEBAR_GIT_BRANCH_SUBTITLE_STORAGE_KEY } from "@/features/sidebar/lib/sidebarBranchSubtitlePreference";
 import { useRuntimeConfigStore } from "@/shared/runtime-config/runtimeConfigStore";
@@ -353,7 +351,6 @@ vi.mock("@/features/design-system/lib/designSystemEnabled", () => ({
 describe("NavigationPanesView", () => {
   beforeEach(() => {
     vi.stubEnv("VITE_AUTOMATIONS", "1");
-    vi.stubEnv("VITE_BUILDERBOT", "1");
     seedSessions();
     mockDraftsBySession = {};
     mockHasMoreSessions = false;
@@ -380,7 +377,6 @@ describe("NavigationPanesView", () => {
     designSystemExplorer.isEnabled.mockReturnValue(false);
     setReadyRuntimeConfig({
       ...DEFAULT_RUNTIME_CONFIG,
-      kgoose: { baseUrl: "https://kgoose.example.test" },
     });
   });
 
@@ -499,7 +495,7 @@ describe("NavigationPanesView", () => {
 
   it("expands Projects only for an explicit local project creation", () => {
     localStorage.setItem(
-      "goose:sidebar:section-visibility",
+      "distill:sidebar:section-visibility",
       JSON.stringify({ pinned: true, projects: false, recents: true }),
     );
     const initialProps = sidebarProps({ projects: [mockProject()] });
@@ -535,7 +531,7 @@ describe("NavigationPanesView", () => {
 
   it("handles project creation when the session list mounts after the signal", async () => {
     localStorage.setItem(
-      "goose:sidebar:section-visibility",
+      "distill:sidebar:section-visibility",
       JSON.stringify({ pinned: true, projects: false, recents: true }),
     );
     const onProjectCreatedRevisionHandled = vi.fn();
@@ -1612,37 +1608,6 @@ describe("NavigationPanesView", () => {
     expect(renderedSessionIds()[0]).toBe("old-project-draft");
   });
 
-  it("renders an automations button in main navigation", async () => {
-    const user = userEvent.setup();
-    const onNavigate = vi.fn();
-
-    renderSidebar({ onNavigate });
-
-    await user.click(screen.getByRole("button", { name: /automations/i }));
-
-    expect(onNavigate).toHaveBeenCalledWith("automations");
-  });
-
-  it("hides Builderbot from main navigation until the experiment is enabled", () => {
-    setExperimentEnabled(BUILDERBOT_SURFACE_EXPERIMENT_ID, false);
-
-    renderSidebar();
-
-    expect(screen.queryByRole("button", { name: /builderbot/i })).toBeNull();
-  });
-
-  it("renders Builderbot in main navigation when the experiment is enabled", async () => {
-    const user = userEvent.setup();
-    const onNavigate = vi.fn();
-    setExperimentEnabled(BUILDERBOT_SURFACE_EXPERIMENT_ID, true);
-
-    renderSidebar({ onNavigate });
-
-    await user.click(screen.getByRole("button", { name: /builderbot/i }));
-
-    expect(onNavigate).toHaveBeenCalledWith("builderbot");
-  });
-
   it("renders settings in the sticky navigation footer", () => {
     renderSidebar();
 
@@ -1681,7 +1646,7 @@ describe("NavigationPanesView", () => {
       .filter((label): label is string => Boolean(label));
 
     expect(labels).toEqual(
-      expect.arrayContaining(["Home", "Agents", "Skills", "Automations"]),
+      expect.arrayContaining(["Home", "Agents", "Skills"]),
     );
     expect(screen.getByTestId("nav-settings")).toHaveAccessibleName("Settings");
     expect(labels).not.toContain("Design system");

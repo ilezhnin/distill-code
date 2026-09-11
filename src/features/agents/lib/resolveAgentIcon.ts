@@ -1,14 +1,14 @@
-import gooseAvatar1 from "@/features/agents/assets/icons/goose-avatar-1.png";
-import gooseAvatar2 from "@/features/agents/assets/icons/goose-avatar-2.png";
-import gooseAvatar3 from "@/features/agents/assets/icons/goose-avatar-3.png";
-import gooseAvatar4 from "@/features/agents/assets/icons/goose-avatar-4.png";
+import agentAvatar1 from "@/features/agents/assets/icons/agent-avatar-1.png";
+import agentAvatar2 from "@/features/agents/assets/icons/agent-avatar-2.png";
+import agentAvatar3 from "@/features/agents/assets/icons/agent-avatar-3.png";
+import agentAvatar4 from "@/features/agents/assets/icons/agent-avatar-4.png";
 
 // Stable, ordered icon set. Index matches `hash % length`.
 const AGENT_ICONS: readonly string[] = [
-  gooseAvatar1,
-  gooseAvatar2,
-  gooseAvatar3,
-  gooseAvatar4,
+  agentAvatar1,
+  agentAvatar2,
+  agentAvatar3,
+  agentAvatar4,
 ];
 
 /**

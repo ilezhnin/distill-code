@@ -13,7 +13,6 @@ import { ChatInputAttachments } from "@/features/chat/ui/ChatInputAttachments";
 import { ChatInputSelectionChips } from "@/features/chat/ui/ChatInputSelectionChips";
 import { ChatLoadingSkeleton } from "@/features/chat/ui/ChatLoadingSkeleton";
 import { ConversationEmptyAvatar } from "@/features/chat/ui/ConversationEmptyAvatar";
-import { McpAppView } from "@/features/chat/ui/McpAppView";
 import { MessageBubble } from "@/features/chat/ui/MessageBubble";
 import { MessageBubbleActions } from "@/features/chat/ui/MessageBubbleActions";
 import { ToolCallAdapter } from "@/features/chat/ui/ToolCallAdapter";
@@ -49,7 +48,7 @@ const samplePersona: Persona = {
   displayName: "Gloopy",
   avatar: null,
   systemPrompt: "You are a helpful agent.",
-  provider: "goose",
+  provider: "claude-acp",
   model: "gpt-4.1",
   isBuiltin: true,
   writable: false,
@@ -66,7 +65,7 @@ const sampleFileAttachment: ChatAttachmentDraft = {
   id: "draft-file",
   kind: "file",
   name: "ConversationAnatomyPage.tsx",
-  path: "/Users/morganm/Development/goose-internal/src/features/chat/ui/ConversationAnatomyPage.tsx",
+  path: "/Users/dev/distill/src/features/chat/ui/ConversationAnatomyPage.tsx",
   mimeType: "text/typescript",
 };
 
@@ -74,7 +73,7 @@ const sampleDirectoryAttachment: ChatAttachmentDraft = {
   id: "draft-directory",
   kind: "directory",
   name: "src/features/chat",
-  path: "/Users/morganm/Development/goose-internal/src/features/chat",
+  path: "/Users/dev/distill/src/features/chat",
 };
 
 const sampleImageAttachment: ChatAttachmentDraft = {
@@ -172,12 +171,12 @@ const userRichMessage = message(
       {
         type: "file",
         name: "ConversationAnatomyPage.tsx",
-        path: "/Users/morganm/Development/goose-internal/src/features/chat/ui/ConversationAnatomyPage.tsx",
+        path: "/Users/dev/distill/src/features/chat/ui/ConversationAnatomyPage.tsx",
       },
       {
         type: "directory",
         name: "src/features/chat",
-        path: "/Users/morganm/Development/goose-internal/src/features/chat",
+        path: "/Users/dev/distill/src/features/chat",
       },
     ],
   },
@@ -204,7 +203,7 @@ const assistantBasicMessage = message(
       text: "This branch adds a design-system page for looking at the conversation UI as individual reusable pieces.",
     },
   ],
-  { providerId: "goose" },
+  { providerId: "claude-acp" },
 );
 
 const assistantMarkdownMessage = message("assistant-markdown", "assistant", [
@@ -724,31 +723,6 @@ export function ConversationAnatomyPage() {
             />
           </StatePreview>
         </PreviewCard>
-
-        <PreviewCard
-          title="McpAppView"
-          when="when a tool returns an embedded MCP app resource."
-        >
-          <StatePreview label="Fallback/error">
-            <McpAppView
-              payload={{
-                sessionId: "catalog-session",
-                toolCallId: "catalog-mcp",
-                toolCallTitle: "Preview MCP app",
-                source: "toolCallUpdateMeta",
-                tool: {
-                  name: "preview_app",
-                  extensionName: "demo",
-                  resourceUri: "ui://demo/preview",
-                },
-                resource: {
-                  result: null,
-                  readError: "The embedded app resource could not be loaded.",
-                },
-              }}
-            />
-          </StatePreview>
-        </PreviewCard>
       </ComponentGrid>
 
       <ComponentGrid>
@@ -869,7 +843,7 @@ export function ConversationAnatomyPage() {
           <StatePreview label="Empty composer">
             <ChatInput
               composerActions={{ onSend: noopSend }}
-              controls={{ autoFocus: false, voice: false }}
+              controls={{ autoFocus: false }}
               surface="bare"
             />
           </StatePreview>
@@ -879,7 +853,7 @@ export function ConversationAnatomyPage() {
               initialValue="Redesign the tool cards to make the hierarchy clearer."
               selectedSkills={[sampleSkill]}
               onSkillsChange={() => {}}
-              controls={{ autoFocus: false, voice: false }}
+              controls={{ autoFocus: false }}
               surface="bare"
             />
           </StatePreview>
@@ -897,7 +871,7 @@ export function ConversationAnatomyPage() {
                 },
                 onDismissQueue: () => {},
               }}
-              controls={{ autoFocus: false, voice: false }}
+              controls={{ autoFocus: false }}
               surface="bare"
             />
           </StatePreview>

@@ -209,7 +209,7 @@ describe("useResizableSidebar", () => {
 
   it("preserves a clamped fixed height during a width-only corner drag", () => {
     window.localStorage.setItem(
-      "goose:sidebar:layout",
+      "distill:sidebar:layout",
       JSON.stringify({
         width: 240,
         height: 727,
@@ -311,7 +311,7 @@ describe("useResizableSidebar", () => {
     unmount();
     window.localStorage.clear();
     window.localStorage.setItem(
-      "goose:sidebar:layout",
+      "distill:sidebar:layout",
       JSON.stringify({
         width: "wide",
         height: Number.POSITIVE_INFINITY,
@@ -328,7 +328,7 @@ describe("useResizableSidebar", () => {
 
   it("migrates a legacy customized height to fixed height", () => {
     window.localStorage.setItem(
-      "goose:sidebar:layout",
+      "distill:sidebar:layout",
       JSON.stringify({
         width: 240,
         height: 640,
@@ -348,7 +348,7 @@ describe("useResizableSidebar", () => {
 
   it("shrinks a wide sidebar before collapsing on narrow windows", () => {
     window.localStorage.setItem(
-      "goose:sidebar:layout",
+      "distill:sidebar:layout",
       JSON.stringify({
         width: 420,
         height: 400,
@@ -365,7 +365,7 @@ describe("useResizableSidebar", () => {
 
   it("keeps the collapsed panel width clamped on narrow windows", () => {
     window.localStorage.setItem(
-      "goose:sidebar:layout",
+      "distill:sidebar:layout",
       JSON.stringify({
         width: 420,
         height: 400,
@@ -391,7 +391,7 @@ describe("useResizableSidebar", () => {
 
   it("restores the preferred sidebar width when space returns", async () => {
     window.localStorage.setItem(
-      "goose:sidebar:layout",
+      "distill:sidebar:layout",
       JSON.stringify({
         width: 420,
         height: 400,
@@ -415,7 +415,7 @@ describe("useResizableSidebar", () => {
 
   it("collapses only after the minimum sidebar width no longer fits", async () => {
     window.localStorage.setItem(
-      "goose:sidebar:layout",
+      "distill:sidebar:layout",
       JSON.stringify({
         width: 420,
         height: 400,
@@ -530,7 +530,7 @@ describe("useResizableSidebar", () => {
 
     expect(result.current.sidebarHeight).toBe(initialHeight);
     expect(setItemSpy).not.toHaveBeenCalledWith(
-      "goose:sidebar:layout",
+      "distill:sidebar:layout",
       expect.any(String),
     );
   });

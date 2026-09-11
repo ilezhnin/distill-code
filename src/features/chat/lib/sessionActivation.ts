@@ -19,7 +19,10 @@ import {
 } from "@/features/projects/lib/sessionCwdSelection";
 import { resolveSessionArtifactCwd } from "@/shared/artifacts/sessionArtifactLocation";
 import { perfLog } from "@/shared/lib/perfLog";
-import { isDefaultChatTitle } from "@/features/chat/lib/sessionTitle";
+import {
+  isDefaultChatTitle,
+  titleFromUserText,
+} from "@/features/chat/lib/sessionTitle";
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
@@ -40,7 +43,7 @@ import {
   getWorkspaceAttachments,
   isSameWorkspacePath,
 } from "@/features/chat/lib/workspaceAttachments";
-import { executionTargetFromGooseServeSession } from "@/features/chat/lib/gooseServeExecutionTarget";
+import { executionTargetFromHostSession } from "@/features/chat/lib/hostExecutionTarget";
 import {
   hydrateSessionTarget,
   transitionSessionTarget,
@@ -61,7 +64,7 @@ function fallbackTitleFromReplay(messages: Message[]): string | null {
     try {
       const text = getTextContent(message).trim();
       if (text) {
-        return text.replace(/\s+/g, " ").slice(0, 80);
+        return titleFromUserText(text);
       }
     } catch {}
   }
@@ -214,6 +217,44 @@ export function clearSessionLoadWarningNotice(sessionId: string): void {
 
 const sessionLoadPromises = new Map<string, Promise<boolean>>();
 
+type SessionLoadModules = [
+  typeof import("@/shared/api/acp"),
+  typeof import("@/features/chat/acp/acpNotificationHandler"),
+];
+
+let sessionLoadModulesPromise: Promise<SessionLoadModules> | null = null;
+
+/**
+ * The ACP client and replay handler are loaded lazily so the chat shell does
+ * not pay for them on every screen — but loaded exactly once, and ideally
+ * before the first chat is opened: under Vite dev the on-demand transform of
+ * these modules was the single largest share of the first open of a chat.
+ * A failed load is forgotten so the next open retries instead of failing
+ * forever.
+ */
+function sessionLoadModules(): Promise<SessionLoadModules> {
+  if (!sessionLoadModulesPromise) {
+    const pending = Promise.all([
+      import("@/shared/api/acp"),
+      import("@/features/chat/acp/acpNotificationHandler"),
+    ]);
+    sessionLoadModulesPromise = pending;
+    pending.catch(() => {
+      if (sessionLoadModulesPromise === pending) {
+        sessionLoadModulesPromise = null;
+      }
+    });
+  }
+  return sessionLoadModulesPromise;
+}
+
+/** Warm the chat load path in the background, e.g. once the app has started. */
+export function prefetchSessionLoadModules(): void {
+  void sessionLoadModules().catch(() => {
+    // Reported by the next real load; nothing to do at prefetch time.
+  });
+}
+
 export async function loadSessionMessagesAndPrepare(
   sessionId: string,
   options: LoadSessionMessagesOptions = {},
@@ -332,12 +373,11 @@ async function performSessionMessagesLoad(
     const [
       { acpGetSessionInfo, acpLoadSession },
       { getReplayPerf, clearReplayPerf },
-    ] = await Promise.all([
-      import("@/shared/api/acp"),
-      import("@/features/chat/acp/acpNotificationHandler"),
-    ]);
+    ] = await sessionLoadModules();
     const t1 = performance.now();
-    perfLog(`[perf:load] ${sid} import in ${(t1 - t0).toFixed(1)}ms`);
+    // Mostly the render yield after setSessionLoading — the modules themselves
+    // are prefetched at startup and resolve in microseconds.
+    perfLog(`[perf:load] ${sid} modules ready in ${(t1 - t0).toFixed(1)}ms`);
     let sessionInfo: Awaited<ReturnType<typeof acpGetSessionInfo>> | null =
       null;
     if (sessionAtRequest?.pinnedLoadState) {
@@ -349,7 +389,7 @@ async function performSessionMessagesLoad(
     }
     if (sessionInfo) {
       const sessionStore = useChatSessionStore.getState();
-      const hydratedTarget = executionTargetFromGooseServeSession({
+      const hydratedTarget = executionTargetFromHostSession({
         providerId: sessionInfo.providerId ?? undefined,
         modelId: sessionInfo.modelId ?? undefined,
       });
@@ -389,7 +429,7 @@ async function performSessionMessagesLoad(
       await resolveWorkingDirForSessionLoad(session, project);
     const loadedSelection = await acpLoadSession(sessionId, workingDir);
     const loadedTarget = loadedSelection
-      ? executionTargetFromGooseServeSession(loadedSelection)
+      ? executionTargetFromHostSession(loadedSelection)
       : undefined;
     if (loadedTarget) {
       hydrateSessionTarget(sessionId, loadedTarget);

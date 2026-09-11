@@ -8,7 +8,7 @@
  * still the operator's and still true — but for the model it does not exist.
  * This is the read channel that closes that hole (LAWS/MEMORY.md, Reading
  * back), on the same fence mechanism the write side already uses, because it
- * is the only one that behaves identically on goose and on the Claude, Grok
+ * is the only one that behaves identically on the Claude, Grok
  * and Codex bridges.
  *
  * Pure. Searching is `memorySearch`, delivering the answer is

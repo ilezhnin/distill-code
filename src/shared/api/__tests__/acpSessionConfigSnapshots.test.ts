@@ -1,32 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  readSessionConfigOptionsSnapshots,
-  readSessionExecutionConfigSnapshot,
-} from "../acpSessionConfigSnapshots";
-
-const gooseModelSnapshot = {
-  configOptions: [
-    {
-      id: "provider",
-      kind: { type: "select", currentValue: "databricks_v2", options: [] },
-    },
-    {
-      id: "model",
-      category: "model",
-      kind: { type: "select", currentValue: "goose", options: [] },
-    },
-  ],
-};
+import { readSessionConfigOptionsSnapshots } from "../acpSessionConfigSnapshots";
 
 describe("ACP session config snapshots", () => {
-  it("rejects the goose sentinel from model and execution snapshots", () => {
-    expect(
-      readSessionConfigOptionsSnapshots(gooseModelSnapshot).model,
-    ).toBeNull();
-    expect(readSessionExecutionConfigSnapshot(gooseModelSnapshot)).toBeNull();
-  });
-
   // A session snapshot answers "which model is this session on", never "which
   // models does this provider have". goose strips the child's own `model`
   // option and rebuilds it from an inventory that is empty for every ACP

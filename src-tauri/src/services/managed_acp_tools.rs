@@ -451,7 +451,10 @@ impl std::error::Error for ManagedToolError {}
 
 pub type InstallLineFn<'a> = dyn Fn(&str) + Send + Sync + 'a;
 
-fn tool_install_lock() -> &'static tokio::sync::Mutex<()> {
+/// The process-wide install mutex. Installs hold it for their whole run; the
+/// agent host takes it around spawning a managed bridge so a bridge is never
+/// started from a tree that an install is in the middle of swapping.
+pub fn install_lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
@@ -487,7 +490,7 @@ pub async fn install_managed_tool(
     })?;
     let layout = runtime_layout()?;
 
-    let _guard = tool_install_lock().lock().await;
+    let _guard = install_lock().lock().await;
     let progress = managed_node::progress_line_reporter(|line| on_line(&line));
     managed_node::ensure_managed_node_runtime(app, &progress)
         .await
@@ -508,6 +511,47 @@ pub async fn install_managed_tool(
         on_line,
     )
     .await
+}
+
+/// Whether the live install already satisfies everything a fresh install of
+/// this pin would be verified for, so `npm ci` can be skipped.
+fn pinned_install_is_current(
+    packages_root: &Path,
+    install_dir: &Path,
+    shim_path: &Path,
+    expected_shim: &str,
+    tool: &ManagedTool,
+    expected: &ToolLockEntry,
+    target: &str,
+) -> bool {
+    let state = read_state(packages_root);
+    let recorded = state
+        .tools
+        .get(tool.id)
+        .is_some_and(|pin| pin.version == tool.version && pin.binary == tool.binary);
+    if !recorded {
+        log::info!(
+            "[acp-tools] {} is not recorded at the pinned version",
+            tool.id
+        );
+        return false;
+    }
+    if !npm_entrypoint(install_dir, tool.package).is_file() {
+        log::info!("[acp-tools] {} entrypoint is missing", tool.id);
+        return false;
+    }
+    if let Err(error) = verify_pinned_install(install_dir, tool, expected, target) {
+        log::info!("[acp-tools] {} pinned install differs: {error}", tool.id);
+        return false;
+    }
+    if !std::fs::read_to_string(shim_path).is_ok_and(|shim| shim == expected_shim) {
+        log::info!(
+            "[acp-tools] {} shim differs from the expected launcher",
+            tool.id
+        );
+        return false;
+    }
+    true
 }
 
 /// The install body, path-parameterized so tests drive it with a fixture
@@ -532,6 +576,35 @@ async fn install_npm_tool(
     transaction.prepare().map_err(|error| {
         ManagedToolError::Io(format!("prepare ACP install transaction: {error}"))
     })?;
+
+    // Nothing to do when the live tree already is the pinned graph: the same
+    // post-conditions a fresh install is checked against hold (lockfile equals
+    // the seeded document, native executable present, entrypoint present), the
+    // shim execs the current runtime, and state.json records this pin. This is
+    // the common launch, and replaying `npm ci` for it cost ~30 s of disk and
+    // CPU per bridge plus a window where the live tree was being swapped
+    // under a bridge trying to start.
+    let expected_shim = shim_contents(
+        layout,
+        &node_binary(layout, node_install_dir),
+        &npm_entrypoint(&install_dir, tool.package),
+    );
+    if pinned_install_is_current(
+        packages_root,
+        &install_dir,
+        &shim_path,
+        &expected_shim,
+        tool,
+        expected,
+        target,
+    ) {
+        transaction.cleanup_staged();
+        on_line(&format!(
+            "{}@{} is already installed at the pinned version",
+            tool.package, tool.version
+        ));
+        return Ok(());
+    }
 
     on_line(&format!(
         "Installing {}@{} into Berd's app data from the checked-in lockfile",
@@ -1682,7 +1755,7 @@ async fn finish_reconcile_at(
     errors: Vec<String>,
 ) {
     let all_installed = errors.is_empty();
-    let _guard = tool_install_lock().lock().await;
+    let _guard = install_lock().lock().await;
     let journal = packages_root.join(".managed-acp-transaction.json");
     if let Err(error) = recover_transaction(&journal) {
         log::error!("failed to recover interrupted managed ACP transaction: {error}");
@@ -2218,6 +2291,73 @@ mod tests {
     fn write_fixture_install(install_dir: &Path, tool: &ManagedTool, entry: &ToolLockEntry) {
         write_fixture_tree(install_dir, tool, entry);
         write_json(&install_dir.join("package-lock.json"), &entry.package_lock);
+    }
+
+    // -- skip when already at the pin ----------------------------------------
+
+    /// The launch-time short-circuit only fires for a live tree that passes
+    /// the install verifier, whose shim execs the current runtime, and whose
+    /// pin is recorded in state.json; any of those missing means npm runs.
+    #[test]
+    fn pinned_install_is_current_only_for_a_verified_recorded_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let packages_root = dir.path().join("packages");
+        let tool = test_tool();
+        let entry = test_lock_entry();
+        let layout = test_layout();
+        let install_dir = tool_install_dir(&packages_root, tool.id);
+        let shim_path = shim_bin_dir(&packages_root).join(shim_file_name(&layout, tool.binary));
+        let node = packages_root
+            .join("node")
+            .join("v9.9.9")
+            .join("plat")
+            .join("node");
+        let expected_shim =
+            shim_contents(&layout, &node, &npm_entrypoint(&install_dir, tool.package));
+        let current = || {
+            pinned_install_is_current(
+                &packages_root,
+                &install_dir,
+                &shim_path,
+                &expected_shim,
+                &tool,
+                &entry,
+                test_target(),
+            )
+        };
+        let record = |version: &str| {
+            let mut state = read_state(&packages_root);
+            state.tools.insert(
+                tool.id.to_string(),
+                InstalledToolPin {
+                    binary: tool.binary.to_string(),
+                    version: version.to_string(),
+                },
+            );
+            write_state(&packages_root, &state).unwrap();
+        };
+
+        assert!(!current(), "nothing installed");
+        write_fixture_install(&install_dir, &tool, &entry);
+        assert!(!current(), "no shim, no state");
+        std::fs::create_dir_all(shim_path.parent().unwrap()).unwrap();
+        std::fs::write(&shim_path, &expected_shim).unwrap();
+        assert!(!current(), "state.json does not record the pin");
+        record(tool.version);
+        assert!(current(), "verified tree + current shim + recorded pin");
+
+        std::fs::write(&shim_path, expected_shim.replace("v9.9.9", "v1.0.0")).unwrap();
+        assert!(!current(), "shim execs a superseded runtime");
+        std::fs::write(&shim_path, &expected_shim).unwrap();
+        assert!(current());
+
+        record("0.0.1");
+        assert!(!current(), "a different recorded version reinstalls");
+        record(tool.version);
+        assert!(current());
+
+        std::fs::remove_file(install_dir.join("package-lock.json")).unwrap();
+        assert!(!current(), "a tree the verifier rejects reinstalls");
     }
 
     // -- shims --------------------------------------------------------------

@@ -48,8 +48,6 @@ function renderSurface(overrides: Record<string, unknown> = {}) {
       settingsSections={SETTINGS_SECTIONS}
       showBottomMask={false}
       showTopMask={false}
-      showAutomationsSurface={false}
-      showBuilderbotSurface={false}
       showSecondaryBottomMask={false}
       width={240}
       {...overrides}

@@ -19,14 +19,7 @@ const createAgentSchema = z
   .refine((args) => !args.model || Boolean(args.provider), {
     message: "provider is required when model is set",
     path: ["provider"],
-  })
-  .refine(
-    (args) => !args.model || args.provider?.trim().toLowerCase() !== "goose",
-    {
-      message: "provider must identify the concrete model provider",
-      path: ["provider"],
-    },
-  );
+  });
 
 export const createAgentCommand = defineCommand({
   effect: "create",

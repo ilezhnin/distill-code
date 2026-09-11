@@ -97,7 +97,6 @@ describe("searchResultModel", () => {
       extensions: [],
       agents: ["agent-1"],
       skills: ["skill-1"],
-      automations: [],
       settings: [],
     };
 

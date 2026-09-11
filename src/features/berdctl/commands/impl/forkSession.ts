@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 
 import { defineCommand } from "../types";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
 const forkSessionSchema = z
   .object({
@@ -86,7 +87,7 @@ Result:
       actor: ctx.actor,
       sessionId: forked.sessionId,
       role: targetLayer,
-      harnessId: chatSession.executionTarget?.harnessId ?? "goose",
+      harnessId: chatSession.executionTarget?.harnessId ?? DEFAULT_HARNESS_ID,
       displayName: chatSession.title,
       task: `fork of ${args.session_id}`,
     });

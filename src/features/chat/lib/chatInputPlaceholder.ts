@@ -16,12 +16,8 @@ export function getChatInputAgentLabel(
 export function getChatInputPlaceholder(
   t: (key: string, options?: { agent: string }) => string,
   agent: string,
-  isRecording: boolean,
-  isTranscribing: boolean,
   override?: string,
 ): string {
-  if (isRecording) return t("toolbar.voiceInputRecording");
-  if (isTranscribing) return t("toolbar.voiceInputTranscribing");
   if (override) return override;
   return t("input.placeholder", { agent });
 }

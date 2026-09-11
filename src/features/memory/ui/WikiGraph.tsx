@@ -14,22 +14,24 @@
  * third writer nobody agreed to. Clicking a node opens the page as it is on
  * disk, and that is the whole interaction.
  *
- * Behind the `memory-wiki-graph` experiment, and silent when there is nothing
- * to draw: a project with no `.distill/wiki/` gets no empty frame, because an
- * empty frame in a settings page reads as something broken rather than as
- * something absent.
+ * Off by default, switched on from the section itself: the graph reads every
+ * page of a project's wiki off disk to draw one picture, so nothing is read
+ * until the operator asks for it.
  */
 
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { MEMORY_WIKI_GRAPH_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
-import { useExperiment } from "@/features/experiments/experimentPreferences";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { SettingsSection } from "@/shared/ui/settings-section";
+import { Switch } from "@/shared/ui/switch";
 
+import {
+  setMemoryWikiGraphEnabled,
+  useMemoryPreferences,
+} from "../lib/memoryPreferences";
 import { projectMemoryRoot } from "../lib/projectMemoryDocuments";
 import { readProjectWikiPresence } from "../lib/projectWikiPrompt";
 import {
@@ -79,8 +81,7 @@ type LoadState = "loading" | "ready" | "failed";
 
 export function WikiGraph() {
   const { t } = useTranslation("memory");
-  const enabled =
-    useExperiment(MEMORY_WIKI_GRAPH_EXPERIMENT_ID)?.enabled === true;
+  const enabled = useMemoryPreferences().wikiGraph;
   const projects = useProjectStore((state) => state.projects);
 
   const [wikiProjects, setWikiProjects] = useState<WikiProject[]>([]);
@@ -178,14 +179,40 @@ export function WikiGraph() {
 
   const layout = useMemo(() => layoutWikiGraph(buildWikiGraph(pages)), [pages]);
 
-  if (!enabled || !selected) return null;
+  const toggle = (
+    <div className="flex items-start justify-between gap-4">
+      <p className="text-xs text-muted-foreground">{t("graph.description")}</p>
+      <Switch
+        checked={enabled}
+        onCheckedChange={setMemoryWikiGraphEnabled}
+        aria-label={t("graph.show")}
+        data-testid="wiki-graph-switch"
+      />
+    </div>
+  );
+
+  if (!enabled || !selected) {
+    return (
+      <SettingsSection title={t("graph.title")}>
+        {toggle}
+        {enabled ? (
+          <p
+            className="text-xs text-muted-foreground"
+            data-testid="wiki-graph-none"
+          >
+            {t("graph.none")}
+          </p>
+        ) : null}
+      </SettingsSection>
+    );
+  }
 
   const typeLabel = (type: WikiPageType | null) =>
     type === null ? t("graph.types.unknown") : t(`graph.types.${type}`);
 
   return (
     <SettingsSection title={t("graph.title")}>
-      <p className="text-xs text-muted-foreground">{t("graph.description")}</p>
+      {toggle}
 
       {/* One project's wiki at a time: the graph is about how one project's
           knowledge hangs together, and a picture merging two projects would

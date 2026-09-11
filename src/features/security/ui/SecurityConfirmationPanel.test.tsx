@@ -2,7 +2,6 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { OPEN_SETTINGS_EVENT } from "@/features/settings/lib/settingsEvents";
 import {
   type InferredExplanationState,
   type PendingSecurityConfirmation,
@@ -128,42 +127,6 @@ describe("SecurityConfirmationPanel", () => {
         "An explanation could not be generated. Review the command carefully before allowing it.",
       ),
     ).toBeInTheDocument();
-  });
-
-  it("offers Goose setup and safely blocks before opening provider settings", async () => {
-    const user = userEvent.setup();
-    const openSettings = vi.fn();
-    window.addEventListener(OPEN_SETTINGS_EVENT, openSettings);
-
-    const first = makePending(
-      "session-1",
-      "🔒 Security Alert\nConfidence: 87%",
-      { status: "needs_setup" },
-    );
-    const second = makePending(
-      "session-1",
-      "🔒 Security Alert\nConfidence: 92%",
-    );
-    useSecurityConfirmationStore.setState({
-      pendingBySessionId: { "session-1": [first, second] },
-    });
-    renderWithProviders(<SecurityConfirmationPanel sessionId="session-1" />);
-
-    await user.click(screen.getByRole("button", { name: "Connect Goose" }));
-
-    expect(first.resolve).toHaveBeenCalledWith({
-      outcome: { outcome: "selected", optionId: "block" },
-    });
-    expect(second.resolve).toHaveBeenCalledWith({
-      outcome: { outcome: "selected", optionId: "block" },
-    });
-    expect(useSecurityConfirmationStore.getState().pendingBySessionId).toEqual(
-      {},
-    );
-    expect(openSettings).toHaveBeenCalledWith(
-      expect.objectContaining({ detail: { section: "providers" } }),
-    );
-    window.removeEventListener(OPEN_SETTINGS_EVENT, openSettings);
   });
 
   it("replaces only the affected session composer and leaves navigation usable", async () => {

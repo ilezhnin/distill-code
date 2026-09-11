@@ -323,7 +323,7 @@ describe("agentBuilderSession", () => {
   });
 
   it("seeds the draft with the stored goose provider and model preference", async () => {
-    window.localStorage.setItem("goose:defaultProvider", "goose");
+    window.localStorage.setItem("distill:defaultProvider", "goose");
     setStoredModelPreference("goose", {
       modelId: "goose-claude-sonnet-4-6",
       modelName: "Claude Sonnet 4.6",
@@ -347,31 +347,8 @@ describe("agentBuilderSession", () => {
     );
   });
 
-  it("falls back to the goose model preference when the stored provider has none", async () => {
-    window.localStorage.setItem("goose:defaultProvider", "databricks_v2");
-    setStoredModelPreference("goose", {
-      modelId: "goose-claude-sonnet-4-6",
-      modelName: "Claude Sonnet 4.6",
-      providerId: "databricks_v2",
-    });
-    mocks.createPersonaSource.mockResolvedValue(draftSource);
-
-    await startAgentBuilderSession({}, deps);
-    await flushDraftPreparation();
-
-    expect(mocks.createPersonaSource).toHaveBeenCalledWith(
-      expect.objectContaining({
-        properties: expect.objectContaining({
-          provider: "databricks_v2",
-          modelProviderId: "databricks_v2",
-          model: "goose-claude-sonnet-4-6",
-        }),
-      }),
-    );
-  });
-
   it("replaces a stored provider that is no longer in the discovered catalog", async () => {
-    window.localStorage.setItem("goose:defaultProvider", "removed-provider");
+    window.localStorage.setItem("distill:defaultProvider", "removed-provider");
     useAgentStore.getState().setProviders(
       [
         { id: "openai", label: "OpenAI" },
@@ -395,25 +372,6 @@ describe("agentBuilderSession", () => {
           provider: "openai",
           modelProviderId: "openai",
           model: "gpt-5",
-        }),
-      }),
-    );
-  });
-
-  it("falls back to the default model id when no model preference is stored", async () => {
-    mocks.createPersonaSource.mockResolvedValue(draftSource);
-
-    await startAgentBuilderSession({}, deps);
-    await flushDraftPreparation();
-
-    expect(mocks.createPersonaSource).toHaveBeenCalledWith(
-      expect.objectContaining({
-        properties: expect.objectContaining({
-          draft: true,
-          builderSessionId: "sess-1",
-          provider: "goose",
-          modelProviderId: "databricks_v2",
-          model: "goose-gpt-5-5",
         }),
       }),
     );

@@ -34,16 +34,6 @@
     "importFailedDescription": "{{fileName}} {{message}}",
     "importFailedFallback": "no se pudo importar.",
     "importingButton": "Importando...",
-    "importPhase": {
-      "importing": "Importando sesión",
-      "reading": "Leyendo archivo",
-      "refreshing": "Actualizando historial"
-    },
-    "importPhaseDescription": {
-      "importing": "se enviaba la sesión a Distill",
-      "reading": "se leía el archivo seleccionado",
-      "refreshing": "se actualizaba el historial de sesiones"
-    },
     "importProgressDescription": "{{fileName}} ({{fileSize}}). Las importaciones de sesiones grandes pueden tardar un poco.",
     "importSuccess": "Se importó {{title}}",
     "importTooLarge": "es demasiado grande para importarlo desde la app.",

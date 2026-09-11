@@ -85,10 +85,6 @@ function renderLocationPlaceholder(location: AppNavigationLocation): ReactNode {
       return <ProjectsPlaceholder />;
     case "session-history":
       return <SessionHistoryPlaceholder />;
-    case "automations":
-      return renderAutomationsPlaceholder(location.route);
-    case "builderbot":
-      return renderBuilderbotPlaceholder(location.route);
     case "search":
       return <SearchPlaceholder />;
     case "design-system":
@@ -97,47 +93,6 @@ function renderLocationPlaceholder(location: AppNavigationLocation): ReactNode {
 
   const exhaustiveLocation: never = location;
   return exhaustiveLocation;
-}
-
-function renderAutomationsPlaceholder(
-  route: Extract<AppNavigationLocation, { view: "automations" }>["route"],
-): ReactNode {
-  switch (route.surface) {
-    case "builder":
-      return <BuilderPlaceholder compact={Boolean(route.automationId)} />;
-    case "history":
-      return <ActivityFeedPlaceholder selected={Boolean(route.selectedRun)} />;
-    case "detail":
-      return route.tab === "history" ? (
-        <ActivityFeedPlaceholder selected={Boolean(route.selectedRunKey)} />
-      ) : (
-        <DetailPlaceholder tone="workbench" />
-      );
-    case "overview":
-      return <WorkbenchOverviewPlaceholder />;
-  }
-
-  const exhaustiveRoute: never = route;
-  return exhaustiveRoute;
-}
-
-function renderBuilderbotPlaceholder(
-  route: Extract<AppNavigationLocation, { view: "builderbot" }>["route"],
-): ReactNode {
-  switch (route.surface) {
-    case "task":
-    case "automation":
-      return <DetailPlaceholder tone="workbench" />;
-    case "overview":
-      return (
-        <WorkbenchOverviewPlaceholder
-          density={route.tab === "automations" ? "cards" : "rows"}
-        />
-      );
-  }
-
-  const exhaustiveRoute: never = route;
-  return exhaustiveRoute;
 }
 
 function PagePlaceholder({
@@ -193,16 +148,6 @@ function PageHeaderPlaceholder({
 
 function SearchPillPlaceholder({ className }: { className?: string }) {
   return <Skeleton className={cn("h-10 rounded-full", className)} />;
-}
-
-function TabStripPlaceholder({ count = 2 }: { count?: number }) {
-  return (
-    <div className="flex items-center gap-5">
-      {placeholderKeys.slice(0, count).map((key) => (
-        <Skeleton key={key} className="h-6 w-24 rounded-sm" />
-      ))}
-    </div>
-  );
 }
 
 function HomePromptPlaceholder() {
@@ -393,62 +338,6 @@ function SettingsPlaceholder() {
   );
 }
 
-function WorkbenchOverviewPlaceholder({
-  density = "cards",
-}: {
-  density?: "cards" | "rows";
-}) {
-  return (
-    <PagePlaceholder contentClassName="gap-6">
-      <TabStripPlaceholder count={2} />
-      {density === "rows" ? (
-        <RowsPlaceholder />
-      ) : (
-        <div className="grid gap-4 lg:grid-cols-2">
-          {placeholderKeys.slice(0, 6).map((key) => (
-            <div
-              key={key}
-              className="rounded-md border border-border/60 bg-background/70 p-5"
-            >
-              <Skeleton className="mb-4 h-5 w-48 rounded-sm" />
-              <div className="space-y-2">
-                <Skeleton className="h-4 w-full rounded-sm" />
-                <Skeleton className="h-4 w-2/3 rounded-sm" />
-              </div>
-              <div className="mt-5 flex gap-2">
-                <Skeleton className="h-6 w-20 rounded-full" />
-                <Skeleton className="h-6 w-24 rounded-full" />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </PagePlaceholder>
-  );
-}
-
-function BuilderPlaceholder({ compact }: { compact: boolean }) {
-  return (
-    <PagePlaceholder contentClassName="gap-6">
-      <PageHeaderPlaceholder actions={compact ? 1 : 0} wide />
-      <div className="grid min-h-0 gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
-        <div className="rounded-md border border-border/60 bg-background/70 p-5">
-          <div className="space-y-5">
-            <Skeleton className="h-5 w-52 rounded-sm" />
-            <Skeleton className="h-28 w-full rounded-md" />
-            <Skeleton className="h-28 w-full rounded-md" />
-            <Skeleton className="h-10 w-36 rounded-md" />
-          </div>
-        </div>
-        <aside className="hidden space-y-4 lg:block">
-          <Skeleton className="h-24 w-full rounded-md" />
-          <Skeleton className="h-40 w-full rounded-md" />
-        </aside>
-      </div>
-    </PagePlaceholder>
-  );
-}
-
 function DetailPlaceholder({
   tone,
 }: {
@@ -482,48 +371,6 @@ function DetailPlaceholder({
             <RowsPlaceholder count={tone === "workbench" ? 5 : 3} />
           </section>
         </div>
-      </div>
-    </PagePlaceholder>
-  );
-}
-
-function ActivityFeedPlaceholder({ selected }: { selected: boolean }) {
-  return (
-    <PagePlaceholder contentClassName="gap-6">
-      <PageHeaderPlaceholder actions={1} />
-      <div
-        className={cn(
-          "grid gap-6",
-          selected && "lg:grid-cols-[minmax(0,1fr)_22rem]",
-        )}
-      >
-        <div className="space-y-4">
-          {placeholderKeys.slice(0, 6).map((key) => (
-            <div
-              key={key}
-              className="rounded-md border border-border/60 bg-background/70 p-4"
-            >
-              <div className="mb-3 flex items-center gap-3">
-                <Skeleton className="size-8 rounded-full" />
-                <div className="space-y-2">
-                  <Skeleton className="h-4 w-44 rounded-sm" />
-                  <Skeleton className="h-3 w-24 rounded-sm" />
-                </div>
-              </div>
-              <Skeleton className="h-4 w-5/6 rounded-sm" />
-            </div>
-          ))}
-        </div>
-        {selected ? (
-          <aside className="hidden rounded-md border border-border/60 bg-background/70 p-5 lg:block">
-            <Skeleton className="mb-5 h-5 w-36 rounded-sm" />
-            <div className="space-y-3">
-              <Skeleton className="h-4 w-full rounded-sm" />
-              <Skeleton className="h-4 w-full rounded-sm" />
-              <Skeleton className="h-4 w-2/3 rounded-sm" />
-            </div>
-          </aside>
-        ) : null}
       </div>
     </PagePlaceholder>
   );

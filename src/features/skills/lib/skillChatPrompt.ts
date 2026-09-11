@@ -137,8 +137,6 @@ function formatProviderSkillContextLine(
       return "These are Gemini CLI-compatible Agent Skills. Treat the loaded SKILL.md content as the active skill instructions for this request.";
     case "standard":
       return "These are Agent Skills in the SKILL.md format. Treat the loaded content as the active skill instructions for this request.";
-    case "goose":
-      return "The selected skill instructions are loaded below. Follow these instructions for this request.";
   }
 }
 

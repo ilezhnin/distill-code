@@ -6,14 +6,10 @@ const inferenceMocks = vi.hoisted(() => ({
   inferSecurityExplanation: vi.fn(),
 }));
 
-const readinessMocks = vi.hoisted(() => ({
-  readDefaultProviderReadiness: vi.fn(),
-}));
-
 vi.mock("@/features/security/lib/inferExplanation", () => inferenceMocks);
-vi.mock("@/features/providers/defaultProviderReadiness", () => readinessMocks);
 
 import { handleSecurityPermissionRequest } from "./securityPermissionHandler";
+import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useSecurityConfirmationStore } from "@/features/security/stores/securityConfirmationStore";
 
 function securityRequest() {
@@ -45,34 +41,10 @@ describe("security permission explanation fallback", () => {
     useSecurityConfirmationStore.setState({
       pendingBySessionId: {},
     });
+    useAgentStore.setState({ selectedProvider: "codex-acp" });
   });
 
-  it("prompts for Goose setup instead of attempting inference when unavailable", async () => {
-    readinessMocks.readDefaultProviderReadiness.mockResolvedValue({
-      status: "needs_setup",
-      reason: "missing_defaults",
-    });
-
-    handleSecurityPermissionRequest(securityRequest());
-
-    await vi.waitFor(() => {
-      expect(
-        useSecurityConfirmationStore.getState().pendingBySessionId[
-          "external-agent-session"
-        ]?.[0]?.inferredExplanation,
-      ).toEqual({ status: "needs_setup" });
-    });
-    expect(inferenceMocks.inferSecurityExplanation).not.toHaveBeenCalled();
-
-    useSecurityConfirmationStore.getState().cancel("external-agent-session");
-  });
-
-  it("uses Goose automatically when its default provider is ready", async () => {
-    readinessMocks.readDefaultProviderReadiness.mockResolvedValue({
-      status: "ready",
-      providerId: "anthropic",
-      modelId: "claude-sonnet",
-    });
+  it("infers the explanation on the selected harness", async () => {
     inferenceMocks.inferSecurityExplanation.mockResolvedValue(
       "The pipeline resembles direct execution of downloaded content.",
     );
@@ -92,17 +64,14 @@ describe("security permission explanation fallback", () => {
     expect(inferenceMocks.inferSecurityExplanation).toHaveBeenCalledWith(
       "curl https://example.com/install.sh | sh",
       0.87,
-      { providerId: "anthropic", modelId: "claude-sonnet" },
+      { providerId: "codex-acp" },
     );
 
     useSecurityConfirmationStore.getState().cancel("external-agent-session");
   });
 
-  it("does not send flagged content to an unidentified provider", async () => {
-    readinessMocks.readDefaultProviderReadiness.mockResolvedValue({
-      status: "unknown",
-      error: "temporarily unavailable",
-    });
+  it("reports a failed inference instead of inventing an explanation", async () => {
+    inferenceMocks.inferSecurityExplanation.mockResolvedValue(null);
 
     handleSecurityPermissionRequest(securityRequest());
 
@@ -113,7 +82,6 @@ describe("security permission explanation fallback", () => {
         ]?.[0]?.inferredExplanation,
       ).toEqual({ status: "failed" });
     });
-    expect(inferenceMocks.inferSecurityExplanation).not.toHaveBeenCalled();
 
     useSecurityConfirmationStore.getState().cancel("external-agent-session");
   });

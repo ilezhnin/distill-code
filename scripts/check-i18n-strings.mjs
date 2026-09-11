@@ -5,7 +5,6 @@ import ts from "typescript";
 const CHECKED_PATHS = [
   "src/app/ui",
   "src/features/agents",
-  "src/features/automations",
   "src/features/chat/ui",
   "src/features/experiments",
   "src/features/home",
@@ -16,9 +15,7 @@ const CHECKED_PATHS = [
   "src/features/status",
   "src/features/sessions",
   "src/shared/ui/ai-elements/code-block.tsx",
-  "src/shared/ui/ai-elements/commit.tsx",
   "src/shared/ui/ai-elements/message.tsx",
-  "src/shared/ui/ai-elements/plan.tsx",
 ];
 
 const EXCLUDED_PATH_SEGMENTS = ["__tests__"];

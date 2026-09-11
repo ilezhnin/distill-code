@@ -15,21 +15,21 @@ describe("SessionWorkspaceCleanupDialog", () => {
       worktreeCount: 1,
       branchCount: 0,
       title: "Archive chat and remove its worktrees?",
-      description: /remove its Goose-created worktrees/i,
+      description: /remove its Distill-created worktrees/i,
     },
     {
       name: "branches",
       worktreeCount: 0,
       branchCount: 1,
       title: "Archive chat and remove its branches?",
-      description: /remove its Goose-created branches/i,
+      description: /remove its Distill-created branches/i,
     },
     {
       name: "worktrees and branches",
       worktreeCount: 1,
       branchCount: 1,
       title: "Archive chat and remove its worktrees and branches?",
-      description: /remove its Goose-created worktrees and branches/i,
+      description: /remove its Distill-created worktrees and branches/i,
     },
   ])("names $name instead of workspaces", (testCase) => {
     render(

@@ -1,32 +1,12 @@
-import { act, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
-import { TRANSCRIPT_VIRTUAL_RENDERER_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
-import {
-  EXPERIMENT_PREFERENCES_STORAGE_KEY,
-  setExperimentEnabled,
-} from "@/features/experiments/experimentPreferences";
 import type { Message } from "@/shared/types/messages";
 import { VirtualMessageTimelineGate } from "../VirtualMessageTimelineGate";
 import type { MessageTimelineBubbleCallbacks } from "../messageTimelineShared";
 
 const mocks = vi.hoisted(() => ({
-  legacyTimelineSpy: vi.fn(),
   virtualTimelineSpy: vi.fn(),
-}));
-
-vi.mock("../MessageTimeline", () => ({
-  MessageTimeline: (props: { messages: Message[]; footer?: ReactNode }) => {
-    mocks.legacyTimelineSpy(props);
-    return (
-      <div data-testid="legacy-message-timeline">
-        {props.messages.map((message) => (
-          <div key={message.id}>{message.id}</div>
-        ))}
-        {props.footer}
-      </div>
-    );
-  },
 }));
 
 vi.mock("../VirtualMessageTimeline", () => ({
@@ -61,43 +41,10 @@ function message(id: string): Message {
 
 describe("VirtualMessageTimelineGate", () => {
   beforeEach(() => {
-    localStorage.removeItem(EXPERIMENT_PREFERENCES_STORAGE_KEY);
-    mocks.legacyTimelineSpy.mockClear();
     mocks.virtualTimelineSpy.mockClear();
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it("uses the virtual timeline by default in production builds", () => {
-    vi.stubEnv("DEV", false);
-
-    render(
-      <VirtualMessageTimelineGate
-        sessionId="session-1"
-        messages={[message("user-1")]}
-      />,
-    );
-
-    expect(screen.getByTestId("virtual-message-timeline")).toBeInTheDocument();
-    expect(
-      screen.queryByTestId("legacy-message-timeline"),
-    ).not.toBeInTheDocument();
-    expect(mocks.virtualTimelineSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "session-1",
-        messages: [expect.objectContaining({ id: "user-1" })],
-      }),
-    );
-    expect(mocks.legacyTimelineSpy).not.toHaveBeenCalled();
-  });
-
-  it("uses the legacy timeline while the virtual renderer experiment is explicitly disabled", () => {
-    expect(
-      setExperimentEnabled(TRANSCRIPT_VIRTUAL_RENDERER_EXPERIMENT_ID, false),
-    ).toBe(true);
-
+  it("renders the virtual timeline with the session's messages and footer", () => {
     render(
       <VirtualMessageTimelineGate
         sessionId="session-1"
@@ -106,109 +53,55 @@ describe("VirtualMessageTimelineGate", () => {
       />,
     );
 
-    expect(screen.getByTestId("legacy-message-timeline")).toBeInTheDocument();
-    expect(
-      screen.queryByTestId("virtual-message-timeline"),
-    ).not.toBeInTheDocument();
-    expect(mocks.legacyTimelineSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        messages: [expect.objectContaining({ id: "user-1" })],
-      }),
-    );
-    expect(mocks.virtualTimelineSpy).not.toHaveBeenCalled();
-  });
-
-  it("uses the virtual timeline bridge after opt-in", () => {
-    expect(
-      setExperimentEnabled(TRANSCRIPT_VIRTUAL_RENDERER_EXPERIMENT_ID, true),
-    ).toBe(true);
-
-    render(
-      <VirtualMessageTimelineGate
-        sessionId="session-1"
-        messages={[message("user-1")]}
-      />,
-    );
-
     expect(screen.getByTestId("virtual-message-timeline")).toBeInTheDocument();
-    expect(
-      screen.queryByTestId("legacy-message-timeline"),
-    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("footer")).toBeInTheDocument();
     expect(mocks.virtualTimelineSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: "session-1",
         messages: [expect.objectContaining({ id: "user-1" })],
       }),
     );
-    expect(mocks.legacyTimelineSpy).not.toHaveBeenCalled();
   });
 
-  it("replaces loaded transcript state when the virtual renderer is toggled", () => {
-    expect(
-      setExperimentEnabled(TRANSCRIPT_VIRTUAL_RENDERER_EXPERIMENT_ID, true),
-    ).toBe(true);
-
-    render(
+  it("keeps one loaded transcript per session and replaces it when the session changes", () => {
+    const view = render(
       <VirtualMessageTimelineGate
         sessionId="session-1"
         messages={[message("user-1")]}
       />,
     );
-    const firstLoadedTranscript =
+    const first = mocks.virtualTimelineSpy.mock.lastCall?.[0].loadedTranscript;
+
+    view.rerender(
+      <VirtualMessageTimelineGate
+        sessionId="session-1"
+        messages={[message("user-1"), message("user-2")]}
+      />,
+    );
+    expect(mocks.virtualTimelineSpy.mock.lastCall?.[0].loadedTranscript).toBe(
+      first,
+    );
+
+    view.rerender(
+      <VirtualMessageTimelineGate
+        sessionId="session-2"
+        messages={[message("user-1")]}
+      />,
+    );
+    const replacement =
       mocks.virtualTimelineSpy.mock.lastCall?.[0].loadedTranscript;
-
-    act(() => {
-      expect(
-        setExperimentEnabled(TRANSCRIPT_VIRTUAL_RENDERER_EXPERIMENT_ID, false),
-      ).toBe(true);
-    });
-    expect(screen.getByTestId("legacy-message-timeline")).toBeInTheDocument();
-
-    act(() => {
-      expect(
-        setExperimentEnabled(TRANSCRIPT_VIRTUAL_RENDERER_EXPERIMENT_ID, true),
-      ).toBe(true);
-    });
-    const replacementLoadedTranscript =
-      mocks.virtualTimelineSpy.mock.lastCall?.[0].loadedTranscript;
-
-    expect(screen.getByTestId("virtual-message-timeline")).toBeInTheDocument();
-    expect(replacementLoadedTranscript).not.toBe(firstLoadedTranscript);
-    expect(replacementLoadedTranscript?.id).not.toBe(firstLoadedTranscript?.id);
+    expect(replacement).not.toBe(first);
+    expect(replacement?.id).not.toBe(first?.id);
   });
 
-  it("passes shared message-bubble callbacks through both experiment states", () => {
+  it("passes shared message-bubble callbacks through", () => {
     const callbackProps = {
       onRetryMessage: vi.fn(),
       onEditMessage: vi.fn(),
-      onSendMcpAppMessage: vi.fn(),
       onForkFromMessage: vi.fn(),
       onRunShellCommand: vi.fn(),
       onEditProject: vi.fn(),
     } satisfies MessageTimelineBubbleCallbacks;
-
-    expect(
-      setExperimentEnabled(TRANSCRIPT_VIRTUAL_RENDERER_EXPERIMENT_ID, false),
-    ).toBe(true);
-
-    const legacyRender = render(
-      <VirtualMessageTimelineGate
-        sessionId="session-1"
-        messages={[message("user-1")]}
-        {...callbackProps}
-      />,
-    );
-
-    expect(mocks.legacyTimelineSpy).toHaveBeenCalledWith(
-      expect.objectContaining(callbackProps),
-    );
-    expect(mocks.virtualTimelineSpy).not.toHaveBeenCalled();
-    legacyRender.unmount();
-    mocks.legacyTimelineSpy.mockClear();
-
-    expect(
-      setExperimentEnabled(TRANSCRIPT_VIRTUAL_RENDERER_EXPERIMENT_ID, true),
-    ).toBe(true);
 
     render(
       <VirtualMessageTimelineGate
@@ -221,6 +114,5 @@ describe("VirtualMessageTimelineGate", () => {
     expect(mocks.virtualTimelineSpy).toHaveBeenCalledWith(
       expect.objectContaining(callbackProps),
     );
-    expect(mocks.legacyTimelineSpy).not.toHaveBeenCalled();
   });
 });

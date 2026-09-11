@@ -10,7 +10,7 @@ import {
   type ProjectWorkspace,
 } from "../api/projects";
 
-const PROJECT_CACHE_STORAGE_KEY = "goose:projects";
+const PROJECT_CACHE_STORAGE_KEY = "distill:projects";
 
 function normalizeCachedProject(project: ProjectInfo): ProjectInfo {
   const rawProject = project as Partial<ProjectInfo>;

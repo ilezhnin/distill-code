@@ -46,7 +46,7 @@ describe("useChatTranscriptSearch find shortcut", () => {
 
   it("honors a user override and releases the default combo", () => {
     localStorage.setItem(
-      "goose:keyboard-shortcuts:v1",
+      "distill:keyboard-shortcuts:v1",
       JSON.stringify({
         version: 1,
         overrides: { "chat.findInConversation": "meta+shift+f" },

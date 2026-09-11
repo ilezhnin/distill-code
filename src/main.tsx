@@ -14,14 +14,12 @@ import { AcpToolsEvents } from "@/app/AcpToolsEvents";
 import { App } from "@/app/App";
 import { GitStateEvents } from "@/app/GitStateEvents";
 import { LocalMediaCacheEvents } from "@/app/LocalMediaCacheEvents";
-import { RendererTelemetry } from "@/app/RendererTelemetry";
+import { RendererBootLog } from "@/app/RendererBootLog";
 import { BackgroundQueuedMessageDrain } from "@/features/chat/ui/BackgroundQueuedMessageDrain";
 import { ConductorGraphSync } from "@/features/conductor/ConductorGraphSync";
 import { PlannerAgentSync } from "@/features/planner/PlannerAgentSync";
 import { MemoryAgentSync } from "@/features/memory/MemoryAgentSync";
-import { UpdaterProvider } from "@/features/updates/hooks/useUpdater";
 import { I18nProvider } from "@/shared/i18n";
-import { initTelemetry, trackAppLaunched } from "@/shared/telemetry/client";
 import { ThemeProvider } from "@/shared/theme/ThemeProvider";
 import { TooltipProvider } from "@/shared/ui/tooltip";
 import { RendererErrorBoundary } from "@/app/ui/RendererErrorBoundary";
@@ -30,10 +28,19 @@ import "@/shared/styles/globals.css";
 
 document.title = "Distill";
 
-// One-time cleanup of retired onboarding state from previous builds.
+// One-time cleanup of retired onboarding state from previous builds, and the
+// rename of every persisted preference from the goose-era `goose:` prefix.
 try {
-  localStorage.removeItem("goose:onboarding:v1");
   localStorage.removeItem("berd:onboarding:v1");
+  for (const key of Object.keys(localStorage)) {
+    if (!key.startsWith("distill:") && !key.startsWith("goose.")) continue;
+    const renamed = `distill${key.slice("goose".length)}`;
+    const value = localStorage.getItem(key);
+    if (value !== null && localStorage.getItem(renamed) === null) {
+      localStorage.setItem(renamed, value);
+    }
+    localStorage.removeItem(key);
+  }
 } catch {
   // localStorage may be unavailable in some environments; ignore.
 }
@@ -140,11 +147,6 @@ if (bootError) {
   renderBootError(bootError);
 } else if (sessionId) {
   const decodedSessionId = sessionId;
-  // Detached session windows run the same instrumented chat send paths as the
-  // main window, so they need the full telemetry pipeline — without it their
-  // events buffer forever and are silently dropped. Deliberately no
-  // trackAppLaunched(): opening a session window is not an app start.
-  initTelemetry();
   Promise.all([
     import("@/app/SessionWindowApp"),
     import("@/app/SessionWindowRuntime"),
@@ -171,17 +173,6 @@ if (bootError) {
       renderBootError("The session window bundle could not be loaded.");
     });
 } else {
-  // Both run again whenever the renderer reloads (a WebKit reap, the crash
-  // screen's Reload button). Re-initializing is the point — the reloaded
-  // renderer needs a live pipeline — while trackAppLaunched() reports only on
-  // the first load of this window session, since a reload is not an app start.
-  // Running before consent is answered is safe by design: events buffer
-  // through the consent gate and are dropped unless the persisted setting
-  // loads as enabled, so a fresh install sends nothing until the user opts in
-  // in Settings.
-  initTelemetry();
-  trackAppLaunched();
-
   reactRoot.render(
     <React.StrictMode>
       <TooltipProvider>
@@ -195,12 +186,10 @@ if (bootError) {
             <PlannerAgentSync />
             <MemoryAgentSync />
             <OptionalBerdctlBridge />
-            <RendererTelemetry />
+            <RendererBootLog />
             <I18nProvider>
               <ThemeProvider>
-                <UpdaterProvider>
-                  <App />
-                </UpdaterProvider>
+                <App />
               </ThemeProvider>
             </I18nProvider>
           </QueryClientProvider>

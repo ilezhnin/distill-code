@@ -12,10 +12,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
-import { useDefaultProviderReadinessStore } from "@/features/providers/stores/defaultProviderReadinessStore";
 import { listSkills } from "@/features/skills/api/skills";
 import { GlobalComposerPill } from "./GlobalComposerPill";
-import { resetVoiceDictationShortcutControllerForTests } from "@/features/chat/lib/voiceDictationShortcutController";
 
 const mockOpenDialog = vi.fn();
 const mockInspectAttachmentPaths = vi.fn();
@@ -31,15 +29,6 @@ const mockProviderModelsState = {
   refreshing: false,
   inventoryAuthoritative: true,
 };
-const mockVoiceDictation = {
-  isEnabled: false,
-  isRecording: false,
-  isTranscribing: false,
-  isStarting: vi.fn(() => false),
-  stopRecording: vi.fn(),
-  toggleRecording: vi.fn(),
-};
-
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: unknown[]) => mockOpenDialog(...args),
 }));
@@ -74,10 +63,6 @@ vi.mock("@/features/skills/api/skills", () => ({
   listSkills: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock("@/features/chat/hooks/useVoiceDictation", () => ({
-  useVoiceDictation: () => mockVoiceDictation,
-}));
-
 // Deterministic shortcut modifiers across dev machines and CI: "mod"
 // resolves to Meta on macOS.
 vi.mock("@/shared/lib/platform", () => ({
@@ -86,8 +71,8 @@ vi.mock("@/shared/lib/platform", () => ({
 
 vi.mock("@/features/providers/hooks/useProviderModels", () => ({
   useProviderModels: () => ({
-    configuredModelProviderIds: ["openai", "anthropic"],
-    modelCacheRefreshProviderIds: ["openai", "anthropic"],
+    configuredModelProviderIds: ["claude-acp", "claude-acp"],
+    modelCacheRefreshProviderIds: ["claude-acp", "claude-acp"],
     getModelsForAgent: (agentId: string) => mockGetModelsForAgent(agentId),
     isModelInventoryAuthoritative: () =>
       mockProviderModelsState.inventoryAuthoritative,
@@ -101,9 +86,9 @@ vi.mock("@/features/providers/hooks/useProviderModels", () => ({
 
 vi.mock("@/features/providers/hooks/useAgentProviderStatus", () => ({
   useAgentProviderStatus: () => ({
-    readyAgentIds: new Set(["goose", "claude-acp"]),
+    readyAgentIds: new Set(["claude-acp", "claude-acp"]),
     agentReadiness: new Map([
-      ["goose", "ready"],
+      ["claude-acp", "ready"],
       ["claude-acp", "ready"],
     ]),
     loading: false,
@@ -113,8 +98,8 @@ vi.mock("@/features/providers/hooks/useAgentProviderStatus", () => ({
 
 vi.mock("@/shared/api/acpConnection", () => ({
   getClient: vi.fn().mockResolvedValue({
-    goose: {
-      GooseUnstableDefaultsRead: vi.fn().mockResolvedValue({}),
+    host: {
+      defaultsRead: vi.fn().mockResolvedValue({}),
     },
   }),
 }));
@@ -192,7 +177,7 @@ function expectSentImageAttachment(
 ) {
   expect(onSend).toHaveBeenCalledWith("", {
     attachments: [expect.objectContaining({ kind: "image", ...expected })],
-    executionTarget: { harnessId: "goose" },
+    executionTarget: { harnessId: "claude-acp" },
     personaId: null,
   });
 }
@@ -203,7 +188,7 @@ function expectSent(
   options: Record<string, unknown> = {},
 ) {
   expect(onSend).toHaveBeenCalledWith(text, {
-    executionTarget: { harnessId: "goose" },
+    executionTarget: { harnessId: "claude-acp" },
     personaId: null,
     ...options,
   });
@@ -253,7 +238,6 @@ describe("GlobalComposerPill", () => {
   });
 
   beforeEach(() => {
-    resetVoiceDictationShortcutControllerForTests();
     mockOpenDialog.mockReset();
     mockInspectAttachmentPaths.mockReset();
     mockReadImageAttachment.mockReset();
@@ -274,13 +258,6 @@ describe("GlobalComposerPill", () => {
     mockRefreshAgentProviderStatus.mockResolvedValue(undefined);
     mockProviderModelsState.refreshing = false;
     mockProviderModelsState.inventoryAuthoritative = true;
-    mockVoiceDictation.isEnabled = false;
-    mockVoiceDictation.isRecording = false;
-    mockVoiceDictation.isTranscribing = false;
-    mockVoiceDictation.isStarting.mockReset();
-    mockVoiceDictation.isStarting.mockReturnValue(false);
-    mockVoiceDictation.stopRecording.mockReset();
-    mockVoiceDictation.toggleRecording.mockReset();
     mockOpenDialog.mockResolvedValue(null);
     mockInspectAttachmentPaths.mockResolvedValue([]);
     mockReadImageAttachment.mockResolvedValue({
@@ -294,18 +271,15 @@ describe("GlobalComposerPill", () => {
     vi.unstubAllGlobals();
     delete window.__TAURI_INTERNALS__;
     localStorage.clear();
-    localStorage.setItem("goose:defaultProvider", "goose");
-    useDefaultProviderReadinessStore.setState({
-      readiness: { status: "ready", providerId: "goose" },
-    });
+    localStorage.setItem("distill:defaultProvider", "claude-acp");
     useAgentStore.setState({
       personas: [],
       providers: [
-        { id: "goose", label: "Goose" },
+        { id: "claude-acp", label: "Claude Code" },
         { id: "claude-acp", label: "Claude Code" },
       ],
       providersLoading: false,
-      selectedProvider: "goose",
+      selectedProvider: "claude-acp",
     });
     setProjectStore();
     vi.stubGlobal("URL", {
@@ -343,8 +317,6 @@ describe("GlobalComposerPill", () => {
 
     const measureCluster = () => {
       const buttons = [
-        screen.queryByRole("button", { name: "Start voice conversation" }),
-        screen.queryByRole("button", { name: /voice dictation|listening/i }),
         screen.getByRole("button", { name: /send message/i }),
       ].filter(Boolean);
       // icon-pill-sm is w-10 (40px), cluster uses gap-2 (8px).
@@ -355,45 +327,6 @@ describe("GlobalComposerPill", () => {
       renderGlobalComposer();
 
       expect(getReservedInsetPx()).toBeGreaterThanOrEqual(measureCluster());
-    });
-
-    it("reserves room for dictation and send", () => {
-      mockVoiceDictation.isEnabled = true;
-      renderGlobalComposer();
-
-      expect(getReservedInsetPx()).toBeGreaterThanOrEqual(measureCluster());
-    });
-
-    it("reserves room for voice conversation, dictation, and send", () => {
-      mockVoiceDictation.isEnabled = true;
-      renderGlobalComposer(vi.fn(), {
-        voiceConversation: {
-          enabled: true,
-          ready: true,
-          onStart: vi.fn().mockResolvedValue(true),
-        },
-      });
-
-      // Three buttons: the regression case where the chip got overlapped.
-      expect(measureCluster()).toBe(136);
-      expect(getReservedInsetPx()).toBeGreaterThanOrEqual(measureCluster());
-    });
-
-    it("grows the reservation when the voice conversation button appears", () => {
-      mockVoiceDictation.isEnabled = true;
-      const { unmount } = render(<GlobalComposerPill onSend={vi.fn()} />);
-      const withoutVoiceConversation = getReservedInsetPx();
-      unmount();
-
-      renderGlobalComposer(vi.fn(), {
-        voiceConversation: {
-          enabled: true,
-          ready: true,
-          onStart: vi.fn().mockResolvedValue(true),
-        },
-      });
-
-      expect(getReservedInsetPx()).toBeGreaterThan(withoutVoiceConversation);
     });
   });
 
@@ -506,166 +439,6 @@ describe("GlobalComposerPill", () => {
     await user.click(destination);
 
     expect(destination).toHaveFocus();
-  });
-
-  it("toggles voice dictation with the default platform shortcut without submitting or changing the draft", async () => {
-    const user = userEvent.setup();
-    const onSend = vi.fn();
-    const onParentKeyDown = vi.fn();
-    mockVoiceDictation.isEnabled = true;
-    render(
-      <form onKeyDown={onParentKeyDown}>
-        <GlobalComposerPill onSend={onSend} />
-      </form>,
-    );
-
-    const input = screen.getByRole("textbox");
-    await user.type(input, "keep this draft");
-    expect(input).toHaveFocus();
-    onParentKeyDown.mockClear();
-
-    const wasNotPrevented = fireEvent.keyDown(input, {
-      key: "d",
-      code: "KeyD",
-      metaKey: true,
-    });
-
-    expect(wasNotPrevented).toBe(false);
-    expect(mockVoiceDictation.toggleRecording).toHaveBeenCalledOnce();
-    expect(onParentKeyDown).not.toHaveBeenCalled();
-    expect(onSend).not.toHaveBeenCalled();
-    expect(input).toHaveValue("keep this draft");
-  });
-
-  it("starts one selected Goose voice config and preserves its draft in the handoff payload", async () => {
-    const user = userEvent.setup();
-    const start = deferred<boolean>();
-    const onStart = vi.fn(() => start.promise);
-    renderGlobalComposer(vi.fn(), {
-      voiceConversation: { enabled: true, ready: true, onStart },
-    });
-
-    const input = screen.getByRole("textbox");
-    await user.type(input, "keep this draft");
-    const button = screen.getByRole("button", {
-      name: "Start voice conversation",
-    });
-    await user.click(button);
-    await user.click(button);
-
-    expect(onStart).toHaveBeenCalledOnce();
-    expect(onStart).toHaveBeenCalledWith({
-      text: "keep this draft",
-      selectedSkills: [],
-      options: {
-        executionTarget: { harnessId: "goose" },
-        personaId: null,
-      },
-    });
-    expect(input).toHaveValue("keep this draft");
-
-    start.resolve(true);
-    await waitFor(() => expect(input).toHaveValue(""));
-  });
-
-  it("blocks Voice Conversation while dictation owns the microphone", async () => {
-    const user = userEvent.setup();
-    const onStart = vi.fn().mockResolvedValue(true);
-    mockVoiceDictation.isRecording = true;
-    renderGlobalComposer(vi.fn(), {
-      voiceConversation: { enabled: true, ready: true, onStart },
-    });
-
-    const button = screen.getByRole("button", {
-      name: "Start voice conversation",
-    });
-    expect(button).toBeDisabled();
-    await user.click(button);
-    expect(onStart).not.toHaveBeenCalled();
-  });
-
-  it("keeps the global draft when voice chat creation is cancelled", async () => {
-    const user = userEvent.setup();
-    const onStart = vi.fn().mockResolvedValue(false);
-    renderGlobalComposer(vi.fn(), {
-      voiceConversation: { enabled: true, ready: true, onStart },
-    });
-
-    const input = screen.getByRole("textbox");
-    await user.type(input, "do not lose me");
-    await user.click(
-      screen.getByRole("button", { name: "Start voice conversation" }),
-    );
-
-    await waitFor(() => expect(onStart).toHaveBeenCalledOnce());
-    expect(input).toHaveValue("do not lose me");
-  });
-
-  it("hides voice chat when gated off and disables it for non-Goose agents", async () => {
-    const user = userEvent.setup();
-    const onStart = vi.fn().mockResolvedValue(true);
-    const { rerender } = render(
-      <GlobalComposerPill
-        onSend={vi.fn()}
-        voiceConversation={{ enabled: false, ready: true, onStart }}
-      />,
-    );
-    expect(
-      screen.queryByRole("button", { name: "Start voice conversation" }),
-    ).not.toBeInTheDocument();
-
-    rerender(
-      <GlobalComposerPill
-        onSend={vi.fn()}
-        voiceConversation={{ enabled: true, ready: true, onStart }}
-      />,
-    );
-    await user.click(screen.getByRole("textbox"));
-    await user.click(
-      screen.getByRole("button", { name: /choose agent and model/i }),
-    );
-    await user.click(screen.getByRole("button", { name: "Claude Code" }));
-
-    expect(
-      screen.getByRole("button", { name: "Start voice conversation" }),
-    ).toBeDisabled();
-    expect(onStart).not.toHaveBeenCalled();
-  });
-
-  it("focuses and toggles dictation once from the body without sending or mutating the draft", async () => {
-    const user = userEvent.setup();
-    const onSend = vi.fn();
-    mockVoiceDictation.isEnabled = true;
-    renderGlobalComposer(onSend, { placement: "centered" });
-
-    const input = screen.getByRole("textbox");
-    await user.type(input, "keep this draft");
-    input.getBoundingClientRect = () =>
-      ({
-        bottom: 40,
-        height: 30,
-        left: 10,
-        right: 210,
-        top: 10,
-        width: 200,
-        x: 10,
-        y: 10,
-        toJSON: () => ({}),
-      }) as DOMRect;
-    act(() => input.blur());
-    expect(input).not.toHaveFocus();
-
-    const wasNotPrevented = fireEvent.keyDown(document.body, {
-      key: "d",
-      code: "KeyD",
-      metaKey: true,
-    });
-
-    expect(wasNotPrevented).toBe(false);
-    expect(input).toHaveFocus();
-    expect(mockVoiceDictation.toggleRecording).toHaveBeenCalledOnce();
-    expect(onSend).not.toHaveBeenCalled();
-    expect(input).toHaveValue("keep this draft");
   });
 
   it("switches @ mention tabs without inserting extra text", async () => {
@@ -821,7 +594,7 @@ describe("GlobalComposerPill", () => {
       id: "persona-1",
       displayName: "Research Scout",
       systemPrompt: "Gather context.",
-      provider: "goose",
+      provider: "claude-acp",
       model: "goose-claude-fable-5",
       isBuiltin: false,
       writable: true,
@@ -837,7 +610,7 @@ describe("GlobalComposerPill", () => {
         id: "goose-claude-fable-5",
         name: "goose-claude-fable-5",
         displayName: "Claude Fable 5",
-        providerId: "databricks_v2",
+        providerId: "claude-acp",
       },
     ]);
     act(() => {
@@ -849,8 +622,8 @@ describe("GlobalComposerPill", () => {
 
     expectSent(onSend, "Hello", {
       executionTarget: {
-        harnessId: "goose",
-        modelProviderId: "databricks_v2",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
         modelId: "goose-claude-fable-5",
         modelName: "Claude Fable 5",
       },
@@ -884,7 +657,7 @@ describe("GlobalComposerPill", () => {
             id: "persona-1",
             displayName: "Research Scout",
             systemPrompt: "Gather context.",
-            provider: "databricks_v2",
+            provider: "claude-acp",
             model: "goose-claude-opus-4-8",
             isBuiltin: false,
             writable: true,
@@ -898,8 +671,8 @@ describe("GlobalComposerPill", () => {
 
     expectSent(onSend, "Hello", {
       executionTarget: {
-        harnessId: "goose",
-        modelProviderId: "databricks_v2",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
         modelId: "goose-claude-opus-4-8",
         modelName: "goose-claude-opus-4-8",
       },
@@ -910,24 +683,24 @@ describe("GlobalComposerPill", () => {
   it("does not send a stored model that is absent from the loaded inventory", async () => {
     const user = userEvent.setup();
     mockProviderModelsState.refreshing = true;
-    useAgentStore.setState({ selectedProvider: "databricks_v2" });
+    useAgentStore.setState({ selectedProvider: "claude-acp" });
     window.localStorage.setItem(
-      "goose:preferredModelsByAgent",
+      "distill:preferredModelsByAgent",
       JSON.stringify({
-        goose: {
+        host: {
           modelId: "retired-model",
           modelName: "Retired model",
-          providerId: "databricks_v2",
+          providerId: "claude-acp",
         },
       }),
     );
     mockGetModelsForAgent.mockImplementation((agentId: string) =>
-      agentId === "goose"
+      agentId === "claude-acp"
         ? [
             {
               id: "goose-gpt-5-5",
               name: "GPT-5.5",
-              providerId: "databricks_v2",
+              providerId: "claude-acp",
               recommended: true,
             },
           ]
@@ -940,8 +713,8 @@ describe("GlobalComposerPill", () => {
 
     expectSent(onSend, "Hello", {
       executionTarget: {
-        harnessId: "goose",
-        modelProviderId: "databricks_v2",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
         modelId: "goose-gpt-5-5",
         modelName: "GPT-5.5",
       },
@@ -950,48 +723,6 @@ describe("GlobalComposerPill", () => {
       "Hello",
       expect.objectContaining({ modelId: "retired-model" }),
     );
-  });
-
-  it("keeps sending the selected model while loaded inventory is provisional", async () => {
-    const user = userEvent.setup();
-    mockProviderModelsState.refreshing = true;
-    mockProviderModelsState.inventoryAuthoritative = false;
-    useAgentStore.setState({ selectedProvider: "databricks_v2" });
-    window.localStorage.setItem(
-      "goose:preferredModelsByAgent",
-      JSON.stringify({
-        goose: {
-          modelId: "goose-claude-fable",
-          modelName: "Claude Fable",
-          providerId: "databricks_v2",
-        },
-      }),
-    );
-    mockGetModelsForAgent.mockImplementation((agentId: string) =>
-      agentId === "goose"
-        ? [
-            {
-              id: "goose-gpt-5-5",
-              name: "GPT-5.5",
-              providerId: "databricks_v2",
-              recommended: true,
-            },
-          ]
-        : [],
-    );
-    const onSend = renderGlobalComposer();
-
-    await user.type(screen.getByRole("textbox"), "Hello");
-    await user.click(screen.getByRole("button", { name: /send message/i }));
-
-    expectSent(onSend, "Hello", {
-      executionTarget: {
-        harnessId: "goose",
-        modelProviderId: "databricks_v2",
-        modelId: "goose-claude-fable",
-        modelName: "Claude Fable",
-      },
-    });
   });
 
   it("tags a starter persona in the composer", async () => {
@@ -1040,7 +771,7 @@ describe("GlobalComposerPill", () => {
     vi.mocked(listSkills).mockResolvedValue([skill]);
     useAgentStore.setState({
       providers: [
-        { id: "goose", label: "Goose" },
+        { id: "claude-acp", label: "Claude Code" },
         { id: "claude-acp", label: "Claude Code" },
       ],
       selectedProvider: "claude-acp",
@@ -1147,8 +878,8 @@ describe("GlobalComposerPill", () => {
           id: "persona-2",
           displayName: "UX Critic",
           systemPrompt: "Review flows.",
-          provider: "goose",
-          modelProviderId: "databricks_v2",
+          provider: "claude-acp",
+          modelProviderId: "claude-acp",
           model: "goose-default",
           isBuiltin: false,
           writable: true,
@@ -1173,8 +904,8 @@ describe("GlobalComposerPill", () => {
 
     expectSent(onSend, "Hello", {
       executionTarget: {
-        harnessId: "goose",
-        modelProviderId: "databricks_v2",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
         modelId: "goose-default",
         modelName: "goose-default",
       },
@@ -1385,12 +1116,12 @@ describe("GlobalComposerPill", () => {
   it("omits stale reasoning effort after switching to a different local model", async () => {
     const user = userEvent.setup();
     mockGetModelsForAgent.mockImplementation((agentId: string) =>
-      agentId === "goose"
+      agentId === "claude-acp"
         ? [
             {
               id: "gpt-5",
               name: "GPT 5",
-              providerId: "openai",
+              providerId: "claude-acp",
               providerName: "OpenAI",
               recommended: true,
             },
@@ -1398,7 +1129,7 @@ describe("GlobalComposerPill", () => {
               id: "claude-sonnet-4",
               name: "Claude Sonnet 4",
               displayName: "Claude Sonnet 4",
-              providerId: "anthropic",
+              providerId: "claude-acp",
               providerName: "Anthropic",
               recommended: true,
             },
@@ -1419,8 +1150,8 @@ describe("GlobalComposerPill", () => {
         onChange: vi.fn(),
       },
       currentExecutionTarget: {
-        harnessId: "goose",
-        modelProviderId: "openai",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
         modelId: "gpt-5",
         modelName: "GPT 5",
       },
@@ -1436,8 +1167,8 @@ describe("GlobalComposerPill", () => {
 
     expectSent(onSend, "Use Sonnet", {
       executionTarget: {
-        harnessId: "goose",
-        modelProviderId: "anthropic",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
         modelId: "claude-sonnet-4",
         modelName: "Claude Sonnet 4",
       },
@@ -1448,13 +1179,13 @@ describe("GlobalComposerPill", () => {
     const user = userEvent.setup();
     const onExecutionTargetChange = vi.fn();
     mockGetModelsForAgent.mockImplementation((agentId: string) =>
-      agentId === "goose"
+      agentId === "claude-acp"
         ? [
             {
               id: "gpt-5",
               name: "GPT 5",
               displayName: "GPT 5",
-              providerId: "openai",
+              providerId: "claude-acp",
               providerName: "OpenAI",
               recommended: true,
             },
@@ -1462,7 +1193,7 @@ describe("GlobalComposerPill", () => {
               id: "claude-sonnet-4",
               name: "Claude Sonnet 4",
               displayName: "Claude Sonnet 4",
-              providerId: "anthropic",
+              providerId: "claude-acp",
               providerName: "Anthropic",
               recommended: true,
             },
@@ -1479,26 +1210,10 @@ describe("GlobalComposerPill", () => {
     await user.click(screen.getByRole("button", { name: "Claude Sonnet 4" }));
 
     expect(onExecutionTargetChange).toHaveBeenCalledWith({
-      harnessId: "goose",
-      modelProviderId: "anthropic",
+      harnessId: "claude-acp",
+      modelProviderId: "claude-acp",
       modelId: "claude-sonnet-4",
       modelName: "Claude Sonnet 4",
-    });
-  });
-
-  it("reports harness-only picks to the Home session", async () => {
-    const user = userEvent.setup();
-    const onExecutionTargetChange = vi.fn();
-    renderGlobalComposer(vi.fn(), { onExecutionTargetChange });
-
-    await user.click(screen.getByRole("textbox"));
-    await user.click(
-      screen.getByRole("button", { name: /choose agent and model/i }),
-    );
-    await user.click(screen.getByRole("button", { name: "Claude Code" }));
-
-    expect(onExecutionTargetChange).toHaveBeenCalledWith({
-      harnessId: "claude-acp",
     });
   });
 
@@ -1593,8 +1308,8 @@ describe("GlobalComposerPill", () => {
     renderGlobalComposer(vi.fn(), {
       onExpand,
       currentExecutionTarget: {
-        harnessId: "goose",
-        modelProviderId: "anthropic",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
         modelId: "goose-claude-fable",
         modelName: "Claude Fable",
       },
@@ -1610,8 +1325,8 @@ describe("GlobalComposerPill", () => {
       selectedSkills: [],
       options: {
         executionTarget: {
-          harnessId: "goose",
-          modelProviderId: "anthropic",
+          harnessId: "claude-acp",
+          modelProviderId: "claude-acp",
           modelId: "goose-claude-fable",
           modelName: "Claude Fable",
         },
@@ -1623,12 +1338,12 @@ describe("GlobalComposerPill", () => {
   it("does not replace a controlled provider-only target with a default model", async () => {
     const user = userEvent.setup();
     mockGetModelsForAgent.mockImplementation((agentId: string) =>
-      agentId === "goose"
+      agentId === "claude-acp"
         ? [
             {
               id: "goose-gpt-5-5",
               name: "GPT-5.5",
-              providerId: "databricks_v2",
+              providerId: "claude-acp",
               recommended: true,
             },
           ]
@@ -1636,8 +1351,8 @@ describe("GlobalComposerPill", () => {
     );
     const onSend = renderGlobalComposer(vi.fn(), {
       currentExecutionTarget: {
-        harnessId: "goose",
-        modelProviderId: "databricks_v2",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
       },
     });
 
@@ -1646,8 +1361,8 @@ describe("GlobalComposerPill", () => {
 
     expectSent(onSend, "Keep this provider", {
       executionTarget: {
-        harnessId: "goose",
-        modelProviderId: "databricks_v2",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
       },
     });
   });
@@ -1657,18 +1372,18 @@ describe("GlobalComposerPill", () => {
     const onSend = vi.fn();
     const onExecutionTargetChange = vi.fn();
     const gpt56Target = {
-      harnessId: "goose",
-      modelProviderId: "databricks_v2",
+      harnessId: "claude-acp",
+      modelProviderId: "claude-acp",
       modelId: "goose-gpt-5-6",
       modelName: "GPT-5.6",
     } as const;
     mockGetModelsForAgent.mockImplementation((agentId: string) =>
-      agentId === "goose"
+      agentId === "claude-acp"
         ? [
             {
               id: "goose-gpt-5-5",
               name: "GPT-5.5",
-              providerId: "databricks_v2",
+              providerId: "claude-acp",
               recommended: true,
             },
             {
@@ -1685,8 +1400,8 @@ describe("GlobalComposerPill", () => {
         onSend={onSend}
         onExecutionTargetChange={onExecutionTargetChange}
         currentExecutionTarget={{
-          harnessId: "goose",
-          modelProviderId: "databricks_v2",
+          harnessId: "claude-acp",
+          modelProviderId: "claude-acp",
           modelId: "goose-gpt-5-5",
           modelName: "GPT-5.5",
         }}
@@ -1796,7 +1511,7 @@ describe("GlobalComposerPill", () => {
       text: "",
       selectedSkills: [],
       options: {
-        executionTarget: { harnessId: "goose" },
+        executionTarget: { harnessId: "claude-acp" },
         personaId: null,
       },
     });
@@ -1863,7 +1578,7 @@ describe("GlobalComposerPill", () => {
             previewUrl: "data:image/png;base64,base64:pasted.png",
           }),
         ],
-        executionTarget: { harnessId: "goose" },
+        executionTarget: { harnessId: "claude-acp" },
         personaId: null,
       },
     });
@@ -2118,12 +1833,12 @@ describe("GlobalComposerPill", () => {
   it("shows the model name in the mini composer picker trigger", async () => {
     const user = userEvent.setup();
     mockGetModelsForAgent.mockImplementation((agentId: string) =>
-      agentId === "goose"
+      agentId === "claude-acp"
         ? [
             {
               id: "claude-sonnet-4",
               name: "Claude Sonnet 4",
-              providerId: "anthropic",
+              providerId: "claude-acp",
               providerName: "Anthropic",
               recommended: true,
             },
@@ -2143,12 +1858,12 @@ describe("GlobalComposerPill", () => {
   it("sends the selected model provider from the shared model picker", async () => {
     const user = userEvent.setup();
     mockGetModelsForAgent.mockImplementation((agentId: string) =>
-      agentId === "goose"
+      agentId === "claude-acp"
         ? [
             {
               id: "gpt-5",
               name: "GPT 5",
-              providerId: "openai",
+              providerId: "claude-acp",
               providerName: "OpenAI",
               recommended: true,
             },
@@ -2156,7 +1871,7 @@ describe("GlobalComposerPill", () => {
               id: "claude-sonnet-4",
               name: "Claude Sonnet 4",
               displayName: "Claude Sonnet 4",
-              providerId: "anthropic",
+              providerId: "claude-acp",
               providerName: "Anthropic",
               recommended: true,
             },
@@ -2176,8 +1891,8 @@ describe("GlobalComposerPill", () => {
 
     expectSent(onSend, "Use Sonnet", {
       executionTarget: {
-        harnessId: "goose",
-        modelProviderId: "anthropic",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
         modelId: "claude-sonnet-4",
         modelName: "Claude Sonnet 4",
       },

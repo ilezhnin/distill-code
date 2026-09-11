@@ -371,6 +371,24 @@ describe("SidebarChatRow", () => {
       ).not.toBeInTheDocument();
     });
 
+    it("marks a conductor by icon, not by a Producer role title", () => {
+      registerGraph(conductorNode());
+
+      render(
+        <SidebarChatRow
+          id="session-1"
+          title="Refund timeout fix"
+          isActive={false}
+          showLeadingIcon={false}
+        />,
+      );
+
+      expect(screen.getByTestId("sidebar-conductor-icon")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Refund timeout fix" }),
+      ).toBeInTheDocument();
+    });
+
     it("uses the singular label for one working child", () => {
       registerGraph(conductorNode(), graphNode("worker-1"));
 

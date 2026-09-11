@@ -228,21 +228,78 @@ describe("the E1 verification lint", () => {
   it("refuses a verifier that cannot see what it is verifying", () => {
     // `access: []` means the step never receives the earlier reports, so it
     // does not know what was built. It is a verification step in name only.
-    expect(
-      plan([
-        step("brigade", "Update the callers"),
-        step("acceptor", "Check the work"),
-      ]),
-    ).toMatchObject({ kind: "rejected", reason: "verification-step-missing" });
+    const admission = plan([
+      step("brigade", "Update the callers"),
+      step("acceptor", "Check the work"),
+    ]);
+    expect(admission).toMatchObject({
+      kind: "rejected",
+      reason: "verification-step-blind",
+      stepIndex: 1,
+    });
+    if (admission.kind !== "rejected") return;
+    // The defect it names is the one it has: access, not a missing step.
+    expect(admission.detail).toContain('"access":"all"');
   });
 
-  it("refuses a verifier that is not the last step", () => {
+  it("refuses a verifier that is not the last step, and says which is", () => {
+    const admission = plan([
+      step("acceptor", "Check the old state", "all"),
+      step("brigade", "Update the callers"),
+    ]);
+    expect(admission).toMatchObject({
+      kind: "rejected",
+      reason: "verification-step-misplaced",
+      stepIndex: 1,
+    });
+    if (admission.kind !== "rejected") return;
+    expect(admission.detail).toContain("Step 1 verifies");
+    expect(admission.detail).toContain("step 2");
+  });
+
+  /**
+   * The live failure this split came from: build, build, verify, commit was
+   * refused as "its last step does not check it" while its acceptor sat at
+   * step 3. The rule the engine means is that the last step which *inspects*
+   * is the verifier — release work acts on what that step already checked.
+   */
+  it("lets a commit step trail the verifier", () => {
     expect(
       plan([
-        step("acceptor", "Check the old state", "all"),
+        step("brigade", "Fix the shell tails"),
+        step("brigade", "Fix the fallback glyph"),
+        step("acceptor", "Build, test, and read the diff yourself", "all"),
+        step("pr-submitter", "Commit what acceptance confirmed", "all"),
+      ]).kind,
+    ).toBe("accepted");
+  });
+
+  it("still refuses when the release tail hides a missing verifier", () => {
+    const admission = plan([
+      step("brigade", "Fix the shell tails"),
+      step("pr-submitter", "Commit it", "all"),
+    ]);
+    expect(admission).toMatchObject({
+      kind: "rejected",
+      reason: "verification-step-missing",
+      // The offending position is the closing *work* step, not the tail.
+      stepIndex: 0,
+    });
+  });
+
+  it("refuses a builder that runs after the verifier, release tail or not", () => {
+    expect(
+      plan([
         step("brigade", "Update the callers"),
+        step("acceptor", "Check it", "all"),
+        step("brigade", "One more fix nobody checks"),
+        step("pr-submitter", "Commit it", "all"),
       ]),
-    ).toMatchObject({ kind: "rejected", reason: "verification-step-missing" });
+    ).toMatchObject({
+      kind: "rejected",
+      reason: "verification-step-misplaced",
+      stepIndex: 2,
+    });
   });
 
   it("leaves waves with nothing to inspect alone", () => {

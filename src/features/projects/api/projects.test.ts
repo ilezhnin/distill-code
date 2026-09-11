@@ -62,11 +62,11 @@ describe("projects API artifact metadata", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getClient.mockResolvedValue({
-      goose: {
-        GooseUnstableSourcesList: mocks.sourcesList,
-        GooseUnstableSourcesCreate: mocks.sourcesCreate,
-        GooseUnstableSourcesUpdate: mocks.sourcesUpdate,
-        GooseUnstableSourcesDelete: mocks.sourcesDelete,
+      host: {
+        sourcesList: mocks.sourcesList,
+        sourcesCreate: mocks.sourcesCreate,
+        sourcesUpdate: mocks.sourcesUpdate,
+        sourcesDelete: mocks.sourcesDelete,
       },
     });
   });

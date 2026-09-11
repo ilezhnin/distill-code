@@ -14,13 +14,6 @@
     "view": "View attachment {{index}}",
     "viewFullSize": "View full-size attachment {{name}}"
   },
-  "agentToolsTip": {
-    "connect": "Connect",
-    "connected": "{{tool}} is connected",
-    "disconnected_one": "{{tools}} is disconnected",
-    "disconnected_other": "{{tools}} are disconnected",
-    "dismiss": "Dismiss tip"
-  },
   "context": {
     "closePanel": "Close context panel",
     "openPanel": "Open context panel",
@@ -74,7 +67,7 @@
     "attachmentsTooLarge": "Attachments are too large to send ({{totalMb}} MB, limit {{limitMb}} MB). Remove some attachments and try again.",
     "harnessRejectedModel": "{{harness}} does not accept the model “{{model}}”, so this message was not sent. This chat is now set to run on {{harness}}'s current model — send again, or pick another model in the composer's model pill.",
     "sessionPreparationSuperseded": "Session configuration changed while preparing. Try sending again.",
-    "steeringBackendUnavailable": "Steering is not available in this Goose backend. Restart with the steering backend branch and try again.",
+    "steeringBackendUnavailable": "Steering is not available for this agent.",
     "voiceInputFailedTitle": "Voice dictation failed",
     "voiceInputNoMicrophoneDescription": "Connect or select a microphone, then try voice dictation again.",
     "voiceInputNoMicrophoneTitle": "No microphone found",
@@ -187,7 +180,7 @@
       "copyPathSuccess": "Workspace path copied.",
       "copyPaths": "Copy paths",
       "copySuccess": "Workspace paths copied.",
-      "description": "All listed workspaces are shared with Goose for this chat.",
+      "description": "All listed workspaces are shared with the agent for this chat.",
       "empty": "No workspaces included yet.",
       "includeSuccess": "Included {{name}}.",
       "mainCheckout": "main checkout",
@@ -214,17 +207,17 @@
       "removeConfirmCancel": "Cancel",
       "removeConfirmTitle": "Are you sure you want to remove this workspace?",
       "removeManagedConfirmAction": "Remove {{resource}}",
-      "removeManagedConfirmBody": "This removes the Goose-created {{resource}} and detaches the workspace from this chat.",
-      "removeManagedConfirmBodyWithChanges_one": "This {{resource}} has {{count}} uncommitted change. Removing it will discard local changes and delete the Goose-created {{resource}}.",
-      "removeManagedConfirmBodyWithChanges_other": "This {{resource}} has {{count}} uncommitted changes. Removing it will discard local changes and delete the Goose-created {{resource}}.",
+      "removeManagedConfirmBody": "This removes the Distill-created {{resource}} and detaches the workspace from this chat.",
+      "removeManagedConfirmBodyWithChanges_one": "This {{resource}} has {{count}} uncommitted change. Removing it will discard local changes and delete the Distill-created {{resource}}.",
+      "removeManagedConfirmBodyWithChanges_other": "This {{resource}} has {{count}} uncommitted changes. Removing it will discard local changes and delete the Distill-created {{resource}}.",
       "removeManagedConfirmTitle": "Are you sure you want to remove this {{resource}}?",
       "removeManagedError": "Couldn't clean up {{resource}}.",
       "removeWorktreeConfirmAction": "Remove workspace",
-      "removeWorktreeConfirmBody": "If you remove this workspace, the Goose-created worktree {{worktree}} will be deleted from disk.",
+      "removeWorktreeConfirmBody": "If you remove this workspace, the Distill-created worktree {{worktree}} will be deleted from disk.",
       "removeWorktreeConfirmBodyWithChanges_one": "You have {{count}} uncommitted change on this worktree. If you remove this workspace, that change will be lost and {{worktree}} will be deleted from disk.",
       "removeWorktreeConfirmBodyWithChanges_other": "You have {{count}} uncommitted changes on this worktree. If you remove this workspace, those changes will be lost and {{worktree}} will be deleted from disk.",
       "removeWorktreeConfirmTitle": "Are you sure you want to remove this worktree?",
-      "removeSharedManagedConfirmBodyOtherChat": "Another active chat uses the same Goose-created {{resource}}. Only this workspace will be removed from this chat; the {{resource}} will stay on disk.",
+      "removeSharedManagedConfirmBodyOtherChat": "Another active chat uses the same Distill-created {{resource}}. Only this workspace will be removed from this chat; the {{resource}} will stay on disk.",
       "terminal": "Terminal"
     },
     "picker": {
@@ -282,21 +275,6 @@
     "summary": {
       "changes_one": "{{count}} change",
       "changes_other": "{{count}} changes"
-    },
-    "pullRequests": {
-      "fallbackTitle": "Pull request #{{number}}",
-      "open": "Open {{repo}} pull request #{{number}} on GitHub",
-      "state": {
-        "OPEN": "Open",
-        "CLOSED": "Closed",
-        "MERGED": "Merged",
-        "DRAFT": "Draft"
-      },
-      "checks": {
-        "SUCCESS": "Checks passed",
-        "PENDING": "Checks running",
-        "FAILURE": "Checks failed"
-      }
     },
     "tabs": {
       "details": "Context",
@@ -378,17 +356,11 @@
       "worktreesAndBranches": "Archive chat and remove its worktrees and branches?"
     },
     "archiveConfirmDescriptionWithFiles": {
-      "worktrees": "This will discard local files and changes, archive the chat, then remove its Goose-created worktrees.",
-      "branches": "This will discard local changes, archive the chat, then remove its Goose-created branches.",
-      "worktreesAndBranches": "This will discard local files and changes, archive the chat, then remove its Goose-created worktrees and branches."
+      "worktrees": "This will discard local files and changes, archive the chat, then remove its Distill-created worktrees.",
+      "branches": "This will discard local changes, archive the chat, then remove its Distill-created branches.",
+      "worktreesAndBranches": "This will discard local files and changes, archive the chat, then remove its Distill-created worktrees and branches."
     },
     "archiveConfirmAction": "Archive and remove"
-  },
-  "pinToHome": {
-    "action": "Pin chat",
-    "pinned": "Pinned chat",
-    "pinning": "Pinning...",
-    "unpin": "Unpin chat"
   },
   "message": {
     "copied": "Copied",
@@ -422,7 +394,7 @@
     "create": "Create agent...",
     "clearActive": "Clear active assistant",
     "removeSelected": "Remove {{agent}} agent",
-    "defaultDescription": "No agent selected - chat directly with Goose"
+    "defaultDescription": "No agent selected - chat with the default assistant"
   },
   "skill": {
     "clearSelected": "Remove {{skill}} skill"
@@ -460,8 +432,7 @@
     "placeholder": "Start a conversation",
     "setupVoiceConversation": "Set up Voice Conversation",
     "startVoiceConversation": "Start voice conversation",
-    "voiceConversationStartFailed": "Voice Conversation could not start. Your draft is still here.",
-    "voiceConversationRequiresGoose": "Voice Conversation requires Goose"
+    "voiceConversationStartFailed": "Voice Conversation could not start. Your draft is still here."
   },
   "emptyState": {
     "startAConversation": "Start a conversation"
@@ -553,7 +524,9 @@
         "budgetInvalid": "A step’s \"budget\" is not a limit the app can enforce.",
         "classUnknown": "A step named a complexity \"class\" this app does not have.",
         "stepModelUnavailable": "Step {{step}} names a model this build cannot run right now, and the whole plan was refused rather than quietly running the step on another model.",
-        "verificationStepMissing": "This plan builds something that can be checked, but its last step does not check it. A wave like this has to end with a verification step that inspects the result itself."
+        "verificationStepMissing": "This plan builds something that can be checked, but nothing in it checks the result. A wave like this has to end with a verification step that inspects the result itself.",
+        "verificationStepMisplaced": "This plan does check its work, but the check is not its last word: a step that is not a commit or release step runs after the verifier.",
+        "verificationStepBlind": "This plan ends with a verification step that never receives the other steps' reports, so it cannot know what it is verifying."
       },
       "budgetReset": {
         "title": "The revision budget starts over with this plan.",
@@ -747,23 +720,7 @@
     "voiceInputDisabled": "Set OPENAI_API_KEY to enable dictation",
     "voiceInputRecording": "Listening...",
     "voiceInputTranscribing": "Transcribing...",
-    "voiceInputAutoSubmitHint": "Say \"submit\" to send",
-    "voiceConversation": {
-      "start": "Start voice conversation",
-      "muteMicrophone": "Mute microphone",
-      "unmuteMicrophone": "Unmute microphone",
-      "states": {
-        "off": "Start voice conversation",
-        "starting": "Starting voice conversation…",
-        "stopping": "Stopping voice conversation…",
-        "listening": "Voice conversation is listening for session {{sessionId}}",
-        "muted": "Voice conversation microphone is muted for session {{sessionId}}",
-        "user-speaking": "Receiving voice input…",
-        "agent-working": "Agent is working…",
-        "agent-speaking": "Agent is speaking…",
-        "error": "Voice conversation error: {{error}}"
-      }
-    }
+    "voiceInputAutoSubmitHint": "Say \"submit\" to send"
   },
   "tools": {
     "content": "Content",

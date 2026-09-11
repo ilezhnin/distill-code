@@ -2,7 +2,7 @@
 #
 # This is the Windows counterpart to the Unix `just bundle` / `bundle-debug`
 # recipes. Those recipes run the POSIX prepare-*-sidecar.sh scripts directly,
-# which on Windows would look for an extensionless berdctl, stage goosed
+# which on Windows would look for an extensionless berdctl, stage the sidecars
 # without the .exe suffix, and emit the forbidden Catch shell stub — none of
 # which match the tauri.windows.conf.json externalBin contract. This driver
 # instead stages through Stage-Sidecar-Windows.ps1 (real *-<triple>.exe files,
@@ -48,41 +48,10 @@ if (-not $SkipDependencyInstall) {
     Invoke-CheckedCommand -FilePath $pnpm -ArgumentList @("install", "--frozen-lockfile") -Label "pnpm install --frozen-lockfile"
 }
 
-# The workspace SDK exports generated files from dist/. A clean checkout has no
-# dist directory, so build it before the application's beforeBuildCommand runs.
-Write-WindowsDevInfo "Building the workspace Goose SDK."
-Invoke-CheckedCommand -FilePath $pnpm -ArgumentList @("--filter", "@aaif/goose-sdk", "build") -Label "Goose SDK build"
-
-$gooseBuildProfile = if ($Debug) { "debug" } else { "release" }
-# Production bundles use optimized Goose; explicit debug bundles retain the
-# development profile for iteration speed.
-$oldGooseMode = $env:GOOSE_DEV_MODE
-$oldGooseBuildProfile = $env:GOOSE_BUILD_PROFILE
-try {
-    $env:GOOSE_DEV_MODE = "required"
-    $env:GOOSE_BUILD_PROFILE = $gooseBuildProfile
-    $goose = Invoke-EnsureLocalGoose -Action Build
-} finally {
-    $env:GOOSE_DEV_MODE = $oldGooseMode
-    $env:GOOSE_BUILD_PROFILE = $oldGooseBuildProfile
-}
-if (-not $goose.Ready -or [string]::IsNullOrWhiteSpace($goose.BinPath)) {
-    throw "Pinned Goose sidecar is not ready: $($goose.Message)"
-}
-# Invoke-EnsureLocalGoose points CARGO_TARGET_DIR at the managed Goose cache.
-# Restore the app target before staging berdctl and invoking Tauri.
-$env:CARGO_TARGET_DIR = $targetDir
-
-# Stage goosed/berdctl as validated *-<triple>.exe. Catch is macOS-only and is
+# Stage berdctl/berd-monitor as validated *-<triple>.exe. Catch is macOS-only and is
 # excluded from the Windows externalBin overlay rather than replaced by a stub.
-$oldGooseBuildProfile = $env:GOOSE_BUILD_PROFILE
-try {
-    $env:GOOSE_BUILD_PROFILE = $gooseBuildProfile
-    Invoke-WindowsChildScript -ScriptPath (Join-Path $PSScriptRoot "Stage-Sidecar-Windows.ps1") `
-        -ArgumentList @("-Triple", $targetTriple) -Label "Stage Windows sidecars"
-} finally {
-    $env:GOOSE_BUILD_PROFILE = $oldGooseBuildProfile
-}
+Invoke-WindowsChildScript -ScriptPath (Join-Path $PSScriptRoot "Stage-Sidecar-Windows.ps1") `
+    -ArgumentList @("-Triple", $targetTriple) -Label "Stage Windows sidecars"
 
 Write-WindowsDevInfo "Resolving application version from Git metadata."
 $resolvedVersion = Resolve-AppVersion $Version
@@ -90,19 +59,6 @@ Write-WindowsDevInfo "Building Berd $($resolvedVersion.Version) ($($resolvedVers
 
 $env:CARGO_TARGET_DIR = $targetDir
 $env:BERD_APP_VERSION = $resolvedVersion.RichVersion
-$releaseUpdaterEnabled = -not $Debug -and `
-    -not [string]::IsNullOrWhiteSpace($env:BERD_RELEASE_CHANNEL) -and `
-    $env:BERD_RELEASE_CHANNEL -ne "disabled"
-# The native updater config and renderer gate are independent contracts. Keep
-# them driven by the same release-channel decision so a packaged updater cannot
-# compile a renderer that permanently reports updates unavailable.
-$env:VITE_UPDATER_ENABLED = if ($releaseUpdaterEnabled) { "true" } else { "false" }
-if ([string]::IsNullOrWhiteSpace($env:VITE_AUTH_GATE)) {
-    $env:VITE_AUTH_GATE = "0"
-}
-if ([string]::IsNullOrWhiteSpace($env:VITE_BYO_KEY_PROVIDERS)) {
-    $env:VITE_BYO_KEY_PROVIDERS = "1"
-}
 $env:VITE_APP_VERSION = $resolvedVersion.RichVersion
 
 $baseFeatures = @("berdctl")
@@ -133,20 +89,9 @@ if ($Debug) {
     $baseConfig.bundle.externalBin = (Get-ObjectValue (Get-ObjectValue $windowsConf "bundle") "externalBin")
     $configJson = $baseConfig | ConvertTo-Json -Depth 32
 } else {
-    if (-not [string]::IsNullOrWhiteSpace($env:BERD_RELEASE_CHANNEL) -and $env:BERD_RELEASE_CHANNEL -ne "disabled") {
-        $releaseConfigPath = Join-Path $repoRoot "src-tauri/tauri.release.conf.json"
-        if (-not (Test-Path -LiteralPath $releaseConfigPath -PathType Leaf)) {
-            throw "Enabled release builds require $releaseConfigPath. Run pnpm tauri:release:config first."
-        }
-        $releaseConfig = Read-JsonFile $releaseConfigPath
-        $releaseConfig | Add-Member -NotePropertyName version -NotePropertyValue $resolvedVersion.RichVersion -Force
-        $releaseConfig.bundle | Add-Member -NotePropertyName targets -NotePropertyValue @($Bundle) -Force
-        $configJson = $releaseConfig | ConvertTo-Json -Depth 32
-    } else {
         $configJson = ([pscustomobject]@{
             version = $resolvedVersion.RichVersion
             bundle = @{ targets = @($Bundle) }
-            plugins = @{ updater = @{ active = $false } }
         } | ConvertTo-Json -Depth 5)
     }
 }

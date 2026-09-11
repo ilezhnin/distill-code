@@ -9,7 +9,7 @@ import {
 import { useChatSessionStore } from "../stores/chatSessionStore";
 import { i18n } from "@/shared/i18n";
 import type { SessionExecutionTarget } from "@/features/chat/lib/sessionExecutionTarget";
-import { gooseServeSelectionFromExecutionTarget } from "@/features/chat/lib/gooseServeExecutionTarget";
+import { hostSelectionFromExecutionTarget } from "@/features/chat/lib/hostExecutionTarget";
 
 export type PreferredModelSelection = {
   id: string;
@@ -132,7 +132,7 @@ export function rollbackToPreviousModel({
     providerId: wireProviderId,
     modelId,
     modelName,
-  } = gooseServeSelectionFromExecutionTarget(previousTarget);
+  } = hostSelectionFromExecutionTarget(previousTarget);
 
   if (previousTarget) {
     setGlobalSelectedProvider?.(previousTarget.harnessId);

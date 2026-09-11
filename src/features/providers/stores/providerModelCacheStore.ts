@@ -1,11 +1,12 @@
 import { create } from "zustand";
-import { providerModelOptionsFromIds } from "../lib/modelRecommendations";
+import { humanizeRawModelId } from "../lib/humanizeModelId";
+import { formatProviderLabel } from "@/shared/ui/icons/ProviderIcons";
 import type { ModelOption } from "@/features/chat/types";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { getClient } from "@/shared/api/acpConnection";
 import { notifyProviderModelInventoryInvalidated } from "../lib/providerModelInventoryEvents";
 
-const MODEL_CACHE_STORAGE_KEY = "goose:providerModelCache:v1";
+const MODEL_CACHE_STORAGE_KEY = "distill:providerModelCache:v1";
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
 /**
  * Floor on how soon a provider whose last poll *failed* may be polled again.
@@ -157,12 +158,29 @@ async function fetchProviderSupportedModels(
   providerId: string,
 ): Promise<string[]> {
   const client = await getClient();
-  const response = await client.goose.GooseUnstableProvidersSupportedModelsList(
-    {
-      providerId,
-    },
-  );
+  const response = await client.host.providersSupportedModelsList({
+    providerId,
+  });
   return response.models;
+}
+
+function providerModelOptionsFromIds(
+  providerId: string,
+  ids: string[],
+): ModelOption[] {
+  const providerName = formatProviderLabel(providerId);
+  return ids.map((id) => {
+    const displayName = humanizeRawModelId(id);
+    return {
+      id,
+      name: displayName,
+      displayName,
+      providerId,
+      providerName,
+      recommended: true,
+      featured: false,
+    };
+  });
 }
 
 export function isCachedModelInventoryAuthoritative(

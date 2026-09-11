@@ -230,7 +230,7 @@ describe("queuePersistence", () => {
 
   it("merges changed sessions into the fallback cache", () => {
     window.localStorage.setItem(
-      "goose:chat-message-queues:v1",
+      "distill:chat-message-queues:v1",
       JSON.stringify({
         main: [
           {
@@ -259,7 +259,7 @@ describe("queuePersistence", () => {
 
     expect(
       JSON.parse(
-        window.localStorage.getItem("goose:chat-message-queues:v1") ?? "{}",
+        window.localStorage.getItem("distill:chat-message-queues:v1") ?? "{}",
       ),
     ).toMatchObject({
       main: [{ recordId: "main-record" }],
@@ -302,7 +302,7 @@ describe("queuePersistence", () => {
       }),
     );
     expect(
-      window.localStorage.getItem("goose:chat-message-queues:v1"),
+      window.localStorage.getItem("distill:chat-message-queues:v1"),
     ).toBeNull();
   });
 

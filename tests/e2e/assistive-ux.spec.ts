@@ -1,7 +1,7 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures/tauri-mock";
 
-const ASSISTIVE_UX_STORAGE_KEY = "goose:assistive-ux";
+const ASSISTIVE_UX_STORAGE_KEY = "distill:assistive-ux";
 const CHANGE_SOUND_MOMENT_ID = "notifications.changeSound";
 
 async function waitForAppShell(page: Page) {

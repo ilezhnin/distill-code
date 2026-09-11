@@ -87,14 +87,14 @@ vi.mock(
 
 const SESSION_ID = "old-monitor-session";
 const INITIAL_TARGET = {
-  harnessId: "goose",
-  modelProviderId: "databricks_v2",
+  harnessId: "claude-acp",
+  modelProviderId: "claude-acp",
   modelId: "goose-gpt-5-5",
   modelName: "GPT-5.5",
 } as const;
 const UPDATED_TARGET = {
-  harnessId: "goose",
-  modelProviderId: "databricks_v2",
+  harnessId: "claude-acp",
+  modelProviderId: "claude-acp",
   modelId: "goose-gpt-5-6-sol",
   modelName: "GPT-5.6 Sol",
 } as const;
@@ -123,7 +123,7 @@ async function emitHistoricalReplay(sessionId: string): Promise<void> {
     update: {
       sessionUpdate: "user_message_chunk",
       content: { type: "text", text: "older prompt" },
-      _meta: { goose: { messageId: "historical-user" } },
+      _meta: { distill: { messageId: "historical-user" } },
     },
   } as never);
   await handleSessionNotification({
@@ -131,7 +131,7 @@ async function emitHistoricalReplay(sessionId: string): Promise<void> {
     update: {
       sessionUpdate: "agent_message_chunk",
       content: { type: "text", text: "older answer" },
-      _meta: { goose: { messageId: "historical-assistant" } },
+      _meta: { distill: { messageId: "historical-assistant" } },
     },
   } as never);
 }
@@ -539,7 +539,7 @@ describe("sendPromptToExistingSessionInBackground", () => {
   it("uses the live session target with the deferred message's captured persona", async () => {
     useAgentStore.setState({
       providers: [
-        { id: "goose", label: "Goose" },
+        { id: "claude-acp", label: "Goose" },
         { id: "claude-acp", label: "Claude Code" },
       ],
       personas: [
@@ -616,7 +616,7 @@ describe("sendPromptToExistingSessionInBackground", () => {
         persona: { kind: "inherit" },
         // Compatibility debris from an older persisted record must not supply
         // execution intent when the authoritative session is unresolved.
-        executionTarget: { harnessId: "goose" },
+        executionTarget: { harnessId: "claude-acp" },
       },
     } as const;
 

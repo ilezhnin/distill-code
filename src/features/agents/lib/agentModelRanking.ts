@@ -70,7 +70,7 @@ export type AgentRankingSource =
   | { kind: "class"; classId: ModelPreferenceClassId };
 
 /**
- * Platforms a ranking entry may name. Goose (and other unmetered harnesses)
+ * Platforms a ranking entry may name. Unmetered harnesses
  * are not in this set: a stored row with no rate-limit meter cannot be
  * walked, so parse drops it rather than keeping a dead preference.
  */
@@ -100,12 +100,12 @@ export interface RankingInventoryItem {
 
 /**
  * Platform a ranking row may store for this model. Parse drops anything else,
- * so the editor must never offer a Goose (or Copilot/Amp) harness id.
+ * so the editor must never offer a Copilot/Amp harness id.
  *
- * Native ACP lists already carry the meter. Goose's combined catalog does not,
+ * Native ACP lists already carry the meter. A combined catalog does not,
  * but the same Opus/Fable/Sol/Grok names still belong on those meters — match
- * the known candidates rather than skipping the whole Goose list, which left
- * Add disabled whenever only Goose had models.
+ * the known candidates rather than skipping the whole list, which left
+ * Add disabled whenever only that list had models.
  */
 export function platformForRankingModel(
   sourceProviderId: string,
@@ -132,7 +132,7 @@ export function platformForRankingModel(
 
 /**
  * Flattened picker list. Rankable harnesses first so a live Claude Code list
- * wins the label over the same id coming through Goose.
+ * wins the label over the same id coming through a combined catalog.
  */
 export function rankingInventoryFromProviders(
   providers: ReadonlyArray<{ id: string; label: string }>,
@@ -250,7 +250,7 @@ export function serializeAgentModelRanking(ranking: AgentModelRanking): string {
 /**
  * The legacy single provider/model pair as a one-row ranking entry, or null
  * when the pair cannot be represented: no saved model, or a provider that is
- * not a ranked platform (goose-routed providers have no rate-limit meter for
+ * not a ranked platform (proxied providers have no rate-limit meter for
  * the ranking to walk).
  *
  * Used to show an agent saved before rankings existed inside the ranking UI

@@ -7,7 +7,6 @@ import {
   useTopBarActions,
 } from "@/app/contexts/TopBarActionsContext";
 import type { SkillInfo } from "../../api/skills";
-import { SKILL_DISCOVERY_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
 import { SkillsView } from "../SkillsView";
 
 const mockRevealInFileManager = vi.hoisted(() => vi.fn());
@@ -133,33 +132,6 @@ vi.mock("@/shared/lib/fileManager", () => ({
   revealInFileManager: mockRevealInFileManager,
 }));
 
-const mockDiscoveryExperimentEnabled = vi.hoisted(() => ({ value: false }));
-const mockUseExperiment = vi.hoisted(() => vi.fn());
-vi.mock("@/features/experiments/experimentPreferences", () => ({
-  useExperiment: mockUseExperiment,
-}));
-
-const mockRemoteSkillsState = vi.hoisted(() => ({
-  value: {
-    cliState: "available" as const,
-    skills: [] as unknown[],
-    loading: false,
-    catalogState: "ready",
-    installing: new Set<string>(),
-    reload: vi.fn(),
-    install: vi.fn(),
-  },
-}));
-vi.mock("../../hooks/useRemoteSkills", () => ({
-  useRemoteSkills: () => mockRemoteSkillsState.value,
-}));
-
-vi.mock("../RemoteSkillDetailPage", () => ({
-  RemoteSkillDetailPage: ({ skill }: { skill: { name: string } }) => (
-    <div data-testid="remote-skill-detail">{skill.name}</div>
-  ),
-}));
-
 const { listSkills, deleteSkill, updateSkill, exportSkill } = (await import(
   "../../api/skills"
 )) as unknown as {
@@ -171,22 +143,7 @@ const { listSkills, deleteSkill, updateSkill, exportSkill } = (await import(
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockDiscoveryExperimentEnabled.value = false;
   mockReducedMotion.value = false;
-  mockUseExperiment.mockImplementation((id: string) =>
-    id === SKILL_DISCOVERY_EXPERIMENT_ID
-      ? { enabled: mockDiscoveryExperimentEnabled.value }
-      : null,
-  );
-  mockRemoteSkillsState.value = {
-    cliState: "available",
-    skills: [],
-    loading: false,
-    catalogState: "ready",
-    installing: new Set<string>(),
-    reload: vi.fn(),
-    install: vi.fn(),
-  };
   mockProjects = [
     {
       id: "project-alpha",
@@ -235,107 +192,6 @@ describe("SkillsView", () => {
       name: "New skill",
     });
     expect(createTiles.length).toBeGreaterThan(0);
-  });
-
-  it("hides tab semantics when the skill-discovery experiment is off", async () => {
-    mockDiscoveryExperimentEnabled.value = false;
-    listSkills.mockResolvedValue(mockSkills);
-    renderSkillsViewWithTopBarActions();
-
-    expect(await screen.findByText("code-review")).toBeInTheDocument();
-    expect(screen.queryByRole("tab")).toBeNull();
-    expect(screen.queryByRole("tabpanel")).toBeNull();
-  });
-
-  it("shows the installed/discover tabs when the experiment is on", async () => {
-    mockDiscoveryExperimentEnabled.value = true;
-    renderSkillsViewWithTopBarActions();
-    await waitFor(() => {
-      expect(listSkills).toHaveBeenCalled();
-    });
-    const installedTab = await screen.findByRole("tab", {
-      name: /Installed, 0/,
-    });
-    const discoverTab = screen.getByRole("tab", { name: /Discover, 0/ });
-    expect(installedTab).toBeInTheDocument();
-    expect(discoverTab).toBeInTheDocument();
-    expect(
-      document.getElementById(installedTab.getAttribute("aria-controls") ?? ""),
-    ).toHaveAttribute("role", "tabpanel");
-    expect(
-      document.getElementById(discoverTab.getAttribute("aria-controls") ?? ""),
-    ).toHaveAttribute("role", "tabpanel");
-  });
-
-  it("returns to Installed when discovery is disabled", async () => {
-    mockDiscoveryExperimentEnabled.value = true;
-    listSkills.mockResolvedValue(mockSkills);
-    const { rerender } = renderSkillsViewWithTopBarActions();
-    const user = userEvent.setup();
-
-    await user.click(await screen.findByRole("tab", { name: /Discover/ }));
-    mockDiscoveryExperimentEnabled.value = false;
-    rerender(
-      <TopBarActionsProvider>
-        <TopBarActionsHost />
-        <SkillsView />
-      </TopBarActionsProvider>,
-    );
-
-    expect(await screen.findByText("code-review")).toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: /Discover/ })).toBeNull();
-  });
-
-  it("resolves a remote detail route by name from the catalog", async () => {
-    mockDiscoveryExperimentEnabled.value = true;
-    mockRemoteSkillsState.value = {
-      cliState: "available",
-      skills: [
-        {
-          name: "agent-browser",
-          description: "Debug visual bugs",
-          roles: [],
-          references: [],
-          author: null,
-          status: null,
-          installed: false,
-        },
-      ],
-      loading: false,
-      catalogState: "ready",
-      installing: new Set<string>(),
-      reload: vi.fn(),
-      install: vi.fn(),
-    };
-    renderSkillsViewWithTopBarActions({
-      activeSkillId: "remote:agent-browser",
-    });
-    expect(await screen.findByTestId("remote-skill-detail")).toHaveTextContent(
-      "agent-browser",
-    );
-  });
-
-  it("clears a remote detail route that can't resolve after loading", async () => {
-    mockDiscoveryExperimentEnabled.value = true;
-    mockRemoteSkillsState.value = {
-      cliState: "available",
-      skills: [],
-      loading: false,
-      catalogState: "ready",
-      installing: new Set<string>(),
-      reload: vi.fn(),
-      install: vi.fn(),
-    };
-    const onActiveSkillIdChange = vi.fn();
-    renderSkillsViewWithTopBarActions({
-      activeSkillId: "remote:missing-skill",
-      onActiveSkillIdChange,
-    });
-    await waitFor(() => {
-      expect(onActiveSkillIdChange).toHaveBeenCalledWith(null, {
-        replace: true,
-      });
-    });
   });
 
   it("ignores stale skill loads after projects change", async () => {
@@ -518,27 +374,6 @@ describe("SkillsView", () => {
     expect(screen.getByRole("button", { name: "Close" })).toBeInTheDocument();
   });
 
-  it("labels Discover scope as an install destination", async () => {
-    mockDiscoveryExperimentEnabled.value = true;
-    listSkills.mockResolvedValue(mockSkills);
-    const user = userEvent.setup();
-
-    renderSkillsViewWithTopBarActions();
-    await user.click(await screen.findByRole("tab", { name: /Discover/ }));
-
-    const destination = screen.getByRole("button", {
-      name: "Choose install destination",
-    });
-    expect(destination).toHaveTextContent("Personal");
-    await user.click(destination);
-    expect(
-      screen.getByRole("menuitemradio", { name: "Personal" }),
-    ).toHaveAttribute("aria-checked", "true");
-    expect(
-      screen.queryByRole("menuitemradio", { name: "All" }),
-    ).not.toBeInTheDocument();
-  });
-
   it("filters Installed to personal skills", async () => {
     listSkills.mockResolvedValue([...mockSkills, builtinSkill]);
     const user = userEvent.setup();
@@ -553,32 +388,6 @@ describe("SkillsView", () => {
     expect(screen.getByText("layout")).toBeInTheDocument();
     expect(screen.queryByText("test-writer")).not.toBeInTheDocument();
     expect(screen.queryByText("goose-doc-guide")).not.toBeInTheDocument();
-  });
-
-  it("falls back to Personal when a Discover project disappears", async () => {
-    mockDiscoveryExperimentEnabled.value = true;
-    listSkills.mockResolvedValue(mockSkills);
-    const user = userEvent.setup();
-    const { rerender } = renderSkillsViewWithTopBarActions();
-
-    await user.click(await screen.findByRole("tab", { name: /Discover/ }));
-    await user.click(
-      screen.getByRole("button", { name: "Choose install destination" }),
-    );
-    await user.click(screen.getByRole("menuitemradio", { name: "alpha" }));
-
-    mockProjects = [];
-    rerender(
-      <TopBarActionsProvider>
-        <TopBarActionsHost />
-        <SkillsView />
-      </TopBarActionsProvider>,
-    );
-
-    const destination = await screen.findByRole("button", {
-      name: "Choose install destination",
-    });
-    await waitFor(() => expect(destination).toHaveTextContent("Personal"));
   });
 
   it("filters skills to a selected project", async () => {

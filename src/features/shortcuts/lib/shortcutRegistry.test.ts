@@ -187,34 +187,6 @@ describe("shortcut command definitions", () => {
     ]);
   });
 
-  it("registers chat.toggleVoiceDictation as a configurable, discoverable composer shortcut", () => {
-    const command = getShortcutCommand("chat.toggleVoiceDictation");
-    expect(command).toBeDefined();
-    expect(command?.scope).toBe("composer");
-    expect(command?.configurable).toBe(true);
-    expect(command?.discoverable).toBe(true);
-
-    expect(getShortcutBindings("chat.toggleVoiceDictation")).toEqual([
-      { shortcut: "meta+d" },
-    ]);
-
-    for (const platform of ["windows", "linux"] as const) {
-      getPlatformMock.mockReturnValue(platform);
-      expect(getShortcutBindings("chat.toggleVoiceDictation")).toEqual([
-        { shortcut: "ctrl+d" },
-      ]);
-    }
-  });
-
-  it("accepts an override for chat.toggleVoiceDictation", () => {
-    expect(
-      setShortcutOverride("chat.toggleVoiceDictation", "meta+shift+d"),
-    ).toEqual({ ok: true });
-    expect(getShortcutBindings("chat.toggleVoiceDictation")).toEqual([
-      { shortcut: "meta+shift+d" },
-    ]);
-  });
-
   it("registers the design system inspector shortcuts on macOS", () => {
     const visibilityCommand = getShortcutCommand(
       "view.toggleDesignSystemInspector",

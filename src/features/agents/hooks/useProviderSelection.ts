@@ -4,6 +4,7 @@ import { selectSelectedProvider } from "../stores/agentSelectors";
 import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProviderStatus";
 import { resolveAgentProviderCatalogIdStrictFromEntries } from "@/features/providers/providerCatalog";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
 export function useProviderSelection() {
   const allProviders = useAgentStore((s) => s.providers);
@@ -24,7 +25,8 @@ export function useProviderSelection() {
     // Selection is preference, not readiness. Session creation resolves stale
     // or unavailable implicit preferences through the shared target resolver.
     return (
-      selectedAgentId ?? (catalogLoaded ? "goose" : storedSelectedProvider)
+      selectedAgentId ??
+      (catalogLoaded ? DEFAULT_HARNESS_ID : storedSelectedProvider)
     );
   }, [catalogEntries, catalogLoaded, storedSelectedProvider]);
 

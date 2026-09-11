@@ -298,15 +298,18 @@ if ($Mode -eq "check") {
 
 $paths = Resolve-WindowsCleanupPaths
 Write-WindowsDevSection "Berd-local caches"
-Remove-CleanupPath "Managed Goose cache" $paths.BerdDevRoot $paths.BerdDevRoot
+Remove-CleanupPath "Berd dev cache" $paths.BerdDevRoot $paths.BerdDevRoot
 Remove-CleanupPath "Tauri cargo cache" $paths.BerdTauriRoot $paths.BerdTauriRoot
+if (-not [string]::IsNullOrWhiteSpace($paths.LegacyBerdTauriRoot)) {
+    # Pre-2026-09 checkouts built into %LOCALAPPDATA%\berd-tauri. Nothing
+    # writes there now, but the tens of GB it holds still need reclaiming.
+    Remove-CleanupPath "legacy Tauri cargo cache" $paths.LegacyBerdTauriRoot $paths.LegacyBerdTauriRoot
+}
 
 Write-WindowsDevSection "Repo-local generated state"
 Remove-CleanupPath "root node_modules" $paths.RepoNodeModules (Get-BerdRepoRoot)
 Remove-CleanupPath "root pnpm store" $paths.RepoPnpmStore (Get-BerdRepoRoot)
 Remove-CleanupPath "root dist" $paths.RepoDist (Get-BerdRepoRoot)
-Remove-CleanupPath "sdk node_modules" $paths.SdkNodeModules (Join-Path (Get-BerdRepoRoot) "sdk")
-Remove-CleanupPath "sdk dist" $paths.SdkDist (Join-Path (Get-BerdRepoRoot) "sdk")
 Remove-LefthookGitHook "pre-commit"
 Remove-LefthookGitHook "pre-push"
 

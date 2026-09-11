@@ -9,7 +9,7 @@ import {
 
 const CWD = "/Users/dev/project";
 /** Artifact root used by projectless "general" chats. */
-const ARTIFACT_ROOT = "/Users/dev/goose artifacts";
+const ARTIFACT_ROOT = "/Users/dev/.distill/artifacts";
 
 function candidate(
   resolvedPath: string,
@@ -223,7 +223,7 @@ describe("shouldAutoOpenArtifact", () => {
   });
 
   it("does not open AGENTS.md or CLAUDE.md", () => {
-    for (const name of ["AGENTS.md", "CLAUDE.md", "GOOSE.md"]) {
+    for (const name of ["AGENTS.md", "CLAUDE.md"]) {
       expect(
         shouldAutoOpenArtifact(candidate(`${CWD}/${name}`), {
           sessionCwd: CWD,
@@ -234,7 +234,6 @@ describe("shouldAutoOpenArtifact", () => {
 
   it("does not open files in machinery directories", () => {
     for (const dir of [
-      ".goose",
       ".git",
       ".github",
       "node_modules",

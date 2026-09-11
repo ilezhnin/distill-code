@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders } from "@/test/render";
 import { ASSISTIVE_UX_STORAGE_KEY } from "@/shared/assistive-ux/registry";
 import { RESPONSE_START_GUTTER_STORAGE_KEY } from "@/features/chat/lib/responseStartGutterPreference";
-import { EXPERIMENT_PREFERENCES_STORAGE_KEY } from "@/features/experiments/experimentPreferences";
 import type { Message } from "@/shared/types/messages";
 import type { RunCommandOptions } from "@/shared/ui/ai-elements/runnable-code-block";
 import {
@@ -129,7 +128,6 @@ vi.mock("../MessageBubble", async () => {
 });
 
 beforeEach(() => {
-  localStorage.removeItem(EXPERIMENT_PREFERENCES_STORAGE_KEY);
   localStorage.removeItem(ASSISTIVE_UX_STORAGE_KEY);
   localStorage.removeItem(RESPONSE_START_GUTTER_STORAGE_KEY);
   resizeObserverCallbacks.length = 0;
@@ -557,14 +555,6 @@ describe("VirtualMessageTimeline", () => {
         },
       ],
     };
-
-    localStorage.setItem(
-      EXPERIMENT_PREFERENCES_STORAGE_KEY,
-      JSON.stringify({
-        version: 2,
-        experiments: { "agent-work-transcript": { enabled: false } },
-      }),
-    );
     renderWithProviders(
       <VirtualMessageTimeline
         sessionId="session-1"
@@ -1789,142 +1779,6 @@ describe("VirtualMessageTimeline", () => {
     await waitFor(() => expect(scroller.scrollTop).toBe(detachedScrollTop));
   });
 
-  it("follows a new voice user turn like a composer submission", async () => {
-    mockTranscriptElementMeasurements();
-    const messages = [
-      textMessage("user-1", "user", "Question"),
-      textMessage(
-        "assistant-1",
-        "assistant",
-        `${longText("history", 80)}\n[height:900]`,
-      ),
-    ];
-    const { rerender } = renderWithProviders(
-      <VirtualMessageTimeline sessionId="session-1" messages={messages} />,
-    );
-    const scroller = screen.getByTestId("message-timeline-scroll");
-    attachScrollTo(scroller);
-    setScrollMetrics(scroller, {
-      scrollTop: 700,
-      scrollHeight: 1000,
-      clientHeight: 300,
-    });
-    fireEvent.scroll(scroller);
-
-    fireEvent.wheel(scroller, { deltaY: -300 });
-    setScrollMetrics(scroller, {
-      scrollTop: 200,
-      scrollHeight: 1000,
-      clientHeight: 300,
-    });
-    fireEvent.scroll(scroller);
-    expect(
-      await screen.findByRole("button", { name: "Jump to latest" }),
-    ).toBeInTheDocument();
-    const voiceMessage = textMessage(
-      "voice-local",
-      "user",
-      "Spoken follow-up",
-      {
-        userVisible: true,
-        origin: "voice_conversation",
-        voiceConversationLifecycleId: "lifecycle-1",
-        voiceUtteranceId: "utterance-1",
-        voiceConversationRevision: 0,
-      },
-    );
-    rerender(
-      <VirtualMessageTimeline
-        sessionId="session-1"
-        messages={[...messages, voiceMessage]}
-      />,
-    );
-
-    await waitFor(() => expect(scroller.scrollTop).toBeGreaterThan(200));
-    expect(
-      screen.queryByRole("button", { name: "Jump to latest" }),
-    ).not.toBeInTheDocument();
-
-    fireEvent.wheel(scroller, { deltaY: -300 });
-    setScrollMetrics(scroller, {
-      scrollTop: 200,
-      scrollHeight: 1000,
-      clientHeight: 300,
-    });
-    fireEvent.scroll(scroller);
-    expect(
-      await screen.findByRole("button", { name: "Jump to latest" }),
-    ).toBeInTheDocument();
-
-    rerender(
-      <VirtualMessageTimeline
-        sessionId="session-1"
-        messages={[...messages, { ...voiceMessage, id: "voice-backend" }]}
-      />,
-    );
-
-    await waitFor(() => expect(scroller.scrollTop).toBe(200));
-    expect(
-      screen.getByRole("button", { name: "Jump to latest" }),
-    ).toBeInTheDocument();
-  });
-
-  it("follows a new voice turn appended with an assistant continuation", async () => {
-    mockTranscriptElementMeasurements();
-    const messages = [
-      textMessage("user-1", "user", "Question"),
-      textMessage(
-        "assistant-1",
-        "assistant",
-        `${longText("history", 80)}\n[height:900]`,
-      ),
-    ];
-    const { rerender } = renderWithProviders(
-      <VirtualMessageTimeline sessionId="session-1" messages={messages} />,
-    );
-    const scroller = screen.getByTestId("message-timeline-scroll");
-    attachScrollTo(scroller);
-    setScrollMetrics(scroller, {
-      scrollTop: 700,
-      scrollHeight: 1000,
-      clientHeight: 300,
-    });
-    fireEvent.scroll(scroller);
-    fireEvent.wheel(scroller, { deltaY: -300 });
-    setScrollMetrics(scroller, {
-      scrollTop: 200,
-      scrollHeight: 1000,
-      clientHeight: 300,
-    });
-    fireEvent.scroll(scroller);
-    expect(
-      await screen.findByRole("button", { name: "Jump to latest" }),
-    ).toBeInTheDocument();
-
-    rerender(
-      <VirtualMessageTimeline
-        sessionId="session-1"
-        messages={[
-          ...messages,
-          textMessage("voice-local", "user", "Spoken follow-up", {
-            userVisible: true,
-            origin: "voice_conversation",
-            voiceConversationLifecycleId: "lifecycle-1",
-            voiceUtteranceId: "utterance-1",
-            voiceConversationRevision: 0,
-          }),
-          textMessage("assistant-2", "assistant", "Working"),
-        ]}
-        streamingMessageId="assistant-2"
-      />,
-    );
-
-    await waitFor(() => expect(scroller.scrollTop).toBeGreaterThan(200));
-    expect(
-      screen.queryByRole("button", { name: "Jump to latest" }),
-    ).not.toBeInTheDocument();
-  });
-
   it("keeps following latest after an intent-less upward scroll correction", async () => {
     const messages = [
       textMessage("user-1", "user", "Question"),
@@ -2540,7 +2394,7 @@ describe("VirtualMessageTimeline", () => {
     expect(
       validateTranscriptDiagnostics(transcriptDiagnosticEvents.at(-1)).errors,
     ).toEqual([]);
-    const sharedWindowDiagnostics = window.__GOOSE_TRANSCRIPT_DIAGNOSTICS__;
+    const sharedWindowDiagnostics = window.__DISTILL_TRANSCRIPT_DIAGNOSTICS__;
     expect(sharedWindowDiagnostics).toMatchObject({
       bridgeKind: "production-virtual-message-timeline",
       rendererMode: "virtual",

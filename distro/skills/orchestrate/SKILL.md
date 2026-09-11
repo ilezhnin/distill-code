@@ -75,6 +75,19 @@ green»:
 The work is checkable, so the last step inspects the artifact itself — the
 build, the tests, a search — never just the other step's report.
 
+«Fix the two open shell tails, then commit what passes»:
+
+```distill-wave
+{"steps":[{"role":"brigade","subtask":"Close the two open cards under tasks/open/ that concern the shell: the unsaved-changes hint that survives a tab switch, and the launch key that leaks into the game. Zone: src/Shell/ only. For each fact add a test with a negative control. Do not touch Core/, tests outside Shell/, or tasks/.","access":[],"label":"shell tails"},{"role":"brigade","subtask":"Change ONLY the Fallback glyph constant in src/Core/SystemFont.cs so it is visually distinct from every ASCII glyph, and make the pairwise-distinct glyph test cover it. Zone: that file and its tests. Do not touch the glyph table or Shell/.","access":[],"label":"fallback glyph"},{"role":"acceptor","subtask":"Do not trust the reports. Run the build and the full test suite yourself, read the diff of both zones, and confirm each claimed fact by reading the code that makes it true. Report the commands you ran and what they printed.","access":"all","label":"verify both"},{"role":"pr-submitter","subtask":"Commit only what the acceptor's report confirmed, on a branch from the current HEAD, one commit per zone, Conventional Commits in English. If acceptance failed, commit nothing and say so. Do not push.","access":"all","label":"commit"}]}
+```
+
+Release work — `pr-submitter`, `localizer`, `devops` — is the one kind of step
+allowed after the verifier, and only there: nothing is committed before it has
+been checked, and a step that builds or fixes anything belongs before the
+acceptor. The two fixers own disjoint zones, so they run in parallel; the
+acceptor waits for both; the submitter commits what acceptance confirmed. So
+«fix it, then commit it» is one wave, not two.
+
 ## 2b. One child is a wave of one step
 
 There is no separate way to start a single agent. "Give this to a specialist"

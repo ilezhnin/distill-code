@@ -3,10 +3,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, Save, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import {
-  applyRuntimeProviderConfig,
-  defaultModelInventoryModeForLoadResult,
-} from "@/features/providers/runtimeProviderConfig";
 import { useDistroStore } from "@/features/settings/stores/distroStore";
 import { rerunDoctorReport } from "@/shared/api/useDoctorReport";
 import {
@@ -72,20 +68,8 @@ export function RuntimeConfigSettings() {
     });
   }
 
-  async function applyLiveRuntimeConfig(nextResult: RuntimeConfigLoadResult) {
-    const runtimeConfig =
-      nextResult.status === "ready"
-        ? nextResult.config
-        : useRuntimeConfigStore.getState().config;
-    await Promise.all([
-      applyRuntimeProviderConfig(runtimeConfig, {
-        seedModelsFresh:
-          nextResult.status === "ready" && nextResult.source === "fakeEndpoint",
-        defaultModelInventoryMode:
-          defaultModelInventoryModeForLoadResult(nextResult),
-      }),
-      useDistroStore.getState().refresh(),
-    ]);
+  async function applyLiveRuntimeConfig(_nextResult: RuntimeConfigLoadResult) {
+    await useDistroStore.getState().refresh();
   }
 
   async function handleSave() {

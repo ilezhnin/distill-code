@@ -15,8 +15,6 @@ import { useChatStore } from "../../stores/chatStore";
 import { getWorkspaceGitContext } from "../widgets/WorkspaceIdentity";
 import { ContextPanel, ContextPanelWorktreeTracker } from "../ContextPanel";
 import { setMultiWorkspaceEnabled } from "@/features/workspaces/multiWorkspacePreference";
-import { RELATED_PULL_REQUESTS_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
-import { setExperimentEnabled } from "@/features/experiments/experimentPreferences";
 
 const {
   mockUseGitState,
@@ -32,7 +30,6 @@ const {
   mockToastError,
   mockToastSuccess,
   mockListenGitStateChanged,
-  mockGetPullRequestSummaries,
   gitStateChangedHandlers,
 } = vi.hoisted(() => {
   const gitStateChangedHandlers: Array<
@@ -58,7 +55,6 @@ const {
         return Promise.resolve(() => {});
       },
     ),
-    mockGetPullRequestSummaries: vi.fn().mockResolvedValue([]),
     gitStateChangedHandlers,
   };
 });
@@ -126,10 +122,6 @@ vi.mock("@/shared/api/git", () => ({
   stashChanges: vi.fn(),
   initRepo: vi.fn(),
   listenGitStateChanged: mockListenGitStateChanged,
-}));
-
-vi.mock("@/shared/api/pullRequests", () => ({
-  getPullRequestSummaries: mockGetPullRequestSummaries,
 }));
 
 vi.mock("../../hooks/ArtifactPolicyContext", () => ({
@@ -308,7 +300,7 @@ describe("ContextPanel", () => {
     repositoryPath: "/Users/test/goose2",
     worktreePath,
     lifecycle: {
-      owner: "goose",
+      owner: "distill",
       cleanup: "worktree",
       branch: "feat/context-panel",
       baseBranch: "main",
@@ -792,72 +784,6 @@ describe("ContextPanel", () => {
     expect(screen.getAllByText("goose2").length).toBeGreaterThan(0);
   });
 
-  it("shows session pull requests only in the changes tab", async () => {
-    const user = userEvent.setup();
-    const sessionId = "test-session-related-pr";
-    useChatStore.setState({
-      messagesBySession: {
-        [sessionId]: [
-          {
-            id: "assistant-pr-link",
-            role: "assistant",
-            created: 1,
-            content: [
-              {
-                type: "text",
-                text: "https://github.com/squareup/berd/pull/891",
-              },
-            ],
-          },
-        ],
-      },
-    });
-
-    renderContextPanel({ sessionId });
-
-    expect(screen.queryByText("Pull requests")).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: /changes/i }));
-    expect(await screen.findByText("Pull requests")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: /files/i }));
-    expect(screen.queryByText("Pull requests")).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: /context/i }));
-    expect(screen.queryByText("Pull requests")).not.toBeInTheDocument();
-  });
-
-  it("does not scan session messages when related pull requests are disabled", async () => {
-    const user = userEvent.setup();
-    const sessionId = "test-session-disabled-related-pr";
-    setExperimentEnabled(RELATED_PULL_REQUESTS_EXPERIMENT_ID, false);
-    useChatStore.setState({
-      messagesBySession: {
-        [sessionId]: [
-          {
-            id: "assistant-pr-link",
-            role: "assistant",
-            created: 1,
-            content: [
-              {
-                type: "text",
-                text: "https://github.com/squareup/berd/pull/891",
-              },
-            ],
-          },
-        ],
-      },
-    });
-
-    renderContextPanel({ sessionId });
-
-    await user.click(screen.getByRole("tab", { name: /changes/i }));
-    expect(screen.queryByText("Pull requests")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: /files/i }));
-    expect(screen.queryByText("Pull requests")).not.toBeInTheDocument();
-    expect(mockGetPullRequestSummaries).not.toHaveBeenCalled();
-  });
-
   it("renders repo-relative titles for project subdirectories", () => {
     mockUseGitState.mockReturnValue({
       data: {
@@ -1179,7 +1105,7 @@ describe("ContextPanel", () => {
     ).toBe("/Users/test/goose2");
   });
 
-  it("cleans up a last-use Goose-created worktree before removing it from the chat", async () => {
+  it("cleans up a last-use Distill-created worktree before removing it from the chat", async () => {
     const user = userEvent.setup();
     const worktreePath = "/Users/test/goose2-feature";
     useChatSessionStore.setState({
@@ -1197,7 +1123,7 @@ describe("ContextPanel", () => {
               repositoryPath: "/Users/test/goose2",
               worktreePath,
               lifecycle: {
-                owner: "goose",
+                owner: "distill",
                 cleanup: "worktree",
                 branch: "feat/context-panel",
                 baseBranch: "main",
@@ -1344,7 +1270,7 @@ describe("ContextPanel", () => {
       repositoryPath: createdPath,
       worktreePath: createdPath,
       lifecycle: {
-        owner: "goose",
+        owner: "distill",
         cleanup: "branch",
         branch: "feat/context-panel",
         baseBranch: "main",
@@ -1437,7 +1363,7 @@ describe("ContextPanel", () => {
 
     expect(
       await screen.findByText(
-        /another active chat uses the same Goose-created worktree/i,
+        /another active chat uses the same Distill-created worktree/i,
       ),
     ).toBeInTheDocument();
     expect(
@@ -1445,7 +1371,7 @@ describe("ContextPanel", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("keeps a Goose-created worktree attached when cleanup fails", async () => {
+  it("keeps a Distill-created worktree attached when cleanup fails", async () => {
     const user = userEvent.setup();
     const worktreePath = "/Users/test/goose2-feature";
     const attachment = createManagedWorktreeAttachment(
@@ -2288,7 +2214,7 @@ describe("ContextPanel", () => {
         "/Users/test/custom artifacts",
       );
     });
-    expect(localStorage.getItem("goose:artifact-root-path")).toBeNull();
+    expect(localStorage.getItem("distill:artifact-root-path")).toBeNull();
     expect(
       screen.queryByRole("button", { name: /initialize git/i }),
     ).not.toBeInTheDocument();

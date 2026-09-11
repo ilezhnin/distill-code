@@ -23,9 +23,9 @@ export const archiveSessionCommand = defineCommand({
   effect: "archive",
   visibility: "immediate",
   destructive: true,
-  summary: "Archive a chat and clean up its Goose-managed Git resources",
+  summary: "Archive a chat and clean up its Distill-managed Git resources",
   description:
-    "Archive a chat session, then remove eligible Goose-managed worktrees and branches. Refuses cleanup that would discard local files or changes unless --discard-changes is set.",
+    "Archive a chat session, then remove eligible Distill-managed worktrees and branches. Refuses cleanup that would discard local files or changes unless --discard-changes is set.",
   helpFooter: `By default, the command refuses to archive when Git cleanup would discard local files or changes.
 Use --discard-changes to allow that loss. The command never opens an interactive prompt.
 

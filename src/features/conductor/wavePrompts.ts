@@ -28,7 +28,11 @@ import {
 } from "./distillWave";
 import { VERDICT_FENCE_TAG, VERDICT_TOKENS } from "./distillVerdict";
 import { wrapOrchestratorTaskPrompt } from "./orchestratorReport";
-import { roleDisplayName, roleStage } from "./roleLayers";
+import {
+  roleDisplayName,
+  roleStage,
+  workerRoleIdsForStage,
+} from "./roleLayers";
 import type { StructuredReport } from "./types";
 
 /** A finished earlier step of the same wave, as handed to an `"all"` step. */
@@ -115,13 +119,15 @@ Work that needs one shared understanding stays in one step. Only split what can 
 
 ## Verification
 
-If the wave produces something that can be checked by looking at the thing itself — code, files, a build, a document, data — the last step must be a verification step: role "acceptor" (or "adversary" to hunt for defects the others would not admit to), "access":"all".
+If the wave produces something that can be checked by looking at the thing itself — code, files, a build, a document, data — the last step that works on it must be a verification step: role "acceptor" (or "adversary" to hunt for defects the others would not admit to), "access":"all".
 
 That step's subtask must tell the worker to inspect the artifact directly: run the build, run the tests, open the files, check that the change is actually there and actually applies. It must not simply re-read the other steps' reports and agree with them. A verifier that only reads reports adds nothing — the workers already told you what they think of their own work.
 
 Its report is the only external evidence you get. Weigh it above the workers' own accounts of themselves.
 
 For work that has nothing to inspect — a summary, an explanation, a recommendation — skip the verification step rather than adding a ceremonial one.
+
+Committing, opening a PR, translating or deploying is release work, and its roles — ${workerRoleIdsForStage("release").join(", ")} — are the only ones allowed to run after the verification step. Put them there and nowhere else: nothing is committed before it has been checked, and a step that builds or fixes anything belongs before the verifier. So «fix it, then commit it» is one wave — the fixers, then the acceptor, then the submitter — not two.
 
 ## Worked examples
 
@@ -215,13 +221,19 @@ Send the plan again as exactly one ${WAVE_FENCE_TAG} block that follows the cont
  * Quoting the enumerated detail is what lets the model fix the actual defect
  * instead of reproducing it — the first live fence failures were exactly that,
  * twice in a row.
+ *
+ * The double-quote hint is conditioned on the block having failed to parse,
+ * because most refusals are not parse failures: a plan refused for its step
+ * order or an unavailable model is syntactically perfect, and handing that
+ * conductor a lead about quoting sends it looking for a defect it does not
+ * have.
  */
 export function buildWaveReplanRequest(detail?: string): string {
   if (!detail?.trim()) return WAVE_REPLAN_REQUEST_PROMPT;
   return `${WAVE_REPLAN_REQUEST_PROMPT}
 
 What was wrong with the previous block: ${detail.trim()}
-Fix exactly that. A frequent cause is a raw double-quote character inside a "subtask" string — use «guillemets» there instead, and keep JSON snippets and report-format descriptions out of subtasks entirely.`;
+Fix exactly that, and change nothing else about the plan. If the block did not parse at all, the frequent cause is a raw double-quote character inside a "subtask" string — use «guillemets» there instead, and keep JSON snippets and report-format descriptions out of subtasks entirely.`;
 }
 
 function reportPayload(

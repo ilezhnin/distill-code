@@ -38,11 +38,7 @@ for (const [name, value] of Object.entries(contract)) {
 }
 ' "$contract_json")"
 
-if [[ -n "${GOOSE_BIN:-}" ]]; then
-  just _setup-no-goose
-else
-  GOOSE_BUILD_PROFILE=debug just setup
-fi
+just setup
 
 export VITE_PORT="$(python3 -c "import hashlib,os; h=int(hashlib.sha256(os.getcwd().encode()).hexdigest(),16); print(10000 + h % 55000)")"
 export VITE_DESIGN_SYSTEM_EXPLORER=1
@@ -51,20 +47,10 @@ export CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)"
 eval "$(./scripts/resolve-app-version.sh)"
 export VITE_APP_VERSION="$BERD_APP_VERSION_RICH"
 
-BERDCTL_FEATURES=()
-[[ "${VITE_FEEDBACK:-0}" == "1" ]] && BERDCTL_FEATURES+=(--features block-feedback)
-# ${arr[@]+...} guards the empty-array expansion, which bash 3.2 (stock
-# macOS) treats as an unbound variable under `set -u`.
-(cd src-tauri && cargo build -p berdctl ${BERDCTL_FEATURES[@]+"${BERDCTL_FEATURES[@]}"})
+(cd src-tauri && cargo build -p berdctl)
 export BERDCTL_BIN="${CARGO_TARGET_DIR}/debug/berdctl"
-if [[ "${VITE_AGENT_TOOLS:-0}" == "1" ]]; then
-  ./scripts/prepare-bb-cli-resource.sh
-fi
-if [[ -z "${GOOSE_BIN:-}" ]]; then
-  export GOOSE_BIN="$(GOOSE_BUILD_PROFILE=debug ./scripts/ensure-local-goose.sh --check-bin)"
-fi
-if [[ -z "${GOOSE_DISTRO_DIR:-}" && -d "$REPO_ROOT/distro" ]]; then
-  export GOOSE_DISTRO_DIR="$REPO_ROOT/distro"
+if [[ -z "${DISTILL_DISTRO_DIR:-}" && -d "$REPO_ROOT/distro" ]]; then
+  export DISTILL_DISTRO_DIR="$REPO_ROOT/distro"
 fi
 
 printf 'Isolated E2E run root: %s\n' "$BERD_E2E_RUN_ROOT"
@@ -74,8 +60,8 @@ printf 'BERD_E2E_RUN_ROOT=%q\nAPP_TEST_DRIVER_TOKEN=%q\n' \
   "$BERD_E2E_RUN_ROOT" "$APP_TEST_DRIVER_TOKEN" > "$BERD_E2E_RUN_ROOT/client.env"
 chmod 600 "$BERD_E2E_RUN_ROOT/client.env"
 
-CARGO_FEATURES="$(./scripts/block-feature-gates.sh "berdctl,app-test-driver")"
-VITE_AUTH_GATE="${VITE_BUILDERBOT:-0}" pnpm tauri dev \
+CARGO_FEATURES="berdctl,app-test-driver"
+pnpm tauri dev \
   --features "$CARGO_FEATURES" \
   --config src-tauri/tauri.dev.conf.json \
   --config "$TAURI_E2E_CONFIG" \

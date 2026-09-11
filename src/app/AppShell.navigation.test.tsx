@@ -30,26 +30,16 @@ import { SHORTCUT_PREFERENCES_STORAGE_KEY } from "@/features/shortcuts/lib/short
 import { useShortcutsDialogStore } from "@/features/shortcuts/stores/shortcutsDialogStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 import type { ProjectInfo } from "@/features/projects/api/projects";
-import { BUILDERBOT_SURFACE_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
-import {
-  EXPERIMENT_PREFERENCES_STORAGE_KEY,
-  EXPERIMENT_PREFERENCES_STORAGE_VERSION,
-} from "@/features/experiments/experimentPreferences";
 import { ThemeProvider } from "@/shared/theme/ThemeProvider";
-import { useDefaultProviderReadinessStore } from "@/features/providers/stores/defaultProviderReadinessStore";
 import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import { useRuntimeConfigStore } from "@/shared/runtime-config/runtimeConfigStore";
-import { gooseServeSelectionFromExecutionTarget } from "@/features/chat/lib/gooseServeExecutionTarget";
+import { hostSelectionFromExecutionTarget } from "@/features/chat/lib/hostExecutionTarget";
 import {
   DEFAULT_RUNTIME_CONFIG,
   type RuntimeConfig,
 } from "@/shared/runtime-config/schema";
 import { AppShell } from "./AppShell";
-import {
-  shouldStopVoiceConversationOnExperimentChange,
-  shouldStopVoiceConversationOnSessionChange,
-} from "./lib/voiceConversationLifecycle";
 import type { NavigationPanesViewProps } from "@/app/views/NavigationPanesView";
 import type { AppShellContent as AppShellContentType } from "./ui/AppShellContent";
 
@@ -77,7 +67,7 @@ const gitMocks = vi.hoisted(() => ({
 }));
 const mockIsExternalAgentReady = vi.hoisted(() => vi.fn());
 const mockAgentStatus = vi.hoisted(() => ({
-  readyAgentIds: new Set<string>(["goose"]),
+  readyAgentIds: new Set<string>(["claude-acp"]),
 }));
 const mockCreatePersonaSource = vi.hoisted(() => vi.fn());
 const mockListPersonaSources = vi.hoisted(() => vi.fn());
@@ -85,7 +75,6 @@ const mockReadAgentSourceFile = vi.hoisted(() => vi.fn());
 const mockDeletePersonaSource = vi.hoisted(() => vi.fn());
 const mockListPersonas = vi.hoisted(() => vi.fn());
 const mockRepairBundledAgent = vi.hoisted(() => vi.fn());
-const mockAutomationBuilderSave = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
 const mockListenSessionDeepLinkErrors = vi.hoisted(() => vi.fn());
 const mockAfterNextPaint = vi.hoisted(() => ({
@@ -176,7 +165,7 @@ function makeManagedWorktreeSession(
   return {
     id: "session-1",
     title: branch,
-    executionTarget: { harnessId: "goose" },
+    executionTarget: { harnessId: "claude-acp" },
     workingDir: worktreePath,
     workspaceAttachments: [
       {
@@ -189,7 +178,7 @@ function makeManagedWorktreeSession(
         worktreePath,
         usedByAgent: true,
         lifecycle: {
-          owner: "goose",
+          owner: "distill",
           cleanup: "worktree",
           branch,
           baseBranch: "main",
@@ -248,15 +237,12 @@ function setReadyRuntimeConfig(config: RuntimeConfig = DEFAULT_RUNTIME_CONFIG) {
 
 function requireByoDefaultProviderSetup() {
   mockBuildFeatures.byoKeyProviders = true;
-  useDefaultProviderReadinessStore.setState({
-    readiness: { status: "needs_setup", reason: "missing_defaults" },
-  });
 }
 
 function selectCodexProvider() {
   useAgentStore.setState({
     providers: [
-      { id: "goose", label: "Goose" },
+      { id: "claude-acp", label: "Claude Code" },
       { id: "codex-acp", label: "Codex" },
     ],
     selectedProvider: "codex-acp",
@@ -265,14 +251,14 @@ function selectCodexProvider() {
 
 function setResolvingPersona(
   model?: string,
-  provider = "databricks_v2",
+  provider = "claude-acp",
   modelProviderId?: string,
 ) {
   useAgentStore.setState({
-    selectedProvider: "goose",
+    selectedProvider: "claude-acp",
     providers: [
-      { id: "goose", label: "Goose" },
-      { id: "databricks_v2", label: "Databricks AI Gateway" },
+      { id: "claude-acp", label: "Claude Code" },
+      { id: "claude-acp", label: "Databricks AI Gateway" },
     ],
     personas: [
       {
@@ -309,13 +295,7 @@ function seedProviderModels(
 
 vi.mock("@/shared/profile/buildProfile", () => ({
   getBuildFeatureState: () => ({
-    authGate: false,
-    agentTools: true,
-    automations: true,
-    builderbot: true,
     telemetry: true,
-    voiceDictation: true,
-    managedConnections: true,
     securityMl: true,
     updater: true,
     ...mockBuildFeatures,
@@ -365,12 +345,6 @@ vi.mock("@/app/views/NavigationPanesView", () => ({
       </button>
       <button type="button" onClick={() => onNavigate?.("skills")}>
         Sidebar skills
-      </button>
-      <button type="button" onClick={() => onNavigate?.("automations")}>
-        Sidebar automations
-      </button>
-      <button type="button" onClick={() => onNavigate?.("builderbot")}>
-        Sidebar builderbot
       </button>
       <button type="button" onClick={() => onNavigate?.("agents")}>
         Sidebar agents
@@ -445,7 +419,7 @@ vi.mock("@/shared/api/acp", () => ({
 }));
 
 vi.mock("@/shared/api/acpApi", () => ({
-  DEFAULT_PROVIDER: { id: "goose", label: "Goose (Default)" },
+  DEFAULT_PROVIDER: { id: "claude-acp", label: "Claude Code" },
   archiveSession: (...args: unknown[]) => mockAcpArchiveSession(...args),
   renameSession: vi.fn().mockResolvedValue(undefined),
   unarchiveSession: vi.fn().mockResolvedValue(undefined),
@@ -567,20 +541,14 @@ vi.mock("./ui/AppShellContent", () => ({
     onCloseDesignSystem,
     onNavigateSkills,
     onNavigateAgents,
-    onNavigateAutomations,
-    onNavigateBuilderbot,
     onSkillsBreadcrumbLabelChange,
     onAgentsBreadcrumbLabelChange,
-    onAutomationsBreadcrumbLabelChange,
-    onBuilderbotBreadcrumbLabelChange,
-    onAutomationBuilderLeaveActionChange,
     onCreatePersona,
     onAgentBuilderCompleted,
     onExitSearch,
     onArchiveChat,
     onOpenAgent,
     onSelectSession,
-    onStartConnectionSetupChat,
   }) => {
     const activeView = targetLocation.view;
     const activeSettingsSection =
@@ -591,14 +559,6 @@ vi.mock("./ui/AppShellContent", () => ({
       targetLocation.view === "skills" ? targetLocation.skillId : null;
     const activeAgentsPersonaId =
       targetLocation.view === "agents" ? targetLocation.personaId : null;
-    const activeAutomationsRoute =
-      targetLocation.view === "automations"
-        ? targetLocation.route
-        : { surface: "overview" };
-    const activeBuilderbotRoute =
-      targetLocation.view === "builderbot"
-        ? targetLocation.route
-        : { surface: "overview" };
 
     return (
       <section>
@@ -609,25 +569,8 @@ vi.mock("./ui/AppShellContent", () => ({
           {renderedSession?.id ?? "none"}
         </div>
         <div data-testid="settings-section">{activeSettingsSection}</div>
-        <button
-          type="button"
-          onClick={() =>
-            onStartConnectionSetupChat({
-              title: "Add a connection",
-              prompt: "Which connection?",
-            })
-          }
-        >
-          Test connection setup
-        </button>
         <div data-testid="skill-route">{activeSkillsSkillId ?? "list"}</div>
         <div data-testid="agent-route">{activeAgentsPersonaId ?? "list"}</div>
-        <div data-testid="automation-route">
-          {JSON.stringify(activeAutomationsRoute)}
-        </div>
-        <div data-testid="builderbot-route">
-          {JSON.stringify(activeBuilderbotRoute)}
-        </div>
         <button
           type="button"
           onClick={() => {
@@ -646,66 +589,6 @@ vi.mock("./ui/AppShellContent", () => ({
         >
           Open agent detail
         </button>
-        <button
-          type="button"
-          onClick={() => {
-            onAutomationsBreadcrumbLabelChange?.("History");
-            onNavigateAutomations({ surface: "history", selectedRun: null });
-          }}
-        >
-          Open automation history
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            onAutomationsBreadcrumbLabelChange?.("Add automation");
-            onNavigateAutomations({
-              surface: "builder",
-              automationId: "automation-1",
-            });
-          }}
-        >
-          Open automation builder
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            onBuilderbotBreadcrumbLabelChange?.("TASK-1");
-            onNavigateBuilderbot({ surface: "task", taskKey: "TASK-1" });
-          }}
-        >
-          Open builderbot task
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            onBuilderbotBreadcrumbLabelChange?.("Daily docs");
-            onNavigateBuilderbot({
-              surface: "automation",
-              automationId: "daily-docs",
-            });
-          }}
-        >
-          Open builderbot automation
-        </button>
-        {activeView === "automations" &&
-        activeAutomationsRoute.surface === "builder" ? (
-          <button
-            type="button"
-            onClick={() =>
-              onAutomationBuilderLeaveActionChange?.({
-                hasUnsavedChanges: true,
-                save: async () => {
-                  mockAutomationBuilderSave();
-                  return true;
-                },
-                discard: () => {},
-              })
-            }
-          >
-            Mark automation edits unsaved
-          </button>
-        ) : null}
         <button type="button" onClick={() => onOpenAgent?.("persona-resolves")}>
           Start chat with resolving agent
         </button>
@@ -757,80 +640,7 @@ vi.mock("./ui/AppShellContent", () => ({
   }) satisfies typeof AppShellContentType,
 }));
 
-function enableBuilderbotExperiment() {
-  window.localStorage.setItem(
-    EXPERIMENT_PREFERENCES_STORAGE_KEY,
-    JSON.stringify({
-      version: EXPERIMENT_PREFERENCES_STORAGE_VERSION,
-      experiments: {
-        [BUILDERBOT_SURFACE_EXPERIMENT_ID]: { enabled: true },
-      },
-    }),
-  );
-}
-
 describe("AppShell global navigation", () => {
-  it("does no Voice native cleanup on startup-off and cleans up an on-to-off transition", () => {
-    expect(
-      shouldStopVoiceConversationOnExperimentChange({
-        wasEnabled: false,
-        isEnabled: false,
-      }),
-    ).toBe(false);
-    expect(
-      shouldStopVoiceConversationOnExperimentChange({
-        wasEnabled: true,
-        isEnabled: false,
-      }),
-    ).toBe(true);
-    expect(
-      shouldStopVoiceConversationOnExperimentChange({
-        wasEnabled: true,
-        isEnabled: true,
-      }),
-    ).toBe(false);
-  });
-
-  it("stops voice only when navigation leaves its bound chat", () => {
-    const base = {
-      previousSessionId: "session-1",
-      boundSessionId: "session-1",
-      lifecycle: "running",
-    };
-
-    expect(
-      shouldStopVoiceConversationOnSessionChange({
-        ...base,
-        nextSessionId: "session-2",
-      }),
-    ).toBe(true);
-    expect(
-      shouldStopVoiceConversationOnSessionChange({
-        ...base,
-        nextSessionId: null,
-      }),
-    ).toBe(true);
-    expect(
-      shouldStopVoiceConversationOnSessionChange({
-        ...base,
-        nextSessionId: "session-1",
-      }),
-    ).toBe(false);
-    expect(
-      shouldStopVoiceConversationOnSessionChange({
-        ...base,
-        nextSessionId: "session-2",
-        boundSessionId: "session-elsewhere",
-      }),
-    ).toBe(false);
-    expect(
-      shouldStopVoiceConversationOnSessionChange({
-        ...base,
-        nextSessionId: "session-2",
-        lifecycle: "stopped",
-      }),
-    ).toBe(false);
-  });
   afterEach(cleanup);
 
   beforeEach(() => {
@@ -861,7 +671,7 @@ describe("AppShell global navigation", () => {
     mockAcpListSessionsPage.mockReset();
     mockAcpListSessionsPage.mockImplementation(async () => ({
       sessions: useChatSessionStore.getState().sessions.map((session) => {
-        const selection = gooseServeSelectionFromExecutionTarget(
+        const selection = hostSelectionFromExecutionTarget(
           session.executionTarget,
         );
         return {
@@ -926,7 +736,7 @@ describe("AppShell global navigation", () => {
     mockCheckAllProviderStatus.mockResolvedValue([]);
     mockIsExternalAgentReady.mockReset();
     mockIsExternalAgentReady.mockResolvedValue(false);
-    mockAgentStatus.readyAgentIds = new Set(["goose"]);
+    mockAgentStatus.readyAgentIds = new Set(["claude-acp"]);
     mockCreatePersonaSource.mockReset();
     mockCreatePersonaSource.mockResolvedValue({
       type: "agent",
@@ -948,7 +758,6 @@ describe("AppShell global navigation", () => {
     mockReadAgentSourceFile.mockRejectedValue(new Error("not found"));
     mockDeletePersonaSource.mockReset();
     mockDeletePersonaSource.mockResolvedValue(undefined);
-    mockAutomationBuilderSave.mockReset();
     useChatStore.setState({
       messagesBySession: {},
       sessionStateById: {},
@@ -971,15 +780,12 @@ describe("AppShell global navigation", () => {
       archiveMutationBySessionId: {},
     });
     useAgentStore.setState({
-      selectedProvider: "goose",
+      selectedProvider: "claude-acp",
     });
     useProjectStore.setState({
       projects: [],
       loading: false,
       activeProjectId: null,
-    });
-    useDefaultProviderReadinessStore.setState({
-      readiness: { status: "ready", providerId: "goose" },
     });
     useProviderModelCacheStore.setState({
       providers: new Map(),
@@ -1000,10 +806,9 @@ describe("AppShell global navigation", () => {
       expect(screen.getByTestId("active-view")).toHaveTextContent("chat");
     });
     expect(mockAcpCreateSession).toHaveBeenCalledWith(
-      "goose",
-      "~/goose artifacts",
+      "claude-acp",
+      "~/.distill/artifacts",
       {
-        deferProviderSetup: false,
         modelId: undefined,
         projectId: undefined,
       },
@@ -1013,210 +818,6 @@ describe("AppShell global navigation", () => {
         "--project-tint",
       ),
     ).toBe("transparent");
-  });
-
-  it("repairs an obsolete managed model before creating Home", async () => {
-    setReadyRuntimeConfig({
-      schemaVersion: 1,
-      goose: {
-        defaultModelProviderId: "databricks_v2",
-        defaultModelId: "goose-gpt-5-5",
-        modelProviders: [
-          {
-            id: "databricks_v2",
-            displayName: "Databricks",
-            models: [
-              { id: "goose-gpt-5-5", name: "GPT-5.5" },
-              { id: "legacy-v1-model", name: "Legacy" },
-            ],
-          },
-        ],
-      },
-    });
-    useDefaultProviderReadinessStore.setState({
-      readiness: {
-        status: "ready",
-        providerId: "databricks_v2",
-        modelId: "legacy-v1-model",
-      },
-    });
-    mockRepairManagedGooseModelSelection.mockResolvedValue({
-      providerId: "databricks_v2",
-      modelId: "goose-gpt-5-5",
-    });
-    useChatSessionStore.setState({ hasHydratedSessions: true });
-
-    renderAppShell();
-
-    await waitFor(() => {
-      expect(mockAcpCreateSession).toHaveBeenCalledWith(
-        "databricks_v2",
-        "~/goose artifacts",
-        expect.objectContaining({ modelId: "goose-gpt-5-5" }),
-      );
-    });
-    expect(mockAcpCreateSession).not.toHaveBeenCalledWith(
-      "databricks_v2",
-      "~/goose artifacts",
-      expect.objectContaining({ modelId: "legacy-v1-model" }),
-    );
-    expect(
-      useChatSessionStore.getState().getSession("created-session"),
-    ).toMatchObject({
-      executionTarget: {
-        harnessId: "goose",
-        modelProviderId: "databricks_v2",
-        modelId: "goose-gpt-5-5",
-      },
-    });
-  });
-
-  it("keeps a newer Home picker choice while managed repair is pending", async () => {
-    const repair = deferred<{
-      providerId: string;
-      modelId: string;
-    }>();
-    setReadyRuntimeConfig({
-      schemaVersion: 1,
-      goose: {
-        defaultModelProviderId: "databricks_v2",
-        defaultModelId: "goose-gpt-5-5",
-        modelProviders: [
-          {
-            id: "databricks_v2",
-            displayName: "Databricks",
-            models: [
-              { id: "goose-gpt-5-5", name: "GPT-5.5" },
-              { id: "goose-gpt-5-6", name: "GPT-5.6" },
-              { id: "legacy-v1-model", name: "Legacy" },
-            ],
-          },
-        ],
-      },
-    });
-    seedProviderModels("databricks_v2", [
-      { id: "goose-gpt-5-5", name: "GPT-5.5" },
-      { id: "goose-gpt-5-6", name: "GPT-5.6" },
-    ]);
-    useDefaultProviderReadinessStore.setState({
-      readiness: {
-        status: "ready",
-        providerId: "databricks_v2",
-        modelId: "legacy-v1-model",
-      },
-    });
-    mockRepairManagedGooseModelSelection
-      .mockReturnValueOnce(repair.promise)
-      .mockImplementation(
-        async (selection: { providerId?: string; modelId?: string }) => ({
-          providerId: selection.providerId ?? "databricks_v2",
-          modelId: selection.modelId ?? "goose-gpt-5-5",
-        }),
-      );
-    useChatSessionStore.setState({ hasHydratedSessions: true });
-    const user = userEvent.setup();
-
-    renderAppShell();
-
-    await user.click(screen.getByPlaceholderText("Start a conversation"));
-    await user.click(
-      screen.getByRole("button", { name: /choose agent and model/i }),
-    );
-    await user.click(screen.getByRole("button", { name: "GPT-5.6" }));
-
-    await act(async () => {
-      repair.resolve({
-        providerId: "databricks_v2",
-        modelId: "goose-gpt-5-5",
-      });
-      await repair.promise;
-    });
-
-    await waitFor(() => {
-      expect(mockAcpCreateSession).toHaveBeenCalledWith(
-        "databricks_v2",
-        "~/goose artifacts",
-        expect.objectContaining({ modelId: "goose-gpt-5-6" }),
-      );
-    });
-    expect(
-      useChatSessionStore.getState().getSession("created-session"),
-    ).toMatchObject({
-      executionTarget: {
-        harnessId: "goose",
-        modelProviderId: "databricks_v2",
-        modelId: "goose-gpt-5-6",
-      },
-    });
-  });
-
-  it("keeps a fresh-start picker selection when Home appears with its default model", async () => {
-    const homeCreation = deferred<{
-      sessionId: string;
-      configOptionsSnapshot: {
-        model: { modelId: string; modelName: string };
-      };
-    }>();
-    seedProviderModels("databricks_v2", [
-      { id: "goose-gpt-5-5", name: "GPT-5.5", recommended: true },
-      { id: "goose-gpt-5-6", name: "GPT-5.6", recommended: true },
-    ]);
-    useDefaultProviderReadinessStore.setState({
-      readiness: {
-        status: "ready",
-        providerId: "databricks_v2",
-        modelId: "goose-gpt-5-5",
-      },
-    });
-    useChatSessionStore.setState({ hasHydratedSessions: true });
-    mockAcpCreateSession.mockReturnValueOnce(homeCreation.promise);
-    const user = userEvent.setup();
-
-    renderAppShell();
-
-    await waitFor(() => {
-      expect(mockAcpCreateSession).toHaveBeenCalledWith(
-        "databricks_v2",
-        "~/goose artifacts",
-        expect.objectContaining({ modelId: "goose-gpt-5-5" }),
-      );
-    });
-    expect(useChatSessionStore.getState().sessions).toHaveLength(0);
-
-    await user.click(screen.getByPlaceholderText("Start a conversation"));
-    await user.click(
-      screen.getByRole("button", { name: /choose agent and model/i }),
-    );
-    await user.click(screen.getByRole("button", { name: "GPT-5.6" }));
-    expect(
-      screen.getByRole("button", { name: /choose agent and model/i }),
-    ).toHaveTextContent("GPT-5.6");
-
-    await act(async () => {
-      homeCreation.resolve({
-        sessionId: "home-session",
-        configOptionsSnapshot: {
-          model: { modelId: "goose-gpt-5-5", modelName: "GPT-5.5" },
-        },
-      });
-      await homeCreation.promise;
-    });
-
-    await waitFor(() => {
-      expect(
-        useChatSessionStore.getState().getSession("home-session"),
-      ).toMatchObject({
-        executionTarget: {
-          harnessId: "goose",
-          modelProviderId: "databricks_v2",
-          modelId: "goose-gpt-5-6",
-          modelName: "GPT-5.6",
-        },
-      });
-    });
-    expect(
-      screen.getByRole("button", { name: /choose agent and model/i }),
-    ).toHaveTextContent("GPT-5.6");
   });
 
   it("keeps an external agent as the Home model harness", async () => {
@@ -1254,21 +855,14 @@ describe("AppShell global navigation", () => {
   });
 
   it("does not reseed an explicitly unresolved Home session", async () => {
-    window.localStorage.setItem("goose:home-session-id", "home-unresolved");
-    useDefaultProviderReadinessStore.setState({
-      readiness: {
-        status: "ready",
-        providerId: "databricks_v2",
-        modelId: "goose-gpt-5-5",
-      },
-    });
+    window.localStorage.setItem("distill:home-session-id", "home-unresolved");
     useChatSessionStore.setState({
       sessions: [
         {
           id: "home-unresolved",
           title: "Home",
           executionTargetSource: "ui",
-          workingDir: "~/goose artifacts",
+          workingDir: "~/.distill/artifacts",
           createdAt: "2026-08-06T00:00:00.000Z",
           updatedAt: "2026-08-06T00:00:00.000Z",
           messageCount: 0,
@@ -1290,16 +884,9 @@ describe("AppShell global navigation", () => {
   });
 
   it("preserves a UI-owned provider-only Home target", async () => {
-    window.localStorage.setItem("goose:home-session-id", "home-provider");
-    useDefaultProviderReadinessStore.setState({
-      readiness: {
-        status: "ready",
-        providerId: "databricks_v2",
-        modelId: "goose-gpt-5-5",
-      },
-    });
+    window.localStorage.setItem("distill:home-session-id", "home-provider");
     mockCheckAllProviderStatus.mockResolvedValue([
-      { providerId: "openai", isConfigured: true },
+      { providerId: "claude-acp", isConfigured: true },
     ]);
     useChatSessionStore.setState({
       sessions: [
@@ -1307,11 +894,11 @@ describe("AppShell global navigation", () => {
           id: "home-provider",
           title: "Home",
           executionTarget: {
-            harnessId: "goose",
-            modelProviderId: "openai",
+            harnessId: "claude-acp",
+            modelProviderId: "claude-acp",
           },
           executionTargetSource: "ui",
-          workingDir: "~/goose artifacts",
+          workingDir: "~/.distill/artifacts",
           createdAt: "2026-08-06T00:00:00.000Z",
           updatedAt: "2026-08-06T00:00:00.000Z",
           messageCount: 0,
@@ -1325,8 +912,8 @@ describe("AppShell global navigation", () => {
     await waitFor(() => {
       expect(mockAcpPrepareSession).toHaveBeenCalledWith(
         "home-provider",
-        "openai",
-        "~/goose artifacts",
+        "claude-acp",
+        "~/.distill/artifacts",
         expect.any(Object),
       );
     });
@@ -1334,138 +921,17 @@ describe("AppShell global navigation", () => {
       useChatSessionStore.getState().getSession("home-provider"),
     ).toMatchObject({
       executionTarget: {
-        harnessId: "goose",
-        modelProviderId: "openai",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
       },
       executionTargetSource: "ui",
     });
   });
 
-  it("does not create a chat when BYO default provider setup is required", async () => {
-    requireByoDefaultProviderSetup();
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("settings");
-    });
-    expect(screen.getByTestId("settings-section")).toHaveTextContent(
-      "providers",
-    );
-    expect(mockAcpCreateSession).not.toHaveBeenCalled();
-  });
-
-  it("allows chat creation when BYO default provider is ready", async () => {
-    mockBuildFeatures.byoKeyProviders = true;
-    useDefaultProviderReadinessStore.setState({
-      readiness: { status: "ready", providerId: "openai", modelId: "gpt-4o" },
-    });
-    mockCheckAllProviderStatus.mockResolvedValue([
-      { providerId: "openai", isConfigured: true },
-    ]);
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("chat");
-    });
-    expect(mockAcpCreateSession).toHaveBeenCalled();
-  });
-
-  it("allows a configured concrete provider when the BYO default is missing", async () => {
-    requireByoDefaultProviderSetup();
-    setResolvingPersona();
-    mockCheckAllProviderStatus.mockResolvedValue([
-      { providerId: "databricks_v2", isConfigured: true },
-    ]);
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Start chat with resolving agent" }),
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("chat");
-    });
-    expect(mockAcpCreateSession).toHaveBeenCalledWith(
-      "databricks_v2",
-      "~/goose artifacts",
-      {
-        deferProviderSetup: false,
-        modelId: undefined,
-        personaId: "persona-resolves",
-        projectId: undefined,
-      },
-    );
-  });
-
-  it("uses a configured explicit Goose model provider when Goose defaults need setup", async () => {
-    requireByoDefaultProviderSetup();
-    setResolvingPersona("goose-model", "goose", "databricks_v2");
-    mockCheckAllProviderStatus.mockResolvedValue([
-      { providerId: "databricks_v2", isConfigured: true },
-    ]);
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Start chat with resolving agent" }),
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("chat");
-    });
-    expect(mockAcpCreateSession).toHaveBeenCalledWith(
-      "databricks_v2",
-      "~/goose artifacts",
-      {
-        deferProviderSetup: false,
-        modelId: "goose-model",
-        personaId: "persona-resolves",
-        projectId: undefined,
-      },
-    );
-  });
-
-  it("blocks an unconfigured explicit Goose model provider when the Goose default is ready", async () => {
-    mockBuildFeatures.byoKeyProviders = true;
-    useDefaultProviderReadinessStore.setState({
-      readiness: {
-        status: "ready",
-        providerId: "openai",
-        modelId: "gpt-4o",
-      },
-    });
-    setResolvingPersona("goose-model", "goose", "databricks_v2");
-    mockCheckAllProviderStatus.mockResolvedValue([
-      { providerId: "openai", isConfigured: true },
-      { providerId: "databricks_v2", isConfigured: false },
-    ]);
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Start chat with resolving agent" }),
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("settings");
-    });
-    expect(screen.getByTestId("settings-section")).toHaveTextContent(
-      "providers",
-    );
-    expect(mockAcpCreateSession).not.toHaveBeenCalled();
-  });
-
   it("starts general chats with the resolved provider when a stored agent is unavailable", async () => {
     useAgentStore.setState({
       providers: [
-        { id: "goose", label: "Goose" },
+        { id: "claude-acp", label: "Claude Code" },
         { id: "codex-acp", label: "Codex" },
       ],
       selectedProvider: "codex-acp",
@@ -1479,10 +945,9 @@ describe("AppShell global navigation", () => {
       expect(screen.getByTestId("active-view")).toHaveTextContent("chat");
     });
     expect(mockAcpCreateSession).toHaveBeenCalledWith(
-      "goose",
-      "~/goose artifacts",
+      "claude-acp",
+      "~/.distill/artifacts",
       {
-        deferProviderSetup: false,
         modelId: undefined,
         projectId: undefined,
       },
@@ -1493,7 +958,7 @@ describe("AppShell global navigation", () => {
     requireByoDefaultProviderSetup();
     selectCodexProvider();
     mockIsExternalAgentReady.mockResolvedValue(true);
-    mockAgentStatus.readyAgentIds = new Set(["goose", "codex-acp"]);
+    mockAgentStatus.readyAgentIds = new Set(["claude-acp", "codex-acp"]);
     const user = userEvent.setup();
     renderAppShell();
 
@@ -1504,9 +969,8 @@ describe("AppShell global navigation", () => {
     });
     expect(mockAcpCreateSession).toHaveBeenCalledWith(
       "codex-acp",
-      "~/goose artifacts",
+      "~/.distill/artifacts",
       {
-        deferProviderSetup: false,
         modelId: undefined,
         projectId: undefined,
       },
@@ -1547,7 +1011,7 @@ describe("AppShell global navigation", () => {
     selectCodexProvider();
     mockAgentStatus.readyAgentIds = new Set(["codex-acp"]);
     window.localStorage.setItem(
-      "goose:preferredModelsByAgent",
+      "distill:preferredModelsByAgent",
       JSON.stringify({
         "codex-acp": {
           modelId: "gpt-5.5",
@@ -1564,9 +1028,8 @@ describe("AppShell global navigation", () => {
     await waitFor(() => {
       expect(mockAcpCreateSession).toHaveBeenCalledWith(
         "codex-acp",
-        "~/goose artifacts",
+        "~/.distill/artifacts",
         {
-          deferProviderSetup: false,
           modelId: "gpt-5.5",
           projectId: undefined,
         },
@@ -1574,28 +1037,9 @@ describe("AppShell global navigation", () => {
     });
   });
 
-  it("routes an auth-failed external ACP agent to Providers settings", async () => {
-    requireByoDefaultProviderSetup();
-    selectCodexProvider();
-    mockIsExternalAgentReady.mockResolvedValue(false);
-    mockAgentStatus.readyAgentIds = new Set(["goose"]);
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("settings");
-    });
-    expect(screen.getByTestId("settings-section")).toHaveTextContent(
-      "providers",
-    );
-    expect(mockAcpCreateSession).not.toHaveBeenCalled();
-  });
-
   it("starts general chats with goose when the stored provider is unknown", async () => {
     useAgentStore.setState({
-      providers: [{ id: "goose", label: "Goose" }],
+      providers: [{ id: "claude-acp", label: "Claude Code" }],
       selectedProvider: "ghost-provider",
     });
     const user = userEvent.setup();
@@ -1607,10 +1051,9 @@ describe("AppShell global navigation", () => {
       expect(screen.getByTestId("active-view")).toHaveTextContent("chat");
     });
     expect(mockAcpCreateSession).toHaveBeenCalledWith(
-      "goose",
-      "~/goose artifacts",
+      "claude-acp",
+      "~/.distill/artifacts",
       {
-        deferProviderSetup: false,
         modelId: undefined,
         projectId: undefined,
       },
@@ -1667,7 +1110,7 @@ describe("AppShell global navigation", () => {
 
   it("starts a full blank chat from the saved artifact location", async () => {
     window.localStorage.setItem(
-      "goose:artifact-root-path",
+      "distill:artifact-root-path",
       "/Users/test/goose artifacts test",
     );
     const user = userEvent.setup();
@@ -1680,10 +1123,9 @@ describe("AppShell global navigation", () => {
       expect(screen.getByTestId("active-view")).toHaveTextContent("chat");
     });
     expect(mockAcpCreateSession).toHaveBeenCalledWith(
-      "goose",
+      "claude-acp",
       "/Users/test/goose artifacts test",
       {
-        deferProviderSetup: false,
         modelId: undefined,
         projectId: undefined,
       },
@@ -1702,7 +1144,7 @@ describe("AppShell global navigation", () => {
     const session: ChatSession = {
       id: "missing-session",
       title: "Missing cwd chat",
-      executionTarget: { harnessId: "goose" },
+      executionTarget: { harnessId: "claude-acp" },
       workingDir: "/missing/session",
       createdAt: "2026-06-09T00:00:00.000Z",
       updatedAt: "2026-06-09T00:00:00.000Z",
@@ -1729,7 +1171,7 @@ describe("AppShell global navigation", () => {
       expect(screen.getByTestId("active-view")).toHaveTextContent("chat");
       expect(mockAcpLoadSession).toHaveBeenCalledWith(
         "missing-session",
-        "~/goose artifacts",
+        "~/.distill/artifacts",
       );
     });
 
@@ -1820,8 +1262,8 @@ describe("AppShell global navigation", () => {
     const session: ChatSession = {
       id: "session-1",
       title: "Active chat",
-      executionTarget: { harnessId: "goose" },
-      workingDir: "~/goose artifacts",
+      executionTarget: { harnessId: "claude-acp" },
+      workingDir: "~/.distill/artifacts",
       createdAt: "2026-06-09T00:00:00.000Z",
       updatedAt: "2026-06-09T00:00:00.000Z",
       messageCount: 1,
@@ -1856,8 +1298,8 @@ describe("AppShell global navigation", () => {
   it("renders session-to-session chat changes immediately", async () => {
     const user = userEvent.setup();
     const sessionBase = {
-      executionTarget: { harnessId: "goose" },
-      workingDir: "~/goose artifacts",
+      executionTarget: { harnessId: "claude-acp" },
+      workingDir: "~/.distill/artifacts",
       createdAt: "2026-06-09T00:00:00.000Z",
       updatedAt: "2026-06-09T00:00:00.000Z",
       messageCount: 1,
@@ -1889,8 +1331,8 @@ describe("AppShell global navigation", () => {
     const session: ChatSession = {
       id: "session-1",
       title: "Active chat",
-      executionTarget: { harnessId: "goose" },
-      workingDir: "~/goose artifacts",
+      executionTarget: { harnessId: "claude-acp" },
+      workingDir: "~/.distill/artifacts",
       createdAt: "2026-06-09T00:00:00.000Z",
       updatedAt: "2026-06-09T00:00:00.000Z",
       messageCount: 1,
@@ -1955,7 +1397,7 @@ describe("AppShell global navigation", () => {
         {
           id: "session-1",
           title: "Plain chat",
-          executionTarget: { harnessId: "goose" },
+          executionTarget: { harnessId: "claude-acp" },
           workingDir: "/tmp/plain-chat",
           createdAt: "2026-07-10T00:00:00.000Z",
           updatedAt: "2026-07-10T00:00:00.000Z",
@@ -1997,7 +1439,7 @@ describe("AppShell global navigation", () => {
         {
           id: "session-1",
           title: "CLI reject",
-          executionTarget: { harnessId: "goose" },
+          executionTarget: { harnessId: "claude-acp" },
           workingDir: worktreePath,
           workspaceAttachments: [
             {
@@ -2010,7 +1452,7 @@ describe("AppShell global navigation", () => {
               worktreePath,
               usedByAgent: true,
               lifecycle: {
-                owner: "goose",
+                owner: "distill",
                 cleanup: "worktree",
                 branch: "cli-reject",
                 baseBranch: "main",
@@ -2064,7 +1506,7 @@ describe("AppShell global navigation", () => {
         {
           id: "session-1",
           title: "CLI discard",
-          executionTarget: { harnessId: "goose" },
+          executionTarget: { harnessId: "claude-acp" },
           workingDir: worktreePath,
           workspaceAttachments: [
             {
@@ -2077,7 +1519,7 @@ describe("AppShell global navigation", () => {
               worktreePath,
               usedByAgent: true,
               lifecycle: {
-                owner: "goose",
+                owner: "distill",
                 cleanup: "worktree",
                 branch: "cli-discard",
                 baseBranch: "main",
@@ -2133,7 +1575,7 @@ describe("AppShell global navigation", () => {
     const session: ChatSession = {
       id: "session-1",
       title: "Dirty chat",
-      executionTarget: { harnessId: "goose" },
+      executionTarget: { harnessId: "claude-acp" },
       workingDir: worktreePath,
       workspaceAttachments: [
         {
@@ -2146,7 +1588,7 @@ describe("AppShell global navigation", () => {
           worktreePath,
           usedByAgent: true,
           lifecycle: {
-            owner: "goose",
+            owner: "distill",
             cleanup: "worktree",
             branch: "dirty-chat",
             baseBranch: "main",
@@ -2224,7 +1666,7 @@ describe("AppShell global navigation", () => {
         {
           id: "session-1",
           title: "Inspect fails",
-          executionTarget: { harnessId: "goose" },
+          executionTarget: { harnessId: "claude-acp" },
           workingDir: worktreePath,
           workspaceAttachments: [
             {
@@ -2237,7 +1679,7 @@ describe("AppShell global navigation", () => {
               worktreePath,
               usedByAgent: true,
               lifecycle: {
-                owner: "goose",
+                owner: "distill",
                 cleanup: "worktree",
                 branch: "inspect-fails",
                 baseBranch: "main",
@@ -2290,7 +1732,7 @@ describe("AppShell global navigation", () => {
         {
           id: "session-1",
           title: "Ignored files",
-          executionTarget: { harnessId: "goose" },
+          executionTarget: { harnessId: "claude-acp" },
           workingDir: worktreePath,
           workspaceAttachments: [
             {
@@ -2303,7 +1745,7 @@ describe("AppShell global navigation", () => {
               worktreePath,
               usedByAgent: true,
               lifecycle: {
-                owner: "goose",
+                owner: "distill",
                 cleanup: "worktree",
                 branch: "ignored-files",
                 baseBranch: "main",
@@ -2460,8 +1902,8 @@ describe("AppShell global navigation", () => {
     const session: ChatSession = {
       id: "session-1",
       title: "Active chat",
-      executionTarget: { harnessId: "goose" },
-      workingDir: "~/goose artifacts",
+      executionTarget: { harnessId: "claude-acp" },
+      workingDir: "~/.distill/artifacts",
       createdAt: "2026-06-09T00:00:00.000Z",
       updatedAt: "2026-06-09T00:00:00.000Z",
       messageCount: 1,
@@ -2495,8 +1937,8 @@ describe("AppShell global navigation", () => {
     const session: ChatSession = {
       id: "session-1",
       title: "Active chat",
-      executionTarget: { harnessId: "goose" },
-      workingDir: "~/goose artifacts",
+      executionTarget: { harnessId: "claude-acp" },
+      workingDir: "~/.distill/artifacts",
       createdAt: "2026-06-09T00:00:00.000Z",
       updatedAt: "2026-06-09T00:00:00.000Z",
       messageCount: 1,
@@ -2535,8 +1977,8 @@ describe("AppShell global navigation", () => {
     const session: ChatSession = {
       id: "session-1",
       title: "Active chat",
-      executionTarget: { harnessId: "goose" },
-      workingDir: "~/goose artifacts",
+      executionTarget: { harnessId: "claude-acp" },
+      workingDir: "~/.distill/artifacts",
       createdAt: "2026-06-09T00:00:00.000Z",
       updatedAt: "2026-06-09T00:00:00.000Z",
       messageCount: 1,
@@ -2573,8 +2015,8 @@ describe("AppShell global navigation", () => {
     const session: ChatSession = {
       id: "session-1",
       title: "Active chat",
-      executionTarget: { harnessId: "goose" },
-      workingDir: "~/goose artifacts",
+      executionTarget: { harnessId: "claude-acp" },
+      workingDir: "~/.distill/artifacts",
       createdAt: "2026-06-09T00:00:00.000Z",
       updatedAt: "2026-06-09T00:00:00.000Z",
       messageCount: 1,
@@ -2842,8 +2284,8 @@ describe("AppShell global navigation", () => {
       const session: ChatSession = {
         id: "session-1",
         title: "Active chat",
-        executionTarget: { harnessId: "goose" },
-        workingDir: "~/goose artifacts",
+        executionTarget: { harnessId: "claude-acp" },
+        workingDir: "~/.distill/artifacts",
         createdAt: "2026-06-09T00:00:00.000Z",
         updatedAt: "2026-06-09T00:00:00.000Z",
         messageCount: 1,
@@ -2885,8 +2327,8 @@ describe("AppShell global navigation", () => {
       const session: ChatSession = {
         id: "session-1",
         title: "Active chat",
-        executionTarget: { harnessId: "goose" },
-        workingDir: "~/goose artifacts",
+        executionTarget: { harnessId: "claude-acp" },
+        workingDir: "~/.distill/artifacts",
         createdAt: "2026-06-09T00:00:00.000Z",
         updatedAt: "2026-06-09T00:00:00.000Z",
         messageCount: 1,
@@ -2934,14 +2376,14 @@ describe("AppShell global navigation", () => {
     vi.useFakeTimers();
     const configUpdate = deferred<Record<string, never>>();
     mockAcpSetSessionConfigOption.mockReturnValue(configUpdate.promise);
-    window.localStorage.setItem("goose:home-session-id", "home-session");
+    window.localStorage.setItem("distill:home-session-id", "home-session");
 
     try {
       const homeSession: ChatSession = {
         id: "home-session",
         title: "Home",
-        executionTarget: { harnessId: "goose" },
-        workingDir: "~/goose artifacts",
+        executionTarget: { harnessId: "claude-acp" },
+        workingDir: "~/.distill/artifacts",
         reasoningEffort: {
           configId: "thinking_effort",
           currentValue: "high",
@@ -3053,7 +2495,7 @@ describe("AppShell global navigation", () => {
       useChatSessionStore.getState().getSession(draftSessionId ?? ""),
     ).toMatchObject({
       creationState: "pending",
-      workingDir: "~/goose artifacts",
+      workingDir: "~/.distill/artifacts",
     });
     const draftWorkingDir = useChatSessionStore
       .getState()
@@ -3107,7 +2549,7 @@ describe("AppShell global navigation", () => {
       expect(mockAcpPrepareSession).toHaveBeenCalledWith(
         "created-session",
         "codex-acp",
-        "~/goose artifacts",
+        "~/.distill/artifacts",
         expect.objectContaining({ modelId: "gpt-5.4-mini" }),
       );
     });
@@ -3126,7 +2568,9 @@ describe("AppShell global navigation", () => {
       });
     });
     expect(
-      JSON.parse(localStorage.getItem("goose:preferredModelsByAgent") ?? "{}"),
+      JSON.parse(
+        localStorage.getItem("distill:preferredModelsByAgent") ?? "{}",
+      ),
     ).toMatchObject({
       "codex-acp": {
         modelId: "gpt-5.4-mini",
@@ -3135,56 +2579,6 @@ describe("AppShell global navigation", () => {
       },
     });
     expect(getModelSelectionIntent("created-session")).toBeUndefined();
-  });
-
-  it("adopts a repaired pending draft selection before promotion", async () => {
-    const pendingSession = deferred<{ sessionId: string }>();
-    mockAcpCreateSession.mockReturnValueOnce(pendingSession.promise);
-    mockRepairManagedGooseModelSelection.mockImplementation(
-      async (selection: { providerId?: string; modelId?: string }) =>
-        selection.modelId === "legacy-v1-model"
-          ? { providerId: "databricks_v2", modelId: "goose-gpt-5-5" }
-          : selection,
-    );
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
-    await waitFor(() => expect(mockAcpCreateSession).toHaveBeenCalled());
-    const draftSessionId = useChatSessionStore.getState().activeSessionId ?? "";
-
-    act(() => {
-      useChatSessionStore
-        .getState()
-        .replaceSessionExecutionTarget(draftSessionId, {
-          harnessId: "goose",
-          modelProviderId: "databricks_v2",
-          modelId: "legacy-v1-model",
-          modelName: "Legacy",
-        });
-      pendingSession.resolve({ sessionId: "created-session" });
-    });
-
-    await waitFor(() => {
-      expect(mockAcpPrepareSession).toHaveBeenCalledWith(
-        "created-session",
-        "databricks_v2",
-        "~/goose artifacts",
-        expect.objectContaining({ modelId: "goose-gpt-5-5" }),
-      );
-    });
-    await waitFor(() => {
-      expect(
-        useChatSessionStore.getState().getSession("created-session"),
-      ).toMatchObject({
-        executionTarget: {
-          harnessId: "goose",
-          modelProviderId: "databricks_v2",
-          modelId: "goose-gpt-5-5",
-          modelName: "goose-gpt-5-5",
-        },
-      });
-    });
   });
 
   it("does not restore a draft target after the UI explicitly clears it", async () => {
@@ -3407,75 +2801,6 @@ describe("AppShell global navigation", () => {
     } finally {
       terminal.remove();
     }
-  });
-
-  it("goes back and forward through Automations tabs", async () => {
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Sidebar automations" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Open automation history" }),
-    );
-
-    expect(screen.getByTestId("automation-route")).toHaveTextContent(
-      '"surface":"history"',
-    );
-
-    await user.click(screen.getByRole("button", { name: "Back" }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("automation-route")).toHaveTextContent(
-        '"surface":"overview"',
-      );
-    });
-
-    await user.click(screen.getByRole("button", { name: "Forward" }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("automation-route")).toHaveTextContent(
-        '"surface":"history"',
-      );
-    });
-  });
-
-  it("goes back and forward through Builderbot detail subroutes", async () => {
-    enableBuilderbotExperiment();
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Sidebar builderbot" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Open builderbot task" }),
-    );
-
-    expect(screen.getByTestId("active-view")).toHaveTextContent("builderbot");
-    expect(screen.getByTestId("builderbot-route")).toHaveTextContent(
-      '"surface":"task"',
-    );
-    expect(screen.getByTestId("builderbot-route")).toHaveTextContent(
-      '"taskKey":"TASK-1"',
-    );
-
-    await user.click(screen.getByRole("button", { name: "Back" }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("builderbot-route")).toHaveTextContent(
-        '"surface":"overview"',
-      );
-    });
-
-    await user.click(screen.getByRole("button", { name: "Forward" }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("builderbot-route")).toHaveTextContent(
-        '"surface":"task"',
-      );
-    });
   });
 
   it("goes back and forward through Agents detail subroutes", async () => {
@@ -3879,8 +3204,8 @@ describe("AppShell global navigation", () => {
         {
           id: "session-1",
           title: "New agent",
-          executionTarget: { harnessId: "goose" },
-          workingDir: "~/goose artifacts",
+          executionTarget: { harnessId: "claude-acp" },
+          workingDir: "~/.distill/artifacts",
           createdAt: "2026-06-09T00:00:00.000Z",
           updatedAt: "2026-06-09T00:00:00.000Z",
           messageCount: 0,
@@ -3906,263 +3231,6 @@ describe("AppShell global navigation", () => {
       intent: "build-agent",
     });
     expect(useChatSessionStore.getState().isRightRailOpen).toBe(false);
-  });
-
-  it("prompts before leaving unsaved automation builder changes", async () => {
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Sidebar automations" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Open automation builder" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Mark automation edits unsaved" }),
-    );
-
-    await user.click(screen.getByRole("button", { name: "Sidebar skills" }));
-
-    expect(
-      await screen.findByText("Unsaved automation changes"),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId("active-view")).toHaveTextContent("automations");
-
-    await user.click(screen.getByRole("button", { name: "Keep editing" }));
-
-    expect(
-      screen.queryByText("Unsaved automation changes"),
-    ).not.toBeInTheDocument();
-    expect(screen.getByTestId("active-view")).toHaveTextContent("automations");
-  });
-
-  it("discarding unsaved automation builder changes continues navigation", async () => {
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Sidebar automations" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Open automation builder" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Mark automation edits unsaved" }),
-    );
-
-    await user.click(screen.getByRole("button", { name: "Sidebar skills" }));
-    await user.click(await screen.findByRole("button", { name: "Discard" }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("skills");
-    });
-  });
-
-  it("saving unsaved automation builder changes continues navigation", async () => {
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Sidebar automations" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Open automation builder" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Mark automation edits unsaved" }),
-    );
-
-    await user.click(screen.getByRole("button", { name: "Sidebar skills" }));
-    await user.click(
-      await screen.findByRole("button", { name: "Save changes" }),
-    );
-
-    expect(mockAutomationBuilderSave).toHaveBeenCalledTimes(1);
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("skills");
-    });
-  });
-
-  it("opens search over unsaved automation builder changes without navigating", async () => {
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Sidebar automations" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Open automation builder" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Mark automation edits unsaved" }),
-    );
-
-    await user.keyboard("{Meta>}k{/Meta}");
-
-    expect(
-      await screen.findByRole("textbox", { name: "Universal search" }),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("Unsaved automation changes")).toBeNull();
-    expect(screen.getByTestId("active-view")).toHaveTextContent("automations");
-  });
-
-  it("guards settings results selected over unsaved automation changes", async () => {
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Sidebar automations" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Open automation builder" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Mark automation edits unsaved" }),
-    );
-
-    await user.keyboard("{Meta>}k{/Meta}");
-    const search = await screen.findByRole("textbox", {
-      name: "Universal search",
-    });
-    await user.type(search, "primary color");
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Open Primary color settings",
-      }),
-    );
-
-    expect(
-      await screen.findByText("Unsaved automation changes"),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId("active-view")).toHaveTextContent("automations");
-
-    await user.click(screen.getByRole("button", { name: "Keep editing" }));
-
-    expect(screen.getByTestId("active-view")).toHaveTextContent("automations");
-    expect(
-      screen.getByRole("textbox", { name: "Universal search" }),
-    ).toBeInTheDocument();
-  });
-
-  it("keeps search open when guarded agent navigation is cancelled", async () => {
-    const user = userEvent.setup();
-    useAgentStore.setState({
-      personas: [
-        {
-          id: "agent-reviewer",
-          displayName: "Reviewer",
-          systemPrompt: "Review code changes",
-          isBuiltin: true,
-          writable: false,
-        },
-      ],
-    });
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Sidebar automations" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Open automation builder" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Mark automation edits unsaved" }),
-    );
-
-    await user.keyboard("{Meta>}k{/Meta}");
-    const search = await screen.findByRole("textbox", {
-      name: "Universal search",
-    });
-    await user.type(search, "reviewer");
-    await user.click(
-      await screen.findByRole("button", { name: "Start chat with Reviewer" }),
-    );
-
-    expect(
-      await screen.findByText("Unsaved automation changes"),
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Keep editing" }));
-
-    expect(search).toBeInTheDocument();
-    expect(search).toHaveValue("reviewer");
-    expect(screen.getByTestId("active-view")).toHaveTextContent("automations");
-  });
-
-  it("prompts before opening the centered composer from unsaved automation builder changes", async () => {
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Sidebar automations" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Open automation builder" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Mark automation edits unsaved" }),
-    );
-
-    await user.keyboard("{Meta>}n{/Meta}");
-
-    expect(
-      await screen.findByText("Unsaved automation changes"),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId("active-view")).toHaveTextContent("automations");
-
-    await user.click(screen.getByRole("button", { name: "Discard" }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("home");
-    });
-    const textbox = await screen.findByPlaceholderText("Start a conversation");
-    await waitFor(() => {
-      expect(textbox).toHaveFocus();
-    });
-    expect(textbox.closest("[data-placement]")).toHaveAttribute(
-      "data-placement",
-      "centered",
-    );
-  });
-
-  it("resets a centered composer when entering a route that hides it", async () => {
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Sidebar automations" }),
-    );
-    await user.keyboard("{Meta>}n{/Meta}");
-
-    const centeredTextbox = await screen.findByPlaceholderText(
-      "Start a conversation",
-    );
-    expect(centeredTextbox.closest("[data-placement]")).toHaveAttribute(
-      "data-placement",
-      "centered",
-    );
-
-    await user.click(
-      screen.getByRole("button", { name: "Open automation builder" }),
-    );
-    expect(
-      screen.queryByPlaceholderText("Start a conversation"),
-    ).not.toBeInTheDocument();
-
-    await user.click(
-      screen.getByRole("button", { name: "Open automation history" }),
-    );
-    await act(async () => {
-      flushAfterNextPaintCallbacks();
-    });
-
-    const dockedTextbox = await screen.findByPlaceholderText(
-      "Start a conversation",
-    );
-    expect(dockedTextbox.closest("[data-placement]")).toHaveAttribute(
-      "data-placement",
-      "docked",
-    );
   });
 
   it("keeps Settings section navigation in the global stack", async () => {
@@ -4320,32 +3388,7 @@ describe("AppShell global navigation", () => {
     expect(useChatSessionStore.getState().activeSessionId).toBeNull();
   });
 
-  it("starts connection setup as an editable draft in the selected harness", async () => {
-    selectCodexProvider();
-    mockAgentStatus.readyAgentIds = new Set(["codex-acp"]);
-    seedProviderModels("codex-acp", [
-      { id: "gpt-5.5", name: "GPT-5.5", recommended: true },
-    ]);
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Test connection setup" }),
-    );
-
-    await waitFor(() => {
-      expect(mockAcpCreateSession).toHaveBeenCalledWith(
-        "codex-acp",
-        expect.any(String),
-        expect.any(Object),
-      );
-    });
-    expect(useChatStore.getState().draftsBySession["created-session"]).toBe(
-      "Which connection?",
-    );
-  });
-
-  it("opens extension search results in Settings Connections", async () => {
+  it("opens extension search results in Settings Extensions", async () => {
     mockListExtensions.mockResolvedValue([
       {
         config_key: "glean-stdio",
@@ -4371,11 +3414,11 @@ describe("AppShell global navigation", () => {
       expect(screen.getByTestId("active-view")).toHaveTextContent("settings");
     });
     expect(screen.getByTestId("settings-section")).toHaveTextContent(
-      "connections",
+      "extensions",
     );
     expect(window.location.pathname).toBe("/settings");
     expect(new URLSearchParams(window.location.search).get("section")).toBe(
-      "connections",
+      "extensions",
     );
   });
 
@@ -4456,30 +3499,6 @@ describe("AppShell global navigation", () => {
     );
     expect(screen.queryByRole("link", { name: "Skills" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Code Review" })).toBeNull();
-
-    await user.click(
-      screen.getByRole("button", { name: "Sidebar automations" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Open automation history" }),
-    );
-    expect(screen.queryByRole("link", { name: "Automations" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "History" })).toBeNull();
-
-    enableBuilderbotExperiment();
-    await user.click(
-      screen.getByRole("button", { name: "Sidebar builderbot" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Open builderbot task" }),
-    );
-    expect(screen.queryByRole("link", { name: "Builderbot" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "TASK-1" })).toBeNull();
-
-    await user.click(
-      screen.getByRole("button", { name: "Open builderbot automation" }),
-    );
-    expect(screen.queryByRole("link", { name: "Daily docs" })).toBeNull();
   });
 
   it("shows only the session title for a project chat", async () => {
@@ -4536,67 +3555,18 @@ describe("AppShell global navigation", () => {
     ).toBe("var(--color-pill-blue)");
   });
 
-  it("repairs an explicit persona model before creating its session", async () => {
-    setResolvingPersona("legacy-v1-model");
-    useAgentStore.setState({
-      selectedProvider: "codex-acp",
-      providers: [
-        { id: "goose", label: "Goose" },
-        { id: "codex-acp", label: "Codex" },
-        { id: "databricks_v2", label: "Databricks AI Gateway" },
-      ],
-    });
-    mockCheckAllProviderStatus.mockResolvedValue([
-      { providerId: "databricks_v2", isConfigured: true },
-    ]);
-    mockRepairManagedGooseModelSelection.mockImplementation(
-      async (selection: { providerId?: string; modelId?: string }) =>
-        selection.modelId === "legacy-v1-model"
-          ? { providerId: "databricks_v2", modelId: "goose-gpt-5-5" }
-          : selection,
-    );
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Start chat with resolving agent" }),
-    );
-
-    await waitFor(() => {
-      expect(mockAcpCreateSession).toHaveBeenCalledWith(
-        "databricks_v2",
-        "~/goose artifacts",
-        expect.objectContaining({ modelId: "goose-gpt-5-5" }),
-      );
-    });
-    expect(mockAcpCreateSession).not.toHaveBeenCalledWith(
-      "databricks_v2",
-      "~/goose artifacts",
-      expect.objectContaining({ modelId: "legacy-v1-model" }),
-    );
-    expect(
-      useChatSessionStore.getState().getSession("created-session"),
-    ).toMatchObject({
-      executionTarget: {
-        harnessId: "goose",
-        modelProviderId: "databricks_v2",
-        modelId: "goose-gpt-5-5",
-      },
-    });
-  });
-
   it("forwards a persona's provider and model when the provider resolves", async () => {
     setResolvingPersona("goose-model");
     useAgentStore.setState({
       selectedProvider: "codex-acp",
       providers: [
-        { id: "goose", label: "Goose" },
+        { id: "claude-acp", label: "Claude Code" },
         { id: "codex-acp", label: "Codex" },
-        { id: "databricks_v2", label: "Databricks AI Gateway" },
+        { id: "claude-acp", label: "Databricks AI Gateway" },
       ],
     });
     mockCheckAllProviderStatus.mockResolvedValue([
-      { providerId: "databricks_v2", isConfigured: true },
+      { providerId: "claude-acp", isConfigured: true },
     ]);
     const user = userEvent.setup();
     renderAppShell();
@@ -4607,10 +3577,9 @@ describe("AppShell global navigation", () => {
 
     await waitFor(() => {
       expect(mockAcpCreateSession).toHaveBeenCalledWith(
-        "databricks_v2",
-        "~/goose artifacts",
+        "claude-acp",
+        "~/.distill/artifacts",
         {
-          deferProviderSetup: false,
           modelId: "goose-model",
           personaId: "persona-resolves",
           projectId: undefined,
@@ -4622,89 +3591,12 @@ describe("AppShell global navigation", () => {
         useChatSessionStore.getState().getSession("created-session"),
       ).toMatchObject({
         executionTarget: {
-          harnessId: "goose",
-          modelProviderId: "databricks_v2",
+          harnessId: "claude-acp",
+          modelProviderId: "claude-acp",
           modelId: "goose-model",
         },
       });
     });
-  });
-
-  it("qualifies a Goose persona model from provider inventory", async () => {
-    setResolvingPersona("custom-model", "goose");
-    seedProviderModels("databricks_v2", [
-      { id: "custom-model", name: "Custom model" },
-    ]);
-    mockCheckAllProviderStatus.mockResolvedValue([
-      { providerId: "databricks_v2", isConfigured: true },
-    ]);
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Start chat with resolving agent" }),
-    );
-
-    await waitFor(() => {
-      expect(mockAcpCreateSession).toHaveBeenCalledWith(
-        "databricks_v2",
-        "~/goose artifacts",
-        expect.objectContaining({ modelId: "custom-model" }),
-      );
-    });
-    await waitFor(() => {
-      expect(
-        useChatSessionStore.getState().getSession("created-session"),
-      ).toMatchObject({
-        executionTarget: {
-          harnessId: "goose",
-          modelProviderId: "databricks_v2",
-          modelId: "custom-model",
-        },
-      });
-    });
-  });
-
-  it("uses the normal new-chat target when a persona has no plausible target", async () => {
-    useDefaultProviderReadinessStore.setState({
-      readiness: {
-        status: "ready",
-        providerId: "databricks_v2",
-        modelId: "goose-default",
-      },
-    });
-    useAgentStore.setState({
-      selectedProvider: "goose",
-      providers: [{ id: "goose", label: "Goose" }],
-      personas: [
-        {
-          id: "persona-unresolved",
-          displayName: "Reviewer",
-          systemPrompt: "Review code.",
-          provider: "totally-unknown-provider",
-          model: "unresolved-model",
-          isBuiltin: false,
-          writable: true,
-        },
-      ],
-    });
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Start chat with unresolved agent" }),
-    );
-
-    await waitFor(() => {
-      expect(mockAcpCreateSession).toHaveBeenCalledWith(
-        "databricks_v2",
-        "~/goose artifacts",
-        expect.objectContaining({ modelId: "goose-default" }),
-      );
-    });
-    expect(
-      useChatSessionStore.getState().getSession("created-session"),
-    ).toMatchObject({ personaId: "persona-unresolved" });
   });
 
   it("opens search with Cmd+K", async () => {
@@ -4956,8 +3848,8 @@ describe("AppShell global navigation", () => {
   it("cycles sessions with Ctrl+Tab and Ctrl+Shift+Tab", async () => {
     const user = userEvent.setup();
     const sessionBase = {
-      executionTarget: { harnessId: "goose" },
-      workingDir: "~/goose artifacts",
+      executionTarget: { harnessId: "claude-acp" },
+      workingDir: "~/.distill/artifacts",
       createdAt: "2026-06-09T00:00:00.000Z",
       messageCount: 1,
     } satisfies Partial<ChatSession>;

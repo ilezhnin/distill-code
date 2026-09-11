@@ -21,7 +21,7 @@ import {
 } from "../lib/routingPolicy";
 
 /** Where the policy lived before it was a document. Read once, then removed. */
-const ROUTING_POLICY_STORAGE_KEY = "goose:routing-policy";
+const ROUTING_POLICY_STORAGE_KEY = "distill:routing-policy";
 
 const document = distillDocument<RoutingPolicy>({
   path: ROUTING_POLICY_DOCUMENT,

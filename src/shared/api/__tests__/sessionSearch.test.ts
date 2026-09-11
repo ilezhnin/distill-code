@@ -4,21 +4,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockExportSession = vi.hoisted(() => vi.fn());
 
 vi.mock("../acpApi", () => ({
-  exportSession: mockExportSession,
+  readSessionTranscript: mockExportSession,
 }));
 
-import { searchSessionsViaExports, sessionSearchStamp } from "../sessionSearch";
+import {
+  searchSessionsViaTranscripts,
+  sessionSearchStamp,
+} from "../sessionSearch";
 
-function exportedNeedleConversation(sessionId: string): string {
-  return JSON.stringify({
-    conversation: [
+function exportedNeedleConversation(sessionId: string): object {
+  return {
+    messages: [
       {
         id: `${sessionId}-message`,
         role: "assistant",
         content: `needle in ${sessionId}`,
       },
     ],
-  });
+  };
 }
 
 describe("sessionSearchStamp", () => {
@@ -39,7 +42,7 @@ describe("sessionSearchStamp", () => {
   });
 });
 
-describe("searchSessionsViaExports", () => {
+describe("searchSessionsViaTranscripts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -48,26 +51,26 @@ describe("searchSessionsViaExports", () => {
     ["snake_case", { user_visible: false }],
     ["camelCase", { userVisible: false }],
   ])("ignores %s hidden exported messages before building snippets", async (_caseName, hiddenMetadata) => {
-    mockExportSession.mockResolvedValueOnce(
-      JSON.stringify({
-        conversation: [
-          {
-            id: "hidden-message",
-            role: "assistant",
-            metadata: hiddenMetadata,
-            content: "hidden needle should not become the snippet",
-          },
-          {
-            id: "visible-message",
-            role: "assistant",
-            content: "visible needle should become the snippet",
-          },
-        ],
-      }),
-    );
+    mockExportSession.mockResolvedValueOnce({
+      messages: [
+        {
+          id: "hidden-message",
+          role: "assistant",
+          metadata: hiddenMetadata,
+          content: "hidden needle should not become the snippet",
+        },
+        {
+          id: "visible-message",
+          role: "assistant",
+          content: "visible needle should become the snippet",
+        },
+      ],
+    });
 
     await expect(
-      searchSessionsViaExports("needle", [{ id: "session-1", stamp: "v1" }]),
+      searchSessionsViaTranscripts("needle", [
+        { id: "session-1", stamp: "v1" },
+      ]),
     ).resolves.toEqual({
       results: [
         {
@@ -94,10 +97,10 @@ describe("searchSessionsViaExports", () => {
       { id: "session-2", stamp: "v1" },
     ];
 
-    const first = await searchSessionsViaExports("needle", targets, {
+    const first = await searchSessionsViaTranscripts("needle", targets, {
       queryClient,
     });
-    const second = await searchSessionsViaExports("needle", targets, {
+    const second = await searchSessionsViaTranscripts("needle", targets, {
       queryClient,
     });
 
@@ -117,7 +120,7 @@ describe("searchSessionsViaExports", () => {
       exportedNeedleConversation(sessionId),
     );
 
-    await searchSessionsViaExports(
+    await searchSessionsViaTranscripts(
       "needle",
       [
         { id: "session-1", stamp: "v1" },
@@ -127,7 +130,7 @@ describe("searchSessionsViaExports", () => {
     );
     mockExportSession.mockClear();
 
-    await searchSessionsViaExports(
+    await searchSessionsViaTranscripts(
       "needle",
       [
         { id: "session-1", stamp: "v1" },
@@ -147,7 +150,7 @@ describe("searchSessionsViaExports", () => {
     const releases: Array<() => void> = [];
     mockExportSession.mockImplementation(
       (sessionId: string) =>
-        new Promise<string>((resolve) => {
+        new Promise<object>((resolve) => {
           active += 1;
           maxActive = Math.max(maxActive, active);
           releases.push(() => {
@@ -161,7 +164,9 @@ describe("searchSessionsViaExports", () => {
       id: `session-${index}`,
       stamp: "v1",
     }));
-    const sweep = searchSessionsViaExports("needle", targets, { queryClient });
+    const sweep = searchSessionsViaTranscripts("needle", targets, {
+      queryClient,
+    });
 
     // The pool fills before anything resolves; wait for that so the drain
     // below cannot release early slots while later workers are still starting.
@@ -195,19 +200,19 @@ describe("searchSessionsViaExports", () => {
       );
       const targets = [{ id: "session-1", stamp: "v1" }];
 
-      await searchSessionsViaExports("needle", targets, { queryClient });
+      await searchSessionsViaTranscripts("needle", targets, { queryClient });
 
       // The gc timer is scheduled when the export settles and cache hits never
       // reschedule it, so under the 5-minute default a search page left open
       // longer than that re-exported every session on the next keystroke.
       await vi.advanceTimersByTimeAsync(6 * 60 * 1000);
-      await searchSessionsViaExports("needle", targets, { queryClient });
+      await searchSessionsViaTranscripts("needle", targets, { queryClient });
 
       expect(mockExportSession).toHaveBeenCalledTimes(1);
 
       // Still bounded: the entry goes away 30 minutes after its export.
       await vi.advanceTimersByTimeAsync(25 * 60 * 1000);
-      await searchSessionsViaExports("needle", targets, { queryClient });
+      await searchSessionsViaTranscripts("needle", targets, { queryClient });
 
       expect(mockExportSession).toHaveBeenCalledTimes(2);
     } finally {
@@ -221,14 +226,14 @@ describe("searchSessionsViaExports", () => {
       exportedNeedleConversation(sessionId),
     );
 
-    await searchSessionsViaExports(
+    await searchSessionsViaTranscripts(
       "needle",
       [{ id: "session-1", stamp: "v1" }],
       {
         queryClient,
       },
     );
-    await searchSessionsViaExports(
+    await searchSessionsViaTranscripts(
       "needle",
       [{ id: "session-1", stamp: "v2" }],
       {
@@ -252,7 +257,7 @@ describe("searchSessionsViaExports", () => {
       exportedNeedleConversation(sessionId),
     );
 
-    await searchSessionsViaExports(
+    await searchSessionsViaTranscripts(
       "needle",
       [
         { id: "session-1", stamp: "v1" },
@@ -262,7 +267,7 @@ describe("searchSessionsViaExports", () => {
     );
     // A narrower sweep (the Cmd-K dialog over a filtered list) must not evict
     // what the search page cached.
-    await searchSessionsViaExports(
+    await searchSessionsViaTranscripts(
       "needle",
       [{ id: "session-1", stamp: "v2" }],
       {
@@ -271,7 +276,7 @@ describe("searchSessionsViaExports", () => {
     );
     mockExportSession.mockClear();
 
-    await searchSessionsViaExports(
+    await searchSessionsViaTranscripts(
       "needle",
       [{ id: "session-2", stamp: "v1" }],
       {
@@ -294,14 +299,14 @@ describe("searchSessionsViaExports", () => {
     // that simply had no match — the caller needs that split to avoid claiming
     // it searched conversation text it never read.
     await expect(
-      searchSessionsViaExports("needle", targets, { queryClient }),
+      searchSessionsViaTranscripts("needle", targets, { queryClient }),
     ).resolves.toEqual({
       results: [],
       searchedIds: [],
       failedIds: ["session-1"],
     });
 
-    const retried = await searchSessionsViaExports("needle", targets, {
+    const retried = await searchSessionsViaTranscripts("needle", targets, {
       queryClient,
     });
 

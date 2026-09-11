@@ -875,6 +875,7 @@ async fn remove_dir_all_if_exists(path: &Path, label: &str) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncReadExt;
 
     fn entry(kind: ArtifactKind, path: &str, bytes: &[u8]) -> ArtifactEntry {
         let digest = Sha256::digest(bytes);
@@ -1165,6 +1166,10 @@ mod tests {
         let body = bytes.to_vec();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
+            // Read the request before answering: closing with unread bytes
+            // resets the connection on Windows before the client sees a reply.
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await.unwrap();
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
                 body.len(),
@@ -1173,9 +1178,8 @@ mod tests {
             socket.write_all(response.as_bytes()).await.unwrap();
         });
         let url = Url::parse(&format!("http://{addr}/memory-01.webp")).unwrap();
-        download_asset(&http_client().unwrap(), url, &target, entry)
-            .await
-            .unwrap();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        download_asset(&client, url, &target, entry).await.unwrap();
 
         server.await.unwrap();
         assert_eq!(fs::read(&target).unwrap(), bytes);

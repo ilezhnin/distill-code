@@ -129,7 +129,7 @@ function journalFor(waveId: string): Journal {
     path: runJournalPath(waveId),
     // No browser copy ever existed for these, and inventing one would put a
     // per-wave key back into the storage this release is emptying.
-    legacyStorageKey: `goose:run-journal:${waveId}`,
+    legacyStorageKey: `distill:run-journal:${waveId}`,
     parse: parseEvents,
     serialize: (events) => ({ version: 1, waveId, events }),
   });

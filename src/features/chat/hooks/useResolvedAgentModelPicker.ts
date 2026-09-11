@@ -1,12 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef } from "react";
 import type { AcpProvider } from "@/shared/api/acp";
-import {
-  resolveAgentProviderCatalogIdStrictFromEntries,
-  resolveModelProviderCatalogIdStrictFromEntries,
-} from "@/features/providers/providerCatalog";
+import { resolveAgentProviderCatalogIdStrictFromEntries } from "@/features/providers/providerCatalog";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
-import { useDefaultProviderReadinessStore } from "@/features/providers/stores/defaultProviderReadinessStore";
-import { resolveModelProviderId } from "@/features/providers/lib/modelProviderResolution";
 import type { ProviderCatalogEntry } from "@/shared/types/providers";
 import type { ChatSession } from "../stores/chatSessionStore";
 import { recoverStrandedProviderSession } from "../model-selection/strandedProviderRecovery";
@@ -33,7 +28,7 @@ import {
   targetFromAgentModelSelection,
   type SessionExecutionTarget,
 } from "../lib/sessionExecutionTarget";
-import { gooseServeSelectionFromExecutionTarget } from "../lib/gooseServeExecutionTarget";
+import { hostSelectionFromExecutionTarget } from "../lib/hostExecutionTarget";
 import { replaceSessionTargetAfterDispatch } from "../lib/sessionTargetCoordinator";
 import type { ModelOption } from "../types";
 
@@ -76,23 +71,21 @@ function isModelAlias(modelId?: string | null): boolean {
 
 function resolvePreferredModelProviderId(
   agentId: string,
-  modelId: string,
+  _modelId: string,
   storedProviderId: string | undefined,
-  models: readonly ModelOption[],
-  catalogEntries: ProviderCatalogEntry[],
+  _models: readonly ModelOption[],
+  _catalogEntries: ProviderCatalogEntry[],
 ): string | undefined {
-  return resolveModelProviderId({
-    harnessId: agentId,
-    modelId,
-    hintedModelProviderId: storedProviderId,
-    models,
-    catalogEntries,
-  });
+  // A model belongs to the harness that reported it. A stored preference
+  // that names another provider predates the harness-only model and is
+  // not actionable.
+  return storedProviderId === undefined || storedProviderId === agentId
+    ? agentId
+    : undefined;
 }
 
 function getPreferredSelectionForAgent(
   agentId: string,
-  gooseDefaultSelection: PreferredModelSelection | null,
   models: readonly ModelOption[],
   catalogEntries: ProviderCatalogEntry[],
 ): PreferredModelSelection | null {
@@ -115,19 +108,7 @@ function getPreferredSelectionForAgent(
       : null;
   }
 
-  if (agentId !== "goose" || !gooseDefaultSelection) {
-    return null;
-  }
-  const providerId = resolvePreferredModelProviderId(
-    agentId,
-    gooseDefaultSelection.id,
-    gooseDefaultSelection.modelProviderId,
-    models,
-    catalogEntries,
-  );
-  return providerId
-    ? { ...gooseDefaultSelection, modelProviderId: providerId }
-    : null;
+  return null;
 }
 
 function resolveAvailableSelection(
@@ -214,8 +195,6 @@ export function useResolvedAgentModelPicker({
   const catalogLoaded = useProviderCatalogStore((state) => state.loaded);
   // A provider or model choice supersedes work started by either callback.
   const selectionVersionRef = useRef(0);
-  const [gooseDefaultSelection, setGooseDefaultSelection] =
-    useState<PreferredModelSelection | null>(null);
 
   const selectedAgentId = useMemo(
     () =>
@@ -235,68 +214,12 @@ export function useResolvedAgentModelPicker({
       return null;
     }
 
-    return (
-      resolveModelProviderCatalogIdStrictFromEntries(
-        catalogEntries,
-        selectedProvider,
-      ) ?? selectedProvider
-    );
+    return selectedProvider;
   }, [catalogEntries, selectedProvider]);
   const storedModelPreference = useMemo(
     () => getStoredModelPreference(selectedAgentId),
     [selectedAgentId],
   );
-
-  if (selectedAgentId !== "goose" && gooseDefaultSelection !== null) {
-    setGooseDefaultSelection(null);
-  }
-
-  useEffect(() => {
-    if (selectedAgentId !== "goose") {
-      return;
-    }
-    let cancelled = false;
-
-    const loadGooseDefaultSelection = async () => {
-      try {
-        const readiness =
-          useDefaultProviderReadinessStore.getState().readiness ??
-          (await useDefaultProviderReadinessStore
-            .getState()
-            .refresh({ coalesce: true }));
-
-        if (cancelled) {
-          return;
-        }
-
-        if (
-          readiness.status !== "ready" ||
-          !readiness.providerId ||
-          !readiness.modelId
-        ) {
-          setGooseDefaultSelection(null);
-          return;
-        }
-
-        setGooseDefaultSelection({
-          id: readiness.modelId,
-          name: readiness.modelId,
-          modelProviderId: readiness.providerId,
-          source: "default",
-        });
-      } catch {
-        if (!cancelled) {
-          setGooseDefaultSelection(null);
-        }
-      }
-    };
-
-    void loadGooseDefaultSelection();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedAgentId]);
 
   // When a switch fails because the current session's provider is unset
   // ("Provider not set"), the in-place switch can never succeed — the backend
@@ -363,7 +286,6 @@ export function useResolvedAgentModelPicker({
         });
       const preferredModelSelection = getPreferredSelectionForAgent(
         resolvedRequestedAgentId,
-        gooseDefaultSelection,
         getModelsForAgent(resolvedRequestedAgentId),
         catalogEntries,
       );
@@ -375,7 +297,7 @@ export function useResolvedAgentModelPicker({
           preferredModelSelection,
         );
       const nextWireProviderId =
-        gooseServeSelectionFromExecutionTarget(nextTarget).providerId;
+        hostSelectionFromExecutionTarget(nextTarget).providerId;
       if (!nextWireProviderId) {
         return;
       }
@@ -512,7 +434,7 @@ export function useResolvedAgentModelPicker({
       const nextModelProviderId =
         model.providerId ??
         session?.executionTarget?.modelProviderId ??
-        (selectedAgentId === "goose" ? undefined : selectedAgentId);
+        selectedAgentId;
       if (!nextModelProviderId) {
         console.warn("Dropped model selection without a model provider", {
           harnessId: selectedAgentId,
@@ -702,36 +624,11 @@ export function useResolvedAgentModelPicker({
         if (availableStoredSelection) return availableStoredSelection;
       }
 
-      const defaultModelProviderId = gooseDefaultSelection
-        ? resolvePreferredModelProviderId(
-            selectedAgentId,
-            gooseDefaultSelection.id,
-            gooseDefaultSelection.modelProviderId,
-            availableModels,
-            catalogEntries,
-          )
-        : undefined;
-      if (
-        selectedAgentId !== "goose" ||
-        !gooseDefaultSelection ||
-        !defaultModelProviderId
-      ) {
-        return null;
-      }
-      return resolveAvailableSelection(
-        {
-          ...gooseDefaultSelection,
-          modelProviderId: defaultModelProviderId,
-        },
-        availableModels,
-        concreteSelectedProviderId,
-        isModelInventoryAuthoritative,
-      );
+      return null;
     }, [
       availableModels,
       catalogEntries,
       concreteSelectedProviderId,
-      gooseDefaultSelection,
       isModelInventoryAuthoritative,
       selectedAgentId,
       storedModelPreference,

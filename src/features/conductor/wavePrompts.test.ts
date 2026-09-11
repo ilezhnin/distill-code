@@ -15,6 +15,7 @@ import {
   VERDICT_TOKEN_VALUES,
   parseDistillVerdict,
 } from "./distillVerdict";
+import { workerRoleIdsForStage } from "./roleLayers";
 import type { StructuredReport } from "./types";
 import { admitWavePlan } from "./waveEngine";
 import {
@@ -408,12 +409,45 @@ describe("verification and decomposition guidance", () => {
     );
   });
 
+  it("says where a commit step goes, naming the catalog's release roles", () => {
+    // Prompt and lint have to agree on the one position release work may
+    // take. When they did not, «fix it, then commit it» was unplannable: the
+    // conductor put the submitter last as anyone would, and the engine
+    // refused the plan for not ending on its verifier.
+    const releaseRoles = workerRoleIdsForStage("release");
+    expect(releaseRoles.length).toBeGreaterThan(0);
+    for (const role of releaseRoles) {
+      expect(CONDUCTOR_PROTOCOL_PROMPT).toContain(role);
+    }
+    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain(
+      "the only ones allowed to run after the verification step",
+    );
+
+    // And the shape it describes is one the engine actually admits.
+    const admission = admitWavePlan(
+      parseDistillWave(
+        [
+          `\`\`\`${WAVE_FENCE_TAG}`,
+          JSON.stringify({
+            steps: [
+              { role: "brigade", subtask: "Fix the tails", access: [] },
+              { role: "acceptor", subtask: "Build and check", access: "all" },
+              { role: "pr-submitter", subtask: "Commit it", access: "all" },
+            ],
+          }),
+          "```",
+        ].join("\n"),
+      ),
+    );
+    expect(admission.kind).toBe("accepted");
+  });
+
   it("names both verification roles it asks for, and they are legal wave roles", () => {
     for (const role of ["acceptor", "adversary"]) {
       expect(CONDUCTOR_PROTOCOL_PROMPT).toContain(role);
       const parsed = parseDistillWave(
         [
-          "```" + WAVE_FENCE_TAG,
+          `\`\`\`${WAVE_FENCE_TAG}`,
           JSON.stringify({
             steps: [{ role, subtask: "Check the build", access: "all" }],
           }),

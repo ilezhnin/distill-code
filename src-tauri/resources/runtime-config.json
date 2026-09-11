@@ -1,7 +1,4 @@
 {
   "schemaVersion": 1,
-  "goose": {
-    "modelProviders": []
-  },
   "featureToggles": {}
 }

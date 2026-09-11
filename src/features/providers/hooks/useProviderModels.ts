@@ -1,13 +1,8 @@
 import { useCallback, useMemo } from "react";
-import { useRuntimeConfigStore } from "@/shared/runtime-config/runtimeConfigStore";
 import type { ModelOption } from "@/features/chat/types";
-import { filterModelProvidersForRuntimeConfig } from "../runtimeProviderConstraints";
-import { getModelProvidersFromEntries } from "../providerCatalog";
 import { getModelCacheRefreshProviderIds } from "../modelCacheRefresh";
 import { getProviderModelSelectionHint } from "../modelSelectionHints";
-import { isGooseModelProviderId } from "../lib/modelRecommendations";
 import type { ProviderModelInventoryProblem } from "../lib/providerModelInventoryStatus";
-import { defaultModelInventoryModeForLoadResult } from "../runtimeProviderConfig";
 import { useProviderCatalogStore } from "../stores/providerCatalogStore";
 import {
   isCachedModelInventoryAuthoritative,
@@ -27,55 +22,11 @@ export function useProviderModels() {
   const refreshAllModelProviders = useProviderModelCacheStore(
     (state) => state.refreshAllModelProviders,
   );
-  const runtimeConfig = useRuntimeConfigStore((state) => state.config);
-  const runtimeConfigResult = useRuntimeConfigStore((state) => state.result);
   const catalogEntries = useProviderCatalogStore((state) => state.entries);
 
-  const configuredModelProviderIds = useMemo(
-    () =>
-      filterModelProvidersForRuntimeConfig(
-        getModelProvidersFromEntries(catalogEntries),
-        runtimeConfig,
-      ).map((p) => p.id),
-    [catalogEntries, runtimeConfig],
-  );
-  const runtimeModelMetadataByProviderId = useMemo(
-    () =>
-      new Map(
-        runtimeConfig.goose.modelProviders.map((provider) => [
-          provider.id,
-          new Map(
-            provider.models.map((model) => [
-              model.id,
-              {
-                recommended: model.recommended ?? false,
-                featured: model.featured ?? false,
-              },
-            ]),
-          ),
-        ]),
-      ),
-    [runtimeConfig],
-  );
-  const customProviderIds = useMemo(
-    () =>
-      getModelProvidersFromEntries(catalogEntries)
-        .filter((provider) => provider.customProvider === true)
-        .map((provider) => provider.id),
-    [catalogEntries],
-  );
   const modelCacheRefreshProviderIds = useMemo(
-    () =>
-      getModelCacheRefreshProviderIds(runtimeConfig, {
-        defaultModelInventoryMode:
-          defaultModelInventoryModeForLoadResult(runtimeConfigResult),
-        catalogEntries,
-        // Connected first-class providers refresh at startup and immediately
-        // after setup. Picker-open refreshes must not probe unconfigured OAuth
-        // providers, which can launch external sign-in flows.
-        configuredProviderIds: customProviderIds,
-      }),
-    [catalogEntries, customProviderIds, runtimeConfig, runtimeConfigResult],
+    () => getModelCacheRefreshProviderIds(catalogEntries),
+    [catalogEntries],
   );
 
   const getModelsForProvider = useCallback(
@@ -89,85 +40,27 @@ export function useProviderModels() {
     [providers],
   );
 
-  const modelsForAgent = useCallback(
-    (
-      agentId: string,
-      { authoritativeOnly }: { authoritativeOnly: boolean },
-    ) => {
-      if (agentId !== "goose") {
-        if (authoritativeOnly && !isModelInventoryAuthoritative(agentId)) {
-          return EMPTY_MODELS;
-        }
-        return getModelsForProvider(agentId);
-      }
-
-      return configuredModelProviderIds
-        .filter(
-          (providerId) =>
-            !authoritativeOnly || isModelInventoryAuthoritative(providerId),
-        )
-        .flatMap((providerId) => {
-          const models = providers.get(providerId)?.models ?? [];
-          if (isGooseModelProviderId(providerId)) {
-            return models;
-          }
-
-          // Goose combines every available provider into one searchable
-          // catalog. Only explicitly curated runtime models keep recommendation
-          // metadata; provider-local discovery must not expand the combined
-          // shortlist.
-          const runtimeModelMetadata =
-            runtimeModelMetadataByProviderId.get(providerId);
-          return models.map((model) => {
-            const curatedMetadata = runtimeModelMetadata?.get(model.id);
-            return {
-              ...model,
-              recommended: curatedMetadata?.recommended ?? false,
-              featured: curatedMetadata?.featured ?? false,
-            };
-          });
-        });
-    },
-    [
-      configuredModelProviderIds,
-      getModelsForProvider,
-      isModelInventoryAuthoritative,
-      providers,
-      runtimeModelMetadataByProviderId,
-    ],
-  );
-
   /** Everything the operator may see and pick, authoritative or not. */
   const getModelsForAgent = useCallback(
-    (agentId: string) => modelsForAgent(agentId, { authoritativeOnly: false }),
-    [modelsForAgent],
+    (agentId: string) => getModelsForProvider(agentId),
+    [getModelsForProvider],
   );
 
   /**
-   * Only models a provider has actually reported — for callers that PIN a
-   * session to a concrete model id.
-   *
-   * The two questions differ. A picker asks "what may the operator choose",
-   * and keeping the last known list on screen while a refresh is in flight is
-   * right there. Starting a session asks "what will the harness accept", and
-   * since the cache stopped clearing itself on an empty discovery result
-   * (a refresh that answers nothing now keeps the previous payload as a
-   * retryable non-answer) a stale list can name models the harness no longer
-   * serves. Goose forwards such an id to the ACP agent verbatim, the agent
-   * answers `Invalid params`, and every send in that chat dies on "Failed to
-   * set ACP model option" — from `stream()`, so the chat cannot be rescued
-   * from inside itself.
-   *
-   * `isCachedModelInventoryAuthoritative` is the cache's own word for "this
-   * payload is an answer, not a leftover", so a non-authoritative provider is
-   * reported here as one that lists nothing: unknown, not installed. The
-   * caller then starts the session on the harness' own current model, which
-   * always works, instead of on an id nothing can serve (D5 — the fallback is
-   * "no model named", never a different concrete model).
+   * Only models a harness has actually reported — for callers that PIN a
+   * session to a concrete model id. A stale or never-answered list can name
+   * models the harness no longer serves; the harness then rejects the id on
+   * every send. A non-authoritative provider is reported here as one that
+   * lists nothing, so the caller starts the session on the harness' own
+   * current model instead (D5: the fallback is "no model named", never a
+   * different concrete model).
    */
   const getInstalledModelsForAgent = useCallback(
-    (agentId: string) => modelsForAgent(agentId, { authoritativeOnly: true }),
-    [modelsForAgent],
+    (agentId: string) =>
+      isModelInventoryAuthoritative(agentId)
+        ? getModelsForProvider(agentId)
+        : EMPTY_MODELS,
+    [getModelsForProvider, isModelInventoryAuthoritative],
   );
 
   const isRefreshingProvider = useCallback(
@@ -184,39 +77,28 @@ export function useProviderModels() {
   );
 
   /**
-   * Why this agent's model list is empty, when it is — the piece of the cache
-   * entry the picker needs to stop rendering three different situations as one
-   * blank list. A failed poll wins over an empty answer: a bridge that never
-   * came up explains more than a provider that answered nothing. A provider
-   * that manages its own model list is not a problem at all; `getError`
-   * already has a sentence for it.
+   * Why this agent's model list is empty, when it is. A failed poll wins over
+   * an empty answer. A provider that manages its own model list is not a
+   * problem at all; `getError` already has a sentence for it.
    */
   const getModelInventoryProblem = useCallback(
     (agentId: string): ProviderModelInventoryProblem | null => {
-      const providerIds =
-        agentId === "goose" ? configuredModelProviderIds : [agentId];
-      let reportedNone: ProviderModelInventoryProblem | null = null;
-
-      for (const providerId of providerIds) {
-        if (getProviderModelSelectionHint(providerId)) {
-          continue;
-        }
-        const entry = providers.get(providerId);
-        if (entry?.outcome === "failed") {
-          return { providerId, outcome: "failed", reason: entry.error };
-        }
-        if (entry?.outcome === "empty" && !reportedNone) {
-          reportedNone = { providerId, outcome: "empty" };
-        }
+      if (getProviderModelSelectionHint(agentId)) {
+        return null;
       }
-
-      return reportedNone;
+      const entry = providers.get(agentId);
+      if (entry?.outcome === "failed") {
+        return { providerId: agentId, outcome: "failed", reason: entry.error };
+      }
+      if (entry?.outcome === "empty") {
+        return { providerId: agentId, outcome: "empty" };
+      }
+      return null;
     },
-    [configuredModelProviderIds, providers],
+    [providers],
   );
 
   return {
-    configuredModelProviderIds,
     modelCacheRefreshProviderIds,
     getModelsForAgent,
     getInstalledModelsForAgent,

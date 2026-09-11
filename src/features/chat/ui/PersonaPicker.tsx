@@ -52,7 +52,7 @@ export function PersonaPicker({
     [personas],
   );
 
-  const label = selected?.displayName ?? t("common:labels.goose");
+  const label = selected?.displayName ?? t("common:labels.defaultAgent");
 
   return (
     <DropdownMenu>
@@ -104,7 +104,7 @@ export function PersonaPicker({
           </div>
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="text-sm font-medium">
-              {t("common:labels.goose")}
+              {t("common:labels.defaultAgent")}
             </span>
             <span className="text-[11px] leading-snug text-muted-foreground">
               {t("persona.defaultDescription")}

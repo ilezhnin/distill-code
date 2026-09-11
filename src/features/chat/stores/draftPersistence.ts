@@ -1,4 +1,4 @@
-const DRAFTS_STORAGE_KEY = "goose:chat-drafts";
+const DRAFTS_STORAGE_KEY = "distill:chat-drafts";
 
 export function loadCachedDrafts(): Record<string, string> {
   if (typeof window === "undefined") return {};

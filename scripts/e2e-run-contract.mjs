@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -29,9 +29,6 @@ function parseArguments(argv) {
         "run-id",
         "driver-token",
         "config-name",
-        "provider-id",
-        "model-id",
-        "provider-key-env",
         "runtime-config",
       ].includes(name)
     ) {
@@ -55,9 +52,6 @@ Options:
   --driver-token <token> Defaults to a random 64-character token
   --config-name <name>       Defaults to tauri-e2e.config.json
   --runtime-config <path>    Non-secret runtime config copied under the run root
-  --provider-id <id>         Provider to select in Goose (requires --model-id)
-  --model-id <id>            Model to select in Goose (requires --provider-id)
-  --provider-key-env <name>  Credential env name copied into run-scoped secrets.yaml
   --help                     Show this help`;
 }
 
@@ -90,20 +84,6 @@ function createContract(options) {
     fail("config name must be a JSON filename without directory components");
   }
 
-  const providerId = options["provider-id"];
-  const modelId = options["model-id"];
-  if (Boolean(providerId) !== Boolean(modelId)) {
-    fail("provider ID and model ID must be specified together");
-  }
-
-  const providerKeyEnv = options["provider-key-env"];
-  if (providerKeyEnv && !/^[A-Z][A-Z0-9_]*$/.test(providerKeyEnv)) {
-    fail("provider key env must be an uppercase environment variable name");
-  }
-  if (providerKeyEnv && !process.env[providerKeyEnv]) {
-    fail(`${providerKeyEnv} is required by --provider-key-env`);
-  }
-
   let runtimeConfig;
   if (options["runtime-config"]) {
     if (!path.isAbsolute(options["runtime-config"])) {
@@ -119,10 +99,6 @@ function createContract(options) {
     driverToken,
     readyFile: path.join(runRoot, "app-test-driver.json"),
     configPath: path.join(runRoot, configName),
-    providerId,
-    modelId,
-    providerKeyEnv,
-    providerKey: providerKeyEnv ? process.env[providerKeyEnv] : undefined,
     runtimeConfig,
   };
 }
@@ -136,32 +112,6 @@ async function writeContract(contract) {
   await writeFile(contract.configPath, `${JSON.stringify(config, null, 2)}\n`, {
     flag: "wx",
   });
-
-  const gooseConfigDir = path.join(contract.runRoot, "goose", "config");
-  await mkdir(gooseConfigDir, { recursive: true });
-  const gooseConfig = [
-    contract.providerId
-      ? `GOOSE_PROVIDER: ${JSON.stringify(contract.providerId)}`
-      : null,
-    contract.modelId
-      ? `GOOSE_MODEL: ${JSON.stringify(contract.modelId)}`
-      : null,
-    "GOOSE_DISABLE_KEYRING: true",
-  ].filter(Boolean);
-  await writeFile(
-    path.join(gooseConfigDir, "config.yaml"),
-    `${gooseConfig.join("\n")}\n`,
-    { flag: "wx", mode: 0o600 },
-  );
-  if (contract.providerKeyEnv) {
-    const secretsPath = path.join(gooseConfigDir, "secrets.yaml");
-    await writeFile(
-      secretsPath,
-      `${contract.providerKeyEnv}: ${JSON.stringify(contract.providerKey)}\n`,
-      { flag: "wx", mode: 0o600 },
-    );
-    await chmod(secretsPath, 0o600);
-  }
 
   let runtimeConfigPath;
   if (contract.runtimeConfig) {

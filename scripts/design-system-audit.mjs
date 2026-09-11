@@ -123,7 +123,6 @@ const buttonStylingBaseline = new Set([
   "src/features/sessions/ui/session-list/SidebarFlatChatsSection.tsx",
   "src/features/sessions/ui/session-list/SidebarProjectList.tsx",
   "src/features/sessions/ui/session-list/SidebarRecentsSection.tsx",
-  "src/features/settings/ui/ProvidersSettings.tsx",
   "src/features/skills/ui/SkillCard.tsx",
   "src/features/skills/ui/SkillEditor.tsx",
 ]);

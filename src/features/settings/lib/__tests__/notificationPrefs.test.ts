@@ -21,7 +21,7 @@ describe("getNotificationPrefs", () => {
 
   it("returns stored values merged with defaults", () => {
     localStorage.setItem(
-      "goose:notifications",
+      "distill:notifications",
       JSON.stringify({ enabled: false }),
     );
     expect(getNotificationPrefs()).toEqual({
@@ -35,7 +35,7 @@ describe("getNotificationPrefs", () => {
 
   it("preserves existing disabled channels while adding default sounds", () => {
     localStorage.setItem(
-      "goose:notifications",
+      "distill:notifications",
       JSON.stringify({ enabled: false, inApp: false, desktop: false }),
     );
     expect(getNotificationPrefs()).toEqual({
@@ -49,7 +49,7 @@ describe("getNotificationPrefs", () => {
 
   it("normalizes invalid stored sounds to the default", () => {
     localStorage.setItem(
-      "goose:notifications",
+      "distill:notifications",
       JSON.stringify({ inAppSound: "missing.mp3", desktopSound: "silent" }),
     );
     expect(getNotificationPrefs()).toEqual({
@@ -62,7 +62,7 @@ describe("getNotificationPrefs", () => {
   });
 
   it("returns defaults when stored value is invalid JSON", () => {
-    localStorage.setItem("goose:notifications", "not-json");
+    localStorage.setItem("distill:notifications", "not-json");
     expect(getNotificationPrefs()).toEqual({
       enabled: true,
       inApp: true,

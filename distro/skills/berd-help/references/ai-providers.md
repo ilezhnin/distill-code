@@ -26,7 +26,3 @@ Do not guess at which specific providers are available, curated, or
 custom-only from memory; verify against `src/features/providers/`
 (`curatedProviders.ts`, `providerCatalog.ts`) since the provider list and
 setup flow are active areas of change.
-
-If the question is actually about an automation failing rather than a chat
-session, see `references/automations.md` for how to tell which phase failed
-before assuming a provider cause.

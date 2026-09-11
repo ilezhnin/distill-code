@@ -7,7 +7,7 @@ const getPlatformMock = vi.hoisted(() => vi.fn(() => "mac"));
 vi.mock("@/shared/lib/platform", () => ({ getPlatform: getPlatformMock }));
 
 const ZOOM_CUSTOM_PROPERTY = "--goose-content-zoom";
-const SHORTCUT_PREFERENCES_KEY = "goose:keyboard-shortcuts:v1";
+const SHORTCUT_PREFERENCES_KEY = "distill:keyboard-shortcuts:v1";
 
 function fireKey(key: string, opts: Partial<KeyboardEventInit> = {}) {
   window.dispatchEvent(

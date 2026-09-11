@@ -1,42 +1,13 @@
 /**
- * Persona handoff for non-goose harnesses.
+ * Persona handoff for ACP agent harnesses.
  *
- * Goose delivers a persona's system prompt through the goose-only ACP
- * extension `_goose/unstable/session/system-prompt/set`. External ACP agents
- * (Claude Code, Codex, Copilot, Amp, Cursor, ...) do not implement that method,
- * and the ACP protocol exposes no system-prompt channel on `session/new` or
- * `session/prompt`. So the persona instructions never reach those models.
- *
- * Instead we treat *entering an agent* as a handoff -- mirroring the backend
- * conversation-history handoff (`build_handoff_context_memo`). On the first
- * prompt sent under a given (session, provider, persona) we inject the persona
- * instructions once as an assistant-audience content block. Switching the
- * session to a different agent (or a different persona) is a new handoff and
- * re-injects.
+ * External ACP agents (Claude Code, Codex, Copilot, Amp, ...) expose no
+ * system-prompt channel on `session/new` or `session/prompt`. So we treat
+ * *entering an agent* as a handoff: on the first prompt sent under a given
+ * (session, provider, persona) we inject the persona instructions once as an
+ * assistant-audience content block. Switching the session to a different
+ * agent (or a different persona) is a new handoff and re-injects.
  */
-
-import { getDefaultGooseModelProviderId } from "@/features/runtime-config/defaults";
-import { getCatalogEntry } from "@/features/providers/providerCatalog";
-import { useDefaultProviderReadinessStore } from "@/features/providers/stores/defaultProviderReadinessStore";
-
-export const GOOSE_PROVIDER_ID = "goose";
-
-/**
- * Translate a UI provider id into the value sent to the backend. Only the
- * `"goose"` agent sentinel is rewritten to the concrete default model provider;
- * every real provider id (`claude-acp`, `codex-acp`, `databricks_v2`, ...)
- * passes through unchanged.
- */
-export function toWireProviderId(providerId: string): string {
-  if (providerId !== GOOSE_PROVIDER_ID) {
-    return providerId;
-  }
-
-  const readiness = useDefaultProviderReadinessStore.getState().readiness;
-  return readiness?.status === "ready"
-    ? readiness.providerId
-    : (getDefaultGooseModelProviderId() ?? providerId);
-}
 
 /**
  * Tracks which persona handoffs have already been delivered, keyed by
@@ -66,39 +37,24 @@ function fingerprint(text: string): string {
 }
 
 /**
- * Goose owns prompt assembly for the Goose agent and Goose model providers.
- * Those sessions use the real system-prompt ext method, so they never need the
- * in-band persona handoff.
- */
-export function isGooseManagedProvider(
-  providerId: string | undefined,
-): boolean {
-  if (!providerId) {
-    return false;
-  }
-  if (providerId === GOOSE_PROVIDER_ID) {
-    return true;
-  }
-  return getCatalogEntry(providerId)?.category === "model";
-}
-
-/**
- * Whether a provider is an external agent harness. External agents do not
- * implement Goose's system-prompt ext method.
- */
-export function isExternalAgentProvider(
-  providerId: string | undefined,
-): boolean {
-  return providerId ? !isGooseManagedProvider(providerId) : false;
-}
-
-/**
  * Frame the handed-off content (app context, persona instructions, or both)
  * as a preamble for the agent.
  */
+const PERSONA_HANDOFF_PREAMBLE_PREFIX =
+  "You are operating under the following context and instructions for this ";
+
+/**
+ * True when `text` is (or starts with) the in-band persona handoff block, so
+ * callers can avoid treating it as user-visible prose (bridge-derived titles,
+ * snippets, search results).
+ */
+export function isPersonaHandoffText(text: string): boolean {
+  return text.startsWith(PERSONA_HANDOFF_PREAMBLE_PREFIX);
+}
+
 export function buildPersonaHandoffPreamble(systemPrompt: string): string {
   return [
-    "You are operating under the following context and instructions for this " +
+    PERSONA_HANDOFF_PREAMBLE_PREFIX +
       "session. Adopt them as your system prompt for the remainder of the " +
       "conversation, even though they arrive in-band:",
     "",
@@ -111,11 +67,8 @@ export function buildPersonaHandoffPreamble(systemPrompt: string): string {
 
 /**
  * Resolve the persona handoff for a send. Returns the preamble text to inject
- * as an assistant-audience block, or `null` when no handoff is needed (goose
- * provider, nothing to deliver, or already delivered for this handoff).
- *
- * Marks the handoff as delivered as a side effect, so callers must only invoke
- * this once per send when they intend to inject.
+ * as an assistant-audience block, or `null` when no handoff is needed (nothing
+ * to deliver, or already delivered for this handoff).
  */
 export interface PersonaHandoffClaim {
   preamble: string;
@@ -128,7 +81,7 @@ export function preparePersonaHandoff(
   systemPrompt: string | undefined,
   appPreamble?: string | null,
 ): PersonaHandoffClaim | null {
-  if (!isExternalAgentProvider(providerId)) {
+  if (!providerId) {
     return null;
   }
 
@@ -139,7 +92,7 @@ export function preparePersonaHandoff(
     return null;
   }
 
-  const key = handoffKey(sessionId, providerId as string, combined);
+  const key = handoffKey(sessionId, providerId, combined);
   if (deliveredHandoffs.has(key)) {
     return null;
   }

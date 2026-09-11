@@ -54,7 +54,7 @@ export interface FactsLedger {
 
 function stepKey(step: WaveStepTelemetry): string | null {
   if (!step.modelId) return null;
-  return step.role + " " + step.modelId + " " + (step.harnessId ?? "");
+  return `${step.role} ${step.modelId} ${step.harnessId ?? ""}`;
 }
 
 /**
@@ -90,7 +90,7 @@ export function buildFactsLedger(
 
     const modelId = record.conductorModelId;
     if (!modelId) continue;
-    const key = modelId + " " + (record.conductorHarnessId ?? "");
+    const key = `${modelId} ${record.conductorHarnessId ?? ""}`;
     const fact = conductors.get(key) ?? {
       modelId,
       ...(record.conductorHarnessId
@@ -138,9 +138,7 @@ export function renderFactsForPrompt(ledger: FactsLedger): string {
   const lines: string[] = [];
   for (const fact of ledger.steps.slice(0, MAX_PROMPT_FACTS)) {
     const degraded =
-      fact.degraded > 0
-        ? ", " + fact.degraded + " finished without a report"
-        : "";
+      fact.degraded > 0 ? `, ${fact.degraded} finished without a report` : "";
     lines.push(
       "- " +
         fact.modelId +

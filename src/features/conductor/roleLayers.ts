@@ -92,6 +92,20 @@ export function roleStage(roleId: string): RoleStage | undefined {
   return ROLE_CATALOG.find((entry) => entry.id === normalized)?.stage;
 }
 
+/**
+ * Worker-layer role ids at `stage`, in catalog order.
+ *
+ * Waves only ever run worker-layer roles, so a stage listed for the conductor
+ * is filtered to the ones it can actually put in a plan. The protocol prompt
+ * names the `release` roles this way rather than spelling them out, so the
+ * sentence about where a commit step goes cannot drift from the catalog.
+ */
+export function workerRoleIdsForStage(stage: RoleStage): readonly string[] {
+  return rolesForLayer("worker")
+    .filter((role) => role.stage === stage)
+    .map((role) => role.id);
+}
+
 /** Display name for a role id, falling back to the raw id when unknown. */
 export function roleDisplayName(roleId: string): string {
   const normalized = normalizeRoleId(roleId);

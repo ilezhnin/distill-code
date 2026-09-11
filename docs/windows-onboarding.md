@@ -108,17 +108,45 @@ Setup:
 - installs hooks
 - clones and builds the Goose backend pinned by `goose-backend.lock.json`
 
-Managed Goose state lives in:
+## Where Build State Lives
+
+The Rust/Tauri build cache is by far the largest thing this lane creates: a
+debug build of the workspace is 30-60 GB (dependency objects, incremental
+cache, debug info). It is written **inside the checkout**, so it lands on
+whatever drive you cloned to:
 
 ```text
-%LOCALAPPDATA%\berd-dev\goose
-%LOCALAPPDATA%\berd-dev\cargo-target
-%LOCALAPPDATA%\berd-dev\stamp.json
+<repo>\src-tauri\target
 ```
 
-The stamp records the repo, ref, commit, Cargo package, binary name, and
-resolved `goose.exe` path. Re-running setup should reuse the build when those
-values still match.
+Set `BERD_TAURI_CARGO_TARGET_DIR` (a user-level environment variable) to move
+it somewhere else. Do not point it at the system drive: earlier versions
+defaulted to `%LOCALAPPDATA%\berd-tauri\cargo-target` and routinely filled C:.
+The launcher warns when the resolved target dir is on the system drive.
+
+Only small dev state stays under `%LOCALAPPDATA%\berd-dev` (the generated
+Tauri dev config and launch locks).
+
+To reclaim space without uninstalling the toolchain:
+
+```powershell
+just prune-build-cache                 # dry run: what would be reclaimed
+just prune-build-cache -Remove         # incremental cache + interrupted-build leftovers
+just prune-build-cache -Remove -Deep   # also the whole target dir (full rebuild)
+```
+
+Without `just` on PATH, call the script directly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/windows/Prune-BuildCache-Windows.ps1 -Remove
+```
+
+It only removes output it can regenerate, and refuses to run while `cargo`,
+`rustc` or `Berd` is alive. Anything it does not recognize is printed as a
+`keep` line and left alone.
+
+`just cleanup-windows` is the uninstall lane instead: it removes
+`node_modules`, git hooks and, with `-All`, the shared toolchain.
 
 ## Launch The Native App
 

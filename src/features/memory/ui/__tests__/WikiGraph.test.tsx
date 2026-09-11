@@ -2,8 +2,6 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { MEMORY_WIKI_GRAPH_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
-import { setExperimentEnabled } from "@/features/experiments/experimentPreferences";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 import { renderWithProviders } from "@/test/render";
@@ -17,6 +15,7 @@ vi.mock("@/shared/api/projectStore", () => ({
   writeProjectDocument: vi.fn(),
 }));
 
+import { setMemoryWikiGraphEnabled } from "../../lib/memoryPreferences";
 import { resetProjectWikiPresenceForTests } from "../../lib/projectWikiPrompt";
 import { WikiGraph } from "../WikiGraph";
 
@@ -108,9 +107,9 @@ describe("WikiGraph", () => {
     });
   });
 
-  it("draws a node per page and an edge per link once the experiment is on", async () => {
+  it("draws a node per page and an edge per link once the graph is switched on", async () => {
     withWiki();
-    setExperimentEnabled(MEMORY_WIKI_GRAPH_EXPERIMENT_ID, true);
+    setMemoryWikiGraphEnabled(true);
 
     renderWithProviders(<WikiGraph />);
 
@@ -128,7 +127,7 @@ describe("WikiGraph", () => {
 
   it("marks the page nothing links to with the warning token", async () => {
     withWiki();
-    setExperimentEnabled(MEMORY_WIKI_GRAPH_EXPERIMENT_ID, true);
+    setMemoryWikiGraphEnabled(true);
 
     renderWithProviders(<WikiGraph />);
     await screen.findByTestId("wiki-graph");
@@ -154,7 +153,7 @@ describe("WikiGraph", () => {
 
   it("opens the page behind a node, exactly as it is on disk", async () => {
     withWiki();
-    setExperimentEnabled(MEMORY_WIKI_GRAPH_EXPERIMENT_ID, true);
+    setMemoryWikiGraphEnabled(true);
     const user = userEvent.setup();
 
     renderWithProviders(<WikiGraph />);
@@ -179,26 +178,39 @@ describe("WikiGraph", () => {
     );
   });
 
-  it("stays out of the panel while the experiment is off", async () => {
+  it("reads nothing and draws nothing while the graph is switched off", async () => {
     withWiki();
-    setExperimentEnabled(MEMORY_WIKI_GRAPH_EXPERIMENT_ID, false);
+    setMemoryWikiGraphEnabled(false);
 
-    const { container } = renderWithProviders(<WikiGraph />);
+    renderWithProviders(<WikiGraph />);
 
+    expect(screen.getByTestId("wiki-graph-switch")).not.toBeChecked();
     await waitFor(() => {
       expect(listProjectDocuments).not.toHaveBeenCalled();
     });
-    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByTestId("wiki-graph")).not.toBeInTheDocument();
   });
 
-  it("shows nothing at all when no project keeps a wiki", async () => {
-    setExperimentEnabled(MEMORY_WIKI_GRAPH_EXPERIMENT_ID, true);
+  it("switches the graph on from the section itself", async () => {
+    withWiki();
+    setMemoryWikiGraphEnabled(false);
+    const user = userEvent.setup();
 
-    const { container } = renderWithProviders(<WikiGraph />);
+    renderWithProviders(<WikiGraph />);
+    await user.click(screen.getByTestId("wiki-graph-switch"));
+
+    expect(await screen.findByTestId("wiki-graph")).toBeInTheDocument();
+  });
+
+  it("says so when no project keeps a wiki", async () => {
+    setMemoryWikiGraphEnabled(true);
+
+    renderWithProviders(<WikiGraph />);
 
     await waitFor(() => {
       expect(listProjectDocuments).toHaveBeenCalledWith(ROOT, "wiki");
     });
-    expect(container).toBeEmptyDOMElement();
+    expect(screen.getByTestId("wiki-graph-none")).toBeInTheDocument();
+    expect(screen.queryByTestId("wiki-graph")).not.toBeInTheDocument();
   });
 });

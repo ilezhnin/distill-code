@@ -1,8 +1,4 @@
 import type {
-  GooseReadResourceResult,
-  GooseToolMetadata,
-} from "@aaif/goose-sdk";
-import type {
   Annotations,
   ImageContent as AcpImageContent,
   Role,
@@ -152,10 +148,10 @@ export interface McpAppPayload {
     name: string;
     extensionName: string;
     resourceUri: string;
-    meta?: GooseToolMetadata;
+    meta?: Record<string, unknown>;
   };
   resource: {
-    result: GooseReadResourceResult | null;
+    result: unknown;
     readError?: string;
   };
 }
@@ -285,8 +281,6 @@ export interface MessageMetadata {
   berdSenderLabel?: string;
   berdDeliveryId?: string;
   voiceUtteranceId?: string;
-  voiceConversationLifecycleId?: string;
-  voiceConversationRevision?: number;
   attachments?: MessageAttachment[];
   chips?: MessageChip[];
   personaId?: string;

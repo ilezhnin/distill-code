@@ -1,4 +1,4 @@
-export const ASSISTIVE_UX_STORAGE_KEY = "goose:assistive-ux";
+export const ASSISTIVE_UX_STORAGE_KEY = "distill:assistive-ux";
 export const ASSISTIVE_UX_STORAGE_VERSION = 1;
 
 export type AssistiveUxMomentType = "discover" | "suggest" | "autoApply";

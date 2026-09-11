@@ -90,7 +90,7 @@ function seedSession(
     id: "s1",
     title: DEFAULT_CHAT_TITLE,
     projectId: project?.id ?? null,
-    executionTarget: { harnessId: "goose" },
+    executionTarget: { harnessId: "claude-acp" },
     workingDir: null,
     createdAt: "2026-06-09T00:00:00.000Z",
     updatedAt: "2026-06-09T00:00:00.000Z",
@@ -183,14 +183,14 @@ describe("loadSessionMessages", () => {
 
   it("uses the leased target when ACP load returns a divergent target", async () => {
     const targetA = {
-      harnessId: "goose",
-      modelProviderId: "openai",
+      harnessId: "claude-acp",
+      modelProviderId: "claude-acp",
       modelId: "a",
       modelName: "a",
     } as const;
     const targetB = {
-      harnessId: "goose",
-      modelProviderId: "openai",
+      harnessId: "claude-acp",
+      modelProviderId: "claude-acp",
       modelId: "b",
       modelName: "b",
     } as const;
@@ -199,7 +199,10 @@ describe("loadSessionMessages", () => {
       executionTarget: targetA,
       executionTargetSource: "acp",
     });
-    acpLoadSession.mockResolvedValue({ providerId: "openai", modelId: "b" });
+    acpLoadSession.mockResolvedValue({
+      providerId: "claude-acp",
+      modelId: "b",
+    });
     const lease = acquireSessionDispatchTarget("leased-load");
 
     await expect(loadSessionMessages("leased-load")).resolves.toBe(true);
@@ -216,14 +219,14 @@ describe("loadSessionMessages", () => {
 
   it("uses the leased target when pinned session info returns a divergent target", async () => {
     const targetA = {
-      harnessId: "goose",
-      modelProviderId: "openai",
+      harnessId: "claude-acp",
+      modelProviderId: "claude-acp",
       modelId: "a",
       modelName: "a",
     } as const;
     const targetB = {
-      harnessId: "goose",
-      modelProviderId: "openai",
+      harnessId: "claude-acp",
+      modelProviderId: "claude-acp",
       modelId: "b",
       modelName: "b",
     } as const;
@@ -234,7 +237,7 @@ describe("loadSessionMessages", () => {
       pinnedLoadState: "loading",
     });
     acpGetSessionInfo.mockResolvedValue({
-      providerId: "openai",
+      providerId: "claude-acp",
       modelId: "b",
       messageCount: 1,
     });
@@ -414,7 +417,7 @@ describe("loadSessionMessages", () => {
     acpLoadSession.mockImplementation(async () => {
       handleSessionInfoUpdate("settled-replay", {
         sessionUpdate: "session_info_update",
-        _meta: { goose: { activeRunId: null } },
+        _meta: { activeRunId: null },
       } as never);
     });
 
@@ -439,7 +442,7 @@ describe("loadSessionMessages", () => {
       subtitle: null,
       workingDir: null,
       projectId: null,
-      providerId: "goose",
+      providerId: "claude-acp",
       modelId: null,
       personaId: null,
       activeRunId: null,
@@ -479,7 +482,7 @@ describe("loadSessionMessages", () => {
       subtitle: null,
       workingDir: null,
       projectId: null,
-      providerId: "goose",
+      providerId: "claude-acp",
       modelId: null,
       personaId: null,
     });
@@ -514,7 +517,7 @@ describe("loadSessionMessages", () => {
 
     handleSessionInfoUpdate(sessionId, {
       sessionUpdate: "session_info_update",
-      _meta: { goose: { activeRunId: "run-1" } },
+      _meta: { activeRunId: "run-1" },
     } as never);
     expect(messagesFor(sessionId)[0]).toMatchObject({
       role: "assistant",
@@ -523,7 +526,7 @@ describe("loadSessionMessages", () => {
 
     handleSessionInfoUpdate(sessionId, {
       sessionUpdate: "session_info_update",
-      _meta: { goose: { activeRunId: null } },
+      _meta: { activeRunId: null },
     } as never);
     expect(messagesFor(sessionId)[0]).toMatchObject({
       role: "assistant",
@@ -550,7 +553,7 @@ describe("loadSessionMessages", () => {
 
     handleSessionInfoUpdate("unknown-run-replay", {
       sessionUpdate: "session_info_update",
-      _meta: { goose: { activeRunId: "run-1" } },
+      _meta: { activeRunId: "run-1" },
     } as never);
 
     expect(messagesFor("unknown-run-replay")[0]).toMatchObject({
@@ -560,7 +563,7 @@ describe("loadSessionMessages", () => {
 
     handleSessionInfoUpdate("unknown-run-replay", {
       sessionUpdate: "session_info_update",
-      _meta: { goose: { activeRunId: null } },
+      _meta: { activeRunId: null },
     } as never);
 
     expect(messagesFor("unknown-run-replay")[0]).toMatchObject({
@@ -653,8 +656,8 @@ describe("loadSessionMessages", () => {
     seedSession({
       id: "s-selection-race",
       executionTarget: {
-        harnessId: "goose",
-        modelProviderId: "databricks_v2",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
         modelId: "goose-gpt-5-5",
         modelName: "GPT-5.5",
       },
@@ -668,8 +671,8 @@ describe("loadSessionMessages", () => {
     useChatSessionStore
       .getState()
       .replaceSessionExecutionTarget("s-selection-race", {
-        harnessId: "goose",
-        modelProviderId: "databricks_v2",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
         modelId: "goose-gpt-5-6-sol",
         modelName: "GPT-5.6 Sol",
       });
@@ -684,7 +687,7 @@ describe("loadSessionMessages", () => {
     );
     expect(acpPrepareSession).toHaveBeenCalledWith(
       "s-selection-race",
-      "databricks_v2",
+      "claude-acp",
       "/resolved/existing/session",
       { modelId: "goose-gpt-5-6-sol" },
     );
@@ -699,7 +702,7 @@ describe("loadSessionMessages", () => {
     expect(checkDirectoriesExist).not.toHaveBeenCalled();
     expect(acpLoadSession).toHaveBeenCalledWith(
       "unknown-session",
-      "~/goose artifacts",
+      "~/.distill/artifacts",
     );
   });
 
@@ -749,15 +752,15 @@ describe("loadSessionMessages", () => {
 
     await expect(loadSessionMessages("s1")).resolves.toBe(true);
 
-    expect(acpLoadSession).toHaveBeenCalledWith("s1", "~/goose artifacts");
+    expect(acpLoadSession).toHaveBeenCalledWith("s1", "~/.distill/artifacts");
     expect(useChatStore.getState().loadingSessionIds.has("s1")).toBe(false);
     expect(useChatSessionStore.getState().getSession("s1")?.workingDir).toBe(
-      "~/goose artifacts",
+      "~/.distill/artifacts",
     );
     const warning = notificationFromLastMessage("s1");
     expect(warning.notificationType).toBe("warning");
     expect(warning.text).toContain("/resolved/missing/project");
-    expect(warning.text).toContain("~/goose artifacts");
+    expect(warning.text).toContain("~/.distill/artifacts");
     expect(warning.action).toEqual({
       type: "editProject",
       projectId: "project-1",
@@ -772,9 +775,9 @@ describe("loadSessionMessages", () => {
 
     await expect(loadSessionMessages("s2")).resolves.toBe(true);
 
-    expect(acpLoadSession).toHaveBeenCalledWith("s2", "~/goose artifacts");
+    expect(acpLoadSession).toHaveBeenCalledWith("s2", "~/.distill/artifacts");
     expect(useChatSessionStore.getState().getSession("s2")?.workingDir).toBe(
-      "~/goose artifacts",
+      "~/.distill/artifacts",
     );
     const warning = notificationFromLastMessage("s2");
     expect(warning.notificationType).toBe("warning");
@@ -796,7 +799,10 @@ describe("loadSessionMessages", () => {
     expect(checkDirectoriesExist).toHaveBeenCalledWith([
       "/resolved/missing/project",
     ]);
-    expect(acpLoadSession).toHaveBeenCalledWith("s-blank", "~/goose artifacts");
+    expect(acpLoadSession).toHaveBeenCalledWith(
+      "s-blank",
+      "~/.distill/artifacts",
+    );
     expect(notificationFromLastMessage("s-blank").action).toEqual({
       type: "editProject",
       projectId: "project-1",
@@ -872,12 +878,12 @@ describe("loadSessionMessages", () => {
     expect(checkDirectoriesExist).toHaveBeenCalledWith([
       "/resolved/missing/worktree",
     ]);
-    expect(acpLoadSession).toHaveBeenCalledWith("s-ws", "~/goose artifacts");
+    expect(acpLoadSession).toHaveBeenCalledWith("s-ws", "~/.distill/artifacts");
     expect(
       useChatSessionStore.getState().activeWorkspaceBySession["s-ws"],
     ).toBeUndefined();
     expect(useChatSessionStore.getState().getSession("s-ws")?.workingDir).toBe(
-      "~/goose artifacts",
+      "~/.distill/artifacts",
     );
     const warning = notificationFromLastMessage("s-ws");
     expect(warning.text).toContain("/resolved/missing/worktree");
@@ -897,7 +903,7 @@ describe("loadSessionMessages", () => {
     expect(acpLoadSession).not.toHaveBeenCalled();
     expect(
       useChatSessionStore.getState().getSession("s-cached")?.workingDir,
-    ).toBe("~/goose artifacts");
+    ).toBe("~/.distill/artifacts");
     const warning = notificationFromLastMessage("s-cached");
     expect(warning.notificationType).toBe("warning");
     expect(warning.text).toContain("/resolved/missing/session");
@@ -925,16 +931,19 @@ describe("loadSessionMessages", () => {
       Promise.resolve({ path: parts[0] }),
     );
     seedSession(
-      { id: "s-root", workingDir: "~/goose artifacts" },
-      { missingDir: "~/goose artifacts" },
+      { id: "s-root", workingDir: "~/.distill/artifacts" },
+      { missingDir: "~/.distill/artifacts" },
     );
 
     await expect(loadSessionMessages("s-root")).resolves.toBe(true);
 
-    expect(acpLoadSession).toHaveBeenCalledWith("s-root", "~/goose artifacts");
+    expect(acpLoadSession).toHaveBeenCalledWith(
+      "s-root",
+      "~/.distill/artifacts",
+    );
     expect(
       useChatSessionStore.getState().getSession("s-root")?.workingDir,
-    ).toBe("~/goose artifacts");
+    ).toBe("~/.distill/artifacts");
     expect(messagesFor("s-root").map((m) => m.role)).toEqual(["user"]);
   });
 
@@ -951,7 +960,7 @@ describe("loadSessionMessages", () => {
       subtitle: "Commented and resolved the GitHub review thread.",
       workingDir: "/Users/morganm/goose artifacts",
       projectId: "goose-internal",
-      providerId: "goose",
+      providerId: "claude-acp",
       modelId: "claude-sonnet-4",
       personaId: null,
     });
@@ -1035,7 +1044,7 @@ describe("loadSessionMessages", () => {
       subtitle: null,
       workingDir: null,
       projectId: null,
-      providerId: "goose",
+      providerId: "claude-acp",
       modelId: "claude-sonnet-4",
       personaId: null,
     });
@@ -1067,8 +1076,8 @@ describe("loadSessionMessages", () => {
   it("does not let pinned metadata replace a newer UI model selection", async () => {
     const metadata = deferred<AcpSessionInfo>();
     const selectedTarget = {
-      harnessId: "goose",
-      modelProviderId: "databricks_v2",
+      harnessId: "claude-acp",
+      modelProviderId: "claude-acp",
       modelId: "goose-gpt-5-6-sol",
       modelName: "GPT-5.6 Sol",
     } as const;
@@ -1095,7 +1104,7 @@ describe("loadSessionMessages", () => {
       subtitle: null,
       workingDir: "/tmp/project",
       projectId: null,
-      providerId: "databricks_v2",
+      providerId: "claude-acp",
       modelId: "goose-gpt-5-5",
       personaId: null,
     });

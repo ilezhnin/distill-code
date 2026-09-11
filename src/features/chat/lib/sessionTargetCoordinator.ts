@@ -5,12 +5,11 @@ import type {
   AcpSessionConfigSnapshotContext,
   AcpSessionConfigSnapshots,
 } from "@/shared/api/acpSessionConfigSnapshots";
-import { repairManagedGooseModelSelection } from "@/features/providers/lib/managedModelSelectionRepair";
 import { useChatSessionStore } from "../stores/chatSessionStore";
 import {
-  executionTargetFromGooseServeSession,
-  gooseServeSelectionFromExecutionTarget,
-} from "./gooseServeExecutionTarget";
+  executionTargetFromHostSession,
+  hostSelectionFromExecutionTarget,
+} from "./hostExecutionTarget";
 import {
   materializeSessionExecutionModel,
   normalizeSessionExecutionTarget,
@@ -208,28 +207,6 @@ function transition(
 }
 
 async function resolveEffectiveTarget(target: SessionExecutionTarget) {
-  const selection = gooseServeSelectionFromExecutionTarget(target);
-  const repaired = await repairManagedGooseModelSelection(selection, "session");
-  const resolved = repaired ?? selection;
-  if (!resolved.providerId) {
-    throw new Error("Session execution target requires a provider boundary.");
-  }
-  if (
-    target.harnessId === "goose" &&
-    repaired &&
-    (repaired.providerId !== selection.providerId ||
-      repaired.modelId !== selection.modelId)
-  ) {
-    return normalizeSessionExecutionTarget({
-      harnessId: target.harnessId,
-      modelProviderId: repaired.providerId,
-      modelId: repaired.modelId,
-      modelName:
-        repaired.modelId === target.modelId
-          ? target.modelName
-          : repaired.modelId,
-    });
-  }
   return target;
 }
 
@@ -320,7 +297,7 @@ async function execute(
       operationId,
       phase: "applying",
     });
-    const selection = gooseServeSelectionFromExecutionTarget(effective);
+    const selection = hostSelectionFromExecutionTarget(effective);
     if (!selection.providerId) {
       throw new Error("Session execution target requires a provider boundary.");
     }
@@ -793,7 +770,7 @@ function snapshotContextMatchesTarget(
   context: AcpSessionConfigSnapshotContext,
 ): boolean {
   if (context.origin !== "response" || !target || !target.modelId) return false;
-  const expected = gooseServeSelectionFromExecutionTarget(target);
+  const expected = hostSelectionFromExecutionTarget(target);
   return (
     context.providerId === expected.providerId &&
     context.modelId === expected.modelId
@@ -810,7 +787,7 @@ function snapshotContextMatchesSelection(
   ) {
     return false;
   }
-  const expected = gooseServeSelectionFromExecutionTarget(selection.target);
+  const expected = hostSelectionFromExecutionTarget(selection.target);
   if (!expected.providerId || context.providerId !== expected.providerId) {
     return false;
   }
@@ -893,7 +870,7 @@ export function observeSessionTargetModelSnapshot(input: {
   if (actor.dispatch) {
     const dispatchTarget = actor.dispatch.target;
     const observedBase = input.context.providerId
-      ? executionTargetFromGooseServeSession({
+      ? executionTargetFromHostSession({
           providerId: input.context.providerId,
           modelId: input.snapshot.modelId,
           modelName: input.snapshot.modelName,
@@ -963,7 +940,7 @@ export function observeSessionTargetModelSnapshot(input: {
     base = localTarget;
   } else {
     base = input.context.providerId
-      ? executionTargetFromGooseServeSession({
+      ? executionTargetFromHostSession({
           providerId: input.context.providerId,
           modelId: input.snapshot.modelId,
           modelName: input.snapshot.modelName,

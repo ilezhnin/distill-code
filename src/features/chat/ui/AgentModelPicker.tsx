@@ -177,12 +177,7 @@ export function AgentModelPicker({
   );
   const displayedModels = useMemo(() => {
     const currentModelBelongsToSelectedAgent =
-      selectedAgentId === "goose"
-        ? Boolean(currentModelProviderId) &&
-          pickerModels.some(
-            (model) => model.providerId === currentModelProviderId,
-          )
-        : currentModelProviderId === selectedAgentId;
+      currentModelProviderId === selectedAgentId;
     if (
       !currentDisplayModelId ||
       !displayModelLabel ||

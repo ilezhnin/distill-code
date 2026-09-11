@@ -9,7 +9,6 @@ import type {
 } from "@agentclientprotocol/sdk";
 import { messageSnippet } from "@/features/chat/lib/messageSnippet";
 import { getCuratedAgentProviders } from "@/features/providers/curatedProviders";
-import { toWireProviderId } from "./acpPersonaHandoff";
 import { getClient, interceptSessionNotifications } from "./acpConnection";
 import {
   applySessionConfigOptionsSnapshot,
@@ -17,6 +16,7 @@ import {
   type AcpSessionConfigSnapshotContext,
   type AcpSessionConfigSnapshots,
 } from "./acpSessionConfigSnapshots";
+import type { SessionTranscript } from "./hostTypes";
 import { perfLog } from "@/shared/lib/perfLog";
 import {
   logReasoningEffortInfo,
@@ -52,17 +52,6 @@ export interface AcpSessionsPage {
   nextCursor: string | null;
 }
 
-export const DEFAULT_PROVIDER: AcpProvider = {
-  id: "goose",
-  label: "Goose (Default)",
-};
-
-const LIST_SESSIONS_META = {
-  goose: {
-    includeLastMessageSnippet: true,
-  },
-} satisfies NonNullable<ListSessionsRequest["_meta"]>;
-
 export async function listProviders(): Promise<AcpProvider[]> {
   return getCuratedAgentProviders();
 }
@@ -95,9 +84,9 @@ function metaNumber(
 }
 
 function mapSessionInfo(info: SessionInfo): AcpSessionInfo {
-  const gooseMeta = isRecord(info._meta?.goose) ? info._meta.goose : null;
+  const meta = info._meta;
   const activeRunValue =
-    gooseMeta && "activeRunId" in gooseMeta ? gooseMeta.activeRunId : undefined;
+    meta && "activeRunId" in meta ? meta.activeRunId : undefined;
   const activeRunId =
     typeof activeRunValue === "string" || activeRunValue === null
       ? activeRunValue
@@ -107,17 +96,17 @@ function mapSessionInfo(info: SessionInfo): AcpSessionInfo {
     sessionId: info.sessionId,
     title: info.title ?? null,
     updatedAt: info.updatedAt ?? null,
-    createdAt: metaString(info._meta, "createdAt"),
-    lastMessageAt: metaString(info._meta, "lastMessageAt"),
-    archivedAt: metaString(info._meta, "archivedAt"),
-    userSetName: info._meta?.userSetName === true,
-    messageCount: metaNumber(info._meta, "messageCount") ?? 0,
-    subtitle: mapLastMessageSnippet(info._meta?.lastMessageSnippet),
+    createdAt: metaString(meta, "createdAt"),
+    lastMessageAt: metaString(meta, "lastMessageAt"),
+    archivedAt: metaString(meta, "archivedAt"),
+    userSetName: meta?.userSetName === true,
+    messageCount: metaNumber(meta, "messageCount") ?? 0,
+    subtitle: mapLastMessageSnippet(meta?.lastMessageSnippet),
     workingDir: info.cwd ?? null,
-    projectId: metaString(info._meta, "projectId"),
-    providerId: metaString(info._meta, "providerId"),
-    modelId: metaString(info._meta, "modelId"),
-    personaId: metaString(info._meta, "personaId"),
+    projectId: metaString(meta, "projectId"),
+    providerId: metaString(meta, "providerId"),
+    modelId: metaString(meta, "modelId"),
+    personaId: metaString(meta, "personaId"),
     ...(activeRunId !== undefined ? { activeRunId } : {}),
   };
 }
@@ -126,7 +115,7 @@ export async function getSessionInfo(
   sessionId: string,
 ): Promise<AcpSessionInfo> {
   const client = await getClient();
-  const result = await client.goose.GooseUnstableSessionInfo({ sessionId });
+  const result = await client.host.sessionInfo({ sessionId });
   return mapSessionInfo(result.session as unknown as SessionInfo);
 }
 
@@ -137,12 +126,10 @@ export async function listSessionsPage({
 } = {}): Promise<AcpSessionsPage> {
   const client = await getClient();
   const normalizedCursor = cursor?.trim() || null;
-  // ACP session/list only standardizes cwd and cursor filters. Goose project
-  // membership lives in _meta.projectId, so callers must paginate globally and
+  // ACP session/list only standardizes cwd and cursor filters. Project
+  // membership lives in _meta.projectId, so callers paginate globally and
   // group by projectId client-side instead of using cwd as a proxy.
-  const params: ListSessionsRequest = {
-    _meta: LIST_SESSIONS_META,
-  };
+  const params: ListSessionsRequest = {};
   if (normalizedCursor != null) {
     params.cursor = normalizedCursor;
   }
@@ -154,20 +141,12 @@ export async function listSessionsPage({
   };
 }
 
-export async function exportSession(sessionId: string): Promise<string> {
+/** The text messages of a session as the host stored them. */
+export async function readSessionTranscript(
+  sessionId: string,
+): Promise<SessionTranscript> {
   const client = await getClient();
-  const result = await client.goose.GooseUnstableSessionExport({ sessionId });
-  // biome-ignore lint/suspicious/noExplicitAny: SDK doesn't expose data field on export result
-  return (result as any).data;
-}
-
-export async function importSession(json: string): Promise<AcpSessionInfo> {
-  const client = await getClient();
-  const result = await client.goose.GooseUnstableSessionImport({
-    input: json,
-    source: "json",
-  });
-  return result as unknown as AcpSessionInfo;
+  return client.host.sessionMessages({ sessionId });
 }
 
 export interface AcpForkSessionOptions {
@@ -285,6 +264,7 @@ export async function setSessionConfigOption(
   return snapshots;
 }
 
+/** Move a session onto another harness; the host starts a fresh bridge session. */
 export async function setProvider(
   sessionId: string,
   providerId: string,
@@ -293,18 +273,16 @@ export async function setProvider(
   const sid = sessionId.slice(0, 8);
   const tClient = performance.now();
   const client = await getClient();
-  const wireProvider = toWireProviderId(providerId);
   const tCall = performance.now();
   const response = await client.setSessionConfigOption({
     sessionId,
     configId: "provider",
-    value: wireProvider,
+    value: providerId,
   });
   const snapshots = readSessionConfigOptionsSnapshots(response);
   logReasoningEffortInfo("setProvider response", {
     sessionId: shortLogId(sessionId),
     providerId,
-    wireProvider,
     hasReasoningEffortSnapshot: Boolean(snapshots.reasoningEffort),
     ...reasoningEffortConfigLogFields(
       "reasoningEffort",
@@ -318,7 +296,7 @@ export async function setProvider(
     modelId: snapshots.model?.modelId,
   });
   perfLog(
-    `[perf:api] ${sid} setProvider(${providerId}→${wireProvider}) getClient=${(tCall - tClient).toFixed(1)}ms wire=${(performance.now() - tCall).toFixed(1)}ms`,
+    `[perf:api] ${sid} setProvider(${providerId}) getClient=${(tCall - tClient).toFixed(1)}ms wire=${(performance.now() - tCall).toFixed(1)}ms`,
   );
   return snapshots;
 }
@@ -333,36 +311,7 @@ export async function updateWorkingDir(
   // dispatching the mutation. This lets callers close local state races
   // without exposing the ACP client or duplicating the wire operation.
   beforeUpdate?.();
-  await client.goose.GooseUnstableSessionWorkingDirUpdate({
-    sessionId,
-    workingDir,
-  });
-}
-
-export async function setSessionSystemPrompt(
-  sessionId: string,
-  text: string,
-): Promise<void> {
-  const client = await getClient();
-  await client.extMethod("_goose/unstable/session/system-prompt/set", {
-    sessionId,
-    mode: "set",
-    text,
-  });
-}
-
-export async function appendSessionSystemPrompt(
-  sessionId: string,
-  key: string,
-  text: string,
-): Promise<void> {
-  const client = await getClient();
-  await client.extMethod("_goose/unstable/session/system-prompt/set", {
-    sessionId,
-    mode: "append",
-    key,
-    text,
-  });
+  await client.host.sessionWorkingDirUpdate({ sessionId, workingDir });
 }
 
 export async function updateSessionProject(
@@ -370,15 +319,12 @@ export async function updateSessionProject(
   projectId: string | null,
 ): Promise<void> {
   const client = await getClient();
-  await client.goose.GooseUnstableSessionProjectUpdate({
-    sessionId,
-    projectId,
-  });
+  await client.host.sessionProjectUpdate({ sessionId, projectId });
 }
 
 export async function archiveSession(sessionId: string): Promise<void> {
   const client = await getClient();
-  await client.goose.GooseUnstableSessionArchive({ sessionId });
+  await client.host.sessionArchive({ sessionId });
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
@@ -388,7 +334,7 @@ export async function deleteSession(sessionId: string): Promise<void> {
 
 export async function unarchiveSession(sessionId: string): Promise<void> {
   const client = await getClient();
-  await client.goose.GooseUnstableSessionUnarchive({ sessionId });
+  await client.host.sessionUnarchive({ sessionId });
 }
 
 export async function renameSession(
@@ -396,7 +342,7 @@ export async function renameSession(
   title: string,
 ): Promise<void> {
   const client = await getClient();
-  await client.goose.GooseUnstableSessionRename({ sessionId, title });
+  await client.host.sessionRename({ sessionId, title });
 }
 
 export async function cancelSession(sessionId: string): Promise<void> {
@@ -424,7 +370,7 @@ export async function newSession(
   };
 
   const meta: Record<string, string | boolean> = {};
-  if (providerId) meta.provider = toWireProviderId(providerId);
+  if (providerId) meta.provider = providerId;
   if (projectId) meta.projectId = projectId;
   if (personaId) meta.personaId = personaId;
   if (hidden) meta.hidden = true;
@@ -583,7 +529,7 @@ export async function steerSession(
 ): Promise<AcpSteerResponse> {
   const client = await getClient();
   const steer = async (runId: string): Promise<AcpSteerResponse> => {
-    const response = await client.extMethod("_goose/unstable/session/steer", {
+    const response = await client.host.sessionSteer({
       sessionId,
       prompt: content,
       expectedRunId: runId,

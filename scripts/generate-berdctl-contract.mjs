@@ -35,7 +35,7 @@ const packageJson = JSON.parse(
   fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"),
 );
 
-async function loadContracts(feedbackEnabled) {
+async function loadContracts() {
   // Mirror the app's vite resolution (the `@` alias and build-feature defines)
   // so each generated projection comes from the exact renderer registry that
   // its build will dispatch.
@@ -48,9 +48,6 @@ async function loadContracts(feedbackEnabled) {
     },
     define: {
       "import.meta.env.VITE_APP_VERSION": JSON.stringify(packageJson.version),
-      "import.meta.env.VITE_FEEDBACK": JSON.stringify(
-        feedbackEnabled ? "1" : "0",
-      ),
     },
     server: { middlewareMode: true, hmr: false },
     optimizeDeps: { noDiscovery: true },
@@ -69,8 +66,7 @@ async function loadContracts(feedbackEnabled) {
   }
 }
 
-const publicContracts = await loadContracts(false);
-const feedbackContracts = await loadContracts(true);
+const publicContracts = await loadContracts();
 
 // Resolve the repo's biome binary (same pattern as
 // scripts/design-system-manifest.mjs) so the emitted JSON matches the
@@ -108,8 +104,6 @@ let stale = false;
 for (const [fileName, contract] of [
   ["api-surface.json", publicContracts.api],
   ["cli-surface.json", publicContracts.surface],
-  ["api-surface-feedback.json", feedbackContracts.api],
-  ["cli-surface-feedback.json", feedbackContracts.surface],
 ]) {
   const target = path.join(crateDir, fileName);
   const rendered = render(fileName, contract);

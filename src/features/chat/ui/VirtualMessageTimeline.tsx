@@ -87,7 +87,6 @@ import {
   isTimelinePinnedToLatest,
   shouldShowTimelineJumpToLatest,
   TIMELINE_AUTO_SCROLL_THRESHOLD_PX,
-  TIMELINE_MCP_APP_STICKY_SCROLL_MS,
   type TimelineScrollIntent,
 } from "./timelineScrollIntent";
 import { getVirtualTranscriptRowSpacingBlockSize } from "./virtualTranscriptRowSpacing";
@@ -108,7 +107,7 @@ const RESPONSE_START_HINT_VIEWPORT_SLOP_PX = 16;
 const GUTTER_RESPONSE_START_THRESHOLD_PX = 16;
 
 export const VIRTUAL_MESSAGE_TIMELINE_DIAGNOSTICS_EVENT =
-  "goose:virtual-message-timeline-diagnostics";
+  "distill:virtual-message-timeline-diagnostics";
 
 const REMAINING_DEFAULT_ON_BLOCKERS = [
   "updated-tanstack-session-history-regression",
@@ -218,10 +217,10 @@ export interface VirtualMessageTimelineDiagnostics {
 
 declare global {
   interface Window {
-    __GOOSE_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__?:
+    __DISTILL_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__?:
       | VirtualMessageTimelineDiagnostics
       | undefined;
-    __GOOSE_TRANSCRIPT_DIAGNOSTICS__?: TranscriptDiagnostics | undefined;
+    __DISTILL_TRANSCRIPT_DIAGNOSTICS__?: TranscriptDiagnostics | undefined;
   }
 }
 
@@ -989,7 +988,6 @@ function VirtualMessageTimelineSession({
   onRetryMessage,
   onEditMessage,
   onForkFromMessage,
-  onSendMcpAppMessage,
   onRunShellCommand,
   onEditProject,
   onChangeFolder,
@@ -1667,9 +1665,9 @@ function VirtualMessageTimelineSession({
 
     onDiagnostics?.(publishedDiagnostics);
     onTranscriptDiagnostics?.(sharedDiagnostics);
-    window.__GOOSE_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__ =
+    window.__DISTILL_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__ =
       publishedDiagnostics;
-    window.__GOOSE_TRANSCRIPT_DIAGNOSTICS__ = sharedDiagnostics;
+    window.__DISTILL_TRANSCRIPT_DIAGNOSTICS__ = sharedDiagnostics;
     window.dispatchEvent(
       new CustomEvent(VIRTUAL_MESSAGE_TIMELINE_DIAGNOSTICS_EVENT, {
         detail: publishedDiagnostics,
@@ -3004,84 +3002,6 @@ function VirtualMessageTimelineSession({
     voiceSubmissionKeys,
   ]);
 
-  const requestMcpAppAutoScroll = useCallback(
-    (element: HTMLElement | null) => {
-      const container = containerRef.current;
-      if (
-        !container ||
-        !element ||
-        userDetachedRef.current ||
-        suppressFollowResumeFromProgrammaticScrollRef.current
-      ) {
-        return;
-      }
-
-      const distanceFromBottom =
-        container.scrollHeight - container.scrollTop - container.clientHeight;
-      const shouldStick =
-        isNearBottomRef.current ||
-        distanceFromBottom < TIMELINE_AUTO_SCROLL_THRESHOLD_PX ||
-        stickyScrollUntilRef.current > performance.now();
-
-      if (!shouldStick) {
-        return;
-      }
-
-      stickyScrollUntilRef.current =
-        performance.now() + TIMELINE_MCP_APP_STICKY_SCROLL_MS;
-
-      const alignElementBottom = () => {
-        const nextContainer = containerRef.current;
-        if (!nextContainer || !element.isConnected) {
-          return;
-        }
-        if (
-          userDetachedRef.current ||
-          suppressFollowResumeFromProgrammaticScrollRef.current
-        ) {
-          return;
-        }
-
-        if (nextContainer.scrollTop < lastScrollTopRef.current - 1) {
-          stickyScrollUntilRef.current = 0;
-          return;
-        }
-
-        const distanceFromBottom =
-          nextContainer.scrollHeight -
-          nextContainer.scrollTop -
-          nextContainer.clientHeight;
-        const shouldStillStick =
-          isNearBottomRef.current ||
-          distanceFromBottom < TIMELINE_AUTO_SCROLL_THRESHOLD_PX ||
-          stickyScrollUntilRef.current > performance.now();
-
-        if (!shouldStillStick) {
-          return;
-        }
-
-        const containerRect = nextContainer.getBoundingClientRect();
-        const elementRect = element.getBoundingClientRect();
-        const footerRect = footerRef.current?.getBoundingClientRect();
-        const visibleBottom = footerRect
-          ? Math.min(containerRect.bottom, footerRect.top)
-          : containerRect.bottom;
-        const delta = elementRect.bottom - visibleBottom + 16;
-
-        if (delta > 0) {
-          writeVirtualScrollTop(nextContainer.scrollTop + delta, {
-            source: "correction",
-          });
-          syncViewportFromDom({ source: "correction" });
-        }
-      };
-
-      alignElementBottom();
-      requestAnimationFrame(alignElementBottom);
-    },
-    [syncViewportFromDom, writeVirtualScrollTop],
-  );
-
   const handleReactCommit = useCallback<ProfilerOnRenderCallback>(
     (_id, _phase, actualDuration, _baseDuration, startTime, commitTime) => {
       const measuredDuration = Number.isFinite(actualDuration)
@@ -3464,8 +3384,6 @@ function VirtualMessageTimelineSession({
       onRetryMessage,
       onEditMessage,
       onForkFromMessage,
-      onSendMcpAppMessage,
-      onMcpAppAutoScroll: requestMcpAppAutoScroll,
       onRunShellCommand,
       onEditProject,
       onChangeFolder,
@@ -3478,8 +3396,6 @@ function VirtualMessageTimelineSession({
       onRetryMessage,
       onEditMessage,
       onForkFromMessage,
-      onSendMcpAppMessage,
-      requestMcpAppAutoScroll,
       onRunShellCommand,
       onEditProject,
       onChangeFolder,

@@ -10,14 +10,9 @@ import { AppShell } from "./AppShell";
 
 const mocks = vi.hoisted(() => ({
   startupRetry: vi.fn(),
-  defaultModelRepair: vi.fn(),
   startupState: {
     ready: true,
     error: null as unknown,
-  },
-  migrationState: {
-    status: "ready",
-    error: null as Error | null,
   },
 }));
 
@@ -39,19 +34,6 @@ vi.mock("@/features/agents/hooks/useAgentBuilderCoordinator", () => ({
     navigateAgentBuilderAgents: vi.fn(),
     navigateAgentBuilderChat: vi.fn(),
   }),
-}));
-
-vi.mock("@/features/migration/hooks/useMigrationGate", () => ({
-  useMigrationGate: () => ({
-    status: mocks.migrationState.status,
-    error: mocks.migrationState.error ?? undefined,
-    retry: vi.fn(),
-  }),
-}));
-
-vi.mock("@/features/migration/hooks/useDefaultModelGate", () => ({
-  useDefaultModelGate: (...args: unknown[]) =>
-    mocks.defaultModelRepair(...args),
 }));
 
 vi.mock("@/features/projects/api/projects", () => ({
@@ -123,8 +105,6 @@ describe("AppShell startup diagnostics", () => {
     window.localStorage.clear();
     mocks.startupState.ready = true;
     mocks.startupState.error = null;
-    mocks.migrationState.status = "ready";
-    mocks.migrationState.error = null;
     useChatStore.setState({
       messagesBySession: {},
       sessionStateById: {},
@@ -152,19 +132,6 @@ describe("AppShell startup diagnostics", () => {
       activeProjectId: null,
       fetchProjects: vi.fn().mockResolvedValue(undefined),
     });
-  });
-
-  it("renders app content even when migration setup fails", () => {
-    mocks.migrationState.status = "error";
-    mocks.migrationState.error = new Error("default save failed");
-
-    renderAppShell();
-
-    expect(screen.getByTestId("app-shell-content")).toBeInTheDocument();
-    expect(mocks.defaultModelRepair).toHaveBeenCalledWith(true);
-    expect(
-      screen.queryByRole("heading", { name: "Distill couldn't start" }),
-    ).not.toBeInTheDocument();
   });
 
   it("shows the Distill loader while app startup is loading", () => {

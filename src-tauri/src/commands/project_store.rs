@@ -27,7 +27,7 @@ pub const PROJECT_STORE_DIR: &str = ".distill";
 ///
 /// Listed together because they are excluded together: an operator who never
 /// asked to version any of them should not have to notice them one at a time.
-const AGENT_FOLDERS: [&str; 4] = [".distill/", ".codex/", ".claude/", ".goose/"];
+const AGENT_FOLDERS: [&str; 3] = [".distill/", ".codex/", ".claude/"];
 
 /// Resolves a caller-supplied relative path inside a project's store.
 ///

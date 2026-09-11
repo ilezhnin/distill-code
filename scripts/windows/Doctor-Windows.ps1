@@ -178,22 +178,6 @@ Check-Command "jq" "Run: winget install --id jqlang.jq -e" $prereqs.Jq | Out-Nul
 Check-Python -Python $prereqs.Python
 Check-Command "lefthook" "Install Lefthook, then rerun 'just setup-windows' to install hooks." $prereqs.Lefthook | Out-Null
 
-$paths = Resolve-GooseDevPaths
-Write-WindowsDevInfo "Managed Goose repo: $($paths.Repo)"
-Write-WindowsDevInfo "Managed Goose cargo target: $($paths.CargoTargetDir)"
-try {
-    $result = Invoke-EnsureLocalGoose -Action Check
-    if ($result.Ready) {
-        Pass "Managed Goose" $result.BinPath
-    } else {
-        Fail "Managed Goose" "$($result.Message)"
-    }
-} catch {
-    Fail "Managed Goose" "$($_.Exception.Message). Run: just setup-windows"
-}
-
-Warn "Native sign-in" "Berd native provider sign-in is not supported on Windows yet. Sign in on macOS or use explicit local credential/file storage for Windows verification."
-
 Write-Host ""
 if ($script:Failures -gt 0) {
     Write-Host "Doctor found $script:Failures failure(s) and $script:Warnings warning(s)." -ForegroundColor Red

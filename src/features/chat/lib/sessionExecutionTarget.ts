@@ -53,8 +53,8 @@ interface SessionExecutionModelSnapshot {
  *
  * PROVENANCE RULE for `modelId`. A concrete model id put on a session is not
  * a preference the runtime is free to interpret — it is forwarded to the
- * harness verbatim (goose sends it as
- * `session/set_config_option("model", <id>)`). A harness that does not know
+ * harness verbatim as
+ * `session/set_config_option("model", <id>)`. A harness that does not know
  * the id answers `Invalid params`, and because that call happens inside
  * `stream()` the failure lands on EVERY send: the chat is unusable and cannot
  * be repaired from inside itself. That is the codex-acp P0.
@@ -91,11 +91,6 @@ export function normalizeSessionExecutionTarget(
   if (modelId && !modelProviderId) {
     throw new Error("Session model selection requires a model provider id.");
   }
-  if (modelId && harnessId === "goose" && modelProviderId === harnessId) {
-    throw new Error(
-      "Goose model selection requires a concrete model provider.",
-    );
-  }
 
   if (!modelProviderId) {
     return { harnessId };
@@ -131,12 +126,7 @@ export function materializeSessionExecutionModel(
   if (!target) {
     return null;
   }
-  const modelProviderId =
-    target.modelProviderId ??
-    (target.harnessId === "goose" ? undefined : target.harnessId);
-  if (!modelProviderId) {
-    return null;
-  }
+  const modelProviderId = target.modelProviderId ?? target.harnessId;
 
   const materialized = normalizeSessionExecutionTarget({
     ...target,

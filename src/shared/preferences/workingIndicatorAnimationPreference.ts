@@ -1,9 +1,9 @@
 import { createBooleanLocalStoragePreference } from "@/shared/preferences/createBooleanLocalStoragePreference";
 
 export const WORKING_INDICATOR_ANIMATION_STORAGE_KEY =
-  "goose:working-indicator-animation-enabled";
+  "distill:working-indicator-animation-enabled";
 export const WORKING_INDICATOR_ANIMATION_CHANGED_EVENT =
-  "goose:working-indicator-animation-changed";
+  "distill:working-indicator-animation-changed";
 
 const workingIndicatorAnimationPreference = createBooleanLocalStoragePreference(
   {

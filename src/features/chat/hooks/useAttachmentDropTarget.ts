@@ -22,7 +22,7 @@ interface UseAttachmentDropTargetOptions {
 
 const NATIVE_DROP_EXPECTED_MS = 1000;
 const NATIVE_DROP_HANDLED_SUPPRESSION_MS = 500;
-const INTERNAL_APP_DRAG_DATA_TYPE = "application/x-goose-internal-drag";
+const INTERNAL_APP_DRAG_DATA_TYPE = "application/x-distill-internal-drag";
 
 function isInternalAppDrag(dataTransfer: DataTransfer) {
   return Array.from(dataTransfer.types).includes(INTERNAL_APP_DRAG_DATA_TYPE);
@@ -31,7 +31,7 @@ function isInternalAppDrag(dataTransfer: DataTransfer) {
 function isInternalAppDragActive() {
   return (
     typeof document !== "undefined" &&
-    document.documentElement.dataset.gooseInternalDrag != null
+    document.documentElement.dataset.distillInternalDrag != null
   );
 }
 

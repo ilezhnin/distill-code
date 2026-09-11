@@ -13,13 +13,6 @@
     "view": "Ver adjunto {{index}}",
     "viewFullSize": "Ver adjunto {{name}} en tamaño completo"
   },
-  "agentToolsTip": {
-    "connect": "Conectar",
-    "connected": "{{tool}} está conectado",
-    "disconnected_one": "{{tools}} está desconectado",
-    "disconnected_other": "{{tools}} están desconectados",
-    "dismiss": "Descartar consejo"
-  },
   "context": {
     "closePanel": "Cerrar panel de contexto",
     "openPanel": "Abrir panel de contexto",
@@ -73,7 +66,7 @@
     "attachmentsTooLarge": "Los adjuntos son demasiado grandes para enviar ({{totalMb}} MB, límite {{limitMb}} MB). Elimina algunos adjuntos e inténtalo de nuevo.",
     "harnessRejectedModel": "{{harness}} no acepta el modelo «{{model}}», por lo que este mensaje no se envió. Este chat ahora usa el modelo actual de {{harness}}: vuelve a enviarlo o elige otro modelo en la píldora de modelo del compositor.",
     "sessionPreparationSuperseded": "La configuración de la sesión cambió durante la preparación. Intenta enviar de nuevo.",
-    "steeringBackendUnavailable": "La guía no está disponible en este backend de Goose. Reinicia con la rama del backend de guía e inténtalo de nuevo.",
+    "steeringBackendUnavailable": "La guía no está disponible para este agente.",
     "voiceInputFailedTitle": "Falló el dictado por voz",
     "voiceInputNoMicrophoneDescription": "Conecta o selecciona un micrófono y vuelve a intentar el dictado por voz.",
     "voiceInputNoMicrophoneTitle": "No se encontró ningún micrófono",
@@ -186,7 +179,7 @@
       "copyPathSuccess": "Ruta del espacio de trabajo copiada.",
       "copyPaths": "Copiar rutas",
       "copySuccess": "Rutas de espacios de trabajo copiadas.",
-      "description": "Todos los espacios de trabajo listados se comparten con Goose para este chat.",
+      "description": "Todos los espacios de trabajo listados se comparten con el agente para este chat.",
       "empty": "Aún no hay espacios de trabajo incluidos.",
       "includeSuccess": "{{name}} incluido.",
       "mainCheckout": "checkout principal",
@@ -213,17 +206,17 @@
       "removeConfirmCancel": "Cancelar",
       "removeConfirmTitle": "¿Seguro que quieres quitar este espacio de trabajo?",
       "removeManagedConfirmAction": "Quitar {{resource}}",
-      "removeManagedConfirmBody": "Esto quita {{resource}} creado por Goose y desvincula el espacio de trabajo de este chat.",
-      "removeManagedConfirmBodyWithChanges_one": "Este {{resource}} tiene {{count}} cambio sin confirmar. Quitarlo descartará los cambios locales y eliminará {{resource}} creado por Goose.",
-      "removeManagedConfirmBodyWithChanges_other": "Este {{resource}} tiene {{count}} cambios sin confirmar. Quitarlo descartará los cambios locales y eliminará {{resource}} creado por Goose.",
+      "removeManagedConfirmBody": "Esto quita {{resource}} creado por Distill y desvincula el espacio de trabajo de este chat.",
+      "removeManagedConfirmBodyWithChanges_one": "Este {{resource}} tiene {{count}} cambio sin confirmar. Quitarlo descartará los cambios locales y eliminará {{resource}} creado por Distill.",
+      "removeManagedConfirmBodyWithChanges_other": "Este {{resource}} tiene {{count}} cambios sin confirmar. Quitarlo descartará los cambios locales y eliminará {{resource}} creado por Distill.",
       "removeManagedConfirmTitle": "¿Seguro que quieres quitar este {{resource}}?",
       "removeManagedError": "No se pudo limpiar {{resource}}.",
       "removeWorktreeConfirmAction": "Quitar espacio de trabajo",
-      "removeWorktreeConfirmBody": "Si quitas este espacio de trabajo, el worktree {{worktree}} creado por Goose se eliminará del disco.",
+      "removeWorktreeConfirmBody": "Si quitas este espacio de trabajo, el worktree {{worktree}} creado por Distill se eliminará del disco.",
       "removeWorktreeConfirmBodyWithChanges_one": "Tienes {{count}} cambio sin confirmar en este worktree. Si quitas este espacio de trabajo, ese cambio se perderá y {{worktree}} se eliminará del disco.",
       "removeWorktreeConfirmBodyWithChanges_other": "Tienes {{count}} cambios sin confirmar en este worktree. Si quitas este espacio de trabajo, esos cambios se perderán y {{worktree}} se eliminará del disco.",
       "removeWorktreeConfirmTitle": "¿Seguro que quieres quitar este worktree?",
-      "removeSharedManagedConfirmBodyOtherChat": "Otro chat activo usa el mismo {{resource}} creado por Goose. Solo se quitará este espacio de trabajo de este chat; el {{resource}} permanecerá en el disco.",
+      "removeSharedManagedConfirmBodyOtherChat": "Otro chat activo usa el mismo {{resource}} creado por Distill. Solo se quitará este espacio de trabajo de este chat; el {{resource}} permanecerá en el disco.",
       "terminal": "Terminal"
     },
     "picker": {
@@ -281,21 +274,6 @@
     "summary": {
       "changes_one": "{{count}} cambio",
       "changes_other": "{{count}} cambios"
-    },
-    "pullRequests": {
-      "fallbackTitle": "Pull request #{{number}}",
-      "open": "Abrir el pull request #{{number}} de {{repo}} en GitHub",
-      "state": {
-        "OPEN": "Abierto",
-        "CLOSED": "Cerrado",
-        "MERGED": "Fusionado",
-        "DRAFT": "Borrador"
-      },
-      "checks": {
-        "SUCCESS": "Verificaciones aprobadas",
-        "PENDING": "Verificaciones en curso",
-        "FAILURE": "Verificaciones fallidas"
-      }
     },
     "tabs": {
       "details": "Contexto",
@@ -377,17 +355,11 @@
       "worktreesAndBranches": "¿Archivar el chat y quitar sus worktrees y ramas?"
     },
     "archiveConfirmDescriptionWithFiles": {
-      "worktrees": "Esto descartará archivos y cambios locales, archivará el chat y luego quitará los worktrees creados por Goose.",
-      "branches": "Esto descartará cambios locales, archivará el chat y luego quitará las ramas creadas por Goose.",
-      "worktreesAndBranches": "Esto descartará archivos y cambios locales, archivará el chat y luego quitará los worktrees y las ramas creados por Goose."
+      "worktrees": "Esto descartará archivos y cambios locales, archivará el chat y luego quitará los worktrees creados por Distill.",
+      "branches": "Esto descartará cambios locales, archivará el chat y luego quitará las ramas creadas por Distill.",
+      "worktreesAndBranches": "Esto descartará archivos y cambios locales, archivará el chat y luego quitará los worktrees y las ramas creados por Distill."
     },
     "archiveConfirmAction": "Archivar y quitar"
-  },
-  "pinToHome": {
-    "action": "Fijar chat",
-    "pinned": "Chat fijado",
-    "pinning": "Fijando...",
-    "unpin": "Desfijar chat"
   },
   "message": {
     "copied": "Copiado",
@@ -421,7 +393,7 @@
     "create": "Crear agente...",
     "clearActive": "Quitar asistente activo",
     "removeSelected": "Quitar agente {{agent}}",
-    "defaultDescription": "Sin agente seleccionado: chatea directamente con Goose"
+    "defaultDescription": "Sin agente seleccionado: chatea con el asistente predeterminado"
   },
   "skill": {
     "clearSelected": "Quitar habilidad {{skill}}"
@@ -459,8 +431,7 @@
     "placeholder": "Inicia una conversación",
     "setupVoiceConversation": "Configurar conversación por voz",
     "startVoiceConversation": "Iniciar conversación por voz",
-    "voiceConversationStartFailed": "No se pudo iniciar la conversación por voz. Tu borrador sigue aquí.",
-    "voiceConversationRequiresGoose": "La conversación por voz requiere Goose"
+    "voiceConversationStartFailed": "No se pudo iniciar la conversación por voz. Tu borrador sigue aquí."
   },
   "emptyState": {
     "startAConversation": "Inicia una conversación"
@@ -552,7 +523,9 @@
         "budgetInvalid": "El \"budget\" de un paso no es un límite que la aplicación pueda aplicar.",
         "classUnknown": "Un paso indicó una \"class\" de complejidad que esta aplicación no tiene.",
         "stepModelUnavailable": "El paso {{step}} indica un modelo que esta instalación no puede ejecutar ahora mismo, y se rechazó el plan entero en lugar de ejecutar el paso en otro modelo sin avisar.",
-        "verificationStepMissing": "Este plan construye algo que se puede comprobar, pero su último paso no lo comprueba. Una ola así debe terminar con un paso de verificación que inspeccione el resultado."
+        "verificationStepMissing": "Este plan construye algo que se puede comprobar, pero nada en él comprueba el resultado. Una ola así debe terminar con un paso de verificación que inspeccione el resultado.",
+        "verificationStepMisplaced": "Este plan sí comprueba su trabajo, pero la comprobación no es lo último que hace: después del verificador se ejecuta un paso que no es de commit ni de publicación.",
+        "verificationStepBlind": "Este plan termina con un paso de verificación que nunca recibe los informes de los demás pasos, así que no puede saber qué está verificando."
       },
       "budgetReset": {
         "title": "El presupuesto de revisiones empieza de cero con este plan.",
@@ -744,23 +717,7 @@
     "voiceInputDisabled": "Configura OPENAI_API_KEY para activar el dictado",
     "voiceInputRecording": "Escuchando...",
     "voiceInputTranscribing": "Transcribiendo...",
-    "voiceInputAutoSubmitHint": "Di \"submit\" para enviar",
-    "voiceConversation": {
-      "start": "Iniciar conversación de voz",
-      "muteMicrophone": "Silenciar micrófono",
-      "unmuteMicrophone": "Activar micrófono",
-      "states": {
-        "off": "Iniciar conversación de voz",
-        "starting": "Iniciando conversación de voz…",
-        "stopping": "Deteniendo conversación de voz…",
-        "listening": "La conversación de voz escucha la sesión {{sessionId}}",
-        "muted": "El micrófono de la conversación de voz está silenciado para la sesión {{sessionId}}",
-        "user-speaking": "Recibiendo entrada de voz…",
-        "agent-working": "El agente está trabajando…",
-        "agent-speaking": "El agente está hablando…",
-        "error": "Error de conversación de voz: {{error}}"
-      }
-    }
+    "voiceInputAutoSubmitHint": "Di \"submit\" para enviar"
   },
   "tools": {
     "content": "Contenido",

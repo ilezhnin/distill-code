@@ -5,8 +5,8 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 
-const STORAGE_KEY = "goose:pending-session-workspace-activations";
-const CHANGED_EVENT = "goose:pending-session-workspace-activations-changed";
+const STORAGE_KEY = "distill:pending-session-workspace-activations";
+const CHANGED_EVENT = "distill:pending-session-workspace-activations-changed";
 
 export interface PendingSessionWorkspaceActivation {
   requestId: string;

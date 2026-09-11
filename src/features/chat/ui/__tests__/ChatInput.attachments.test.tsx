@@ -10,18 +10,6 @@ import {
 import userEvent from "@testing-library/user-event";
 import { ChatInput } from "./chatInputTestUtils";
 
-vi.mock("@/features/chat/hooks/useVoiceDictation", () => ({
-  useAnyVoiceDictationActive: () => false,
-  useVoiceDictation: () => ({
-    isEnabled: false,
-    isRecording: false,
-    isTranscribing: false,
-    isStarting: () => false,
-    stopRecording: vi.fn(),
-    toggleRecording: vi.fn(),
-  }),
-}));
-
 vi.mock("@/features/chat/hooks/useMentionHandlers", () => ({
   useMentionHandlers: () => ({
     mentionOpen: false,

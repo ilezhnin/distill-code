@@ -88,7 +88,7 @@ checks out a reviewed Berd revision, supplies its updater and runtime
 configuration, invokes the normal builders, then owns signing and publication.
 
 Custom macOS builds use `BUILD_KIND=custom` with
-`BERD_RELEASE_CHANNEL=disabled`. `scripts/release/build-macos.sh` validates their
+`BERD_RELEASE_CHANNEL=disabled`. The release bundle recipe validates their
 configuration, stamps the suffixed version, stages resources, and builds the
 unsigned app; distribution-specific orchestration and artifact destinations do
 not live in this repository.
@@ -123,7 +123,6 @@ deletion, and force changes.
 | `scripts/release/lib.sh` | Release validation, naming, paths, and explicit inputs |
 | `scripts/release/version.mjs` | Shared canonical SemVer parsing and comparison |
 | `scripts/release/release.mjs` | Lockstep version checks and prepare/publish maintainer commands |
-| `scripts/release/build-macos.sh` | Version, resources, sidecar, and macOS build |
 | `scripts/release/build-tauri-release-config.mjs` | Fail-closed updater profile overlay |
 | `scripts/release/package-signed-updater.sh` | macOS signed-app verification, archive, signature, and digest |
 | `scripts/release/package-signed-updater-windows.sh` | Windows updater archive, signature, and digest |

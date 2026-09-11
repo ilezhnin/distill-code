@@ -2,15 +2,7 @@
 //!
 //! The operator's requirement is simple to state and the whole point of this
 //! module: archive one folder, unpack it on another machine, and have
-//! everything back. Before this, the pieces were scattered by the operating
-//! system's conventions — goose put config, data and state in three different
-//! places under `Block/goose`, and the app kept its own database somewhere
-//! else again. Backing that up meant knowing all of it.
-//!
-//! One root fixes it, because goose already supports being told where to
-//! live: `GOOSE_PATH_ROOT` moves its config, data, state, agents and plugins
-//! under one absolute path. This module decides what that path is, creates
-//! it, and hands it to the goose child.
+//! everything back. This module decides what that path is and creates it.
 //!
 //! ## The bootstrap problem
 //!
@@ -23,32 +15,12 @@
 //! Precedence is env var, then pointer file, then `~/.distill`. The env var
 //! comes first so a test, a second install or a portable run can redirect
 //! everything without touching the user's real setup.
-//!
-//! ## Why goose is not moved without being asked
-//!
-//! Setting `GOOSE_PATH_ROOT` does not carry anything with it: goose simply
-//! starts looking somewhere new. On a machine that already has chats and
-//! projects under `Block/goose`, switching silently would open an app with an
-//! empty history and no explanation — the data is fine, and the operator has
-//! no way to know that.
-//!
-//! So the switch is automatic only where it is free: a fresh install, with no
-//! previous goose data, adopts the one folder immediately and records it. An
-//! install that already has data keeps working exactly as before until the
-//! operator picks a folder, which is the act of opting in. The app's own
-//! documents — planner, memory, review queue — always live in the root either
-//! way, because they have nothing on disk to orphan.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use etcetera::{choose_app_strategy, AppStrategy, AppStrategyArgs};
-
 /// Overrides the pointer file and the default. Absolute paths only.
 pub const DISTILL_ROOT_ENV: &str = "DISTILL_ROOT";
-
-/// Handed to the goose child so its own directories land under our root.
-pub const GOOSE_PATH_ROOT_ENV: &str = "GOOSE_PATH_ROOT";
 
 const POINTER_FILE_NAME: &str = "root-path";
 const DEFAULT_ROOT_DIR_NAME: &str = ".distill";
@@ -87,10 +59,10 @@ pub fn resolve_root(env_value: Option<&str>, os_config_dir: &Path, home_dir: &Pa
 
 /// Records a new root for the next start. Does not move existing data.
 ///
-/// Deliberately not applied to the running process: goose reads
-/// `GOOSE_PATH_ROOT` once, at spawn, and half the app pointing at a new root
-/// while the other half still holds the old one is the kind of split the
-/// whole module exists to prevent. The caller tells the operator to restart.
+/// Deliberately not applied to the running process: half the app pointing at
+/// a new root while the other half still holds the old one is the kind of
+/// split the whole module exists to prevent. The caller tells the operator to
+/// restart.
 pub fn write_root_pointer(os_config_dir: &Path, root: &Path) -> Result<(), String> {
     if !root.is_absolute() {
         return Err(format!("Root must be an absolute path: {}", root.display()));
@@ -111,46 +83,6 @@ pub fn write_root_pointer(os_config_dir: &Path, root: &Path) -> Result<(), Strin
         root.to_string_lossy().as_bytes(),
     )
     .map_err(|error| format!("Cannot record the root: {error}"))
-}
-
-/// goose's own data directory when nothing redirects it.
-///
-/// Computed with the same `etcetera` call goose makes, with the same
-/// arguments, rather than a per-platform guess: a wrong path here would
-/// report "no previous data" on a machine full of it and switch anyway.
-pub fn legacy_goose_data_dir() -> Option<PathBuf> {
-    choose_app_strategy(AppStrategyArgs {
-        top_level_domain: "Block".to_string(),
-        author: "Block".to_string(),
-        app_name: "goose".to_string(),
-    })
-    .ok()
-    .map(|strategy| strategy.data_dir())
-}
-
-/// True when a previous install left chats or projects behind.
-///
-/// An empty directory does not count: goose creates it eagerly, and treating
-/// "the folder exists" as "there is data" would keep every fresh install on
-/// the old scattered layout forever.
-pub fn has_legacy_goose_data(data_dir: &Path) -> bool {
-    ["sessions.db", "projects"]
-        .iter()
-        .any(|name| data_dir.join(name).exists())
-}
-
-/// Whether goose should be pointed at the root on this start.
-///
-/// `true` for an explicit choice (env var or a recorded pointer) and for a
-/// fresh install. `false` only when there is previous data and nobody has
-/// asked to move — the one case where switching would hide it.
-pub fn should_adopt_root(forced_by_env: bool, has_pointer: bool, has_legacy_data: bool) -> bool {
-    forced_by_env || has_pointer || !has_legacy_data
-}
-
-/// True when a root has been recorded, i.e. the operator chose one.
-pub fn has_root_pointer(os_config_dir: &Path) -> bool {
-    pointer_file(os_config_dir).is_file()
 }
 
 /// Creates the root and the folders the app expects inside it.
@@ -246,32 +178,6 @@ mod tests {
         let config = base.join("config");
         assert!(write_root_pointer(&config, Path::new("relative")).is_err());
         assert!(!pointer_file(&config).exists());
-    }
-
-    #[test]
-    fn an_empty_goose_folder_is_not_previous_data() {
-        // goose creates its data directory eagerly; treating that as "there is
-        // history here" would keep every fresh install on the old layout.
-        let base = temp();
-        fs::create_dir_all(base.join("data")).unwrap();
-        assert!(!has_legacy_goose_data(&base.join("data")));
-
-        fs::write(base.join("data").join("sessions.db"), b"x").unwrap();
-        assert!(has_legacy_goose_data(&base.join("data")));
-    }
-
-    #[test]
-    fn a_fresh_install_adopts_the_root_and_one_with_history_does_not() {
-        // The whole point: switching is free when there is nothing to orphan,
-        // and hides the operator's chats when there is.
-        assert!(should_adopt_root(false, false, false));
-        assert!(!should_adopt_root(false, false, true));
-    }
-
-    #[test]
-    fn an_explicit_choice_adopts_the_root_whatever_is_left_behind() {
-        assert!(should_adopt_root(false, true, true));
-        assert!(should_adopt_root(true, false, true));
     }
 
     #[test]

@@ -4,8 +4,6 @@ import {
   BarChart3,
   Bell,
   Brain,
-  FlaskConical,
-  Headphones,
   Keyboard,
   Palette,
   Settings2,
@@ -102,21 +100,14 @@ export const SETTINGS_SECTIONS = [
   { id: "appearance", labelKey: "nav.appearance", icon: Palette },
   { id: "behavior", labelKey: "nav.behavior", icon: SlidersHorizontal },
   { id: "memory", labelKey: "nav.memory", icon: Brain },
-  { id: "connections", labelKey: "nav.connections", icon: IconPlug },
+  { id: "extensions", labelKey: "nav.extensions", icon: IconPlug },
   { id: "providers", labelKey: "nav.providers", icon: IconServer },
   { id: "notifications", labelKey: "nav.notifications", icon: Bell },
   { id: "shortcuts", labelKey: "nav.shortcuts", icon: Keyboard },
   { id: "stats", labelKey: "nav.stats", icon: BarChart3 },
-  {
-    id: "voice",
-    labelKey: "nav.voice",
-    icon: Headphones,
-    capability: "voiceConversation",
-  },
   { id: "archive", labelKey: "nav.archive", icon: Archive },
   { id: "security", labelKey: "nav.security", icon: Shield },
   { id: "system", labelKey: "nav.system", icon: Settings2 },
-  { id: "experiments", labelKey: "nav.experiments", icon: FlaskConical },
 ] as const satisfies readonly SettingsSectionDefinition[];
 
 export type SectionId = (typeof SETTINGS_SECTIONS)[number]["id"];
@@ -127,7 +118,7 @@ const LEGACY_SECTION_REDIRECTS: Record<string, SectionId> = {
   general: "appearance",
   projects: "archive",
   chats: "archive",
-  extensions: "connections",
+  connections: "extensions",
   // rev 5: "about" is no longer a section -- app identity, the update
   // check, and Account now live at the bottom of "system" under an "About"
   // subhead. Both the legacy `about` route and the older `updates` route
@@ -153,7 +144,9 @@ export function resolveSettingsSection(section: string | null): SectionId {
 function getSectionCapability(
   section: (typeof SETTINGS_SECTIONS)[number],
 ): ProfileCapabilityId | undefined {
-  return "capability" in section ? section.capability : undefined;
+  return "capability" in section
+    ? (section.capability as ProfileCapabilityId)
+    : undefined;
 }
 
 function isSectionHidden(section: (typeof SETTINGS_SECTIONS)[number]): boolean {

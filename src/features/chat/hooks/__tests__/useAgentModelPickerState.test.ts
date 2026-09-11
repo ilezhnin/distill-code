@@ -259,44 +259,6 @@ describe("useAgentModelPickerState", () => {
     });
   });
 
-  it("routes model providers through Goose", () => {
-    const getModelsForAgent = vi.fn((agentId: string) =>
-      agentId === "goose"
-        ? [
-            {
-              id: "gpt-5.4",
-              name: "GPT-5.4",
-              providerId: "databricks_v2",
-              providerName: "Databricks AI Gateway",
-            },
-          ]
-        : [],
-    );
-
-    mockUseProviderModels.mockReturnValue({
-      configuredModelProviderIds: ["databricks_v2"],
-      modelCacheRefreshProviderIds: ["databricks_v2"],
-      getModelsForAgent,
-      refreshAllModelProviders: vi.fn().mockResolvedValue(undefined),
-      isRefreshingProvider: () => false,
-      getError: () => null,
-    });
-
-    const { result } = renderHook(() =>
-      useAgentModelPickerState({
-        providers: [{ id: "goose", label: "Goose" }],
-        selectedProvider: "databricks_v2",
-        onProviderSelected: vi.fn(),
-      }),
-    );
-
-    expect(result.current.selectedAgentId).toBe("goose");
-    expect(getModelsForAgent).toHaveBeenCalledWith("goose");
-    expect(
-      result.current.availableModels.map((model) => model.providerId),
-    ).toEqual(["databricks_v2"]);
-  });
-
   it("preserves curated agent providers", () => {
     const getModelsForAgent = vi.fn(() => [
       {
@@ -342,7 +304,6 @@ describe("useAgentModelPickerState", () => {
 
     expect(result.current.pickerAgents.map((agent) => agent.id)).toEqual(
       expect.arrayContaining([
-        "goose",
         "claude-acp",
         "codex-acp",
         "grok-acp",
@@ -387,41 +348,9 @@ describe("useAgentModelPickerState", () => {
       result.current.pickerAgents.find((agent) => agent.id === "cursor-agent"),
     ).toMatchObject({
       id: "cursor-agent",
-      label: "Cursor Agent",
+      label: "Cursor",
       readiness: "ready",
     });
-  });
-
-  it("keeps Goose visible when it is selected and still needs setup", () => {
-    mockUseAgentProviderStatus.mockReturnValue({
-      readyAgentIds: new Set(["codex-acp"]),
-      agentReadiness: new Map([
-        ["goose", "not_ready"],
-        ["codex-acp", "ready"],
-      ]),
-      loading: false,
-      refresh: mockRefreshAgentProviderStatus,
-    });
-
-    const { result } = renderHook(() =>
-      useAgentModelPickerState({
-        providers: [{ id: "codex-acp", label: "Codex" }],
-        selectedProvider: "goose",
-        onProviderSelected: vi.fn(),
-      }),
-    );
-
-    expect(
-      result.current.pickerAgents.find((agent) => agent.id === "goose"),
-    ).toEqual({
-      id: "goose",
-      label: "Goose",
-      readiness: "not_ready",
-      setupAction: "connect",
-    });
-    expect(
-      result.current.pickerAgents.find((agent) => agent.id === "codex-acp"),
-    ).toMatchObject({ id: "codex-acp", label: "Codex", readiness: "ready" });
   });
 
   it("still lists connected catalog harnesses when startup has not populated providers", () => {
@@ -434,11 +363,9 @@ describe("useAgentModelPickerState", () => {
     );
 
     expect(result.current.pickerAgents.map((agent) => agent.id)).toEqual([
-      "goose",
       "claude-acp",
       "codex-acp",
       "grok-acp",
-      "cursor-agent",
     ]);
   });
 });

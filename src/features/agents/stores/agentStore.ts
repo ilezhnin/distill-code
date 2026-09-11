@@ -2,9 +2,10 @@ import { create } from "zustand";
 import type { Persona, Agent } from "@/shared/types/agents";
 import type { AcpProvider } from "@/shared/api/acp";
 import { canEditPersona } from "@/features/agents/lib/personaPresentation";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
-const PROVIDER_STORAGE_KEY = "goose:defaultProvider";
-const FALLBACK_PROVIDER = "goose";
+const PROVIDER_STORAGE_KEY = "distill:defaultProvider";
+const FALLBACK_PROVIDER = DEFAULT_HARNESS_ID;
 
 export function getStoredProvider(providers: AcpProvider[] = []): string {
   try {

@@ -1,8 +1,9 @@
 import { useCallback, useSyncExternalStore } from "react";
 
-export const TERMINAL_FALLBACK_CWD_STORAGE_KEY = "goose:terminal-fallback-cwd";
+export const TERMINAL_FALLBACK_CWD_STORAGE_KEY =
+  "distill:terminal-fallback-cwd";
 const TERMINAL_FALLBACK_CWD_CHANGED_EVENT =
-  "goose:terminal-fallback-cwd-changed";
+  "distill:terminal-fallback-cwd-changed";
 
 function trimValue(value: string | null | undefined): string | null {
   const trimmed = value?.trim();

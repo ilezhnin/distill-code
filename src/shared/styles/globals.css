@@ -1786,7 +1786,7 @@ body,
     font-variation-settings: normal;
   }
 
-  .goose-zoom-scope {
+  .app-zoom-scope {
     zoom: var(--goose-content-zoom, 1);
   }
 

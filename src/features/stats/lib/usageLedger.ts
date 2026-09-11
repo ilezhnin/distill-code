@@ -14,6 +14,7 @@ import {
   USAGE_LEDGER_STORAGE_KEY,
   USAGE_LEDGER_VERSION,
 } from "./usageTypes";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
 const WORKING_CHAT_STATES: ReadonlySet<ChatState> = new Set([
   "thinking",
@@ -39,7 +40,7 @@ let removeWindowListener: (() => void) | undefined;
 
 function emptySessionRecord(): UsageSessionRecord {
   return {
-    providerId: "goose",
+    providerId: DEFAULT_HARNESS_ID,
     modelId: null,
     modelName: null,
     createdAt: 0,
@@ -275,7 +276,7 @@ function sessionFromSource(
     createdAt;
   return {
     ...(existing ?? emptySessionRecord()),
-    providerId: source.providerId || existing?.providerId || "goose",
+    providerId: source.providerId || existing?.providerId || DEFAULT_HARNESS_ID,
     modelId: source.modelId ?? existing?.modelId ?? null,
     modelName: source.modelName ?? existing?.modelName ?? null,
     createdAt:

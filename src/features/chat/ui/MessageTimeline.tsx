@@ -123,7 +123,6 @@ export function MessageTimeline({
   onRetryMessage,
   onEditMessage,
   onForkFromMessage,
-  onSendMcpAppMessage,
   onRunShellCommand,
   onEditProject,
   onChangeFolder,
@@ -156,7 +155,6 @@ export function MessageTimeline({
   const messageListBottomPaddingPxRef = useRef(0);
   const autoScrollTimersRef = useRef<number[]>([]);
   const jumpToLatestAnimationFrameRef = useRef<number | null>(null);
-  const lastMcpAppSignatureRef = useRef<string | null>(null);
   const suppressFollowResumeFromProgrammaticScrollRef = useRef(false);
   const scrollIntentRef = useRef<TimelineScrollIntent>("following-latest");
   const previousStreamingMessageIdRef = useRef<string | null>(null);
@@ -710,67 +708,6 @@ export function MessageTimeline({
     }
   }, [scrollToBottom]);
 
-  const requestMcpAppAutoScroll = useCallback((element: HTMLElement | null) => {
-    const container = containerRef.current;
-    if (!container || !element) {
-      return;
-    }
-
-    if (
-      userDetachedRef.current ||
-      suppressFollowResumeFromProgrammaticScrollRef.current
-    ) {
-      return;
-    }
-
-    const distanceFromBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight;
-    const shouldStick =
-      isNearBottomRef.current ||
-      distanceFromBottom < TIMELINE_AUTO_SCROLL_THRESHOLD_PX ||
-      stickyScrollUntilRef.current > performance.now();
-
-    if (!shouldStick) {
-      return;
-    }
-
-    stickyScrollUntilRef.current =
-      performance.now() + TIMELINE_MCP_APP_STICKY_SCROLL_MS;
-
-    const alignElementBottom = () => {
-      const nextContainer = containerRef.current;
-      if (!nextContainer || !element.isConnected) {
-        return;
-      }
-      if (
-        userDetachedRef.current ||
-        suppressFollowResumeFromProgrammaticScrollRef.current
-      ) {
-        return;
-      }
-
-      const containerRect = nextContainer.getBoundingClientRect();
-      const elementRect = element.getBoundingClientRect();
-      const footerRect = footerRef.current?.getBoundingClientRect();
-      const visibleBottom = footerRect
-        ? Math.min(containerRect.bottom, footerRect.top)
-        : containerRect.bottom;
-      const delta = elementRect.bottom - visibleBottom + 16;
-
-      if (delta > 0) {
-        nextContainer.scrollBy({
-          top: delta,
-          behavior: "auto",
-        });
-      }
-    };
-
-    alignElementBottom();
-    requestAnimationFrame(() => {
-      alignElementBottom();
-    });
-  }, []);
-
   // Use scrollTo instead of scrollIntoView to avoid scrolling parent/document-level ancestors.
   // biome-ignore lint/correctness/useExhaustiveDependencies: refs are stable and don't need to be in deps
   useEffect(() => {
@@ -1188,35 +1125,6 @@ export function MessageTimeline({
     [cancelJumpToLatestAnimation],
   );
 
-  useEffect(() => {
-    const lastMessage = visibleMessages.at(-1);
-    if (!lastMessage || lastMessage.role !== "assistant") {
-      lastMcpAppSignatureRef.current = null;
-      return;
-    }
-
-    const mcpAppCount = lastMessage.content.filter(
-      (block) => block.type === "mcpApp",
-    ).length;
-    if (mcpAppCount === 0) {
-      lastMcpAppSignatureRef.current = null;
-      return;
-    }
-
-    const signature = `${lastMessage.id}:${mcpAppCount}:${lastMessage.content.length}`;
-    if (lastMcpAppSignatureRef.current === signature) {
-      return;
-    }
-    lastMcpAppSignatureRef.current = signature;
-
-    if (
-      isNearBottomRef.current ||
-      stickyScrollUntilRef.current > performance.now()
-    ) {
-      schedulePinnedBottomBurst();
-    }
-  }, [schedulePinnedBottomBurst, visibleMessages]);
-
   const handleScroll = () => {
     const container = containerRef.current;
     if (!container) return;
@@ -1397,8 +1305,6 @@ export function MessageTimeline({
       onRetryMessage,
       onEditMessage,
       onForkFromMessage,
-      onSendMcpAppMessage,
-      onMcpAppAutoScroll: requestMcpAppAutoScroll,
       onRunShellCommand,
       onEditProject,
       onChangeFolder,
@@ -1411,8 +1317,6 @@ export function MessageTimeline({
       onRetryMessage,
       onEditMessage,
       onForkFromMessage,
-      onSendMcpAppMessage,
-      requestMcpAppAutoScroll,
       onRunShellCommand,
       onEditProject,
       onChangeFolder,

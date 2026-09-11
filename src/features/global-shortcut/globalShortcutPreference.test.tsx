@@ -1,8 +1,8 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const LEGACY_EXPERIMENT_STORAGE_KEY = "goose:experimental-features";
-const STORAGE_KEY = "goose:global-shortcut-enabled";
+const LEGACY_EXPERIMENT_STORAGE_KEY = "distill:experimental-features";
+const STORAGE_KEY = "distill:global-shortcut-enabled";
 
 async function loadPreference() {
   vi.resetModules();
@@ -46,26 +46,6 @@ describe("globalShortcutPreference", () => {
       );
     });
     expect(result.current.enabled).toBe(false);
-  });
-
-  it("migrates an explicit legacy experiment choice only when unset", async () => {
-    localStorage.setItem(
-      LEGACY_EXPERIMENT_STORAGE_KEY,
-      JSON.stringify({
-        version: 2,
-        experiments: { "global-shortcut": { enabled: true } },
-      }),
-    );
-
-    let preference = await loadPreference();
-
-    expect(preference.getGlobalShortcutEnabled()).toBe(true);
-    expect(localStorage.getItem(STORAGE_KEY)).toBe("true");
-
-    localStorage.setItem(STORAGE_KEY, "false");
-    preference = await loadPreference();
-
-    expect(preference.getGlobalShortcutEnabled()).toBe(false);
   });
 
   it("ignores unknown or implicit legacy experiment state", async () => {

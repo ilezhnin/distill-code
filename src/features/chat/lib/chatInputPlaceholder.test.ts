@@ -29,23 +29,12 @@ describe("getChatInputAgentLabel", () => {
 
 describe("getChatInputPlaceholder", () => {
   it("uses the agent label in the default placeholder", () => {
-    expect(getChatInputPlaceholder(t, "Goose", false, false)).toBe(
-      "input.placeholder:Goose",
-    );
-  });
-
-  it("uses voice status placeholders while recording or transcribing", () => {
-    expect(getChatInputPlaceholder(t, "Goose", true, false)).toBe(
-      "toolbar.voiceInputRecording",
-    );
-    expect(getChatInputPlaceholder(t, "Goose", false, true)).toBe(
-      "toolbar.voiceInputTranscribing",
-    );
+    expect(getChatInputPlaceholder(t, "Goose")).toBe("input.placeholder:Goose");
   });
 
   it("respects an explicit placeholder override", () => {
-    expect(
-      getChatInputPlaceholder(t, "Goose", false, false, "Custom prompt"),
-    ).toBe("Custom prompt");
+    expect(getChatInputPlaceholder(t, "Goose", "Custom prompt")).toBe(
+      "Custom prompt",
+    );
   });
 });

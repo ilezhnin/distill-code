@@ -39,7 +39,7 @@ import {
   type ChildChatTab,
 } from "../stores/childChatTabsStore";
 
-const CHILD_CHAT_WIDTH_STORAGE_KEY = "goose:child-chat-panel-width";
+const CHILD_CHAT_WIDTH_STORAGE_KEY = "distill:child-chat-panel-width";
 const EMPTY_MESSAGES: Message[] = [];
 
 /**

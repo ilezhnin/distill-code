@@ -6,7 +6,7 @@ import {
 import { usePersistedState } from "@/shared/hooks/usePersistedState";
 import { CP_TOTAL_W } from "../ui/ChatContextPanel";
 
-const RIGHT_RAIL_WIDTH_STORAGE_KEY = "goose:chat-right-rail-width";
+const RIGHT_RAIL_WIDTH_STORAGE_KEY = "distill:chat-right-rail-width";
 const RIGHT_RAIL_DEFAULT_WIDTH = CP_TOTAL_W;
 const RIGHT_RAIL_MIN_WIDTH = 280;
 const RIGHT_RAIL_MAX_WIDTH = 460;

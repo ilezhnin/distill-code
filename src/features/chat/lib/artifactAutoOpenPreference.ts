@@ -1,9 +1,9 @@
 import { useCallback, useSyncExternalStore } from "react";
 
-export const ARTIFACT_AUTO_OPEN_STORAGE_KEY = "goose:artifact-auto-open";
+export const ARTIFACT_AUTO_OPEN_STORAGE_KEY = "distill:artifact-auto-open";
 export const DEFAULT_ARTIFACT_AUTO_OPEN = true;
 
-const ARTIFACT_AUTO_OPEN_CHANGED_EVENT = "goose:artifact-auto-open-changed";
+const ARTIFACT_AUTO_OPEN_CHANGED_EVENT = "distill:artifact-auto-open-changed";
 
 function normalize(value: unknown): boolean {
   // Only an explicit "false" disables it; default (and anything else) is on.

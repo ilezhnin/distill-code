@@ -8,6 +8,7 @@ import { providerModelInventoryMessage } from "@/features/providers/lib/provider
 import { resolveSelectedAgentId } from "../lib/agentProviderResolution";
 import { listVisibleAgentPickerOptions } from "../lib/listVisibleAgentPickerOptions";
 import type { ModelOption } from "../types";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
 interface UseAgentModelPickerStateOptions {
   providers: AcpProvider[];
@@ -26,7 +27,6 @@ export function useAgentModelPickerState({
   const catalogEntries = useProviderCatalogStore((state) => state.entries);
   const catalogLoaded = useProviderCatalogStore((state) => state.loaded);
   const {
-    configuredModelProviderIds,
     modelCacheRefreshProviderIds,
     getModelsForAgent,
     getInstalledModelsForAgent,
@@ -78,11 +78,8 @@ export function useAgentModelPickerState({
   );
 
   const providerIdsForSelectedAgent = useMemo(
-    () =>
-      selectedAgentId === "goose"
-        ? configuredModelProviderIds
-        : [selectedAgentId],
-    [configuredModelProviderIds, selectedAgentId],
+    () => [selectedAgentId],
+    [selectedAgentId],
   );
 
   const isModelInventoryAuthoritative = useCallback(
@@ -134,7 +131,7 @@ export function useAgentModelPickerState({
 
   const handleProviderChange = useCallback(
     (providerId: string) => {
-      if (providerId === (selectedProvider ?? "goose")) {
+      if (providerId === (selectedProvider ?? DEFAULT_HARNESS_ID)) {
         return;
       }
 

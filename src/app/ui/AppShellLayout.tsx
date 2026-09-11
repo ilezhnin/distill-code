@@ -17,8 +17,6 @@ import {
   SIDEBAR_COLLAPSE_TRANSITION_MS,
   SIDEBAR_RESIZE_HANDLE_INSIDE_PX,
 } from "@/shared/ui/sidebar-tokens";
-import { ChannelSwitchDialog } from "@/features/updates/ui/ChannelSwitchDialog";
-import { UpdateButton } from "@/features/updates/ui/UpdateButton";
 import { TopBar } from "./TopBar";
 import { useFocusRegion } from "@/app/focus/FocusRegionProvider";
 import { useSessionListRefresh } from "@/features/sessions/hooks/useSessionListRefresh";
@@ -212,7 +210,7 @@ export function AppShellLayout({
         }
       />
 
-      <div className="goose-zoom-scope relative flex min-h-0 flex-1">
+      <div className="app-zoom-scope relative flex min-h-0 flex-1">
         {/*
           This slot owns the sidebar/content gap. The panel is right-aligned
           inside the slot, so animating the slot width moves the panel and main
@@ -386,8 +384,6 @@ export function AppShellLayout({
       </div>
 
       <StatusBar />
-      <UpdateButton />
-      <ChannelSwitchDialog />
 
       <CreateProjectDialog {...createProjectDialog} />
       {isDesignSystemExplorerEnabled() && showDesignSystemInspector ? (

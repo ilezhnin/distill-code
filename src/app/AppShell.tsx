@@ -8,8 +8,6 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { FeedbackDialog } from "@/features/feedback/FeedbackDialog";
-import { useFeedbackDialogStore } from "@/features/feedback/feedbackDialogStore";
 import { KeyboardShortcutsDialog } from "@/features/shortcuts/ui/KeyboardShortcutsDialog";
 import { eventMatchesShortcutCommand } from "@/features/shortcuts/lib/shortcutRegistry";
 import { useShortcutsDialogStore } from "@/features/shortcuts/stores/shortcutsDialogStore";
@@ -36,7 +34,6 @@ import {
 } from "@/features/settings/lib/settingsEvents";
 import type { ExtensionEntry } from "@/features/extensions/types";
 import { acceptFirstSend } from "@/features/chat/lib/firstWorkspaceSend";
-import { CHAT_SOURCE_SURFACE } from "@/features/chat/lib/chatTelemetry";
 import {
   admitSystemInheritedQueuedMessage,
   personaIntentFromComposer,
@@ -129,10 +126,7 @@ import {
   useRegisterAppNavigationController,
 } from "@/features/berdctl/navigation";
 import { AgentBuilderLeaveDraftDialog } from "@/features/agents/ui/AgentBuilderLeaveDraftDialog";
-import { AutomationBuilderLeaveDialog } from "@/features/automations/ui/AutomationBuilderLeaveDialog";
-import type { AutomationBuilderLeaveAction } from "@/features/automations/ui/AutomationBuilderView";
 import { AppShellLayout } from "./ui/AppShellLayout";
-import type { AuthStatus } from "@/features/auth/api/auth";
 import { AppShellContent } from "./ui/AppShellContent";
 import {
   replaceSessionTargetAfterDispatch,
@@ -173,21 +167,14 @@ import {
   getChatSessionIdsWithTerminals,
   setTerminalRenderingSuspended,
 } from "@/features/terminal/lib/terminalSessionManager";
-import type { SetupChatRequest } from "@/features/chat/lib/setupChatRequest";
 import type { AgentSetupTroubleshootingRequest } from "@/features/providers/lib/agentSetupTroubleshooting";
 import type { SkillInfo } from "@/features/skills/api/skills";
 import { toChatSkillDraft } from "@/features/skills/lib/skillChatPrompt";
-import { useMigrationGate } from "@/features/migration/hooks/useMigrationGate";
 import { useNewSessionTarget } from "@/features/providers/hooks/useNewSessionTarget";
-import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProviderStatus";
-import { useDefaultProviderReadinessStore } from "@/features/providers/stores/defaultProviderReadinessStore";
-import {
-  getProviderCatalog,
-  resolveAgentProviderCatalogIdStrict,
-} from "@/features/providers/providerCatalog";
+import { getProviderCatalog } from "@/features/providers/providerCatalog";
 import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
-import { getBuildFeatureState } from "@/shared/profile/buildProfile";
-import { gooseServeSelectionFromExecutionTarget } from "@/features/chat/lib/gooseServeExecutionTarget";
+import { hostSelectionFromExecutionTarget } from "@/features/chat/lib/hostExecutionTarget";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 import {
   isModelExecutionTarget,
   materializeSessionExecutionModel,
@@ -195,7 +182,6 @@ import {
   sameSessionExecutionTarget,
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
-import { useDefaultModelGate } from "@/features/migration/hooks/useDefaultModelGate";
 import { StartupDiagnosticView } from "./ui/StartupDiagnosticView";
 import { buildStartupDiagnosticIssue } from "./lib/startupDiagnostics";
 import { usePersistedState } from "@/shared/hooks/usePersistedState";
@@ -227,15 +213,6 @@ import {
   isSystemNotification,
 } from "@/shared/types/messages";
 import { isDesignSystemExplorerEnabled } from "@/features/design-system/lib/designSystemEnabled";
-import { useVoiceConversationStore } from "@/features/voice-conversation/stores/voiceConversationStore";
-import { usePocketVoiceSetup } from "@/features/voice-conversation/hooks/usePocketVoiceSetup";
-import { PocketVoiceSetupDialog } from "@/features/voice-conversation/ui/PocketVoiceSetupDialog";
-import {
-  cancelPendingVoiceStart,
-  continuePendingVoiceStart,
-  deferPendingVoiceStart,
-  type DeferredPendingVoiceStart,
-} from "@/features/voice-conversation/lib/pendingVoiceStart";
 import { useProfileCapabilities } from "@/shared/profile/capabilities";
 import { getOptimisticArtifactCwd } from "@/shared/artifacts/sessionArtifactLocation";
 import {
@@ -247,16 +224,10 @@ import type {
   AppNavigationLocation,
   AppNavigationUpdateOptions,
   AppView,
-  AutomationNavigationRoute,
-  BuilderbotNavigationRoute,
 } from "./types/appNavigation";
 import type { TopBarBreadcrumb } from "./ui/TopBar";
 import { STARTUP_LOADING_MIN_DISPLAY_MS } from "./lib/startupLoading";
 import { StartupLoadingView } from "./ui/StartupLoadingView";
-import {
-  shouldStopVoiceConversationOnExperimentChange,
-  shouldStopVoiceConversationOnSessionChange,
-} from "./lib/voiceConversationLifecycle";
 export type { AppView } from "./types/appNavigation";
 
 type AppNavigationHistory = {
@@ -286,20 +257,11 @@ function executionTargetFromModelPreference(
   harnessId: string,
   preference: ResolvedSessionModelPreference,
 ): SessionExecutionTarget {
-  const canApplyModel =
-    !preference.modelId ||
-    harnessId !== "goose" ||
-    (preference.providerId !== "goose" &&
-      !resolveAgentProviderCatalogIdStrict(preference.providerId));
   return normalizeSessionExecutionTarget({
     harnessId,
-    modelProviderId:
-      canApplyModel &&
-      (preference.modelId || preference.providerId !== harnessId)
-        ? preference.providerId
-        : undefined,
-    modelId: canApplyModel ? preference.modelId : undefined,
-    modelName: canApplyModel ? preference.modelName : undefined,
+    modelProviderId: preference.modelId ? harnessId : undefined,
+    modelId: preference.modelId,
+    modelName: preference.modelName,
   });
 }
 
@@ -311,7 +273,7 @@ interface PendingSessionWorkspaceCleanupConfirmation {
 
 const APP_NAVIGATION_HISTORY_LIMIT = 50;
 const DESIGN_SYSTEM_INSPECTOR_VISIBLE_STORAGE_KEY =
-  "goose:design-system-inspector-visible:v2";
+  "distill:design-system-inspector-visible:v2";
 const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 const GLOBAL_COMPOSER_HANDOFF_MS = 620;
 const GLOBAL_COMPOSER_ROUTE_SWAP_DELAY_MS = 220;
@@ -470,7 +432,7 @@ async function applyReasoningEffortToSession(
     );
   };
   const { providerId, modelId } =
-    gooseServeSelectionFromExecutionTarget(targetAtRequest);
+    hostSelectionFromExecutionTarget(targetAtRequest);
 
   try {
     const configOptionsSnapshot = await acpSetSessionConfigOption(
@@ -583,15 +545,7 @@ function getTopBarChromeInsets(
   return { leading: "compact" };
 }
 
-export function AppShell({
-  authStatus,
-  children,
-  onLoggedOut,
-}: {
-  authStatus?: AuthStatus;
-  children?: React.ReactNode;
-  onLoggedOut?: (status: AuthStatus) => void;
-}) {
+export function AppShell({ children }: { children?: React.ReactNode }) {
   const { t } = useTranslation([
     "chat",
     "common",
@@ -656,69 +610,10 @@ export function AppShell({
   const initialActiveView = getInitialAppView(initialSettingsSection);
   const [activeView, setActiveView] = useState<AppView>(initialActiveView);
   const capabilities = useProfileCapabilities();
-  const isAutomationsFeatureEnabled = capabilities.automations;
-  const isBuilderbotSurfaceEnabled = capabilities.builderbot;
-  const isFeedbackEnabled = capabilities.feedback;
   const sessionWindowSupport = useSessionWindowSupport();
   const isMultiWindowEnabled = sessionWindowSupport.supported;
-  const stopVoiceConversation = useVoiceConversationStore(
-    (state) => state.stop,
-  );
-  const requestVoiceConversationStart = useVoiceConversationStore(
-    (state) => state.requestStart,
-  );
-  const globalPocketVoiceSetup = usePocketVoiceSetup(
-    capabilities.voiceConversation,
-  );
-  const [globalPocketVoiceSetupOpen, setGlobalPocketVoiceSetupOpen] =
-    useState(false);
-  const pendingGlobalVoiceStartRef =
-    useRef<DeferredPendingVoiceStart<GlobalComposerExpandPayload> | null>(null);
-  const voiceConversationWasEnabledRef = useRef(capabilities.voiceConversation);
-  useEffect(() => {
-    const wasEnabled = voiceConversationWasEnabledRef.current;
-    voiceConversationWasEnabledRef.current = capabilities.voiceConversation;
-    if (
-      !shouldStopVoiceConversationOnExperimentChange({
-        wasEnabled,
-        isEnabled: capabilities.voiceConversation,
-      })
-    ) {
-      return;
-    }
-    // The native process survives renderer reloads and may be owned by another
-    // window, so an explicit on-to-off transition must clean up active use.
-    // Mounting with the experiment already off performs no Voice native work.
-    cancelPendingVoiceStart(pendingGlobalVoiceStartRef);
-    setGlobalPocketVoiceSetupOpen(false);
-    void stopVoiceConversation().catch(() => undefined);
-  }, [capabilities.voiceConversation, stopVoiceConversation]);
   const sessions = useChatSessionStore(selectSessions);
   const activeSessionId = useChatSessionStore(selectActiveSessionId);
-  const previousActiveSessionIdRef = useRef(activeSessionId);
-  useEffect(() => {
-    const previousSessionId = previousActiveSessionIdRef.current;
-    previousActiveSessionIdRef.current = activeSessionId;
-    const voice = useVoiceConversationStore.getState();
-    if (
-      previousSessionId !== null &&
-      previousSessionId !== activeSessionId &&
-      voice.requestedStartSessionId === previousSessionId
-    ) {
-      voice.clearRequestedStart(previousSessionId);
-    }
-    if (
-      !shouldStopVoiceConversationOnSessionChange({
-        previousSessionId,
-        nextSessionId: activeSessionId,
-        boundSessionId: voice.status.sessionId,
-        lifecycle: voice.status.lifecycle,
-      })
-    ) {
-      return;
-    }
-    void stopVoiceConversation().catch(() => undefined);
-  }, [activeSessionId, stopVoiceConversation]);
   const sidebarIsResizing = isResizing;
   const sidebarDockedPanelOuterWidth = sidebarPanelOuterWidth;
   const sidebarDockedOuterWidth = sidebarCollapsed ? 0 : sidebarPanelOuterWidth;
@@ -740,20 +635,10 @@ export function AppShell({
     useState<GlobalComposerHandoffRect | null>(null);
   const globalComposerHandoffTimeoutRef = useRef<number | null>(null);
   const globalComposerRouteSwapTimeoutRef = useRef<number | null>(null);
-  const [automationsRoute, setAutomationsRoute] =
-    useState<AutomationNavigationRoute>({ surface: "overview" });
-  const [builderbotRoute, setBuilderbotRoute] =
-    useState<BuilderbotNavigationRoute>({ surface: "overview" });
   const [skillsBreadcrumbLabel, setSkillsBreadcrumbLabel] = useState<
     string | null
   >(null);
   const [agentsBreadcrumbLabel, setAgentsBreadcrumbLabel] = useState<
-    string | null
-  >(null);
-  const [automationsBreadcrumbLabel, setAutomationsBreadcrumbLabel] = useState<
-    string | null
-  >(null);
-  const [builderbotBreadcrumbLabel, setBuilderbotBreadcrumbLabel] = useState<
     string | null
   >(null);
   const [
@@ -778,8 +663,6 @@ export function AppShell({
         initialSettingsSection ?? DEFAULT_SETTINGS_SECTION,
         null,
         null,
-        { surface: "overview" },
-        { surface: "overview" },
         DEFAULT_DESIGN_SYSTEM_SECTION,
       ),
     ],
@@ -796,19 +679,6 @@ export function AppShell({
   const navigateAgentBuilderChatRef = useRef<
     (sessionId: string) => void | Promise<void>
   >(() => {});
-  const automationBuilderLeaveActionRef =
-    useRef<AutomationBuilderLeaveAction | null>(null);
-  const pendingAutomationNavigationRef = useRef<{
-    next: () => void;
-    onCancel?: () => void;
-  } | null>(null);
-  const [
-    automationBuilderHasUnsavedChanges,
-    setAutomationBuilderHasUnsavedChanges,
-  ] = useState(false);
-  const [automationLeavePromptOpen, setAutomationLeavePromptOpen] =
-    useState(false);
-  const [automationLeaveSaving, setAutomationLeaveSaving] = useState(false);
   const {
     workspaceNameRequest: pendingWorkspaceName,
     enqueueWorkspaceNameRequest,
@@ -896,7 +766,7 @@ export function AppShell({
     ): Promise<SessionExecutionTarget | undefined> => {
       const requestedTarget = options.executionTarget;
       const requestedSelection = requestedTarget
-        ? gooseServeSelectionFromExecutionTarget(requestedTarget)
+        ? hostSelectionFromExecutionTarget(requestedTarget)
         : undefined;
       const resolution = await ensureNewSessionTarget(
         requestedTarget
@@ -928,14 +798,6 @@ export function AppShell({
     },
     [ensureNewSessionTarget],
   );
-  const { readyAgentIds } = useAgentProviderStatus();
-  const defaultProviderReadinessStatus = useDefaultProviderReadinessStore(
-    (state) => state.readiness?.status,
-  );
-  const providerSetupRequiredForHome =
-    getBuildFeatureState().byoKeyProviders &&
-    defaultProviderReadinessStatus === "needs_setup" &&
-    ![...readyAgentIds].some((providerId) => providerId !== "goose");
   const selectedProviderRef = useRef(selectedProvider);
   selectedProviderRef.current = selectedProvider;
   const projects = useProjectStore(selectProjects);
@@ -1066,10 +928,6 @@ export function AppShell({
     globalComposerPlacement,
   ]);
   const startupReady = startup.ready && !startup.error;
-  const migrationGate = useMigrationGate(startupReady);
-  const migrationSettled =
-    migrationGate.status === "ready" || migrationGate.status === "error";
-  useDefaultModelGate(migrationSettled);
   useSessionWindowTracking({ enabled: isMultiWindowEnabled });
   useSessionHandoffSource({ enabled: isMultiWindowEnabled });
   const lastNonSecondaryViewRef = useRef<AppView>("home");
@@ -1127,15 +985,6 @@ export function AppShell({
   }, [activeView]);
 
   useEffect(() => {
-    if (activeView === "builderbot" && !isBuilderbotSurfaceEnabled) {
-      setActiveView("home");
-    }
-    if (activeView === "automations" && !isAutomationsFeatureEnabled) {
-      setActiveView("home");
-    }
-  }, [activeView, isAutomationsFeatureEnabled, isBuilderbotSurfaceEnabled]);
-
-  useEffect(() => {
     const enabledSection = resolveEnabledSettingsSection(
       activeSettingsSection,
       capabilities,
@@ -1176,8 +1025,6 @@ export function AppShell({
         activeSettingsSection,
         skillsSkillId,
         agentsPersonaId,
-        automationsRoute,
-        builderbotRoute,
         activeDesignSystemSection,
       ),
     [
@@ -1186,8 +1033,6 @@ export function AppShell({
       activeSettingsSection,
       activeView,
       agentsPersonaId,
-      automationsRoute,
-      builderbotRoute,
       skillsSkillId,
     ],
   );
@@ -1304,7 +1149,8 @@ export function AppShell({
     }
 
     const request = (async () => {
-      const currentProvider = () => selectedProviderRef.current ?? "goose";
+      const currentProvider = () =>
+        selectedProviderRef.current ?? DEFAULT_HARNESS_ID;
 
       if (
         homeSession &&
@@ -1335,7 +1181,7 @@ export function AppShell({
           (uiOwnsBootstrapTarget || isModelExecutionTarget(bootstrapTarget))
         ) {
           const bootstrapSelection =
-            gooseServeSelectionFromExecutionTarget(bootstrapTarget);
+            hostSelectionFromExecutionTarget(bootstrapTarget);
           const target = await ensureNewSessionTarget(
             {
               providerId:
@@ -1400,8 +1246,7 @@ export function AppShell({
         ) {
           return liveHomeSession;
         }
-        const targetSelection =
-          gooseServeSelectionFromExecutionTarget(targetToApply);
+        const targetSelection = hostSelectionFromExecutionTarget(targetToApply);
         const target = await ensureNewSessionTarget(
           {
             providerId: targetSelection.providerId ?? targetToApply.harnessId,
@@ -1463,7 +1308,7 @@ export function AppShell({
         sessionModelPreference,
       );
       const executionSelection =
-        gooseServeSelectionFromExecutionTarget(executionTarget);
+        hostSelectionFromExecutionTarget(executionTarget);
       const target = await ensureNewSessionTarget(
         {
           providerId:
@@ -1509,22 +1354,13 @@ export function AppShell({
   ]);
 
   useEffect(() => {
-    if (
-      activeView !== "home" ||
-      !migrationSettled ||
-      providerSetupRequiredForHome
-    ) {
+    if (activeView !== "home" || !startupReady) {
       return;
     }
     void ensureHomeSession().catch((error) => {
       console.error("Failed to ensure Home session:", error);
     });
-  }, [
-    activeView,
-    ensureHomeSession,
-    migrationSettled,
-    providerSetupRequiredForHome,
-  ]);
+  }, [activeView, ensureHomeSession, startupReady]);
 
   const startDraftSessionCreation = useCallback(
     ({
@@ -1597,7 +1433,7 @@ export function AppShell({
             sessionExecutionTarget,
           );
           const creationSelection =
-            gooseServeSelectionFromExecutionTarget(requestedTarget);
+            hostSelectionFromExecutionTarget(requestedTarget);
           return acpCreateSession(
             creationSelection.providerId ?? requestedTarget.harnessId,
             resolvedWorkingDir,
@@ -1608,7 +1444,6 @@ export function AppShell({
               // The draft is already interactive. Construct its provider now so
               // a selection made while creation is in flight can be applied to
               // the backend session as soon as it exists.
-              deferProviderSetup: false,
             },
           ).then(({ sessionId, configOptionsSnapshot }) => {
             createdBackendSessionId = sessionId;
@@ -2092,87 +1927,12 @@ export function AppShell({
     navigateChat: (sessionId) => navigateAgentBuilderChatRef.current(sessionId),
   });
 
-  const handleAutomationBuilderLeaveActionChange = useCallback(
-    (action: AutomationBuilderLeaveAction | null) => {
-      automationBuilderLeaveActionRef.current = action;
-      setAutomationBuilderHasUnsavedChanges(Boolean(action?.hasUnsavedChanges));
-    },
-    [],
-  );
-
-  const guardAutomationBuilderNavigation = useCallback(
-    (next: () => void, onCancel?: () => void) => {
-      const action = automationBuilderLeaveActionRef.current;
-      if (
-        activeView === "automations" &&
-        automationsRoute.surface === "builder" &&
-        automationBuilderHasUnsavedChanges &&
-        action?.hasUnsavedChanges
-      ) {
-        // A newer guarded navigation supersedes any pending one; settle the
-        // old entry as cancelled so its caller is not left waiting forever.
-        pendingAutomationNavigationRef.current?.onCancel?.();
-        pendingAutomationNavigationRef.current = { next, onCancel };
-        setAutomationLeavePromptOpen(true);
-        return;
-      }
-
-      next();
-    },
-    [activeView, automationBuilderHasUnsavedChanges, automationsRoute.surface],
-  );
-
   const guardAppNavigation = useCallback(
     (next: () => void, onCancel?: () => void) => {
-      agentBuilder.guardNavigation(() => {
-        guardAutomationBuilderNavigation(next, onCancel);
-      }, onCancel);
+      agentBuilder.guardNavigation(next, onCancel);
     },
-    [agentBuilder.guardNavigation, guardAutomationBuilderNavigation],
+    [agentBuilder.guardNavigation],
   );
-
-  const continuePendingAutomationNavigation = useCallback(() => {
-    const pending = pendingAutomationNavigationRef.current;
-    pendingAutomationNavigationRef.current = null;
-    pending?.next();
-  }, []);
-
-  const cancelAutomationLeave = useCallback(() => {
-    const pending = pendingAutomationNavigationRef.current;
-    pendingAutomationNavigationRef.current = null;
-    setAutomationLeavePromptOpen(false);
-    pending?.onCancel?.();
-  }, []);
-
-  const discardAutomationLeave = useCallback(() => {
-    automationBuilderLeaveActionRef.current?.discard();
-    automationBuilderLeaveActionRef.current = null;
-    setAutomationBuilderHasUnsavedChanges(false);
-    setAutomationLeavePromptOpen(false);
-    continuePendingAutomationNavigation();
-  }, [continuePendingAutomationNavigation]);
-
-  const saveAutomationLeave = useCallback(async () => {
-    const action = automationBuilderLeaveActionRef.current;
-    if (!action) {
-      discardAutomationLeave();
-      return;
-    }
-
-    setAutomationLeaveSaving(true);
-    try {
-      const saved = await action.save();
-      if (saved === false) {
-        return;
-      }
-      automationBuilderLeaveActionRef.current = null;
-      setAutomationBuilderHasUnsavedChanges(false);
-      setAutomationLeavePromptOpen(false);
-      continuePendingAutomationNavigation();
-    } finally {
-      setAutomationLeaveSaving(false);
-    }
-  }, [continuePendingAutomationNavigation, discardAutomationLeave]);
 
   const createNewProjectDraft = useCallback(
     async (
@@ -2486,7 +2246,7 @@ export function AppShell({
 
       const targetAtRequest = homeSession.executionTarget;
       const { providerId, modelId } =
-        gooseServeSelectionFromExecutionTarget(targetAtRequest);
+        hostSelectionFromExecutionTarget(targetAtRequest);
       void acpSetSessionConfigOption(homeSessionId, current.configId, value, {
         providerId,
         modelId,
@@ -2687,15 +2447,7 @@ export function AppShell({
               : {}),
             persona: personaIntentFromComposer(options?.personaId),
             attachments: options?.attachments,
-            sendOptions: {
-              ...options?.sendOptions,
-              // A deferred first send is dispatched by the background
-              // queued-send pipeline, which reads this surface for `berd_chat`
-              // send telemetry. MAIN_CHAT for parity with this composer's
-              // non-deferred sends, which drain through the ChatView
-              // controller and report the same surface.
-              telemetrySourceSurface: CHAT_SOURCE_SURFACE.MAIN_CHAT,
-            },
+            sendOptions: options?.sendOptions,
           },
           { queueReady: true, onNeedsName: enqueueWorkspaceNameRequest },
         );
@@ -2878,154 +2630,11 @@ export function AppShell({
     ],
   );
 
-  const handleGlobalVoiceConversationStart = useCallback(
-    (
-      payload: GlobalComposerExpandPayload,
-      setupComplete = false,
-    ): Promise<boolean> => {
-      if (!capabilities.voiceConversation) return Promise.resolve(false);
-      if (!setupComplete && globalPocketVoiceSetup.status?.installed !== true) {
-        const pending = deferPendingVoiceStart(
-          pendingGlobalVoiceStartRef,
-          payload,
-        );
-        setGlobalPocketVoiceSetupOpen(true);
-        return pending;
-      }
-
-      const options = payload.options;
-      const project = options?.projectId
-        ? projects.find((candidate) => candidate.id === options.projectId)
-        : undefined;
-      const chatOptions = {
-        activate: false,
-        reuseExistingDraft: false,
-        executionTarget: options?.executionTarget,
-        reasoningEffort: options?.reasoningEffort,
-      };
-
-      const createAndStart = async () => {
-        const voice = useVoiceConversationStore.getState();
-        if (
-          voice.status.lifecycle === "starting" ||
-          voice.status.lifecycle === "running" ||
-          voice.status.lifecycle === "stopping"
-        ) {
-          await stopVoiceConversation();
-        }
-        const session = await createNewTab(
-          DEFAULT_CHAT_TITLE,
-          project,
-          chatOptions,
-        );
-        if (!session) {
-          toast.error(t("chat:globalPill.voiceConversationStartFailed"));
-          return false;
-        }
-
-        const sessionId = resolveLiveSessionId(session.id) ?? session.id;
-        if (options?.personaId !== undefined) {
-          patchSession(sessionId, {
-            personaId: options.personaId ?? undefined,
-          });
-        }
-        if (options?.reasoningEffort) {
-          try {
-            await applyReasoningEffortToSession(
-              sessionId,
-              options.reasoningEffort,
-            );
-          } catch (error) {
-            console.error(
-              "Failed to apply reasoning effort for voice conversation:",
-              error,
-            );
-          }
-        }
-
-        const chatState = useChatStore.getState();
-        chatState.setDraft(sessionId, payload.text);
-        chatState.setSkillDrafts(sessionId, payload.selectedSkills);
-        chatState.setDraftAttachments(sessionId, options?.attachments ?? []);
-        handleNavigateToSession(sessionId);
-        requestVoiceConversationStart(sessionId);
-        resetGlobalComposerTransition();
-        return true;
-      };
-
-      return new Promise<boolean>((resolve) => {
-        guardAppNavigation(
-          () => {
-            void createAndStart()
-              .then(resolve)
-              .catch((error) => {
-                console.error(
-                  "Failed to create chat for voice conversation:",
-                  error,
-                );
-                toast.error(t("chat:globalPill.voiceConversationStartFailed"));
-                resolve(false);
-              });
-          },
-          () => resolve(false),
-        );
-      });
-    },
-    [
-      capabilities.voiceConversation,
-      createNewTab,
-      globalPocketVoiceSetup.status?.installed,
-      guardAppNavigation,
-      handleNavigateToSession,
-      patchSession,
-      projects,
-      requestVoiceConversationStart,
-      resetGlobalComposerTransition,
-      stopVoiceConversation,
-      t,
-    ],
-  );
-  const handleGlobalPocketVoiceSetupOpenChange = useCallback(
-    (open: boolean) => {
-      if (!open) {
-        cancelPendingVoiceStart(pendingGlobalVoiceStartRef);
-      }
-      setGlobalPocketVoiceSetupOpen(open);
-    },
-    [],
-  );
-  const handleGlobalPocketVoiceUseSelected = useCallback(() => {
-    setGlobalPocketVoiceSetupOpen(false);
-    void continuePendingVoiceStart(pendingGlobalVoiceStartRef, (payload) =>
-      handleGlobalVoiceConversationStart(payload, true),
-    );
-  }, [handleGlobalVoiceConversationStart]);
-
-  const handleStartConnectionSetupChat = useCallback(
-    (request: SetupChatRequest) => {
-      guardAppNavigation(() => {
-        const harnessId = selectedProviderRef.current ?? "goose";
-        void createNewTab(request.title, undefined, {
-          executionTarget: { harnessId },
-        })
-          .then((session) => {
-            if (!session) return;
-            const sessionId = resolveLiveSessionId(session.id) ?? session.id;
-            useChatStore.getState().setDraft(sessionId, request.prompt);
-          })
-          .catch((error) => {
-            console.error("Failed to start connection setup chat:", error);
-          });
-      });
-    },
-    [guardAppNavigation, createNewTab],
-  );
-
   const handleStartProviderTroubleshootingChat = useCallback(
     (request: AgentSetupTroubleshootingRequest) => {
       guardAppNavigation(() => {
         void createNewTab(request.title, undefined, {
-          executionTarget: { harnessId: "goose" },
+          executionTarget: { harnessId: DEFAULT_HARNESS_ID },
         })
           .then((session) => {
             if (!session) return;
@@ -3113,7 +2722,8 @@ export function AppShell({
         ),
       );
       guardAppNavigation(() => {
-        void createNewProjectDraft(displayName, project, {
+        // Untitled on purpose: the list icon marks a conductor, the harness names it.
+        void createNewProjectDraft(DEFAULT_CHAT_TITLE, project, {
           reuseExistingDraft: false,
           personaId: chosen?.id,
         })
@@ -3131,11 +2741,6 @@ export function AppShell({
                 ? (roleById(fileStemFromPersonaId(chosen.id))?.id ??
                   DEFAULT_CONDUCTOR_ROLE_ID)
                 : DEFAULT_CONDUCTOR_ROLE_ID,
-            });
-            useChatSessionStore.getState().patchSession(session.id, {
-              title: displayName,
-              userSetName: true,
-              personaId: chosen?.id,
             });
           })
           .catch((error) => {
@@ -3661,45 +3266,15 @@ export function AppShell({
 
   const handleOpenExtensionFromSearch = useCallback(
     (_entry: ExtensionEntry) => {
-      handleOpenSettingsFromSearch("connections");
+      handleOpenSettingsFromSearch("extensions");
     },
     [handleOpenSettingsFromSearch],
-  );
-
-  const handleOpenAutomationFromSearch = useCallback(
-    (automationId: string, onNavigationAccepted?: () => void) => {
-      if (!isAutomationsFeatureEnabled) {
-        return;
-      }
-      guardAppNavigation(() => {
-        onNavigationAccepted?.();
-        replaceNextNavigationEntryRef.current = false;
-        setAutomationsRoute({
-          surface: "detail",
-          automationId,
-          tab: "details",
-          selectedRunKey: null,
-        });
-        setActiveSession(null);
-        clearSettingsSectionUrl();
-        setActiveView("automations");
-      });
-    },
-    [guardAppNavigation, isAutomationsFeatureEnabled, setActiveSession],
   );
 
   const handleNavigate = useCallback(
     (view: AppView) => {
       guardAppNavigation(() => {
         resetGlobalComposerTransition();
-        if (view === "automations" && !isAutomationsFeatureEnabled) {
-          setActiveView("home");
-          return;
-        }
-        if (view === "builderbot" && !isBuilderbotSurfaceEnabled) {
-          setActiveView("home");
-          return;
-        }
         if (view === "settings") {
           openSettings();
           return;
@@ -3717,12 +3292,6 @@ export function AppShell({
         if (view === "agents") {
           setAgentsPersonaId(null);
         }
-        if (view === "automations") {
-          setAutomationsRoute({ surface: "overview" });
-        }
-        if (view === "builderbot") {
-          setBuilderbotRoute({ surface: "overview" });
-        }
         clearSettingsSectionUrl();
         setActiveView(view);
       });
@@ -3733,8 +3302,6 @@ export function AppShell({
       guardAppNavigation,
       resetGlobalComposerTransition,
       setActiveSession,
-      isAutomationsFeatureEnabled,
-      isBuilderbotSurfaceEnabled,
     ],
   );
 
@@ -3809,44 +3376,6 @@ export function AppShell({
     [navigateAgentsDirect],
   );
 
-  const navigateAutomations = useCallback(
-    (
-      route: AutomationNavigationRoute,
-      options?: AppNavigationUpdateOptions,
-    ) => {
-      if (!isAutomationsFeatureEnabled) {
-        return;
-      }
-      guardAppNavigation(() => {
-        replaceNextNavigationEntryRef.current = Boolean(options?.replace);
-        setAutomationsRoute(route);
-        setActiveSession(null);
-        clearSettingsSectionUrl();
-        setActiveView("automations");
-      });
-    },
-    [guardAppNavigation, isAutomationsFeatureEnabled, setActiveSession],
-  );
-
-  const navigateBuilderbot = useCallback(
-    (
-      route: BuilderbotNavigationRoute,
-      options?: AppNavigationUpdateOptions,
-    ) => {
-      if (!isBuilderbotSurfaceEnabled) {
-        return;
-      }
-      guardAppNavigation(() => {
-        replaceNextNavigationEntryRef.current = Boolean(options?.replace);
-        setBuilderbotRoute(route);
-        setActiveSession(null);
-        clearSettingsSectionUrl();
-        setActiveView("builderbot");
-      });
-    },
-    [guardAppNavigation, isBuilderbotSurfaceEnabled, setActiveSession],
-  );
-
   const applyNavigationLocation = useCallback(
     (location: AppNavigationLocation) => {
       navigationHistoryRef.current.isApplying = true;
@@ -3890,30 +3419,6 @@ export function AppShell({
         return;
       }
 
-      if (location.view === "automations") {
-        if (!isAutomationsFeatureEnabled) {
-          setActiveSession(null);
-          setActiveView("home");
-          return;
-        }
-        setActiveSession(null);
-        setAutomationsRoute(location.route);
-        setActiveView("automations");
-        return;
-      }
-
-      if (location.view === "builderbot") {
-        if (!isBuilderbotSurfaceEnabled) {
-          setActiveSession(null);
-          setActiveView("home");
-          return;
-        }
-        setActiveSession(null);
-        setBuilderbotRoute(location.route);
-        setActiveView("builderbot");
-        return;
-      }
-
       if (location.view === "search") {
         setActiveView("search");
         return;
@@ -3937,14 +3442,7 @@ export function AppShell({
       setActiveSession(null);
       setActiveView(location.view === "chat" ? "home" : location.view);
     },
-    [
-      expandSidebar,
-      isAutomationsFeatureEnabled,
-      isBuilderbotSurfaceEnabled,
-      setActiveSession,
-      setChatActiveSession,
-      sidebarCollapsed,
-    ],
+    [expandSidebar, setActiveSession, setChatActiveSession, sidebarCollapsed],
   );
 
   const goBack = useCallback(() => {
@@ -4030,48 +3528,23 @@ export function AppShell({
     setRightRailOpen(nextOpen);
   }, [activeSession, activeSessionId, isContextVisible, setRightRailOpen]);
 
-  const feedbackOpen = useFeedbackDialogStore((state) => state.open);
-  const feedbackDraft = useFeedbackDialogStore((state) => state.draft);
-  const openFeedbackDialog = useFeedbackDialogStore(
-    (state) => state.openDialog,
-  );
-  const setFeedbackOpen = useFeedbackDialogStore((state) => state.setOpen);
   const shortcutsOpen = useShortcutsDialogStore((state) => state.open);
   const setShortcutsOpen = useShortcutsDialogStore((state) => state.setOpen);
-  const handleFeedbackClick = useCallback(() => {
-    if (!isFeedbackEnabled) {
-      return;
-    }
-    openFeedbackDialog();
-  }, [isFeedbackEnabled, openFeedbackDialog]);
-
-  useEffect(() => {
-    if (!isFeedbackEnabled) {
-      setFeedbackOpen(false);
-    }
-  }, [isFeedbackEnabled, setFeedbackOpen]);
 
   const startupIssue = useMemo(
-    () =>
-      startup.error
-        ? buildStartupDiagnosticIssue(startup.error, startup.probe)
-        : null,
-    [startup.error, startup.probe],
+    () => (startup.error ? buildStartupDiagnosticIssue(startup.error) : null),
+    [startup.error],
   );
   const forceStartupLoading =
     import.meta.env.DEV &&
     new URLSearchParams(window.location.search).has("startupLoading");
   const isGlobalComposerHandoff = globalComposerPlacement === "handoff";
-  const isGlobalComposerRouteDisallowed =
-    targetLocation.view === "automations" &&
-    targetLocation.route.surface === "builder";
   const canShowGlobalComposer =
     startup.ready &&
     !forceStartupLoading &&
     !startupIssue &&
     children == null &&
-    (!isPreparingContent || globalComposerPlacement === "handoff") &&
-    !isGlobalComposerRouteDisallowed;
+    (!isPreparingContent || globalComposerPlacement === "handoff");
   const canUseGlobalComposerShortcut =
     startup.ready && !forceStartupLoading && !startupIssue && children == null;
   const showGlobalComposer =
@@ -4079,21 +3552,6 @@ export function AppShell({
     (globalComposerPlacement !== "docked" || renderedLocation.view !== "chat");
   const showGlobalComposerShim =
     canShowGlobalComposer && globalComposerPlacement !== "docked";
-
-  useEffect(() => {
-    if (
-      globalComposerPlacement === "docked" ||
-      !isGlobalComposerRouteDisallowed
-    ) {
-      return;
-    }
-
-    resetGlobalComposerTransition();
-  }, [
-    globalComposerPlacement,
-    isGlobalComposerRouteDisallowed,
-    resetGlobalComposerTransition,
-  ]);
 
   const handleGlobalComposerHandoffStart = useCallback(
     (rect: GlobalComposerHandoffRect) => {
@@ -4153,42 +3611,6 @@ export function AppShell({
               current("agent-detail", agentsBreadcrumbLabel),
             ]
           : [current("agents", "Agents")];
-      case "automations":
-        return automationsBreadcrumbLabel
-          ? [
-              parent("automations", "Automations", () =>
-                handleNavigate("automations"),
-              ),
-              current("automation-detail", automationsBreadcrumbLabel),
-            ]
-          : [current("automations", "Automations")];
-      case "builderbot":
-        if (!builderbotBreadcrumbLabel) {
-          return [current("builderbot", "Builderbot")];
-        }
-        if (builderbotRoute.surface === "task") {
-          return [
-            parent("builderbot", "Builderbot", () =>
-              navigateBuilderbot({ surface: "overview" }),
-            ),
-            parent("builderbot-tasks", "Tasks", () =>
-              navigateBuilderbot({ surface: "overview", tab: "tasks" }),
-            ),
-            current("builderbot-detail", builderbotBreadcrumbLabel),
-          ];
-        }
-        if (builderbotRoute.surface === "automation") {
-          return [
-            parent("builderbot", "Builderbot", () =>
-              navigateBuilderbot({ surface: "overview" }),
-            ),
-            parent("builderbot-automations", "Automations", () =>
-              navigateBuilderbot({ surface: "overview", tab: "automations" }),
-            ),
-            current("builderbot-detail", builderbotBreadcrumbLabel),
-          ];
-        }
-        return [current("builderbot", "Builderbot")];
       case "design-system": {
         const designSystemSectionLabel = DESIGN_SYSTEM_SECTIONS.find(
           (section) => section.id === activeDesignSystemSection,
@@ -4253,11 +3675,7 @@ export function AppShell({
     activeView,
     agentsBreadcrumbLabel,
     agentsPersonaId,
-    automationsBreadcrumbLabel,
-    builderbotBreadcrumbLabel,
-    builderbotRoute.surface,
     handleNavigate,
-    navigateBuilderbot,
     openDesignSystem,
     openSettings,
     projects,
@@ -4516,7 +3934,6 @@ export function AppShell({
           rightRailOpen: isContextVisible,
           rightRailLabel,
           onToggleRightRail: toggleRightRail,
-          onFeedbackClick: isFeedbackEnabled ? handleFeedbackClick : undefined,
           onSearchClick: () => setSearchDialogOpen(true),
         }}
         navigationPanes={{
@@ -4601,13 +4018,9 @@ export function AppShell({
                 setDesignSystemInspectorVisible
               }
               onDesignSystemSectionChange={selectDesignSystemSection}
-              authStatus={authStatus}
               isPreparingContent={isPreparingContent}
-              automationsEnabled={isAutomationsFeatureEnabled}
-              builderbotEnabled={isBuilderbotSurfaceEnabled}
               renderedSession={renderedSession}
               homeSessionId={homeSessionId}
-              homeProviderSetupRequired={providerSetupRequiredForHome}
               chatComposerHandoffRequest={chatComposerHandoffRequest}
               chatComposerHandoffSessionId={chatComposerHandoffSessionId}
               chatComposerHandoffActive={isGlobalComposerHandoff}
@@ -4619,15 +4032,8 @@ export function AppShell({
               }
               onNavigateSkills={navigateSkills}
               onNavigateAgents={navigateAgents}
-              onNavigateAutomations={navigateAutomations}
-              onNavigateBuilderbot={navigateBuilderbot}
               onSkillsBreadcrumbLabelChange={setSkillsBreadcrumbLabel}
               onAgentsBreadcrumbLabelChange={setAgentsBreadcrumbLabel}
-              onAutomationsBreadcrumbLabelChange={setAutomationsBreadcrumbLabel}
-              onBuilderbotBreadcrumbLabelChange={setBuilderbotBreadcrumbLabel}
-              onAutomationBuilderLeaveActionChange={
-                handleAutomationBuilderLeaveActionChange
-              }
               onCreatePersona={agentBuilder.create}
               onAgentBuilderCompleted={handleAgentBuilderCompleted}
               onStartAgentBuilderSession={agentBuilder.start}
@@ -4644,19 +4050,10 @@ export function AppShell({
               onExitSearch={handleExitSearch}
               onOpenExtension={handleOpenExtensionFromSearch}
               onOpenAgent={handleStartChatWithAgent}
-              onOpenAutomation={handleOpenAutomationFromSearch}
               onOpenSkill={handleStartChatWithSkill}
-              onLoggedOut={onLoggedOut}
               onStartProviderTroubleshootingChat={
                 handleStartProviderTroubleshootingChat
               }
-              onStartConnectionSetupChat={handleStartConnectionSetupChat}
-              onReturnToAgentDraft={
-                agentBuilderSettingsReturnTarget
-                  ? returnToAgentBuilderSettingsTarget
-                  : undefined
-              }
-              onOpenProvidersSettings={() => openSettings("providers")}
             />
             {showGlobalComposerShim ? (
               <div
@@ -4706,16 +4103,6 @@ export function AppShell({
                 onExecutionTargetChange={
                   handleGlobalComposerExecutionTargetChange
                 }
-                voiceConversation={
-                  capabilities.voiceConversation
-                    ? {
-                        enabled: true,
-                        ready:
-                          globalPocketVoiceSetup.status?.installed === true,
-                        onStart: handleGlobalVoiceConversationStart,
-                      }
-                    : undefined
-                }
                 suggestedPersonaId={
                   renderedLocation.view === "agents"
                     ? renderedLocation.personaId
@@ -4726,12 +4113,6 @@ export function AppShell({
           </>
         )}
       </AppShellLayout>
-      <PocketVoiceSetupDialog
-        open={globalPocketVoiceSetupOpen}
-        onOpenChange={handleGlobalPocketVoiceSetupOpenChange}
-        onUseSelected={handleGlobalPocketVoiceUseSelected}
-        setup={globalPocketVoiceSetup}
-      />
       <SessionWorkspaceCleanupDialog
         open={Boolean(pendingWorkspaceCleanupConfirmation)}
         worktreeCount={pendingWorkspaceCleanupConfirmation?.worktreeCount ?? 0}
@@ -4787,11 +4168,6 @@ export function AppShell({
                 setSearchDialogOpen(false),
               );
             }}
-            onOpenAutomation={(automationId) => {
-              handleOpenAutomationFromSearch(automationId, () =>
-                setSearchDialogOpen(false),
-              );
-            }}
             onOpenSkill={(skill) => {
               handleStartChatWithSkill(skill, undefined, () =>
                 setSearchDialogOpen(false),
@@ -4816,25 +4192,6 @@ export function AppShell({
         onConfirm={handleConfirmConductorAgent}
       />
       <AgentBuilderLeaveDraftDialog {...agentBuilder.leaveDraftDialogProps} />
-      <AutomationBuilderLeaveDialog
-        open={automationLeavePromptOpen}
-        isSaving={automationLeaveSaving}
-        onOpenChange={(open) => {
-          if (!open) {
-            cancelAutomationLeave();
-          }
-        }}
-        onCancel={cancelAutomationLeave}
-        onDiscard={discardAutomationLeave}
-        onSave={() => void saveAutomationLeave()}
-      />
-      {isFeedbackEnabled ? (
-        <FeedbackDialog
-          open={feedbackOpen}
-          onOpenChange={setFeedbackOpen}
-          draft={feedbackDraft}
-        />
-      ) : null}
       <KeyboardShortcutsDialog
         open={shortcutsOpen}
         onOpenChange={setShortcutsOpen}

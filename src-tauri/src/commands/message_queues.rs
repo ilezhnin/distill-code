@@ -24,14 +24,6 @@ pub async fn load_message_queues(app: AppHandle) -> Result<Option<String>, Strin
 }
 
 #[tauri::command]
-pub async fn persist_message_queues(
-    app: AppHandle,
-    serialized: Option<String>,
-) -> Result<(), String> {
-    persist_message_queues_at_path(&message_queues_path(&app)?, serialized.as_deref())
-}
-
-#[tauri::command]
 pub async fn persist_message_queue_updates(
     app: AppHandle,
     serialized_updates: String,

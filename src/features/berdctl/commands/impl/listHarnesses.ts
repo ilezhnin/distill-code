@@ -21,13 +21,13 @@ export const listHarnessesCommand = defineCommand({
   destructive: false,
   summary: "List the agent harnesses sessions can run on, with readiness",
   description:
-    "List the agent harnesses sessions can run on (goose, Claude Code, Codex, ...) " +
+    "List the agent harnesses sessions can run on (Claude Code, Codex, ...) " +
     'with their readiness; only "ready" harnesses accept new sessions.',
   helpFooter: `Example:
   berdctl info harnesses --json
 
 Result:
-  {"harnesses": [{"harness_id": "goose", "name": "...",
+  {"harnesses": [{"harness_id": "claude-acp", "name": "...",
                   "is_default": true,
                   "status": "ready"|"not_installed"|"not_ready"}, ...]}
   Only "ready" harnesses accept new sessions; "not_installed" and
@@ -35,16 +35,18 @@ Result:
   the app first.`,
   schema: listHarnessesSchema,
   execute: async (): Promise<ListHarnessesResult> => {
-    const [{ GOOSE_PROVIDER_ID }, { listHarnessStatuses }] = await Promise.all([
-      import("@/shared/api/acpPersonaHandoff"),
-      import("../runtime/providers"),
-    ]);
+    const [{ DEFAULT_HARNESS_ID }, { listHarnessStatuses }] = await Promise.all(
+      [
+        import("@/features/providers/curatedProviders"),
+        import("../runtime/providers"),
+      ],
+    );
     const harnesses = await listHarnessStatuses();
     return {
       harnesses: harnesses.map((harness) => ({
         harness_id: harness.id,
         name: harness.label,
-        is_default: harness.id === GOOSE_PROVIDER_ID,
+        is_default: harness.id === DEFAULT_HARNESS_ID,
         status: harness.readiness,
       })),
     };

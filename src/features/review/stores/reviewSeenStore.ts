@@ -27,7 +27,7 @@ import { distillDocument } from "@/shared/lib/distillDocument";
 export const REVIEW_SEEN_DOCUMENT_PATH = "review-seen.json";
 
 /** Where this lived before the move; read once, then removed. */
-export const REVIEW_SEEN_STORAGE_KEY = "goose:review-seen";
+export const REVIEW_SEEN_STORAGE_KEY = "distill:review-seen";
 
 interface ReviewSeenState {
   lastSeenAt: number;

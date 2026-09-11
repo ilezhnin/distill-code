@@ -12,25 +12,21 @@ import {
   getCatalogEntry,
   resolveAgentProviderCatalogId,
 } from "@/features/providers/providerCatalog";
-import { CURATED_PROVIDER_CATALOG_BY_ID } from "@/features/providers/curatedProviders";
 import {
   setActiveMessageId,
   clearActiveMessageId,
 } from "./acpActiveMessageTracking";
 import {
-  searchSessionsViaExports,
+  searchSessionsViaTranscripts,
   type SessionSearchOptions,
   type SessionSearchTarget,
 } from "./sessionSearch";
 import {
-  isGooseManagedProvider,
   preparePersonaHandoff,
   type PersonaHandoffClaim,
 } from "./acpPersonaHandoff";
-import { useRuntimeConfigStore } from "@/shared/runtime-config/runtimeConfigStore";
-import { resolveManagedGooseProviderSelection } from "@/shared/runtime-config/modelProviderPolicy";
-import { getStyleGuidelinesPrompt } from "@/shared/preferences/styleGuidelinesPreference";
 import { getBerdctlPreamble } from "@/features/berdctl/appPreamble";
+import { getStyleGuidelinesPrompt } from "@/shared/preferences/styleGuidelinesPreference";
 import { INTERACTION_NORMS_PREAMBLE } from "@/shared/api/interactionNorms";
 import { perfLog } from "@/shared/lib/perfLog";
 import {
@@ -57,7 +53,8 @@ export interface AcpSendMessageOptions {
   assistantPrompt?: string;
   personaId?: string;
   personaName?: string;
-  goose?: Record<string, unknown>;
+  /** Extra `_meta` the host records on the prompt (origin, sender labels). */
+  promptMeta?: Record<string, unknown>;
   /** Image attachments as [base64Data, mimeType] pairs. */
   images?: [string, string][];
   /** Fires after ACP setup/client acquisition, immediately before transport. */
@@ -70,7 +67,6 @@ export interface AcpCreateSessionOptions {
   personaId?: string;
   projectId?: string;
   modelId?: string | null;
-  deferProviderSetup?: boolean;
 }
 
 export interface AcpSessionConfigApplyOptions {
@@ -88,7 +84,7 @@ export interface AcpCreateSessionResult {
 
 export type AcpDuplicateSessionOptions = AcpForkSessionOptions;
 
-/** Discover ACP providers installed on the system. */
+/** The ACP harnesses the app can run sessions on. */
 export async function discoverAcpProviders(): Promise<AcpProvider[]> {
   const providers = await directAcp.listProviders();
   return resolveProvidersCatalog(providers);
@@ -116,30 +112,6 @@ function resolveProvidersCatalog(providers: AcpProvider[]): AcpProvider[] {
     .filter((provider): provider is AcpProvider => provider !== null);
 }
 
-const BERD_INTERACTION_NORMS_SYSTEM_PROMPT_KEY = "berd_interaction_norms";
-const BERD_APP_CONTEXT_SYSTEM_PROMPT_KEY = "berd_app_context";
-const BERD_STYLE_GUIDELINES_SYSTEM_PROMPT_KEY = "berd_style_guidelines";
-const LEGACY_STYLE_GUIDELINES_SYSTEM_PROMPT_KEY =
-  "goose_internal_style_guidelines";
-
-async function appendBerdStyleGuidelinesPrompt(
-  sessionId: string,
-  prompt: string,
-): Promise<void> {
-  // Clear the pre-rename app-owned key first so existing sessions do not keep
-  // duplicate Additional Instructions under both goose-internal and berd keys.
-  await directAcp.appendSessionSystemPrompt(
-    sessionId,
-    LEGACY_STYLE_GUIDELINES_SYSTEM_PROMPT_KEY,
-    "",
-  );
-  await directAcp.appendSessionSystemPrompt(
-    sessionId,
-    BERD_STYLE_GUIDELINES_SYSTEM_PROMPT_KEY,
-    prompt,
-  );
-}
-
 /** Send a message to an ACP agent. Response streams via Tauri events. */
 export function acpSendMessage(
   sessionId: string,
@@ -162,7 +134,7 @@ async function acpSendMessageNow(
     assistantPrompt,
     personaId,
     personaName,
-    goose,
+    promptMeta,
     images,
     onPromptDispatching,
     onPromptDispatched,
@@ -170,56 +142,23 @@ async function acpSendMessageNow(
   const sid = sessionId.slice(0, 8);
   const tStart = performance.now();
 
-  const resolvedProvider = resolveGooseSessionSelection(providerId).providerId;
-  if (resolvedProvider !== providerId) {
-    throw new Error(
-      `Session provider ${providerId} is outside the managed Goose provider policy. Re-prepare the session before prompting.`,
-    );
-  }
-
-  // Goose owns prompt assembly and accepts a real system prompt via its ACP
-  // extension. External agent harnesses (Claude Code, Codex, ...) ignore that
-  // method and expose no system-prompt channel, so we hand the persona off
-  // in-band on the first prompt under that agent instead. See acpPersonaHandoff.
-  const isGooseManaged = !providerId || isGooseManagedProvider(providerId);
+  // ACP agents expose no system-prompt channel, so the persona and the app
+  // context are handed off in-band on the first prompt under that agent.
+  // See acpPersonaHandoff.
   const berdctlPreamble = await getBerdctlPreamble();
-  let personaHandoffClaim: PersonaHandoffClaim | null = null;
-  if (isGooseManaged) {
-    await appendBerdStyleGuidelinesPrompt(
-      sessionId,
-      getStyleGuidelinesPrompt(),
-    );
-    // App-level defaults with no off switch. Sent before user-authored
-    // sections so the user's own content arrives after — and therefore
-    // reads as — the override. See interactionNorms.ts.
-    await directAcp.appendSessionSystemPrompt(
-      sessionId,
-      BERD_INTERACTION_NORMS_SYSTEM_PROMPT_KEY,
-      INTERACTION_NORMS_PREAMBLE,
-    );
-    // Keyed and re-sent on every send (empty when berdctl is unreachable),
-    // so availability changes self-correct on the next message.
-    await directAcp.appendSessionSystemPrompt(
-      sessionId,
-      BERD_APP_CONTEXT_SYSTEM_PROMPT_KEY,
-      berdctlPreamble ?? "",
-    );
-    await directAcp.appendSessionSystemPrompt(
-      sessionId,
-      "client_system_prompt",
-      systemPrompt?.trim() ? systemPrompt : "",
-    );
-  } else {
-    const appPreamble = [INTERACTION_NORMS_PREAMBLE, berdctlPreamble]
-      .filter((part): part is string => Boolean(part?.trim()))
-      .join("\n\n");
-    personaHandoffClaim = preparePersonaHandoff(
-      sessionId,
-      providerId,
-      systemPrompt,
-      appPreamble,
-    );
-  }
+  const appPreamble = [
+    INTERACTION_NORMS_PREAMBLE,
+    getStyleGuidelinesPrompt(),
+    berdctlPreamble,
+  ]
+    .filter((part): part is string => Boolean(part?.trim()))
+    .join("\n\n");
+  const personaHandoffClaim: PersonaHandoffClaim | null = preparePersonaHandoff(
+    sessionId,
+    providerId,
+    systemPrompt,
+    appPreamble,
+  );
 
   // Merge the persona handoff (when present) with any skill/builder assistant
   // prompt into a single assistant-audience block, persona first.
@@ -263,9 +202,8 @@ async function acpSendMessageNow(
     `[perf:send] ${sid} acpSendMessage → prompt(len=${prompt.length}, imgs=${images?.length ?? 0})`,
   );
   const tPrompt = performance.now();
-  const meta: Record<string, unknown> = {};
+  const meta: Record<string, unknown> = { ...promptMeta };
   if (personaId) meta.personaId = personaId;
-  if (goose && Object.keys(goose).length > 0) meta.goose = goose;
   try {
     const promptPromise = directAcp.prompt(
       sessionId,
@@ -294,7 +232,7 @@ async function acpSendMessageNow(
             totalTokens: usage.totalTokens,
             turnsDelta: 1,
           },
-          { providerId: resolvedProvider },
+          { providerId },
         );
       }
     } catch {
@@ -316,11 +254,11 @@ export async function acpSteerMessage(
   prompt: string,
   options: Pick<
     AcpSendMessageOptions,
-    "assistantPrompt" | "goose" | "images"
+    "assistantPrompt" | "promptMeta" | "images"
   > = {},
 ): Promise<AcpSteerResponse> {
   sessionRegistry.requireSessionInvocationSelection(sessionId);
-  const { assistantPrompt, goose, images } = options;
+  const { assistantPrompt, promptMeta, images } = options;
   const content: ContentBlock[] = [];
   const assistantText = assistantPrompt?.trim();
   if (assistantText) {
@@ -341,57 +279,8 @@ export async function acpSteerMessage(
     sessionId,
     content,
     expectedRunId,
-    goose && Object.keys(goose).length > 0 ? { goose } : undefined,
+    promptMeta && Object.keys(promptMeta).length > 0 ? promptMeta : undefined,
   );
-}
-
-function resolveGooseSessionSelection(
-  providerId: string,
-  modelId?: string | null,
-): { providerId: string; modelId?: string } {
-  if (modelId === "goose") {
-    throw new Error(`Invalid model id: ${modelId}`);
-  }
-  const concreteModelId = normalizeConcreteModelId(modelId);
-  // Agent harnesses are outside Goose model-provider policy. Everything else
-  // is resolved from runtime policy directly; a missing model catalog entry
-  // must not turn into an allowlist bypass while catalogs are still loading.
-  if (
-    providerId !== "goose" &&
-    CURATED_PROVIDER_CATALOG_BY_ID.get(providerId)?.category === "agent"
-  ) {
-    return {
-      providerId,
-      ...(concreteModelId ? { modelId: concreteModelId } : {}),
-    };
-  }
-
-  const runtimeConfigState = useRuntimeConfigStore.getState();
-  if (runtimeConfigState.result.status === "unavailable") {
-    throw new Error(
-      `Goose provider policy is unavailable: ${runtimeConfigState.result.message}`,
-    );
-  }
-
-  const requestedSelection = {
-    providerId,
-    ...(concreteModelId ? { modelId: concreteModelId } : {}),
-  };
-  const managedSelection = resolveManagedGooseProviderSelection(
-    runtimeConfigState.config,
-    requestedSelection,
-  );
-  if (!managedSelection) return requestedSelection;
-  if (providerId === "goose") return managedSelection;
-  if (managedSelection.providerId !== providerId) {
-    throw new Error(
-      `Provider ${providerId} is outside the managed Goose provider policy.`,
-    );
-  }
-
-  // A concrete provider is renderer-owned. Policy may validate it, but must
-  // not replace its provider or inject a different provider's default model.
-  return requestedSelection;
 }
 
 /** Prepare or warm an ACP session ahead of the first prompt. */
@@ -406,24 +295,21 @@ export async function acpPrepareSession(
   perfLog(
     `[perf:prepare] ${sid} acpPrepareSession start (provider=${providerId})`,
   );
-  const selection = resolveGooseSessionSelection(providerId, options.modelId);
-  const applyResolvedModel =
-    Boolean(options.modelId) || selection.providerId !== providerId;
-  const snapshots =
-    applyResolvedModel && selection.modelId
-      ? await sessionRegistry.configureSession(
-          sessionId,
-          selection.providerId,
-          workingDir,
-          selection.modelId,
-          options,
-        )
-      : await sessionRegistry.prepareSession(
-          sessionId,
-          selection.providerId,
-          workingDir,
-          options,
-        );
+  const modelId = normalizeConcreteModelId(options.modelId);
+  const snapshots = modelId
+    ? await sessionRegistry.configureSession(
+        sessionId,
+        providerId,
+        workingDir,
+        modelId,
+        options,
+      )
+    : await sessionRegistry.prepareSession(
+        sessionId,
+        providerId,
+        workingDir,
+        options,
+      );
   perfLog(
     `[perf:prepare] ${sid} acpPrepareSession done in ${(performance.now() - t0).toFixed(1)}ms`,
   );
@@ -435,69 +321,39 @@ export async function acpCreateSession(
   workingDir: string,
   options: AcpCreateSessionOptions = {},
 ): Promise<AcpCreateSessionResult> {
-  const selection = resolveGooseSessionSelection(providerId, options.modelId);
-  providerId = selection.providerId;
-  options = { ...options, modelId: selection.modelId };
-  // Only the "goose" sentinel should rely on backend defaults. Concrete
-  // model providers must be sent even without a model so Goose does not try to
-  // resolve a missing global GOOSE_PROVIDER.
-  const deferProviderSetup =
-    options.deferProviderSetup === true &&
-    !options.modelId &&
-    providerId === "goose";
+  const modelId = normalizeConcreteModelId(options.modelId);
   const response = await directAcp.newSession(workingDir, {
-    providerId: deferProviderSetup ? undefined : providerId,
+    providerId,
     projectId: options.projectId,
     personaId: options.personaId,
   });
   const sessionId = response.sessionId;
-  let rollbackSessionRegistration: (() => void) | undefined;
   let configOptionsSnapshot = readSessionConfigOptionsSnapshots(response);
   logReasoningEffortInfo("acpCreateSession newSession response", {
     sessionId: shortLogId(sessionId),
     providerId,
-    requestedModelId: options.modelId ?? null,
-    providerSetupDeferred: deferProviderSetup,
+    requestedModelId: modelId ?? null,
     hasReasoningEffortSnapshot: Boolean(configOptionsSnapshot.reasoningEffort),
     ...reasoningEffortConfigLogFields(
       "reasoningEffort",
       configOptionsSnapshot.reasoningEffort,
     ),
   });
+  const rollbackSessionRegistration = sessionRegistry.registerPreparedSession(
+    sessionId,
+    providerId,
+    workingDir,
+    configOptionsSnapshot.model?.modelId,
+  );
   try {
-    if (!deferProviderSetup) {
-      const providerConfigSnapshot = await directAcp.setProvider(
-        sessionId,
-        providerId,
-      );
-      configOptionsSnapshot = providerConfigSnapshot;
-      logReasoningEffortInfo("acpCreateSession setProvider complete", {
-        sessionId: shortLogId(sessionId),
-        providerId,
-        requestedModelId: options.modelId ?? null,
-        hasReasoningEffortSnapshot: Boolean(
-          configOptionsSnapshot.reasoningEffort,
-        ),
-        ...reasoningEffortConfigLogFields(
-          "reasoningEffort",
-          configOptionsSnapshot.reasoningEffort,
-        ),
-      });
-      rollbackSessionRegistration = sessionRegistry.registerPreparedSession(
-        sessionId,
-        providerId,
-        workingDir,
-        providerConfigSnapshot?.model?.modelId,
-      );
-    }
-    if (options.modelId) {
+    if (modelId) {
       configOptionsSnapshot =
-        (await sessionRegistry.applySessionModel(sessionId, options.modelId)) ??
+        (await sessionRegistry.applySessionModel(sessionId, modelId)) ??
         configOptionsSnapshot;
     }
     return { sessionId, configOptionsSnapshot };
   } catch (error) {
-    rollbackSessionRegistration?.();
+    rollbackSessionRegistration();
     try {
       await directAcp.archiveSession(sessionId);
     } catch (archiveError) {
@@ -550,7 +406,7 @@ export interface AcpSessionSearchSweep {
   failedIds: string[];
 }
 
-/** List one page of sessions known to the goose binary. */
+/** List one page of sessions known to the host. */
 export async function acpListSessionsPage({
   cursor,
 }: {
@@ -564,11 +420,11 @@ export async function acpSearchSessions(
   targets: SessionSearchTarget[],
   options: SessionSearchOptions = {},
 ): Promise<AcpSessionSearchSweep> {
-  return searchSessionsViaExports(query, targets, options);
+  return searchSessionsViaTranscripts(query, targets, options);
 }
 
 /**
- * Load an existing session from the goose binary.
+ * Load an existing session from the host.
  *
  * This triggers message replay via SessionNotification events that the
  * notification handler picks up automatically.
@@ -610,14 +466,10 @@ export async function acpLoadSession(
   return executionSelection;
 }
 
-/** Export a session as JSON via the goose binary. */
+/** The session transcript as pretty-printed JSON, for export to a file. */
 export async function acpExportSession(sessionId: string): Promise<string> {
-  return directAcp.exportSession(sessionId);
-}
-
-/** Import a session from JSON via the goose binary. Returns new session metadata. */
-export async function acpImportSession(json: string): Promise<AcpSessionInfo> {
-  return directAcp.importSession(json);
+  const transcript = await directAcp.readSessionTranscript(sessionId);
+  return JSON.stringify({ sessionId, ...transcript }, null, 2);
 }
 
 /** Duplicate a session via ACP's fork method. Returns new session metadata. */

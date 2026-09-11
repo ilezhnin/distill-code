@@ -71,7 +71,7 @@ export interface TerminalState {
   placement: TerminalPlacement;
 }
 
-export const TERMINAL_STORAGE_KEY_PREFIX = "goose:chat-terminal-workspaces";
+export const TERMINAL_STORAGE_KEY_PREFIX = "distill:chat-terminal-workspaces";
 
 export const TERMINAL_FLOATING_MARGIN_PX = 16;
 export const TERMINAL_FLOATING_DEFAULT_WIDTH_PX = 720;

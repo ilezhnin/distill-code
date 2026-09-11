@@ -48,7 +48,7 @@ export function berdctlCrossSessionSendOptions(
       ...senderMetadata,
       ...deliveryMetadata,
     },
-    acpGooseMetadata: {
+    acpPromptMetadata: {
       origin: BERDCTL_CROSS_SESSION_ORIGIN,
       ...senderMetadata,
       ...deliveryMetadata,

@@ -4,9 +4,10 @@ use std::sync::Mutex;
 use tauri::{AppHandle, State};
 use tauri_plugin_shell::ShellExt;
 
-use crate::services::acp::GooseServeProcess;
+use crate::services::agent_host::AgentHost;
+use tauri::Manager;
 
-const GOOSE_SERVE_URL_ENV: &str = "GOOSE_SERVE_URL";
+const AGENT_HOST_URL_ENV: &str = "DISTILL_AGENT_HOST_URL";
 
 #[derive(Default)]
 pub struct GlobalShortcutHandlerState {
@@ -25,8 +26,12 @@ pub async fn launch_global_shortcut_handler(
         return Err("Global shortcut handler shortcut cannot be empty".to_string());
     }
 
-    let goose_serve = GooseServeProcess::get(app_handle.clone()).await?;
-    state.launch(app_handle, goose_serve.ws_url(), shortcut, initially_hidden)
+    let host = app_handle
+        .state::<AgentHost>()
+        .get_or_start(&app_handle)
+        .await?;
+    let ws_url = host.ws_url().to_string();
+    state.launch(app_handle, ws_url, shortcut, initially_hidden)
 }
 
 #[tauri::command]
@@ -47,7 +52,7 @@ impl GlobalShortcutHandlerState {
     fn launch(
         &self,
         app_handle: AppHandle,
-        goose_serve_url: String,
+        agent_host_url: String,
         shortcut: String,
         initially_hidden: bool,
     ) -> Result<(), String> {
@@ -59,12 +64,7 @@ impl GlobalShortcutHandlerState {
         terminate_child(child.as_mut());
 
         let mut command = catch_sidecar_command(&app_handle)?;
-        configure_catch_sidecar_command(
-            &mut command,
-            &goose_serve_url,
-            &shortcut,
-            initially_hidden,
-        );
+        configure_catch_sidecar_command(&mut command, &agent_host_url, &shortcut, initially_hidden);
         crate::services::process::apply_no_window(&mut command);
 
         let spawned = command
@@ -80,7 +80,7 @@ impl GlobalShortcutHandlerState {
 
 fn configure_catch_sidecar_command(
     command: &mut Command,
-    goose_serve_url: &str,
+    agent_host_url: &str,
     shortcut: &str,
     initially_hidden: bool,
 ) {
@@ -88,7 +88,7 @@ fn configure_catch_sidecar_command(
         .arg("--embedded")
         .arg("--global-hotkey")
         .arg(shortcut)
-        .env(GOOSE_SERVE_URL_ENV, goose_serve_url)
+        .env(AGENT_HOST_URL_ENV, agent_host_url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -154,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn command_configuration_passes_embedded_shortcut_and_goose_serve_url() {
+    fn command_configuration_passes_embedded_shortcut_and_agent_host_url() {
         let mut command = Command::new("catch");
 
         configure_catch_sidecar_command(
@@ -169,7 +169,7 @@ mod tests {
             ["--embedded", "--global-hotkey", "alt+space"]
         );
         assert_eq!(
-            command_env(&command, GOOSE_SERVE_URL_ENV),
+            command_env(&command, AGENT_HOST_URL_ENV),
             Some("ws://127.0.0.1:1234/acp?token=secret".to_string())
         );
     }

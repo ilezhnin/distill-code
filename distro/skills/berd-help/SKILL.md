@@ -2,8 +2,7 @@
 name: berd-help
 description: >-
   Help with Berd the desktop app: how-to, troubleshooting, settings, agents,
-  skills, automations, projects, sessions, providers, connections, feedback,
-  or berdctl. Use for app questions, not harness-specific behavior.
+  skills, projects, sessions, providers, extensions, or berdctl. Use for app questions, not harness-specific behavior.
 metadata:
   berdBundled: true
 ---
@@ -43,8 +42,7 @@ more than one if the question spans topics.
 ## Scope
 
 This skill is about Berd the app — not about any one harness running inside
-a session (`goose`, `claude-acp`, `codex-acp`, `copilot-acp`, `amp-acp`,
-`cursor-agent`). A question about the app around the harness (where a
+a session (`claude-acp`, `codex-acp`, `grok-acp`, `copilot-acp`, `amp-acp`). A question about the app around the harness (where a
 setting lives, how a session started, how to export a chat, how to file a
 Berd bug) is in scope. A question about a specific harness's own behavior,
 output, or errors is not — treat that as harness-specific and say so rather
@@ -73,26 +71,21 @@ For troubleshooting:
 - Suggest low-risk checks first: rerun, reconnect, verify settings, check
   selected model/provider, restart the app, or run Doctor when relevant.
 - Separate likely causes from confirmed causes.
-- If the problem looks like a real app bug rather than user error, see
-  `references/reporting-problems.md` instead of guessing at a fix.
 
 ## Topics
 
 Read the matching reference file for a specific question. Read more than one
-when a question spans topics (for example, an automation failure that might
+when a question spans topics (for example, a session failure that might
 be a provider problem needs both):
 
 - `references/berdctl.md` — the berdctl CLI, when to prefer it over UI steps
 - `references/agents.md` — agents/personas
 - `references/skills.md` — skills, source kinds, precedence
-- `references/automations.md` — automations
 - `references/projects.md` — projects and workspaces
 - `references/sessions.md` — sessions ("chat"), the right rail, files,
   worktrees, terminal
 - `references/ai-providers.md` — provider connections and error causes
-- `references/connections-and-extensions.md` — connections vs. extensions
 - `references/settings.md` — settings structure and gotchas
-- `references/reporting-problems.md` — filing feedback or a bug
 
 ## Working With Bundled Builder Skills
 

@@ -25,7 +25,6 @@ export function buildInitScript(options?: {
   skills?: unknown[];
   projects?: unknown[];
   sessions?: unknown[];
-  voiceConversationStatus?: unknown;
   enabledExperiments?: string[];
   providerCatalog?: unknown[];
   providerInventory?: unknown[];
@@ -39,15 +38,6 @@ export function buildInitScript(options?: {
   const skills = JSON.stringify(options?.skills ?? MOCK_SKILLS);
   const projects = JSON.stringify(options?.projects ?? MOCK_PROJECTS);
   const sessions = JSON.stringify(options?.sessions ?? []);
-  const voiceConversationStatus = JSON.stringify(
-    options?.voiceConversationStatus ?? {
-      available: false,
-      unavailableReason: "Voice conversation unavailable in browser E2E",
-      lifecycle: "unavailable",
-      sessionId: null,
-      revision: 0,
-    },
-  );
   const enabledExperiments = JSON.stringify(options?.enabledExperiments ?? []);
   const providerCatalog = JSON.stringify(options?.providerCatalog ?? []);
   const providerInventory = JSON.stringify(
@@ -114,7 +104,6 @@ export function buildInitScript(options?: {
       const SKILLS = ${skills};
       const PROJECTS = ${projects};
       const SEED_SESSIONS = ${sessions};
-      const VOICE_CONVERSATION_STATUS = ${voiceConversationStatus};
       const ENABLED_EXPERIMENTS = ${enabledExperiments};
       const PROVIDER_CATALOG = ${providerCatalog};
       const PROVIDER_INVENTORY = ${providerInventory};
@@ -185,10 +174,10 @@ export function buildInitScript(options?: {
       let nextCallbackId = 1;
       let nextEventId = 1;
 
-      localStorage.setItem("goose:defaultProvider", "goose");
+      localStorage.setItem("distill:defaultProvider", "goose");
       if (ENABLED_EXPERIMENTS.length > 0) {
         localStorage.setItem(
-          "goose:experimental-features",
+          "distill:experimental-features",
           JSON.stringify({
             version: 2,
             experiments: Object.fromEntries(
@@ -198,7 +187,7 @@ export function buildInitScript(options?: {
         );
       }
       localStorage.setItem(
-        "goose:preferredModelsByAgent",
+        "distill:preferredModelsByAgent",
         JSON.stringify({
           goose: {
             providerId: "openai",
@@ -209,7 +198,7 @@ export function buildInitScript(options?: {
       );
 
       const persistAgentSources = () => {
-        sessionStorage.setItem("goose:e2e:agentSources", JSON.stringify(AGENT_SOURCES));
+        sessionStorage.setItem("distill:e2e:agentSources", JSON.stringify(AGENT_SOURCES));
       };
 
       const slugify = (name) =>
@@ -276,20 +265,19 @@ export function buildInitScript(options?: {
       };
 
       let AGENT_SOURCES = (() => {
-        const stored = sessionStorage.getItem("goose:e2e:agentSources");
+        const stored = sessionStorage.getItem("distill:e2e:agentSources");
         if (stored) {
           try {
             return JSON.parse(stored);
           } catch (_error) {
-            sessionStorage.removeItem("goose:e2e:agentSources");
+            sessionStorage.removeItem("distill:e2e:agentSources");
           }
         }
         return PERSONAS.map(personaToSourceEntry);
       })();
       const SKILL_SOURCES = SKILLS.map(skillToSourceEntry);
-      const POCKET_VOICE_SPOKEN_TEXTS = [];
 
-      window.__GOOSE_E2E__ = {
+      window.__DISTILL_E2E__ = {
         listAgentSources: () => clone(AGENT_SOURCES),
         clearAgentSources: () => {
           AGENT_SOURCES = PERSONAS.map(personaToSourceEntry);
@@ -310,7 +298,6 @@ export function buildInitScript(options?: {
           }
         },
         emitTauriEvent,
-        pocketVoiceSpokenTexts: () => clone(POCKET_VOICE_SPOKEN_TEXTS),
       };
 
       function nowIso() {
@@ -676,33 +663,6 @@ export function buildInitScript(options?: {
               return Promise.resolve(FAKE_ACP_URL);
             case "get_installation_cohort":
               return Promise.resolve("established-before-landing-v1");
-            case "get_voice_conversation_status":
-            case "get_native_voice_conversation_status":
-              return Promise.resolve(clone(VOICE_CONVERSATION_STATUS));
-            case "drain_native_voice_conversation_transcripts":
-              return Promise.resolve([]);
-            case "acknowledge_native_voice_conversation_transcript":
-              return Promise.resolve(null);
-            case "reject_native_voice_conversation_transcript":
-              return Promise.resolve({ attempts: 1, terminal: false });
-            case "get_pocket_voice_status":
-              return Promise.resolve({
-                installed: true,
-                downloading: false,
-                downloadedBytes: 278120564,
-                totalBytes: 278120564,
-                error: null,
-                selectedVoice: "mary",
-                playbackSpeed: 1,
-                voices: [{ id: "mary", name: "Mary" }],
-              });
-            case "speak_pocket_voice":
-              POCKET_VOICE_SPOKEN_TEXTS.push(args?.text);
-              return new Promise((resolve) =>
-                window.setTimeout(() => resolve(null), 50),
-              );
-            case "stop_pocket_voice":
-              return Promise.resolve(null);
             case "get_distro_bundle":
               return Promise.resolve(DISTRO);
             case "get_runtime_config":

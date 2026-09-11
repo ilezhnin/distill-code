@@ -22,8 +22,8 @@ function getRuntime(sessionId: string) {
 
 describe("chatStore", () => {
   beforeEach(() => {
-    window.localStorage.removeItem("goose:unread-sessions");
-    window.localStorage.removeItem("goose:chat-message-queues:v1");
+    window.localStorage.removeItem("distill:unread-sessions");
+    window.localStorage.removeItem("distill:chat-message-queues:v1");
     useChatStore.setState({
       messagesBySession: {},
       sessionStateById: {},
@@ -786,7 +786,7 @@ describe("chatStore", () => {
 
   it("hydrates persisted unread sessions on store initialization", async () => {
     window.localStorage.setItem(
-      "goose:unread-sessions",
+      "distill:unread-sessions",
       JSON.stringify(["s1", "s2"]),
     );
 
@@ -1006,7 +1006,7 @@ describe("chatStore", () => {
 
   it("parks interrupted workspace creation, clears edit locks, and restores targetless transport records", async () => {
     window.localStorage.setItem(
-      "goose:chat-message-queues:v1",
+      "distill:chat-message-queues:v1",
       JSON.stringify({
         s1: [
           {
@@ -1065,7 +1065,7 @@ describe("chatStore", () => {
     const record = useChatStore.getState().queuedMessageBySession.s1?.[0];
     expect(
       JSON.parse(
-        window.localStorage.getItem("goose:chat-message-queues:v1") ?? "{}",
+        window.localStorage.getItem("distill:chat-message-queues:v1") ?? "{}",
       ),
     ).toMatchObject({
       s1: [{ recordId: record?.recordId, payload: { text: "durable" } }],
@@ -1073,7 +1073,7 @@ describe("chatStore", () => {
 
     store.dismissQueuedMessage("s1", record?.recordId);
     expect(
-      window.localStorage.getItem("goose:chat-message-queues:v1"),
+      window.localStorage.getItem("distill:chat-message-queues:v1"),
     ).toBeNull();
   });
 
@@ -1338,7 +1338,7 @@ describe("chatStore", () => {
 });
 
 describe("chatStore draft localStorage persistence", () => {
-  const STORAGE_KEY = "goose:chat-drafts";
+  const STORAGE_KEY = "distill:chat-drafts";
 
   beforeEach(() => {
     window.localStorage.removeItem(STORAGE_KEY);

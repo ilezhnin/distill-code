@@ -15,25 +15,6 @@
     "title": "About",
     "unavailable": "Not available"
   },
-  "account": {
-    "loggingOut": "Logging out...",
-    "logout": "Log out",
-    "logoutError": "Couldn't log out. Try again.",
-    "logoutSuccess": "Logged out.",
-    "organization": "Organization",
-    "signedInAs": "Signed in as",
-    "title": "Account",
-    "workspace": {
-      "description": "The BuilderBot workspace used by Distill.",
-      "label": "Workspace",
-      "loadError": "Couldn't load workspaces.",
-      "loading": "Loading...",
-      "retry": "Retry",
-      "switchError": "Couldn't switch workspace. Try again.",
-      "switchSuccess": "Switched to {{workspace}}.",
-      "unavailable": "No workspaces"
-    }
-  },
   "appearance": {
     "primary": {
       "custom": "Custom",
@@ -82,61 +63,6 @@
     "sectionTitle": "Archived chats",
     "title": "Chats"
   },
-  "compaction": {
-    "goose": {
-      "autoCompact": {
-        "helper": "Set to 100% to turn off auto-compaction.",
-        "label": "Threshold",
-        "loading": "Loading...",
-        "off": "Off",
-        "saveError": "Couldn't save your auto-compact setting. Try again."
-      },
-      "description": "Automatically compact older context and reset your token count during sessions. This only applies to chats using the Goose harness.",
-      "label": "Auto-compact (Goose harness only)"
-    },
-    "title": "Compaction"
-  },
-  "connections": {
-    "configure": "Configure",
-    "connect": "Connect",
-    "connectError": "Couldn't open the connect flow. Try again.",
-    "description": "See company-managed connections and MCP servers configured on this device.",
-    "disconnect": "Disconnect",
-    "disconnectError": "Couldn't disconnect. Try again.",
-    "empty": {
-      "description": "Add an MCP server to connect Distill to the apps and services you use.",
-      "title": "No connections yet"
-    },
-    "expiresInDays": "Expires in {{count}} days",
-    "expiresToday": "Expires today",
-    "expiresTomorrow": "Expires tomorrow",
-    "extendAccess": "Extend access",
-    "noResults": "No connections match your search.",
-    "reconnect": "Reconnect",
-    "search": "Search connections",
-    "sections": {
-      "managed": "Company managed",
-      "local": "Local"
-    },
-    "status": {
-      "active": "Active",
-      "disconnected": "Disconnected",
-      "expired": "Expired"
-    },
-    "title": "Connections",
-    "worksWith": "Works with: {{harnesses}}",
-    "localError": {
-      "title": "Couldn’t load your local MCPs",
-      "description": "Try again in a moment.",
-      "partialTitle": "Some local MCPs may be missing",
-      "partialDescription": "Distill couldn’t read every local configuration source.",
-      "retry": "Try again",
-      "retrying": "Trying…"
-    },
-    "askAgent": "Add connection",
-    "askAgentTitle": "Add a connection",
-    "askAgentPrompt": "Help me add a connection. First ask whether I want a company-managed service or a local MCP, then explain the setup and access requirements. Ask before changing any configuration and never print or copy credentials."
-  },
   "deleteProject": {
     "description": "Removes the project and all its data. You can't undo this.",
     "title": "Delete \"{{name}}\" permanently?"
@@ -184,42 +110,6 @@
       },
       "updateAvailable": "Update available → {{version}}",
       "updateLabel": "Update {{name}} to {{version}}"
-    }
-  },
-  "experiments": {
-    "autoEnable": {
-      "description": "Dev builds enable experiments by default. Turn off individual experiments below when you need the stable path.",
-      "label": "Auto-enable new experiments"
-    },
-    "builderbot": {
-      "description": "Show the Builderbot tasks and automations surface.",
-      "title": "Builderbot"
-    },
-    "relatedPullRequests": {
-      "description": "Show the PR Inbox and the current status of pull requests linked in a chat.",
-      "title": "PR Inbox"
-    },
-    "memoryWikiGraph": {
-      "description": "Draw a project's .distill/wiki/ as a graph at the bottom of the Memory panel: a node per page, an edge per [[link]], and a warning colour for a page nothing links to.",
-      "title": "Wiki graph"
-    },
-    "defaultLabel": "default",
-    "description": "Opt into in-progress Distill features on this device. Experiments can change, break, or disappear.",
-    "emptyDescription": "New experiments will appear here when they are ready for opt-in testing.",
-    "resetToAuto": "Reset to auto",
-    "saveError": "Couldn't save the experiment setting. Try again.",
-    "skillDiscovery": {
-      "description": "Add a Discover tab to Skills for browsing and installing skills from the Block catalog without leaving the app. Requires the sq-agents CLI.",
-      "title": "Skill discovery"
-    },
-    "title": "Experiments",
-    "transcriptVirtualRenderer": {
-      "description": "Routes chats through the virtual transcript renderer bridge for implementation testing.",
-      "title": "Transcript virtual renderer"
-    },
-    "voiceConversation": {
-      "description": "Try continuous two-way voice conversations in Goose chats.",
-      "title": "Voice conversations"
     }
   },
   "extensions": {
@@ -283,10 +173,6 @@
     }
   },
   "general": {
-    "agentToolsTips": {
-      "description": "Distill will show tips in chat for relevant tools, skills, or workflows.",
-      "label": "Chat tips"
-    },
     "artifactAutoOpen": {
       "description": "When the agent creates or opens a viewable file (like markdown or an image), show it in the viewer automatically.",
       "label": "Auto-open files in viewer"
@@ -308,28 +194,11 @@
       "files": "Files",
       "label": "@ mention default"
     },
-    "bbCli": {
-      "description": "Goose automatically installs or repairs the /usr/local/bin/bb link to this app's bundled command.",
-      "install": "Install",
-      "installError": "Couldn't install the bb command. Try again.",
-      "installSuccess": "bb command installed.",
-      "installing": "Installing...",
-      "label": "bb command",
-      "refresh": "Refresh",
-      "repair": "Repair",
-      "title": "Command line",
-      "version": "Bundled: {{version}}",
-      "versionUnknown": "Bundled version unavailable"
-    },
     "followUpBehavior": {
       "description": "Queue follow-ups while Distill responds or steer the current run. Press Cmd+Enter to do the opposite for one message.",
       "label": "Follow-up behavior",
       "queue": "Queue",
-      "steer": "Steer (Goose harness only)"
-    },
-    "groupChatsByProject": {
-      "description": "Show project groups in the sidebar. Turn this off for one chat list sorted by activity.",
-      "label": "Group chats by project"
+      "steer": "Steer"
     },
     "language": {
       "description": "Sets the language Distill uses across menus, buttons, and messages.",
@@ -351,9 +220,9 @@
       "label": "Show session cost"
     },
     "styleGuidelines": {
-      "promptDescription": "Customize the default style guidance Goose receives for response style and behavior.",
+      "promptDescription": "Style guidance handed to the agent at the start of every new chat, before your first message.",
       "promptLabel": "Guidelines",
-      "promptPlaceholder": "Enter style guidance for Goose",
+      "promptPlaceholder": "Enter style guidance",
       "reset": "Reset to default",
       "save": "Save guidelines",
       "saveError": "Couldn't save your style guidelines. Try again.",
@@ -373,15 +242,14 @@
     "title": "General",
     "distillFolder": {
       "label": "Distill folder",
-      "description": "Everything Distill owns — projects, chats, agents, skills, memory and settings — lives here. Back up this one folder and you have all of it.",
+      "description": "Distill's own data — projects, memory, conductor runs and generated artifacts — lives here. Chat history stays in the app data folder.",
       "chooseDialogTitle": "Choose the Distill folder",
       "choose": "Change folder",
       "saved": "New folder saved",
       "savedDescription": "Nothing was moved. Copy the old folder's contents across, then restart Distill.",
       "saveError": "Couldn't use that folder",
       "restartRequired": "Takes effect after a restart.",
-      "forcedByEnvironment": "Set by DISTILL_ROOT for this run, so this setting is not in charge.",
-      "legacyDataElsewhere": "Chats and projects are still in {{path}}. Pick a folder above, copy that folder's contents into it, and restart."
+      "forcedByEnvironment": "Set by DISTILL_ROOT for this run, so this setting is not in charge."
     }
   },
   "memory": {
@@ -405,7 +273,6 @@
     "compaction": "Compaction",
     "connections": "Connections",
     "doctor": "Doctor",
-    "experiments": "Experiments",
     "extensions": "Extensions",
     "general": "General",
     "notifications": "Notifications",
@@ -446,31 +313,14 @@
     "sounds": {
       "badNewsBird": "Very Excited",
       "beakYeah": "Excited",
-      "dingDongGoose": "Ding Dong",
       "paidInBread": "A Bit of Everything",
       "politeHonk": "Distill",
       "quickPeep": "Chime",
       "silent": "Silent",
-      "youHaveGotGoose": "Twinkle"
+      "twinkle": "Twinkle",
+      "dingDong": "Ding Dong"
     },
     "title": "Notifications"
-  },
-  "privacy": {
-    "telemetry": {
-      "description": "Help improve Distill by sharing usage events, like which features are used. Chat content is never sent.",
-      "label": "Share usage data",
-      "learnMore": "Learn more",
-      "saveError": "Couldn't update the usage data setting. Try again.",
-      "usageDialog": {
-        "collectBody": "Usage events, such as features used, errors, and performance, tied to a random installation ID.",
-        "collectTitle": "What we collect",
-        "intro": "We use a random installation ID, not your identity, to see how Distill is used and fix what’s broken.",
-        "notCollectBody": "Your name, email, or account. Distill has no login, so there’s nothing to tie data to.",
-        "notCollectTitle": "What we don’t collect",
-        "title": "Sharing usage data"
-      }
-    },
-    "title": "Privacy"
   },
   "projects": {
     "empty": "Archived projects will show here.",
@@ -481,7 +331,7 @@
     "agents": {
       "applyUpdates": "Update",
       "collapseLabel": "Collapse {{name}} details",
-      "description": "Connect a model provider to use Goose, or connect another agent harness.",
+      "description": "Agent harnesses Distill can run chats on. Install or sign in to the ones you use.",
       "errors": {
         "genericSetupFailure": "Setup hit a snag.",
         "installStart": "Couldn’t start installation",
@@ -516,165 +366,13 @@
       "troubleshootInChat": "Troubleshoot in chat",
       "updateLabel": "Update {{name}}"
     },
-    "catalog": {
-      "loading": "Loading provider catalog..."
-    },
-    "connectionHints": {
-      "keyRejected": "That key was rejected — double-check it in your provider's console. ({{message}})",
-      "rateLimited": "The key works, but the provider is rate-limiting requests. Try again shortly. ({{message}})",
-      "unreachable": "Can't reach the server — check the URL and make sure it's running. ({{message}})",
-      "urlLooksWrong": "The server answered, but not at that path — check the URL (did you include /v1?). ({{message}})"
-    },
-    "custom": {
-      "actions": {
-        "addHeader": "Add header",
-        "addModel": "Add model",
-        "back": "Back",
-        "create": "Create provider",
-        "delete": "Delete",
-        "deleteProvider": "Delete {{name}}",
-        "deleting": "Deleting...",
-        "editProvider": "Edit {{name}}",
-        "hideApiKey": "Hide API key",
-        "removeHeader": "Remove header",
-        "removeModel": "Remove {{model}}",
-        "save": "Save changes",
-        "saving": "Saving...",
-        "showApiKey": "Show API key"
-      },
-      "addButton": "Add provider",
-      "addTitle": "Add model provider",
-      "confirmDelete": "This removes {{name}} and its saved API key.",
-      "confirmDeleteTitle": "Delete {{name}}?",
-      "description": "Choose a model provider to connect to Goose.",
-      "editTitle": "Edit custom provider",
-      "emptyHeaders": "No custom headers.",
-      "emptyModels": "Add at least one model.",
-      "engines": {
-        "anthropic_compatible": "Anthropic API",
-        "ollama_compatible": "Ollama (local)",
-        "openai_compatible": "OpenAI API"
-      },
-      "errors": {
-        "deleteFailed": "Couldn't delete the custom provider.",
-        "loadFailed": "Couldn't load the custom provider.",
-        "saveFailed": "Couldn't save the custom provider.",
-        "templatesFailed": "Couldn't load provider templates."
-      },
-      "fields": {
-        "apiKey": "API key",
-        "apiKeyEditPlaceholder": "Leave blank to keep the saved key",
-        "apiKeyPlaceholder": "Paste your API key",
-        "apiUrl": "API URL",
-        "apiUrlPlaceholder": "https://api.example.com/v1",
-        "basePath": "Base path",
-        "basePathPlaceholder": "/v1/chat/completions",
-        "displayName": "Display name",
-        "displayNamePlaceholder": "My provider",
-        "engine": "API type",
-        "headerKey": "Header",
-        "headerValue": "Value",
-        "headers": "Custom headers",
-        "models": "Models",
-        "modelsPlaceholder": "gpt-4.1, claude-3-5-sonnet",
-        "requiresAuth": "Requires authentication",
-        "requiresAuthDescription": "Store an API key for requests to this provider.",
-        "supportsStreaming": "Supports streaming",
-        "supportsStreamingDescription": "Stream responses as the model generates tokens."
-      },
-      "modelCount_one": "{{count}} model",
-      "modelCount_other": "{{count}} models",
-      "notConfigured": "Not configured",
-      "sections": {
-        "template": "Start from template"
-      },
-      "templates": {
-        "clear": "Clear template",
-        "compatibility": {
-          "all": "All types"
-        },
-        "empty": "No providers match your search.",
-        "loading": "Loading providers...",
-        "manual": "Add a custom provider",
-        "manualDescription": "Start from a blank provider configuration.",
-        "manualLead": "Provider not in the list?",
-        "searchPlaceholder": "Search providers",
-        "useTemplate": "Use a template",
-        "useTemplateDescription": "Start with endpoint and model defaults for a known provider."
-      },
-      "validation": {
-        "apiKeyRequired": "API key is required.",
-        "apiUrlInvalid": "Enter a valid HTTP or HTTPS URL.",
-        "apiUrlRequired": "API URL is required.",
-        "displayNameRequired": "Display name is required.",
-        "engineRequired": "Choose an API type.",
-        "headerDuplicate": "Header names must be unique.",
-        "headerNameInvalid": "Header names can only contain valid HTTP token characters.",
-        "headerNameRequired": "Header name is required.",
-        "headerValueRequired": "Header value is required.",
-        "modelsRequired": "Add at least one model."
-      }
-    },
-    "disconnect": "Disconnect",
-    "getApiKey": "Get an API key",
-    "loadingModels": "Loading models...",
-    "modelRefreshWarning": "Credentials saved. Model refresh needs attention: {{message}}",
-    "models": {
-      "active": "Active",
-      "checkingStatus": "Checking provider status...",
-      "configured": "Configured",
-      "connectPrompt": "Choose a model provider",
-      "description": "Goose requires an AI model to run.",
-      "details": {
-        "configuredUrl": "Configured URL"
-      },
-      "notSet": "Not set",
-      "setup": {
-        "configLoadFallback": "Couldn't load provider settings. You can still enter values and save.",
-        "connected": {
-          "cloudCredentials": "Connected through your cloud credentials.",
-          "local": "Running locally.",
-          "oauthBrowser": "Connected through Distill sign-in.",
-          "oauthDeviceCode": "Connected through Distill device-code sign-in."
-        },
-        "fieldDescription": {
-          "cloudCredentials": "Add your cloud credentials to use this provider.",
-          "configFields": "Fill in the required fields to use this provider.",
-          "hostWithOauthFallback": "Add your host details to use this provider.",
-          "singleApiKey": "Add your API key to use this provider."
-        },
-        "hostWithOauthFallbackTerminal": "Leave **access token** blank, save your host URL, then run `goose configure` in your terminal to sign in.",
-        "nativeConnectDescription": "Sign in with your existing account.",
-        "pending": {
-          "cloudCredentials": "Configure your cloud credentials in your terminal before using this provider.",
-          "local": "This provider runs locally and doesn't need saved settings.",
-          "oauthGuided": "Distill will guide you through sign-in.",
-          "oauthTerminal": "Run `goose configure` in your terminal to finish sign-in."
-        }
-      },
-      "summaryLabel": "Model provider",
-      "summaryLabelPlural": "Model providers",
-      "title": "Model providers"
-    },
-    "needsAttention": "Needs attention",
-    "saved": "Saved",
-    "saving": "Saving...",
-    "setupDetour": {
-      "readyDescription": "Provider connected. Return to your agent draft when you're ready.",
-      "returnToDraft": "Return to agent draft"
-    },
     "setupOutput": {
       "copyDeviceCode": "Copy device code",
       "deviceCode": "Device code"
     },
     "setupRequired": {
-      "body": "This build does not include a preconfigured model provider. Configure one before starting a Goose chat.",
-      "openProviders": "Open AI providers",
-      "title": "Choose an AI provider to start chatting",
       "toast": "Choose an AI provider before starting a chat."
     },
-    "showFewer": "Show fewer",
-    "showMore": "Show {{count}} more providers",
     "title": "Providers",
     "waitingForSignIn": "Waiting for sign-in..."
   },
@@ -829,8 +527,6 @@
     "backgroundChatUnknown": "From another chat",
     "block": "Block",
     "commandLabel": "Flagged command",
-    "connectGoose": "Connect Goose",
-    "connectGooseDescription": "Connect Goose to get AI-generated explanations for future security alerts.",
     "description": "This action was flagged as a potential security risk. Review the details below before deciding whether to allow it.",
     "detectionConfidence": "Detection confidence",
     "findingId": "Finding ID: {{id}}",
@@ -868,127 +564,6 @@
     }
   },
   "title": "Settings",
-  "updates": {
-    "actions": {
-      "cancel": "Cancel",
-      "check": "Check for updates",
-      "checking": "Checking...",
-      "downloading": "Downloading...",
-      "installing": "Installing...",
-      "restart": "Restart to update",
-      "restartToFinish": "Restart to finish switching to {{channel}}",
-      "retry": "Try again",
-      "switchTo": "Switch to {{channel}}",
-      "update": "Update Distill"
-    },
-    "betaBadge": {
-      "build": "Distill {{version}}",
-      "defaultWhatToTest": "Try the newest features and report anything that feels rough.",
-      "open": "Open Beta details",
-      "reportIssue": "Report an issue",
-      "reportIssueUnavailable": "Beta issue reporting is not configured for this build.",
-      "title": "Beta release",
-      "waitingForMain": "Beta updates are off. Distill will switch to Main when a compatible release is ready.",
-      "whatToTest": "What to test"
-    },
-    "card": {
-      "checkPrompt": "Check for a new version",
-      "currentVersion": "Version {{version}}",
-      "description": "Keep Distill up to date with the latest features and fixes.",
-      "title": "App version"
-    },
-    "channel": {
-      "description": "Choose Main for recommended releases or Beta for early features.",
-      "title": "Release channel",
-      "unknown": "Current release",
-      "waitingDescription": "Beta updates are off. Distill will return to Main when a compatible release is ready."
-    },
-    "description": "Distill checks for signed app updates in the background and waits for you to restart.",
-    "details": {
-      "available": "Update {{version}} is ready to download.",
-      "checking": "Checking for updates...",
-      "downloading": "Downloading the latest signed update.",
-      "error": "The last update attempt failed.",
-      "idle": "Distill will check automatically every few hours.",
-      "installing": "Installing the downloaded update.",
-      "ready": "Update {{version}} is installed and will apply after restart.",
-      "switchReady": "{{channel}} {{version}} is installed. Restart when you’re ready to finish switching.",
-      "unavailable": "Updates are only available in signed Tauri release builds.",
-      "upToDate": "Distill is up to date."
-    },
-    "errors": {
-      "detail": "Details: {{detail}}",
-      "generic": "Update failed. Try again.",
-      "networkAccess": "Unable to check for updates. Connect to Cloudflare WARP and try again.",
-      "switchUnavailable": "No {{channel}} release is available for this build yet."
-    },
-    "progress": {
-      "downloading": "Downloading",
-      "installing": "Installing",
-      "percent": "{{progress}}%"
-    },
-    "status": {
-      "available": "Available",
-      "checking": "Checking",
-      "downloading": "Downloading",
-      "error": "Error",
-      "idle": "Idle",
-      "installing": "Installing",
-      "ready": "Ready",
-      "unavailable": "Unavailable",
-      "upToDate": "Up to date"
-    },
-    "switchDialog": {
-      "betaDescription": "Distill will download the latest beta and restart. Betas get new features first and may have rough edges. You can switch back to Main anytime — from Settings or the Beta badge.",
-      "builds": "You’re running {{source}} {{currentVersion}}. Distill found {{target}} {{targetVersion}}.",
-      "mainDescription": "Distill will make sure everything from the beta works with Main, then download it and restart.",
-      "restartLater": "You can keep working after the download and restart when you’re ready.",
-      "title": "Switch to {{channel}}?"
-    },
-    "title": "Updates",
-    "toast": {
-      "error": {
-        "description": "{{message}}",
-        "title": "Update failed"
-      },
-      "ready": {
-        "description": "Distill {{version}} will apply after restart.",
-        "title": "Update ready"
-      }
-    }
-  },
-  "voice": {
-    "description": "Install both Pocket TTS and Parakeet STT to use Voice Conversation.",
-    "download": "Download model",
-    "downloadPhase": {
-      "complete": "Installed",
-      "downloading": "Downloading",
-      "extracting": "Preparing model",
-      "publishing": "Installing model",
-      "queued": "Queued",
-      "verifying": "Verifying model"
-    },
-    "downloadProgress": "{{downloaded}} of {{total}}",
-    "modelInstalled": "Installed",
-    "modelInstalledSize": "Installed · {{size}} on disk",
-    "modelMissingSize": "Not installed · {{size}} download",
-    "modelNotInstalled": "Not installed",
-    "notNow": "Not now",
-    "playbackSpeed": "Playback speed",
-    "playing": "Playing",
-    "preview": "Preview",
-    "previewVoice": "Preview {{voice}}",
-    "removeModel": "Remove model",
-    "removeModelDescription": "Voice Conversation will stop before {{model}} is removed. You can download the model again later.",
-    "removeModelQueued": "Queued for removal…",
-    "removeModelTitle": "Remove {{model}}?",
-    "removingModel": "Removing model…",
-    "retryDownload": "Retry model download",
-    "settingsDescription": "Install Pocket TTS, choose from 12 voices, and preview them through your selected output device.",
-    "title": "Voice conversation",
-    "useSelected": "Use selected voice",
-    "voiceLabel": "Pocket TTS voice"
-  },
   "routing": {
     "title": "Routing",
     "waveThreshold": "Move wave steps off a platform at",

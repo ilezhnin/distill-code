@@ -99,7 +99,7 @@ if (hasWindow) {
 async function resetTestLocale() {
   if (hasWindow) {
     ensureLocalStorage();
-    localStorage.removeItem("goose:locale");
+    localStorage.removeItem("distill:locale");
   }
   await i18n.changeLanguage(DEFAULT_LOCALE);
   await i18n.loadNamespaces(TRANSLATION_NAMESPACES);

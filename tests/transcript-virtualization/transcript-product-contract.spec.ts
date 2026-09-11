@@ -37,7 +37,7 @@ interface TranscriptHarnessWindow extends Window {
       | Promise<Record<string, unknown>>;
     getRowIdForMessage?: (messageId: string) => string;
   };
-  __GOOSE_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__?: {
+  __DISTILL_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__?: {
     protectedRows?: number;
     protectedOffscreenRows?: number;
     forcedProtectedRowCount?: number;
@@ -179,7 +179,7 @@ async function collectHarnessDiagnostics(page: Page) {
     return {
       ...(diagnostics ?? {}),
       ...((window as TranscriptHarnessWindow)
-        .__GOOSE_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__ ?? {}),
+        .__DISTILL_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__ ?? {}),
     };
   });
 
@@ -232,7 +232,7 @@ async function waitForVirtualDiagnostics(
     await page.waitForFunction(
       (expected) => {
         const diagnostics = (window as TranscriptHarnessWindow)
-          .__GOOSE_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__;
+          .__DISTILL_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__;
         if (!diagnostics) {
           return false;
         }
@@ -274,7 +274,7 @@ async function waitForProtectedRows(page: Page, protectedRows: number) {
   await page.waitForFunction(
     (expectedProtectedRows) => {
       const diagnostics = (window as TranscriptHarnessWindow)
-        .__GOOSE_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__;
+        .__DISTILL_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__;
       return diagnostics?.protectedRows === expectedProtectedRows;
     },
     protectedRows,
@@ -417,7 +417,7 @@ async function setSelectedTextMenuOpen(
       }
 
       window.dispatchEvent(
-        new CustomEvent("goose:transcript-selected-text-context-menu", {
+        new CustomEvent("distill:transcript-selected-text-context-menu", {
           detail: { open: nextOpen, ranges },
         }),
       );

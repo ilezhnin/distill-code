@@ -32,8 +32,5 @@
   "states": {
     "available": "Disponible",
     "enabled": "Activada"
-  },
-  "fallbackTitles": {
-    "automation": "Automatización sin título"
   }
 }

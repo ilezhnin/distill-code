@@ -20,4 +20,3 @@ ureq = { version = "3", features = ["json"] }
 
 [features]
 default = []
-block-feedback = []

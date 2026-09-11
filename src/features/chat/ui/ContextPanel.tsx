@@ -68,9 +68,6 @@ import { useWorkspaceRepository } from "@/features/workspaces/workspaceRepositor
 import { useChangeSessionFolder } from "@/features/chat/hooks/useChangeSessionFolder";
 import { supersedePendingSessionWorkspaceActivation } from "@/features/chat/lib/sessionWorkspaceActivation";
 import { useChatStore } from "../stores/chatStore";
-import { SessionPullRequestsWidget } from "./widgets/PullRequestsWidget";
-import { RELATED_PULL_REQUESTS_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
-import { useExperiment } from "@/features/experiments/experimentPreferences";
 import type { CreatedWorkspaceWorktreeContext } from "./widgets/WorkspaceCreateDialog";
 import type { WorkspaceRemovalPlan } from "./widgets/WorkspaceRowActionsMenu";
 
@@ -99,19 +96,15 @@ interface PendingCreatedWorktree {
 }
 
 type ContextPanelTab = "details" | "changes" | "files";
-type ContextPanelSection =
-  | "workspace"
-  | "pullRequests"
-  | "changes"
-  | "artifacts";
+type ContextPanelSection = "workspace" | "changes" | "artifacts";
 const TAB_CONTENT_CLASS =
   "scrollbar-none w-full min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-4";
 type ContextPanelSectionVisibility = Record<ContextPanelSection, boolean>;
 
-const SECTION_VISIBILITY_STORAGE_KEY = "goose:context-panel:section-visibility";
+const SECTION_VISIBILITY_STORAGE_KEY =
+  "distill:context-panel:section-visibility";
 const DEFAULT_SECTION_VISIBILITY: ContextPanelSectionVisibility = {
   workspace: true,
-  pullRequests: true,
   changes: true,
   artifacts: true,
 };
@@ -127,10 +120,6 @@ function validateSectionVisibility(
       typeof parsed.workspace === "boolean"
         ? parsed.workspace
         : defaults.workspace,
-    pullRequests:
-      typeof parsed.pullRequests === "boolean"
-        ? parsed.pullRequests
-        : defaults.pullRequests,
     changes:
       typeof parsed.changes === "boolean" ? parsed.changes : defaults.changes,
     artifacts:
@@ -277,12 +266,6 @@ export function ContextPanel({
 }: ContextPanelProps) {
   const { t } = useTranslation("chat");
   const { openInApp } = useArtifactActionsContext();
-  const relatedPullRequestsExperiment = useExperiment(
-    RELATED_PULL_REQUESTS_EXPERIMENT_ID,
-  );
-  const relatedPullRequestsEnabled = Boolean(
-    relatedPullRequestsExperiment?.enabled,
-  );
   const workspaceRepository = useWorkspaceRepository();
   const [activeTab, setActiveTab] = useState<ContextPanelTab>("details");
   const [isAddWorkspaceOpen, setIsAddWorkspaceOpen] = useState(false);
@@ -782,7 +765,7 @@ export function ContextPanel({
           classification?.worktreePath ?? runtime.workspace.worktreePath,
         source: "created",
         lifecycle: {
-          owner: "goose",
+          owner: "distill",
           cleanup: "branch",
           branch: name,
           baseBranch,
@@ -893,7 +876,7 @@ export function ContextPanel({
                   worktreePath: classification.worktreePath ?? worktree.path,
                   source: "created",
                   lifecycle: {
-                    owner: "goose",
+                    owner: "distill",
                     cleanup: "worktree",
                     branch: worktree.branch,
                     baseBranch: context.baseBranch,
@@ -972,7 +955,7 @@ export function ContextPanel({
         worktreePath: classification.worktreePath ?? worktree.path,
         source: "created",
         lifecycle: {
-          owner: "goose",
+          owner: "distill",
           cleanup: "worktree",
           branch: worktree.branch,
           baseBranch: context.baseBranch,
@@ -1159,14 +1142,6 @@ export function ContextPanel({
 
       <TabsContent value="changes" className={TAB_CONTENT_CLASS}>
         <div className="w-full pb-4">
-          {relatedPullRequestsEnabled && (
-            <SessionPullRequestsWidget
-              sessionId={sessionId}
-              workspacePath={gitTargetPath}
-              isOpen={sectionVisibility.pullRequests}
-              onToggleOpen={() => toggleSection("pullRequests")}
-            />
-          )}
           {shouldShowChanges ? (
             hasWorkspaceAttachments ? (
               <WorkspaceChangesWidget

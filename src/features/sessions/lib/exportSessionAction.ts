@@ -18,7 +18,7 @@ export interface ExportSessionActionOptions {
 
 function isSessionNotFoundError(error: unknown): boolean {
   const message = formatAcpErrorMessage(error, "");
-  return message.includes("not found in sessions or threads");
+  return /session .*not found/i.test(message);
 }
 
 export async function exportSessionAction({

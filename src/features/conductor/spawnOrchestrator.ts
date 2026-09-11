@@ -29,6 +29,7 @@ import {
   type SessionManagedBy,
   type SessionRole,
 } from "./types";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
 export async function spawnConductorChildSession(args: {
   parentSessionId: string;
@@ -156,7 +157,8 @@ export async function spawnConductorChildSession(args: {
     pickUniqueScientistName(usedNames) ||
     DEFAULT_ORCHESTRATOR_NAME;
   const executionTarget = normalizeSessionExecutionTarget(
-    args.executionTarget ?? parent.executionTarget ?? { harnessId: "goose" },
+    args.executionTarget ??
+      parent.executionTarget ?? { harnessId: DEFAULT_HARNESS_ID },
   );
   const project = parent.projectId
     ? useProjectStore
@@ -287,7 +289,7 @@ export function registerConductorSession(args: {
     parentSessionId: null,
     rootConductorId: args.sessionId,
     runId: null,
-    harnessId: args.harnessId ?? "goose",
+    harnessId: args.harnessId ?? DEFAULT_HARNESS_ID,
     modelProviderId: args.modelProviderId,
     modelId: args.modelId,
     displayName: args.displayName,

@@ -1,8 +1,8 @@
 # Berd
 
 Berd is an open-source desktop app for working with AI agents. It is built with
-Tauri 2 and React 19 and talks to the upstream Goose backend through the ACP
-WebSocket served by a `goose serve` sidecar.
+Tauri 2 and React 19. A built-in Rust host speaks ACP to the agent harnesses
+(Claude Code, Codex, Grok, Copilot, Amp) and keeps every session locally.
 
 The repository builds a general-purpose public distribution. Organizations can
 also create enterprise distributions by supplying managed provider settings,
@@ -16,49 +16,23 @@ just setup
 just dev
 ```
 
-`just setup` installs pnpm dependencies, builds the vendored `@aaif/goose-sdk`,
-and prepares the Goose backend pinned by `goose-backend.lock.json` in your
-platform cache directory. `just dev` reuses that stamped pinned binary and fails
-if the lockfile commit no longer matches the cached build.
-
-If you already have an upstream Goose binary you want to test, set
-`GOOSE_BIN=/path/to/goose` before running `just dev`; that is an explicit local
-override and bypasses the managed pinned checkout.
-
-To bump the default Goose backend, update the lockfile in a PR:
-
-```bash
-scripts/update-goose-backend-lock.sh main # or a tag/branch/sha
-just goose-sync                          # fetch/build the new pinned commit
-```
+`just setup` installs pnpm dependencies and git hooks. `just dev` builds the
+workspace CLIs and starts the Tauri dev app; the ACP bridges are installed at
+runtime from `acp-tools.lock.json`.
 
 ## Bundling and distributions
 
-Tauri bundles the Goose backend as an external sidecar. By default, `just bundle`
-stages the pinned managed Goose binary from `goose-backend.lock.json` and then
-runs `pnpm tauri build`:
+`just bundle` stages the `berdctl` and `berd-monitor` sidecars and runs
+`pnpm tauri build`:
 
 ```bash
 just bundle
 ```
 
-You can stage an explicit local binary with
-`GOOSE_BIN=/path/to/goose just stage-sidecar`. Staging creates
-`src-tauri/binaries/goosed-<rust-host-triple>`, matching the
-`"externalBin": ["binaries/goosed"]` entry in `src-tauri/tauri.conf.json`.
-
 The public build is self-contained and does not require private package
 registries or enterprise credentials. Enterprise distributors may overlay
-private agents, runtime configuration, optional companion tools, update
-channels, and signing or publishing infrastructure in their own private build
-orchestration.
-
-## Optional companion CLI
-
-Berd includes a distribution seam for bundling an optional companion CLI as an
-app resource. The public app does not require a private CLI package; enterprise
-distributors can provide and package their own implementation while retaining
-the normal Berd build and validation flow.
+private agents, runtime configuration, update channels, and signing or
+publishing infrastructure in their own private build orchestration.
 
 ## Public Agent Skills
 
@@ -66,18 +40,6 @@ Berd publishes portable Agent Skills under [`skills/`](skills/README.md). These
 can be installed independently of the Berd app and are separate from the
 contributor workflows under `.agents/skills/` and the starter skills bundled
 under `distro/skills/`.
-
-The first published skill, [`buzz-handoff`](skills/buzz-handoff/SKILL.md), brings
-Buzz channel or thread context into a private agent conversation and can send an
-explicitly approved reply through the public Buzz CLI.
-
-## Adding an experiment
-
-Experiments are user-local preferences for unstable UI or workflow behavior.
-Untouched experiments follow the global auto-enable setting, which defaults on
-in dev builds and off in production builds. Use
-`.agents/skills/experimental-features/SKILL.md` for the current workflow,
-registry contract, storage rules, Tauri guardrails, and test coverage.
 
 ## Participating
 
@@ -110,4 +72,4 @@ public issue.
 - `just test` — unit and component tests
 - `just tauri-check` — Rust type check with sidecars disabled
 - `just clippy` — Rust lint with warnings denied
-- `just bundle` — stage the pinned Goose backend and run `pnpm tauri build`
+- `just bundle` — stage the sidecars and run `pnpm tauri build`

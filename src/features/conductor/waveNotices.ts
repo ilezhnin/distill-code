@@ -39,6 +39,8 @@ export const WAVE_REJECTION_REASON_KEYS: Record<WaveRejectionReason, string> = {
   "class-unknown": "classUnknown",
   "step-model-unavailable": "stepModelUnavailable",
   "verification-step-missing": "verificationStepMissing",
+  "verification-step-misplaced": "verificationStepMisplaced",
+  "verification-step-blind": "verificationStepBlind",
 };
 
 export interface WaveRejectionNotice {

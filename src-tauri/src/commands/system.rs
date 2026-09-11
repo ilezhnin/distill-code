@@ -2,9 +2,8 @@ use base64::Engine;
 use nucleo_matcher::pattern::{Atom, AtomKind, CaseMatching, Normalization};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Window};
+use tauri::Window;
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_opener::OpenerExt;
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -177,172 +176,6 @@ pub struct ImageAttachmentPayload {
 pub fn get_home_dir() -> Result<String, String> {
     let home_dir = dirs::home_dir().ok_or("Could not determine home directory")?;
     Ok(home_dir.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
-pub fn open_in_chrome(app: AppHandle, url: String) -> Result<(), String> {
-    open_in_chrome_with(&url, try_launch_chrome, |fallback_url| {
-        app.opener()
-            .open_url(fallback_url, None::<&str>)
-            .map_err(|error| {
-                format!("Failed to open URL '{fallback_url}' in fallback browser: {error}")
-            })
-    })
-}
-
-fn open_in_chrome_with(
-    url: &str,
-    launch_chrome: impl FnOnce(&str) -> bool,
-    open_fallback: impl FnOnce(&str) -> Result<(), String>,
-) -> Result<(), String> {
-    validate_external_url(url)?;
-
-    if launch_chrome(url) {
-        return Ok(());
-    }
-
-    log::warn!("Could not launch Google Chrome; falling back to default browser for {url}");
-    open_fallback(url)
-}
-
-fn validate_external_url(url: &str) -> Result<(), String> {
-    let parsed =
-        reqwest::Url::parse(url).map_err(|error| format!("Invalid URL '{url}': {error}"))?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(format!(
-            "Refusing to open URL with non-http(s) scheme '{}'",
-            parsed.scheme()
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn try_launch_chrome(url: &str) -> bool {
-    std::process::Command::new("open")
-        .args(["-a", "Google Chrome", url])
-        .spawn()
-        .is_ok()
-}
-
-#[cfg(target_os = "linux")]
-fn try_launch_chrome(url: &str) -> bool {
-    for binary in ["google-chrome", "google-chrome-stable", "chromium"] {
-        if std::process::Command::new(binary).arg(url).spawn().is_ok() {
-            return true;
-        }
-    }
-    false
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct WindowsChromeLaunch {
-    program: PathBuf,
-    arguments: [std::ffi::OsString; 1],
-}
-
-#[cfg(target_os = "windows")]
-fn windows_chrome_launches(
-    url: &str,
-    roots: impl IntoIterator<Item = PathBuf>,
-) -> Vec<WindowsChromeLaunch> {
-    const CHROME_RELATIVE_PATH: [&str; 4] = ["Google", "Chrome", "Application", "chrome.exe"];
-
-    roots
-        .into_iter()
-        .filter(|root| root.is_absolute())
-        .map(|root| WindowsChromeLaunch {
-            program: CHROME_RELATIVE_PATH
-                .iter()
-                .fold(root, |path, component| path.join(component)),
-            arguments: [url.into()],
-        })
-        .collect()
-}
-
-#[cfg(target_os = "windows")]
-fn windows_known_folder(folder_id: &windows_sys::core::GUID) -> Option<PathBuf> {
-    use std::ffi::{c_void, OsString};
-    use std::os::windows::ffi::OsStringExt;
-    use std::slice;
-    use windows_sys::Win32::Globalization::lstrlenW;
-    use windows_sys::Win32::System::Com::CoTaskMemFree;
-    use windows_sys::Win32::UI::Shell::SHGetKnownFolderPath;
-
-    let mut raw_path = std::ptr::null_mut();
-    // SAFETY: SHGetKnownFolderPath initializes `raw_path` with a
-    // CoTaskMemAlloc-owned, NUL-terminated UTF-16 string on success. The
-    // pointer is copied before it is released with CoTaskMemFree.
-    let result = unsafe { SHGetKnownFolderPath(folder_id, 0, std::ptr::null_mut(), &mut raw_path) };
-    let path = if result >= 0 && !raw_path.is_null() {
-        // SAFETY: successful SHGetKnownFolderPath output is NUL-terminated.
-        let length = unsafe { lstrlenW(raw_path) } as usize;
-        // SAFETY: `length` excludes the terminator and the pointer remains
-        // valid until the CoTaskMemFree below.
-        let wide_path = unsafe { slice::from_raw_parts(raw_path, length) };
-        Some(PathBuf::from(OsString::from_wide(wide_path)))
-    } else {
-        None
-    };
-    // SAFETY: raw_path is either null or owned by CoTaskMemAlloc.
-    unsafe { CoTaskMemFree(raw_path.cast::<c_void>()) };
-    path
-}
-
-#[cfg(target_os = "windows")]
-fn windows_chrome_roots() -> Vec<PathBuf> {
-    use windows_sys::Win32::UI::Shell::{
-        FOLDERID_LocalAppData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86,
-    };
-
-    [
-        &FOLDERID_LocalAppData,
-        &FOLDERID_ProgramFiles,
-        &FOLDERID_ProgramFilesX86,
-    ]
-    .into_iter()
-    .filter_map(windows_known_folder)
-    .collect()
-}
-
-#[cfg(target_os = "windows")]
-fn try_launch_windows_chrome_with(
-    launches: impl IntoIterator<Item = WindowsChromeLaunch>,
-    mut is_file: impl FnMut(&Path) -> bool,
-    mut launch: impl FnMut(&WindowsChromeLaunch) -> io::Result<()>,
-) -> bool {
-    launches
-        .into_iter()
-        .filter(|candidate| is_file(&candidate.program))
-        .any(|candidate| launch(&candidate).is_ok())
-}
-
-#[cfg(target_os = "windows")]
-fn windows_chrome_command(launch: &WindowsChromeLaunch) -> std::process::Command {
-    let mut command = std::process::Command::new(&launch.program);
-    command.args(&launch.arguments);
-    crate::services::process::apply_no_window(&mut command);
-    command
-}
-
-#[cfg(target_os = "windows")]
-fn launch_windows_chrome(launch: &WindowsChromeLaunch) -> io::Result<()> {
-    windows_chrome_command(launch).spawn().map(|_| ())
-}
-
-#[cfg(target_os = "windows")]
-fn try_launch_chrome(url: &str) -> bool {
-    try_launch_windows_chrome_with(
-        windows_chrome_launches(url, windows_chrome_roots()),
-        Path::is_file,
-        launch_windows_chrome,
-    )
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn try_launch_chrome(_url: &str) -> bool {
-    false
 }
 
 #[tauri::command]
@@ -757,7 +590,7 @@ fn inspect_attachment_path(path: &Path) -> Result<AttachmentPathInfo, String> {
 }
 
 fn normalized_path_key(path: &Path) -> String {
-    if let Ok(canonical) = path.canonicalize() {
+    if let Ok(canonical) = dunce::canonicalize(path) {
         return canonical.to_string_lossy().into_owned();
     }
 
@@ -1087,7 +920,7 @@ fn display_path_for_mention(path: &Path, root: &Path) -> String {
     let root_name = file_name_for_path(root);
     match path.strip_prefix(root) {
         Ok(relative) if relative.as_os_str().is_empty() => root_name,
-        Ok(relative) => format!("{}/{}", root_name, relative.to_string_lossy()),
+        Ok(relative) => format!("{}/{}", root_name, normalize_relative_path(relative)),
         Err(_) => path.to_string_lossy().into_owned(),
     }
 }
@@ -1175,7 +1008,11 @@ fn insert_file_mention_index_entry(
         return;
     }
 
-    let path = root_path.join(Path::new(&normalized_relative_path));
+    // Join segment by segment: a "/"-separated relative path pushed as one
+    // component keeps its slashes on Windows and yields mixed separators.
+    let path = normalized_relative_path
+        .split('/')
+        .fold(root_path.to_path_buf(), |acc, segment| acc.join(segment));
     let Ok(metadata) = fs::symlink_metadata(&path) else {
         return;
     };
@@ -1358,7 +1195,7 @@ fn build_walk_file_mention_index(root_path: &Path) -> Vec<IndexedFileMentionEntr
 }
 
 fn build_file_mention_index(root_path: &Path) -> Result<FileMentionIndex, String> {
-    let canonical_root = root_path.canonicalize().map_err(|error| {
+    let canonical_root = dunce::canonicalize(root_path).map_err(|error| {
         format!(
             "Failed to resolve root '{}': {}",
             root_path.display(),
@@ -1434,7 +1271,7 @@ fn get_or_build_file_mention_index_from_cache<F>(
 where
     F: Fn(&Path) -> Result<FileMentionIndex, String>,
 {
-    let canonical_root = root_path.canonicalize().map_err(|error| {
+    let canonical_root = dunce::canonicalize(root_path).map_err(|error| {
         format!(
             "Failed to resolve root '{}': {}",
             root_path.display(),
@@ -1751,7 +1588,7 @@ fn canonicalize_existing_path_prefix(path: &Path) -> Option<PathBuf> {
         existing = existing.parent()?.to_path_buf();
     }
 
-    let mut canonical = existing.canonicalize().ok()?;
+    let mut canonical = dunce::canonicalize(&existing).ok()?;
     for segment in missing_segments.iter().rev() {
         canonical.push(segment);
     }
@@ -1897,7 +1734,7 @@ fn should_search_file_mention_root(
         return true;
     }
 
-    let Ok(canonical_root) = root_path.canonicalize() else {
+    let Ok(canonical_root) = dunce::canonicalize(root_path) else {
         return false;
     };
 
@@ -2035,10 +1872,7 @@ fn search_filesystem_path_mentions(query: &str, max_results: usize) -> Vec<FileM
     let Some((lookup_dir, partial)) = filesystem_file_mention_lookup(query) else {
         return Vec::new();
     };
-    if lookup_dir
-        .canonicalize()
-        .map_or(true, |path| !path.is_dir())
-    {
+    if dunce::canonicalize(&lookup_dir).map_or(true, |path| !path.is_dir()) {
         return Vec::new();
     }
 
@@ -2153,7 +1987,7 @@ mod tests {
     use super::{
         build_file_mention_index, build_file_tree_entry, ensure_directory_path,
         get_or_build_file_mention_index_from_cache, inspect_attachment_path,
-        inspect_attachment_paths, normalize_attachment_paths, normalize_roots, open_in_chrome_with,
+        inspect_attachment_paths, normalize_attachment_paths, normalize_roots,
         read_directory_entries, read_image_attachment, read_text_file,
         search_file_mentions_blocking, signed_unix_timestamp_ns, stat_file_blocking,
         stat_file_with, write_agent_image_atomically, write_sibling_then_replace,
@@ -2341,21 +2175,27 @@ mod tests {
         fs::write(src.join("main.ts"), "").expect("source file");
 
         let entries = search_mentions(root, "src", 50);
-        let canonical_src = src.canonicalize().expect("canonical src");
-        let canonical_main = src.join("main.ts").canonicalize().expect("canonical main");
+        let canonical_src = dunce::canonicalize(&src).expect("canonical src");
+        let canonical_main = dunce::canonicalize(src.join("main.ts")).expect("canonical main");
 
-        assert!(entries.iter().any(|entry| {
-            entry.resolved_path == canonical_src.to_string_lossy()
-                && entry.display_path.ends_with("/src")
-                && entry.filename == "src"
-                && entry.kind == "folder"
-        }));
-        assert!(entries.iter().any(|entry| {
-            entry.resolved_path == canonical_main.to_string_lossy()
-                && entry.display_path.ends_with("/src/main.ts")
-                && entry.filename == "main.ts"
-                && entry.kind == "file"
-        }));
+        assert!(
+            entries.iter().any(|entry| {
+                entry.resolved_path == canonical_src.to_string_lossy()
+                    && entry.display_path.ends_with("/src")
+                    && entry.filename == "src"
+                    && entry.kind == "folder"
+            }),
+            "expected {canonical_src:?} among {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|entry| {
+                entry.resolved_path == canonical_main.to_string_lossy()
+                    && entry.display_path.ends_with("/src/main.ts")
+                    && entry.filename == "main.ts"
+                    && entry.kind == "file"
+            }),
+            "expected {canonical_main:?} among {entries:?}"
+        );
     }
 
     #[test]
@@ -2427,7 +2267,8 @@ mod tests {
         fs::write(root.join("main.ts"), "").expect("source file");
 
         let entries = search_mentions(root, "empty-folder", 50);
-        let canonical_empty_folder = empty_folder.canonicalize().expect("canonical empty folder");
+        let canonical_empty_folder =
+            dunce::canonicalize(&empty_folder).expect("canonical empty folder");
 
         assert!(
             entries.iter().any(|entry| {
@@ -2499,7 +2340,7 @@ mod tests {
             format!("{}/src/client", symlink_root.to_string_lossy()),
             Some(50),
         );
-        let canonical_file = file.canonicalize().expect("canonical file");
+        let canonical_file = dunce::canonicalize(&file).expect("canonical file");
 
         assert!(
             entries.iter().any(|entry| {
@@ -3031,10 +2872,11 @@ mod tests {
 
     #[test]
     fn serializes_pre_epoch_times_as_signed_nanoseconds() {
-        let timestamp = UNIX_EPOCH - Duration::from_nanos(42);
-        assert_eq!(signed_unix_timestamp_ns(timestamp), "-42");
+        let timestamp = UNIX_EPOCH - Duration::from_secs(1);
+        assert_eq!(signed_unix_timestamp_ns(timestamp), "-1000000000");
     }
 
+    #[cfg(unix)]
     #[test]
     fn stat_file_accepts_pre_epoch_modification_times() {
         let dir = tempdir().expect("tempdir");
@@ -3205,169 +3047,5 @@ mod tests {
             "exceeds the {} byte limit",
             MAX_IMAGE_ATTACHMENT_BYTES
         )));
-    }
-
-    #[test]
-    fn validates_only_http_external_urls_without_rewriting_them() {
-        for url in [
-            "https://example.com",
-            "http://example.com",
-            "https://example.com/connect?first=one&second=two|three<four>five^six%25",
-        ] {
-            let launched_urls = std::cell::RefCell::new(Vec::new());
-            let fallback_urls = std::cell::RefCell::new(Vec::new());
-
-            open_in_chrome_with(
-                url,
-                |launched_url| {
-                    launched_urls.borrow_mut().push(launched_url.to_owned());
-                    true
-                },
-                |fallback_url| {
-                    fallback_urls.borrow_mut().push(fallback_url.to_owned());
-                    Ok(())
-                },
-            )
-            .expect("valid HTTP(S) URL");
-
-            assert_eq!(launched_urls.into_inner(), [url]);
-            assert!(fallback_urls.into_inner().is_empty());
-        }
-
-        for url in ["javascript:alert(1)", "file:///etc/passwd", "not a url"] {
-            assert!(
-                open_in_chrome_with(
-                    url,
-                    |_| panic!("invalid URL must not reach Chrome"),
-                    |_| panic!("invalid URL must not reach the fallback browser"),
-                )
-                .is_err(),
-                "expected URL to be rejected: {url}"
-            );
-        }
-    }
-
-    #[test]
-    fn falls_back_to_default_browser_when_chrome_is_unavailable() {
-        let url = "https://example.com/connect?first=one&second=two|three<four>five^six%25";
-        let fallback_urls = std::cell::RefCell::new(Vec::new());
-
-        open_in_chrome_with(
-            url,
-            |_| false,
-            |fallback_url| {
-                fallback_urls.borrow_mut().push(fallback_url.to_owned());
-                Ok(())
-            },
-        )
-        .expect("fallback browser should open");
-
-        assert_eq!(fallback_urls.into_inner(), [url]);
-    }
-
-    #[test]
-    fn reports_fallback_browser_failures() {
-        let error = open_in_chrome_with(
-            "https://example.com",
-            |_| false,
-            |_| Err("fallback unavailable".into()),
-        )
-        .expect_err("fallback failure should be returned");
-
-        assert_eq!(error, "fallback unavailable");
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_chrome_launch_keeps_shell_metacharacters_in_one_literal_argument() {
-        use std::ffi::OsStr;
-
-        const URL: &str = "https://example.com/connect?first=one&second=two|three<four>five^six%25";
-        let launches = super::windows_chrome_launches(
-            URL,
-            [
-                PathBuf::from(r"C:\Users\alice\AppData\Local"),
-                PathBuf::from(r"C:\Program Files"),
-                PathBuf::from(r"C:\Program Files (x86)"),
-            ],
-        );
-
-        assert_eq!(launches.len(), 3);
-        for launch in &launches {
-            assert!(launch.program.is_absolute());
-            assert_eq!(launch.program.file_name(), Some(OsStr::new("chrome.exe")));
-            assert_eq!(launch.arguments.as_slice(), [OsStr::new(URL)]);
-
-            let command = super::windows_chrome_command(launch);
-            assert_eq!(command.get_program(), launch.program.as_os_str());
-            assert_eq!(command.get_args().collect::<Vec<_>>(), [OsStr::new(URL)]);
-            assert_ne!(command.get_program(), OsStr::new("cmd.exe"));
-        }
-
-        assert!(super::windows_chrome_launches(URL, [PathBuf::from("relative-root")]).is_empty());
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_chrome_launch_stops_after_the_first_success() {
-        use std::ffi::OsString;
-
-        let candidates = [r"C:\first\chrome.exe", r"C:\second\chrome.exe"].map(|program| {
-            super::WindowsChromeLaunch {
-                program: PathBuf::from(program),
-                arguments: [OsString::from("https://example.com")],
-            }
-        });
-        let attempted = std::cell::RefCell::new(Vec::new());
-
-        let launched = super::try_launch_windows_chrome_with(
-            candidates,
-            |_| true,
-            |launch| {
-                attempted.borrow_mut().push(launch.program.clone());
-                Ok(())
-            },
-        );
-
-        assert!(launched);
-        assert_eq!(
-            attempted.into_inner(),
-            [PathBuf::from(r"C:\first\chrome.exe")]
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_chrome_launch_tries_candidates_directly_then_reports_unavailable() {
-        use std::ffi::OsString;
-
-        let candidates = [r"C:\first\chrome.exe", r"C:\second\chrome.exe"].map(|program| {
-            super::WindowsChromeLaunch {
-                program: PathBuf::from(program),
-                arguments: [OsString::from("https://example.com")],
-            }
-        });
-        let attempted = std::cell::RefCell::new(Vec::new());
-
-        let launched = super::try_launch_windows_chrome_with(
-            candidates,
-            |_| true,
-            |launch| {
-                attempted.borrow_mut().push(launch.program.clone());
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Chrome unavailable",
-                ))
-            },
-        );
-
-        assert!(!launched);
-        assert_eq!(
-            attempted.into_inner(),
-            [
-                PathBuf::from(r"C:\first\chrome.exe"),
-                PathBuf::from(r"C:\second\chrome.exe")
-            ]
-        );
     }
 }

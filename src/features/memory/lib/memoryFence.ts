@@ -2,7 +2,7 @@
  * The `distill-memory` fence: how an agent keeps something across sessions.
  *
  * Same channel as `distill-todo`, for the same reason — it is the only one
- * that works identically on goose and on the Claude, Grok and Codex bridges,
+ * that works identically on the Claude, Grok and Codex bridges,
  * and a memory that only forms under one backend is a memory the operator
  * cannot rely on.
  *

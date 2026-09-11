@@ -5,7 +5,6 @@ import {
   registerAppNavigationController,
 } from "@/features/berdctl/bridge/appNavigationController";
 import {
-  ALL_TOOL_GROUPS,
   dispatchCommand,
   TOOL_GROUPS,
 } from "@/features/berdctl/commands/registry";
@@ -31,7 +30,6 @@ import type { ProjectInfo } from "@/features/projects/api/projects";
 import { DEFAULT_PROJECT_COLOR } from "@/features/projects/lib/projectDefaults";
 import { DEFAULT_PROJECT_ICON } from "@/features/projects/lib/projectIcons";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
-import { getModelProviders } from "@/features/providers/providerCatalog";
 import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
 import { setMultiWorkspaceEnabled } from "@/features/workspaces/multiWorkspacePreference";
 import { resolveSkillPillTone } from "@/features/skills/lib/resolveSkillPillTone";
@@ -294,20 +292,6 @@ function seedModelCache(cacheKey: string, modelIds: string[]): void {
   });
 }
 
-/** Fresh-but-empty cache entries for every catalog model provider, so goose
- *  aggregation never triggers a real refresh in tests. */
-function emptyModelProviderCache(): Map<
-  string,
-  { providerId: string; models: never[]; fetchedAt: number }
-> {
-  return new Map(
-    getModelProviders().map((provider) => [
-      provider.id,
-      { providerId: provider.id, models: [], fetchedAt: Date.now() },
-    ]),
-  );
-}
-
 async function expectCommandError(
   promise: Promise<unknown>,
   code: string,
@@ -325,7 +309,7 @@ async function expectCommandError(
 
 beforeEach(() => {
   resetSessionTargetCoordinatorsForTests();
-  localStorage.removeItem("goose:chat-workspace-metadata");
+  localStorage.removeItem("distill:chat-workspace-metadata");
   useChatSessionStore.setState({
     sessions: [],
     activeSessionId: null,
@@ -357,7 +341,7 @@ beforeEach(() => {
   });
   useAgentStore.setState({ personas: [], agents: [], activeAgentId: null });
   useProviderModelCacheStore.setState({
-    providers: emptyModelProviderCache(),
+    providers: new Map(),
     refreshingProviderIds: new Set(),
   });
 
@@ -383,14 +367,12 @@ beforeEach(() => {
     messageId: "steer-message",
   });
   mocks.discoverAcpProviders.mockResolvedValue([
-    { id: "goose", label: "Goose (Default)" },
     { id: "claude-acp", label: "Claude Code" },
     { id: "codex-acp", label: "Codex" },
   ]);
   mocks.runDoctor.mockResolvedValue({ checks: [] });
   mocks.readinessFromReport.mockReturnValue(
     new Map([
-      ["goose", "ready"],
       ["claude-acp", "ready"],
       ["codex-acp", "ready"],
     ]),
@@ -579,8 +561,6 @@ describe("action schemas", () => {
       "skills.create": { name: "Skill", description: "Does X", content: "#" },
       "skills.list": {},
       "skills.get": { skill_id: "global:/skills/x" },
-      "feedback.open": { title: "Bug", description: "Details" },
-      "feedback.submit": { title: "Bug", description: "Details" },
       "info.list_harnesses": {},
       "info.list_models": {},
       "info.get_context": {},
@@ -676,19 +656,18 @@ describe("sessions.create", () => {
 
     expect(mocks.resolveSessionCwd).toHaveBeenCalledWith(null);
     expect(mocks.acpCreateSession).toHaveBeenCalledWith(
-      "databricks_v2",
+      "claude-acp",
       "/resolved/cwd",
       {
         personaId: "agent-7",
         modelId: "model-9",
         projectId: undefined,
-        deferProviderSetup: false,
       },
     );
     expect(result).toEqual({
       session_id: "session-new",
       title: DEFAULT_CHAT_TITLE,
-      harness_id: "goose",
+      harness_id: "claude-acp",
       send_status: "dispatched",
     });
 
@@ -703,7 +682,7 @@ describe("sessions.create", () => {
             origin: "berdctl_cross_session",
             berdSenderLabel: "the test orchestrator",
           },
-          acpGooseMetadata: {
+          acpPromptMetadata: {
             origin: "berdctl_cross_session",
             berdSenderLabel: "the test orchestrator",
           },
@@ -743,7 +722,6 @@ describe("sessions.create", () => {
         personaId: undefined,
         modelId: undefined,
         projectId: undefined,
-        deferProviderSetup: false,
       },
     );
   });
@@ -773,50 +751,6 @@ describe("sessions.create", () => {
         ctx,
       ),
       "harness_not_ready",
-    );
-    expect(mocks.acpCreateSession).not.toHaveBeenCalled();
-  });
-
-  it("resolves a goose model to its owning model provider", async () => {
-    const modelProvider = getModelProviders()[0].id;
-    seedModelCache(modelProvider, ["model-a"]);
-
-    await dispatchCommand(
-      "sessions",
-      { action: "create", prompt: "hi", model_id: "model-a" },
-      ctx,
-    );
-
-    // The session runs against the model's provider, like the in-app picker.
-    expect(mocks.acpCreateSession).toHaveBeenCalledWith(
-      modelProvider,
-      "/resolved/cwd",
-      expect.objectContaining({ modelId: "model-a" }),
-    );
-
-    await expectCommandError(
-      dispatchCommand(
-        "sessions",
-        { action: "create", prompt: "hi", model_id: "nope" },
-        ctx,
-      ),
-      "model_not_found",
-    );
-  });
-
-  it("reports model_not_found when an explicit Goose model has no concrete provider", async () => {
-    await expectCommandError(
-      dispatchCommand(
-        "sessions",
-        {
-          action: "create",
-          prompt: "hi",
-          harness_id: "goose",
-          model_id: "unresolved-model",
-        },
-        ctx,
-      ),
-      "model_not_found",
     );
     expect(mocks.acpCreateSession).not.toHaveBeenCalled();
   });
@@ -873,7 +807,7 @@ describe("sessions.create", () => {
       expect.objectContaining({ id: "project-1" }),
     );
     expect(mocks.acpCreateSession).toHaveBeenCalledWith(
-      "goose",
+      "claude-acp",
       "/resolved/cwd",
       expect.objectContaining({ projectId: "project-1" }),
     );
@@ -1042,7 +976,7 @@ describe("sessions.send", () => {
           personaId: "agent-7",
           personaName: "Reviewer",
           systemPrompt: expect.stringContaining("Review the work carefully."),
-          goose: { origin: "berdctl_cross_session" },
+          promptMeta: { origin: "berdctl_cross_session" },
         }),
       );
     });
@@ -1597,7 +1531,7 @@ describe("sessions.send", () => {
       "run-1",
       "make it shorter",
       expect.objectContaining({
-        goose: { origin: "berdctl_cross_session" },
+        promptMeta: { origin: "berdctl_cross_session" },
       }),
     );
     expect(mocks.acpPrepareSession).not.toHaveBeenCalled();
@@ -1630,7 +1564,7 @@ describe("sessions.send", () => {
       text: "next prompt",
       sendOptions: {
         userMessageMetadata: { origin: "berdctl_cross_session" },
-        acpGooseMetadata: { origin: "berdctl_cross_session" },
+        acpPromptMetadata: { origin: "berdctl_cross_session" },
       },
     });
 
@@ -1687,7 +1621,7 @@ describe("sessions.send", () => {
           "the Berd session handling berd-monitor implementation",
         berdDeliveryId: "monitor-event-1",
       },
-      acpGooseMetadata: {
+      acpPromptMetadata: {
         origin: "berdctl_cross_session",
         berdSenderLabel:
           "the Berd session handling berd-monitor implementation",
@@ -2252,20 +2186,6 @@ describe("sessions.get", () => {
       ),
       "session_not_found",
     );
-  });
-
-  it("maps goose model-provider sessions back to harness_id goose", async () => {
-    // Goose-managed sessions persist a model-provider id; reported raw it
-    // would fail the round-trip into create's harness_id.
-    mockSessionFound({ providerId: getModelProviders()[0].id });
-
-    const result = (await dispatchCommand(
-      "sessions",
-      { action: "get", session_id: "session-1" },
-      ctx,
-    )) as { harness_id: string };
-
-    expect(result.harness_id).toBe("goose");
   });
 });
 
@@ -4102,7 +4022,6 @@ describe("info", () => {
   it("list_harnesses reports readiness and flags the default", async () => {
     mocks.readinessFromReport.mockReturnValue(
       new Map([
-        ["goose", "ready"],
         ["claude-acp", "ready"],
         ["codex-acp", "not_installed"],
       ]),
@@ -4117,15 +4036,9 @@ describe("info", () => {
     expect(result).toEqual({
       harnesses: [
         {
-          harness_id: "goose",
-          name: "Goose (Default)",
-          is_default: true,
-          status: "ready",
-        },
-        {
           harness_id: "claude-acp",
           name: "Claude Code",
-          is_default: false,
+          is_default: true,
           status: "ready",
         },
         {
@@ -4160,32 +4073,10 @@ describe("info", () => {
     });
   });
 
-  it("list_models aggregates the goose harness across model providers", async () => {
-    const modelProvider = getModelProviders()[0].id;
-    seedModelCache(modelProvider, ["model-a"]);
-
-    const result = await dispatchCommand(
-      "info",
-      { action: "list_models", harness_id: "goose" },
-      ctx,
-    );
-
-    expect(result).toEqual({
-      harnesses: [
-        {
-          harness_id: "goose",
-          models: [
-            { model_id: "model-a", name: "model-a", provider: modelProvider },
-          ],
-        },
-      ],
-    });
-  });
-
   it("list_models covers every ready harness when harness_id is omitted", async () => {
     mocks.readinessFromReport.mockReturnValue(
       new Map([
-        ["goose", "ready"],
+        ["claude-acp", "ready"],
         ["claude-acp", "not_ready"],
         ["codex-acp", "ready"],
       ]),
@@ -4198,23 +4089,20 @@ describe("info", () => {
       ctx,
     )) as { harnesses: Array<{ harness_id: string }> };
 
-    // Unready harnesses (claude-acp) are excluded; goose + codex covered.
-    expect(result.harnesses.map((h) => h.harness_id)).toEqual([
-      "goose",
-      "codex-acp",
-    ]);
+    // Unready harnesses (claude-acp) are excluded.
+    expect(result.harnesses.map((h) => h.harness_id)).toEqual(["codex-acp"]);
   });
 
   it("list_models reports a harness that manages its model outside the app as empty with a warning", async () => {
     // amp-acp's catalog entry has supportsModelList: false, so it exposes no
     // model list; the hint surfaces through `warning` instead of an error.
     mocks.discoverAcpProviders.mockResolvedValue([
-      { id: "goose", label: "Goose (Default)" },
+      { id: "claude-acp", label: "Claude Code" },
       { id: "amp-acp", label: "Amp" },
     ]);
     mocks.readinessFromReport.mockReturnValue(
       new Map([
-        ["goose", "ready"],
+        ["claude-acp", "ready"],
         ["amp-acp", "ready"],
       ]),
     );
@@ -4281,23 +4169,5 @@ describe("info", () => {
     expect(result.active_session_id).toBe("session-2");
     expect(result.active_project_id).toBe("project-9");
     expect(result.app_version.length).toBeGreaterThan(0);
-  });
-});
-
-describe("feedback schemas", () => {
-  it("requires bounded report content and defaults diagnostics off", () => {
-    for (const action of ["open", "submit"] as const) {
-      const schema = ALL_TOOL_GROUPS.feedback.actions[action].schema;
-      expect(
-        schema.safeParse({ title: "Bug", description: "Details" }),
-      ).toMatchObject({ success: true, data: { include_logs: false } });
-      expect(
-        schema.safeParse({ title: "", description: "Details" }).success,
-      ).toBe(false);
-      expect(
-        schema.safeParse({ title: "Bug", description: "x".repeat(50_001) })
-          .success,
-      ).toBe(false);
-    }
   });
 });

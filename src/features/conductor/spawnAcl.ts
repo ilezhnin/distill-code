@@ -16,11 +16,11 @@
  *   the same effective ACL so the text can never disagree with the code.
  *
  * `berdctl session create` / `session fork` are enforced too (P42): the CLI
- * reads AGENT_SESSION_ID from the shell env goose injects per session and
+ * reads AGENT_SESSION_ID from the shell env when the harness exports it and
  * sends it as `actor` on the call envelope; the commands resolve it to a
  * graph node and run this same check (berdctl runtime/spawnGate.ts). The
  * residue is stated there: the id is guessable, so a deliberately forged
- * env var can still impersonate a session until goose mints a nonce — the
+ * env var can still impersonate a session until the host mints a nonce — the
  * gate covers every honest call, not a determined adversary.
  *
  * Operator-initiated actions (UI buttons, the composer) are exempt on

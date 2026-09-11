@@ -3,8 +3,8 @@
 A session is a single conversation with an agent — what a user casually
 calls a "chat." It's the object `berdctl session` and `sessions.json`'s
 strings name it as; "chat" is the informal word for the same thing, not a
-separate object. A session runs on a harness — `goose`, `claude-acp`,
-`codex-acp`, `copilot-acp`, `amp-acp`, or `cursor-agent` — chosen per
+separate object. A session runs on a harness — `claude-acp`, `codex-acp`,
+`grok-acp`, `copilot-acp`, or `amp-acp` — chosen per
 session; a question about a specific harness's own behavior is out of scope
 for this skill (see the Scope section in `SKILL.md`). Within a session, a
 user can attach workspaces (folders/repos), tag in skills and agents, and

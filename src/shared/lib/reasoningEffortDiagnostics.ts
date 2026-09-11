@@ -1,4 +1,4 @@
-import { logRendererEvent } from "@/shared/api/rendererTelemetry";
+import { logRendererEvent } from "@/shared/api/rendererLog";
 
 type ReasoningEffortLogValue = string | number | boolean | null | undefined;
 

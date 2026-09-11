@@ -7,14 +7,13 @@ import {
   type CommandOutcome,
 } from "@/features/berdctl/navigation";
 import { useChatStore } from "@/features/chat/stores/chatStore";
-import { gooseServeSelectionFromExecutionTarget } from "@/features/chat/lib/gooseServeExecutionTarget";
+import { hostSelectionFromExecutionTarget } from "@/features/chat/lib/hostExecutionTarget";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 
 import { useShortcutsDialogStore } from "@/features/shortcuts/stores/shortcutsDialogStore";
 import { useRuntimeConfigStore } from "@/shared/runtime-config/runtimeConfigStore";
-import { useDefaultProviderReadinessStore } from "@/features/providers/stores/defaultProviderReadinessStore";
 import {
   DEFAULT_RUNTIME_CONFIG,
   type RuntimeConfig,
@@ -65,9 +64,6 @@ vi.mock("@/app/views/NavigationPanesView", () => ({
     <nav aria-label="mock sidebar">
       <button type="button" onClick={() => onNavigate?.("skills")}>
         Sidebar skills
-      </button>
-      <button type="button" onClick={() => onNavigate?.("automations")}>
-        Sidebar automations
       </button>
       <button type="button" onClick={() => onNavigate?.("agents")}>
         Sidebar agents
@@ -142,8 +138,8 @@ vi.mock("@/features/updates/ui/BetaBadge", () => ({
 
 vi.mock("@/features/providers/hooks/useAgentProviderStatus", () => ({
   useAgentProviderStatus: () => ({
-    readyAgentIds: new Set(["goose"]),
-    agentReadiness: new Map([["goose", "ready"]]),
+    readyAgentIds: new Set(["claude-acp"]),
+    agentReadiness: new Map([["claude-acp", "ready"]]),
     agentChecks: new Map(),
     loading: false,
     refresh: vi.fn().mockResolvedValue(undefined),
@@ -151,18 +147,8 @@ vi.mock("@/features/providers/hooks/useAgentProviderStatus", () => ({
 }));
 
 vi.mock("./ui/AppShellContent", () => ({
-  AppShellContent: (({
-    targetLocation,
-    onNavigateAutomations,
-    onAutomationBuilderLeaveActionChange,
-    onCreatePersona,
-    onArchiveChat,
-  }) => {
+  AppShellContent: (({ targetLocation, onCreatePersona, onArchiveChat }) => {
     const activeView = targetLocation.view;
-    const activeAutomationsRoute =
-      targetLocation.view === "automations"
-        ? targetLocation.route
-        : { surface: "overview" };
 
     return (
       <section>
@@ -170,32 +156,6 @@ vi.mock("./ui/AppShellContent", () => ({
         <button type="button" onClick={() => onArchiveChat("session-1")}>
           Archive session
         </button>
-        <button
-          type="button"
-          onClick={() =>
-            onNavigateAutomations({
-              surface: "builder",
-              automationId: "automation-1",
-            })
-          }
-        >
-          Open automation builder
-        </button>
-        {activeView === "automations" &&
-        activeAutomationsRoute.surface === "builder" ? (
-          <button
-            type="button"
-            onClick={() =>
-              onAutomationBuilderLeaveActionChange?.({
-                hasUnsavedChanges: true,
-                save: async () => true,
-                discard: () => {},
-              })
-            }
-          >
-            Mark automation edits unsaved
-          </button>
-        ) : null}
         {activeView === "agents" ? (
           <button type="button" onClick={onCreatePersona}>
             Create agent
@@ -211,7 +171,7 @@ function makeSession(overrides: Partial<ChatSession> = {}): ChatSession {
   return {
     id: "session-1",
     title: "Calling chat",
-    executionTarget: { harnessId: "goose" },
+    executionTarget: { harnessId: "claude-acp" },
     workingDir: "/tmp/session-1",
     createdAt: now,
     updatedAt: now,
@@ -264,7 +224,7 @@ describe("AppShell berdctl integration", () => {
     mockAcpListSessionsPage.mockReset();
     mockAcpListSessionsPage.mockImplementation(async () => ({
       sessions: useChatSessionStore.getState().sessions.map((session) => {
-        const selection = gooseServeSelectionFromExecutionTarget(
+        const selection = hostSelectionFromExecutionTarget(
           session.executionTarget,
         );
         return {
@@ -331,10 +291,7 @@ describe("AppShell berdctl integration", () => {
       archiveMutationBySessionId: {},
     });
     useAgentStore.setState({
-      selectedProvider: "goose",
-    });
-    useDefaultProviderReadinessStore.setState({
-      readiness: { status: "ready", providerId: "goose" },
+      selectedProvider: "claude-acp",
     });
     useProjectStore.setState({
       projects: [],
@@ -343,7 +300,6 @@ describe("AppShell berdctl integration", () => {
     });
     setReadyRuntimeConfig({
       ...DEFAULT_RUNTIME_CONFIG,
-      kgoose: { baseUrl: "https://kgoose.example.test" },
     });
   });
 
@@ -612,85 +568,6 @@ describe("AppShell berdctl integration", () => {
     await waitFor(() => {
       expect(screen.getByTestId("active-view")).toHaveTextContent("home");
     });
-  });
-
-  it("openSession resolves blocked_unsaved_changes when the automation guard is cancelled", async () => {
-    const user = userEvent.setup();
-    useChatSessionStore.setState({ sessions: [makeSession()] });
-    render(<AppShell />);
-
-    await user.click(
-      screen.getByRole("button", { name: "Sidebar automations" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Open automation builder" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Mark automation edits unsaved" }),
-    );
-
-    const outcome = startCommand(() =>
-      getAppNavigationController().openSession("session-1"),
-    );
-
-    expect(
-      await screen.findByText("Unsaved automation changes"),
-    ).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Keep editing" }));
-
-    await expect(outcome).resolves.toEqual({
-      ok: false,
-      reason: "blocked_unsaved_changes",
-    });
-    expect(screen.getByTestId("active-view")).toHaveTextContent("automations");
-  });
-
-  it("settles a superseded pending guard entry as cancelled when a second guarded navigation arrives", async () => {
-    const user = userEvent.setup();
-    useChatSessionStore.setState({
-      sessions: [
-        makeSession(),
-        makeSession({ id: "session-2", workingDir: "/tmp/session-2" }),
-      ],
-    });
-    render(<AppShell />);
-
-    await user.click(
-      screen.getByRole("button", { name: "Sidebar automations" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Open automation builder" }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Mark automation edits unsaved" }),
-    );
-
-    const first = startCommand(() =>
-      getAppNavigationController().openSession("session-1"),
-    );
-    expect(
-      await screen.findByText("Unsaved automation changes"),
-    ).toBeInTheDocument();
-
-    // A second guarded navigation supersedes the first pending entry; the
-    // first command must settle (cancelled) instead of dying by timeout.
-    const second = startCommand(() =>
-      getAppNavigationController().openSession("session-2"),
-    );
-
-    await expect(first).resolves.toEqual({
-      ok: false,
-      reason: "blocked_unsaved_changes",
-    });
-
-    // The second entry is still live and resolves through the prompt.
-    await user.click(screen.getByRole("button", { name: "Keep editing" }));
-    await expect(second).resolves.toEqual({
-      ok: false,
-      reason: "blocked_unsaved_changes",
-    });
-    expect(screen.getByTestId("active-view")).toHaveTextContent("automations");
   });
 
   it("openSession resolves blocked_unsaved_changes when the agent draft guard is cancelled", async () => {

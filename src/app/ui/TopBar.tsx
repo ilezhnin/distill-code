@@ -5,15 +5,10 @@ import {
   IconLayoutSidebarFilled,
   IconLayoutSidebarRight,
   IconLayoutSidebarRightFilled,
-  IconMessageReport,
   IconSearch,
 } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { useTopBarActions } from "@/app/contexts/TopBarActionsContext";
-import { RELATED_PULL_REQUESTS_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
-import { useExperiment } from "@/features/experiments/experimentPreferences";
-import { BetaBadge } from "@/features/updates/ui/BetaBadge";
-import { PullRequestsPopover } from "@/features/work-status/PullRequestsPopover";
 import { cn } from "@/shared/lib/cn";
 import { TopBarIconButton } from "@/shared/ui/top-bar-icon-button";
 
@@ -36,7 +31,6 @@ interface TopBarProps {
   onGoForward?: () => void;
   onToggleRightRail?: () => void;
   onToggleSidebar?: () => void;
-  onFeedbackClick?: () => void;
   onSearchClick?: () => void;
 }
 
@@ -60,13 +54,10 @@ export function TopBar({
   onGoForward,
   onToggleRightRail,
   onToggleSidebar,
-  onFeedbackClick,
   onSearchClick,
 }: TopBarProps) {
-  const { t } = useTranslation(["sidebar", "feedback"]);
+  const { t } = useTranslation("sidebar");
   const viewActions = useTopBarActions();
-  const pullRequestsEnabled =
-    useExperiment(RELATED_PULL_REQUESTS_EXPERIMENT_ID)?.enabled === true;
   const topBarTitle =
     breadcrumbs.find((breadcrumb) => breadcrumb.id === "chat-session")?.label ??
     breadcrumbs[breadcrumbs.length - 1]?.label ??
@@ -140,9 +131,7 @@ export function TopBar({
         </span>
       </div>
       <div className="flex shrink-0 items-center gap-3 text-app-top-bar-control-fg [&_svg]:size-[length:var(--text-app-top-bar-icon)]">
-        {pullRequestsEnabled ? <PullRequestsPopover /> : null}
         {viewActions}
-        <BetaBadge />
 
         {onSearchClick ? (
           <TopBarIconButton
@@ -153,17 +142,6 @@ export function TopBar({
             tooltip={t("actions.search")}
           >
             <IconSearch aria-hidden="true" />
-          </TopBarIconButton>
-        ) : null}
-        {onFeedbackClick ? (
-          <TopBarIconButton
-            type="button"
-            size="icon-top-bar"
-            onClick={onFeedbackClick}
-            aria-label={t("feedback:title")}
-            tooltip={t("feedback:title")}
-          >
-            <IconMessageReport aria-hidden="true" />
           </TopBarIconButton>
         ) : null}
         {showRightRailToggle && (

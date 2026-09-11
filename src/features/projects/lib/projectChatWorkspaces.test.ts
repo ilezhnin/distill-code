@@ -185,7 +185,7 @@ describe("project chat workspaces", () => {
         source: "created",
         branch: "chat-123",
         lifecycle: expect.objectContaining({
-          owner: "goose",
+          owner: "distill",
           cleanup: "worktree",
           branch: "chat-123",
           baseBranch: "main",
@@ -199,7 +199,7 @@ describe("project chat workspaces", () => {
         source: "created",
         branch: "chat-123",
         lifecycle: expect.objectContaining({
-          owner: "goose",
+          owner: "distill",
           cleanup: "worktree",
           branch: "chat-123",
           baseBranch: "main",
@@ -414,7 +414,7 @@ describe("project chat workspaces", () => {
         source: "created",
         branch: "chat-123",
         lifecycle: expect.objectContaining({
-          owner: "goose",
+          owner: "distill",
           cleanup: "branch",
           branch: "chat-123",
           baseBranch: "main",
@@ -428,7 +428,7 @@ describe("project chat workspaces", () => {
         source: "created",
         branch: "chat-123",
         lifecycle: expect.objectContaining({
-          owner: "goose",
+          owner: "distill",
           cleanup: "branch",
           branch: "chat-123",
           baseBranch: "main",

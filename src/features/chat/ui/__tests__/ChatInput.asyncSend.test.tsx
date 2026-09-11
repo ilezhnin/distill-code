@@ -3,19 +3,6 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatInput } from "./chatInputTestUtils";
 
-const mockVoiceDictation = {
-  isEnabled: true,
-  isRecording: false,
-  isTranscribing: false,
-  isStarting: vi.fn(() => false),
-  stopRecording: vi.fn(),
-  toggleRecording: vi.fn(),
-};
-
-vi.mock("../hooks/useVoiceDictation", () => ({
-  useVoiceDictation: () => mockVoiceDictation,
-}));
-
 vi.mock("@/features/providers/hooks/useAgentProviderStatus", () => ({
   useAgentProviderStatus: () => ({
     readyAgentIds: new Set(["goose", "claude-acp", "codex-acp"]),
@@ -54,13 +41,6 @@ describe("ChatInput async send handling", () => {
   beforeEach(() => {
     mockSearchFilesForMentions.mockClear();
     mockSearchFilesForMentions.mockResolvedValue([]);
-    mockVoiceDictation.isEnabled = true;
-    mockVoiceDictation.isRecording = false;
-    mockVoiceDictation.isTranscribing = false;
-    mockVoiceDictation.isStarting.mockReset();
-    mockVoiceDictation.isStarting.mockReturnValue(false);
-    mockVoiceDictation.stopRecording.mockReset();
-    mockVoiceDictation.toggleRecording.mockReset();
   });
 
   it("clears the composer after an accepted async send when the draft is unchanged", async () => {

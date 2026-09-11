@@ -22,31 +22,6 @@ describe("getToolCallIdentity", () => {
     ).toEqual({});
   });
 
-  it("extracts goose tool call identity", () => {
-    expect(
-      getToolCallIdentity(
-        toolCallUpdate({
-          goose: {
-            toolCall: { toolName: "delegate", extensionName: "summon" },
-          },
-        }),
-      ),
-    ).toEqual({ toolName: "delegate", extensionName: "summon" });
-  });
-
-  it("prefers goose mcpApp identity over toolCall", () => {
-    expect(
-      getToolCallIdentity(
-        toolCallUpdate({
-          goose: {
-            mcpApp: { toolName: "app-tool" },
-            toolCall: { toolName: "other" },
-          },
-        }),
-      ),
-    ).toEqual({ toolName: "app-tool" });
-  });
-
   it("extracts Claude Code tool names", () => {
     expect(
       getToolCallIdentity(toolCallUpdate({ claudeCode: { toolName: "Task" } })),
@@ -85,17 +60,6 @@ describe("getToolCallIdentity", () => {
         }),
       ),
     ).toEqual({ toolName: "spawn_agent" });
-  });
-
-  it("prefers goose tool identity over other vendors when both exist", () => {
-    expect(
-      getToolCallIdentity(
-        toolCallUpdate({
-          goose: { toolCall: { toolName: "delegate" } },
-          claudeCode: { toolName: "Task" },
-        }),
-      ),
-    ).toEqual({ toolName: "delegate" });
   });
 
   it("returns empty for malformed vendor metadata", () => {

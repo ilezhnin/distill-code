@@ -190,7 +190,7 @@ pub fn repair_bundled_agent(
         .ok_or_else(|| "Bundled agent distribution is unavailable".to_string())?;
     let e2e_agents_dir = app
         .try_state::<crate::services::e2e_mode::E2eMode>()
-        .map(|mode| mode.goose_agents_dir());
+        .map(|mode| mode.agents_dir());
     bundled_agents::repair_bundled_agent(bundle, e2e_agents_dir.as_deref(), &file_name)
 }
 
@@ -253,7 +253,7 @@ pub fn read_agent_source_file(
 ) -> Result<ImportFileReadResult, String> {
     let e2e_agents_dir = app
         .try_state::<crate::services::e2e_mode::E2eMode>()
-        .map(|mode| mode.goose_agents_dir());
+        .map(|mode| mode.agents_dir());
     let path = validate_agent_source_path(&source_path, e2e_agents_dir.as_deref())?;
     read_persona_file(path, "agent source")
 }

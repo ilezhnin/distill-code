@@ -151,9 +151,13 @@ mod tests {
 
     #[test]
     fn joins_absolute_path_and_subpath() {
+        let expected = std::path::Path::new("/tmp/project")
+            .join("src")
+            .to_string_lossy()
+            .into_owned();
         assert_eq!(
             resolve_path_parts(vec!["/tmp/project".to_string(), "src".to_string()]),
-            Ok("/tmp/project/src".to_string())
+            Ok(expected)
         );
     }
 

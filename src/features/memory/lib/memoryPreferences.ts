@@ -26,24 +26,27 @@ import { useSyncExternalStore } from "react";
 import type { MemoryEntry } from "./memoryEntry";
 import { composeMemorySection } from "./memoryPrompt";
 
-export const MEMORY_PREFERENCES_STORAGE_KEY = "goose:memory-preferences";
+export const MEMORY_PREFERENCES_STORAGE_KEY = "distill:memory-preferences";
 export const MEMORY_PREFERENCES_STORAGE_VERSION = 1;
 export const MEMORY_PREFERENCES_CHANGE_EVENT =
-  "goose:memory-preferences-change";
+  "distill:memory-preferences-change";
 
-const EMPTY_STORAGE_SNAPSHOT = "__goose_memory_preferences_empty__";
+const EMPTY_STORAGE_SNAPSHOT = "__distill_memory_preferences_empty__";
 
 export interface MemoryPreferences {
   /** Agents may keep and retire memories through the `distill-memory` fence. */
   write: boolean;
   /** Sessions are told what is remembered, and how to ask for the rest. */
   read: boolean;
+  /** Draw a project's `.distill/wiki/` as a graph at the bottom of the panel. */
+  wikiGraph: boolean;
 }
 
 interface StoredPreferences {
   version: number;
   write?: boolean;
   read?: boolean;
+  wikiGraph?: boolean;
 }
 
 /**
@@ -51,7 +54,13 @@ interface StoredPreferences {
  * and the feature's whole value is the facts the operator never had to
  * repeat — so the pause is opt-in, not the memory.
  */
-const DEFAULT_PREFERENCES: MemoryPreferences = { write: true, read: true };
+const DEFAULT_PREFERENCES: MemoryPreferences = {
+  write: true,
+  read: true,
+  // Off unless asked for: the graph reads every page of a project's wiki off
+  // disk to draw one picture, and most projects have no wiki yet.
+  wikiGraph: false,
+};
 
 let snapshotCache: { key: string; value: MemoryPreferences } | undefined;
 
@@ -92,6 +101,8 @@ function parseStoredPreferencesValue(parsed: unknown): StoredPreferences {
     version: MEMORY_PREFERENCES_STORAGE_VERSION,
     write: typeof parsed.write === "boolean" ? parsed.write : undefined,
     read: typeof parsed.read === "boolean" ? parsed.read : undefined,
+    wikiGraph:
+      typeof parsed.wikiGraph === "boolean" ? parsed.wikiGraph : undefined,
   };
 }
 
@@ -174,6 +185,7 @@ export function getMemoryPreferences(): MemoryPreferences {
   return {
     write: stored.write ?? DEFAULT_PREFERENCES.write,
     read: stored.read ?? DEFAULT_PREFERENCES.read,
+    wikiGraph: stored.wikiGraph ?? DEFAULT_PREFERENCES.wikiGraph,
   };
 }
 
@@ -183,6 +195,10 @@ export function setMemoryWriteEnabled(enabled: boolean): boolean {
 
 export function setMemoryReadEnabled(enabled: boolean): boolean {
   return writeMemoryPreference({ read: enabled });
+}
+
+export function setMemoryWikiGraphEnabled(enabled: boolean): boolean {
+  return writeMemoryPreference({ wikiGraph: enabled });
 }
 
 export function subscribeToMemoryPreferenceChanges(

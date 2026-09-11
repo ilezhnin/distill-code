@@ -32,11 +32,15 @@ doctor-windows:
 cleanup-windows *ARGS:
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Cleanup-Windows.ps1 {{ ARGS }}
 
-# Install pnpm dependencies, build the SDK, install hooks, and build pinned Goose natively on Windows.
-setup-windows goose-profile="debug":
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Setup-Windows.ps1 -GooseBuildProfile "{{ goose-profile }}"
+# Reclaim disk from the Rust/Tauri build cache (dry run; -Remove to delete).
+prune-build-cache *ARGS:
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Prune-BuildCache-Windows.ps1 {{ ARGS }}
 
-# Launch the native Windows Tauri dev app with managed goose.exe and berdctl.exe.
+# Install pnpm dependencies and hooks natively on Windows.
+setup-windows:
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Setup-Windows.ps1
+
+# Launch the native Windows Tauri dev app with berdctl.exe.
 dev-windows:
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Dev-Windows.ps1
 
@@ -61,36 +65,19 @@ test-windows-dev:
 
 # ── Dev Environment ──────────────────────────────────────────
 
-# Sync and build the pinned managed local Goose checkout used for Berd development.
-[unix]
-goose-sync:
-    GOOSE_DEV_MODE=required GOOSE_BUILD_PROFILE=debug ./scripts/ensure-local-goose.sh
-
-# Regenerate the vendored ACP schema from the pinned Goose backend and rebuild the SDK (kept out of setup; mutates tracked files).
-[unix]
-sync-schema:
-    ./scripts/regenerate-sdk-schema.sh
-
-# Install dependencies and build workspace packages.
+# Install dependencies.
 [unix]
 _setup-dev-deps:
     pnpm install
-    cd sdk && pnpm build
 
 [unix]
 _install-lefthook:
     ./scripts/install-lefthook.sh
 
-# Install dependencies, build workspace packages, and prepare local development hooks.
-[unix]
-_setup-no-goose: _setup-dev-deps
-    just _install-lefthook
-
-# Install dependencies, build workspace packages, prepare local development hooks, and build managed Goose.
+# Install dependencies and prepare local development hooks.
 [unix]
 setup: _setup-dev-deps
     just _install-lefthook
-    GOOSE_DEV_MODE=required ./scripts/ensure-local-goose.sh
 
 # ── Build & Check ────────────────────────────────────────────
 
@@ -147,11 +134,6 @@ frontend-fmt-check:
 # Lint frontend files with Biome.
 lint:
     {{ dev_tool }} pnpm lint
-
-# Run react-doctor static analysis as an advisory report (fully offline, no telemetry).
-# Forwards extra flags, e.g. `just react-doctor --verbose` or `just react-doctor --json`.
-react-doctor *ARGS:
-    pnpm exec react-doctor --project berd --no-score --blocking none {{ ARGS }}
 
 # Check frontend i18n string conventions.
 i18n-check:
@@ -235,10 +217,7 @@ _tauri-check-unix:
 _tauri-check-windows:
     just tauri-check-windows
 
-# Run the Rust plugin and app-crate telemetry tests with external sidecars
-# disabled. The telemetry lanes filter the app lib's tests by name — the
-# `commands::telemetry` module path matches wholesale — and run twice because
-# the `block-telemetry-enforced` feature swaps in the enforced-consent tests.
+# Run the Rust workspace crate tests with external sidecars disabled.
 tauri-test:
     just _tauri-test-{{ os_family() }}
 
@@ -247,19 +226,15 @@ _tauri-test-unix:
     just _tauri-cargo-unix test -p tauri-plugin-berdctl --features server
     just _tauri-cargo-unix test -p berdctl
     just _tauri-cargo-unix test -p berd-monitor
-    just _tauri-cargo-unix test --lib telemetry
-    just _tauri-cargo-unix test --lib --features block-telemetry-enforced telemetry
 
 [windows]
 _tauri-test-windows:
     just _tauri-cargo-windows test -p tauri-plugin-berdctl --features server
     just _tauri-cargo-windows test -p berdctl
     just _tauri-cargo-windows test -p berd-monitor
-    just _tauri-cargo-windows test --lib telemetry
-    just _tauri-cargo-windows test --lib --features block-telemetry-enforced telemetry
 
 # Run the local CI gate.
-ci: release-version-check check tauri-fmt-check tauri-check tauri-test clippy test release-scripts-test agent-driver-test build
+ci: check tauri-fmt-check tauri-check tauri-test clippy test agent-driver-test build
 
 # Native x64 MSVC CI gate for the managed Node runtime + ACP bridge.
 # Runs the managed_node / managed_acp_tools module tests (including the
@@ -268,87 +243,13 @@ ci: release-version-check check tauri-fmt-check tauri-check tauri-test clippy te
 ci-windows:
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/CI-Windows.ps1
 
-# Run release/updater script tests.
-release-scripts-test:
-    pnpm test:release-scripts
-
 # Run the agent driver relay tests. Plain `node --test`: the relay exists
 # because the toolchain is unreachable from the agent's side, so its own tests
 # must not need that toolchain.
 agent-driver-test:
     pnpm test:agent-driver
 
-# Verify lockstep app, CLI, plugin, and Cargo.lock versions. An expected version
-# also requires the matching linked CHANGELOG.md entry.
-release-version-check expected="":
-    node scripts/release/release.mjs version-check {{ quote(expected) }}
-
-# Focused validation used by release preparation and release PRs.
-release-validate expected="":
-    node scripts/release/release.mjs version-check {{ quote(expected) }}
-    cargo metadata --locked --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml >/dev/null
-    pnpm test:release-scripts
-
-# Generate and approve notes, then prepare, push, and open a release PR.
-# This never merges or tags.
-[unix]
-release-prepare version:
-    node scripts/release/release.mjs prepare {{ quote(version) }}
-
-# Sign and publish the immutable tag for an already squash-merged release PR.
-[unix]
-release-publish version:
-    node scripts/release/release.mjs publish {{ quote(version) }}
-
-# Create or verify the immutable GitHub release for a tag.
-[unix]
-release-ensure-versioned repository tag version source_sha:
-    scripts/release/github/ensure-versioned-release.sh {{ quote(repository) }} {{ quote(tag) }} {{ quote(version) }} {{ quote(source_sha) }}
-
-# Report complete staged platform payloads and clean up partial payloads.
-[unix]
-release-reconcile-assets repository tag version output_file:
-    scripts/release/github/reconcile-staged-assets.sh {{ quote(repository) }} {{ quote(tag) }} {{ quote(version) }} {{ quote(output_file) }}
-
-# Write one platform's tag-bound release provenance receipt.
-[unix]
-[positional-arguments]
-release-write-provenance source_sha version platform output_dir *ASSETS:
-    bash -euo pipefail -c 'scripts/release/write-provenance.sh "$@"' _ "$@"
-
-# On Windows, run the shared Bash script as one generated recipe so argv remains
-# positional and is not interpolated into shell source.
-[windows]
-[positional-arguments]
-[script("bash", "-euo", "pipefail")]
-release-write-provenance source_sha version platform output_dir *ASSETS:
-    scripts/release/write-provenance.sh "$1" "$2" "$3" "$4" "${@:5}"
-
-# ── BuilderBot CLI ───────────────────────────────────────────
-
-# Build the BuilderBot CLI crate.
-bb-cli-build:
-    cargo build --manifest-path bb-cli/Cargo.toml --locked
-
-# Build the sq agent-tools package output.
-bb-cli-build-sq:
-    just --working-directory bb-cli build-sq
-
-# Check BuilderBot CLI formatting and clippy.
-bb-cli-lint:
-    cargo fmt --manifest-path bb-cli/Cargo.toml --all -- --check
-    cargo clippy --manifest-path bb-cli/Cargo.toml --locked --all-targets --all-features -- -D warnings
-
-# Run BuilderBot CLI tests.
-bb-cli-test:
-    cargo test --manifest-path bb-cli/Cargo.toml --locked
-
-# Build and run the isolated, deterministic Docker acceptance harness for bb skills.
-bb-cli-docker-acceptance:
-    docker build --tag bb-cli-acceptance --file bb-cli/docker/acceptance/Dockerfile .
-    docker run --rm bb-cli-acceptance
-
-# Stage the pinned Goose backend into src-tauri/binaries/goosed-<target> and build bundles.
+# Stage the sidecars and build bundles.
 bundle:
     just _bundle-{{ os_family() }}
 
@@ -364,17 +265,10 @@ _bundle-unix:
     set -euo pipefail
 
     TAURI_CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)"
-    if [[ -z "${GOOSE_BIN:-}" ]]; then
-      GOOSE_DEV_MODE=required GOOSE_BUILD_PROFILE=release ./scripts/ensure-local-goose.sh
-    fi
-    GOOSE_BUILD_PROFILE=release ./scripts/prepare-goose-sidecar.sh
-    VITE_FEEDBACK="${VITE_FEEDBACK:-0}" CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" ./scripts/prepare-berdctl-sidecar.sh
+    CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" ./scripts/prepare-berdctl-sidecar.sh
     ./scripts/prepare-catch-sidecar.sh
 
-    CARGO_FEATURES_CSV="$(./scripts/block-feature-gates.sh berdctl)"
-    if [[ "${VITE_AGENT_TOOLS:-0}" == "1" ]]; then
-      ./scripts/prepare-bb-cli-resource.sh
-    fi
+    CARGO_FEATURES_CSV="berdctl"
 
     # Derive a git-based version so non-release bundles don't ship the 0.1.0
     # placeholder. Injected via a temp --config overlay to keep the tree clean.
@@ -384,52 +278,18 @@ _bundle-unix:
     trap 'rm -f "$VERSION_CONFIG"' EXIT
     jq -n \
       --arg v "$BERD_APP_VERSION" \
-      --argjson agent_tools "$( [[ "${VITE_AGENT_TOOLS:-0}" == "1" ]] && echo true || echo false )" \
-      '{ version: $v } + if $agent_tools then { bundle: { resources: { "../resources/bb": "bb" } } } else {} end' \
+      '{ version: $v }' \
       > "$VERSION_CONFIG"
 
     TAURI_BUILD_ARGS=(pnpm tauri build --features "$CARGO_FEATURES_CSV" --config "$VERSION_CONFIG")
-    if [[ "$(uname -s)" = "Darwin" ]]; then
-      TAURI_BUILD_ARGS+=(--bundles app)
-    fi
 
     CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" \
       BERD_APP_VERSION="$BERD_APP_VERSION" \
-      VITE_AUTH_GATE="${VITE_AUTH_GATE:-0}" \
-      VITE_BYO_KEY_PROVIDERS="${VITE_BYO_KEY_PROVIDERS:-1}" \
       VITE_APP_VERSION="$BERD_APP_VERSION_RICH" \
       "${TAURI_BUILD_ARGS[@]}"
 
-    if [[ "$(uname -s)" = "Darwin" ]]; then
-      APP_PATH="$TAURI_CARGO_TARGET_DIR/release/bundle/macos/Berd.app"
-      # Local Tauri builds are ad-hoc signed before resources are sealed. Re-sign
-      # after app bundling so the local DMG contains a verifiable app bundle.
-      codesign --force --deep --sign - "$APP_PATH"
-      DMG_DIR="$TAURI_CARGO_TARGET_DIR/release/bundle/dmg"
-      mkdir -p "$DMG_DIR"
-      case "$(uname -m)" in
-        arm64) DMG_ARCH="aarch64" ;;
-        *) DMG_ARCH="$(uname -m)" ;;
-      esac
-      ./scripts/package-macos-dmg.sh "$APP_PATH" "$DMG_DIR/berd_${BERD_APP_VERSION}_${DMG_ARCH}.dmg"
-    fi
 
-# Build macOS app and DMG bundles.
-[macos]
-bundle-macos:
-    ./scripts/build_darwin.sh
-
-# Build Linux deb and AppImage bundles. Must run on Linux.
-[linux]
-bundle-linux:
-    ./scripts/build_linux.sh
-
-# Build Linux deb and AppImage bundles inside Docker.
-[linux]
-bundle-linux-docker:
-    ./scripts/build_linux_docker.sh
-
-# Stage the pinned Goose backend and build a release bundle with WebView devtools enabled.
+# Build a release bundle with WebView devtools enabled.
 bundle-debug:
     just _bundle-debug-{{ os_family() }}
 
@@ -443,17 +303,10 @@ _bundle-debug-unix:
     set -euo pipefail
 
     TAURI_CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)"
-    if [[ -z "${GOOSE_BIN:-}" ]]; then
-      GOOSE_DEV_MODE=required GOOSE_BUILD_PROFILE=debug ./scripts/ensure-local-goose.sh
-    fi
-    GOOSE_BUILD_PROFILE=debug ./scripts/prepare-goose-sidecar.sh
-    VITE_FEEDBACK="${VITE_FEEDBACK:-0}" CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" ./scripts/prepare-berdctl-sidecar.sh
+    CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" ./scripts/prepare-berdctl-sidecar.sh
     ./scripts/prepare-catch-sidecar.sh
 
-    CARGO_FEATURES_CSV="$(./scripts/block-feature-gates.sh berdctl,devtools)"
-    if [[ "${VITE_AGENT_TOOLS:-0}" == "1" ]]; then
-      ./scripts/prepare-bb-cli-resource.sh
-    fi
+    CARGO_FEATURES_CSV="berdctl,devtools"
 
     # Use a temporary config overlay so normal release bundles keep devtools
     # disabled, and fold in the git-derived version so the bundle doesn't ship
@@ -464,14 +317,11 @@ _bundle-debug-unix:
     trap 'rm -f "$DEBUG_CONFIG"' EXIT
     jq \
       --arg v "$BERD_APP_VERSION" \
-      --argjson agent_tools "$( [[ "${VITE_AGENT_TOOLS:-0}" == "1" ]] && echo true || echo false )" \
-      '.version = $v | .app.windows[0].devtools = true | if $agent_tools then .bundle.resources["../resources/bb"] = "bb" else . end' \
+      '.version = $v | .app.windows[0].devtools = true' \
       src-tauri/tauri.conf.json > "$DEBUG_CONFIG"
 
     CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" \
       BERD_APP_VERSION="$BERD_APP_VERSION" \
-      VITE_AUTH_GATE="${VITE_AUTH_GATE:-0}" \
-      VITE_BYO_KEY_PROVIDERS="${VITE_BYO_KEY_PROVIDERS:-1}" \
       VITE_APP_VERSION="$BERD_APP_VERSION_RICH" \
       pnpm tauri build --features "$CARGO_FEATURES_CSV" --config "$DEBUG_CONFIG"
 
@@ -499,17 +349,13 @@ dev:
     #!/usr/bin/env bash
     set -euo pipefail
 
-    if [[ -n "${GOOSE_BIN:-}" ]]; then
-        just _setup-no-goose
-    else
-        GOOSE_BUILD_PROFILE=debug just setup
-    fi
+    just setup
 
     VITE_PORT="$(python3 -c "import hashlib,os; h=int(hashlib.sha256(os.getcwd().encode()).hexdigest(),16); print(10000 + h % 55000)")"
     export VITE_PORT
     # ACP bridges install at runtime onto the Berd-managed Node runtime, the
     # same path dev and release share; set BERD_ACP_TOOLS_DIR by hand to point
-    # goosed at a locally built bridge dir instead.
+    # the host at a locally built bridge dir instead.
     export VITE_DESIGN_SYSTEM_EXPLORER=1
     export RUST_LOG="${RUST_LOG:-perf=debug,info}"
     export CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)"
@@ -524,40 +370,18 @@ dev:
 
     # tauri dev only builds the root package; the agent-facing CLI workspace
     # members need explicit builds because tauri.dev.conf.json blanks externalBin.
-    BERDCTL_FEATURES=()
-    [[ "${VITE_FEEDBACK:-0}" == "1" ]] && BERDCTL_FEATURES+=(--features block-feedback)
-    # ${arr[@]+...} guards the empty-array expansion, which bash 3.2 (stock
-    # macOS) treats as an unbound variable under `set -u`.
-    (cd src-tauri && cargo build -p berdctl ${BERDCTL_FEATURES[@]+"${BERDCTL_FEATURES[@]}"})
+    (cd src-tauri && cargo build -p berdctl)
     (cd src-tauri && cargo build -p berd-monitor)
     export BERDCTL_BIN="${CARGO_TARGET_DIR}/debug/berdctl"
     export BERD_MONITOR_BIN="${CARGO_TARGET_DIR}/debug/berd-monitor"
     echo "Using berdctl CLI: ${BERDCTL_BIN}"
     echo "Using berd-monitor CLI: ${BERD_MONITOR_BIN}"
 
-    if [[ "${VITE_AGENT_TOOLS:-0}" == "1" ]]; then
-        ./scripts/prepare-bb-cli-resource.sh
-    fi
-
-    if [[ -n "${GOOSE_BIN:-}" ]]; then
-        echo "Using explicitly set GOOSE_BIN: ${GOOSE_BIN}"
-    else
-        LOCAL_GOOSE_BIN="$(GOOSE_BUILD_PROFILE=debug ./scripts/ensure-local-goose.sh --check-bin)" || {
-            rc=$?
-            if [[ $rc -eq 2 ]]; then
-                echo "❌ Local goose binary is not ready. Run 'just setup' first." >&2
-                exit 1
-            fi
-            exit $rc
-        }
-        export GOOSE_BIN="$LOCAL_GOOSE_BIN"
-        echo "Using local goose binary: ${GOOSE_BIN}"
-    fi
 
     DISTRO_DIR="$(pwd)/distro"
-    if [[ -z "${GOOSE_DISTRO_DIR:-}" && -d "$DISTRO_DIR" ]]; then
-        export GOOSE_DISTRO_DIR="$DISTRO_DIR"
-        echo "Using distro dir: ${GOOSE_DISTRO_DIR}"
+    if [[ -z "${DISTILL_DISTRO_DIR:-}" && -d "$DISTRO_DIR" ]]; then
+        export DISTILL_DISTRO_DIR="$DISTRO_DIR"
+        echo "Using distro dir: ${DISTILL_DISTRO_DIR}"
     fi
 
     EXTRA_CONFIG_ARGS=(--config src-tauri/tauri.dev.conf.json --config "{\"build\":{\"devUrl\":\"http://localhost:${VITE_PORT}\",\"beforeDevCommand\":{\"script\":\"exec pnpm exec vite --port ${VITE_PORT} --strictPort\",\"cwd\":\"..\",\"wait\":false}}}")
@@ -583,8 +407,8 @@ dev:
         EXTRA_CONFIG_ARGS+=(--config "$DEV_ICON_CONFIG")
     fi
 
-    CARGO_FEATURES="$(./scripts/block-feature-gates.sh "{{ app_features }}")"
-    VITE_AUTH_GATE="${VITE_BUILDERBOT:-0}" pnpm tauri dev --features "$CARGO_FEATURES" "${EXTRA_CONFIG_ARGS[@]}"
+    CARGO_FEATURES="{{ app_features }}"
+    pnpm tauri dev --features "$CARGO_FEATURES" "${EXTRA_CONFIG_ARGS[@]}"
 
 [unix]
 dev-debug: dev
@@ -607,20 +431,11 @@ dev-e2e mode="":
         ;;
     esac
 
-# Resolve a Goose ref/tag/sha, update goose-backend.lock.json, and refresh the SDK schema.
-[unix]
-bump-goose ref="main":
-    ./scripts/update-goose-backend-lock.sh "{{ ref }}"
-    just sync-schema
-
 # Fetch official Node.js release checksums and update node-runtime.lock.json (e.g. `just bump-node-runtime v24.12.0`).
 bump-node-runtime *ARGS:
     node scripts/update-node-runtime-lock.mjs {{ ARGS }}
 
 # Draft release notes from commits without mutating GitHub.
-[unix]
-release-notes from="" to="HEAD" compare_from="":
-    FROM_REF="{{ from }}" TO_REF="{{ to }}" COMPARE_FROM="{{ compare_from }}" ./scripts/generate-release-notes.sh
 
 # ── Utilities ────────────────────────────────────────────────
 
@@ -634,7 +449,7 @@ clean:
 [unix]
 _clean-unix:
     just _tauri-cargo-unix clean
-    rm -rf dist node_modules sdk/node_modules sdk/dist
+    rm -rf dist node_modules
 
 # Same broken multi-argument shebang as _tauri-cargo-windows; see there.
 [windows]
@@ -643,14 +458,14 @@ _clean-windows:
     $ErrorActionPreference = "Stop"
     just _tauri-cargo-windows clean
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist,node_modules,sdk/node_modules,sdk/dist
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist,node_modules
 
 stage-sidecar:
     just _stage-sidecar-{{ os_family() }}
 
 [unix]
 _stage-sidecar-unix:
-    TAURI_CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)" && GOOSE_BUILD_PROFILE=debug ./scripts/prepare-goose-sidecar.sh && CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" ./scripts/prepare-berdctl-sidecar.sh && ./scripts/prepare-catch-sidecar.sh
+    TAURI_CARGO_TARGET_DIR="$(bash ./scripts/resolve-tauri-cargo-target-dir.sh)" && CARGO_TARGET_DIR="$TAURI_CARGO_TARGET_DIR" ./scripts/prepare-berdctl-sidecar.sh && ./scripts/prepare-catch-sidecar.sh
 
 [windows]
 _stage-sidecar-windows:

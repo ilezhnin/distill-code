@@ -1,9 +1,7 @@
 import { useCallback, useSyncExternalStore } from "react";
 
-export const STYLE_GUIDELINES_STORAGE_KEY = "goose:style-guidelines";
-const STYLE_GUIDELINES_CHANGE_EVENT = "goose:style-guidelines-change";
-const LEGACY_EXPERIMENT_STORAGE_KEY = "goose:experimental-features";
-const LEGACY_STYLE_GUIDELINES_EXPERIMENT_ID = "goose-style-guidelines";
+export const STYLE_GUIDELINES_STORAGE_KEY = "distill:style-guidelines";
+const STYLE_GUIDELINES_CHANGE_EVENT = "distill:style-guidelines-change";
 
 export const DEFAULT_STYLE_GUIDELINES_PROMPT = `Response style:
 - Be concise, direct, and friendly; avoid unnecessary detail unless the user asks for it.
@@ -49,40 +47,12 @@ function getStorage(): Storage | null {
   return window.localStorage ?? null;
 }
 
-function readLegacyExperimentPreference(): StyleGuidelinesPreference | null {
-  const storage = getStorage();
-  if (!storage) return null;
-
-  try {
-    const raw = storage.getItem(LEGACY_EXPERIMENT_STORAGE_KEY);
-    if (!raw) return null;
-
-    const parsed = JSON.parse(raw);
-    if (!isRecord(parsed) || !isRecord(parsed.experiments)) return null;
-
-    const styleGuidelines =
-      parsed.experiments[LEGACY_STYLE_GUIDELINES_EXPERIMENT_ID];
-    if (!isRecord(styleGuidelines)) return null;
-
-    const config = isRecord(styleGuidelines.config)
-      ? styleGuidelines.config
-      : {};
-    return {
-      prompt: normalizeStyleGuidelinesPrompt(config.prompt),
-    };
-  } catch {
-    return null;
-  }
-}
-
 function readStorageSnapshotKey(): string {
   const storage = getStorage();
   if (!storage) return "no-storage";
 
   try {
-    return `${storage.getItem(STYLE_GUIDELINES_STORAGE_KEY) ?? ""}:${
-      storage.getItem(LEGACY_EXPERIMENT_STORAGE_KEY) ?? ""
-    }`;
+    return storage.getItem(STYLE_GUIDELINES_STORAGE_KEY) ?? "";
   } catch {
     return "unavailable-storage";
   }
@@ -95,9 +65,7 @@ export function getStyleGuidelinesPreference(): StyleGuidelinesPreference {
   try {
     const raw = storage.getItem(STYLE_GUIDELINES_STORAGE_KEY);
     if (!raw) {
-      return (
-        readLegacyExperimentPreference() ?? defaultStyleGuidelinesPreference()
-      );
+      return defaultStyleGuidelinesPreference();
     }
 
     const parsed = JSON.parse(raw);
@@ -155,11 +123,7 @@ function subscribeToStyleGuidelinesChanges(onStoreChange: () => void) {
   if (typeof window === "undefined") return () => {};
 
   const handleStorage = (event: StorageEvent) => {
-    if (
-      event.key === STYLE_GUIDELINES_STORAGE_KEY ||
-      event.key === LEGACY_EXPERIMENT_STORAGE_KEY ||
-      event.key === null
-    ) {
+    if (event.key === STYLE_GUIDELINES_STORAGE_KEY || event.key === null) {
       onStoreChange();
     }
   };

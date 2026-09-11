@@ -32,7 +32,7 @@ export function composeBuilderSendOptions(
 
   const pathNote = [
     "agent-builder session path instructions:",
-    "This session is bound to an existing draft that the Goose UI is previewing.",
+    "This session is bound to an existing draft that the app is previewing.",
     "These instructions override the generic create/rename workflow above:",
     `- Edit exactly this file: ${session.targetAgentPath}`,
     "- Do not rename, move, delete, or replace it with a new slug-named file.",

@@ -12,37 +12,10 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { ChatInput } from "./chatInputTestUtils";
 import { ChatInputToolbar } from "../ChatInputToolbar";
-import { OPEN_SETTINGS_EVENT } from "@/features/settings/lib/settingsEvents";
 import type { Persona } from "@/shared/types/agents";
 import type { ChatInputComposerActions } from "../../types";
 import { STREAMING_SHORTCUT_MODE_STORAGE_KEY } from "../../lib/streamingShortcutPreference";
 import { MAX_PROMPT_ATTACHMENT_BYTES } from "../../lib/attachmentPayloadBudget";
-import {
-  resetShortcutOverride,
-  setShortcutOverride,
-} from "@/features/shortcuts/lib/shortcutRegistry";
-import { resetVoiceDictationShortcutControllerForTests } from "../../lib/voiceDictationShortcutController";
-
-const mockVoiceDictation = {
-  isEnabled: true,
-  isRecording: false,
-  isTranscribing: false,
-  isStarting: vi.fn(() => false),
-  stopRecording: vi.fn(),
-  toggleRecording: vi.fn(),
-};
-let lastVoiceAutoSubmit: ((text: string) => boolean | Promise<boolean>) | null =
-  null;
-
-vi.mock("../../hooks/useVoiceDictation", () => ({
-  useAnyVoiceDictationActive: () => false,
-  useVoiceDictation: (options: {
-    onAutoSubmit?: (text: string) => boolean | Promise<boolean>;
-  }) => {
-    lastVoiceAutoSubmit = options.onAutoSubmit ?? null;
-    return mockVoiceDictation;
-  },
-}));
 
 // Deterministic shortcut modifiers across dev machines and CI: "mod"
 // combos (e.g. chat.sendNow's Mod+Enter) resolve to Meta.
@@ -385,8 +358,6 @@ describe("ChatInput", () => {
   afterEach(cleanup);
 
   beforeEach(() => {
-    resetVoiceDictationShortcutControllerForTests();
-    resetShortcutOverride("chat.toggleVoiceDictation");
     setViewportHeight(DEFAULT_VIEWPORT_HEIGHT);
     localStorage.clear();
     mockSearchFilesForMentions.mockClear();
@@ -404,21 +375,13 @@ describe("ChatInput", () => {
       base64: "abc",
       mimeType: "image/png",
     });
-    mockVoiceDictation.isEnabled = true;
-    mockVoiceDictation.isRecording = false;
-    mockVoiceDictation.isTranscribing = false;
-    mockVoiceDictation.isStarting.mockReset();
-    mockVoiceDictation.isStarting.mockReturnValue(false);
-    mockVoiceDictation.stopRecording.mockReset();
-    mockVoiceDictation.toggleRecording.mockReset();
-    lastVoiceAutoSubmit = null;
   });
 
   it("renders with default placeholder", () => {
     render(<ChatInput onSend={vi.fn()} />);
     expect(
       screen.getByPlaceholderText(
-        "Chat with Goose, @ for agents/files, or / for skills",
+        /Chat with .*, @ for agents\/files, or \/ for skills/,
       ),
     ).toBeInTheDocument();
   });
@@ -462,106 +425,6 @@ describe("ChatInput", () => {
     expect(wasNotPrevented).toBe(true);
     expect(onSend).not.toHaveBeenCalled();
     expect(input).toHaveValue("hello");
-  });
-
-  it("toggles voice dictation with the default platform composer shortcut without changing the draft", () => {
-    const onSend = vi.fn();
-    const onDraftChange = vi.fn();
-    const onParentKeyDown = vi.fn();
-    render(
-      <form onKeyDown={onParentKeyDown}>
-        <ChatInput
-          onSend={onSend}
-          onDraftChange={onDraftChange}
-          initialValue="keep this draft"
-        />
-      </form>,
-    );
-
-    const input = screen.getByRole("textbox");
-    const wasNotPrevented = fireEvent.keyDown(input, {
-      key: "d",
-      code: "KeyD",
-      metaKey: true,
-    });
-
-    expect(wasNotPrevented).toBe(false);
-    expect(mockVoiceDictation.toggleRecording).toHaveBeenCalledOnce();
-    expect(onParentKeyDown).not.toHaveBeenCalled();
-    expect(onSend).not.toHaveBeenCalled();
-    expect(onDraftChange).not.toHaveBeenCalled();
-    expect(input).toHaveValue("keep this draft");
-  });
-
-  it("focuses and toggles dictation once from a non-editable outside target without mutating the draft", () => {
-    const onSend = vi.fn();
-    const onDraftChange = vi.fn();
-    render(
-      <>
-        <button type="button">Outside</button>
-        <ChatInput
-          onSend={onSend}
-          onDraftChange={onDraftChange}
-          initialValue="keep this draft"
-        />
-      </>,
-    );
-
-    const outside = screen.getByRole("button", { name: "Outside" });
-    const input = screen.getByRole("textbox");
-    input.getBoundingClientRect = () =>
-      ({
-        bottom: 40,
-        height: 30,
-        left: 10,
-        right: 210,
-        top: 10,
-        width: 200,
-        x: 10,
-        y: 10,
-        toJSON: () => ({}),
-      }) as DOMRect;
-    outside.focus();
-    expect(outside).toHaveFocus();
-
-    const wasNotPrevented = fireEvent.keyDown(outside, {
-      key: "d",
-      code: "KeyD",
-      metaKey: true,
-    });
-
-    expect(wasNotPrevented).toBe(false);
-    expect(input).toHaveFocus();
-    expect(mockVoiceDictation.toggleRecording).toHaveBeenCalledOnce();
-    expect(onSend).not.toHaveBeenCalled();
-    expect(onDraftChange).not.toHaveBeenCalled();
-    expect(input).toHaveValue("keep this draft");
-  });
-
-  it("shows the platform-formatted dictation shortcut and updates it when rebound", async () => {
-    const user = userEvent.setup();
-    render(<ChatInput onSend={vi.fn()} />);
-
-    await user.hover(screen.getByRole("button", { name: "Voice dictation" }));
-
-    const tooltip = await screen.findByRole("tooltip");
-    expect(tooltip).toHaveTextContent("Voice dictation⌘D");
-    expect(
-      within(tooltip)
-        .getAllByText(/⌘|D/)
-        .map((part) => part.tagName),
-    ).toEqual(["KBD", "KBD"]);
-
-    act(() => {
-      expect(setShortcutOverride("chat.toggleVoiceDictation", "alt+d")).toEqual(
-        { ok: true },
-      );
-    });
-
-    await waitFor(() => {
-      expect(tooltip).toHaveTextContent("Voice dictation⌥D");
-    });
-    expect(tooltip).not.toHaveTextContent("⌘");
   });
 
   it("does not send while IME composition is active", async () => {
@@ -940,7 +803,6 @@ describe("ChatInput", () => {
           fileMentions: false,
           projectPicker: false,
           skills: false,
-          voice: false,
         }}
         providers={[{ id: "kgoose", label: "kgoose" }]}
         selectedProvider="kgoose"
@@ -955,9 +817,6 @@ describe("ChatInput", () => {
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /attach/i }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: /voice dictation/i }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("textbox")).not.toHaveFocus();
   });
@@ -1004,54 +863,6 @@ describe("ChatInput", () => {
     expect(screen.getByText("19%")).toBeInTheDocument();
   });
 
-  it("runs compaction from the context usage popover", async () => {
-    const user = userEvent.setup();
-    const onCompactContext = vi.fn();
-
-    render(
-      <ChatInput
-        onSend={vi.fn()}
-        contextTokens={1536}
-        contextLimit={8192}
-        canCompactContext
-        onCompactContext={onCompactContext}
-      />,
-    );
-
-    await user.click(screen.getByRole("button", { name: /context usage/i }));
-    await user.click(screen.getByRole("button", { name: "Compact" }));
-
-    expect(onCompactContext).toHaveBeenCalledOnce();
-  });
-
-  it("opens compaction settings from the context usage popover", async () => {
-    const user = userEvent.setup();
-    const dispatchEventSpy = vi.spyOn(window, "dispatchEvent");
-
-    render(
-      <ChatInput
-        onSend={vi.fn()}
-        selectedProvider="goose"
-        contextTokens={1536}
-        contextLimit={8192}
-        canCompactContext
-      />,
-    );
-
-    await user.click(screen.getByRole("button", { name: /context usage/i }));
-
-    await user.click(screen.getByRole("button", { name: /settings/i }));
-
-    expect(dispatchEventSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: OPEN_SETTINGS_EVENT,
-        detail: { section: "behavior" },
-      }),
-    );
-
-    dispatchEventSpy.mockRestore();
-  });
-
   it("hides the context usage control when the context limit is unavailable", () => {
     render(
       <ChatInput onSend={vi.fn()} contextTokens={1536} contextLimit={0} />,
@@ -1075,246 +886,6 @@ describe("ChatInput", () => {
     expect(
       screen.queryByRole("button", { name: /context usage/i }),
     ).not.toBeInTheDocument();
-  });
-
-  it("shows the start voice conversation tooltip on hover", async () => {
-    const user = userEvent.setup();
-    render(
-      <ChatInput
-        onSend={vi.fn()}
-        voiceConversation={{
-          visible: true,
-          state: "off",
-          boundSessionId: null,
-          active: false,
-          microphoneMuted: false,
-          onToggle: vi.fn(),
-          onMicrophoneMuteToggle: vi.fn(),
-        }}
-      />,
-    );
-
-    await user.hover(
-      screen.getByRole("button", { name: "Start voice conversation" }),
-    );
-
-    expect(
-      await screen.findByRole("tooltip", {
-        name: "Start voice conversation",
-      }),
-    ).toBeInTheDocument();
-  });
-
-  it("shows voice tooltips in the individual-chat composer", async () => {
-    const user = userEvent.setup();
-    render(
-      <ChatInput
-        surface="bare"
-        onSend={vi.fn()}
-        voiceConversation={{
-          visible: true,
-          state: "off",
-          boundSessionId: null,
-          active: false,
-          microphoneMuted: false,
-          onToggle: vi.fn(),
-          onMicrophoneMuteToggle: vi.fn(),
-        }}
-      />,
-    );
-
-    const voiceConversationTrigger = screen.getByRole("button", {
-      name: "Start voice conversation",
-    });
-    await user.hover(voiceConversationTrigger);
-    expect(
-      await screen.findByRole("tooltip", {
-        name: "Start voice conversation",
-      }),
-    ).toBeInTheDocument();
-    await user.unhover(voiceConversationTrigger);
-    await waitFor(() => {
-      expect(
-        screen.queryByRole("tooltip", { name: "Start voice conversation" }),
-      ).not.toBeInTheDocument();
-    });
-
-    const dictationTrigger = screen.getByRole("button", {
-      name: "Voice dictation",
-    });
-    await user.hover(dictationTrigger);
-    expect(
-      await screen.findByRole("tooltip", { name: /voice dictation/i }),
-    ).toBeInTheDocument();
-  });
-
-  it("shows the voice dictation tooltip on hover", async () => {
-    const user = userEvent.setup();
-    render(<ChatInput onSend={vi.fn()} />);
-
-    const dictationButton = screen.getByRole("button", {
-      name: /voice dictation/i,
-    });
-    await user.hover(dictationButton);
-
-    expect(
-      await screen.findByRole("tooltip", { name: /voice dictation/i }),
-    ).toBeInTheDocument();
-  });
-
-  it("shows a distinct voice conversation control", async () => {
-    const onToggle = vi.fn();
-    const user = userEvent.setup();
-    render(
-      <ChatInput
-        onSend={vi.fn()}
-        voiceConversation={{
-          visible: true,
-          state: "off",
-          boundSessionId: null,
-          active: false,
-          microphoneMuted: false,
-          onToggle,
-          onMicrophoneMuteToggle: vi.fn(),
-        }}
-      />,
-    );
-
-    await user.click(
-      screen.getByRole("button", { name: "Start voice conversation" }),
-    );
-    expect(onToggle).toHaveBeenCalledTimes(1);
-  });
-
-  it("shows voice conversation as pressed with high-contrast active styling", () => {
-    render(
-      <ChatInput
-        onSend={vi.fn()}
-        voiceConversation={{
-          visible: true,
-          state: "listening",
-          boundSessionId: "session-1",
-          active: true,
-          microphoneMuted: false,
-          onToggle: vi.fn(),
-          onMicrophoneMuteToggle: vi.fn(),
-        }}
-      />,
-    );
-
-    const button = screen.getByRole("button", {
-      name: /voice conversation is listening/i,
-    });
-    expect(button).toHaveAttribute("aria-pressed", "true");
-    expect(button).toHaveClass("bg-info", "text-info-foreground");
-  });
-
-  it("reports the muted microphone state on the voice conversation control", () => {
-    render(
-      <ChatInput
-        onSend={vi.fn()}
-        voiceConversation={{
-          visible: true,
-          state: "listening",
-          boundSessionId: "session-1",
-          active: true,
-          microphoneMuted: true,
-          onToggle: vi.fn(),
-          onMicrophoneMuteToggle: vi.fn(),
-        }}
-      />,
-    );
-
-    expect(
-      screen.getByRole("button", {
-        name: "Voice conversation microphone is muted for session session-1",
-      }),
-    ).toHaveAttribute("aria-pressed", "true");
-    expect(
-      screen.getByRole("button", { name: "Unmute microphone" }),
-    ).toHaveAttribute("aria-pressed", "true");
-  });
-
-  it.each([
-    "starting",
-    "listening",
-    "user-speaking",
-    "agent-working",
-    "agent-speaking",
-  ] as const)("keeps the voice control active in the %s state", (state) => {
-    render(
-      <ChatInput
-        onSend={vi.fn()}
-        voiceConversation={{
-          visible: true,
-          state,
-          boundSessionId: "session-1",
-          active: true,
-          microphoneMuted: false,
-          onToggle: vi.fn(),
-          onMicrophoneMuteToggle: vi.fn(),
-        }}
-      />,
-    );
-
-    expect(screen.getByRole("button", { pressed: true })).toHaveClass(
-      "bg-info",
-      "text-info-foreground",
-    );
-  });
-
-  it("shows an animated activity indicator while voice is detected", () => {
-    const { container } = render(
-      <ChatInput
-        onSend={vi.fn()}
-        voiceConversation={{
-          visible: true,
-          state: "user-speaking",
-          boundSessionId: "session-1",
-          active: true,
-          microphoneMuted: false,
-          onToggle: vi.fn(),
-          onMicrophoneMuteToggle: vi.fn(),
-        }}
-      />,
-    );
-
-    const indicator = container.querySelector(
-      '[data-role="voice-activity-indicator"]',
-    );
-    expect(indicator).toBeInTheDocument();
-    expect(indicator).toHaveAttribute("data-activity", "user-speaking");
-    expect(indicator?.querySelectorAll(".voice-waveform-bar")).toHaveLength(3);
-    expect(
-      screen.getByRole("button", { name: "Receiving voice input…" }),
-    ).toHaveAttribute("aria-pressed", "true");
-  });
-
-  it("shows a distinct speaker indicator while the agent is speaking", () => {
-    const { container } = render(
-      <ChatInput
-        onSend={vi.fn()}
-        voiceConversation={{
-          visible: true,
-          state: "agent-speaking",
-          boundSessionId: "session-1",
-          active: true,
-          microphoneMuted: false,
-          onToggle: vi.fn(),
-          onMicrophoneMuteToggle: vi.fn(),
-        }}
-      />,
-    );
-
-    expect(
-      container.querySelector('[data-role="agent-voice-activity-indicator"]'),
-    ).toHaveAttribute("data-activity", "agent-speaking");
-    expect(
-      container.querySelector('[data-role="voice-activity-indicator"]'),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Agent is speaking…" }),
-    ).toHaveAttribute("aria-pressed", "true");
   });
 
   it("shows stop button when streaming", () => {
@@ -3010,71 +2581,6 @@ describe("ChatInput", () => {
     expect(onCancelQueueEdit).not.toHaveBeenCalled();
   });
 
-  it("routes queued-edit voice auto-submit through the editor-local persona", async () => {
-    const onSend = vi.fn();
-    const onUpdateQueue = vi.fn(() => true);
-    const user = userEvent.setup();
-    render(
-      <ChatInput
-        onSend={onSend}
-        personas={TEST_PERSONAS}
-        selectedPersonaId="builtin-solo"
-        onPersonaChange={vi.fn()}
-        queuedMessages={[
-          {
-            recordId: "queued-review",
-            payload: {
-              persona: { kind: "persona", id: "reviewer" },
-              text: "original",
-            },
-          },
-        ]}
-        onEditQueue={vi.fn(() => true)}
-        onCancelQueueEdit={vi.fn(() => true)}
-        onDismissQueue={vi.fn()}
-        onUpdateQueue={onUpdateQueue}
-      />,
-    );
-
-    await user.click(
-      screen.getByRole("button", { name: "Edit queued message" }),
-    );
-    await user.clear(screen.getByRole("textbox"));
-    await act(async () => {
-      expect(await lastVoiceAutoSubmit?.("dictated revision")).toBe(true);
-    });
-
-    expect(onUpdateQueue).toHaveBeenCalledWith("queued-review", {
-      text: "dictated revision",
-      persona: { kind: "persona", id: "reviewer" },
-      attachments: undefined,
-      sendOptions: undefined,
-    });
-    expect(onSend).not.toHaveBeenCalled();
-  });
-
-  it("keeps non-edit voice auto-submit on the normal send path", async () => {
-    const onSend = vi.fn(() => true);
-    render(
-      <ChatInput
-        onSend={onSend}
-        personas={TEST_PERSONAS}
-        selectedPersonaId="builtin-solo"
-      />,
-    );
-
-    await act(async () => {
-      expect(await lastVoiceAutoSubmit?.("dictated message")).toBe(true);
-    });
-
-    expect(onSend).toHaveBeenCalledWith(
-      "dictated message",
-      "builtin-solo",
-      undefined,
-      expect.any(Object),
-    );
-  });
-
   it("keeps inherited queue persona editor-local across open and save", async () => {
     const onPersonaChange = vi.fn();
     const onUpdateQueue = vi.fn(() => true);
@@ -3591,7 +3097,7 @@ describe("ChatInput", () => {
         persona: { kind: "none" },
         text: "queued from another session",
         sendOptions: {
-          acpGooseMetadata: {
+          acpPromptMetadata: {
             origin: "berdctl_cross_session",
             berdSenderLabel: "berd-monitor",
             berdDeliveryId: "event-1",
@@ -3625,7 +3131,7 @@ describe("ChatInput", () => {
     await user.keyboard("{Enter}");
 
     expect(onSend).toHaveBeenCalledWith("now from me", null, undefined, {
-      acpGooseMetadata: {
+      acpPromptMetadata: {
         threadId: "thread-1",
       },
     });
@@ -4072,26 +3578,6 @@ describe("ChatInput", () => {
     expect(screen.getByRole("textbox")).toHaveValue("");
   });
 
-  it("stops dictation when appending to the queue", async () => {
-    const onSend = vi.fn();
-    const user = userEvent.setup();
-    mockVoiceDictation.isRecording = true;
-
-    render(
-      <ChatInput
-        onSend={onSend}
-        isStreaming
-        queuedMessage={{ persona: { kind: "none" }, text: "queued msg" }}
-      />,
-    );
-
-    await user.type(screen.getByRole("textbox"), "another message");
-    await user.keyboard("{Enter}");
-
-    expect(onSend).toHaveBeenCalledWith("another message", null, undefined);
-    expect(mockVoiceDictation.stopRecording).toHaveBeenCalled();
-  });
-
   it("uses icon-only picker triggers in compact toolbar layout", () => {
     render(
       <ChatInputToolbar
@@ -4272,17 +3758,6 @@ describe("ChatInput", () => {
           onAttachFiles: vi.fn(),
           onAttachFolders: vi.fn(),
           onSend: vi.fn(),
-          voiceEnabled: true,
-          onVoiceToggle: vi.fn(),
-          voiceConversation: {
-            visible: true,
-            state: "off",
-            boundSessionId: null,
-            active: false,
-            microphoneMuted: false,
-            onToggle: vi.fn(),
-            onMicrophoneMuteToggle: vi.fn(),
-          },
         }}
         isCompact={false}
       />,
@@ -4312,25 +3787,6 @@ describe("ChatInput", () => {
     fireEvent.pointerUp(modelTrigger, { pointerType: "mouse" });
     fireEvent.click(modelTrigger);
     expect(screen.queryByText("Agent")).not.toBeInTheDocument();
-
-    const voiceConversationTrigger = screen.getByRole("button", {
-      name: "Start voice conversation",
-    });
-    await user.hover(voiceConversationTrigger);
-    expect(
-      await screen.findByRole("tooltip", {
-        name: "Start voice conversation",
-      }),
-    ).toBeInTheDocument();
-    await user.unhover(voiceConversationTrigger);
-
-    const dictationTrigger = screen.getByRole("button", {
-      name: "Voice dictation",
-    });
-    await user.hover(dictationTrigger);
-    expect(
-      await screen.findByRole("tooltip", { name: "Voice dictation" }),
-    ).toBeInTheDocument();
   });
 
   it("keeps the model picker open when clicked after the project picker", async () => {
@@ -4381,128 +3837,6 @@ describe("ChatInput", () => {
     expect(screen.getByText("Agent")).toBeInTheDocument();
     expect(screen.getByText("Model")).toBeInTheDocument();
     expect(screen.queryByText("Choose a project")).not.toBeInTheDocument();
-  });
-
-  it("keeps the mic toggle enabled while recording even if voice input becomes unavailable", () => {
-    render(
-      <ChatInputToolbar
-        agentModelPicker={{
-          providers: [],
-          selectedProvider: "goose",
-          onProviderChange: vi.fn(),
-          availableModels: [],
-        }}
-        projectPicker={{
-          selectedProjectId: null,
-          availableProjects: [],
-        }}
-        contextUsage={{
-          contextTokens: 0,
-          contextLimit: 0,
-        }}
-        composerActions={{
-          canSend: false,
-          isStreaming: false,
-          onSend: vi.fn(),
-          voiceEnabled: false,
-          voiceRecording: true,
-          onVoiceToggle: vi.fn(),
-        }}
-        isCompact={false}
-      />,
-    );
-
-    expect(screen.getByRole("button", { name: "Listening..." })).toBeEnabled();
-  });
-
-  it("hides the mic toggle when voice input is unavailable and idle", () => {
-    render(
-      <ChatInputToolbar
-        agentModelPicker={{
-          providers: [],
-          selectedProvider: "goose",
-          onProviderChange: vi.fn(),
-          availableModels: [],
-        }}
-        projectPicker={{
-          selectedProjectId: null,
-          availableProjects: [],
-        }}
-        contextUsage={{
-          contextTokens: 0,
-          contextLimit: 0,
-        }}
-        composerActions={{
-          canSend: false,
-          isStreaming: false,
-          onSend: vi.fn(),
-          voiceEnabled: false,
-          voiceRecording: false,
-          onVoiceToggle: vi.fn(),
-        }}
-        isCompact={false}
-      />,
-    );
-
-    expect(
-      screen.queryByRole("button", { name: "Voice dictation" }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("repurposes the existing dictation mic as voice-call mute without reordering controls", async () => {
-    const onMicrophoneMuteToggle = vi.fn();
-    const user = userEvent.setup();
-
-    render(
-      <ChatInputToolbar
-        agentModelPicker={{
-          providers: [],
-          selectedProvider: "goose",
-          onProviderChange: vi.fn(),
-          availableModels: [],
-        }}
-        projectPicker={{
-          selectedProjectId: null,
-          availableProjects: [],
-        }}
-        contextUsage={{
-          contextTokens: 0,
-          contextLimit: 0,
-        }}
-        composerActions={{
-          canSend: false,
-          isStreaming: false,
-          onSend: vi.fn(),
-          voiceEnabled: true,
-          voiceConversation: {
-            visible: true,
-            state: "listening",
-            boundSessionId: "session-1",
-            active: true,
-            microphoneMuted: false,
-            onToggle: vi.fn(),
-            onMicrophoneMuteToggle,
-          },
-        }}
-        isCompact={false}
-      />,
-    );
-
-    const callButton = screen.getByRole("button", {
-      name: /voice conversation is listening/i,
-    });
-    const muteButton = screen.getByRole("button", {
-      name: "Mute microphone",
-    });
-
-    expect(
-      callButton.compareDocumentPosition(muteButton) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(muteButton).toHaveAttribute("aria-pressed", "false");
-
-    await user.click(muteButton);
-    expect(onMicrophoneMuteToggle).toHaveBeenCalledOnce();
   });
 
   it("shows and updates reasoning effort from the effort pill", async () => {
@@ -4720,7 +4054,7 @@ describe("ChatInput", () => {
 
   function setShortcutOverrides(overrides: Record<string, string>) {
     localStorage.setItem(
-      "goose:keyboard-shortcuts:v1",
+      "distill:keyboard-shortcuts:v1",
       JSON.stringify({ version: 1, overrides }),
     );
   }

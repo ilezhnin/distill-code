@@ -78,7 +78,9 @@ export type WorkspaceAttachmentSource =
 export type WorkspaceAttachmentCleanupKind = "branch" | "worktree";
 
 export interface WorkspaceAttachmentLifecycle {
-  owner: "goose";
+  /** Workspaces the app created itself (and may clean up). `goose` is the
+   *  value earlier builds persisted; it is normalized to `distill` on read. */
+  owner: "distill";
   cleanup: WorkspaceAttachmentCleanupKind;
   branch?: string | null;
   baseBranch?: string | null;

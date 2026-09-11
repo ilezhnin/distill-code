@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SettingsView } from "../SettingsView";
 
 let securityMlEnabled = true;
-let voiceConversationEnabled = true;
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -18,8 +17,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@/shared/api/acpConnection", () => ({}));
 
 vi.mock("@/shared/profile/capabilities", () => ({
-  useProfileCapability: (capability: string) =>
-    capability === "voiceConversation" ? voiceConversationEnabled : true,
+  useProfileCapability: () => true,
 }));
 
 vi.mock("@/shared/profile/buildProfile", () => ({
@@ -38,16 +36,8 @@ vi.mock("../SecuritySettings", () => ({
   SecuritySettings: () => <div>security.title</div>,
 }));
 
-vi.mock("@/features/voice-conversation/ui/VoiceSettings", () => ({
-  VoiceSettings: () => <div>voice.settings</div>,
-}));
-
-// This mock keeps the pane-identity assertions below focused on `SettingsView`'s
-// own tree shape. It cannot see inside the real component, so the companion
-// guard that the section itself renders no pane lives in
-// `ConnectionsSettings.pane.test.tsx`.
-vi.mock("@/features/connections/ui/ConnectionsSettings", () => ({
-  ConnectionsSettings: () => <div>connections.settings</div>,
+vi.mock("@/features/extensions/ui/ExtensionsSettings", () => ({
+  ExtensionsSettings: () => <div>extensions.settings</div>,
 }));
 
 vi.mock("../StatsSettings", () => ({
@@ -73,7 +63,6 @@ function renderSettingsView(
 describe("SettingsView", () => {
   afterEach(() => {
     securityMlEnabled = true;
-    voiceConversationEnabled = true;
   });
 
   // Rev 3: Security is a permanent section now -- SettingsView no longer
@@ -90,18 +79,10 @@ describe("SettingsView", () => {
     expect(screen.getAllByText("security.title").length).toBeGreaterThan(0);
   });
 
-  it("does not mount native Voice settings when the experiment is off", () => {
-    voiceConversationEnabled = false;
+  it("renders extensions inside the shared settings pane", () => {
+    renderSettingsView("extensions");
 
-    renderSettingsView("voice");
-
-    expect(screen.queryByText("voice.settings")).not.toBeInTheDocument();
-  });
-
-  it("renders connections inside the shared settings pane", () => {
-    renderSettingsView("connections");
-
-    expect(screen.getByText("connections.settings")).toBeInTheDocument();
+    expect(screen.getByText("extensions.settings")).toBeInTheDocument();
   });
 
   it("renders stats settings in the shared pane", () => {
@@ -116,7 +97,7 @@ describe("SettingsView", () => {
   // `page-transition` enter animation (opacity 0 -> 1) and flashing the
   // surface underneath. Every section must render into the same pane element
   // so section switches only swap the pane's children.
-  it("keeps the same pane element when switching to and from connections", () => {
+  it("keeps the same pane element when switching to and from extensions", () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
@@ -138,10 +119,10 @@ describe("SettingsView", () => {
 
     rerender(
       <QueryClientProvider client={queryClient}>
-        <SettingsView activeSection="connections" />
+        <SettingsView activeSection="extensions" />
       </QueryClientProvider>,
     );
-    expect(screen.getByText("connections.settings")).toBeInTheDocument();
+    expect(screen.getByText("extensions.settings")).toBeInTheDocument();
     expect(panesOf()).toEqual([initialPane]);
 
     rerender(

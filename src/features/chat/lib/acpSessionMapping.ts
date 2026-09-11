@@ -8,7 +8,7 @@ import { compareSessionsByActivityDesc } from "@/features/chat/lib/sessionActivi
 import { normalizeAcpTitle } from "@/features/chat/lib/sessionTitle";
 import { withWorkspaceBackfill } from "@/features/chat/lib/workspaceAttachments";
 import { loadPersistedChatWorkspaceMetadata } from "@/features/chat/stores/workspaceAttachmentPersistence";
-import { executionTargetFromGooseServeSession } from "@/features/chat/lib/gooseServeExecutionTarget";
+import { executionTargetFromHostSession } from "@/features/chat/lib/hostExecutionTarget";
 
 interface SessionPageState {
   sessions: ChatSession[];
@@ -22,7 +22,7 @@ export function acpSessionToChatSession(session: AcpSessionInfo): ChatSession {
   const persistedWorkspaceMetadata = loadPersistedChatWorkspaceMetadata(
     session.sessionId,
   );
-  const executionTarget = executionTargetFromGooseServeSession({
+  const executionTarget = executionTargetFromHostSession({
     providerId: session.providerId ?? undefined,
     modelId: session.modelId ?? undefined,
   });

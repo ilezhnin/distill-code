@@ -136,8 +136,8 @@ interface TranscriptHarnessWindow extends Window {
   __TRANSCRIPT_VIRTUALIZATION_FIXTURE__?: TranscriptFixture;
   __TRANSCRIPT_VIRTUALIZATION_RENDERER_MODE__?: TranscriptRendererMode;
   __TRANSCRIPT_VIRTUALIZATION_HARNESS__?: TranscriptVirtualizationBrowserHarness;
-  __GOOSE_TRANSCRIPT_DIAGNOSTICS__?: Record<string, unknown>;
-  __GOOSE_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__?: TranscriptVirtualTimelineDiagnosticsInput;
+  __DISTILL_TRANSCRIPT_DIAGNOSTICS__?: Record<string, unknown>;
+  __DISTILL_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__?: TranscriptVirtualTimelineDiagnosticsInput;
 }
 
 const TRANSCRIPT_SCROLL_STABILITY_EPSILON_PX = 1;
@@ -178,15 +178,15 @@ export async function loadTranscriptRenderer(
       harnessWindow.__TRANSCRIPT_VIRTUALIZATION_FIXTURE__ = serializedFixture;
       harnessWindow.__TRANSCRIPT_VIRTUALIZATION_RENDERER_MODE__ = mode;
       localStorage.setItem(
-        "goose:transcriptVirtualizationFixture",
+        "distill:transcriptVirtualizationFixture",
         JSON.stringify(serializedFixture),
       );
-      localStorage.setItem("goose:transcriptVirtualizationRenderer", mode);
+      localStorage.setItem("distill:transcriptVirtualizationRenderer", mode);
       // The harness runs through Vite's dev server but validates production
       // renderer defaults. Keep unrelated dev-auto-enabled experiments from
       // changing the transcript shape and invalidating performance thresholds.
       localStorage.setItem(
-        "goose:experimental-features",
+        "distill:experimental-features",
         JSON.stringify({ version: 2, autoEnable: false, experiments: {} }),
       );
     },
@@ -239,7 +239,7 @@ async function settleTranscriptRendererAfterLoad(
     .waitForFunction(
       () => {
         const harnessWindow = window as TranscriptHarnessWindow;
-        const diagnostics = harnessWindow.__GOOSE_TRANSCRIPT_DIAGNOSTICS__;
+        const diagnostics = harnessWindow.__DISTILL_TRANSCRIPT_DIAGNOSTICS__;
         return (
           typeof diagnostics?.timeToFirstVisibleTailMs === "number" &&
           diagnostics.timeToFirstVisibleTailMs > 0
@@ -458,9 +458,9 @@ export async function collectProductionTranscriptRendererDiagnostics(
   const productionDiagnostics = await page.evaluate(() => {
     const diagnosticsWindow = window as TranscriptHarnessWindow;
     return {
-      shared: diagnosticsWindow.__GOOSE_TRANSCRIPT_DIAGNOSTICS__ ?? null,
+      shared: diagnosticsWindow.__DISTILL_TRANSCRIPT_DIAGNOSTICS__ ?? null,
       virtual:
-        diagnosticsWindow.__GOOSE_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__ ??
+        diagnosticsWindow.__DISTILL_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__ ??
         null,
     };
   });

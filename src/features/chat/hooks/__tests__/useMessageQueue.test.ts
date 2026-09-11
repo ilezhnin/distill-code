@@ -930,7 +930,7 @@ describe("useMessageQueue", () => {
       text: "queued from berdctl",
       sendOptions: {
         userMessageMetadata: { origin: "berdctl_cross_session" },
-        acpGooseMetadata: { origin: "berdctl_cross_session" },
+        acpPromptMetadata: { origin: "berdctl_cross_session" },
       },
     });
 
@@ -949,7 +949,7 @@ describe("useMessageQueue", () => {
       text: "queued from berdctl",
       sendOptions: {
         userMessageMetadata: { origin: "berdctl_cross_session" },
-        acpGooseMetadata: { origin: "berdctl_cross_session" },
+        acpPromptMetadata: { origin: "berdctl_cross_session" },
       },
     });
   });

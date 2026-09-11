@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type DiagnosticLevel = "info" | "warn" | "error";
-export type DiagnosticCategory = "startup" | "gooseServe" | "renderer";
+export type DiagnosticCategory = "startup" | "agentHost" | "renderer";
 
 export interface DiagnosticEventInput {
   level: DiagnosticLevel;

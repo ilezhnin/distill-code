@@ -24,12 +24,6 @@ pub struct AgentSkillEntry {
     pub file_location: String,
     pub source_kind: String,
     pub source_label: String,
-    // A skill can accumulate more than one historical pin id over time (a
-    // pre-#974 Personal-skill migration, and separately a rename retiring
-    // an old-named copy from more than one legacy location) -- all of them
-    // must be preserved so a Home pin keyed to any prior id still resolves.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub legacy_pin_ids: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -178,7 +172,6 @@ fn read_skill(skill_dir: &Path, root: &SkillRoot) -> Option<AgentSkillEntry> {
         }
         .to_string(),
         source_label: root.source_label.clone(),
-        legacy_pin_ids: Vec::new(),
     })
 }
 
@@ -426,10 +419,6 @@ pub async fn list_berd_app_skills(
         .app_data_dir()
         .map_err(|err| format!("Failed to resolve Berd app data directory: {err}"))?;
     let app_skills_root = app_data_dir.join("skills");
-    let include_home_aliases = app
-        .try_state::<crate::services::e2e_mode::E2eMode>()
-        .is_none();
-    let legacy_pin_aliases = collect_legacy_pin_aliases(&app_data_dir, include_home_aliases);
     let skills = tokio::task::spawn_blocking(move || {
         let mut roots = Vec::new();
         let mut seen_roots = HashSet::new();
@@ -441,48 +430,11 @@ pub async fn list_berd_app_skills(
             "Berd app".to_string(),
             None,
         );
-        let mut skills = collect_skills_from_roots(roots, None);
-        for skill in &mut skills {
-            skill.legacy_pin_ids = legacy_pin_aliases
-                .get(&skill.name)
-                .cloned()
-                .unwrap_or_default();
-        }
-        skills
+        collect_skills_from_roots(roots, None)
     })
     .await
     .map_err(|err| format!("Failed to list Berd app skills: {err}"))?;
     Ok(ListAgentSkillsResponse { skills })
-}
-
-/// Collects all historical pin ids a bundled skill's current name may need
-/// to keep resolving, keyed by that current name. A skill can pick up more
-/// than one alias over time (a pre-#974 Personal-skill migration, and
-/// separately a rename retiring an old-named copy from more than one legacy
-/// location) -- all of them are preserved rather than one overwriting
-/// another, so a Home pin keyed to any of them still resolves.
-fn collect_legacy_pin_aliases(
-    app_data_dir: &Path,
-    include_home_aliases: bool,
-) -> HashMap<String, Vec<String>> {
-    let mut aliases: HashMap<String, Vec<String>> = HashMap::new();
-    for (name, pin_id) in crate::services::bundled_skills::migrated_legacy_skill_aliases(
-        app_data_dir,
-        include_home_aliases,
-    )
-    .into_iter()
-    .chain(
-        crate::services::bundled_skills::renamed_bundled_skill_pin_aliases(
-            app_data_dir,
-            include_home_aliases,
-        ),
-    ) {
-        let entry = aliases.entry(name).or_default();
-        if !entry.contains(&pin_id) {
-            entry.push(pin_id);
-        }
-    }
-    aliases
 }
 
 #[tauri::command]
@@ -499,25 +451,14 @@ pub async fn list_agent_skills(
     let app_skills_root = app_data_dir.join("skills");
     let e2e_skills_root = app
         .try_state::<crate::services::e2e_mode::E2eMode>()
-        .map(|mode| mode.goose_skills_dir());
-    let include_home_aliases = e2e_skills_root.is_none();
-    let legacy_pin_aliases = collect_legacy_pin_aliases(&app_data_dir, include_home_aliases);
+        .map(|mode| mode.skills_dir());
     let skills = tokio::task::spawn_blocking(move || {
-        let mut skills = collect_agent_skills(
+        collect_agent_skills(
             request.provider_id,
             request.workspace_paths,
             Some(&app_skills_root),
             e2e_skills_root.as_deref(),
-        );
-        for skill in &mut skills {
-            if skill.source_kind == "app" {
-                skill.legacy_pin_ids = legacy_pin_aliases
-                    .get(&skill.name)
-                    .cloned()
-                    .unwrap_or_default();
-            }
-        }
-        skills
+        )
     })
     .await
     .map_err(|err| format!("Failed to list agent skills: {err}"))?;

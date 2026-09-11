@@ -101,7 +101,7 @@ describe("useBerdctlQueuedMessageDrain", () => {
         createdAt: "2026-01-01T00:00:00Z",
         updatedAt: "2026-01-01T00:00:00Z",
         messageCount: 0,
-        executionTarget: { harnessId: "goose" },
+        executionTarget: { harnessId: "claude-acp" },
       })),
       hasHydratedSessions: true,
     });
@@ -146,7 +146,9 @@ describe("useBerdctlQueuedMessageDrain", () => {
     act(() =>
       useChatSessionStore
         .getState()
-        .replaceSessionExecutionTarget("session-1", { harnessId: "goose" }),
+        .replaceSessionExecutionTarget("session-1", {
+          harnessId: "claude-acp",
+        }),
     );
 
     await waitFor(() =>
@@ -188,7 +190,7 @@ describe("useBerdctlQueuedMessageDrain", () => {
           session.id === "session-1"
             ? {
                 ...session,
-                executionTarget: { harnessId: "goose" },
+                executionTarget: { harnessId: "claude-acp" },
                 executionTargetSource: "acp" as const,
               }
             : session,
@@ -246,7 +248,7 @@ describe("useBerdctlQueuedMessageDrain", () => {
           createdAt: "2026-01-01T00:00:00Z",
           updatedAt: "2026-01-01T00:00:00Z",
           messageCount: 0,
-          executionTarget: { harnessId: "goose" },
+          executionTarget: { harnessId: "claude-acp" },
         },
       ],
       hasHydratedSessions: true,
@@ -289,7 +291,7 @@ describe("useBerdctlQueuedMessageDrain", () => {
           createdAt: "2026-01-01T00:00:00Z",
           updatedAt: "2026-01-01T00:00:00Z",
           messageCount: 0,
-          executionTarget: { harnessId: "goose" },
+          executionTarget: { harnessId: "claude-acp" },
         },
       ],
       hasHydratedSessions: true,
@@ -329,7 +331,7 @@ describe("useBerdctlQueuedMessageDrain", () => {
           createdAt: "2026-01-01T00:00:00Z",
           updatedAt: "2026-01-01T00:00:00Z",
           messageCount: 0,
-          executionTarget: { harnessId: "goose" },
+          executionTarget: { harnessId: "claude-acp" },
         },
       ],
       hasHydratedSessions: true,
@@ -383,7 +385,7 @@ describe("useBerdctlQueuedMessageDrain", () => {
           createdAt: "2026-01-01T00:00:00Z",
           updatedAt: "2026-01-01T00:00:00Z",
           messageCount: 0,
-          executionTarget: { harnessId: "goose" },
+          executionTarget: { harnessId: "claude-acp" },
         },
       ],
       hasHydratedSessions: true,
@@ -422,7 +424,7 @@ describe("useBerdctlQueuedMessageDrain", () => {
           createdAt: "2026-01-01T00:00:00Z",
           updatedAt: "2026-01-01T00:00:00Z",
           messageCount: 0,
-          executionTarget: { harnessId: "goose" },
+          executionTarget: { harnessId: "claude-acp" },
         },
       ],
       hasHydratedSessions: true,
@@ -531,7 +533,7 @@ describe("useBerdctlQueuedMessageDrain", () => {
       text: "queued prompt",
       sendOptions: {
         userMessageMetadata: { origin: "berdctl_cross_session" as const },
-        acpGooseMetadata: { origin: "berdctl_cross_session" },
+        acpPromptMetadata: { origin: "berdctl_cross_session" },
       },
     });
     render(<DrainHarness />);
@@ -565,7 +567,7 @@ describe("useBerdctlQueuedMessageDrain", () => {
         origin: "berdctl_cross_session" as const,
         berdDeliveryId: "monitor-event-1",
       },
-      acpGooseMetadata: {
+      acpPromptMetadata: {
         origin: "berdctl_cross_session" as const,
         berdDeliveryId: "monitor-event-1",
       },
@@ -757,7 +759,7 @@ describe("useBerdctlQueuedMessageDrain", () => {
       text: "queued prompt",
       sendOptions: {
         userMessageMetadata: { origin: "berdctl_cross_session" as const },
-        acpGooseMetadata: { origin: "berdctl_cross_session" },
+        acpPromptMetadata: { origin: "berdctl_cross_session" },
       },
     });
     render(<DrainHarness />);
@@ -793,7 +795,7 @@ describe("useBerdctlQueuedMessageDrain", () => {
       text: "queued prompt",
       sendOptions: {
         userMessageMetadata: { origin: "berdctl_cross_session" as const },
-        acpGooseMetadata: { origin: "berdctl_cross_session" },
+        acpPromptMetadata: { origin: "berdctl_cross_session" },
       },
     });
     render(<DrainHarness />);
@@ -825,7 +827,7 @@ describe("useBerdctlQueuedMessageDrain", () => {
       text: "queued prompt",
       sendOptions: {
         userMessageMetadata: { origin: "berdctl_cross_session" as const },
-        acpGooseMetadata: { origin: "berdctl_cross_session" },
+        acpPromptMetadata: { origin: "berdctl_cross_session" },
       },
     });
     render(<DrainHarness />);
@@ -857,7 +859,7 @@ describe("useBerdctlQueuedMessageDrain", () => {
       text: "queued prompt",
       sendOptions: {
         userMessageMetadata: { origin: "berdctl_cross_session" as const },
-        acpGooseMetadata: { origin: "berdctl_cross_session" },
+        acpPromptMetadata: { origin: "berdctl_cross_session" },
       },
     });
   });
@@ -1489,7 +1491,7 @@ describe("useBerdctlQueuedMessageDrain", () => {
           createdAt: "2026-01-01T00:00:00Z",
           updatedAt: "2026-01-01T00:00:00Z",
           messageCount: 0,
-          executionTarget: { harnessId: "goose" },
+          executionTarget: { harnessId: "claude-acp" },
           clientSessionId: "draft-session",
           creationState: "pending" as const,
         },

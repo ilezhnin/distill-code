@@ -41,10 +41,10 @@
   },
   "review": {
     "title": "Revisar lo que se recuerda",
-    "description": "Abre un chat nuevo con todo lo anterior dentro. Propone duplicados que fusionar, contradicciones que resolver, l\u00edneas caducas que quitar y demasiado largas que dividir \u2014 en forma de lista, y no cambia nada hasta que confirmes cada una.",
-    "run": "Hacer una revisi\u00f3n",
-    "starting": "Abriendo la revisi\u00f3n\u2026",
-    "failed": "No se pudo abrir el chat de revisi\u00f3n. Si se lleg\u00f3 a crear, est\u00e1 en tu lista de chats."
+    "description": "Abre un chat nuevo con todo lo anterior dentro. Propone duplicados que fusionar, contradicciones que resolver, líneas caducas que quitar y demasiado largas que dividir — en forma de lista, y no cambia nada hasta que confirmes cada una.",
+    "run": "Hacer una revisión",
+    "starting": "Abriendo la revisión…",
+    "failed": "No se pudo abrir el chat de revisión. Si se llegó a crear, está en tu lista de chats."
   },
   "groups": {
     "global": "En todas partes",
@@ -107,22 +107,24 @@
   },
   "graph": {
     "title": "Grafo del wiki",
-    "description": "Las p\u00e1ginas del .distill/wiki/ de este proyecto y los [[enlaces]] entre ellas. Solo lectura: una p\u00e1gina la escribes t\u00fa o un conductor, nunca desde aqu\u00ed.",
-    "project": "Wiki de qu\u00e9 proyecto",
-    "reading": "Leyendo el wiki\u2026",
+    "description": "Las páginas del .distill/wiki/ de este proyecto y los [[enlaces]] entre ellas. Solo lectura: una página la escribes tú o un conductor, nunca desde aquí.",
+    "project": "Wiki de qué proyecto",
+    "reading": "Leyendo el wiki…",
     "failed": "No se pudo leer el wiki de este proyecto.",
-    "empty": "Este wiki tiene \u00edndice pero todav\u00eda no tiene p\u00e1ginas.",
-    "node_one": "{{title}} \u2014 {{type}}, {{count}} p\u00e1gina enlaza aqu\u00ed",
-    "node_other": "{{title}} \u2014 {{type}}, {{count}} p\u00e1ginas enlazan aqu\u00ed",
-    "orphan": "nada enlaza aqu\u00ed",
+    "empty": "Este wiki tiene índice pero todavía no tiene páginas.",
+    "node_one": "{{title}} — {{type}}, {{count}} página enlaza aquí",
+    "node_other": "{{title}} — {{type}}, {{count}} páginas enlazan aquí",
+    "orphan": "nada enlaza aquí",
     "close": "Cerrar",
-    "pageUnreadable": "No se pudo leer esta p\u00e1gina desde la carpeta del proyecto.",
+    "pageUnreadable": "No se pudo leer esta página desde la carpeta del proyecto.",
     "types": {
       "entity": "entidad",
       "concept": "concepto",
-      "decision": "decisi\u00f3n",
+      "decision": "decisión",
       "report": "informe",
       "unknown": "sin tipo"
-    }
+    },
+    "show": "Mostrar el grafo de la wiki",
+    "none": "Ningún proyecto tiene todavía un .distill/wiki/."
   }
 }
