@@ -5,7 +5,10 @@ import {
 import { completeAssistantMessage } from "@/features/chat/lib/messageCompletion";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import type { Message } from "@/shared/types/messages";
-import type { ReplayAssistantMetadata } from "@/shared/api/acpReplayMetadata";
+import {
+  legacyReplayReplyId,
+  type ReplayAssistantMetadata,
+} from "@/shared/api/acpReplayMetadata";
 
 const replayAssistantMessageIds = new Map<string, string>();
 
@@ -50,8 +53,15 @@ export function ensureReplayAssistantMessage(
     }
   }
 
-  const messageId = preferredMessageId ?? crypto.randomUUID();
   const buffer = ensureReplayBuffer(sessionId);
+  // A reply with no id at all still gets the same id on every load: a random
+  // one read as a brand-new reply each time, so the fences in it (a wave
+  // plan, a memory, a task) were acted on again on every restart. Keyed by
+  // its place in the history, and marked as derived so the scanners leave
+  // it alone (`isLegacyReplayReplyId`).
+  const messageId =
+    preferredMessageId ??
+    legacyReplayReplyId(`${sessionId}:replay-${buffer.length}`);
   const message: Message = {
     id: messageId,
     role: "assistant",

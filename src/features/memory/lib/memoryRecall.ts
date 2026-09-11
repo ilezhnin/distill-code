@@ -15,6 +15,7 @@
  * `useMemoryRecallSync`.
  */
 
+import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
 import { getTextContent, type Message } from "@/shared/types/messages";
 
 import { appliesToProject, type MemoryEntry } from "./memoryEntry";
@@ -243,7 +244,10 @@ export const RECALL_SCAN_TAIL = 20;
 function isSettledAssistantMessage(message: Message): boolean {
   return (
     message.role === "assistant" &&
-    message.metadata?.completionStatus !== "inProgress"
+    message.metadata?.completionStatus !== "inProgress" &&
+    // A reply replayed under a derived id was handled when it streamed, under
+    // an id no reload reproduces; its tombstone cannot match it.
+    !isLegacyReplayReplyId(message.id)
   );
 }
 

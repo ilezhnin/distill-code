@@ -5,6 +5,8 @@ import {
   getReplayCreated,
   getReplayMessageId,
   getReplayUserMetadata,
+  isLegacyReplayReplyId,
+  legacyReplayReplyId,
 } from "../acpReplayMetadata";
 
 describe("getReplayMessageId", () => {
@@ -220,5 +222,27 @@ describe("getReplayUserMetadata", () => {
         _meta: { distill: { origin: "some_future_origin" } },
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("isLegacyReplayReplyId", () => {
+  it("recognises the id derived for a reply the host never named", () => {
+    const derived = getReplayAssistantMessageId({
+      _meta: { distill: { messageId: "u1" } },
+    });
+    expect(derived).not.toBeNull();
+    expect(isLegacyReplayReplyId(derived ?? "")).toBe(true);
+    expect(isLegacyReplayReplyId(legacyReplayReplyId("s:replay-3"))).toBe(true);
+  });
+
+  it("does not match a reply id the host stamped", () => {
+    expect(isLegacyReplayReplyId("a1")).toBe(false);
+    expect(
+      isLegacyReplayReplyId(
+        getReplayAssistantMessageId({
+          _meta: { distill: { messageId: "u1", assistantMessageId: "a1" } },
+        }) ?? "",
+      ),
+    ).toBe(false);
   });
 });

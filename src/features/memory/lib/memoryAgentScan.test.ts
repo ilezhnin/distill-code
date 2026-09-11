@@ -29,6 +29,18 @@ function filler(count: number): Message[] {
 }
 
 describe("detectMemoryFenceCandidates", () => {
+  it("leaves a reply replayed under a derived id alone", () => {
+    // Its fence was applied when it streamed, under an id the reload does not
+    // reproduce: honouring it again could bring back a deleted memory.
+    expect(
+      detectMemoryFenceCandidates({
+        messagesBySession: { s1: [assistant("u-1:reply", FENCE)] },
+        isApplied: () => false,
+        isFirstScan: () => true,
+      }),
+    ).toEqual([]);
+  });
+
   it("reads the tail on an ordinary change", () => {
     const messages = [assistant("old", FENCE), ...filler(MEMORY_SCAN_TAIL)];
     expect(

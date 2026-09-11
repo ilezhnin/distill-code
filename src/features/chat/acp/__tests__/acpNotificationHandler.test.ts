@@ -20,6 +20,7 @@ import {
 } from "../acpNotificationHandler";
 import { flushBufferedStreamingUpdatesForSession } from "../liveStreamingUpdates";
 import { setActiveMessageId } from "@/shared/api/acpActiveMessageTracking";
+import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
 import { registerPreparedSession } from "@/shared/api/acpSessionRegistry";
 import { claimSessionPrompt } from "@/features/chat/lib/sessionPromptOwnership";
 import { resetUsageLedgerForTests } from "@/features/stats/lib/usageLedger";
@@ -2372,6 +2373,39 @@ describe("acpNotificationHandler", () => {
         content: [{ type: "text", text: "hello" }],
       },
     ]);
+  });
+
+  it("gives an id-less reply the same derived id on every load", async () => {
+    // A random id read as a brand-new reply on each load, so a fence in it
+    // (a wave plan, a memory, a task) was acted on again after every restart.
+    const load = async () => {
+      clearMessageTracking();
+      clearReplayBuffer("acp-session");
+      markSessionReplayLoading();
+      for (const [sessionUpdate, text] of [
+        ["user_message_chunk", "hi"],
+        ["agent_message_chunk", "hel"],
+        ["agent_message_chunk", "lo"],
+      ]) {
+        await handleSessionNotification({
+          sessionId: "acp-session",
+          update: { sessionUpdate, content: { type: "text", text } },
+        } as never);
+      }
+      return (getReplayBuffer("acp-session") ?? []).filter(
+        (message) => message.role === "assistant",
+      );
+    };
+
+    const first = await load();
+    const second = await load();
+
+    expect(first).toHaveLength(1);
+    expect(first[0].content).toEqual([{ type: "text", text: "hello" }]);
+    expect(second.map((message) => message.id)).toEqual(
+      first.map((message) => message.id),
+    );
+    expect(isLegacyReplayReplyId(first[0].id)).toBe(true);
   });
 
   it("does not repeat a steered prompt whose live echo overlaps a load", async () => {
