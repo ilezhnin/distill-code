@@ -559,8 +559,29 @@ impl Inner {
             if let Err(error) = self.store.append_event(&session_id, &params).await {
                 log::warn!("[agent-host] failed to persist session update: {error}");
             }
+            if let Some(title) = Self::agent_title(&params) {
+                if let Err(error) = self.store.set_agent_title(&session_id, title).await {
+                    log::warn!("[agent-host] failed to store the agent's title: {error}");
+                }
+            }
         }
         self.notify_frontend("session/update", params);
+    }
+
+    /// The title a `session_info_update` proposes, when it is one the chat
+    /// list should keep (the renderer applies the same filter live).
+    fn agent_title(params: &Value) -> Option<&str> {
+        let update = params.get("update")?;
+        if update.get("sessionUpdate").and_then(Value::as_str) != Some("session_info_update") {
+            return None;
+        }
+        update
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|title| {
+                !title.is_empty() && !title.starts_with(legacy_import::PERSONA_HANDOFF_PREFIX)
+            })
     }
 
     /// Note what a running turn's update adds to the chat snippet and stamp
@@ -1773,5 +1794,26 @@ mod tests {
         assert_eq!(distill["messageId"], "user-1");
         assert!(distill.get("assistantMessageId").is_none());
         assert!(!run.saw_agent_message);
+    }
+
+    #[test]
+    fn only_a_real_session_info_title_is_kept() {
+        fn info(title: &str) -> Value {
+            json!({
+                "sessionId": "s1",
+                "update": { "sessionUpdate": "session_info_update", "title": title },
+            })
+        }
+        assert_eq!(
+            Inner::agent_title(&info("  Fix the build ")),
+            Some("Fix the build")
+        );
+        assert_eq!(Inner::agent_title(&info("   ")), None);
+        let handoff = format!("{}chat", legacy_import::PERSONA_HANDOFF_PREFIX);
+        assert_eq!(Inner::agent_title(&info(&handoff)), None);
+        let chunk = json!({
+            "update": { "sessionUpdate": "agent_message_chunk", "title": "no" }
+        });
+        assert_eq!(Inner::agent_title(&chunk), None);
     }
 }

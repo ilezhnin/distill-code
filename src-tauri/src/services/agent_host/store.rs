@@ -202,6 +202,18 @@ impl SessionStore {
         Ok(())
     }
 
+    /// A title the agent proposed (`session_info_update`). A name the user
+    /// chose is never replaced, and the list order is left alone.
+    pub async fn set_agent_title(&self, id: &str, title: &str) -> Result<(), String> {
+        sqlx::query("UPDATE sessions SET title = ? WHERE id = ? AND user_set_name = 0")
+            .bind(title)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| db_error("failed to store the session title", error))?;
+        Ok(())
+    }
+
     pub async fn set_archived(&self, id: &str, archived: bool) -> Result<(), String> {
         let archived_at = archived.then(now_iso);
         sqlx::query("UPDATE sessions SET archived_at = ?, updated_at = ? WHERE id = ?")
@@ -640,5 +652,22 @@ mod tests {
             .map(|(text, _)| text)
             .collect();
         assert_eq!(copied, vec!["one".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn an_agent_title_never_replaces_a_name_the_user_chose() {
+        let (_dir, store) = store_with_history().await;
+        store
+            .set_agent_title("a", "Fix the build")
+            .await
+            .expect("title");
+        let titled = store.get_session("a").await.expect("read").expect("row");
+        assert_eq!(titled.title.as_deref(), Some("Fix the build"));
+        assert!(!titled.user_set_name);
+
+        store.set_title("a", "Mine", true).await.expect("rename");
+        store.set_agent_title("a", "Other").await.expect("title");
+        let renamed = store.get_session("a").await.expect("read").expect("row");
+        assert_eq!(renamed.title.as_deref(), Some("Mine"));
     }
 }
