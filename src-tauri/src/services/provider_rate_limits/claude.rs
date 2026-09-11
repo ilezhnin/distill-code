@@ -20,7 +20,9 @@ pub struct ClaudeOauthCredentials {
 }
 
 pub fn claude_config_dir() -> Option<PathBuf> {
-    if let Ok(override_dir) = std::env::var("CLAUDE_CONFIG_DIR") {
+    // Like CODEX_HOME / GROK_HOME: a launcher-injected redirect (Orca's
+    // per-account config dir) must not decide whose credentials are read.
+    if let Some(override_dir) = crate::services::shell_env::user_env_var("CLAUDE_CONFIG_DIR") {
         let trimmed = override_dir.trim();
         if !trimmed.is_empty() {
             return Some(PathBuf::from(trimmed));

@@ -96,7 +96,7 @@ pub fn write_project_document(
         let _ = exclude_agent_folders(&root);
     }
     let temporary = target.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
-    fs::write(&temporary, contents.as_bytes())
+    super::distill_store::write_file_synced(&temporary, contents.as_bytes())
         .map_err(|error| format!("Cannot write '{}': {error}", temporary.display()))?;
     match fs::rename(&temporary, &target) {
         Ok(()) => Ok(()),
@@ -174,6 +174,7 @@ pub fn write_project_run_closeout(
         || file.contains('/')
         || file.contains('\\')
         || file.contains("..")
+        || file.contains(':')
         || !file.ends_with(".md")
     {
         return Err("A closeout file name must be a plain '.md' name".into());
@@ -185,7 +186,7 @@ pub fn write_project_run_closeout(
         .map_err(|error| format!("Cannot create '{}': {error}", dir.display()))?;
     let target = dir.join(file);
     let temporary = target.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
-    fs::write(&temporary, contents.as_bytes())
+    super::distill_store::write_file_synced(&temporary, contents.as_bytes())
         .map_err(|error| format!("Cannot write '{}': {error}", temporary.display()))?;
     match fs::rename(&temporary, &target) {
         Ok(()) => Ok(target.to_string_lossy().to_string()),
@@ -345,7 +346,16 @@ mod tests {
     #[test]
     fn refuses_a_closeout_name_that_is_a_path() {
         let root = temp();
-        for name in ["../escape.md", "sub/dir.md", "notes.txt", ""] {
+        // `C:x.md` is drive-relative on Windows and would replace the folder
+        // it is joined onto.
+        for name in [
+            "../escape.md",
+            "sub/dir.md",
+            "notes.txt",
+            "",
+            "C:escape.md",
+            "note.md:stream.md",
+        ] {
             assert!(write_project_run_closeout(
                 root.to_string_lossy().to_string(),
                 name.into(),
