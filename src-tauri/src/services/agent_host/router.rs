@@ -100,7 +100,9 @@ pub struct Inner {
     spawn_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     sessions: Mutex<HashMap<String, SessionRuntime>>,
     frontend: StdMutex<Option<mpsc::UnboundedSender<String>>>,
-    client_requests: StdMutex<HashMap<u64, (String, Value)>>,
+    /// Requests a bridge made of the client, by the id the renderer was
+    /// asked under: (harness, the bridge's own id, method).
+    client_requests: StdMutex<HashMap<u64, (String, Value, String)>>,
     next_client_request_id: AtomicU64,
     events_tx: mpsc::UnboundedSender<BridgeEvent>,
     spawn_env: Mutex<Option<Arc<SpawnEnv>>>,
@@ -272,11 +274,14 @@ impl Inner {
     ) {
         let (mut sink, mut source) = ws.split();
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        // Whatever the previous renderer was asked can no longer be answered.
+        let orphaned = self.take_client_requests();
         {
             if let Ok(mut frontend) = self.frontend.lock() {
                 *frontend = Some(tx.clone());
             }
         }
+        self.answer_orphaned_client_requests(orphaned).await;
         let writer = tokio::spawn(async move {
             while let Some(line) = rx.recv().await {
                 if sink.send(WsMessage::Text(line.into())).await.is_err() {
@@ -295,13 +300,21 @@ impl Inner {
                 Ok(_) => {}
             }
         }
-        if let Ok(mut frontend) = self.frontend.lock() {
-            if frontend
-                .as_ref()
-                .is_some_and(|current| current.same_channel(&tx))
-            {
-                *frontend = None;
+        let was_current = match self.frontend.lock() {
+            Ok(mut frontend) => {
+                let current = frontend
+                    .as_ref()
+                    .is_some_and(|current| current.same_channel(&tx));
+                if current {
+                    *frontend = None;
+                }
+                current
             }
+            Err(_) => false,
+        };
+        if was_current {
+            let orphaned = self.take_client_requests();
+            self.answer_orphaned_client_requests(orphaned).await;
         }
         writer.abort();
         log::info!("[agent-host] frontend disconnected");
@@ -360,12 +373,44 @@ impl Inner {
         let mapping = id
             .as_u64()
             .and_then(|key| self.client_requests.lock().ok()?.remove(&key));
-        let Some((harness, bridge_id)) = mapping else {
+        let Some((harness, bridge_id, _)) = mapping else {
             log::warn!("[agent-host] response for unknown client request {id}");
             return;
         };
         if let Some(bridge) = self.bridges.lock().await.get(&harness).cloned() {
             bridge.respond(bridge_id, result);
+        }
+    }
+
+    /// The answer a bridge gets when no renderer can answer its request: a
+    /// permission prompt is cancelled (the turn goes on or stops cleanly),
+    /// anything else fails instead of leaving the bridge waiting forever.
+    fn unanswered_client_request(method: &str) -> Result<Value, Value> {
+        if method == "session/request_permission" {
+            Ok(json!({ "outcome": { "outcome": "cancelled" } }))
+        } else {
+            Err(protocol::internal("The app is not connected"))
+        }
+    }
+
+    /// Every request still waiting on the renderer; taken when the socket it
+    /// was sent over is replaced or goes away.
+    fn take_client_requests(&self) -> Vec<(String, Value, String)> {
+        match self.client_requests.lock() {
+            Ok(mut pending) => pending.drain().map(|(_, request)| request).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    async fn answer_orphaned_client_requests(&self, orphaned: Vec<(String, Value, String)>) {
+        if orphaned.is_empty() {
+            return;
+        }
+        let bridges = self.bridges.lock().await;
+        for (harness, id, method) in orphaned {
+            if let Some(bridge) = bridges.get(&harness) {
+                bridge.respond(id, Self::unanswered_client_request(&method));
+            }
         }
     }
 
@@ -632,7 +677,10 @@ impl Inner {
         }
         let request_id = self.next_client_request_id.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut pending) = self.client_requests.lock() {
-            pending.insert(request_id, (harness.to_string(), id.clone()));
+            pending.insert(
+                request_id,
+                (harness.to_string(), id.clone(), method.to_string()),
+            );
         }
         let has_frontend = self.frontend.lock().map(|f| f.is_some()).unwrap_or(false);
         if !has_frontend {
@@ -641,7 +689,7 @@ impl Inner {
                 pending.remove(&request_id);
             }
             if let Some(bridge) = self.bridges.lock().await.get(harness).cloned() {
-                bridge.respond(id, Ok(json!({ "outcome": { "outcome": "cancelled" } })));
+                bridge.respond(id, Self::unanswered_client_request(method));
             }
             return;
         }
@@ -1815,5 +1863,14 @@ mod tests {
             "update": { "sessionUpdate": "agent_message_chunk", "title": "no" }
         });
         assert_eq!(Inner::agent_title(&chunk), None);
+    }
+
+    #[test]
+    fn a_request_nobody_can_answer_is_cancelled_or_failed() {
+        assert_eq!(
+            Inner::unanswered_client_request("session/request_permission"),
+            Ok(json!({ "outcome": { "outcome": "cancelled" } }))
+        );
+        assert!(Inner::unanswered_client_request("fs/read_text_file").is_err());
     }
 }
