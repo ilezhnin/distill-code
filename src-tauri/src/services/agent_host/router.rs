@@ -32,6 +32,23 @@ const BACKGROUND_ATTACH_DELAY: std::time::Duration = std::time::Duration::from_m
 const SNIPPET_CHARS: usize = 200;
 pub const EXT_PREFIX: &str = "_distill/";
 
+/// The ids one user turn is recorded under: `message_id` is the user
+/// prompt's message, `run_id` the turn.
+#[derive(Clone)]
+struct TurnIds {
+    run_id: String,
+    message_id: String,
+}
+
+impl TurnIds {
+    fn new() -> Self {
+        Self {
+            run_id: uuid::Uuid::new_v4().to_string(),
+            message_id: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+}
+
 struct RunState {
     run_id: String,
     message_id: String,
@@ -39,11 +56,21 @@ struct RunState {
     saw_agent_message: bool,
 }
 
+impl RunState {
+    fn start(ids: &TurnIds) -> Self {
+        Self {
+            run_id: ids.run_id.clone(),
+            message_id: ids.message_id.clone(),
+            agent_text: String::new(),
+            saw_agent_message: false,
+        }
+    }
+}
+
 struct QueuedPrompt {
     prompt: Value,
     meta: Value,
-    message_id: String,
-    run_id: String,
+    ids: TurnIds,
 }
 
 pub struct SessionRuntime {
@@ -1312,32 +1339,28 @@ impl Inner {
             .unwrap_or_default()
     }
 
+    /// Persist a user turn's prompt blocks. A steered turn (one the agent
+    /// picks up after the turn it was steered into) is marked `steer` and
+    /// echoed live once: the renderer already shows the message and needs
+    /// the echo as the boundary between the previous reply and this one.
     async fn record_user_prompt(
         &self,
         session_id: &str,
         prompt: &Value,
         meta: &Value,
-        message_id: &str,
-        run_id: &str,
+        ids: &TurnIds,
+        steer: bool,
     ) {
-        let created = now_iso();
-        let mut distill = json!({ "messageId": message_id, "runId": run_id, "created": created });
-        if let Some(persona_id) = meta.get("personaId") {
-            distill["personaId"] = persona_id.clone();
-        }
-        let mut update_meta = meta.as_object().cloned().unwrap_or_default();
-        update_meta.insert("distill".to_string(), distill);
-        for block in prompt.as_array().cloned().unwrap_or_default() {
-            let event = json!({
-                "sessionId": session_id,
-                "update": {
-                    "sessionUpdate": "user_message_chunk",
-                    "content": block,
-                    "_meta": Value::Object(update_meta.clone()),
-                }
-            });
-            if let Err(error) = self.store.append_event(session_id, &event).await {
+        let events = Self::user_prompt_events(session_id, prompt, meta, ids, &now_iso(), steer);
+        for event in &events {
+            if let Err(error) = self.store.append_event(session_id, event).await {
                 log::warn!("[agent-host] failed to persist prompt: {error}");
+            }
+        }
+        if steer {
+            if let Some(mut echo) = events.into_iter().next() {
+                echo["update"]["messageId"] = json!(ids.message_id);
+                self.notify_frontend("session/update", echo);
             }
         }
         let snippet = Self::snippet(&Self::prompt_text(prompt));
@@ -1347,7 +1370,58 @@ impl Inner {
         }
     }
 
+    fn user_prompt_events(
+        session_id: &str,
+        prompt: &Value,
+        meta: &Value,
+        ids: &TurnIds,
+        created: &str,
+        steer: bool,
+    ) -> Vec<Value> {
+        let mut distill =
+            json!({ "messageId": ids.message_id, "runId": ids.run_id, "created": created });
+        if let Some(persona_id) = meta.get("personaId") {
+            distill["personaId"] = persona_id.clone();
+        }
+        if steer {
+            distill["steer"] = json!(true);
+        }
+        let mut update_meta = meta.as_object().cloned().unwrap_or_default();
+        update_meta.insert("distill".to_string(), distill);
+        prompt
+            .as_array()
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .map(|block| {
+                        json!({
+                            "sessionId": session_id,
+                            "update": {
+                                "sessionUpdate": "user_message_chunk",
+                                "content": block,
+                                "_meta": Value::Object(update_meta.clone()),
+                            }
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     async fn prompt(self: &Arc<Self>, params: Value) -> Result<Value, Value> {
+        self.start_turn(params, TurnIds::new(), false).await
+    }
+
+    /// Run one user turn and then every message steered into it, in order.
+    /// A steered turn (`steer`) that finds another turn already running is
+    /// queued behind it instead of failing: the steer was acknowledged with
+    /// these ids, so it has to be delivered under them.
+    async fn start_turn(
+        self: &Arc<Self>,
+        params: Value,
+        ids: TurnIds,
+        steer: bool,
+    ) -> Result<Value, Value> {
         let session_id =
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
         let record = self
@@ -1362,28 +1436,27 @@ impl Inner {
             .cloned()
             .unwrap_or_else(|| Value::Array(vec![]));
         let meta = params.get("_meta").cloned().unwrap_or_else(|| json!({}));
-        let run_id = uuid::Uuid::new_v4().to_string();
-        let message_id = uuid::Uuid::new_v4().to_string();
         {
             let mut sessions = self.sessions.lock().await;
             let runtime = sessions
                 .get_mut(&session_id)
                 .ok_or_else(|| protocol::internal("session vanished"))?;
-            if runtime.run.is_some() {
+            if let Some(active) = runtime.run.as_ref() {
+                if steer {
+                    runtime
+                        .steer_queue
+                        .push_back(QueuedPrompt { prompt, meta, ids });
+                    return Ok(json!({}));
+                }
                 return Err(protocol::error_with_data(
                     protocol::INVALID_PARAMS,
                     "A prompt is already running for this session",
-                    json!({ "actualRunId": runtime.run.as_ref().map(|run| run.run_id.clone()) }),
+                    json!({ "actualRunId": active.run_id }),
                 ));
             }
-            runtime.run = Some(RunState {
-                run_id: run_id.clone(),
-                message_id: message_id.clone(),
-                agent_text: String::new(),
-                saw_agent_message: false,
-            });
+            runtime.run = Some(RunState::start(&ids));
         }
-        self.record_user_prompt(&session_id, &prompt, &meta, &message_id, &run_id)
+        self.record_user_prompt(&session_id, &prompt, &meta, &ids, steer)
             .await;
         let mut result = self
             .run_prompt(&bridge, &session_id, &bridge_session_id, prompt, meta)
@@ -1400,22 +1473,11 @@ impl Inner {
                     runtime.run = None;
                     break;
                 };
-                runtime.run = Some(RunState {
-                    run_id: queued.run_id.clone(),
-                    message_id: queued.message_id.clone(),
-                    agent_text: String::new(),
-                    saw_agent_message: false,
-                });
+                runtime.run = Some(RunState::start(&queued.ids));
                 queued
             };
-            self.record_user_prompt(
-                &session_id,
-                &queued.prompt,
-                &queued.meta,
-                &queued.message_id,
-                &queued.run_id,
-            )
-            .await;
+            self.record_user_prompt(&session_id, &queued.prompt, &queued.meta, &queued.ids, true)
+                .await;
             result = self
                 .run_prompt(
                     &bridge,
@@ -1463,6 +1525,7 @@ impl Inner {
     }
 
     /// Queue a message behind the running turn (or start one when idle).
+    /// The answer's ids are the ones the message is recorded and run under.
     pub async fn steer(self: &Arc<Self>, params: Value) -> Result<Value, Value> {
         let session_id =
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
@@ -1475,8 +1538,7 @@ impl Inner {
             .cloned()
             .unwrap_or_else(|| Value::Array(vec![]));
         let meta = params.get("_meta").cloned().unwrap_or_else(|| json!({}));
-        let run_id = uuid::Uuid::new_v4().to_string();
-        let message_id = uuid::Uuid::new_v4().to_string();
+        let ids = TurnIds::new();
         let queued = {
             let mut sessions = self.sessions.lock().await;
             match sessions.get_mut(&session_id).and_then(|runtime| {
@@ -1497,8 +1559,7 @@ impl Inner {
                     runtime.steer_queue.push_back(QueuedPrompt {
                         prompt: prompt.clone(),
                         meta: meta.clone(),
-                        message_id: message_id.clone(),
-                        run_id: run_id.clone(),
+                        ids: ids.clone(),
                     });
                     true
                 }
@@ -1506,18 +1567,21 @@ impl Inner {
             }
         };
         if !queued {
+            // Nothing is running: this becomes a turn of its own. Attach now
+            // so a session that cannot be woken fails the steer instead of
+            // being acknowledged and then dropped.
+            let record = self.session_record(&session_id).await?;
+            self.attach_session(&record).await?;
             let host = Arc::clone(self);
-            let session = session_id.clone();
+            let turn = ids.clone();
             tokio::spawn(async move {
-                if let Err(error) = host
-                    .prompt(json!({ "sessionId": session, "prompt": prompt, "_meta": meta }))
-                    .await
-                {
+                let params = json!({ "sessionId": session_id, "prompt": prompt, "_meta": meta });
+                if let Err(error) = host.start_turn(params, turn, true).await {
                     log::warn!("[agent-host] steer prompt failed: {}", error_text(&error));
                 }
             });
         }
-        Ok(json!({ "runId": run_id, "messageId": message_id }))
+        Ok(json!({ "runId": ids.run_id, "messageId": ids.message_id }))
     }
 
     /// Session ids of every live session on `harness` (used to answer
@@ -1576,5 +1640,63 @@ impl Inner {
             }
         }
         Ok(models)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ids() -> TurnIds {
+        TurnIds {
+            run_id: "run-1".to_string(),
+            message_id: "user-1".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_steered_prompt_is_recorded_as_a_steer_under_its_acknowledged_ids() {
+        let prompt = json!([
+            { "type": "text", "text": "skill", "annotations": { "audience": ["assistant"] } },
+            { "type": "text", "text": "also check the tests" }
+        ]);
+        let events = Inner::user_prompt_events(
+            "s1",
+            &prompt,
+            &json!({ "personaId": "p1" }),
+            &ids(),
+            "2026-09-11T00:00:00.000Z",
+            true,
+        );
+        assert_eq!(events.len(), 2);
+        for event in &events {
+            assert_eq!(event["sessionId"], "s1");
+            assert_eq!(event["update"]["sessionUpdate"], "user_message_chunk");
+            let distill = &event["update"]["_meta"]["distill"];
+            assert_eq!(distill["messageId"], "user-1");
+            assert_eq!(distill["runId"], "run-1");
+            assert_eq!(distill["steer"], true);
+            assert_eq!(distill["personaId"], "p1");
+        }
+        assert_eq!(
+            events[1]["update"]["content"]["text"],
+            "also check the tests"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_prompt_is_not_marked_as_a_steer() {
+        let events = Inner::user_prompt_events(
+            "s1",
+            &json!([{ "type": "text", "text": "hi" }]),
+            &json!({}),
+            &ids(),
+            "2026-09-11T00:00:00.000Z",
+            false,
+        );
+        assert_eq!(events.len(), 1);
+        assert!(events[0]["update"]["_meta"]["distill"]
+            .get("steer")
+            .is_none());
     }
 }
