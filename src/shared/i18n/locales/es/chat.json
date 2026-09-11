@@ -63,9 +63,9 @@
     "voiceInputFailedTitle": "Falló el dictado por voz",
     "voiceInputNoMicrophoneDescription": "Conecta o selecciona un micrófono y vuelve a intentar el dictado por voz.",
     "voiceInputNoMicrophoneTitle": "No se encontró ningún micrófono",
-    "voiceInputPermissionDescription": "Permite el acceso al micrófono para Distill en Configuración del Sistema y vuelve a intentar el dictado por voz.",
+    "voiceInputPermissionDescription": "Permite el acceso al micrófono para Distill en Configuración de Windows > Privacidad y seguridad > Micrófono y vuelve a intentar el dictado por voz.",
     "voiceInputPermissionTitle": "El acceso al micrófono está bloqueado",
-    "voiceInputUnavailableDescription": "Otra app puede estar usando tu micrófono, o macOS no pudo iniciar la grabación. Cierra otras apps de grabación y vuelve a intentarlo.",
+    "voiceInputUnavailableDescription": "Otra app puede estar usando tu micrófono, o Windows no pudo iniciar la grabación. Cierra otras apps de grabación y vuelve a intentarlo.",
     "voiceInputUnavailableTitle": "El micrófono no está disponible"
   },
   "contextPanel": {

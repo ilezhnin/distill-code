@@ -159,7 +159,7 @@
       "label": "Predeterminado de menciones @"
     },
     "followUpBehavior": {
-      "description": "Pon seguimientos en cola mientras Distill responde o guía la ejecucion actual. Pulsa Cmd+Enter para hacer lo opuesto en un mensaje.",
+      "description": "Pon seguimientos en cola mientras Distill responde o guía la ejecucion actual. Pulsa Ctrl+Enter para hacer lo opuesto en un mensaje.",
       "label": "Comportamiento de seguimiento",
       "queue": "Cola",
       "steer": "Guiar"

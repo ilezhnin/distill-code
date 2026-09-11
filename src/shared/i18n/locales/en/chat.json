@@ -63,9 +63,9 @@
     "voiceInputFailedTitle": "Voice dictation failed",
     "voiceInputNoMicrophoneDescription": "Connect or select a microphone, then try voice dictation again.",
     "voiceInputNoMicrophoneTitle": "No microphone found",
-    "voiceInputPermissionDescription": "Allow microphone access for Distill in System Settings, then try voice dictation again.",
+    "voiceInputPermissionDescription": "Allow microphone access for Distill in Windows Settings > Privacy & security > Microphone, then try voice dictation again.",
     "voiceInputPermissionTitle": "Microphone access is blocked",
-    "voiceInputUnavailableDescription": "Another app may be using your microphone, or macOS could not start recording. Close other recording apps and try again.",
+    "voiceInputUnavailableDescription": "Another app may be using your microphone, or Windows could not start recording. Close other recording apps and try again.",
     "voiceInputUnavailableTitle": "Microphone is unavailable"
   },
   "contextPanel": {

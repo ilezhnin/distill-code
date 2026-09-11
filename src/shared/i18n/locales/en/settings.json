@@ -159,7 +159,7 @@
       "label": "@ mention default"
     },
     "followUpBehavior": {
-      "description": "Queue follow-ups while Distill responds or steer the current run. Press Cmd+Enter to do the opposite for one message.",
+      "description": "Queue follow-ups while Distill responds or steer the current run. Press Ctrl+Enter to do the opposite for one message.",
       "label": "Follow-up behavior",
       "queue": "Queue",
       "steer": "Steer"

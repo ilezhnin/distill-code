@@ -198,7 +198,7 @@
     "description": "Importa un agente con un archivo ZIP, una imagen o un archivo .md o JSON.",
     "dropTitle": "Arrastra y suelta aquí un archivo de agente",
     "preparing": "Abriendo el archivo del agente…",
-    "openFinder": "Abrir Finder",
+    "openFinder": "Buscar archivos",
     "previewAlt": "Vista previa de {{name}}",
     "descriptionFallback": "{{name}} está listo para ayudar.",
     "import": "Importar agente"
