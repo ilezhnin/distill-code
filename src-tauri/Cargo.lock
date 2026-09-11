@@ -8,28 +8,23 @@ version = "0.6.2"
 dependencies = [
  "base64 0.22.1",
  "block2",
- "bytes",
  "chrono",
  "dirs",
  "doctor",
  "dunce",
- "fern",
  "flate2",
  "futures-util",
  "hex",
  "ignore",
- "infer",
  "libc",
  "log",
  "mime_guess",
- "minisign-verify",
  "nucleo-matcher",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-user-notifications",
  "percent-encoding",
- "plist",
  "portable-pty",
  "reqwest",
  "semver",
@@ -53,13 +48,11 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-window-state",
  "tempfile",
- "time",
  "tokio",
  "tokio-tungstenite",
  "toml 1.1.4+spec-1.1.0",
  "url",
  "uuid",
- "which",
  "windows-sys 0.59.0",
  "yaml_serde",
  "zip",
@@ -3065,12 +3058,6 @@ dependencies = [
  "mime",
  "unicase",
 ]
-
-[[package]]
-name = "minisign-verify"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
 
 [[package]]
 name = "miniz_oxide"
@@ -6915,15 +6902,6 @@ name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
-
-[[package]]
-name = "which"
-version = "8.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f3ef584124b911bcc3875c2f1472e80f24361ceb789bd1c62b3e9a3df9ff43c"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "whoami"

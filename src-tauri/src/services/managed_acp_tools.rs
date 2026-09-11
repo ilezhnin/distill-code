@@ -30,9 +30,7 @@
 //!
 //! `BERD_ACP_TOOLS_DIR` stays honored as a dev/bridge-developer override: when
 //! set, managed resolution short-circuits (no managed tools, no shim dir, no
-//! installs) so the override dir is the one source of bridge binaries. The
-//! `no-managed-acp-tools` build feature compiles the managed bridge set to
-//! empty for restricted builds, so nothing installs and the checks stay silent.
+//! installs) so the override dir is the one source of bridge binaries.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -114,17 +112,12 @@ pub fn managed_shim_bin_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Opt
 fn managed_bridges_enabled() -> bool {
     managed_bridges_enabled_from_parts(
         dev_tools_override_active(),
-        cfg!(feature = "no-managed-acp-tools"),
         managed_node::current_target_triple().is_some(),
     )
 }
 
-fn managed_bridges_enabled_from_parts(
-    override_active: bool,
-    managed_tools_disabled: bool,
-    supported_target: bool,
-) -> bool {
-    !override_active && !managed_tools_disabled && supported_target
+fn managed_bridges_enabled_from_parts(override_active: bool, supported_target: bool) -> bool {
+    !override_active && supported_target
 }
 
 fn dev_tools_override_active() -> bool {
@@ -261,7 +254,7 @@ pub struct ManagedTool {
     /// The frontend provider id (e.g. `claude-acp`). Also the key into
     /// `acp-tools.lock.json`'s `tools` map for this bridge's install documents.
     pub id: &'static str,
-    /// The bin name the shim is written under and that goosed resolves.
+    /// The bin name the shim is written under and that the agent host resolves.
     pub binary: &'static str,
     /// The npm package installed from the private registry.
     pub package: &'static str,
@@ -296,8 +289,7 @@ pub const MANAGED_TOOLS: &[ManagedTool] = &[
 
 /// The managed bridges this build installs at runtime, or an empty list when
 /// nothing is managed: the `BERD_ACP_TOOLS_DIR` dev override supplies bridges
-/// from its own dir, the `no-managed-acp-tools` feature compiles the set out
-/// for restricted builds, and an unsupported target has no managed runtime to
+/// from its own dir, and an unsupported target has no managed runtime to
 /// install onto.
 pub fn managed_tools() -> Vec<ManagedTool> {
     if !managed_bridges_enabled() {
@@ -381,9 +373,10 @@ fn node_binary(layout: &managed_node::RuntimeLayout, node_install_dir: &Path) ->
     layout.node_exe(node_install_dir)
 }
 
-/// The file name a bridge shim is written under and that goosed resolves by
-/// bare name. On Windows that is `<binary>.cmd` (a batch launcher resolved via
-/// `PATHEXT`); elsewhere it is the extensionless `<binary>`.
+/// The file name a bridge shim is written under and that the agent host
+/// resolves by bare name. On Windows that is `<binary>.cmd` (a batch launcher
+/// found by `bridge::resolve_executable`'s extension probe); elsewhere it is
+/// the extensionless `<binary>`.
 fn shim_file_name(layout: &managed_node::RuntimeLayout, binary: &str) -> String {
     if layout.is_windows() {
         format!("{binary}.cmd")
@@ -2074,10 +2067,9 @@ mod tests {
 
     #[test]
     fn managed_bridge_shims_require_management_to_be_enabled() {
-        assert!(managed_bridges_enabled_from_parts(false, false, true));
-        assert!(!managed_bridges_enabled_from_parts(true, false, true));
-        assert!(!managed_bridges_enabled_from_parts(false, true, true));
-        assert!(!managed_bridges_enabled_from_parts(false, false, false));
+        assert!(managed_bridges_enabled_from_parts(false, true));
+        assert!(!managed_bridges_enabled_from_parts(true, true));
+        assert!(!managed_bridges_enabled_from_parts(false, false));
     }
 
     #[test]
@@ -4006,14 +3998,13 @@ exit 0
     // ── Native Windows gate (real runtime + real bridge launch) ─────────
     //
     // Installs the real pinned Node runtime plus a real managed bridge, then
-    // launches the bridge by its bare name through the exact PATH /
-    // GOOSE_SEARCH_PATHS shim directory goosed prepends. This compiles on every
-    // host (so the mac/Linux CI lanes type-check it) but only executes on
-    // native Windows when opted in via `BERD_WS2_NATIVE_GATE=1` (set by the
-    // native Windows CI gate). `node.exe` and the `.cmd` launcher are
-    // not runnable on the Unix host, so off Windows it skips immediately.
-    // Covers the audit's native matrix item 5: bridge install, Windows launcher
-    // generation, and bare-name launch through goosed's search path.
+    // launches the bridge by its bare name through the same shim directories
+    // the agent host prepends to a bridge's PATH. This compiles on every host
+    // but only executes on native Windows when opted in via
+    // `BERD_WS2_NATIVE_GATE=1`. `node.exe` and the `.cmd` launcher are not
+    // runnable on the Unix host, so off Windows it skips immediately. Covers
+    // bridge install, Windows launcher generation, and bare-name launch through
+    // the agent host's resolver.
 
     fn native_gate_enabled() -> bool {
         cfg!(windows) && std::env::var_os("BERD_WS2_NATIVE_GATE").is_some_and(|value| value == "1")
@@ -4080,33 +4071,31 @@ exit 0
         .await
         .expect("managed bridge upgrades repeatedly on native Windows");
 
-        // The launcher is the `.cmd` name goosed resolves by bare name.
+        // The launcher is the `.cmd` name the agent host resolves by bare name.
         let shim_dir = shim_bin_dir(&packages_root);
         let launcher = shim_dir.join(shim_file_name(&layout, tool.binary));
         assert!(launcher.is_file(), "bridge .cmd launcher was written");
 
-        // Launch the bridge by its bare name through the exact search-path
-        // directory goosed prepends (shim dir + managed node bin dir), with
-        // `--help` so a real ACP bridge exits promptly. Goose spawns bridges in
-        // two stages — resolve the bare name against the search path, then spawn
-        // the resolved path — so the gate mirrors that here. `which_in_global`
-        // is the same resolver goosed uses (crates/goose config/search_path.rs),
-        // and on Windows it applies `PATHEXT`, so it must return the generated
-        // `.cmd` launcher rather than the extensionless name. Spawning that
-        // resolved path is what proves the launcher is Windows-launchable;
-        // spawning the bare name directly would fail because Rust's `Command`
-        // does not apply `PATHEXT`.
-        let mut search_path = vec![shim_dir.clone(), layout.bin_dir(&node_install_dir)];
-        search_path.extend(std::env::split_paths(
-            &std::env::var_os("PATH").unwrap_or_default(),
-        ));
+        // Launch the bridge by its bare name through the directories the agent
+        // host prepends (shim dir + managed node bin dir), with `--help` so a
+        // real ACP bridge exits promptly. The host spawns bridges in two stages
+        // — resolve the bare name with `bridge::resolve_executable`, then spawn
+        // the resolved path — so the gate mirrors that here. On Windows the
+        // resolver must return the generated `.cmd` launcher rather than the
+        // extensionless name; spawning that resolved path is what proves the
+        // launcher is Windows-launchable, because Rust's `Command` does not
+        // apply `PATHEXT` to a bare name.
+        let prepend_dirs = vec![shim_dir.clone(), layout.bin_dir(&node_install_dir)];
+        let inherited_path = std::env::var("PATH").unwrap_or_default();
+        let resolved = crate::services::agent_host::bridge::resolve_executable(
+            tool.binary,
+            &prepend_dirs,
+            Some(inherited_path.as_str()),
+        )
+        .expect("the agent host's resolver finds the bridge launcher by bare name");
+        let mut search_path = prepend_dirs;
+        search_path.extend(std::env::split_paths(&inherited_path));
         let path_value = std::env::join_paths(search_path).unwrap();
-        let resolved = which::which_in_global(tool.binary, Some(&path_value))
-            .expect("which_in_global runs")
-            .next()
-            .expect("goosed's resolver finds the bridge launcher by bare name");
-        // `which` canonicalizes its result, so compare canonicalized paths
-        // rather than the raw tempdir join.
         assert_eq!(
             dunce::canonicalize(&resolved).expect("resolved launcher canonicalizes"),
             dunce::canonicalize(&launcher).expect("generated launcher canonicalizes"),
@@ -4117,7 +4106,7 @@ exit 0
             .env("PATH", &path_value)
             .output()
             .await
-            .expect("bridge launches through the resolved goosed search path");
+            .expect("bridge launches through the resolved launcher path");
         assert!(
             output.status.code().is_some(),
             "bridge process ran to completion"
