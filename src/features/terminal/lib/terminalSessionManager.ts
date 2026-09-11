@@ -819,9 +819,36 @@ export function setTerminalRenderingSuspended(suspended: boolean): void {
   }
 }
 
+let pageHideCleanupInstalled = false;
+
+/**
+ * The backend keeps a PTY alive until it is stopped or its output channel
+ * fails, and an idle shell writes nothing. When this page goes away (a
+ * reload from the renderer error screen, a session window closing) the ids
+ * die with this module, so without an explicit stop the shells would linger
+ * until the app quits. Stop them while the page is still able to invoke.
+ */
+function installPageHideCleanup(): void {
+  if (pageHideCleanupInstalled || typeof window === "undefined") {
+    return;
+  }
+
+  pageHideCleanupInstalled = true;
+  window.addEventListener("pagehide", (event) => {
+    if (event.persisted) {
+      return;
+    }
+
+    for (const session of [...sessions.values()]) {
+      session.stop();
+    }
+  });
+}
+
 export function getOrCreateTerminalSession(
   options: TerminalSessionOptions,
 ): TerminalSession {
+  installPageHideCleanup();
   const existing = sessions.get(options.key);
   if (existing && existing.cwd === options.cwd) {
     existing.updateLabels(options.labels);

@@ -287,6 +287,25 @@ describe("terminalSessionManager", () => {
     expect(mocks.writeTerminal).not.toHaveBeenCalledWith("terminal-1", "ls\r");
   });
 
+  it("stops backend shells when the page is torn down", async () => {
+    const { getOrCreateTerminalSession, getTerminalSessionStatus } =
+      await import("./terminalSessionManager");
+    mocks.startTerminal.mockResolvedValueOnce("terminal-pagehide");
+    getOrCreateTerminalSession({
+      key: "chat-session-id:tab-pagehide",
+      cwd: "/repo",
+      labels,
+      theme: {},
+      fontFamily: "monospace",
+    });
+    await Promise.resolve();
+
+    window.dispatchEvent(new Event("pagehide"));
+
+    expect(mocks.stopTerminal).toHaveBeenCalledWith("terminal-pagehide");
+    expect(getTerminalSessionStatus("chat-session-id:tab-pagehide")).toBeNull();
+  });
+
   it("keeps pre-session status subscriptions for later backend exits", async () => {
     const changes: unknown[] = [];
     let emitTerminalEvent: (event: TerminalEvent) => void = () => undefined;
