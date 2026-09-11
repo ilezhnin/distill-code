@@ -832,7 +832,8 @@
   },
   "artifactChips": {
     "open": "Abrir {{name}} en el visor",
-    "more": "+{{count}} más"
+    "more": "+{{count}} más",
+    "openFailed": "No se pudo abrir {{name}}. Puede que se haya movido o eliminado."
   },
   "agentBuilder": {
     "hideChat": "Ocultar chat"

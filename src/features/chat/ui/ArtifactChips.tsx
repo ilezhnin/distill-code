@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { PanelRight } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { FileContextMenu } from "@/shared/ui/file-context-menu";
@@ -40,6 +41,11 @@ export function ArtifactChips({
   const { t } = useTranslation("chat");
   const { openInApp, openResolvedPath } = useArtifactActionsContext();
   const [expanded, setExpanded] = useState(false);
+  // A chip outlives its file: the agent can move or delete it later. Say so
+  // instead of letting the click fail silently.
+  const reportOpenFailure = (artifact: ViewableArtifactTarget) => () => {
+    toast.error(t("artifactChips.openFailed", { name: artifact.filename }));
+  };
 
   if (artifacts.length === 0) return null;
 
@@ -58,17 +64,25 @@ export function ArtifactChips({
           key={artifact.path}
           path={artifact.path}
           onOpenInViewer={() =>
-            void openInApp(artifact.path, artifact.filename)
+            void openInApp(artifact.path, artifact.filename).catch(
+              reportOpenFailure(artifact),
+            )
           }
           onOpenExternally={() =>
-            void openResolvedPath(artifact.path).catch(() => {})
+            void openResolvedPath(artifact.path).catch(
+              reportOpenFailure(artifact),
+            )
           }
         >
           <Button
             type="button"
             variant="outline"
             size="xxs"
-            onClick={() => void openInApp(artifact.path, artifact.filename)}
+            onClick={() =>
+              void openInApp(artifact.path, artifact.filename).catch(
+                reportOpenFailure(artifact),
+              )
+            }
             tooltip={artifact.path}
             aria-label={t("artifactChips.open", { name: artifact.filename })}
             leftIcon={<PanelRight aria-hidden="true" />}
