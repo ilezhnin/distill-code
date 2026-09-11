@@ -8,7 +8,7 @@
 
       1. toolchain environment: MSVC, fnm-managed Node, pnpm on PATH
       2. dependencies: pnpm install
-      3. berdctl.exe
+      3. berdctl.exe and berd-monitor.exe
       4. stale leftovers from a previous run (orphaned Vite on this checkout's
          port, Berd.exe whose dev session is gone)
       5. Vite + the Tauri dev app; the app itself starts the per-session ACP
@@ -25,7 +25,7 @@
     script, then exit without launching.
 
 .PARAMETER SkipSetup
-    Skip the dependency checks (pnpm install / berdctl)
+    Skip the dependency checks (pnpm install / berdctl / berd-monitor)
     for a faster relaunch. Artifacts must already exist.
 
 .PARAMETER NoPause
@@ -349,14 +349,21 @@ try {
     $env:CARGO_TARGET_DIR = $tauriTargetDir
 
     $srcTauri = Join-Path $repoRoot "src-tauri"
+    # `tauri dev` builds only the app crate; the agent-facing CLIs are
+    # workspace members it never touches. Without berd-monitor here the app's
+    # PATH shim pointed at a missing (or stale) target\debug\berd-monitor.exe.
     $env:BERDCTL_BIN = Join-Path $tauriTargetDir "debug\berdctl.exe"
+    $env:BERD_MONITOR_BIN = Join-Path $tauriTargetDir "debug\berd-monitor.exe"
     if (-not $SkipSetup) {
-        Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("build", "-p", "berdctl") -WorkingDirectory $srcTauri -Label "cargo build berdctl"
+        Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("build", "-p", "berdctl", "-p", "berd-monitor") -WorkingDirectory $srcTauri -Label "cargo build berdctl berd-monitor"
     }
-    if (-not (Test-Path -LiteralPath $env:BERDCTL_BIN -PathType Leaf)) {
-        throw "berdctl.exe missing at $env:BERDCTL_BIN. Relaunch without -SkipSetup."
+    foreach ($cliBin in @($env:BERDCTL_BIN, $env:BERD_MONITOR_BIN)) {
+        if (-not (Test-Path -LiteralPath $cliBin -PathType Leaf)) {
+            throw "$(Split-Path -Leaf $cliBin) missing at $cliBin. Relaunch without -SkipSetup."
+        }
     }
     Write-WindowsDevInfo "berdctl: $env:BERDCTL_BIN"
+    Write-WindowsDevInfo "berd-monitor: $env:BERD_MONITOR_BIN"
 
     Write-Step "App"
     $distroDir = Join-Path $repoRoot "distro"
