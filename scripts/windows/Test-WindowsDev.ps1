@@ -202,8 +202,8 @@ try {
     Assert-Equal "Windows Tauri config is pinned to LF" `
         (($gitAttributes -split '\r?\n') -contains "src-tauri/tauri.windows.conf.json text eol=lf") $true
     Assert-Equal "SQL migrations are pinned to LF for stable sqlx checksums" `
-        (($gitAttributes -split '\r?\n') -contains "src-tauri/migrations/*.sql text eol=lf") $true
-    $migrationFiles = Get-ChildItem -Path (Join-Path (Get-BerdRepoRoot) "src-tauri/migrations") -Filter "*.sql" -File
+        (($gitAttributes -split '\r?\n') -contains "src-tauri/migrations_agent_host/*.sql text eol=lf") $true
+    $migrationFiles = @(Get-ChildItem -Path (Join-Path (Get-BerdRepoRoot) "src-tauri/migrations_agent_host") -Filter "*.sql" -File -ErrorAction SilentlyContinue)
     Assert-Equal "SQL migration contract covers at least one migration" ($migrationFiles.Count -gt 0) $true
     foreach ($migrationFile in $migrationFiles) {
         $migrationBytes = [System.IO.File]::ReadAllBytes($migrationFile.FullName)
