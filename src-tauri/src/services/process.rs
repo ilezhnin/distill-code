@@ -66,18 +66,6 @@ pub(crate) fn process_is_alive(pid: ProcessId) -> bool {
     system.process(pid).is_some()
 }
 
-#[cfg(unix)]
-pub(crate) fn terminate_process(pid: ProcessId) -> bool {
-    // SAFETY: sending SIGTERM to a process id we previously recorded.
-    unsafe { libc::kill(pid, libc::SIGTERM) == 0 }
-}
-
-#[cfg(unix)]
-pub(crate) fn kill_process(pid: ProcessId) -> bool {
-    // SAFETY: sending SIGKILL as a last resort to a process id we previously recorded.
-    unsafe { libc::kill(pid, libc::SIGKILL) == 0 }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
