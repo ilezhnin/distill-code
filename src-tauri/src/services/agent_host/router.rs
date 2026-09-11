@@ -63,6 +63,9 @@ pub struct Inner {
     pub roots: SourceRoots,
     ws_url: String,
     bridges: Mutex<HashMap<String, Arc<Bridge>>>,
+    /// One lock per harness so two callers never spawn the same bridge twice,
+    /// without holding `bridges` while a spawn is in flight.
+    spawn_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     sessions: Mutex<HashMap<String, SessionRuntime>>,
     frontend: StdMutex<Option<mpsc::UnboundedSender<String>>>,
     client_requests: StdMutex<HashMap<u64, (String, Value)>>,
@@ -162,6 +165,7 @@ impl Inner {
             roots,
             ws_url,
             bridges: Mutex::new(HashMap::new()),
+            spawn_locks: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             frontend: StdMutex::new(None),
             client_requests: StdMutex::new(HashMap::new()),
@@ -384,15 +388,37 @@ impl Inner {
         env
     }
 
+    /// The running bridge for `harness_id`, if any. Takes the bridge map lock
+    /// only for the lookup.
+    async fn live_bridge(&self, harness_id: &str) -> Option<Arc<Bridge>> {
+        self.bridges
+            .lock()
+            .await
+            .get(harness_id)
+            .filter(|bridge| bridge.is_alive())
+            .cloned()
+    }
+
     pub async fn ensure_bridge(&self, harness_id: &str) -> Result<Arc<Bridge>, Value> {
         let spec: &HarnessSpec = harness::harness(harness_id)
             .ok_or_else(|| invalid_params(format!("Unknown harness {harness_id}")))?;
-        let mut bridges = self.bridges.lock().await;
-        if let Some(bridge) = bridges.get(harness_id) {
-            if bridge.is_alive() {
-                return Ok(Arc::clone(bridge));
-            }
-            bridges.remove(harness_id);
+        if let Some(bridge) = self.live_bridge(harness_id).await {
+            return Ok(bridge);
+        }
+        // Spawning waits on a managed install and on the bridge's
+        // `initialize` answer. Serialize that per harness instead of holding
+        // the shared bridge map, which every session route, cancel and
+        // permission answer needs in the meantime.
+        let spawn_lock = Arc::clone(
+            self.spawn_locks
+                .lock()
+                .await
+                .entry(harness_id.to_string())
+                .or_default(),
+        );
+        let _spawning = spawn_lock.lock().await;
+        if let Some(bridge) = self.live_bridge(harness_id).await {
+            return Ok(bridge);
         }
         let env = self.spawn_env().await;
         // A managed bridge is installed transactionally into app data; wait
@@ -406,7 +432,10 @@ impl Inner {
         let bridge = Bridge::spawn(spec, &env, self.events_tx.clone())
             .await
             .map_err(protocol::internal)?;
-        bridges.insert(harness_id.to_string(), Arc::clone(&bridge));
+        self.bridges
+            .lock()
+            .await
+            .insert(harness_id.to_string(), Arc::clone(&bridge));
         Ok(bridge)
     }
 
@@ -798,14 +827,11 @@ impl Inner {
     /// The live bridge behind a session, when it is already attached and the
     /// bridge process is still running. Never attaches.
     async fn attached_route(&self, session_id: &str) -> Option<(Arc<Bridge>, String)> {
-        let sessions = self.sessions.lock().await;
-        let runtime = sessions.get(session_id)?;
-        let bridges = self.bridges.lock().await;
-        let bridge = bridges.get(&runtime.harness)?;
-        if !bridge.is_alive() {
-            return None;
-        }
-        Some((Arc::clone(bridge), runtime.bridge_session_id.clone()))
+        // Never hold the session map while waiting for the bridge map: the
+        // bridge event loop needs the session map for every update it routes.
+        let (harness, bridge_session_id) = self.runtime_route(session_id).await?;
+        let bridge = self.live_bridge(&harness).await?;
+        Some((bridge, bridge_session_id))
     }
 
     async fn attach_session_locked(
