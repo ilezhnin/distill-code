@@ -4,7 +4,6 @@
 //! `<app data>/projects/<slug>.md`) so existing files keep working.
 
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -1083,6 +1082,3 @@ pub fn import(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
     )?;
     Ok(json!({ "sources": [created["source"]] }))
 }
-
-#[allow(dead_code)]
-fn _unused(_: &HashMap<String, String>) {}

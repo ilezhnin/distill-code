@@ -1,7 +1,6 @@
 mod commands;
 mod deep_links;
 mod services;
-mod types;
 
 #[cfg(test)]
 pub(crate) mod test_support {
