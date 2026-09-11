@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
+import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { Button } from "@/shared/ui/button";
 import { SettingsRow } from "@/shared/ui/settings-row";
 import { SettingsSection } from "@/shared/ui/settings-section";
@@ -47,6 +49,7 @@ export function ArchivedChatsSection() {
       await useChatSessionStore.getState().unarchiveSession(id);
     } catch (err) {
       console.error("Failed to unarchive session in backend:", err);
+      toast.error(formatAcpErrorMessage(err, t("chats.restoreFailed")));
       return;
     }
     setArchivedChats((prev) => prev.filter((session) => session.id !== id));

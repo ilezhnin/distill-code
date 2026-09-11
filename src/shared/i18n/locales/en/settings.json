@@ -60,6 +60,7 @@
     "empty": "Archived chats will show here.",
     "messageCount_one": "{{displayCount}} message",
     "messageCount_other": "{{displayCount}} messages",
+    "restoreFailed": "Couldn’t restore the chat",
     "sectionTitle": "Archived chats",
     "title": "Chats"
   },
@@ -287,7 +288,9 @@
     "title": "Notifications"
   },
   "projects": {
+    "deleteFailed": "Couldn’t delete the project",
     "empty": "Archived projects will show here.",
+    "restoreFailed": "Couldn’t restore the project",
     "sectionTitle": "Archived projects",
     "title": "Projects"
   },
