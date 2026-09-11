@@ -72,5 +72,5 @@ Add focused tests for:
 - invalid localStorage fallback
 - any feature surface that renders or applies the moment
 
-For broad behavior, add Playwright coverage only when the flow benefits from
-real app navigation or persistence across reloads.
+For behavior that depends on real app navigation or persistence across
+reloads, check it in the running app (`docs/app-e2e.md`) and say so in the PR.

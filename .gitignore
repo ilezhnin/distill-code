@@ -33,13 +33,9 @@ Thumbs.db
 # in older checkouts stay hidden.
 resources/acp/
 
-# Playwright artifacts
-playwright-report/
+# Playwright artifacts (tests/transcript-virtualization)
 transcript-playwright-report/
 test-results/
-
-# App E2E screenshots
-tests/app-e2e/screenshots/
 
 # Testing coverage
 coverage/

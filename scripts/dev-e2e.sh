@@ -23,14 +23,8 @@ run_root="$(cd "$run_root" && pwd -P)"
 contract_args=(--run-root "$run_root")
 [[ -n "${BERD_E2E_RUN_ID:-}" ]] && contract_args+=(--run-id "$BERD_E2E_RUN_ID")
 [[ -n "${APP_TEST_DRIVER_TOKEN:-}" ]] && contract_args+=(--driver-token "$APP_TEST_DRIVER_TOKEN")
-[[ -n "${BERD_E2E_PROVIDER_ID:-}" ]] && contract_args+=(--provider-id "$BERD_E2E_PROVIDER_ID")
-[[ -n "${BERD_E2E_MODEL_ID:-}" ]] && contract_args+=(--model-id "$BERD_E2E_MODEL_ID")
-[[ -n "${BERD_E2E_PROVIDER_KEY_ENV:-}" ]] && contract_args+=(--provider-key-env "$BERD_E2E_PROVIDER_KEY_ENV")
 [[ -n "${BERD_E2E_RUNTIME_CONFIG:-}" ]] && contract_args+=(--runtime-config "$BERD_E2E_RUNTIME_CONFIG")
 contract_json="$(node scripts/e2e-run-contract.mjs "${contract_args[@]}")"
-if [[ -n "${BERD_E2E_PROVIDER_KEY_ENV:-}" ]]; then
-  unset "$BERD_E2E_PROVIDER_KEY_ENV"
-fi
 eval "$(node -e '
 const contract = JSON.parse(process.argv[1]);
 for (const [name, value] of Object.entries(contract)) {

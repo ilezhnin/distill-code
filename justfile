@@ -274,12 +274,6 @@ test-watch:
 test-coverage:
     pnpm test:coverage
 
-test-e2e:
-    pnpm test:e2e:smoke
-
-test-e2e-all:
-    pnpm test:e2e
-
 # ── Run ──────────────────────────────────────────────────────
 
 [unix]
