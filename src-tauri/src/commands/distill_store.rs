@@ -12,6 +12,8 @@
 //! remove.
 
 use std::fs;
+use std::io::Write;
+use std::path::Path;
 
 use tauri::{Manager, State};
 
@@ -92,7 +94,7 @@ pub fn write_distill_document(
             .map_err(|error| format!("Cannot create '{}': {error}", parent.display()))?;
     }
     let temporary = target.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
-    fs::write(&temporary, contents.as_bytes())
+    write_file_synced(&temporary, contents.as_bytes())
         .map_err(|error| format!("Cannot write '{}': {error}", temporary.display()))?;
     match fs::rename(&temporary, &target) {
         Ok(()) => Ok(()),
@@ -101,6 +103,17 @@ pub fn write_distill_document(
             Err(format!("Cannot replace '{}': {error}", target.display()))
         }
     }
+}
+
+/// Writes `bytes` to `path` and flushes them to disk before returning.
+///
+/// The temporary file of a write-then-rename must be durable before the
+/// rename: otherwise a power cut can persist the rename but not the data,
+/// and the document comes back empty instead of in its previous version.
+pub(crate) fn write_file_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 /// Resolves the root at startup and creates it.

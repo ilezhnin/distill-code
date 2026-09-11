@@ -96,7 +96,7 @@ pub fn write_project_document(
         let _ = exclude_agent_folders(&root);
     }
     let temporary = target.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
-    fs::write(&temporary, contents.as_bytes())
+    super::distill_store::write_file_synced(&temporary, contents.as_bytes())
         .map_err(|error| format!("Cannot write '{}': {error}", temporary.display()))?;
     match fs::rename(&temporary, &target) {
         Ok(()) => Ok(()),
@@ -186,7 +186,7 @@ pub fn write_project_run_closeout(
         .map_err(|error| format!("Cannot create '{}': {error}", dir.display()))?;
     let target = dir.join(file);
     let temporary = target.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
-    fs::write(&temporary, contents.as_bytes())
+    super::distill_store::write_file_synced(&temporary, contents.as_bytes())
         .map_err(|error| format!("Cannot write '{}': {error}", temporary.display()))?;
     match fs::rename(&temporary, &target) {
         Ok(()) => Ok(target.to_string_lossy().to_string()),

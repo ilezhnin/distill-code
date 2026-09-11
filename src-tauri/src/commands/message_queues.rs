@@ -82,7 +82,7 @@ fn persist_message_queues_at_path(path: &Path, serialized: Option<&str>) -> Resu
     fs::create_dir_all(parent)
         .map_err(|error| format!("Failed to create message queue directory: {error}"))?;
     let pending_path = path.with_extension("json.pending");
-    fs::write(&pending_path, serialized)
+    super::distill_store::write_file_synced(&pending_path, serialized.as_bytes())
         .map_err(|error| format!("Failed to write message queues: {error}"))?;
     fs::rename(&pending_path, path)
         .map_err(|error| format!("Failed to commit message queues: {error}"))
