@@ -239,6 +239,7 @@
       "cancel": "Cancel",
       "switchError": "Failed to switch to {{branch}}. Your changes may conflict with the target branch.",
       "stashError": "Failed to stash changes.",
+      "switchWorktreeError": "Could not switch worktree.",
       "stashSuccess": "Changes stashed and switched to {{branch}}."
     },
     "git": {

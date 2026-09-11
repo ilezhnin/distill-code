@@ -275,7 +275,7 @@ export function WorkspaceContextPicker({
                           toast.error(
                             formatErrorMessage(
                               error,
-                              "Could not switch worktree.",
+                              t("contextPanel.picker.switchWorktreeError"),
                             ),
                           ),
                         );

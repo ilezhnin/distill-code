@@ -239,6 +239,7 @@
       "cancel": "Cancelar",
       "switchError": "Error al cambiar a {{branch}}. Tus cambios pueden entrar en conflicto con la rama destino.",
       "stashError": "Error al guardar los cambios.",
+      "switchWorktreeError": "No se pudo cambiar de worktree.",
       "stashSuccess": "Cambios guardados y cambiado a {{branch}}."
     },
     "git": {
