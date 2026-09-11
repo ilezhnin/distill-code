@@ -299,6 +299,9 @@
       "errors": {
         "genericSetupFailure": "Setup hit a snag.",
         "installStart": "Couldn’t start installation",
+        "updateStart": "Couldn’t start the update",
+        "authStart": "Couldn’t start sign-in",
+        "refreshStatus": "Couldn’t refresh provider status",
         "installVerificationFailed": "Install finished, but the CLI isn't on your PATH. Try restarting your terminal.",
         "unknownPath": "that path",
         "unknownPlatform": "another platform"
