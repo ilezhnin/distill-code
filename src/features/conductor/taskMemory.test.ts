@@ -269,6 +269,40 @@ describe("the stored document", () => {
     expect(stored(files).waves[0].verdict).toBe("revise");
   });
 
+  it("does not lose an update that overlaps another on the same file", async () => {
+    const files = useFakeFolder();
+    // Both halves of every update cross the IPC bridge; with the read and the
+    // write a tick apart, two unserialized updates would both read the empty
+    // folder and the second write would drop the first one's wave.
+    setTaskMemoryIoForTests({
+      projectRootFor: () => "/repo",
+      read: async (_root, path) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return files.get(path) ?? null;
+      },
+      write: async (_root, path, contents) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        files.set(path, contents);
+      },
+    });
+    await Promise.all([
+      recordWaveInTaskMemory({
+        conductorSessionId: CONDUCTOR_ID,
+        rootRequestId: ROOT,
+        goal: "a goal",
+        wave: { waveId: "wave-1", attempt: 1, verdict: "undecided", steps: [] },
+      }),
+      recordTaskMemoryVerdict({
+        conductorSessionId: CONDUCTOR_ID,
+        rootRequestId: ROOT,
+        waveId: "wave-1",
+        verdict: "revise",
+      }),
+    ]);
+    expect(stored(files).waves).toHaveLength(1);
+    expect(stored(files).waves[0].verdict).toBe("revise");
+  });
+
   it("keeps nothing for a chat that has no project folder", async () => {
     const written: string[] = [];
     setTaskMemoryIoForTests({

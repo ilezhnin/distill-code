@@ -461,28 +461,54 @@ export async function readTaskMemory(
   }
 }
 
+/**
+ * The last queued update per document, so updates to one file run one after
+ * another. Each update is a read-modify-write across two IPC round trips;
+ * two of them in flight at once (the wave record and its verdict, a retried
+ * digest) would each read the old file and the later write would drop the
+ * earlier one's change.
+ */
+const documentQueues = new Map<string, Promise<unknown>>();
+
 async function updateTaskMemory(
   conductorSessionId: string,
   rootRequestId: string,
   apply: (document: TaskMemoryDocument) => TaskMemoryDocument,
 ): Promise<TaskMemoryDocument | null> {
+  let root: string | null;
   try {
-    const root = io.projectRootFor(conductorSessionId);
-    if (!root) return null;
-    const path = taskMemoryDocumentPath(rootRequestId);
-    const current = parseTaskMemoryDocument(
-      await io.read(root, path),
-      rootRequestId,
-    );
-    const next = apply(current);
-    await io.write(root, path, JSON.stringify(next));
-    return next;
+    root = io.projectRootFor(conductorSessionId);
   } catch (error) {
-    // A request whose record could not be written is a request with less
-    // history, never a wave that stops: this is a courtesy to the next wave,
-    // and it must not be able to break the one that earned it.
     console.error("Failed to write the task memory document:", error);
     return null;
+  }
+  if (!root) return null;
+  const projectRoot = root;
+  const path = taskMemoryDocumentPath(rootRequestId);
+  const key = `${projectRoot}\n${path}`;
+  const previous = documentQueues.get(key) ?? Promise.resolve();
+  const run = previous.then(async () => {
+    try {
+      const current = parseTaskMemoryDocument(
+        await io.read(projectRoot, path),
+        rootRequestId,
+      );
+      const next = apply(current);
+      await io.write(projectRoot, path, JSON.stringify(next));
+      return next;
+    } catch (error) {
+      // A request whose record could not be written is a request with less
+      // history, never a wave that stops: this is a courtesy to the next
+      // wave, and it must not be able to break the one that earned it.
+      console.error("Failed to write the task memory document:", error);
+      return null;
+    }
+  });
+  documentQueues.set(key, run);
+  try {
+    return await run;
+  } finally {
+    if (documentQueues.get(key) === run) documentQueues.delete(key);
   }
 }
 
