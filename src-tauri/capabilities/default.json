@@ -31,9 +31,6 @@
           "path": "$HOME/**"
         },
         {
-          "path": "$HOME/.goose/**"
-        },
-        {
           "path": "$TEMP/**"
         },
         {
