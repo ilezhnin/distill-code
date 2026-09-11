@@ -36,9 +36,24 @@ describe("getConversationBeforeForMessageFork", () => {
       message("selected", 1_700_000_003_100),
     ];
 
-    expect(getConversationBeforeForMessageFork(messages, "selected")).toBe(
-      1_700_000_004,
-    );
+    expect(
+      getConversationBeforeForMessageFork(messages, "selected", 1_000),
+    ).toBe(1_700_000_004);
+  });
+
+  it("keeps a long latest reply whole by cutting after now", () => {
+    const messages = [
+      message("prompt", 1_700_000_000_250, "user"),
+      message("selected", 1_700_000_000_900),
+    ];
+
+    expect(
+      getConversationBeforeForMessageFork(
+        messages,
+        "selected",
+        1_700_000_095_400,
+      ),
+    ).toBe(1_700_000_096);
   });
 
   it("keeps same-second siblings by skipping equal-second messages", () => {
@@ -67,6 +82,7 @@ describe("getConversationBeforeForMessageFork", () => {
       getConversationBeforeForMessageFork(
         [message("selected", 1_700_000_000_999)],
         "selected",
+        1_000,
       ),
     ).toBe(1_700_000_001);
   });

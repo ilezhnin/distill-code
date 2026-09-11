@@ -14,10 +14,16 @@ function isForkableConversationMessage(message: Message): boolean {
  * `created_timestamp >= conversationBefore`, while renderer message timestamps
  * are milliseconds. Use the next later whole-second boundary when possible so
  * the selected message and same-second siblings are retained.
+ *
+ * A message's `created` is when it started, and a reply keeps streaming (and
+ * recording events) long after that, so the latest message has no later
+ * boundary of its own: its cutoff is the second after `now`, which keeps the
+ * whole reply.
  */
 export function getConversationBeforeForMessageFork(
   messages: readonly Message[],
   messageId: string,
+  now: number = Date.now(),
 ): number | null {
   const selectedIndex = messages.findIndex(
     (message) =>
@@ -41,5 +47,5 @@ export function getConversationBeforeForMessageFork(
     }
   }
 
-  return selectedSeconds + 1;
+  return Math.max(selectedSeconds, Math.floor(now / 1000)) + 1;
 }
