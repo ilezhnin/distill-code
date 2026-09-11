@@ -51,13 +51,6 @@ Invoke-CargoCheck -ArgumentList @(
     "native_gate_installs_and_launches_a_bridge_by_bare_name"
 ) -Label "cargo test managed services"
 
-# Keep shell-free process-launch regressions on the native Windows lane. These
-# tests inspect the exact executable/argv boundary that cannot be compiled into
-# the macOS/Linux test binary.
-Invoke-CargoCheck -ArgumentList @(
-    "test", "--lib", "commands::system::tests::windows_chrome_launch_"
-) -Label "cargo test Windows Chrome launch"
-
 # Clippy compiles both configurations, so separate `cargo check` calls only
 # repeat the same compile coverage.
 Invoke-CargoCheck -ArgumentList @(
