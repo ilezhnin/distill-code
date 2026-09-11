@@ -933,7 +933,8 @@ describe("acpNotificationHandler", () => {
         },
         _meta: {
           distill: {
-            messageId: "assistant-replay-1",
+            messageId: "user-replay-1",
+            assistantMessageId: "assistant-replay-1",
             personaId: "persona-meta",
             personaName: "Meta Persona",
           },
@@ -983,7 +984,8 @@ describe("acpNotificationHandler", () => {
         },
         _meta: {
           distill: {
-            messageId: "assistant-replay-2",
+            messageId: "user-replay-2",
+            assistantMessageId: "assistant-replay-2",
           },
         },
       },
@@ -2189,7 +2191,8 @@ describe("acpNotificationHandler", () => {
         },
         _meta: {
           distill: {
-            messageId: "assistant-from-meta",
+            messageId: "user-from-meta",
+            assistantMessageId: "assistant-from-meta",
             created: assistantCreated,
           },
         },
@@ -2227,7 +2230,8 @@ describe("acpNotificationHandler", () => {
         },
         _meta: {
           distill: {
-            messageId: "assistant-1",
+            messageId: "user-1",
+            assistantMessageId: "assistant-1",
             created: assistantCreated,
           },
         },
@@ -2274,6 +2278,297 @@ describe("acpNotificationHandler", () => {
       result: "Tool completed.",
       isError: false,
     });
+  });
+
+  it("replays two turns with a steer as prompt, reply, steer, reply", async () => {
+    markSessionReplayLoading();
+    const turn = (
+      sessionUpdate: string,
+      distill: Record<string, unknown>,
+      extra: Record<string, unknown>,
+    ) => ({
+      sessionId: "acp-session",
+      update: { sessionUpdate, ...extra, _meta: { distill } },
+    });
+    const firstTurn = { messageId: "user-1", assistantMessageId: "reply-1" };
+    const steeredTurn = { messageId: "user-2", assistantMessageId: "reply-2" };
+
+    for (const notification of [
+      turn(
+        "user_message_chunk",
+        { messageId: "user-1" },
+        { content: { type: "text", text: "write a poem" } },
+      ),
+      turn("agent_thought_chunk", firstTurn, {
+        content: { type: "text", text: "thinking" },
+      }),
+      turn("agent_message_chunk", firstTurn, {
+        content: { type: "text", text: "Roses " },
+      }),
+      turn("tool_call", firstTurn, { toolCallId: "tool-1", title: "search" }),
+      turn("tool_call_update", firstTurn, {
+        toolCallId: "tool-1",
+        status: "completed",
+      }),
+      turn("agent_message_chunk", firstTurn, {
+        content: { type: "text", text: "are red" },
+      }),
+      turn(
+        "user_message_chunk",
+        { messageId: "user-2", steer: true },
+        { content: { type: "text", text: "make it shorter" } },
+      ),
+      turn("agent_message_chunk", steeredTurn, {
+        content: { type: "text", text: "Roses." },
+      }),
+    ]) {
+      await handleSessionNotification(notification as never);
+    }
+
+    const replayMessages = getReplayBuffer("acp-session") ?? [];
+    expect(replayMessages.map(({ id, role }) => ({ id, role }))).toEqual([
+      { id: "user-1", role: "user" },
+      { id: "reply-1", role: "assistant" },
+      { id: "user-2", role: "user" },
+      { id: "reply-2", role: "assistant" },
+    ]);
+    expect(replayMessages[1].content.map((block) => block.type)).toEqual([
+      "thinking",
+      "text",
+      "toolRequest",
+      "toolResponse",
+      "text",
+    ]);
+    expect(replayMessages[1].metadata?.completionStatus).toBe("completed");
+    expect(replayMessages[2].metadata?.delivery).toBe("steer");
+    expect(replayMessages[3].content).toEqual([
+      { type: "text", text: "Roses." },
+    ]);
+  });
+
+  it("replays history without reply ids as one reply per prompt", async () => {
+    markSessionReplayLoading();
+
+    for (const [sessionUpdate, text] of [
+      ["user_message_chunk", "hi"],
+      ["agent_message_chunk", "hel"],
+      ["agent_message_chunk", "lo"],
+    ]) {
+      await handleSessionNotification({
+        sessionId: "acp-session",
+        update: {
+          sessionUpdate,
+          content: { type: "text", text },
+          _meta: { distill: { messageId: "user-1" } },
+        },
+      } as never);
+    }
+
+    expect(getReplayBuffer("acp-session")).toMatchObject([
+      { id: "user-1", role: "user", content: [{ type: "text", text: "hi" }] },
+      {
+        id: "user-1:reply",
+        role: "assistant",
+        content: [{ type: "text", text: "hello" }],
+      },
+    ]);
+  });
+
+  it("streams a live reply under the id the host names it with", async () => {
+    setActiveMessageId("acp-session", "local-preset", {
+      personaId: "persona-1",
+    });
+
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "Hello" },
+        _meta: {
+          distill: { messageId: "user-1", assistantMessageId: "reply-1" },
+        },
+      },
+    } as never);
+    flushBufferedStreamingUpdatesForSession("acp-session");
+
+    expect(
+      useChatStore.getState().messagesBySession["acp-session"],
+    ).toMatchObject([
+      {
+        id: "reply-1",
+        role: "assistant",
+        content: [{ type: "text", text: "Hello" }],
+        metadata: { personaId: "persona-1" },
+      },
+    ]);
+    expect(
+      useChatStore.getState().getSessionRuntime("acp-session")
+        .streamingMessageId,
+    ).toBe("reply-1");
+  });
+
+  it("names the continuation after a steer with the steered turn's reply id", async () => {
+    useChatStore.getState().setMessages("acp-session", [
+      {
+        id: "reply-1",
+        role: "assistant",
+        created: 1,
+        content: [{ type: "text", text: "Initial answer" }],
+        metadata: {
+          userVisible: true,
+          agentVisible: true,
+          completionStatus: "inProgress",
+        },
+      },
+      {
+        id: "user-2",
+        role: "user",
+        created: 2,
+        content: [{ type: "text", text: "make it shorter" }],
+        metadata: {
+          userVisible: true,
+          agentVisible: true,
+          delivery: "steering",
+        },
+      },
+    ]);
+    useChatStore.getState().setStreamingMessageId("acp-session", "reply-1");
+    useChatStore.getState().setPendingInterventionBoundary("acp-session", {
+      interventionMessageId: "user-2",
+    });
+
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "user_message_chunk",
+        messageId: "user-2",
+        content: { type: "text", text: "make it shorter" },
+        _meta: { distill: { messageId: "user-2", steer: true } },
+      },
+    } as never);
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-2",
+        title: "search",
+        _meta: {
+          distill: { messageId: "user-2", assistantMessageId: "reply-2" },
+        },
+      },
+    } as never);
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "Shorter." },
+        _meta: {
+          distill: { messageId: "user-2", assistantMessageId: "reply-2" },
+        },
+      },
+    } as never);
+    flushBufferedStreamingUpdatesForSession("acp-session");
+
+    const messages = useChatStore.getState().messagesBySession["acp-session"];
+    expect(messages.map(({ id, role }) => ({ id, role }))).toEqual([
+      { id: "reply-1", role: "assistant" },
+      { id: "user-2", role: "user" },
+      { id: "reply-2", role: "assistant" },
+    ]);
+    expect(messages[0].metadata?.completionStatus).toBe("completed");
+    expect(messages[2].content.map((block) => block.type)).toEqual([
+      "toolRequest",
+      "text",
+    ]);
+    expect(
+      useChatStore.getState().getSessionRuntime("acp-session")
+        .streamingMessageId,
+    ).toBe("reply-2");
+  });
+
+  it("starts a new reply when the host names one while an earlier reply is streaming", async () => {
+    useChatStore.getState().setMessages("acp-session", [
+      {
+        id: "reply-1",
+        role: "assistant",
+        created: 1,
+        content: [{ type: "text", text: "First answer" }],
+        metadata: {
+          userVisible: true,
+          agentVisible: true,
+          completionStatus: "inProgress",
+        },
+      },
+    ]);
+    useChatStore.getState().setStreamingMessageId("acp-session", "reply-1");
+
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "Second answer" },
+        _meta: {
+          distill: { messageId: "user-2", assistantMessageId: "reply-2" },
+        },
+      },
+    } as never);
+    flushBufferedStreamingUpdatesForSession("acp-session");
+
+    expect(
+      useChatStore.getState().messagesBySession["acp-session"],
+    ).toMatchObject([
+      {
+        id: "reply-1",
+        content: [{ type: "text", text: "First answer" }],
+        metadata: { completionStatus: "completed" },
+      },
+      {
+        id: "reply-2",
+        content: [{ type: "text", text: "Second answer" }],
+        metadata: { completionStatus: "inProgress" },
+      },
+    ]);
+  });
+
+  it("continues a replayed reply when its live stream resumes after a load", async () => {
+    useChatStore.getState().setMessages("acp-session", [
+      {
+        id: "user-1",
+        role: "user",
+        created: 1,
+        content: [{ type: "text", text: "write a poem" }],
+        metadata: { userVisible: true, agentVisible: true },
+      },
+      {
+        id: "reply-1",
+        role: "assistant",
+        created: 2,
+        content: [{ type: "text", text: "Roses " }],
+        metadata: {
+          userVisible: true,
+          agentVisible: true,
+          completionStatus: "inProgress",
+        },
+      },
+    ]);
+
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "are red" },
+        _meta: {
+          distill: { messageId: "user-1", assistantMessageId: "reply-1" },
+        },
+      },
+    } as never);
+    flushBufferedStreamingUpdatesForSession("acp-session");
+
+    const messages = useChatStore.getState().messagesBySession["acp-session"];
+    expect(messages).toHaveLength(2);
+    expect(messages[1].content).toEqual([
+      { type: "text", text: "Roses are red" },
+    ]);
   });
 
   describe("usage_update cost handling", () => {
