@@ -124,6 +124,7 @@ describe("useMemoryAgentSync", () => {
       entries: [],
       archived: [],
       appliedMessageIds: [],
+      hydrated: true,
     });
     useChatStore.setState({ messagesBySession: {} });
     useChatSessionStore.setState({ sessions: [] } as never);

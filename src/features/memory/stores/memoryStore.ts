@@ -328,6 +328,11 @@ function commit(
   nowMs: number = Date.now(),
 ): MemoryState {
   const { kept, evicted } = capWithArchive(entries);
+  // The flag is carried, never raised, here. Raising it on any write made
+  // the first change before the read landed mark the store as read: the
+  // hydration then skipped the document, and the next write replaced every
+  // stored memory with that one change.
+  const hydrated = useMemoryStore.getState().hydrated;
   const next: MemoryState = {
     entries: kept,
     archived: withCapacityEvictions(archived, evicted, nowMs),
@@ -335,9 +340,9 @@ function commit(
     recallAnsweredMessageIds: recallAnsweredMessageIds.slice(
       -MAX_APPLIED_MEMORY_MESSAGE_IDS,
     ),
-    hydrated: true,
+    hydrated,
   };
-  if (useMemoryStore.getState().hydrated) {
+  if (hydrated) {
     document.write(next);
     // And a copy into each project's own folder, so a project carries what
     // was learned about it when it moves (P31). Fire-and-forget: the global
@@ -459,7 +464,49 @@ export async function hydrateMemoryStore(): Promise<void> {
   } catch (error) {
     console.error("Failed to read project memories:", error);
   }
-  useMemoryStore.setState({ ...base, entries, archived, hydrated: true });
+  const current = useMemoryStore.getState();
+  // A second hydration raced this one and already landed.
+  if (current.hydrated) return;
+  // Whatever changed before the read landed — a line the operator typed into
+  // the panel while the disk was still being read — joins what was stored
+  // instead of being replaced by it.
+  const pending =
+    current.entries.length > 0 ||
+    current.archived.length > 0 ||
+    current.appliedMessageIds.length > 0 ||
+    current.recallAnsweredMessageIds.length > 0;
+  const merged = capWithArchive(mergeProjectMemories(entries, current.entries));
+  const next: MemoryState = {
+    entries: merged.kept,
+    archived: withCapacityEvictions(
+      mergeProjectMemories(archived, current.archived),
+      merged.evicted,
+      Date.now(),
+    ),
+    appliedMessageIds: unionMessageIds(
+      base.appliedMessageIds,
+      current.appliedMessageIds,
+    ),
+    recallAnsweredMessageIds: unionMessageIds(
+      base.recallAnsweredMessageIds,
+      current.recallAnsweredMessageIds,
+    ),
+    hydrated: true,
+  };
+  useMemoryStore.setState(next);
+  if (pending) {
+    document.write(next);
+    queueProjectMemoryMirror(next.entries, next.archived);
+  }
+}
+
+function unionMessageIds(
+  stored: readonly string[],
+  pending: readonly string[],
+): string[] {
+  return [...new Set([...stored, ...pending])].slice(
+    -MAX_APPLIED_MEMORY_MESSAGE_IDS,
+  );
 }
 
 /** Waits for a queued write to land. For tests and for shutdown. */

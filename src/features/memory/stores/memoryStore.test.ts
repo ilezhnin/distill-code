@@ -6,6 +6,7 @@ import type { MemoryFenceRequest } from "../lib/memoryFence";
 import {
   capWithArchive,
   flushMemoryWrites,
+  hydrateMemoryStore,
   MAX_MEMORY_ENTRIES,
   MEMORY_STORAGE_KEY,
   MAX_APPLIED_MEMORY_MESSAGE_IDS,
@@ -43,6 +44,51 @@ function archived(
     ...overrides,
   };
 }
+
+describe("hydrateMemoryStore", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    useMemoryStore.setState({
+      entries: [],
+      archived: [],
+      appliedMessageIds: [],
+      recallAnsweredMessageIds: [],
+      hydrated: false,
+    });
+  });
+
+  it("reads the document even after an early change", async () => {
+    window.localStorage.setItem(
+      MEMORY_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        entries: [entry({ id: "stored", text: "The stored fact" })],
+        archived: [],
+        appliedMessageIds: ["m-old"],
+        recallAnsweredMessageIds: [],
+      }),
+    );
+    useMemoryStore.getState().markRecallAnswered("q-early");
+    useMemoryStore
+      .getState()
+      .remember({ text: "An early fact", scope: "global" }, NOW);
+    // A change is not a read: until the document lands nothing may be
+    // written, and the hydration must not be skipped.
+    expect(useMemoryStore.getState().hydrated).toBe(false);
+
+    await hydrateMemoryStore();
+
+    const state = useMemoryStore.getState();
+    expect(state.hydrated).toBe(true);
+    expect(state.entries.map((item) => item.text)).toEqual([
+      "The stored fact",
+      "An early fact",
+    ]);
+    expect(state.appliedMessageIds).toEqual(["m-old"]);
+    expect(state.recallAnsweredMessageIds).toEqual(["q-early"]);
+    await flushMemoryWrites();
+  });
+});
 
 describe("useMemoryStore", () => {
   beforeEach(() => {

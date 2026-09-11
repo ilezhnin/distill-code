@@ -85,6 +85,11 @@ function drainMemoryFences(): void {
   // Reading nothing means marking nothing, so the requests stay in their
   // transcripts and land when the operator switches writing back on.
   if (!getMemoryPreferences().write) return;
+  // Not before the stored memory is read. Until then the applied tombstones
+  // are empty, so every fence in every cached transcript looks new: a line
+  // the operator deleted weeks ago would be remembered again from the old
+  // message that first kept it. The drain runs again when the read lands.
+  if (!useMemoryStore.getState().hydrated) return;
   if (draining) return;
   draining = true;
   try {
@@ -152,9 +157,15 @@ export function useMemoryAgentSync(): void {
       resetMemoryDeepScan();
       drainMemoryFences();
     });
+    const stopWatchingHydration = useMemoryStore.subscribe(
+      (state, previous) => {
+        if (state.hydrated && !previous.hydrated) drainMemoryFences();
+      },
+    );
     return () => {
       stopWatchingMessages();
       stopWatchingPreferences();
+      stopWatchingHydration();
     };
   }, []);
 }
