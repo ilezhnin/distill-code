@@ -2,16 +2,6 @@ mod commands;
 mod deep_links;
 mod services;
 
-#[cfg(test)]
-pub(crate) mod test_support {
-    use std::sync::{Mutex, OnceLock};
-
-    pub(crate) fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-}
-
 use services::{bundled_agents, bundled_skills, distro_bundle::DistroBundleState};
 use std::path::PathBuf;
 use tauri::{include_image, Manager, RunEvent, WebviewWindow};
@@ -245,10 +235,10 @@ pub fn run() {
             }
 
             // Install or upgrade the Berd-managed ACP bridges (claude, codex)
-            // to the latest published version in the background: each floats
-            // to `<pkg>@latest` from the private npm registry onto the managed
-            // Node runtime in app data; failures are logged and retried next
-            // launch while any previously installed version keeps working.
+            // in the background to the versions pinned in
+            // `acp-tools.lock.json`, onto the managed Node runtime in app
+            // data; failures are logged and retried next launch while any
+            // previously installed version keeps working.
             services::acp_tools_reconciler::spawn_startup_reconcile(app.handle());
 
             apply_app_window_icons(app.handle());
@@ -350,4 +340,14 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::{Mutex, OnceLock};
+
+    pub(crate) fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 }

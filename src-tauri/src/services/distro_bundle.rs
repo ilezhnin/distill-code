@@ -64,22 +64,6 @@ impl DistroBundleState {
         Self { bundle }
     }
 
-    #[cfg(test)]
-    pub(crate) fn empty_for_tests() -> Self {
-        Self { bundle: None }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_manifest_for_tests(manifest: DistroManifest) -> Self {
-        Self {
-            bundle: Some(DistroBundle {
-                root_dir: PathBuf::new(),
-                bin_dir: None,
-                manifest,
-            }),
-        }
-    }
-
     pub fn info(&self) -> DistroBundleInfo {
         match &self.bundle {
             Some(bundle) => DistroBundleInfo {
