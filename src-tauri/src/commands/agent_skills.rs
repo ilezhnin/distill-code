@@ -161,8 +161,8 @@ fn read_skill(skill_dir: &Path, root: &SkillRoot) -> Option<AgentSkillEntry> {
         return None;
     }
 
-    let canonical_skill_dir = skill_dir.canonicalize().ok()?;
-    let canonical_skill_file = skill_file.canonicalize().ok()?;
+    let canonical_skill_dir = dunce::canonicalize(skill_dir).ok()?;
+    let canonical_skill_file = dunce::canonicalize(skill_file).ok()?;
 
     Some(AgentSkillEntry {
         name,
@@ -198,7 +198,7 @@ fn add_skill_root(
     if !metadata.file_type().is_dir() {
         return;
     }
-    let Ok(canonical_root) = root_path.canonicalize() else {
+    let Ok(canonical_root) = dunce::canonicalize(root_path) else {
         return;
     };
     if matches!(scope, SkillRootScope::Workspace)
@@ -279,7 +279,7 @@ fn collect_skill_roots(
         if trimmed.is_empty() {
             continue;
         }
-        let Ok(workspace_path) = expand_home_prefix(trimmed).canonicalize() else {
+        let Ok(workspace_path) = dunce::canonicalize(expand_home_prefix(trimmed)) else {
             continue;
         };
         if !workspace_path.is_dir() || !seen_workspaces.insert(workspace_path.clone()) {
@@ -345,7 +345,7 @@ fn collect_skills_from_roots(
         }
 
         for candidate_dir in candidate_dirs {
-            let Ok(canonical_candidate_dir) = candidate_dir.canonicalize() else {
+            let Ok(canonical_candidate_dir) = dunce::canonicalize(candidate_dir) else {
                 continue;
             };
             if !seen_skill_paths.insert(canonical_candidate_dir.clone()) {
