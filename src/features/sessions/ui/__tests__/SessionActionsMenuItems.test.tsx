@@ -30,7 +30,6 @@ describe("SessionActionsMenuContent", () => {
       onClose: vi.fn(),
       onMarkUnread: vi.fn(),
       onRename: vi.fn(),
-      onOpenInWindow: vi.fn(),
       onDuplicate: vi.fn(),
       onExport: vi.fn(),
       onArchive: vi.fn(),
@@ -39,7 +38,6 @@ describe("SessionActionsMenuContent", () => {
     expect(menuItemLabels()).toEqual([
       "Mark unread",
       "Rename",
-      "Open in new window",
       "Duplicate",
       "Copy chat link",
       "Export…",
@@ -52,17 +50,14 @@ describe("SessionActionsMenuContent", () => {
     renderMenu({
       onClose: vi.fn(),
       hasUnread: true,
-      isOpenInWindow: true,
       onMarkRead: vi.fn(),
       onRename: vi.fn(),
-      onOpenInWindow: vi.fn(),
       onArchive: vi.fn(),
     });
 
     expect(menuItemLabels()).toEqual([
       "Mark read",
       "Rename",
-      "Open window",
       "Copy chat link",
       "Archive",
     ]);

@@ -12,12 +12,6 @@ import {
   type ChatSession,
   useChatSessionStore,
 } from "@/features/chat/stores/chatSessionStore";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
-import {
-  focusSessionWindow,
-  getSessionWindowSupport,
-  openSessionWindow,
-} from "@/features/chat/lib/sessionWindowCommands";
 import { saveExportedSessionFile } from "@/shared/api/system";
 import { SessionHistoryView } from "../SessionHistoryView";
 
@@ -31,10 +25,6 @@ const mocks = vi.hoisted(() => ({
   // Scroll position the fake virtualizer reports. Real `getVirtualItems()`
   // leads with overscan rows sitting above the viewport, so tests that care
   // which row is genuinely visible drive this instead of the item list.
-  sessionWindowSupport: {
-    supported: true,
-    reason: undefined as string | undefined,
-  },
   virtualizerState: { scrollOffset: 0 },
 }));
 
@@ -42,19 +32,6 @@ vi.mock("@/shared/api/acp", () => ({
   acpExportSession: (...args: unknown[]) => mocks.acpExportSession(...args),
   acpImportSession: (...args: unknown[]) => mocks.acpImportSession(...args),
   acpSearchSessions: (...args: unknown[]) => mocks.acpSearchSessions(...args),
-}));
-
-vi.mock("@/features/chat/hooks/useSessionWindowSupport", () => ({
-  useSessionWindowSupport: () => mocks.sessionWindowSupport,
-}));
-
-vi.mock("@/features/chat/lib/sessionWindowCommands", () => ({
-  focusSessionWindow: vi.fn().mockResolvedValue(undefined),
-  getSessionWindowSupport: vi
-    .fn()
-    .mockResolvedValue({ supported: true, reason: undefined }),
-  openSessionWindow: vi.fn().mockResolvedValue(undefined),
-  releaseSession: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("sonner", () => ({
@@ -119,8 +96,6 @@ vi.mock("../SessionCard", () => ({
     id,
     title,
     onExport,
-    onOpenInWindow,
-    isOpenInWindow,
     snippet,
     snippetLineClamp,
     onSelectionChange,
@@ -131,8 +106,6 @@ vi.mock("../SessionCard", () => ({
     id: string;
     title: string;
     onExport?: (id: string) => void;
-    onOpenInWindow?: (id: string) => void;
-    isOpenInWindow?: boolean;
     snippet?: string;
     snippetLineClamp?: 1 | 3;
     onSelectionChange?: (id: string, selected: boolean) => void;
@@ -167,11 +140,6 @@ vi.mock("../SessionCard", () => ({
       {onUnarchive ? (
         <button type="button" onClick={() => onUnarchive(id)}>
           Restore {title}
-        </button>
-      ) : null}
-      {onOpenInWindow ? (
-        <button type="button" onClick={() => onOpenInWindow(id)}>
-          {isOpenInWindow ? "Open window" : "Open in new window"} {title}
         </button>
       ) : null}
     </div>
@@ -242,8 +210,6 @@ function scrollHistoryTo(scrollTop: number) {
 
 describe("SessionHistoryView", () => {
   beforeEach(() => {
-    mocks.sessionWindowSupport.supported = true;
-    mocks.sessionWindowSupport.reason = undefined;
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: {},
@@ -254,15 +220,10 @@ describe("SessionHistoryView", () => {
     // The view toggle persists here; without a reset one test's choice would
     // decide the next test's starting view.
     window.localStorage.removeItem("sessions.history.view");
-    vi.mocked(getSessionWindowSupport).mockResolvedValue({
-      supported: true,
-      reason: undefined,
-    });
     useChatStore.setState({
       messagesBySession: {},
       queuedMessageBySession: {},
     });
-    useSessionWindowStore.getState().setSnapshot([]);
     setSessionStoreState({
       sessions: [],
       activeSessionId: null,
@@ -281,40 +242,6 @@ describe("SessionHistoryView", () => {
         failedIds: [],
       }),
     );
-  });
-
-  it("does not expose open-in-window from history when session windows are unsupported", async () => {
-    mocks.sessionWindowSupport.supported = false;
-    mocks.sessionWindowSupport.reason = "unsupported platform";
-    setSessionStoreState({
-      sessions: [session()],
-    });
-
-    renderHistory();
-
-    expect(
-      screen.queryByRole("button", { name: /open in new window chat one/i }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("opens a session window from history when session windows are supported", async () => {
-    const user = userEvent.setup();
-    setSessionStoreState({
-      sessions: [session()],
-    });
-
-    renderHistory();
-
-    await user.click(
-      await screen.findByRole("button", {
-        name: /open in new window chat one/i,
-      }),
-    );
-
-    expect(openSessionWindow).toHaveBeenCalledWith("session-1", {
-      handoff: false,
-    });
-    expect(focusSessionWindow).not.toHaveBeenCalled();
   });
 
   it("previews the latest session text on browse rows", () => {
@@ -357,25 +284,6 @@ describe("SessionHistoryView", () => {
       expect(screen.getByText("Needle Chat")).toBeInTheDocument();
       expect(screen.queryByText("Latest session text")).not.toBeInTheDocument();
     });
-  });
-
-  it("focuses an existing session window from history when session windows are supported", async () => {
-    const user = userEvent.setup();
-    useSessionWindowStore
-      .getState()
-      .setSnapshot([{ sessionId: "session-1", windowLabel: "session:a" }]);
-    setSessionStoreState({
-      sessions: [session()],
-    });
-
-    renderHistory();
-
-    await user.click(
-      await screen.findByRole("button", { name: /open window chat one/i }),
-    );
-
-    expect(focusSessionWindow).toHaveBeenCalledWith("session-1");
-    expect(openSessionWindow).not.toHaveBeenCalled();
   });
 
   it("loads the next session page near the bottom without immediately repeating", async () => {

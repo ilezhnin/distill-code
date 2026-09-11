@@ -2,26 +2,17 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CHAT_TITLE } from "@/features/chat/lib/sessionTitle";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import type { SessionNode } from "@/features/conductor/types";
 import { TOOLTIP_DELAY } from "@/shared/ui/tooltip-delay";
 import { SidebarChatRow } from "../SidebarChatRow";
 import { formatSidebarChatTimestamp } from "../sidebarChatTimestamp";
-import {
-  focusSessionWindow,
-  getSessionWindowSupport,
-} from "@/features/chat/lib/sessionWindowCommands";
 import { setWorkingIndicatorAnimationEnabled } from "@/shared/preferences/workingIndicatorAnimationPreference";
 
 const mocks = vi.hoisted(() => ({
   toastError: vi.fn(),
   toastSuccess: vi.fn(),
   writeTextToTauriClipboard: vi.fn(),
-  sessionWindowSupport: {
-    supported: true,
-    reason: undefined as string | undefined,
-  },
 }));
 
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
@@ -35,19 +26,6 @@ vi.mock("sonner", () => ({
   },
 }));
 
-vi.mock("@/features/chat/hooks/useSessionWindowSupport", () => ({
-  useSessionWindowSupport: () => mocks.sessionWindowSupport,
-}));
-
-vi.mock("@/features/chat/lib/sessionWindowCommands", () => ({
-  focusSessionWindow: vi.fn().mockResolvedValue(undefined),
-  getSessionWindowSupport: vi
-    .fn()
-    .mockResolvedValue({ supported: true, reason: undefined }),
-  openSessionWindow: vi.fn().mockResolvedValue(undefined),
-  releaseSession: vi.fn().mockResolvedValue(undefined),
-}));
-
 describe("SidebarChatRow", () => {
   const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
     navigator,
@@ -59,19 +37,12 @@ describe("SidebarChatRow", () => {
     mocks.toastSuccess.mockReset();
     mocks.writeTextToTauriClipboard.mockReset();
     mocks.writeTextToTauriClipboard.mockResolvedValue(undefined);
-    mocks.sessionWindowSupport.supported = true;
-    mocks.sessionWindowSupport.reason = undefined;
     Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
     localStorage.clear();
     // The conductor graph store hydrates from localStorage at module load and
     // is never reset by `localStorage.clear()`; without this any test that
     // registers nodes would leak into every later case in this file.
     useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
-    useSessionWindowStore.getState().setSnapshot([]);
-    vi.mocked(getSessionWindowSupport).mockResolvedValue({
-      supported: true,
-      reason: undefined,
-    });
   });
 
   afterEach(() => {
@@ -691,64 +662,6 @@ describe("SidebarChatRow", () => {
     expect(onSelectionChange).not.toHaveBeenCalled();
   });
 
-  it("selects normally when a session window exists but session windows are unsupported", async () => {
-    const user = userEvent.setup();
-    const onSelect = vi.fn();
-    mocks.sessionWindowSupport.supported = false;
-    mocks.sessionWindowSupport.reason = "unsupported platform";
-
-    useSessionWindowStore
-      .getState()
-      .setSnapshot([{ sessionId: "session-1", windowLabel: "session:a" }]);
-
-    render(
-      <SidebarChatRow
-        id="session-1"
-        title="Windowed Chat"
-        isActive={false}
-        onSelect={onSelect}
-      />,
-    );
-
-    expect(screen.queryByLabelText(/open in window/i)).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Windowed Chat" }));
-
-    expect(focusSessionWindow).not.toHaveBeenCalled();
-    expect(onSelect).toHaveBeenCalledWith("session-1");
-  });
-
-  it("focuses an existing session window instead of selecting the row when session windows are supported", async () => {
-    const user = userEvent.setup();
-    const onSelect = vi.fn();
-    Object.defineProperty(window, "__TAURI_INTERNALS__", {
-      configurable: true,
-      value: {},
-    });
-
-    useSessionWindowStore
-      .getState()
-      .setSnapshot([{ sessionId: "session-1", windowLabel: "session:a" }]);
-
-    render(
-      <SidebarChatRow
-        id="session-1"
-        title="Windowed Chat"
-        isActive={false}
-        onSelect={onSelect}
-      />,
-    );
-
-    expect(await screen.findByLabelText(/open in window/i)).toBeInTheDocument();
-
-    await user.click(
-      screen.getAllByRole("button", { name: /windowed chat/i })[0],
-    );
-
-    expect(focusSessionWindow).toHaveBeenCalledWith("session-1");
-    expect(onSelect).not.toHaveBeenCalled();
-  });
-
   it("shows the trailing ready dot only when the chat has unread output", () => {
     const { rerender } = render(
       <SidebarChatRow id="session-1" title="Recent Chat" isActive={false} />,
@@ -1139,7 +1052,6 @@ describe("SidebarChatRow", () => {
         onFork={vi.fn()}
         onArchiveSelected={vi.fn()}
         onMarkSelectedUnread={vi.fn()}
-        onOpenSelectedInWindows={vi.fn()}
       />,
     );
 
@@ -1161,33 +1073,6 @@ describe("SidebarChatRow", () => {
         "true",
       );
     }
-  });
-
-  it("opens every selected chat in its own window from the bulk menu", async () => {
-    const user = userEvent.setup();
-    const onOpenSelectedInWindows = vi.fn();
-
-    render(
-      <SidebarChatRow
-        id="session-1"
-        title="Bulk Chat"
-        isActive={false}
-        selected
-        selectionEnabled
-        selectedSessionIds={new Set(["session-1", "session-2"])}
-        onSelectionChange={vi.fn()}
-        onOpenSelectedInWindows={onOpenSelectedInWindows}
-      />,
-    );
-
-    await user.click(
-      screen.getByRole("button", { name: /options for bulk chat/i }),
-    );
-    await user.click(
-      await screen.findByRole("menuitem", { name: /open in new windows/i }),
-    );
-
-    expect(onOpenSelectedInWindows).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the localized default title in rename mode without persisting it", async () => {

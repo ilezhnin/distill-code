@@ -28,15 +28,11 @@ Example:
 Result:
   {"ok": true, "path": "...", "detached": true|false}`,
   schema: detachSessionFolderSchema,
-  precheck: async (args) => {
-    const { refuseWindowedTarget } = await import("../runtime/sessions");
-    refuseWindowedTarget(args.session_id, "detach a folder from");
-  },
   execute: async (args, ctx) => {
     const [
       { detachSessionFolder, FolderAttachmentError },
       { refusePastDeadline },
-      { loadSessionForBerdctl, refuseWindowedTarget },
+      { loadSessionForBerdctl },
     ] = await Promise.all([
       import("@/features/chat/lib/sessionFolderRegistration"),
       import("../runtime/deadline"),
@@ -47,7 +43,6 @@ Result:
       const result = await detachSessionFolder(args.session_id, args.path, {
         beforeMutation: () => {
           refusePastDeadline(ctx, "the folder was not detached");
-          refuseWindowedTarget(args.session_id, "detach a folder from");
         },
       });
       return { ok: true as const, ...result };

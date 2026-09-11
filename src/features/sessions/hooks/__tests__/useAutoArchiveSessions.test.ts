@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import { setAutoArchiveAfter } from "@/features/settings/lib/autoArchivePreference";
 import { runAutoArchiveSweep } from "../useAutoArchiveSessions";
 
@@ -45,7 +44,6 @@ function resetStores() {
     draftAttachmentsBySession: {},
     hasHydratedMessageQueues: true,
   });
-  useSessionWindowStore.getState().setSnapshot([]);
 }
 
 describe("runAutoArchiveSweep", () => {
@@ -82,17 +80,6 @@ describe("runAutoArchiveSweep", () => {
     const stale = session("stale");
     mocks.loadAllSessions.mockResolvedValue([stale]);
     useChatStore.setState({ hasHydratedMessageQueues: false });
-    const archiveSession = vi.fn();
-
-    await runAutoArchiveSweep({ archiveSession });
-
-    expect(archiveSession).not.toHaveBeenCalled();
-  });
-
-  it("waits for the detached-window snapshot to hydrate", async () => {
-    const stale = session("stale");
-    mocks.loadAllSessions.mockResolvedValue([stale]);
-    useSessionWindowStore.setState({ hasLoadedSnapshot: false });
     const archiveSession = vi.fn();
 
     await runAutoArchiveSweep({ archiveSession });
@@ -221,15 +208,6 @@ describe("runAutoArchiveSweep", () => {
       "a running session",
       () => {
         useChatStore.getState().setChatState("stale", "streaming");
-        return {};
-      },
-    ],
-    [
-      "a detached window",
-      () => {
-        useSessionWindowStore
-          .getState()
-          .setSnapshot([{ sessionId: "stale", windowLabel: "session:stale" }]);
         return {};
       },
     ],

@@ -21,7 +21,6 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { ensureReplayBuffer } from "@/features/chat/hooks/replayBuffer";
 import { interruptedTurnNoticeId } from "@/features/chat/lib/unansweredSend";
 import { createUserMessage } from "@/shared/types/messages";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
 import type { Message } from "@/shared/types/messages";
 import type { GitState } from "@/shared/types/git";
@@ -77,8 +76,6 @@ const mockListenSessionDeepLinkErrors = vi.hoisted(() => vi.fn());
 const mockAfterNextPaint = vi.hoisted(() => ({
   callbacks: [] as Array<{ callback: () => void; cancelled: boolean }>,
 }));
-const mockSessionWindowSupport = vi.hoisted(() => ({ supported: false }));
-const mockFocusSessionWindow = vi.hoisted(() => vi.fn());
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -349,29 +346,6 @@ vi.mock("@/app/views/NavigationPanesView", () => ({
   ),
 }));
 
-vi.mock("@/features/chat/hooks/useSessionWindowSupport", () => ({
-  useSessionWindowSupport: () => mockSessionWindowSupport,
-}));
-
-// The real tracking hook reads `window.__TAURI_INTERNALS__` directly, and in
-// jsdom there is none — so on every effect flush it wipes the window snapshot
-// these tests set by hand. That is a race, not a constant: alone the wipe
-// lands before the test's own setSnapshot, and under a loaded full run it can
-// land after, which is why "focuses a detached chat selected from search"
-// failed in the suite and passed on its own for weeks.
-//
-// Stubbed rather than raced. Window support is already mocked one hook up, so
-// leaving the tracker live meant two sources of truth for the same fact
-// disagreeing; and nothing in a navigation test exercises the tracker itself.
-vi.mock("@/features/chat/hooks/useSessionWindowTracking", () => ({
-  useSessionWindowTracking: () => {},
-}));
-
-vi.mock("@/features/chat/lib/sessionWindowCommands", () => ({
-  focusSessionWindow: (...args: unknown[]) => mockFocusSessionWindow(...args),
-  releaseSession: vi.fn(),
-}));
-
 vi.mock("@/features/extensions/api/extensions", () => ({
   listExtensions: (...args: unknown[]) => mockListExtensions(...args),
 }));
@@ -634,9 +608,6 @@ describe("AppShell global navigation", () => {
     resetAgentBuilderSourceLifecycleForTests();
     useShortcutsDialogStore.setState({ open: false });
     document.documentElement.removeAttribute("data-global-composer-visible");
-    mockSessionWindowSupport.supported = false;
-    mockFocusSessionWindow.mockReset();
-    useSessionWindowStore.getState().setSnapshot([]);
     mockListExtensions.mockReset();
     mockListExtensions.mockResolvedValue([]);
     mockAcpCreateSession.mockReset();
@@ -3299,63 +3270,6 @@ describe("AppShell global navigation", () => {
     expect(new URLSearchParams(window.location.search).get("section")).toBe(
       "providers",
     );
-  });
-
-  it("focuses a detached chat selected from search", async () => {
-    mockSessionWindowSupport.supported = true;
-    useSessionWindowStore
-      .getState()
-      .setSnapshot([
-        { sessionId: "session-1", windowLabel: "session-session-1" },
-      ]);
-    useChatSessionStore.setState({
-      sessions: [
-        {
-          id: "session-1",
-          title: "Detached planning",
-          createdAt: "2026-07-28T11:00:00.000Z",
-          updatedAt: "2026-07-28T12:00:00.000Z",
-          messageCount: 2,
-        },
-      ],
-    });
-    const user = userEvent.setup();
-    renderAppShell();
-    await act(async () => {
-      useSessionWindowStore
-        .getState()
-        .setSnapshot([
-          { sessionId: "session-1", windowLabel: "session-session-1" },
-        ]);
-    });
-
-    await user.click(screen.getByRole("button", { name: "Search" }));
-    const search = screen.getByRole("textbox", { name: "Universal search" });
-    await user.type(search, "detached planning");
-    // Re-queried and dispatched in the same tick, and retried until it takes.
-    //
-    // This failed in the full suite for weeks while passing alone, and the
-    // preconditions were never the problem: with the window support on, the
-    // session recorded as open in a window, the dialog open and the result
-    // row present, the click simply reached no handler. That is what a click
-    // on a node React has already replaced looks like — `user.click` runs
-    // pointerdown, mousedown, pointerup, mouseup and click as separate steps,
-    // and the results list re-renders as the session search settles, so under
-    // enough load a render lands between them and the rest of the sequence
-    // goes to a detached node. A browser hit-tests at click time and cannot
-    // have this problem; only a test can.
-    await screen.findByRole("button", {
-      name: "Open chat Detached planning",
-    });
-    await waitFor(() => {
-      const result = screen.queryByRole("button", {
-        name: "Open chat Detached planning",
-      });
-      if (result) fireEvent.click(result);
-      expect(mockFocusSessionWindow).toHaveBeenCalledWith("session-1");
-    });
-    expect(screen.getByTestId("active-view")).toHaveTextContent("home");
-    expect(useChatSessionStore.getState().activeSessionId).toBeNull();
   });
 
   it("opens extension search results in Settings Extensions", async () => {

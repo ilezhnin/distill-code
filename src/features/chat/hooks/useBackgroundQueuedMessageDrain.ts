@@ -24,13 +24,7 @@ import {
   type QueuedMessageRecord,
   useChatStore,
 } from "@/features/chat/stores/chatStore";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import { SessionDispatchContentionError } from "@/features/chat/lib/sessionDispatchAcquisition";
-import {
-  isReclaimedQueueReconciliationPending,
-  requestReclaimedQueueReconciliation,
-  subscribeReclaimedQueueReconciliation,
-} from "@/features/chat/lib/reclaimedQueueReconciliation";
 import { sendQueuedPromptToExistingSessionInBackground } from "@/features/chat/lib/queuedSessionSend";
 
 const drainingSessionIds = new Set<string>();
@@ -206,7 +200,6 @@ function scheduleContentionResume(
 
 function drainQueuedMessage(sessionId: string, ownerId: string): void {
   if (!activeOwners.has(ownerId)) return;
-  if (isReclaimedQueueReconciliationPending(sessionId)) return;
   const sessionExists = Boolean(
     useChatSessionStore.getState().getSession(sessionId),
   );
@@ -348,11 +341,7 @@ function getOwnedSessionIds(
   scopedSessionId?: string,
 ): string[] {
   if (scopedSessionId) return [scopedSessionId];
-  const sessionWindowStore = useSessionWindowStore.getState();
-  if (!sessionWindowStore.hasLoadedSnapshot) return [];
-  return Object.keys(queuedMessageBySession).filter(
-    (sessionId) => !sessionWindowStore.isOpenInWindow(sessionId),
-  );
+  return Object.keys(queuedMessageBySession);
 }
 
 function drainReadyQueuedMessages(scopedSessionId?: string): void {
@@ -378,25 +367,6 @@ export function useBackgroundQueuedMessageDrain(
     const ownerId = ownerIdFor(scopedSessionId);
     activeOwners.add(ownerId);
     drainReadyQueuedMessages(scopedSessionId);
-    const unsubscribeWindowStore = scopedSessionId
-      ? undefined
-      : useSessionWindowStore.subscribe((state, previousState) => {
-          if (
-            state.hasLoadedSnapshot &&
-            (!previousState.hasLoadedSnapshot ||
-              state.openSessions !== previousState.openSessions)
-          ) {
-            if (
-              !previousState.hasLoadedSnapshot ||
-              !requestReclaimedQueueReconciliation(
-                previousState.openSessions,
-                state.openSessions,
-              )
-            ) {
-              drainReadyQueuedMessages();
-            }
-          }
-        });
     // When a foreground chat releases queue ownership (the user left the
     // chat), any ready queued head it never sent becomes ours to send.
     // Registration also lifts restored-head exclusions: the user reopening
@@ -406,9 +376,6 @@ export function useBackgroundQueuedMessageDrain(
         liftRestoredExclusionsForOwnedSessions();
         drainReadyQueuedMessages(scopedSessionId);
       },
-    );
-    const unsubscribeReclaimedQueues = subscribeReclaimedQueueReconciliation(
-      () => drainReadyQueuedMessages(scopedSessionId),
     );
     const unsubscribeSessionStore = useChatSessionStore.subscribe(
       (state, previousState) => {
@@ -472,8 +439,6 @@ export function useBackgroundQueuedMessageDrain(
       },
     );
     return () => {
-      unsubscribeWindowStore?.();
-      unsubscribeReclaimedQueues();
       unsubscribeForegroundOwnership();
       unsubscribeSessionStore();
       unsubscribeChatStore();

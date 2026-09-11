@@ -33,9 +33,9 @@ Result:
     const outcome = await getAppNavigationController().openSession(
       args.session_id,
     );
-    // The facade reports session_not_found, focus_failed, and
-    // blocked_unsaved_changes as outcomes; surface them as thrown errors so
-    // the CLI exits non-zero instead of reporting an exit-0 "success".
+    // The facade reports session_not_found and blocked_unsaved_changes as
+    // outcomes; surface them as thrown errors so the CLI exits non-zero
+    // instead of reporting an exit-0 "success".
     if (!outcome.ok) {
       throw new CommandError(
         outcome.reason,
@@ -56,8 +56,6 @@ function openFailureMessage(
       return sessionNotFoundMessage(sessionId);
     case "blocked_unsaved_changes":
       return "The user declined to leave unsaved work; do not retry — tell the user.";
-    case "focus_failed":
-      return "The session is open in a separate window that could not be focused; tell the user.";
     case "backend_archive_failed":
     case "target_session_running":
     case "cleanup_requires_discard":

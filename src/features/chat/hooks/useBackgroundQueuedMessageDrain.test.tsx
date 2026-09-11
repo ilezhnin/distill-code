@@ -9,11 +9,9 @@ import {
   registerForegroundQueueOwner,
   resetForegroundQueueOwnershipForTesting,
 } from "@/features/chat/lib/foregroundQueueOwnership";
-import { resetReclaimedQueueReconciliationForTesting } from "@/features/chat/lib/reclaimedQueueReconciliation";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import * as queuePersistence from "@/features/chat/stores/queuePersistence";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import type { QueuedMessageRecord } from "@/features/chat/stores/chatStore";
 import {
   resetBackgroundQueueDrainStateForTesting,
@@ -150,7 +148,6 @@ describe("useBackgroundQueuedMessageDrain", () => {
     vi.clearAllMocks();
     resetForegroundQueueOwnershipForTesting();
     resetBackgroundQueueDrainStateForTesting();
-    resetReclaimedQueueReconciliationForTesting();
     vi.spyOn(queuePersistence, "loadPersistedMessageQueues").mockResolvedValue(
       {},
     );
@@ -193,11 +190,6 @@ describe("useBackgroundQueuedMessageDrain", () => {
         },
       ],
       hasHydratedSessions: true,
-    });
-    useSessionWindowStore.setState({
-      openSessions: {},
-      handoffs: {},
-      hasLoadedSnapshot: true,
     });
   });
 
@@ -795,231 +787,6 @@ describe("useBackgroundQueuedMessageDrain", () => {
       await Promise.resolve();
     });
     expect(mocks.toastError).not.toHaveBeenCalled();
-  });
-
-  it("scopes released draining to the renderer that owns each session", async () => {
-    const detached = releasedRecord();
-    const main = { ...releasedRecord(), recordId: "main-record" };
-    useChatStore.setState({
-      queuedMessageBySession: {
-        "detached-session": [detached],
-        "main-session": [main],
-      },
-    });
-    useSessionWindowStore.setState({
-      openSessions: { "detached-session": "session:detached-session" },
-    });
-
-    render(<DrainHarness />);
-
-    await waitFor(() => {
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledWith(
-        "main-session",
-        main,
-        expect.any(Function),
-        expect.any(Function),
-      );
-    });
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalledWith(
-      "detached-session",
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-    );
-
-    render(<DrainHarness sessionId="detached-session" />);
-    await waitFor(() => {
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledWith(
-        "detached-session",
-        detached,
-        expect.any(Function),
-        expect.any(Function),
-      );
-    });
-  });
-
-  it("refreshes a reclaimed session's queue from persistence before draining", async () => {
-    // The session window already sent/dismissed the head; this renderer still
-    // holds a stale in-memory copy. Persistence is the source of truth.
-    const stale = { ...ordinaryRecord(), recordId: "stale-record" };
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [stale] },
-    });
-    useSessionWindowStore.setState({
-      openSessions: { "session-1": "window-1" },
-    });
-    vi.spyOn(queuePersistence, "loadPersistedMessageQueues").mockResolvedValue(
-      {},
-    );
-
-    render(<DrainHarness />);
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-
-    act(() => useSessionWindowStore.setState({ openSessions: {} }));
-
-    await waitFor(() =>
-      expect(queuePersistence.loadPersistedMessageQueues).toHaveBeenCalled(),
-    );
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-    expect(
-      useChatStore.getState().queuedMessageBySession["session-1"],
-    ).toBeUndefined();
-  });
-
-  it("serializes overlapping reclaims without draining either stale queue", async () => {
-    const staleA = { ...ordinaryRecord(), recordId: "stale-a" };
-    const staleB = { ...ordinaryRecord(), recordId: "stale-b" };
-    useChatStore.setState({
-      queuedMessageBySession: {
-        "session-1": [staleA],
-        "detached-session": [staleB],
-      },
-    });
-    useSessionWindowStore.setState({
-      openSessions: {
-        "session-1": "window-1",
-        "detached-session": "window-2",
-      },
-    });
-    let resolveFirst!: (queues: Record<string, QueuedMessageRecord[]>) => void;
-    let resolveSecond!: (queues: Record<string, QueuedMessageRecord[]>) => void;
-    vi.spyOn(queuePersistence, "loadPersistedMessageQueues")
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveFirst = resolve;
-          }),
-      )
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveSecond = resolve;
-          }),
-      );
-
-    render(<DrainHarness />);
-    act(() =>
-      useSessionWindowStore.setState({
-        openSessions: { "detached-session": "window-2" },
-      }),
-    );
-    await waitFor(() =>
-      expect(queuePersistence.loadPersistedMessageQueues).toHaveBeenCalledTimes(
-        1,
-      ),
-    );
-    act(() => useSessionWindowStore.setState({ openSessions: {} }));
-
-    resolveFirst({});
-    await waitFor(() =>
-      expect(queuePersistence.loadPersistedMessageQueues).toHaveBeenCalledTimes(
-        2,
-      ),
-    );
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-    resolveSecond({});
-    await waitFor(() => {
-      expect(
-        useChatStore.getState().queuedMessageBySession["session-1"],
-      ).toBeUndefined();
-      expect(
-        useChatStore.getState().queuedMessageBySession["detached-session"],
-      ).toBeUndefined();
-    });
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-  });
-
-  it("does not fire a reclaimed head that persistence marks restored", async () => {
-    const stale = ordinaryRecord();
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [stale] },
-    });
-    useSessionWindowStore.setState({
-      openSessions: { "session-1": "window-1" },
-    });
-    vi.spyOn(queuePersistence, "loadPersistedMessageQueues").mockResolvedValue({
-      "session-1": [{ ...ordinaryRecord(), restored: true }],
-    });
-
-    render(<DrainHarness />);
-    act(() => useSessionWindowStore.setState({ openSessions: {} }));
-
-    await waitFor(() =>
-      expect(queuePersistence.loadPersistedMessageQueues).toHaveBeenCalled(),
-    );
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-    expect(
-      useChatStore.getState().queuedMessageBySession["session-1"]?.[0]
-        ?.restored,
-    ).toBe(true);
-  });
-
-  it("drains immediately when window changes reclaim no sessions", async () => {
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [ordinaryRecord()] },
-    });
-    useSessionWindowStore.setState({
-      openSessions: { "other-session": "window-1" },
-    });
-
-    render(<DrainHarness />);
-    await waitFor(() =>
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledOnce(),
-    );
-
-    act(() =>
-      useSessionWindowStore.setState({
-        openSessions: {
-          "other-session": "window-1",
-          "main-session": "window-2",
-        },
-      }),
-    );
-    expect(queuePersistence.loadPersistedMessageQueues).not.toHaveBeenCalled();
-  });
-
-  it("waits for the authoritative window snapshot before global draining", async () => {
-    const released = releasedRecord();
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [released] },
-    });
-    useSessionWindowStore.setState({ hasLoadedSnapshot: false });
-
-    render(<DrainHarness />);
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-
-    useSessionWindowStore.getState().setSnapshot([]);
-    await waitFor(() => {
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledTimes(1);
-    });
   });
 
   it("ignores Berdctl-origin transport-ready records", () => {

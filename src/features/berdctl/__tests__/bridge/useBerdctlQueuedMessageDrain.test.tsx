@@ -4,14 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionDispatchContentionError } from "@/features/chat/lib/sessionDispatchAcquisition";
 import type { SessionDispatchReleaseWaiter } from "@/features/chat/lib/sessionTargetCoordinator";
 import { QueuedMessageOwnershipLostError } from "@/features/chat/lib/preCommitSendRejection";
-import { resetReclaimedQueueReconciliationForTesting } from "@/features/chat/lib/reclaimedQueueReconciliation";
 import {
   type QueuedMessageRecord,
   useChatStore,
 } from "@/features/chat/stores/chatStore";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
-import * as queuePersistence from "@/features/chat/stores/queuePersistence";
 import { useBerdctlQueuedMessageDrain } from "@/features/berdctl/bridge/useBerdctlQueuedMessageDrain";
 import { createUserMessage } from "@/shared/types/messages";
 
@@ -82,7 +79,6 @@ function resetChatStore(): void {
 describe("useBerdctlQueuedMessageDrain", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resetReclaimedQueueReconciliationForTesting();
     mocks.sendPromptToExistingSessionInBackground.mockResolvedValue(undefined);
     mocks.sendQueuedPromptToExistingSessionInBackground.mockResolvedValue(
       undefined,
@@ -104,11 +100,6 @@ describe("useBerdctlQueuedMessageDrain", () => {
         executionTarget: { harnessId: "claude-acp" },
       })),
       hasHydratedSessions: true,
-    });
-    useSessionWindowStore.setState({
-      openSessions: {},
-      handoffs: {},
-      hasLoadedSnapshot: true,
     });
   });
 
@@ -1015,148 +1006,6 @@ describe("useBerdctlQueuedMessageDrain", () => {
       expect.any(Function),
       { returnOnDispatch: true },
     );
-  });
-
-  it("waits for the initial detached-window snapshot before global draining", async () => {
-    const chatStore = useChatStore.getState();
-    chatStore.enqueueTransportReadyMessage("detached-session", {
-      persona: { kind: "inherit" },
-      text: "owned elsewhere",
-      sendOptions: {
-        userMessageMetadata: { origin: "berdctl_cross_session" as const },
-      },
-    });
-    useSessionWindowStore.setState({
-      openSessions: {},
-      handoffs: {},
-      hasLoadedSnapshot: false,
-    });
-
-    render(<DrainHarness />);
-
-    expect(
-      mocks.sendPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-
-    act(() => {
-      useSessionWindowStore.getState().setSnapshot([
-        {
-          sessionId: "detached-session",
-          windowLabel: "session:detached-session",
-        },
-      ]);
-    });
-
-    await waitFor(() => {
-      expect(useSessionWindowStore.getState().hasLoadedSnapshot).toBe(true);
-    });
-    expect(
-      mocks.sendPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-    expect(
-      useChatStore.getState().queuedMessageBySession["detached-session"]?.[0]
-        ?.payload.text,
-    ).toBe("owned elsewhere");
-  });
-
-  it("starts global draining after an empty initial window snapshot", async () => {
-    const chatStore = useChatStore.getState();
-    chatStore.enqueueTransportReadyMessage("main-session", {
-      persona: { kind: "inherit" },
-      text: "owned by main",
-      sendOptions: {
-        userMessageMetadata: { origin: "berdctl_cross_session" as const },
-      },
-    });
-    useSessionWindowStore.setState({
-      openSessions: {},
-      handoffs: {},
-      hasLoadedSnapshot: false,
-    });
-
-    render(<DrainHarness />);
-    expect(
-      mocks.sendPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-
-    act(() => {
-      useSessionWindowStore.getState().setSnapshot([]);
-    });
-
-    await waitFor(() => {
-      expect(
-        mocks.sendPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledWith(
-        "main-session",
-        "owned by main",
-        expect.any(Function),
-        { returnOnDispatch: true },
-      );
-    });
-  });
-
-  it("leaves detached-window sessions for their scoped owner drain", () => {
-    const chatStore = useChatStore.getState();
-    chatStore.enqueueTransportReadyMessage("detached-session", {
-      persona: { kind: "inherit" },
-      text: "owned elsewhere",
-      sendOptions: {
-        userMessageMetadata: { origin: "berdctl_cross_session" as const },
-      },
-    });
-    useSessionWindowStore.setState({
-      openSessions: { "detached-session": "session:detached-session" },
-    });
-
-    render(<DrainHarness />);
-
-    expect(
-      mocks.sendPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-    expect(
-      useChatStore.getState().queuedMessageBySession["detached-session"]?.[0]
-        ?.payload.text,
-    ).toBe("owned elsewhere");
-  });
-
-  it("refreshes a reclaimed detached session before draining it", async () => {
-    const stale: QueuedMessageRecord = {
-      kind: "transport-ready",
-      recordId: "already-sent",
-      payload: {
-        persona: { kind: "inherit" },
-        text: "stale prompt",
-        sendOptions: {
-          userMessageMetadata: { origin: "berdctl_cross_session" as const },
-        },
-      },
-    };
-    useChatStore.setState({
-      queuedMessageBySession: { "detached-session": [stale] },
-    });
-    useSessionWindowStore.setState({
-      openSessions: { "detached-session": "session:detached-session" },
-      handoffs: {},
-      hasLoadedSnapshot: true,
-    });
-    vi.spyOn(queuePersistence, "loadPersistedMessageQueues").mockResolvedValue(
-      {},
-    );
-    render(<DrainHarness />);
-
-    act(() => {
-      useSessionWindowStore.getState().setSnapshot([]);
-    });
-
-    await waitFor(() => {
-      expect(queuePersistence.loadPersistedMessageQueues).toHaveBeenCalled();
-      expect(
-        useChatStore.getState().queuedMessageBySession["detached-session"],
-      ).toBeUndefined();
-    });
-    expect(
-      mocks.sendPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
   });
 
   it("waits until a detached window owns the session before scoped draining", async () => {

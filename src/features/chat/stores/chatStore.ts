@@ -522,10 +522,6 @@ interface ChatStoreActions {
   replaceQueuedMessages: (
     queues: Record<string, QueuedMessageRecord[]>,
   ) => void;
-  reconcileQueuedMessages: (
-    queues: Record<string, QueuedMessageRecord[]>,
-    sessionIds: string[],
-  ) => void;
   markQueuedMessagesReady: (sessionId: string) => void;
   dismissQueuedMessage: (sessionId: string, expectedRecordId?: string) => void;
   moveQueuedMessage: (
@@ -1615,21 +1611,6 @@ const createChatStore: StateCreator<
 
   replaceQueuedMessages: (queues) => {
     set({ queuedMessageBySession: queues, hasHydratedMessageQueues: true });
-  },
-
-  reconcileQueuedMessages: (queues, sessionIds) => {
-    set((state) => {
-      const queuedMessageBySession = { ...state.queuedMessageBySession };
-      for (const sessionId of sessionIds) {
-        const queue = queues[sessionId];
-        if (queue?.length) {
-          queuedMessageBySession[sessionId] = queue;
-        } else {
-          delete queuedMessageBySession[sessionId];
-        }
-      }
-      return { queuedMessageBySession };
-    });
   },
 
   markQueuedMessagesReady: (sessionId) => {

@@ -24,22 +24,8 @@ export interface AppNavigationPrimitives {
   ): Promise<CommandOutcome>;
   getActiveSessionId(): string | null;
   hasSession(sessionId: string): boolean;
-  isSessionOpenInWindow(sessionId: string): boolean;
-  focusSessionWindow(sessionId: string): Promise<void>;
   getAppContext(): AppContext;
   activeView: AppView;
-  isMultiWindowEnabled: boolean;
-}
-
-function focusPopoutWindowOutcome(
-  focusSession: (sessionId: string) => Promise<void>,
-  sessionId: string,
-): Promise<CommandOutcome> {
-  return focusSession(sessionId).then(
-    () => ({ ok: true as const }),
-    // focus_session_window rejects with plain strings, not Errors.
-    () => ({ ok: false as const, reason: "focus_failed" }),
-  );
 }
 
 /**
@@ -56,20 +42,13 @@ export function useRegisterAppNavigationController(
     archiveChat,
     getActiveSessionId,
     hasSession,
-    isSessionOpenInWindow,
-    focusSessionWindow,
     getAppContext,
     activeView,
-    isMultiWindowEnabled,
   } = primitives;
 
   // Plain functions (not useCallback): they are only read through
   // appNavigationHandlersRef, which is reassigned every render anyway.
   const openSession = (sessionId: string): Promise<CommandOutcome> => {
-    if (isMultiWindowEnabled && isSessionOpenInWindow(sessionId)) {
-      // v1 rule: focus the pop-out, do not steal the session into main.
-      return focusPopoutWindowOutcome(focusSessionWindow, sessionId);
-    }
     // "Already open" only counts when the chat surface is actually showing;
     // the session can stay active while the user is on settings/search etc.
     if (activeView === "chat" && sessionId === getActiveSessionId()) {
