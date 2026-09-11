@@ -94,7 +94,7 @@ pub fn env_vars_with_extended_path_and_prepended_dirs(
     prepend_dirs: &[PathBuf],
 ) -> Vec<(String, String)> {
     let mut env = if shell_env.is_empty() {
-        std::env::vars().collect()
+        env_key::process_vars_lossy().into_iter().collect()
     } else {
         shell_env.clone()
     };

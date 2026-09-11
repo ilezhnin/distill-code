@@ -19,7 +19,7 @@ pub(super) async fn capture_dir_env_uncached(
 }
 
 pub(crate) fn windows_process_env_for_dir(dir: &Path) -> HashMap<String, String> {
-    let mut env = dedupe_env_case_insensitive(std::env::vars());
+    let mut env = dedupe_env_case_insensitive(env_key::process_vars_lossy());
     strip_untrusted_windows_tool_state(&mut env);
     if let Some(hermit_bin) = find_project_hermit_bin(dir) {
         prepend_dir_to_windows_path(&mut env, &hermit_bin);
@@ -58,7 +58,7 @@ pub(crate) fn find_project_hermit_bin(dir: &Path) -> Option<PathBuf> {
     } else {
         target.parent()?
     };
-    let mut env = dedupe_env_case_insensitive(std::env::vars());
+    let mut env = dedupe_env_case_insensitive(env_key::process_vars_lossy());
     strip_untrusted_windows_tool_state(&mut env);
     env.retain(|key, _| !key.to_ascii_uppercase().starts_with("GIT_"));
     let git = find_file_on_windows_path("git.exe", env_key::get(&env, "PATH"))?;
