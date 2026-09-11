@@ -27,10 +27,13 @@ Write-WindowsDevInfo "Using Tauri Cargo target dir: $env:CARGO_TARGET_DIR"
 $version = Resolve-AppVersion
 $env:VITE_APP_VERSION = $version.RichVersion
 
-Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("build", "-p", "berdctl") -WorkingDirectory (Join-Path (Get-BerdRepoRoot) "src-tauri") -Label "cargo build berdctl"
+Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("build", "-p", "berdctl", "-p", "berd-monitor") -WorkingDirectory (Join-Path (Get-BerdRepoRoot) "src-tauri") -Label "cargo build berdctl berd-monitor"
 $env:BERDCTL_BIN = Join-Path (Join-Path $env:CARGO_TARGET_DIR "debug") "berdctl.exe"
-if (-not (Test-Path $env:BERDCTL_BIN -PathType Leaf)) {
-    throw "Expected berdctl.exe at $env:BERDCTL_BIN after cargo build."
+$env:BERD_MONITOR_BIN = Join-Path (Join-Path $env:CARGO_TARGET_DIR "debug") "berd-monitor.exe"
+foreach ($cliBin in @($env:BERDCTL_BIN, $env:BERD_MONITOR_BIN)) {
+    if (-not (Test-Path -LiteralPath $cliBin -PathType Leaf)) {
+        throw "Expected $(Split-Path -Leaf $cliBin) at $cliBin after cargo build."
+    }
 }
 
 $distroDir = Join-Path (Get-BerdRepoRoot) "distro"

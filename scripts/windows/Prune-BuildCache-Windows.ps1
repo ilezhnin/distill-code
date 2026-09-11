@@ -83,6 +83,10 @@ function Invoke-Prune {
         return
     }
     try {
+        # The target dir comes from BERD_TAURI_CARGO_TARGET_DIR when set, so a
+        # mistyped override (a drive root, the user profile, the repo itself,
+        # a relative path) must not become a recursive delete under -Deep.
+        Assert-SafeCleanupPath -Path $Path -AllowedRoot $Path
         Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
         Write-Host ("removed {0} - {1} ({2})" -f $Name, $Path, (Format-Size $size)) -ForegroundColor Green
     } catch {

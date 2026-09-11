@@ -22,7 +22,7 @@ function Test-IsElevated {
 
 function Assert-WindowsHost {
     if (-not (Test-IsWindowsHost)) {
-        throw "This command is for native Windows verification. Use the existing Unix just recipes on macOS/Linux."
+        throw "This command runs on Windows only; Distill has no macOS or Linux build."
     }
 }
 

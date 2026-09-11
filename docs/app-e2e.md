@@ -75,10 +75,6 @@ $env:APP_TEST_DRIVER_TOKEN = -join ((1..48) | ForEach-Object { '{0:x}' -f (Get-R
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Dev-Windows.ps1
 ```
 
-Outside Windows, `just dev-e2e isolated=1` (`scripts/dev-e2e.sh`) creates a
-temporary run root through `scripts/e2e-run-contract.mjs` and writes the run
-root and token to `<run-root>/client.env`.
-
 Point the relay at the isolated driver with the port from
 `app-test-driver.json` and the token:
 
@@ -88,6 +84,3 @@ node scripts/agent-driver/relay.mjs --port <port> --token <token>
 
 Nothing cleans up after an isolated run: delete the run root and the per-run
 app data folders named after its identifier yourself.
-
-The contract producer has its own test:
-`node --test scripts/e2e-run-contract.test.mjs` (`pnpm test:e2e-contract`).

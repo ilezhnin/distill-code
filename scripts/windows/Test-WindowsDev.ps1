@@ -74,29 +74,25 @@ try {
 
     $justfile = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "justfile")
     Assert-Equal "justfile selects PowerShell for ordinary Windows recipes" ($justfile -match '(?m)^set windows-shell := \["powershell\.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"\]\r?$') $true
-    foreach ($recipe in @("_tauri-cargo-windows", "_clean-windows")) {
+    foreach ($recipe in @("_tauri-cargo-windows", "clean")) {
         $escapedRecipe = [regex]::Escape($recipe)
         Assert-Equal "$recipe selects PowerShell locally" ($justfile -match "(?m)^\[windows\]\r?\n\[script\(`"powershell\.exe`"[^\]]*\]\r?\n${escapedRecipe}[^:]*:") $true
     }
-    Assert-Equal "_stage-sidecar-windows dispatches through its native wrapper" `
-        ($justfile -match '(?m)^\[windows\]\r?\n_stage\-sidecar\-windows:\r?\n\s+powershell\.exe .* -File scripts/windows/Invoke-Stage-Sidecar-Windows\.ps1\r?$') $true
-    Assert-Equal "stage-sidecar dispatches by os_family on Windows and Unix" ($justfile -match '(?m)^stage-sidecar[^:]*:\r?\n\s+just _stage-sidecar-\{\{ os_family\(\) \}\}') $true
+    Assert-Equal "stage-sidecar dispatches through its native wrapper" `
+        ($justfile -match '(?m)^\[windows\]\r?\nstage\-sidecar:\r?\n\s+powershell\.exe .* -File scripts/windows/Invoke-Stage-Sidecar-Windows\.ps1\r?$') $true
     $just = Get-CommandSource "just"
     $dryRunTargets = [ordered]@{
         "bundle" = 'Bundle-Windows\.ps1'
         "bundle-debug" = 'Bundle-Windows\.ps1 -Debug'
-        "stage-sidecar" = "_stage-sidecar-windows"
+        "stage-sidecar" = 'Invoke-Stage-Sidecar-Windows\.ps1'
     }
     foreach ($recipe in $dryRunTargets.Keys) {
         $dryRun = Invoke-CaptureCommand -FilePath $just -ArgumentList @("--dry-run", $recipe) -WorkingDirectory (Get-BerdRepoRoot)
         Assert-Equal "$recipe is visible and dry-runs on Windows" $dryRun.ExitCode 0
         Assert-Equal "$recipe dry-run reaches its Windows implementation" ($dryRun.Output -match $dryRunTargets[$recipe]) $true
     }
-    foreach ($recipe in @("dev", "dev-e2e")) {
-        $escapedRecipe = [regex]::Escape($recipe)
-        Assert-Equal "$recipe stays Unix-only" ($justfile -match "(?m)^\[unix\]\r?\n${escapedRecipe}[^:]*:") $true
-        Assert-Equal "$recipe keeps an explicit bash shebang" ($justfile -match "(?m)^${escapedRecipe}[^:]*:\r?\n\s+#!/usr/bin/env bash") $true
-    }
+    Assert-Equal "justfile declares no Unix-only recipes" ($justfile -notmatch '(?m)^\[unix\]') $true
+    Assert-Equal "justfile calls no Unix shell scripts" ($justfile -notmatch '\.sh\b(?<!dev-tool\.sh)') $true
     foreach ($recipe in @("bootstrap-windows", "doctor-windows", "cleanup-windows", "setup-windows", "dev-windows", "tauri-check-windows", "test-windows-dev")) {
         $escapedRecipe = [regex]::Escape($recipe)
         Assert-Equal "$recipe is declared in the justfile" ($justfile -match "(?m)^${escapedRecipe}[^:]*:") $true
@@ -137,7 +133,9 @@ try {
         ($bundleScript -match '\$env:VITE_APP_VERSION\s*=\s*\$resolvedVersion\.RichVersion') $true
     Assert-Equal "bundle verifies the application PE version" ($bundleScript -match '\.VersionInfo\.ProductVersion') $true
     Assert-Equal "bundle verifies the full-SemVer installer path" `
-        ($bundleScript -match 'Berd_\$\{ExpectedVersion\}_x64-setup\.exe') $true
+        ($bundleScript -match '\$\{ProductName\}_\$\{ExpectedVersion\}_x64-setup\.exe') $true
+    Assert-Equal "bundle takes the installer name from tauri.conf.json productName" `
+        ($bundleScript -match 'tauri\.conf\.json"\)\) "productName"') $true
     Assert-Equal "bundle reports the verified installer path" ($bundleScript -match 'Windows bundle ready: \$bundlePath') $true
 
     $prereleaseVersion = Resolve-AppVersion "1.2.3-rc.1"
@@ -204,8 +202,8 @@ try {
     Assert-Equal "Windows Tauri config is pinned to LF" `
         (($gitAttributes -split '\r?\n') -contains "src-tauri/tauri.windows.conf.json text eol=lf") $true
     Assert-Equal "SQL migrations are pinned to LF for stable sqlx checksums" `
-        (($gitAttributes -split '\r?\n') -contains "src-tauri/migrations/*.sql text eol=lf") $true
-    $migrationFiles = Get-ChildItem -Path (Join-Path (Get-BerdRepoRoot) "src-tauri/migrations") -Filter "*.sql" -File
+        (($gitAttributes -split '\r?\n') -contains "src-tauri/migrations_agent_host/*.sql text eol=lf") $true
+    $migrationFiles = @(Get-ChildItem -Path (Join-Path (Get-BerdRepoRoot) "src-tauri/migrations_agent_host") -Filter "*.sql" -File -ErrorAction SilentlyContinue)
     Assert-Equal "SQL migration contract covers at least one migration" ($migrationFiles.Count -gt 0) $true
     foreach ($migrationFile in $migrationFiles) {
         $migrationBytes = [System.IO.File]::ReadAllBytes($migrationFile.FullName)
