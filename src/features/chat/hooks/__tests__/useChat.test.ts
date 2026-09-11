@@ -295,6 +295,31 @@ describe("useChat", () => {
     ).toBe(true);
   });
 
+  it("settles a stop of a reply no prompt of this window is driving", async () => {
+    const sessionId = "session-host-turn";
+    const { result } = renderHook(() => useChat(sessionId));
+    act(() => {
+      addStreamingAssistantMessage(
+        sessionId,
+        "assistant-1",
+        "persona-a",
+        "Persona A",
+      );
+    });
+
+    await act(async () => {
+      await result.current.stopGeneration();
+    });
+
+    const runtime = useChatStore.getState().getSessionRuntime(sessionId);
+    expect(runtime.isRunCancellationPending).toBe(false);
+    expect(runtime.streamingMessageId).toBeNull();
+    expect(
+      useChatStore.getState().messagesBySession[sessionId]?.[0]?.metadata
+        ?.completionStatus,
+    ).toBe("stopped");
+  });
+
   it("ignores a stale cancellation after a newer stop begins", async () => {
     const firstCancellation = createDeferredPromise<boolean>();
     const secondCancellation = createDeferredPromise<boolean>();

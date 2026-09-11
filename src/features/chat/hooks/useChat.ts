@@ -27,6 +27,7 @@ import { i18n } from "@/shared/i18n";
 import type { ChatSendOptions } from "../types";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { steerPromptInSession } from "../lib/steerCore";
+import { getSessionPromptOwner } from "../lib/sessionPromptOwnership";
 import {
   clearBufferedStreamingUpdatesForSession,
   flushBufferedStreamingUpdatesForSession,
@@ -291,8 +292,15 @@ export function useChat(
 
     abortRef.current?.abort();
     const activeStreamingMessageId = runtime.streamingMessageId;
+    // Nothing but a prompt of this window settles a pending stop (its send
+    // releases the prompt and settles the run). A reply this window does not
+    // drive — a turn the host started for a steer that found the session
+    // idle, or one still running when the chat was loaded — has no such
+    // prompt, so the stop must settle itself or the chat refuses every send.
     const shouldClearPendingAfterCancel =
-      runtime.chatState === "thinking" && runtime.activeRunId === null;
+      runtime.activeRunId === null &&
+      (runtime.chatState === "thinking" ||
+        getSessionPromptOwner(sessionId) === null);
     const cancellationOwner = Symbol(sessionId);
     cancellationOwnerBySession.set(sessionId, cancellationOwner);
     const ownsCancellation = () =>
