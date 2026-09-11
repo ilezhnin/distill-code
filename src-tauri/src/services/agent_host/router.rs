@@ -859,20 +859,10 @@ impl Inner {
             .and_then(Value::as_str)
             .map(str::to_string)
             .ok_or_else(|| invalid_params("session/new requires cwd"))?;
-        let bridge = self.ensure_bridge(&harness_id).await?;
         let mcp_servers = self.mcp_servers(&params["mcpServers"]).await;
-        let result = bridge
-            .request(
-                "session/new",
-                json!({ "cwd": cwd, "mcpServers": mcp_servers }),
-            )
-            .await?;
-        let bridge_session_id = protocol::session_id(&result)
-            .ok_or_else(|| protocol::internal("bridge returned no sessionId"))?;
+        let (bridge_session_id, snapshot) =
+            self.open_bridge_session(spec, &cwd, mcp_servers).await?;
         let session_id = bridge_session_id.clone();
-        self.apply_mode(&bridge, spec, &bridge_session_id).await;
-
-        let snapshot = Self::snapshot_from(&result);
         let has_model_option = Self::has_model_option(&snapshot);
         let now = now_iso();
         let record = SessionRecord {
@@ -919,24 +909,61 @@ impl Inner {
         Ok(response)
     }
 
+    /// Start a fresh session on `spec`'s bridge in `cwd` with the configured
+    /// agent mode applied. Returns the bridge's session id and the snapshot
+    /// the bridge answered with.
+    async fn open_bridge_session(
+        &self,
+        spec: &HarnessSpec,
+        cwd: &str,
+        mcp_servers: Vec<Value>,
+    ) -> Result<(String, Value), Value> {
+        let bridge = self.ensure_bridge(spec.id).await?;
+        let result = bridge
+            .request(
+                "session/new",
+                json!({ "cwd": cwd, "mcpServers": mcp_servers }),
+            )
+            .await?;
+        let bridge_session_id = protocol::session_id(&result)
+            .ok_or_else(|| protocol::internal("bridge returned no sessionId"))?;
+        self.apply_mode(&bridge, spec, &bridge_session_id).await;
+        Ok((bridge_session_id, Self::snapshot_from(&result)))
+    }
+
+    /// The per-session lock that serializes attaching a session to a bridge
+    /// and moving it to another harness.
+    async fn attach_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
+        Arc::clone(
+            self.attach_locks
+                .lock()
+                .await
+                .entry(session_id.to_string())
+                .or_default(),
+        )
+    }
+
     /// Make sure a stored session has a live bridge session behind it,
     /// (re)attaching after a bridge restart or an app restart.
     async fn attach_session(
         self: &Arc<Self>,
         record: &SessionRecord,
     ) -> Result<(Arc<Bridge>, String), Value> {
-        let lock = Arc::clone(
-            self.attach_locks
-                .lock()
-                .await
-                .entry(record.id.clone())
-                .or_default(),
-        );
+        let lock = self.attach_lock(&record.id).await;
         let _attaching = lock.lock().await;
         if let Some(attached) = self.attached_route(&record.id).await {
             return Ok(attached);
         }
-        self.attach_session_locked(record).await
+        // The caller's copy may predate a move to another harness made while
+        // it waited for the lock (a delayed background attach, say); attach
+        // what the store holds now.
+        let current = self
+            .store
+            .get_session(&record.id)
+            .await
+            .map_err(protocol::internal)?
+            .ok_or_else(|| invalid_params(format!("Unknown session {}", record.id)))?;
+        self.attach_session_locked(&current).await
     }
 
     /// The live bridge behind a session, when it is already attached and the
@@ -1143,10 +1170,13 @@ impl Inner {
             );
             return;
         }
+        let Some((harness, _)) = self.runtime_route(&record.id).await else {
+            return;
+        };
         let Some((snapshot, has_model_option)) = self.runtime_snapshot(&record.id).await else {
             return;
         };
-        let presented = Self::presented_snapshot(&record.harness, &snapshot, has_model_option);
+        let presented = Self::presented_snapshot(&harness, &snapshot, has_model_option);
         if presented["configOptions"] == presented_before {
             return;
         }
@@ -1339,6 +1369,12 @@ impl Inner {
             .await
             .map_err(protocol::internal)?
             .ok_or_else(|| invalid_params(format!("Unknown session {session_id}")))?;
+        if config_id == "provider" {
+            let requested = params.get("value").and_then(Value::as_str).unwrap_or("");
+            if requested != record.harness {
+                return self.move_to_harness(&session_id, requested).await;
+            }
+        }
         let (bridge, bridge_session_id) = self.attach_session(&record).await?;
         let (mut snapshot, has_model_option) = {
             let sessions = self.sessions.lock().await;
@@ -1348,15 +1384,8 @@ impl Inner {
             (runtime.snapshot.clone(), runtime.has_model_option)
         };
         match config_id.as_str() {
-            "provider" => {
-                let requested = params.get("value").and_then(Value::as_str).unwrap_or("");
-                if requested != record.harness {
-                    return Err(invalid_params(format!(
-                        "Session {session_id} runs on {}; start a new chat to use {requested}",
-                        record.harness
-                    )));
-                }
-            }
+            // Already on the requested harness (a move returned above).
+            "provider" => {}
             "model" => {
                 let model_id = params
                     .get("value")
@@ -1397,6 +1426,82 @@ impl Inner {
         let _ = self.store.set_snapshot(&session_id, &snapshot).await;
         Ok(Self::presented_snapshot(
             &record.harness,
+            &snapshot,
+            has_model_option,
+        ))
+    }
+
+    /// Put a session on another harness — the "provider" option. That is
+    /// only possible before its first message: from then on the
+    /// conversation lives in the agent's own context, which cannot follow
+    /// the chat to a different agent, so a started chat keeps its harness
+    /// and a new chat is the way to another one. The new bridge session is
+    /// opened before anything is changed, so a failure leaves the session
+    /// on the harness it had.
+    async fn move_to_harness(
+        self: &Arc<Self>,
+        session_id: &str,
+        harness_id: &str,
+    ) -> Result<Value, Value> {
+        let spec = harness::harness(harness_id)
+            .ok_or_else(|| invalid_params(format!("Unknown harness {harness_id}")))?;
+        let lock = self.attach_lock(session_id).await;
+        let _moving = lock.lock().await;
+        let record = self
+            .store
+            .get_session(session_id)
+            .await
+            .map_err(protocol::internal)?
+            .ok_or_else(|| invalid_params(format!("Unknown session {session_id}")))?;
+        let started = || {
+            invalid_params(format!(
+                "Session {session_id} already has messages on {}; start a new chat to use {harness_id}",
+                record.harness
+            ))
+        };
+        if record.message_count > 0 || self.active_run_id(session_id).await.is_some() {
+            return Err(started());
+        }
+        let mcp_servers = self.mcp_servers(&Value::Null).await;
+        let (bridge_session_id, snapshot) = self
+            .open_bridge_session(spec, &record.cwd, mcp_servers)
+            .await?;
+        let model_id = Self::current_model(&snapshot);
+        // The store re-checks "no message yet" in the same statement, so a
+        // first prompt that slipped in meanwhile keeps the session where it is.
+        if !self
+            .store
+            .rebind_unstarted_session(
+                session_id,
+                harness_id,
+                &bridge_session_id,
+                model_id.as_deref(),
+                &snapshot,
+            )
+            .await
+            .map_err(protocol::internal)?
+        {
+            return Err(started());
+        }
+        let has_model_option = Self::has_model_option(&snapshot);
+        self.sessions.lock().await.insert(
+            session_id.to_string(),
+            SessionRuntime {
+                harness: harness_id.to_string(),
+                bridge_session_id,
+                loading: false,
+                run: None,
+                steer_queue: VecDeque::new(),
+                snapshot: snapshot.clone(),
+                has_model_option,
+            },
+        );
+        log::info!(
+            "[agent-host] session {session_id} moved from {} to {harness_id} before its first message",
+            record.harness
+        );
+        Ok(Self::presented_snapshot(
+            harness_id,
             &snapshot,
             has_model_option,
         ))
