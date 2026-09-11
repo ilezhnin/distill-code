@@ -13,6 +13,7 @@ import {
   playNotificationSound,
 } from "@/shared/notifications/notificationSounds";
 import { ASSISTIVE_UX_RULES } from "@/shared/assistive-ux/registry";
+import { i18n } from "@/shared/i18n";
 import {
   recordAssistiveMomentAccepted,
   recordAssistiveMomentShown,
@@ -103,10 +104,9 @@ export function getNotificationBody(
   outcome: "completed" | "error" | "stopped",
   sessionTitle: string,
 ): string {
-  const name = sessionTitle.trim() || "Agent";
-  if (outcome === "error") return `${name} encountered an error`;
-  if (outcome === "stopped") return `${name} was stopped`;
-  return `${name} finished`;
+  const name =
+    sessionTitle.trim() || i18n.t("common:completionNotification.agent");
+  return i18n.t(`common:completionNotification.body.${outcome}`, { name });
 }
 
 function getChangedSessionIds<T>(
