@@ -66,6 +66,11 @@ pub struct Endpoint {
 
 fn agent(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
+        // The default config picks up HTTP(S)_PROXY / ALL_PROXY from the
+        // environment. The broker only ever listens on loopback, so a
+        // corporate proxy inherited by the agent session must never see these
+        // requests (they fail there, and `/v1/call` bodies carry prompt text).
+        .proxy(None)
         .timeout_global(Some(timeout))
         // Non-2xx responses carry the broker's structured error body; read it
         // instead of treating the status as a transport error.
