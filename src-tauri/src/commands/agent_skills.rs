@@ -126,7 +126,12 @@ fn display_name_for_path(path: &Path) -> String {
 }
 
 fn skill_frontmatter(contents: &str) -> Option<(&str, &str)> {
-    let contents = contents.strip_prefix("---\n")?;
+    // SKILL.md files checked out on Windows usually have CRLF line endings
+    // (core.autocrlf) and editors there may add a BOM; both are still skills.
+    let contents = contents.strip_prefix('\u{feff}').unwrap_or(contents);
+    let contents = contents
+        .strip_prefix("---\n")
+        .or_else(|| contents.strip_prefix("---\r\n"))?;
     let end = contents.find("\n---")?;
     let frontmatter = &contents[..end];
     let body_start = end + "\n---".len();
@@ -156,8 +161,8 @@ fn read_skill(skill_dir: &Path, root: &SkillRoot) -> Option<AgentSkillEntry> {
         return None;
     }
 
-    let canonical_skill_dir = skill_dir.canonicalize().ok()?;
-    let canonical_skill_file = skill_file.canonicalize().ok()?;
+    let canonical_skill_dir = dunce::canonicalize(skill_dir).ok()?;
+    let canonical_skill_file = dunce::canonicalize(skill_file).ok()?;
 
     Some(AgentSkillEntry {
         name,
@@ -193,7 +198,7 @@ fn add_skill_root(
     if !metadata.file_type().is_dir() {
         return;
     }
-    let Ok(canonical_root) = root_path.canonicalize() else {
+    let Ok(canonical_root) = dunce::canonicalize(root_path) else {
         return;
     };
     if matches!(scope, SkillRootScope::Workspace)
@@ -274,7 +279,7 @@ fn collect_skill_roots(
         if trimmed.is_empty() {
             continue;
         }
-        let Ok(workspace_path) = expand_home_prefix(trimmed).canonicalize() else {
+        let Ok(workspace_path) = dunce::canonicalize(expand_home_prefix(trimmed)) else {
             continue;
         };
         if !workspace_path.is_dir() || !seen_workspaces.insert(workspace_path.clone()) {
@@ -340,7 +345,7 @@ fn collect_skills_from_roots(
         }
 
         for candidate_dir in candidate_dirs {
-            let Ok(canonical_candidate_dir) = candidate_dir.canonicalize() else {
+            let Ok(canonical_candidate_dir) = dunce::canonicalize(candidate_dir) else {
                 continue;
             };
             if !seen_skill_paths.insert(canonical_candidate_dir.clone()) {
@@ -482,6 +487,32 @@ mod tests {
             format!("---\nname: {name}\ndescription: {description}\n---\n\nUse it."),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn reads_skills_written_with_windows_line_endings_and_a_bom() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("skills");
+        let skill_dir = root.join("crlf");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "\u{feff}---\r\nname: crlf\r\ndescription: Checked out on Windows\r\n---\r\n\r\nUse it.\r\n",
+        )
+        .unwrap();
+
+        let skills = collect_skills_from_roots(
+            vec![SkillRoot {
+                path: root,
+                source_label: "Personal".to_string(),
+                scope: SkillRootScope::User,
+            }],
+            None,
+        );
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "crlf");
+        assert_eq!(skills[0].description, "Checked out on Windows");
     }
 
     #[test]

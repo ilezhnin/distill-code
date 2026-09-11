@@ -248,11 +248,16 @@ pub async fn start_terminal(
     let read_sessions = state.sessions.clone();
     thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
+        let mut pending = Vec::new();
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(len) => {
-                    let data = String::from_utf8_lossy(&buffer[..len]).to_string();
+                    pending.extend_from_slice(&buffer[..len]);
+                    let data = take_decodable_utf8(&mut pending);
+                    if data.is_empty() {
+                        continue;
+                    }
                     if read_channel
                         .send(TerminalEvent::Output {
                             terminal_id: read_terminal_id.clone(),
@@ -400,6 +405,44 @@ pub fn stop_terminal(state: State<'_, TerminalState>, terminal_id: String) -> Re
     Ok(())
 }
 
+/// Decodes everything in `pending` except a trailing, still-incomplete UTF-8
+/// sequence, which stays in `pending` for the next read.
+///
+/// The PTY hands over bytes in arbitrary chunks, so a multi-byte character
+/// (Cyrillic, CJK, box drawing, emoji) regularly straddles two reads; decoding
+/// each chunk on its own turns both halves into U+FFFD. Bytes that are invalid
+/// for any other reason are still replaced, as before.
+fn take_decodable_utf8(pending: &mut Vec<u8>) -> String {
+    let complete_len = incomplete_utf8_tail_start(pending);
+    let tail = pending.split_off(complete_len);
+    let text = String::from_utf8_lossy(pending).into_owned();
+    *pending = tail;
+    text
+}
+
+/// Index where a trailing UTF-8 sequence that still lacks bytes begins, or the
+/// length of `bytes` when the input does not end mid-character.
+fn incomplete_utf8_tail_start(bytes: &[u8]) -> usize {
+    let len = bytes.len();
+    // A sequence is at most four bytes long, so only the last three bytes can
+    // belong to a character whose remaining bytes have not arrived yet.
+    for back in 1..=len.min(3) {
+        let index = len - back;
+        let byte = bytes[index];
+        if byte & 0b1100_0000 == 0b1000_0000 {
+            continue;
+        }
+        let sequence_len = match byte {
+            0xF0..=0xF7 => 4,
+            0xE0..=0xEF => 3,
+            0xC0..=0xDF => 2,
+            _ => 1,
+        };
+        return if sequence_len > back { index } else { len };
+    }
+    len
+}
+
 fn terminal_size(cols: u16, rows: u16) -> PtySize {
     PtySize {
         rows: rows.clamp(MIN_ROWS, MAX_ROWS),
@@ -434,8 +477,11 @@ fn resolve_terminal_cwd(cwd: &str) -> Result<PathBuf, String> {
     Ok(normalize_path(&path))
 }
 
+/// Canonical form without the `\\?\` verbatim prefix `std::fs::canonicalize`
+/// adds on Windows: PowerShell would show it in every prompt and cmd.exe,
+/// started from that shell, refuses a UNC-style current directory.
 fn normalize_path(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn resolve_shell(shell_env: &HashMap<String, String>) -> String {
@@ -502,7 +548,7 @@ const FALLBACK_ENV_KEYS: &[&str] = &[
 mod tests {
     #[cfg(unix)]
     use super::{process_group_exists, stop_unix_process_group};
-    use super::{resolve_shell, resolve_terminal_cwd};
+    use super::{resolve_shell, resolve_terminal_cwd, take_decodable_utf8};
     use std::collections::HashMap;
     #[cfg(unix)]
     use std::os::unix::process::CommandExt;
@@ -546,13 +592,38 @@ mod tests {
     }
 
     #[test]
+    fn characters_split_across_reads_are_decoded_whole() {
+        let text = "Привет, 世界 🙂!";
+        let bytes = text.as_bytes();
+        for split in 0..=bytes.len() {
+            let mut pending = bytes[..split].to_vec();
+            let mut decoded = take_decodable_utf8(&mut pending);
+            pending.extend_from_slice(&bytes[split..]);
+            decoded.push_str(&take_decodable_utf8(&mut pending));
+            assert_eq!(decoded, text, "split at byte {split}");
+            assert!(pending.is_empty());
+        }
+    }
+
+    #[test]
+    fn invalid_bytes_are_still_replaced_rather_than_held_back() {
+        let mut pending = vec![b'a', 0xFF, b'b', 0x80];
+        assert_eq!(take_decodable_utf8(&mut pending), "a\u{FFFD}b\u{FFFD}");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
     fn resolve_terminal_cwd_accepts_plain_directory() {
         let dir = tempdir().expect("tempdir");
         let cwd = dir.path().to_string_lossy().to_string();
 
         let resolved = resolve_terminal_cwd(&cwd).expect("resolve cwd");
 
-        assert_eq!(resolved, dir.path().canonicalize().expect("canonicalize"));
+        assert_eq!(
+            resolved,
+            dunce::canonicalize(dir.path()).expect("canonicalize")
+        );
+        assert!(!resolved.to_string_lossy().starts_with(r"\\?\"));
     }
 
     #[test]

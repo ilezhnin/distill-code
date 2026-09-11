@@ -77,7 +77,16 @@ mod tests {
     /// Spawn and reap a short-lived child to obtain a pid that is no longer
     /// alive.
     fn dead_pid() -> u32 {
-        let mut child = std::process::Command::new("true").spawn().unwrap();
+        // `true` is not an executable on a stock Windows PATH.
+        let mut command = if cfg!(windows) {
+            let mut command = std::process::Command::new("cmd.exe");
+            command.args(["/D", "/C", "exit 0"]);
+            command
+        } else {
+            std::process::Command::new("true")
+        };
+        crate::services::process::apply_no_window(&mut command);
+        let mut child = command.spawn().unwrap();
         let pid = child.id();
         child.wait().unwrap();
         pid

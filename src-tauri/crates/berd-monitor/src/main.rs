@@ -396,13 +396,31 @@ fn configure_producer(command: &mut Command) {
     }
 }
 
+/// The detached monitor runs without a console (`DETACHED_PROCESS`), so
+/// Windows gives every console-subsystem child it starts a new, visible
+/// console window unless the child is created with `CREATE_NO_WINDOW`. Its
+/// output is piped or redirected anyway; the window is pure noise that stays
+/// open for the producer's whole life.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 #[cfg(windows)]
 fn configure_producer(command: &mut Command) {
     use std::os::windows::process::CommandExt;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     const CREATE_SUSPENDED: u32 = 0x0000_0004;
-    command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED | CREATE_NO_WINDOW);
 }
+
+/// The `berdctl` run for each delivery: see [`CREATE_NO_WINDOW`].
+#[cfg(windows)]
+fn configure_delivery(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(unix)]
+fn configure_delivery(_command: &mut Command) {}
 
 #[cfg(unix)]
 fn resume_producer(_child: &std::process::Child) -> io::Result<()> {
@@ -1065,7 +1083,9 @@ fn deliver_with_candidates(
             if stop_requested(paths) {
                 return false;
             }
-            let mut child = match Command::new(binary)
+            let mut command = Command::new(binary);
+            configure_delivery(&mut command);
+            let mut child = match command
                 .arg("--lock-path")
                 .arg(&lock)
                 .arg("--timeout-ms")

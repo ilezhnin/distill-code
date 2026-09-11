@@ -17,6 +17,22 @@ pub fn matches(left: &str, right: &str) -> bool {
     left == right
 }
 
+/// This process's environment as UTF-8 pairs, in the order the OS reports
+/// them. `std::env::vars()` panics on the first key or value that is not valid
+/// Unicode — reachable on Windows, whose environment is UTF-16 and may hold
+/// unpaired surrogates — so every snapshot Berd builds converts lossily
+/// instead.
+pub fn process_vars_lossy() -> Vec<(String, String)> {
+    std::env::vars_os()
+        .map(|(key, value)| {
+            (
+                key.to_string_lossy().into_owned(),
+                value.to_string_lossy().into_owned(),
+            )
+        })
+        .collect()
+}
+
 pub fn get<'a>(env: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
     env.iter()
         .find(|(existing, _)| matches(existing, key))

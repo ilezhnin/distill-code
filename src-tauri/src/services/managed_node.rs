@@ -1129,9 +1129,6 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    #[cfg(windows)]
-    fn set_test_executable(_path: &Path) {}
-
     #[test]
     fn embedded_lock_pins_every_release_target() {
         let lock = node_runtime_lock();

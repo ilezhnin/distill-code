@@ -90,7 +90,7 @@ fn collect_workspace_instruction_files(
         }
 
         let workspace_path = expand_home_prefix(trimmed);
-        let Ok(canonical_workspace_path) = workspace_path.canonicalize() else {
+        let Ok(canonical_workspace_path) = dunce::canonicalize(workspace_path) else {
             continue;
         };
         if !canonical_workspace_path.is_dir() {
@@ -107,7 +107,7 @@ fn collect_workspace_instruction_files(
             let Some(content) = read_instruction_file(&instruction_path) else {
                 continue;
             };
-            let Ok(canonical_instruction_path) = instruction_path.canonicalize() else {
+            let Ok(canonical_instruction_path) = dunce::canonicalize(instruction_path) else {
                 continue;
             };
 

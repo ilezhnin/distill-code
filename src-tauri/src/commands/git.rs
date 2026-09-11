@@ -135,9 +135,11 @@ async fn get_git_state_inner(path: String) -> Result<GitState, String> {
         )
         .await?,
     );
+    // Asked from the toplevel: `--git-common-dir` prints a path relative to the
+    // cwd, and `resolve_main_worktree_path` joins it onto the toplevel.
     let git_common_dir = trim_to_option(
         run_git_success_async(
-            &repo_path,
+            Path::new(&current_root),
             &["rev-parse", "--git-common-dir"],
             GIT_READ_COMMAND_TIMEOUT,
         )
@@ -180,6 +182,7 @@ async fn get_git_state_inner(path: String) -> Result<GitState, String> {
 #[tauri::command]
 pub async fn git_switch_branch(app: AppHandle, path: String, branch: String) -> Result<(), String> {
     let repo_path = resolve_repo_path(&path)?;
+    let branch = require_branch_name(&branch, "Branch name")?;
     run_git_success_async(
         &repo_path,
         &["switch", &branch],
@@ -240,8 +243,8 @@ pub async fn git_create_branch(
     base_branch: String,
 ) -> Result<(), String> {
     let repo_path = resolve_repo_path(&path)?;
-    let branch_name = require_nonempty(&name, "Branch name")?;
-    let base_branch = require_nonempty(&base_branch, "Base branch")?;
+    let branch_name = require_branch_name(&name, "Branch name")?;
+    let base_branch = require_branch_name(&base_branch, "Base branch")?;
     run_git_success_async(
         &repo_path,
         &["switch", "-c", branch_name.as_str(), base_branch.as_str()],
@@ -278,8 +281,8 @@ pub async fn git_count_branch_commits_not_in_base(
     base_branch: String,
 ) -> Result<u32, String> {
     let repo_path = resolve_repo_path(&path)?;
-    let branch_name = require_nonempty(&branch, "Branch name")?;
-    let base_branch_name = require_nonempty(&base_branch, "Base branch")?;
+    let branch_name = require_branch_name(&branch, "Branch name")?;
+    let base_branch_name = require_branch_name(&base_branch, "Base branch")?;
     let range = format!("refs/heads/{base_branch_name}..refs/heads/{branch_name}");
     let output = run_git_success_async(
         &repo_path,
@@ -301,7 +304,7 @@ pub async fn git_delete_branch(
     switch_to_branch: Option<String>,
 ) -> Result<(), String> {
     let repo_path = resolve_repo_path(&path)?;
-    let branch_name = require_nonempty(&branch, "Branch name")?;
+    let branch_name = require_branch_name(&branch, "Branch name")?;
     let current_branch = trim_to_option(
         run_git_success_async(
             &repo_path,
@@ -312,7 +315,7 @@ pub async fn git_delete_branch(
     );
 
     if current_branch.as_deref() == Some(branch_name.as_str()) {
-        let target_branch = require_nonempty(
+        let target_branch = require_branch_name(
             switch_to_branch.as_deref().unwrap_or_default(),
             "Switch target branch",
         )?;
@@ -378,7 +381,7 @@ pub async fn git_create_worktree(
 ) -> Result<CreatedWorktree, String> {
     let repo_path = resolve_repo_path(&path)?;
     let worktree_name = validate_worktree_name(&name)?;
-    let branch_name = require_nonempty(&branch, "Branch name")?;
+    let branch_name = require_branch_name(&branch, "Branch name")?;
     let (_, main_worktree_path) = git_repo_context_async(&repo_path).await?;
     let target_path = derive_worktree_path(
         main_worktree_path.as_deref().unwrap_or(path.as_str()),
@@ -394,7 +397,7 @@ pub async fn git_create_worktree(
 
     if create_branch {
         let base_branch =
-            require_nonempty(base_branch.as_deref().unwrap_or_default(), "Base branch")?;
+            require_branch_name(base_branch.as_deref().unwrap_or_default(), "Base branch")?;
         run_git_worktree_add_success(
             &repo_path,
             &[
@@ -825,6 +828,19 @@ fn require_nonempty(value: &str, label: &str) -> Result<String, String> {
     }
 }
 
+/// A branch or revision name passed to git as a positional argument.
+///
+/// Git refuses ref names that start with `-`, so such a value can only be an
+/// option: `git switch --orphan=x` or `git worktree add -b -f` would run a
+/// different command than the one the UI offered.
+fn require_branch_name(value: &str, label: &str) -> Result<String, String> {
+    let name = require_nonempty(value, label)?;
+    if name.starts_with('-') {
+        return Err(format!("{} cannot start with '-'", label));
+    }
+    Ok(name)
+}
+
 fn count_lines(value: &str) -> u32 {
     value
         .lines()
@@ -891,9 +907,10 @@ async fn git_repo_context_async(path: &Path) -> Result<(String, Option<String>),
         .await?,
     )
     .ok_or("Could not determine repository root")?;
+    // Asked from the toplevel for the same reason as in `get_git_state_inner`.
     let git_common_dir = trim_to_option(
         run_git_success_async(
-            path,
+            Path::new(&current_root),
             &["rev-parse", "--git-common-dir"],
             GIT_READ_COMMAND_TIMEOUT,
         )
@@ -915,6 +932,11 @@ fn validate_worktree_name(value: &str) -> Result<String, String> {
     }
     if worktree_name.contains('/') || worktree_name.contains('\\') {
         return Err("Worktree name cannot contain path separators".to_string());
+    }
+    // `C:name` is drive-relative on Windows: joining it replaces the base
+    // path, so the worktree would land outside `<repo>-worktrees`.
+    if worktree_name.contains(':') {
+        return Err("Worktree name cannot contain ':'".to_string());
     }
     Ok(worktree_name)
 }
@@ -1062,6 +1084,59 @@ mod tests {
         assert!(git_has_ignored_files(path)
             .await
             .expect("probe ignored file"));
+    }
+
+    #[tokio::test]
+    async fn main_worktree_resolves_from_a_repository_subfolder() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        run_git_success_async(temp.path(), &["init", "-q"], GIT_MUTATING_COMMAND_TIMEOUT)
+            .await
+            .expect("initialize git repo");
+        let nested = temp.path().join("packages").join("app");
+        std::fs::create_dir_all(&nested).expect("nested folder");
+
+        let (current_root, main_worktree_path) = git_repo_context_async(&nested)
+            .await
+            .expect("repository context");
+
+        assert_eq!(
+            main_worktree_path,
+            Some(normalize_path_string(&current_root))
+        );
+    }
+
+    #[test]
+    fn branch_names_cannot_be_read_as_git_options() {
+        assert!(require_branch_name("--orphan=wipe", "Branch name").is_err());
+        assert!(require_branch_name(" -f", "Branch name").is_err());
+        assert_eq!(
+            require_branch_name(" feature/x ", "Branch name").as_deref(),
+            Ok("feature/x")
+        );
+        assert_eq!(
+            require_branch_name("HEAD", "Base branch").as_deref(),
+            Ok("HEAD")
+        );
+    }
+
+    #[test]
+    fn worktree_names_cannot_leave_the_worktrees_folder() {
+        for name in [
+            "",
+            ".",
+            "..",
+            "a/b",
+            "a\\b",
+            "C:evil",
+            "C:\\evil",
+            "name:stream",
+        ] {
+            assert!(validate_worktree_name(name).is_err(), "accepted {name:?}");
+        }
+        assert_eq!(
+            validate_worktree_name(" feature-x ").as_deref(),
+            Ok("feature-x")
+        );
     }
 
     #[test]
