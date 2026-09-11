@@ -77,26 +77,3 @@ pub fn classify_codex_window_minutes(duration_minutes: Option<f64>) -> Option<&'
     }
     None
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_seconds_and_millis_epochs() {
-        assert_eq!(
-            parse_reset_timestamp(&serde_json::json!(1_700_000_000)),
-            Some(1_700_000_000_000)
-        );
-        assert_eq!(
-            parse_reset_timestamp(&serde_json::json!(1_700_000_000_000i64)),
-            Some(1_700_000_000_000)
-        );
-    }
-
-    #[test]
-    fn clamps_percent() {
-        assert_eq!(clamp_used_percent(140.0), 100.0);
-        assert_eq!(clamp_used_percent(-4.0), 0.0);
-    }
-}

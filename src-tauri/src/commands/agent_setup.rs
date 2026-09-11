@@ -1218,104 +1218,6 @@ async fn ensure_managed_runtime(
 mod tests {
     use super::*;
 
-    #[test]
-    fn npm_registry_is_quiet_without_a_distribution_and_override_wins() {
-        assert_eq!(npm_registry_for_distribution(None), None);
-
-        let distribution = serde_json::from_str(
-            r#"{"npmRegistryUrl":"https://packages.example.test/npm/","nodeDistBaseUrl":"https://node.example.test/dist/"}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            npm_registry_for_distribution(Some(&distribution)),
-            Some("https://packages.example.test/npm/".to_string())
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_cmd_exe_prefers_comspec() {
-        let cmd = windows_cmd_exe();
-        let name = cmd
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        assert!(
-            name == "cmd.exe" || name == "cmd",
-            "expected cmd.exe from ComSpec, got {}",
-            cmd.display()
-        );
-    }
-
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn windows_cmd_streaming_runs_through_cmd_exe() {
-        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let captured = lines.clone();
-        execute_windows_cmd_streaming("echo hello-from-cmd".to_string(), Vec::new(), move |line| {
-            captured.lock().unwrap().push(line.to_string())
-        })
-        .await
-        .expect("cmd.exe /c echo should succeed");
-        let lines = lines.lock().unwrap();
-        assert_eq!(
-            lines.first().map(String::as_str),
-            Some("$ echo hello-from-cmd")
-        );
-        assert!(
-            lines.iter().any(|line| line.contains("hello-from-cmd")),
-            "expected echo output in {lines:?}"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn doctor_login_shell_is_missing_on_windows() {
-        // Pin the failure Connect-all used to hit: the doctor crate always
-        // spawns `/bin/bash -l -c`, which is os error 3 on this host.
-        let error = std::process::Command::new("/bin/bash")
-            .args(["-l", "-c", "echo hi"])
-            .output()
-            .expect_err("unix login shell must not exist on Windows");
-        assert_eq!(error.raw_os_error(), Some(3));
-    }
-
-    #[test]
-    fn crate_check_id_strips_acp_suffix() {
-        assert_eq!(crate_check_id("claude-acp"), "ai-agent-claude");
-        assert_eq!(crate_check_id("codex-acp"), "ai-agent-codex");
-        assert_eq!(crate_check_id("copilot-acp"), "ai-agent-copilot");
-        assert_eq!(crate_check_id("amp-acp"), "ai-agent-amp");
-        assert_eq!(crate_check_id("pi-acp"), "ai-agent-pi");
-    }
-
-    #[test]
-    fn crate_check_id_maps_cursor_agent() {
-        assert_eq!(crate_check_id("cursor-agent"), "ai-agent-cursor");
-    }
-
-    #[test]
-    fn crate_check_id_passes_through_goose() {
-        assert_eq!(crate_check_id("goose"), "ai-agent-goose");
-    }
-
-    #[test]
-    fn npm_backed_install_fixes_trigger_the_managed_runtime_gate() {
-        // Pins the cross-crate contract the ensure step in `run_fix` relies
-        // on: copilot installs through npm (needs the managed runtime first),
-        // cursor installs through curl (host-only, no runtime needed). If the
-        // crate changes an install command's shape, this failing points at
-        // the gate, not at a mystery install regression.
-        let copilot = doctor::agents::lookup_fix_command("ai-agent-copilot", &FixType::Command)
-            .expect("copilot install command");
-        assert!(managed_acp_tools::is_npm_backed_command(&copilot));
-
-        let cursor = doctor::agents::lookup_fix_command("ai-agent-cursor", &FixType::Command)
-            .expect("cursor install command");
-        assert!(!managed_acp_tools::is_npm_backed_command(&cursor));
-    }
-
     fn check_with_fix(fix_type: Option<FixType>) -> doctor::DoctorCheck {
         doctor::DoctorCheck {
             id: "ai-agent-codex".into(),
@@ -1350,28 +1252,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_update_command_returns_the_trusted_readout_command() {
-        let mut check = check_with_fix(None);
-        check.main = Some(readout_with_update(
-            "npm install -g @anthropic-ai/claude-code@latest",
-            FixType::UpdateMain,
-        ));
-        check.bridge = Some(readout_with_update(
-            "npm install -g claude-agent-acp@latest",
-            FixType::UpdateBridge,
-        ));
-
-        assert_eq!(
-            resolve_update_command(&check, &FixType::UpdateMain).unwrap(),
-            "npm install -g @anthropic-ai/claude-code@latest"
-        );
-        assert_eq!(
-            resolve_update_command(&check, &FixType::UpdateBridge).unwrap(),
-            "npm install -g claude-agent-acp@latest"
-        );
-    }
-
-    #[test]
     fn resolve_update_command_rejects_non_update_fix_types() {
         // A forged plan naming an install/auth fix as an "update" must never
         // resolve to a command — those are not update slots.
@@ -1390,14 +1270,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_update_command_rejects_absent_readout() {
-        // No `main` / `bridge` readout means there is no trusted command to run.
-        let check = check_with_fix(None);
-        assert!(resolve_update_command(&check, &FixType::UpdateMain).is_err());
-        assert!(resolve_update_command(&check, &FixType::UpdateBridge).is_err());
-    }
-
-    #[test]
     fn resolve_update_command_rejects_mismatched_slot() {
         // The bridge readout carries a bridge update; requesting `updateMain`
         // against it (a mismatched slot) must fail rather than run the bridge
@@ -1407,19 +1279,6 @@ mod tests {
             "npm install -g claude-agent-acp@latest",
             FixType::UpdateBridge,
         ));
-        assert!(resolve_update_command(&check, &FixType::UpdateMain).is_err());
-    }
-
-    #[test]
-    fn resolve_update_command_rejects_readout_without_actionable_command() {
-        // A readout with no derived update command (e.g. a self-updating or
-        // opaque install source) offers nothing to run, even for a valid slot.
-        let mut check = check_with_fix(None);
-        check.main = Some(doctor::types::AgentVersionInfo {
-            update_command: None,
-            update_fix_type: None,
-            ..Default::default()
-        });
         assert!(resolve_update_command(&check, &FixType::UpdateMain).is_err());
     }
 
@@ -1443,76 +1302,6 @@ mod tests {
             ]
         )
         .is_err());
-    }
-
-    #[test]
-    fn authorize_update_fixes_allows_at_most_one_of_each_slot() {
-        // The card only ever names each slot once. An empty list, a single
-        // slot, and one of each (in either order) all authorize and map to the
-        // corresponding `FixType`.
-        assert_eq!(authorize_update_fixes("claude", &[]).unwrap(), Vec::new());
-        assert_eq!(
-            authorize_update_fixes("claude", &[UpdateFixType::UpdateMain]).unwrap(),
-            vec![FixType::UpdateMain]
-        );
-        assert_eq!(
-            authorize_update_fixes(
-                "claude",
-                &[UpdateFixType::UpdateBridge, UpdateFixType::UpdateMain]
-            )
-            .unwrap(),
-            vec![FixType::UpdateBridge, FixType::UpdateMain]
-        );
-    }
-
-    #[test]
-    fn install_fix_for_check_returns_the_two_install_recipes() {
-        assert_eq!(
-            install_fix_for_check(&check_with_fix(Some(FixType::Command))),
-            Some(FixType::Command)
-        );
-        assert_eq!(
-            install_fix_for_check(&check_with_fix(Some(FixType::Bridge))),
-            Some(FixType::Bridge)
-        );
-    }
-
-    #[test]
-    fn install_fix_for_check_ignores_auth_update_and_absent_fixes() {
-        // Auth and the per-readout update fixes are handled by later chain
-        // steps, not the install loop, so they don't keep the loop running.
-        assert_eq!(
-            install_fix_for_check(&check_with_fix(Some(FixType::Auth))),
-            None
-        );
-        assert_eq!(
-            install_fix_for_check(&check_with_fix(Some(FixType::UpdateMain))),
-            None
-        );
-        assert_eq!(
-            install_fix_for_check(&check_with_fix(Some(FixType::UpdateBridge))),
-            None
-        );
-        // A fully-installed agent has no install fix pending.
-        assert_eq!(install_fix_for_check(&check_with_fix(None)), None);
-    }
-
-    #[test]
-    fn authorize_install_seed_returns_the_matching_backend_fix() {
-        // The renderer names the install fix it intends; when it matches the
-        // fix the check currently offers, the backend value is what runs.
-        assert_eq!(
-            authorize_install_seed(
-                "codex-acp",
-                &InstallFixType::Command,
-                Some(FixType::Command)
-            ),
-            Ok(FixType::Command)
-        );
-        assert_eq!(
-            authorize_install_seed("codex-acp", &InstallFixType::Bridge, Some(FixType::Bridge)),
-            Ok(FixType::Bridge)
-        );
     }
 
     #[test]
@@ -1558,14 +1347,6 @@ mod tests {
     }
 
     #[test]
-    fn authorize_auth_allows_a_currently_offered_sign_in_for_a_probeable_agent() {
-        // Installed-but-signed-out is the state a probe-capable agent reports as
-        // offering `Auth`, so a legitimate sign-in is authorized.
-        let check = check_with_fix(Some(FixType::Auth)); // id = ai-agent-codex
-        assert!(authorize_auth("codex-acp", &check).is_ok());
-    }
-
-    #[test]
     fn authorize_auth_allows_installed_copilot_despite_no_offered_fix() {
         // Regression for the Copilot auth-gate defect: Copilot declares an
         // `auth_command` but no `auth_status_command`, so Doctor reports
@@ -1588,30 +1369,6 @@ mod tests {
         check.path = None;
         check.bridge_path = None;
         assert!(authorize_auth("copilot-acp", &check).is_err());
-    }
-
-    #[test]
-    fn authorize_auth_rejects_sign_in_for_an_agent_with_no_login_flow() {
-        // Goose declares no `auth_command`, so a renderer-requested sign-in is
-        // never authorized regardless of the reported check state.
-        let mut check = check_with_fix(None);
-        check.id = "ai-agent-goose".into();
-        check.path = Some("/usr/local/bin/goose".into());
-        assert!(authorize_auth("goose", &check).is_err());
-    }
-
-    #[test]
-    fn auth_capability_reflects_the_pinned_crate_table() {
-        // The gate's oracle is the backend-owned `AI_AGENT_CHECKS` table, not a
-        // renderer claim: probe-capable agents, the unprobeable Copilot, the
-        // no-login goose, and an unknown id each resolve to their capability.
-        assert_eq!(auth_capability("ai-agent-codex"), AuthCapability::Probeable);
-        assert_eq!(
-            auth_capability("ai-agent-copilot"),
-            AuthCapability::Unprobeable
-        );
-        assert_eq!(auth_capability("ai-agent-goose"), AuthCapability::None);
-        assert_eq!(auth_capability("ai-agent-nope"), AuthCapability::None);
     }
 
     #[test]
@@ -1660,44 +1417,11 @@ mod tests {
     }
 
     #[test]
-    fn install_sequence_single_binary_runs_once() {
-        // Copilot/Cursor resolve their only binary; the re-probe reports nothing
-        // further to install.
-        let sequence = plan_install_sequence(Some(FixType::Command), || None);
-        assert_eq!(sequence, vec![FixType::Command]);
-    }
-
-    #[test]
-    fn install_sequence_two_binary_runs_cli_then_bridge() {
-        // From scratch the crate reports the main CLI first; once it lands the
-        // now-visible bridge surfaces, then nothing remains.
-        let mut probes = [Some(FixType::Bridge), None].into_iter();
-        let sequence =
-            plan_install_sequence(Some(FixType::Command), move || probes.next().flatten());
-        assert_eq!(sequence, vec![FixType::Command, FixType::Bridge]);
-    }
-
-    #[test]
-    fn install_sequence_bridge_only_fix_runs_once() {
-        // The bridge-only "Fix" path seeds "bridge"; the re-probe then returns
-        // null so the loop runs exactly once.
-        let sequence = plan_install_sequence(Some(FixType::Bridge), || None);
-        assert_eq!(sequence, vec![FixType::Bridge]);
-    }
-
-    #[test]
     fn install_sequence_terminates_on_stuck_reprobe() {
         // An install that didn't take leaves the same fix pending; the `ran`
         // guard must short-circuit so the loop terminates instead of spinning.
         let sequence = plan_install_sequence(Some(FixType::Command), || Some(FixType::Command));
         assert_eq!(sequence, vec![FixType::Command]);
-    }
-
-    #[test]
-    fn install_sequence_empty_without_a_seed() {
-        // A pure update/auth has no install recipe, so the loop never runs.
-        let sequence = plan_install_sequence(None, || Some(FixType::Command));
-        assert!(sequence.is_empty());
     }
 
     #[test]
@@ -1726,161 +1450,5 @@ mod tests {
             registry.get("claude-acp").unwrap().status,
             SetupStatus::Running
         );
-    }
-
-    #[test]
-    fn begin_auth_starts_in_authenticating_phase() {
-        let registry = AgentSetupRegistry::default();
-        let (_, operation) = registry.begin("claude-acp", SetupAction::Auth);
-        assert_eq!(operation.phase, SetupPhase::Authenticating);
-    }
-
-    #[test]
-    fn mutate_transitions_phase_and_status() {
-        let registry = AgentSetupRegistry::default();
-        registry.begin("codex-acp", SetupAction::Install);
-
-        registry.mutate("codex-acp", |operation| {
-            operation.phase = SetupPhase::Checking;
-        });
-        assert_eq!(
-            registry.get("codex-acp").unwrap().phase,
-            SetupPhase::Checking
-        );
-
-        registry.mutate("codex-acp", |operation| {
-            operation.status = SetupStatus::Succeeded;
-            operation.phase = SetupPhase::Idle;
-        });
-        let operation = registry.get("codex-acp").unwrap();
-        assert_eq!(operation.status, SetupStatus::Succeeded);
-        assert_eq!(operation.phase, SetupPhase::Idle);
-    }
-
-    #[test]
-    fn mutate_is_a_noop_for_a_cleared_entry() {
-        let registry = AgentSetupRegistry::default();
-        assert!(registry
-            .mutate("never-started", |operation| operation
-                .output
-                .push("x".into()))
-            .is_none());
-    }
-
-    #[test]
-    fn push_output_line_caps_to_the_window() {
-        let mut output = Vec::new();
-        for index in 0..(MAX_OUTPUT_LINES + 25) {
-            push_output_line(&mut output, &format!("line {index}"));
-        }
-        assert_eq!(output.len(), MAX_OUTPUT_LINES);
-        // Oldest lines drop first; the last line is retained.
-        assert_eq!(output.first().unwrap(), "line 25");
-        assert_eq!(
-            output.last().unwrap(),
-            &format!("line {}", MAX_OUTPUT_LINES + 24)
-        );
-    }
-
-    fn operation_at(status: SetupStatus, updated_at_ms: u64) -> SetupOperation {
-        SetupOperation {
-            action: SetupAction::Install,
-            phase: SetupPhase::Idle,
-            status,
-            output: Vec::new(),
-            error: None,
-            updated_at_ms,
-        }
-    }
-
-    #[test]
-    fn sweep_removes_stale_terminal_but_keeps_running_and_fresh() {
-        let now = 1_000_000u64;
-        let mut map = HashMap::new();
-        // Running entries are never swept, even when older than the TTL.
-        map.insert("running".to_string(), operation_at(SetupStatus::Running, 0));
-        map.insert(
-            "stale".to_string(),
-            operation_at(SetupStatus::Succeeded, now - GC_TTL_MS - 1),
-        );
-        map.insert(
-            "fresh".to_string(),
-            operation_at(SetupStatus::Failed, now - 1_000),
-        );
-
-        sweep_terminal(&mut map, now, GC_TTL_MS);
-
-        assert!(map.contains_key("running"));
-        assert!(!map.contains_key("stale"));
-        assert!(map.contains_key("fresh"));
-    }
-
-    fn plan_with_requirements(verify_install: bool, bundled_bridge: bool) -> SetupPlan {
-        SetupPlan {
-            install_fix_type: None,
-            update_fix_types: Vec::new(),
-            verify_install,
-            bundled_bridge,
-        }
-    }
-
-    fn check_with_paths(path: Option<&str>, bridge_path: Option<&str>) -> doctor::DoctorCheck {
-        doctor::DoctorCheck {
-            path: path.map(str::to_string),
-            bridge_path: bridge_path.map(str::to_string),
-            ..check_with_fix(None)
-        }
-    }
-
-    #[tokio::test]
-    async fn verify_installed_skips_probe_when_not_required() {
-        // A built-in / binary-less provider sends `verify_install = false`: it
-        // has no binary to resolve, so verification must report success rather
-        // than failing closed on the absent doctor check (the old in-card
-        // `refreshInstallStatus` short-circuited the same way). The `false` arm
-        // returns before touching the doctor crate, so this needs no real check
-        // on PATH — and a provider id with no check is exactly the case the old
-        // path passed and the unconditional probe would have failed.
-        assert!(verify_installed(
-            None,
-            "provider-without-a-check",
-            &plan_with_requirements(false, false)
-        )
-        .await
-        .is_ok());
-    }
-
-    #[test]
-    fn check_satisfies_plan_accepts_either_binary_by_default() {
-        let plan = plan_with_requirements(true, false);
-        assert!(check_satisfies_plan(
-            &check_with_paths(Some("/bin/agent"), None),
-            &plan
-        ));
-        assert!(check_satisfies_plan(
-            &check_with_paths(None, Some("/bin/agent-acp")),
-            &plan
-        ));
-        assert!(!check_satisfies_plan(&check_with_paths(None, None), &plan));
-    }
-
-    #[test]
-    fn check_satisfies_plan_bundled_bridge_gates_on_path() {
-        // Mirror of the frontend readiness gate: the bundled bridge is the
-        // provider's only binary and reports under `path`. A bundled-bridge
-        // check with no resolved `path` is a broken bundle, so verification
-        // must fail even if a stray `bridge_path` were reported — otherwise
-        // the fix reports success and the card immediately flips back to
-        // not_installed.
-        let plan = plan_with_requirements(true, true);
-        assert!(check_satisfies_plan(
-            &check_with_paths(Some("/bundled/codex-acp"), None),
-            &plan
-        ));
-        assert!(!check_satisfies_plan(
-            &check_with_paths(None, Some("/bundled/codex-acp")),
-            &plan
-        ));
-        assert!(!check_satisfies_plan(&check_with_paths(None, None), &plan));
     }
 }

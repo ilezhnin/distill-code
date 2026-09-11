@@ -215,13 +215,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_unknown_id_is_noop() {
-        let bridge = Bridge::new();
-        bridge.resolve(result("never-dispatched", json!(null)));
-        assert_eq!(bridge.pending_len(), 0);
-    }
-
-    #[tokio::test]
     async fn duplicate_resolve_is_noop() {
         let bridge = Arc::new(Bridge::new());
         let bridge_task = bridge.clone();

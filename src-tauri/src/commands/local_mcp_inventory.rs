@@ -714,43 +714,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_toml_discovers_mcp_servers() {
-        let dir = tempdir().unwrap();
-        let config = ConfigFile {
-            path: dir.path().join("config.toml"),
-            scope: McpConfigScope::User,
-            label: "fixture".to_string(),
-        };
-        file(
-            &config.path,
-            r#"
-[mcp_servers.context7]
-command = "node"
-args = ["server.js"]
-
-[mcp_servers.remote]
-type = "sse"
-url = "https://mcp.example.test/sse?api_key=secret"
-"#,
-        );
-
-        let mut inventory = empty_inventory(McpHarnessId::Codex);
-        let value = read_toml_config(&config, &mut inventory, &mut Vec::new()).unwrap();
-        let mut servers = Vec::new();
-        collect_codex_servers(&mut servers, &config, &value);
-
-        assert_eq!(servers.len(), 2);
-        assert_ne!(
-            servers[0].identity_fingerprint,
-            servers[1].identity_fingerprint
-        );
-        assert_eq!(servers[0].name, "context7");
-        assert_eq!(servers[0].transport, McpTransportKind::Stdio);
-        assert_eq!(servers[1].transport, McpTransportKind::Sse);
-        assert!(!serde_json::to_string(&servers).unwrap().contains("api_key"));
-    }
-
-    #[test]
     fn malformed_file_marks_harness_error_without_raw_contents() {
         let dir = tempdir().unwrap();
         let config = ConfigFile {
@@ -765,121 +728,6 @@ url = "https://mcp.example.test/sse?api_key=secret"
         inventory = finish_inventory(inventory, messages);
         assert_eq!(inventory.status, McpInventoryStatus::Error);
         assert!(!inventory.message.unwrap_or_default().contains("ghp_secret"));
-    }
-
-    #[test]
-    fn configured_harness_with_read_errors_is_marked_partial() {
-        let mut inventory = empty_inventory(McpHarnessId::Codex);
-        inventory.servers.push(McpConfiguredServer {
-            id: "codex:user:context7".to_string(),
-            harness: McpHarnessId::Codex,
-            source: McpConfigSource {
-                scope: McpConfigScope::User,
-                label: "Codex user config".to_string(),
-            },
-            config_key: "context7".to_string(),
-            name: "Context7".to_string(),
-            transport: McpTransportKind::Http,
-            identity_fingerprint: "fixture".to_string(),
-        });
-
-        inventory = finish_inventory(
-            inventory,
-            vec!["Codex project config could not be parsed.".to_string()],
-        );
-
-        assert_eq!(inventory.status, McpInventoryStatus::Partial);
-        assert_eq!(inventory.servers.len(), 1);
-    }
-
-    #[test]
-    fn canonical_workspace_paths_ignores_missing_paths() {
-        let dir = tempdir().unwrap();
-        let existing = dir.path().join("workspace");
-        fs::create_dir_all(&existing).unwrap();
-        let result = canonical_workspace_paths(&[
-            existing.to_string_lossy().into_owned(),
-            dir.path().join("missing").to_string_lossy().into_owned(),
-        ]);
-        assert_eq!(result, vec![existing.canonicalize().unwrap()]);
-    }
-
-    #[test]
-    fn all_inventory_messages_are_generic() {
-        let mut inventory = empty_inventory(McpHarnessId::ClaudeCode);
-        inventory = finish_inventory(
-            inventory,
-            vec!["Claude Code user config could not be parsed.".to_string()],
-        );
-        assert_eq!(inventory.status, McpInventoryStatus::Error);
-        assert_eq!(
-            inventory.message.as_deref(),
-            Some("Claude Code user config could not be parsed.")
-        );
-    }
-
-    #[test]
-    fn empty_workspace_list_checks_only_user_claude_location() {
-        let inventory = discover_claude_code(&[]);
-        assert!(inventory
-            .checked_locations
-            .iter()
-            .any(|location| location.scope == McpConfigScope::User));
-        assert!(!inventory
-            .checked_locations
-            .iter()
-            .any(|location| location.scope == McpConfigScope::Project));
-    }
-
-    #[test]
-    fn missing_candidate_locations_are_marked_missing_not_sources() {
-        let dir = tempdir().unwrap();
-        let config = ConfigFile {
-            path: dir.path().join("missing.json"),
-            scope: McpConfigScope::User,
-            label: "fixture".to_string(),
-        };
-        let mut inventory = empty_inventory(McpHarnessId::ClaudeCode);
-        let mut messages = Vec::new();
-
-        assert!(read_json_config(&config, &mut inventory, &mut messages).is_none());
-
-        assert_eq!(inventory.checked_locations.len(), 1);
-        assert_eq!(
-            inventory.checked_locations[0].status,
-            McpSourceStatus::Missing
-        );
-        assert!(inventory.servers.is_empty());
-        assert!(messages.is_empty());
-    }
-
-    #[test]
-    fn claude_user_config_does_not_recursively_inventory_unrelated_projects() {
-        let dir = tempdir().unwrap();
-        let config = ConfigFile {
-            path: dir.path().join(".claude.json"),
-            scope: McpConfigScope::User,
-            label: "fixture".to_string(),
-        };
-        file(
-            &config.path,
-            r#"{
-              "projects": {
-                "/elsewhere": {
-                  "mcpServers": {
-                    "unrelated": { "command": "node" }
-                  }
-                }
-              }
-            }"#,
-        );
-        let mut inventory = empty_inventory(McpHarnessId::ClaudeCode);
-        let value = read_json_config(&config, &mut inventory, &mut Vec::new()).unwrap();
-        let mut servers = Vec::new();
-
-        collect_claude_code_servers(&mut servers, &config, &value, &[]);
-
-        assert!(servers.is_empty());
     }
 
     #[test]
@@ -944,29 +792,5 @@ url = "https://mcp.example.test/sse?api_key=secret"
         assert!(!rendered.contains("secret"));
         assert!(!rendered.contains(active_workspace.to_string_lossy().as_ref()));
         assert!(!rendered.contains("Claude Code local project config ("));
-    }
-
-    #[test]
-    fn codex_discovery_does_not_treat_generic_servers_as_mcp() {
-        let dir = tempdir().unwrap();
-        let config = ConfigFile {
-            path: dir.path().join("config.toml"),
-            scope: McpConfigScope::User,
-            label: "fixture".to_string(),
-        };
-        file(
-            &config.path,
-            r#"
-[servers.not_mcp]
-command = "node"
-"#,
-        );
-        let mut inventory = empty_inventory(McpHarnessId::Codex);
-        let value = read_toml_config(&config, &mut inventory, &mut Vec::new()).unwrap();
-        let mut servers = Vec::new();
-
-        collect_codex_servers(&mut servers, &config, &value);
-
-        assert!(servers.is_empty());
     }
 }

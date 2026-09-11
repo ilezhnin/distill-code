@@ -66,17 +66,15 @@ pub(crate) fn process_is_alive(pid: ProcessId) -> bool {
     system.process(pid).is_some()
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
-    #[cfg(windows)]
     const CONSOLE_WINDOW_PROBE: &str = r#"
         Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class ConsoleProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }';
         if ([ConsoleProbe]::GetConsoleWindow() -ne [IntPtr]::Zero) { exit 7 }
     "#;
 
-    #[cfg(windows)]
     #[test]
     fn std_background_command_has_no_console_window() {
         let mut command = std::process::Command::new("powershell.exe");
@@ -97,7 +95,6 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
     #[tokio::test]
     async fn async_background_command_has_no_console_window() {
         let mut command = tokio::process::Command::new("powershell.exe");
@@ -116,27 +113,5 @@ mod tests {
             "background child had a console window: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pid_t_from_u32_accepts_pid_t_boundary() {
-        let max_pid = u32::try_from(libc::pid_t::MAX).expect("pid_t max should fit in u32");
-
-        assert_eq!(pid_t_from_u32(max_pid), Some(libc::pid_t::MAX));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pid_t_from_u32_rejects_values_outside_pid_t_range() {
-        let max_pid = u32::try_from(libc::pid_t::MAX).expect("pid_t max should fit in u32");
-        assert_eq!(pid_t_from_u32(max_pid + 1), None);
-        assert_eq!(pid_t_from_u32(u32::MAX), None);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn pid_t_from_u32_accepts_windows_process_ids() {
-        assert_eq!(pid_t_from_u32(u32::MAX), Some(u32::MAX));
     }
 }

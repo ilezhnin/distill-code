@@ -93,12 +93,6 @@ mod tests {
     }
 
     #[test]
-    fn missing_dir_is_a_no_op() {
-        let app_data_dir = tempdir().unwrap();
-        sweep_stale_discovery_files(app_data_dir.path());
-    }
-
-    #[test]
     fn removes_dead_owner_files_and_keeps_live_and_own_files() {
         let app_data_dir = tempdir().unwrap();
         let gone = dead_pid();

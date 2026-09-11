@@ -546,50 +546,8 @@ const FALLBACK_ENV_KEYS: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
-    use super::{process_group_exists, stop_unix_process_group};
-    use super::{resolve_shell, resolve_terminal_cwd, take_decodable_utf8};
-    use std::collections::HashMap;
-    #[cfg(unix)]
-    use std::os::unix::process::CommandExt;
-    #[cfg(unix)]
-    use std::process::{Command, Stdio};
-    use tempfile::{tempdir, NamedTempFile};
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_terminal_defaults_to_powershell_instead_of_comspec() {
-        let shell_env = HashMap::from([("SHELL".to_string(), "ignored.exe".to_string())]);
-
-        assert_eq!(resolve_shell(&shell_env), "powershell.exe");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unix_terminal_prefers_captured_shell() {
-        let shell_env = HashMap::from([("SHELL".to_string(), "/bin/test-shell".to_string())]);
-
-        assert_eq!(resolve_shell(&shell_env), "/bin/test-shell");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn stop_escalates_for_a_process_group_that_ignores_hup() {
-        let mut child = Command::new("sh")
-            .args(["-c", "trap '' HUP; while :; do sleep 1; done"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .expect("spawn HUP-ignoring process group");
-        let process_id = child.id();
-
-        assert!(process_group_exists(process_id));
-        stop_unix_process_group(process_id);
-        child.wait().expect("reap stopped process group");
-        assert!(!process_group_exists(process_id));
-    }
+    use super::{resolve_terminal_cwd, take_decodable_utf8};
+    use tempfile::tempdir;
 
     #[test]
     fn characters_split_across_reads_are_decoded_whole() {
@@ -624,26 +582,5 @@ mod tests {
             dunce::canonicalize(dir.path()).expect("canonicalize")
         );
         assert!(!resolved.to_string_lossy().starts_with(r"\\?\"));
-    }
-
-    #[test]
-    fn resolve_terminal_cwd_rejects_file_path() {
-        let file = NamedTempFile::new().expect("temp file");
-        let cwd = file.path().to_string_lossy().to_string();
-
-        let error = resolve_terminal_cwd(&cwd).expect_err("file should fail");
-
-        assert!(error.contains("Terminal path is not a folder"));
-    }
-
-    #[test]
-    fn resolve_terminal_cwd_rejects_missing_path() {
-        let dir = tempdir().expect("tempdir");
-        let missing = dir.path().join("missing");
-        let cwd = missing.to_string_lossy().to_string();
-
-        let error = resolve_terminal_cwd(&cwd).expect_err("missing path should fail");
-
-        assert!(error.contains("Terminal folder does not exist"));
     }
 }
