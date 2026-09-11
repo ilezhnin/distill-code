@@ -29,13 +29,6 @@ import { useMultiWorkspacePreference } from "@/features/workspaces/multiWorkspac
 // rationale. Language lives in System (install-level, not a behavior) and
 // Keyboard shortcuts is its own top-level page, so neither is duplicated
 // here. Follow-up behavior is the primary.
-//
-// The global shortcut enable/disable toggle moved to Keyboard Shortcuts
-// (KeyboardShortcutsSettings.tsx) -- it's a shortcut-surface setting, not a
-// chat/work behavior, and Keyboard shortcuts is where the rest of the
-// shortcut configuration (including this shortcut's own chord) already
-// lives. Caught by Builderbot review: the toggle had been left behind here
-// after Keyboard shortcuts was promoted to its own top-level page.
 export function BehaviorSettings() {
   const { t } = useTranslation(["settings", "shortcuts"]);
   const sessionCostPreference = useSessionCostPreference();

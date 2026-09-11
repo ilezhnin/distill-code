@@ -19,7 +19,6 @@ export type KnownShortcutCommandId =
   | "navigation.closeSession"
   | "navigation.openSettings"
   | "navigation.paneJump"
-  | "navigation.globalShortcut"
   | "session.quickSwitch"
   | "session.next"
   | "session.previous"
@@ -82,7 +81,6 @@ export function shortcutScopesOverlap(
 }
 
 const DEFAULT_PANE_JUMP_NAVIGATION_SHORTCUT = "ctrl+;";
-const DEFAULT_GLOBAL_SHORTCUT = "alt+space";
 
 export interface ShortcutCommandDefinition {
   id: ShortcutCommandId;
@@ -207,16 +205,6 @@ export const SHORTCUT_COMMANDS: readonly ShortcutCommandDefinition[] = [
     descriptionKey: "actions.previousSession",
     configurable: true,
     discoverable: true,
-  },
-  {
-    id: "navigation.globalShortcut",
-    category: "navigation",
-    scope: "global",
-    defaultBindings: [{ shortcut: DEFAULT_GLOBAL_SHORTCUT }],
-    descriptionKey: "actions.globalShortcut",
-    configurable: true,
-    discoverable: true,
-    when: () => getPlatform() === "mac",
   },
   {
     id: "navigation.paneJump",

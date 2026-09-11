@@ -3,7 +3,6 @@ import { useEffect } from "react";
 import { AppShell } from "@/app/AppShell";
 import { TopBarActionsProvider } from "@/app/contexts/TopBarActionsContext";
 import { SelectedTextContextMenu } from "@/app/ui/SelectedTextContextMenu";
-import { GlobalShortcutBridge } from "@/features/global-shortcut/GlobalShortcutBridge";
 import { useZoom } from "@/shared/hooks/useZoom";
 import { Toaster } from "@/shared/ui/sonner";
 import { SecurityConfirmationFallback } from "@/features/security/ui/SecurityConfirmationPanel";
@@ -37,7 +36,6 @@ export function App() {
   return (
     <>
       <TopBarActionsProvider>
-        <GlobalShortcutBridge />
         <AppShell />
       </TopBarActionsProvider>
       <SelectedTextContextMenu />

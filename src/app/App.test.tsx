@@ -20,10 +20,6 @@ vi.mock("@/app/ui/SelectedTextContextMenu", () => ({
   SelectedTextContextMenu: () => null,
 }));
 
-vi.mock("@/features/global-shortcut/GlobalShortcutBridge", () => ({
-  GlobalShortcutBridge: () => null,
-}));
-
 vi.mock("@/features/security/ui/SecurityConfirmationPanel", () => ({
   SecurityConfirmationFallback: () => {
     mocks.securityConfirmationFallbackRender();
