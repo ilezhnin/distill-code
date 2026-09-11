@@ -387,6 +387,31 @@ describe("the E2 evidence gate on accept", () => {
     expect(decision.closure?.reason).toBe("accepted-without-evidence");
   });
 
+  it("downgrades accept when the verifier's report was quarantined", () => {
+    const wave = checkableWave();
+    const decision = decide({
+      parse: parse(verdictFence(ACCEPT)),
+      revisionCount: 0,
+      wave: {
+        ...wave,
+        steps: wave.steps.map((step) =>
+          step.stepIndex === 1
+            ? {
+                ...step,
+                reportVerified: true,
+                verificationFailed: true,
+                verificationDetail: "the report's summary is empty",
+              }
+            : step,
+        ),
+      },
+      reportOf: (runId) => (runId === "run-verify" ? stepReport() : undefined),
+    });
+    expect(decision.phase).toBe("needsOperator");
+    expect(decision.closure?.reason).toBe("accepted-without-evidence");
+    expect(decision.closure?.detail).toContain("quarantined");
+  });
+
   it("downgrades accept when the verifier reported nothing it looked at", () => {
     const decision = decide({
       parse: parse(verdictFence(ACCEPT)),
