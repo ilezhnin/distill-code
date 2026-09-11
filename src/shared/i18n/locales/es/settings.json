@@ -60,6 +60,7 @@
     "empty": "No hay chats archivados.",
     "messageCount_one": "{{displayCount}} mensaje",
     "messageCount_other": "{{displayCount}} mensajes",
+    "restoreFailed": "No se pudo restaurar el chat",
     "sectionTitle": "Chats archivados",
     "title": "Chats"
   },
@@ -159,7 +160,7 @@
       "label": "Predeterminado de menciones @"
     },
     "followUpBehavior": {
-      "description": "Pon seguimientos en cola mientras Distill responde o guía la ejecucion actual. Pulsa Cmd+Enter para hacer lo opuesto en un mensaje.",
+      "description": "Pon seguimientos en cola mientras Distill responde o guía la ejecucion actual. Pulsa Ctrl+Enter para hacer lo opuesto en un mensaje.",
       "label": "Comportamiento de seguimiento",
       "queue": "Cola",
       "steer": "Guiar"
@@ -287,7 +288,9 @@
     "title": "Notificaciones"
   },
   "projects": {
+    "deleteFailed": "No se pudo eliminar el proyecto",
     "empty": "No hay proyectos archivados.",
+    "restoreFailed": "No se pudo restaurar el proyecto",
     "sectionTitle": "Proyectos archivados",
     "title": "Proyectos"
   },
@@ -299,6 +302,9 @@
       "errors": {
         "genericSetupFailure": "La configuración tuvo un tropiezo.",
         "installStart": "No se pudo iniciar la instalación",
+        "updateStart": "No se pudo iniciar la actualización",
+        "authStart": "No se pudo iniciar el inicio de sesión",
+        "refreshStatus": "No se pudo actualizar el estado del proveedor",
         "installVerificationFailed": "La instalación terminó, pero no se encontró la CLI en PATH. Puede que tengas que reiniciar tu terminal.",
         "unknownPath": "esa ruta",
         "unknownPlatform": "otra plataforma"

@@ -7,6 +7,7 @@ import {
 } from "@/shared/api/acp";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { sessionSearchStamp } from "@/shared/api/sessionSearch";
+import { i18n } from "@/shared/i18n";
 import {
   buildSessionSearchResults,
   mergeSessionSearchResults,
@@ -30,7 +31,7 @@ interface UseSessionSearchOptions {
 export const SESSION_CONTENT_SEARCH_MIN_CHARS = 2;
 
 function searchErrorMessage(error: unknown): string {
-  return formatAcpErrorMessage(error, "Search failed");
+  return formatAcpErrorMessage(error, i18n.t("common:errors.searchFailed"));
 }
 
 /** What a run is allowed to invalidate on screen. */

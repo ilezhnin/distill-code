@@ -333,13 +333,18 @@ export function recordSessionTokens(
     const previousOutput = next.outputTokens;
     const previousCache = next.cacheTokens;
     const previousTotal = next.totalTokens;
+    // An auto snapshot that reports a turn (turnsDelta) is that turn's usage
+    // (ACP PromptResponse.usage), so it always adds. Treating it as a
+    // cumulative counter whenever both figures grew kept only the larger
+    // turn: 100/50 then 200/60 ended at 260 tokens instead of 410.
     const add =
       snapshot.mode === "add" ||
       (snapshot.mode !== "replace" &&
-        snapshot.inputTokens != null &&
-        snapshot.outputTokens != null &&
-        (snapshot.inputTokens < next.inputTokens ||
-          snapshot.outputTokens < next.outputTokens));
+        ((snapshot.turnsDelta ?? 0) > 0 ||
+          (snapshot.inputTokens != null &&
+            snapshot.outputTokens != null &&
+            (snapshot.inputTokens < next.inputTokens ||
+              snapshot.outputTokens < next.outputTokens))));
 
     if (snapshot.inputTokens !== undefined) {
       next.inputTokens = add

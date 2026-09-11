@@ -252,6 +252,60 @@ describe("terminalSessionManager", () => {
     });
   });
 
+  it("keeps a shell that exited before the start reply marked as exited", async () => {
+    const { getOrCreateTerminalSession } = await import(
+      "./terminalSessionManager"
+    );
+    let resolveStart: (terminalId: string) => void = () => undefined;
+    mocks.startTerminal.mockImplementationOnce(({ onEvent }) => {
+      return new Promise<string>((resolve) => {
+        onEvent({ event: "started", data: { terminalId: "terminal-1" } });
+        onEvent({
+          event: "exited",
+          data: { terminalId: "terminal-1", exitCode: 1, signal: null },
+        });
+        resolveStart = resolve;
+      });
+    });
+    mocks.startTerminal.mockResolvedValueOnce("terminal-2");
+    const session = getOrCreateTerminalSession({
+      key: "chat-session-id:tab-1",
+      cwd: "/repo",
+      labels,
+      theme: {},
+      fontFamily: "monospace",
+    });
+
+    resolveStart("terminal-1");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(session.status).toBe("exited");
+
+    session.runCommand("ls");
+    expect(mocks.startTerminal).toHaveBeenCalledTimes(2);
+    expect(mocks.writeTerminal).not.toHaveBeenCalledWith("terminal-1", "ls\r");
+  });
+
+  it("stops backend shells when the page is torn down", async () => {
+    const { getOrCreateTerminalSession, getTerminalSessionStatus } =
+      await import("./terminalSessionManager");
+    mocks.startTerminal.mockResolvedValueOnce("terminal-pagehide");
+    getOrCreateTerminalSession({
+      key: "chat-session-id:tab-pagehide",
+      cwd: "/repo",
+      labels,
+      theme: {},
+      fontFamily: "monospace",
+    });
+    await Promise.resolve();
+
+    window.dispatchEvent(new Event("pagehide"));
+
+    expect(mocks.stopTerminal).toHaveBeenCalledWith("terminal-pagehide");
+    expect(getTerminalSessionStatus("chat-session-id:tab-pagehide")).toBeNull();
+  });
+
   it("keeps pre-session status subscriptions for later backend exits", async () => {
     const changes: unknown[] = [];
     let emitTerminalEvent: (event: TerminalEvent) => void = () => undefined;

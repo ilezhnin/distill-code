@@ -73,6 +73,23 @@ describe("usageOverviewModel", () => {
     expect(overview.bestDay?.day).toBe("2026-08-01");
   });
 
+  it("flags partial cost when a costed provider has uncosted sessions", () => {
+    const { a } = ledger.sessions;
+    const overview = buildUsageOverview({
+      ledger: {
+        ...ledger,
+        sessions: {
+          a,
+          c: { ...a, costUsd: null, totalTokens: 50 },
+        },
+      },
+      enabledProviderIds: ["goose"],
+    });
+
+    expect(overview.estimatedCostUsd).toBe(1.5);
+    expect(overview.hasPartialCost).toBe(true);
+  });
+
   it("filters daily totals to the selected provider", () => {
     const overview = buildUsageOverview({
       ledger,

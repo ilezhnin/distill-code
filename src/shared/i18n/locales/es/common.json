@@ -52,6 +52,11 @@
     "archiveConfirmTitle_one": "¿Archivar 1 chat?",
     "archiveConfirmTitle_other": "¿Archivar {{displayCount}} chats?",
     "archiving": "Archivando...",
+    "exportFailed": "No se pudieron exportar los chats",
+    "exportedTo_one": "Se exportó 1 chat a {{folder}}",
+    "exportedTo_other": "Se exportaron {{displayCount}} chats a {{folder}}",
+    "exported_one": "Se exportó 1 chat",
+    "exported_other": "Se exportaron {{displayCount}} chats",
     "failed_one": "{{displayCount}} acción falló",
     "failed_other": "{{displayCount}} acciones fallaron"
   },
@@ -93,7 +98,8 @@
     "view": "Ver"
   },
   "errors": {
-    "clipboardUnavailable": "La API del portapapeles no está disponible"
+    "clipboardUnavailable": "La API del portapapeles no está disponible",
+    "searchFailed": "La búsqueda falló"
   },
   "rendererError": {
     "description": "Distill tuvo un error del renderizador. Recarga la ventana para intentarlo de nuevo.",
@@ -155,7 +161,9 @@
     "reportedNone": "{{provider}} no informó ningún modelo"
   },
   "session": {
-    "defaultTitle": "Nuevo chat"
+    "defaultTitle": "Nuevo chat",
+    "exported": "Se exportó {{title}} a {{filename}}",
+    "exportFailed": "No se pudo exportar el chat"
   },
   "usage": {
     "cache": "Caché",

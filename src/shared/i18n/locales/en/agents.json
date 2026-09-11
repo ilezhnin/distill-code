@@ -198,7 +198,7 @@
     "description": "Import an agent with a ZIP, image, .md, or JSON file.",
     "dropTitle": "Drag and drop an agent file here",
     "preparing": "Opening agent file…",
-    "openFinder": "Open Finder",
+    "openFinder": "Browse files",
     "previewAlt": "Preview of {{name}}",
     "descriptionFallback": "{{name}} is ready to help.",
     "import": "Import agent"
