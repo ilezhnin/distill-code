@@ -34,7 +34,7 @@ const APP_LOG_MAX_FILE_SIZE_BYTES: u128 = 10 * 1024 * 1024;
 /// counts archives only — the active `berd.log` is always kept on top, so
 /// this retains three files total. The plugin's default strategy is
 /// `KeepOne`, which *deletes* the full file rather than archiving it — that
-/// would wipe the captured `goose serve` stderr (crash backtraces included)
+/// would wipe the captured agent-bridge stderr and panic backtraces
 /// mid-incident.
 const APP_LOG_ARCHIVES_KEPT: usize = 2;
 #[cfg(target_os = "macos")]
@@ -124,7 +124,7 @@ pub fn run() {
 
     // Single-instance enforcement: on Windows, a second launch exits early
     // and focuses the existing window instead of starting a duplicate app
-    // (log files, db connections, goose serve, etc.). macOS handles this
+    // (log files, db connections, agent host, etc.). macOS handles this
     // via RunEvent::Reopen further below.
     #[cfg(target_os = "windows")]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -194,11 +194,11 @@ pub fn run() {
             // window is created hidden, but its webview still loads and races
             // ahead on Tokio threads (e.g. `runChatRuntimeStartup` starting
             // the agent host and calling `refresh_runtime_config`). If a blocking
-            // step such as the move-to-/Applications prompt runs first, those
-            // handlers read the state map before `manage()` has run and fail
-            // with "state not managed". These `manage()` calls are cheap and
-            // side-effect-free, so running them first guarantees the state is
-            // present even while a later step blocks the setup thread.
+            // step runs first, those handlers read the state map before
+            // `manage()` has run and fail with "state not managed". These
+            // `manage()` calls are cheap and side-effect-free, so running them
+            // first guarantees the state is present even while a later step
+            // blocks the setup thread.
             let app_data_dir = app.path().app_data_dir()?;
 
             // Resolved before anything writes to disk so every part of the app
@@ -249,15 +249,6 @@ pub fn run() {
 
             // With all command state registered, it is now safe to run blocking,
             // async, network, or filesystem work.
-            //
-            // The move-to-/Applications prompt is intentionally NOT run here.
-            // Its synchronous `NSAlert.runModal()` would block this setup
-            // closure on the main thread until the user dismisses it, stalling
-            // the menu, lifecycle, and updater wiring below and widening the
-            // window in which the racing webview observes a partially set-up
-            // app. It is deferred to `RunEvent::Ready` (see `run` below), which
-            // fires on the main thread once setup has returned and the event
-            // loop is running.
 
             services::diagnostic_log::record_event(
                 services::diagnostic_log::DiagnosticLevel::Info,

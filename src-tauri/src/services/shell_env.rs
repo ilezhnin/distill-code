@@ -8,11 +8,11 @@
 //!    and coding-agent hosts (Orca, Claude Code, Codex, Grok) stamp their
 //!    children with per-pane / per-session variables, and the agent CLIs carry
 //!    host-installed hooks that report any session running with those
-//!    variables back to the host. Berd's long-lived backend (`goose serve`) and
-//!    the per-session ACP bridges it spawns are not children of that pane:
-//!    inheriting its identity makes every Berd chat show up inside the terminal
-//!    that happened to run Berd, and Orca's redirected `CODEX_HOME` would route
-//!    Codex sessions through Orca's account instead of the user's own.
+//!    variables back to the host. The ACP bridges Berd's agent host spawns
+//!    are not children of that pane: inheriting its identity makes every Berd
+//!    chat show up inside the terminal that happened to run Berd, and Orca's
+//!    redirected `CODEX_HOME` would route Codex sessions through Orca's
+//!    account instead of the user's own.
 //!
 //! A captured shell environment is a map, but a `Command` that layers that map
 //! onto the live process environment still inherits everything the map was
@@ -443,7 +443,7 @@ mod tests {
         assert!(keys.iter().any(|key| key == PANE), "{keys:?}");
         assert!(!keys.iter().any(|key| key == SAFE), "{keys:?}");
 
-        let mut command = std::process::Command::new("goose");
+        let mut command = std::process::Command::new("claude-agent-acp");
         remove_inherited_launcher_env(&mut command);
         let removed: Vec<String> = command
             .get_envs()

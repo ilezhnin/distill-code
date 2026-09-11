@@ -1,10 +1,11 @@
 //! Agent-platform subscription rate limits.
 //!
 //! Distill owns this surface because Distill already owns agent CLI install
-//! and auth (`agent_setup`). Goose remains the ACP runtime and reports
-//! per-session token usage on prompt results; those tokens are recorded in
-//! the renderer usage ledger and shown on Settings → Stats. Do not scrape
-//! Claude Code / Codex / Grok CLI subscriptions from Goose.
+//! and auth (`agent_setup`). Per-session token usage is a separate signal:
+//! the ACP bridges report it on prompt results, the agent host passes those
+//! through unchanged, and the renderer records them in its usage ledger for
+//! Settings → Stats. Subscription windows come only from the CLIs' own
+//! accounts, fetched here.
 
 mod claude;
 mod codex;

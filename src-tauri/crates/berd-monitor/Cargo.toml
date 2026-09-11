@@ -2,7 +2,7 @@
 name = "berd-monitor"
 version = "0.6.2"
 description = "Detached command monitor for Berd sessions"
-authors = ["Block, Inc."]
+authors = ["Ivan Lezhnin"]
 edition = "2021"
 
 [dependencies]
