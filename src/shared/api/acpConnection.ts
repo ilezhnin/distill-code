@@ -7,7 +7,10 @@ import {
   type RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 import packageJson from "../../../package.json";
-import { createWebSocketStream } from "./createWebSocketStream";
+import {
+  createWebSocketStream,
+  type WebSocketStream,
+} from "./createWebSocketStream";
 import { HostClient } from "./hostClient";
 import { perfLog } from "@/shared/lib/perfLog";
 
@@ -41,7 +44,7 @@ function allowOnce(args: RequestPermissionRequest): RequestPermissionResponse {
 
 let clientPromise: Promise<HostClient> | null = null;
 let resolvedClient: HostClient | null = null;
-let activeStream: ReturnType<typeof createWebSocketStream> | null = null;
+let activeStream: WebSocketStream | null = null;
 
 function createClientCallbacks(): () => Client {
   return () => ({
@@ -57,10 +60,7 @@ function createClientCallbacks(): () => Client {
   });
 }
 
-function monitorConnection(
-  client: HostClient,
-  stream: ReturnType<typeof createWebSocketStream>,
-): void {
+function monitorConnection(client: HostClient, stream: WebSocketStream): void {
   const clearCurrentConnection = () => {
     if (activeStream !== stream) {
       return;
@@ -88,15 +88,17 @@ function monitorConnection(
  * Abort the current transport after an ACP request exceeds its liveness bound.
  * A timed-out request leaves the connection state unknowable; reconnecting is
  * safer than allowing later mutations to race work still running remotely.
+ *
+ * The socket is closed directly: aborting the writable side is refused while
+ * a writer holds it, which would leave the old socket open and every request
+ * still waiting on it unanswered.
  */
 export async function invalidateClientConnection(): Promise<void> {
   const stream = activeStream;
   activeStream = null;
   resolvedClient = null;
   clientPromise = null;
-  if (stream) {
-    await stream.writable.abort();
-  }
+  stream?.close();
 }
 
 async function initializeConnection(): Promise<HostClient> {
@@ -111,14 +113,25 @@ async function initializeConnection(): Promise<HostClient> {
   const client = new HostClient(createClientCallbacks(), stream);
 
   const tInit = performance.now();
-  await client.initialize({
-    protocolVersion: PROTOCOL_VERSION,
-    clientCapabilities: {},
-    clientInfo: {
-      name: packageJson.name,
-      version: packageJson.version,
-    },
-  });
+  try {
+    await client.initialize({
+      protocolVersion: PROTOCOL_VERSION,
+      clientCapabilities: {},
+      clientInfo: {
+        name: packageJson.name,
+        version: packageJson.version,
+      },
+    });
+  } catch (error) {
+    // A socket that never finished the handshake must not linger: the host
+    // treats the newest socket as the renderer's, and this one would stay
+    // open, unanswered, next to the retry's.
+    if (activeStream === stream) {
+      activeStream = null;
+    }
+    stream.close();
+    throw error;
+  }
   perfLog(
     `[perf:conn] client.initialize in ${(performance.now() - tInit).toFixed(1)}ms (total ${(performance.now() - tStart).toFixed(1)}ms)`,
   );
@@ -135,15 +148,23 @@ export async function getClient(): Promise<HostClient> {
 
   if (!clientPromise) {
     perfLog("[perf:conn] getClient() → initializing new ACP connection");
-    clientPromise = initializeConnection()
+    // A connection invalidated while it was still initializing must not be
+    // cached when it resolves: its socket is already closed, and the close
+    // monitor no longer recognises it, so it would be handed out forever.
+    const pending: Promise<HostClient> = initializeConnection()
       .then((client) => {
-        resolvedClient = client;
+        if (clientPromise === pending) {
+          resolvedClient = client;
+        }
         return client;
       })
       .catch((error) => {
-        clientPromise = null;
+        if (clientPromise === pending) {
+          clientPromise = null;
+        }
         throw error;
       });
+    clientPromise = pending;
   } else {
     perfLog("[perf:conn] getClient() awaiting in-flight initializeConnection");
   }

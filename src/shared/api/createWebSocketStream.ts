@@ -26,7 +26,10 @@ function acpDebug(label: string, payload: unknown): void {
   console.debug(`[acp] ${label}`, payload);
 }
 
-export function createWebSocketStream(wsUrl: string): Stream {
+/** An ACP stream over one WebSocket; `close` drops the socket itself. */
+export type WebSocketStream = Stream & { close: () => void };
+
+export function createWebSocketStream(wsUrl: string): WebSocketStream {
   const ws = new WebSocket(wsUrl);
 
   const incoming: AnyMessage[] = [];
@@ -105,5 +108,5 @@ export function createWebSocketStream(wsUrl: string): Stream {
     },
   });
 
-  return { readable, writable };
+  return { readable, writable, close: () => ws.close() };
 }
