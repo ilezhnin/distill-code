@@ -13,6 +13,10 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 
 import { BoundedSet } from "@/features/conductor/boundedSet";
+import {
+  isConductorGraphHydrated,
+  whenConductorGraphHydrated,
+} from "@/features/conductor/conductorGraphStore";
 
 import { detectMemoryFenceCandidates } from "./lib/memoryAgentScan";
 import {
@@ -90,6 +94,10 @@ function drainMemoryFences(): void {
   // the operator deleted weeks ago would be remembered again from the old
   // message that first kept it. The drain runs again when the read lands.
   if (!useMemoryStore.getState().hydrated) return;
+  // Nor before the graph is read: the ACL below reads "no node" as the
+  // operator's own chat, so a worker whose node is still on disk would have
+  // its fence honoured.
+  if (!isConductorGraphHydrated()) return;
   if (draining) return;
   draining = true;
   try {
@@ -162,6 +170,7 @@ export function useMemoryAgentSync(): void {
         if (state.hydrated && !previous.hydrated) drainMemoryFences();
       },
     );
+    whenConductorGraphHydrated(drainMemoryFences);
     return () => {
       stopWatchingMessages();
       stopWatchingPreferences();

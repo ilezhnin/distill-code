@@ -15,7 +15,10 @@ import type { Persona } from "@/shared/types/agents";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
-import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import {
+  setConductorGraphHydratedForTests,
+  useConductorGraphStore,
+} from "@/features/conductor/conductorGraphStore";
 import type { SessionManagedBy, SessionRole } from "@/features/conductor/types";
 
 import { MEMORY_SCAN_TAIL } from "./lib/memoryAgentScan";
@@ -203,6 +206,32 @@ describe("useMemoryAgentSync", () => {
     });
     expect(warn).not.toHaveBeenCalled();
     expect(useMemoryStore.getState().appliedMessageIds).toContain("m-1");
+  });
+
+  it("waits for the graph before judging who wrote a fence", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    putSession("s-w", "p-1");
+    act(() => {
+      setConductorGraphHydratedForTests(false);
+    });
+    try {
+      renderHook(() => useMemoryAgentSync());
+      // The worker's node is still on disk: with no node, the ACL would
+      // read this session as the operator's own chat.
+      putMessages("s-w", [assistant("m-1", '{"remember":["Too early"]}')]);
+      expect(useMemoryStore.getState().entries).toHaveLength(0);
+      expect(useMemoryStore.getState().appliedMessageIds).not.toContain("m-1");
+
+      putGraphNode("s-w", "worker", { managedBy: "wave" });
+      act(() => {
+        setConductorGraphHydratedForTests(true);
+      });
+
+      expect(useMemoryStore.getState().entries).toHaveLength(0);
+      expect(useMemoryStore.getState().appliedMessageIds).toContain("m-1");
+    } finally {
+      setConductorGraphHydratedForTests(null);
+    }
   });
 
   it("refuses a worker-layer node even outside the wave engine", () => {

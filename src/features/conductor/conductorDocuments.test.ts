@@ -27,7 +27,10 @@ const {
   CONDUCTOR_GRAPH_STORAGE_KEY,
   flushConductorGraphWrites,
   hydrateConductorGraph,
+  isConductorGraphHydrated,
+  setConductorGraphHydratedForTests,
   useConductorGraphStore,
+  whenConductorGraphHydrated,
 } = await import("./conductorGraphStore");
 const {
   CONDUCTOR_WAVES_STORAGE_KEY,
@@ -165,16 +168,23 @@ describe("the conductor's state lives in the Distill folder (P24)", () => {
     const woken = vi.fn();
     whenWaveEngineStateHydrated(woken);
     expect(woken).not.toHaveBeenCalled();
+    // Back to the real answer, which on the desktop waits for the read.
+    setWaveEngineStateHydratedForTests(null);
     await hydrateWaveEngineState();
     expect(isWaveEngineStateHydrated()).toBe(true);
     expect(woken).toHaveBeenCalledTimes(1);
   });
 
-  it("is ready even when the folder could not be read", async () => {
-    setWaveEngineStateHydratedForTests(false);
-    readDistillDocument.mockRejectedValueOnce(new Error("disk gone"));
-    await hydrateWaveEngineState();
-    expect(isWaveEngineStateHydrated()).toBe(true);
+  it("says the graph is not ready until the folder has been read", async () => {
+    setConductorGraphHydratedForTests(false);
+    expect(isConductorGraphHydrated()).toBe(false);
+    const woken = vi.fn();
+    whenConductorGraphHydrated(woken);
+    expect(woken).not.toHaveBeenCalled();
+    setConductorGraphHydratedForTests(null);
+    await hydrateConductorGraph();
+    expect(isConductorGraphHydrated()).toBe(true);
+    expect(woken).toHaveBeenCalledTimes(1);
   });
 
   it("unions telemetry records without counting this session twice", async () => {

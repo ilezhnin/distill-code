@@ -293,6 +293,71 @@ function persistGraph(state: ConductorGraphState): void {
  * node the app just created is more certainly true than the file on disk.
  */
 export async function hydrateConductorGraph(): Promise<void> {
+  try {
+    await mergeStoredGraph();
+  } finally {
+    markConductorGraphHydrated();
+  }
+}
+
+let graphHydrated = false;
+const graphHydrationWaiters = new Set<() => void>();
+
+/**
+ * True once the folder's graph has been folded in — or when there is no
+ * folder to wait for.
+ *
+ * Until then the graph is only what this process registered, and anything
+ * that reads "no node" as a fact is wrong: the memory ACL treats a session
+ * with no node as the operator's own chat (so a worker's fence would be
+ * honoured), the startup reconcile would run over an empty graph once and
+ * never demote the stale nodes that arrive a moment later, and the wave
+ * engine would reset a `spawning` step whose child is in the file.
+ */
+export function isConductorGraphHydrated(): boolean {
+  if (graphHydratedForTests !== null) return graphHydratedForTests;
+  return graphHydrated || !graphDocument.active;
+}
+
+let graphHydratedForTests: boolean | null = null;
+
+function markConductorGraphHydrated(): void {
+  graphHydrated = true;
+  const waiters = [...graphHydrationWaiters];
+  graphHydrationWaiters.clear();
+  for (const waiter of waiters) {
+    try {
+      waiter();
+    } catch {
+      // One waiter that throws must not keep the others waiting.
+    }
+  }
+}
+
+/** Calls `callback` once the graph is hydrated (immediately if it is). */
+export function whenConductorGraphHydrated(callback: () => void): void {
+  if (isConductorGraphHydrated()) {
+    callback();
+    return;
+  }
+  graphHydrationWaiters.add(callback);
+}
+
+/**
+ * Pins the hydration answer, or (`null`) returns it to the real one. When
+ * pinned to true, parked waiters run. Tests only.
+ */
+export function setConductorGraphHydratedForTests(
+  hydrated: boolean | null,
+): void {
+  graphHydratedForTests = hydrated;
+  // Pinning "not read" also forgets a real read, so that returning to the
+  // real answer waits for the next hydration.
+  if (hydrated === false) graphHydrated = false;
+  if (hydrated === true) markConductorGraphHydrated();
+}
+
+async function mergeStoredGraph(): Promise<void> {
   if (!graphDocument.active) return;
   const stored = await graphDocument.read();
   if (!stored) return;

@@ -23,7 +23,11 @@ import {
   type Message,
 } from "@/shared/types/messages";
 
-import { useConductorGraphStore } from "./conductorGraphStore";
+import {
+  isConductorGraphHydrated,
+  useConductorGraphStore,
+  whenConductorGraphHydrated,
+} from "./conductorGraphStore";
 import { stopOrchestratorSession } from "./orchestratorControls";
 import { roleDisplayName, waveStepDisplayName } from "./roleLayers";
 import { SpawnAclDeniedError } from "./spawnAcl";
@@ -127,8 +131,12 @@ const scannedWithoutPlan = new BoundedSet(MAX_REMEMBERED_PLAN_MESSAGES);
 /** Re-entrancy guard: spawning writes stores, which call this again. */
 let ticking = false;
 
-/** True while a tick is parked until the folder's waves are read. */
+/** True while a tick is parked until the folder's documents are read. */
 let awaitingWaveHydration = false;
+
+function conductorDocumentsHydrated(): boolean {
+  return isWaveEngineStateHydrated() && isConductorGraphHydrated();
+}
 
 /**
  * Steps left `spawning` by a previous process are only adopted or reset on the
@@ -991,15 +999,20 @@ function advanceWaves(state: WaveEngineState): {
 export function runWaveEngineTick(): void {
   if (ticking) return;
   if (!useChatSessionStore.getState().hasHydratedSessions) return;
-  if (!isWaveEngineStateHydrated()) {
-    // The folder's waves and tombstones are not in memory yet; a tick now
-    // would re-admit plans they already record. One wake-up once they land.
+  if (!conductorDocumentsHydrated()) {
+    // The folder's waves, tombstones and graph are not all in memory yet: a
+    // tick now would re-admit plans the tombstones record, or reset a
+    // `spawning` step whose child is in the graph file and spawn it twice.
+    // One wake-up once both have landed.
     if (!awaitingWaveHydration) {
       awaitingWaveHydration = true;
-      whenWaveEngineStateHydrated(() => {
+      const wake = () => {
+        if (!conductorDocumentsHydrated()) return;
         awaitingWaveHydration = false;
         runWaveEngineTick();
-      });
+      };
+      whenWaveEngineStateHydrated(wake);
+      whenConductorGraphHydrated(wake);
     }
     return;
   }

@@ -7,7 +7,10 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { syncConductorDisplayNameFromTitle } from "./syncConductorDisplayName";
 
-import { useConductorGraphStore } from "./conductorGraphStore";
+import {
+  isConductorGraphHydrated,
+  useConductorGraphStore,
+} from "./conductorGraphStore";
 import { publishTerminalGroupDigests } from "./digestPublisher";
 import { parseStructuredReport } from "./orchestratorReport";
 import { reconcileStaleGraphStatuses } from "./reconcileStaleGraphStatuses";
@@ -40,6 +43,10 @@ let hasReconciledStaleStatuses = false;
 function reconcileStaleStatusesOnce(): void {
   if (hasReconciledStaleStatuses) return;
   if (!useChatSessionStore.getState().hasHydratedSessions) return;
+  // One-shot, so it must see the nodes the previous run left: reconciling an
+  // empty graph "succeeds", and the stale nodes the folder brings in a moment
+  // later would then claim to be working forever.
+  if (!isConductorGraphHydrated()) return;
   const chat = useChatStore.getState();
   // Queues hydrate from native storage after the cached snapshot; reconciling
   // earlier could stomp a child whose queued first message is still loading.
@@ -357,6 +364,7 @@ export function useConductorGraphSync(): void {
     void hydrateMissingSessions();
 
     const unsubGraph = useConductorGraphStore.subscribe(() => {
+      reconcileStaleStatusesOnce();
       syncChildStatuses();
     });
     const unsubChat = useChatStore.subscribe(() => {
