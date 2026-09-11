@@ -14,8 +14,10 @@ pub(crate) fn redact_log_line(line: &str) -> String {
         "authorization",
         "refresh_token",
         "access_token",
+        "private_key",
         "secret_key",
         "api_key",
+        "api-key",
         "apikey",
         "password",
         "secret",
@@ -37,7 +39,7 @@ fn redact_sensitive_key(line: String, key: &str) -> String {
         let key_start = search_start + relative_key_start;
         let key_end = key_start + key.len();
 
-        if !is_key_boundary(lower.as_bytes(), key_start, key_end) {
+        if !is_key_end(lower.as_bytes(), key_end) {
             search_start = key_end;
             continue;
         }
@@ -85,16 +87,16 @@ fn redact_sensitive_key(line: String, key: &str) -> String {
     redacted
 }
 
-fn is_key_boundary(bytes: &[u8], key_start: usize, key_end: usize) -> bool {
-    let before_is_key_char = key_start
-        .checked_sub(1)
-        .and_then(|index| bytes.get(index))
-        .is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-'));
-    let after_is_key_char = bytes
+/// Whether a secret-ish key ends at `key_end`. Only the trailing edge is a
+/// boundary: the key may be the tail of a longer identifier, because that is
+/// how secrets are actually spelled — `ANTHROPIC_API_KEY=`, `GITHUB_TOKEN=`,
+/// `x-api-key:`, `client_secret=`, `accessToken:`. Requiring a leading
+/// boundary too let every one of those through unredacted. A trailing key
+/// character still disqualifies the match (`tokens=`, `token_count=`).
+fn is_key_end(bytes: &[u8], key_end: usize) -> bool {
+    !bytes
         .get(key_end)
-        .is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-'));
-
-    !before_is_key_char && !after_is_key_char
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-'))
 }
 
 fn skip_ascii_whitespace(bytes: &[u8], start: usize) -> usize {
@@ -151,6 +153,30 @@ mod tests {
         assert_eq!(
             redacted,
             r#"{"authorization":"[redacted]","SECRET_KEY":"[redacted]"}"#
+        );
+    }
+
+    #[test]
+    fn redacts_keys_that_end_a_longer_identifier() {
+        let redacted = redact_log_line(
+            "ANTHROPIC_API_KEY=sk-ant-1 GITHUB_TOKEN=ghp_2 x-api-key: k3 client_secret=s4",
+        );
+
+        assert_eq!(
+            redacted,
+            "ANTHROPIC_API_KEY=[redacted] GITHUB_TOKEN=[redacted] x-api-key: [redacted] client_secret=[redacted]"
+        );
+        assert_eq!(
+            redact_log_line(r#"{"accessToken":"a1","refreshToken":"r2"}"#),
+            r#"{"accessToken":"[redacted]","refreshToken":"[redacted]"}"#
+        );
+    }
+
+    #[test]
+    fn leaves_keys_that_only_start_with_a_secret_word_alone() {
+        assert_eq!(
+            redact_log_line("tokens=12 token_count=3 passwords_set=true"),
+            "tokens=12 token_count=3 passwords_set=true"
         );
     }
 
