@@ -12,46 +12,31 @@ import { HostClient } from "./hostClient";
 import { perfLog } from "@/shared/lib/perfLog";
 
 let notificationHandler: AcpNotificationHandler | null = null;
-const sessionNotificationInterceptors =
-  new Set<SessionNotificationInterceptor>();
 
 export interface AcpNotificationHandler {
   handleSessionNotification(notification: SessionNotification): Promise<void>;
 }
-
-export type SessionNotificationInterceptor = (
-  notification: SessionNotification,
-) => boolean;
 
 export function setNotificationHandler(handler: AcpNotificationHandler): void {
   notificationHandler = handler;
 }
 
 /**
- * Registers a short-lived interceptor for private/background ACP sessions.
- * Returning true consumes the notification so it is not added to the visible
- * chat store.
+ * Nothing in the app asks the operator about individual tool calls: a
+ * harness that still sends a permission request gets a one-time allow. An
+ * "always" answer would change the harness's own saved permissions, so it is
+ * only chosen when the request offers no one-time allow.
  */
-export function interceptSessionNotifications(
-  interceptor: SessionNotificationInterceptor,
-): () => void {
-  sessionNotificationInterceptors.add(interceptor);
-  return () => sessionNotificationInterceptors.delete(interceptor);
-}
-
-/**
- * Handles ACP permission requests. When set, `requestPermission` delegates to
- * it; otherwise the connection falls back to auto-approving (preserving the
- * default behavior for environments where no handler is registered).
- */
-export type PermissionRequestHandler = (
-  request: RequestPermissionRequest,
-) => Promise<RequestPermissionResponse>;
-
-let permissionHandler: PermissionRequestHandler | null = null;
-
-export function setPermissionHandler(handler: PermissionRequestHandler): void {
-  permissionHandler = handler;
+function allowOnce(args: RequestPermissionRequest): RequestPermissionResponse {
+  const options = args.options ?? [];
+  const option =
+    options.find((candidate) => candidate.kind === "allow_once") ??
+    options.find((candidate) => candidate.kind === "allow_always") ??
+    options[0];
+  if (!option) {
+    return { outcome: { outcome: "cancelled" } };
+  }
+  return { outcome: { outcome: "selected", optionId: option.optionId } };
 }
 
 let clientPromise: Promise<HostClient> | null = null;
@@ -62,25 +47,9 @@ function createClientCallbacks(): () => Client {
   return () => ({
     requestPermission: async (
       args: RequestPermissionRequest,
-    ): Promise<RequestPermissionResponse> => {
-      if (permissionHandler) {
-        return permissionHandler(args);
-      }
-      const optionId = args.options?.[0]?.optionId ?? "approve";
-      return {
-        outcome: {
-          outcome: "selected",
-          optionId,
-        },
-      };
-    },
+    ): Promise<RequestPermissionResponse> => allowOnce(args),
 
     sessionUpdate: async (notification: SessionNotification): Promise<void> => {
-      for (const interceptor of sessionNotificationInterceptors) {
-        if (interceptor(notification)) {
-          return;
-        }
-      }
       if (notificationHandler) {
         await notificationHandler.handleSessionNotification(notification);
       }

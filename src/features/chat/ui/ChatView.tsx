@@ -79,11 +79,6 @@ import {
 import type { TranscriptSearchBackend } from "@/features/chat/lib/transcriptSearchBackend";
 import { scheduleAfterNextPaint } from "@/app/lib/scheduleAfterNextPaint";
 import type { GlobalComposerHandoffRect } from "@/shared/ui/GlobalComposerPill";
-import { SecurityConfirmationPanel } from "@/features/security/ui/SecurityConfirmationPanel";
-import {
-  useHasPendingSecurityConfirmation,
-  useRegisterSecurityConfirmationSurface,
-} from "@/features/security/ui/securityConfirmationSurface";
 import {
   type ConductorOpenChildIntent,
   ConductorTranscriptProvider,
@@ -197,9 +192,6 @@ export function ChatView({
   onSelectSession,
 }: ChatViewProps) {
   const { t } = useTranslation("chat");
-  useRegisterSecurityConfirmationSurface(sessionId);
-  const hasPendingSecurityConfirmation =
-    useHasPendingSecurityConfirmation(sessionId);
   // The conversation has room for exactly one side panel. `sidePanelSurface`
   // decides which one owns it; neither store is cleared when the other wins,
   // so closing the last child tab brings the artifact viewer straight back.
@@ -948,9 +940,7 @@ export function ChatView({
           nodes={conductorChildren}
           sessionId={sessionId}
         />
-        <SecurityConfirmationPanel sessionId={sessionId} />
         <ChatInput
-          className={hasPendingSecurityConfirmation ? "hidden" : undefined}
           surface="bare"
           innerBareSurface
           queuedMessageAccessory={

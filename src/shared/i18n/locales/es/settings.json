@@ -445,20 +445,6 @@
       "factConductor": "Olas planificadas en {{model}}: {{accepted}} de {{waves}} aceptadas"
     }
   },
-  "securityConfirmation": {
-    "allow": "Permitir una vez",
-    "backgroundChat": "Desde el chat: {{title}}",
-    "backgroundChatUnknown": "Desde otro chat",
-    "block": "Bloquear",
-    "commandLabel": "Comando marcado",
-    "description": "Esta acción fue marcada como un posible riesgo de seguridad. Revisa los detalles a continuación antes de decidir si permitirla.",
-    "detectionConfidence": "Confianza de detección",
-    "findingId": "ID del hallazgo: {{id}}",
-    "inferenceFailed": "No se pudo generar una explicación. Revisa el comando cuidadosamente antes de permitirlo.",
-    "inferredLabel": "Por qué se pudo haber marcado (inferido)",
-    "inferring": "Analizando por qué se marcó esto…",
-    "title": "Alerta de seguridad"
-  },
   "storage": {
     "cachedMedia": {
       "clear": "Limpiar medios en caché",

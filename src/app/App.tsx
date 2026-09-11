@@ -5,7 +5,6 @@ import { TopBarActionsProvider } from "@/app/contexts/TopBarActionsContext";
 import { SelectedTextContextMenu } from "@/app/ui/SelectedTextContextMenu";
 import { useZoom } from "@/shared/hooks/useZoom";
 import { Toaster } from "@/shared/ui/sonner";
-import { SecurityConfirmationFallback } from "@/features/security/ui/SecurityConfirmationPanel";
 
 export function App() {
   useZoom();
@@ -39,7 +38,6 @@ export function App() {
         <AppShell />
       </TopBarActionsProvider>
       <SelectedTextContextMenu />
-      <SecurityConfirmationFallback />
       <Toaster />
     </>
   );
