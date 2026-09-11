@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import { acpSessionToChatSession } from "@/features/chat/lib/acpSessionMapping";
 import { useChatStore } from "@/features/chat/stores/chatStore";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import {
   isSessionRunning,
   sessionActivityAt,
@@ -38,11 +37,8 @@ let sweepPromise: Promise<void> | null = null;
 
 function hasLocalAutoArchiveBlocker(sessionId: string): boolean {
   const chatState = useChatStore.getState();
-  const windowState = useSessionWindowStore.getState();
   const runtime = chatState.getSessionRuntime(sessionId);
   return (
-    !windowState.hasLoadedSnapshot ||
-    windowState.isOpenInWindow(sessionId) ||
     isSessionRunning(runtime.chatState) ||
     runtime.isRunCancellationPending ||
     chatState.nonEmptyDraftSessionIds.has(sessionId) ||

@@ -46,7 +46,6 @@ export function SidebarRecentsSection({
   onSelectionChange,
   onRangeSelect,
   onArchiveSelected,
-  onOpenSelectedInWindows,
   onMarkSelectedRead,
   onMarkSelectedUnread,
   showChatIcons,
@@ -80,7 +79,6 @@ export function SidebarRecentsSection({
   onSelectionChange?: (sessionId: string, selected: boolean) => void;
   onRangeSelect?: (sessionId: string) => void;
   onArchiveSelected?: () => void;
-  onOpenSelectedInWindows?: () => void;
   onMarkSelectedRead?: () => void;
   onMarkSelectedUnread?: () => void;
   showChatIcons: boolean;
@@ -265,7 +263,6 @@ export function SidebarRecentsSection({
                 onMarkUnread={onMarkChatUnread}
                 onArchive={onArchiveChat}
                 onArchiveSelected={onArchiveSelected}
-                onOpenSelectedInWindows={onOpenSelectedInWindows}
                 onMarkSelectedRead={onMarkSelectedRead}
                 onMarkSelectedUnread={onMarkSelectedUnread}
               />

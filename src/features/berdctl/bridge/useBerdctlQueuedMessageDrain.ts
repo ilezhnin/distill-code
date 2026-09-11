@@ -15,7 +15,6 @@ import {
   useChatStore,
 } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import {
   BerdctlDeliveryAlreadyAcceptedError,
   hasAcceptedBerdctlDeliveryInTranscript,
@@ -23,11 +22,6 @@ import {
   sendPromptToExistingSessionInBackground,
 } from "@/features/berdctl/commands/runtime/sessionSend";
 import { SessionDispatchContentionError } from "@/features/chat/lib/sessionDispatchAcquisition";
-import {
-  isReclaimedQueueReconciliationPending,
-  requestReclaimedQueueReconciliation,
-  subscribeReclaimedQueueReconciliation,
-} from "@/features/chat/lib/reclaimedQueueReconciliation";
 
 const drainingSessionIds = new Set<string>();
 const activeOwners = new Set<string>();
@@ -70,7 +64,6 @@ function scheduleContentionResume(
 
 function drainQueuedMessage(queuedSessionId: string, ownerId: string): void {
   if (!activeOwners.has(ownerId)) return;
-  if (isReclaimedQueueReconciliationPending(queuedSessionId)) return;
   const sessionExists = Boolean(
     useChatSessionStore.getState().getSession(queuedSessionId),
   );
@@ -230,11 +223,7 @@ function getQueuedSessionIds(
   if (!chatStore.hasHydratedMessageQueues) return [];
   if (!useChatSessionStore.getState().hasHydratedSessions) return [];
   if (queuedSessionId) return [queuedSessionId];
-  const sessionWindowStore = useSessionWindowStore.getState();
-  if (!sessionWindowStore.hasLoadedSnapshot) return [];
-  return Object.keys(queuedMessageBySession).filter(
-    (sessionId) => !sessionWindowStore.isOpenInWindow(sessionId),
-  );
+  return Object.keys(queuedMessageBySession);
 }
 
 function reconcileContentionWaiters(scopedSessionId?: string): void {
@@ -275,28 +264,6 @@ export function useBerdctlQueuedMessageDrain(
     const ownerId = ownerIdFor(queuedSessionId);
     activeOwners.add(ownerId);
     drainReadyQueuedMessages(queuedSessionId);
-    const unsubscribeWindowStore = queuedSessionId
-      ? undefined
-      : useSessionWindowStore.subscribe((state, previousState) => {
-          if (
-            state.hasLoadedSnapshot &&
-            (!previousState.hasLoadedSnapshot ||
-              state.openSessions !== previousState.openSessions)
-          ) {
-            if (
-              !previousState.hasLoadedSnapshot ||
-              !requestReclaimedQueueReconciliation(
-                previousState.openSessions,
-                state.openSessions,
-              )
-            ) {
-              drainReadyQueuedMessages();
-            }
-          }
-        });
-    const unsubscribeReclaimedQueues = subscribeReclaimedQueueReconciliation(
-      () => drainReadyQueuedMessages(queuedSessionId),
-    );
     const unsubscribeSessionStore = useChatSessionStore.subscribe(
       (state, previousState) => {
         reconcileContentionWaiters(queuedSessionId);
@@ -378,8 +345,6 @@ export function useBerdctlQueuedMessageDrain(
       },
     );
     return () => {
-      unsubscribeWindowStore?.();
-      unsubscribeReclaimedQueues();
       unsubscribeSessionStore();
       unsubscribeChatStore();
       activeOwners.delete(ownerId);

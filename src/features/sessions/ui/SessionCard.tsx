@@ -53,8 +53,6 @@ export interface SessionCardProps {
   onUnarchiveSelected?: () => void;
   onExport?: (id: string) => void;
   onExportSelected?: () => void;
-  onOpenInWindow?: (id: string) => void;
-  isOpenInWindow?: boolean;
   onPinSelectedToHome?: () => void;
   onUnpinSelectedFromHome?: () => void;
   isSelectionPinnedToHome?: boolean;
@@ -85,7 +83,6 @@ export function SessionCard(props: SessionCardProps) {
     onSelectionClear,
     onSelectionChange,
     onRename,
-    onOpenInWindow,
   } = props;
   const { t } = useTranslation(["sessions", "common"]);
   const { formatRelativeTimeToNow } = useLocaleFormatting();
@@ -333,9 +330,6 @@ export function SessionCard(props: SessionCardProps) {
                     }
                   : undefined
               }
-              onOpenInWindow={
-                onOpenInWindow ? () => onOpenInWindow(id) : undefined
-              }
             />
           </DropdownMenu>
         </div>
@@ -363,7 +357,6 @@ export function SessionCard(props: SessionCardProps) {
               }
             : undefined
         }
-        onOpenInWindow={onOpenInWindow ? () => onOpenInWindow(id) : undefined}
       />
     </ContextMenu>
   );

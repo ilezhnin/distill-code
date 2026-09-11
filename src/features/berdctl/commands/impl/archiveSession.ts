@@ -110,7 +110,6 @@ function archiveFailureMessage(
     case "timed_out":
       return `Archiving session "${sessionId}" timed out before the next mutation could start.`;
     case "blocked_unsaved_changes":
-    case "focus_failed":
       return `Failed to archive session "${sessionId}" (${reason})`;
     default:
       reason satisfies never;
