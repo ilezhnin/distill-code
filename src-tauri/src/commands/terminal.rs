@@ -477,8 +477,11 @@ fn resolve_terminal_cwd(cwd: &str) -> Result<PathBuf, String> {
     Ok(normalize_path(&path))
 }
 
+/// Canonical form without the `\\?\` verbatim prefix `std::fs::canonicalize`
+/// adds on Windows: PowerShell would show it in every prompt and cmd.exe,
+/// started from that shell, refuses a UNC-style current directory.
 fn normalize_path(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn resolve_shell(shell_env: &HashMap<String, String>) -> String {
@@ -616,7 +619,11 @@ mod tests {
 
         let resolved = resolve_terminal_cwd(&cwd).expect("resolve cwd");
 
-        assert_eq!(resolved, dir.path().canonicalize().expect("canonicalize"));
+        assert_eq!(
+            resolved,
+            dunce::canonicalize(dir.path()).expect("canonicalize")
+        );
+        assert!(!resolved.to_string_lossy().starts_with(r"\\?\"));
     }
 
     #[test]
