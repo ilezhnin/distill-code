@@ -30,6 +30,43 @@ export function getReplayMessageId(
   return null;
 }
 
+/**
+ * The id of the assistant message an agent-side update (message and thought
+ * chunks, tool calls) belongs to. The host names the reply apart from the
+ * prompt in `_meta.distill.assistantMessageId`; history recorded before that
+ * only carries the prompt's `messageId`, so its reply is folded under a
+ * derived `${messageId}:reply` instead of colliding with the user message.
+ */
+export function getReplayAssistantMessageId(
+  source: ReplayMetadataSource,
+): string | null {
+  if (source.messageId) {
+    return source.messageId;
+  }
+
+  const assistantMessageId = getHostAssistantMessageId(source);
+  if (assistantMessageId) {
+    return assistantMessageId;
+  }
+
+  const promptMessageId = getHostReplayMeta(source)?.messageId;
+  if (typeof promptMessageId === "string" && promptMessageId.length > 0) {
+    return `${promptMessageId}:reply`;
+  }
+
+  return null;
+}
+
+/** The reply id the host stamps on every agent-side update of a turn. */
+export function getHostAssistantMessageId(
+  source: ReplayMetadataSource,
+): string | null {
+  const assistantMessageId = getHostReplayMeta(source)?.assistantMessageId;
+  return typeof assistantMessageId === "string" && assistantMessageId.length > 0
+    ? assistantMessageId
+    : null;
+}
+
 export function getReplayCreated(
   source: ReplayMetadataSource,
 ): number | undefined {

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  getHostAssistantMessageId,
+  getReplayAssistantMessageId,
   getReplayCreated,
   getReplayMessageId,
   getReplayUserMetadata,
@@ -44,6 +46,63 @@ describe("getReplayMessageId", () => {
   it("returns null when _meta is an array", () => {
     expect(
       getReplayMessageId({ _meta: [] as unknown as Record<string, unknown> }),
+    ).toBeNull();
+  });
+});
+
+describe("getReplayAssistantMessageId", () => {
+  it("prefers the update's own top-level messageId", () => {
+    expect(
+      getReplayAssistantMessageId({
+        messageId: "top",
+        _meta: { distill: { messageId: "u1", assistantMessageId: "a1" } },
+      }),
+    ).toBe("top");
+  });
+
+  it("uses the reply id the host stamps next to the prompt's", () => {
+    expect(
+      getReplayAssistantMessageId({
+        _meta: { distill: { messageId: "u1", assistantMessageId: "a1" } },
+      }),
+    ).toBe("a1");
+  });
+
+  it("derives a reply id from the prompt's id for older history", () => {
+    expect(
+      getReplayAssistantMessageId({ _meta: { distill: { messageId: "u1" } } }),
+    ).toBe("u1:reply");
+  });
+
+  it("ignores an empty or non-string reply id", () => {
+    expect(
+      getReplayAssistantMessageId({
+        _meta: { distill: { messageId: "u1", assistantMessageId: "" } },
+      }),
+    ).toBe("u1:reply");
+    expect(
+      getReplayAssistantMessageId({
+        _meta: { distill: { messageId: "u1", assistantMessageId: 7 } },
+      }),
+    ).toBe("u1:reply");
+  });
+
+  it("returns null when no id is present", () => {
+    expect(getReplayAssistantMessageId({})).toBeNull();
+    expect(getReplayAssistantMessageId({ _meta: { distill: {} } })).toBeNull();
+  });
+});
+
+describe("getHostAssistantMessageId", () => {
+  it("reads only the host's reply id", () => {
+    expect(
+      getHostAssistantMessageId({
+        messageId: "top",
+        _meta: { distill: { messageId: "u1", assistantMessageId: "a1" } },
+      }),
+    ).toBe("a1");
+    expect(
+      getHostAssistantMessageId({ _meta: { distill: { messageId: "u1" } } }),
     ).toBeNull();
   });
 });

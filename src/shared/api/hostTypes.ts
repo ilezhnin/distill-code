@@ -120,6 +120,8 @@ export interface ProviderInventoryEntry {
 export interface SteerSessionResponse {
   runId: string;
   messageId: string;
+  /** The steered turn's reply; hosts before it was introduced omit it. */
+  assistantMessageId?: string;
 }
 
 export interface HostSessionInfo {

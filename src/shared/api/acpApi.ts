@@ -455,6 +455,8 @@ function extractActualRunId(error: unknown): string | null {
 export interface AcpSteerResponse {
   runId: string;
   messageId: string;
+  /** The id the steered turn's reply streams under, when the host names it. */
+  assistantMessageId?: string;
 }
 
 export async function steerSession(
@@ -477,7 +479,14 @@ export async function steerSession(
     ) {
       throw new Error("Steer response is missing runId or messageId");
     }
-    return { runId: response.runId, messageId: response.messageId };
+    return {
+      runId: response.runId,
+      messageId: response.messageId,
+      ...(typeof response.assistantMessageId === "string" &&
+      response.assistantMessageId.length > 0
+        ? { assistantMessageId: response.assistantMessageId }
+        : {}),
+    };
   };
 
   try {

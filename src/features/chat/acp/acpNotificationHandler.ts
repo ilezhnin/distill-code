@@ -45,6 +45,8 @@ import {
   getTrackedReplayAssistantMessageId,
 } from "./acpReplayAssistant";
 import {
+  getHostAssistantMessageId,
+  getReplayAssistantMessageId,
   getReplayAssistantMetadata,
   getReplayCreated,
   getReplayMessageId,
@@ -69,6 +71,7 @@ import {
 import { addSessionWorkedMs } from "@/features/stats/lib/usageLedger";
 import { recordAcpSessionUsage } from "@/features/stats/lib/usageRecorder";
 import { isRecord } from "@/shared/lib/isRecord";
+import { completeAssistantMessage } from "@/features/chat/lib/messageCompletion";
 
 // Per-session perf counters for replay streaming.
 interface ReplayPerf {
@@ -126,7 +129,7 @@ function handleReplayAssistantBoundary(
   sessionId: string,
   update: SessionUpdate,
 ): void {
-  const replayMessageId = getReplayMessageId(update);
+  const replayMessageId = getReplayAssistantMessageId(update);
   const assistantMessageId =
     replayMessageId ?? replayAssistantMessageIds.get(sessionId) ?? "anonymous";
   const previousAssistantMessageId =
@@ -296,6 +299,27 @@ function getChunkMessageId(update: SessionUpdate): string | null {
     : null;
 }
 
+/**
+ * The assistant message a live agent-side update streams into: the ACP
+ * chunk's own `messageId` when the agent sends one, otherwise the reply id
+ * the host stamps on every update of a turn (`hostTurn`).
+ */
+interface LiveAssistantMessageId {
+  id: string;
+  hostTurn: boolean;
+}
+
+function getLiveAssistantMessageId(
+  update: SessionUpdate,
+): LiveAssistantMessageId | null {
+  const chunkMessageId = getChunkMessageId(update);
+  if (chunkMessageId) {
+    return { id: chunkMessageId, hostTurn: false };
+  }
+  const hostMessageId = getHostAssistantMessageId(update);
+  return hostMessageId ? { id: hostMessageId, hostTurn: true } : null;
+}
+
 function isRunInterventionBoundary(update: SessionUpdate): boolean {
   const record: Record<string, unknown> = update;
   const meta = record._meta;
@@ -390,7 +414,7 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
       handleReplayAssistantBoundary(sessionId, update);
       const msg = ensureReplayAssistantMessage(
         sessionId,
-        getReplayMessageId(update),
+        getReplayAssistantMessageId(update),
         getReplayCreated(update),
         getReplayAssistantMessageMetadata(sessionId, update),
       );
@@ -412,7 +436,7 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
       if (update.content.type === "text" && "text" in update.content) {
         const msg = ensureReplayAssistantMessage(
           sessionId,
-          getReplayMessageId(update),
+          getReplayAssistantMessageId(update),
           getReplayCreated(update),
           getReplayAssistantMessageMetadata(sessionId, update),
         );
@@ -452,7 +476,7 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
       const chainSummary = undefined;
       const msg = ensureReplayAssistantMessage(
         sessionId,
-        getReplayMessageId(update),
+        getReplayAssistantMessageId(update),
         created,
         getReplayAssistantMessageMetadata(sessionId, update),
       );
@@ -482,7 +506,7 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
     case "tool_call_update": {
       handleReplayAssistantBoundary(sessionId, update);
       const created = getReplayCreated(update);
-      const replayMessageId = getReplayMessageId(update);
+      const replayMessageId = getReplayAssistantMessageId(update);
       const identity = getToolCallIdentity(update);
       const chainSummary = undefined;
       const trackedMessageId = getTrackedReplayAssistantMessageId(sessionId);
@@ -597,7 +621,7 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
 
       const messageId = ensureLiveAssistantMessage(
         sessionId,
-        getChunkMessageId(update) ?? undefined,
+        getLiveAssistantMessageId(update),
       );
 
       if (update.content.type === "text" && "text" in update.content) {
@@ -623,7 +647,7 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
       if (update.content.type === "text" && "text" in update.content) {
         const messageId = ensureLiveAssistantMessage(
           sessionId,
-          getChunkMessageId(update) ?? undefined,
+          getLiveAssistantMessageId(update),
         );
         enqueueStreamingThinkingUpdate(
           sessionId,
@@ -645,7 +669,10 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
 
     case "tool_call": {
       flushBufferedStreamingUpdatesForSession(sessionId);
-      const messageId = ensureLiveAssistantMessage(sessionId);
+      const messageId = ensureLiveAssistantMessage(
+        sessionId,
+        getLiveAssistantMessageId(update),
+      );
       const identity = getToolCallIdentity(update);
       const chainSummary = undefined;
 
@@ -686,7 +713,12 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
         sessionId,
         update.toolCallId,
       );
-      const messageId = ownerMessageId ?? ensureLiveAssistantMessage(sessionId);
+      const messageId =
+        ownerMessageId ??
+        ensureLiveAssistantMessage(
+          sessionId,
+          getLiveAssistantMessageId(update),
+        );
 
       const patch = toolCallUpdatePatch(update);
       if (
@@ -995,12 +1027,13 @@ function findLiveToolRequest(
 
 function ensureLiveAssistantMessage(
   sessionId: string,
-  preferredMessageId?: string | null,
+  preferred?: LiveAssistantMessageId | null,
 ): string {
   const store = useChatStore.getState();
   const existingStreamingMessageId = findStreamingMessageId(sessionId);
   const messages = store.messagesBySession[sessionId] ?? [];
   const activePreset = getActiveMessagePreset(sessionId);
+  const preferredMessageId = preferred?.id ?? null;
 
   if (
     preferredMessageId &&
@@ -1015,16 +1048,29 @@ function ensureLiveAssistantMessage(
     existingStreamingMessageId &&
     messages.some((message) => message.id === existingStreamingMessageId)
   ) {
-    if (activePreset?.metadata) {
-      store.updateMessage(sessionId, existingStreamingMessageId, (message) => ({
-        ...message,
-        metadata: {
-          ...message.metadata,
-          ...activePreset.metadata,
-        },
-      }));
+    const hostTurnMessageId =
+      preferred?.hostTurn && preferred.id !== existingStreamingMessageId
+        ? preferred.id
+        : null;
+    if (!hostTurnMessageId) {
+      if (activePreset?.metadata) {
+        store.updateMessage(
+          sessionId,
+          existingStreamingMessageId,
+          (message) => ({
+            ...message,
+            metadata: {
+              ...message.metadata,
+              ...activePreset.metadata,
+            },
+          }),
+        );
+      }
+      return existingStreamingMessageId;
     }
-    return existingStreamingMessageId;
+    if (adoptHostTurnMessageId(sessionId, hostTurnMessageId)) {
+      return hostTurnMessageId;
+    }
   }
 
   const messageId =
@@ -1054,6 +1100,54 @@ function ensureLiveAssistantMessage(
   clearActiveMessageId(sessionId);
 
   return messageId;
+}
+
+/**
+ * The host names each turn's reply (`assistantMessageId`). When the message
+ * the renderer is streaming into has no content yet (the placeholder started
+ * at a steer boundary), it becomes that reply: it is renamed so everything
+ * keyed by message id (wave plans, brigade nodes, a later reload) agrees on
+ * the host's id. A streaming message that already has content belongs to an
+ * earlier turn: it is completed, and the caller starts the new reply.
+ */
+function adoptHostTurnMessageId(
+  sessionId: string,
+  hostTurnMessageId: string,
+): boolean {
+  flushBufferedStreamingUpdatesForSession(sessionId);
+  const store = useChatStore.getState();
+  const streamingMessageId = findStreamingMessageId(sessionId);
+  const streamingMessage = streamingMessageId
+    ? store.messagesBySession[sessionId]?.find(
+        (message) => message.id === streamingMessageId,
+      )
+    : undefined;
+  if (!streamingMessage || streamingMessage.role !== "assistant") {
+    return false;
+  }
+  if (streamingMessage.content.length > 0) {
+    store.updateMessage(
+      sessionId,
+      streamingMessage.id,
+      completeAssistantMessage,
+    );
+    return false;
+  }
+
+  const activePreset = getActiveMessagePreset(sessionId);
+  store.replaceMessageId(sessionId, streamingMessage.id, hostTurnMessageId);
+  if (activePreset?.metadata) {
+    store.updateMessage(sessionId, hostTurnMessageId, (message) => ({
+      ...message,
+      metadata: {
+        ...message.metadata,
+        ...activePreset.metadata,
+      },
+    }));
+  }
+  registerStreamingMessageOwner(sessionId, hostTurnMessageId);
+  store.setStreamingMessageId(sessionId, hostTurnMessageId);
+  return true;
 }
 
 export function clearMessageTracking(): void {

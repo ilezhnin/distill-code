@@ -745,6 +745,28 @@ describe("steerSession", () => {
     });
   });
 
+  it("passes on the reply id the host names the steered turn with", async () => {
+    mocks.extMethod.mockResolvedValue({
+      runId: "run-2",
+      messageId: "steer-message",
+      assistantMessageId: "steer-reply",
+    });
+
+    const { steerSession } = await import("../acpApi");
+
+    await expect(
+      steerSession(
+        "session-1",
+        [{ type: "text", text: "make it shorter" }],
+        "run-1",
+      ),
+    ).resolves.toEqual({
+      runId: "run-2",
+      messageId: "steer-message",
+      assistantMessageId: "steer-reply",
+    });
+  });
+
   it("keeps the delivery message id when retrying with the actual run", async () => {
     mocks.extMethod
       .mockRejectedValueOnce({ data: { actualRunId: "run-2" } })
