@@ -30,10 +30,6 @@ Example:
 Result:
   {"ok": true, "path": "...", "kind": "...", "branch": "..."|null, "status": "applied"|"pending"}`,
   schema: setSessionFolderCwdSchema,
-  precheck: async (args) => {
-    const { refuseWindowedTarget } = await import("../runtime/sessions");
-    refuseWindowedTarget(args.session_id, "change the cwd for");
-  },
   execute: async (args, ctx) => {
     const [
       { attachSessionFolder, FolderAttachmentError },
@@ -51,7 +47,7 @@ Result:
         queueSessionWorkspaceActivation,
         SessionWorkspaceActivationError,
       },
-      { loadSessionForBerdctl, refuseRunningTarget, refuseWindowedTarget },
+      { loadSessionForBerdctl, refuseRunningTarget },
     ] = await Promise.all([
       import("@/features/chat/lib/sessionFolderRegistration"),
       import("../runtime/deadline"),
@@ -79,7 +75,6 @@ Result:
         replaceExistingInSingleWorkspace: true,
         beforeMutation: () => {
           refusePastDeadline(ctx, "the session cwd was not changed");
-          refuseWindowedTarget(args.session_id, "change the cwd for");
         },
       });
     } catch (error) {
@@ -94,7 +89,6 @@ Result:
         isSameWorkspacePath(candidate.path, attachment.path),
     );
     refusePastDeadline(ctx, "the session cwd was not changed");
-    refuseWindowedTarget(args.session_id, "change the cwd for");
     const runtime = useChatStore.getState().getSessionRuntime(args.session_id);
     const branch = attachment.branch ?? null;
     if (

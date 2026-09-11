@@ -23,7 +23,11 @@ import {
   type Message,
 } from "@/shared/types/messages";
 
-import { useConductorGraphStore } from "./conductorGraphStore";
+import {
+  isConductorGraphHydrated,
+  useConductorGraphStore,
+  whenConductorGraphHydrated,
+} from "./conductorGraphStore";
 import { stopOrchestratorSession } from "./orchestratorControls";
 import { roleDisplayName, waveStepDisplayName } from "./roleLayers";
 import { SpawnAclDeniedError } from "./spawnAcl";
@@ -89,9 +93,11 @@ import { resetConductorTranscriptsForTests } from "./waveTranscripts";
 import {
   getWaveEngineState,
   hasWaveTombstone,
+  isWaveEngineStateHydrated,
   pruneOrphanedWaves,
   setWaveEngineState,
   updateWaveEngineState,
+  whenWaveEngineStateHydrated,
   withWave,
   withWaveTombstone,
   withoutParkedWavesFor,
@@ -124,6 +130,13 @@ const scannedWithoutPlan = new BoundedSet(MAX_REMEMBERED_PLAN_MESSAGES);
 
 /** Re-entrancy guard: spawning writes stores, which call this again. */
 let ticking = false;
+
+/** True while a tick is parked until the folder's documents are read. */
+let awaitingWaveHydration = false;
+
+function conductorDocumentsHydrated(): boolean {
+  return isWaveEngineStateHydrated() && isConductorGraphHydrated();
+}
 
 /**
  * Steps left `spawning` by a previous process are only adopted or reset on the
@@ -187,6 +200,70 @@ function scheduleStallTick(delayMs: number): void {
     stallTimer = null;
     runWaveEngineTick();
   }, delayMs + 50);
+}
+
+/**
+ * The chat-store entries each wave child had on the previous tick, by session
+ * id. The wave's own state does not move while a child works — a step that
+ * streams for ten minutes is one `spawned` step the whole time — so without
+ * this the stall detector counted every step longer than two sample windows
+ * as wedged and stopped it mid-work. The chat store is immutable, so a new
+ * reference for a child's messages or runtime is exactly "the child did
+ * something since last time".
+ */
+const childActivitySnapshots = new Map<
+  string,
+  { messages: unknown; runtime: unknown }
+>();
+
+/**
+ * Wall clock of the last movement seen on each running wave, in memory only.
+ * Movement is frequent (every streamed token of every child), and persisting
+ * it would write the wave document per token; the persisted
+ * `lastProgressAt` stays the restart-safe floor and this refines it.
+ */
+const waveActivityAt = new Map<string, number>();
+
+/** True when any spawned child of the wave changed in the chat store. */
+function waveChildrenMoved(wave: WaveState): boolean {
+  const chat = useChatStore.getState();
+  let moved = false;
+  for (const step of wave.steps) {
+    if (step.phase !== "spawned" || !step.sessionId) continue;
+    const messages = chat.messagesBySession[step.sessionId];
+    const runtime = chat.sessionStateById[step.sessionId];
+    const seen = childActivitySnapshots.get(step.sessionId);
+    if (seen && seen.messages === messages && seen.runtime === runtime) {
+      continue;
+    }
+    childActivitySnapshots.set(step.sessionId, { messages, runtime });
+    // The first sighting is a baseline, not movement: after a restart every
+    // child is "new" to this process, and that says nothing about whether it
+    // is doing anything.
+    if (seen) moved = true;
+  }
+  return moved;
+}
+
+/** Drops the activity marks of waves that are no longer running. */
+function forgetSettledWaveActivity(state: WaveEngineState): void {
+  const running = state.waves.filter((wave) => wave.phase === "running");
+  const waveIds = new Set(running.map((wave) => wave.waveId));
+  const sessionIds = new Set(
+    running.flatMap((wave) =>
+      wave.steps.flatMap((step) => (step.sessionId ? [step.sessionId] : [])),
+    ),
+  );
+  for (const waveId of [...waveActivityAt.keys()]) {
+    if (!waveIds.has(waveId)) waveActivityAt.delete(waveId);
+  }
+  for (const sessionId of [...childActivitySnapshots.keys()]) {
+    if (!sessionIds.has(sessionId)) childActivitySnapshots.delete(sessionId);
+  }
+  for (const key of [...reportGraceDeadlines.keys()]) {
+    const waveId = key.slice(0, key.lastIndexOf(":"));
+    if (!waveIds.has(waveId)) reportGraceDeadlines.delete(key);
+  }
 }
 
 /** `waveId:stepIndex` → grace deadline for a completed-but-reportless step. */
@@ -847,9 +924,18 @@ function advanceWaves(state: WaveEngineState): {
     // P61: the stall detector. An advance that moved anything resets the
     // count; a run of sample-sized silent windows ends the wave through the
     // existing digest/verdict cycle — never a bigger plan, never a retry.
-    if (advanced.noProgress) {
-      const now = Date.now();
-      const lastProgressAt = current.lastProgressAt ?? current.createdAt;
+    // A child that is streaming or running tools is movement too, even though
+    // the wave's own state has nothing new to say about it.
+    const now = Date.now();
+    const childrenMoved = waveChildrenMoved(current);
+    if (!advanced.noProgress || childrenMoved) {
+      waveActivityAt.set(wave.waveId, now);
+    }
+    if (advanced.noProgress && !childrenMoved) {
+      const lastProgressAt = Math.max(
+        current.lastProgressAt ?? current.createdAt,
+        waveActivityAt.get(wave.waveId) ?? 0,
+      );
       if (now - lastProgressAt >= WAVE_STALL_SAMPLE_MS) {
         current = {
           ...current,
@@ -858,7 +944,7 @@ function advanceWaves(state: WaveEngineState): {
         };
       }
     } else if ((current.stallCount ?? 0) > 0 || !current.lastProgressAt) {
-      current = { ...current, stallCount: 0, lastProgressAt: Date.now() };
+      current = { ...current, stallCount: 0, lastProgressAt: now };
     }
     if ((current.stallCount ?? 0) >= WAVE_STALL_THRESHOLD) {
       // Phase first (crash-safe, same discipline as the blocked path), then
@@ -898,6 +984,7 @@ function advanceWaves(state: WaveEngineState): {
       pending.push({ wave: current, request });
     }
   }
+  forgetSettledWaveActivity(next);
   return { state: next, pending };
 }
 
@@ -912,6 +999,23 @@ function advanceWaves(state: WaveEngineState): {
 export function runWaveEngineTick(): void {
   if (ticking) return;
   if (!useChatSessionStore.getState().hasHydratedSessions) return;
+  if (!conductorDocumentsHydrated()) {
+    // The folder's waves, tombstones and graph are not all in memory yet: a
+    // tick now would re-admit plans the tombstones record, or reset a
+    // `spawning` step whose child is in the graph file and spawn it twice.
+    // One wake-up once both have landed.
+    if (!awaitingWaveHydration) {
+      awaitingWaveHydration = true;
+      const wake = () => {
+        if (!conductorDocumentsHydrated()) return;
+        awaitingWaveHydration = false;
+        runWaveEngineTick();
+      };
+      whenWaveEngineStateHydrated(wake);
+      whenConductorGraphHydrated(wake);
+    }
+    return;
+  }
   ticking = true;
   let pending: Array<{ wave: WaveState; request: WaveSpawnRequest }> = [];
   let digests: PendingDigestDispatch[] = [];
@@ -1000,9 +1104,12 @@ export function resetWaveRunnerForTests(): void {
   scannedWithoutPlan.clear();
   concurrentRefusalNotices.clear();
   ticking = false;
+  awaitingWaveHydration = false;
   hasResumedOrphanedSpawns = false;
   onceOrphanedWaveIds = new Set();
   reportGraceDeadlines.clear();
+  childActivitySnapshots.clear();
+  waveActivityAt.clear();
   if (graceTimer !== null) {
     clearTimeout(graceTimer);
     graceTimer = null;

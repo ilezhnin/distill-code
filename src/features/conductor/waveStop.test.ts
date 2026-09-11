@@ -96,6 +96,37 @@ describe("stopWaveByOperator", () => {
     });
   });
 
+  it("leaves a child that already finished alone", async () => {
+    const { useConductorGraphStore } = await import("./conductorGraphStore");
+    useConductorGraphStore.setState({
+      nodesById: {
+        "child-0": {
+          sessionId: "child-0",
+          projectId: "project",
+          role: "worker",
+          managedBy: "wave",
+          parentSessionId: CONDUCTOR_ID,
+          rootConductorId: CONDUCTOR_ID,
+          runId: "run-0",
+          harnessId: "goose",
+          displayName: "Scout",
+          status: "completed",
+          waveId: "wave-1",
+          stepIndex: 0,
+        },
+      },
+    });
+    seed();
+
+    try {
+      expect(stopWaveByOperator(CONDUCTOR_ID, "wave-1")).toBe(true);
+      // Stopping a finished run would relabel it `cancelled` in the graph.
+      expect(stopOrchestratorSession).not.toHaveBeenCalled();
+    } finally {
+      useConductorGraphStore.setState({ nodesById: {} });
+    }
+  });
+
   it("declines silently when the wave has already left running", () => {
     seed(withWavePhase(runningWave(), "digestPending"));
 

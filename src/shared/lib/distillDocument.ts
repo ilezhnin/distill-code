@@ -50,7 +50,11 @@ export interface DistillDocumentOptions<T> {
 }
 
 export interface DistillDocument<T> {
-  /** The stored value, migrating an old browser copy on the way if needed. */
+  /**
+   * The stored value, migrating an old browser copy on the way if needed.
+   * `null` means there is no document. Rejects when one exists but cannot be
+   * read, so the caller never mistakes it for an empty one.
+   */
   read: () => Promise<T | null>;
   /** Queues a write. Returns immediately. */
   write: (value: T) => void;
@@ -73,6 +77,12 @@ function writeLegacy(key: string, payload: unknown): void {
   } catch {
     // Storage may be unavailable; the value still holds for this session.
   }
+}
+
+/** `planner.json` → `planner.corrupt-<ms>.json`, beside the original. */
+export function corruptCopyPath(path: string, nowMs = Date.now()): string {
+  const stem = path.replace(/\.json$/i, "");
+  return `${stem}.corrupt-${nowMs}.json`;
 }
 
 export function distillDocument<T>(
@@ -114,13 +124,22 @@ export function distillDocument<T>(
         const legacy = readLegacy(options.legacyStorageKey);
         return legacy === null ? null : options.parse(legacy);
       }
+      // A document that exists but cannot be read is not an empty one: the
+      // caller would mark itself hydrated and its next write would replace
+      // the operator's data. Throw instead, so the store stays unhydrated,
+      // keeps this run's changes in memory, and the next start tries again.
+      const raw = await readDistillDocument(options.path);
       let stored: unknown = null;
-      try {
-        const raw = await readDistillDocument(options.path);
-        stored = raw === null ? null : JSON.parse(raw);
-      } catch (error) {
-        console.error(`Failed to read ${options.path}:`, error);
-        stored = null;
+      if (raw !== null) {
+        try {
+          stored = JSON.parse(raw);
+        } catch (error) {
+          console.error(`Failed to parse ${options.path}:`, error);
+          // The next write replaces this file, so keep the unparseable text
+          // beside it for a person to recover. Should that copy fail too,
+          // throw rather than start from empty over the only copy.
+          await writeDistillDocument(corruptCopyPath(options.path), raw);
+        }
       }
       if (stored !== null) return options.parse(stored);
 

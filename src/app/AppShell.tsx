@@ -75,7 +75,6 @@ import {
 } from "@/features/chat/stores/chatSessionStore";
 import { selectLocalMessageCountsBySession } from "@/features/chat/stores/chatSelectors";
 import { resolveSessionCycleTarget } from "@/features/sessions/lib/sessionCycle";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import {
   selectActiveSessionId,
   selectHasHydratedSessions,
@@ -150,14 +149,6 @@ import {
   activateSession as activateChatSession,
   loadSessionMessagesAndPrepare,
 } from "@/features/chat/lib/sessionActivation";
-import {
-  focusSessionWindow,
-  releaseSession,
-} from "@/features/chat/lib/sessionWindowCommands";
-import { sendSessionWindowSearchTarget } from "@/features/chat/lib/sessionWindowSearchEvents";
-import { useSessionHandoffSource } from "@/features/chat/hooks/useSessionHandoffSource";
-import { useSessionWindowSupport } from "@/features/chat/hooks/useSessionWindowSupport";
-import { useSessionWindowTracking } from "@/features/chat/hooks/useSessionWindowTracking";
 import { resolveSessionCwd } from "@/features/projects/lib/sessionCwdSelection";
 import { perfLog } from "@/shared/lib/perfLog";
 import { cn } from "@/shared/lib/cn";
@@ -290,9 +281,6 @@ function getSessionArchiveInterruptionReason(
   }
   if (cleanupPolicy === "confirm") {
     return null;
-  }
-  if (useSessionWindowStore.getState().isOpenInWindow(sessionId)) {
-    return "target_session_running";
   }
   const runtime = useChatStore.getState().getSessionRuntime(sessionId);
   return isSessionRunning(runtime.chatState) || runtime.isRunCancellationPending
@@ -609,8 +597,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const initialActiveView = getInitialAppView(initialSettingsSection);
   const [activeView, setActiveView] = useState<AppView>(initialActiveView);
   const capabilities = useProfileCapabilities();
-  const sessionWindowSupport = useSessionWindowSupport();
-  const isMultiWindowEnabled = sessionWindowSupport.supported;
   const sessions = useChatSessionStore(selectSessions);
   const activeSessionId = useChatSessionStore(selectActiveSessionId);
   const sidebarIsResizing = isResizing;
@@ -699,16 +685,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const activeProjectTint = useActiveProjectTint();
   const hasHydratedSessions = useChatSessionStore(selectHasHydratedSessions);
   const sessionsLoading = useChatSessionStore(selectSessionsLoading);
-  const activeSessionWindowLabel = useSessionWindowStore((s) =>
-    isMultiWindowEnabled && activeSessionId
-      ? s.openSessions[activeSessionId]
-      : undefined,
-  );
-  const activeSessionInHandoff = useSessionWindowStore((s) =>
-    isMultiWindowEnabled && activeSessionId
-      ? s.isInHandoff(activeSessionId)
-      : false,
-  );
   const createSession = useChatSessionStore((s) => s.createSession);
   const createDraftSession = useChatSessionStore((s) => s.createDraftSession);
   const promoteDraftSession = useChatSessionStore((s) => s.promoteDraftSession);
@@ -927,8 +903,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     globalComposerPlacement,
   ]);
   const startupReady = startup.ready && !startup.error;
-  useSessionWindowTracking({ enabled: isMultiWindowEnabled });
-  useSessionHandoffSource({ enabled: isMultiWindowEnabled });
   const lastNonSecondaryViewRef = useRef<AppView>("home");
   const designSystemReturnViewRef = useRef<AppView>("home");
   const homeSessionRequestRef = useRef<Promise<ChatSession | null> | null>(
@@ -937,25 +911,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   useEffect(() => {
     fetchProjects();
   }, [fetchProjects]);
-
-  useEffect(() => {
-    if (
-      !activeSessionId ||
-      !activeSessionWindowLabel ||
-      activeSessionInHandoff
-    ) {
-      return;
-    }
-
-    clearSettingsSectionUrl();
-    setActiveView("home");
-    setActiveSession(null);
-  }, [
-    activeSessionId,
-    activeSessionInHandoff,
-    activeSessionWindowLabel,
-    setActiveSession,
-  ]);
 
   useEffect(() => {
     const isViewingChat = activeView === "chat" && Boolean(activeSessionId);
@@ -3073,11 +3028,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         const wasActiveSession =
           useChatSessionStore.getState().activeSessionId === sessionId;
         cleanupChatSession(sessionId);
-        if (useSessionWindowStore.getState().isOpenInWindow(sessionId)) {
-          releaseSession(sessionId).catch((error: unknown) =>
-            console.error("Failed to release session window:", error),
-          );
-        }
         if (wasActiveSession) {
           setActiveSession(null);
           setActiveView("home");
@@ -3189,13 +3139,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const handleSelectSession = useCallback(
     (id: string) => {
       if (
-        isMultiWindowEnabled &&
-        useSessionWindowStore.getState().isOpenInWindow(id)
-      ) {
-        void focusSessionWindow(id);
-        return;
-      }
-      if (
         activeView === "chat" &&
         id === useChatSessionStore.getState().activeSessionId
       ) {
@@ -3205,7 +3148,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         selectSessionDirect(id);
       });
     },
-    [activeView, guardAppNavigation, isMultiWindowEnabled, selectSessionDirect],
+    [activeView, guardAppNavigation, selectSessionDirect],
   );
 
   const handleSelectSearchResult = useCallback(
@@ -3217,27 +3160,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
             .getState()
             .setScrollTargetMessage(sessionId, messageId, query);
         }
-        const sessionWindowStore = useSessionWindowStore.getState();
-        if (
-          isMultiWindowEnabled &&
-          sessionWindowStore.isOpenInWindow(sessionId)
-        ) {
-          const windowLabel = sessionWindowStore.getWindowLabel(sessionId);
-          if (messageId && windowLabel) {
-            void sendSessionWindowSearchTarget(windowLabel, {
-              sessionId,
-              messageId,
-              query,
-            }).then(() => focusSessionWindow(sessionId));
-          } else {
-            void focusSessionWindow(sessionId);
-          }
-          return;
-        }
         selectSessionDirect(sessionId);
       });
     },
-    [guardAppNavigation, isMultiWindowEnabled, selectSessionDirect],
+    [guardAppNavigation, selectSessionDirect],
   );
 
   const handleForkChat = useForkSession({ onForked: handleSelectSession });
@@ -3308,9 +3234,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     getActiveSessionId: () => useChatSessionStore.getState().activeSessionId,
     hasSession: (sessionId) =>
       Boolean(useChatSessionStore.getState().getSession(sessionId)),
-    isSessionOpenInWindow: (sessionId) =>
-      useSessionWindowStore.getState().isOpenInWindow(sessionId),
-    focusSessionWindow,
     getAppContext: () => {
       const sessionStore = useChatSessionStore.getState();
       const activeSession = sessionStore.activeSessionId
@@ -3323,7 +3246,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       };
     },
     activeView,
-    isMultiWindowEnabled,
   });
 
   const navigateSkills = useCallback(
@@ -3770,20 +3692,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       if (cycleDirection !== null) {
         e.preventDefault();
         const { sessions, activeSessionId } = useChatSessionStore.getState();
-        const sessionWindowStore = useSessionWindowStore.getState();
         const candidates = getVisibleSessions(
           sessions,
           selectLocalMessageCountsBySession(useChatStore.getState()),
-        ).filter(
-          (session) =>
-            !session.archivedAt &&
-            // Sessions open in other windows aren't part of this window's
-            // cycle order.
-            !(
-              isMultiWindowEnabled &&
-              sessionWindowStore.isOpenInWindow(session.id)
-            ),
-        );
+        ).filter((session) => !session.archivedAt);
         const currentSessionId =
           activeView === "chat" && activeSessionId
             ? resolveLiveSessionId(activeSessionId)
@@ -3866,7 +3778,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     handleArchiveChat,
     handleNavigate,
     handleSelectSession,
-    isMultiWindowEnabled,
     leaveSecondarySurface,
     resetGlobalComposerTransition,
     setDesignSystemInspectorVisible,

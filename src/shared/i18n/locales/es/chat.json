@@ -6,6 +6,7 @@
     "dropToAttach": "Suelta archivos o carpetas para adjuntarlos",
     "groupLabel_one": "1 adjunto",
     "groupLabel_other": "{{count}} adjuntos",
+    "imagePreviewTitle": "Vista previa de imagen",
     "open": "Abrir adjunto {{name}}",
     "previewAlt": "Vista previa de {{name}}",
     "remove": "Eliminar adjunto",
@@ -22,14 +23,6 @@
     "actions": {
       "copyAsMarkdown": "Copiar como Markdown"
     }
-  },
-  "sessionWindow": {
-    "handoffPausedDescription": "La ventana de origen dejó de enviar actualizaciones en vivo. Recarga la sesión para recuperar el historial de conversación persistido.",
-    "handoffPausedTitle": "Transferencia de sesión pausada",
-    "missingDescription": "No encontramos esta sesión. Es posible que se haya eliminado.",
-    "missingTitle": "Sesión no disponible",
-    "readOnlyStatus": "Terminando la respuesta actual...",
-    "reload": "Recargar sesión"
   },
   "terminal": {
     "close": "Cerrar terminal",
@@ -673,6 +666,8 @@
     "generalChatWithoutProject": "Chat general sin contexto de proyecto",
     "loading": "Cargando...",
     "loadingModels": "Cargando modelos...",
+    "install": "Instalar",
+    "connect": "Conectar",
     "model": "Modelo",
     "allModels": "Todos los modelos",
     "searchModels": "Buscar modelos...",
@@ -740,6 +735,7 @@
     "openFolder": "Abrir carpeta",
     "openNamed": "Abrir {{name}}",
     "openPath": "Abrir ruta",
+    "viewFile": "Ver",
     "pathOutsideRoots": "La ruta está fuera de las raíces permitidas de proyecto/artefactos.",
     "structuredContent": "Contenido estructurado",
     "structuredOutput": "Salida estructurada",

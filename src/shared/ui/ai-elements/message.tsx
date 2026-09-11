@@ -365,6 +365,21 @@ function isBareLocalMarkdownPath(value: string): boolean {
   );
 }
 
+/**
+ * `C:/repo/report.md` and `C:\repo\report.md`: absolute Windows paths, which
+ * the sanitizer would otherwise read as a `c:` URL scheme and block.
+ */
+function isWindowsAbsoluteMarkdownPath(value: string): boolean {
+  const trimmed = value.trim();
+  return /^[a-zA-Z]:[\\/]/.test(trimmed) && !hasControlCharacter(trimmed);
+}
+
+function isLocalMarkdownPath(value: string): boolean {
+  return (
+    isBareLocalMarkdownPath(value) || isWindowsAbsoluteMarkdownPath(value)
+  );
+}
+
 function isValidBerdSessionDeepLink(value: string): boolean {
   return parseSessionDeepLink(value) !== null;
 }
@@ -389,7 +404,7 @@ function visitMarkdownDestinations(
 function prefixBerdMarkdownDestinations() {
   return (tree: MarkdownHastNode) => {
     visitMarkdownDestinations(tree, (value, property) => {
-      if (isBareLocalMarkdownPath(value)) {
+      if (isLocalMarkdownPath(value)) {
         return `${BERD_LOCAL_PATH_PREFIX}${encodeURIComponent(value)}`;
       }
       if (property === "href" && isValidBerdSessionDeepLink(value)) {
@@ -407,7 +422,7 @@ function restoreBerdMarkdownDestinations() {
         const encodedPath = value.slice(BERD_LOCAL_PATH_PREFIX.length);
         try {
           const decodedPath = decodeURIComponent(encodedPath);
-          return isBareLocalMarkdownPath(decodedPath) ? decodedPath : value;
+          return isLocalMarkdownPath(decodedPath) ? decodedPath : value;
         } catch {
           return value;
         }

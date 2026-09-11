@@ -27,7 +27,10 @@ const {
   CONDUCTOR_GRAPH_STORAGE_KEY,
   flushConductorGraphWrites,
   hydrateConductorGraph,
+  isConductorGraphHydrated,
+  setConductorGraphHydratedForTests,
   useConductorGraphStore,
+  whenConductorGraphHydrated,
 } = await import("./conductorGraphStore");
 const {
   CONDUCTOR_WAVES_STORAGE_KEY,
@@ -35,8 +38,11 @@ const {
   flushWaveEngineWrites,
   getWaveEngineState,
   hydrateWaveEngineState,
+  isWaveEngineStateHydrated,
   resetWaveEngineStateCache,
   setWaveEngineState,
+  setWaveEngineStateHydratedForTests,
+  whenWaveEngineStateHydrated,
 } = await import("./waveStore");
 const { createWaveState } = await import("./waveEngine");
 const {
@@ -154,6 +160,31 @@ describe("the conductor's state lives in the Distill folder (P24)", () => {
     expect(getWaveEngineState().tombstones).toHaveLength(1);
     await flushWaveEngineWrites();
     expect(window.localStorage.getItem(CONDUCTOR_WAVES_STORAGE_KEY)).toBeNull();
+  });
+
+  it("says the waves are not ready until the folder has been read", async () => {
+    setWaveEngineStateHydratedForTests(false);
+    expect(isWaveEngineStateHydrated()).toBe(false);
+    const woken = vi.fn();
+    whenWaveEngineStateHydrated(woken);
+    expect(woken).not.toHaveBeenCalled();
+    // Back to the real answer, which on the desktop waits for the read.
+    setWaveEngineStateHydratedForTests(null);
+    await hydrateWaveEngineState();
+    expect(isWaveEngineStateHydrated()).toBe(true);
+    expect(woken).toHaveBeenCalledTimes(1);
+  });
+
+  it("says the graph is not ready until the folder has been read", async () => {
+    setConductorGraphHydratedForTests(false);
+    expect(isConductorGraphHydrated()).toBe(false);
+    const woken = vi.fn();
+    whenConductorGraphHydrated(woken);
+    expect(woken).not.toHaveBeenCalled();
+    setConductorGraphHydratedForTests(null);
+    await hydrateConductorGraph();
+    expect(isConductorGraphHydrated()).toBe(true);
+    expect(woken).toHaveBeenCalledTimes(1);
   });
 
   it("unions telemetry records without counting this session twice", async () => {

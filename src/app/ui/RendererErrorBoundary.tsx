@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
 import { reportRendererError } from "@/app/lib/rendererDiagnostics";
+import { showMainWindow } from "@/app/lib/showMainWindow";
 import { i18n } from "@/shared/i18n";
 import { Button } from "@/shared/ui/button";
 
@@ -23,6 +24,9 @@ export class RendererErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
+    // A render that fails before App commits never runs the effect that shows
+    // the (initially hidden) window, which left a startup crash invisible.
+    showMainWindow();
     reportRendererError("react_error_boundary", error, {
       componentStack: info.componentStack ?? "",
     });

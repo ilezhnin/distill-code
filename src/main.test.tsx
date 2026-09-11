@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -19,18 +19,6 @@ vi.mock("@/app/RendererBootLog", () => ({
 
 vi.mock("@/app/ui/StartupLoadingView", () => ({
   StartupLoadingView: () => <div data-testid="startup-loading" />,
-}));
-
-vi.mock("@/app/SessionWindowApp", () => ({
-  SessionWindowApp: ({ sessionId }: { sessionId: string }) => (
-    <div data-testid="session-app">{sessionId}</div>
-  ),
-}));
-
-vi.mock("@/app/SessionWindowRuntime", () => ({
-  SessionWindowRuntime: ({ children }: { children: ReactNode }) => (
-    <>{children}</>
-  ),
 }));
 
 vi.mock("@/app/lib/rendererDiagnostics", () => ({
@@ -93,40 +81,5 @@ describe("main entrypoint telemetry startup", () => {
     expect(mockInstallRendererDiagnostics).toHaveBeenCalledWith({
       windowKind: "main",
     });
-  });
-
-  it("runs the session window startup path without telemetry network or native-command work", async () => {
-    await loadMainAt("?sessionKey=c2Vzc2lvbi0xMjM");
-
-    expect(await screen.findByTestId("session-app")).toHaveTextContent(
-      "session-123",
-    );
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-    expect(mockInvoke).not.toHaveBeenCalled();
-    expect(mockInstallRendererDiagnostics).toHaveBeenCalledWith({
-      windowKind: "session",
-    });
-  });
-
-  it("does not start launch telemetry for malformed session windows", async () => {
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => {});
-
-    await loadMainAt("?sessionKey=*");
-
-    await waitFor(() => {
-      expect(
-        screen.getByRole("heading", { name: "Session window failed to load" }),
-      ).toBeInTheDocument();
-    });
-    expect(mockReportRendererError).toHaveBeenCalledWith(
-      "session_key_decode_failed",
-      expect.anything(),
-    );
-    expect(mockInstallRendererDiagnostics).toHaveBeenCalledWith({
-      windowKind: "main",
-    });
-    consoleError.mockRestore();
   });
 });

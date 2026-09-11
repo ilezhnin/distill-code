@@ -487,9 +487,11 @@ describe("advanceWave scheduling", () => {
       reportOf: noReports,
     });
     expect(advanced.spawn.map((request) => request.stepIndex)).toEqual([1]);
+    // A stopped child did not "finish without a report": the next worker is
+    // told, as the digest tells the conductor, that it may have done nothing.
     expect(advanced.spawn[0].previousReports[0].report).toMatchObject({
       status: "failed",
-      summary: MISSING_STEP_REPORT_SUMMARY,
+      summary: INTERRUPTED_STEP_REPORT_SUMMARY,
       needsOperator: true,
     });
   });

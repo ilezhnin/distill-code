@@ -20,8 +20,6 @@ import {
   unarchiveSession as acpUnarchiveSession,
 } from "@/shared/api/acpApi";
 import { mergeAcpSessionPage } from "@/features/chat/lib/acpSessionMapping";
-import { releaseSession } from "@/features/chat/lib/sessionWindowCommands";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import {
   logReasoningEffortInfo,
   reasoningEffortConfigLogFields,
@@ -462,15 +460,6 @@ function persistRightRailOpenPreference(open: boolean): void {
   } catch {
     // localStorage may be unavailable
   }
-}
-
-function releaseWindowedSession(sessionId: string): void {
-  if (!useSessionWindowStore.getState().isOpenInWindow(sessionId)) {
-    return;
-  }
-  releaseSession(sessionId).catch((err: unknown) =>
-    console.error("Failed to release session window:", err),
-  );
 }
 
 function persistWorkspaceMetadataForSession(session: ChatSession): void {
@@ -961,7 +950,6 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
       };
     });
     removePersistedChatWorkspaceMetadata(id);
-    releaseWindowedSession(id);
   },
 
   archiveSession: async (id, fallbackSession) => {

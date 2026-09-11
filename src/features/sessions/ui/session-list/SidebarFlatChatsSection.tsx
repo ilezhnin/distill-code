@@ -48,7 +48,6 @@ export function SidebarFlatChatsSection({
   onSelectionChange,
   onRangeSelect,
   onArchiveSelected,
-  onOpenSelectedInWindows,
   onMarkSelectedRead,
   onMarkSelectedUnread,
   showChatIcons = false,
@@ -80,7 +79,6 @@ export function SidebarFlatChatsSection({
   onSelectionChange?: (sessionId: string, selected: boolean) => void;
   onRangeSelect?: (sessionId: string) => void;
   onArchiveSelected?: () => void;
-  onOpenSelectedInWindows?: () => void;
   onMarkSelectedRead?: () => void;
   onMarkSelectedUnread?: () => void;
   showChatIcons?: boolean;
@@ -322,7 +320,6 @@ export function SidebarFlatChatsSection({
                       onMarkUnread={onMarkChatUnread}
                       onArchive={onArchiveChat}
                       onArchiveSelected={onArchiveSelected}
-                      onOpenSelectedInWindows={onOpenSelectedInWindows}
                       onMarkSelectedRead={onMarkSelectedRead}
                       onMarkSelectedUnread={onMarkSelectedUnread}
                     />

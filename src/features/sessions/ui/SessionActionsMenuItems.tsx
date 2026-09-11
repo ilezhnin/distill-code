@@ -6,7 +6,6 @@ import {
   Copy,
   CopyPlus,
   Download,
-  ExternalLink,
   Mail,
   MailOpen,
   Pencil,
@@ -57,15 +56,11 @@ export interface SessionActionsMenuProps {
   onClose?: () => void;
   archived?: boolean;
   hasUnread?: boolean;
-  isOpenInWindow?: boolean;
   selectionCount?: number;
   selectionActionsDisabled?: boolean;
   onMarkRead?: () => void;
   onMarkUnread?: () => void;
   onRename?: () => void;
-  onOpenInWindow?: () => void;
-  /** Bulk variant of open-in-window; opens every selected chat. */
-  onOpenSelectedInWindows?: () => void;
   onDuplicate?: () => void;
   editProjectLabel?: string;
   onEditProject?: () => void;
@@ -85,14 +80,11 @@ function SessionActionsMenuItems({
   onClose,
   archived = false,
   hasUnread = false,
-  isOpenInWindow = false,
   selectionCount = 0,
   selectionActionsDisabled = false,
   onMarkRead,
   onMarkUnread,
   onRename,
-  onOpenInWindow,
-  onOpenSelectedInWindows,
   onDuplicate,
   editProjectLabel,
   onEditProject,
@@ -144,9 +136,6 @@ function SessionActionsMenuItems({
   // Single-chat-only actions are hidden (not disabled) during multi-select;
   // bulk-capable actions stay when their bulk callback exists.
   const showRenameItem = onRename != null && !appliesToSelection;
-  const showOpenInWindowItem =
-    onOpenInWindow != null &&
-    (!appliesToSelection || onOpenSelectedInWindows != null);
   const showDuplicateItem = onDuplicate != null && !appliesToSelection;
   const showEditProjectItem = onEditProject != null && !appliesToSelection;
   const showCopyLinkItem = showCopyLink && !appliesToSelection;
@@ -155,7 +144,6 @@ function SessionActionsMenuItems({
   const showRegularActions =
     !archived &&
     (showRenameItem ||
-      showOpenInWindowItem ||
       showDuplicateItem ||
       showEditProjectItem ||
       showCopyLinkItem ||
@@ -210,25 +198,6 @@ function SessionActionsMenuItems({
                 <Item onClick={() => invoke(onRename)}>
                   <Pencil className="size-3.5" />
                   {t("common:actions.rename")}
-                </Item>
-              ) : null}
-              {showOpenInWindowItem ? (
-                <Item
-                  onClick={() =>
-                    invoke(
-                      appliesToSelection
-                        ? onOpenSelectedInWindows
-                        : onOpenInWindow,
-                    )
-                  }
-                  disabled={appliesToSelection && selectionActionsDisabled}
-                >
-                  <ExternalLink className="size-3.5" />
-                  {appliesToSelection
-                    ? t("sidebar:actions.openInNewWindows")
-                    : isOpenInWindow
-                      ? t("sessions:card.openWindow")
-                      : t("sessions:card.openInNewWindow")}
                 </Item>
               ) : null}
               {showDuplicateItem ? (

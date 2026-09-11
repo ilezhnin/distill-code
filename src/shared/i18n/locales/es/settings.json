@@ -63,6 +63,27 @@
     "sectionTitle": "Chats archivados",
     "title": "Chats"
   },
+  "connections": {
+    "askAgent": "Agregar conexión",
+    "empty": {
+      "description": "Agrega un servidor MCP para conectar Distill a las apps y servicios que usas.",
+      "title": "Aún no hay conexiones"
+    },
+    "localError": {
+      "title": "No se pudieron cargar tus MCP locales",
+      "description": "Inténtalo de nuevo en unos instantes.",
+      "partialTitle": "Es posible que falten algunos MCP locales",
+      "partialDescription": "Distill no pudo leer todas las fuentes de configuración local.",
+      "retry": "Intentar de nuevo",
+      "retrying": "Intentando…"
+    },
+    "noResults": "Ninguna conexión coincide con tu búsqueda.",
+    "search": "Buscar conexiones",
+    "sections": {
+      "local": "Locales"
+    },
+    "worksWith": "Funciona con: {{harnesses}}"
+  },
   "deleteProject": {
     "description": "Este proyecto y todos sus datos se eliminarán de forma permanente.",
     "title": "¿Eliminar \"{{name}}\" de forma permanente?"
@@ -228,9 +249,6 @@
     "updates": "Actualizaciones",
     "voice": "Voz",
     "memory": "Memoria"
-  },
-  "navigation": {
-    "title": "Navegación"
   },
   "navigationLabel": "Navegación de configuración",
   "notifications": {

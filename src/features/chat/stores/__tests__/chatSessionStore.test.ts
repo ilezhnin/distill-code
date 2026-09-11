@@ -2,7 +2,6 @@ import { getModelSelectionIntent } from "@/features/chat/model-selection/modelSe
 import { beginModelSelectionIntent } from "@/features/chat/model-selection/modelSelectionIntent";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AcpSessionInfo } from "@/shared/api/acp";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import {
   getIncludedWorkspaceAttachments,
   workspaceAttachmentIdForPath,
@@ -23,7 +22,6 @@ const mocks = vi.hoisted(() => ({
   acpListSessionsPage: vi.fn(),
   archiveSession: vi.fn(),
   checkAllProviderStatus: vi.fn(),
-  releaseSession: vi.fn(),
   unarchiveSession: vi.fn(),
 }));
 
@@ -43,10 +41,6 @@ vi.mock("@/shared/api/acpApi", () => ({
   unarchiveSession: (...args: unknown[]) => mocks.unarchiveSession(...args),
   renameSession: vi.fn().mockResolvedValue(undefined),
   updateSessionProject: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock("@/features/chat/lib/sessionWindowCommands", () => ({
-  releaseSession: (...args: unknown[]) => mocks.releaseSession(...args),
 }));
 
 function resetStore() {
@@ -138,23 +132,10 @@ describe("chatSessionStore", () => {
     window.localStorage.removeItem("distill:context-panel-open");
     window.localStorage.removeItem(CHAT_WORKSPACE_METADATA_STORAGE_KEY);
     resetStore();
-    useSessionWindowStore.getState().setSnapshot([]);
     vi.clearAllMocks();
     mocks.archiveSession.mockResolvedValue(undefined);
     mocks.checkAllProviderStatus.mockResolvedValue([]);
-    mocks.releaseSession.mockResolvedValue(undefined);
     mocks.unarchiveSession.mockResolvedValue(undefined);
-  });
-
-  it("releases a windowed session when removing it locally", () => {
-    seedSession({ id: "session-1" });
-    useSessionWindowStore
-      .getState()
-      .setSnapshot([{ sessionId: "session-1", windowLabel: "session:a" }]);
-
-    useChatSessionStore.getState().removeSession("session-1");
-
-    expect(mocks.releaseSession).toHaveBeenCalledWith("session-1");
   });
 
   describe("archiveSession", () => {
@@ -206,7 +187,6 @@ describe("chatSessionStore", () => {
       ).rejects.toBeInstanceOf(SessionNotFoundError);
 
       expect(mocks.archiveSession).not.toHaveBeenCalled();
-      expect(mocks.releaseSession).not.toHaveBeenCalled();
     });
 
     it("archives a known paged-out session without materializing it", async () => {
@@ -233,17 +213,6 @@ describe("chatSessionStore", () => {
       const state = useChatSessionStore.getState();
       expect(state.getSession("paged-out")).toBeUndefined();
       expect(state.archiveMutationBySessionId["paged-out"]).toBeUndefined();
-    });
-
-    it("does not release a windowed session when archiving", async () => {
-      seedSession({ id: "session-1" });
-      useSessionWindowStore
-        .getState()
-        .setSnapshot([{ sessionId: "session-1", windowLabel: "session:a" }]);
-
-      await useChatSessionStore.getState().archiveSession("session-1");
-
-      expect(mocks.releaseSession).not.toHaveBeenCalled();
     });
 
     it("does not let an older unarchive failure roll back a newer archive", async () => {

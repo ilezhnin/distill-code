@@ -63,6 +63,27 @@
     "sectionTitle": "Archived chats",
     "title": "Chats"
   },
+  "connections": {
+    "askAgent": "Add connection",
+    "empty": {
+      "description": "Add an MCP server to connect Distill to the apps and services you use.",
+      "title": "No connections yet"
+    },
+    "localError": {
+      "title": "Couldn’t load your local MCPs",
+      "description": "Try again in a moment.",
+      "partialTitle": "Some local MCPs may be missing",
+      "partialDescription": "Distill couldn’t read every local configuration source.",
+      "retry": "Try again",
+      "retrying": "Trying…"
+    },
+    "noResults": "No connections match your search.",
+    "search": "Search connections",
+    "sections": {
+      "local": "Local"
+    },
+    "worksWith": "Works with: {{harnesses}}"
+  },
   "deleteProject": {
     "description": "Removes the project and all its data. You can't undo this.",
     "title": "Delete \"{{name}}\" permanently?"

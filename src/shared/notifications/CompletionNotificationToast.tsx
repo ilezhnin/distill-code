@@ -1,4 +1,5 @@
 import { toast } from "sonner";
+import { i18n } from "@/shared/i18n";
 import { ToastActionButton, ToastActionGroup } from "@/shared/ui/sonner";
 
 export type CompletionNotificationOutcome = "completed" | "error" | "stopped";
@@ -8,9 +9,7 @@ const TOAST_DURATION_MS = 8000;
 export function getCompletionToastDescription(
   outcome: CompletionNotificationOutcome,
 ): string {
-  if (outcome === "error") return "Agent response needs attention";
-  if (outcome === "stopped") return "Agent response stopped";
-  return "Agent response complete";
+  return i18n.t(`common:completionNotification.description.${outcome}`);
 }
 
 export function showCompletionNotificationToast({
@@ -38,6 +37,7 @@ export function showCompletionNotificationToast({
     onChangeSound?.();
   };
 
+  const viewLabel = i18n.t("common:completionNotification.view");
   const action = onChangeSound ? (
     <ToastActionGroup>
       <ToastActionButton
@@ -45,14 +45,14 @@ export function showCompletionNotificationToast({
         emphasis="secondary"
         onClick={handleChangeSound}
       >
-        Change sound
+        {i18n.t("common:completionNotification.changeSound")}
       </ToastActionButton>
       <ToastActionButton className="ml-0" onClick={handleView}>
-        View
+        {viewLabel}
       </ToastActionButton>
     </ToastActionGroup>
   ) : (
-    <ToastActionButton onClick={handleView}>View</ToastActionButton>
+    <ToastActionButton onClick={handleView}>{viewLabel}</ToastActionButton>
   );
 
   const options = {

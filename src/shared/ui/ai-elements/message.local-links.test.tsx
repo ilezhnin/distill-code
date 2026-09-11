@@ -30,6 +30,22 @@ describe("MessageResponse local Markdown links", () => {
     );
   });
 
+  it.each([
+    "C:/repo/wiki/report.md",
+    "C:\\repo\\wiki\\report.md",
+  ])("keeps the absolute Windows path %s as a link", (path) => {
+    render(
+      <MessageResponse mode="static">
+        {`Open the [report](${path}).`}
+      </MessageResponse>,
+    );
+
+    // Markdown percent-encodes the backslashes; the path itself survives.
+    const link = screen.getByRole("link", { name: "report" });
+    expect(decodeURIComponent(link.getAttribute("href") ?? "")).toBe(path);
+    expect(screen.queryByText("[blocked]", { exact: false })).toBeNull();
+  });
+
   it("still blocks unsafe link schemes", () => {
     render(
       <MessageResponse mode="static">

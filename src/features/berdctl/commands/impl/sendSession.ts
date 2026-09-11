@@ -11,7 +11,6 @@ import {
   admitSystemInheritedQueuedMessage,
   createDeferredQueuedMessagePayload,
 } from "@/features/chat/lib/admittedSend";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 
 import { CommandError, defineCommand } from "../types";
@@ -130,13 +129,6 @@ Result:
     }
 
     try {
-      if (useSessionWindowStore.getState().isOpenInWindow(args.session_id)) {
-        throw new CommandError(
-          "target_session_running",
-          `Refusing to send to session "${args.session_id}" while it is open in a separate window; close that window first or ask the user.`,
-        );
-      }
-
       const chatStore = useChatStore.getState();
       const runtime = chatStore.getSessionRuntime(args.session_id);
       if (
