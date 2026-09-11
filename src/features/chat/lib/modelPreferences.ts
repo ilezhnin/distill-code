@@ -3,6 +3,7 @@ import {
   resolveAgentProviderCatalogIdStrict,
 } from "@/features/providers/providerCatalog";
 import { normalizeConcreteModelId } from "@/shared/lib/modelIdentity";
+import { isRecord } from "@/shared/lib/isRecord";
 
 const MODEL_PREFERENCES_STORAGE_KEY = "distill:preferredModelsByAgent";
 
@@ -20,10 +21,6 @@ function canonicalAgentId(agentId: string): string {
 
 function canonicalModelProviderId(providerId: string): string | undefined {
   return providerId ? canonicalProviderCatalogId(providerId) : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseStoredModelPreferences(value: unknown): StoredModelPreferences {

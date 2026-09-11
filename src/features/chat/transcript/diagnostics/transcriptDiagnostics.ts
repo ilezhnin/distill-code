@@ -1,3 +1,4 @@
+import { isRecord } from "@/shared/lib/isRecord";
 export const TRANSCRIPT_DIAGNOSTICS_SCHEMA_VERSION = "2026-06-04.v2";
 
 export const TRANSCRIPT_DIAGNOSTICS_EVENT = "distill:transcript-diagnostics";
@@ -209,10 +210,6 @@ export interface TranscriptDiagnosticsValidationResult {
 }
 
 type UnknownRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === "object" && value != null && !Array.isArray(value);
-}
 
 function readOptionalString(
   record: UnknownRecord,

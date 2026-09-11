@@ -68,6 +68,7 @@ import {
 } from "./liveStreamingUpdates";
 import { addSessionWorkedMs } from "@/features/stats/lib/usageLedger";
 import { recordAcpSessionUsage } from "@/features/stats/lib/usageRecorder";
+import { isRecord } from "@/shared/lib/isRecord";
 
 // Per-session perf counters for replay streaming.
 interface ReplayPerf {
@@ -175,10 +176,6 @@ function handleReplayAssistantBoundary(
       delivery: "steer",
     };
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function rawInputToArguments(rawInput: unknown): Record<string, unknown> {

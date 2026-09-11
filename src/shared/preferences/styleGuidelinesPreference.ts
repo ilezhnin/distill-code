@@ -1,4 +1,5 @@
 import { useCallback, useSyncExternalStore } from "react";
+import { isRecord } from "@/shared/lib/isRecord";
 
 export const STYLE_GUIDELINES_STORAGE_KEY = "distill:style-guidelines";
 const STYLE_GUIDELINES_CHANGE_EVENT = "distill:style-guidelines-change";
@@ -19,10 +20,6 @@ Showing images:
 
 export interface StyleGuidelinesPreference {
   prompt: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function normalizeStyleGuidelinesPrompt(prompt: unknown): string {

@@ -5,6 +5,7 @@ import { syncConductorDisplayNameFromTitle } from "@/features/conductor/syncCond
 import { isPersonaHandoffText } from "@/shared/api/acpPersonaHandoff";
 import { completeReplayAssistantMessage } from "./acpReplayAssistant";
 import { flushBufferedStreamingUpdatesForSession } from "./liveStreamingUpdates";
+import { isRecord } from "@/shared/lib/isRecord";
 
 type SessionInfoUpdate = SessionUpdate & {
   sessionUpdate: "session_info_update";
@@ -13,10 +14,6 @@ type SessionInfoUpdate = SessionUpdate & {
   meta?: unknown;
   _meta?: unknown;
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 export function handleSessionInfoUpdate(
   sessionId: string,
