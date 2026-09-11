@@ -4,6 +4,7 @@ import {
   shortLogId,
 } from "@/shared/lib/reasoningEffortDiagnostics";
 import { normalizeConcreteModelId } from "@/shared/lib/modelIdentity";
+import { isRecord } from "@/shared/lib/isRecord";
 
 export interface AcpModelConfigSnapshot {
   modelId: string;
@@ -499,8 +500,4 @@ function getStringProperty(
 ): string | undefined {
   const value = record[key];
   return typeof value === "string" ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

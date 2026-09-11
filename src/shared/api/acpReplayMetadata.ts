@@ -1,4 +1,5 @@
 import type { MessageMetadata } from "@/shared/types/messages";
+import { isRecord } from "@/shared/lib/isRecord";
 
 type ReplayMetadataSource = {
   _meta?: Record<string, unknown> | null;
@@ -130,10 +131,6 @@ function normalizeEpochMilliseconds(value: number): number | undefined {
   }
 
   return value < 1_000_000_000_000 ? value * 1000 : value;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function nonEmptyString(value: unknown): string | undefined {

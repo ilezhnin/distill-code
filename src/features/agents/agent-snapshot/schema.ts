@@ -1,3 +1,4 @@
+import { isRecord } from "@/shared/lib/isRecord";
 export const SNAPSHOT_FORMAT = "buzz-agent-snapshot" as const;
 export const SNAPSHOT_VERSION = 1 as const;
 export const SNAPSHOT_PNG_KEYWORD = "buzz_agent_snapshot" as const;
@@ -82,10 +83,6 @@ export class AgentSnapshotError extends Error {
     super(message);
     this.name = "AgentSnapshotError";
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function optionalString(

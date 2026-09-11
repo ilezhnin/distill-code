@@ -25,6 +25,7 @@ import { useSyncExternalStore } from "react";
 
 import type { MemoryEntry } from "./memoryEntry";
 import { composeMemorySection } from "./memoryPrompt";
+import { isRecord } from "@/shared/lib/isRecord";
 
 export const MEMORY_PREFERENCES_STORAGE_KEY = "distill:memory-preferences";
 export const MEMORY_PREFERENCES_STORAGE_VERSION = 1;
@@ -67,10 +68,6 @@ let snapshotCache: { key: string; value: MemoryPreferences } | undefined;
 function getStorage(): Storage | null {
   if (typeof window === "undefined") return null;
   return window.localStorage ?? null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function defaultStoredPreferences(): StoredPreferences {

@@ -1,12 +1,9 @@
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
+import { isRecord } from "@/shared/lib/isRecord";
 
 export interface ToolCallIdentity {
   toolName?: string;
   extensionName?: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 export function getToolCallIdentity(update: SessionUpdate): ToolCallIdentity {

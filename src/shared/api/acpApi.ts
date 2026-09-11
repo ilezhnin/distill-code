@@ -23,6 +23,7 @@ import {
   reasoningEffortConfigLogFields,
   shortLogId,
 } from "@/shared/lib/reasoningEffortDiagnostics";
+import { isRecord } from "@/shared/lib/isRecord";
 
 export interface AcpProvider {
   id: string;
@@ -54,10 +55,6 @@ export interface AcpSessionsPage {
 
 export async function listProviders(): Promise<AcpProvider[]> {
   return getCuratedAgentProviders();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function mapLastMessageSnippet(value: unknown): string | null {

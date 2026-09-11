@@ -5,6 +5,7 @@ import {
   type AssistiveUxMomentType,
   type AssistiveUxRetiredReason,
 } from "./registry";
+import { isRecord } from "@/shared/lib/isRecord";
 
 interface StoredAssistiveUxMoment {
   type: AssistiveUxMomentType;
@@ -25,10 +26,6 @@ function defaultAssistiveUxState(): StoredAssistiveUxState {
     version: ASSISTIVE_UX_STORAGE_VERSION,
     moments: {},
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function parseMoment(value: unknown): StoredAssistiveUxMoment | null {

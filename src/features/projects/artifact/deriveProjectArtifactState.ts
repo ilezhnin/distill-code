@@ -7,6 +7,7 @@ import type {
   ProjectArtifactMood,
   ProjectArtifactState,
 } from "./types";
+import { isRecord } from "@/shared/lib/isRecord";
 
 const PILL_TONE_HEX: Record<PillTone, string> = {
   pink: "#f4bed1",
@@ -110,10 +111,6 @@ function contentModeForInput(
   if (workingDirCount > 1) return "sphere";
   if (promptLength >= 100) return "planes";
   return CONTENT_MODES[seed % CONTENT_MODES.length];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function finiteNumber(value: unknown): number | null {
