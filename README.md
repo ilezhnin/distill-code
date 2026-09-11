@@ -34,13 +34,6 @@ registries or enterprise credentials. Enterprise distributors may overlay
 private agents, runtime configuration, update channels, and signing or
 publishing infrastructure in their own private build orchestration.
 
-## Public Agent Skills
-
-Berd publishes portable Agent Skills under [`skills/`](skills/README.md). These
-can be installed independently of the Berd app and are separate from the
-contributor workflows under `.agents/skills/` and the starter skills bundled
-under `distro/skills/`.
-
 ## Participating
 
 Berd is built by a small team at Block, in the open. You can read the source,

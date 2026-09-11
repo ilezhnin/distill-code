@@ -5,7 +5,6 @@
 ## Supported files
 
 - `distro.json` — minimal bundled manifest for app-level defaults that still need to be available before runtime config owns them
-- `bin/` — optional executables or helper scripts prepended to `PATH` for the harness bridges
 - `skills/` — bundled skills seeded into the user's global skills directory
 - `agents/` — bundled agents seeded into the user's global agents directory
 
@@ -16,7 +15,7 @@ The Tauri app resolves bundled defaults in this order:
 1. `DISTILL_DISTRO_DIR`, if set
 2. bundled Tauri resource dir at `resource_dir()/distro`
 
-In development, `just dev` exports `DISTILL_DISTRO_DIR` to this repository's `distro/` directory when it exists.
+In development, `just dev-windows` (`scripts/windows/Dev-Windows.ps1`) exports `DISTILL_DISTRO_DIR` to this repository's `distro/` directory when it exists.
 
 ## Manifest shape
 
@@ -24,17 +23,14 @@ In development, `just dev` exports `DISTILL_DISTRO_DIR` to this repository's `di
 
 - `appVersion?: string` — optional app version tag supplied by bundled defaults
 - `distribution?: { npmRegistryUrl, nodeDistBaseUrl }` — where the managed Node runtime and ACP bridges are downloaded from
-- `telemetry?: { channel }` — which telemetry channel a packaged build reports to
 
 ## Runtime effects
 
 When bundled defaults are present, the Tauri shell:
 
-- prepends `distro/bin` to `PATH` when present
-- sets `DISTILL_DISTRO_DIR` to the resolved distro root
 - installs Berd-owned `distro/skills/<name>/` entries into the platform app-data `skills/<name>/` directory; Personal skills remain in `~/.agents/skills`
 - installs `distro/agents/<name>.md` entries into `~/.agents/agents/<name>.md`
-- warms installed bundled agent `app-avatar:` media when network access is available
+- resolves bundled `agent-avatar:` images from `distro/agents/.avatars/`
 
 Bundled skills reinstall existing copies only when the installed `SKILL.md` frontmatter has the `metadata.berdBundled: true` marker; unmarked Personal skills are left untouched.
 
@@ -48,7 +44,6 @@ Good fits:
 
 - bundled skills
 - bundled agents
-- bundled `bin/`
 - temporary generic app defaults that cannot yet move to runtime config
 
 Do not use bundled app defaults for policy, provider allowlists, runtime feature toggles, normal app state, user preferences, or ACP-backed data.

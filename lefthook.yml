@@ -1,4 +1,4 @@
-# Equivalent of the aaif-goose/goose Husky hooks, using lefthook.
+# Git hooks, run through lefthook.
 # See: https://github.com/evilmartians/lefthook
 
 pre-commit:

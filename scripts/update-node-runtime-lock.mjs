@@ -6,13 +6,11 @@ import process from "node:process";
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const defaultLockFile = path.join(repoRoot, "node-runtime.lock.json");
 
-// Block's Artifactory `nodejs` repo is a read-through mirror of
-// https://nodejs.org/dist with an identical path shape, so SHASUMS256.txt is
-// the official Node.js checksum file either way.
-const DEFAULT_BASE_URL =
-  "https://global.block-artifacts.com/artifactory/nodejs";
+// The same origin src-tauri/src/services/managed_node.rs downloads the runtime
+// from, so the pinned checksums come from the official SHASUMS256.txt.
+const DEFAULT_BASE_URL = "https://nodejs.org/dist";
 
-// The rust target triples Berd releases for, mapped to the platform
+// The rust target triples the lockfile pins, mapped to the platform
 // component of Node's release tarball names.
 const TARGET_PLATFORMS = {
   "aarch64-apple-darwin": "darwin-arm64",

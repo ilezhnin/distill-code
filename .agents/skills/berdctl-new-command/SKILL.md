@@ -31,8 +31,8 @@ validation, TS input types, CLI help, and generated contract JSON. Background:
   `.strict()` schema, `.describe()` on every field, `summary`, `description`,
   `helpFooter`, safety metadata, optional `precheck`, and `execute`.
 - Update inventories only when needed: `registry.ts` group `cli.about`,
-  top-level help pins in `tree.rs`, and `distro/skills/berdctl/SKILL.md` for
-  overview changes.
+  top-level help pins in `tree.rs`, and
+  `distro/skills/berd-help/references/berdctl.md` for overview changes.
 - Run `pnpm generate:berdctl-contract`,
   `pnpm vitest run src/features/berdctl`, and `cargo test -p berdctl` from
   `src-tauri/`.

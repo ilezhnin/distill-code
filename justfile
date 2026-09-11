@@ -300,7 +300,7 @@ dev:
     echo "Using Tauri Cargo target dir: ${CARGO_TARGET_DIR}"
 
     # Derive a git-based version so dev builds don't report the 0.1.0
-    # placeholder. The rich string carries the telemetry/agent-context version;
+    # placeholder. The rich string is the version agents see in their context;
     # the numeric one is injected into Tauri's config below.
     eval "$(./scripts/resolve-app-version.sh)"
     export VITE_APP_VERSION="$BERD_APP_VERSION_RICH"
@@ -371,8 +371,6 @@ dev-e2e mode="":
 bump-node-runtime *ARGS:
     node scripts/update-node-runtime-lock.mjs {{ ARGS }}
 
-# Draft release notes from commits without mutating GitHub.
-
 # ── Utilities ────────────────────────────────────────────────
 
 # Scaffold a new berdctl command (see .agents/skills/berdctl-new-command/SKILL.md).
@@ -406,35 +404,3 @@ _stage-sidecar-unix:
 [windows]
 _stage-sidecar-windows:
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Invoke-Stage-Sidecar-Windows.ps1
-
-# Delete the silent migration marker(s) so the next launch re-runs the migration.
-[unix]
-reset-migration:
-    #!/usr/bin/env bash
-    set -euo pipefail
-
-    case "$(uname -s)" in
-        Darwin)
-            base="$HOME/Library/Application Support"
-            ;;
-        Linux)
-            base="${XDG_DATA_HOME:-$HOME/.local/share}"
-            ;;
-        *)
-            echo "❌ Unsupported platform: $(uname -s)" >&2
-            exit 1
-            ;;
-    esac
-
-    removed=0
-    for ident in com.squareup.berd com.squareup.berd.dev; do
-        marker="$base/$ident/migration.json"
-        if [[ -f "$marker" ]]; then
-            rm -v "$marker"
-            removed=$((removed + 1))
-        fi
-    done
-
-    if [[ $removed -eq 0 ]]; then
-        echo "No migration marker found under $base/com.squareup.berd{,.dev}/."
-    fi

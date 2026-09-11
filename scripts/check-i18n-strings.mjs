@@ -6,8 +6,6 @@ const CHECKED_PATHS = [
   "src/app/ui",
   "src/features/agents",
   "src/features/chat/ui",
-  "src/features/experiments",
-  "src/features/home",
   "src/features/projects",
   "src/features/settings",
   "src/features/skills",

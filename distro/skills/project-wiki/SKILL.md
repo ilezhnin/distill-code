@@ -74,7 +74,7 @@ row and `[[link]]` from the original.
 | slug | what it is | type | updated |
 | --- | --- | --- | --- |
 | retry-policy | How src/net/retry.ts schedules and caps retries | concept | 2026-08-31 |
-| goose-sidecar | The pinned Goose backend and how a build stages it | entity | 2026-08-14 |
+| build-sidecar | The helper binary a build ships next to the app, and how it is staged | entity | 2026-08-14 |
 ```
 
 Keep the heading and both header rows exactly as written. One row per file in
@@ -123,7 +123,7 @@ What surprised someone and cost time.
 
 ## See also
 
-- [[goose-sidecar]]
+- [[build-sidecar]]
 ```
 
 The four frontmatter keys, in that order, one value per line — the wiki is
