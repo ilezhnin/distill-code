@@ -297,7 +297,8 @@ pub async fn save_exported_session_files(
     let mut written: Vec<String> = Vec::with_capacity(items.len());
 
     for item in items {
-        let resolved = resolve_export_filename(&folder_path, &item.filename, &used);
+        let filename = plain_export_filename(&item.filename);
+        let resolved = resolve_export_filename(&folder_path, &filename, &used);
         let path = folder_path.join(&resolved);
         std::fs::write(&path, &item.contents)
             .map_err(|e| format!("Failed to write file '{}': {}", path.display(), e))?;
@@ -309,6 +310,23 @@ pub async fn save_exported_session_files(
         folder: folder_path.to_string_lossy().into_owned(),
         files: written,
     }))
+}
+
+/// Reduces a renderer-supplied export name to a bare file name.
+///
+/// The names are joined onto the folder the operator picked; a name carrying
+/// separators, `..` or a drive (`C:x.json` replaces the base path on join)
+/// would write somewhere else. Only the last path segment is kept and colons
+/// are replaced, since Windows reads them as a drive or a data stream.
+fn plain_export_filename(raw: &str) -> String {
+    let last_segment = raw.rsplit(['/', '\\']).next().unwrap_or_default();
+    let name = last_segment.replace(':', "-");
+    let name = name.trim();
+    if name.is_empty() || name == "." || name == ".." {
+        "session.json".to_string()
+    } else {
+        name.to_string()
+    }
 }
 
 fn resolve_export_filename(folder: &Path, filename: &str, used: &HashSet<String>) -> String {
@@ -1862,7 +1880,7 @@ mod tests {
         build_file_mention_index, build_file_tree_entry, ensure_directory_path,
         get_or_build_file_mention_index_from_cache, inspect_attachment_path,
         inspect_attachment_paths, normalize_attachment_paths, normalize_roots,
-        read_directory_entries, read_image_attachment, read_text_file,
+        plain_export_filename, read_directory_entries, read_image_attachment, read_text_file,
         search_file_mentions_blocking, signed_unix_timestamp_ns, stat_file_blocking,
         stat_file_with, FileMentionIndexCache, FileStatErrorKind, MAX_IMAGE_ATTACHMENT_BYTES,
         MAX_TEXT_FILE_BYTES,
@@ -1911,6 +1929,16 @@ mod tests {
             query.to_string(),
             Some(max_results),
         )
+    }
+
+    #[test]
+    fn export_names_stay_inside_the_chosen_folder() {
+        assert_eq!(plain_export_filename("chat.json"), "chat.json");
+        assert_eq!(plain_export_filename("../../escape.json"), "escape.json");
+        assert_eq!(plain_export_filename("..\\..\\escape.json"), "escape.json");
+        assert_eq!(plain_export_filename("C:escape.json"), "C-escape.json");
+        assert_eq!(plain_export_filename(".."), "session.json");
+        assert_eq!(plain_export_filename("dir/"), "session.json");
     }
 
     #[test]
