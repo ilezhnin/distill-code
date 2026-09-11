@@ -236,11 +236,7 @@ pub(crate) fn supported_target_triples() -> impl Iterator<Item = &'static str> {
 }
 
 pub(crate) fn current_target_triple() -> Option<&'static str> {
-    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Some("aarch64-apple-darwin")
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        Some("x86_64-apple-darwin")
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+    if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
         Some("aarch64-unknown-linux-gnu")
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         Some("x86_64-unknown-linux-gnu")

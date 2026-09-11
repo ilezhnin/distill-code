@@ -80,17 +80,19 @@ try {
     }
     Assert-Equal "_stage-sidecar-windows dispatches through its native wrapper" `
         ($justfile -match '(?m)^\[windows\]\r?\n_stage\-sidecar\-windows:\r?\n\s+powershell\.exe .* -File scripts/windows/Invoke-Stage-Sidecar-Windows\.ps1\r?$') $true
-    foreach ($recipe in @("bundle", "bundle-debug", "stage-sidecar")) {
-        $escapedRecipe = [regex]::Escape($recipe)
-        Assert-Equal "$recipe dispatches by os_family on Windows and Unix" ($justfile -match "(?m)^${escapedRecipe}[^:]*:\r?\n\s+just _${escapedRecipe}-\{\{ os_family\(\) \}\}") $true
-    }
+    Assert-Equal "stage-sidecar dispatches by os_family on Windows and Unix" ($justfile -match '(?m)^stage-sidecar[^:]*:\r?\n\s+just _stage-sidecar-\{\{ os_family\(\) \}\}') $true
     $just = Get-CommandSource "just"
-    foreach ($recipe in @("bundle", "bundle-debug", "stage-sidecar")) {
+    $dryRunTargets = [ordered]@{
+        "bundle" = 'Bundle-Windows\.ps1'
+        "bundle-debug" = 'Bundle-Windows\.ps1 -Debug'
+        "stage-sidecar" = "_stage-sidecar-windows"
+    }
+    foreach ($recipe in $dryRunTargets.Keys) {
         $dryRun = Invoke-CaptureCommand -FilePath $just -ArgumentList @("--dry-run", $recipe) -WorkingDirectory (Get-BerdRepoRoot)
         Assert-Equal "$recipe is visible and dry-runs on Windows" $dryRun.ExitCode 0
-        Assert-Equal "$recipe dry-run dispatches to its Windows helper" ($dryRun.Output -match "_${recipe}-windows") $true
+        Assert-Equal "$recipe dry-run reaches its Windows implementation" ($dryRun.Output -match $dryRunTargets[$recipe]) $true
     }
-    foreach ($recipe in @("_bundle-unix", "_bundle-debug-unix", "dev", "dev-e2e", "reset-migration")) {
+    foreach ($recipe in @("dev", "dev-e2e", "reset-migration")) {
         $escapedRecipe = [regex]::Escape($recipe)
         Assert-Equal "$recipe stays Unix-only" ($justfile -match "(?m)^\[unix\]\r?\n${escapedRecipe}[^:]*:") $true
         Assert-Equal "$recipe keeps an explicit bash shebang" ($justfile -match "(?m)^${escapedRecipe}[^:]*:\r?\n\s+#!/usr/bin/env bash") $true
@@ -308,12 +310,12 @@ try {
     Assert-Equal "PE info reads machine" $peInfo.Machine $amd64
     Assert-Equal "PE info reads executable bit" $peInfo.IsExecutableImage $true
 
-    # A POSIX shell script (what the old Catch stub emitted) is not a PE.
-    $shellStub = Join-Path $srcDir "catch"
+    # A POSIX shell script is not a PE.
+    $shellStub = Join-Path $srcDir "berd-monitor-shell-stub"
     Set-Content -Path $shellStub -Value "#!/usr/bin/env sh`necho no`n" -Encoding ASCII
     Assert-Equal "shell script is not a PE" (Get-PeFileInfo -Path $shellStub).IsPe $false
     Assert-Throws "staging rejects a shell-script fake binary" {
-        Stage-WindowsSidecar -SourcePath $shellStub -Triple "x86_64-pc-windows-msvc" -Stem "catch" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath $shellStub -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
     }
 
     # Truncated image: MZ + PE signature + COFF header but nothing after it (no
@@ -405,32 +407,24 @@ try {
     $windowsExternalBin = @(Get-ObjectValue (Get-ObjectValue $windowsConf "bundle") "externalBin")
     Assert-Equal "Windows externalBin stages berdctl" ($windowsExternalBin -contains "binaries/berdctl") $true
     Assert-Equal "Windows externalBin stages berd-monitor" ($windowsExternalBin -contains "binaries/berd-monitor") $true
-    Assert-Equal "Windows externalBin excludes catch" ($windowsExternalBin -contains "binaries/catch") $false
 
     # Tauri merges platform overlays into the base config with json_patch (RFC
-    # 7386), which REPLACES arrays wholesale rather than concatenating. The base
-    # config stages catch; the Windows overlay's array must fully replace it so
-    # the effective Windows externalBin contract has no catch entry. Model that
-    # array-replacement merge here so a regression that turns the overlay into a
-    # partial patch (leaving catch in the merged result) fails locally.
+    # 7386), which REPLACES arrays wholesale rather than concatenating. Model
+    # that merge so the effective Windows externalBin contract is checked, not
+    # just the overlay: exactly the two native sidecars, nothing else.
     $baseConf = Read-JsonFile (Join-Path (Get-BerdRepoRoot) "src-tauri/tauri.conf.json")
     $baseExternalBin = @(Get-ObjectValue (Get-ObjectValue $baseConf "bundle") "externalBin")
-    Assert-Equal "base externalBin stages catch" ($baseExternalBin -contains "binaries/catch") $true
     # RFC 7386 merge: a present member on the overlay replaces the base member.
     $mergedExternalBin = if ($null -ne $windowsExternalBin) { $windowsExternalBin } else { $baseExternalBin }
     Assert-Equal "merged Windows externalBin stages berdctl" ($mergedExternalBin -contains "binaries/berdctl") $true
     Assert-Equal "merged Windows externalBin stages berd-monitor" ($mergedExternalBin -contains "binaries/berd-monitor") $true
-    Assert-Equal "merged Windows externalBin drops catch" ($mergedExternalBin -contains "binaries/catch") $false
+    Assert-Equal "merged Windows externalBin stages only the native sidecars" (@($mergedExternalBin).Count) 2
 
-    # ── Windows bundle recipes route through native staging ──────
-    # just bundle / bundle-debug must platform-dispatch: Unix keeps the POSIX
-    # prepare-*-sidecar.sh flow, Windows drives Bundle-Windows.ps1 (native
-    # staging + NSIS). A Windows `just bundle` that ran the Bash recipe would
-    # stage extensionless inputs and emit the forbidden Catch stub.
-    Assert-Equal "bundle dispatches by os_family" ($justfile -match "(?m)^bundle:\r?\n\s+just _bundle-\{\{ os_family\(\) \}\}") $true
-    Assert-Equal "bundle-debug dispatches by os_family" ($justfile -match "(?m)^bundle-debug:\r?\n\s+just _bundle-debug-\{\{ os_family\(\) \}\}") $true
-    Assert-Equal "_bundle-windows runs Bundle-Windows.ps1" ($justfile -match "(?m)^_bundle-windows:\r?\n\s+powershell\.exe.*Bundle-Windows\.ps1") $true
-    Assert-Equal "_bundle-debug-windows runs Bundle-Windows.ps1 -Debug" ($justfile -match "(?m)^_bundle-debug-windows:\r?\n\s+powershell\.exe.*Bundle-Windows\.ps1 -Debug") $true
+    # ── Bundle recipes are Windows-only and route through native staging ──
+    # Bundling exists only on Windows: `just bundle` / `bundle-debug` drive
+    # Bundle-Windows.ps1 (native PE-validated staging + NSIS) directly.
+    Assert-Equal "bundle is Windows-only and runs Bundle-Windows.ps1" ($justfile -match '(?m)^\[windows\]\r?\nbundle:\r?\n\s+powershell\.exe.*Bundle-Windows\.ps1\r?$') $true
+    Assert-Equal "bundle-debug is Windows-only and runs Bundle-Windows.ps1 -Debug" ($justfile -match '(?m)^\[windows\]\r?\nbundle-debug:\r?\n\s+powershell\.exe.*Bundle-Windows\.ps1 -Debug\r?$') $true
 
     # ── Bundle and stage-sidecar call sites invoke native child processes ──
     # A successful in-process `& script.ps1` leaves $LASTEXITCODE unset, so the

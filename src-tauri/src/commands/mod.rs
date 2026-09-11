@@ -11,7 +11,6 @@ pub mod distro;
 pub mod doctor;
 pub mod git;
 pub mod git_changes;
-pub mod global_shortcut;
 pub mod local_mcp_inventory;
 pub mod message_queues;
 pub mod notifications;

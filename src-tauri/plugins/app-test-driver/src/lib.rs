@@ -4,8 +4,6 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
-#[cfg(target_os = "macos")]
-use tauri::WebviewWindow;
 use tauri::{AppHandle, Manager, Runtime};
 
 const READY_FILE_NAME: &str = "app-test-driver.json";
@@ -412,62 +410,12 @@ fn validate_command(cmd: &TestCommand, expected_token: &str) -> Result<(), TestR
             cmd.action
         )));
     }
-    #[cfg(not(target_os = "macos"))]
     if cmd.action == "screenshot" {
         return Err(TestResult::failure(
             "Test driver screenshots are not supported on this platform",
         ));
     }
     Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn get_ns_window_number<R: Runtime>(window: &WebviewWindow<R>) -> Option<u32> {
-    let ns_window_ptr = window.ns_window().ok()?;
-    let ns_window = unsafe { &*(ns_window_ptr as *const objc2_app_kit::NSWindow) };
-    Some(ns_window.windowNumber() as u32)
-}
-
-#[cfg(target_os = "macos")]
-fn take_screenshot<R: Runtime>(window: &WebviewWindow<R>, path: &str) -> TestResult {
-    if let Some(parent) = std::path::Path::new(path).parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    let window_id = match get_ns_window_number(window) {
-        Some(id) => id,
-        None => {
-            return TestResult {
-                success: false,
-                data: None,
-                error: Some("Failed to get window ID".into()),
-            };
-        }
-    };
-
-    match std::process::Command::new("screencapture")
-        .args(["-x", "-l", &window_id.to_string(), path])
-        .output()
-    {
-        Ok(output) if output.status.success() => TestResult {
-            success: true,
-            data: Some(format!("Screenshot saved to {}", path)),
-            error: None,
-        },
-        Ok(output) => TestResult {
-            success: false,
-            data: None,
-            error: Some(format!(
-                "screencapture failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )),
-        },
-        Err(e) => TestResult {
-            success: false,
-            data: None,
-            error: Some(format!("Failed to run screencapture: {}", e)),
-        },
-    }
 }
 
 fn write_result(stream: &mut impl Write, result: &TestResult) {
@@ -607,13 +555,6 @@ fn start_server<R: Runtime>(
 
                 let state = app.state::<DriverState>();
                 let _command_guard = state.command_lock.lock().unwrap();
-
-                #[cfg(target_os = "macos")]
-                if cmd.action == "screenshot" {
-                    let path = cmd.value.as_deref().unwrap_or("screenshot.png");
-                    write_result(&mut stream, &take_screenshot(&window, path));
-                    continue;
-                }
 
                 state.reset();
                 let js = match build_js(&cmd) {
@@ -758,9 +699,8 @@ mod tests {
         assert!(build_js(&cmd).is_err());
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
-    fn screenshot_is_an_explicit_failure_off_macos() {
+    fn screenshot_is_an_explicit_failure() {
         let error = validate_command(&command("token", "screenshot"), "token").unwrap_err();
         assert_eq!(
             error.error.as_deref(),

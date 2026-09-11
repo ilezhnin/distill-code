@@ -88,10 +88,6 @@ Write-WindowsDevInfo "Using berd-monitor CLI: $env:BERD_MONITOR_BIN"
 
 $env:CARGO_TARGET_DIR = $tauriCargoTargetDir
 
-# bb.exe is intentionally not staged: the bb CLI resource is only mapped and
-# resolved on macOS (tauri.macos.conf.json + commands/cli.rs), so building it
-# here would spend minutes producing an artifact the Windows app never reads.
-
 $distroDir = Join-Path (Get-BerdRepoRoot) "distro"
 if ([string]::IsNullOrWhiteSpace($env:DISTILL_DISTRO_DIR) -and (Test-Path $distroDir -PathType Container)) {
     $env:DISTILL_DISTRO_DIR = $distroDir

@@ -469,11 +469,11 @@ fn normalized_path_key(path: &Path) -> String {
     }
 
     let raw = path.to_string_lossy().into_owned();
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(target_os = "windows")]
     {
         raw.to_lowercase()
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(target_os = "windows"))]
     {
         raw
     }
@@ -2798,7 +2798,7 @@ mod tests {
             "/tmp/Readme.md".into(),
         ]);
 
-        if cfg!(any(target_os = "macos", target_os = "windows")) {
+        if cfg!(target_os = "windows") {
             assert_eq!(normalized, vec![PathBuf::from("/tmp/Readme.md")]);
         } else {
             assert_eq!(
@@ -2847,7 +2847,7 @@ mod tests {
             "/tmp/Workspace".into(),
         ]);
 
-        if cfg!(any(target_os = "macos", target_os = "windows")) {
+        if cfg!(target_os = "windows") {
             assert_eq!(normalized, vec![PathBuf::from("/tmp/Workspace")]);
         } else {
             assert_eq!(
