@@ -9,6 +9,7 @@ import type {
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
+  ensureReplayBuffer,
   getBufferedMessage,
   getReplayBuffer,
 } from "@/features/chat/hooks/replayBuffer";
@@ -179,6 +180,33 @@ function handleReplayAssistantBoundary(
       delivery: "steer",
     };
   }
+}
+
+/**
+ * The host saves a steered prompt before echoing its first block live, so a
+ * load that overlaps the echo sees that block twice: once from the log, once
+ * as the live boundary. The seen blocks live with the replay buffer, so every
+ * load starts with a clean slate.
+ */
+const replayedSteerBlocks = new WeakMap<object, Set<string>>();
+
+function isRepeatedReplaySteerBlock(
+  sessionId: string,
+  messageId: string,
+  content: unknown,
+): boolean {
+  const buffer = ensureReplayBuffer(sessionId);
+  let seen = replayedSteerBlocks.get(buffer);
+  if (!seen) {
+    seen = new Set();
+    replayedSteerBlocks.set(buffer, seen);
+  }
+  const key = `${messageId}\0${JSON.stringify(content)}`;
+  if (seen.has(key)) {
+    return true;
+  }
+  seen.add(key);
+  return false;
 }
 
 function rawInputToArguments(rawInput: unknown): Record<string, unknown> {
@@ -454,6 +482,12 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
       }
       const messageId = getReplayMessageId(update) ?? crypto.randomUUID();
       const metadata = getReplayUserMetadata(update);
+      if (
+        metadata?.delivery === "steer" &&
+        isRepeatedReplaySteerBlock(sessionId, messageId, update.content)
+      ) {
+        break;
+      }
       handleReplayUserMessageChunk(
         sessionId,
         messageId,

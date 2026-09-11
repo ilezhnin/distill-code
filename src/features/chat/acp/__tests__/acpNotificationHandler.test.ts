@@ -2374,6 +2374,33 @@ describe("acpNotificationHandler", () => {
     ]);
   });
 
+  it("does not repeat a steered prompt whose live echo overlaps a load", async () => {
+    markSessionReplayLoading();
+    const steerBlock = {
+      sessionUpdate: "user_message_chunk",
+      content: { type: "text", text: "make it shorter" },
+      _meta: { distill: { messageId: "user-2", steer: true } },
+    };
+
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: steerBlock,
+    } as never);
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: { ...steerBlock, messageId: "user-2" },
+    } as never);
+
+    expect(getReplayBuffer("acp-session")).toMatchObject([
+      {
+        id: "user-2",
+        content: [{ type: "text", text: "make it shorter" }],
+        metadata: { delivery: "steer" },
+      },
+    ]);
+    expect(getReplayBuffer("acp-session")?.[0].content).toHaveLength(1);
+  });
+
   it("streams a live reply under the id the host names it with", async () => {
     setActiveMessageId("acp-session", "local-preset", {
       personaId: "persona-1",
