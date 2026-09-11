@@ -89,9 +89,11 @@ import { resetConductorTranscriptsForTests } from "./waveTranscripts";
 import {
   getWaveEngineState,
   hasWaveTombstone,
+  isWaveEngineStateHydrated,
   pruneOrphanedWaves,
   setWaveEngineState,
   updateWaveEngineState,
+  whenWaveEngineStateHydrated,
   withWave,
   withWaveTombstone,
   withoutParkedWavesFor,
@@ -124,6 +126,9 @@ const scannedWithoutPlan = new BoundedSet(MAX_REMEMBERED_PLAN_MESSAGES);
 
 /** Re-entrancy guard: spawning writes stores, which call this again. */
 let ticking = false;
+
+/** True while a tick is parked until the folder's waves are read. */
+let awaitingWaveHydration = false;
 
 /**
  * Steps left `spawning` by a previous process are only adopted or reset on the
@@ -986,6 +991,18 @@ function advanceWaves(state: WaveEngineState): {
 export function runWaveEngineTick(): void {
   if (ticking) return;
   if (!useChatSessionStore.getState().hasHydratedSessions) return;
+  if (!isWaveEngineStateHydrated()) {
+    // The folder's waves and tombstones are not in memory yet; a tick now
+    // would re-admit plans they already record. One wake-up once they land.
+    if (!awaitingWaveHydration) {
+      awaitingWaveHydration = true;
+      whenWaveEngineStateHydrated(() => {
+        awaitingWaveHydration = false;
+        runWaveEngineTick();
+      });
+    }
+    return;
+  }
   ticking = true;
   let pending: Array<{ wave: WaveState; request: WaveSpawnRequest }> = [];
   let digests: PendingDigestDispatch[] = [];
@@ -1074,6 +1091,7 @@ export function resetWaveRunnerForTests(): void {
   scannedWithoutPlan.clear();
   concurrentRefusalNotices.clear();
   ticking = false;
+  awaitingWaveHydration = false;
   hasResumedOrphanedSpawns = false;
   onceOrphanedWaveIds = new Set();
   reportGraceDeadlines.clear();
