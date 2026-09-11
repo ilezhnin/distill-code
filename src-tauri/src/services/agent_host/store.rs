@@ -282,6 +282,54 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Move a session nobody has written in yet onto another harness: the new
+    /// bridge session, its model and snapshot replace the old ones, and the
+    /// events the previous agent reported before the first message (its
+    /// command list, config updates) are dropped so they never replay into
+    /// the new one. Returns `false`, changing nothing, once the session has a
+    /// message — from then on its history belongs to the harness it ran on.
+    pub async fn rebind_unstarted_session(
+        &self,
+        id: &str,
+        harness: &str,
+        bridge_session_id: &str,
+        model_id: Option<&str>,
+        snapshot: &Value,
+    ) -> Result<bool, String> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db_error("failed to start rebind transaction", error))?;
+        let rebound = sqlx::query(
+            "UPDATE sessions SET harness = ?, bridge_session_id = ?, model_id = ?, snapshot_json = ?, updated_at = ? \
+             WHERE id = ? AND message_count = 0",
+        )
+        .bind(harness)
+        .bind(bridge_session_id)
+        .bind(model_id)
+        .bind(snapshot.to_string())
+        .bind(now_iso())
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| db_error("failed to rebind session", error))?
+        .rows_affected()
+            == 1;
+        if !rebound {
+            return Ok(false);
+        }
+        sqlx::query("DELETE FROM session_events WHERE session_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| db_error("failed to clear rebound session events", error))?;
+        tx.commit()
+            .await
+            .map_err(|error| db_error("failed to commit rebind", error))?;
+        Ok(true)
+    }
+
     /// Record activity on a session: bumps `updated_at`/`last_message_at`,
     /// adds `message_delta` to the message count, and replaces the snippet
     /// when one is given.
@@ -652,6 +700,41 @@ mod tests {
             .map(|(text, _)| text)
             .collect();
         assert_eq!(copied, vec!["one".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn an_unstarted_session_moves_to_another_harness_without_its_old_events() {
+        let (_dir, store) = store_with_history().await;
+        store
+            .append_event("b", &event("commands"))
+            .await
+            .expect("event");
+        let snapshot = json!({ "models": { "currentModelId": "gpt-5" } });
+        let rebound = store
+            .rebind_unstarted_session("b", "codex-acp", "codex-1", Some("gpt-5"), &snapshot)
+            .await
+            .expect("rebind");
+        assert!(rebound);
+        let moved = store.get_session("b").await.expect("read").expect("row");
+        assert_eq!(moved.harness, "codex-acp");
+        assert_eq!(moved.bridge_session_id.as_deref(), Some("codex-1"));
+        assert_eq!(moved.model_id.as_deref(), Some("gpt-5"));
+        assert_eq!(moved.snapshot, Some(snapshot));
+        assert!(store.list_events("b").await.expect("events").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_session_with_a_message_keeps_its_harness_and_history() {
+        let (_dir, store) = store_with_history().await;
+        store.touch("a", 1, Some("one")).await.expect("touch");
+        let rebound = store
+            .rebind_unstarted_session("a", "codex-acp", "codex-1", None, &json!({}))
+            .await
+            .expect("rebind");
+        assert!(!rebound);
+        let kept = store.get_session("a").await.expect("read").expect("row");
+        assert_eq!(kept.harness, "claude-acp");
+        assert_eq!(store.list_events("a").await.expect("events").len(), 3);
     }
 
     #[tokio::test]
