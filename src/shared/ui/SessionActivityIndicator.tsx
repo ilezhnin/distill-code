@@ -1,4 +1,5 @@
 import { useReducedMotion } from "motion/react";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "@/shared/lib/cn";
 import { RESPONDING_SHIMMER_PROPS } from "@/shared/ui/ai-elements/shimmer";
@@ -76,6 +77,7 @@ export function SessionActivityIndicator({
   variant = "inline",
   className,
 }: SessionActivityIndicatorProps) {
+  const { t } = useTranslation("sidebar");
   const shouldReduceMotion = useReducedMotion();
   const workingIndicatorAnimationPreference =
     useWorkingIndicatorAnimationPreference();
@@ -87,7 +89,7 @@ export function SessionActivityIndicator({
       return (
         <span
           role="status"
-          aria-label="Chat active"
+          aria-label={t("status.chatActive")}
           className={cn(
             "absolute -right-1 -top-1 flex items-center justify-center",
             motionEnabled && WORKING_INDICATOR_ENTRANCE_CLASSES,
@@ -106,7 +108,7 @@ export function SessionActivityIndicator({
     return (
       <span
         role="status"
-        aria-label="Chat active"
+        aria-label={t("status.chatActive")}
         className={cn(
           "inline-flex shrink-0 items-center justify-center",
           motionEnabled && WORKING_INDICATOR_ENTRANCE_CLASSES,
@@ -130,7 +132,7 @@ export function SessionActivityIndicator({
     return (
       <span
         role="status"
-        aria-label="Unread messages"
+        aria-label={t("status.unreadMessages")}
         className={cn(
           "absolute -right-0.5 -top-0.5 h-2 w-2 shrink-0 rounded-full bg-success transition-opacity duration-200 ease-out animate-in fade-in-0",
           className,
@@ -142,7 +144,7 @@ export function SessionActivityIndicator({
   return (
     <span
       role="status"
-      aria-label="Unread messages"
+      aria-label={t("status.unreadMessages")}
       className={cn(
         "h-2 w-2 shrink-0 rounded-full bg-success transition-opacity duration-200 ease-out animate-in fade-in-0",
         className,
