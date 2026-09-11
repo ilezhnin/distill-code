@@ -2,14 +2,12 @@
 //!
 //! `redact_log_line` masks the values of a fixed allowlist of secret-ish keys
 //! (`authorization`, `api_key`, `token`, …) wherever they appear in a line. It
-//! is applied both when capturing the goosed sidecar's stdout/stderr into the
-//! Tauri shell log (see `services::acp::goose_serve`) and when exporting the
-//! shell log for a feedback attachment (see `services::log_export`).
+//! is applied to every string field of a diagnostic event before the event is
+//! recorded (see `services::diagnostic_log`).
 //!
 //! NOTE: this is a *key-based* redactor — it scrubs `key=value` / `key: "value"`
 //! pairs, not free-form prose. It cannot tell whether arbitrary text contains
-//! user/LLM content. Callers that export logs must additionally drop any line
-//! that can carry such content.
+//! user/LLM content.
 
 pub(crate) fn redact_log_line(line: &str) -> String {
     [

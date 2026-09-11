@@ -41,7 +41,7 @@ fn build_extended_path(
         Err(_) => {
             // A single dir embedding the separator (legal in macOS paths)
             // makes join_paths reject the whole list; drop such dirs so one
-            // bad entry cannot empty the sidecar PATH.
+            // bad entry cannot empty the child-process PATH.
             paths.retain(|path| {
                 let joinable = std::env::join_paths(std::iter::once(path)).is_ok();
                 if !joinable {
@@ -72,8 +72,8 @@ fn dedupe_paths(paths: &mut Vec<PathBuf>) {
     platform::dedupe_paths(paths);
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn build_extended_path_from_path(path: Option<&str>) -> String {
+#[cfg(test)]
+fn build_extended_path_from_path(path: Option<&str>) -> String {
     build_extended_path_with_prepended_dirs(path, &[])
 }
 
@@ -85,7 +85,7 @@ pub fn build_terminal_path(path: Option<&str>) -> String {
 }
 
 /// Build a deterministic environment snapshot with PATH normalized through
-/// `build_extended_path_from_path`.
+/// `build_extended_path_with_prepended_dirs`.
 ///
 /// If home env capture failed, fall back to the current process environment so
 /// callers that clear child environments still preserve essential variables.

@@ -137,16 +137,11 @@ fn project_icon_score(root: &Path, path: &Path) -> i32 {
 }
 
 fn project_icon_group_key(path: &Path) -> String {
-    let file_stem = path
+    let normalized = path
         .file_stem()
         .and_then(|name| name.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let normalized = file_stem
-        .replace("goose-logo", "logo")
-        .replace("logo-codename-goose", "logo")
-        .replace("codename-goose", "logo");
-
     if normalized.contains("favicon") {
         "favicon".to_string()
     } else if normalized.contains("wordmark") {

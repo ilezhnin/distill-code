@@ -3,7 +3,8 @@
 //!
 //! The path formula and protocol version are exported unconditionally (not
 //! behind the `server` feature) so the app crate can compute the path for the
-//! goosed spawn env and the stale-file sweep without enabling the broker.
+//! agent bridges' spawn env and the stale-file sweep without enabling the
+//! broker.
 
 use std::path::{Path, PathBuf};
 

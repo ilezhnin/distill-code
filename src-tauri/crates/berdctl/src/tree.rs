@@ -87,11 +87,12 @@ pub fn build_cli(contract: &Contract) -> Command {
         )
         // Hidden like lock_path, and env-sourced on purpose: argv is visible
         // to every process on the machine (`ps`), the environment of the
-        // session's own shell is not. goose injects AGENT_SESSION_ID into
-        // each session's shell (upstream `apply_session_environment`), so a
-        // call made by an agent carries which session made it, and a call
-        // from the operator's own terminal — which never gets the variable —
-        // stays anonymous. The app treats anonymous as the operator.
+        // session's own shell is not. A harness that exports AGENT_SESSION_ID
+        // into each session's shell makes a call from an agent carry which
+        // session made it, while a call from the operator's own terminal —
+        // which never gets the variable — stays anonymous. The app treats
+        // anonymous as the operator. The built-in agent host does not export
+        // the variable yet, so its sessions' calls arrive anonymous too.
         .arg(
             Arg::new("actor")
                 .long("actor")
