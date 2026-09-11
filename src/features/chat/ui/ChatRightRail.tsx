@@ -125,8 +125,7 @@ export const ChatRightRail = forwardRef<HTMLDivElement, ChatRightRailProps>(
     const dockingTimerRef = useRef<number | null>(null);
     const [isDockingFromOverlay, setIsDockingFromOverlay] = useState(false);
     const agentBuilderVisible =
-      session?.intent === "build-agent" &&
-      session.agentBuilderOpen !== false;
+      session?.intent === "build-agent" && session.agentBuilderOpen !== false;
     const railTerminalDocked =
       terminalController?.visible &&
       terminalController.placement.kind === "docked" &&
