@@ -1,10 +1,7 @@
-# Build a native Windows Berd bundle with real sidecars staged.
+# Build a native Windows Distill bundle with real sidecars staged.
 #
 # This is what `just bundle` / `bundle-debug` run; bundling exists only on
-# Windows. The POSIX prepare-*-sidecar.sh scripts would look for an
-# extensionless berdctl and stage the sidecars without the .exe suffix, which
-# does not match the tauri.windows.conf.json externalBin contract. This driver
-# instead stages through Stage-Sidecar-Windows.ps1 (real *-<triple>.exe files,
+# Windows. The driver stages through Stage-Sidecar-Windows.ps1 (real *-<triple>.exe files,
 # PE-validated) and hands Tauri the same explicit target triple so the staged
 # names and Tauri's externalBin resolution cannot diverge.
 param(
@@ -122,7 +119,8 @@ function Assert-WindowsBundleVersion {
         [Parameter(Mandatory = $true)][string]$TargetDir,
         [Parameter(Mandatory = $true)][string]$TargetTriple,
         [Parameter(Mandatory = $true)][string]$ExpectedVersion,
-        [Parameter(Mandatory = $true)][string]$BundleType
+        [Parameter(Mandatory = $true)][string]$BundleType,
+        [Parameter(Mandatory = $true)][string]$ProductName
     )
 
     $appPath = Join-Path $TargetDir "$TargetTriple\release\Berd.exe"
@@ -134,10 +132,12 @@ function Assert-WindowsBundleVersion {
         throw "Built application version mismatch: expected '$ExpectedVersion', got '$actualVersion' at $appPath."
     }
 
+    # The bundler names installers after productName, not the Cargo binary
+    # (which stays Berd.exe above): Distill_<version>_x64-setup.exe.
     $bundlePattern = if ($BundleType -eq "nsis") {
-        "Berd_${ExpectedVersion}_x64-setup.exe"
+        "${ProductName}_${ExpectedVersion}_x64-setup.exe"
     } else {
-        "Berd_${ExpectedVersion}_x64_en-US.msi"
+        "${ProductName}_${ExpectedVersion}_x64_en-US.msi"
     }
     $bundlePath = Join-Path $BundleDir $bundlePattern
     if (-not (Test-Path -LiteralPath $bundlePath -PathType Leaf)) {
@@ -148,11 +148,16 @@ function Assert-WindowsBundleVersion {
 }
 
 $bundleDir = Join-Path $targetDir "$targetTriple\release\bundle\$Bundle"
+$productName = Get-ObjectValue (Read-JsonFile (Join-Path $repoRoot "src-tauri\tauri.conf.json")) "productName"
+if ([string]::IsNullOrWhiteSpace($productName)) {
+    throw "src-tauri\tauri.conf.json has no productName; cannot locate the installer."
+}
 $bundlePath = Assert-WindowsBundleVersion `
     -BundleDir $bundleDir `
     -TargetDir $targetDir `
     -TargetTriple $targetTriple `
     -ExpectedVersion $resolvedVersion.RichVersion `
-    -BundleType $Bundle
+    -BundleType $Bundle `
+    -ProductName $productName
 Write-Host ""
 Write-Host "Windows bundle ready: $bundlePath" -ForegroundColor Green

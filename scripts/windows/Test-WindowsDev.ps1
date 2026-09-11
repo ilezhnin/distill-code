@@ -133,7 +133,9 @@ try {
         ($bundleScript -match '\$env:VITE_APP_VERSION\s*=\s*\$resolvedVersion\.RichVersion') $true
     Assert-Equal "bundle verifies the application PE version" ($bundleScript -match '\.VersionInfo\.ProductVersion') $true
     Assert-Equal "bundle verifies the full-SemVer installer path" `
-        ($bundleScript -match 'Berd_\$\{ExpectedVersion\}_x64-setup\.exe') $true
+        ($bundleScript -match '\$\{ProductName\}_\$\{ExpectedVersion\}_x64-setup\.exe') $true
+    Assert-Equal "bundle takes the installer name from tauri.conf.json productName" `
+        ($bundleScript -match 'tauri\.conf\.json"\)\) "productName"') $true
     Assert-Equal "bundle reports the verified installer path" ($bundleScript -match 'Windows bundle ready: \$bundlePath') $true
 
     $prereleaseVersion = Resolve-AppVersion "1.2.3-rc.1"
