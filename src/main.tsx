@@ -58,33 +58,7 @@ const queryClient = new QueryClient({
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Root element not found");
-const appRoot: HTMLElement = root;
-const reactRoot = ReactDOM.createRoot(appRoot);
-
-function decodeSessionKey(sessionKey: string): string {
-  const base64 = sessionKey.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
-  const bytes = Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
-}
-
-function renderBootError(message: string) {
-  reactRoot.render(
-    <React.StrictMode>
-      <div className="flex h-screen min-w-0 flex-col items-center justify-center gap-3 bg-canvas-base px-6 text-center text-foreground">
-        <h1 className="font-medium text-lg">Session window failed to load</h1>
-        <p className="max-w-md text-muted-foreground text-sm">{message}</p>
-        <button
-          type="button"
-          className="rounded-md border border-border px-3 py-1.5 text-sm"
-          onClick={() => window.location.reload()}
-        >
-          Reload
-        </button>
-      </div>
-    </React.StrictMode>,
-  );
-}
+const reactRoot = ReactDOM.createRoot(root);
 
 function OptionalBerdctlBridge() {
   const [Bridge, setBridge] = React.useState<React.ComponentType | null>(null);
@@ -109,74 +83,28 @@ function OptionalBerdctlBridge() {
   return Bridge ? <Bridge /> : null;
 }
 
-const sessionKey = new URLSearchParams(window.location.search).get(
-  "sessionKey",
+installRendererDiagnostics({ windowKind: "main" });
+
+reactRoot.render(
+  <React.StrictMode>
+    <TooltipProvider>
+      <RendererErrorBoundary>
+        <QueryClientProvider client={queryClient}>
+          <AcpToolsEvents />
+          <GitStateEvents />
+          <BackgroundQueuedMessageDrain />
+          <ConductorGraphSync />
+          <PlannerAgentSync />
+          <MemoryAgentSync />
+          <OptionalBerdctlBridge />
+          <RendererBootLog />
+          <I18nProvider>
+            <ThemeProvider>
+              <App />
+            </ThemeProvider>
+          </I18nProvider>
+        </QueryClientProvider>
+      </RendererErrorBoundary>
+    </TooltipProvider>
+  </React.StrictMode>,
 );
-let sessionId: string | null = null;
-let bootError: string | null = null;
-if (sessionKey) {
-  try {
-    sessionId = decodeSessionKey(sessionKey);
-  } catch (error) {
-    console.error("Failed to decode session window key:", error);
-    reportRendererError("session_key_decode_failed", error);
-    bootError = "The session window URL is malformed.";
-  }
-}
-
-installRendererDiagnostics({ windowKind: sessionId ? "session" : "main" });
-
-if (bootError) {
-  renderBootError(bootError);
-} else if (sessionId) {
-  const decodedSessionId = sessionId;
-  Promise.all([
-    import("@/app/SessionWindowApp"),
-    import("@/app/SessionWindowRuntime"),
-  ])
-    .then(([{ SessionWindowApp }, { SessionWindowRuntime }]) => {
-      reactRoot.render(
-        <React.StrictMode>
-          <TooltipProvider>
-            <RendererErrorBoundary>
-              <SessionWindowRuntime
-                queryClient={queryClient}
-                sessionId={decodedSessionId}
-              >
-                <SessionWindowApp sessionId={decodedSessionId} />
-              </SessionWindowRuntime>
-            </RendererErrorBoundary>
-          </TooltipProvider>
-        </React.StrictMode>,
-      );
-    })
-    .catch((error) => {
-      console.error("Failed to load session window bundle:", error);
-      reportRendererError("session_window_bundle_load_failed", error);
-      renderBootError("The session window bundle could not be loaded.");
-    });
-} else {
-  reactRoot.render(
-    <React.StrictMode>
-      <TooltipProvider>
-        <RendererErrorBoundary>
-          <QueryClientProvider client={queryClient}>
-            <AcpToolsEvents />
-            <GitStateEvents />
-            <BackgroundQueuedMessageDrain />
-            <ConductorGraphSync />
-            <PlannerAgentSync />
-            <MemoryAgentSync />
-            <OptionalBerdctlBridge />
-            <RendererBootLog />
-            <I18nProvider>
-              <ThemeProvider>
-                <App />
-              </ThemeProvider>
-            </I18nProvider>
-          </QueryClientProvider>
-        </RendererErrorBoundary>
-      </TooltipProvider>
-    </React.StrictMode>,
-  );
-}
