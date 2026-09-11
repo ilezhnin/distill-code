@@ -283,6 +283,39 @@ describe("the relay end to end", () => {
     assert.match(answer.error, /not valid JSON/);
   });
 
+  it("waits for an envelope that is still being written", async () => {
+    // A copy onto the mount can land in pieces; the first piece is not JSON
+    // yet, and must not be answered as garbage and deleted.
+    const target = path.join(relay.paths.inbox, "p1.json");
+    writeFileSync(target, '{"kind":"control",', "utf8");
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    writeFileSync(target, '{"kind":"control","action":"ping"}', "utf8");
+    const answer = await collect("p1");
+    assert.equal(answer.ok, true);
+    assert.equal(answer.pong, true);
+  });
+
+  it("answers a timed-out command even when a grandchild holds its output", async () => {
+    // Killing the direct child is not enough when something it started still
+    // has stdout open; the lane used to stay busy until that process died.
+    const script = [
+      "const { spawn } = require('node:child_process');",
+      "spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], {",
+      "  stdio: 'inherit',",
+      "});",
+      "setTimeout(() => {}, 30000);",
+    ].join("\n");
+    post("e6", {
+      kind: "exec",
+      cmd: "node",
+      args: ["-e", script],
+      timeoutMs: 1_000,
+    });
+    const answer = await collect("e6");
+    assert.equal(answer.ok, false);
+    assert.equal(answer.timedOut, true);
+  });
+
   it("names an envelope kind it does not know", async () => {
     post("x2", { kind: "telepathy" });
     const answer = await collect("x2");

@@ -35,6 +35,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import net from "node:net";
@@ -55,6 +56,18 @@ const DEFAULT_DRIVER_TIMEOUT_MS = 15_000;
 const DEFAULT_EXEC_TIMEOUT_MS = 15 * 60_000;
 /** How much of each stream rides back inside the answer file. */
 const TAIL_LIMIT = 8_000;
+/**
+ * How long an envelope that does not parse yet may still be mid-write. Not
+ * every writer can write-then-rename: a file copied onto the mount lands in
+ * pieces, and reading the first piece as "not JSON" deleted the envelope.
+ */
+const ENVELOPE_SETTLE_MS = 2_000;
+/**
+ * After a timed-out command is killed, how long to wait for its streams to
+ * close. A grandchild that inherited stdout keeps them open for as long as it
+ * lives, and waiting for that kept the lane busy forever.
+ */
+const KILL_GRACE_MS = 5_000;
 
 // ---------------------------------------------------------------------------
 // pure helpers
@@ -132,6 +145,26 @@ function writeAtomic(file, text) {
   const tmp = `${file}.tmp`;
   writeFileSync(tmp, text, "utf8");
   renameSync(tmp, file);
+}
+
+/**
+ * Kill a command and everything it started.
+ *
+ * On Windows `pnpm` and `just` run under `cmd.exe /c`, and killing that shell
+ * leaves the real work (node, cargo, powershell) running with our pipes still
+ * open, so the command never finished. `taskkill /T` takes the whole tree.
+ */
+function killTree(child) {
+  if (process.platform === "win32" && child.pid) {
+    const args = ["/pid", String(child.pid), "/T", "/F"];
+    const killer = spawn("taskkill", args, {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    killer.on("error", () => child.kill("SIGKILL"));
+    return;
+  }
+  child.kill("SIGKILL");
 }
 
 // ---------------------------------------------------------------------------
@@ -244,14 +277,38 @@ export function createRelay({
   }
 
   function runProcess(file, argv, options) {
-    return new Promise((resolve) => {
+    return new Promise((resolvePromise) => {
       const child = spawn(file, argv, options);
       let stdout = "";
       let stderr = "";
       let timedOut = false;
+      let exitCode = null;
+      let exitSignal = null;
+      let grace = null;
+      let settled = false;
+      const resolve = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearTimeout(grace);
+        resolvePromise(value);
+      };
       const timer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGKILL");
+        killTree(child);
+        grace = setTimeout(() => {
+          // Something the command started still holds its output open. Stop
+          // listening rather than wait for it: the answer is "timed out".
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          resolve({
+            code: exitCode,
+            signal: exitSignal,
+            stdout,
+            stderr,
+            timedOut,
+          });
+        }, KILL_GRACE_MS);
       }, options.timeoutMs);
 
       child.stdout?.on("data", (c) => {
@@ -260,12 +317,14 @@ export function createRelay({
       child.stderr?.on("data", (c) => {
         stderr += c.toString();
       });
+      child.on("exit", (code, signal) => {
+        exitCode = code;
+        exitSignal = signal;
+      });
       child.on("error", (error) => {
-        clearTimeout(timer);
         resolve({ spawnError: error.message, stdout, stderr, timedOut });
       });
       child.on("close", (code, signal) => {
-        clearTimeout(timer);
         resolve({ code, signal, stdout, stderr, timedOut });
       });
     });
@@ -391,6 +450,14 @@ export function createRelay({
     );
   }
 
+  function stillBeingWritten(file) {
+    try {
+      return Date.now() - statSync(file).mtimeMs < ENVELOPE_SETTLE_MS;
+    } catch {
+      return false;
+    }
+  }
+
   function claim(file) {
     const id = path.basename(file, ".json");
     const full = path.join(INBOX, file);
@@ -398,6 +465,7 @@ export function createRelay({
     try {
       envelope = JSON.parse(readFileSync(full, "utf8"));
     } catch (error) {
+      if (stillBeingWritten(full)) return null;
       answer(id, {
         ok: false,
         error: `Envelope is not valid JSON: ${error.message}`,
@@ -425,7 +493,13 @@ export function createRelay({
     }
     for (const file of files) {
       if (claimed.has(file)) continue;
-      const job = claim(file);
+      let job;
+      try {
+        job = claim(file);
+      } catch (error) {
+        onLog(`${file} -> not claimed: ${error.message}`);
+        continue;
+      }
       if (!job || busy[job.lane]) continue;
 
       claimed.add(file);
@@ -439,8 +513,16 @@ export function createRelay({
           error: `Relay failed: ${error.message}`,
         }))
         .then((body) => {
-          answer(job.id, body);
-          rmSync(job.full, { force: true });
+          try {
+            answer(job.id, body);
+            rmSync(job.full, { force: true });
+          } catch (error) {
+            // A reader holding the file open (Windows refuses the rename then)
+            // must not take the whole relay down with an unhandled rejection.
+            onLog(
+              `${job.lane} ${job.id} -> answer not written: ${error.message}`,
+            );
+          }
           claimed.delete(file);
           busy[job.lane] = false;
           onLog(
@@ -456,6 +538,16 @@ export function createRelay({
   }
 
   function heartbeat() {
+    try {
+      writeHeartbeat();
+    } catch (error) {
+      // Same as answers: the agent reading heartbeat.json at the moment of
+      // the rename is not a reason to crash; the next beat will land.
+      onLog(`heartbeat not written: ${error.message}`);
+    }
+  }
+
+  function writeHeartbeat() {
     writeAtomic(
       HEARTBEAT,
       `${JSON.stringify(
