@@ -575,6 +575,54 @@ export function setWaveEngineState(next: WaveEngineState): void {
  * an old plan as a new root request.
  */
 export async function hydrateWaveEngineState(): Promise<void> {
+  try {
+    await mergeStoredWaveEngineState();
+  } finally {
+    markWaveEngineStateHydrated();
+  }
+}
+
+/**
+ * True once the folder's waves have been folded in — or when there is no
+ * folder to wait for.
+ *
+ * The engine must not tick before this. On the desktop the synchronous load
+ * finds an empty `localStorage` (the folder is the only copy after the P24
+ * migration), so a tick in that window sees no waves and no tombstones: it
+ * spends the one-shot "resume orphaned spawns" pass on nothing, and a plan
+ * message already admitted in a previous run looks brand new and is admitted
+ * again beside the children it already has.
+ */
+export function isWaveEngineStateHydrated(): boolean {
+  return wavesHydrated || !wavesDocument.active;
+}
+
+let wavesHydrated = false;
+const hydrationWaiters = new Set<() => void>();
+
+function markWaveEngineStateHydrated(): void {
+  wavesHydrated = true;
+  const waiters = [...hydrationWaiters];
+  hydrationWaiters.clear();
+  for (const waiter of waiters) {
+    try {
+      waiter();
+    } catch {
+      // One waiter that throws must not keep the others waiting.
+    }
+  }
+}
+
+/** Calls `callback` once the waves are hydrated (immediately if they are). */
+export function whenWaveEngineStateHydrated(callback: () => void): void {
+  if (isWaveEngineStateHydrated()) {
+    callback();
+    return;
+  }
+  hydrationWaiters.add(callback);
+}
+
+async function mergeStoredWaveEngineState(): Promise<void> {
   if (!wavesDocument.active) return;
   const stored = await wavesDocument.read();
   if (!stored) return;
@@ -616,4 +664,10 @@ export function updateWaveEngineState(
 /** Drops the in-memory copy so the next read re-hydrates. Tests only. */
 export function resetWaveEngineStateCache(): void {
   cached = null;
+}
+
+/** Forgets that the folder was read, or marks it read. Tests only. */
+export function setWaveEngineStateHydratedForTests(hydrated: boolean): void {
+  wavesHydrated = hydrated;
+  if (hydrated) markWaveEngineStateHydrated();
 }

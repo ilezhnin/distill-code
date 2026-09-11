@@ -35,8 +35,11 @@ const {
   flushWaveEngineWrites,
   getWaveEngineState,
   hydrateWaveEngineState,
+  isWaveEngineStateHydrated,
   resetWaveEngineStateCache,
   setWaveEngineState,
+  setWaveEngineStateHydratedForTests,
+  whenWaveEngineStateHydrated,
 } = await import("./waveStore");
 const { createWaveState } = await import("./waveEngine");
 const {
@@ -154,6 +157,24 @@ describe("the conductor's state lives in the Distill folder (P24)", () => {
     expect(getWaveEngineState().tombstones).toHaveLength(1);
     await flushWaveEngineWrites();
     expect(window.localStorage.getItem(CONDUCTOR_WAVES_STORAGE_KEY)).toBeNull();
+  });
+
+  it("says the waves are not ready until the folder has been read", async () => {
+    setWaveEngineStateHydratedForTests(false);
+    expect(isWaveEngineStateHydrated()).toBe(false);
+    const woken = vi.fn();
+    whenWaveEngineStateHydrated(woken);
+    expect(woken).not.toHaveBeenCalled();
+    await hydrateWaveEngineState();
+    expect(isWaveEngineStateHydrated()).toBe(true);
+    expect(woken).toHaveBeenCalledTimes(1);
+  });
+
+  it("is ready even when the folder could not be read", async () => {
+    setWaveEngineStateHydratedForTests(false);
+    readDistillDocument.mockRejectedValueOnce(new Error("disk gone"));
+    await hydrateWaveEngineState();
+    expect(isWaveEngineStateHydrated()).toBe(true);
   });
 
   it("unions telemetry records without counting this session twice", async () => {
