@@ -72,21 +72,6 @@ pub fn raw_notification(method: &str, params_json: &str) -> String {
     format!(r#"{{"jsonrpc":"2.0","method":{method},"params":{params_json}}}"#)
 }
 
-#[cfg(test)]
-mod raw_notification_tests {
-    use super::*;
-
-    #[test]
-    fn raw_notification_matches_the_parsed_form() {
-        let params = json!({ "sessionId": "s1", "update": { "text": "a \"quoted\" line\n" } });
-        let raw = raw_notification("session/update", &params.to_string());
-        let parsed: Value = serde_json::from_str(&raw).unwrap();
-        let expected: Value =
-            serde_json::from_str(&notification("session/update", params)).unwrap();
-        assert_eq!(parsed, expected);
-    }
-}
-
 pub fn response(id: Value, result: Value) -> String {
     json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
 }
@@ -121,4 +106,19 @@ pub fn session_id(params: &Value) -> Option<String> {
 
 pub fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+#[cfg(test)]
+mod raw_notification_tests {
+    use super::*;
+
+    #[test]
+    fn raw_notification_matches_the_parsed_form() {
+        let params = json!({ "sessionId": "s1", "update": { "text": "a \"quoted\" line\n" } });
+        let raw = raw_notification("session/update", &params.to_string());
+        let parsed: Value = serde_json::from_str(&raw).unwrap();
+        let expected: Value =
+            serde_json::from_str(&notification("session/update", params)).unwrap();
+        assert_eq!(parsed, expected);
+    }
 }
