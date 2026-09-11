@@ -12,6 +12,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { invokeWithStartupRetry } from "@/shared/api/invokeWithStartupRetry";
 
 export interface DistillRootInfo {
   root: string;
@@ -42,7 +43,11 @@ export async function readDistillDocument(
   path: string,
 ): Promise<string | null> {
   if (!isDesktopRuntime()) return null;
-  return invoke<string | null>("read_distill_document", { path });
+  // Startup hydration can race the backend's setup; a read that fails there
+  // leaves its store unhydrated for the whole run, so ride out that window.
+  return invokeWithStartupRetry<string | null>("read_distill_document", {
+    path,
+  });
 }
 
 export async function writeDistillDocument(
