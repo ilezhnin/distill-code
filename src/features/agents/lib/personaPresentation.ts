@@ -11,11 +11,6 @@ export function getRealPersonaDescription(
     : undefined;
 }
 
-type ProviderLabel = {
-  id: string;
-  label: string;
-};
-
 export function getPersonaSource(persona: Persona): PersonaSource {
   return persona.writable ? "file" : "builtin";
 }
@@ -30,19 +25,4 @@ export function canDeletePersona(persona: Persona): boolean {
 
 export function isPersonaReadOnly(persona: Persona): boolean {
   return !canEditPersona(persona);
-}
-
-export function getPersonaProviderLabel(
-  provider: string | undefined,
-  providers: readonly ProviderLabel[],
-  noneLabel: string,
-): string {
-  if (!provider) {
-    return noneLabel;
-  }
-
-  return (
-    providers.find((providerOption) => providerOption.id === provider)?.label ??
-    provider
-  );
 }

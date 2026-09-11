@@ -663,14 +663,6 @@ export function startDigestDispatch(
   })();
 }
 
-/** True when this process holds a digest delivery for the wave. Tests only. */
-export function hasInFlightDigestForTests(
-  waveId: string,
-  attempt: number,
-): boolean {
-  return inFlightDigests.has(digestKey(waveId, attempt));
-}
-
 /** Clears the process-local guards. Tests only. */
 export function resetWaveLifecycleForTests(): void {
   inFlightDigests.clear();

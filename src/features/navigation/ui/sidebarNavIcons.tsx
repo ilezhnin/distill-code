@@ -111,44 +111,6 @@ export function SidebarNavSkillsIcon({
   );
 }
 
-export function SidebarNavAutomationsIcon({
-  className,
-  ...props
-}: SidebarNavIconProps) {
-  return (
-    <SidebarNavIcon className={className} {...props}>
-      <path
-        d="M9 1.98926L11 3.98926L9 5.98926"
-        stroke="currentColor"
-        strokeWidth={STROKE_WIDTH}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M2 6.98926V5.98926C2 5.45882 2.21071 4.95012 2.58579 4.57504C2.96086 4.19997 3.46957 3.98926 4 3.98926H11"
-        stroke="currentColor"
-        strokeWidth={STROKE_WIDTH}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M4 12.9902L2 10.9902L4 8.99023"
-        stroke="currentColor"
-        strokeWidth={STROKE_WIDTH}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M11 7.99023V8.99023C11 9.52067 10.7893 10.0294 10.4142 10.4044C10.0391 10.7795 9.53043 10.9902 9 10.9902H2"
-        stroke="currentColor"
-        strokeWidth={STROKE_WIDTH}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </SidebarNavIcon>
-  );
-}
-
 /** Message bubble used for session history and chat rows. */
 export function SidebarNavChatsIcon({
   className,
@@ -163,61 +125,6 @@ export function SidebarNavChatsIcon({
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-    </SidebarNavIcon>
-  );
-}
-
-/** Blank sidebar message bubble with a plus mark for starting a chat. */
-export function SidebarNavChatPlusIcon({
-  className,
-  ...props
-}: SidebarNavIconProps) {
-  return (
-    <SidebarNavIcon className={className} {...props}>
-      <path
-        d="M11 10C11 10.2652 10.8946 10.5196 10.7071 10.7071C10.5196 10.8946 10.2652 11 10 11H4L2 13V5C2 4.73478 2.10536 4.48043 2.29289 4.29289C2.48043 4.10536 2.73478 4 3 4H10C10.2652 4 10.5196 4.10536 10.7071 4.29289C10.8946 4.48043 11 4.73478 11 5V10Z"
-        stroke="currentColor"
-        strokeWidth={STROKE_WIDTH}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M9.25 12.25H12.25"
-        stroke="currentColor"
-        strokeWidth={1.15}
-        strokeLinecap="round"
-      />
-      <path
-        d="M10.75 10.75V13.75"
-        stroke="currentColor"
-        strokeWidth={1.15}
-        strokeLinecap="round"
-      />
-    </SidebarNavIcon>
-  );
-}
-
-/** Sidebar project cube with a plus mark for creating a project. */
-export function SidebarNavProjectPlusIcon({
-  className,
-  ...props
-}: SidebarNavIconProps) {
-  return (
-    <SidebarNavIcon className={className} {...props}>
-      <g
-        transform="matrix(0.5 0 0 0.5 0.75 2)"
-        stroke="currentColor"
-        strokeWidth={2}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <path d="M21 12.5v-4.509a1.98 1.98 0 0 0-1-1.717l-7-4.008a2.016 2.016 0 0 0-2 0l-7 4.007c-.619 .355-1 1.01-1 1.718v8.018c0 .709 .381 1.363 1 1.717l7 4.008a2.016 2.016 0 0 0 2 0" />
-        <path d="M12 22v-10" />
-        <path d="M12 12l8.73-5.04" />
-        <path d="M3.27 6.96l8.73 5.04" />
-        <path d="M16 19h6" />
-        <path d="M19 16v6" />
-      </g>
     </SidebarNavIcon>
   );
 }

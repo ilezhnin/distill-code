@@ -28,10 +28,6 @@ import type { WaveTelemetryRecord } from "./waveTelemetryStore";
 /** Root requests this process has already written. One file per request. */
 const written = new Set<string>();
 
-export function resetRunCloseoutsForTests(): void {
-  written.clear();
-}
-
 /** True when this outcome ends the root request rather than continuing it. */
 export function closesTheRootRequest(
   outcome: WaveTelemetryRecord["outcome"],

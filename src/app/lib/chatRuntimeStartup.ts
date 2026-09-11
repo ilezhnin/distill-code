@@ -42,11 +42,6 @@ export function runChatRuntimeStartup(): Promise<void> {
   return startupLatch;
 }
 
-/** Drop the latch so the next `runChatRuntimeStartup()` runs startup again. */
-export function resetChatRuntimeStartup(): void {
-  startupLatch = null;
-}
-
 async function startChatRuntime(
   options: { hydrateMessageQueues?: boolean } = {},
 ): Promise<void> {

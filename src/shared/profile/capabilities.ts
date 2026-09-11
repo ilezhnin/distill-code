@@ -40,14 +40,6 @@ export function resolveProfileCapabilities({
   return capabilities;
 }
 
-export function getProfileCapabilitySnapshot(id: ProfileCapabilityId): boolean {
-  const runtimeState = useRuntimeConfigStore.getState();
-  return resolveProfileCapabilities({
-    runtimeConfig: runtimeState.config,
-    runtimeConfigLoaded: runtimeState.loaded,
-  })[id];
-}
-
 export function useProfileCapabilities(): ProfileCapabilityState {
   const runtimeConfig = useRuntimeConfigStore((state) => state.config);
   const runtimeConfigLoaded = useRuntimeConfigStore((state) => state.loaded);

@@ -9,10 +9,7 @@ import {
   setAgentBuilderSessionSaveHandler,
 } from "@/features/agents/lib/agentBuilderSession";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
-import {
-  AgentBuilderRail,
-  AGENT_BUILDER_RAIL_WIDTH as AGENT_BUILDER_RAIL_INTERNAL_WIDTH,
-} from "@/features/agents/ui/AgentBuilderRail";
+import { AgentBuilderRail } from "@/features/agents/ui/AgentBuilderRail";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
@@ -20,10 +17,6 @@ import {
   listPersonas,
   type AgentSourceEntry,
 } from "@/shared/api/agents";
-
-/** Design width hosts should use when laying out the chat-rail render mode. */
-export const AGENT_BUILDER_RAIL_DESIGN_WIDTH =
-  AGENT_BUILDER_RAIL_INTERNAL_WIDTH;
 
 export interface AgentBuilderCapabilityProps {
   session: ChatSession;

@@ -8,6 +8,4 @@ const sessionCostPreference = createBooleanLocalStoragePreference({
   changedEvent: SESSION_COST_CHANGED_EVENT,
 });
 
-export const getSessionCostEnabled = sessionCostPreference.get;
-export const setSessionCostEnabled = sessionCostPreference.set;
 export const useSessionCostPreference = sessionCostPreference.useValue;

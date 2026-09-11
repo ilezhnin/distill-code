@@ -181,11 +181,3 @@ export async function getClient(): Promise<HostClient> {
 
   return clientPromise;
 }
-
-export function isClientReady(): boolean {
-  return resolvedClient !== null;
-}
-
-export function getClientSync(): HostClient | null {
-  return resolvedClient;
-}

@@ -93,10 +93,3 @@ export function flushRoutingPolicyWrites(): Promise<void> {
 export function getRoutingPolicy(): RoutingPolicy {
   return useRoutingPolicyStore.getState().policy;
 }
-
-export function resetRoutingPolicyForTests(): void {
-  useRoutingPolicyStore.setState({
-    policy: { ...DEFAULT_ROUTING_POLICY },
-    hydrated: false,
-  });
-}

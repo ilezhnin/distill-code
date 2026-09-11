@@ -57,8 +57,6 @@ const sidebarChatGroupingPreference = createBooleanLocalStoragePreference({
   defaultValue: true,
 });
 
-export const getSidebarGroupChatsByProjectEnabled =
-  sidebarChatGroupingPreference.get;
 export const setSidebarGroupChatsByProjectEnabled =
   sidebarChatGroupingPreference.set;
 export const useSidebarChatGroupingPreference =

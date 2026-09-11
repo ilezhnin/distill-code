@@ -45,8 +45,7 @@ export type DesignSystemSection =
   | "component-main-panel-layout"
   | "component-menubar"
   | "component-navigation-menu"
-  | "component-page-columns"
-  | "component-detail-page-shell"
+  | "component-page-shell"
   | "component-pagination"
   | "component-popover"
   | "component-progress"
@@ -114,7 +113,7 @@ export const DESIGN_SYSTEM_COMPONENT_SECTIONS: Array<{
   { id: "component-image-lightbox", label: "Image Lightbox" },
   { id: "component-input", label: "Input" },
   { id: "component-label", label: "Label" },
-  { id: "component-detail-page-shell", label: "Detail Page Shell" },
+  { id: "component-page-shell", label: "Page Shell" },
   { id: "component-main-panel-layout", label: "Main Panel Layout" },
   { id: "component-popover", label: "Popover" },
   { id: "component-progress", label: "Progress" },
@@ -157,7 +156,6 @@ export const DESIGN_SYSTEM_UNUSED_COMPONENT_SECTIONS: Array<{
   { id: "component-input-otp", label: "Input OTP" },
   { id: "component-menubar", label: "Menubar" },
   { id: "component-navigation-menu", label: "Navigation Menu" },
-  { id: "component-page-columns", label: "Page Columns" },
   { id: "component-pagination", label: "Pagination" },
   { id: "component-resizable-handle", label: "Resizable Handle" },
   { id: "component-separator", label: "Separator" },

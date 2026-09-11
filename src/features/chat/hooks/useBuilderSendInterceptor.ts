@@ -1,10 +1,6 @@
-import { useCallback } from "react";
 import agentBuilderSkillBody from "../../../../distro/skills/agent-builder/SKILL.md?raw";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
-import type {
-  ChatInputSendHandler,
-  ChatSendOptions,
-} from "@/features/chat/types";
+import type { ChatSendOptions } from "@/features/chat/types";
 
 export function resolveAgentBuilderSkillBody(
   skillBody = agentBuilderSkillBody,
@@ -55,23 +51,4 @@ export function composeBuilderSendOptions(
       ? `${builderPrompt}\n\n${existingAssistantPrompt}`
       : builderPrompt,
   };
-}
-
-export function useBuilderSendInterceptor(
-  session:
-    | Pick<ChatSession, "intent" | "agentBuilderOpen" | "targetAgentPath">
-    | null
-    | undefined,
-  baseSend: ChatInputSendHandler,
-): ChatInputSendHandler {
-  return useCallback(
-    (text, personaId, attachments, options) =>
-      baseSend(
-        text,
-        personaId,
-        attachments,
-        composeBuilderSendOptions(session, options),
-      ),
-    [baseSend, session],
-  );
 }

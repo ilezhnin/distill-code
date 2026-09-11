@@ -29,9 +29,6 @@ export {
   isEmptyPlaceholderDraft,
   isPlaceholderAgentName,
   PLACEHOLDER_AGENT_BODY,
-  PLACEHOLDER_AGENT_DESCRIPTION,
-  PLACEHOLDER_AGENT_NAME,
-  placeholderAgentName,
 } from "./agentBuilderIdentity";
 
 interface StartAgentBuilderSessionArgs {

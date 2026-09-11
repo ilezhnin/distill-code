@@ -44,29 +44,6 @@ export function formatSkillChatPrompt(
   return `Use the ${name} skill to ${task}`;
 }
 
-export function formatSkillDraftsChatPrompt(
-  skills: SkillDraftLike[],
-  taskText = "",
-): string {
-  if (skills.length === 0) {
-    return taskText;
-  }
-
-  if (skills.length === 1) {
-    return formatSkillChatPrompt(skills[0].name, taskText);
-  }
-
-  const skillNames = skills
-    .map((skill) => skill.name.trim())
-    .filter(Boolean)
-    .join(", ");
-  const task = taskText.trimStart();
-  if (!task) {
-    return `Use the ${skillNames} skills`;
-  }
-  return `Use the ${skillNames} skills to ${task}`;
-}
-
 function truncateSkillCatalogDescription(description: string): string {
   const normalized = description.replace(/\s+/g, " ").trim();
   if (normalized.length <= MAX_SKILL_CATALOG_DESCRIPTION_LENGTH) {

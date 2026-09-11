@@ -51,7 +51,3 @@ export interface UsageSection {
   shortLabel: string;
   window: RateLimitWindow;
 }
-
-export const SESSION_WINDOW_MINUTES = 300;
-export const WEEKLY_WINDOW_MINUTES = 10_080;
-export const MONTHLY_WINDOW_MINUTES = 43_200;

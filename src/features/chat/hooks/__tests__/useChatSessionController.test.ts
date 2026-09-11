@@ -222,7 +222,6 @@ vi.mock("@/features/chat/api/workspaceContext", () => ({
 // presence check looks. Outside the desktop runtime these are no-ops, so the
 // mock only makes the answer steerable.
 vi.mock("@/shared/api/projectStore", () => ({
-  PROJECT_STORE_DIR: ".distill",
   listProjectDocuments: (...args: unknown[]) =>
     mockListProjectDocuments(...args),
   readProjectDocument: (...args: unknown[]) => mockReadProjectDocument(...args),

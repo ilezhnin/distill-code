@@ -113,64 +113,7 @@
     }
   },
   "extensions": {
-    "addExtension": "Agregar conexión",
-    "alwaysOn": {
-      "label": "Siempre activa",
-      "reset": "Restablecer",
-      "resetAria": "Restablecer {{name}} a bajo demanda",
-      "tooltip": "Esta extensión se carga en cada chat. Restablécela para que esté disponible bajo demanda."
-    },
-    "cancel": "Cancelar",
-    "configure": "Configurar {{name}}",
-    "deleteConfirmation": {
-      "confirm": "Eliminar conexión",
-      "deleting": "Eliminando...",
-      "description": "Esto eliminará de forma permanente esta conexión y toda su configuración.",
-      "title": "¿Eliminar \"{{name}}\" de forma permanente?"
-    },
-    "deleteExtension": "Eliminar conexión",
-    "description": "Conecta Distill con apps, servicios y capacidades integradas.",
-    "disabledBanner": {
-      "description": "Estas extensiones se cargaban automáticamente en cada sesión, pero ahora solo se cargan cuando se necesitan: {{names}}.",
-      "dismiss": "Descartar",
-      "title": "Algunas extensiones se cargan ahora bajo demanda"
-    },
-    "editExtension": "Editar conexión",
-    "emptyCustom": "No hay extensiones personalizadas configuradas.",
-    "errors": {
-      "deleteFailed": "Error al eliminar la conexión. Inténtalo de nuevo.",
-      "nameConflict": "Ya existe una conexión llamada \"{{name}}\".",
-      "resetFailed": "No se pudo restablecer la conexión. Inténtalo de nuevo.",
-      "saveFailed": "Error al guardar la conexión. Inténtalo de nuevo."
-    },
-    "fields": {
-      "addEnvVar": "Agregar variable",
-      "arguments": "Argumentos",
-      "argumentsPlaceholder": "Un argumento por línea",
-      "command": "Comando",
-      "commandPlaceholder": "npx",
-      "description": "Descripción",
-      "descriptionPlaceholder": "¿Qué hace esta conexión?",
-      "envKeyPlaceholder": "CLAVE",
-      "envValuePlaceholder": "valor",
-      "envVars": "Variables de entorno",
-      "name": "Nombre",
-      "namePlaceholder": "mi-extension",
-      "removeEnvVar": "Eliminar variable",
-      "timeout": "Tiempo de espera (segundos)",
-      "type": "Tipo",
-      "url": "URL",
-      "urlPlaceholder": "http://localhost:3000/mcp"
-    },
-    "noResults": "Ninguna extensión coincide con tu búsqueda.",
-    "save": "Guardar",
-    "search": "Buscar extensiones",
-    "title": "Extensiones",
-    "types": {
-      "builtin": "Integrada",
-      "stdio": "Stdio",
-      "streamable_http": "HTTP"
-    }
+    "description": "Conecta Distill con apps, servicios y capacidades integradas."
   },
   "general": {
     "artifactAutoOpen": {

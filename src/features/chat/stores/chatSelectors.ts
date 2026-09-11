@@ -54,8 +54,5 @@ export const selectLocalMessageCountsBySession = (
 export const selectSessionStateById = (state: ChatStore) =>
   state.sessionStateById;
 
-export const selectDraftsBySession = (state: ChatStore) =>
-  state.draftsBySession;
-
 export const selectNonEmptyDraftSessionIds = (state: ChatStore) =>
   state.nonEmptyDraftSessionIds;

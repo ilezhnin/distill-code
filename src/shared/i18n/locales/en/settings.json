@@ -113,64 +113,7 @@
     }
   },
   "extensions": {
-    "addExtension": "Add connection",
-    "alwaysOn": {
-      "label": "Always on",
-      "reset": "Reset",
-      "resetAria": "Reset {{name}} to on-demand",
-      "tooltip": "This extension is loaded into every chat. Reset to make it available on demand."
-    },
-    "cancel": "Cancel",
-    "configure": "Configure {{name}}",
-    "deleteConfirmation": {
-      "confirm": "Delete connection",
-      "deleting": "Deleting...",
-      "description": "This will permanently remove this connection and all of its settings.",
-      "title": "Delete \"{{name}}\" permanently?"
-    },
-    "deleteExtension": "Delete connection",
-    "description": "Connect Distill to apps, services, and built-in capabilities.",
-    "disabledBanner": {
-      "description": "These extensions used to be auto enabled for every session, but are now enabled when needed: {{names}}.",
-      "dismiss": "Dismiss",
-      "title": "Some extensions are now enabled on demand"
-    },
-    "editExtension": "Edit connection",
-    "emptyCustom": "No custom extensions configured.",
-    "errors": {
-      "deleteFailed": "Couldn't delete the connection. Try again.",
-      "nameConflict": "A connection named \"{{name}}\" already exists.",
-      "resetFailed": "Couldn't reset the connection. Try again.",
-      "saveFailed": "Couldn't save the connection. Try again."
-    },
-    "fields": {
-      "addEnvVar": "Add variable",
-      "arguments": "Arguments",
-      "argumentsPlaceholder": "One argument per line",
-      "command": "Command",
-      "commandPlaceholder": "npx",
-      "description": "Description",
-      "descriptionPlaceholder": "What does this connection do?",
-      "envKeyPlaceholder": "KEY",
-      "envValuePlaceholder": "value",
-      "envVars": "Environment variables",
-      "name": "Name",
-      "namePlaceholder": "my-extension",
-      "removeEnvVar": "Remove variable",
-      "timeout": "Timeout (seconds)",
-      "type": "Type",
-      "url": "URL",
-      "urlPlaceholder": "http://localhost:3000/mcp"
-    },
-    "noResults": "No extensions match your search.",
-    "save": "Save",
-    "search": "Search extensions",
-    "title": "Extensions",
-    "types": {
-      "builtin": "Built-in",
-      "stdio": "Stdio",
-      "streamable_http": "HTTP"
-    }
+    "description": "Connect Distill to apps, services, and built-in capabilities."
   },
   "general": {
     "artifactAutoOpen": {

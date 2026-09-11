@@ -62,10 +62,6 @@ function subscribe(onStoreChange: () => void) {
   };
 }
 
-export function getAtMentionDefaultCategory(): AtMentionDefaultCategory {
-  return readAtMentionDefaultCategory();
-}
-
 export function setAtMentionDefaultCategory(
   category: AtMentionDefaultCategory,
 ): void {

@@ -65,10 +65,6 @@ function subscribe(onStoreChange: () => void) {
   };
 }
 
-export function getStreamingShortcutMode(): StreamingShortcutMode {
-  return readStreamingShortcutMode();
-}
-
 export function setStreamingShortcutMode(mode: StreamingShortcutMode): void {
   const normalized = normalizeStreamingShortcutMode(mode);
   try {

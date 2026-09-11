@@ -10,10 +10,3 @@ export function notifyProviderModelInventoryInvalidated(
     listener(providerId);
   }
 }
-
-export function subscribeToProviderModelInventoryInvalidation(
-  listener: ProviderModelInventoryInvalidationListener,
-): () => void {
-  invalidationListeners.add(listener);
-  return () => invalidationListeners.delete(listener);
-}

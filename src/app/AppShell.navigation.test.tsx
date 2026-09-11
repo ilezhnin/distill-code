@@ -64,7 +64,6 @@ const gitMocks = vi.hoisted(() => ({
   getGitState: vi.fn(),
   removeWorktree: vi.fn(),
 }));
-const mockIsExternalAgentReady = vi.hoisted(() => vi.fn());
 const mockAgentStatus = vi.hoisted(() => ({
   readyAgentIds: new Set<string>(["claude-acp"]),
 }));
@@ -380,11 +379,6 @@ vi.mock("@/features/extensions/api/extensions", () => ({
 vi.mock("@/features/providers/api/credentials", () => ({
   checkAllProviderStatus: (...args: unknown[]) =>
     mockCheckAllProviderStatus(...args),
-}));
-
-vi.mock("@/features/chat/lib/externalAgentReadiness", () => ({
-  isExternalAgentReady: (...args: unknown[]) =>
-    mockIsExternalAgentReady(...args),
 }));
 
 vi.mock("@/features/providers/lib/managedModelSelectionRepair", () => ({
@@ -717,8 +711,6 @@ describe("AppShell global navigation", () => {
     mockCheckDirectoriesExist.mockResolvedValue([]);
     mockCheckAllProviderStatus.mockReset();
     mockCheckAllProviderStatus.mockResolvedValue([]);
-    mockIsExternalAgentReady.mockReset();
-    mockIsExternalAgentReady.mockResolvedValue(false);
     mockAgentStatus.readyAgentIds = new Set(["claude-acp"]);
     mockCreatePersonaSource.mockReset();
     mockCreatePersonaSource.mockResolvedValue({
@@ -937,7 +929,6 @@ describe("AppShell global navigation", () => {
 
   it("allows a ready external ACP agent when the BYO default is missing", async () => {
     selectCodexProvider();
-    mockIsExternalAgentReady.mockResolvedValue(true);
     mockAgentStatus.readyAgentIds = new Set(["claude-acp", "codex-acp"]);
     const user = userEvent.setup();
     renderAppShell();

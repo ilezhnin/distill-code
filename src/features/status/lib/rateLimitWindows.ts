@@ -92,17 +92,6 @@ export function providerMaxUsed(provider: ProviderRateLimits): number {
   );
 }
 
-export function soonestResetAt(provider: ProviderRateLimits): number | null {
-  const resets = getUsageSections(provider)
-    .map((section) => section.window.resetsAt)
-    .filter(
-      (value): value is number =>
-        typeof value === "number" && Number.isFinite(value),
-    );
-  if (resets.length === 0) return null;
-  return Math.min(...resets);
-}
-
 export function formatWindowLength(windowMinutes: number): string {
   if (windowMinutes >= 40_000) return "mo";
   if (windowMinutes >= 1_000) return "wk";
@@ -205,15 +194,4 @@ export function platformLimitState(
   );
   if (tightest >= 100) return "at-limit";
   return tightest >= nearLimit ? "near-limit" : "clear";
-}
-
-export function isPlatformAtLimit(
-  providers: readonly ProviderRateLimits[],
-  platform: string,
-): boolean {
-  const entry = providers.find((provider) => provider.provider === platform);
-  if (!entry) return false;
-  return getUsageSections(entry).some(
-    (section) => clampUsedPercent(section.window.usedPercent) >= 100,
-  );
 }

@@ -187,11 +187,6 @@ export function subscribeRunEvents(listener: () => void): () => void {
   };
 }
 
-/** Pushes every open journal to disk. Shutdown, and tests. */
-export async function flushRunJournals(): Promise<void> {
-  await Promise.all([...journals.values()].map((journal) => journal.flush()));
-}
-
 /** Drops the in-memory journals. Tests only. */
 export function resetRunJournalsForTests(): void {
   journals.clear();

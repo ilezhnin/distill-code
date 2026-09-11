@@ -118,7 +118,6 @@ const buttonStylingBaseline = new Set([
   "src/features/chat/ui/PersonaPicker.tsx",
   "src/features/chat/ui/widgets/WorkspaceActionsMenu.tsx",
   "src/features/design-system/ui/ConversationAnatomyPage.tsx",
-  "src/features/extensions/ui/ExtensionModal.tsx",
   "src/features/projects/ui/ProjectsView.tsx",
   "src/features/sessions/ui/session-list/SidebarFlatChatsSection.tsx",
   "src/features/sessions/ui/session-list/SidebarProjectList.tsx",
