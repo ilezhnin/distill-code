@@ -199,7 +199,6 @@ exact machine-checked contract.
 | `text-selection-bg`, `text-selection-fg` | `::selection` | Pseudo-element; a `bg-*` class cannot target selected text. Lighter primary tint with normal foreground text so selection reads as a quiet highlight, not an inverted fill. |
 | `chat-search-match-bg`, `chat-search-match-fg`, `chat-search-match-active-bg`, `chat-search-match-active-fg` | `::highlight(chat-search-match[-active])` | CSS Custom Highlight API ranges; not element-class styleable. |
 | `scrollbar-thumb`, `scrollbar-thumb-hover` | `::-webkit-scrollbar-thumb` | Scrollbar pseudo-element. |
-| `filter-chat-responding-goose` | `filter` property | Non-color CSS property, not a color utility. |
 | `app-top-bar-control-hover-opacity` | `opacity` via `hover:opacity-[var(...)]` | Opacity value, consumed through an arbitrary-value utility. |
 | `project-panel-tint`, `project-panel-alpha` | Create/edit project panel glass surface via an inline `color-mix(...)` | Percentage mix shares, not colors: the tint is the share of the runtime-selected project color mixed over `background` to form the panel hue, and the alpha is that hue's opacity over the backdrop blur. Dark mode raises both because pastel hues get lost over a near-black backdrop. |
 | `overlay-search-scrim` | Global search dialog overlay | Search intentionally uses a lighter, blur-free scrim than standard dialogs while retaining a theme-governed semantic color. |

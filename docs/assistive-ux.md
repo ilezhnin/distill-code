@@ -137,7 +137,7 @@ Assistive UX state should be stored separately from feature settings.
 For renderer-local behavior, use a single local storage umbrella:
 
 ```text
-goose:assistive-ux
+distill:assistive-ux
 ```
 
 The stored state should be versioned, resilient to invalid data, and safe to

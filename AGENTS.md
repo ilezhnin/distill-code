@@ -1,8 +1,10 @@
 # AGENTS.md
 
-Guidelines for agents working on Berd.
+Guidelines for agents working on Distill.
 
-Berd is a standalone Tauri 2 + React 19 desktop. ACP is the main interface
+Distill is a standalone Tauri 2 + React 19 desktop app, built for Windows only.
+Much of the code still carries its upstream name, Berd (`berdctl`,
+`berd-monitor`, `BERD_*` variables). ACP is the main interface
 we use for the actual agent loop - creating and running sessions, finding available
 models, and setting configuration. When available, we work over ACP methods, but the
 UI can handle operations that are not yet in ACP or are client specific.
@@ -12,8 +14,8 @@ UI can handle operations that are not yet in ACP or are client specific.
 - `src/` — React UI/features/shared code
 - `src-tauri/` — Tauri shell; `src-tauri/src/services/agent_host/` is the
   built-in ACP host that spawns the harness bridges and stores sessions
-- `distro/` — bundled app defaults and packaged distribution assets
-- `acp-tools.lock.json` — release-controlled `package.json` + `package-lock.json`
+- `distro/` — bundled agents and skills and other app defaults
+- `acp-tools.lock.json` — pinned `package.json` + `package-lock.json`
   the managed ACP bridges are installed from with `npm ci`
 - `scripts/update-acp-tools-lock.mjs` — resolves and records a new managed ACP bridge pin
 - `src/features/berdctl/` — berdctl command registry
@@ -30,19 +32,24 @@ law file relevant to the affected behavior. Laws take correctness precedence
 over the current code and tests; when they disagree, change the implementation
 and tests or explicitly propose a product-approved law change.
 
-## Startup assets
+## Avatar media
 
-Startup artifact media is resolved by the Tauri backend and returned as local
-cache paths. Renderer code should use `getArtifacts()` or
-`selectProjectPreviewArtifacts()` from `src/shared/api/artifacts.ts`, then pass
-paths through `convertFileSrc(..., "asset")` before rendering media. Do not
-vendor startup media, fetch catalogs in the renderer, or construct CDN
-URLs in UI code.
+Avatar images are resolved by the Tauri backend and returned as local paths.
+Renderer code should use `getCachedAvatarForRef()` or
+`getCachedAvatarsForRefs()` from `src/shared/api/avatars.ts` and render through
+`cachedAssetToMedia()`, which passes paths through
+`convertFileSrc(..., "asset")`. Do not fetch remote media or construct CDN URLs
+in UI code.
 
 ## Common commands
 
-- `just setup` — install pnpm deps and git hooks
-- `just dev` — run the Tauri app in dev mode
+Each `*-windows` recipe and `bundle` wraps a script in `scripts/windows/`; when
+`just` is not on `PATH`, run it with
+`powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\<Script>.ps1`
+(see `README.md`).
+
+- `just setup-windows` — install pnpm deps and git hooks (`Setup-Windows.ps1`)
+- `just dev-windows` — run the Tauri app in dev mode (`Dev-Windows.ps1`)
 - `just fmt` — format frontend and Tauri/Rust files
 - `just fmt-check` — check frontend and Tauri/Rust formatting
 - `just lint` — Biome lint checks
@@ -52,7 +59,8 @@ URLs in UI code.
 - `just tauri-check` — Rust check with external sidecars disabled
 - `just clippy` — Rust clippy with warnings denied
 - `just ci` — local validation gate: frontend checks, Tauri/Rust checks, clippy, tests, build
-- `just bundle` — stage the berdctl sidecars and run `pnpm tauri build`
+- `just bundle` — stage the berdctl and berd-monitor sidecars and build the
+  NSIS installer (`Bundle-Windows.ps1`)
 
 ## When to validate
 
@@ -61,7 +69,9 @@ URLs in UI code.
 - `src-tauri/`, Tauri config, sidecars, or Rust: `just tauri-check`
 - berdctl commands: `pnpm generate:berdctl-contract`, `pnpm vitest run
   src/features/berdctl`, and `cargo test -p berdctl` (from `src-tauri/`)
-- Broad/release/packaging changes: `just ci`
+- Windows scripts: `just test-windows-dev`
+- Broad or packaging changes: `just ci`, and `just ci-windows` for the managed
+  Node runtime and bridges
 
 ## berdctl
 
@@ -98,11 +108,11 @@ consistency via the crate's tests). Never hand-edit the contract JSONs.
 
 ## Sidecar rule
 
-Release builds stage the workspace CLIs (`berdctl`, `berd-monitor`) as Tauri
+Bundles stage the workspace CLIs (`berdctl`, `berd-monitor`) as Tauri
 `externalBin` sidecars:
 
-```bash
-just setup
+```powershell
+just setup-windows
 just bundle
 ```
 

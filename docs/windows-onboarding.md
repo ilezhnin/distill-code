@@ -1,17 +1,32 @@
-# Native Windows Verification
+# Windows setup
 
-This lane is for native Windows dev-app verification. It does not replace the
-Mac/Hermit flow, and it does not build a Windows installer yet.
+Distill builds and runs on Windows only. This lane takes a machine from nothing
+to a running dev app and an installer:
 
-The first Windows milestone is:
+- install or diagnose the native Windows prerequisites
+- install pnpm dependencies and git hooks
+- launch the Tauri dev app with `just dev-windows`
+- build an NSIS or MSI installer with `just bundle`
 
-- install or diagnose native Windows prerequisites
-- verify npm and pnpm access
-- build the pinned Goose backend natively
-- launch the real Tauri dev app with `just dev-windows`
+Every `just` recipe here runs a script in `scripts\windows\`. Without `just`
+on `PATH`, run the script directly from the repository root, for example:
 
-Native Berd provider sign-in is intentionally deferred on Windows. The app and
-`doctor-windows` report this as a known gap.
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Doctor-Windows.ps1
+```
+
+| Recipe | Script |
+| --- | --- |
+| `just bootstrap-windows [install]` | `Bootstrap-Windows.ps1 [-Mode install]` |
+| `just doctor-windows` | `Doctor-Windows.ps1` |
+| `just setup-windows` | `Setup-Windows.ps1` |
+| `just dev-windows` | `Dev-Windows.ps1` |
+| `just bundle`, `just bundle-windows msi`, `just bundle-debug` | `Bundle-Windows.ps1 [-Bundle msi] [-Debug]` |
+| `just tauri-check-windows` | `Tauri-Check-Windows.ps1` |
+| `just ci-windows` | `CI-Windows.ps1` |
+| `just test-windows-dev` | `Test-WindowsDev.ps1` |
+| `just prune-build-cache [-Remove] [-Deep]` | `Prune-BuildCache-Windows.ps1 [-Remove] [-Deep]` |
+| `just cleanup-windows [remove] [flags]` | `Cleanup-Windows.ps1 [-Mode remove] [flags]` |
 
 ## Fresh Machine Scope
 
@@ -27,13 +42,13 @@ still needs two seed steps:
    winget install --id Casey.Just -e
    ```
 
-2. Get a Berd checkout. If Git is not installed yet, install it once:
+2. Get a checkout. If Git is not installed yet, install it once:
 
    ```powershell
    winget install --id Git.Git -e
    ```
 
-   Then clone or open the Berd repo. After you are in the repo,
+   Then clone or open the repository. After you are in it,
    `bootstrap-windows` owns Git validation and repair like the other Windows
    prerequisites.
 
@@ -69,9 +84,9 @@ Bootstrap installs or validates:
 
 Bootstrap does not create or mutate user-level npm registry or TLS configuration.
 The Windows setup/dev scripts talk to the public npm registry
-(`https://registry.npmjs.org/`) and ignore leftover Block Artifactory settings
-in the process environment, so Block VPN is not required. If your environment
-uses a non-Block registry mirror, proxy, or custom certificate authority,
+(`https://registry.npmjs.org/`); registry and CA overrides left in the
+environment by an older upstream setup are ignored for the run. If your
+environment uses a registry mirror, proxy, or custom certificate authority,
 configure those through your normal Node/npm tooling before running
 `just setup-windows`. Never bypass TLS verification with `strict-ssl=false`.
 
@@ -85,12 +100,8 @@ After bootstrap install:
 just doctor-windows
 ```
 
-Expected result:
-
-- required checks pass against public npm (Block VPN is not required)
-- one warning is acceptable: native Windows sign-in is deferred
-
-If doctor reports managed Goose is missing, continue with `setup-windows`.
+Expected result: every check passes, including `npm ping` against the public
+registry. A failure line names the command that fixes it.
 
 ## Setup
 
@@ -98,12 +109,10 @@ If doctor reports managed Goose is missing, continue with `setup-windows`.
 just setup-windows
 ```
 
-Setup:
-
-- installs pnpm dependencies
-- builds the vendored SDK
-- installs hooks
-- clones and builds the Goose backend pinned by `goose-backend.lock.json`
+Setup installs pnpm dependencies and the Lefthook git hooks. Nothing else is
+built ahead of time: the app installs the Claude Code and Codex bridges itself
+at startup, from the versions pinned in `acp-tools.lock.json`, onto a managed
+Node runtime pinned by `node-runtime.lock.json`.
 
 ## Where Build State Lives
 
@@ -135,7 +144,7 @@ just prune-build-cache -Remove -Deep   # also the whole target dir (full rebuild
 Without `just` on PATH, call the script directly:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/windows/Prune-BuildCache-Windows.ps1 -Remove
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Prune-BuildCache-Windows.ps1 -Remove
 ```
 
 It only removes output it can regenerate, and refuses to run while `cargo`,
@@ -151,20 +160,33 @@ It only removes output it can regenerate, and refuses to run while `cargo`,
 just dev-windows
 ```
 
-`just dev-windows` launches native Tauri dev mode with Windows-native paths for:
-
-- managed `goose.exe`
-- built `berdctl.exe`
+`just dev-windows` builds `berdctl.exe` and `berd-monitor.exe`, points the app
+at this repository's `distro\` for bundled agents and skills, and starts Tauri
+dev mode.
 
 Expected result:
 
-- Vite starts
-- native `Berd.exe` launches from the Windows Tauri cargo target
-- Goose ACP startup uses the managed `goose.exe`
-- Goose serve reaches ready
+- Vite starts on a port derived from the checkout path
+- `Berd.exe` launches from the Tauri cargo target as the Distill window
+- on launch the app installs the pinned Claude Code and Codex bridges onto the
+  managed Node runtime (the first launch downloads both); later launches reuse
+  them until a pin changes
 
-Native provider sign-in may still be unavailable. That is expected for this
-milestone.
+`scripts\windows\Launch-Distill.ps1 -InstallShortcut` puts a "Distill Code"
+shortcut on the desktop that runs the same launch from Explorer.
+
+## Build An Installer
+
+```powershell
+just bundle                 # NSIS
+just bundle-windows msi     # MSI
+just bundle-debug           # NSIS with WebView devtools
+```
+
+The bundle script installs locked dependencies, stages `berdctl` and
+`berd-monitor` as `*-x86_64-pc-windows-msvc.exe` sidecars, runs `tauri build`
+for that target and prints the installer path under
+`<target>\x86_64-pc-windows-msvc\release\bundle\`. Installers are unsigned.
 
 ## Validation Commands
 
@@ -179,7 +201,8 @@ just test-windows-dev
 
 `tauri-check-windows` runs Windows-native Rust/Tauri checks with external
 sidecars disabled. `test-windows-dev` covers focused Windows script path, stamp,
-and cleanup helpers.
+and cleanup helpers. `ci-windows` runs the managed Node runtime and bridge
+tests that need a real Windows host, plus Windows clippy.
 
 ## Cleanup And Reset
 
@@ -189,10 +212,10 @@ Cleanup is dry-run by default:
 just cleanup-windows
 ```
 
-Default removal deletes Berd-local caches and generated repo setup/dev
-artifacts. That includes root `node_modules`, root `.pnpm-store`, root `dist`,
-`sdk\node_modules`, `sdk\dist`, and Lefthook-managed `pre-commit` and
-`pre-push` hooks:
+Default removal deletes the local dev caches (`%LOCALAPPDATA%\berd-dev` and
+the Tauri cargo target) and generated repo setup/dev artifacts: root
+`node_modules`, root `.pnpm-store`, root `dist`, and the Lefthook-managed
+`pre-commit` and `pre-push` hooks:
 
 ```powershell
 just cleanup-windows remove -Yes
@@ -262,12 +285,16 @@ just bootstrap-windows install
 Install mode may request an administrator prompt to repair Visual Studio Build
 Tools with the C++ workload.
 
-If managed Goose looks stale or dirty, reset the Berd-local Windows cache:
+If dependencies or the dev cache look stale, reset the local Windows state:
 
 ```powershell
 just cleanup-windows remove -Yes
 just setup-windows
 ```
+
+If an agent session will not start, check the app log at
+`%LOCALAPPDATA%\xyz.block.berd\logs\berd.log`; each harness's stderr is
+logged there prefixed with its id, such as `[claude-acp]`.
 
 If you want a full fresh-machine reset after testing, review the cleanup dry run
 first, then run the full reset command from the cleanup section.
