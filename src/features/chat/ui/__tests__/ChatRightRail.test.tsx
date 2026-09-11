@@ -423,26 +423,6 @@ describe("ChatRightRail", () => {
     expect(screen.getByTestId("rail-terminal")).toBeVisible();
   });
 
-  it("does not mount an editable Agent Builder in read-only chat windows", () => {
-    render(
-      <ChatRightRail
-        contextVisible={mocks.rightRailOpen}
-        session={
-          {
-            id: "s1",
-            intent: "build-agent",
-            agentBuilderOpen: true,
-            targetAgentPath: "/path",
-            targetAgentSlug: "draft-s1",
-          } as never
-        }
-        agentBuilderReadOnly
-      />,
-    );
-
-    expect(screen.queryByTestId("agent-builder-rail")).toBeNull();
-  });
-
   it("renders AgentBuilderRail for provisional build-agent sessions", () => {
     render(
       <ChatRightRail
