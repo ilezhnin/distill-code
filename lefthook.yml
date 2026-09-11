@@ -38,6 +38,13 @@ pre-commit:
 # dictionary: 'home'". That happens before any recipe of ours runs, so it has
 # to be fixed where the environment is built: drop the duplicate variable in
 # the client, or push from a terminal.
+commit-msg:
+  commands:
+    no-ai-attribution:
+      # Plain sh, no dev-tool launcher: it needs nothing beyond Git's own sh,
+      # grep and sed, so it can never be skipped as "tool not found".
+      run: sh scripts/hooks/no-ai-attribution.sh {1}
+
 pre-push:
   parallel: true
   commands:
