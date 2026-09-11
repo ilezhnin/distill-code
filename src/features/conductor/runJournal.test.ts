@@ -1,8 +1,31 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { diffGraphNodes, diffWaveStates, runJournalPath } from "./runJournal";
+const files = vi.hoisted(() => new Map<string, string>());
+
+vi.mock("@/shared/api/distillStore", () => ({
+  isDesktopRuntime: () => true,
+  readDistillDocument: vi.fn(async (path: string) => files.get(path) ?? null),
+  writeDistillDocument: vi.fn(async (path: string, contents: string) => {
+    files.set(path, contents);
+  }),
+  getDistillRoot: async () => null,
+  setDistillRoot: async () => undefined,
+}));
+
+import {
+  appendRunEvent,
+  diffGraphNodes,
+  diffWaveStates,
+  installRunJournal,
+  runEventsFor,
+  runJournalPath,
+} from "./runJournal";
 import type { WaveState } from "./waveEngine";
-import { emptyWaveEngineState, type WaveEngineState } from "./waveStore";
+import {
+  emptyWaveEngineState,
+  setWaveEngineState,
+  type WaveEngineState,
+} from "./waveStore";
 import type { SessionNode, StructuredReport } from "./types";
 
 function wave(over: Partial<WaveState> = {}): WaveState {
@@ -186,5 +209,64 @@ describe("runJournalPath", () => {
     expect(runJournalPath("../../etc/passwd")).toBe(
       "runs/______etc_passwd.json",
     );
+  });
+});
+
+describe("the journal in the folder", () => {
+  it("keeps what a previous run wrote for the same wave", async () => {
+    files.set(
+      runJournalPath("w-restart"),
+      JSON.stringify({
+        version: 1,
+        waveId: "w-restart",
+        events: [
+          {
+            seq: 0,
+            at: 1,
+            kind: "wave-admitted",
+            waveId: "w-restart",
+            conductorSessionId: "c1",
+            rootRequestId: "m1",
+          },
+        ],
+      }),
+    );
+
+    appendRunEvent({
+      at: 2,
+      kind: "wave-phase",
+      waveId: "w-restart",
+      conductorSessionId: "c1",
+      rootRequestId: "m1",
+    });
+
+    await vi.waitFor(() =>
+      expect(runEventsFor("w-restart").map((event) => event.seq)).toEqual([
+        0, 1,
+      ]),
+    );
+    await vi.waitFor(() => {
+      const raw = files.get(runJournalPath("w-restart")) ?? "{}";
+      expect(JSON.parse(raw).events).toHaveLength(2);
+    });
+  });
+
+  it("does not report the previous run's waves as newly admitted", () => {
+    const stop = installRunJournal();
+    try {
+      setWaveEngineState(state([wave({ waveId: "w-hydrated" })]), {
+        hydration: true,
+      });
+      expect(runEventsFor("w-hydrated")).toHaveLength(0);
+
+      setWaveEngineState(
+        state([wave({ waveId: "w-hydrated", phase: "digestPending" })]),
+      );
+      expect(runEventsFor("w-hydrated").map((event) => event.kind)).toEqual([
+        "wave-phase",
+      ]);
+    } finally {
+      stop();
+    }
   });
 });

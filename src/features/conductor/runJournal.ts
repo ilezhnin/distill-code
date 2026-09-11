@@ -90,6 +90,14 @@ const MAX_OPEN_JOURNALS = 24;
 interface Journal {
   waveId: string;
   events: RunEvent[];
+  /**
+   * True once the wave's existing file has been read into `events`. Until
+   * then nothing is written: this process opens a journal empty, and a
+   * wave that outlived a restart (or was evicted from memory and reopened)
+   * would otherwise have its whole recorded history replaced by the events
+   * of this session alone.
+   */
+  loaded: boolean;
   write: (events: RunEvent[]) => void;
   flush: () => Promise<void>;
 }
@@ -136,9 +144,16 @@ function journalFor(waveId: string): Journal {
   const journal: Journal = {
     waveId,
     events: [],
+    loaded: !isDesktopRuntime(),
     write: (events) => document.write(events),
     flush: () => document.flush(),
   };
+  if (!journal.loaded) {
+    void document.read().then(
+      (stored) => settleJournalLoad(journal, stored ?? []),
+      () => settleJournalLoad(journal, []),
+    );
+  }
   journals.set(waveId, journal);
   // Insertion-ordered: the first key is the least recently opened journal.
   while (journals.size > MAX_OPEN_JOURNALS) {
@@ -151,6 +166,41 @@ function journalFor(waveId: string): Journal {
   return journal;
 }
 
+/**
+ * Puts the file's events in front of whatever this session appended while
+ * the read was in flight, renumbering the new ones to follow on, and writes
+ * the result if this session added anything.
+ */
+function settleJournalLoad(journal: Journal, stored: RunEvent[]): void {
+  try {
+    journal.loaded = true;
+    if (stored.length > 0) {
+      let seq = stored[stored.length - 1]?.seq ?? stored.length - 1;
+      const appended = journal.events.map((event) => {
+        seq += 1;
+        return { ...event, seq };
+      });
+      journal.events = [...stored, ...appended].slice(-MAX_RUN_EVENTS);
+      if (appended.length > 0) journal.write(journal.events);
+    } else if (journal.events.length > 0) {
+      journal.write(journal.events);
+    }
+    notifyRunEventListeners();
+  } catch {
+    // A trace that cannot be read back is a worse day, not a broken run.
+  }
+}
+
+function notifyRunEventListeners(): void {
+  for (const listener of [...listeners]) {
+    try {
+      listener();
+    } catch {
+      // A reader that throws must not reach a store's write path.
+    }
+  }
+}
+
 /** Records one event. Never throws: this runs inside store subscriptions. */
 export function appendRunEvent(event: RunEvent): void {
   try {
@@ -159,14 +209,8 @@ export function appendRunEvent(event: RunEvent): void {
     journal.events = [...journal.events, { ...event, seq }].slice(
       -MAX_RUN_EVENTS,
     );
-    if (isDesktopRuntime()) journal.write(journal.events);
-    for (const listener of [...listeners]) {
-      try {
-        listener();
-      } catch {
-        // A reader that throws must not reach a store's write path.
-      }
-    }
+    if (isDesktopRuntime() && journal.loaded) journal.write(journal.events);
+    notifyRunEventListeners();
   } catch {
     // A trace that cannot be written is a worse day, not a broken run.
   }
@@ -358,7 +402,14 @@ export function installRunJournal(): () => void {
   installed = true;
 
   let previousWaves: WaveEngineState | null = getWaveEngineState();
-  const stopWaves = subscribeWaveEngineState((next) => {
+  const stopWaves = subscribeWaveEngineState((next, change) => {
+    // The previous run's waves joining memory are not transitions this run
+    // observed; diffing them would open each one with a fresh
+    // "wave-admitted" as if it had just been planned.
+    if (change.hydration) {
+      previousWaves = next;
+      return;
+    }
     const events = diffWaveStates(previousWaves, next, Date.now());
     previousWaves = next;
     for (const event of events) appendRunEvent(event);
