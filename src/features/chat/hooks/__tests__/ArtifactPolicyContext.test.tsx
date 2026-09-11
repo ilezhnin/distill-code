@@ -67,6 +67,8 @@ function ArtifactListIdentityProbe({
   return null;
 }
 
+const WINDOWS_SESSION_CWD = "C:\\Users\\me\\repo";
+
 function LinkProbe({ href }: { href: string }) {
   const { resolveMarkdownHref } = useArtifactActionsContext();
   const candidate = resolveMarkdownHref(href);
@@ -476,6 +478,38 @@ describe("ArtifactPolicyContext", () => {
     expect(screen.getByTestId("link-path")).toHaveTextContent(
       "/Users/test/goose artifacts/my image.png",
     );
+  });
+
+  it.each([
+    ["C:\\Users\\me\\repo\\report.md", "C:/Users/me/repo/report.md"],
+    ["C:/Users/me/repo/report.md", "C:/Users/me/repo/report.md"],
+    [
+      "c:%5Cusers%5Cme%5Crepo%5Cmy%20report.md",
+      "c:/users/me/repo/my report.md",
+    ],
+    ["D:%2Fdata%2Freport.md", "D:/data/report.md"],
+  ])("resolves the Windows drive markdown href %s", (href, expected) => {
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <LinkProbe href={href} />
+      </ArtifactPolicyProvider>,
+    );
+
+    expect(screen.getByTestId("link-has-candidate")).toHaveTextContent("true");
+    expect(screen.getByTestId("link-path")).toHaveTextContent(expected);
+  });
+
+  it("marks a Windows drive href inside the session cwd as within cwd", () => {
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd={WINDOWS_SESSION_CWD}>
+        <LinkProbe href="C:%5CUsers%5Cme%5Crepo%5Csrc%5Cmain.ts" />
+      </ArtifactPolicyProvider>,
+    );
+
+    expect(screen.getByTestId("link-path")).toHaveTextContent(
+      "C:/Users/me/repo/src/main.ts",
+    );
+    expect(screen.getByTestId("link-within-cwd")).toHaveTextContent("true");
   });
 
   it.each([
