@@ -15,7 +15,20 @@ pub(super) async fn capture_dir_env_uncached(
     dir: &Path,
     _timeout_duration: Duration,
 ) -> HashMap<String, String> {
-    windows_process_env_for_dir(dir)
+    windows_process_env_for_dir_off_runtime(dir).await
+}
+
+/// [`windows_process_env_for_dir`] runs `git rev-parse` synchronously to find
+/// the repository; keep that wait off the async runtime's worker threads.
+async fn windows_process_env_for_dir_off_runtime(dir: &Path) -> HashMap<String, String> {
+    let dir = dir.to_path_buf();
+    match tokio::task::spawn_blocking(move || windows_process_env_for_dir(&dir)).await {
+        Ok(env) => env,
+        Err(error) => {
+            log::warn!("Windows environment capture task failed: {error}");
+            HashMap::new()
+        }
+    }
 }
 
 pub(crate) fn windows_process_env_for_dir(dir: &Path) -> HashMap<String, String> {
@@ -116,5 +129,5 @@ pub(super) async fn capture_terminal_env(
     dir: &Path,
     _timeout_duration: Duration,
 ) -> HashMap<String, String> {
-    windows_process_env_for_dir(dir)
+    windows_process_env_for_dir_off_runtime(dir).await
 }
