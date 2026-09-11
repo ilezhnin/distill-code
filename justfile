@@ -176,9 +176,11 @@ build:
 tauri-check:
     just tauri-check-windows
 
-# Run the Rust workspace crate tests with external sidecars disabled.
+# Run the Rust tests with external sidecars disabled: the app library's own
+# unit tests, then the berdctl plugin, CLI and monitor crates.
 [windows]
 tauri-test:
+    just _tauri-cargo-windows test --lib
     just _tauri-cargo-windows test -p tauri-plugin-berdctl --features server
     just _tauri-cargo-windows test -p berdctl
     just _tauri-cargo-windows test -p berd-monitor
