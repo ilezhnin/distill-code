@@ -39,6 +39,19 @@ describe("git query key builders", () => {
     );
   });
 
+  it("match the backslash spelling the backend reports on Windows", () => {
+    const windowsHome = "C:\\Users\\test";
+    expect(normalizeGitPath("~/project/app", windowsHome)).toBe(
+      "C:\\Users\\test\\project\\app",
+    );
+    expect(normalizeGitPath("~\\project", `${windowsHome}\\`)).toBe(
+      "C:\\Users\\test\\project",
+    );
+    expect(gitStateQueryKey("~/project", windowsHome)).toEqual(
+      gitStateQueryKey("C:\\Users\\test\\project", windowsHome),
+    );
+  });
+
   it("namespace their keys distinctly", () => {
     expect(gitStateQueryKey("/Users/test/project", HOME)).toEqual([
       "git-state",
