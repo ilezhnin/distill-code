@@ -26,7 +26,7 @@ const SNIPPET_MAX_CHARS: usize = 160;
 /// The renderer used to hand a persona's system prompt to goose in-band as
 /// plain user text. Live sessions mark that block assistant-only; imported
 /// history gets the same annotation so it stays hidden.
-const PERSONA_HANDOFF_PREFIX: &str =
+pub(super) const PERSONA_HANDOFF_PREFIX: &str =
     "You are operating under the following context and instructions for this ";
 
 /// `<data dir>/Block/goose/data/sessions/sessions.db` on every platform goose
