@@ -13,7 +13,6 @@ import {
 import { AcpToolsEvents } from "@/app/AcpToolsEvents";
 import { App } from "@/app/App";
 import { GitStateEvents } from "@/app/GitStateEvents";
-import { LocalMediaCacheEvents } from "@/app/LocalMediaCacheEvents";
 import { RendererBootLog } from "@/app/RendererBootLog";
 import { BackgroundQueuedMessageDrain } from "@/features/chat/ui/BackgroundQueuedMessageDrain";
 import { ConductorGraphSync } from "@/features/conductor/ConductorGraphSync";
@@ -180,7 +179,6 @@ if (bootError) {
           <QueryClientProvider client={queryClient}>
             <AcpToolsEvents />
             <GitStateEvents />
-            <LocalMediaCacheEvents />
             <BackgroundQueuedMessageDrain />
             <ConductorGraphSync />
             <PlannerAgentSync />

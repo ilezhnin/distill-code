@@ -45,9 +45,6 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$APPDATA/avatars/media/**/*",
-          "$APPDATA/artifacts/media/**/*",
-          "$APPDATA/project-artifacts/media/**/*",
           "$RESOURCE/distro/agents/.avatars/**/*",
           "$HOME/**/*",
           "$TEMP/**/*"

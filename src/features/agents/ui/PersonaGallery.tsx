@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { IconArrowDownToArc, IconPlus } from "@tabler/icons-react";
-import { selectAvatarImageUrl } from "@/shared/api/artifacts";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { AgentTileButton } from "@/shared/ui/agent-tile-button";
@@ -13,7 +12,6 @@ import { Skeleton } from "@/shared/ui/skeleton";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
 import type { Persona } from "@/shared/types/agents";
 import { PersonaCard } from "@/features/agents/ui/PersonaCard";
-import { useArtifacts } from "@/shared/hooks/useArtifacts";
 import { useAvatarMedia } from "@/shared/hooks/useAvatarSrc";
 import { useFileImportZone } from "@/shared/hooks/useFileImportZone";
 import { usePersonaSource } from "@/features/agents/hooks/usePersonaSource";
@@ -22,10 +20,6 @@ import {
   isPlaceholderAgentName,
   PLACEHOLDER_AGENT_BODY,
 } from "@/features/agents/lib/agentBuilderIdentity";
-
-// Blue jello gloopy shown oversized in the gallery empty state, per the
-// onboarding Figma. Resolved from the startup artifacts catalog.
-const EMPTY_STATE_GLOOPY_AVATAR_ID = "gloopies-14";
 
 const GALLERY_CARD_STAGGER_MS = 40;
 const MAX_STAGGERED_CARDS = 6;
@@ -234,12 +228,6 @@ export function PersonaGallery({
       document.removeEventListener("keydown", collapseOnEscape);
     };
   }, [showAddActions]);
-  const emptyGloopyQuery = useArtifacts({
-    enabled: !isLoading && personas.length === 0,
-    select: (artifacts) =>
-      selectAvatarImageUrl(artifacts, EMPTY_STATE_GLOOPY_AVATAR_ID),
-  });
-  const emptyGloopyUrl = emptyGloopyQuery.data;
   const { fileInputRef, isDragOver, dropHandlers, handleFileChange } =
     useFileImportZone({
       onImportFile: onImportFile ?? (() => {}),
@@ -292,17 +280,6 @@ export function PersonaGallery({
         )}
       >
         <div className="flex h-full min-h-[inherit] flex-col items-center justify-center gap-x-10 gap-y-8 px-6 py-12 @2xl:flex-row">
-          {emptyGloopyUrl ? (
-            // Stacked above the copy at a fixed h-64 on narrow panels; beside
-            // it on @2xl+, growing fluidly between 240px and 760px wide.
-            <img
-              src={emptyGloopyUrl}
-              alt=""
-              aria-hidden="true"
-              draggable={false}
-              className="pointer-events-none h-64 w-auto self-center select-none @2xl:h-auto @2xl:min-w-[240px] @2xl:max-w-[760px] @2xl:flex-1 @2xl:basis-0"
-            />
-          ) : null}
           <div className="flex w-full max-w-[359px] shrink-0 flex-col items-start text-left">
             <div className="space-y-1">
               <h2

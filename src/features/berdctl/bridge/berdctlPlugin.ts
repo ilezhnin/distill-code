@@ -73,9 +73,8 @@ export async function submitBerdctlResult(result: BridgeResult): Promise<void> {
 }
 
 /**
- * Listens for broker command requests. Mirrors
- * `listenLocalMediaCachesCleared` (src/shared/api/localMediaCaches.ts): a
- * no-op unlistener outside the Tauri webview.
+ * Listens for broker command requests; a no-op unlistener outside the Tauri
+ * webview.
  */
 export function listenBerdctlRequests(
   handler: (request: BridgeRequest) => void,

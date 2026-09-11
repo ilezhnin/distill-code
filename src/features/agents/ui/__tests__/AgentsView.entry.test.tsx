@@ -80,27 +80,6 @@ vi.mock("@/shared/api/avatars", async (importOriginal) => ({
   importAgentAvatarFile: avatarApiMocks.importAgentAvatarFile,
 }));
 
-vi.mock("@/shared/api/artifacts", () => ({
-  ARTIFACTS_QUERY_KEY: ["artifacts"],
-  getArtifacts: vi.fn().mockResolvedValue({
-    catalogVersion: "test",
-    assets: [
-      {
-        kind: "collectionImage",
-        path: "/avatars/gloopies-1.png",
-        mimeType: "image/png",
-        byteSize: 4,
-        sha256: "test",
-      },
-    ],
-  }),
-  selectAvatarImageUrl: (
-    artifacts: { assets: Array<{ path: string }> },
-    id: string,
-  ) =>
-    artifacts.assets.find((asset) => asset.path.endsWith(`/${id}.png`))?.path,
-}));
-
 vi.mock("@/shared/api/agents", async (importOriginal) => ({
   // The preview builder is pure; the real one keeps gallery-drop tests
   // exercising the actual parse-and-preview path.

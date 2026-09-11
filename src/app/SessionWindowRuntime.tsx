@@ -4,7 +4,6 @@ import { useEffect, type ReactNode } from "react";
 import { AcpToolsEvents } from "@/app/AcpToolsEvents";
 import { TopBarActionsProvider } from "@/app/contexts/TopBarActionsContext";
 import { GitStateEvents } from "@/app/GitStateEvents";
-import { LocalMediaCacheEvents } from "@/app/LocalMediaCacheEvents";
 import { SelectedTextContextMenu } from "@/app/ui/SelectedTextContextMenu";
 import { useSessionWindowTracking } from "@/features/chat/hooks/useSessionWindowTracking";
 import { useWorkspaceAttachmentSync } from "@/features/chat/hooks/useWorkspaceAttachmentSync";
@@ -59,7 +58,6 @@ export function SessionWindowRuntime({
     <QueryClientProvider client={queryClient}>
       <AcpToolsEvents />
       <GitStateEvents />
-      <LocalMediaCacheEvents />
       <I18nProvider>
         <ThemeProvider>
           <TopBarActionsProvider>{children}</TopBarActionsProvider>

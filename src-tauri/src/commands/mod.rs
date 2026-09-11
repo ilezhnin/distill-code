@@ -2,7 +2,6 @@ pub mod agent_host;
 pub mod agent_setup;
 pub mod agent_skills;
 pub mod agents;
-pub mod artifacts;
 pub mod avatars;
 pub mod cache;
 pub mod diagnostics;

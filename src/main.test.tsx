@@ -13,10 +13,6 @@ vi.mock("@/app/App", () => ({
   App: () => <div data-testid="main-app" />,
 }));
 
-vi.mock("@/app/LocalMediaCacheEvents", () => ({
-  LocalMediaCacheEvents: () => null,
-}));
-
 vi.mock("@/app/RendererBootLog", () => ({
   RendererBootLog: () => null,
 }));
