@@ -29,6 +29,17 @@ function withFence(id: string, body: string, extra?: Partial<Message>) {
 const never = () => false;
 
 describe("detectPlannerFenceCandidates", () => {
+  it("leaves a reply replayed under a derived id alone", () => {
+    const found = detectPlannerFenceCandidates({
+      messagesBySession: {
+        "s-1": [withFence("u-1:reply", '{"add":["Filed long ago"]}')],
+      },
+      isApplied: never,
+    });
+
+    expect(found).toEqual([]);
+  });
+
   it("finds a settled assistant turn that filed work", () => {
     const found = detectPlannerFenceCandidates({
       messagesBySession: {

@@ -51,10 +51,39 @@ export function getReplayAssistantMessageId(
 
   const promptMessageId = getHostReplayMeta(source)?.messageId;
   if (typeof promptMessageId === "string" && promptMessageId.length > 0) {
-    return `${promptMessageId}:reply`;
+    return legacyReplayReplyId(promptMessageId);
   }
 
   return null;
+}
+
+/** Marks an id the renderer derived for a reply the host never named. */
+const LEGACY_REPLY_ID_SUFFIX = ":reply";
+
+/**
+ * The id a replayed reply gets when its history names no reply of its own:
+ * history recorded before the host stamped `assistantMessageId`, or an
+ * update with no ids at all.
+ */
+export function legacyReplayReplyId(anchor: string): string {
+  return `${anchor}${LEGACY_REPLY_ID_SUFFIX}`;
+}
+
+/**
+ * True for a reply whose id was derived on replay rather than given by the
+ * host.
+ *
+ * Such a reply was streamed, and every fence in it handled, under an id the
+ * renderer made up at the time, which no reload can reproduce. Every scanner
+ * that acts on a settled reply exactly once (wave plans, memory and recall
+ * fences, planner fences) must treat it as already handled: its tombstone
+ * is filed under the old id, so a reply that now reads as new would plan the
+ * wave again, keep the memory again, file the task again. Before replies
+ * were folded under this id they replayed as one unfinished bubble per chunk
+ * and no scanner ever read them, so skipping them keeps exactly that.
+ */
+export function isLegacyReplayReplyId(messageId: string): boolean {
+  return messageId.endsWith(LEGACY_REPLY_ID_SUFFIX);
 }
 
 /** The reply id the host stamps on every agent-side update of a turn. */

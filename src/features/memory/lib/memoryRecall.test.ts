@@ -241,6 +241,20 @@ describe("the recall loop guard", () => {
 });
 
 describe("detectRecallFenceCandidates", () => {
+  it("leaves a question replayed under a derived id alone", () => {
+    expect(
+      detectRecallFenceCandidates({
+        messagesBySession: {
+          "s-1": [
+            user("u-1", "What did we decide?"),
+            assistant("u-1:reply", fence('{"query":"release branch"}')),
+          ],
+        },
+        isAnswered: () => false,
+      }),
+    ).toEqual([]);
+  });
+
   it("finds an unanswered question and carries the session's tail", () => {
     const candidates = detectRecallFenceCandidates({
       messagesBySession: {

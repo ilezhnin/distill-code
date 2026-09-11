@@ -33,6 +33,23 @@ const PLAN =
 const neverProcessed = () => false;
 
 describe("detectWavePlanCandidates", () => {
+  it("leaves a reply replayed under a derived id alone", () => {
+    // History recorded before the host named replies replays each one under
+    // `<prompt id>:reply`. Its plan was admitted when it streamed, under an id
+    // no reload reproduces, so it must not become a second wave.
+    const candidates = detectWavePlanCandidates({
+      conductorSessionIds: ["conductor-1"],
+      messagesBySession: {
+        "conductor-1": [
+          user("u1", "Do a few things"),
+          assistant("u1:reply", `On it.\n\n${PLAN}`, "completed"),
+        ],
+      },
+      isProcessed: neverProcessed,
+    });
+    expect(candidates).toEqual([]);
+  });
+
   it("finds a plan in a conductor's assistant message", () => {
     const candidates = detectWavePlanCandidates({
       conductorSessionIds: ["conductor-1"],
