@@ -370,15 +370,54 @@ impl SessionStore {
             .collect())
     }
 
-    pub async fn copy_events(&self, from: &str, to: &str) -> Result<(), String> {
-        let events = self.list_events(from).await?;
-        for event in events {
-            let mut event = event;
+    /// Copy a session's history onto another session (a fork), keeping each
+    /// event's original time. With `before` (Unix seconds), only events
+    /// recorded before that second are copied, which is how a fork from a
+    /// given message drops what came after it.
+    pub async fn copy_events(
+        &self,
+        from: &str,
+        to: &str,
+        before: Option<i64>,
+    ) -> Result<(), String> {
+        let rows = sqlx::query(
+            "SELECT created_at, payload_json FROM session_events WHERE session_id = ? ORDER BY id ASC",
+        )
+        .bind(from)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| db_error("failed to read session events", error))?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db_error("failed to start fork transaction", error))?;
+        for row in rows {
+            let created_at: String = row.get("created_at");
+            if before.is_some_and(|cutoff| !recorded_before(&created_at, cutoff)) {
+                continue;
+            }
+            let Ok(mut event) =
+                serde_json::from_str::<Value>(&row.get::<String, _>("payload_json"))
+            else {
+                continue;
+            };
             if let Some(object) = event.as_object_mut() {
                 object.insert("sessionId".to_string(), Value::String(to.to_string()));
             }
-            self.append_event(to, &event).await?;
+            sqlx::query(
+                "INSERT INTO session_events (session_id, created_at, payload_json) VALUES (?, ?, ?)",
+            )
+            .bind(to)
+            .bind(&created_at)
+            .bind(event.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| db_error("failed to copy session event", error))?;
         }
+        tx.commit()
+            .await
+            .map_err(|error| db_error("failed to commit fork", error))?;
         Ok(())
     }
 
@@ -487,5 +526,119 @@ impl SessionStore {
             .await
             .map_err(|error| db_error("failed to delete MCP server", error))?;
         Ok(result.rows_affected() > 0)
+    }
+}
+
+/// Whether an event stored at `created_at` (RFC 3339) precedes the Unix
+/// second `cutoff`. An unreadable time keeps the event.
+fn recorded_before(created_at: &str, cutoff: i64) -> bool {
+    chrono::DateTime::parse_from_rfc3339(created_at)
+        .map(|at| at.timestamp() < cutoff)
+        .unwrap_or(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn record(id: &str) -> SessionRecord {
+        SessionRecord {
+            id: id.to_string(),
+            harness: "claude-acp".to_string(),
+            bridge_session_id: None,
+            cwd: "C:\\work".to_string(),
+            title: None,
+            user_set_name: false,
+            project_id: None,
+            persona_id: None,
+            model_id: None,
+            hidden: false,
+            created_at: "2026-09-11T00:00:00.000Z".to_string(),
+            updated_at: "2026-09-11T00:00:00.000Z".to_string(),
+            last_message_at: None,
+            archived_at: None,
+            message_count: 0,
+            last_snippet: None,
+            snapshot: None,
+        }
+    }
+
+    fn event(text: &str) -> Value {
+        json!({
+            "sessionId": "a",
+            "update": {
+                "sessionUpdate": "user_message_chunk",
+                "content": { "type": "text", "text": text },
+            }
+        })
+    }
+
+    async fn store_with_history() -> (tempfile::TempDir, SessionStore) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SessionStore::open(&dir.path().join("host.db"))
+            .await
+            .expect("open store");
+        // 2026-09-11T00:00:10Z is Unix 1789084810.
+        let history = vec![
+            ("2026-09-11T00:00:09.500Z".to_string(), event("one")),
+            ("2026-09-11T00:00:10.000Z".to_string(), event("two")),
+            ("2026-09-11T00:00:11.250Z".to_string(), event("three")),
+        ];
+        store
+            .import_session(&record("a"), &history)
+            .await
+            .expect("import");
+        store.insert_session(&record("b")).await.expect("insert");
+        (dir, store)
+    }
+
+    async fn texts_and_times(store: &SessionStore, id: &str) -> Vec<(String, String)> {
+        sqlx::query(
+            "SELECT created_at, payload_json FROM session_events WHERE session_id = ? ORDER BY id",
+        )
+        .bind(id)
+        .fetch_all(&store.pool)
+        .await
+        .expect("read")
+        .iter()
+        .map(|row| {
+            let payload: Value =
+                serde_json::from_str(&row.get::<String, _>("payload_json")).expect("json");
+            assert_eq!(payload["sessionId"], id);
+            (
+                payload["update"]["content"]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                row.get::<String, _>("created_at"),
+            )
+        })
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn a_fork_keeps_the_history_and_its_times() {
+        let (_dir, store) = store_with_history().await;
+        store.copy_events("a", "b", None).await.expect("copy");
+        let copied = texts_and_times(&store, "b").await;
+        assert_eq!(copied, texts_and_times(&store, "a").await);
+        assert_eq!(copied.len(), 3);
+        assert_eq!(copied[0].1, "2026-09-11T00:00:09.500Z");
+    }
+
+    #[tokio::test]
+    async fn a_fork_from_a_message_drops_what_came_after_it() {
+        let (_dir, store) = store_with_history().await;
+        store
+            .copy_events("a", "b", Some(1_789_084_810))
+            .await
+            .expect("copy");
+        let copied: Vec<String> = texts_and_times(&store, "b")
+            .await
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        assert_eq!(copied, vec!["one".to_string()]);
     }
 }
