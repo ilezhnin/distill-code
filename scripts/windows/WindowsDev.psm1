@@ -4,7 +4,6 @@ $ErrorActionPreference = "Stop"
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $script:RequiredPnpmVersion = "10.33.0"
 $script:RequiredNodeVersion = "24.10.0"
-$script:BlockNpmRegistry = "https://global.block-artifacts.com/artifactory/api/npm/square-npm/"
 $script:PublicNpmRegistry = "https://registry.npmjs.org/"
 $script:WebView2ClientIds = @(
     "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
@@ -39,10 +38,6 @@ function Get-RequiredNodeVersion {
     return $script:RequiredNodeVersion
 }
 
-function Get-BlockNpmRegistry {
-    return $script:BlockNpmRegistry
-}
-
 function Get-PublicNpmRegistry {
     return $script:PublicNpmRegistry
 }
@@ -53,10 +48,6 @@ function Test-IsBlockNpmValue {
         return $false
     }
     return ($Value -like "*global.block-artifacts.com*") -or ($Value -like "*block-certs*")
-}
-
-function Get-BlockRootCertPath {
-    return (Join-Path $env:USERPROFILE ".block-certs\root-certs.pem")
 }
 
 function Get-RequiredRustVersion {
@@ -113,43 +104,6 @@ function Get-CorepackCommand {
         return $cmd
     }
     return (Get-CommandSource "corepack")
-}
-
-function Find-RunnablePython {
-    $candidates = New-Object System.Collections.Generic.List[string]
-    foreach ($name in @("python", "py")) {
-        $source = Get-CommandSource $name
-        if (-not [string]::IsNullOrWhiteSpace($source)) {
-            $candidates.Add($source)
-        }
-    }
-
-    $wherePython = Invoke-CaptureCommand -FilePath "where.exe" -ArgumentList @("python")
-    if ($wherePython.ExitCode -eq 0) {
-        foreach ($line in ($wherePython.Output -split "`r?`n")) {
-            if (-not [string]::IsNullOrWhiteSpace($line)) {
-                $candidates.Add($line.Trim())
-            }
-        }
-    }
-
-    $localPythonRoot = Join-Path (Get-LocalAppDataRoot) "Programs\Python"
-    if (Test-Path $localPythonRoot -PathType Container) {
-        Get-ChildItem $localPythonRoot -Recurse -Filter python.exe -ErrorAction SilentlyContinue |
-            ForEach-Object { $candidates.Add($_.FullName) }
-    }
-
-    foreach ($candidate in ($candidates | Select-Object -Unique)) {
-        if (Test-CodexRuntimePath $candidate) {
-            continue
-        }
-        $version = Invoke-CaptureCommand -FilePath $candidate -ArgumentList @("--version")
-        if ($version.ExitCode -eq 0 -and $version.Output -match "Python\s+3\.") {
-            return [pscustomobject]@{ Path = $candidate; Version = $version.Output.Trim() }
-        }
-    }
-
-    return $null
 }
 
 function Repair-WindowsProcessEnvironment {
@@ -356,86 +310,6 @@ function Invoke-WindowsChildScript {
     }
 }
 
-# Build the taskkill argument vector that terminates a process AND its whole
-# child tree by PID. Factored out so the tree-kill command shape is a pure,
-# deterministically testable value: Windows PowerShell 5.1 has no kill-tree
-# process overload, so a timed-out probe must terminate the tree with
-# `taskkill /PID <id> /T /F` or a wedged child's grandchildren leak.
-function Get-TaskkillTreeArguments {
-    param([Parameter(Mandatory = $true)][int]$ProcessId)
-    return @("/PID", "$ProcessId", "/T", "/F")
-}
-
-# Terminate a process and its children in a way that works on both Windows
-# PowerShell 5.1 (.NET Framework, which lacks the kill-tree overload) and pwsh 7
-# (.NET Core). On Windows prefer taskkill's tree kill; on any host, and if
-# taskkill is missing or fails, fall back to the single-process Kill() that
-# exists everywhere.
-function Stop-ProcessTree {
-    param([Parameter(Mandatory = $true)]$Process)
-
-    $processId = $Process.Id
-    if (Test-IsWindowsHost) {
-        try {
-            $arguments = Get-TaskkillTreeArguments -ProcessId $processId
-            & taskkill.exe @arguments 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                return
-            }
-        } catch {
-            # Fall through to the portable single-process kill below.
-        }
-    }
-    try { $Process.Kill() } catch { }
-}
-
-# Run an external command with a hard wall-clock timeout and capture its exit
-# code and combined output. Unlike Invoke-CaptureCommand this bounds a hung or
-# non-responsive binary: if it does not exit within TimeoutSeconds it is killed
-# and TimedOut is reported so callers never block a build on a wedged probe.
-# Kept Windows PowerShell 5.1-safe: arguments are passed via the string
-# `Arguments` property (5.1 lacks ProcessStartInfo.ArgumentList) built with the
-# existing MSVCRT quoting helper, and the timeout path uses Stop-ProcessTree
-# instead of the .NET Core-only kill-tree process overload.
-function Invoke-BoundedCommand {
-    param(
-        [Parameter(Mandatory = $true)][string]$FilePath,
-        [string[]]$ArgumentList = @(),
-        [int]$TimeoutSeconds = 15
-    )
-
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $FilePath
-    $psi.Arguments = (Join-WindowsProcessArguments -Arguments $ArgumentList)
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
-
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $psi
-
-    try {
-        [void]$process.Start()
-        # Read both streams asynchronously so a full stderr pipe cannot deadlock
-        # a process still writing stdout (and vice versa). --version output is
-        # tiny, but the async tasks keep this correct regardless of volume.
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-
-        $exited = $process.WaitForExit($TimeoutSeconds * 1000)
-        if (-not $exited) {
-            Stop-ProcessTree -Process $process
-            [void]$process.WaitForExit(2000)
-            return [pscustomobject]@{ ExitCode = $null; Output = ""; TimedOut = $true }
-        }
-        $combined = (($stdoutTask.GetAwaiter().GetResult()) + ($stderrTask.GetAwaiter().GetResult())).Trim()
-        return [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $combined; TimedOut = $false }
-    } finally {
-        $process.Dispose()
-    }
-}
-
 function Join-WindowsProcessArguments {
     param([string[]]$Arguments)
     $quoted = foreach ($argument in $Arguments) {
@@ -578,17 +452,6 @@ function Resolve-WindowsCleanupPaths {
     }
 }
 
-function Get-BlockNpmEnvironmentTargets {
-    $paths = Resolve-WindowsCleanupPaths
-    return @(
-        [pscustomobject]@{ Name = "NPM_CONFIG_REGISTRY"; ExpectedValue = $script:BlockNpmRegistry },
-        [pscustomobject]@{ Name = "NPM_CONFIG_CAFILE"; ExpectedValue = $paths.BlockCertFile },
-        [pscustomobject]@{ Name = "NODE_EXTRA_CA_CERTS"; ExpectedValue = $paths.BlockCertFile },
-        [pscustomobject]@{ Name = "COREPACK_NPM_REGISTRY"; ExpectedValue = $script:BlockNpmRegistry },
-        [pscustomobject]@{ Name = "COREPACK_INTEGRITY_KEYS"; ExpectedValue = "0" }
-    )
-}
-
 function Get-BerdDevRoot {
     $devRoot = $env:BERD_DEV_ROOT
     if ([string]::IsNullOrWhiteSpace($devRoot)) {
@@ -722,7 +585,6 @@ function Get-WindowsPrerequisiteSnapshot {
     $corepack = Test-ResolvedCommandAvailability -Name "corepack" -Source (Get-CorepackCommand)
     $pnpm = Get-PnpmReadiness
     $cmake = Test-WindowsCommandAvailability "cmake"
-    $jq = Test-WindowsCommandAvailability "jq"
     $just = Test-WindowsCommandAvailability "just"
     $lefthook = Test-WindowsCommandAvailability "lefthook"
 
@@ -757,34 +619,9 @@ function Get-WindowsPrerequisiteSnapshot {
         Pnpm = $pnpm
         NpmReachability = $npmReachability
         Cmake = $cmake
-        LibClangPath = Get-LibClangPath
-        Jq = $jq
-        Python = Find-RunnablePython
         Just = $just
         Lefthook = $lefthook
     }
-}
-
-function Get-CargoMetadataTargetDirectory {
-    param(
-        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
-        [Parameter(Mandatory = $true)][string]$Fallback
-    )
-
-    $metadata = Invoke-CaptureCommand -FilePath "cargo" -ArgumentList @("metadata", "--no-deps", "--format-version", "1") -WorkingDirectory $WorkingDirectory
-    if ($metadata.ExitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($metadata.Output)) {
-        try {
-            $parsed = $metadata.Output | ConvertFrom-Json
-            $resolvedTarget = Get-ObjectValue $parsed "target_directory"
-            if (-not [string]::IsNullOrWhiteSpace($resolvedTarget)) {
-                return $resolvedTarget
-            }
-        } catch {
-            return $Fallback
-        }
-    }
-
-    return $Fallback
 }
 
 function Get-WindowsExeName {
@@ -1035,15 +872,6 @@ function Stage-WindowsSidecar {
     Assert-WindowsSidecarBinary -Path $stagedPath -Triple $Triple
 
     return $stagedPath
-}
-
-function Get-GitHead {
-    param([Parameter(Mandatory = $true)][string]$Repo)
-    $result = Invoke-CaptureCommand -FilePath "git" -ArgumentList @("-C", $Repo, "rev-parse", "HEAD")
-    if ($result.ExitCode -ne 0) {
-        return $null
-    }
-    return $result.Output.Trim()
 }
 
 function Get-GitDescribeVersion {
@@ -1391,48 +1219,6 @@ function Assert-MsvcEnvironment {
     }
     if ([string]::IsNullOrWhiteSpace((Get-CommandSource "link.exe"))) {
         throw "MSVC linker link.exe is not on PATH after loading the Visual Studio environment. Re-run 'just bootstrap-windows install' and ensure the Visual C++ tools workload completed."
-    }
-}
-
-function Get-LibClangPath {
-    $candidates = @()
-    if (-not [string]::IsNullOrWhiteSpace($env:LIBCLANG_PATH)) {
-        $candidates += $env:LIBCLANG_PATH
-    }
-    if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
-        $candidates += (Join-Path $env:ProgramFiles "LLVM\bin")
-    }
-    $programFilesX86 = ${env:ProgramFiles(x86)}
-    if (-not [string]::IsNullOrWhiteSpace($programFilesX86)) {
-        $candidates += (Join-Path $programFilesX86 "LLVM\bin")
-    }
-
-    foreach ($candidate in ($candidates | Select-Object -Unique)) {
-        if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path $candidate -PathType Container)) {
-            continue
-        }
-        if ((Test-Path (Join-Path $candidate "libclang.dll") -PathType Leaf) -or (Test-Path (Join-Path $candidate "clang.dll") -PathType Leaf)) {
-            return $candidate
-        }
-    }
-    return $null
-}
-
-function Initialize-LibClangEnvironment {
-    $path = Get-LibClangPath
-    if ([string]::IsNullOrWhiteSpace($path)) {
-        return $false
-    }
-    $env:LIBCLANG_PATH = $path
-    if (($env:Path -split ";") -notcontains $path) {
-        $env:Path = "$path;$env:Path"
-    }
-    return $true
-}
-
-function Assert-LibClangEnvironment {
-    if (-not (Initialize-LibClangEnvironment)) {
-        throw "libclang was not found. Run 'just bootstrap-windows install' to install LLVM, then retry."
     }
 }
 

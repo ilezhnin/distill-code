@@ -80,19 +80,6 @@ function Test-RequiredCommand {
     return $true
 }
 
-function Test-PythonCommand {
-    param([AllowNull()]$Python = $null)
-    $python = $Python
-    if ($null -eq $python) {
-        $python = Find-RunnablePython
-    }
-    if ($null -eq $python) {
-        Add-Failure "Python" "no runnable Python 3 interpreter found. Install Python with WinGet or disable the Microsoft Store app execution alias." "Python.Python.3.12"
-        return
-    }
-    Add-Pass "Python" "$($python.Path) ($($python.Version))"
-}
-
 # WinGet return codes that mean "nothing to do" rather than "install failed".
 # 0x8A15002B: no applicable update (package already installed at this version).
 # 0x8A15010B: found an existing package already installed.
@@ -188,14 +175,6 @@ function Invoke-PrerequisiteEvaluation {
         }
     }
     Test-RequiredCommand -Name "cmake" -WingetId "Kitware.CMake" -DisplayName "CMake" -Check $prereqs.Cmake | Out-Null
-    $libClangPath = $prereqs.LibClangPath
-    if ([string]::IsNullOrWhiteSpace($libClangPath)) {
-        Add-Failure "libclang" "libclang.dll was not found" "LLVM.LLVM"
-    } else {
-        Add-Pass "libclang" $libClangPath
-    }
-    Test-RequiredCommand -Name "jq" -WingetId "jqlang.jq" -DisplayName "jq" -Check $prereqs.Jq | Out-Null
-    Test-PythonCommand -Python $prereqs.Python
     Test-RequiredCommand -Name "just" -WingetId "Casey.Just" -DisplayName "just" -Check $prereqs.Just | Out-Null
     Test-RequiredCommand -Name "lefthook" -WingetId "evilmartians.lefthook" -DisplayName "Lefthook" -Check $prereqs.Lefthook | Out-Null
 }

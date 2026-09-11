@@ -64,9 +64,6 @@ Bootstrap installs or validates:
 - Rust MSVC toolchain from `rust-toolchain.toml`
 - `fnm`, Node, Corepack, and `pnpm@10.33.0`
 - CMake
-- LLVM/libclang
-- jq
-- Python
 - Lefthook
 - just
 
@@ -202,7 +199,7 @@ just cleanup-windows remove -Yes
 ```
 
 Everything beyond the default removal touches software shared with other
-projects (global Node state, rustup toolchains, CMake, LLVM, Python, ...), so
+projects (global Node state, rustup toolchains, CMake, just, ...), so
 those categories require a second acknowledgment: `-YesShared` in addition to
 `-Yes`.
 
@@ -230,8 +227,7 @@ just cleanup-windows remove -Yes -YesShared -IncludeNodeState -IncludeSharedTool
 ```
 
 `-IncludeSharedTools` covers rustup (via `rustup self uninstall`, which also
-removes `~\.cargo` and `~\.rustup`), fnm, CMake, LLVM/libclang, jq, Python,
-just, and Lefthook. Git is intentionally retained because the Windows
+removes `~\.cargo` and `~\.rustup`), fnm, CMake, just, and Lefthook. Git is intentionally retained because the Windows
 onboarding lane still needs it to manage the checkout. Visual Studio Build
 Tools is separate because uninstalling it is more disruptive and may require
 elevation.
