@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { afterEach, describe, it } from "node:test";
 
 const repo = resolve(import.meta.dirname, "../../..");
 const launcher = join(repo, "scripts/hooks/dev-tool.sh");
@@ -54,7 +55,9 @@ afterEach(async () => {
   );
 });
 
-describe("dev-tool.sh", () => {
+// The launcher under test is the POSIX one; Windows hooks go through
+// dev-tool.cmd, which these cases do not cover.
+describe("dev-tool.sh", { skip: process.platform === "win32" }, () => {
   it("runs a tool found on PATH and forwards its arguments verbatim", async () => {
     const bin = await tempDir();
     await writeFakeTool(bin, "pnpm");
@@ -64,12 +67,12 @@ describe("dev-tool.sh", () => {
       { PATH: `${bin}:${BASE_PATH}` },
     );
 
-    expect(result.status).toBe(0);
+    assert.equal(result.status, 0);
     // `--` must survive: a launcher that eats it silently changes which flags
     // reach the script behind `pnpm run`.
-    expect(result.stdout).toContain("arg=design-system:coverage");
-    expect(result.stdout).toContain("arg=--");
-    expect(result.stdout).toContain("arg=--strict");
+    assert.ok(result.stdout.includes("arg=design-system:coverage"));
+    assert.ok(result.stdout.includes("arg=--"));
+    assert.ok(result.stdout.includes("arg=--strict"));
   });
 
   it("finds a tool in an fnm per-shell directory and leads PATH with it", async () => {
@@ -79,28 +82,28 @@ describe("dev-tool.sh", () => {
 
     const result = runLauncher(["pnpm", "lint"], { LOCALAPPDATA: home });
 
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain(join(shell, "pnpm"));
+    assert.equal(result.status, 0);
+    assert.ok(result.stdout.includes(join(shell, "pnpm")));
     // The shim calls the node next to it, so its own directory has to lead.
-    expect(result.stdout).toContain(`path1=${shell}`);
+    assert.ok(result.stdout.includes(`path1=${shell}`));
   });
 
   it("warns and lets the push through when the tool is genuinely missing", () => {
     const result = runLauncher(["pnpm", "lint"]);
 
-    expect(result.status).toBe(0);
-    expect(result.stderr).toContain("pnpm was not found");
-    expect(result.stderr).toContain("Skipping the check");
-    expect(result.stdout).toBe("");
+    assert.equal(result.status, 0);
+    assert.ok(result.stderr.includes("pnpm was not found"));
+    assert.ok(result.stderr.includes("Skipping the check"));
+    assert.equal(result.stdout, "");
   });
 
   it("still fails hard on a missing tool where the environment is built, not chosen", () => {
     for (const env of [{ CI: "true" }, { BERD_REQUIRE_DEV_TOOLS: "1" }]) {
       const result = runLauncher(["cargo", "fmt"], env);
 
-      expect(result.status).toBe(127);
-      expect(result.stderr).toContain("cargo was not found");
-      expect(result.stderr).toContain("Refusing to skip");
+      assert.equal(result.status, 127);
+      assert.ok(result.stderr.includes("cargo was not found"));
+      assert.ok(result.stderr.includes("Refusing to skip"));
     }
   });
 
@@ -112,6 +115,6 @@ describe("dev-tool.sh", () => {
       PATH: `${bin}:${BASE_PATH}`,
     });
 
-    expect(result.status).toBe(3);
+    assert.equal(result.status, 3);
   });
 });

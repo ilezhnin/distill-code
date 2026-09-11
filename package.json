@@ -35,6 +35,7 @@
     "test:app-e2e": "vitest run --config vitest.app-e2e.config.ts",
     "test:e2e-contract": "node --test scripts/e2e-run-contract.test.mjs",
     "test:agent-driver": "node --test scripts/agent-driver/relay.test.mjs",
+    "test:hooks": "node --test scripts/hooks/tests/dev-tool.test.mjs",
     "test-driver": "tsx tests/app-e2e/lib/test-driver-cli.ts",
     "validate:bundled-agents": "tsx scripts/validate-bundled-agents.ts"
   },
