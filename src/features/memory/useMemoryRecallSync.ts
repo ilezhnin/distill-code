@@ -76,6 +76,10 @@ function answerFor(candidate: MemoryRecallCandidate): string {
 }
 
 function drainRecallFences(): void {
+  // Not before the stored memory is read: the answered tombstones are empty
+  // until then, so every question already answered in an earlier run would
+  // be answered again, and the answer would search an empty list.
+  if (!useMemoryStore.getState().hydrated) return;
   if (draining) return;
   draining = true;
   try {
@@ -127,8 +131,17 @@ function drainRecallFences(): void {
 export function useMemoryRecallSync(): void {
   useEffect(() => {
     drainRecallFences();
-    return useChatStore.subscribe(() => {
+    const stopWatchingMessages = useChatStore.subscribe(() => {
       drainRecallFences();
     });
+    const stopWatchingHydration = useMemoryStore.subscribe(
+      (state, previous) => {
+        if (state.hydrated && !previous.hydrated) drainRecallFences();
+      },
+    );
+    return () => {
+      stopWatchingMessages();
+      stopWatchingHydration();
+    };
   }, []);
 }
