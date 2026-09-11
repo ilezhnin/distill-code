@@ -35,13 +35,10 @@ export const runtimeConfigSchema = z
 export const runtimeConfigSourceSchema = z.enum([
   "appDefault",
   "bundledFile",
-  "cachedEndpoint",
-  "endpoint",
   "fakeEndpoint",
 ]);
 
 export const runtimeConfigUnavailableReasonSchema = z.enum([
-  "endpointUnavailable",
   "invalid",
   "missing",
   "readFailed",
