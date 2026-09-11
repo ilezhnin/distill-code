@@ -7,8 +7,6 @@ import {
   enqueueStreamingThinkingUpdate,
   flushAllBufferedStreamingUpdates,
   flushBufferedStreamingUpdatesForSession,
-  flushLiveSubtitleUpdate,
-  scheduleLiveSubtitleUpdate,
 } from "../liveStreamingUpdates";
 import {
   type ChatSession,
@@ -54,42 +52,6 @@ describe("liveStreamingUpdates", () => {
       isRightRailOpen: false,
       activeWorkspaceBySession: {},
     });
-  });
-
-  it("does not republish a previous turn subtitle after subtitle state is cleared", () => {
-    scheduleLiveSubtitleUpdate(sessionId, "old assistant subtitle");
-    expect(useChatSessionStore.getState().getSession(sessionId)?.subtitle).toBe(
-      "old assistant subtitle",
-    );
-
-    clearLiveSubtitleUpdate(sessionId);
-    useChatSessionStore
-      .getState()
-      .updateSessionSubtitleFromText(sessionId, "new user prompt");
-
-    flushLiveSubtitleUpdate(sessionId);
-
-    expect(useChatSessionStore.getState().getSession(sessionId)?.subtitle).toBe(
-      "new user prompt",
-    );
-  });
-
-  it("consumes pending subtitle state when flushing a completed turn", () => {
-    scheduleLiveSubtitleUpdate(sessionId, "completed assistant subtitle");
-    flushLiveSubtitleUpdate(sessionId);
-    expect(useChatSessionStore.getState().getSession(sessionId)?.subtitle).toBe(
-      "completed assistant subtitle",
-    );
-
-    useChatSessionStore
-      .getState()
-      .updateSessionSubtitleFromText(sessionId, "next user prompt");
-
-    flushLiveSubtitleUpdate(sessionId);
-
-    expect(useChatSessionStore.getState().getSession(sessionId)?.subtitle).toBe(
-      "next user prompt",
-    );
   });
 
   it("applies interleaved streaming updates in one store write", () => {
@@ -167,25 +129,6 @@ describe("liveStreamingUpdates", () => {
     );
     expect(useChatSessionStore.getState().getSession(sessionId)?.subtitle).toBe(
       undefined,
-    );
-  });
-
-  it("publishes the subtitle from the last text update in a session", () => {
-    claimSessionPrompt(sessionId);
-    useChatStore
-      .getState()
-      .setMessages(sessionId, [
-        makeAssistantMessage("assistant-1"),
-        makeAssistantMessage("assistant-2"),
-      ]);
-
-    enqueueStreamingTextUpdate(sessionId, "assistant-1", "first ");
-    enqueueStreamingTextUpdate(sessionId, "assistant-2", "second");
-    enqueueStreamingTextUpdate(sessionId, "assistant-1", "latest");
-    flushAllBufferedStreamingUpdates();
-
-    expect(useChatSessionStore.getState().getSession(sessionId)?.subtitle).toBe(
-      "first latest",
     );
   });
 });

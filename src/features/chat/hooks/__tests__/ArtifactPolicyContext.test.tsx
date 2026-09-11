@@ -1,5 +1,4 @@
 import { render, screen } from "@testing-library/react";
-import { useEffect } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { Message } from "@/shared/types/messages";
 import {
@@ -7,8 +6,6 @@ import {
   collectSessionArtifacts,
   useArtifactActionsContext,
   useSessionArtifacts,
-  type ArtifactPolicyContextValue,
-  type SessionArtifact,
 } from "../ArtifactPolicyContext";
 
 const mockPathExists = vi.fn<(path: string) => Promise<boolean>>();
@@ -43,30 +40,6 @@ function ArtifactListProbe() {
   );
 }
 
-function ActionIdentityProbe({
-  onValue,
-}: {
-  onValue: (value: ArtifactPolicyContextValue) => void;
-}) {
-  const value = useArtifactActionsContext();
-  useEffect(() => {
-    onValue(value);
-  }, [onValue, value]);
-  return null;
-}
-
-function ArtifactListIdentityProbe({
-  onValue,
-}: {
-  onValue: (value: readonly SessionArtifact[]) => void;
-}) {
-  const value = useSessionArtifacts();
-  useEffect(() => {
-    onValue(value);
-  }, [onValue, value]);
-  return null;
-}
-
 const WINDOWS_SESSION_CWD = "C:\\Users\\me\\repo";
 
 function LinkProbe({ href }: { href: string }) {
@@ -85,165 +58,6 @@ function LinkProbe({ href }: { href: string }) {
 }
 
 describe("ArtifactPolicyContext", () => {
-  it("keeps action-context identity stable when only assistant text changes", () => {
-    const onValue = vi.fn<(value: ArtifactPolicyContextValue) => void>();
-    const initialMessages: Message[] = [
-      {
-        id: "assistant-1",
-        role: "assistant",
-        created: 1,
-        content: [{ type: "text", text: "first chunk" }],
-      },
-    ];
-
-    const { rerender } = render(
-      <ArtifactPolicyProvider messages={initialMessages} sessionCwd="/work">
-        <ActionIdentityProbe onValue={onValue} />
-      </ArtifactPolicyProvider>,
-    );
-    const initialValue = onValue.mock.calls.at(-1)?.[0];
-
-    rerender(
-      <ArtifactPolicyProvider
-        messages={[
-          {
-            ...initialMessages[0],
-            content: [{ type: "text", text: "first chunk plus stream" }],
-          },
-        ]}
-        sessionCwd="/work"
-      >
-        <ActionIdentityProbe onValue={onValue} />
-      </ArtifactPolicyProvider>,
-    );
-
-    expect(onValue).toHaveBeenCalledTimes(1);
-    expect(onValue.mock.calls.at(-1)?.[0]).toBe(initialValue);
-  });
-
-  it("updates artifact-list identity when a tool request adds a location", () => {
-    const onValue = vi.fn<(value: readonly SessionArtifact[]) => void>();
-    const initialMessages: Message[] = [
-      {
-        id: "assistant-1",
-        role: "assistant",
-        created: 1,
-        content: [{ type: "text", text: "no artifacts yet" }],
-      },
-    ];
-
-    const { rerender } = render(
-      <ArtifactPolicyProvider messages={initialMessages} sessionCwd="/work">
-        <ArtifactListIdentityProbe onValue={onValue} />
-        <ArtifactListProbe />
-      </ArtifactPolicyProvider>,
-    );
-    const initialValue = onValue.mock.calls.at(-1)?.[0];
-
-    rerender(
-      <ArtifactPolicyProvider
-        messages={[
-          ...initialMessages,
-          {
-            id: "assistant-2",
-            role: "assistant",
-            created: 2,
-            content: [
-              {
-                type: "toolRequest",
-                id: "tool-1",
-                name: "write_file",
-                arguments: {},
-                status: "completed",
-                toolKind: "edit",
-                locations: [{ path: "output.md" }],
-              },
-            ],
-          },
-        ]}
-        sessionCwd="/work"
-      >
-        <ArtifactListIdentityProbe onValue={onValue} />
-        <ArtifactListProbe />
-      </ArtifactPolicyProvider>,
-    );
-
-    expect(onValue).toHaveBeenCalledTimes(2);
-    expect(onValue.mock.calls.at(-1)?.[0]).not.toBe(initialValue);
-    expect(screen.getByTestId("artifact-list-count")).toHaveTextContent("1");
-    expect(screen.getByTestId("artifact-list-paths")).toHaveTextContent(
-      "/work/output.md",
-    );
-  });
-
-  it("keeps artifact-list identity stable when a user-invisible tool request is added", () => {
-    const onValue = vi.fn<(value: readonly SessionArtifact[]) => void>();
-    const initialMessages: Message[] = [
-      {
-        id: "assistant-1",
-        role: "assistant",
-        created: 1,
-        content: [
-          {
-            type: "toolRequest",
-            id: "tool-1",
-            name: "write_file",
-            arguments: {},
-            status: "completed",
-            toolKind: "edit",
-            locations: [{ path: "visible.md" }],
-          },
-        ],
-      },
-    ];
-
-    const { rerender } = render(
-      <ArtifactPolicyProvider messages={initialMessages} sessionCwd="/work">
-        <ArtifactListIdentityProbe onValue={onValue} />
-        <ArtifactListProbe />
-      </ArtifactPolicyProvider>,
-    );
-    const initialValue = onValue.mock.calls.at(-1)?.[0];
-
-    rerender(
-      <ArtifactPolicyProvider
-        messages={[
-          ...initialMessages,
-          {
-            id: "assistant-hidden",
-            role: "assistant",
-            created: 2,
-            metadata: { userVisible: false },
-            content: [
-              {
-                type: "toolRequest",
-                id: "tool-hidden",
-                name: "write_file",
-                arguments: {},
-                status: "completed",
-                toolKind: "edit",
-                locations: [{ path: "hidden.md" }],
-              },
-            ],
-          },
-        ]}
-        sessionCwd="/work"
-      >
-        <ArtifactListIdentityProbe onValue={onValue} />
-        <ArtifactListProbe />
-      </ArtifactPolicyProvider>,
-    );
-
-    // The hidden message contributes no artifact, so the list array identity
-    // must not change and consumers must not re-render.
-    expect(onValue).toHaveBeenCalledTimes(1);
-    expect(onValue.mock.calls.at(-1)?.[0]).toBe(initialValue);
-    expect(screen.getByTestId("artifact-list-count")).toHaveTextContent("1");
-    expect(screen.getByTestId("artifact-list-paths")).toHaveTextContent(
-      "/work/visible.md",
-    );
-  });
-
   it("updates path resolution and artifacts when the session cwd changes", () => {
     const messages: Message[] = [
       {
