@@ -299,6 +299,9 @@
       "errors": {
         "genericSetupFailure": "La configuración tuvo un tropiezo.",
         "installStart": "No se pudo iniciar la instalación",
+        "updateStart": "No se pudo iniciar la actualización",
+        "authStart": "No se pudo iniciar el inicio de sesión",
+        "refreshStatus": "No se pudo actualizar el estado del proveedor",
         "installVerificationFailed": "La instalación terminó, pero no se encontró la CLI en PATH. Puede que tengas que reiniciar tu terminal.",
         "unknownPath": "esa ruta",
         "unknownPlatform": "otra plataforma"
