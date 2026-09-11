@@ -135,9 +135,11 @@ async fn get_git_state_inner(path: String) -> Result<GitState, String> {
         )
         .await?,
     );
+    // Asked from the toplevel: `--git-common-dir` prints a path relative to the
+    // cwd, and `resolve_main_worktree_path` joins it onto the toplevel.
     let git_common_dir = trim_to_option(
         run_git_success_async(
-            &repo_path,
+            Path::new(&current_root),
             &["rev-parse", "--git-common-dir"],
             GIT_READ_COMMAND_TIMEOUT,
         )
@@ -891,9 +893,10 @@ async fn git_repo_context_async(path: &Path) -> Result<(String, Option<String>),
         .await?,
     )
     .ok_or("Could not determine repository root")?;
+    // Asked from the toplevel for the same reason as in `get_git_state_inner`.
     let git_common_dir = trim_to_option(
         run_git_success_async(
-            path,
+            Path::new(&current_root),
             &["rev-parse", "--git-common-dir"],
             GIT_READ_COMMAND_TIMEOUT,
         )
@@ -1062,6 +1065,25 @@ mod tests {
         assert!(git_has_ignored_files(path)
             .await
             .expect("probe ignored file"));
+    }
+
+    #[tokio::test]
+    async fn main_worktree_resolves_from_a_repository_subfolder() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        run_git_success_async(temp.path(), &["init", "-q"], GIT_MUTATING_COMMAND_TIMEOUT)
+            .await
+            .expect("initialize git repo");
+        let nested = temp.path().join("packages").join("app");
+        std::fs::create_dir_all(&nested).expect("nested folder");
+
+        let (current_root, main_worktree_path) = git_repo_context_async(&nested)
+            .await
+            .expect("repository context");
+
+        assert_eq!(
+            main_worktree_path,
+            Some(normalize_path_string(&current_root))
+        );
     }
 
     #[test]
