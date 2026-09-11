@@ -4,22 +4,15 @@ import {
   QueryClientContext,
   useQuery,
 } from "@tanstack/react-query";
-import { selectAvatarImageUrl } from "@/shared/api/artifacts";
 import {
   avatarCachedRefQueryKey,
   cachedAssetToMedia,
   getCachedAvatarForRef,
 } from "@/shared/api/avatars";
-import {
-  isAgentAvatarRef,
-  isAppAvatarRef,
-  isUserAvatarRef,
-  parseAvatarRef,
-} from "@/shared/avatars/catalog";
+import { isAgentAvatarRef, isUserAvatarRef } from "@/shared/avatars/catalog";
 import { resolveAvatarMedia, resolveAvatarSrc } from "@/shared/lib/avatarUrl";
 import type { Avatar } from "@/shared/types/agents";
 import type { ResolvedAvatarMedia } from "@/shared/avatars/catalog";
-import { useArtifacts } from "./useArtifacts";
 
 export interface AvatarMediaState {
   media: ResolvedAvatarMedia | undefined;
@@ -45,29 +38,15 @@ export function useAvatarMedia(avatar: Avatar | null | undefined) {
 }
 
 /**
- * React hook that resolves an Avatar to a static image URL. For bundled
- * `app-avatar:<id>` refs it looks up the matching `collectionImage` in the
- * artifacts catalog (downloaded on startup). For remote URLs it passes
- * through.
+ * React hook that resolves an Avatar to a static image URL. Remote URLs and
+ * PNG data URLs pass through; app-managed refs (`user-avatar:`,
+ * `agent-avatar:`) resolve through `useAvatarMedia` instead, and a persisted
+ * `app-avatar:` ref from the retired CDN library resolves to nothing.
  */
 export function useAvatarImage(
   avatar: Avatar | null | undefined,
 ): string | undefined {
-  const directUrl = useMemo(() => resolveAvatarSrc(avatar), [avatar]);
-  const avatarRef = typeof avatar === "string" ? avatar.trim() : "";
-  const avatarId = useMemo(
-    () => (isAppAvatarRef(avatarRef) ? parseAvatarRef(avatarRef) : undefined),
-    [avatarRef],
-  );
-  const avatarImageQuery = useArtifacts({
-    enabled: Boolean(avatarId && !directUrl),
-    select: (artifacts) =>
-      avatarId ? selectAvatarImageUrl(artifacts, avatarId) : undefined,
-  });
-
-  if (directUrl) return directUrl;
-  if (!avatarId) return undefined;
-  return avatarImageQuery.data;
+  return useAvatarSrc(avatar);
 }
 
 // Only used when a component mounts without a QueryClientProvider (some
@@ -85,19 +64,15 @@ export function useAvatarMediaState(
   const queryClient = useContext(QueryClientContext);
   const directMedia = useMemo(() => resolveAvatarMedia(avatar), [avatar]);
   const avatarRef = typeof avatar === "string" ? avatar.trim() : "";
-  // User-avatar refs (generated gloopies) resolve through the same cached
-  // lookup as bundled app-avatar refs.
+  // User and bundled agent avatars are files on disk, looked up by ref. A
+  // persisted `app-avatar:` ref has nothing behind it anymore, so it skips
+  // the lookup and renders as a missing avatar.
   const shouldLoadCachedAvatar =
-    !directMedia &&
-    (isAppAvatarRef(avatarRef) ||
-      isUserAvatarRef(avatarRef) ||
-      isAgentAvatarRef(avatarRef));
+    !directMedia && (isUserAvatarRef(avatarRef) || isAgentAvatarRef(avatarRef));
   const enabled = shouldLoadCachedAvatar && Boolean(queryClient);
 
-  // Reactive observer on the shared per-ref cache entry: when the app-level
-  // `LocalMediaCacheEvents` listener resets these keys on cache-cleared /
-  // cache-warmed events, every mounted tile refetches automatically. Tiles
-  // themselves no longer register per-mount IPC event subscriptions.
+  // Reactive observer on the shared per-ref cache entry, so every tile
+  // showing the same avatar shares one lookup.
   const cachedAvatarQuery = useQuery(
     {
       queryKey: avatarCachedRefQueryKey(avatarRef),
@@ -121,7 +96,7 @@ export function useAvatarMediaState(
       return;
     }
     // Reset (not invalidate) so the tile blanks and shows its loading state
-    // while the lookup re-runs, matching the cleared/warmed event behavior.
+    // while the lookup re-runs.
     void queryClient.resetQueries({
       queryKey: avatarCachedRefQueryKey(avatarRef),
     });

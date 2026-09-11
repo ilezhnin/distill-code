@@ -1,129 +1,76 @@
-use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use std::path::Path;
 
-use crate::commands::{artifacts, avatars};
+use tauri::{AppHandle, Manager};
 
-const LOCAL_MEDIA_CACHES_CLEARED_EVENT: &str = "berd:local-media-caches-cleared";
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LocalMediaCachesClearedPayload {
-    avatars: bool,
-    artifacts: bool,
-}
+/// Cache directories, relative to app data, that earlier builds filled with
+/// avatar and project artwork downloaded from Block's CDN. Nothing writes
+/// them anymore; clearing them only reclaims the disk space an older install
+/// left behind.
+const LEGACY_MEDIA_CACHE_DIRS: [&str; 5] = [
+    "avatars/meta",
+    "avatars/media",
+    "artifacts/meta",
+    "artifacts/media",
+    "project-artifacts",
+];
 
 #[tauri::command]
 pub async fn clear_local_media_caches(app: AppHandle) -> Result<(), String> {
-    let avatar_result = avatars::clear_avatar_cache(app.clone()).await;
-    let artifacts_result = artifacts::clear_artifacts_cache(app.clone()).await;
-
-    clear_local_media_caches_result(avatar_result, artifacts_result, |payload| {
-        app.emit(LOCAL_MEDIA_CACHES_CLEARED_EVENT, payload)
-            .map_err(|error| format!("Failed to emit local media cache clear event: {error}"))
-    })
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("Failed to resolve app data directory: {error}"))?;
+    clear_legacy_media_caches(&app_data_dir).await
 }
 
-fn clear_local_media_caches_result(
-    avatar_result: Result<(), String>,
-    artifacts_result: Result<(), String>,
-    emit_cleared: impl FnOnce(LocalMediaCachesClearedPayload) -> Result<(), String>,
-) -> Result<(), String> {
-    let payload = LocalMediaCachesClearedPayload {
-        avatars: avatar_result.is_ok(),
-        artifacts: artifacts_result.is_ok(),
-    };
-
-    let emit_result = if payload.avatars || payload.artifacts {
-        emit_cleared(payload)
-    } else {
-        Ok(())
-    };
-
+async fn clear_legacy_media_caches(app_data_dir: &Path) -> Result<(), String> {
     let mut errors = Vec::new();
-    if let Err(error) = avatar_result {
-        errors.push(format!("avatars: {error}"));
-    }
-    if let Err(error) = artifacts_result {
-        errors.push(format!("artifact assets: {error}"));
+    for relative_dir in LEGACY_MEDIA_CACHE_DIRS {
+        match tokio::fs::remove_dir_all(app_data_dir.join(relative_dir)).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => errors.push(format!("{relative_dir}: {error}")),
+        }
     }
 
-    if !errors.is_empty() {
+    if errors.is_empty() {
+        Ok(())
+    } else {
         Err(format!(
             "Failed to clear local media caches: {}",
             errors.join("; ")
         ))
-    } else {
-        emit_result
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
 
-    #[test]
-    fn clear_result_emits_event_and_succeeds_when_both_caches_clear() {
-        let emitted = RefCell::new(None);
+    #[tokio::test]
+    async fn clears_every_legacy_cache_dir_and_leaves_user_avatars_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        for relative_dir in LEGACY_MEDIA_CACHE_DIRS {
+            let cache_dir = dir.path().join(relative_dir);
+            std::fs::create_dir_all(&cache_dir).unwrap();
+            std::fs::write(cache_dir.join("blob"), b"cached").unwrap();
+        }
+        let user_avatar = dir.path().join("user-avatars/media/gloopie-1.png");
+        std::fs::create_dir_all(user_avatar.parent().unwrap()).unwrap();
+        std::fs::write(&user_avatar, b"mine").unwrap();
 
-        let result = clear_local_media_caches_result(Ok(()), Ok(()), |payload| {
-            emitted.replace(Some(payload));
-            Ok(())
-        });
+        clear_legacy_media_caches(dir.path()).await.unwrap();
 
-        assert!(result.is_ok());
-        assert_eq!(
-            emitted.into_inner(),
-            Some(LocalMediaCachesClearedPayload {
-                avatars: true,
-                artifacts: true,
-            })
-        );
+        for relative_dir in LEGACY_MEDIA_CACHE_DIRS {
+            assert!(!dir.path().join(relative_dir).exists());
+        }
+        assert!(user_avatar.exists());
     }
 
-    #[test]
-    fn clear_result_emits_partial_event_and_fails_when_artifacts_fail() {
-        let emitted = RefCell::new(None);
+    #[tokio::test]
+    async fn succeeds_when_no_legacy_cache_exists() {
+        let dir = tempfile::tempdir().unwrap();
 
-        let result = clear_local_media_caches_result(
-            Ok(()),
-            Err("permission denied".to_string()),
-            |payload| {
-                emitted.replace(Some(payload));
-                Ok(())
-            },
-        );
-
-        assert_eq!(
-            result.unwrap_err(),
-            "Failed to clear local media caches: artifact assets: permission denied"
-        );
-        assert_eq!(
-            emitted.into_inner(),
-            Some(LocalMediaCachesClearedPayload {
-                avatars: true,
-                artifacts: false,
-            })
-        );
-    }
-
-    #[test]
-    fn clear_result_does_not_emit_event_when_both_caches_fail() {
-        let emitted = RefCell::new(false);
-
-        let result = clear_local_media_caches_result(
-            Err("avatar locked".to_string()),
-            Err("project locked".to_string()),
-            |_| {
-                emitted.replace(true);
-                Ok(())
-            },
-        );
-
-        assert_eq!(
-            result.unwrap_err(),
-            "Failed to clear local media caches: avatars: avatar locked; artifact assets: project locked"
-        );
-        assert!(!emitted.into_inner());
+        clear_legacy_media_caches(dir.path()).await.unwrap();
     }
 }

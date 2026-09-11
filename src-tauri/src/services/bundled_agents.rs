@@ -17,7 +17,6 @@ static INSTALL_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SeedBundledAgentsResult {
     pub seeded_count: usize,
-    pub avatar_refs_to_warm: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -28,7 +27,6 @@ struct SeedMarker {
 
 #[derive(Deserialize)]
 struct AgentFrontmatter {
-    avatar: Option<String>,
     metadata: Option<AgentMetadata>,
 }
 
@@ -84,18 +82,6 @@ fn installed_agent_path_state(path: &Path) -> Result<InstalledAgentPathState, St
     }
 }
 
-/// Extracts an agent file's cache-backed avatar ref from its raw contents, if the
-/// YAML frontmatter declares one. Keeps the `frontmatter -> yaml -> avatar ->
-/// cache-backed prefix` contract in a single place; callers layer their own
-/// read-error handling on top.
-fn avatar_ref_from_contents(contents: &str) -> Option<String> {
-    agent_frontmatter(contents)
-        .and_then(|frontmatter| yaml_serde::from_str::<AgentFrontmatter>(frontmatter).ok())
-        .and_then(|frontmatter| frontmatter.avatar)
-        .map(|value| value.trim().to_string())
-        .filter(|value| value.starts_with("app-avatar:") || value.starts_with("agent-avatar:"))
-}
-
 fn seed_bundled_agents_from_dir(
     source_root: &Path,
     target_root: &Path,
@@ -124,7 +110,6 @@ fn seed_bundled_agents_from_dir(
 
     let mut marker = read_seed_marker(target_root)?;
     let mut seeded_count = 0usize;
-    let mut avatar_refs_to_warm = BTreeSet::new();
 
     for entry in entries {
         let source = entry.path();
@@ -148,22 +133,9 @@ fn seed_bundled_agents_from_dir(
         let file_name = entry.file_name().to_string_lossy().into_owned();
         let target = target_root.join(&file_name);
         let was_previously_seeded = marker.seeded_files.contains(&file_name);
-        let installed_or_refreshed =
-            if should_install_agent(&source, &target, was_previously_seeded)? {
-                install_agent_file(&source, &target)?;
-                seeded_count += 1;
-                true
-            } else {
-                false
-            };
-
-        if (installed_or_refreshed || was_previously_seeded)
-            && target.exists()
-            && is_installed_bundled_agent(&target)?
-        {
-            if let Some(avatar_ref) = source_agent_avatar_ref(&source)? {
-                avatar_refs_to_warm.insert(avatar_ref);
-            }
+        if should_install_agent(&source, &target, was_previously_seeded)? {
+            install_agent_file(&source, &target)?;
+            seeded_count += 1;
         }
         marker.seeded_files.insert(file_name);
     }
@@ -172,10 +144,7 @@ fn seed_bundled_agents_from_dir(
         write_seed_marker(target_root, &marker)?;
     }
 
-    Ok(SeedBundledAgentsResult {
-        seeded_count,
-        avatar_refs_to_warm: avatar_refs_to_warm.into_iter().collect(),
-    })
+    Ok(SeedBundledAgentsResult { seeded_count })
 }
 
 fn should_install_agent(
@@ -231,17 +200,6 @@ fn files_are_equal(left: &Path, right: &Path) -> Result<bool, String> {
     let right_bytes =
         fs::read(right).map_err(|err| format!("Failed to read '{}': {err}", right.display()))?;
     Ok(left_bytes == right_bytes)
-}
-
-fn source_agent_avatar_ref(agent_file: &Path) -> Result<Option<String>, String> {
-    let contents = fs::read_to_string(agent_file).map_err(|err| {
-        format!(
-            "Failed to read bundled agent '{}': {err}",
-            agent_file.display()
-        )
-    })?;
-
-    Ok(avatar_ref_from_contents(&contents))
 }
 
 fn agent_frontmatter(contents: &str) -> Option<&str> {
@@ -396,7 +354,6 @@ mod tests {
         let result = seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
 
         assert_eq!(result.seeded_count, 1);
-        assert_eq!(result.avatar_refs_to_warm, vec!["app-avatar:gloopies-20"]);
         assert_eq!(
             fs::read_to_string(target.path().join("builderbot.md")).unwrap(),
             "---\nname: Builderbot\ndescription: Agent\navatar: app-avatar:gloopies-20\nmetadata:\n  berdBundled: true\n---\nBuild carefully."
@@ -419,7 +376,6 @@ mod tests {
         let result = seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
 
         assert_eq!(result.seeded_count, 0);
-        assert!(result.avatar_refs_to_warm.is_empty());
         assert!(!target.path().join("builderbot.md").exists());
     }
 
@@ -441,7 +397,6 @@ mod tests {
         let result = seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
 
         assert_eq!(result.seeded_count, 0);
-        assert!(result.avatar_refs_to_warm.is_empty());
         assert_eq!(
             fs::read_to_string(target.path().join("builderbot.md")).unwrap(),
             "---\nname: Builderbot\ndescription: Agent\n---\nUser edited."
@@ -451,7 +406,6 @@ mod tests {
         let second_result = seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
 
         assert_eq!(second_result.seeded_count, 0);
-        assert!(second_result.avatar_refs_to_warm.is_empty());
         assert!(!target.path().join("builderbot.md").exists());
     }
 
@@ -470,7 +424,6 @@ mod tests {
         let result = seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
 
         assert_eq!(result.seeded_count, 0);
-        assert!(result.avatar_refs_to_warm.is_empty());
         assert_eq!(
             fs::read(target.path().join("builderbot.md")).unwrap(),
             [0xff]
@@ -478,7 +431,6 @@ mod tests {
 
         let second_result = seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
         assert_eq!(second_result.seeded_count, 0);
-        assert!(second_result.avatar_refs_to_warm.is_empty());
     }
 
     #[test]
@@ -521,7 +473,6 @@ mod tests {
         let result = seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
 
         assert_eq!(result.seeded_count, 0);
-        assert_eq!(result.avatar_refs_to_warm, vec!["app-avatar:gloopies-20"]);
     }
 
     #[cfg(unix)]

@@ -313,18 +313,6 @@ pub fn run() {
             }
             app.manage(commands::global_shortcut::GlobalShortcutHandlerState::default());
 
-            // Refresh the complete avatar catalog immediately, then every 12
-            // hours. Asset verification is content-addressed, so unchanged
-            // files remain local while newly published assets are downloaded.
-            commands::avatars::spawn_avatar_cache_refresh(app.handle().clone());
-
-            let artifacts_app = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(error) = commands::artifacts::warm_artifacts_cache(artifacts_app).await {
-                    log::warn!("Failed to warm artifact asset cache: {error}");
-                }
-            });
-
             // Install or upgrade the Berd-managed ACP bridges (claude, codex)
             // to the latest published version in the background: each floats
             // to `<pkg>@latest` from the private npm registry onto the managed
@@ -404,10 +392,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::agents::read_import_agent_file,
             commands::agents::read_agent_source_file,
-            commands::avatars::get_avatar_library_snapshot,
-            commands::avatars::refresh_avatar_cache,
             commands::avatars::get_cached_avatars_for_refs,
-            commands::avatars::read_cached_avatar_animation,
             commands::avatars::import_user_avatar_data_url,
             commands::avatars::import_agent_avatar_file,
             commands::avatars::delete_user_avatar,
@@ -418,7 +403,6 @@ pub fn run() {
             commands::project_icons::scan_project_icons,
             commands::project_icons::read_project_icon,
             commands::renderer::log_renderer_event,
-            commands::artifacts::get_artifacts,
             commands::doctor::run_doctor,
             commands::doctor::run_doctor_fresh,
             commands::doctor::run_doctor_fix,
