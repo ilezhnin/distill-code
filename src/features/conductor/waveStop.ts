@@ -29,8 +29,13 @@
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
+import { useConductorGraphStore } from "./conductorGraphStore";
 import { stopOrchestratorSession } from "./orchestratorControls";
-import { withWavePhase, type WaveState } from "./waveEngine";
+import {
+  isTerminalRunStatus,
+  withWavePhase,
+  type WaveState,
+} from "./waveEngine";
 import { waveClosureNoticeText } from "./waveNotices";
 import { updateWaveEngineState, withWave } from "./waveStore";
 import { recordWaveClose } from "./waveTelemetryStore";
@@ -45,8 +50,17 @@ import { recordWaveClose } from "./waveTelemetryStore";
  * crash mid-stop resumes into a wave the scheduler never advances again.
  */
 export function stopWaveChildSessions(wave: WaveState): void {
+  const graph = useConductorGraphStore.getState();
   for (const step of wave.steps) {
-    if (step.sessionId) void stopOrchestratorSession(step.sessionId);
+    if (!step.sessionId) continue;
+    // A child that already finished has nothing to stop, and stopping it is
+    // not harmless: the stop marks the node `cancelled`, which turns a
+    // completed step into a cancelled one in the digest the stalled wave is
+    // about to build — and re-derives a reportless child's report as
+    // "cancelled" before that digest is read.
+    const node = graph.getNode(step.sessionId);
+    if (node && isTerminalRunStatus(node.status)) continue;
+    void stopOrchestratorSession(step.sessionId);
   }
 }
 

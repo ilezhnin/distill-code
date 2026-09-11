@@ -246,9 +246,9 @@ describe("waveRunner", () => {
     expect(getWaveEngineState().waves[0]?.phase).toBe("needsOperator");
     // The satisfied access:"all" successor was never spawned…
     expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
-    // …the children were told to stop the same way the operator's stop tells
-    // them…
-    expect(stopOrchestratorSession).toHaveBeenCalledWith("child-0");
+    // …the blocked child itself already finished, so it is not "stopped"
+    // after the fact (that would relabel its completed run as cancelled)…
+    expect(stopOrchestratorSession).not.toHaveBeenCalledWith("child-0");
     // …and the operator can read which step blocked and why, in the worker's
     // own words.
     const notice = noticeTexts().at(-1);
