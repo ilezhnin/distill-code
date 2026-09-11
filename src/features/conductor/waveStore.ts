@@ -611,8 +611,11 @@ export async function hydrateWaveEngineState(): Promise<void> {
  * again beside the children it already has.
  */
 export function isWaveEngineStateHydrated(): boolean {
+  if (wavesHydratedForTests !== null) return wavesHydratedForTests;
   return wavesHydrated || !wavesDocument.active;
 }
+
+let wavesHydratedForTests: boolean | null = null;
 
 let wavesHydrated = false;
 const hydrationWaiters = new Set<() => void>();
@@ -686,8 +689,16 @@ export function resetWaveEngineStateCache(): void {
   cached = null;
 }
 
-/** Forgets that the folder was read, or marks it read. Tests only. */
-export function setWaveEngineStateHydratedForTests(hydrated: boolean): void {
-  wavesHydrated = hydrated;
-  if (hydrated) markWaveEngineStateHydrated();
+/**
+ * Pins the hydration answer, or (`null`) returns it to the real one. When
+ * pinned to true, parked waiters run. Tests only.
+ */
+export function setWaveEngineStateHydratedForTests(
+  hydrated: boolean | null,
+): void {
+  wavesHydratedForTests = hydrated;
+  // Pinning "not read" also forgets a real read, so that returning to the
+  // real answer waits for the next hydration.
+  if (hydrated === false) wavesHydrated = false;
+  if (hydrated === true) markWaveEngineStateHydrated();
 }

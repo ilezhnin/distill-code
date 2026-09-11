@@ -29,6 +29,10 @@ import { useEffect } from "react";
 
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import {
+  isConductorGraphHydrated,
+  whenConductorGraphHydrated,
+} from "@/features/conductor/conductorGraphStore";
 import { deliverEnvelope } from "@/features/conductor/digestDelivery";
 import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
@@ -80,6 +84,9 @@ function drainRecallFences(): void {
   // until then, so every question already answered in an earlier run would
   // be answered again, and the answer would search an empty list.
   if (!useMemoryStore.getState().hydrated) return;
+  // Nor before the graph is read: a wave child whose node is still on disk
+  // would look like the operator's chat and be sent the operator's memories.
+  if (!isConductorGraphHydrated()) return;
   if (draining) return;
   draining = true;
   try {
@@ -139,6 +146,7 @@ export function useMemoryRecallSync(): void {
         if (state.hydrated && !previous.hydrated) drainRecallFences();
       },
     );
+    whenConductorGraphHydrated(drainRecallFences);
     return () => {
       stopWatchingMessages();
       stopWatchingHydration();
