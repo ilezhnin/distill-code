@@ -63,6 +63,7 @@ const mocks = vi.hoisted(() => ({
   checkDirectoriesExist: vi.fn(),
   canonicalizeAuthorizedWorkspaceDirectory: vi.fn(),
   getGitState: vi.fn(),
+  getHomeDir: vi.fn(),
   updateWorkingDir: vi.fn(),
   createPersona: vi.fn(),
   listPersonas: vi.fn(),
@@ -118,6 +119,14 @@ vi.mock("@/shared/api/acpApi", () => ({
 vi.mock("@/shared/api/git", () => ({
   getGitState: (...args: unknown[]) => mocks.getGitState(...args),
 }));
+
+vi.mock("@/shared/api/system", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/shared/api/system")>();
+  return {
+    ...actual,
+    getHomeDir: (...args: unknown[]) => mocks.getHomeDir(...args),
+  };
+});
 
 vi.mock("@/shared/api/pathResolver", () => ({
   resolvePath: (...args: unknown[]) => mocks.resolvePath(...args),
@@ -391,6 +400,7 @@ beforeEach(() => {
     async ({ parts }: { parts: string[] }) => ({ path: parts[0] }),
   );
   mocks.checkDirectoriesExist.mockResolvedValue([]);
+  mocks.getHomeDir.mockReset().mockResolvedValue("/Users/me");
   mocks.getGitState.mockResolvedValue({
     isGitRepo: true,
     currentBranch: "main",
@@ -3247,6 +3257,103 @@ describe("folders.attach", () => {
       ),
       "invalid_args",
     );
+  });
+});
+
+describe("folders implicit default cwd (issue #225)", () => {
+  function seedMixedImplicitDefault(): void {
+    seedSessions({
+      ...makeSession({ workingDir: "/Users/me/.distill/artifacts" }),
+      workspaceAttachments: [
+        {
+          id: "path:~/.distill/artifacts",
+          path: "~/.distill/artifacts",
+          kind: "directory",
+          source: "inferred",
+          usedByAgent: true,
+        },
+      ],
+    });
+    mockSessionFound({ workingDir: "/Users/me/.distill/artifacts" });
+    mocks.resolvePath.mockImplementation(
+      async ({ parts }: { parts: string[] }) => ({
+        path: parts[0].replace(/^~/, "/Users/me"),
+      }),
+    );
+    mocks.canonicalizeAuthorizedWorkspaceDirectory.mockImplementation(
+      async ({ path }: { path: string }) => ({ path }),
+    );
+  }
+
+  it("attaches in single-workspace mode instead of recommending an impossible replace", async () => {
+    setMultiWorkspaceEnabled(false);
+    seedMixedImplicitDefault();
+
+    await expect(
+      dispatchCommand(
+        "folders",
+        { action: "attach", session_id: "session-1", path: "/repo-wt" },
+        ctx,
+      ),
+    ).resolves.toMatchObject({ ok: true, path: "/repo-wt" });
+    expect(
+      useChatSessionStore
+        .getState()
+        .getSession("session-1")
+        ?.workspaceAttachments?.filter(
+          (attachment) => attachment.source !== "excluded",
+        )
+        .map(({ path }) => path),
+    ).toEqual(["/repo-wt"]);
+  });
+
+  it("replaces the cwd when its attachment uses the other home spelling", async () => {
+    seedMixedImplicitDefault();
+
+    await expect(
+      dispatchCommand(
+        "folders",
+        {
+          action: "replace",
+          session_id: "session-1",
+          old_path: "/Users/me/.distill/artifacts",
+          new_path: "/repo-wt",
+        },
+        ctx,
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      oldPath: "~/.distill/artifacts",
+      newPath: "/repo-wt",
+      cwdStatus: "pending",
+    });
+  });
+
+  it("marks an expanded attachment as cwd when the session stores ~", async () => {
+    seedSessions({
+      ...makeSession({ workingDir: "~/.distill/artifacts" }),
+      workspaceAttachments: [
+        {
+          id: "path:/users/me/.distill/artifacts",
+          path: "/Users/me/.distill/artifacts",
+          kind: "directory",
+          source: "inferred",
+          usedByAgent: true,
+        },
+      ],
+    });
+    mockSessionFound({ workingDir: "~/.distill/artifacts" });
+
+    await expect(
+      dispatchCommand(
+        "folders",
+        { action: "list", session_id: "session-1" },
+        ctx,
+      ),
+    ).resolves.toMatchObject({
+      cwd: "~/.distill/artifacts",
+      folders: [expect.objectContaining({ cwd: true })],
+    });
   });
 });
 
