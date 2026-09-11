@@ -10,6 +10,7 @@ import {
   getIncludedWorkspaceAttachments,
   getWorkspaceAttachments,
   getWorkspaceTitle,
+  isSameWorkspacePathWithHome,
   removeWorkspaceAttachment,
   workspaceAttachmentUsesCleanupTarget,
   workspaceAttachmentIdForPath,
@@ -710,5 +711,33 @@ describe("windows identity across dedupe / ensure / exclude", () => {
 
     expect(next.workspaceAttachments).toHaveLength(1);
     expect(next.workspaceAttachments?.[0].source).toBe("excluded");
+  });
+});
+
+describe("isSameWorkspacePathWithHome", () => {
+  it("matches home-relative and expanded spellings", () => {
+    expect(
+      isSameWorkspacePathWithHome(
+        "~/.distill/artifacts",
+        "/Users/me/.distill/artifacts",
+        "/Users/me",
+      ),
+    ).toBe(true);
+  });
+
+  it("still distinguishes different paths", () => {
+    expect(
+      isSameWorkspacePathWithHome(
+        "~/.distill/artifacts",
+        "/other",
+        "/Users/me",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not treat a mid-path tilde as home-relative", () => {
+    expect(
+      isSameWorkspacePathWithHome("/tmp/~/repo", "/Users/me/repo", "/Users/me"),
+    ).toBe(false);
   });
 });
