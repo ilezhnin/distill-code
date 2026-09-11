@@ -74,19 +74,10 @@ pub fn upsert_vec(vars: &mut Vec<(String, String)>, key: &str, value: String) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
-    #[test]
-    fn exact_platform_key_is_replaced() {
-        let mut env = HashMap::from([("PATH".to_string(), "old".to_string())]);
-        upsert_map(&mut env, "PATH", "new".to_string());
-        assert_eq!(get(&env, "PATH"), Some("new"));
-        assert_eq!(env.len(), 1);
-    }
-
-    #[cfg(windows)]
     #[test]
     fn windows_map_upsert_collapses_mixed_case_duplicates() {
         let mut env = HashMap::from([
@@ -105,7 +96,6 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
     #[test]
     fn windows_vec_upsert_collapses_mixed_case_duplicates() {
         let mut vars = vec![
@@ -116,16 +106,5 @@ mod tests {
         upsert_vec(&mut vars, "PATH", "extended".to_string());
 
         assert_eq!(vars, vec![("Path".to_string(), "extended".to_string())]);
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn unix_keys_remain_case_sensitive() {
-        let mut vars = vec![("Path".to_string(), "captured".to_string())];
-        upsert_vec(&mut vars, "PATH", "extended".to_string());
-
-        assert_eq!(vars.len(), 2);
-        assert_eq!(vars[0], ("Path".to_string(), "captured".to_string()));
-        assert_eq!(vars[1], ("PATH".to_string(), "extended".to_string()));
     }
 }

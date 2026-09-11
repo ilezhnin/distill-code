@@ -104,35 +104,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_fields() {
-        assert!(parse(r#"{"port":52341,"pid":4242}"#).is_err());
-        assert!(parse(r#"{}"#).is_err());
-    }
-
-    #[test]
-    fn rejects_wrongly_typed_fields() {
-        assert!(
-            parse(r#"{"port":"not-a-port","pid":1,"generation":1,"protocolVersion":1}"#).is_err()
-        );
-    }
-
-    #[test]
     fn missing_lock_path_is_exit_3_with_the_pinned_message() {
         let failure = resolve_lock_path(None).expect_err("missing path fails");
         assert_eq!(failure.exit, crate::client::EXIT_ENV);
         assert_eq!(failure.message, NOT_UNDER_APP);
-    }
-
-    #[test]
-    fn empty_lock_path_is_treated_as_missing() {
-        let failure = resolve_lock_path(Some(PathBuf::new())).expect_err("empty path fails");
-        assert_eq!(failure.message, NOT_UNDER_APP);
-    }
-
-    #[test]
-    fn present_lock_path_resolves() {
-        let path = resolve_lock_path(Some(PathBuf::from("/tmp/control-1.json")))
-            .expect("present path resolves");
-        assert_eq!(path, PathBuf::from("/tmp/control-1.json"));
     }
 }

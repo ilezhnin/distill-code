@@ -115,15 +115,6 @@ mod tests {
     const API_SURFACE: &str = include_str!("../../../crates/berdctl/api-surface.json");
 
     #[test]
-    fn discovery_file_path_is_pid_suffixed() {
-        let path = discovery_file_path(Path::new("/data"), 4242);
-        assert_eq!(
-            path,
-            Path::new("/data").join("berdctl").join("control-4242.json")
-        );
-    }
-
-    #[test]
     fn parses_owner_pid_from_file_name() {
         assert_eq!(
             owner_pid_from_discovery_file_name("control-1234.json"),

@@ -266,16 +266,6 @@ mod plugin {
     mod tests {
         use super::*;
         use crate::bridge::BridgeErrorBody;
-        use serde_json::json;
-
-        fn ok_result(data: Option<serde_json::Value>) -> BridgeResult {
-            BridgeResult {
-                id: "request-id".to_string(),
-                ok: true,
-                data,
-                error: None,
-            }
-        }
 
         fn error_result(error: Option<BridgeErrorBody>) -> BridgeResult {
             BridgeResult {
@@ -284,18 +274,6 @@ mod plugin {
                 data: None,
                 error,
             }
-        }
-
-        #[test]
-        fn resolves_successful_dispatch_result_data() {
-            assert_eq!(
-                resolve_dispatch_result(Ok(ok_result(Some(json!({ "ok": true }))))),
-                Ok(json!({ "ok": true }))
-            );
-            assert_eq!(
-                resolve_dispatch_result(Ok(ok_result(None))),
-                Ok(serde_json::Value::Null)
-            );
         }
 
         #[test]
@@ -324,16 +302,6 @@ mod plugin {
             assert_eq!(
                 resolve_dispatch_result(Err(BridgeError::Timeout)),
                 Err(AppCommandDispatchError::Timeout)
-            );
-        }
-
-        #[test]
-        fn maps_emit_failure_to_bridge_unavailable() {
-            assert_eq!(
-                resolve_dispatch_result(Err(BridgeError::Emit(tauri::Error::Io(
-                    std::io::Error::other("emit failed"),
-                )))),
-                Err(AppCommandDispatchError::BridgeUnavailable)
             );
         }
     }

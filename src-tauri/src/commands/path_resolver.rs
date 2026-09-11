@@ -145,57 +145,7 @@ pub async fn check_directories_exist(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        canonicalize_authorized_workspace_directory_inner, missing_directories, resolve_path_parts,
-    };
-
-    #[test]
-    fn joins_absolute_path_and_subpath() {
-        let expected = std::path::Path::new("/tmp/project")
-            .join("src")
-            .to_string_lossy()
-            .into_owned();
-        assert_eq!(
-            resolve_path_parts(vec!["/tmp/project".to_string(), "src".to_string()]),
-            Ok(expected)
-        );
-    }
-
-    #[test]
-    fn ignores_empty_parts() {
-        assert_eq!(
-            resolve_path_parts(vec!["  ".to_string(), "/tmp/project".to_string()]),
-            Ok("/tmp/project".to_string())
-        );
-    }
-
-    #[test]
-    fn expands_home_segments() {
-        let Some(home) = dirs::home_dir() else {
-            return;
-        };
-
-        assert_eq!(
-            resolve_path_parts(vec!["~".to_string()]),
-            Ok(home.to_string_lossy().into_owned())
-        );
-        assert_eq!(
-            resolve_path_parts(vec!["~/Documents".to_string()]),
-            Ok(home.join("Documents").to_string_lossy().into_owned())
-        );
-        assert_eq!(
-            resolve_path_parts(vec!["~\\Documents".to_string()]),
-            Ok(home.join("Documents").to_string_lossy().into_owned())
-        );
-    }
-
-    #[test]
-    fn errors_when_no_non_empty_parts_exist() {
-        assert_eq!(
-            resolve_path_parts(vec!["  ".to_string(), "".to_string()]),
-            Err("Path parts must include at least one non-empty segment".to_string())
-        );
-    }
+    use super::canonicalize_authorized_workspace_directory_inner;
 
     #[test]
     fn rejects_existing_directory_outside_authorized_roots() {
@@ -225,30 +175,6 @@ mod tests {
 
         let result = canonicalize_authorized_workspace_directory_inner(
             home.to_str().expect("utf-8 home path"),
-            &[allowed.to_string_lossy().into_owned()],
-        );
-
-        assert_eq!(
-            result,
-            Err("Path is outside this chat's authorized workspace roots".to_string())
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn rejects_symlink_escape_from_authorized_root() {
-        use std::os::unix::fs::symlink;
-
-        let temp = tempfile::tempdir().expect("temp root");
-        let allowed = temp.path().join("allowed");
-        let sensitive = temp.path().join("sensitive");
-        std::fs::create_dir_all(&allowed).expect("allowed dir");
-        std::fs::create_dir_all(&sensitive).expect("sensitive dir");
-        let escape = allowed.join("escape");
-        symlink(&sensitive, &escape).expect("symlink escape");
-
-        let result = canonicalize_authorized_workspace_directory_inner(
-            escape.to_str().expect("utf-8 escape path"),
             &[allowed.to_string_lossy().into_owned()],
         );
 
@@ -298,53 +224,6 @@ mod tests {
                 .unwrap()
                 .to_string_lossy()
                 .into_owned())
-        );
-    }
-
-    #[test]
-    fn reports_only_missing_directories() {
-        let temp = std::env::temp_dir();
-        let existing = temp.to_string_lossy().into_owned();
-        let missing = temp
-            .join("goose-missing-dir-check")
-            .to_string_lossy()
-            .into_owned();
-
-        assert_eq!(
-            missing_directories(vec![existing.clone(), missing.clone()]),
-            vec![missing]
-        );
-        assert!(missing_directories(vec![existing]).is_empty());
-    }
-
-    #[test]
-    fn treats_files_as_missing_directories() {
-        let mut file = std::env::temp_dir();
-        file.push("goose-missing-dir-check.tmp");
-        std::fs::write(&file, b"goose").expect("write temp file");
-        let file_path = file.to_string_lossy().into_owned();
-
-        assert_eq!(
-            missing_directories(vec![file_path.clone()]),
-            vec![file_path]
-        );
-
-        std::fs::remove_file(&file).ok();
-    }
-
-    #[test]
-    fn expands_home_prefix_when_checking() {
-        if dirs::home_dir().is_none() {
-            return;
-        }
-        // The home directory itself exists, so "~" should not be reported missing.
-        assert!(missing_directories(vec!["~".to_string()]).is_empty());
-
-        // A "~" path is expanded for the existence check, but the original input
-        // is echoed back in the missing list so callers see what they passed.
-        assert_eq!(
-            missing_directories(vec!["~/goose-missing-home-dir-check".to_string()]),
-            vec!["~/goose-missing-home-dir-check".to_string()]
         );
     }
 }

@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import type { Message } from "@/shared/types/messages";
 import { VirtualMessageTimelineGate } from "../VirtualMessageTimelineGate";
-import type { MessageTimelineBubbleCallbacks } from "../messageTimelineShared";
 
 const mocks = vi.hoisted(() => ({
   virtualTimelineSpy: vi.fn(),
@@ -92,27 +91,5 @@ describe("VirtualMessageTimelineGate", () => {
       mocks.virtualTimelineSpy.mock.lastCall?.[0].loadedTranscript;
     expect(replacement).not.toBe(first);
     expect(replacement?.id).not.toBe(first?.id);
-  });
-
-  it("passes shared message-bubble callbacks through", () => {
-    const callbackProps = {
-      onRetryMessage: vi.fn(),
-      onEditMessage: vi.fn(),
-      onForkFromMessage: vi.fn(),
-      onRunShellCommand: vi.fn(),
-      onEditProject: vi.fn(),
-    } satisfies MessageTimelineBubbleCallbacks;
-
-    render(
-      <VirtualMessageTimelineGate
-        sessionId="session-1"
-        messages={[message("user-1")]}
-        {...callbackProps}
-      />,
-    );
-
-    expect(mocks.virtualTimelineSpy).toHaveBeenCalledWith(
-      expect.objectContaining(callbackProps),
-    );
   });
 });

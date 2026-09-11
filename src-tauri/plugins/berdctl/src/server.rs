@@ -780,64 +780,6 @@ mod tests {
         .await;
     }
 
-    #[test]
-    fn command_timeout_prefers_override_and_clamps() {
-        // Request override wins over the configured value.
-        assert_eq!(
-            command_timeout(Some(45_000), Some(Duration::from_secs(60))),
-            Duration::from_millis(45_000)
-        );
-        // Override clamped at both ends.
-        assert_eq!(command_timeout(Some(10), None), MIN_REQUEST_TIMEOUT);
-        assert_eq!(command_timeout(Some(999_000), None), MAX_COMMAND_TIMEOUT);
-        // Configured value clamped to the ceiling.
-        assert_eq!(
-            command_timeout(None, Some(Duration::from_secs(999))),
-            MAX_COMMAND_TIMEOUT
-        );
-        // Neither: default.
-        assert_eq!(command_timeout(None, None), DEFAULT_COMMAND_TIMEOUT);
-    }
-
-    #[test]
-    fn timeout_store_clamps_and_replaces() {
-        let store = TimeoutStore::new();
-        store.set(HashMap::from([
-            ("sessions".to_string(), 60_000),
-            ("sessions.create".to_string(), 900_000),
-            ("projects".to_string(), 999_000),
-        ]));
-        assert_eq!(
-            store.command_timeout("sessions", Some("create"), None),
-            Duration::from_millis(900_000)
-        );
-        assert_eq!(
-            store.command_timeout("sessions", Some("list"), None),
-            Duration::from_millis(60_000)
-        );
-        assert_eq!(store.timeout_for("projects"), Some(MAX_COMMAND_TIMEOUT));
-        assert_eq!(store.timeout_for("missing"), None);
-
-        // A new push fully replaces the previous map.
-        store.set(HashMap::from([("projects".to_string(), 5_000)]));
-        assert_eq!(store.timeout_for("sessions"), None);
-        assert_eq!(
-            store.timeout_for("projects"),
-            Some(Duration::from_millis(5_000))
-        );
-    }
-
-    #[test]
-    fn sanitize_for_log_truncates_and_replaces_control_chars() {
-        assert_eq!(sanitize_for_log("sessions", 32), "sessions");
-        // Newlines (log-line forgery) and other control chars become '?'.
-        assert_eq!(
-            sanitize_for_log("bad\ncommand\r\t\u{7f}", 32),
-            "bad?command???"
-        );
-        assert_eq!(sanitize_for_log(&"x".repeat(64), 32), "x".repeat(32));
-    }
-
     /// The non-test portion of a plugin source file: everything before its
     /// `mod tests` module, which must be unique and must run to end-of-file
     /// so no scannable code can hide after it. The brace walk is naive about

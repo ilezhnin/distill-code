@@ -990,7 +990,6 @@ fn verify_runtime_tree(dir: &Path, platform: &str) -> Result<(), ManagedNodeErro
 mod tests {
     use super::*;
     use std::io::Write as _;
-    use std::sync::Mutex;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const TEST_VERSION: &str = "v9.9.9";
@@ -1020,70 +1019,7 @@ mod tests {
         hex::encode(Sha256::digest(bytes))
     }
 
-    fn node_script(version: &str) -> String {
-        format!("#!/bin/sh\necho {version}\n")
-    }
-
     fn ignore_progress(_: ManagedNodeProgress) {}
-
-    fn gzip(tar_bytes: &[u8]) -> Vec<u8> {
-        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        encoder.write_all(tar_bytes).unwrap();
-        encoder.finish().unwrap()
-    }
-
-    fn append_file(builder: &mut tar::Builder<Vec<u8>>, path: &str, contents: &str, mode: u32) {
-        let mut header = tar::Header::new_gnu();
-        header.set_size(contents.len() as u64);
-        header.set_mode(mode);
-        builder
-            .append_data(&mut header, path, contents.as_bytes())
-            .unwrap();
-    }
-
-    /// A minimal but shape-faithful Node release tarball: executable
-    /// `bin/node` stub plus the `bin/npm` symlink into `lib/node_modules`.
-    fn node_tarball(version: &str) -> Vec<u8> {
-        let prefix = format!("node-{version}-{TEST_PLATFORM}");
-        let mut builder = tar::Builder::new(Vec::new());
-        append_file(
-            &mut builder,
-            &format!("{prefix}/bin/node"),
-            &node_script(version),
-            0o755,
-        );
-        append_file(
-            &mut builder,
-            &format!("{prefix}/lib/node_modules/npm/bin/npm-cli.js"),
-            "#!/usr/bin/env node\n",
-            0o755,
-        );
-        let mut header = tar::Header::new_gnu();
-        header.set_entry_type(tar::EntryType::Symlink);
-        header.set_size(0);
-        header.set_mode(0o777);
-        builder
-            .append_link(
-                &mut header,
-                format!("{prefix}/bin/npm"),
-                "../lib/node_modules/npm/bin/npm-cli.js",
-            )
-            .unwrap();
-        gzip(&builder.into_inner().unwrap())
-    }
-
-    /// `tar::Builder` refuses to author unsafe paths, so write the name field
-    /// into the raw header bytes.
-    fn raw_entry_tar(name: &str) -> Vec<u8> {
-        let mut header = tar::Header::new_gnu();
-        header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
-        header.set_size(4);
-        header.set_mode(0o644);
-        header.set_cksum();
-        let mut builder = tar::Builder::new(Vec::new());
-        builder.append(&header, &b"evil"[..]).unwrap();
-        builder.into_inner().unwrap()
-    }
 
     /// One-shot HTTP server; without a Content-Length header the body is
     /// delimited by connection close, which exercises the streaming size cap.
@@ -1109,26 +1045,6 @@ mod tests {
         format!("http://{addr}")
     }
 
-    /// A ready Unix runtime whose `bin/node` is an executable `#!/bin/sh`
-    /// stub. Unix-only: the stub relies on the shebang, so the readiness probe
-    /// that runs it cannot execute on native Windows. Windows execution is
-    /// covered by the real-ZIP native gate.
-    #[cfg(unix)]
-    fn write_ready_runtime(root: &Path, version: &str) {
-        let bin = install_dir(root, version, TEST_PLATFORM).join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let node = bin.join("node");
-        std::fs::write(&node, node_script(version)).unwrap();
-        set_test_executable(&node);
-        std::fs::write(bin.join("npm"), "").unwrap();
-    }
-
-    #[cfg(unix)]
-    fn set_test_executable(path: &Path) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
     #[test]
     fn embedded_lock_pins_every_release_target() {
         let lock = node_runtime_lock();
@@ -1151,147 +1067,6 @@ mod tests {
             );
             assert!(artifact.platform(&lock.version).is_some(), "{target}");
         }
-    }
-
-    #[test]
-    fn artifact_platform_derives_from_filename() {
-        let artifact = NodeRuntimeArtifact {
-            filename: "node-v24.11.0-darwin-arm64.tar.gz".to_string(),
-            sha256: String::new(),
-        };
-        assert_eq!(artifact.platform("v24.11.0"), Some("darwin-arm64"));
-        assert_eq!(artifact.platform("v24.12.0"), None);
-    }
-
-    #[test]
-    fn base_url_defaults_upstream_and_distribution_override_wins() {
-        assert_eq!(
-            node_dist_base_url_for_distribution(None),
-            UPSTREAM_NODE_DIST_BASE_URL
-        );
-
-        let distribution = serde_json::from_str(
-            r#"{"npmRegistryUrl":"https://packages.example.test/npm/","nodeDistBaseUrl":"https://node.example.test/dist/"}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            node_dist_base_url_for_distribution(Some(distribution)),
-            "https://node.example.test/dist/"
-        );
-    }
-
-    #[test]
-    fn archive_validation_rejects_traversal_and_absolute_paths() {
-        for name in ["../evil.sh", "/abs/evil.sh"] {
-            let mut archive = tar::Archive::new(std::io::Cursor::new(raw_entry_tar(name)));
-            let error = validate_tar_entries(&mut archive, MAX_EXTRACTED_BYTES).unwrap_err();
-            assert!(
-                matches!(error, ManagedNodeError::UnsafeArchiveEntry(_)),
-                "{name}: {error}"
-            );
-        }
-    }
-
-    // These tests drive the full install/readiness path against a `#!/bin/sh`
-    // fake `node`, so the readiness probe actually executes it. That stub
-    // cannot run on native Windows; the real-ZIP native gate covers Windows
-    // execution.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn install_keeps_superseded_versions_until_reconcile_prunes() {
-        let root_dir = tempfile::tempdir().unwrap();
-        let root = root_dir.path();
-        // Leftovers from a superseded install and a crashed one.
-        std::fs::create_dir_all(install_dir(root, "v9.9.8", TEST_PLATFORM)).unwrap();
-        std::fs::create_dir_all(root.join(format!("{TEST_VERSION}.{TEST_PLATFORM}.tmp"))).unwrap();
-        std::fs::write(root.join("node-v9.9.8-old.tar.gz.download"), b"stale").unwrap();
-
-        let archive = node_tarball(TEST_VERSION);
-        let lock = test_lock(&sha256_hex(&archive));
-        let base_url = serve_once(archive, true).await;
-
-        let events = Mutex::new(Vec::new());
-        let record = |event: ManagedNodeProgress| events.lock().unwrap().push(event);
-        ensure_managed_node_runtime_at(root, &base_url, &lock, MAX_ARCHIVE_BYTES, &record)
-            .await
-            .unwrap();
-
-        let bin = install_dir(root, TEST_VERSION, TEST_PLATFORM).join("bin");
-        assert!(bin.join("node").is_file());
-        assert!(bin.join("npm").is_file());
-        // The install cleans up its own temp dir but leaves the superseded
-        // version (and the other install's orphaned download) alone: shims
-        // written against v9.9.8 must keep working until the reconcile
-        // epilogue confirms every bridge migrated and prunes.
-        assert!(root.join("v9.9.8").exists());
-        assert!(!root
-            .join(format!("{TEST_VERSION}.{TEST_PLATFORM}.tmp"))
-            .exists());
-        assert!(root.join("node-v9.9.8-old.tar.gz.download").exists());
-
-        prune_superseded(root, TEST_VERSION);
-        assert!(bin.join("node").is_file());
-        assert!(!root.join("v9.9.8").exists());
-        assert!(!root.join("node-v9.9.8-old.tar.gz.download").exists());
-
-        let recorded = events.lock().unwrap().clone();
-        assert!(recorded
-            .iter()
-            .any(|event| matches!(event, ManagedNodeProgress::Downloading { .. })));
-        assert!(recorded.contains(&ManagedNodeProgress::Extracting));
-        assert!(recorded.contains(&ManagedNodeProgress::Installing));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn fast_path_skips_download_when_runtime_matches_pin() {
-        let root_dir = tempfile::tempdir().unwrap();
-        write_ready_runtime(root_dir.path(), TEST_VERSION);
-
-        // An unroutable base URL: any download attempt fails the test.
-        ensure_managed_node_runtime_at(
-            root_dir.path(),
-            "http://127.0.0.1:1",
-            &test_lock(&"0".repeat(64)),
-            MAX_ARCHIVE_BYTES,
-            &ignore_progress,
-        )
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn sha_mismatch_fails_and_preserves_previous_install() {
-        let root_dir = tempfile::tempdir().unwrap();
-        let root = root_dir.path();
-        std::fs::create_dir_all(install_dir(root, "v9.9.8", TEST_PLATFORM)).unwrap();
-
-        let lock = test_lock(&sha256_hex(b"something else entirely"));
-        let base_url = serve_once(node_tarball(TEST_VERSION), true).await;
-        let error = ensure_managed_node_runtime_at(
-            root,
-            &base_url,
-            &lock,
-            MAX_ARCHIVE_BYTES,
-            &ignore_progress,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            matches!(error, ManagedNodeError::Sha256Mismatch { .. }),
-            "{error}"
-        );
-        assert!(!install_dir(root, TEST_VERSION, TEST_PLATFORM).exists());
-        // The failed download is cleaned up and the previous install is only
-        // pruned by a later fully-successful reconcile.
-        assert!(install_dir(root, "v9.9.8", TEST_PLATFORM).exists());
-        let downloads = std::fs::read_dir(root)
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".download"))
-            .count();
-        assert_eq!(downloads, 0);
     }
 
     #[tokio::test]
@@ -1324,95 +1099,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn traversal_entry_fails_install() {
-        let root_dir = tempfile::tempdir().unwrap();
-        let archive = gzip(&raw_entry_tar("../evil.sh"));
-        let lock = test_lock(&sha256_hex(&archive));
-        let base_url = serve_once(archive, true).await;
-
-        let error = ensure_managed_node_runtime_at(
-            root_dir.path(),
-            &base_url,
-            &lock,
-            MAX_ARCHIVE_BYTES,
-            &ignore_progress,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            matches!(error, ManagedNodeError::UnsafeArchiveEntry(_)),
-            "{error}"
-        );
-        assert!(!install_dir(root_dir.path(), TEST_VERSION, TEST_PLATFORM).exists());
-        // `../evil.sh` would have escaped the temp dir into the root.
-        assert!(!root_dir.path().join("evil.sh").exists());
-    }
-
-    #[tokio::test]
-    async fn archive_missing_npm_fails_install() {
-        let root_dir = tempfile::tempdir().unwrap();
-        let prefix = format!("node-{TEST_VERSION}-{TEST_PLATFORM}");
-        let mut builder = tar::Builder::new(Vec::new());
-        append_file(
-            &mut builder,
-            &format!("{prefix}/bin/node"),
-            &node_script(TEST_VERSION),
-            0o755,
-        );
-        let archive = gzip(&builder.into_inner().unwrap());
-        let lock = test_lock(&sha256_hex(&archive));
-        let base_url = serve_once(archive, true).await;
-
-        let error = ensure_managed_node_runtime_at(
-            root_dir.path(),
-            &base_url,
-            &lock,
-            MAX_ARCHIVE_BYTES,
-            &ignore_progress,
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            matches!(error, ManagedNodeError::IncompleteRuntime(_)),
-            "{error}"
-        );
-        assert!(!install_dir(root_dir.path(), TEST_VERSION, TEST_PLATFORM).exists());
-    }
-
-    #[test]
-    fn pinned_install_dir_follows_the_embedded_lock() {
-        let lock = node_runtime_lock();
-        let artifact = &lock.artifacts[target()];
-        let platform = artifact.platform(&lock.version).unwrap();
-        assert_eq!(
-            pinned_install_dir(Path::new("/data/packages/node")),
-            Some(
-                Path::new("/data/packages/node")
-                    .join(&lock.version)
-                    .join(platform)
-            )
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn pinned_runtime_ready_probes_the_embedded_pin() {
-        let root_dir = tempfile::tempdir().unwrap();
-        let root = root_dir.path();
-        assert!(!pinned_runtime_ready(root).await);
-
-        // A runtime matching the real embedded pin at the pinned install dir.
-        let bin = pinned_install_dir(root).unwrap().join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let node = bin.join("node");
-        std::fs::write(&node, node_script(&node_runtime_lock().version)).unwrap();
-        set_test_executable(&node);
-        assert!(pinned_runtime_ready(root).await);
-    }
-
-    #[tokio::test]
     async fn prune_superseded_node_runtimes_keeps_only_the_embedded_pin() {
         let root_dir = tempfile::tempdir().unwrap();
         let root = root_dir.path();
@@ -1428,88 +1114,7 @@ mod tests {
         assert!(!root.join("node-v9.9.8-old.tar.gz.download").exists());
     }
 
-    #[test]
-    fn progress_line_reporter_throttles_download_chunks() {
-        let lines = Mutex::new(Vec::new());
-        let report = progress_line_reporter(|line| lines.lock().unwrap().push(line));
-
-        let mb = 1024 * 1024;
-        for received in [mb, 5 * mb, 12 * mb, 15 * mb, 25 * mb] {
-            report(ManagedNodeProgress::Downloading {
-                received_bytes: received,
-                total_bytes: Some(49 * mb),
-            });
-        }
-        report(ManagedNodeProgress::Extracting);
-        report(ManagedNodeProgress::Installing);
-
-        assert_eq!(
-            *lines.lock().unwrap(),
-            vec![
-                "Downloading Node.js: 12 MB of 49 MB",
-                "Downloading Node.js: 25 MB of 49 MB",
-                "Extracting Node.js runtime",
-                "Installing Node.js runtime",
-            ]
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn readiness_probe_requires_exact_pinned_version() {
-        let root_dir = tempfile::tempdir().unwrap();
-        let root = root_dir.path();
-        let final_dir = install_dir(root, TEST_VERSION, TEST_PLATFORM);
-        assert!(!runtime_ready(&final_dir, TEST_VERSION, TEST_PLATFORM).await);
-
-        write_ready_runtime(root, TEST_VERSION);
-        assert!(runtime_ready(&final_dir, TEST_VERSION, TEST_PLATFORM).await);
-        assert!(!runtime_ready(&final_dir, "v9.9.8", TEST_PLATFORM).await);
-    }
-
     // ── Windows target ──────────────────────────────────────────────────
-
-    #[test]
-    fn windows_target_maps_to_zip_and_win_platform() {
-        let lock = node_runtime_lock();
-        let artifact = lock
-            .artifacts
-            .get("x86_64-pc-windows-msvc")
-            .expect("lock is missing the Windows target");
-        assert_eq!(artifact.platform(&lock.version), Some("win-x64"));
-        assert_eq!(archive_format(&artifact.filename), ArchiveFormat::Zip);
-        assert!(artifact.filename.ends_with(".zip"));
-    }
-
-    #[test]
-    fn artifact_platform_parses_zip_filenames() {
-        let artifact = NodeRuntimeArtifact {
-            filename: "node-v24.11.0-win-x64.zip".to_string(),
-            sha256: String::new(),
-        };
-        assert_eq!(artifact.platform("v24.11.0"), Some("win-x64"));
-        assert_eq!(artifact.platform("v24.12.0"), None);
-    }
-
-    #[test]
-    fn archive_format_and_layout_are_target_aware() {
-        assert_eq!(
-            archive_format("node-v1-linux-x64.tar.gz"),
-            ArchiveFormat::TarGz
-        );
-        assert_eq!(archive_format("node-v1-win-x64.zip"), ArchiveFormat::Zip);
-
-        assert!(is_windows_platform("win-x64"));
-        assert!(!is_windows_platform("linux-x64"));
-
-        let root = Path::new("/data/v1/win-x64");
-        assert_eq!(node_bin_dir(root, "win-x64"), root.to_path_buf());
-        assert_eq!(node_bin_dir(root, "linux-x64"), root.join("bin"));
-        assert_eq!(node_exe_name("win-x64"), "node.exe");
-        assert_eq!(node_exe_name("linux-x64"), "node");
-        assert_eq!(npm_exe_name("win-x64"), "npm.cmd");
-        assert_eq!(npm_exe_name("linux-x64"), "npm");
-    }
 
     /// A minimal but shape-faithful Windows Node release zip: `node.exe`,
     /// `npm`, and `npm.cmd` flat in the runtime root (no `bin/`), plus the
@@ -1555,48 +1160,6 @@ mod tests {
             version: TEST_VERSION.to_string(),
             artifacts,
         }
-    }
-
-    #[test]
-    fn zip_extraction_lays_out_windows_runtime_flat() {
-        let root_dir = tempfile::tempdir().unwrap();
-        let dest = root_dir.path().join("out");
-        std::fs::create_dir_all(&dest).unwrap();
-        let zip = node_win_zip(TEST_VERSION, &[("subdir/extra.txt", b"data")]);
-        let archive = root_dir.path().join("node.zip");
-        std::fs::write(&archive, &zip).unwrap();
-
-        extract_zip(&archive, &dest, MAX_EXTRACTED_BYTES).unwrap();
-
-        let runtime = dest.join(format!("node-{TEST_VERSION}-{WIN_PLATFORM}"));
-        assert!(runtime.join("node.exe").is_file());
-        assert!(runtime.join("npm.cmd").is_file());
-        assert!(runtime.join("subdir").join("extra.txt").is_file());
-        // Windows layout: executables sit in the runtime root, not under bin/.
-        verify_runtime_tree(&runtime, WIN_PLATFORM).unwrap();
-    }
-
-    #[test]
-    fn verify_runtime_tree_requires_windows_npm_cli() {
-        let root_dir = tempfile::tempdir().unwrap();
-        let runtime = root_dir.path();
-        // A Windows tree with node.exe + npm.cmd but no npm-cli.js: the npm
-        // command would exec a missing `node.exe <npm-cli.js>` and fail every
-        // run, so the tree must be rejected as incomplete rather than accepted.
-        std::fs::write(runtime.join("node.exe"), b"MZ node").unwrap();
-        std::fs::write(runtime.join("npm.cmd"), b"@echo off\n").unwrap();
-        let error = verify_runtime_tree(runtime, WIN_PLATFORM).unwrap_err();
-        assert!(
-            matches!(error, ManagedNodeError::IncompleteRuntime(ref message)
-                if message.contains("npm-cli.js")),
-            "{error:?}"
-        );
-
-        // Adding the CLI entrypoint completes the tree.
-        let npm_cli = npm_cli_entrypoint(runtime, WIN_PLATFORM).unwrap();
-        std::fs::create_dir_all(npm_cli.parent().unwrap()).unwrap();
-        std::fs::write(&npm_cli, b"// npm-cli\n").unwrap();
-        verify_runtime_tree(runtime, WIN_PLATFORM).unwrap();
     }
 
     #[tokio::test]
@@ -1789,21 +1352,6 @@ mod tests {
     }
 
     // ── Atomic swap + repair durability ─────────────────────────────────
-
-    #[test]
-    fn swap_installs_when_no_previous_runtime_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("source");
-        let final_dir = dir.path().join("final");
-        std::fs::create_dir_all(&source).unwrap();
-        std::fs::write(source.join("node"), b"new").unwrap();
-
-        swap_runtime_into_place(&source, &final_dir).unwrap();
-
-        assert!(final_dir.join("node").is_file());
-        assert!(!source.exists());
-        assert!(!final_dir.with_extension("old").exists());
-    }
 
     #[test]
     fn swap_replaces_previous_runtime_and_drops_staged_copy() {

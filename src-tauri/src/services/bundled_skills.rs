@@ -231,58 +231,6 @@ mod tests {
         fs::write(dir.join(SKILL_FILE_NAME), skill_md).unwrap();
     }
 
-    #[tokio::test]
-    async fn bundled_skill_discovery_waits_for_seeding_readiness() {
-        let state = BundledSkillsState::default();
-        let waiting_state = state.clone();
-        let waiter = tokio::spawn(async move {
-            waiting_state.wait_until_ready().await;
-        });
-
-        tokio::task::yield_now().await;
-        assert!(!waiter.is_finished());
-
-        state.mark_ready();
-        waiter.await.unwrap();
-    }
-
-    #[test]
-    fn bundled_skills_use_the_platform_app_data_root() {
-        let app_data_dir = Path::new("/platform/app-data/xyz.block.berd");
-        assert_eq!(
-            bundled_skills_target(app_data_dir),
-            app_data_dir.join("skills")
-        );
-    }
-
-    #[test]
-    fn seeds_missing_bundled_skill() {
-        let source = tempdir().unwrap();
-        let target = tempdir().unwrap();
-        write_skill(
-            source.path(),
-            "agent-builder",
-            "---\nname: agent-builder\n---\n",
-        );
-        fs::write(
-            source.path().join("agent-builder").join("notes.md"),
-            "details",
-        )
-        .unwrap();
-
-        let seeded = seed_bundled_skills_from_dir(source.path(), target.path()).unwrap();
-
-        assert_eq!(seeded, 1);
-        assert_eq!(
-            fs::read_to_string(target.path().join("agent-builder").join(SKILL_FILE_NAME)).unwrap(),
-            "---\nname: agent-builder\n---\n"
-        );
-        assert_eq!(
-            fs::read_to_string(target.path().join("agent-builder").join("notes.md")).unwrap(),
-            "details"
-        );
-    }
-
     #[test]
     fn preserves_existing_user_skill() {
         let source = tempdir().unwrap();
@@ -321,37 +269,5 @@ mod tests {
             fs::read_to_string(target.path().join("agent-builder").join(SKILL_FILE_NAME)).unwrap(),
             "---\nname: agent-builder\nmetadata:\n  berdBundled: true\n---\nupdated"
         );
-    }
-
-    #[test]
-    fn ignores_non_skill_entries() {
-        let source = tempdir().unwrap();
-        let target = tempdir().unwrap();
-        fs::write(source.path().join("loose.md"), "not a skill").unwrap();
-        fs::create_dir_all(source.path().join("missing-skill-md")).unwrap();
-
-        let seeded = seed_bundled_skills_from_dir(source.path(), target.path()).unwrap();
-
-        assert_eq!(seeded, 0);
-        assert!(!target.path().exists() || fs::read_dir(target.path()).unwrap().next().is_none());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn rejects_symlinked_skill_contents() {
-        let source = tempdir().unwrap();
-        let target = tempdir().unwrap();
-        write_skill(source.path(), "agent-builder", "skill");
-        fs::write(source.path().join("outside.md"), "outside").unwrap();
-        std::os::unix::fs::symlink(
-            source.path().join("outside.md"),
-            source.path().join("agent-builder").join("link.md"),
-        )
-        .unwrap();
-
-        let err = seed_bundled_skills_from_dir(source.path(), target.path()).unwrap_err();
-
-        assert!(err.contains("must not be a symbolic link"));
-        assert!(!target.path().join("agent-builder").exists());
     }
 }

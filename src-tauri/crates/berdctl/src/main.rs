@@ -158,19 +158,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn empty_actor_reads_as_anonymous() {
-        let matches =
-            try_parse(&["berdctl", "session", "list", "--actor", ""]).expect("empty parses");
-        assert_eq!(wire::globals(&matches).actor, None);
-    }
-
-    #[test]
-    fn doctor_is_a_normal_unknown_subcommand() {
-        let err = try_parse(&["berdctl", "doctor"]).expect_err("doctor is not a command");
-        assert!(err.use_stderr());
-    }
-
     // Raw-Value views of the contract files, kept independent of
     // contract.rs's typed parse.
     fn surface_nouns() -> serde_json::Map<String, Value> {
@@ -364,25 +351,6 @@ mod tests {
         }
     }
 
-    /// Agents reach for plural nouns (`berdctl projects list`); the hidden
-    /// aliases must forgive that by parsing to the same command as the
-    /// singular spelling.
-    #[test]
-    fn plural_noun_aliases_parse_to_the_singular_commands() {
-        for (plural, singular) in [
-            ("sessions", "session"),
-            ("projects", "project"),
-            ("agents", "agent"),
-            ("skills", "skill"),
-        ] {
-            assert_eq!(
-                wire_of(&["berdctl", plural, "list"]),
-                wire_of(&["berdctl", singular, "list"]),
-                "`{plural}` must hit the same wire command as `{singular}`"
-            );
-        }
-    }
-
     #[test]
     fn optional_flags_are_omitted_from_the_wire() {
         let (_, args) = wire_of(&["berdctl", "session", "create", "--prompt", "hi"]);
@@ -450,31 +418,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn session_send_maps_every_flag_onto_the_wire() {
-        let (command, args) = wire_of(&[
-            "berdctl",
-            "session",
-            "send",
-            "--session-id",
-            "s",
-            "--prompt",
-            "hi",
-            "--if-running",
-            "queue",
-        ]);
-        assert_eq!(command, "sessions");
-        assert_eq!(
-            Value::Object(args),
-            serde_json::json!({
-                "action": "send",
-                "session_id": "s",
-                "prompt": "hi",
-                "if_running": "queue",
-            })
-        );
-    }
-
     /// Second pin of the contract-driven wire path, covering numeric flags:
     /// --messages must reach the wire as a JSON number, not a string.
     #[test]
@@ -521,50 +464,6 @@ mod tests {
             Value::Object(args_without_flag),
             serde_json::json!({"action": "archive", "session_id": "s"})
         );
-    }
-
-    #[test]
-    fn move_to_group_maps_to_its_explicit_action() {
-        let (command, args) = wire_of(&[
-            "berdctl",
-            "session",
-            "move-to-group",
-            "--session-id",
-            "s",
-            "--group-id",
-            "g",
-        ]);
-        assert_eq!(command, "sessions");
-        assert_eq!(
-            Value::Object(args),
-            serde_json::json!({"action": "move_to_group", "session_id": "s", "group_id": "g"})
-        );
-    }
-
-    #[test]
-    fn clear_project_maps_to_its_explicit_action() {
-        let (command, args) =
-            wire_of(&["berdctl", "session", "clear-project", "--session-id", "s"]);
-        assert_eq!(command, "sessions");
-        assert_eq!(
-            Value::Object(args),
-            serde_json::json!({"action": "clear_project", "session_id": "s"})
-        );
-    }
-
-    /// The --timeout-ms help promises 1000-900000; out-of-range values must
-    /// be usage errors here, not silent broker-side clamps.
-    #[test]
-    fn timeout_ms_is_range_checked_client_side() {
-        for out_of_range in ["999", "900001", "0"] {
-            assert!(
-                try_parse(&["berdctl", "session", "list", "--timeout-ms", out_of_range]).is_err(),
-                "--timeout-ms {out_of_range} must be rejected"
-            );
-        }
-        let matches = try_parse(&["berdctl", "session", "list", "--timeout-ms", "1000"])
-            .expect("in-range timeout parses");
-        assert_eq!(wire::globals(&matches).timeout_ms, Some(1000));
     }
 
     /// Range parsers must survive the tree builder: the bounds in

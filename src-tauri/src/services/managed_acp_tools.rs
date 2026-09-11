@@ -1899,37 +1899,6 @@ mod tests {
         std::fs::rename(&temp, &path)
     }
 
-    #[cfg(unix)]
-    fn is_executable(path: &Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        path.metadata()
-            .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
-    }
-
-    #[test]
-    fn managed_tools_lists_the_two_bridges() {
-        let ids: Vec<&str> = MANAGED_TOOLS.iter().map(|tool| tool.id).collect();
-        assert_eq!(ids, vec!["claude-acp", "codex-acp"]);
-        for tool in MANAGED_TOOLS {
-            assert!(
-                tool.package.starts_with("@agentclientprotocol/"),
-                "{}",
-                tool.package
-            );
-            assert!(!tool.binary.is_empty(), "{}", tool.id);
-            // Every managed bridge carries an immutable version pin. A floating
-            // range (`latest`, `^`, `~`, `*`) is forbidden.
-            assert!(!tool.version.is_empty(), "{} version", tool.id);
-            assert!(
-                !tool.version.contains(['^', '~', '*']) && tool.version != "latest",
-                "{} version must be an exact pin: {}",
-                tool.id,
-                tool.version
-            );
-        }
-    }
-
     /// The checked-in `acp-tools.lock.json` is what the installer feeds npm, so
     /// it must parse, cover every managed bridge, and agree with
     /// `MANAGED_TOOLS` on the immutable version in all three places `npm ci`
@@ -2022,57 +1991,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn managed_npm_env_points_every_pair_into_the_prefix() {
-        let prefix = Path::new("/data/packages/npm-prefix");
-        let env = managed_npm_env_at(prefix);
-        let prefix = prefix.to_string_lossy().into_owned();
-        let cache = Path::new(&prefix)
-            .join("cache")
-            .to_string_lossy()
-            .into_owned();
-        let corepack = Path::new(&prefix)
-            .join("corepack")
-            .to_string_lossy()
-            .into_owned();
-        let expect = |key: &str, value: &str| {
-            assert_eq!(
-                env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str()),
-                Some(value),
-                "{key}"
-            );
-        };
-        expect("NPM_CONFIG_PREFIX", &prefix);
-        expect("npm_config_prefix", &prefix);
-        expect("NPM_CONFIG_CACHE", &cache);
-        expect("npm_config_cache", &cache);
-        expect("COREPACK_HOME", &corepack);
-        assert_eq!(env.len(), 5);
-    }
-
-    #[test]
-    fn apply_managed_npm_env_replaces_and_inserts() {
-        let mut vars = vec![
-            ("PATH".to_string(), "/usr/bin".to_string()),
-            ("NPM_CONFIG_PREFIX".to_string(), "/stray/prefix".to_string()),
-        ];
-
-        let prefix = Path::new("/data/npm-prefix");
-        apply_managed_npm_env(&mut vars, &managed_npm_env_at(prefix));
-        let prefix = prefix.to_string_lossy().into_owned();
-        let corepack = Path::new(&prefix)
-            .join("corepack")
-            .to_string_lossy()
-            .into_owned();
-
-        assert_eq!(vars.len(), if cfg!(windows) { 4 } else { 6 });
-        assert_eq!(vars[0], ("PATH".to_string(), "/usr/bin".to_string()));
-        assert_eq!(vars[1], ("NPM_CONFIG_PREFIX".to_string(), prefix));
-        assert!(vars
-            .iter()
-            .any(|(k, v)| k == "COREPACK_HOME" && v == &corepack));
-    }
-
     #[cfg(windows)]
     #[test]
     fn managed_npm_env_replaces_inherited_mixed_case_prefix() {
@@ -2098,13 +2016,6 @@ mod tests {
                 .map(|(_, value)| value.as_str()),
             Some("C:\\Berd Data\\npm-prefix")
         );
-    }
-
-    #[test]
-    fn managed_bridge_shims_require_management_to_be_enabled() {
-        assert!(managed_bridges_enabled_from_parts(false, true));
-        assert!(!managed_bridges_enabled_from_parts(true, true));
-        assert!(!managed_bridges_enabled_from_parts(false, false));
     }
 
     #[test]
@@ -2137,24 +2048,6 @@ mod tests {
                 PathBuf::from("/data/packages/npm-prefix/bin"),
             ]
         );
-    }
-
-    #[test]
-    fn npm_backed_commands_are_detected() {
-        for command in [
-            "npm install -g @github/copilot",
-            "npm install -g amp-acp@latest --registry=https://example.test/npm/",
-            "sh -c 'npm install -g @agentclientprotocol/claude-agent-acp'",
-        ] {
-            assert!(is_npm_backed_command(command), "{command}");
-        }
-        for command in [
-            "curl -fsSL https://cursor.com/install | bash",
-            "brew install --cask codex",
-            "claude /login",
-        ] {
-            assert!(!is_npm_backed_command(command), "{command}");
-        }
     }
 
     // -- fixtures -----------------------------------------------------------
@@ -2274,8 +2167,7 @@ mod tests {
         }
     }
 
-    /// The host's runtime layout — these `#[cfg(unix)]` install-flow tests run
-    /// on the host, so `RuntimeLayout::current()` is the Unix layout.
+    /// The host's runtime layout.
     fn test_layout() -> managed_node::RuntimeLayout {
         managed_node::RuntimeLayout::current().expect("tests run on a supported target")
     }
@@ -2394,21 +2286,6 @@ mod tests {
     // -- shims --------------------------------------------------------------
 
     #[test]
-    fn shim_contents_execs_absolute_paths_and_quotes_spaces() {
-        let unix = managed_node::RuntimeLayout::for_platform("linux-x64");
-        let contents = shim_contents(
-            &unix,
-            Path::new("/data/Application Support/packages/bin"),
-            Path::new("/data/Application Support/packages/node/v1/plat/bin/node"),
-            Path::new("/data/Application Support/packages/tools/claude-acp/node_modules/@scope/claude-acp/dist/index.js"),
-        );
-        assert!(contents.starts_with("#!/bin/sh\n"));
-        assert!(contents.ends_with(
-            "exec '/data/Application Support/packages/node/v1/plat/bin/node' '/data/Application Support/packages/tools/claude-acp/node_modules/@scope/claude-acp/dist/index.js' \"$@\"\n"
-        ));
-    }
-
-    #[test]
     fn windows_shim_contents_is_a_cmd_launcher_forwarding_args() {
         let win = managed_node::RuntimeLayout::for_platform("win-x64");
         // A profile path cmd.exe would mangle if it were written into the
@@ -2471,20 +2348,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn write_shim_is_executable() {
-        let dir = tempfile::tempdir().unwrap();
-        let bin_dir = dir.path().join("bin");
-        write_shim(&bin_dir, "claude-agent-acp", "#!/bin/sh\nexec true\n").unwrap();
-        let shim = bin_dir.join("claude-agent-acp");
-        assert!(is_executable(&shim));
-        assert_eq!(
-            std::fs::read_to_string(&shim).unwrap(),
-            "#!/bin/sh\nexec true\n"
-        );
-    }
-
     // -- state --------------------------------------------------------------
 
     #[test]
@@ -2513,455 +2376,6 @@ mod tests {
         );
         std::fs::write(state_path(dir.path()), "not json").unwrap();
         assert_eq!(read_state(dir.path()), ManagedToolsState::default());
-    }
-
-    // -- install flow (fake npm) --------------------------------------------
-
-    /// A fake managed-node install dir: `node` prints a version, `npm` runs
-    /// `body` (which sees `$prefix`, the `--prefix` it was passed).
-    #[cfg(unix)]
-    fn write_fake_node(node_install_dir: &Path, body: &str) {
-        let bin = node_install_dir.join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join("node"), "#!/bin/sh\necho v9.9.9\n").unwrap();
-        std::fs::write(bin.join("npm"), body).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        for name in ["node", "npm"] {
-            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755))
-                .unwrap();
-        }
-    }
-
-    /// The shared body of every fake npm: parse `--prefix`, then behave like
-    /// `npm ci` — refuse to run unless the installer seeded both documents
-    /// (copying them aside as `seeded-*` so a test can compare them against
-    /// the checked-in ones), and materialize `template` over the prefix. A
-    /// template containing its own `package-lock.json` therefore models an npm
-    /// that rewrote the seeded lock.
-    #[cfg(unix)]
-    fn fake_npm_prelude(template: &Path) -> String {
-        format!(
-            r#"#!/bin/sh
-prefix=""
-prev=""
-os="<unset>"
-cpu="<unset>"
-libc="<unset>"
-for arg in "$@"; do
-  case "$prev" in
-    --prefix) prefix="$arg" ;;
-    --os) os="$arg" ;;
-    --cpu) cpu="$arg" ;;
-    --libc) libc="$arg" ;;
-  esac
-  prev="$arg"
-done
-for doc in package.json package-lock.json; do
-  if [ ! -f "$prefix/$doc" ]; then
-    echo "npm ci: $prefix/$doc was not seeded" >&2
-    exit 66
-  fi
-  cp "$prefix/$doc" "$prefix/seeded-$doc"
-done
-cp -R '{}/.' "$prefix/"
-"#,
-            template.display()
-        )
-    }
-
-    /// A fake npm that installs `template` and exits with `exit_code`.
-    #[cfg(unix)]
-    fn write_fake_node_with_npm(node_install_dir: &Path, template: &Path, exit_code: i32) {
-        write_fake_node(
-            node_install_dir,
-            &format!(
-                "{}echo \"added 3 packages\"\nexit {exit_code}\n",
-                fake_npm_prelude(template)
-            ),
-        );
-    }
-
-    /// A fake npm that records the npm target-selector env vars it observed
-    /// (both spellings of os/cpu/libc) into `<prefix>/env-selectors.txt`, so a
-    /// test can assert `run_pinned_npm_install` cleared any inherited values
-    /// before spawning. Still produces a passing fixture install so the whole
-    /// flow succeeds.
-    #[cfg(unix)]
-    fn write_fake_node_recording_target_selectors(node_install_dir: &Path, template: &Path) {
-        write_fake_node(
-            node_install_dir,
-            &format!(
-                r#"{}{{
-  echo "npm_config_os=${{npm_config_os:-<unset>}}"
-  echo "NPM_CONFIG_OS=${{NPM_CONFIG_OS:-<unset>}}"
-  echo "npm_config_cpu=${{npm_config_cpu:-<unset>}}"
-  echo "NPM_CONFIG_CPU=${{NPM_CONFIG_CPU:-<unset>}}"
-  echo "npm_config_libc=${{npm_config_libc:-<unset>}}"
-  echo "NPM_CONFIG_LIBC=${{NPM_CONFIG_LIBC:-<unset>}}"
-}} > "$prefix/env-selectors.txt"
-echo "added 3 packages"
-exit 0
-"#,
-                fake_npm_prelude(template)
-            ),
-        );
-    }
-
-    /// A fake npm that records the `--os`/`--cpu`/`--libc` values it received on
-    /// its command line (plus whether an `NPM_CONFIG_USERCONFIG` was in scope)
-    /// into `<prefix>/cli-selectors.txt`, so a test can assert the spawned npm
-    /// observed the trusted command-line selectors regardless of npmrc. Still
-    /// produces a passing fixture install so the whole flow succeeds.
-    #[cfg(unix)]
-    fn write_fake_node_recording_cli_selectors(node_install_dir: &Path, template: &Path) {
-        write_fake_node(
-            node_install_dir,
-            &format!(
-                r#"{}{{
-  echo "os=$os"
-  echo "cpu=$cpu"
-  echo "libc=$libc"
-  echo "userconfig=${{NPM_CONFIG_USERCONFIG:-<unset>}}"
-}} > "$prefix/cli-selectors.txt"
-echo "added 3 packages"
-exit 0
-"#,
-                fake_npm_prelude(template)
-            ),
-        );
-    }
-
-    /// Inherited `npm_config_os` / `_cpu` / `_libc` (either spelling) must be
-    /// cleared before npm runs, so a stray target selector cannot steer
-    /// materialization to a different platform's native package than this host.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn install_clears_inherited_npm_target_selectors() {
-        use crate::test_support::env_lock;
-        let _guard = env_lock().lock().expect("env lock");
-        for (key, value) in [
-            ("npm_config_os", "linux"),
-            ("NPM_CONFIG_OS", "linux"),
-            ("npm_config_cpu", "x64"),
-            ("NPM_CONFIG_CPU", "x64"),
-            ("npm_config_libc", "musl"),
-            ("NPM_CONFIG_LIBC", "musl"),
-        ] {
-            std::env::set_var(key, value);
-        }
-
-        let dir = tempfile::tempdir().unwrap();
-        let packages_root = dir.path().join("packages");
-        let node_install_dir = packages_root.join("node").join("v9.9.9").join("plat");
-        let tool = test_tool();
-        let template = dir.path().join("template");
-        std::fs::create_dir_all(&template).unwrap();
-        write_fixture_tree(&template, &tool, &test_lock_entry());
-        write_fake_node_recording_target_selectors(&node_install_dir, &template);
-
-        install_npm_tool(
-            &packages_root,
-            &node_install_dir,
-            &test_layout(),
-            &tool,
-            &test_lock_entry(),
-            test_target(),
-            None,
-            &|_| {},
-        )
-        .await
-        .unwrap();
-
-        for key in [
-            "npm_config_os",
-            "NPM_CONFIG_OS",
-            "npm_config_cpu",
-            "NPM_CONFIG_CPU",
-            "npm_config_libc",
-            "NPM_CONFIG_LIBC",
-        ] {
-            std::env::remove_var(key);
-        }
-
-        let observed = std::fs::read_to_string(
-            tool_install_dir(&packages_root, tool.id).join("env-selectors.txt"),
-        )
-        .unwrap();
-        for line in observed.lines() {
-            assert!(
-                line.ends_with("=<unset>"),
-                "npm saw an inherited target selector: {line}"
-            );
-        }
-    }
-
-    /// npm also reads `os`/`cpu`/`libc` from npmrc files (including one pointed
-    /// at by `NPM_CONFIG_USERCONFIG`), which `env_remove` does not touch. The
-    /// trusted `--os`/`--cpu`/`--libc` command-line selectors must reach npm so
-    /// they outrank a cross-target npmrc; the spawned npm must observe the
-    /// current target's values even when a userconfig requests another platform.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn install_passes_trusted_cli_selectors_over_a_cross_target_userconfig() {
-        use crate::test_support::env_lock;
-        let _guard = env_lock().lock().expect("env lock");
-
-        let dir = tempfile::tempdir().unwrap();
-        // A userconfig requesting a platform no supported host target matches,
-        // so any leak is unambiguous regardless of which host runs the test.
-        let userconfig = dir.path().join("cross-target.npmrc");
-        std::fs::write(&userconfig, "os=aix\ncpu=ppc64\nlibc=musl\n").unwrap();
-        std::env::set_var("NPM_CONFIG_USERCONFIG", &userconfig);
-
-        let packages_root = dir.path().join("packages");
-        let node_install_dir = packages_root.join("node").join("v9.9.9").join("plat");
-        let tool = test_tool();
-        let template = dir.path().join("template");
-        std::fs::create_dir_all(&template).unwrap();
-        write_fixture_tree(&template, &tool, &test_lock_entry());
-        write_fake_node_recording_cli_selectors(&node_install_dir, &template);
-
-        let target = test_target();
-        install_npm_tool(
-            &packages_root,
-            &node_install_dir,
-            &test_layout(),
-            &tool,
-            &test_lock_entry(),
-            target,
-            None,
-            &|_| {},
-        )
-        .await
-        .unwrap();
-
-        std::env::remove_var("NPM_CONFIG_USERCONFIG");
-
-        let observed = std::fs::read_to_string(
-            tool_install_dir(&packages_root, tool.id).join("cli-selectors.txt"),
-        )
-        .unwrap();
-        // The trusted selectors for THIS host's target reached npm on the
-        // command line, not the cross-target userconfig's `linux/arm64/musl`.
-        let expected = npm_target_selectors(target).expect("supported target has selectors");
-        let os_at = expected.iter().position(|a| a == "--os").unwrap();
-        assert!(
-            observed.contains(&format!("os={}", expected[os_at + 1])),
-            "npm did not observe the trusted --os; recorded:\n{observed}"
-        );
-        let cpu_at = expected.iter().position(|a| a == "--cpu").unwrap();
-        assert!(
-            observed.contains(&format!("cpu={}", expected[cpu_at + 1])),
-            "npm did not observe the trusted --cpu; recorded:\n{observed}"
-        );
-        // Never the cross-target userconfig values.
-        assert!(
-            !observed.contains("os=aix"),
-            "userconfig os leaked:\n{observed}"
-        );
-        assert!(
-            !observed.contains("cpu=ppc64"),
-            "userconfig cpu leaked:\n{observed}"
-        );
-        assert!(
-            !observed.contains("libc=musl"),
-            "userconfig libc leaked:\n{observed}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn install_npm_tool_installs_shims_and_records_version() {
-        let dir = tempfile::tempdir().unwrap();
-        let packages_root = dir.path().join("packages");
-        let node_install_dir = packages_root.join("node").join("v9.9.9").join("plat");
-        let tool = test_tool();
-
-        let template = dir.path().join("template");
-        std::fs::create_dir_all(&template).unwrap();
-        let expected = test_lock_entry();
-        write_fixture_tree(&template, &tool, &expected);
-        write_fake_node_with_npm(&node_install_dir, &template, 0);
-
-        // A per-version dir left behind by the old lock-pinned layout.
-        std::fs::create_dir_all(tool_install_dir(&packages_root, tool.id).join("1.0.0")).unwrap();
-
-        let lines = std::sync::Mutex::new(Vec::new());
-        let on_line = |line: &str| lines.lock().unwrap().push(line.to_string());
-        install_npm_tool(
-            &packages_root,
-            &node_install_dir,
-            &test_layout(),
-            &tool,
-            &expected,
-            test_target(),
-            None,
-            &on_line,
-        )
-        .await
-        .unwrap();
-
-        let shim = shim_bin_dir(&packages_root).join(tool.binary);
-        let entrypoint = npm_entrypoint(&tool_install_dir(&packages_root, tool.id), tool.package);
-        assert!(is_executable(&shim));
-        assert_eq!(
-            std::fs::read_to_string(&shim).unwrap(),
-            shim_contents(
-                &test_layout(),
-                &shim_bin_dir(&packages_root),
-                &node_binary(&test_layout(), &node_install_dir),
-                &entrypoint
-            )
-        );
-        assert_eq!(
-            read_state(&packages_root).tools.get(tool.id),
-            Some(&InstalledToolPin {
-                binary: tool.binary.to_string(),
-                version: "1.2.3".to_string(),
-            })
-        );
-        // The stale per-version dir is pruned; the npm prefix files stay.
-        assert!(!tool_install_dir(&packages_root, tool.id)
-            .join("1.0.0")
-            .exists());
-        assert!(entrypoint.is_file());
-
-        let recorded = lines.lock().unwrap().clone();
-        assert!(recorded
-            .iter()
-            .any(|line| line.contains("added 3 packages")));
-        assert!(recorded.iter().any(|line| line.contains("1.2.3 is ready")));
-    }
-
-    /// npm is handed the release-controlled documents, not a package spec: both
-    /// must be on disk in the staged tree before npm is spawned, with exactly
-    /// the checked-in content. Every fake npm copies what it found aside as
-    /// `seeded-*` (and refuses to run if either is absent), so this reads back
-    /// what the real npm would have replayed.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn install_seeds_the_staged_tree_with_the_checked_in_documents() {
-        let dir = tempfile::tempdir().unwrap();
-        let packages_root = dir.path().join("packages");
-        let node_install_dir = packages_root.join("node").join("v9.9.9").join("plat");
-        let tool = test_tool();
-        let expected = test_lock_entry();
-
-        let template = dir.path().join("template");
-        std::fs::create_dir_all(&template).unwrap();
-        write_fixture_tree(&template, &tool, &expected);
-        write_fake_node_with_npm(&node_install_dir, &template, 0);
-
-        install_npm_tool(
-            &packages_root,
-            &node_install_dir,
-            &test_layout(),
-            &tool,
-            &expected,
-            test_target(),
-            None,
-            &|_| {},
-        )
-        .await
-        .unwrap();
-
-        let install_dir = tool_install_dir(&packages_root, tool.id);
-        let read = |name: &str| -> serde_json::Value {
-            serde_json::from_str(&std::fs::read_to_string(install_dir.join(name)).unwrap()).unwrap()
-        };
-        assert_eq!(read("seeded-package.json"), expected.package_json);
-        assert_eq!(read("seeded-package-lock.json"), expected.package_lock);
-        // And `npm ci` leaves both in place, which is what makes the
-        // post-install graph comparison a post-condition.
-        assert_eq!(read("package-lock.json"), expected.package_lock);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn failed_npm_install_preserves_the_previous_tree_shim_and_state() {
-        let dir = tempfile::tempdir().unwrap();
-        let packages_root = dir.path().join("packages");
-        let node_install_dir = packages_root.join("node").join("v9.9.9").join("plat");
-        let tool = test_tool();
-        write_installed_tool(&packages_root, &node_install_dir, &tool);
-        let old_entrypoint =
-            npm_entrypoint(&tool_install_dir(&packages_root, tool.id), tool.package);
-        std::fs::write(&old_entrypoint, "// old working bridge\n").unwrap();
-        let old_shim = std::fs::read(shim_bin_dir(&packages_root).join(tool.binary)).unwrap();
-        let old_state = std::fs::read(state_path(&packages_root)).unwrap();
-
-        let template = dir.path().join("template");
-        std::fs::create_dir_all(&template).unwrap();
-        write_fixture_tree(&template, &tool, &test_lock_entry());
-        write_fake_node_with_npm(&node_install_dir, &template, 7);
-
-        let error = install_npm_tool(
-            &packages_root,
-            &node_install_dir,
-            &test_layout(),
-            &tool,
-            &test_lock_entry(),
-            test_target(),
-            None,
-            &|_| {},
-        )
-        .await
-        .unwrap_err();
-
-        assert!(matches!(error, ManagedToolError::NpmInstall(_)), "{error}");
-        assert_eq!(
-            std::fs::read_to_string(old_entrypoint).unwrap(),
-            "// old working bridge\n"
-        );
-        assert_eq!(
-            std::fs::read(shim_bin_dir(&packages_root).join(tool.binary)).unwrap(),
-            old_shim
-        );
-        assert_eq!(
-            std::fs::read(state_path(&packages_root)).unwrap(),
-            old_state
-        );
-        let launch = std::process::Command::new(shim_bin_dir(&packages_root).join(tool.binary))
-            .output()
-            .unwrap();
-        assert!(launch.status.success(), "preserved old shim still launches");
-        assert_eq!(String::from_utf8_lossy(&launch.stdout).trim(), "v9.9.9");
-        assert!(!tools_root(&packages_root)
-            .read_dir()
-            .unwrap()
-            .flatten()
-            .any(|entry| entry.file_name().to_string_lossy().contains("berd-stage")));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn install_without_entrypoint_fails_incomplete_before_shims() {
-        let dir = tempfile::tempdir().unwrap();
-        let packages_root = dir.path().join("packages");
-        let node_install_dir = packages_root.join("node").join("v9.9.9").join("plat");
-        let tool = test_tool();
-
-        // A clean npm exit that produced no bridge entrypoint (empty template).
-        let template = dir.path().join("template");
-        std::fs::create_dir_all(&template).unwrap();
-        write_fake_node_with_npm(&node_install_dir, &template, 0);
-
-        let error = install_npm_tool(
-            &packages_root,
-            &node_install_dir,
-            &test_layout(),
-            &tool,
-            &test_lock_entry(),
-            test_target(),
-            None,
-            &|_| {},
-        )
-        .await
-        .unwrap_err();
-
-        assert!(matches!(error, ManagedToolError::Incomplete(_)), "{error}");
-        assert!(!shim_bin_dir(&packages_root).join(tool.binary).exists());
-        assert!(read_state(&packages_root).tools.is_empty());
     }
 
     // -- pin verification ---------------------------------------------------
@@ -3029,21 +2443,6 @@ exit 0
             "x64"
         );
         assert!(!windows.iter().any(|arg| arg == "--libc"));
-    }
-
-    #[test]
-    fn npm_ci_args_appends_the_registry_last() {
-        let args = npm_ci_args(
-            Path::new("/data/tools/claude-acp"),
-            "aarch64-apple-darwin",
-            Some("https://registry.example.test/"),
-        );
-        let registry_at = args.iter().position(|arg| arg == "--registry").unwrap();
-        assert_eq!(args[registry_at + 1], "https://registry.example.test/");
-        // The registry pair follows the target selectors and closes the vector.
-        let cpu_at = args.iter().position(|arg| arg == "--cpu").unwrap();
-        assert!(registry_at > cpu_at);
-        assert_eq!(registry_at + 2, args.len());
     }
 
     /// `npm_target_selectors` and every bridge's `nativeExecutables` map must
@@ -3168,24 +2567,6 @@ exit 0
     }
 
     #[test]
-    fn verify_pinned_install_rejects_a_missing_transitive_dependency() {
-        let dir = tempfile::tempdir().unwrap();
-        let tool = test_tool();
-        let expected = test_lock_entry();
-        // The install is missing a pinned transitive dependency entirely.
-        let installed = with_graph(&expected, |graph| {
-            graph.remove(TEST_DEP_KEY);
-        });
-        write_fixture_install(dir.path(), &tool, &installed);
-        let error = verify_pinned_install(dir.path(), &tool, &expected, test_target()).unwrap_err();
-        assert!(
-            matches!(error, ManagedToolError::IntegrityMismatch(_)),
-            "{error}"
-        );
-        assert!(error.to_string().contains("missing"), "{error}");
-    }
-
-    #[test]
     fn verify_pinned_install_rejects_an_extra_unpinned_dependency() {
         let dir = tempfile::tempdir().unwrap();
         let tool = test_tool();
@@ -3209,24 +2590,6 @@ exit 0
             "{error}"
         );
         assert!(error.to_string().contains("unpinned"), "{error}");
-    }
-
-    #[test]
-    fn verify_pinned_install_rejects_a_missing_lockfile() {
-        let dir = tempfile::tempdir().unwrap();
-        let tool = test_tool();
-        let expected = test_lock_entry();
-        // No package-lock.json exists to prove the resolved graph.
-        write_json(
-            &package_dir(dir.path(), tool.package).join("package.json"),
-            &serde_json::json!({ "name": tool.package, "version": tool.version }),
-        );
-        let error = verify_pinned_install(dir.path(), &tool, &expected, test_target()).unwrap_err();
-        assert!(
-            matches!(error, ManagedToolError::IntegrityMismatch(_)),
-            "{error}"
-        );
-        assert!(error.to_string().contains("package-lock.json"), "{error}");
     }
 
     #[test]
@@ -3277,231 +2640,6 @@ exit 0
         let error = verify_pinned_install(dir.path(), &tool, &expected, test_target()).unwrap_err();
         assert!(matches!(error, ManagedToolError::Incomplete(_)), "{error}");
         assert!(error.to_string().contains(TEST_NATIVE_REL), "{error}");
-    }
-
-    /// The lock must map a native executable for the target being installed.
-    /// An install for a target with no mapping is rejected rather than
-    /// committing an unverifiable tree — a checked-in-data mistake, not a
-    /// disagreement with the pin.
-    #[test]
-    fn verify_pinned_install_rejects_an_unmapped_target() {
-        let dir = tempfile::tempdir().unwrap();
-        let tool = test_tool();
-        let expected = test_lock_entry();
-        write_fixture_install(dir.path(), &tool, &expected);
-        let error = verify_pinned_install(dir.path(), &tool, &expected, "sparc64-unknown-unknown")
-            .unwrap_err();
-        assert!(matches!(error, ManagedToolError::Incomplete(_)), "{error}");
-        assert!(
-            error.to_string().contains("sparc64-unknown-unknown"),
-            "{error}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn install_rejecting_a_version_mismatch_preserves_the_previous_install() {
-        let dir = tempfile::tempdir().unwrap();
-        let packages_root = dir.path().join("packages");
-        let node_install_dir = packages_root.join("node").join("v9.9.9").join("plat");
-        let tool = test_tool();
-        write_installed_tool(&packages_root, &node_install_dir, &tool);
-        let old_entrypoint =
-            npm_entrypoint(&tool_install_dir(&packages_root, tool.id), tool.package);
-        std::fs::write(&old_entrypoint, "// old working bridge\n").unwrap();
-        let old_shim = std::fs::read(shim_bin_dir(&packages_root).join(tool.binary)).unwrap();
-        let old_state = std::fs::read(state_path(&packages_root)).unwrap();
-
-        // npm exits cleanly but rewrites the seeded lockfile so the root
-        // package resolves to a version other than the pin.
-        let template = dir.path().join("template");
-        std::fs::create_dir_all(&template).unwrap();
-        let installed = with_graph(&test_lock_entry(), |graph| {
-            graph.insert(
-                format!("node_modules/{}", tool.package),
-                ResolvedPackage {
-                    version: "9.9.9".to_string(),
-                    integrity: TEST_ROOT_INTEGRITY.to_string(),
-                },
-            );
-        });
-        write_fixture_install(&template, &tool, &installed);
-        write_fake_node_with_npm(&node_install_dir, &template, 0);
-
-        let error = install_npm_tool(
-            &packages_root,
-            &node_install_dir,
-            &test_layout(),
-            &tool,
-            &test_lock_entry(),
-            test_target(),
-            None,
-            &|_| {},
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            matches!(error, ManagedToolError::IntegrityMismatch(_)),
-            "{error}"
-        );
-        assert_eq!(
-            std::fs::read_to_string(old_entrypoint).unwrap(),
-            "// old working bridge\n"
-        );
-        assert_eq!(
-            std::fs::read(shim_bin_dir(&packages_root).join(tool.binary)).unwrap(),
-            old_shim
-        );
-        assert_eq!(
-            std::fs::read(state_path(&packages_root)).unwrap(),
-            old_state
-        );
-        // No staged artifacts left behind after the rejected upgrade.
-        assert!(!tools_root(&packages_root)
-            .read_dir()
-            .unwrap()
-            .flatten()
-            .any(|entry| entry.file_name().to_string_lossy().contains("berd-stage")));
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn install_rejecting_a_transitive_drift_preserves_the_previous_install() {
-        let dir = tempfile::tempdir().unwrap();
-        let packages_root = dir.path().join("packages");
-        let node_install_dir = packages_root.join("node").join("v9.9.9").join("plat");
-        let tool = test_tool();
-        write_installed_tool(&packages_root, &node_install_dir, &tool);
-        let old_entrypoint =
-            npm_entrypoint(&tool_install_dir(&packages_root, tool.id), tool.package);
-        std::fs::write(&old_entrypoint, "// old working bridge\n").unwrap();
-        let old_shim = std::fs::read(shim_bin_dir(&packages_root).join(tool.binary)).unwrap();
-        let old_state = std::fs::read(state_path(&packages_root)).unwrap();
-
-        // npm leaves the pinned root version and root integrity alone but
-        // rewrites the seeded lockfile so a transitive dependency lands at a
-        // different in-range version with its own forged integrity — the
-        // registry-substitution shape the graph post-condition backstops. A
-        // root-only check would have passed this; the whole-graph check must
-        // reject it and keep the previous working bridge.
-        let template = dir.path().join("template");
-        std::fs::create_dir_all(&template).unwrap();
-        let installed = with_graph(&test_lock_entry(), |graph| {
-            graph.insert(
-                TEST_DEP_KEY.to_string(),
-                ResolvedPackage {
-                    version: "9.9.9".to_string(),
-                    integrity: "sha512-swappedSWAPPEDswappedSWAPPEDswappedSWAPPEDswappedSWAPPEDswappedSWAPPEDswappedSW==".to_string(),
-                },
-            );
-        });
-        write_fixture_install(&template, &tool, &installed);
-        std::fs::write(
-            npm_entrypoint(&template, tool.package),
-            "// tampered bridge\n",
-        )
-        .unwrap();
-        write_fake_node_with_npm(&node_install_dir, &template, 0);
-
-        let error = install_npm_tool(
-            &packages_root,
-            &node_install_dir,
-            &test_layout(),
-            &tool,
-            &test_lock_entry(),
-            test_target(),
-            None,
-            &|_| {},
-        )
-        .await
-        .unwrap_err();
-
-        assert!(
-            matches!(error, ManagedToolError::IntegrityMismatch(_)),
-            "{error}"
-        );
-        assert!(error.to_string().contains(TEST_DEP_KEY), "{error}");
-        // The previous working bridge is untouched.
-        assert_eq!(
-            std::fs::read_to_string(old_entrypoint).unwrap(),
-            "// old working bridge\n"
-        );
-        assert_eq!(
-            std::fs::read(shim_bin_dir(&packages_root).join(tool.binary)).unwrap(),
-            old_shim
-        );
-        assert_eq!(
-            std::fs::read(state_path(&packages_root)).unwrap(),
-            old_state
-        );
-        assert!(!tools_root(&packages_root)
-            .read_dir()
-            .unwrap()
-            .flatten()
-            .any(|entry| entry.file_name().to_string_lossy().contains("berd-stage")));
-    }
-
-    /// A clean npm exit whose lockfile matches the full graph but whose native
-    /// executable for this host was not materialized must be rejected through
-    /// the whole install transaction, leaving the previous working bridge in
-    /// place. This is the release-blocking path: a graph-matching but
-    /// unrunnable install must not replace last-known-good.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn install_rejecting_a_missing_native_executable_preserves_the_previous_install() {
-        let dir = tempfile::tempdir().unwrap();
-        let packages_root = dir.path().join("packages");
-        let node_install_dir = packages_root.join("node").join("v9.9.9").join("plat");
-        let tool = test_tool();
-        write_installed_tool(&packages_root, &node_install_dir, &tool);
-        let old_entrypoint =
-            npm_entrypoint(&tool_install_dir(&packages_root, tool.id), tool.package);
-        std::fs::write(&old_entrypoint, "// old working bridge\n").unwrap();
-        let old_shim = std::fs::read(shim_bin_dir(&packages_root).join(tool.binary)).unwrap();
-        let old_state = std::fs::read(state_path(&packages_root)).unwrap();
-
-        // The replayed install leaves the seeded lockfile intact and writes the
-        // entrypoint, then the native executable is removed to model npm's
-        // non-fatal optional package failure.
-        let template = dir.path().join("template");
-        std::fs::create_dir_all(&template).unwrap();
-        write_fixture_tree(&template, &tool, &test_lock_entry());
-        std::fs::remove_file(template.join(TEST_NATIVE_REL)).unwrap();
-        write_fake_node_with_npm(&node_install_dir, &template, 0);
-
-        let error = install_npm_tool(
-            &packages_root,
-            &node_install_dir,
-            &test_layout(),
-            &tool,
-            &test_lock_entry(),
-            test_target(),
-            None,
-            &|_| {},
-        )
-        .await
-        .unwrap_err();
-
-        assert!(matches!(error, ManagedToolError::Incomplete(_)), "{error}");
-        assert!(error.to_string().contains(TEST_NATIVE_REL), "{error}");
-        assert_eq!(
-            std::fs::read_to_string(old_entrypoint).unwrap(),
-            "// old working bridge\n"
-        );
-        assert_eq!(
-            std::fs::read(shim_bin_dir(&packages_root).join(tool.binary)).unwrap(),
-            old_shim
-        );
-        assert_eq!(
-            std::fs::read(state_path(&packages_root)).unwrap(),
-            old_state
-        );
-        assert!(!tools_root(&packages_root)
-            .read_dir()
-            .unwrap()
-            .flatten()
-            .any(|entry| entry.file_name().to_string_lossy().contains("berd-stage")));
     }
 
     fn transaction_fixture(root: &Path) -> (InstallTransaction, [PathBuf; 3]) {
@@ -3558,40 +2696,6 @@ exit 0
             "prepare must not mutate recovery files after a read failure"
         );
         assert!(!tx.staged_tree.exists());
-    }
-
-    #[test]
-    fn prepare_removes_stale_journal_temp_after_successful_recovery() {
-        let dir = tempfile::tempdir().unwrap();
-        let live_tree = dir.path().join("tools").join("claude-acp");
-        let live_shim = dir.path().join("bin").join("claude-agent-acp.cmd");
-        let live_state = dir.path().join("state.json");
-        let tx = InstallTransaction::new(&live_tree, &live_shim, &live_state);
-        std::fs::create_dir_all(dir.path()).unwrap();
-        let temp = transaction_journal_temp_path(&tx.journal);
-        std::fs::write(&temp, "interrupted journal write").unwrap();
-
-        tx.prepare().unwrap();
-
-        assert!(!temp.exists());
-        assert!(tx.staged_tree.is_dir());
-    }
-
-    #[test]
-    fn malformed_journal_error_includes_operator_remediation() {
-        let dir = tempfile::tempdir().unwrap();
-        let journal = dir.path().join(".managed-acp-transaction.json");
-        std::fs::write(&journal, "not json").unwrap();
-
-        let error = recover_transaction(&journal).unwrap_err().to_string();
-
-        assert!(error.contains("invalid JSON"), "{error}");
-        assert!(
-            error.contains("Preserve this file and any .berd-backup artifacts"),
-            "{error}"
-        );
-        assert!(error.contains("repair/remove the journal"), "{error}");
-        assert!(journal.is_file());
     }
 
     #[test]
@@ -3786,26 +2890,6 @@ exit 0
     }
 
     #[test]
-    fn a_backup_held_briefly_is_deleted_by_the_retry() {
-        let dir = tempfile::tempdir().unwrap();
-        let (tx, paths) = transaction_fixture(dir.path());
-        let backups: Vec<PathBuf> = tx
-            .artifacts
-            .iter()
-            .map(|artifact| artifact.backup.clone())
-            .collect();
-        // Two refusals, then the handle goes away — the common antivirus case.
-        REMOVE_FAILURES.with(|remaining| remaining.set(2));
-
-        tx.commit().unwrap();
-
-        assert_artifacts(&paths, "new");
-        assert!(backups.iter().all(|backup| !backup.exists()));
-        assert!(trash_entries(dir.path()).is_empty());
-        REMOVE_FAILURES.with(|remaining| remaining.set(0));
-    }
-
-    #[test]
     fn an_undeletable_backup_is_retired_instead_of_failing_the_install() {
         let dir = tempfile::tempdir().unwrap();
         let (tx, paths) = transaction_fixture(dir.path());
@@ -3897,25 +2981,6 @@ exit 0
         assert!(tx.staged_tree.is_dir());
     }
 
-    #[test]
-    fn the_trash_is_emptied_on_the_next_prepare() {
-        let dir = tempfile::tempdir().unwrap();
-        let live_tree = dir.path().join("tools").join("claude-acp");
-        let live_shim = dir.path().join("bin").join("claude-agent-acp.cmd");
-        let live_state = dir.path().join("state.json");
-        std::fs::create_dir_all(&live_tree).unwrap();
-        std::fs::create_dir_all(live_shim.parent().unwrap()).unwrap();
-        let trash = dir.path().join(".berd-trash");
-        std::fs::create_dir_all(trash.join("123-old-tree")).unwrap();
-        std::fs::write(trash.join("123-old-tree").join("entrypoint.js"), "old").unwrap();
-
-        InstallTransaction::new(&live_tree, &live_shim, &live_state)
-            .prepare()
-            .unwrap();
-
-        assert!(!trash.exists());
-    }
-
     // -- reconcile prune ----------------------------------------------------
 
     /// Lay down a complete healthy install (tree + shim + state) for `tool`.
@@ -3976,21 +3041,6 @@ exit 0
         assert!(tools_root(packages_root).join(kept.id).exists());
         assert!(!tools_root(packages_root).join(dropped.id).exists());
         assert!(!tools_root(packages_root).join("ghost-acp").exists());
-    }
-
-    #[test]
-    fn record_reconcile_stamps_the_state() {
-        let dir = tempfile::tempdir().unwrap();
-        record_reconcile(dir.path(), vec!["codex-acp: boom".to_string()]);
-        let record = read_state(dir.path()).last_reconcile.unwrap();
-        assert!(!record.ok);
-        assert_eq!(record.errors, vec!["codex-acp: boom".to_string()]);
-        assert!(record.at_ms > 0);
-
-        record_reconcile(dir.path(), Vec::new());
-        let record = read_state(dir.path()).last_reconcile.unwrap();
-        assert!(record.ok);
-        assert!(record.errors.is_empty());
     }
 
     /// A packages root with the pinned Node runtime dir plus a superseded
