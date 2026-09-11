@@ -60,6 +60,7 @@
     "empty": "Archived chats will show here.",
     "messageCount_one": "{{displayCount}} message",
     "messageCount_other": "{{displayCount}} messages",
+    "restoreFailed": "Couldn’t restore the chat",
     "sectionTitle": "Archived chats",
     "title": "Chats"
   },
@@ -159,7 +160,7 @@
       "label": "@ mention default"
     },
     "followUpBehavior": {
-      "description": "Queue follow-ups while Distill responds or steer the current run. Press Cmd+Enter to do the opposite for one message.",
+      "description": "Queue follow-ups while Distill responds or steer the current run. Press Ctrl+Enter to do the opposite for one message.",
       "label": "Follow-up behavior",
       "queue": "Queue",
       "steer": "Steer"
@@ -287,7 +288,9 @@
     "title": "Notifications"
   },
   "projects": {
+    "deleteFailed": "Couldn’t delete the project",
     "empty": "Archived projects will show here.",
+    "restoreFailed": "Couldn’t restore the project",
     "sectionTitle": "Archived projects",
     "title": "Projects"
   },
@@ -299,6 +302,9 @@
       "errors": {
         "genericSetupFailure": "Setup hit a snag.",
         "installStart": "Couldn’t start installation",
+        "updateStart": "Couldn’t start the update",
+        "authStart": "Couldn’t start sign-in",
+        "refreshStatus": "Couldn’t refresh provider status",
         "installVerificationFailed": "Install finished, but the CLI isn't on your PATH. Try restarting your terminal.",
         "unknownPath": "that path",
         "unknownPlatform": "another platform"

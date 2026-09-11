@@ -339,18 +339,43 @@ export function AgentProviderCard({
     t,
   ]);
 
+  // A rejected start (the command itself failed, before any backend
+  // snapshot) would otherwise leave the card silently idle with an unhandled
+  // rejection; surface it as a failed operation like the install path does.
+  async function startSetupOrReportFailure(
+    action: "update" | "auth",
+    updateFixTypes: AgentSetupUpdateFixType[],
+    fallbackMessage: string,
+  ) {
+    try {
+      await startSetup(provider.id, action, {
+        installFixType: null,
+        updateFixTypes,
+        verifyInstall,
+        ...(bundledBridge ? { bundledBridge } : {}),
+      });
+    } catch (error) {
+      setOperation(provider.id, {
+        action,
+        phase: "idle",
+        status: "failed",
+        output: [],
+        error: formatAcpErrorMessage(error, fallbackMessage),
+      });
+    }
+  }
+
   function handleUpdate() {
     if (!hasActionableUpdate) return;
     if (setupFailureSimulation) {
       runSimulatedFailure("update");
       return;
     }
-    void startSetup(provider.id, "update", {
-      installFixType: null,
-      updateFixTypes: buildUpdateFixTypes(),
-      verifyInstall,
-      ...(bundledBridge ? { bundledBridge } : {}),
-    });
+    void startSetupOrReportFailure(
+      "update",
+      buildUpdateFixTypes(),
+      t("providers.agents.errors.updateStart"),
+    );
   }
 
   function handleAuth() {
@@ -359,12 +384,11 @@ export function AgentProviderCard({
       runSimulatedFailure("auth");
       return;
     }
-    void startSetup(provider.id, "auth", {
-      installFixType: null,
-      updateFixTypes: [],
-      verifyInstall,
-      ...(bundledBridge ? { bundledBridge } : {}),
-    });
+    void startSetupOrReportFailure(
+      "auth",
+      [],
+      t("providers.agents.errors.authStart"),
+    );
   }
 
   // When the backend reports success, run the React-Query refresh the backend
@@ -397,7 +421,7 @@ export function AgentProviderCard({
       } catch (nextError) {
         const message = formatAcpErrorMessage(
           nextError,
-          "Couldn't refresh provider status",
+          t("providers.agents.errors.refreshStatus"),
         );
         console.error("Failed to finalize agent provider setup:", nextError);
         setOperation(provider.id, {
@@ -422,6 +446,7 @@ export function AgentProviderCard({
     setOperation,
     onProviderReady,
     onInstallComplete,
+    t,
   ]);
 
   useEffect(() => {

@@ -97,6 +97,29 @@ describe("usageLedger", () => {
     expect(getUsageLedger().sessions.s1?.totalTokens).toBe(200);
   });
 
+  it("adds each per-turn snapshot, even one above the running total", () => {
+    recordSessionTokens("s1", {
+      inputTokens: 100,
+      outputTokens: 50,
+      cacheTokens: 10,
+      totalTokens: 150,
+      turnsDelta: 1,
+    });
+    recordSessionTokens("s1", {
+      inputTokens: 200,
+      outputTokens: 60,
+      cacheTokens: 30,
+      totalTokens: 260,
+      turnsDelta: 1,
+    });
+    const session = getUsageLedger().sessions.s1;
+    expect(session?.inputTokens).toBe(300);
+    expect(session?.outputTokens).toBe(110);
+    expect(session?.cacheTokens).toBe(40);
+    expect(session?.totalTokens).toBe(410);
+    expect(session?.turns).toBe(2);
+  });
+
   it("summarizes started sessions and extra conductor agents", () => {
     syncUsageSessions([
       {

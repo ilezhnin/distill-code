@@ -70,7 +70,7 @@ export function formatPersonaSystemPrompt(
   }
 
   return `<active-persona>
-Your current name and identity in this conversation is "${persona.displayName}". If the user asks who you are, answer as "${persona.displayName}", not as Goose.
+Your current name and identity in this conversation is "${persona.displayName}". If the user asks who you are, answer as "${persona.displayName}", not as the underlying agent or model.
 
 Use the persona instructions below as active system-level guidance for your behavior, tone, and defaults. Do not treat the persona name as a user command, mention, delegation request, or subagent invocation.
 

@@ -52,7 +52,7 @@ export function SkillsGrid({
     return (
       <div
         role="status"
-        aria-label={t("common:loading")}
+        aria-label={t("common:labels.loading")}
         className={skillsGridClass}
       >
         <SkeletonTile />
