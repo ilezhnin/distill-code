@@ -114,7 +114,15 @@ function inferPathKind(path: string): SessionArtifact["kind"] {
   return "path";
 }
 
+// "C:/x", "C:\x" and — once the markdown renderer has percent-encoded the
+// backslash — "C:%5Cx" all start like a one-letter URL scheme, but they are
+// Windows drive paths and must resolve like any other local path.
+const WINDOWS_DRIVE_HREF = /^[a-zA-Z]:(?:[\\/]|%5c|%2f)/i;
+
 function hasBlockedMarkdownScheme(href: string): boolean {
+  if (WINDOWS_DRIVE_HREF.test(href)) {
+    return false;
+  }
   if (!/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(href)) {
     return false;
   }
@@ -173,7 +181,9 @@ function resolvePath(path: string, sessionCwd: string | null): string {
     return "";
   }
 
-  const normalized = decodePathIfEncoded(normalizePath(path));
+  // Decode before normalizing so a percent-encoded backslash (%5C) becomes a
+  // separator like a raw one does.
+  const normalized = normalizePath(decodePathIfEncoded(path));
   if (!normalized) return "";
 
   if (isAbsolutePath(normalized)) {

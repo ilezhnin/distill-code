@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import type { CreatedWorktree, GitState } from "@/shared/types/git";
 import { cn } from "@/shared/lib/cn";
+import { isSamePath } from "@/shared/lib/pathIdentity";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Badge } from "@/shared/ui/badge";
 import {
@@ -54,13 +55,6 @@ interface WorkspaceContextPickerProps {
 
 function normalizePath(path: string) {
   return path.replace(/\\/g, "/").replace(/\/+$/, "");
-}
-
-function isSamePath(
-  a: string | null | undefined,
-  b: string | null | undefined,
-) {
-  return Boolean(a && b && normalizePath(a) === normalizePath(b));
 }
 
 function worktreeName(path: string) {
@@ -281,7 +275,7 @@ export function WorkspaceContextPicker({
                           toast.error(
                             formatErrorMessage(
                               error,
-                              "Could not switch worktree.",
+                              t("contextPanel.picker.switchWorktreeError"),
                             ),
                           ),
                         );
