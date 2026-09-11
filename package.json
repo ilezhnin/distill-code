@@ -25,8 +25,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:transcript-virtualization:local": "playwright test --config tests/transcript-virtualization/playwright.config.ts",
-    "test:transcript-virtualization:real": "TRANSCRIPT_VIRTUALIZATION_START_SERVER=1 TRANSCRIPT_VIRTUALIZATION_RENDERER_URL=http://127.0.0.1:1520/tests/transcript-virtualization/real-renderer-bridge.html TRANSCRIPT_VIRTUALIZATION_RENDERERS=virtual playwright test --config tests/transcript-virtualization/playwright.config.ts --project=desktop tests/transcript-virtualization/transcript-parity.spec.ts tests/transcript-virtualization/transcript-resize-anchoring.spec.ts",
-    "test:transcript-virtualization:ci": "TRANSCRIPT_VIRTUALIZATION_START_SERVER=1 TRANSCRIPT_VIRTUALIZATION_RENDERER_URL=http://127.0.0.1:1520/tests/transcript-virtualization/real-renderer-bridge.html TRANSCRIPT_VIRTUALIZATION_RENDERERS=virtual playwright test --config tests/transcript-virtualization/playwright.config.ts --project=desktop tests/transcript-virtualization/transcript-parity.spec.ts tests/transcript-virtualization/transcript-resize-anchoring.spec.ts tests/transcript-virtualization/transcript-product-contract.spec.ts",
+    "test:transcript-virtualization:real": "node ./scripts/transcript-virtualization.mjs real",
+    "test:transcript-virtualization:ci": "node ./scripts/transcript-virtualization.mjs ci",
     "test:agent-driver": "node --test scripts/agent-driver/relay.test.mjs",
     "test:hooks": "node --test scripts/hooks/tests/dev-tool.test.mjs",
     "validate:bundled-agents": "tsx scripts/validate-bundled-agents.ts"
