@@ -4,6 +4,7 @@ import type { StructuredReport } from "./types";
 import {
   MAX_CHECKED_ARTIFACT_PATHS,
   artifactPathsOf,
+  isCheckableArtifactPath,
   resetWaveArtifactProbeForTests,
   resolveArtifactPath,
   startWaveArtifactProbe,
@@ -86,6 +87,36 @@ describe("resolveArtifactPath", () => {
   it("passes the path through when there is no working folder", () => {
     expect(resolveArtifactPath("src/a.ts", undefined)).toBe("src/a.ts");
   });
+
+  it("leaves UNC and root-relative Windows paths alone", () => {
+    expect(resolveArtifactPath("\\\\host\\share\\a.ts", "C:\\repo")).toBe(
+      "\\\\host\\share\\a.ts",
+    );
+    expect(resolveArtifactPath("\\src\\a.ts", "C:\\repo")).toBe("\\src\\a.ts");
+  });
+
+  it("drops a cited line and column from the path", () => {
+    expect(resolveArtifactPath("src/a.ts:42", "C:\\repo")).toBe(
+      "C:\\repo\\src/a.ts",
+    );
+    expect(resolveArtifactPath("C:\\repo\\a.ts:4:2", "C:\\repo")).toBe(
+      "C:\\repo\\a.ts",
+    );
+  });
+});
+
+describe("isCheckableArtifactPath", () => {
+  it("refuses what the filesystem cannot answer about", () => {
+    expect(isCheckableArtifactPath("~/notes.md")).toBe(false);
+    expect(isCheckableArtifactPath("https://ci/1")).toBe(false);
+    expect(isCheckableArtifactPath("  ")).toBe(false);
+  });
+
+  it("accepts relative and absolute paths", () => {
+    expect(isCheckableArtifactPath("src/a.ts")).toBe(true);
+    expect(isCheckableArtifactPath("C:\\x\\y.txt")).toBe(true);
+    expect(isCheckableArtifactPath("/etc/hosts")).toBe(true);
+  });
 });
 
 describe("startWaveArtifactProbe", () => {
@@ -138,6 +169,37 @@ describe("startWaveArtifactProbe", () => {
     expect(waveNow().checkedArtifacts).toBe(2);
     expect(waveNow().missingArtifacts).toEqual(["src/ghost.ts"]);
     expect(waveNow().artifactsProbed).toBe(true);
+  });
+
+  it("does not ask the filesystem about a URL or a home path", async () => {
+    seedWave();
+    const asked: string[] = [];
+    setWaveArtifactProbeIoForTests({
+      canProbe: () => true,
+      workingDirOf: () => "C:\\repo",
+      exists: async (path) => {
+        asked.push(path);
+        return path === "C:\\repo\\src/a.ts";
+      },
+    });
+    await settled(
+      startWaveArtifactProbe({
+        waveId: "w1",
+        conductorSessionId: "c1",
+        reports: [
+          report({
+            artifacts: [
+              { label: "ci", path: "https://ci.example/run/1" },
+              { label: "notes", path: "~/notes.md" },
+              { label: "code", path: "src/a.ts:12" },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(asked).toEqual(["C:\\repo\\src/a.ts"]);
+    expect(waveNow().checkedArtifacts).toBe(1);
+    expect(waveNow().missingArtifacts).toBeUndefined();
   });
 
   it("records a clean check as checked-and-nothing-missing", async () => {
