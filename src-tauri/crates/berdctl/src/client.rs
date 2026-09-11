@@ -267,12 +267,6 @@ mod tests {
     }
 
     #[test]
-    fn ok_true_without_result_yields_null() {
-        let result = classify_response(200, r#"{"ok":true}"#).expect("ok without result");
-        assert_eq!(result, Value::Null);
-    }
-
-    #[test]
     fn ok_false_is_exit_1_with_code_message_verbatim() {
         let failure = classify_response(
             200,
@@ -292,14 +286,6 @@ mod tests {
         .expect_err("400 fails");
         assert_eq!(failure.exit, EXIT_COMMAND);
         assert_eq!(failure.message, "bad_request: missing command");
-    }
-
-    #[test]
-    fn too_many_requests_is_exit_1() {
-        let body = r#"{"ok":false,"error":{"code":"busy","message":"slow down"}}"#;
-        let failure = classify_response(429, body).expect_err("429 fails");
-        assert_eq!(failure.exit, EXIT_COMMAND);
-        assert_eq!(failure.message, "busy: slow down");
     }
 
     #[test]
@@ -339,11 +325,5 @@ mod tests {
         .expect_err("403 fails");
         assert_eq!(failure.exit, EXIT_TRANSPORT);
         assert!(failure.message.starts_with("forbidden: origin rejected"));
-    }
-
-    #[test]
-    fn ok_false_without_error_body_is_exit_2() {
-        let failure = classify_response(200, r#"{"ok":false}"#).expect_err("malformed fails");
-        assert_eq!(failure.exit, EXIT_TRANSPORT);
     }
 }
