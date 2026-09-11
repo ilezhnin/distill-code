@@ -77,6 +77,21 @@
       "toggle": "Toggle plan"
     }
   },
+  "completionNotification": {
+    "agent": "Agent",
+    "body": {
+      "completed": "{{name}} finished",
+      "error": "{{name}} encountered an error",
+      "stopped": "{{name}} was stopped"
+    },
+    "description": {
+      "completed": "Agent response complete",
+      "error": "Agent response needs attention",
+      "stopped": "Agent response stopped"
+    },
+    "changeSound": "Change sound",
+    "view": "View"
+  },
   "errors": {
     "clipboardUnavailable": "Clipboard API not available"
   },
