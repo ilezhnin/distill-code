@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
+import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { Button, buttonVariants } from "@/shared/ui/button";
 import { SettingsRow } from "@/shared/ui/settings-row";
 import { SettingsSection } from "@/shared/ui/settings-section";
@@ -42,8 +44,9 @@ export function ArchivedProjectsSection() {
       await restoreProject(id);
       await useProjectStore.getState().fetchProjects();
       setArchivedProjects((prev) => prev.filter((p) => p.id !== id));
-    } catch {
-      // best-effort
+    } catch (error) {
+      console.error("Failed to restore project:", error);
+      toast.error(formatAcpErrorMessage(error, t("projects.restoreFailed")));
     }
   }
 
@@ -51,8 +54,9 @@ export function ArchivedProjectsSection() {
     try {
       await deleteProject(project.id);
       setArchivedProjects((prev) => prev.filter((p) => p.id !== project.id));
-    } catch {
-      // best-effort
+    } catch (error) {
+      console.error("Failed to delete project:", error);
+      toast.error(formatAcpErrorMessage(error, t("projects.deleteFailed")));
     }
   }
 
