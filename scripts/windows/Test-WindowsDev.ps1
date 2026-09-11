@@ -90,7 +90,7 @@ try {
         Assert-Equal "$recipe is visible and dry-runs on Windows" $dryRun.ExitCode 0
         Assert-Equal "$recipe dry-run dispatches to its Windows helper" ($dryRun.Output -match "_${recipe}-windows") $true
     }
-    foreach ($recipe in @("_bundle-unix", "_bundle-debug-unix", "dev", "dev-e2e", "artifacts-publish", "reset-migration")) {
+    foreach ($recipe in @("_bundle-unix", "_bundle-debug-unix", "dev", "dev-e2e", "reset-migration")) {
         $escapedRecipe = [regex]::Escape($recipe)
         Assert-Equal "$recipe stays Unix-only" ($justfile -match "(?m)^\[unix\]\r?\n${escapedRecipe}[^:]*:") $true
         Assert-Equal "$recipe keeps an explicit bash shebang" ($justfile -match "(?m)^${escapedRecipe}[^:]*:\r?\n\s+#!/usr/bin/env bash") $true

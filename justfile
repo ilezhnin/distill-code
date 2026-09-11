@@ -471,31 +471,6 @@ _stage-sidecar-unix:
 _stage-sidecar-windows:
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/Invoke-Stage-Sidecar-Windows.ps1
 
-avatars-manifest source version:
-    pnpm avatars:manifest -- --source="{{ source }}" --version="{{ version }}"
-
-avatars-publish source:
-    pnpm avatars:publish -- --source="{{ source }}"
-
-avatars-promote version:
-    pnpm avatars:promote -- --version="{{ version }}"
-
-artifacts-manifest source version:
-    pnpm artifacts:manifest -- --source="{{ source }}" --version="{{ version }}"
-
-[unix]
-artifacts-publish source version="":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [[ -n "{{ version }}" ]]; then
-      pnpm artifacts:publish -- --source="{{ source }}" --version="{{ version }}"
-    else
-      pnpm artifacts:publish -- --source="{{ source }}"
-    fi
-
-artifacts-promote version:
-    pnpm artifacts:promote -- --version="{{ version }}"
-
 # Delete the silent migration marker(s) so the next launch re-runs the migration.
 [unix]
 reset-migration:
