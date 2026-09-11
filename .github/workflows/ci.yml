@@ -80,9 +80,17 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
-      - name: Run Windows-native Rust tests
+      - name: Run Windows-native Rust gate (fmt, managed Node tests, clippy)
         shell: powershell
         run: just ci-windows
+
+      - name: Run Rust unit tests (app library and workspace crates)
+        shell: powershell
+        run: just tauri-test
+
+      - name: Run Windows script self-tests
+        shell: powershell
+        run: just test-windows-dev
 
   transcript-virtualization:
     name: Transcript virtualization
