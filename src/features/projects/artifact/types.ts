@@ -40,26 +40,4 @@ export interface ProjectArtifactMetadata {
   contentMode: ProjectArtifactContentMode;
 }
 
-export interface ProjectArtifactMotionImpulse {
-  sequence: number;
-  deltaX: number;
-  deltaY: number;
-}
-
-export interface ProjectArtifactRendererProps {
-  state: ProjectArtifactState;
-  imageUrls: string[];
-  environmentUrl: string;
-  className?: string;
-  variant?: "preview" | "tile";
-  motionImpulse?: ProjectArtifactMotionImpulse;
-  /** Pauses continuous rendering while the home canvas drags/resizes the widget. */
-  gestureFreezeActive?: boolean;
-  /** Pauses continuous rendering while a mounted preview is not visible. */
-  renderPaused?: boolean;
-  onGlCanvasReady?: (canvas: HTMLCanvasElement) => void;
-  /** Pulls the camera back to provide extra framing around oversized embeds. */
-  cameraDistanceScale?: number;
-}
-
 export type ProjectArtifactPinState = { projectId: string };
