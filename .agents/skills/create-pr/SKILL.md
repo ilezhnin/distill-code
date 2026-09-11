@@ -46,7 +46,7 @@ Run these commands in parallel to understand the branch:
 Start with metadata tags, then a Problem/Solution block:
 
 - `**Category:**` — one of: `new-feature`, `improvement`, `fix`, `infrastructure`
-- `**User Impact:**` — one sentence describing what changed from the user's perspective. Write this as a standalone sentence a non-technical stakeholder would understand (e.g., "Users can now create and schedule repeatable tasks directly from the desktop app."). This line is used for project changelogs.
+- `**User Impact:**` — one sentence describing what changed from the user's perspective. Write this as a standalone sentence a non-technical stakeholder would understand (e.g., "Users can now create and schedule repeatable tasks directly from the desktop app.").
 - `**Problem:**` — describe the user-facing confusion, mismatch, or friction this PR addresses.
 - `**Solution:**` — explain how the change resolves that UX problem and, if applicable, why the approach was chosen.
 

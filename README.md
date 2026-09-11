@@ -1,68 +1,100 @@
-# Berd
+# Distill
 
-Berd is an open-source desktop app for working with AI agents. It is built with
-Tauri 2 and React 19. A built-in Rust host speaks ACP to the agent harnesses
-(Claude Code, Codex, Grok, Copilot, Amp) and keeps every session locally.
+Distill is a desktop app for working with AI agents, built with Tauri 2 and
+React 19. A built-in Rust ACP host (`src-tauri/src/services/agent_host/`)
+spawns the agent harnesses on demand and keeps every session on your machine:
 
-The repository builds a general-purpose public distribution. Organizations can
-also create enterprise distributions by supplying managed provider settings,
-private resources, and release infrastructure through the repository's
-distribution seams without adding private material to the public source tree.
+- Claude Code and Codex, through the ACP bridges pinned in
+  `acp-tools.lock.json` and installed at runtime onto a managed Node runtime;
+- GitHub Copilot, Grok and Amp, through their own CLIs when you have them
+  installed.
 
-## Getting started
+On top of plain chats it has projects, agents and skills, a conductor that
+plans larger requests as waves of executor sessions and reviews their reports
+(`src/features/conductor/`, `LAWS/WAVES.md`), a planner that collects tasks
+agents file (`src/features/planner/`), and memory that carries short facts into
+later prompts, globally or per project (`src/features/memory/`,
+`LAWS/MEMORY.md`). Agents drive the visible app through the bundled `berdctl`
+CLI.
 
-```bash
-just setup
-just dev
+Distill runs on Windows only. It is a personal fork of
+[block/berd](https://github.com/block/berd) by Ivan Lezhnin; the original work
+is Block's, and the project stays under the Apache 2.0 [LICENSE](LICENSE).
+
+## Setup on Windows
+
+Every recipe below is a thin wrapper around a script in `scripts\windows\`.
+When `just` is not on `PATH`, run the script from the repository root with
+`powershell.exe -NoProfile -ExecutionPolicy Bypass -File <script>`.
+
+| Step | `just` | Script |
+| --- | --- | --- |
+| Check prerequisites | `just bootstrap-windows` | `scripts\windows\Bootstrap-Windows.ps1` |
+| Install what is missing with WinGet | `just bootstrap-windows install` | `scripts\windows\Bootstrap-Windows.ps1 -Mode install` |
+| Verify the machine | `just doctor-windows` | `scripts\windows\Doctor-Windows.ps1` |
+| Install pnpm dependencies and git hooks | `just setup-windows` | `scripts\windows\Setup-Windows.ps1` |
+| Run the dev app | `just dev-windows` | `scripts\windows\Dev-Windows.ps1` |
+
+For example, without `just`:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Bootstrap-Windows.ps1 -Mode install
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Setup-Windows.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Dev-Windows.ps1
 ```
 
-`just setup` installs pnpm dependencies and git hooks. `just dev` builds the
-workspace CLIs and starts the Tauri dev app; the ACP bridges are installed at
-runtime from `acp-tools.lock.json`.
+Bootstrap installs or checks Git, Visual Studio Build Tools (MSVC), the WebView2
+Runtime, the Rust toolchain from `rust-toolchain.toml`, fnm with Node and pnpm,
+CMake, just and Lefthook; `winget install --id Casey.Just -e` gets `just`
+itself. Open a new PowerShell when freshly installed tools are not on `PATH`.
 
-## Bundling and distributions
+`dev-windows` builds `berdctl.exe` and `berd-monitor.exe`, starts Vite and the
+Tauri dev app, and points the app at this repository's `distro\` for bundled
+agents and skills. `scripts\windows\Launch-Distill.ps1 -InstallShortcut`
+creates a desktop shortcut that launches the dev app from Explorer.
 
-`just bundle` stages the `berdctl` and `berd-monitor` sidecars and runs
-`pnpm tauri build`:
+The Rust build cache lives in `src-tauri\target` and grows to tens of GB; set
+`BERD_TAURI_CARGO_TARGET_DIR` to move it. More detail, cleanup and
+troubleshooting: [docs/windows-onboarding.md](docs/windows-onboarding.md).
 
-```bash
-just bundle
-```
+## Bundling
 
-The public build is self-contained and does not require private package
-registries or enterprise credentials. Enterprise distributors may overlay
-private agents, runtime configuration, update channels, and signing or
-publishing infrastructure in their own private build orchestration.
+| Output | `just` | Script |
+| --- | --- | --- |
+| NSIS installer | `just bundle` | `scripts\windows\Bundle-Windows.ps1` |
+| MSI installer | `just bundle-windows msi` | `scripts\windows\Bundle-Windows.ps1 -Bundle msi` |
+| NSIS installer with WebView devtools | `just bundle-debug` | `scripts\windows\Bundle-Windows.ps1 -Debug` |
 
-## Participating
-
-Berd is built by a small team at Block, in the open. You can read the source,
-build it, and fork it freely — but **we don't accept pull requests from outside
-authorized repository collaborators**, and outside PRs are closed automatically.
-
-The way to participate is to **open a well-formed issue**. A bug report we can
-reproduce is worth more to us than a patch, because it's the part we can't do
-ourselves. [CONTRIBUTING.md](CONTRIBUTING.md) spells out exactly what each kind
-of issue needs; the [issue forms](https://github.com/block/berd/issues/new/choose)
-require it.
-
-Filing one? Hand this to your coding agent:
-
-```
-Read https://raw.githubusercontent.com/block/berd/main/CONTRIBUTING.md
-and help me file a Berd issue. Interview me for anything the guide
-requires that I haven't given you, and tell me if what I'm reporting
-is actually two separate issues.
-```
-
-Please also review the [Code of Conduct](CODE_OF_CONDUCT.md) and
-[Security Policy](SECURITY.md). Never report a security vulnerability as a
-public issue.
+The script installs locked dependencies, stages `berdctl` and `berd-monitor`
+as `externalBin` sidecars, runs `tauri build` for `x86_64-pc-windows-msvc`, and
+prints the installer path under
+`<target>\x86_64-pc-windows-msvc\release\bundle\`. Installers are unsigned.
+The harness bridges are not bundled; the app installs them at runtime.
 
 ## Useful commands
 
-- `just check` — Biome, design-system, i18n, contract, and type checks
-- `just test` — unit and component tests
-- `just tauri-check` — Rust type check with sidecars disabled
-- `just clippy` — Rust lint with warnings denied
-- `just bundle` — stage the sidecars and run `pnpm tauri build`
+- `just check` — design-system, berdctl contract, formatting, lint, i18n and
+  TypeScript checks
+- `just test` — the Vitest suite (`pnpm test`) plus the hook launcher tests
+- `just fmt` — format frontend and Rust files
+- `just tauri-check` / `just clippy` — Rust check and lint with sidecars
+  disabled
+- `just ci` — the local gate: frontend checks, Rust format, check, tests and
+  clippy, unit and relay tests, frontend build
+- `just ci-windows` — Windows-native Rust tests for the managed Node runtime
+  and bridges (`scripts\windows\CI-Windows.ps1`)
+- `just test-windows-dev` — self-tests for the Windows scripts
+  (`scripts\windows\Test-WindowsDev.ps1`)
+- `just prune-build-cache` — reclaim build-cache disk; a dry run unless given
+  `-Remove` (`scripts\windows\Prune-BuildCache-Windows.ps1`)
+- `just cleanup-windows` — dry-run or remove local setup state
+  (`scripts\windows\Cleanup-Windows.ps1`)
+- `just new-command <noun> <verb>` — scaffold a berdctl command
+- `just bump-node-runtime <version>` — re-pin the managed Node runtime
+
+The app log is `%LOCALAPPDATA%\xyz.block.berd\logs\berd.log`; each harness's
+stderr lands there prefixed with its id, such as `[claude-acp]`.
+
+[AGENTS.md](AGENTS.md) describes the layout and conventions,
+[LAWS/](LAWS/README.md) the product rules the code is held to, and
+[docs/app-e2e.md](docs/app-e2e.md) how to drive the running app from outside.

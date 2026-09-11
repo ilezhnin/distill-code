@@ -68,10 +68,12 @@ Conductor — тип чата. Сообщение оператора уходи�
 `gitDirtyAtDigest`, `waveGitProbe.ts`) — единственный факт в дайджесте,
 который не сочинила модель.
 
-Хранилища: граф сессий — `conductorGraphStore.ts` (localStorage
-`goose:conductor-graph`), волны — `waveStore.ts` (`goose:conductor-waves`),
-телеметрия — `waveTelemetryStore.ts`. Переезд на файлы `.distill` запланирован
-(P24 в `../PLAN.md`), в localStorage запись может тихо отказать.
+Хранилища: граф сессий — `conductorGraphStore.ts`, волны — `waveStore.ts`,
+телеметрия — `waveTelemetryStore.ts`. На десктопе все три — файлы в корне
+`.distill` (`conductor/graph.json`, `conductor/waves.json`,
+`conductor/telemetry.json`, `conductorDocuments.ts`, P24); ключи localStorage
+`distill:conductor-graph`, `distill:conductor-waves`, `distill:wave-telemetry`
+остались для тестов и браузерного превью и мигрируют в файлы при первом запуске.
 
 Узел графа (`types.ts`, `SessionNode`) несёт `managedBy: "ui" | "wave" |
 "agent-cli"`: движок волн трогает только `"wave"`. Wave-дети дополнительно
@@ -125,21 +127,23 @@ user-сообщением** через berdctl-seam (`session send`, `if_running
 генерируется в промпт из того же ACL (`formatSpawnPolicyPrompt`), так что
 модель и харнесс говорят одно и то же.
 
-Закрыто (P42): CLI читает `AGENT_SESSION_ID` из окружения шелла (goose
-инъецирует её в каждый шелл сессии, апстримный `apply_session_environment`)
-и шлёт опциональным полем `actor` на конверте `/v1/call`; брокер пробрасывает
-не читая; `session create` / `fork` резолвят actor → узел графа и зовут тот же
-`checkSpawnAllowed` (`berdctl/commands/runtime/spawnGate.ts`). Анонимный вызов
-— оператор, разрешён. Остаток P42: id сессии угадываем (`YYYYMMDD_n`),
-сознательно подделанный env всё ещё может выдать себя за чужую сессию —
-закрывается nonce'ом на стороне distill-goose.
+Переоткрыто (P42): встроенный агент-хост не экспортирует `AGENT_SESSION_ID`
+в шелл сессии, как это делал goose, поэтому вызовы berdctl из агентов сейчас
+приходят анонимными и проходят как операторские. Механизм на месте: CLI читает
+`AGENT_SESSION_ID` из окружения и шлёт опциональным полем `actor` на конверте
+`/v1/call`; брокер пробрасывает не читая; `session create` / `fork` резолвят
+actor → узел графа и зовут тот же `checkSpawnAllowed`
+(`berdctl/commands/runtime/spawnGate.ts`). Анонимный вызов — оператор,
+разрешён. Остаток P42: даже с экспортом id сессии угадываем, и подделанный env
+может выдать себя за чужую сессию — закрывается nonce'ом, который выдаёт
+агент-хост.
 
 ---
 
 ## 5. Память
 
 Фенс `distill-memory` (`features/memory/lib/memoryFence.ts`) — тот же канал,
-что `distill-todo`, потому что он одинаково работает на goose и на мостах
+что `distill-todo`, потому что он одинаково работает на мостах
 Claude / Grok / Codex. До 5 записей за ход. Сканер смотрит хвост последних
 сообщений (`memoryAgentScan.ts`), стор — `memoryStore.ts`, файл в корне
 `.distill`. Врезка в промпт — `<memory>`-блок,
@@ -157,8 +161,8 @@ recency (`memoryPrompt.ts`); пустой блок не выводится во�
 
 Чипы детей — `ConductorAgentFooter` / `waveFooterChips.ts`, под тем
 сообщением, чей id равен `anchorMessageId`. Дети скрыты из сайдбара, поиска и
-свитчера (`sessionVisibility.ts`). Harness-субагенты (Goose delegate/load,
-Claude Code Task/Agent, Codex spawn_agent) классифицируются в
+свитчера (`sessionVisibility.ts`). Harness-субагенты (Claude Code
+Task/Agent, Codex spawn_agent) классифицируются в
 `features/chat/lib/subagentToolCalls.ts` и проецируются чипами в любом чате —
 прозрачность есть свойство любого чата, автоповедение (волны) — только у
 conductor-типа.

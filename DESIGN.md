@@ -130,7 +130,6 @@ The product should reject the PRODUCT.md anti-references directly: not a generic
 - Use Tailwind-facing design tokens in component code, then trace back to CSS variables only when changing the system itself.
 - Keep product chrome quiet, dense, and legible.
 - Treat the chat composer, sidebar, settings, projects, skills, extensions, agents, and onboarding as the canonical surfaces.
-- Do not use Automations as a source for visual decisions.
 - Improve `src/shared/styles/globals.css` and `src/shared/ui/` when the design system needs to evolve.
 
 ## 2. Colors
@@ -179,8 +178,6 @@ The source palette is a semantic token system backed by a gray scale and small s
 **The State Color Rule.** Red, green, blue, and yellow are for state, not decoration. If a color does not communicate status or selected context, remove it.
 
 **The Neutral Migration Rule.** Current tokens include pure `#ffffff` and `#000000`. Future token work may tint those neutrals, but new surfaces should not introduce raw white or black outside the token layer.
-
-**The No Automations Precedent Rule.** Do not copy color decisions from the Automations UI into shared guidance or new product surfaces.
 
 ## 3. Typography
 
@@ -331,7 +328,6 @@ Use Radix-backed shared primitives for dialogs, sheets, drawers, dropdowns, popo
 
 ### Don't:
 
-- **Don't** use the Automations feature UI as design precedent for new product work.
 - **Don't** invent friendly alias tokens like "ink" or "paper" in docs, components, or feature code.
 - **Don't** make Berd feel like a generic chatbot wrapper.
 - **Don't** make it feel like a dark terminal skin.
