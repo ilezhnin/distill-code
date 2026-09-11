@@ -22,5 +22,4 @@ pub mod renderer;
 pub mod runtime_config;
 pub mod system;
 pub mod terminal;
-pub mod window_session;
 pub mod workspace_context;
