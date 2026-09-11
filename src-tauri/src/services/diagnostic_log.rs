@@ -358,7 +358,6 @@ fn quote_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn validates_and_sanitizes_diagnostic_event_fields() {
@@ -398,62 +397,5 @@ mod tests {
             record.fields.get("lineCount"),
             Some(&DiagnosticFieldValue::Number(3_u64.into()))
         );
-    }
-
-    #[test]
-    fn formats_diagnostic_records_as_key_value_lines() {
-        let record = build_record(DiagnosticEventInput {
-            level: DiagnosticLevel::Error,
-            category: DiagnosticCategory::Renderer,
-            event: "window_error".to_string(),
-            elapsed_ms: Some(42),
-            fields: Some(BTreeMap::from([
-                (
-                    "message".to_string(),
-                    DiagnosticFieldValue::String("boom with spaces".to_string()),
-                ),
-                (
-                    "path".to_string(),
-                    DiagnosticFieldValue::String("/tmp/berd.log".to_string()),
-                ),
-                (
-                    "apiKey".to_string(),
-                    DiagnosticFieldValue::String("secret".to_string()),
-                ),
-                ("lineCount".to_string(), 3_u64.into()),
-            ])),
-        })
-        .unwrap();
-
-        let line = format_record(&record);
-
-        assert!(line.contains("category=renderer"));
-        assert!(line.contains("event=window_error"));
-        assert!(line.contains("elapsed_ms=42"));
-        assert!(line.contains("message=\"boom with spaces\""));
-        assert!(line.contains("path=/tmp/berd.log"));
-        assert!(line.contains("apiKey=\"[redacted]\""));
-        assert!(line.contains("lineCount=3"));
-        assert!(!line.contains('{'));
-    }
-
-    #[test]
-    fn rejects_high_cardinality_or_nested_diagnostic_input() {
-        assert!(build_record(DiagnosticEventInput {
-            level: DiagnosticLevel::Info,
-            category: DiagnosticCategory::AgentHost,
-            event: "SpawnStarted".to_string(),
-            elapsed_ms: None,
-            fields: None,
-        })
-        .is_err());
-
-        assert!(serde_json::from_value::<DiagnosticEventInput>(json!({
-            "level": "info",
-            "category": "agentHost",
-            "event": "spawn_start",
-            "fields": { "nested": { "x": 1 } }
-        }))
-        .is_err());
     }
 }

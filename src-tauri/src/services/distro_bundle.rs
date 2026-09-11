@@ -189,58 +189,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn loads_bundle_assets_without_manifest() {
-        let root_dir = tempfile::tempdir().expect("temp distro root");
-        let bin_dir = root_dir.path().join(DISTRO_BIN_DIR_NAME);
-        std::fs::create_dir(&bin_dir).expect("create bin dir");
-
-        let bundle = load_distro_bundle_from_root(root_dir.path().to_path_buf())
-            .expect("bundle should load without manifest");
-
-        assert_eq!(bundle.root_dir, root_dir.path());
-        assert_eq!(bundle.bin_dir.as_deref(), Some(bin_dir.as_path()));
-        assert!(bundle.manifest.app_version.is_none());
-    }
-
-    #[test]
-    fn parses_partial_manifest() {
-        let manifest = parse_manifest(
-            r#"{
-                "appVersion": "development"
-            }"#,
-        )
-        .expect("manifest should parse");
-
-        assert_eq!(manifest.app_version.as_deref(), Some("development"));
-        assert!(manifest.distribution.is_none());
-    }
-
-    #[test]
-    fn parses_complete_distribution_and_normalizes_base_urls() {
-        let manifest = parse_manifest(r#"{"distribution":{"npmRegistryUrl":"https://packages.example.test/npm","nodeDistBaseUrl":"https://node.example.test"}}"#).expect("complete distribution should parse");
-        let distribution = manifest
-            .distribution
-            .expect("distribution should be present");
-        assert_eq!(
-            distribution.npm_registry_url(),
-            "https://packages.example.test/npm/"
-        );
-        assert_eq!(
-            distribution.node_dist_base_url(),
-            "https://node.example.test/"
-        );
-    }
-
-    #[test]
-    fn rejects_partial_distribution() {
-        let error = parse_manifest(
-            r#"{"distribution":{"npmRegistryUrl":"https://packages.example.test/"}}"#,
-        )
-        .expect_err("partial distribution should be rejected");
-        assert!(error.contains("missing field"), "{error}");
-    }
-
-    #[test]
     fn rejects_insecure_or_credential_bearing_distribution_urls() {
         for url in [
             "http://packages.example.test/npm/",

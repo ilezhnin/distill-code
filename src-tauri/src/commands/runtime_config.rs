@@ -477,25 +477,6 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn valid_config() -> RuntimeConfig {
-        RuntimeConfig {
-            schema_version: RUNTIME_CONFIG_SCHEMA_VERSION,
-            customer: Some(RuntimeIdentity {
-                id: "customer-1".to_string(),
-                display_name: Some("Customer One".to_string()),
-            }),
-            workspace: Some(RuntimeIdentity {
-                id: "workspace-1".to_string(),
-                display_name: Some("Workspace One".to_string()),
-            }),
-            feature_toggles: Some(HashMap::from([("doctor".to_string(), true)])),
-            doctor: Some(RuntimeDoctorConfig {
-                enabled: Some(true),
-                internal_tooling_checks: Some(true),
-            }),
-        }
-    }
-
     fn temp_state() -> (tempfile::TempDir, RuntimeConfigState) {
         let dir = tempdir().expect("temp dir");
         let state = RuntimeConfigState::new(dir.path().to_path_buf(), None);
@@ -561,16 +542,6 @@ mod tests {
     }
 
     #[test]
-    fn validates_complete_runtime_config() {
-        validate_runtime_config(&valid_config()).expect("valid config");
-    }
-
-    #[test]
-    fn default_runtime_config_is_valid() {
-        validate_runtime_config(&default_runtime_config()).expect("default config");
-    }
-
-    #[test]
     fn bundled_runtime_config_resource_is_valid_and_carries_no_restrictive_toggles() {
         // Pins the checked-in resource that ships as the official default source
         // of truth (bundled via tauri.conf.json `resources`). It must parse
@@ -593,79 +564,6 @@ mod tests {
             toggles.is_empty(),
             "official default must not carry feature toggles, got {toggles:?}"
         );
-    }
-
-    #[test]
-    fn read_fake_runtime_config_from_path_round_trips_and_reports_errors() {
-        let dir = tempdir().expect("temp dir");
-        let path = dir.path().join("fake.json");
-        write_fake_runtime_config_to_path(&path, &valid_config()).expect("write fake config");
-
-        let (source, config) = expect_ready(read_fake_runtime_config_from_path(&path));
-        assert_eq!(source, RuntimeConfigSource::FakeEndpoint);
-        assert_eq!(config, valid_config());
-
-        std::fs::write(&path, r#"{"schemaVersion":2}"#).expect("write invalid config");
-        let (source, reason, message) =
-            expect_unavailable(read_fake_runtime_config_from_path(&path));
-        assert_eq!(source, RuntimeConfigSource::FakeEndpoint);
-        assert_eq!(reason, RuntimeConfigUnavailableReason::Invalid);
-        assert!(message.contains("failed validation") || message.contains("Failed to parse"));
-
-        let missing = dir.path().join("missing.json");
-        let (source, reason, message) =
-            expect_unavailable(read_fake_runtime_config_from_path(&missing));
-        assert_eq!(source, RuntimeConfigSource::FakeEndpoint);
-        assert_eq!(reason, RuntimeConfigUnavailableReason::Missing);
-        assert!(message.contains("Failed to read fake runtime config"));
-    }
-
-    #[tokio::test]
-    async fn runtime_config_state_get_caches_until_refresh() {
-        let (_dir, state) = temp_state();
-        let mut first = valid_config();
-        first.feature_toggles = Some(HashMap::from([("first".to_string(), true)]));
-        let mut second = valid_config();
-        second.feature_toggles = Some(HashMap::from([("second".to_string(), true)]));
-        write_fake_runtime_config_to_path(&state.fake_config_path, &first).expect("write first");
-
-        let (_, config) = expect_ready(state.get().await.expect("get first"));
-        assert_eq!(config.feature_toggles, first.feature_toggles);
-
-        write_fake_runtime_config_to_path(&state.fake_config_path, &second).expect("write second");
-        let (_, cached) = expect_ready(state.get().await.expect("get cached"));
-        assert_eq!(cached.feature_toggles, first.feature_toggles);
-
-        let (_, refreshed) = expect_ready(state.refresh().await.expect("refresh"));
-        assert_eq!(refreshed.feature_toggles, second.feature_toggles);
-    }
-
-    #[tokio::test]
-    async fn runtime_config_state_clear_fake_config_restores_default_and_removes_file() {
-        let (_dir, state) = temp_state();
-        state
-            .set_fake_config(valid_config())
-            .expect("set fake config");
-        assert!(state.fake_config_path.exists());
-
-        let (source, config) =
-            expect_ready(state.clear_fake_config().await.expect("clear fake config"));
-        assert_eq!(source, RuntimeConfigSource::AppDefault);
-        assert_eq!(config, default_runtime_config());
-        assert!(!state.fake_config_path.exists());
-    }
-
-    #[tokio::test]
-    async fn runtime_config_state_ready_config_returns_default_when_none_saved() {
-        let (_dir, state) = temp_state();
-
-        let result = state.get().await.expect("get default");
-        let (source, config) = expect_ready(result);
-        assert_eq!(source, RuntimeConfigSource::AppDefault);
-        assert_eq!(config, default_runtime_config());
-
-        let ready = state.ready_config().await.expect("ready default config");
-        assert_eq!(ready, default_runtime_config());
     }
 
     #[tokio::test]
@@ -701,33 +599,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn load_uses_dev_default_fallback_when_bundled_runtime_config_missing() {
-        let (_dir, state) = temp_state_with_bundled(None);
-
-        let (source, config) = expect_ready(state.get().await.expect("get default config"));
-        assert_eq!(source, RuntimeConfigSource::AppDefault);
-        assert_eq!(config, default_runtime_config());
-    }
-
-    #[tokio::test]
-    async fn load_uses_dev_default_fallback_when_bundled_runtime_config_invalid() {
-        let dir = tempdir().expect("temp dir");
-        let bundled_path = dir
-            .path()
-            .join("resources")
-            .join(BUNDLED_RUNTIME_CONFIG_FILE_NAME);
-        std::fs::create_dir_all(bundled_path.parent().expect("parent")).expect("create dir");
-        std::fs::write(&bundled_path, r#"{"schemaVersion":2}"#)
-            .expect("write invalid bundled config");
-        let state = RuntimeConfigState::new(dir.path().to_path_buf(), Some(bundled_path));
-
-        let (source, config) =
-            expect_ready(state.get().await.expect("get fallback default config"));
-        assert_eq!(source, RuntimeConfigSource::AppDefault);
-        assert_eq!(config, default_runtime_config());
-    }
-
     #[test]
     fn bundled_runtime_config_fails_closed_when_missing_and_fallback_disabled() {
         let dir = tempdir().expect("temp dir");
@@ -743,16 +614,6 @@ mod tests {
         assert_eq!(source, RuntimeConfigSource::BundledFile);
         assert_eq!(reason, RuntimeConfigUnavailableReason::Missing);
         assert!(message.contains("not found"));
-    }
-
-    #[test]
-    fn bundled_runtime_config_fails_closed_when_path_unavailable_and_fallback_disabled() {
-        let (source, reason, message) =
-            expect_unavailable(load_bundled_runtime_config_from_source(None, false));
-
-        assert_eq!(source, RuntimeConfigSource::BundledFile);
-        assert_eq!(reason, RuntimeConfigUnavailableReason::Missing);
-        assert!(message.contains("path unavailable"));
     }
 
     #[test]

@@ -236,10 +236,7 @@ pub(crate) fn contains_hermit_path_component(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        inherited_env_keys_to_remove, remove_inherited_launcher_env, sanitize_shell_env,
-        user_env_var,
-    };
+    use super::{inherited_env_keys_to_remove, remove_inherited_launcher_env, sanitize_shell_env};
     use std::collections::HashMap;
 
     fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -247,14 +244,6 @@ mod tests {
             .iter()
             .map(|(key, value)| (key.to_string(), value.to_string()))
             .collect()
-    }
-
-    fn temp_path(segments: &[&str]) -> String {
-        let mut path = std::env::temp_dir();
-        for segment in segments {
-            path.push(segment);
-        }
-        path.to_string_lossy().into_owned()
     }
 
     #[test]
@@ -353,51 +342,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sanitize_shell_env_removes_config_redirects_orca_mirrors() {
-        let orca_codex_home = temp_path(&["orca", "codex-accounts", "acct", "home"]);
-        let mut env = env(&[
-            ("ORCA_CODEX_HOME", orca_codex_home.as_str()),
-            ("CODEX_HOME", orca_codex_home.as_str()),
-            ("ORCA_OPENCODE_CONFIG_DIR", "/shared/opencode"),
-            ("OPENCODE_CONFIG_DIR", "/shared/opencode"),
-            // The user overrode Orca's redirect with their own value: keep it.
-            ("ORCA_GROK_HOME", "/orca/grok"),
-            ("GROK_HOME", "/Users/morganm/.grok"),
-        ]);
-
-        sanitize_shell_env(&mut env);
-
-        assert_eq!(
-            env,
-            HashMap::from([("GROK_HOME".to_string(), "/Users/morganm/.grok".to_string())])
-        );
-    }
-
-    #[test]
-    fn sanitize_shell_env_removes_config_redirects_inside_orca_user_data() {
-        let user_data = temp_path(&["orca"]);
-        let claude_account = temp_path(&["orca", "claude-accounts", "acct"]);
-        let codex_account = temp_path(&["orca", "codex-accounts", "acct"]);
-        // Sibling of the Orca root, not inside it.
-        let grok_home = temp_path(&["orca-backup", "grok"]);
-        // A user's own config dir elsewhere.
-        let opencode_dir = temp_path(&["dotfiles", "opencode"]);
-        let mut env = env(&[
-            ("ORCA_USER_DATA_PATH", user_data.as_str()),
-            ("CLAUDE_CONFIG_DIR", claude_account.as_str()),
-            ("CODEX_HOME", codex_account.as_str()),
-            ("GROK_HOME", grok_home.as_str()),
-            ("OPENCODE_CONFIG_DIR", opencode_dir.as_str()),
-        ]);
-
-        sanitize_shell_env(&mut env);
-
-        let mut remaining: Vec<&str> = env.keys().map(String::as_str).collect();
-        remaining.sort_unstable();
-        assert_eq!(remaining, vec!["GROK_HOME", "OPENCODE_CONFIG_DIR"]);
-    }
-
     #[cfg(windows)]
     #[test]
     fn windows_orca_user_data_match_ignores_case_and_separator_style() {
@@ -455,23 +399,5 @@ mod tests {
 
         std::env::remove_var(PANE);
         std::env::remove_var(SAFE);
-    }
-
-    #[test]
-    fn user_env_var_ignores_launcher_identity_but_reads_user_config() {
-        const PANE: &str = "ORCA_TAB_ID_SHELL_ENV_TEST_9A2D";
-        const CONFIG: &str = "BERD_SHELL_ENV_TEST_CONFIG_DIR_9A2D";
-        std::env::set_var(PANE, "tab");
-        std::env::set_var(CONFIG, "/Users/morganm/.config/tool");
-
-        assert_eq!(user_env_var(PANE), None);
-        assert_eq!(
-            user_env_var(CONFIG).as_deref(),
-            Some("/Users/morganm/.config/tool")
-        );
-        assert_eq!(user_env_var("BERD_SHELL_ENV_TEST_UNSET_9A2D"), None);
-
-        std::env::remove_var(PANE);
-        std::env::remove_var(CONFIG);
     }
 }

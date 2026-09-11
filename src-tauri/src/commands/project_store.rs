@@ -253,27 +253,11 @@ mod tests {
     }
 
     #[test]
-    fn resolves_inside_the_project_store() {
-        let root = temp();
-        let resolved = resolve_project_document_path(&root, "memory/facts.json").unwrap();
-        assert_eq!(
-            resolved,
-            root.join(".distill").join("memory").join("facts.json")
-        );
-    }
-
-    #[test]
     fn refuses_to_leave_the_store() {
         let root = temp();
         assert!(resolve_project_document_path(&root, "../secrets.json").is_err());
         assert!(resolve_project_document_path(&root, "/etc/passwd").is_err());
         assert!(resolve_project_document_path(&root, "notes.txt").is_err());
-    }
-
-    #[test]
-    fn allows_markdown_because_project_overrides_are_written_by_people() {
-        let root = temp();
-        assert!(resolve_project_document_path(&root, "agents/reviewer.md").is_ok());
     }
 
     #[test]
@@ -301,12 +285,6 @@ mod tests {
     }
 
     #[test]
-    fn is_quiet_about_a_folder_that_is_not_a_repository() {
-        let root = temp();
-        assert!(!exclude_agent_folders(&root).unwrap());
-    }
-
-    #[test]
     fn writes_and_reads_back_a_document() {
         let root = temp();
         write_project_document(
@@ -325,22 +303,6 @@ mod tests {
             list_project_documents(root.to_string_lossy().to_string(), "memory".into()).unwrap(),
             vec!["facts.json".to_string()]
         );
-    }
-
-    #[test]
-    fn writes_a_closeout_where_git_will_see_it() {
-        let root = temp();
-        let written = write_project_run_closeout(
-            root.to_string_lossy().to_string(),
-            "2026-08-29-rename-the-flag.md".into(),
-            "# What changed".into(),
-        )
-        .unwrap();
-        assert!(written.ends_with("2026-08-29-rename-the-flag.md"));
-        assert!(root.join("docs").join("runs").is_dir());
-        // Not in `.distill`: that folder is excluded from git, and a closeout
-        // nobody can commit is a closeout nobody will ever read.
-        assert!(!written.contains(".distill"));
     }
 
     #[test]

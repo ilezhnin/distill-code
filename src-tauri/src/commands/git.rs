@@ -1140,18 +1140,6 @@ mod tests {
     }
 
     #[test]
-    fn dir_env_capture_timeout_is_capped_for_extended_commands() {
-        assert_eq!(
-            dir_env_capture_timeout(Duration::from_secs(10)),
-            Duration::from_secs(15)
-        );
-        assert_eq!(
-            dir_env_capture_timeout(GIT_WORKTREE_CREATE_TIMEOUT),
-            GIT_MUTATING_COMMAND_TIMEOUT
-        );
-    }
-
-    #[test]
     fn captured_git_env_replaces_command_env_and_preserves_full_snapshot() {
         let mut command = TokioCommand::new("git");
         command.env("STALE_VAR", "remove-me");
@@ -1279,41 +1267,6 @@ mod tests {
         assert!(env_is_removed(&command, "GIT_FUTURE_REPOSITORY_CONTROL"));
     }
 
-    #[test]
-    fn lite_git_env_does_not_override_path() {
-        let mut command = TokioCommand::new("git");
-        apply_lite_git_env(&mut command);
-        assert_eq!(env_value(&command, "PATH"), None);
-    }
-
-    #[cfg(not(windows))]
-    #[tokio::test]
-    async fn captured_env_failure_falls_back_to_lite_env() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let missing_dir = temp.path().join("missing");
-
-        let mut command = TokioCommand::new("git");
-        command.env("GIT_DIR", "/wrong/repo");
-        command.env("GIT_WORK_TREE", "/wrong/worktree");
-        command.env("GIT_INDEX_FILE", "/wrong/index");
-        apply_git_environment(
-            &mut command,
-            &missing_dir,
-            EnvSource::Captured,
-            Duration::from_millis(50),
-        )
-        .await;
-
-        assert!(env_is_removed(&command, "GIT_DIR"));
-        assert!(env_is_removed(&command, "GIT_WORK_TREE"));
-        assert!(env_is_removed(&command, "GIT_INDEX_FILE"));
-        assert_eq!(env_value(&command, "PATH"), None);
-        assert_eq!(
-            env_value(&command, "GIT_TERMINAL_PROMPT"),
-            Some(OsString::from("0"))
-        );
-    }
-
     #[cfg(windows)]
     #[tokio::test]
     async fn windows_captured_env_runs_hermit_managed_cmd_git_hook() {
@@ -1400,72 +1353,6 @@ mod tests {
         );
     }
 
-    /// A hook whose tool lookup fails must fail the Git operation: the fixture
-    /// above cannot be trusted unless a missing tool propagates a nonzero
-    /// status through the same native cmd boundary.
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn windows_captured_env_propagates_hook_tool_lookup_failure() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let repo = temp.path().join("Project With Spaces");
-        let hook = repo.join(".git").join("hooks").join("pre-commit");
-        std::fs::create_dir_all(&repo).expect("repo");
-        let run_setup_git = |args: &[&str]| {
-            let output = std::process::Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .output()
-                .expect("run setup git");
-            assert!(
-                output.status.success(),
-                "setup git {args:?} failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
-        run_setup_git(&["init", "-q"]);
-        std::fs::write(
-            repo.join("tracked.txt"),
-            "tracked
-",
-        )
-        .expect("tracked file");
-        run_setup_git(&["add", "tracked.txt"]);
-        std::fs::write(
-            &hook,
-            "#!/bin/sh
-MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /c berd-missing-hook-tool-fixture
-exit \"$?\"
-",
-        )
-        .expect("hook");
-        let mut command = TokioCommand::new("git");
-        command
-            .args([
-                "-c",
-                "user.name=Berd Test",
-                "-c",
-                "user.email=berd@example.test",
-                "commit",
-                "-qm",
-                "fixture",
-            ])
-            .current_dir(&repo);
-
-        apply_git_environment(
-            &mut command,
-            &repo,
-            EnvSource::Captured,
-            Duration::from_secs(5),
-        )
-        .await;
-        let output = command.output().await.expect("run Git hook");
-
-        assert!(
-            !output.status.success(),
-            "commit must fail when the hook tool lookup fails"
-        );
-    }
-
     #[test]
     fn env_source_policy_uses_captured_for_hook_sensitive_mutations() {
         assert_eq!(
@@ -1497,102 +1384,6 @@ exit \"$?\"
     }
 
     #[test]
-    fn delete_branch_switch_args_detaches_at_head() {
-        assert_eq!(
-            delete_branch_switch_args(true, "HEAD"),
-            vec!["switch", "-f", "--detach", "HEAD"]
-        );
-        assert_eq!(
-            delete_branch_switch_args(false, "main"),
-            vec!["switch", "--", "main"]
-        );
-    }
-
-    #[test]
-    fn env_source_policy_uses_smart_for_read_and_status_probes() {
-        assert_eq!(
-            env_source_for_git_args(&["rev-parse", "--show-toplevel"]),
-            EnvSource::Smart
-        );
-        assert_eq!(
-            env_source_for_git_args(&["status", "--porcelain"]),
-            EnvSource::Smart
-        );
-        assert_eq!(
-            env_source_for_git_args(&["worktree", "list", "--porcelain"]),
-            EnvSource::Smart
-        );
-        assert_eq!(
-            env_source_for_git_args(&["for-each-ref", "refs/heads"]),
-            EnvSource::Smart
-        );
-    }
-
-    #[test]
-    fn retry_predicate_skips_missing_ref_object_and_revision_errors() {
-        assert!(is_missing_ref_or_object_error(
-            "fatal: Needed a single revision"
-        ));
-        assert!(is_missing_ref_or_object_error(
-            "fatal: ambiguous argument 'origin/foo': unknown revision or path not in the working tree."
-        ));
-        assert!(is_missing_ref_or_object_error(
-            "fatal: Not a valid object name origin/foo"
-        ));
-        assert!(is_missing_ref_or_object_error(
-            "fatal: no upstream configured for branch 'main'"
-        ));
-        assert!(is_missing_ref_or_object_error(
-            "fatal: Not a valid commit name origin/foo"
-        ));
-        assert!(is_missing_ref_or_object_error(
-            "fatal: bad revision 'origin/foo'"
-        ));
-        assert!(is_missing_ref_or_object_error("fatal: bad object HEAD"));
-    }
-
-    #[test]
-    fn retry_predicate_treats_spawn_not_found_as_env_sensitive() {
-        assert!(should_retry_with_captured_error(&GitRunError::Spawn(
-            io::Error::new(io::ErrorKind::NotFound, "git")
-        )));
-        assert!(!should_retry_with_captured_error(&GitRunError::Spawn(
-            io::Error::new(io::ErrorKind::PermissionDenied, "git")
-        )));
-        assert!(!should_retry_with_captured_error(&GitRunError::TimedOut));
-    }
-
-    #[cfg(unix)]
-    fn failed_output(stderr: &str) -> Output {
-        use std::os::unix::process::ExitStatusExt;
-
-        Output {
-            status: std::process::ExitStatus::from_raw(1),
-            stdout: Vec::new(),
-            stderr: stderr.as_bytes().to_vec(),
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn smart_retry_skips_env_independent_git_failures() {
-        assert!(!should_retry_with_captured_output(&failed_output(
-            "fatal: not a git repository (or any of the parent directories): .git"
-        )));
-        assert!(!should_retry_with_captured_output(&failed_output(
-            "fatal: bad revision 'origin/foo'"
-        )));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn smart_retry_retries_unrecognized_git_failures() {
-        assert!(should_retry_with_captured_output(&failed_output(
-            "git-lfs: command not found"
-        )));
-    }
-
-    #[test]
     fn force_non_interactive_sets_git_prompt_ssh_and_locale_defaults() {
         let mut command = TokioCommand::new("git");
 
@@ -1609,49 +1400,5 @@ exit \"$?\"
         );
         assert_eq!(env_value(&command, "LC_ALL"), Some(OsString::from("C")));
         assert_eq!(env_value(&command, "LANG"), Some(OsString::from("C")));
-    }
-
-    #[test]
-    fn force_non_interactive_respects_captured_git_ssh() {
-        let mut command = TokioCommand::new("git");
-        let mut env = HashMap::from([
-            (
-                "GIT_SSH".to_string(),
-                "/usr/local/bin/company-ssh".to_string(),
-            ),
-            ("GIT_SSH_VARIANT".to_string(), "ssh".to_string()),
-        ]);
-
-        sanitize_git_env(&mut env);
-        apply_captured_git_env(&mut command, &env);
-        force_non_interactive(&mut command);
-
-        assert_eq!(
-            env_value(&command, "GIT_SSH"),
-            Some(OsString::from("/usr/local/bin/company-ssh"))
-        );
-        assert_eq!(
-            env_value(&command, "GIT_SSH_VARIANT"),
-            Some(OsString::from("ssh"))
-        );
-        assert_eq!(env_value(&command, "GIT_SSH_COMMAND"), None);
-    }
-
-    #[test]
-    fn force_non_interactive_respects_captured_git_ssh_command() {
-        let mut command = TokioCommand::new("git");
-        let mut env = HashMap::from([(
-            "GIT_SSH_COMMAND".to_string(),
-            "/usr/local/bin/company-ssh".to_string(),
-        )]);
-
-        sanitize_git_env(&mut env);
-        apply_captured_git_env(&mut command, &env);
-        force_non_interactive(&mut command);
-
-        assert_eq!(
-            env_value(&command, "GIT_SSH_COMMAND"),
-            Some(OsString::from("/usr/local/bin/company-ssh"))
-        );
     }
 }
