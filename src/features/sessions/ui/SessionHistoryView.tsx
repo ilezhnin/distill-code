@@ -811,20 +811,31 @@ export function SessionHistoryView({
         const result = await saveExportedSessionFiles(items);
         if (!result) return;
         toast.success(
-          `Exported ${result.files.length} chats to ${result.folder}`,
+          t("common:bulkActions.exportedTo", {
+            count: result.files.length,
+            displayCount: result.files.length,
+            folder: result.folder,
+          }),
         );
       } else {
         for (const item of items) {
           downloadJson(item.contents, item.filename);
         }
-        toast.success(`Exported ${items.length} chats`);
+        toast.success(
+          t("common:bulkActions.exported", {
+            count: items.length,
+            displayCount: items.length,
+          }),
+        );
       }
       clearSelection();
     } catch (error) {
       console.error("Bulk export failed:", error);
-      toast.error(formatAcpErrorMessage(error, "Failed to export chats"));
+      toast.error(
+        formatAcpErrorMessage(error, t("common:bulkActions.exportFailed")),
+      );
     }
-  }, [activeSessions, clearSelection, selectedSessionIds]);
+  }, [activeSessions, clearSelection, selectedSessionIds, t]);
 
   const handleSelectResult = useCallback(
     (sessionId: string, messageId?: string) => {

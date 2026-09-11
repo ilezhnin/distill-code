@@ -52,6 +52,11 @@
     "archiveConfirmTitle_one": "Archive 1 chat?",
     "archiveConfirmTitle_other": "Archive {{displayCount}} chats?",
     "archiving": "Archiving...",
+    "exportFailed": "Failed to export chats",
+    "exportedTo_one": "Exported 1 chat to {{folder}}",
+    "exportedTo_other": "Exported {{displayCount}} chats to {{folder}}",
+    "exported_one": "Exported 1 chat",
+    "exported_other": "Exported {{displayCount}} chats",
     "failed_one": "{{displayCount}} action failed",
     "failed_other": "{{displayCount}} actions failed"
   },
@@ -93,7 +98,8 @@
     "view": "View"
   },
   "errors": {
-    "clipboardUnavailable": "Clipboard API not available"
+    "clipboardUnavailable": "Clipboard API not available",
+    "searchFailed": "Search failed"
   },
   "rendererError": {
     "description": "Distill hit a renderer error. Reload the window to try again.",
@@ -155,7 +161,9 @@
     "reportedNone": "{{provider}} reported no models"
   },
   "session": {
-    "defaultTitle": "New chat"
+    "defaultTitle": "New chat",
+    "exported": "Exported {{title}} to {{filename}}",
+    "exportFailed": "Failed to export chat"
   },
   "usage": {
     "cache": "Cache",
