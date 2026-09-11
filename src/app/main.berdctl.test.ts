@@ -85,24 +85,15 @@ function collectStaticValueImportGraph(entry: string) {
 }
 
 describe("main entrypoint berdctl bridge loading", () => {
-  it("loads the berdctl bridge dynamically from the main-window branch only", () => {
+  it("loads the berdctl bridge dynamically, next to the queued-message drain", () => {
     expect(mainSource).not.toContain(
       'import { BerdctlBridge } from "@/features/berdctl"',
     );
     expect(mainSource).toContain(
       'import("@/features/berdctl/bridge/BerdctlBridge")',
     );
-
-    const sessionBranchStart = mainSource.indexOf("} else if (sessionId) {");
-    const mainBranchStart = mainSource.indexOf("} else {", sessionBranchStart);
-    expect(sessionBranchStart).toBeGreaterThan(-1);
-    expect(mainBranchStart).toBeGreaterThan(sessionBranchStart);
-
-    const sessionBranch = mainSource.slice(sessionBranchStart, mainBranchStart);
-    const mainBranch = mainSource.slice(mainBranchStart);
-    expect(sessionBranch).not.toContain("<OptionalBerdctlBridge />");
-    expect(mainBranch).toContain("<BackgroundQueuedMessageDrain />");
-    expect(mainBranch).toContain("<OptionalBerdctlBridge />");
+    expect(mainSource).toContain("<BackgroundQueuedMessageDrain />");
+    expect(mainSource).toContain("<OptionalBerdctlBridge />");
   });
 
   it("mounts the background queued-message drain unconditionally", () => {

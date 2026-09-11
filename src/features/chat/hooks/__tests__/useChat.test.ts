@@ -947,7 +947,7 @@ describe("useChat", () => {
     expect(runtime.isRunCancellationPending).toBe(false);
   });
 
-  it("keeps cancellation pending after stopping a streaming run without active run metadata", async () => {
+  it("settles cancellation once the cancel is sent for a run no local prompt owns", async () => {
     const cancelDeferred = createDeferredPromise<boolean>();
     mockAcpCancelSession.mockReturnValue(cancelDeferred.promise);
 
@@ -975,7 +975,7 @@ describe("useChat", () => {
     expect(
       useChatStore.getState().getSessionRuntime("session-1")
         .isRunCancellationPending,
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("clears cancellation pending after stopping before the ACP prompt starts", async () => {
