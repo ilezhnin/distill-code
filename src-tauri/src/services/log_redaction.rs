@@ -9,16 +9,10 @@
 //! NOTE: this is a *key-based* redactor — it scrubs `key=value` / `key: "value"`
 //! pairs, not free-form prose. It cannot tell whether arbitrary text contains
 //! user/LLM content. Callers that export logs must additionally drop any line
-//! that can carry such content (see `sanitize_app_log_line`).
-
-/// Substrings that identify lines echoing the goosed sidecar's captured
-/// stdout/stderr. Those lines can contain free-form user or LLM content that
-/// the key-based redactor cannot scrub, so they are dropped before export.
-const SIDECAR_CAPTURE_MARKERS: [&str; 2] = ["[goose serve stdout]", "[goose serve stderr]"];
+//! that can carry such content.
 
 pub(crate) fn redact_log_line(line: &str) -> String {
     [
-        "goose_server__secret_key",
         "authorization",
         "refresh_token",
         "access_token",
@@ -31,23 +25,6 @@ pub(crate) fn redact_log_line(line: &str) -> String {
     ]
     .into_iter()
     .fold(line.to_string(), redact_sensitive_key)
-}
-
-/// Sanitize one line of the Tauri shell log (`berd.log`) for export.
-///
-/// Returns `None` for lines that echo the goosed sidecar's captured
-/// stdout/stderr — those are dropped because they can carry conversation/LLM
-/// content the key-based redactor would not catch (and the same diagnostics are
-/// already covered, content-free, by goosed's own `logs/{cli,server}` files).
-/// All other lines are passed through [`redact_log_line`].
-pub(crate) fn sanitize_app_log_line(line: &str) -> Option<String> {
-    if SIDECAR_CAPTURE_MARKERS
-        .iter()
-        .any(|marker| line.contains(marker))
-    {
-        return None;
-    }
-    Some(redact_log_line(line))
 }
 
 fn redact_sensitive_key(line: String, key: &str) -> String {
@@ -155,7 +132,7 @@ fn find_value_end(bytes: &[u8], value_start: usize, quote: Option<u8>, key: &str
 
 #[cfg(test)]
 mod tests {
-    use super::{redact_log_line, sanitize_app_log_line};
+    use super::redact_log_line;
 
     #[test]
     fn redacts_common_secret_key_value_pairs() {
@@ -170,13 +147,12 @@ mod tests {
 
     #[test]
     fn redacts_json_style_secret_values() {
-        let redacted = redact_log_line(
-            r#"{"authorization":"Bearer abc.def","GOOSE_SERVER__SECRET_KEY":"local-secret"}"#,
-        );
+        let redacted =
+            redact_log_line(r#"{"authorization":"Bearer abc.def","SECRET_KEY":"local-secret"}"#);
 
         assert_eq!(
             redacted,
-            r#"{"authorization":"[redacted]","GOOSE_SERVER__SECRET_KEY":"[redacted]"}"#
+            r#"{"authorization":"[redacted]","SECRET_KEY":"[redacted]"}"#
         );
     }
 
@@ -185,24 +161,5 @@ mod tests {
         let redacted = redact_log_line("Authorization: Bearer abc.def, status=401");
 
         assert_eq!(redacted, "Authorization: [redacted], status=401");
-    }
-
-    #[test]
-    fn sanitize_drops_captured_sidecar_lines_and_redacts_the_rest() {
-        // Captured goosed stdout/stderr lines are dropped wholesale.
-        assert_eq!(
-            sanitize_app_log_line("[2026-01-01][INFO] [goose serve stdout] user said hello"),
-            None
-        );
-        assert_eq!(
-            sanitize_app_log_line("[2026-01-01][WARN] [goose serve stderr] panic: secret stuff"),
-            None
-        );
-
-        // Native shell-log lines are kept, with secret values still redacted.
-        assert_eq!(
-            sanitize_app_log_line("[INFO] Spawning goose serve token=abc port=1234"),
-            Some("[INFO] Spawning goose serve token=[redacted] port=1234".to_string())
-        );
     }
 }

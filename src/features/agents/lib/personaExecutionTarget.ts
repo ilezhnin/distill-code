@@ -2,11 +2,8 @@ import {
   normalizeSessionExecutionTarget,
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
-import {
-  canonicalProviderCatalogIdFromEntries,
-  resolveAgentProviderCatalogIdStrictFromEntries,
-  resolveModelProviderCatalogIdStrictFromEntries,
-} from "@/features/providers/providerCatalog";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
+import { resolveAgentProviderCatalogIdStrictFromEntries } from "@/features/providers/providerCatalog";
 import { normalizeProviderKey } from "@/features/providers/lib/providerKey";
 import { normalizeConcreteModelId } from "@/shared/lib/modelIdentity";
 import type { Persona, UpdatePersonaRequest } from "@/shared/types/agents";
@@ -31,21 +28,19 @@ export interface PersonaTargetContext {
   catalogEntries: ProviderCatalogEntry[];
 }
 
-const INTERNAL_DATABRICKS_KEYS = new Set([
+/**
+ * Provider ids written by earlier app versions that no longer name a harness:
+ * the built-in agent of earlier builds and the model providers it fronted.
+ */
+const LEGACY_PROVIDER_KEYS = new Set([
+  "berd",
   "databricks",
   "databricks_v2",
   "databricks_ai_gateway",
+  "anthropic",
+  "openai",
+  "google",
 ]);
-
-function canonicalModelProviderId(
-  providerId: string,
-  catalogEntries: ProviderCatalogEntry[],
-): string {
-  if (INTERNAL_DATABRICKS_KEYS.has(normalizeProviderKey(providerId))) {
-    return "databricks_v2";
-  }
-  return canonicalProviderCatalogIdFromEntries(catalogEntries, providerId);
-}
 
 function harnessIdForPersona(
   providerId: string | undefined,
@@ -54,13 +49,7 @@ function harnessIdForPersona(
 ): string | undefined {
   if (!providerId) return undefined;
   const normalized = normalizeProviderKey(providerId);
-  if (normalized === "goose" || normalized === "berd") return "goose";
-  if (
-    INTERNAL_DATABRICKS_KEYS.has(normalized) ||
-    resolveModelProviderCatalogIdStrictFromEntries(catalogEntries, providerId)
-  ) {
-    return "goose";
-  }
+  if (LEGACY_PROVIDER_KEYS.has(normalized)) return DEFAULT_HARNESS_ID;
 
   return (
     resolveAgentProviderCatalogIdStrictFromEntries(
@@ -75,39 +64,15 @@ function harnessIdForPersona(
   );
 }
 
-function persistedModelProviderId(
-  persona: Pick<Persona, "provider" | "modelProviderId">,
-  harnessId: string,
-  catalogEntries: ProviderCatalogEntry[],
-): string | undefined {
-  if (persona.modelProviderId?.trim()) {
-    return canonicalModelProviderId(persona.modelProviderId, catalogEntries);
-  }
-  if (
-    persona.provider?.trim() &&
-    harnessId === "goose" &&
-    (INTERNAL_DATABRICKS_KEYS.has(normalizeProviderKey(persona.provider)) ||
-      resolveModelProviderCatalogIdStrictFromEntries(
-        catalogEntries,
-        persona.provider,
-      ))
-  ) {
-    return canonicalModelProviderId(persona.provider, catalogEntries);
-  }
-  return harnessId === "goose" ? undefined : harnessId;
-}
-
 export interface PersonaTargetOptions {
   /**
    * Refuse to name a model the harness does not report.
    *
    * Callers that ESTABLISH a session pass this. A model id the harness has
-   * never heard of is not a preference the runtime can honour: goose forwards
-   * it to the ACP agent verbatim, the agent answers `Invalid params`, and every
-   * send in that chat fails with "Failed to set ACP model option" — a chat the
+   * never heard of is not a preference the runtime can honour: the harness
+   * answers `Invalid params`, and every send in that chat fails — a chat the
    * operator cannot rescue from inside the chat. Dropping to the harness'
-   * own current model is the honest fallback: the session runs, and the model
-   * pill shows what it actually runs on.
+   * own current model is the honest fallback.
    *
    * Readers that only INTERPRET stored data (personaTargetMigration) must
    * leave it off: for them an unmatched id means "inventory has not answered
@@ -118,8 +83,8 @@ export interface PersonaTargetOptions {
 }
 
 /**
- * Convert canonical saved agent metadata into PR #1085's runtime target.
- * An incomplete legacy target is no override; callers must leave chat state alone.
+ * Convert saved agent metadata into a runtime target. An incomplete legacy
+ * target is no override; callers must leave chat state alone.
  */
 export function personaExecutionTarget(
   persona:
@@ -143,34 +108,10 @@ export function personaExecutionTarget(
 
   const availableModels = getModelsForHarness?.(harnessId) ?? models;
   const modelId = normalizeConcreteModelId(persona?.model);
-  let modelProviderId = persistedModelProviderId(
-    persona ?? {},
-    harnessId,
-    catalogEntries,
-  );
-
-  // Compatibility read until the migration write completes.
-  if (modelId && !modelProviderId && harnessId === "goose") {
-    const matches = new Set(
-      availableModels.flatMap((model) =>
-        model.id === modelId && model.providerId
-          ? [canonicalModelProviderId(model.providerId, catalogEntries)]
-          : [],
-      ),
-    );
-    if (matches.size === 1) {
-      modelProviderId = matches.values().next().value;
-    }
-  }
-
-  if (modelId && !modelProviderId) return undefined;
-
   const matchingModel = availableModels.find(
     (model) =>
       model.id === modelId &&
-      (!model.providerId ||
-        canonicalModelProviderId(model.providerId, catalogEntries) ===
-          modelProviderId),
+      (!model.providerId || model.providerId === harnessId),
   );
 
   // An empty list is "inventory has not answered", never "the model is gone" —
@@ -183,7 +124,7 @@ export function personaExecutionTarget(
 
   return normalizeSessionExecutionTarget({
     harnessId,
-    modelProviderId,
+    modelProviderId: modelId && !inventoryDisownsModel ? harnessId : undefined,
     modelId: inventoryDisownsModel ? undefined : modelId,
     modelName: inventoryDisownsModel
       ? undefined
@@ -192,8 +133,8 @@ export function personaExecutionTarget(
 }
 
 /**
- * Produce the durable repair for legacy agent metadata after provider inventory
- * has refreshed. `null` means the saved target is already canonical.
+ * Produce the durable repair for legacy agent metadata. `null` means the
+ * saved target is already canonical.
  */
 export function personaTargetMigration(
   persona: Pick<Persona, "provider" | "modelProviderId" | "model">,
@@ -206,14 +147,7 @@ export function personaTargetMigration(
 
   const target = personaExecutionTarget(persona, context);
   if (!target) {
-    const modelId = normalizeConcreteModelId(persona.model);
-    const matchingProviderIds = new Set(
-      context.models.flatMap((model) =>
-        modelId && model.id === modelId && model.providerId
-          ? [canonicalModelProviderId(model.providerId, context.catalogEntries)]
-          : [],
-      ),
-    );
+    // Clear only when the saved data itself proves it cannot form one target.
     const unknownHarness =
       Boolean(persona.provider) &&
       !harnessIdForPersona(
@@ -221,10 +155,7 @@ export function personaTargetMigration(
         context.providers,
         context.catalogEntries,
       );
-    // Clear only when the saved data itself proves it cannot form one target.
-    // No inventory match may be a transient availability problem, so preserve
-    // that legacy metadata until a later authoritative refresh can repair it.
-    return unknownHarness || matchingProviderIds.size > 1
+    return unknownHarness
       ? { provider: null, modelProviderId: null, model: null }
       : null;
   }

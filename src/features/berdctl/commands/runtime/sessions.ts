@@ -13,6 +13,7 @@ import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore
 import { acpGetSessionInfo, acpListSessionsPage } from "@/shared/api/acp";
 import { sessionNotFoundMessage } from "../helpers";
 import { CommandError } from "../types";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
 export async function loadAllSessionsForBerdctl(): Promise<void> {
   try {
@@ -125,7 +126,7 @@ export function sessionMetadata(session: ChatSession) {
   return {
     session_id: session.id,
     title: session.title,
-    harness_id: session.executionTarget?.harnessId ?? "goose",
+    harness_id: session.executionTarget?.harnessId ?? DEFAULT_HARNESS_ID,
     model_id: session.executionTarget?.modelId ?? null,
     agent_id: session.personaId ?? null,
     project_id: session.projectId ?? null,

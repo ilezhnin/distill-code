@@ -246,13 +246,18 @@ if ($Mode -eq "install") {
 
     if (-not [string]::IsNullOrWhiteSpace((Get-CommandSource "fnm"))) {
         Ensure-FnmNode
-        Initialize-PublicNpmEnvironment
-        Invoke-CheckedCommand -FilePath (Get-CorepackCommand) -ArgumentList @("enable") -Label "corepack enable"
+    }
+
+    # pnpm provisioning is gated on Node, not on fnm: fnm only decides which
+    # Node is on PATH. Gating it on fnm left a plain Node install with no
+    # package manager and no way to get one — install mode reported success
+    # while every lane still failed with "pnpm is not available. Run 'just
+    # bootstrap-windows install'".
+    if (-not [string]::IsNullOrWhiteSpace((Get-CommandSource "node"))) {
         # Distill fetches the version-pinned pnpm from public npmjs through
-        # Corepack. If Corepack cannot activate it, fall back to a global npm
-        # install of the same pin.
-        if (-not (Invoke-CorepackPreparePnpm)) {
-            Invoke-NpmInstallPnpm | Out-Null
+        # Corepack, with a global npm install of the same pin as the fallback.
+        if (-not (Install-PnpmForUser)) {
+            Add-Warn "pnpm" "Could not put pnpm@$(Get-RequiredPnpmVersion) on PATH automatically."
         }
         try {
             Assert-PnpmReady

@@ -33,11 +33,6 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     labelKey: "appearance.workingIndicatorAnimation.label",
   },
   {
-    id: "chat-tips",
-    sectionId: "behavior",
-    labelKey: "general.agentToolsTips.label",
-  },
-  {
     id: "mention-default",
     sectionId: "behavior",
     labelKey: "general.atMentionDefault.label",
@@ -87,22 +82,10 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     sectionId: "system",
     labelKey: "storage.cachedMedia.label",
   },
-  // Hidden via hiddenItemIds wherever the row itself does not render: enforced
-  // builds, and builds/sessions without the `telemetry` capability.
   {
-    id: "telemetry",
-    sectionId: "system",
-    labelKey: "privacy.telemetry.label",
-  },
-  {
-    id: "bb-cli",
-    sectionId: "system",
-    labelKey: "general.bbCli.title",
-  },
-  {
-    id: "connections",
-    sectionId: "connections",
-    labelKey: "nav.connections",
+    id: "extensions",
+    sectionId: "extensions",
+    labelKey: "nav.extensions",
   },
   {
     id: "providers",
@@ -198,15 +181,5 @@ export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     id: "about",
     sectionId: "system",
     labelKey: "about.title",
-  },
-  {
-    id: "updates",
-    sectionId: "system",
-    labelKey: "updates.title",
-  },
-  {
-    id: "experiments",
-    sectionId: "experiments",
-    labelKey: "nav.experiments",
   },
 ] as const;

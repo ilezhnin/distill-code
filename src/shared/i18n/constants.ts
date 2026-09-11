@@ -3,11 +3,8 @@ export const SUPPORTED_LOCALES = ["en", "es"] as const;
 export const DEFAULT_NAMESPACE = "common";
 export const TRANSLATION_NAMESPACES = [
   "agents",
-  "automations",
-  "builderbot",
   "common",
   "chat",
-  "feedback",
   "home",
   "memory",
   "planner",
@@ -21,7 +18,7 @@ export const TRANSLATION_NAMESPACES = [
   "sessions",
   "status",
 ] as const;
-export const LOCALE_STORAGE_KEY = "goose:locale";
+export const LOCALE_STORAGE_KEY = "distill:locale";
 export const SYSTEM_LOCALE = "system";
 
 export type AppLocale = (typeof SUPPORTED_LOCALES)[number];

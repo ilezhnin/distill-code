@@ -281,7 +281,7 @@ function missingVerificationEvidence(
   if (!waveRequiresVerification(wave.steps)) return null;
   const step = waveVerificationStep(wave.steps);
   if (!step) {
-    return "This wave built something inspectable and its last step was not a verification step, so nothing external checked the result.";
+    return "This wave built something inspectable and did not close its work with a verification step, so nothing external checked the result.";
   }
   const report = step.runId ? reportOf(step.runId) : undefined;
   if (!report || report.status !== "completed") {

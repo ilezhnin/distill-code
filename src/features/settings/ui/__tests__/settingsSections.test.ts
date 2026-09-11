@@ -1,25 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { ProfileCapabilityState } from "@/shared/profile/capabilities";
 import {
-  DEFAULT_SETTINGS_SECTION,
   SETTINGS_SECTIONS,
   getVisibleSettingsSections,
   isSettingsSectionEnabled,
-  resolveEnabledSettingsSection,
   resolveSettingsSection,
 } from "../settingsSections";
 
 const enabledCapabilities: ProfileCapabilityState = {
-  agentTools: true,
-  automations: true,
-  builderbot: true,
   doctor: true,
-  feedback: true,
-  telemetry: true,
-  voiceDictation: true,
-  voiceConversation: true,
-  managedConnections: true,
-  updates: true,
 };
 
 // Rev 3 (Aug 10): rewritten for the appearance/behavior/system/about split.
@@ -34,13 +23,6 @@ const enabledCapabilities: ProfileCapabilityState = {
 // "updates" now redirect to "system", which absorbed About's content under
 // its own subhead.
 describe("settingsSections", () => {
-  it("includes experiments in settings navigation", () => {
-    const sectionIds = SETTINGS_SECTIONS.map((section) => section.id);
-
-    expect(sectionIds).toContain("experiments");
-    expect(resolveSettingsSection("experiments")).toBe("experiments");
-  });
-
   it("includes memory in settings navigation after behavior", () => {
     const sectionIds = SETTINGS_SECTIONS.map((section) => section.id);
 
@@ -105,15 +87,15 @@ describe("settingsSections", () => {
     );
   });
 
-  it("hosts connections and redirects the legacy extensions route", () => {
+  it("hosts extensions and redirects the legacy connections route", () => {
     expect(SETTINGS_SECTIONS.map((section) => section.id)).not.toContain(
-      "extensions",
-    );
-    expect(SETTINGS_SECTIONS.map((section) => section.id)).toContain(
       "connections",
     );
-    expect(resolveSettingsSection("extensions")).toBe("connections");
-    expect(resolveSettingsSection("connections")).toBe("connections");
+    expect(SETTINGS_SECTIONS.map((section) => section.id)).toContain(
+      "extensions",
+    );
+    expect(resolveSettingsSection("connections")).toBe("extensions");
+    expect(resolveSettingsSection("extensions")).toBe("extensions");
   });
 
   it("redirects the legacy doctor route to System (rev 4: dialog, not a page)", () => {
@@ -121,21 +103,5 @@ describe("settingsSections", () => {
       "doctor",
     );
     expect(resolveSettingsSection("doctor")).toBe("system");
-  });
-
-  it("filters and redirects capability-gated settings sections", () => {
-    const capabilities = {
-      ...enabledCapabilities,
-      voiceConversation: false,
-    };
-
-    expect(isSettingsSectionEnabled("voice", capabilities)).toBe(false);
-    expect(isSettingsSectionEnabled("appearance", capabilities)).toBe(true);
-    expect(resolveEnabledSettingsSection("voice", capabilities)).toBe(
-      DEFAULT_SETTINGS_SECTION,
-    );
-    expect(
-      getVisibleSettingsSections(capabilities).map((section) => section.id),
-    ).not.toContain("voice");
   });
 });

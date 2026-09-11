@@ -8,7 +8,6 @@ export type SearchCategory =
   | "extensions"
   | "agents"
   | "skills"
-  | "automations"
   | "settings";
 
 export interface SettingsSearchResult {

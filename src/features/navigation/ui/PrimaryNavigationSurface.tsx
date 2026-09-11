@@ -10,7 +10,7 @@ import {
   type Ref,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { IconArrowLeft, IconServer } from "@tabler/icons-react";
+import { IconArrowLeft } from "@tabler/icons-react";
 import { ArrowUpCircle } from "lucide-react";
 import type { AppView } from "@/app/AppShell";
 import { PaneSurface } from "@/app/layout/panes/paneChrome";
@@ -31,7 +31,6 @@ import {
 import { SidebarNavItem } from "./SidebarNavItem";
 import {
   SidebarNavAgentsIcon,
-  SidebarNavAutomationsIcon,
   SidebarNavHomeIcon,
   SidebarNavPlannerIcon,
   SidebarNavSettingsIcon,
@@ -66,8 +65,6 @@ interface PrimaryNavigationSurfaceProps {
   settingsSections: readonly (typeof SETTINGS_SECTIONS)[number][];
   showBottomMask: boolean;
   showTopMask: boolean;
-  showAutomationsSurface: boolean;
-  showBuilderbotSurface: boolean;
   showSecondaryBottomMask: boolean;
   width: number;
 }
@@ -99,8 +96,6 @@ export const PrimaryNavigationSurface = forwardRef<
     settingsSections,
     showBottomMask,
     showTopMask,
-    showAutomationsSurface,
-    showBuilderbotSurface,
     showSecondaryBottomMask,
     width,
   },
@@ -127,24 +122,6 @@ export const PrimaryNavigationSurface = forwardRef<
   }[] = [
     { id: "agents", label: t("navigation.agents"), icon: SidebarNavAgentsIcon },
     { id: "skills", label: t("navigation.skills"), icon: SidebarNavSkillsIcon },
-    ...(showAutomationsSurface
-      ? [
-          {
-            id: "automations" as const,
-            label: t("navigation.automations"),
-            icon: SidebarNavAutomationsIcon,
-          },
-        ]
-      : []),
-    ...(showBuilderbotSurface
-      ? [
-          {
-            id: "builderbot" as const,
-            label: t("navigation.builderbot"),
-            icon: IconServer,
-          },
-        ]
-      : []),
   ];
 
   return (

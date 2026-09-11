@@ -309,7 +309,7 @@ function distillMessage(
 }
 
 function distillSignature(wavePlanLabel: string): string {
-  return `${i18n.language ?? ""} ${wavePlanLabel}`;
+  return `${i18n.language ?? ""}\u0000${wavePlanLabel}`;
 }
 
 export function distillConductorTranscript(

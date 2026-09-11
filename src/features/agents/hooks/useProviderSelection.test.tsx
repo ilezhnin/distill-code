@@ -5,7 +5,7 @@ import { useProviderCatalogStore } from "@/features/providers/stores/providerCat
 import { useProviderSelection } from "./useProviderSelection";
 
 const mockReadyAgentIds = vi.hoisted(() => ({
-  value: new Set<string>(["goose"]),
+  value: new Set<string>(["claude-acp"]),
 }));
 
 vi.mock("@/features/providers/hooks/useAgentProviderStatus", () => ({
@@ -20,13 +20,13 @@ vi.mock("@/features/providers/hooks/useAgentProviderStatus", () => ({
 
 describe("useProviderSelection", () => {
   beforeEach(() => {
-    mockReadyAgentIds.value = new Set<string>(["goose"]);
+    mockReadyAgentIds.value = new Set<string>(["claude-acp"]);
     useProviderCatalogStore.getState().reset();
-    useAgentStore.setState({ providers: [], selectedProvider: "goose" });
+    useAgentStore.setState({ providers: [], selectedProvider: "claude-acp" });
   });
 
   it("keeps a ready catalog provider as the stored value", () => {
-    mockReadyAgentIds.value = new Set(["goose", "codex-acp"]);
+    mockReadyAgentIds.value = new Set(["claude-acp", "codex-acp"]);
     useAgentStore.setState({ selectedProvider: "codex-acp" });
 
     const { result } = renderHook(() => useProviderSelection());
@@ -35,7 +35,7 @@ describe("useProviderSelection", () => {
   });
 
   it("keeps a catalogued provider as the persisted preference", () => {
-    mockReadyAgentIds.value = new Set(["goose"]);
+    mockReadyAgentIds.value = new Set(["claude-acp"]);
     useAgentStore.setState({ selectedProvider: "codex-acp" });
 
     const { result } = renderHook(() => useProviderSelection());
@@ -43,21 +43,21 @@ describe("useProviderSelection", () => {
     expect(result.current.selectedProvider).toBe("codex-acp");
   });
 
-  it("keeps goose as the persisted preference when another agent is ready", () => {
+  it("keeps the default harness as the persisted preference when another agent is ready", () => {
     mockReadyAgentIds.value = new Set(["codex-acp"]);
-    useAgentStore.setState({ selectedProvider: "goose" });
+    useAgentStore.setState({ selectedProvider: "claude-acp" });
 
     const { result } = renderHook(() => useProviderSelection());
 
-    expect(result.current.selectedProvider).toBe("goose");
+    expect(result.current.selectedProvider).toBe("claude-acp");
   });
 
-  it("falls an unknown provider back to goose once the catalog is loaded", () => {
+  it("falls an unknown provider back to the default harness once the catalog is loaded", () => {
     useAgentStore.setState({ selectedProvider: "ghost-provider" });
 
     const { result } = renderHook(() => useProviderSelection());
 
-    expect(result.current.selectedProvider).toBe("goose");
+    expect(result.current.selectedProvider).toBe("claude-acp");
   });
 
   it("keeps an unknown provider while the catalog has not loaded", () => {
@@ -69,11 +69,11 @@ describe("useProviderSelection", () => {
     expect(result.current.selectedProvider).toBe("ghost-provider");
   });
 
-  it("keeps goose as goose", () => {
-    useAgentStore.setState({ selectedProvider: "goose" });
+  it("keeps the default harness as the default harness", () => {
+    useAgentStore.setState({ selectedProvider: "claude-acp" });
 
     const { result } = renderHook(() => useProviderSelection());
 
-    expect(result.current.selectedProvider).toBe("goose");
+    expect(result.current.selectedProvider).toBe("claude-acp");
   });
 });

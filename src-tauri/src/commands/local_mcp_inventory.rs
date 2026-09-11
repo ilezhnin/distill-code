@@ -1,22 +1,18 @@
 use std::{
     collections::{hash_map::DefaultHasher, HashSet},
-    env, fs,
+    fs,
     hash::{Hash, Hasher},
     path::PathBuf,
 };
 
 use serde::Serialize;
 use serde_json::Value as JsonValue;
-use yaml_serde::Value as YamlValue;
-
-use crate::services::goose_config;
 
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum McpHarnessId {
-    Goose,
     ClaudeCode,
     Codex,
 }
@@ -28,7 +24,6 @@ pub enum McpConfigScope {
     Project,
     LocalProject,
     Profile,
-    Additional,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -134,42 +129,10 @@ pub async fn list_local_mcp_inventory(
 fn list_local_mcp_inventory_blocking(workspace_paths: &[String]) -> Result<McpInventory, String> {
     Ok(McpInventory {
         harnesses: vec![
-            discover_goose(),
             discover_claude_code(workspace_paths),
             discover_codex(workspace_paths),
         ],
     })
-}
-
-fn discover_goose() -> McpHarnessInventory {
-    let mut files = Vec::new();
-    if let Ok(path) = goose_config::config_path() {
-        files.push(ConfigFile {
-            path,
-            scope: McpConfigScope::User,
-            label: "Goose user config".to_string(),
-        });
-    }
-
-    for path in goose_additional_config_paths() {
-        files.push(ConfigFile {
-            path,
-            scope: McpConfigScope::Additional,
-            label: "Goose additional config".to_string(),
-        });
-    }
-
-    let mut inventory = empty_inventory(McpHarnessId::Goose);
-    let mut messages = Vec::new();
-
-    for file in files {
-        let Some(value) = read_yaml_config(&file, &mut inventory, &mut messages) else {
-            continue;
-        };
-        collect_goose_servers(&mut inventory.servers, &file, &value);
-    }
-
-    finish_inventory(inventory, messages)
 }
 
 /// Claude Code config files Berd passively inspects. Local-project MCPs do not
@@ -329,26 +292,6 @@ fn read_json_config(
     }
 }
 
-fn read_yaml_config(
-    file: &ConfigFile,
-    inventory: &mut McpHarnessInventory,
-    messages: &mut Vec<String>,
-) -> Option<YamlValue> {
-    let contents = read_config_file(file, inventory, messages)?;
-    match yaml_serde::from_str(&contents) {
-        Ok(value) => {
-            record_checked_location(inventory, file, McpSourceStatus::Found);
-            Some(value)
-        }
-        Err(_error) => {
-            record_checked_location(inventory, file, McpSourceStatus::Error);
-            messages.push(format!("{} could not be parsed.", file.label));
-            log::warn!("failed to parse {}", file.label);
-            None
-        }
-    }
-}
-
 fn read_toml_config(
     file: &ConfigFile,
     inventory: &mut McpHarnessInventory,
@@ -408,72 +351,6 @@ fn read_config_file(
             log::warn!("failed to read {}: {}", file.label, error.kind());
             None
         }
-    }
-}
-
-fn collect_goose_servers(
-    servers: &mut Vec<McpConfiguredServer>,
-    file: &ConfigFile,
-    value: &YamlValue,
-) {
-    let Some(root) = value.as_mapping() else {
-        return;
-    };
-    let Some(extensions) = yaml_lookup(root, "extensions").and_then(YamlValue::as_mapping) else {
-        return;
-    };
-
-    for (key, extension) in extensions {
-        let Some(config_key) = key.as_str() else {
-            continue;
-        };
-        let Some(extension_map) = extension.as_mapping() else {
-            continue;
-        };
-        let extension_type = yaml_lookup_string(extension_map, "type");
-        let name = yaml_lookup_string(extension_map, "name")
-            .or_else(|| yaml_lookup_string(extension_map, "display_name"))
-            .unwrap_or_else(|| config_key.to_string());
-
-        let transport = match extension_type.as_deref() {
-            Some("stdio") => McpTransportKind::Stdio,
-            Some("streamable_http") | Some("http") => McpTransportKind::Http,
-            Some("sse") => McpTransportKind::Sse,
-            Some("acp") => McpTransportKind::Acp,
-            Some("builtin") | Some("platform") | Some("frontend") | Some("inline_python") => {
-                McpTransportKind::Builtin
-            }
-            _ => McpTransportKind::Unknown,
-        };
-
-        // Connections inventories MCP servers, not Goose-native capabilities.
-        // Builtin/platform/frontend extensions never belong in this section,
-        // regardless of whether a distro marked them bundled.
-        if transport == McpTransportKind::Builtin {
-            continue;
-        }
-
-        let command = yaml_lookup_string(extension_map, "cmd");
-        let args = yaml_lookup_string_sequence(extension_map, "args");
-        let url = yaml_lookup_string(extension_map, "uri")
-            .or_else(|| yaml_lookup_string(extension_map, "url"));
-        push_server(
-            servers,
-            McpConfiguredServer {
-                id: server_id(McpHarnessId::Goose, file, config_key),
-                harness: McpHarnessId::Goose,
-                source: source_from_file(file),
-                config_key: config_key.to_string(),
-                name,
-                transport,
-                identity_fingerprint: identity_fingerprint(
-                    transport,
-                    command.as_deref(),
-                    &args,
-                    url.as_deref(),
-                ),
-            },
-        );
     }
 }
 
@@ -647,16 +524,6 @@ fn infer_transport(
     }
 }
 
-fn goose_additional_config_paths() -> Vec<PathBuf> {
-    let process_value = env::var_os(goose_config::ADDITIONAL_CONFIG_FILES_ENV);
-    match process_value {
-        Some(value) => env::split_paths(&value)
-            .filter(|path| path.is_absolute())
-            .collect(),
-        None => Vec::new(),
-    }
-}
-
 fn canonical_matching_workspace<'a>(
     project_path: &str,
     active_workspaces: &'a [PathBuf],
@@ -698,29 +565,6 @@ fn expand_home_prefix(path: &str) -> PathBuf {
 
 fn home_dir() -> Option<PathBuf> {
     dirs::home_dir()
-}
-
-fn yaml_lookup<'a>(map: &'a yaml_serde::Mapping, key: &str) -> Option<&'a YamlValue> {
-    map.get(YamlValue::String(key.to_string()))
-}
-
-fn yaml_lookup_string(map: &yaml_serde::Mapping, key: &str) -> Option<String> {
-    yaml_lookup(map, key)
-        .and_then(YamlValue::as_str)
-        .map(str::to_string)
-}
-
-fn yaml_lookup_string_sequence(map: &yaml_serde::Mapping, key: &str) -> Vec<String> {
-    yaml_lookup(map, key)
-        .and_then(YamlValue::as_sequence)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(YamlValue::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn safe_stdio_identity(command: Option<&str>, args: &[String]) -> String {
@@ -867,45 +711,6 @@ mod tests {
         ] {
             assert!(!serialized.contains(forbidden), "leaked {forbidden}");
         }
-    }
-
-    #[test]
-    fn goose_discovery_ignores_native_capabilities_and_redacts_env() {
-        let dir = tempdir().unwrap();
-        let config = ConfigFile {
-            path: dir.path().join("config.yaml"),
-            scope: McpConfigScope::User,
-            label: "fixture".to_string(),
-        };
-        file(
-            &config.path,
-            r#"
-extensions:
-  developer:
-    type: builtin
-    name: developer
-    bundled: true
-    enabled: true
-  github:
-    type: stdio
-    name: GitHub
-    cmd: /usr/local/bin/npx
-    envs:
-      GITHUB_TOKEN: ghp_secret
-    enabled: false
-"#,
-        );
-
-        let mut inventory = empty_inventory(McpHarnessId::Goose);
-        let value = read_yaml_config(&config, &mut inventory, &mut Vec::new()).unwrap();
-        let mut servers = Vec::new();
-        collect_goose_servers(&mut servers, &config, &value);
-
-        assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].name, "GitHub");
-        assert_eq!(servers[0].transport, McpTransportKind::Stdio);
-        let rendered = serde_json::to_string(&servers).unwrap();
-        assert!(!rendered.contains("ghp_secret"));
     }
 
     #[test]
@@ -1109,8 +914,11 @@ url = "https://mcp.example.test/sse?api_key=secret"
                     }}
                   }}
                 }}"#,
-                active_workspace.display(),
-                unrelated_workspace.display(),
+                active_workspace.display().to_string().replace('\\', "\\\\"),
+                unrelated_workspace
+                    .display()
+                    .to_string()
+                    .replace('\\', "\\\\"),
             ),
         );
         let mut inventory = empty_inventory(McpHarnessId::ClaudeCode);

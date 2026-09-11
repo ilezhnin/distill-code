@@ -7,7 +7,6 @@
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
-use tauri::Manager;
 
 pub(crate) const MODE_ENV: &str = "BERD_E2E_MODE";
 pub(crate) const RUN_ID_ENV: &str = "BERD_E2E_RUN_ID";
@@ -16,22 +15,18 @@ pub(crate) const DRIVER_TOKEN_ENV: &str = "APP_TEST_DRIVER_TOKEN";
 pub(crate) const RUNTIME_CONFIG_ENV: &str = "BERD_E2E_RUNTIME_CONFIG";
 pub(crate) const APP_IDENTIFIER_PREFIX: &str = "xyz.block.berd.e2e.";
 
-pub(crate) const GOOSE_PATH_ROOT_ENV: &str = "GOOSE_PATH_ROOT";
-pub(crate) const GOOSE_DISABLE_KEYRING_ENV: &str = "GOOSE_DISABLE_KEYRING";
 pub(crate) const BB_HOME_ENV: &str = "BB_HOME";
 pub(crate) const BB_AUTH_STORAGE_ENV: &str = "BB_AUTH_STORAGE";
 pub(crate) const BB_AUTH_STORAGE_FILE_ENV: &str = "BB_AUTH_STORAGE_FILE";
 
-const GOOSE_DIR_NAME: &str = "goose";
+const AGENTS_DIR_NAME: &str = "home";
 const BUILDERBOT_DIR_NAME: &str = "builderbot";
-const PROCESS_DIR_NAME: &str = "processes";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct E2eMode {
     run_id: String,
     run_root: PathBuf,
-    process_record_dir: PathBuf,
-    goose_root: PathBuf,
+    agents_home: PathBuf,
     builderbot_root: PathBuf,
     driver_token: String,
     runtime_config_path: Option<PathBuf>,
@@ -93,8 +88,7 @@ impl E2eMode {
 
         Ok(Some(Self {
             run_id: run_id.to_string(),
-            process_record_dir: run_root.join(PROCESS_DIR_NAME),
-            goose_root: run_root.join(GOOSE_DIR_NAME),
+            agents_home: run_root.join(AGENTS_DIR_NAME),
             builderbot_root: run_root.join(BUILDERBOT_DIR_NAME),
             run_root,
             driver_token,
@@ -103,8 +97,8 @@ impl E2eMode {
     }
 
     #[cfg(test)]
-    fn goose_root(&self) -> &Path {
-        &self.goose_root
+    fn agents_home(&self) -> &Path {
+        &self.agents_home
     }
 
     #[cfg(test)]
@@ -118,12 +112,7 @@ impl E2eMode {
     }
 
     pub(crate) fn enforce_process_env(&self) -> Result<(), String> {
-        for path in [
-            &self.run_root,
-            &self.goose_root,
-            &self.builderbot_root,
-            &self.process_record_dir,
-        ] {
+        for path in [&self.run_root, &self.agents_home, &self.builderbot_root] {
             std::fs::create_dir_all(path).map_err(|error| {
                 format!(
                     "failed to create isolated E2E directory {}: {error}",
@@ -136,8 +125,6 @@ impl E2eMode {
         // worker threads or app services. The values remain fixed for the life
         // of the process; no production code mutates these variables later.
         unsafe {
-            std::env::set_var(GOOSE_PATH_ROOT_ENV, &self.goose_root);
-            std::env::set_var(GOOSE_DISABLE_KEYRING_ENV, "1");
             std::env::set_var(BB_HOME_ENV, &self.builderbot_root);
             std::env::set_var(BB_AUTH_STORAGE_ENV, "memory");
             std::env::remove_var(BB_AUTH_STORAGE_FILE_ENV);
@@ -145,41 +132,16 @@ impl E2eMode {
         Ok(())
     }
 
-    pub(crate) fn apply_goose_command_env(&self, command: &mut tokio::process::Command) {
-        command
-            .env(GOOSE_PATH_ROOT_ENV, &self.goose_root)
-            .env(GOOSE_DISABLE_KEYRING_ENV, "1");
+    pub(crate) fn agents_root(&self) -> PathBuf {
+        self.agents_home.join(".agents")
     }
 
-    pub(crate) fn apply_goose_command_env_if_active(
-        app_handle: &tauri::AppHandle,
-        command: &mut tokio::process::Command,
-    ) {
-        if let Some(mode) = app_handle.try_state::<Self>() {
-            mode.apply_goose_command_env(command);
-        }
+    pub(crate) fn agents_dir(&self) -> PathBuf {
+        self.agents_root().join("agents")
     }
 
-    pub(crate) fn process_record_dir(&self) -> PathBuf {
-        self.process_record_dir.clone()
-    }
-
-    pub(crate) fn process_record_dir_for(app_handle: &tauri::AppHandle) -> Option<PathBuf> {
-        app_handle
-            .try_state::<Self>()
-            .map(|mode| mode.process_record_dir())
-    }
-
-    pub(crate) fn goose_agents_root(&self) -> PathBuf {
-        self.goose_root.join(".agents")
-    }
-
-    pub(crate) fn goose_agents_dir(&self) -> PathBuf {
-        self.goose_agents_root().join("agents")
-    }
-
-    pub(crate) fn goose_skills_dir(&self) -> PathBuf {
-        self.goose_agents_root().join("skills")
+    pub(crate) fn skills_dir(&self) -> PathBuf {
+        self.agents_root().join("skills")
     }
 
     #[cfg(any(feature = "app-test-driver", test))]
@@ -499,36 +461,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(mode.run_root(), run_root);
-        assert_eq!(mode.goose_root(), run_root.join(GOOSE_DIR_NAME));
+        assert_eq!(mode.agents_home(), run_root.join(AGENTS_DIR_NAME));
         assert_eq!(mode.builderbot_root(), run_root.join(BUILDERBOT_DIR_NAME));
-        assert_eq!(mode.process_record_dir(), run_root.join(PROCESS_DIR_NAME));
         assert_eq!(
-            mode.goose_agents_dir(),
-            run_root.join(GOOSE_DIR_NAME).join(".agents").join("agents")
+            mode.agents_dir(),
+            run_root
+                .join(AGENTS_DIR_NAME)
+                .join(".agents")
+                .join("agents")
         );
         assert_eq!(mode.driver_token(), valid_driver_token());
-    }
-
-    #[test]
-    fn goose_child_isolation_overrides_captured_normal_root() {
-        let run_root = PathBuf::from(absolute_test_root());
-        let normal_root = absolute_test_base().join("normal-goose");
-        let mode = enabled_mode(run_root.clone());
-        let mut command = tokio::process::Command::new("goose");
-
-        command
-            .env(GOOSE_PATH_ROOT_ENV, &normal_root)
-            .env(GOOSE_DISABLE_KEYRING_ENV, "0");
-        mode.apply_goose_command_env(&mut command);
-
-        assert_eq!(
-            command_env(&command, GOOSE_PATH_ROOT_ENV),
-            Some(run_root.join(GOOSE_DIR_NAME).into_os_string())
-        );
-        assert_eq!(
-            command_env(&command, GOOSE_DISABLE_KEYRING_ENV),
-            Some(OsString::from("1"))
-        );
     }
 
     #[test]
@@ -537,26 +479,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let run_root = temp.path().join(RUN_ID);
         let normal_berd_root = temp.path().join("xyz.block.berd.dev");
-        let normal_goose_root = temp.path().join("normal-goose");
         let normal_builderbot_root = temp.path().join("normal-builderbot");
         std::fs::create_dir_all(&normal_berd_root).unwrap();
-        std::fs::create_dir_all(&normal_goose_root).unwrap();
         std::fs::create_dir_all(&normal_builderbot_root).unwrap();
         std::fs::write(normal_berd_root.join("sentinel"), b"berd").unwrap();
-        std::fs::write(normal_goose_root.join("sentinel"), b"goose").unwrap();
         std::fs::write(normal_builderbot_root.join("sentinel"), b"builderbot").unwrap();
 
-        let saved = save_env([
-            GOOSE_PATH_ROOT_ENV,
-            GOOSE_DISABLE_KEYRING_ENV,
-            BB_HOME_ENV,
-            BB_AUTH_STORAGE_ENV,
-            BB_AUTH_STORAGE_FILE_ENV,
-        ]);
+        let saved = save_env([BB_HOME_ENV, BB_AUTH_STORAGE_ENV, BB_AUTH_STORAGE_FILE_ENV]);
         // SAFETY: this test holds the crate-wide environment lock.
         unsafe {
-            std::env::set_var(GOOSE_PATH_ROOT_ENV, &normal_goose_root);
-            std::env::set_var(GOOSE_DISABLE_KEYRING_ENV, "0");
             std::env::set_var(BB_HOME_ENV, &normal_builderbot_root);
             std::env::set_var(BB_AUTH_STORAGE_ENV, "file");
             std::env::set_var(
@@ -569,14 +500,6 @@ mod tests {
             .enforce_process_env()
             .unwrap();
 
-        assert_eq!(
-            std::env::var_os(GOOSE_PATH_ROOT_ENV),
-            Some(run_root.join(GOOSE_DIR_NAME).into_os_string())
-        );
-        assert_eq!(
-            std::env::var_os(GOOSE_DISABLE_KEYRING_ENV),
-            Some(OsString::from("1"))
-        );
         assert_eq!(
             std::env::var_os(BB_HOME_ENV),
             Some(run_root.join(BUILDERBOT_DIR_NAME).into_os_string())
@@ -591,15 +514,10 @@ mod tests {
             b"berd"
         );
         assert_eq!(
-            std::fs::read(normal_goose_root.join("sentinel")).unwrap(),
-            b"goose"
-        );
-        assert_eq!(
             std::fs::read(normal_builderbot_root.join("sentinel")).unwrap(),
             b"builderbot"
         );
         assert_eq!(std::fs::read_dir(&normal_berd_root).unwrap().count(), 1);
-        assert_eq!(std::fs::read_dir(&normal_goose_root).unwrap().count(), 1);
         assert_eq!(
             std::fs::read_dir(&normal_builderbot_root).unwrap().count(),
             1
@@ -650,14 +568,6 @@ mod tests {
         {
             PathBuf::from("/")
         }
-    }
-
-    fn command_env(command: &tokio::process::Command, key: &str) -> Option<OsString> {
-        command.as_std().get_envs().find_map(|(candidate, value)| {
-            (candidate == OsStr::new(key))
-                .then(|| value.map(OsStr::to_os_string))
-                .flatten()
-        })
     }
 
     fn save_env<const N: usize>(names: [&'static str; N]) -> Vec<(&'static str, Option<OsString>)> {

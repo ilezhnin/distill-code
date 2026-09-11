@@ -577,7 +577,7 @@ describe("AgentShareDialog", () => {
     const fallback = screen.getByTestId("agent-card-avatar-preload");
     expect(fallback).toHaveAttribute(
       "src",
-      expect.stringContaining("goose-avatar"),
+      expect.stringContaining("agent-avatar"),
     );
     fireEvent.load(fallback);
     await waitFor(() =>

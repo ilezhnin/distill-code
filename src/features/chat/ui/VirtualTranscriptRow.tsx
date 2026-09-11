@@ -182,8 +182,6 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
     onForkFromMessage,
     onJumpToResponseStartHintClose,
     onJumpToResponseStartHintDismiss,
-    onSendMcpAppMessage,
-    onMcpAppAutoScroll,
     onRunShellCommand,
     onEditProject,
     onChangeFolder,
@@ -322,8 +320,6 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
           }
           onJumpToResponseStartHintClose={onJumpToResponseStartHintClose}
           onJumpToResponseStartHintDismiss={onJumpToResponseStartHintDismiss}
-          onSendMcpAppMessage={onSendMcpAppMessage}
-          onMcpAppAutoScroll={onMcpAppAutoScroll}
           onRunShellCommand={onRunShellCommand}
           onEditProject={onEditProject}
           onChangeFolder={onChangeFolder}
@@ -402,8 +398,6 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
           }
           onJumpToResponseStartHintClose={onJumpToResponseStartHintClose}
           onJumpToResponseStartHintDismiss={onJumpToResponseStartHintDismiss}
-          onSendMcpAppMessage={onSendMcpAppMessage}
-          onMcpAppAutoScroll={onMcpAppAutoScroll}
           onRunShellCommand={onRunShellCommand}
           onEditProject={onEditProject}
           onChangeFolder={onChangeFolder}

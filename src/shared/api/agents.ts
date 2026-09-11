@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { SourceEntry, SourceScope } from "@aaif/goose-sdk";
+import type { SourceEntry, SourceScope } from "./hostTypes";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { getClient } from "@/shared/api/acpConnection";
 import { graphemeCount } from "@/shared/lib/graphemeCount";
@@ -264,7 +264,7 @@ function sproutNameFromProperties(
  * bundled role a file came from (the conductor resolves roles through it) and
  * carries no ownership claim.
  */
-const BUNDLED_AGENT_MARKER_KEYS = ["berdBundled", "gooseInternalBundled"];
+const BUNDLED_AGENT_MARKER_KEYS = ["berdBundled"];
 
 function withoutBundledMarkerRecord(
   record: Record<string, unknown> | undefined,
@@ -379,11 +379,7 @@ function personaModelProperty(
   const harnessId = propertyToString(properties?.provider);
   const modelProviderId = propertyToString(properties?.modelProviderId);
   let provider = modelProviderId;
-  if (
-    !provider &&
-    harnessId &&
-    resolveAgentProviderCatalogIdStrict(harnessId) !== "goose"
-  ) {
+  if (!provider && harnessId) {
     provider = harnessId;
   }
   return provider ? `${provider}:${model}` : model;
@@ -526,7 +522,7 @@ function serializePersonaMarkdown(source: AgentSourceEntry): ExportResult {
   const name = personaExportName(source);
   const description = hasRealAgentDescription(source.description)
     ? source.description
-    : "Imported Goose agent";
+    : "Imported agent";
   const frontmatter: Record<string, unknown> = {
     name,
     display_name: source.name,
@@ -672,12 +668,8 @@ function applyPersonaModelProperty(
   const { provider, model } = splitPersonaModel(value);
   if (provider) {
     const harnessId = resolveAgentProviderCatalogIdStrict(provider);
-    applyOptionalProperty(properties, "provider", harnessId ?? "goose");
-    applyOptionalProperty(
-      properties,
-      "modelProviderId",
-      harnessId ? null : provider,
-    );
+    applyOptionalProperty(properties, "provider", harnessId ?? provider);
+    applyOptionalProperty(properties, "modelProviderId", null);
   }
   applyOptionalProperty(properties, "model", model);
 }
@@ -1015,7 +1007,7 @@ export function agentSourceToPersona(source: AgentSourceEntry): Persona {
 
 async function listAgentSources(): Promise<AgentSourceEntry[]> {
   const client = await getClient();
-  const response = await client.goose.GooseUnstableSourcesList({
+  const response = await client.host.sourcesList({
     type: AGENT_SOURCE_TYPE,
   });
   const sources = response.sources.filter(isAgentSource);
@@ -1070,7 +1062,7 @@ async function preserveImportedAvatar(
 
   try {
     const client = await getClient();
-    const response = await client.goose.GooseUnstableSourcesUpdate({
+    const response = await client.host.sourcesUpdate({
       type: AGENT_SOURCE_TYPE,
       path: source.path,
       name: source.name,
@@ -1118,7 +1110,7 @@ export async function createPersonaSource(
   request: CreatePersonaSourceRequest,
 ): Promise<AgentSourceEntry> {
   const client = await getClient();
-  const response = await client.goose.GooseUnstableSourcesCreate(request);
+  const response = await client.host.sourcesCreate(request);
 
   return requireAgentSource(response.source);
 }
@@ -1137,7 +1129,7 @@ export async function updatePersonaSource(
       : existing.properties,
   );
   const client = await getClient();
-  const response = await client.goose.GooseUnstableSourcesUpdate({
+  const response = await client.host.sourcesUpdate({
     type: AGENT_SOURCE_TYPE,
     path,
     name: patch.name ?? existing.name,
@@ -1151,7 +1143,7 @@ export async function updatePersonaSource(
 
 export async function deletePersonaSource(path: string): Promise<void> {
   const client = await getClient();
-  await client.goose.GooseUnstableSourcesDelete({
+  await client.host.sourcesDelete({
     type: AGENT_SOURCE_TYPE,
     path,
   });
@@ -1171,7 +1163,7 @@ export async function promotePersonaSource(
   delete promotedProperties.builderSessionId;
 
   const client = await getClient();
-  const response = await client.goose.GooseUnstableSourcesCreate({
+  const response = await client.host.sourcesCreate({
     type: AGENT_SOURCE_TYPE,
     name,
     description: patch.description ?? existing.description,
@@ -1183,7 +1175,7 @@ export async function promotePersonaSource(
 
   if (promoted.path !== path) {
     try {
-      await client.goose.GooseUnstableSourcesDelete({
+      await client.host.sourcesDelete({
         type: AGENT_SOURCE_TYPE,
         path,
       });
@@ -1205,7 +1197,7 @@ export async function createPersona(
   request: CreatePersonaRequest,
 ): Promise<Persona> {
   const client = await getClient();
-  const response = await client.goose.GooseUnstableSourcesCreate({
+  const response = await client.host.sourcesCreate({
     type: AGENT_SOURCE_TYPE,
     name: request.displayName,
     description: hasRealAgentDescription(request.description)
@@ -1250,7 +1242,7 @@ export async function updatePersona(
         ? (persona.sourceDescription as string).trim()
         : AGENT_DESCRIPTION;
 
-  const response = await client.goose.GooseUnstableSourcesUpdate({
+  const response = await client.host.sourcesUpdate({
     type: AGENT_SOURCE_TYPE,
     path: persona.id,
     name: request.displayName ?? persona.displayName,
@@ -1286,7 +1278,7 @@ export async function migratePersonaTargetIfUnchanged(
   }
 
   const client = await getClient();
-  const response = await client.goose.GooseUnstableSourcesUpdate({
+  const response = await client.host.sourcesUpdate({
     type: AGENT_SOURCE_TYPE,
     path: latestSource.path,
     name: latestSource.name,
@@ -1300,7 +1292,7 @@ export async function migratePersonaTargetIfUnchanged(
 
 export async function deletePersona(id: string): Promise<void> {
   const client = await getClient();
-  await client.goose.GooseUnstableSourcesDelete({
+  await client.host.sourcesDelete({
     type: AGENT_SOURCE_TYPE,
     path: id,
   });
@@ -1436,7 +1428,7 @@ export async function importPersonas(
   const client = await getClient();
 
   if (isPersonaMarkdownFile(fileName)) {
-    const response = await client.goose.GooseUnstableSourcesCreate(
+    const response = await client.host.sourcesCreate(
       personaMarkdownToCreateRequest(fileContents),
     );
     if (!isAgentSource(response.source)) {
@@ -1451,7 +1443,7 @@ export async function importPersonas(
 
   if (parsed.type === AGENT_SOURCE_TYPE) {
     const nativeImport = sanitizedNativeAgentImport(parsed);
-    const response = await client.goose.GooseUnstableSourcesImport({
+    const response = await client.host.sourcesImport({
       data: nativeImport.data,
       target: { scope: "global" },
     });
@@ -1463,7 +1455,7 @@ export async function importPersonas(
     return sources.map(agentSourceToPersona);
   }
 
-  const response = await client.goose.GooseUnstableSourcesCreate(
+  const response = await client.host.sourcesCreate(
     legacyPersonaToCreateRequest(parsed),
   );
   if (!isAgentSource(response.source)) {

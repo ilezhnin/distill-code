@@ -11,8 +11,6 @@ import {
 } from "@/shared/ui/settings-section";
 import { Switch } from "@/shared/ui/switch";
 import { Textarea } from "@/shared/ui/textarea";
-import { GooseAutoCompactSettings } from "./GooseAutoCompactSettings";
-import { useAgentToolsTipsPreference } from "@/features/chat/lib/agentToolsTipPreferences";
 import { useSessionCostPreference } from "@/features/chat/lib/sessionCostPreference";
 import { useResponseStartGutterPreference } from "@/features/chat/lib/responseStartGutterPreference";
 import { useArtifactAutoOpenPreference } from "@/features/chat/lib/artifactAutoOpenPreference";
@@ -21,7 +19,6 @@ import {
   type StreamingShortcutMode,
 } from "@/features/chat/lib/streamingShortcutPreference";
 import { useAtMentionDefaultCategoryPreference } from "@/features/chat/lib/mentionPreference";
-import { useProfileCapability } from "@/shared/profile/capabilities";
 import { useStyleGuidelinesPreference } from "@/shared/preferences/styleGuidelinesPreference";
 import { useMultiWorkspacePreference } from "@/features/workspaces/multiWorkspacePreference";
 
@@ -41,7 +38,6 @@ import { useMultiWorkspacePreference } from "@/features/workspaces/multiWorkspac
 // after Keyboard shortcuts was promoted to its own top-level page.
 export function BehaviorSettings() {
   const { t } = useTranslation(["settings", "shortcuts"]);
-  const agentToolsTipsPreference = useAgentToolsTipsPreference();
   const sessionCostPreference = useSessionCostPreference();
   const responseStartGutterPreference = useResponseStartGutterPreference();
   const multiWorkspacePreference = useMultiWorkspacePreference();
@@ -57,11 +53,6 @@ export function BehaviorSettings() {
   );
   const followUpBehavior =
     streamingShortcutPreference.mode === "cmd-enter-steers" ? "queue" : "steer";
-  // "agentTools" is the capability id (main renamed it from the older
-  // "agentToolsTip" naming) -- isMac/getPlatform is intentionally dropped
-  // here since the global shortcut toggle that needed it moved to
-  // KeyboardShortcutsSettings.tsx (see the comment above).
-  const showAgentToolsTipsSetting = useProfileCapability("agentTools");
 
   useEffect(() => {
     setStyleGuidelinesPromptDraft(styleGuidelinesPreference.prompt);
@@ -161,19 +152,6 @@ export function BehaviorSettings() {
             </fieldset>
           </SettingsRow>
 
-          {showAgentToolsTipsSetting ? (
-            <SettingsRow
-              label={t("general.agentToolsTips.label")}
-              description={t("general.agentToolsTips.description")}
-            >
-              <Switch
-                checked={agentToolsTipsPreference.enabled}
-                onCheckedChange={agentToolsTipsPreference.setEnabled}
-                aria-label={t("general.agentToolsTips.label")}
-              />
-            </SettingsRow>
-          ) : null}
-
           <SettingsRow
             label={t("general.sessionCost.label")}
             description={t("general.sessionCost.description")}
@@ -265,25 +243,6 @@ export function BehaviorSettings() {
                 </div>
               </div>
             }
-          />
-        </SettingsSection>
-
-        <SettingsSection title={t("compaction.title")}>
-          {/* One row, not two: auto-compact is a control over the Goose
-            harness's own compaction, not a separate peer setting, so it
-            lives in this row's `details` slot instead of its own SettingsRow
-            with a divider before it. No leading icon/badge here (previously
-            the Goose provider icon + "Built in" badge) -- that pushed the
-            label/description text to the right and threw off alignment with
-            the threshold slider below. Layout is "stacked" so the details
-            slot renders full-width under the label/description, matching
-            the requested layout: label+description, then a Threshold row
-            (label + value), then the slider, then the helper text. */}
-          <SettingsRow
-            layout="stacked"
-            label={t("compaction.goose.label")}
-            description={t("compaction.goose.description")}
-            details={<GooseAutoCompactSettings />}
           />
         </SettingsSection>
       </SettingsSections>

@@ -60,7 +60,6 @@ function layoutProps({
   return {
     topBar: {
       breadcrumbs: [],
-      onFeedbackClick: noop,
     },
     navigationPanes: {
       collapsed: false,
@@ -104,10 +103,10 @@ function renderLayout(options?: Parameters<typeof layoutProps>[0]) {
   );
 
   const sidebarSlot = result.container.querySelector(
-    ".goose-zoom-scope > div:first-child",
+    ".app-zoom-scope > div:first-child",
   ) as HTMLElement | null;
   const sidebarPanel = result.container.querySelector(
-    ".goose-zoom-scope > div:first-child > div",
+    ".app-zoom-scope > div:first-child > div",
   ) as HTMLElement | null;
 
   if (!sidebarSlot || !sidebarPanel) {

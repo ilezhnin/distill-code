@@ -32,8 +32,8 @@ function deferred<T = void>() {
 
 const target = (modelId: string) =>
   ({
-    harnessId: "goose",
-    modelProviderId: "openai",
+    harnessId: "claude-acp",
+    modelProviderId: "claude-acp",
     modelId,
     modelName: modelId,
   }) as const;
@@ -69,8 +69,8 @@ describe("session target coordinator", () => {
       reasoningEffort: null,
     });
     const providerTarget = {
-      harnessId: "goose",
-      modelProviderId: "anthropic",
+      harnessId: "claude-acp",
+      modelProviderId: "claude-acp",
     } as const;
 
     await expect(
@@ -82,26 +82,26 @@ describe("session target coordinator", () => {
     ).resolves.toMatchObject({
       status: "committed",
       target: {
-        harnessId: "goose",
-        modelProviderId: "anthropic",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
         modelId: "claude-default",
         modelName: "Claude Default",
       },
       resolvedTarget: {
-        modelProviderId: "anthropic",
+        modelProviderId: "claude-acp",
         modelId: "claude-default",
       },
     });
     expect(getSessionTargetState("s")).toMatchObject({
       status: "settled",
       committed: {
-        modelProviderId: "anthropic",
+        modelProviderId: "claude-acp",
         modelId: "claude-default",
       },
     });
     expect(useChatSessionStore.getState().getSession("s")).toMatchObject({
       executionTarget: {
-        modelProviderId: "anthropic",
+        modelProviderId: "claude-acp",
         modelId: "claude-default",
       },
     });
@@ -126,7 +126,7 @@ describe("session target coordinator", () => {
       target: target("c"),
     });
     expect(mockPrepare).toHaveBeenCalledTimes(1);
-    expect(mockPrepare).toHaveBeenCalledWith("s", "openai", "/w", {
+    expect(mockPrepare).toHaveBeenCalledWith("s", "claude-acp", "/w", {
       modelId: "c",
     });
   });
@@ -187,7 +187,7 @@ describe("session target coordinator", () => {
         context: {
           origin: "response",
           requestId: "operation-b",
-          providerId: "openai",
+          providerId: "claude-acp",
           modelId: "b",
         },
       }),
@@ -209,16 +209,7 @@ describe("session target coordinator", () => {
       context: {
         origin: "response" as const,
         requestId: "operation-old",
-        providerId: "openai",
-        modelId: "b",
-      },
-    },
-    {
-      name: "mismatched provider",
-      context: {
-        origin: "response" as const,
-        requestId: "operation-b",
-        providerId: "anthropic",
+        providerId: "claude-acp",
         modelId: "b",
       },
     },
@@ -227,7 +218,7 @@ describe("session target coordinator", () => {
       context: {
         origin: "response" as const,
         requestId: "operation-b",
-        providerId: "openai",
+        providerId: "claude-acp",
         modelId: "c",
       },
     },
@@ -405,7 +396,7 @@ describe("session target coordinator", () => {
       requireReasoningEffort: true,
     });
 
-    expect(mockPrepare).toHaveBeenCalledWith("s", "openai", "/w", {
+    expect(mockPrepare).toHaveBeenCalledWith("s", "claude-acp", "/w", {
       modelId: "a",
       forceConfigRefresh: true,
     });
@@ -446,7 +437,7 @@ describe("session target coordinator", () => {
         snapshot: { modelId: "b", modelName: "b" },
         context: {
           origin: "response",
-          providerId: "openai",
+          providerId: "claude-acp",
           modelId: "b",
         },
       }),
@@ -489,8 +480,8 @@ describe("session target coordinator", () => {
 
   it("materializes a matching provider-only lease without deferring it", () => {
     const providerTarget = {
-      harnessId: "goose",
-      modelProviderId: "openai",
+      harnessId: "claude-acp",
+      modelProviderId: "claude-acp",
     } as const;
     useChatSessionStore.setState((state) => ({
       sessions: state.sessions.map((session) => ({
@@ -784,14 +775,14 @@ describe("session target coordinator", () => {
       operationId: "op-1",
       target: target("b"),
       previousTarget: target("a"),
-      preferenceAgentId: "goose",
+      preferenceAgentId: "claude-acp",
     });
 
     expect(getSessionTargetSelection("selection")).toMatchObject({
       operationId: "op-1",
       target: target("b"),
       previousTarget: target("a"),
-      preferenceAgentId: "goose",
+      preferenceAgentId: "claude-acp",
     });
     expect(clearSessionTargetSelection("selection", "stale")).toBe(false);
     expect(clearSessionTargetSelection("selection", "op-1")).toBe(true);

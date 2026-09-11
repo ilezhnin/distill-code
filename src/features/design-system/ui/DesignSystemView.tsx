@@ -80,9 +80,7 @@ import {
   CommandList,
   CommandShortcut,
 } from "@/shared/ui/command";
-import { ContextualTip } from "@/shared/ui/contextual-tip";
 import { designSystemComponentManifest } from "@/features/design-system/generated/componentManifest";
-import { DetailField } from "@/shared/ui/detail-field";
 import {
   Dialog,
   DialogContent,
@@ -149,7 +147,6 @@ import {
   ResizablePanelGroup,
 } from "@/shared/ui/resizable";
 import { ScrollArea } from "@/shared/ui/scroll-area";
-import { SearchableSelect } from "@/shared/ui/searchable-select";
 import { SearchBar } from "@/shared/ui/SearchBar";
 import { Separator } from "@/shared/ui/separator";
 import { SessionActivityIndicator } from "@/shared/ui/SessionActivityIndicator";
@@ -169,7 +166,6 @@ import {
   SheetTrigger,
 } from "@/shared/ui/sheet";
 import { Skeleton } from "@/shared/ui/skeleton";
-import { Slider } from "@/shared/ui/slider";
 import { Spinner } from "@/shared/ui/spinner";
 import { SplitButton } from "@/shared/ui/split-button";
 import { Switch } from "@/shared/ui/switch";
@@ -263,8 +259,6 @@ const componentPageDescriptions: Partial<Record<string, string>> = {
   Card: "Contained content surfaces that carry the app's card background, border, typography, and elevation tokens.",
   Carousel:
     "Horizontal browsing primitives for grouped content where navigation and item framing need to stay aligned.",
-  "Chart Container":
-    "Chart framing and theme helpers used to bind data visualization colors back to the token system.",
   Checkbox:
     "Binary selection controls with checked, unchecked, disabled, and invalid states.",
   Collapsible:
@@ -275,9 +269,6 @@ const componentPageDescriptions: Partial<Record<string, string>> = {
     "Application-level confirmation composition built from dialog primitives and destructive action treatment.",
   "Context Menu":
     "Pointer-invoked action menus with nested, checkbox, radio, shortcut, and destructive item states.",
-  "Contextual Tip":
-    "Inline guidance surfaces for teaching without interrupting the surrounding workflow.",
-  "Detail Field": "Label/value presentation for metadata-heavy detail pages.",
   Dialog:
     "Modal surfaces for focused workflows, with shared overlay, title, description, and footer structure.",
   Drawer:
@@ -320,8 +311,6 @@ const componentPageDescriptions: Partial<Record<string, string>> = {
   "Resizable Handle": "Drag handle affordances for resizable panel layouts.",
   "Scroll Area":
     "Custom scroll containers that preserve overlay and scrollbar consistency.",
-  "Searchable Select":
-    "Combobox composition for choosing from longer option sets with filtering.",
   "Search Bar":
     "Search input composition with icon placement and compact size variants.",
   Separator:
@@ -336,12 +325,8 @@ const componentPageDescriptions: Partial<Record<string, string>> = {
     "Aligned settings content with optional supporting copy and flexible action or detail slots.",
   Sheet:
     "Side-panel modal surfaces for secondary workflows and mobile-friendly overlays.",
-  Sidebar:
-    "Application sidebar primitives for grouped navigation, rail behavior, and nested menus. Nav labels use regular weight via --sidebar-nav-font-weight and SIDEBAR_NAV_TEXT_CLASS.",
   Skeleton:
     "Loading placeholders that preserve layout while async content resolves.",
-  Slider:
-    "Range input controls with track, range, thumb, and disabled treatments.",
   Toaster:
     "Toast notification host that applies shared color and surface tokens.",
   Spinner: "Inline progress indicator for loading states where space is tight.",
@@ -2374,17 +2359,6 @@ const componentPreviewRenderers: Record<string, () => React.ReactNode> = {
       </CarouselContent>
     </Carousel>
   ),
-  "Chart Container": () => (
-    <div className="grid h-36 w-72 grid-cols-6 items-end gap-2 rounded-md border border-border bg-card p-4">
-      {[40, 70, 52, 88, 64, 96].map((height, index) => (
-        <div
-          key={height}
-          className="rounded-t-sm bg-primary"
-          style={{ height: `${height}%`, opacity: 0.45 + index * 0.08 }}
-        />
-      ))}
-    </div>
-  ),
   Checkbox: () => (
     <Label className="items-center">
       <Checkbox defaultChecked />
@@ -2429,24 +2403,6 @@ const componentPreviewRenderers: Record<string, () => React.ReactNode> = {
     <div className="rounded-md border border-dashed border-border px-6 py-4 text-sm text-muted-foreground">
       Right-click target
     </div>
-  ),
-  "Contextual Tip": () => (
-    <ContextualTip
-      dismissLabel="Dismiss tip"
-      actionLabel="Review"
-      onAction={() => undefined}
-      onDismiss={() => undefined}
-    >
-      Token coverage improved.
-    </ContextualTip>
-  ),
-  "Detail Field": () => (
-    <DetailField
-      label="Provider"
-      meta={<Badge variant="outline">Active</Badge>}
-    >
-      OpenAI
-    </DetailField>
   ),
   Dialog: () => (
     <Dialog>
@@ -2675,16 +2631,6 @@ const componentPreviewRenderers: Record<string, () => React.ReactNode> = {
       </div>
     </ScrollArea>
   ),
-  "Searchable Select": () => (
-    <SearchableSelect
-      value="button"
-      options={[
-        { value: "button", label: "Button" },
-        { value: "dialog", label: "Dialog" },
-      ]}
-      onValueChange={() => undefined}
-    />
-  ),
   "Search Bar": () => (
     <SearchBar
       value="buttons"
@@ -2763,16 +2709,6 @@ const componentPreviewRenderers: Record<string, () => React.ReactNode> = {
       </SheetContent>
     </Sheet>
   ),
-  Sidebar: () => (
-    <div className="h-40 w-56 rounded-md border border-border bg-background p-3">
-      <div className="mb-3 h-6 w-6 rounded bg-muted" />
-      <div className="space-y-2">
-        <div className="h-7 rounded-md bg-sidebar-accent" />
-        <div className="h-7 rounded-md bg-card" />
-        <div className="h-7 rounded-md bg-card" />
-      </div>
-    </div>
-  ),
   Skeleton: () => (
     <div className="w-72 space-y-3">
       <Skeleton className="h-4 w-3/4" />
@@ -2780,7 +2716,6 @@ const componentPreviewRenderers: Record<string, () => React.ReactNode> = {
       <Skeleton className="h-4 w-1/2" />
     </div>
   ),
-  Slider: () => <Slider defaultValue={[42]} max={100} className="w-72" />,
   Toaster: () => (
     <div className="rounded-md border border-border bg-background p-4 text-sm text-muted-foreground shadow-popover">
       Toast host
@@ -4663,10 +4598,6 @@ function CarouselPage() {
   return <GenericComponentPage name="Carousel" />;
 }
 
-function ChartContainerPage() {
-  return <GenericComponentPage name="Chart Container" />;
-}
-
 function CheckboxPage() {
   return <GenericComponentPage name="Checkbox" />;
 }
@@ -4685,14 +4616,6 @@ function ConfirmDialogPage() {
 
 function ContextMenuPage() {
   return <GenericComponentPage name="Context Menu" />;
-}
-
-function ContextualTipPage() {
-  return <GenericComponentPage name="Contextual Tip" />;
-}
-
-function DetailFieldPage() {
-  return <GenericComponentPage name="Detail Field" />;
 }
 
 function DialogPage() {
@@ -4783,10 +4706,6 @@ function ScrollAreaPage() {
   return <GenericComponentPage name="Scroll Area" />;
 }
 
-function SearchableSelectPage() {
-  return <GenericComponentPage name="Searchable Select" />;
-}
-
 function SearchBarPage() {
   return <GenericComponentPage name="Search Bar" />;
 }
@@ -4815,16 +4734,8 @@ function SheetPage() {
   return <GenericComponentPage name="Sheet" />;
 }
 
-function SidebarPage() {
-  return <GenericComponentPage name="Sidebar" />;
-}
-
 function SkeletonPage() {
   return <GenericComponentPage name="Skeleton" />;
-}
-
-function SliderPage() {
-  return <GenericComponentPage name="Slider" />;
 }
 
 function ToasterPage() {
@@ -5638,8 +5549,6 @@ function renderSection(section: DesignSystemSection) {
       return <CardPage />;
     case "component-carousel":
       return <CarouselPage />;
-    case "component-chart-container":
-      return <ChartContainerPage />;
     case "component-checkbox":
       return <CheckboxPage />;
     case "component-collapsible":
@@ -5650,10 +5559,6 @@ function renderSection(section: DesignSystemSection) {
       return <ConfirmDialogPage />;
     case "component-context-menu":
       return <ContextMenuPage />;
-    case "component-contextual-tip":
-      return <ContextualTipPage />;
-    case "component-detail-field":
-      return <DetailFieldPage />;
     case "component-dialog":
       return <DialogPage />;
     case "component-drawer":
@@ -5706,8 +5611,6 @@ function renderSection(section: DesignSystemSection) {
       return <ResizableHandlePage />;
     case "component-scroll-area":
       return <ScrollAreaPage />;
-    case "component-searchable-select":
-      return <SearchableSelectPage />;
     case "component-search-bar":
       return <SearchBarPage />;
     case "component-separator":
@@ -5722,12 +5625,8 @@ function renderSection(section: DesignSystemSection) {
       return <SettingsRowPage />;
     case "component-sheet":
       return <SheetPage />;
-    case "component-sidebar":
-      return <SidebarPage />;
     case "component-skeleton":
       return <SkeletonPage />;
-    case "component-slider":
-      return <SliderPage />;
     case "component-toaster":
       return <ToasterPage />;
     case "component-spinner":

@@ -42,7 +42,7 @@ import type { RunStatus, SessionNode } from "./types";
 import type { WaveState } from "./waveEngine";
 import type { WaveClosureReason } from "./waveVerdict";
 
-export const WAVE_TELEMETRY_STORAGE_KEY = "goose:wave-telemetry";
+export const WAVE_TELEMETRY_STORAGE_KEY = "distill:wave-telemetry";
 
 /**
  * Enough history for every rate the audit asked about, small enough that the

@@ -1,18 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { FolderOpen, RotateCcw, Terminal, Trash2 } from "lucide-react";
-import {
-  listAuthWorkspaces,
-  logout,
-  switchAuthWorkspace,
-  type AuthStatus,
-  type AuthWorkspaceList,
-} from "@/features/auth/api/auth";
-import { resetChatRuntimeStartup } from "@/app/lib/chatRuntimeStartup";
+import { FolderOpen, RotateCcw, Trash2 } from "lucide-react";
 import { cn } from "@/shared/lib/cn";
-import { getPlatform } from "@/shared/lib/platform";
 import { SettingsPage } from "@/shared/ui/SettingsPage";
 import { SettingsRow } from "@/shared/ui/settings-row";
 import { DistillFolderRow } from "./DistillFolderRow";
@@ -34,16 +24,9 @@ import { type LocalePreference, useLocale } from "@/shared/i18n";
 import { useArtifactRootPreference } from "@/shared/artifacts/useArtifactRootPreference";
 import { useTerminalFallbackCwdPreference } from "@/features/terminal/lib/terminalCwdPreference";
 import { useProfileCapability } from "@/shared/profile/capabilities";
-import { UpdatesSettings } from "@/features/updates/ui/UpdatesSettings";
 import { RuntimeConfigSettings } from "./RuntimeConfigSettings";
-import { TelemetryConsentRow } from "./TelemetryConsentRow";
 import { DoctorSettings } from "./DoctorSettings";
 import { useDoctorStatusSummary } from "@/shared/api/useDoctorReport";
-import {
-  getBbCliStatus,
-  installBbCli,
-  type BbCliStatus,
-} from "@/shared/api/bbCli";
 
 interface AboutAppInfo {
   version: string;
@@ -62,11 +45,6 @@ function AboutInfoRow({ label, value }: { label: string; value: string }) {
       }
     />
   );
-}
-
-interface SystemSettingsProps {
-  authStatus?: AuthStatus;
-  onLoggedOut?: (status: AuthStatus) => void;
 }
 
 // System (rev 3): "settings about Berd as installed software on this
@@ -102,57 +80,20 @@ interface SystemSettingsProps {
 // bottom under an "About" subhead, in the same order they rendered on the
 // old About page. `about` and the legacy `updates` route both redirect
 // here now (see settingsSections.ts).
-export function SystemSettings({
-  authStatus,
-  onLoggedOut,
-}: SystemSettingsProps) {
+export function SystemSettings() {
   const { t } = useTranslation("settings");
-  const queryClient = useQueryClient();
   const { preference, setLocalePreference, systemLocaleLabel } = useLocale();
-  const [bbCliStatus, setBbCliStatus] = useState<BbCliStatus | null>(null);
-  const [bbCliLoading, setBbCliLoading] = useState(false);
-  const [bbCliInstalling, setBbCliInstalling] = useState(false);
   const [clearCacheDialogOpen, setClearCacheDialogOpen] = useState(false);
   const [clearingCache, setClearingCache] = useState(false);
   const [doctorDialogOpen, setDoctorDialogOpen] = useState(false);
   const [appInfo, setAppInfo] = useState<AboutAppInfo | null>(null);
-  const [loggingOut, setLoggingOut] = useState(false);
-  const [workspaceList, setWorkspaceList] = useState<AuthWorkspaceList | null>(
-    null,
-  );
-  const [workspaceLoading, setWorkspaceLoading] = useState(false);
-  const [workspaceError, setWorkspaceError] = useState(false);
-  const [workspaceSwitching, setWorkspaceSwitching] = useState(false);
   const artifactRootPreference = useArtifactRootPreference();
   const terminalFallbackCwdPreference = useTerminalFallbackCwdPreference();
   const doctorEnabled = useProfileCapability("doctor");
-  const agentToolsEnabled = useProfileCapability("agentTools");
-  const updatesEnabled = useProfileCapability("updates");
-  const isMac = getPlatform() === "mac";
   const doctorStatus = useDoctorStatusSummary();
   const terminalFallbackPath =
     terminalFallbackCwdPreference.fallbackCwd ??
     artifactRootPreference.rootPath;
-
-  const refreshBbCliStatus = useCallback(async () => {
-    if (!isMac || !agentToolsEnabled || !window.__TAURI_INTERNALS__) {
-      return;
-    }
-
-    setBbCliLoading(true);
-    try {
-      setBbCliStatus(await getBbCliStatus());
-    } catch (error) {
-      console.warn("Failed to load bb CLI status:", error);
-      setBbCliStatus(null);
-    } finally {
-      setBbCliLoading(false);
-    }
-  }, [agentToolsEnabled, isMac]);
-
-  useEffect(() => {
-    void refreshBbCliStatus();
-  }, [refreshBbCliStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -190,87 +131,6 @@ export function SystemSettings({
   }, []);
 
   const aboutFallback = t("about.unavailable");
-
-  async function handleLogout() {
-    setLoggingOut(true);
-    try {
-      const nextStatus = await logout();
-      // `onLoggedOut` flips the auth gate, which unmounts AppShell and remounts
-      // it on the next login. Clear the startup latch first so that remount
-      // re-runs startup instead of reusing this account's run.
-      resetChatRuntimeStartup();
-      toast.success(t("account.logoutSuccess"));
-      onLoggedOut?.(nextStatus);
-    } catch (error) {
-      console.warn("Failed to log out:", error);
-      toast.error(t("account.logoutError"));
-    } finally {
-      setLoggingOut(false);
-    }
-  }
-
-  const loadWorkspaces = useCallback(async () => {
-    if (authStatus?.loggedIn !== true) return;
-
-    setWorkspaceLoading(true);
-    setWorkspaceError(false);
-    try {
-      setWorkspaceList(await listAuthWorkspaces());
-    } catch (error) {
-      console.warn("Failed to list workspaces:", error);
-      setWorkspaceError(true);
-    } finally {
-      setWorkspaceLoading(false);
-    }
-  }, [authStatus?.loggedIn]);
-
-  useEffect(() => {
-    void loadWorkspaces();
-  }, [loadWorkspaces]);
-
-  async function handleWorkspaceSwitch(workspaceIdentifier: string) {
-    if (
-      workspaceSwitching ||
-      workspaceIdentifier === workspaceList?.activeWorkspaceIdentifier
-    ) {
-      return;
-    }
-
-    setWorkspaceSwitching(true);
-    try {
-      const result = await switchAuthWorkspace(workspaceIdentifier);
-      const activeWorkspaceIdentifier =
-        result.workspace.workspaceIdentifier ?? workspaceIdentifier;
-      setWorkspaceList((current) =>
-        current
-          ? {
-              ...current,
-              activeWorkspaceIdentifier,
-            }
-          : current,
-      );
-      await queryClient.invalidateQueries();
-      toast.success(
-        t("account.workspace.switchSuccess", {
-          workspace: result.workspace.displayName ?? activeWorkspaceIdentifier,
-        }),
-      );
-    } catch (error) {
-      console.warn("Failed to switch workspace:", error);
-      toast.error(t("account.workspace.switchError"));
-    } finally {
-      setWorkspaceSwitching(false);
-    }
-  }
-
-  const signedInAs =
-    authStatus?.email ?? authStatus?.name ?? authStatus?.user ?? aboutFallback;
-  const organization = authStatus?.org ?? aboutFallback;
-  const showAccountSection = authStatus?.loggedIn === true;
-  const selectableWorkspaces =
-    workspaceList?.workspaces.filter(
-      (workspace) => workspace.workspaceIdentifier,
-    ) ?? [];
 
   async function handleClearMediaCache() {
     setClearingCache(true);
@@ -350,35 +210,9 @@ export function SystemSettings({
     }
   }
 
-  async function handleInstallBbCli() {
-    setBbCliInstalling(true);
-    try {
-      const nextStatus = await installBbCli();
-      setBbCliStatus(nextStatus);
-      toast.success(t("general.bbCli.installSuccess"));
-    } catch (error) {
-      console.warn("Failed to install bb CLI:", error);
-      toast.error(t("general.bbCli.installError"));
-      await refreshBbCliStatus();
-    } finally {
-      setBbCliInstalling(false);
-    }
-  }
-
-  const bbCliActionLabel =
-    bbCliStatus?.installed || bbCliStatus?.needsRepair
-      ? t("general.bbCli.repair")
-      : t("general.bbCli.install");
-  const bbCliBusy = bbCliLoading || bbCliInstalling;
-
   return (
     <SettingsPage title={t("nav.system")} contentClassName="space-y-8">
       <SettingsSections>
-        {/* Check for updates, first (rev 5): the row people open System for
-          most often. Renders app version + the release channel picker
-          alongside it, same content as the old standalone Updates card. */}
-        {updatesEnabled ? <UpdatesSettings embedded /> : null}
-
         <SettingsSection>
           <SettingsRow
             label={t("general.language.label")}
@@ -534,88 +368,17 @@ export function SystemSettings({
           ) : null}
         </SettingsSection>
 
-        {/* Renders nothing in enforced builds, where telemetry consent is
-          build policy and not a user choice, or when the `telemetry`
-          capability is off, where no event can emit whatever consent says. */}
-        <TelemetryConsentRow />
-
-        {/* bb CLI and Runtime config are both one-off developer-facing rows
-          (not a growing list), so they share a single "Developer tools"
-          section instead of each getting its own subheading -- this also
-          gives them a divider between them for free via SettingsSection's
-          divide-y content wrapper. A restricted build compiled with the
-          `no-bb-cli-install` Cargo feature reports `unsupportedInBuild`;
-          hide the bb CLI row entirely rather than showing a button that can
-          never install. Runtime config only renders in dev builds. */}
-        {(isMac && agentToolsEnabled && !bbCliStatus?.unsupportedInBuild) ||
-        import.meta.env.DEV ? (
+        {import.meta.env.DEV ? (
           <SettingsSection title={t("developerTools.title")}>
-            {isMac && agentToolsEnabled && !bbCliStatus?.unsupportedInBuild ? (
-              <SettingsRow
-                label={t("general.bbCli.label")}
-                description={
-                  bbCliStatus
-                    ? `${bbCliStatus.message}. ${bbCliStatus.detail}`
-                    : t("general.bbCli.description")
-                }
-                align="start"
-              >
-                <div className="flex flex-col items-end gap-2">
-                  <div className="flex items-center gap-2">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="xs"
-                      onClick={() => void refreshBbCliStatus()}
-                      disabled={bbCliBusy}
-                    >
-                      <RotateCcw className="size-3.5" />
-                      {t("general.bbCli.refresh")}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant={bbCliStatus?.installed ? "outline" : "primary"}
-                      size="xs"
-                      onClick={() => void handleInstallBbCli()}
-                      disabled={bbCliBusy || bbCliStatus?.canInstall === false}
-                    >
-                      <Terminal className="size-3.5" />
-                      {bbCliInstalling
-                        ? t("general.bbCli.installing")
-                        : bbCliActionLabel}
-                    </Button>
-                  </div>
-                  <p className="max-w-80 truncate text-right text-xs text-muted-foreground">
-                    {bbCliStatus?.bundledVersion
-                      ? t("general.bbCli.version", {
-                          version: bbCliStatus.bundledVersion,
-                        })
-                      : t("general.bbCli.versionUnknown")}
-                  </p>
-                </div>
-              </SettingsRow>
-            ) : null}
-
-            {import.meta.env.DEV ? <RuntimeConfigSettings /> : null}
+            <RuntimeConfigSettings />
           </SettingsSection>
         ) : null}
 
-        {/* About (rev 5): app identity rows + Account, moved here from the
-          standalone About page and pushed to the bottom of System, under
-          their own subhead. App version normally isn't duplicated here
-          since the embedded Updates card above already shows it -- but in
-          updater-disabled builds (VITE_UPDATER_ENABLED=false / capability
-          off) that card doesn't render at all, and this is still the only
-          app-identity surface, so restricted/custom builds would otherwise
-          have no visible version anywhere. Show the row only when the card
-          is absent. Caught by Builderbot review (carried over from About). */}
         <SettingsSection title={t("about.title")}>
-          {!updatesEnabled ? (
-            <AboutInfoRow
-              label={t("about.fields.version")}
-              value={appInfo?.version ?? aboutFallback}
-            />
-          ) : null}
+          <AboutInfoRow
+            label={t("about.fields.version")}
+            value={appInfo?.version ?? aboutFallback}
+          />
           <AboutInfoRow
             label={t("about.fields.buildMode")}
             value={
@@ -634,85 +397,6 @@ export function SystemSettings({
           />
           <AboutInfoRow label={t("about.fields.license")} value="Apache-2.0" />
         </SettingsSection>
-
-        {showAccountSection ? (
-          <SettingsSection title={t("account.title")}>
-            <SettingsRow
-              label={t("account.signedInAs")}
-              description={signedInAs}
-              align="start"
-            >
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                feedbackState={loggingOut ? "loading" : "idle"}
-                loadingLabel={t("account.loggingOut")}
-                disabled={loggingOut}
-                onClick={() => void handleLogout()}
-              >
-                {t("account.logout")}
-              </Button>
-            </SettingsRow>
-            <AboutInfoRow
-              label={t("account.organization")}
-              value={organization}
-            />
-            <SettingsRow
-              label={t("account.workspace.label")}
-              description={
-                workspaceError
-                  ? t("account.workspace.loadError")
-                  : t("account.workspace.description")
-              }
-            >
-              {workspaceError ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  disabled={workspaceLoading}
-                  onClick={() => void loadWorkspaces()}
-                >
-                  {t("account.workspace.retry")}
-                </Button>
-              ) : (
-                <Select
-                  value={workspaceList?.activeWorkspaceIdentifier ?? undefined}
-                  disabled={
-                    workspaceLoading ||
-                    workspaceSwitching ||
-                    selectableWorkspaces.length === 0
-                  }
-                  onValueChange={(value) => void handleWorkspaceSwitch(value)}
-                >
-                  <SelectTrigger
-                    className="w-52"
-                    aria-label={t("account.workspace.label")}
-                  >
-                    <SelectValue
-                      placeholder={
-                        workspaceLoading
-                          ? t("account.workspace.loading")
-                          : t("account.workspace.unavailable")
-                      }
-                    />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {selectableWorkspaces.map((workspace) => (
-                      <SelectItem
-                        key={workspace.workspaceIdentifier}
-                        value={workspace.workspaceIdentifier ?? ""}
-                      >
-                        {workspace.displayName ?? workspace.workspaceIdentifier}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            </SettingsRow>
-          </SettingsSection>
-        ) : null}
       </SettingsSections>
 
       <ConfirmDialog

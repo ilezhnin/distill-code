@@ -1095,7 +1095,7 @@ describe("AgentModelPicker", () => {
 
     const picker = screen.getByRole("dialog");
     const selectedAgent = within(picker).getByRole("button", {
-      name: "Goose Goose",
+      name: "Goose",
     });
     const selectedModel = within(picker).getByRole("button", {
       name: "Claude Sonnet 4",
@@ -1168,7 +1168,7 @@ describe("AgentModelPicker", () => {
       within(picker).getByRole("button", { name: "Search models..." }),
     );
     const selectedAgent = within(picker).getByRole("button", {
-      name: "Goose Goose",
+      name: "Goose",
     });
     selectedAgent.focus();
 

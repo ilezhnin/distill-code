@@ -14,7 +14,9 @@ import {
   extractConfidence,
   inferSecurityExplanation,
 } from "@/features/security/lib/inferExplanation";
-import { readDefaultProviderReadiness } from "@/features/providers/defaultProviderReadiness";
+import { useAgentStore } from "@/features/agents/stores/agentStore";
+import { resolveSelectedAgentId } from "@/features/chat/lib/agentProviderResolution";
+import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 
 function textFromContentBlock(block: ContentBlock): string | null {
   if (block.type === "text") {
@@ -112,19 +114,15 @@ export function handleSecurityPermissionRequest(
     });
 
     const confidence = extractConfidence(alertText);
-    readDefaultProviderReadiness()
-      .then(async (readiness) => {
-        if (readiness.status === "needs_setup") {
-          return { status: "needs_setup" as const };
-        }
-
-        if (readiness.status === "unknown") {
-          return { status: "failed" as const };
-        }
-
+    Promise.resolve(
+      resolveSelectedAgentId({
+        catalogEntries: useProviderCatalogStore.getState().entries,
+        selectedProvider: useAgentStore.getState().selectedProvider,
+      }),
+    )
+      .then(async (providerId) => {
         const text = await inferSecurityExplanation(command, confidence, {
-          providerId: readiness.providerId,
-          modelId: readiness.modelId,
+          providerId,
         });
         return text
           ? { status: "done" as const, text }

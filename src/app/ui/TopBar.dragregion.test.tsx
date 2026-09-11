@@ -70,7 +70,6 @@ function renderTopBar() {
       onGoForward={() => {}}
       onToggleSidebar={() => {}}
       onSearchClick={() => {}}
-      onFeedbackClick={() => {}}
     />,
   );
   const header = container.querySelector("header");

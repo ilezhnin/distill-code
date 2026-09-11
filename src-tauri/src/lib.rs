@@ -146,11 +146,7 @@ pub fn run() {
                     APP_LOG_ARCHIVES_KEPT,
                 ))
                 .targets([
-                    // The Stdout formatter greys dev-time telemetry-viewer
-                    // records; the LogDir target keeps no formatter so the
-                    // ANSI escapes never reach `berd.log`.
-                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout)
-                        .format(commands::renderer::stdout_log_format),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
                         file_name: Some("berd".into()),
                     }),
@@ -158,7 +154,6 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_deep_link::init())
@@ -198,8 +193,8 @@ pub fn run() {
             // Register every command-backed state in the Tauri state map
             // before any blocking, async, or filesystem work below. The main
             // window is created hidden, but its webview still loads and races
-            // ahead on Tokio threads (e.g. `runChatRuntimeStartup` spawning
-            // goose serve and calling `refresh_runtime_config`). If a blocking
+            // ahead on Tokio threads (e.g. `runChatRuntimeStartup` starting
+            // the agent host and calling `refresh_runtime_config`). If a blocking
             // step such as the move-to-/Applications prompt runs first, those
             // handlers read the state map before `manage()` has run and fail
             // with "state not managed". These `manage()` calls are cheap and
@@ -207,10 +202,8 @@ pub fn run() {
             // present even while a later step blocks the setup thread.
             let app_data_dir = app.path().app_data_dir()?;
 
-            // Resolved and exported before anything can spawn the goose child:
-            // `GOOSE_PATH_ROOT` is read once, at spawn, so a root set later
-            // would leave goose writing to the OS-blessed directories while
-            // the rest of the app wrote to the chosen folder.
+            // Resolved before anything writes to disk so every part of the app
+            // agrees on the chosen folder.
             match commands::distill_store::initialize(app) {
                 Ok(state) => {
                     log::info!("Distill root: {}", state.root.display());
@@ -245,60 +238,15 @@ pub fn run() {
                 app_data_dir.clone(),
                 bundled_runtime_config_path,
             ));
-            // Construct and register the distro bundle up front (goose serve and
-            // runtime-config readiness both depend on it). Seeding its bundled
+            // Construct and register the distro bundle up front (the agent host
+            // and runtime-config readiness both depend on it). Seeding its bundled
             // skills/agents is filesystem work and is deferred below.
             app.manage(DistroBundleState::new(app.handle()));
             app.manage(bundled_skills::BundledSkillsState::default());
-            #[cfg(feature = "block-automations")]
-            app.manage(commands::automations::AutomationStreamState::default());
             app.manage(commands::terminal::TerminalState::default());
+            app.manage(services::agent_host::AgentHost::new());
             app.manage(commands::window_session::WindowSessionRegistry::default());
             app.manage(commands::agent_setup::AgentSetupRegistry::default());
-            app.manage(commands::model_setup::ModelSetupRegistry::default());
-            app.manage(commands::pocket_voice::PocketVoiceState::default());
-            app.manage(commands::native_voice::NativeVoiceState::default());
-            app.manage(commands::voice_capture::VoiceCaptureState::default());
-            app.manage(commands::telemetry::TelemetryAuthState::new(
-                app_data_dir.clone(),
-            ));
-            let (installation_cohort_sender, installation_cohort_state) =
-                services::installation_cohort::installation_cohort_channel();
-            app.manage(installation_cohort_state);
-            let current_layout_exists =
-                services::installation_cohort::layout_database_exists(&app_data_dir);
-            let legacy_layout_exists = if app.try_state::<services::e2e_mode::E2eMode>().is_some() {
-                Ok(false)
-            } else {
-                services::app_data_migration::legacy_layout_database_exists(app.handle())
-            };
-            let installation_cohort =
-                services::installation_cohort::initialize_installation_cohort(
-                    &app_data_dir,
-                    current_layout_exists,
-                    legacy_layout_exists,
-                )
-                .unwrap_or_else(|error| {
-                    log::warn!("Failed to initialize installation cohort: {error}");
-                    services::installation_cohort::InstallationCohort::Unknown
-                });
-            installation_cohort_sender.send_replace(
-                services::installation_cohort::InstallationCohortReadiness::Ready(
-                    installation_cohort,
-                ),
-            );
-            let release_channel_state = commands::updates::ReleaseChannelState::load(app.handle())?;
-            app.manage(release_channel_state);
-
-            // `LayoutState::new` opens (and creates) the layout database, so the
-            // one-time legacy app-data migration must run first to copy any
-            // pre-rename database before a fresh, empty one is created here.
-            services::app_data_migration::migrate_legacy_app_data(app.handle());
-            let layout_state = tauri::async_runtime::block_on(commands::layout::LayoutState::new(
-                app_data_dir.clone(),
-            ))
-            .map_err(std::io::Error::other)?;
-            app.manage(layout_state);
 
             // With all command state registered, it is now safe to run blocking,
             // async, network, or filesystem work.
@@ -311,9 +259,6 @@ pub fn run() {
             // app. It is deferred to `RunEvent::Ready` (see `run` below), which
             // fires on the main thread once setup has returned and the event
             // loop is running.
-
-            #[cfg(all(feature = "block-agent-tools", not(feature = "no-bb-cli-install")))]
-            commands::cli::schedule_bb_cli_auto_install(app.handle());
 
             services::diagnostic_log::record_event(
                 services::diagnostic_log::DiagnosticLevel::Info,
@@ -334,31 +279,13 @@ pub fn run() {
 
             deep_links::install(app);
 
-            // Register the updater plugin only when a signing public key is
-            // configured (i.e. release builds that include tauri.release.conf.json).
-            let updater_pubkey_present = app
-                .config()
-                .plugins
-                .0
-                .get("updater")
-                .and_then(|v| v.as_object())
-                .and_then(|u| u.get("pubkey"))
-                .and_then(|k| k.as_str())
-                .is_some_and(|k| !k.trim().is_empty());
-
-            if updater_pubkey_present {
-                app.handle()
-                    .plugin(tauri_plugin_updater::Builder::new().build())?;
-            }
-
             services::berdctl_discovery::sweep_stale_discovery_files(&app_data_dir);
 
             // Seed bundled skills and agents from the distro bundle registered
             // above. This touches the filesystem, so it runs after the prompt.
             let e2e_agents_dir = app
                 .try_state::<services::e2e_mode::E2eMode>()
-                .map(|mode| mode.goose_agents_dir());
-            let migrate_bundled_skills_from_home = e2e_agents_dir.is_none();
+                .map(|mode| mode.agents_dir());
             {
                 let distro_state = app.state::<DistroBundleState>();
                 let bundled_skills_state = app
@@ -372,7 +299,6 @@ pub fn run() {
                         match bundled_skills::seed_bundled_skills(
                             &skills_bundle,
                             &skills_app_data_dir,
-                            migrate_bundled_skills_from_home,
                         ) {
                             Ok(count) if count > 0 => {
                                 log::info!("Seeded {count} bundled skill(s)");
@@ -415,9 +341,6 @@ pub fn run() {
             // Node runtime in app data; failures are logged and retried next
             // launch while any previously installed version keeps working.
             services::acp_tools_reconciler::spawn_startup_reconcile(app.handle());
-
-            // Surface WKWebView renderer memory and detect silent OOM reaps.
-            services::renderer_monitor::start(app.handle().clone());
 
             apply_app_window_icons(app.handle());
 
@@ -489,91 +412,22 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::pr_tracker::open_pr_tracker_url,
-            commands::pr_tracker::resolve_pr_tracker_projects,
-            commands::pr_tracker::list_pr_tracker_pull_requests,
             commands::agents::read_import_persona_file,
             commands::agents::read_import_agent_file,
             commands::agents::read_import_agent_image,
             commands::agents::read_agent_source_file,
             commands::agents::repair_bundled_agent,
-            #[cfg(feature = "block-builderbot")]
-            commands::auth::auth_status,
-            #[cfg(feature = "block-builderbot")]
-            commands::auth::start_login,
-            #[cfg(feature = "block-builderbot")]
-            commands::auth::login,
-            #[cfg(feature = "block-builderbot")]
-            commands::auth::cancel_login,
-            #[cfg(feature = "block-builderbot")]
-            commands::auth::logout,
-            #[cfg(feature = "block-builderbot")]
-            commands::auth::list_auth_workspaces,
-            #[cfg(feature = "block-builderbot")]
-            commands::auth::switch_auth_workspace,
             commands::avatars::get_avatar_library_snapshot,
             commands::avatars::refresh_avatar_cache,
-            commands::avatars::get_cached_avatar_for_ref,
             commands::avatars::get_cached_avatars_for_refs,
             commands::avatars::read_cached_avatar_animation,
             commands::avatars::import_user_avatar_data_url,
             commands::avatars::import_agent_avatar_file,
             commands::avatars::delete_user_avatar,
             commands::cache::clear_local_media_caches,
-            #[cfg(feature = "block-agent-tools")]
-            commands::cli::get_bb_cli_status,
-            #[cfg(not(feature = "no-bb-cli-install"))]
-            #[cfg(feature = "block-agent-tools")]
-            commands::cli::install_bb_cli,
             commands::global_shortcut::launch_global_shortcut_handler,
             commands::global_shortcut::stop_global_shortcut_handler,
-            #[cfg(feature = "block-managed-connections")]
-            commands::connections::list_connections,
-            #[cfg(feature = "block-managed-connections")]
-            commands::connections::disconnect_connection,
-            #[cfg(feature = "block-automations")]
-            commands::automations::get_automation_tiles,
-            #[cfg(feature = "block-automations")]
-            commands::automations::get_automation_tile,
-            #[cfg(feature = "block-automations")]
-            commands::automations::get_automation_tile_results,
-            #[cfg(feature = "block-automations")]
-            commands::automations::create_automation_tile,
-            #[cfg(feature = "block-automations")]
-            commands::automations::push_automation_builder_messages,
-            #[cfg(feature = "block-automations")]
-            commands::automations::cancel_automation_builder_message,
-            #[cfg(feature = "block-automations")]
-            commands::automations::start_automation_builder_stream,
-            #[cfg(feature = "block-automations")]
-            commands::automations::stop_automation_builder_stream,
-            #[cfg(feature = "block-automations")]
-            commands::automations::update_automation_tile,
-            #[cfg(feature = "block-automations")]
-            commands::automations::delete_automation_tile,
-            #[cfg(feature = "block-automations")]
-            commands::automations::refresh_automation_tile,
-            #[cfg(feature = "block-automations")]
-            commands::automations::generate_automation_schedule,
-            #[cfg(feature = "block-automations")]
-            commands::automations::get_automation_session_messages,
-            #[cfg(feature = "block-builderbot")]
-            commands::builderbot::get_builderbot_tasks,
-            #[cfg(feature = "block-builderbot")]
-            commands::builderbot::get_builderbot_scheduled_triggers,
-            #[cfg(feature = "block-builderbot")]
-            commands::builderbot::get_builderbot_routing_rules,
-            #[cfg(feature = "block-builderbot")]
-            commands::builderbot::update_builderbot_scheduled_trigger,
-            #[cfg(feature = "block-builderbot")]
-            commands::builderbot::update_builderbot_routing_rule,
-            commands::telemetry::export_otel_logs,
-            commands::telemetry::get_telemetry_resource,
-            commands::telemetry::get_telemetry_settings,
-            commands::telemetry::set_telemetry_enabled,
-            commands::whoami::whoami,
-            commands::acp::get_goose_serve_url,
-            commands::acp::get_goose_serve_host_info,
+            commands::agent_host::get_agent_host_url,
             commands::project_icons::scan_project_icons,
             commands::project_icons::read_project_icon,
             commands::renderer::log_renderer_event,
@@ -581,8 +435,6 @@ pub fn run() {
             commands::doctor::run_doctor,
             commands::doctor::run_doctor_fresh,
             commands::doctor::run_doctor_fix,
-            #[cfg(feature = "block-feedback")]
-            commands::feedback::submit_feedback_issue,
             commands::git::get_git_state,
             commands::git_changes::get_changed_files,
             commands::git::git_switch_branch,
@@ -596,35 +448,10 @@ pub fn run() {
             commands::git::git_delete_branch,
             commands::git::git_create_worktree,
             commands::git::git_remove_worktree,
-            commands::pull_requests::get_pull_request_summaries,
-            commands::home_widget_media::import_home_widget_photo,
-            commands::installation::get_installation_cohort,
-            commands::layout::get_layout,
-            commands::layout::save_layout_items,
-            commands::layout::save_layout_camera,
-            commands::layout::reset_layout,
-            commands::migration::migration_status,
-            commands::migration::backup_goose_config,
-            commands::migration::mark_migration_complete,
-            commands::migration::mark_legacy_extension_cleanup_complete,
-            commands::migration::dismiss_migration_banner,
             commands::message_queues::load_message_queues,
-            commands::message_queues::persist_message_queues,
             commands::message_queues::persist_message_queue_updates,
-            commands::model_setup::start_model_setup,
-            commands::model_setup::get_model_setup_status,
             commands::local_mcp_inventory::list_local_mcp_inventory,
-            commands::model_setup::list_model_setup_status,
-            commands::model_setup::clear_model_setup_status,
             commands::notifications::show_completion_notification,
-            #[cfg(feature = "block-voice-dictation")]
-            commands::openai_realtime::get_openai_realtime_status,
-            #[cfg(feature = "block-voice-dictation")]
-            commands::openai_realtime::create_openai_realtime_session,
-            #[cfg(feature = "block-voice-dictation")]
-            commands::openai_realtime::claim_voice_dictation_microphone,
-            #[cfg(feature = "block-voice-dictation")]
-            commands::openai_realtime::release_voice_dictation_microphone,
             commands::agent_setup::start_agent_setup,
             commands::agent_setup::get_agent_setup_status,
             commands::agent_setup::list_agent_setup_status,
@@ -633,7 +460,6 @@ pub fn run() {
             commands::path_resolver::resolve_path,
             commands::path_resolver::canonicalize_authorized_workspace_directory,
             commands::path_resolver::check_directories_exist,
-            commands::diagnostics::probe_kgoose_connectivity,
             commands::diagnostics::write_diagnostic_event,
             commands::distro::get_distro_bundle,
             commands::runtime_config::get_runtime_config,
@@ -643,7 +469,6 @@ pub fn run() {
             commands::security_threshold::get_security_threshold,
             commands::security_threshold::set_security_threshold,
             commands::system::get_home_dir,
-            commands::system::open_in_chrome,
             commands::system::save_exported_agent_file,
             commands::system::save_exported_agent_image,
             commands::system::save_exported_session_file,
@@ -668,30 +493,6 @@ pub fn run() {
             commands::terminal::write_terminal,
             commands::terminal::resize_terminal,
             commands::terminal::stop_terminal,
-            commands::updates::get_release_runtime,
-            commands::updates::check_release_update,
-            commands::updates::prepare_channel_switch,
-            commands::updates::confirm_channel_switch,
-            commands::updates::download_and_install_release,
-            commands::updates::complete_channel_switch_install,
-            commands::updates::cancel_channel_switch,
-            commands::updates::finalize_update_relaunch,
-            commands::pocket_voice::get_pocket_voice_status,
-            commands::pocket_voice::install_voice_model,
-            commands::pocket_voice::select_pocket_voice,
-            commands::pocket_voice::set_pocket_playback_speed,
-            commands::pocket_voice::preview_pocket_voice,
-            commands::pocket_voice::speak_pocket_voice,
-            commands::pocket_voice::stop_pocket_voice,
-            commands::pocket_voice::remove_voice_model,
-            commands::native_voice::get_native_voice_conversation_status,
-            commands::native_voice::drain_native_voice_conversation_transcripts,
-            commands::native_voice::acknowledge_native_voice_conversation_transcript,
-            commands::native_voice::reject_native_voice_conversation_transcript,
-            commands::native_voice::start_native_voice_conversation,
-            commands::native_voice::stop_native_voice_conversation,
-            commands::native_voice::push_native_voice_audio,
-            commands::voice_capture::register_voice_renderer_instance,
             commands::window_session::get_session_window_support,
             commands::window_session::open_session_window,
             commands::window_session::release_session,
@@ -704,25 +505,16 @@ pub fn run() {
             commands::window_session::list_session_windows,
             commands::agent_skills::list_agent_skills,
             commands::agent_skills::list_berd_app_skills,
-            commands::skill_marketplace::skill_cli_status,
-            commands::skill_marketplace::list_remote_skills,
-            commands::skill_marketplace::show_remote_skill,
-            commands::skill_marketplace::install_remote_skill,
             commands::workspace_context::load_workspace_context,
         ])
         .build(context)
         .expect("error while building tauri application")
         .run(|app, event| match event {
             RunEvent::Exit => {
-                #[cfg(feature = "block-automations")]
-                app.state::<commands::automations::AutomationStreamState>()
-                    .abort_all();
                 app.state::<commands::global_shortcut::GlobalShortcutHandlerState>()
                     .stop();
                 app.state::<commands::terminal::TerminalState>().stop_all();
-                app.state::<commands::native_voice::NativeVoiceState>()
-                    .stop_for_app_exit();
-                services::acp::goose_serve::GooseServeProcess::kill_singleton();
+                app.state::<services::agent_host::AgentHost>().shutdown();
             }
             #[cfg(target_os = "macos")]
             RunEvent::Reopen { .. } => {
@@ -731,17 +523,8 @@ pub fn run() {
                     let _ = main.set_focus();
                 }
             }
-            // Offer to move into /Applications when launched from installer
-            // media (DMG, a read-only/translocated location, or another
-            // non-installed download). Deferred out of `setup` to here so the
-            // synchronous `NSAlert.runModal()` runs on the main thread only
-            // once setup has returned and the event loop is running, keeping
-            // setup non-blocking. Fires once. Accepting copies the bundle,
-            // relaunches the installed copy, and exits this process.
             RunEvent::Ready => {
                 apply_app_window_icons(app);
-                #[cfg(target_os = "macos")]
-                services::installer_media::maybe_prompt_move_to_applications(app);
             }
             _ => {}
         });

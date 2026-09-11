@@ -39,12 +39,8 @@ export function listVisibleAgentPickerOptions(options: {
     const readiness = options.agentReadiness.get(resolvedId) ?? "not_installed";
     const isSelected = resolvedId === options.selectedAgentId;
     // Composer lists installed harnesses. Install-only rows stay in
-    // Settings. Goose without a model provider is installed-but-unusable,
-    // so keep it out unless it is already the selected agent.
+    // Settings.
     if (readiness === "not_installed" && !isSelected) {
-      return;
-    }
-    if (resolvedId === "goose" && readiness !== "ready" && !isSelected) {
       return;
     }
     const setupAction =

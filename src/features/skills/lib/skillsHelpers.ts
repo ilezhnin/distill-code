@@ -1,6 +1,6 @@
 import type { SkillInfo } from "../api/skills";
 
-// Mirrors crates/goose/src/skills/mod.rs::validate_skill_name.
+// Mirrors the skill-name rules the bundled skills follow.
 // Keep in sync with the Rust rule.
 const MAX_SKILL_NAME_LENGTH = 64;
 

@@ -142,4 +142,96 @@ describe("useConductorGraphSync startup reconcile", () => {
       "running",
     );
   });
+
+  it("does not stamp a promoted conductor with its role name", async () => {
+    const {
+      useConductorGraphSync,
+      useConductorGraphStore,
+      useChatSessionStore,
+    } = await loadModules();
+    const { updateSessionTitle } = await import(
+      "@/features/chat/stores/chatSessionOperations"
+    );
+    useConductorGraphStore.getState().registerNode({
+      sessionId: "draft-1",
+      projectId: "project",
+      role: "conductor",
+      managedBy: "ui",
+      parentSessionId: null,
+      rootConductorId: "draft-1",
+      runId: null,
+      harnessId: "goose",
+      displayName: "Producer",
+      status: "stopped",
+      createdAt: 1,
+    });
+    useChatSessionStore.setState({
+      sessions: [
+        {
+          id: "goose-1",
+          clientSessionId: "draft-1",
+          title: "Producer",
+          userSetName: true,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          messageCount: 0,
+        },
+      ],
+      hasHydratedSessions: true,
+    });
+
+    renderHook(() => useConductorGraphSync());
+
+    expect(updateSessionTitle).not.toHaveBeenCalled();
+    expect(useChatSessionStore.getState().getSession("goose-1")).toMatchObject({
+      title: "Producer",
+      userSetName: false,
+    });
+    expect(useConductorGraphStore.getState().getNode("goose-1")?.role).toBe(
+      "conductor",
+    );
+    expect(
+      useConductorGraphStore.getState().getNode("draft-1"),
+    ).toBeUndefined();
+  });
+
+  it("copies a generated chat title onto the conductor graph label", async () => {
+    const {
+      useConductorGraphSync,
+      useConductorGraphStore,
+      useChatSessionStore,
+    } = await loadModules();
+    useConductorGraphStore.getState().registerNode({
+      sessionId: "goose-1",
+      projectId: "project",
+      role: "conductor",
+      managedBy: "ui",
+      parentSessionId: null,
+      rootConductorId: "goose-1",
+      runId: null,
+      harnessId: "goose",
+      displayName: "Producer",
+      status: "stopped",
+      createdAt: 1,
+    });
+    useChatSessionStore.setState({
+      sessions: [
+        {
+          id: "goose-1",
+          title: "Refund timeout fix",
+          userSetName: false,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          messageCount: 1,
+        },
+      ],
+      hasHydratedSessions: true,
+    });
+
+    renderHook(() => useConductorGraphSync());
+
+    expect(
+      useConductorGraphStore.getState().getNode("goose-1")?.displayName,
+    ).toBe("Refund timeout fix");
+  });
 });

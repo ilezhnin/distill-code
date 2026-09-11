@@ -18,7 +18,7 @@ import type {
   WaveStep,
   WaveStepAccess,
 } from "./distillWave";
-import { roleStage } from "./roleLayers";
+import { roleStage, workerRoleIdsForStage } from "./roleLayers";
 import type { RunStatus, SessionNode, StructuredReport } from "./types";
 import type { CompletedWaveStepReport } from "./wavePrompts";
 
@@ -250,7 +250,25 @@ export type WaveRejectionReason =
    * this is the floor under that instruction, so "the conductor forgot" is a
    * refused plan the operator can see rather than an accept nobody checked.
    */
-  | "verification-step-missing";
+  | "verification-step-missing"
+  /**
+   * The plan has a verification step, but something that is not a release
+   * step runs after it, so the wave's last word is not the check.
+   *
+   * Split from `verification-step-missing` because the two are different
+   * edits. A live plan — build, build, acceptor, pr-submitter — was refused
+   * with "its last step does not check it" while its acceptor sat right
+   * there, and the replan request repeated that to the conductor: told to add
+   * the step it had already written, the model can only guess. One code per
+   * defect is what makes the sentence true.
+   */
+  | "verification-step-misplaced"
+  /**
+   * The plan closes with a verification step whose `access` is `[]`: it never
+   * receives the earlier steps' reports, so it cannot know what it is
+   * verifying. A verifier in name only.
+   */
+  | "verification-step-blind";
 
 export type WaveAdmission =
   | { kind: "accepted"; steps: readonly WaveStep[] }
@@ -383,6 +401,24 @@ export const VERIFICATION_TRIGGER_STAGES: readonly string[] = ["prod"];
 /** Stage a wave's closing verification step must carry. */
 export const VERIFICATION_STAGE = "verify";
 
+/**
+ * Stages allowed to run *after* the verification step.
+ *
+ * Build, check, then commit is the ordinary shape of real work, and the
+ * catalog offers `pr-submitter`, `localizer` and `devops` for the last part.
+ * They act on an artifact that has already been verified — that is exactly
+ * why they are exempt from triggering the lint themselves — so they trail the
+ * verifier instead of displacing it.
+ *
+ * Without this, the rule "the verifier is the literal last step" made every
+ * plan that also commits unrunnable: the operator's own «fix it, then commit»
+ * could not be expressed as one wave, and the refusal blamed a missing
+ * verification step that was in fact present. The rule the engine means is
+ * that the last step which *inspects the work* is the verifier, not that
+ * nothing at all may follow it.
+ */
+export const POST_VERIFICATION_STAGES: readonly string[] = ["release"];
+
 interface WaveStepShape {
   role: string;
   access: WaveStepAccess;
@@ -405,21 +441,91 @@ export function waveRequiresVerification(
   );
 }
 
+/** True when this step may run after the verification step. */
+function isPostVerificationStep(step: WaveStepShape): boolean {
+  return POST_VERIFICATION_STAGES.includes(roleStage(step.role) ?? "");
+}
+
+/**
+ * Index of the step that closes the wave's *work* — the last one that is not
+ * a trailing release step, and therefore the position the verifier has to
+ * occupy. `-1` when the plan is nothing but release steps.
+ */
+function closingWorkStepIndex(steps: readonly WaveStepShape[]): number {
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const step = steps[index];
+    if (step && isPostVerificationStep(step)) continue;
+    return index;
+  }
+  return -1;
+}
+
 /**
  * The plan's closing verification step, or `null` when it does not have one.
  *
  * Both halves are load-bearing: a `verify`-stage role because that is what the
  * catalog says inspects work, and `access: "all"` because a verifier that
  * cannot see the earlier steps' reports cannot know what it is verifying.
+ *
+ * "Closing" means the last step that inspects, not the last step in the
+ * array: a release tail (see {@link POST_VERIFICATION_STAGES}) is allowed to
+ * follow it.
  */
 export function waveVerificationStep<Step extends WaveStepShape>(
   steps: readonly Step[],
 ): Step | null {
-  const last = steps.at(-1);
-  if (!last) return null;
-  if (roleStage(last.role) !== VERIFICATION_STAGE) return null;
-  if (last.access !== "all") return null;
-  return last;
+  const closing = steps[closingWorkStepIndex(steps)];
+  if (!closing) return null;
+  if (roleStage(closing.role) !== VERIFICATION_STAGE) return null;
+  if (closing.access !== "all") return null;
+  return closing;
+}
+
+/**
+ * Which verification defect a plan has, or `null` when it has none.
+ *
+ * Three codes rather than one because they are three different edits — add a
+ * verifier, move the one you have, let it see the reports — and the refusal
+ * is read twice: once by the operator in the card, once by the conductor if
+ * the operator presses "ask for a new plan". A message that names the wrong
+ * defect sends the model to fix something that was never broken.
+ */
+function verificationDefect(steps: readonly WaveStepShape[]): {
+  reason: WaveRejectionReason;
+  detail: string;
+  stepIndex: number;
+} | null {
+  if (!waveRequiresVerification(steps)) return null;
+  if (waveVerificationStep(steps)) return null;
+
+  const closingIndex = closingWorkStepIndex(steps);
+  const closing = steps[closingIndex];
+  const releaseRoles = workerRoleIdsForStage("release").join(", ");
+
+  if (closing && roleStage(closing.role) === VERIFICATION_STAGE) {
+    return {
+      reason: "verification-step-blind",
+      detail: `Step ${closingIndex + 1} is the verification step, but its "access" is [] — it never receives the earlier steps' reports, so it cannot know what it is verifying. Re-send the plan with "access":"all" on that step.`,
+      stepIndex: closingIndex,
+    };
+  }
+
+  const verifierIndex = steps.findIndex(
+    (step) => roleStage(step.role) === VERIFICATION_STAGE,
+  );
+  if (verifierIndex >= 0 && closing) {
+    return {
+      reason: "verification-step-misplaced",
+      detail: `Step ${verifierIndex + 1} verifies the work, but step ${closingIndex + 1} ("${closing.role}") runs after it, so the wave does not end on the check. Move the verification step to the end. Only a commit or release step (${releaseRoles}) may follow it — everything it verifies has to come before it.`,
+      stepIndex: closingIndex,
+    };
+  }
+
+  return {
+    reason: "verification-step-missing",
+    detail: `This wave builds something that can be inspected, so it must close its work by inspecting it: role "acceptor" (or "adversary") with "access":"all", and a subtask that checks the artifact itself rather than re-reading the other steps' reports. Only a commit or release step (${releaseRoles}) may follow that step. Re-send the plan with it, or — if there is genuinely nothing to inspect — without the step that builds one.`,
+    stepIndex: Math.max(closingIndex, 0),
+  };
 }
 
 function rejected(
@@ -487,15 +593,9 @@ export function admitWavePlan(
     }
   }
 
-  if (
-    waveRequiresVerification(parse.steps) &&
-    !waveVerificationStep(parse.steps)
-  ) {
-    return rejected(
-      "verification-step-missing",
-      `This wave builds something that can be inspected, so its last step must inspect it: role "acceptor" (or "adversary") with "access":"all", and a subtask that checks the artifact itself rather than re-reading the other steps' reports. Re-send the plan with that step, or — if there is genuinely nothing to inspect — without the step that builds one.`,
-      parse.steps.length - 1,
-    );
+  const defect = verificationDefect(parse.steps);
+  if (defect) {
+    return rejected(defect.reason, defect.detail, defect.stepIndex);
   }
 
   return { kind: "accepted", steps: parse.steps };

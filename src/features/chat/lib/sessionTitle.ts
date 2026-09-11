@@ -2,6 +2,9 @@ import type { ChatAttachmentDraft } from "@/shared/types/messages";
 
 export const DEFAULT_CHAT_TITLE = "New chat";
 const ACP_DEFAULT_CHAT_TITLE = "New Chat";
+const MAX_DRAFT_TITLE_LENGTH = 100;
+const MIN_LAST_LINE_WORDS = 3;
+const MIN_WORD_BREAK_LENGTH = 40;
 
 export function isDefaultChatTitle(title: string): boolean {
   return title === DEFAULT_CHAT_TITLE || title === ACP_DEFAULT_CHAT_TITLE;
@@ -26,13 +29,61 @@ export function normalizeAcpTitle(
   return title === ACP_DEFAULT_CHAT_TITLE ? DEFAULT_CHAT_TITLE : title;
 }
 
+/**
+ * Immediate list title from the user's first message. Goose (and other
+ * harnesses) replace this with an LLM summary unless the operator renamed
+ * the chat. Prefer the actual request over a long preamble; never treat the
+ * first 100 characters of a pasted brief as the name.
+ */
+export function titleFromUserText(text: string): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  if (!collapsed) {
+    return "";
+  }
+  return clipTitle(preferRequestFromPrompt(text, collapsed));
+}
+
+function preferRequestFromPrompt(raw: string, collapsed: string): string {
+  const lines = raw
+    .split(/\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const lastLine = lines.at(-1);
+  if (lastLine && lines.length > 1) {
+    const lastCollapsed = lastLine.replace(/\s+/g, " ");
+    if (lastCollapsed.split(" ").length >= MIN_LAST_LINE_WORDS) {
+      return lastCollapsed;
+    }
+  }
+
+  const questions = collapsed.match(/[^.!?][^.!?]*\?/g);
+  const lastQuestion = questions?.at(-1)?.trim();
+  if (lastQuestion && lastQuestion.split(" ").length >= MIN_LAST_LINE_WORDS) {
+    return lastQuestion;
+  }
+
+  return collapsed;
+}
+
+function clipTitle(text: string): string {
+  if (text.length <= MAX_DRAFT_TITLE_LENGTH) {
+    return text;
+  }
+  const slice = text.slice(0, MAX_DRAFT_TITLE_LENGTH);
+  const lastSpace = slice.lastIndexOf(" ");
+  if (lastSpace >= MIN_WORD_BREAK_LENGTH) {
+    return slice.slice(0, lastSpace).trimEnd();
+  }
+  return slice.trimEnd();
+}
+
 export function getSessionTitleFromDraft(
   text: string,
   attachments?: ChatAttachmentDraft[],
 ): string {
-  const trimmed = text.trim();
-  if (trimmed.length > 0) {
-    return trimmed.slice(0, 100);
+  const fromText = titleFromUserText(text);
+  if (fromText) {
+    return fromText;
   }
 
   if (!attachments || attachments.length === 0) {

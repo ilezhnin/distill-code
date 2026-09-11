@@ -16,13 +16,13 @@ export const NOTIFICATION_SOUNDS = [
   },
   {
     id: "berd-sounds-1.mp3",
-    labelKey: "notifications.sounds.youHaveGotGoose",
+    labelKey: "notifications.sounds.twinkle",
     resource: "berd-sounds-1.mp3",
     url: new URL("../../../resources/berd-sounds-1.mp3", import.meta.url).href,
   },
   {
     id: "berd-sounds-2.mp3",
-    labelKey: "notifications.sounds.dingDongGoose",
+    labelKey: "notifications.sounds.dingDong",
     resource: "berd-sounds-2.mp3",
     url: new URL("../../../resources/berd-sounds-2.mp3", import.meta.url).href,
   },

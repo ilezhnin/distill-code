@@ -562,7 +562,7 @@ describe("wave closed loop", () => {
     resetWaveRunnerForTests();
     resetWaveEngineStateCache();
     window.localStorage.setItem(
-      "goose:conductor-waves",
+      "distill:conductor-waves",
       JSON.stringify({
         version: 2,
         waves: [{ ...wave, phase: "dispatchingDigest" }],
@@ -587,7 +587,7 @@ describe("wave closed loop", () => {
       messagesBySession: { [CONDUCTOR_ID]: [assistant("plan-1", PLAN)] },
     });
     window.localStorage.setItem(
-      "goose:conductor-waves",
+      "distill:conductor-waves",
       JSON.stringify({
         version: 2,
         waves: [{ ...wave, phase: "dispatchingDigest" }],
@@ -631,7 +631,7 @@ describe("wave closed loop", () => {
     }): void {
       resetWaveRunnerForTests();
       window.localStorage.setItem(
-        "goose:conductor-waves",
+        "distill:conductor-waves",
         JSON.stringify({
           version: 2,
           waves: [{ ...wave, phase: "dispatchingDigest" }],
@@ -710,7 +710,7 @@ describe("wave closed loop", () => {
       // the operator happens to open that chat.
       resetWaveRunnerForTests();
       window.localStorage.setItem(
-        "goose:conductor-waves",
+        "distill:conductor-waves",
         JSON.stringify({
           version: 2,
           waves: [wave],

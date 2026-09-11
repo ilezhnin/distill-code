@@ -39,10 +39,10 @@ import {
   sameSessionExecutionTarget,
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
-import { gooseServeSelectionFromExecutionTarget } from "@/features/chat/lib/gooseServeExecutionTarget";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
-const RIGHT_RAIL_OPEN_STORAGE_KEY = "goose:right-rail-open";
-const LEGACY_CONTEXT_PANEL_OPEN_STORAGE_KEY = "goose:context-panel-open";
+const RIGHT_RAIL_OPEN_STORAGE_KEY = "distill:right-rail-open";
+const LEGACY_CONTEXT_PANEL_OPEN_STORAGE_KEY = "distill:context-panel-open";
 
 let sessionLoadEpoch = 0;
 let archiveMutationOperationId = 0;
@@ -524,12 +524,9 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
     }
     const now = new Date().toISOString();
     const requestedExecutionTarget = normalizeSessionExecutionTarget(
-      opts.executionTarget ?? { harnessId: "goose" },
+      opts.executionTarget ?? { harnessId: DEFAULT_HARNESS_ID },
     );
-    const gooseServeSelection = gooseServeSelectionFromExecutionTarget(
-      requestedExecutionTarget,
-    );
-    const providerId = gooseServeSelection.providerId ?? "goose";
+    const providerId = requestedExecutionTarget.harnessId;
     const requestedModelId = requestedExecutionTarget.modelId;
     const { sessionId, configOptionsSnapshot } = await acpCreateSession(
       providerId,
@@ -538,7 +535,6 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
         personaId: opts.personaId,
         modelId: requestedModelId,
         projectId: opts.projectId,
-        deferProviderSetup: opts.deferProviderSetup ?? requestedModelId == null,
       },
     );
     logReasoningEffortInfo("createSession acp resolved", {
@@ -592,7 +588,7 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
     }
     const now = new Date().toISOString();
     const executionTarget = normalizeSessionExecutionTarget(
-      opts.executionTarget ?? { harnessId: "goose" },
+      opts.executionTarget ?? { harnessId: DEFAULT_HARNESS_ID },
     );
     const id = crypto.randomUUID();
     const chatSession: ChatSession = withWorkspaceBackfill({

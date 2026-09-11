@@ -103,7 +103,7 @@ describe("attachSessionFolder", () => {
         usedByAgent: true,
       },
     );
-    expect(localStorage.getItem("goose:chat-workspace-metadata")).toContain(
+    expect(localStorage.getItem("distill:chat-workspace-metadata")).toContain(
       "/repo-wt",
     );
   });
@@ -294,7 +294,7 @@ describe("attachSessionFolder", () => {
       updated?.workspaceAttachments?.some((item) => item.path === "/repo-wt"),
     ).toBe(false);
     expect(
-      localStorage.getItem("goose:chat-workspace-metadata") ?? "",
+      localStorage.getItem("distill:chat-workspace-metadata") ?? "",
     ).not.toContain("/repo-wt");
   });
 
@@ -514,7 +514,7 @@ describe("attachSessionFolder", () => {
   });
   it("promotes the first real attachment over Berd's implicit default cwd", async () => {
     useChatSessionStore.setState({
-      sessions: [{ ...session, workingDir: "~/goose artifacts" }],
+      sessions: [{ ...session, workingDir: "~/.distill/artifacts" }],
     });
 
     await attachSessionFolder("session-1", "/repo-wt");
@@ -539,7 +539,7 @@ describe("attachSessionFolder", () => {
 
   it("rechecks the implicit cwd before pruning its attachment", async () => {
     useChatSessionStore.setState({
-      sessions: [{ ...session, workingDir: "~/goose artifacts" }],
+      sessions: [{ ...session, workingDir: "~/.distill/artifacts" }],
     });
 
     await attachSessionFolder("session-1", "/repo-wt", {

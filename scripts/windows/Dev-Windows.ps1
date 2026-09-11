@@ -14,19 +14,9 @@ Initialize-FnmEnvironment | Out-Null
 Initialize-PublicNpmEnvironment
 Update-SessionPathFromRegistry
 
-if ([string]::IsNullOrWhiteSpace($env:GOOSE_BIN)) {
-    & (Join-Path $PSScriptRoot "Setup-Windows.ps1")
-    if ($LASTEXITCODE -ne 0) {
-        throw "Setup-Windows.ps1 failed with exit code $LASTEXITCODE."
-    }
-} else {
-    Write-WindowsDevInfo "Using explicitly set GOOSE_BIN: $env:GOOSE_BIN"
-    # Mirror unix `just dev`: a GOOSE_BIN override skips the managed Goose
-    # build but still needs pnpm deps, the SDK build, and hooks.
-    & (Join-Path $PSScriptRoot "Setup-Windows.ps1") -SkipGooseBuild
-    if ($LASTEXITCODE -ne 0) {
-        throw "Setup-Windows.ps1 -SkipGooseBuild failed with exit code $LASTEXITCODE."
-    }
+& (Join-Path $PSScriptRoot "Setup-Windows.ps1")
+if ($LASTEXITCODE -ne 0) {
+    throw "Setup-Windows.ps1 failed with exit code $LASTEXITCODE."
 }
 $pnpm = Get-PnpmCommand
 if ([string]::IsNullOrWhiteSpace($pnpm)) {
@@ -71,38 +61,6 @@ if ($E2eMode) {
         $env:BERD_E2E_RUNTIME_CONFIG = $runtimeConfigPath
     }
 
-    $providerIdPresent = -not [string]::IsNullOrWhiteSpace($env:BERD_E2E_PROVIDER_ID)
-    $modelIdPresent = -not [string]::IsNullOrWhiteSpace($env:BERD_E2E_MODEL_ID)
-    if ($providerIdPresent -ne $modelIdPresent) {
-        throw "BERD_E2E_PROVIDER_ID and BERD_E2E_MODEL_ID must be specified together."
-    }
-
-    $gooseConfigDir = Join-Path $e2e.RunRoot "goose\config"
-    if ($providerIdPresent) {
-        New-Item -ItemType Directory -Force -Path $gooseConfigDir | Out-Null
-        $providerIdYaml = ConvertTo-Json -InputObject $env:BERD_E2E_PROVIDER_ID -Compress
-        $modelIdYaml = ConvertTo-Json -InputObject $env:BERD_E2E_MODEL_ID -Compress
-        $providerConfig = "GOOSE_PROVIDER: $providerIdYaml`nGOOSE_MODEL: $modelIdYaml`nGOOSE_DISABLE_KEYRING: true`n"
-        [System.IO.File]::WriteAllText((Join-Path $gooseConfigDir "config.yaml"), $providerConfig, [System.Text.UTF8Encoding]::new($false))
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($env:BERD_E2E_PROVIDER_KEY_ENV)) {
-        if ($env:BERD_E2E_PROVIDER_KEY_ENV -cnotmatch '^[A-Z][A-Z0-9_]*$') {
-            throw "BERD_E2E_PROVIDER_KEY_ENV must name an uppercase environment variable."
-        }
-        if (-not $providerIdPresent) {
-            throw "BERD_E2E_PROVIDER_ID and BERD_E2E_MODEL_ID are required with BERD_E2E_PROVIDER_KEY_ENV."
-        }
-        $providerToken = [Environment]::GetEnvironmentVariable($env:BERD_E2E_PROVIDER_KEY_ENV, "Process")
-        if ([string]::IsNullOrWhiteSpace($providerToken)) {
-            throw "$($env:BERD_E2E_PROVIDER_KEY_ENV) is required for the E2E provider bootstrap."
-        }
-        $providerTokenYaml = ConvertTo-Json -InputObject $providerToken -Compress
-        $secrets = "$($env:BERD_E2E_PROVIDER_KEY_ENV): $providerTokenYaml`n"
-        [System.IO.File]::WriteAllText((Join-Path $gooseConfigDir "secrets.yaml"), $secrets, [System.Text.UTF8Encoding]::new($false))
-        [Environment]::SetEnvironmentVariable($env:BERD_E2E_PROVIDER_KEY_ENV, $null, "Process")
-    }
-
     Remove-Item -LiteralPath $e2e.DriverReadyPath -Force -ErrorAction SilentlyContinue
     Write-WindowsDevInfo "Using isolated E2E run root: $($e2e.RunRoot)"
     Write-WindowsDevInfo "Using isolated E2E identifier: $($e2e.Identifier)"
@@ -114,9 +72,6 @@ $env:VITE_APP_VERSION = $version.RichVersion
 Write-WindowsDevInfo "Using app version: $($version.Version) ($($version.RichVersion))"
 
 $berdctlArgs = @("build", "-p", "berdctl")
-if ($env:VITE_FEEDBACK -eq "1") {
-    $berdctlArgs += @("--features", "block-feedback")
-}
 Invoke-CheckedCommand -FilePath "cargo" -ArgumentList $berdctlArgs -WorkingDirectory (Join-Path (Get-BerdRepoRoot) "src-tauri") -Label "cargo build berdctl"
 $env:BERDCTL_BIN = Join-Path (Join-Path $env:CARGO_TARGET_DIR "debug") "berdctl.exe"
 if (-not (Test-Path $env:BERDCTL_BIN -PathType Leaf)) {
@@ -131,17 +86,6 @@ if (-not (Test-Path $env:BERD_MONITOR_BIN -PathType Leaf)) {
 }
 Write-WindowsDevInfo "Using berd-monitor CLI: $env:BERD_MONITOR_BIN"
 
-if ([string]::IsNullOrWhiteSpace($env:GOOSE_BIN)) {
-    $env:GOOSE_BUILD_PROFILE = "debug"
-    $result = Invoke-EnsureLocalGoose -Action Check
-    if (-not $result.Ready) {
-        throw "Local Goose binary is not ready. Run 'just setup-windows' first."
-    }
-    $env:GOOSE_BIN = $result.BinPath
-    Write-WindowsDevInfo "Using local Goose binary: $env:GOOSE_BIN"
-}
-Assert-DistillGooseBinary -BinPath $env:GOOSE_BIN
-
 $env:CARGO_TARGET_DIR = $tauriCargoTargetDir
 
 # bb.exe is intentionally not staged: the bb CLI resource is only mapped and
@@ -149,9 +93,9 @@ $env:CARGO_TARGET_DIR = $tauriCargoTargetDir
 # here would spend minutes producing an artifact the Windows app never reads.
 
 $distroDir = Join-Path (Get-BerdRepoRoot) "distro"
-if ([string]::IsNullOrWhiteSpace($env:GOOSE_DISTRO_DIR) -and (Test-Path $distroDir -PathType Container)) {
-    $env:GOOSE_DISTRO_DIR = $distroDir
-    Write-WindowsDevInfo "Using distro dir: $env:GOOSE_DISTRO_DIR"
+if ([string]::IsNullOrWhiteSpace($env:DISTILL_DISTRO_DIR) -and (Test-Path $distroDir -PathType Container)) {
+    $env:DISTILL_DISTRO_DIR = $distroDir
+    Write-WindowsDevInfo "Using distro dir: $env:DISTILL_DISTRO_DIR"
 }
 
 # Fail fast if a previous run's vite survived: tauri only kills its direct
@@ -188,7 +132,7 @@ if ($E2eMode) {
 $devConfigPath = if ($E2eMode) {
     $e2e.ConfigPath
 } else {
-    Join-Path (Resolve-GooseDevPaths).DevRoot "tauri-dev-windows.config.json"
+    Join-Path (Get-BerdDevRoot) "tauri-dev-windows.config.json"
 }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $devConfigPath) | Out-Null
 # Write without a BOM: Windows PowerShell's `Set-Content -Encoding UTF8` adds
@@ -197,7 +141,6 @@ $devConfigJson = $devConfig | ConvertTo-Json -Depth 8
 [System.IO.File]::WriteAllText($devConfigPath, $devConfigJson, [System.Text.UTF8Encoding]::new($false))
 Write-WindowsDevInfo "Using Tauri dev config: $devConfigPath"
 
-$env:VITE_AUTH_GATE = if ($env:VITE_BUILDERBOT -eq "1") { "1" } else { "0" }
 $tauriArguments = @(
     "exec", "tauri", "dev",
     "--features", (Get-BerdAppFeatures),

@@ -3,12 +3,12 @@ import { useCallback, useSyncExternalStore } from "react";
 export type AtMentionDefaultCategory = "agents" | "files";
 
 export const AT_MENTION_DEFAULT_CATEGORY_STORAGE_KEY =
-  "goose:at-mention-default-category";
+  "distill:at-mention-default-category";
 export const DEFAULT_AT_MENTION_DEFAULT_CATEGORY: AtMentionDefaultCategory =
   "agents";
 
 const AT_MENTION_DEFAULT_CATEGORY_CHANGED_EVENT =
-  "goose:at-mention-default-category-changed";
+  "distill:at-mention-default-category-changed";
 
 function normalizeAtMentionDefaultCategory(
   value: unknown,

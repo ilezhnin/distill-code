@@ -1,9 +1,7 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
-import { getSkillProviderCapabilities } from "@/features/chat/lib/skillProviderCapabilities";
 import {
   listAgentFileSkills,
   listBerdAppSkills,
-  listGooseSourceSkills,
   listSkills,
   type ListSkillsOptions,
   type SkillInfo,
@@ -30,10 +28,6 @@ export const BERD_APP_SKILLS_QUERY_KEY = [
 // out duplicate IPC calls, short enough that external skill-file edits show
 // up on the next navigation. In-app mutations bypass it via `fresh`.
 const SKILLS_LIST_STALE_TIME = 15_000;
-
-function gooseSourceSkillsQueryKey(projectDirs: string[]) {
-  return [...SKILLS_QUERY_KEY_PREFIX, "goose-source", projectDirs] as const;
-}
 
 function agentFileSkillsQueryKey(
   providerId: string | null | undefined,
@@ -137,33 +131,15 @@ export async function fetchSkillsList(
   }
 
   const normalizedDirs = normalizeProjectDirs(projectDirs);
-  const capabilities = getSkillProviderCapabilities(listOptions.providerId);
-  if (capabilities.discoveryMode === "agent-skill-files") {
-    const skills = await fetchSkillLeg(
-      queryClient,
-      agentFileSkillsQueryKey(listOptions.providerId, normalizedDirs),
-      () => listAgentFileSkills(normalizedDirs, listOptions.providerId),
-      fresh,
-    );
-    return listOptions.includeAppSkills === false
-      ? withoutAppSkills(skills)
-      : skills;
-  }
-
-  const [gooseSkills, appSkills] = await Promise.all([
-    fetchSkillLeg(
-      queryClient,
-      gooseSourceSkillsQueryKey(normalizedDirs),
-      () => listGooseSourceSkills(normalizedDirs),
-      fresh,
-    ),
-    listOptions.includeAppSkills === false
-      ? []
-      : fetchBerdAppSkills(queryClient, { fresh }),
-  ]);
-  // Same ordering contract as `listSkills`: Goose sources first, app skills
-  // appended so a same-named Personal skill wins bare-name activation.
-  return [...gooseSkills, ...appSkills];
+  const skills = await fetchSkillLeg(
+    queryClient,
+    agentFileSkillsQueryKey(listOptions.providerId, normalizedDirs),
+    () => listAgentFileSkills(normalizedDirs, listOptions.providerId),
+    fresh,
+  );
+  return listOptions.includeAppSkills === false
+    ? withoutAppSkills(skills)
+    : skills;
 }
 
 /** Synchronous snapshot of an already-cached skill list so consumers (e.g.
@@ -178,30 +154,11 @@ export function getCachedSkillsList(
   }
 
   const normalizedDirs = normalizeProjectDirs(projectDirs);
-  const capabilities = getSkillProviderCapabilities(options.providerId);
-  if (capabilities.discoveryMode === "agent-skill-files") {
-    const skills = queryClient.getQueryData<SkillInfo[]>(
-      agentFileSkillsQueryKey(options.providerId, normalizedDirs),
-    );
-    if (!skills) {
-      return undefined;
-    }
-    return options.includeAppSkills === false
-      ? withoutAppSkills(skills)
-      : skills;
-  }
-
-  const gooseSkills = queryClient.getQueryData<SkillInfo[]>(
-    gooseSourceSkillsQueryKey(normalizedDirs),
+  const skills = queryClient.getQueryData<SkillInfo[]>(
+    agentFileSkillsQueryKey(options.providerId, normalizedDirs),
   );
-  if (!gooseSkills) {
+  if (!skills) {
     return undefined;
   }
-  if (options.includeAppSkills === false) {
-    return gooseSkills;
-  }
-  const appSkills = queryClient.getQueryData<SkillInfo[]>(
-    BERD_APP_SKILLS_QUERY_KEY,
-  );
-  return appSkills ? [...gooseSkills, ...appSkills] : gooseSkills;
+  return options.includeAppSkills === false ? withoutAppSkills(skills) : skills;
 }

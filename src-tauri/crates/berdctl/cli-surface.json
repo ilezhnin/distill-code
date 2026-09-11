@@ -57,7 +57,7 @@
         },
         "archive": {
           "action": "archive",
-          "about": "Archive a chat and clean up its Goose-managed Git resources",
+          "about": "Archive a chat and clean up its Distill-managed Git resources",
           "afterHelp": "By default, the command refuses to archive when Git cleanup would discard local files or changes.\nUse --discard-changes to allow that loss. The command never opens an interactive prompt.\n\nExamples:\n  berdctl session archive --session-id <session-id>\n  berdctl session archive --session-id <session-id> --discard-changes\n\nResult:\n  {\"ok\": true} — the session was archived and eligible worktrees and branches were removed."
         }
       }
@@ -168,12 +168,12 @@
         "harnesses": {
           "action": "list_harnesses",
           "about": "List the agent harnesses sessions can run on, with readiness",
-          "afterHelp": "Example:\n  berdctl info harnesses --json\n\nResult:\n  {\"harnesses\": [{\"harness_id\": \"goose\", \"name\": \"...\",\n                  \"is_default\": true,\n                  \"status\": \"ready\"|\"not_installed\"|\"not_ready\"}, ...]}\n  Only \"ready\" harnesses accept new sessions; \"not_installed\" and\n  \"not_ready\" (sign-in or setup required) need the user to fix them in\n  the app first."
+          "afterHelp": "Example:\n  berdctl info harnesses --json\n\nResult:\n  {\"harnesses\": [{\"harness_id\": \"claude-acp\", \"name\": \"...\",\n                  \"is_default\": true,\n                  \"status\": \"ready\"|\"not_installed\"|\"not_ready\"}, ...]}\n  Only \"ready\" harnesses accept new sessions; \"not_installed\" and\n  \"not_ready\" (sign-in or setup required) need the user to fix them in\n  the app first."
         },
         "models": {
           "action": "list_models",
           "about": "List the models available per agent harness",
-          "afterHelp": "Example:\n  berdctl info models --harness-id goose --json\n\nResult:\n  {\"harnesses\": [{\"harness_id\": \"...\",\n                  \"models\": [{\"model_id\": \"...\", \"name\": \"...\",\n                              \"provider\": \"...\"?}],\n                  \"warning\": \"...\"?}]}\n  Use a model_id (with its harness) as --model-id when creating a session.\n  \"warning\" appears when a stale cached list was served or when the harness\n  manages its model outside the app."
+          "afterHelp": "Example:\n  berdctl info models --harness-id claude-acp --json\n\nResult:\n  {\"harnesses\": [{\"harness_id\": \"...\",\n                  \"models\": [{\"model_id\": \"...\", \"name\": \"...\",\n                              \"provider\": \"...\"?}],\n                  \"warning\": \"...\"?}]}\n  Use a model_id (with its harness) as --model-id when creating a session.\n  \"warning\" appears when a stale cached list was served or when the harness\n  manages its model outside the app."
         },
         "context": {
           "action": "get_context",

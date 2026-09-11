@@ -76,7 +76,9 @@ describe("KeyboardShortcutsSettings", () => {
     await user.click(toggle);
 
     expect(toggle).toBeChecked();
-    expect(localStorage.getItem("goose:global-shortcut-enabled")).toBe("true");
+    expect(localStorage.getItem("distill:global-shortcut-enabled")).toBe(
+      "true",
+    );
   });
 
   it("shows shortcut buttons with content-hugging padding and flat keycaps", () => {

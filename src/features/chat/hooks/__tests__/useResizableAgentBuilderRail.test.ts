@@ -5,7 +5,7 @@ import {
   useResizableAgentBuilderRail,
 } from "@/features/chat/hooks/useResizableAgentBuilderRail";
 
-const STORAGE_KEY = "goose:agent-builder-rail-fraction";
+const STORAGE_KEY = "distill:agent-builder-rail-fraction";
 const MIN_FRACTION = 0.3;
 const MAX_FRACTION = 0.72;
 

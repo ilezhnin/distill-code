@@ -25,7 +25,6 @@ export type KnownShortcutCommandId =
   | "session.previous"
   | "chat.archiveSession"
   | "chat.findInConversation"
-  | "chat.toggleVoiceDictation"
   | "chat.sendMessage"
   | "chat.insertNewline"
   | "chat.sendNow"
@@ -244,15 +243,6 @@ export const SHORTCUT_COMMANDS: readonly ShortcutCommandDefinition[] = [
     scope: "chat",
     defaultBindings: [{ shortcut: "mod+f" }],
     descriptionKey: "actions.findInConversation",
-    configurable: true,
-    discoverable: true,
-  },
-  {
-    id: "chat.toggleVoiceDictation",
-    category: "chat",
-    scope: "composer",
-    defaultBindings: [{ shortcut: "mod+d" }],
-    descriptionKey: "actions.toggleVoiceDictation",
     configurable: true,
     discoverable: true,
   },

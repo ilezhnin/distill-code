@@ -7,6 +7,7 @@ import {
   providerIdFromExecutionTarget,
 } from "./usageProvider";
 import type { UsageSessionSource, UsageTokenSnapshot } from "./usageTypes";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
 function sourceFromSession(session: {
   id: string;
@@ -135,7 +136,7 @@ export function syncConductorNodesIntoUsageLedger(
       lastMessageAt: new Date(node.createdAt ?? Date.now()).toISOString(),
       messageCount: 0,
       started: node.role === "orchestrator" || node.role === "worker",
-      providerId: node.harnessId || "goose",
+      providerId: node.harnessId || DEFAULT_HARNESS_ID,
       modelId: node.modelId ?? null,
     })),
   );

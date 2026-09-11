@@ -97,10 +97,7 @@ export function StatsSettings() {
 
   const summary = buildUsageSummary(extraAgentIds);
 
-  const enabledProviderIds = useMemo(
-    () => ["goose", ...readyAgentIds],
-    [readyAgentIds],
-  );
+  const enabledProviderIds = useMemo(() => [...readyAgentIds], [readyAgentIds]);
 
   const providerOptions = useMemo(() => {
     const ids = new Set<string>(enabledProviderIds);

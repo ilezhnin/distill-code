@@ -36,12 +36,7 @@ function Assert-NoThrow {
     }
 }
 
-$oldGooseDevRoot = $env:GOOSE_DEV_ROOT
-$oldGooseRepo = $env:GOOSE_DEV_REPO
-$oldGooseTarget = $env:GOOSE_DEV_CARGO_TARGET_DIR
-$oldGooseStamp = $env:GOOSE_DEV_STAMP_FILE
-$oldGooseBuildProfile = $env:GOOSE_BUILD_PROFILE
-$oldGoosePatchDir = $env:GOOSE_DEV_PATCH_DIR
+$oldBerdDevRoot = $env:BERD_DEV_ROOT
 $oldLocalAppData = $env:LOCALAPPDATA
 $oldUserProfile = $env:USERPROFILE
 $oldAppData = $env:APPDATA
@@ -50,10 +45,7 @@ $oldFnmDir = $env:FNM_DIR
 try {
     $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("berd-windowsdev-test-" + [System.Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force -Path $temp | Out-Null
-    $env:GOOSE_DEV_ROOT = Join-Path $temp "root"
-    $env:GOOSE_DEV_REPO = ""
-    $env:GOOSE_DEV_CARGO_TARGET_DIR = ""
-    $env:GOOSE_DEV_STAMP_FILE = ""
+    $env:BERD_DEV_ROOT = Join-Path $temp "root"
 
     Assert-Equal "temporary file helper uses the framework temp-file primitive" `
         ((Get-Command New-BerdTemporaryFile -CommandType Function).Definition -match 'GetTempFileName') $true
@@ -78,28 +70,13 @@ try {
     Assert-Equal "process args: trailing backslash doubled inside quotes" (Join-WindowsProcessArguments -Arguments @("C:\Program Files\")) '"C:\Program Files\\"'
     Assert-Equal "process args: embedded quote escaped" (Join-WindowsProcessArguments -Arguments @('say "hi"')) '"say \"hi\""'
 
-    Assert-Equal "public app feature defaults fail closed" (Get-BerdAppFeatures) "berdctl,app-test-driver,no-voice-dictation"
-    $featureGateNames = @("VITE_AGENT_TOOLS", "VITE_AUTOMATIONS", "VITE_BUILDERBOT", "VITE_FEEDBACK", "VITE_MANAGED_CONNECTIONS", "VITE_TELEMETRY_ENFORCED", "VITE_VOICE_DICTATION")
-    $savedFeatureGates = @{}
-    foreach ($name in $featureGateNames) {
-        $savedFeatureGates[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
-        [Environment]::SetEnvironmentVariable($name, "1", "Process")
-    }
-    try {
-        Assert-Equal "all seven renderer gates map to app Cargo features" `
-            (Get-BerdAppFeatures -BaseFeatures @("berdctl")) `
-            "berdctl,block-agent-tools,block-automations,block-builderbot,block-feedback,block-managed-connections,block-telemetry-enforced,block-voice-dictation"
-    } finally {
-        foreach ($name in $featureGateNames) {
-            [Environment]::SetEnvironmentVariable($name, $savedFeatureGates[$name], "Process")
-        }
-    }
+    Assert-Equal "public app feature defaults fail closed" (Get-BerdAppFeatures) "berdctl,app-test-driver"
 
     $justfile = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "justfile")
     Assert-Equal "justfile selects PowerShell for ordinary Windows recipes" ($justfile -match '(?m)^set windows-shell := \["powershell\.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"\]\r?$') $true
     foreach ($recipe in @("_tauri-cargo-windows", "_clean-windows")) {
         $escapedRecipe = [regex]::Escape($recipe)
-        Assert-Equal "$recipe selects PowerShell locally" ($justfile -match "(?m)^\[windows\]\r?\n${escapedRecipe}[^:]*:\r?\n\s+#!powershell\.exe") $true
+        Assert-Equal "$recipe selects PowerShell locally" ($justfile -match "(?m)^\[windows\]\r?\n\[script\(`"powershell\.exe`"[^\]]*\]\r?\n${escapedRecipe}[^:]*:") $true
     }
     Assert-Equal "_stage-sidecar-windows dispatches through its native wrapper" `
         ($justfile -match '(?m)^\[windows\]\r?\n_stage\-sidecar\-windows:\r?\n\s+powershell\.exe .* -File scripts/windows/Invoke-Stage-Sidecar-Windows\.ps1\r?$') $true
@@ -243,29 +220,6 @@ try {
         Assert-Equal "$($migrationFile.Name) contains no CR bytes" ($migrationBytes -notcontains 13) $true
     }
 
-    $paths = Resolve-GooseDevPaths
-    Assert-Equal "default Goose repo path" $paths.Repo (Join-Path $env:GOOSE_DEV_ROOT "goose")
-    Assert-Equal "default Goose cargo target path" $paths.CargoTargetDir (Join-Path $env:GOOSE_DEV_ROOT "cargo-target")
-    Assert-Equal "default Goose stamp path" $paths.StampFile (Join-Path $env:GOOSE_DEV_ROOT "stamp.json")
-    Assert-Equal "Windows exe suffix" (Get-WindowsExeName "goose") "goose.exe"
-    Assert-Equal "Existing exe suffix is preserved" (Get-WindowsExeName "goose.exe") "goose.exe"
-    $gooseRepo = Join-Path $temp "goose-repo"
-    $gooseTarget = Join-Path $temp "goose-target"
-    New-Item -ItemType Directory -Force -Path $gooseRepo | Out-Null
-    $goosePaths = [pscustomobject]@{ Repo = $gooseRepo; CargoTargetDir = $gooseTarget }
-    $gooseSettings = [pscustomobject]@{ Bin = "goose"; BuildProfile = "release" }
-    Assert-Equal "managed Goose resolves from the selected profile" `
-        (Resolve-GooseBinaryPath -Paths $goosePaths -Settings $gooseSettings) `
-        (Join-Path (Join-Path $gooseTarget "release") "goose.exe")
-    $env:GOOSE_BUILD_PROFILE = ""
-    Assert-Equal "managed Goose defaults development to debug" (Get-GooseBackendSettings).BuildProfile "debug"
-    $env:GOOSE_BUILD_PROFILE = "release"
-    Assert-Equal "managed Goose accepts the release profile" (Get-GooseBackendSettings).BuildProfile "release"
-    $env:GOOSE_BUILD_PROFILE = ""
-    $windowsDevSource = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\WindowsDev.psm1")
-    Assert-Equal "managed Goose release profile adds cargo --release" `
-        ($windowsDevSource -match '(?s)if \(\$Settings\.BuildProfile -eq "release"\).*?\$cargoArguments \+= "--release"') $true
-
     # ── Windows sidecar staging (Get-WindowsSidecarName / Get-WindowsTripleMachine /
     #    Get-PeFileInfo / Assert-WindowsSidecarBinary / Remove-StaleWindowsSidecars /
     #    Stage-WindowsSidecar) ──────────────────────────────────────────────────
@@ -274,8 +228,8 @@ try {
     # validation runs deterministically on any host without a real toolchain.
 
     Assert-Equal "sidecar name appends triple and exe" `
-        (Get-WindowsSidecarName -Stem "goosed" -Triple "x86_64-pc-windows-msvc") `
-        "goosed-x86_64-pc-windows-msvc.exe"
+        (Get-WindowsSidecarName -Stem "berd-monitor" -Triple "x86_64-pc-windows-msvc") `
+        "berd-monitor-x86_64-pc-windows-msvc.exe"
     Assert-Equal "x86_64 triple maps to amd64 machine" `
         (Get-WindowsTripleMachine -Triple "x86_64-pc-windows-msvc") 0x8664
     Assert-Equal "aarch64 triple maps to arm64 machine" `
@@ -347,7 +301,7 @@ try {
     $srcDir = Join-Path $stageRoot "src"
     $binDir = Join-Path $stageRoot "binaries"
 
-    $goodPe = Join-Path $srcDir "goosed.exe"
+    $goodPe = Join-Path $srcDir "berd-monitor.exe"
     New-FakePeFile -Path $goodPe -Machine $amd64
     $peInfo = Get-PeFileInfo -Path $goodPe
     Assert-Equal "PE info detects amd64 image" $peInfo.IsPe $true
@@ -365,19 +319,19 @@ try {
     # Truncated image: MZ + PE signature + COFF header but nothing after it (no
     # optional header/section table). Windows cannot load it, so validation must
     # reject it instead of blessing a corrupt/partial artifact.
-    $truncated = Join-Path $srcDir "goosed-truncated.exe"
+    $truncated = Join-Path $srcDir "berd-monitor-truncated.exe"
     New-FakePeFile -Path $truncated -Machine $amd64 -TruncateAfterCoff
     Assert-Equal "truncated PE (no optional header) is not a valid PE" (Get-PeFileInfo -Path $truncated).IsPe $false
     Assert-Throws "staging rejects a truncated PE" {
-        Stage-WindowsSidecar -SourcePath $truncated -Triple "x86_64-pc-windows-msvc" -Stem "goosed" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath $truncated -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
     }
 
     # Malformed optional-header magic (neither PE32 0x10B nor PE32+ 0x20B).
-    $badMagic = Join-Path $srcDir "goosed-badmagic.exe"
+    $badMagic = Join-Path $srcDir "berd-monitor-badmagic.exe"
     New-FakePeFile -Path $badMagic -Machine $amd64 -BadOptionalMagic
     Assert-Equal "PE with bad optional-header magic is not valid" (Get-PeFileInfo -Path $badMagic).IsPe $false
     Assert-Throws "staging rejects a bad optional-header magic" {
-        Stage-WindowsSidecar -SourcePath $badMagic -Triple "x86_64-pc-windows-msvc" -Stem "goosed" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath $badMagic -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
     }
 
     # Minimal non-image: MZ + PE + COFF + a 2-byte optional header that carries a
@@ -385,71 +339,70 @@ try {
     # ~90-byte defect where the truncation simply moved past the magic. A 2-byte
     # optional header is far below the PE32+ minimum (112 bytes) and the file has
     # no section table, so validation must reject it.
-    $magicOnly = Join-Path $srcDir "goosed-magiconly.exe"
+    $magicOnly = Join-Path $srcDir "berd-monitor-magiconly.exe"
     New-FakePeFile -Path $magicOnly -Machine $amd64 -OptionalHeaderSize 2 -SectionCount 0
     Assert-Equal "PE with magic but sub-minimum optional header is not valid" (Get-PeFileInfo -Path $magicOnly).IsPe $false
     Assert-Throws "staging rejects a magic-only sub-minimum PE" {
-        Stage-WindowsSidecar -SourcePath $magicOnly -Triple "x86_64-pc-windows-msvc" -Stem "goosed" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath $magicOnly -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
     }
 
     # A full-size optional header but zero sections is still not a loadable image.
-    $noSections = Join-Path $srcDir "goosed-nosections.exe"
+    $noSections = Join-Path $srcDir "berd-monitor-nosections.exe"
     New-FakePeFile -Path $noSections -Machine $amd64 -SectionCount 0
     Assert-Equal "PE with zero sections is not valid" (Get-PeFileInfo -Path $noSections).IsPe $false
     Assert-Throws "staging rejects a zero-section PE" {
-        Stage-WindowsSidecar -SourcePath $noSections -Triple "x86_64-pc-windows-msvc" -Stem "goosed" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath $noSections -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
     }
 
     # A PE32+ optional header just under the 112-byte minimum must also be rejected.
-    $shortOptional = Join-Path $srcDir "goosed-shortoptional.exe"
+    $shortOptional = Join-Path $srcDir "berd-monitor-shortoptional.exe"
     New-FakePeFile -Path $shortOptional -Machine $amd64 -OptionalHeaderSize 111
     Assert-Equal "PE32+ with sub-minimum optional header is not valid" (Get-PeFileInfo -Path $shortOptional).IsPe $false
 
     Assert-Throws "staging rejects a missing source" {
-        Stage-WindowsSidecar -SourcePath (Join-Path $srcDir "does-not-exist.exe") -Triple "x86_64-pc-windows-msvc" -Stem "goosed" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath (Join-Path $srcDir "does-not-exist.exe") -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
     }
 
     # Wrong architecture: an arm64 PE staged for an x86_64 target must fail.
-    $wrongArch = Join-Path $srcDir "goosed-arm64.exe"
+    $wrongArch = Join-Path $srcDir "berd-monitor-arm64.exe"
     New-FakePeFile -Path $wrongArch -Machine $arm64
     Assert-Throws "staging rejects a wrong-architecture PE" {
-        Stage-WindowsSidecar -SourcePath $wrongArch -Triple "x86_64-pc-windows-msvc" -Stem "goosed" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath $wrongArch -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
     }
 
     # A PE without the executable-image characteristic is rejected.
-    $notExec = Join-Path $srcDir "goosed-noexec.exe"
+    $notExec = Join-Path $srcDir "berd-monitor-noexec.exe"
     New-FakePeFile -Path $notExec -Machine $amd64 -ExecutableImage $false
     Assert-Throws "staging rejects a non-executable PE image" {
-        Stage-WindowsSidecar -SourcePath $notExec -Triple "x86_64-pc-windows-msvc" -Stem "goosed" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath $notExec -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
     }
 
     # Happy path: valid amd64 PE stages to the exact Tauri name under a spaced dir.
-    $stagedPath = Stage-WindowsSidecar -SourcePath $goodPe -Triple "x86_64-pc-windows-msvc" -Stem "goosed" -BinDir $binDir
-    $expectedStaged = Join-Path $binDir "goosed-x86_64-pc-windows-msvc.exe"
+    $stagedPath = Stage-WindowsSidecar -SourcePath $goodPe -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
+    $expectedStaged = Join-Path $binDir "berd-monitor-x86_64-pc-windows-msvc.exe"
     Assert-Equal "staging writes the exact Tauri sidecar name" $stagedPath $expectedStaged
     Assert-Equal "staged sidecar exists" (Test-Path $expectedStaged -PathType Leaf) $true
     Assert-Equal "staged sidecar matches source checksum" (Get-FileSha256 -Path $expectedStaged) (Get-FileSha256 -Path $goodPe)
 
     # Stale cleanup: a leftover extensionless Unix-staged file and an old-triple
     # file must be removed when the current triple is staged.
-    Set-Content -Path (Join-Path $binDir "goosed") -Value "old-unix" -Encoding ASCII
-    New-FakePeFile -Path (Join-Path $binDir "goosed-aarch64-pc-windows-msvc.exe") -Machine $arm64
-    Stage-WindowsSidecar -SourcePath $goodPe -Triple "x86_64-pc-windows-msvc" -Stem "goosed" -BinDir $binDir | Out-Null
-    Assert-Equal "stale extensionless sidecar removed" (Test-Path (Join-Path $binDir "goosed") -PathType Leaf) $false
-    Assert-Equal "stale old-triple sidecar removed" (Test-Path (Join-Path $binDir "goosed-aarch64-pc-windows-msvc.exe") -PathType Leaf) $false
+    Set-Content -Path (Join-Path $binDir "berd-monitor") -Value "old-unix" -Encoding ASCII
+    New-FakePeFile -Path (Join-Path $binDir "berd-monitor-aarch64-pc-windows-msvc.exe") -Machine $arm64
+    Stage-WindowsSidecar -SourcePath $goodPe -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir | Out-Null
+    Assert-Equal "stale extensionless sidecar removed" (Test-Path (Join-Path $binDir "berd-monitor") -PathType Leaf) $false
+    Assert-Equal "stale old-triple sidecar removed" (Test-Path (Join-Path $binDir "berd-monitor-aarch64-pc-windows-msvc.exe") -PathType Leaf) $false
     Assert-Equal "current sidecar retained after cleanup" (Test-Path $expectedStaged -PathType Leaf) $true
 
     # Cleanup must only touch the requested stem, never a sibling sidecar.
     $berdctlSrc = Join-Path $srcDir "berdctl.exe"
     New-FakePeFile -Path $berdctlSrc -Machine $amd64
     Stage-WindowsSidecar -SourcePath $berdctlSrc -Triple "x86_64-pc-windows-msvc" -Stem "berdctl" -BinDir $binDir | Out-Null
-    Stage-WindowsSidecar -SourcePath $goodPe -Triple "x86_64-pc-windows-msvc" -Stem "goosed" -BinDir $binDir | Out-Null
+    Stage-WindowsSidecar -SourcePath $goodPe -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir | Out-Null
     Assert-Equal "sibling stem sidecar untouched by cleanup" (Test-Path (Join-Path $binDir "berdctl-x86_64-pc-windows-msvc.exe") -PathType Leaf) $true
 
     # ── Windows externalBin contract (tauri.windows.conf.json) ──
     $windowsConf = Read-JsonFile (Join-Path (Get-BerdRepoRoot) "src-tauri/tauri.windows.conf.json")
     $windowsExternalBin = @(Get-ObjectValue (Get-ObjectValue $windowsConf "bundle") "externalBin")
-    Assert-Equal "Windows externalBin stages goosed" ($windowsExternalBin -contains "binaries/goosed") $true
     Assert-Equal "Windows externalBin stages berdctl" ($windowsExternalBin -contains "binaries/berdctl") $true
     Assert-Equal "Windows externalBin stages berd-monitor" ($windowsExternalBin -contains "binaries/berd-monitor") $true
     Assert-Equal "Windows externalBin excludes catch" ($windowsExternalBin -contains "binaries/catch") $false
@@ -465,7 +418,6 @@ try {
     Assert-Equal "base externalBin stages catch" ($baseExternalBin -contains "binaries/catch") $true
     # RFC 7386 merge: a present member on the overlay replaces the base member.
     $mergedExternalBin = if ($null -ne $windowsExternalBin) { $windowsExternalBin } else { $baseExternalBin }
-    Assert-Equal "merged Windows externalBin stages goosed" ($mergedExternalBin -contains "binaries/goosed") $true
     Assert-Equal "merged Windows externalBin stages berdctl" ($mergedExternalBin -contains "binaries/berdctl") $true
     Assert-Equal "merged Windows externalBin stages berd-monitor" ($mergedExternalBin -contains "binaries/berd-monitor") $true
     Assert-Equal "merged Windows externalBin drops catch" ($mergedExternalBin -contains "binaries/catch") $false
@@ -479,159 +431,6 @@ try {
     Assert-Equal "bundle-debug dispatches by os_family" ($justfile -match "(?m)^bundle-debug:\r?\n\s+just _bundle-debug-\{\{ os_family\(\) \}\}") $true
     Assert-Equal "_bundle-windows runs Bundle-Windows.ps1" ($justfile -match "(?m)^_bundle-windows:\r?\n\s+powershell\.exe.*Bundle-Windows\.ps1") $true
     Assert-Equal "_bundle-debug-windows runs Bundle-Windows.ps1 -Debug" ($justfile -match "(?m)^_bundle-debug-windows:\r?\n\s+powershell\.exe.*Bundle-Windows\.ps1 -Debug") $true
-    Assert-Equal "_bundle-unix keeps POSIX goose preparer" ($justfile -match "(?ms)^_bundle-unix:.*prepare-goose-sidecar\.sh") $true
-
-    $settings = [pscustomobject]@{
-        LockFile = Join-Path (Get-BerdRepoRoot) "goose-backend.lock.json"
-        Ref = "main"
-        Commit = "abc123"
-        Package = "goose-cli"
-        Bin = "goose"
-        BuildProfile = "debug"
-    }
-    $bin = Join-Path $temp "goose.exe"
-    Set-Content -Path $bin -Value "fake" -Encoding ASCII
-    Write-GooseStamp -Paths $paths -Settings $settings -Commit "abc123" -BinPath $bin
-    $stamp = Read-GooseStamp -Path $paths.StampFile
-    Assert-Equal "stamp records ref" (Get-ObjectValue $stamp "ref") "main"
-    Assert-Equal "stamp records bin path" (Get-ObjectValue $stamp "bin") $bin
-    Assert-Equal "stamp records build profile" (Get-ObjectValue $stamp "buildProfile") "debug"
-    Assert-Equal "stamp match accepts current build" (Test-GooseStampRecordMatches -Stamp $stamp -Paths $paths -Settings $settings -BinPath $bin -LocalHead "abc123") $true
-    Assert-Equal "stamp match rejects changed commit" (Test-GooseStampRecordMatches -Stamp $stamp -Paths $paths -Settings $settings -BinPath $bin -LocalHead "def456") $false
-    $releaseSettings = $settings.PSObject.Copy()
-    $releaseSettings.BuildProfile = "release"
-    Assert-Equal "stamp match rejects a different build profile" (Test-GooseStampRecordMatches -Stamp $stamp -Paths $paths -Settings $releaseSettings -BinPath $bin -LocalHead "abc123") $false
-
-    # ── Goose readiness is bound to the binary's SHA-256, not just its path ──
-    # The stamp records the digest of the built binary; reuse must re-verify it
-    # so replacing the binary bytes after stamping (a tampered/rebuilt/corrupted
-    # file at the same path) is detected and forces a rebuild instead of staging
-    # unknown bytes as "ready".
-    Assert-Equal "stamp records binary sha256" `
-        (Get-ObjectValue $stamp "sha256") (Get-FileSha256 -Path $bin)
-    Set-Content -Path $bin -Value "tampered-bytes" -Encoding ASCII
-    Assert-Equal "stamp match rejects replaced binary bytes" `
-        (Test-GooseStampRecordMatches -Stamp $stamp -Paths $paths -Settings $settings -BinPath $bin -LocalHead "abc123") $false
-    # A stamp with no recorded digest predates this gate and must not be trusted.
-    $legacyStamp = [pscustomobject]@{
-        repo = $paths.Repo; ref = "main"; commit = "abc123"
-        package = "goose-cli"; binName = "goose"; bin = $bin
-    }
-    Assert-Equal "stamp match rejects a digest-less legacy stamp" `
-        (Test-GooseStampRecordMatches -Stamp $legacyStamp -Paths $paths -Settings $settings -BinPath $bin -LocalHead "abc123") $false
-
-    # Restore the binary after the digest-tamper case so later stamp checks
-    # isolate patch-fingerprint reuse, not a leftover sha256 mismatch.
-    Set-Content -Path $bin -Value "fake" -Encoding ASCII
-    Write-GooseStamp -Paths $paths -Settings $settings -Commit "abc123" -BinPath $bin
-    $stamp = Read-GooseStamp -Path $paths.StampFile
-
-    # ── Goose patch fingerprint / stamp reuse ──────────────────────────────
-    # Windows setup must apply the same patches/goose/*.patch set as the Unix
-    # helper, and a stamp without the current fingerprint must rebuild.
-    Assert-Equal "missing patch dir fingerprints as none" `
-        (Get-GoosePatchFingerprint -PatchDir (Join-Path $temp "missing-patches")) "none"
-    $emptyPatchDir = Join-Path $temp "empty-patches"
-    New-Item -ItemType Directory -Force -Path $emptyPatchDir | Out-Null
-    Assert-Equal "empty patch dir fingerprints as none" `
-        (Get-GoosePatchFingerprint -PatchDir $emptyPatchDir) "none"
-    $patchDir = Join-Path $temp "goose-patches"
-    New-Item -ItemType Directory -Force -Path $patchDir | Out-Null
-    Set-Content -LiteralPath (Join-Path $patchDir "0001-example.patch") -Value "diff --git a/x b/x`n" -Encoding Ascii -NoNewline
-    $fingerprint = Get-GoosePatchFingerprint -PatchDir $patchDir
-    Assert-Equal "patch fingerprint is a sha256 hex digest" ($fingerprint -match '^[0-9a-f]{64}$') $true
-    Set-Content -LiteralPath (Join-Path $patchDir "0001-example.patch") -Value "diff --git a/y b/y`n" -Encoding Ascii -NoNewline
-    Assert-Equal "patch fingerprint changes with file bytes" `
-        ((Get-GoosePatchFingerprint -PatchDir $patchDir) -ne $fingerprint) $true
-    $env:GOOSE_DEV_PATCH_DIR = $patchDir
-    Assert-Equal "Goose settings honor GOOSE_DEV_PATCH_DIR" (Get-GooseBackendSettings).PatchDir $patchDir
-    $env:GOOSE_DEV_PATCH_DIR = ""
-    Assert-Equal "Goose settings default patch dir" `
-        (Get-GooseBackendSettings).PatchDir (Join-Path (Get-BerdRepoRoot) "patches\goose")
-    $patchedSettings = $settings.PSObject.Copy()
-    $patchedSettings | Add-Member -NotePropertyName PatchFingerprint -NotePropertyValue $fingerprint -Force
-    Assert-Equal "stamp match rejects a changed Goose patch fingerprint" `
-        (Test-GooseStampRecordMatches -Stamp $stamp -Paths $paths -Settings $patchedSettings -BinPath $bin -LocalHead "abc123") $false
-
-    # ── Goose --version identity classification (Test-GooseVersionOutput) ──
-    # Pure classifier: distinguishes a real Goose CLI banner from an arbitrary
-    # binary, a failing probe, and a hung/timed-out probe. This is the accept/
-    # reject core of the bounded identity gate, tested without launching Goose.
-    Assert-Equal "identity accepts a Goose version banner" `
-        (Test-GooseVersionOutput -ExitCode 0 -Output "goose 1.7.0" -TimedOut $false -BinName "goose").Ok $true
-    Assert-Equal "identity accepts a v-prefixed version banner" `
-        (Test-GooseVersionOutput -ExitCode 0 -Output "goose v1.7.0-dev" -TimedOut $false -BinName "goose").Ok $true
-    $gooseHelp = "An AI agent`n`nUsage: goose.exe [COMMAND]`n`nCommands:`n  configure  Configure goose settings`n  serve      Start server`n  session    Start a session`n"
-    Assert-Equal "identity accepts current Goose bare semver with Goose help" `
-        (Test-GooseVersionOutput -ExitCode 0 -Output "1.45.0" -TimedOut $false -BinName "goose" -HelpExitCode 0 -HelpOutput $gooseHelp -HelpTimedOut $false).Ok $true
-    Assert-Equal "identity rejects arbitrary bare semver without Goose help" `
-        (Test-GooseVersionOutput -ExitCode 0 -Output "1.45.0" -TimedOut $false -BinName "goose" -HelpExitCode 0 -HelpOutput "Usage: other.exe" -HelpTimedOut $false).Ok $false
-    Assert-Equal "identity rejects a non-Goose banner" `
-        (Test-GooseVersionOutput -ExitCode 0 -Output "some-other-tool 9.9" -TimedOut $false -BinName "goose").Ok $false
-    Assert-Equal "identity rejects a name-without-version banner" `
-        (Test-GooseVersionOutput -ExitCode 0 -Output "goose" -TimedOut $false -BinName "goose").Ok $false
-    Assert-Equal "identity rejects empty output" `
-        (Test-GooseVersionOutput -ExitCode 0 -Output "" -TimedOut $false -BinName "goose").Ok $false
-    Assert-Equal "identity rejects a nonzero exit code" `
-        (Test-GooseVersionOutput -ExitCode 3 -Output "goose 1.7.0" -TimedOut $false -BinName "goose").Ok $false
-    Assert-Equal "identity rejects a timed-out probe" `
-        (Test-GooseVersionOutput -ExitCode $null -Output "" -TimedOut $true -BinName "goose").Ok $false
-
-    # ── Bounded process probe (Invoke-BoundedCommand) end-to-end ──
-    # Drives a real child process cross-platform so the timeout, exit-code, and
-    # output capture the identity gate depends on are exercised deterministically.
-    # On Windows the shell is cmd.exe; elsewhere /bin/sh — both echo and sleep.
-    if (Test-IsWindowsHost) {
-        $probeValid = Invoke-BoundedCommand -FilePath "cmd.exe" -ArgumentList @("/c", "echo goose 1.7.0") -TimeoutSeconds 10
-        $probeFail = Invoke-BoundedCommand -FilePath "cmd.exe" -ArgumentList @("/c", "exit 3") -TimeoutSeconds 10
-        $probeTimeout = Invoke-BoundedCommand -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-Command", "Start-Sleep -Seconds 5") -TimeoutSeconds 1
-    } else {
-        $probeValid = Invoke-BoundedCommand -FilePath "/bin/sh" -ArgumentList @("-c", "echo goose 1.7.0") -TimeoutSeconds 10
-        $probeFail = Invoke-BoundedCommand -FilePath "/bin/sh" -ArgumentList @("-c", "exit 3") -TimeoutSeconds 10
-        $probeTimeout = Invoke-BoundedCommand -FilePath "/bin/sh" -ArgumentList @("-c", "sleep 3") -TimeoutSeconds 1
-    }
-    Assert-Equal "bounded probe captures valid output" `
-        (Test-GooseVersionOutput -ExitCode $probeValid.ExitCode -Output $probeValid.Output -TimedOut $probeValid.TimedOut -BinName "goose").Ok $true
-    Assert-Equal "bounded probe reports nonzero exit" $probeFail.ExitCode 3
-    Assert-Equal "bounded probe reports a timeout" $probeTimeout.TimedOut $true
-
-    # Assert-GooseBinaryIdentity throws when the source is not Goose and passes
-    # for a Goose-identifying source, for both managed and GOOSE_BIN paths.
-    $identityDir = Join-Path $temp "goose-identity"
-    New-Item -ItemType Directory -Force -Path $identityDir | Out-Null
-    if (Test-IsWindowsHost) {
-        $gooseShim = Join-Path $identityDir "goose.cmd"
-        Set-Content -Path $gooseShim -Value "@echo goose 1.7.0" -Encoding ASCII
-        $notGooseShim = Join-Path $identityDir "not-goose.cmd"
-        Set-Content -Path $notGooseShim -Value "@echo some-tool 2.0" -Encoding ASCII
-    } else {
-        $gooseShim = Join-Path $identityDir "goose"
-        Set-Content -Path $gooseShim -Value "#!/bin/sh`necho goose 1.7.0`n" -Encoding ASCII
-        $notGooseShim = Join-Path $identityDir "not-goose"
-        Set-Content -Path $notGooseShim -Value "#!/bin/sh`necho some-tool 2.0`n" -Encoding ASCII
-        & chmod +x $gooseShim $notGooseShim
-    }
-    Assert-NoThrow "identity probe accepts a Goose-identifying source" {
-        Assert-GooseBinaryIdentity -Path $gooseShim -BinName "goose"
-    }
-    Assert-Throws "identity probe rejects a non-Goose source" {
-        Assert-GooseBinaryIdentity -Path $notGooseShim -BinName "goose"
-    }
-    Assert-Throws "identity probe rejects a missing source" {
-        Assert-GooseBinaryIdentity -Path (Join-Path $identityDir "absent") -BinName "goose"
-    }
-
-    $unpatchedGoose = Join-Path $temp "unpatched-goose.exe"
-    Set-Content -Path $unpatchedGoose -Value "goose serve without distill providers" -Encoding ASCII
-    $patchedGoose = Join-Path $temp "patched-goose.exe"
-    Set-Content -Path $patchedGoose -Value "goose serve grok-acp provider" -Encoding ASCII
-    Assert-Equal "unpatched goose binary lacks grok-acp" (Test-GooseBinaryIncludesGrokAcp -BinPath $unpatchedGoose) $false
-    Assert-Equal "patched goose binary includes grok-acp" (Test-GooseBinaryIncludesGrokAcp -BinPath $patchedGoose) $true
-    Assert-Throws "distill rejects an unpatched Goose binary" { Assert-DistillGooseBinary -BinPath $unpatchedGoose }
-    Assert-NoThrow "distill accepts a grok-acp Goose binary" { Assert-DistillGooseBinary -BinPath $patchedGoose }
-    Assert-Equal "dev-windows asserts Distill Goose patches" ((Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Dev-Windows.ps1")) -match "Assert-DistillGooseBinary") $true
-    Assert-Equal "setup-windows asserts Distill Goose patches" ((Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Setup-Windows.ps1")) -match "Assert-DistillGooseBinary") $true
-    Assert-Equal "sidecar staging asserts Distill Goose patches" ((Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Stage-Sidecar-Windows.ps1")) -match "Assert-DistillGooseBinary") $true
 
     # ── Bundle and stage-sidecar call sites invoke native child processes ──
     # A successful in-process `& script.ps1` leaves $LASTEXITCODE unset, so the
@@ -742,14 +541,19 @@ try {
     # Cleanup honors the same env overrides setup/dev use.
     $env:BERD_TAURI_CARGO_TARGET_DIR = Join-Path $temp "override-target"
     $overriddenPaths = Resolve-WindowsCleanupPaths
-    Assert-Equal "cleanup honors GOOSE_DEV_ROOT override" $overriddenPaths.BerdDevRoot $env:GOOSE_DEV_ROOT
+    Assert-Equal "cleanup honors BERD_DEV_ROOT override" $overriddenPaths.BerdDevRoot $env:BERD_DEV_ROOT
     Assert-Equal "cleanup honors BERD_TAURI_CARGO_TARGET_DIR override" $overriddenPaths.BerdTauriRoot $env:BERD_TAURI_CARGO_TARGET_DIR
+    Assert-Equal "Get-TauriCargoTargetDir honors BERD_TAURI_CARGO_TARGET_DIR" (Get-TauriCargoTargetDir) $env:BERD_TAURI_CARGO_TARGET_DIR
     $env:BERD_TAURI_CARGO_TARGET_DIR = ""
-    $env:GOOSE_DEV_ROOT = ""
+    $env:BERD_DEV_ROOT = ""
 
     $cleanupPaths = Resolve-WindowsCleanupPaths
     Assert-Equal "cleanup Berd dev root" $cleanupPaths.BerdDevRoot (Join-Path $env:LOCALAPPDATA "berd-dev")
-    Assert-Equal "cleanup Tauri root" $cleanupPaths.BerdTauriRoot (Join-Path $env:LOCALAPPDATA "berd-tauri")
+    # The active target dir is repo-local so a 30-60 GB debug build stays on
+    # the checkout's drive; %LOCALAPPDATA%\berd-tauri survives only as the
+    # legacy tree cleanup still reclaims.
+    Assert-Equal "cleanup Tauri root" $cleanupPaths.BerdTauriRoot (Join-Path (Get-BerdRepoRoot) "src-tauri\target")
+    Assert-Equal "cleanup legacy Tauri root" $cleanupPaths.LegacyBerdTauriRoot (Join-Path $env:LOCALAPPDATA "berd-tauri")
     Assert-Equal "Block npm cert file" $cleanupPaths.BlockCertFile (Join-Path $env:USERPROFILE ".block-certs\root-certs.pem")
     Assert-Equal "cleanup Corepack pnpm dir" $cleanupPaths.CorepackPnpmVersionDir (Join-Path $env:LOCALAPPDATA "node\corepack\v1\pnpm\$(Get-RequiredPnpmVersion)")
     Assert-Equal "cleanup fnm Node dir" $cleanupPaths.FnmNodeVersionDir (Join-Path $env:APPDATA "fnm\node-versions\v$(Get-RequiredNodeVersion)")
@@ -757,8 +561,6 @@ try {
     Assert-Equal "cleanup repo node_modules" $cleanupPaths.RepoNodeModules (Join-Path (Get-BerdRepoRoot) "node_modules")
     Assert-Equal "cleanup repo pnpm store" $cleanupPaths.RepoPnpmStore (Join-Path (Get-BerdRepoRoot) ".pnpm-store")
     Assert-Equal "cleanup repo dist" $cleanupPaths.RepoDist (Join-Path (Get-BerdRepoRoot) "dist")
-    Assert-Equal "cleanup sdk node_modules" $cleanupPaths.SdkNodeModules (Join-Path (Get-BerdRepoRoot) "sdk\node_modules")
-    Assert-Equal "cleanup sdk dist" $cleanupPaths.SdkDist (Join-Path (Get-BerdRepoRoot) "sdk\dist")
     Assert-Equal "cleanup git hooks dir" $cleanupPaths.GitHooksDir (Join-Path (Get-BerdRepoRoot) ".git\hooks")
 
     $envTargets = Get-BlockNpmEnvironmentTargets
@@ -812,12 +614,7 @@ try {
         $env:COREPACK_INTEGRITY_KEYS = $oldIntegrity
     }
 } finally {
-    $env:GOOSE_DEV_ROOT = $oldGooseDevRoot
-    $env:GOOSE_DEV_REPO = $oldGooseRepo
-    $env:GOOSE_DEV_CARGO_TARGET_DIR = $oldGooseTarget
-    $env:GOOSE_DEV_STAMP_FILE = $oldGooseStamp
-    $env:GOOSE_BUILD_PROFILE = $oldGooseBuildProfile
-    $env:GOOSE_DEV_PATCH_DIR = $oldGoosePatchDir
+    $env:BERD_DEV_ROOT = $oldBerdDevRoot
     $env:LOCALAPPDATA = $oldLocalAppData
     $env:USERPROFILE = $oldUserProfile
     $env:APPDATA = $oldAppData

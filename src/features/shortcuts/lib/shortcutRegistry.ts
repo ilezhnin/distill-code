@@ -32,9 +32,9 @@ export type {
 } from "./shortcutDefinitions";
 export type { ShortcutBinding } from "@/shared/keyboard/keyboardShortcut";
 
-export const SHORTCUT_PREFERENCES_STORAGE_KEY = "goose:keyboard-shortcuts:v1";
+export const SHORTCUT_PREFERENCES_STORAGE_KEY = "distill:keyboard-shortcuts:v1";
 export const SHORTCUT_PREFERENCES_CHANGED_EVENT =
-  "goose:keyboard-shortcuts:changed";
+  "distill:keyboard-shortcuts:changed";
 
 export interface ShortcutPreferencesV1 {
   version: 1;

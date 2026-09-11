@@ -25,12 +25,10 @@ import { listSessionsCommand } from "./impl/listSessions";
 import { listSkillsCommand } from "./impl/listSkills";
 import { moveSessionCommand } from "./impl/moveSession";
 import { moveSessionToGroupCommand } from "./impl/moveSessionToGroup";
-import { openFeedbackCommand } from "./impl/openFeedback";
 import { openSessionCommand } from "./impl/openSession";
 import { renameSessionCommand } from "./impl/renameSession";
 import { sendSessionCommand } from "./impl/sendSession";
 import { setProjectStartupModeCommand } from "./impl/setProjectStartupMode";
-import { submitFeedbackCommand } from "./impl/submitFeedback";
 import { commandBridgeTimeoutMs } from "./timeouts";
 import { CommandError, type CommandContext, type ToolGroup } from "./types";
 
@@ -150,18 +148,6 @@ export const ALL_TOOL_GROUPS = {
       get: getSkillCommand,
     },
   },
-  feedback: {
-    description:
-      "Open an approved report in Distill's feedback form or submit it directly after explicit user approval.",
-    cli: {
-      noun: "feedback",
-      about: "Open or submit an approved Distill feedback report",
-    },
-    actions: {
-      open: openFeedbackCommand,
-      submit: submitFeedbackCommand,
-    },
-  },
   info: {
     description:
       "Read-only app information: installed agent harnesses, available " +
@@ -184,16 +170,7 @@ export const ALL_TOOL_GROUPS = {
   },
 } as const satisfies Record<string, ToolGroup>;
 
-/**
- * Build-owned command registry. Public builds omit Feedback entirely; an
- * enabled distribution opts it back in with the same VITE_FEEDBACK boolean
- * that owns the renderer and backend surfaces.
- */
-export const TOOL_GROUPS: Record<string, ToolGroup> = Object.fromEntries(
-  Object.entries(ALL_TOOL_GROUPS).filter(
-    ([name]) => name !== "feedback" || import.meta.env.VITE_FEEDBACK === "1",
-  ),
-);
+export const TOOL_GROUPS: Record<string, ToolGroup> = ALL_TOOL_GROUPS;
 
 function formatZodError(error: ZodError): string {
   const parts = error.issues.map((issue) =>

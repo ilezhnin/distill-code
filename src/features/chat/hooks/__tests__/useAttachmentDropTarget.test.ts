@@ -83,7 +83,7 @@ function createInternalDragEvent() {
     dataTransfer: {
       files: [],
       items: [],
-      types: ["application/x-goose-internal-drag"],
+      types: ["application/x-distill-internal-drag"],
       dropEffect: "none",
     },
   } as unknown as React.DragEvent<HTMLDivElement>;
@@ -105,7 +105,7 @@ describe("useAttachmentDropTarget", () => {
 
   afterEach(() => {
     delete window.__TAURI_INTERNALS__;
-    delete document.documentElement.dataset.gooseInternalDrag;
+    delete document.documentElement.dataset.distillInternalDrag;
     vi.restoreAllMocks();
   });
 
@@ -718,7 +718,7 @@ describe("useAttachmentDropTarget", () => {
 
     await waitFor(() => expect(dragDropListener).not.toBeNull());
 
-    document.documentElement.dataset.gooseInternalDrag = "project-chat";
+    document.documentElement.dataset.distillInternalDrag = "project-chat";
     act(() => {
       dragDropListener?.({
         payload: {

@@ -41,9 +41,9 @@
   },
   "review": {
     "title": "Review what is remembered",
-    "description": "Opens a new chat holding everything above. It proposes duplicates to merge, contradictions to settle, stale lines to drop and long ones to split \u2014 as a list, and changes nothing until you confirm each one.",
+    "description": "Opens a new chat holding everything above. It proposes duplicates to merge, contradictions to settle, stale lines to drop and long ones to split — as a list, and changes nothing until you confirm each one.",
     "run": "Run a review",
-    "starting": "Opening the review\u2026",
+    "starting": "Opening the review…",
     "failed": "The review chat could not be opened. If one was created, it is in your chat list."
   },
   "groups": {
@@ -109,11 +109,11 @@
     "title": "Wiki graph",
     "description": "The pages in this project's .distill/wiki/ and the [[links]] between them. Read-only: a page is written by you or by a conductor, never from here.",
     "project": "Which project's wiki",
-    "reading": "Reading the wiki\u2026",
+    "reading": "Reading the wiki…",
     "failed": "This project's wiki could not be read.",
     "empty": "This wiki has an index but no pages yet.",
-    "node_one": "{{title}} \u2014 {{type}}, {{count}} page links here",
-    "node_other": "{{title}} \u2014 {{type}}, {{count}} pages link here",
+    "node_one": "{{title}} — {{type}}, {{count}} page links here",
+    "node_other": "{{title}} — {{type}}, {{count}} pages link here",
     "orphan": "nothing links here",
     "close": "Close",
     "pageUnreadable": "This page could not be read from the project folder.",
@@ -123,6 +123,8 @@
       "decision": "decision",
       "report": "report",
       "unknown": "no type"
-    }
+    },
+    "show": "Show wiki graph",
+    "none": "No project has a .distill/wiki/ yet."
   }
 }

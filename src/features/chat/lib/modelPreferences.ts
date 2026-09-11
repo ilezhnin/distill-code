@@ -4,7 +4,7 @@ import {
 } from "@/features/providers/providerCatalog";
 import { normalizeConcreteModelId } from "@/shared/lib/modelIdentity";
 
-const MODEL_PREFERENCES_STORAGE_KEY = "goose:preferredModelsByAgent";
+const MODEL_PREFERENCES_STORAGE_KEY = "distill:preferredModelsByAgent";
 
 export interface StoredModelPreference {
   modelId: string;
@@ -19,10 +19,7 @@ function canonicalAgentId(agentId: string): string {
 }
 
 function canonicalModelProviderId(providerId: string): string | undefined {
-  if (!providerId || providerId === "goose") {
-    return undefined;
-  }
-  return canonicalProviderCatalogId(providerId);
+  return providerId ? canonicalProviderCatalogId(providerId) : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -46,8 +43,7 @@ function parseStoredModelPreferences(value: unknown): StoredModelPreferences {
       typeof candidate.providerId === "string"
         ? canonicalModelProviderId(candidate.providerId)
         : undefined;
-    const providerId =
-      storedProviderId ?? (agentId === "goose" ? undefined : agentId);
+    const providerId = storedProviderId ?? agentId;
     if (!modelId) continue;
 
     preferences[agentId] = {
@@ -113,8 +109,9 @@ export function getStoredModelPreferenceForProvider(
     return exactPreference;
   }
 
-  const agentId = resolveAgentProviderCatalogIdStrict(providerId) ?? "goose";
-  return getStoredModelPreference(agentId);
+  return getStoredModelPreference(
+    resolveAgentProviderCatalogIdStrict(providerId) ?? providerId,
+  );
 }
 
 export function setStoredModelPreference(

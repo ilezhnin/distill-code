@@ -335,9 +335,6 @@ mod tests {
             }
             ("skill", "list") => vec![],
             ("skill", "get") => vec!["--skill-id", "k"],
-            ("feedback", "open") | ("feedback", "submit") => {
-                vec!["--title", "t", "--description", "d"]
-            }
             ("info", "harnesses") => vec![],
             ("info", "models") => vec![],
             ("info", "context") => vec![],
@@ -665,7 +662,7 @@ Options:
 
       --harness-id <HARNESS_ID>
           Agent harness to run the session on (from `berdctl info harnesses`,
-          e.g. "goose", "claude-acp", "codex-acp"). Defaults to the app default.
+          e.g. "claude-acp", "codex-acp"). Defaults to the app default.
 
       --model-id <MODEL_ID>
           Id of the model to use (from `berdctl info models`).
@@ -791,10 +788,7 @@ Result:
     #[test]
     fn top_level_long_help_matches_expected() {
         let rendered = rendered_long_help(&[]);
-        assert_eq!(
-            rendered.contains("feedback"),
-            cfg!(feature = "block-feedback")
-        );
+        assert!(!rendered.contains("feedback"));
         for command in ["session", "folder", "project", "agent", "skill", "info"] {
             assert!(
                 rendered

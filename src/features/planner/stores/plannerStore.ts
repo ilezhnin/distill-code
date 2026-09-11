@@ -36,7 +36,7 @@ import {
 export const PLANNER_DOCUMENT_PATH = "planner.json";
 
 /** Where the list lived before the move; read once, then removed. */
-export const PLANNER_STORAGE_KEY = "goose:planner";
+export const PLANNER_STORAGE_KEY = "distill:planner";
 
 /**
  * Upper bound on stored tasks. Completed work is trimmed first and oldest

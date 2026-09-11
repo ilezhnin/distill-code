@@ -60,23 +60,6 @@ describe("runtime config api", () => {
     expect(mockInvoke).toHaveBeenCalledWith("set_fake_runtime_config", {
       config: validConfig,
     });
-
-    mockInvoke.mockReset();
-    await expect(
-      setFakeRuntimeConfig({
-        ...validConfig,
-        goose: {
-          ...validConfig.goose,
-          modelProviders: [
-            {
-              ...validConfig.goose.modelProviders[0],
-              endpointEnv: { DATABRICKS_HOST: "Bearer nope" },
-            },
-          ],
-        },
-      }),
-    ).rejects.toThrow(/secret-looking/);
-    expect(mockInvoke).not.toHaveBeenCalled();
   });
 
   it("clears fake runtime config through the native command", async () => {

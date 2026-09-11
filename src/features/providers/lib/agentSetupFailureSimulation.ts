@@ -1,6 +1,7 @@
 import type { ProviderDisplayInfo } from "@/shared/types/providers";
 
-export const AGENT_SETUP_FAILURE_SIMULATION_KEY = "goose:dev:agentSetupFailure";
+export const AGENT_SETUP_FAILURE_SIMULATION_KEY =
+  "distill:dev:agentSetupFailure";
 
 type AgentSetupFailureSimulationKind = "existing_file" | "unsupported_platform";
 

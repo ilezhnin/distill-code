@@ -425,33 +425,6 @@ fn read_cached_avatar_animation_asset(
 }
 
 #[tauri::command]
-pub async fn get_cached_avatar_for_ref(
-    app: AppHandle,
-    avatar_ref: String,
-) -> Result<Option<CachedAvatar>, String> {
-    // No lock needed: reads immutable, atomically placed media blobs.
-    if let Some(avatar_id) = parse_user_avatar_ref(&avatar_ref)? {
-        return cached_user_avatar_for_id(&app, &avatar_id);
-    }
-    if let Some(avatar_id) = parse_agent_avatar_ref(&avatar_ref)? {
-        return cached_agent_avatar_for_id(&app, &avatar_id);
-    }
-
-    let avatar_id = parse_app_avatar_ref(&avatar_ref)?;
-    let paths = avatar_cache_paths(&app)?;
-    let Some(catalog) = read_cached_catalog(&paths)? else {
-        return Ok(None);
-    };
-    if let Some(avatar) = cached_avatar_for_id(&paths, &catalog, &avatar_id)? {
-        return Ok(Some(avatar));
-    }
-
-    let _catalog_guard = catalog_lock().lock().await;
-    prepare_legacy_media(&paths, &catalog.catalog_version)?;
-    cached_avatar_for_id(&paths, &catalog, &avatar_id)
-}
-
-#[tauri::command]
 pub async fn import_user_avatar_data_url(
     app: AppHandle,
     data_url: String,
@@ -573,7 +546,7 @@ fn decode_imported_poster_data_url(data_url: &str) -> Result<Vec<u8>, String> {
 fn trusted_agent_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
     let mut roots = Vec::new();
     if let Some(e2e_mode) = app.try_state::<crate::services::e2e_mode::E2eMode>() {
-        roots.push(e2e_mode.goose_agents_dir());
+        roots.push(e2e_mode.agents_dir());
     }
     roots.push(
         dirs::home_dir()
@@ -603,7 +576,7 @@ fn validate_agent_source_path_with_roots(
     }
     let canonical_path = canonicalize_existing_path(&path, "agent source")?;
     if trusted_roots.iter().any(|root| {
-        root.canonicalize()
+        dunce::canonicalize(root)
             .is_ok_and(|canonical_root| canonical_path.starts_with(canonical_root))
     }) {
         Ok(canonical_path)
@@ -653,7 +626,7 @@ fn validate_existing_regular_file(
 }
 
 fn canonicalize_existing_path(path: &Path, context: &'static str) -> Result<PathBuf, String> {
-    path.canonicalize().map_err(|error| {
+    dunce::canonicalize(path).map_err(|error| {
         format!(
             "Failed to resolve selected {context} '{}': {error}",
             path.display()
@@ -747,6 +720,33 @@ fn delete_user_avatar_at_with_roots(
         delete_file_if_exists(&poster_path)?;
     }
     delete_file_if_exists(&manifest_path)
+}
+
+/// Resolve one cached avatar for a user, agent, or app avatar ref.
+async fn get_cached_avatar_for_ref(
+    app: AppHandle,
+    avatar_ref: String,
+) -> Result<Option<CachedAvatar>, String> {
+    // No lock needed: reads immutable, atomically placed media blobs.
+    if let Some(avatar_id) = parse_user_avatar_ref(&avatar_ref)? {
+        return cached_user_avatar_for_id(&app, &avatar_id);
+    }
+    if let Some(avatar_id) = parse_agent_avatar_ref(&avatar_ref)? {
+        return cached_agent_avatar_for_id(&app, &avatar_id);
+    }
+
+    let avatar_id = parse_app_avatar_ref(&avatar_ref)?;
+    let paths = avatar_cache_paths(&app)?;
+    let Some(catalog) = read_cached_catalog(&paths)? else {
+        return Ok(None);
+    };
+    if let Some(avatar) = cached_avatar_for_id(&paths, &catalog, &avatar_id)? {
+        return Ok(Some(avatar));
+    }
+
+    let _catalog_guard = catalog_lock().lock().await;
+    prepare_legacy_media(&paths, &catalog.catalog_version)?;
+    cached_avatar_for_id(&paths, &catalog, &avatar_id)
 }
 
 #[tauri::command]
@@ -2811,6 +2811,7 @@ async fn remove_dir_all_if_exists(path: &Path, label: &str) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncReadExt;
 
     fn variant(path: &str, bytes: &[u8]) -> AvatarVariant {
         let digest = Sha256::digest(bytes);
@@ -3894,6 +3895,10 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
+            // Read the request before answering: closing with unread bytes
+            // resets the connection on Windows before the client sees a reply.
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await.unwrap();
             socket
                 .write_all(
                     b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nabcd\r\n4\r\nefgh\r\n0\r\n\r\n",
@@ -3904,8 +3909,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("media/v1/webm/gloopies/gloopy-1.webm");
         let variant = variant("webm/gloopies/gloopy-1.webm", b"abcd");
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let error = download_asset(
-            &asset_http_client().unwrap(),
+            &client,
             Url::parse(&format!("http://{addr}/avatar.webm")).unwrap(),
             &target,
             &variant,

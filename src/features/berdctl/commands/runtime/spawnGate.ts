@@ -4,7 +4,7 @@
  * `berdctl session create` / `session fork` create sessions programmatically.
  * Until the wire carried an `actor`, these calls arrived anonymous and the
  * ACL reached them through prompt text alone. Now the CLI reads
- * AGENT_SESSION_ID — injected by goose into every session's shell — and sends
+ * AGENT_SESSION_ID — when the harness exports it into the session's shell — and sends
  * it on the call envelope, so the app can resolve who asked and run the same
  * check `spawnConductorChildSession` runs.
  *
@@ -18,10 +18,11 @@
  *   chokepoint: role + persona override → `checkSpawnAllowed`, refusal
  *   posted into the actor's own transcript first (D5), then a CommandError.
  *
- * The identity is goose's session id, which is guessable by construction
- * (YYYYMMDD_n). An agent that deliberately exports a different session's id
- * before calling berdctl can still impersonate it; closing that needs a
- * per-session nonce minted in distill-goose and is P42's documented residue.
+ * The identity is whatever the harness exports, which is not secret. An agent
+ * that deliberately exports a different session's id before calling berdctl
+ * can still impersonate it; closing that needs a per-session nonce minted by
+ * the agent host and is P42's documented residue. The built-in host does not
+ * export AGENT_SESSION_ID yet, so its calls arrive anonymous.
  * This gate still moves the path from "a sentence in the prompt" to "checked
  * in code for every honest call".
  */

@@ -97,7 +97,8 @@ function normalizeLifecycleString(value: string | null | undefined) {
 export function normalizeWorkspaceAttachmentLifecycle(
   lifecycle: WorkspaceAttachmentLifecycle | null | undefined,
 ): WorkspaceAttachmentLifecycle | undefined {
-  if (!lifecycle || lifecycle.owner !== "goose") {
+  const owner = (lifecycle as { owner?: unknown } | null | undefined)?.owner;
+  if (!lifecycle || (owner !== "distill" && owner !== "goose")) {
     return undefined;
   }
   if (lifecycle.cleanup !== "branch" && lifecycle.cleanup !== "worktree") {
@@ -105,7 +106,7 @@ export function normalizeWorkspaceAttachmentLifecycle(
   }
 
   const normalized: WorkspaceAttachmentLifecycle = {
-    owner: "goose",
+    owner: "distill",
     cleanup: lifecycle.cleanup,
   };
   const branch = normalizeLifecycleString(lifecycle.branch);

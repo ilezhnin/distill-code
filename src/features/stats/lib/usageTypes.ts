@@ -1,5 +1,5 @@
-export const USAGE_LEDGER_STORAGE_KEY = "goose:stats-usage-ledger";
-export const USAGE_LEDGER_CHANGED_EVENT = "goose:stats-usage-ledger-changed";
+export const USAGE_LEDGER_STORAGE_KEY = "distill:stats-usage-ledger";
+export const USAGE_LEDGER_CHANGED_EVENT = "distill:stats-usage-ledger-changed";
 export const USAGE_LEDGER_VERSION = 1;
 
 export type UsageIntensity = 0 | 1 | 2 | 3 | 4;

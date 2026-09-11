@@ -75,7 +75,7 @@ interface AgentProviderCardProps {
   onInstallComplete?: (providerId: string) => void;
   onDisclosureOpenChange?: (open: boolean) => void;
   // Optional collapsible region rendered inside the card below the header
-  // row (the goose card hosts its model providers here). Purely
+  // row. Purely
   // presentational: the parent owns the content.
   expandedContent?: ReactNode;
   expandableLabel?: ReactNode;
@@ -83,9 +83,9 @@ interface AgentProviderCardProps {
   collapsedSupplement?: ReactNode;
   statusIndicator?: ReactNode;
   // Makes a custom status indicator an explicit shortcut into the card's
-  // expandable setup details (for example, Goose's model-provider setup).
+  // expandable setup details.
   statusIndicatorOpensDetails?: boolean;
-  /** Goose keeps its expandable harness card; other agents use SettingsRow. */
+  /** Expandable harness card, or a plain settings row. */
   presentation?: "card" | "row";
   /** Adds an inline disclosure card below the settings row when expandable details are present. */
   showDisclosure?: boolean;
@@ -181,8 +181,6 @@ export function AgentProviderCard({
     : isBuiltIn || !hasBinary
       ? "ready"
       : (readiness ?? "not_installed");
-  const isInstalled =
-    resolvedReadiness === "ready" || resolvedReadiness === "not_ready";
 
   // Version / update / partial-install readout from the shared report. Derived
   // here (above the setup handlers) so the handlers and rendered actions share
@@ -506,8 +504,6 @@ export function AgentProviderCard({
   const needsAuth = resolvedReadiness === "not_ready" && supportsAuth;
   const needsInstall = resolvedReadiness === "not_installed" && supportsInstall;
   const needsSetupAction = needsInstall || hasActionableUpdate;
-
-  if (provider.showOnlyWhenInstalled && !isInstalled) return null;
 
   // Shared setup call-to-action style for Install / Update / Fix states.
   function renderActionButton(

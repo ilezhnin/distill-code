@@ -11,13 +11,7 @@ export type ReplayAssistantMetadata = Pick<
 >;
 export type ReplayUserMetadata = Pick<
   MessageMetadata,
-  | "delivery"
-  | "origin"
-  | "berdSenderLabel"
-  | "berdDeliveryId"
-  | "voiceUtteranceId"
-  | "voiceConversationLifecycleId"
-  | "voiceConversationRevision"
+  "delivery" | "origin" | "berdSenderLabel" | "berdDeliveryId"
 >;
 
 export function getReplayMessageId(
@@ -27,7 +21,7 @@ export function getReplayMessageId(
     return source.messageId;
   }
 
-  const metaMessageId = getGooseReplayMeta(source)?.messageId;
+  const metaMessageId = getHostReplayMeta(source)?.messageId;
   if (typeof metaMessageId === "string" && metaMessageId.length > 0) {
     return metaMessageId;
   }
@@ -38,20 +32,20 @@ export function getReplayMessageId(
 export function getReplayCreated(
   source: ReplayMetadataSource,
 ): number | undefined {
-  const goose = getGooseReplayMeta(source);
-  return coerceReplayTimestamp(goose?.created ?? goose?.createdAt);
+  const meta = getHostReplayMeta(source);
+  return coerceReplayTimestamp(meta?.created ?? meta?.createdAt);
 }
 
 export function getReplayAssistantMetadata(
   source: ReplayMetadataSource,
 ): ReplayAssistantMetadata | undefined {
-  const goose = getGooseReplayMeta(source);
-  if (!goose) {
+  const meta = getHostReplayMeta(source);
+  if (!meta) {
     return undefined;
   }
 
-  const personaId = nonEmptyString(goose.personaId);
-  const personaName = nonEmptyString(goose.personaName);
+  const personaId = nonEmptyString(meta.personaId);
+  const personaName = nonEmptyString(meta.personaName);
   if (!personaId && !personaName) {
     return undefined;
   }
@@ -65,41 +59,22 @@ export function getReplayAssistantMetadata(
 export function getReplayUserMetadata(
   source: ReplayMetadataSource,
 ): ReplayUserMetadata | undefined {
-  const goose = getGooseReplayMeta(source);
-  if (!goose) {
+  const meta = getHostReplayMeta(source);
+  if (!meta) {
     return undefined;
   }
 
-  const delivery = goose.steer === true ? "steer" : undefined;
+  const delivery = meta.steer === true ? "steer" : undefined;
   const origin =
-    goose.origin === "berdctl_cross_session"
+    meta.origin === "berdctl_cross_session"
       ? "berdctl_cross_session"
-      : goose.origin === "voice_conversation"
-        ? "voice_conversation"
-        : undefined;
-  const berdSenderLabel =
-    origin === "berdctl_cross_session"
-      ? boundedSingleLineString(goose.berdSenderLabel, 120)
       : undefined;
-  const berdDeliveryId =
-    origin === "berdctl_cross_session"
-      ? boundedSingleLineString(goose.berdDeliveryId, 200)
-      : undefined;
-  const voiceUtteranceId =
-    origin === "voice_conversation"
-      ? nonEmptyString(goose.voiceUtteranceId)
-      : undefined;
-  const voiceConversationLifecycleId =
-    origin === "voice_conversation"
-      ? nonEmptyString(goose.voiceConversationLifecycleId)
-      : undefined;
-  const voiceConversationRevision =
-    origin === "voice_conversation" &&
-    typeof goose.voiceConversationRevision === "number" &&
-    Number.isSafeInteger(goose.voiceConversationRevision) &&
-    goose.voiceConversationRevision >= 0
-      ? goose.voiceConversationRevision
-      : undefined;
+  const berdSenderLabel = origin
+    ? boundedSingleLineString(meta.berdSenderLabel, 120)
+    : undefined;
+  const berdDeliveryId = origin
+    ? boundedSingleLineString(meta.berdDeliveryId, 200)
+    : undefined;
   if (!delivery && !origin) {
     return undefined;
   }
@@ -109,11 +84,6 @@ export function getReplayUserMetadata(
     ...(origin ? { origin } : {}),
     ...(berdSenderLabel ? { berdSenderLabel } : {}),
     ...(berdDeliveryId ? { berdDeliveryId } : {}),
-    ...(voiceUtteranceId ? { voiceUtteranceId } : {}),
-    ...(voiceConversationLifecycleId ? { voiceConversationLifecycleId } : {}),
-    ...(voiceConversationRevision !== undefined
-      ? { voiceConversationRevision }
-      : {}),
   };
 }
 
@@ -130,20 +100,25 @@ function boundedSingleLineString(
     : undefined;
 }
 
-function getGooseReplayMeta(
+/** Replay bookkeeping the host stamps on every persisted update. */
+function getHostReplayMeta(
   source: ReplayMetadataSource,
 ): Record<string, unknown> | null {
   if (!isRecord(source._meta)) {
     return null;
   }
 
-  const goose = source._meta.goose;
-  return isRecord(goose) ? goose : null;
+  const meta = source._meta.distill;
+  return isRecord(meta) ? meta : null;
 }
 
 function coerceReplayTimestamp(value: unknown): number | undefined {
   if (typeof value === "number") {
     return normalizeEpochMilliseconds(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
   }
 
   return undefined;

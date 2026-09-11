@@ -89,18 +89,6 @@ const mockController = {
   isContextUsageReady: false,
 };
 
-vi.mock("@/features/chat/hooks/useVoiceDictation", () => ({
-  useAnyVoiceDictationActive: () => false,
-  useVoiceDictation: () => ({
-    isEnabled: false,
-    isRecording: false,
-    isTranscribing: false,
-    isStarting: () => false,
-    stopRecording: vi.fn(),
-    toggleRecording: vi.fn(),
-  }),
-}));
-
 vi.mock("@/features/chat/hooks/useMentionHandlers", () => ({
   useMentionHandlers: () => ({
     mentionOpen: false,
@@ -252,7 +240,7 @@ describe("HomeScreen", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 2, 29, 14, 30, 0)); // 2:30 PM
     localStorage.clear();
-    localStorage.setItem("goose:defaultProvider", "goose");
+    localStorage.setItem("distill:defaultProvider", "goose");
     setSelectedProvider.mockReset();
     setSelectedProviderWithoutPersist.mockReset();
     mockController.handleSend.mockReset();

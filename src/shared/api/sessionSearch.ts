@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { exportSession } from "./acpApi";
+import { readSessionTranscript } from "./acpApi";
 
 const SNIPPET_PREFIX = 40;
 const SNIPPET_SUFFIX = 60;
@@ -103,7 +103,7 @@ export interface SessionSearchOptions {
   queryClient?: QueryClient;
 }
 
-export async function searchSessionsViaExports(
+export async function searchSessionsViaTranscripts(
   query: string,
   targets: SessionSearchTarget[],
   options: SessionSearchOptions = {},
@@ -219,12 +219,8 @@ function fetchCorpus(
 }
 
 async function exportCorpus(sessionId: string): Promise<ParsedMessage[]> {
-  const exported = await exportSession(sessionId);
-  const root = safeParse(exported);
-  if (!root) return [];
-  const conversation = root.conversation ?? root.messages;
-  if (!conversation) return [];
-  return flattenMessages(conversation, false);
+  const transcript = await readSessionTranscript(sessionId);
+  return flattenMessages(transcript.messages, false);
 }
 
 function searchSession(
@@ -271,7 +267,7 @@ export interface ExportedSessionMessage {
 }
 
 /**
- * The last `limit` text-bearing messages of a session, read via export so it
+ * The last `limit` text-bearing messages of a session, read from the host so it
  * works without loading the session into the UI. Unlike search (which scans
  * broadly and only ever returns a snippet), this hands full message bodies to
  * another agent, so block types are ALLOWLISTED: anything not an explicitly
@@ -282,22 +278,10 @@ export async function lastSessionMessages(
   sessionId: string,
   limit: number,
 ): Promise<ExportedSessionMessage[]> {
-  const exported = await exportSession(sessionId);
-  const root = safeParse(exported);
-  if (!root) return [];
-  const conversation = root.conversation ?? root.messages;
-  if (!conversation) return [];
-  return flattenMessages(conversation, true)
+  const transcript = await readSessionTranscript(sessionId);
+  return flattenMessages(transcript.messages, true)
     .slice(-limit)
     .map((msg) => ({ role: msg.role, text: msg.texts.join("\n") }));
-}
-
-function safeParse(json: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(json);
-  } catch {
-    return null;
-  }
 }
 
 function flattenMessages(

@@ -21,7 +21,7 @@ import type {
 export type AgentVersionRole = "single" | "main" | "bridge";
 
 // `unknown` means the crate couldn't fingerprint the install source -- it
-// carries no signal for the user (Goose itself is the common case). Treat it
+// carries no signal for the user (the built-in host is the common case). Treat it
 // as absent so we never render "Installed via an unknown source"; a readout
 // left with nothing else collapses to empty and renders nothing.
 function normalizeSource(source: InstallSource | null): InstallSource | null {

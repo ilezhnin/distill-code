@@ -44,7 +44,7 @@ export interface RankedPersonaTargetContext {
    * pass the picker's list. The model cache keeps a provider's last payload
    * when a discovery refresh answers nothing (a retryable non-answer, not an
    * empty inventory), and a ranking that matches against that leftover pins
-   * the chat to a model the harness has dropped — goose forwards the id
+   * the chat to a model the harness has dropped — the host forwards the id
    * verbatim and every send fails with "Failed to set ACP model option:
    * Invalid params", out of `stream()`, where the chat cannot rescue itself.
    * Filter by `isCachedModelInventoryAuthoritative` (or use the hook's
@@ -130,7 +130,7 @@ export function rankedPersonaExecutionTarget(
       // normalizer refused every resolution the ranking made, so the feature
       // could not retarget anything at all. The model's own provider id is
       // the right one — for a harness that fans several providers into one
-      // list (goose), the harness id is not a provider.
+      // list, the harness id is not a provider.
       target: normalizeSessionExecutionTarget({
         harnessId,
         modelProviderId: model.providerId ?? harnessId,

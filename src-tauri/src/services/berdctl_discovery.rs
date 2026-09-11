@@ -100,8 +100,9 @@ mod tests {
             app_data_dir.path(),
             &format!("control-{}.json", std::process::id()),
         );
-        // pid 1 (launchd/init) is always alive.
-        let live = write_discovery_file(app_data_dir.path(), "control-1.json");
+        // pid 1 (launchd/init) and pid 4 (Windows System) are always alive.
+        let live_pid = if cfg!(windows) { 4 } else { 1 };
+        let live = write_discovery_file(app_data_dir.path(), &format!("control-{live_pid}.json"));
         let unrelated = write_discovery_file(app_data_dir.path(), "notes.json");
 
         sweep_stale_discovery_files(app_data_dir.path());

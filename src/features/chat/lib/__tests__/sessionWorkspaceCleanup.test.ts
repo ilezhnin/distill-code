@@ -51,7 +51,7 @@ function makeManagedWorktree(
     worktreePath: path,
     usedByAgent: true,
     lifecycle: {
-      owner: "goose",
+      owner: "distill",
       cleanup: "worktree",
       branch: "chat",
       baseBranch: "main",
@@ -73,7 +73,7 @@ function makeManagedBranch(): WorkspaceAttachment {
     worktreePath: "/repo",
     usedByAgent: true,
     lifecycle: {
-      owner: "goose",
+      owner: "distill",
       cleanup: "branch",
       branch: "chat",
       baseBranch: "main",
@@ -184,7 +184,7 @@ describe("session workspace cleanup", () => {
     });
   });
 
-  it("plans only Goose-managed cleanup targets", () => {
+  it("plans only Distill-managed cleanup targets", () => {
     const managed = makeManagedWorktree();
     const selected: WorkspaceAttachment = {
       ...managed,
@@ -281,7 +281,7 @@ describe("session workspace cleanup", () => {
       repositoryPath: "/Users/test/repo",
       worktreePath: "/Users/test/repo",
       lifecycle: {
-        owner: "goose",
+        owner: "distill",
         cleanup: "branch",
         branch: "chat",
         baseBranch: "main",

@@ -17,8 +17,7 @@ const listModelsSchema = z
 interface ModelEntry {
   model_id: string;
   name: string;
-  /** Model provider the model belongs to (goose harness only, where a model
-   *  choice implies a model provider). */
+  /** Model provider the model belongs to, when the harness reports one. */
   provider?: string;
 }
 
@@ -42,7 +41,7 @@ export const listModelsCommand = defineCommand({
     "model picker); omit harness_id to cover every ready harness in one " +
     "call. Use a model_id (and its harness_id) when creating a session.",
   helpFooter: `Example:
-  berdctl info models --harness-id goose --json
+  berdctl info models --harness-id claude-acp --json
 
 Result:
   {"harnesses": [{"harness_id": "...",
@@ -57,17 +56,10 @@ Result:
     const [
       { getProviderModelSelectionHint },
       { useProviderModelCacheStore },
-      { GOOSE_PROVIDER_ID },
-      {
-        findReadyHarnessOrThrow,
-        listHarnessStatuses,
-        gooseModelOptions,
-        harnessModelOptions,
-      },
+      { findReadyHarnessOrThrow, listHarnessStatuses, harnessModelOptions },
     ] = await Promise.all([
       import("@/features/providers/modelSelectionHints"),
       import("@/features/providers/stores/providerModelCacheStore"),
-      import("@/shared/api/acpPersonaHandoff"),
       import("../runtime/providers"),
     ]);
     const targets = args.harness_id
@@ -77,20 +69,13 @@ Result:
         );
     const harnesses = await Promise.all(
       targets.map(async (harness) => {
-        const models =
-          harness.id === GOOSE_PROVIDER_ID
-            ? await gooseModelOptions()
-            : await harnessModelOptions(harness.id);
-        const hint =
-          harness.id === GOOSE_PROVIDER_ID
-            ? null
-            : getProviderModelSelectionHint(harness.id);
+        const models = await harnessModelOptions(harness.id);
+        const hint = getProviderModelSelectionHint(harness.id);
         // A failed refresh keeps serving the previous cache; tell the
         // caller the list may be stale instead of silently masking it.
-        const staleError =
-          harness.id === GOOSE_PROVIDER_ID
-            ? null
-            : useProviderModelCacheStore.getState().getError(harness.id);
+        const staleError = useProviderModelCacheStore
+          .getState()
+          .getError(harness.id);
         const warning =
           hint ?? (staleError ? `list may be stale: ${staleError}` : null);
         return {

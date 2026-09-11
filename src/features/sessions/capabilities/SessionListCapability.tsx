@@ -72,9 +72,9 @@ import {
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { isNestedExecutorSession } from "@/features/conductor/sessionVisibility";
 
-const EXPANDED_PROJECTS_STORAGE_KEY = "goose:sidebar:expanded-projects";
-const SECTION_VISIBILITY_STORAGE_KEY = "goose:sidebar:section-visibility";
-const DISPLAY_OPTIONS_STORAGE_KEY = "goose:sidebar:display-options";
+const EXPANDED_PROJECTS_STORAGE_KEY = "distill:sidebar:expanded-projects";
+const SECTION_VISIBILITY_STORAGE_KEY = "distill:sidebar:section-visibility";
+const DISPLAY_OPTIONS_STORAGE_KEY = "distill:sidebar:display-options";
 const MAX_RECENTS = MAX_FLAT_SIDEBAR_CHATS;
 const MAX_AUTO_LOADED_GROUPED_CHATS = MAX_FLAT_SIDEBAR_CHATS * 2;
 const FLAT_CHAT_GROUP_REFRESH_INTERVAL_MS = 60 * 1000;

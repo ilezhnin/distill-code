@@ -11,7 +11,6 @@ import type { ChatAttachmentDraft } from "@/shared/types/messages";
 import type { ChatSendOptions, ChatSkillDraft, ModelOption } from "../types";
 import { INITIAL_TOKEN_STATE } from "@/shared/types/chat";
 import { useChat } from "./useChat";
-import { useAutoCompactPreferences } from "./useAutoCompactPreferences";
 import { useMessageQueue } from "./useMessageQueue";
 import { useChatStore, type QueuedMessagePayload } from "../stores/chatStore";
 import { personaIntentFromComposer } from "../lib/admittedSend";
@@ -70,11 +69,6 @@ import {
   transitionSessionTarget,
 } from "../lib/sessionTargetCoordinator";
 import { applyPendingSessionWorkspaceActivation } from "../lib/sessionWorkspaceActivation";
-import {
-  shouldAutoCompactContext,
-  supportsContextAutoCompaction,
-  supportsContextCompactionControls,
-} from "../lib/autoCompact";
 import { resolveSessionCwd } from "@/features/projects/lib/sessionCwdSelection";
 import {
   acceptFirstSend,
@@ -130,14 +124,6 @@ import {
   recoverStrandedProviderSession,
   type RecreateSessionForProvider,
 } from "../model-selection/strandedProviderRecovery";
-import { perfLog } from "@/shared/lib/perfLog";
-import type { BerdChatChatSourceSurface } from "@/shared/telemetry/events";
-import { isFirstCommittedUserMessage } from "../lib/chatFirstMessage";
-import {
-  CHAT_SOURCE_SURFACE,
-  trackChatMessageSent,
-  trackChatSessionStarted,
-} from "../lib/chatTelemetry";
 import {
   isModelExecutionTarget,
   normalizeSessionExecutionTarget,
@@ -146,9 +132,9 @@ import {
   type SessionExecutionTarget,
 } from "../lib/sessionExecutionTarget";
 import {
-  executionTargetFromGooseServeBoundary,
-  gooseServeSelectionFromExecutionTarget,
-} from "../lib/gooseServeExecutionTarget";
+  executionTargetFromHostBoundary,
+  hostSelectionFromExecutionTarget,
+} from "../lib/hostExecutionTarget";
 
 interface UseChatSessionControllerOptions {
   sessionId: string | null;
@@ -270,7 +256,7 @@ async function syncPendingHomeModelSelection({
         resolveAgentProviderCatalogIdStrictFromEntries(
           catalogEntries,
           homePendingModelProviderId,
-        ) ?? "goose";
+        ) ?? homePendingModelProviderId;
       setStoredModelPreference(agentId, {
         modelId: homePendingModel.id,
         modelName: homePendingModel.name,
@@ -306,7 +292,7 @@ async function syncPendingHomeModelSelection({
             resolveAgentProviderCatalogIdStrictFromEntries(
               catalogEntries,
               homePendingModelProviderId,
-            ) ?? "goose";
+            ) ?? homePendingModelProviderId;
           setStoredModelPreference(agentId, {
             modelId: homePendingModel.id,
             modelName: homePendingModel.name,
@@ -331,8 +317,7 @@ async function syncPendingHomeModelSelection({
       showModelSwitchErrorToast({
         modelName: nextWireProviderId,
         fallbackModelName:
-          gooseServeSelectionFromExecutionTarget(previousTarget).providerId ??
-          null,
+          hostSelectionFromExecutionTarget(previousTarget).providerId ?? null,
       });
       return;
     }
@@ -455,8 +440,6 @@ export function useChatSessionController({
       : undefined,
   );
   const project = storedProject ?? null;
-  const { autoCompactThreshold, isHydrated: isAutoCompactThresholdHydrated } =
-    useAutoCompactPreferences();
   const hasContextUsageSnapshot = useChatStore(
     (s) => s.sessionStateById[stateSessionId]?.hasUsageSnapshot ?? false,
   );
@@ -914,7 +897,7 @@ export function useChatSessionController({
       if (requestId && !isCurrentModelSelectionIntent(sessionId, requestId)) {
         return false;
       }
-      const target = executionTargetFromGooseServeBoundary({ providerId });
+      const target = executionTargetFromHostBoundary({ providerId });
       const result = await transitionSessionTarget({
         sessionId,
         target,
@@ -957,7 +940,7 @@ export function useChatSessionController({
           requestId: selectionIntent.requestId,
         };
       }
-      const wireProviderId = gooseServeSelectionFromExecutionTarget(
+      const wireProviderId = hostSelectionFromExecutionTarget(
         targetToApply.target,
       ).providerId;
       if (!wireProviderId) return false;
@@ -1049,7 +1032,7 @@ export function useChatSessionController({
         !isModelExecutionTarget(intent.target) ||
         intent.requestId !== requestId ||
         intent.target.modelId !== modelSelection.id ||
-        gooseServeSelectionFromExecutionTarget(intent.target).providerId !==
+        hostSelectionFromExecutionTarget(intent.target).providerId !==
           modelProviderId
       ) {
         return false;
@@ -1147,7 +1130,7 @@ export function useChatSessionController({
         title: current?.title,
         projectId: current?.projectId ?? undefined,
         personaId: current?.personaId,
-        executionTarget: executionTargetFromGooseServeBoundary({
+        executionTarget: executionTargetFromHostBoundary({
           providerId,
           modelId,
           modelName: modelId ? (modelSelection?.name ?? undefined) : undefined,
@@ -1421,7 +1404,7 @@ export function useChatSessionController({
         persona,
         {
           providers,
-          models: getModelsForAgent("goose"),
+          models: [],
           getModelsForHarness: getModelsForAgent,
           catalogEntries,
         },
@@ -1623,7 +1606,7 @@ export function useChatSessionController({
 
       const targetAtRequest = session.executionTarget;
       const { providerId, modelId } =
-        gooseServeSelectionFromExecutionTarget(targetAtRequest);
+        hostSelectionFromExecutionTarget(targetAtRequest);
       void acpSetSessionConfigOption(sessionId, current.configId, value, {
         providerId,
         modelId,
@@ -1676,7 +1659,7 @@ export function useChatSessionController({
 
       const targetAtRequest = session.executionTarget;
       const { providerId, modelId } =
-        gooseServeSelectionFromExecutionTarget(targetAtRequest);
+        hostSelectionFromExecutionTarget(targetAtRequest);
       const wireValue: string | boolean =
         current.kind === "boolean" ? enabled : enabled ? "on" : "off";
       void acpSetSessionConfigOption(sessionId, current.configId, wireValue, {
@@ -2118,75 +2101,12 @@ export function useChatSessionController({
     },
   );
   const resolvedTokenState = tokenState ?? INITIAL_TOKEN_STATE;
-  const supportsAutoCompactContext =
-    supportsContextAutoCompaction(selectedAgentId);
-  const supportsCompactionControls =
-    supportsContextCompactionControls(selectedAgentId);
+  // ACP harnesses manage their own context window; the app neither
+  // compacts for them nor exposes compaction controls.
+  const supportsAutoCompactContext = false;
+  const supportsCompactionControls = false;
   const isCompactingContext = chatState === "compacting";
   const isQueuedSendBlocked = activeRunId !== null || isRunCancellationPending;
-  const resolveAutoCompactAgentId = useCallback(
-    (
-      overridePersona?: { id: string | null; name?: string },
-      sessionSelection?: SessionExecutionTarget,
-    ): string | null => {
-      if (sessionSelection) return sessionSelection.harnessId;
-      if (overridePersona?.id === null) {
-        return session?.executionTarget?.harnessId ?? selectedAgentId;
-      }
-      if (!overridePersona?.id) {
-        return selectedAgentId;
-      }
-
-      const targetPersona = personas.find(
-        (persona) => persona.id === overridePersona.id,
-      );
-      return (
-        (targetPersona
-          ? resolvePersonaTarget(targetPersona)?.harnessId
-          : undefined) ?? selectedAgentId
-      );
-    },
-    [
-      personas,
-      resolvePersonaTarget,
-      selectedAgentId,
-      session?.executionTarget?.harnessId,
-    ],
-  );
-  const canAutoCompactBeforeSend = useCallback(
-    (
-      overridePersona?: { id: string | null; name?: string },
-      sessionSelection?: SessionExecutionTarget,
-    ) => {
-      const targetAgentId = resolveAutoCompactAgentId(
-        overridePersona,
-        sessionSelection,
-      );
-      if (
-        !sessionId ||
-        !supportsContextAutoCompaction(targetAgentId) ||
-        !isAutoCompactThresholdHydrated
-      ) {
-        return false;
-      }
-
-      const liveRuntime = useChatStore
-        .getState()
-        .getSessionRuntime(stateSessionId);
-      return shouldAutoCompactContext(
-        liveRuntime.tokenState.accumulatedTotal,
-        liveRuntime.tokenState.contextLimit,
-        autoCompactThreshold,
-      );
-    },
-    [
-      autoCompactThreshold,
-      isAutoCompactThresholdHydrated,
-      resolveAutoCompactAgentId,
-      sessionId,
-      stateSessionId,
-    ],
-  );
   const isQueuedSendBlockedNow = useCallback(() => {
     const liveRuntime = useChatStore
       .getState()
@@ -2195,90 +2115,6 @@ export function useChatSessionController({
       liveRuntime.activeRunId !== null || liveRuntime.isRunCancellationPending
     );
   }, [stateSessionId]);
-  // Entry point this chat surface maps to for `berd_chat` session telemetry. An
-  // agent-builder session takes precedence over the composer it was launched
-  // from; otherwise Home's global composer vs the main chat view.
-  const chatSourceSurface = useMemo<BerdChatChatSourceSurface>(() => {
-    if (session?.intent === "build-agent") {
-      return CHAT_SOURCE_SURFACE.AGENT_BUILDER;
-    }
-    return isHomeSession
-      ? CHAT_SOURCE_SURFACE.GLOBAL_COMPOSER
-      : CHAT_SOURCE_SURFACE.MAIN_CHAT;
-  }, [isHomeSession, session?.intent]);
-  // Fires `berd_chat` send telemetry for a foreground send dispatched by this
-  // controller. A foreground send released from the deferred-workspace flow is
-  // dispatched by the background queued-send pipeline instead and fires there
-  // (`sendQueuedPromptToExistingSessionInBackground`), keyed off the surface
-  // captured in its payload; berdctl/background sends carry no surface and
-  // bypass telemetry entirely. It runs from the send's user-message-commit
-  // callback — synchronously after sendCore appends the user message to the
-  // transcript, or, for the steer paths below, once steerCore's backend
-  // acknowledgement makes the steered user message durable — so a send that
-  // fails before committing emits nothing and the queue's automatic retry of
-  // it cannot double-fire; each accepted send emits exactly once.
-  // Message.Sent fires every send; Session.Started fires once, on the
-  // session's first user message — both are intended to co-fire on that first
-  // send per the schema.
-  const fireChatSendTelemetry = useCallback(
-    (
-      overridePersona?: { id: string | null; name?: string },
-      attachments?: ChatAttachmentDraft[],
-    ) => {
-      if (!sessionId) {
-        return;
-      }
-      // Observation only, structurally: this runs inside the send and steer
-      // commit callbacks, where a throw would reject a dispatch the backend
-      // already accepted — for steerQueuedMessage that skips queue.dismiss()
-      // and the retained record re-sends as a duplicate user turn
-      // (LAWS/CHAT.md: at most one user turn per message).
-      try {
-        // Post-commit read: the user message this send committed is already in
-        // the transcript, so "first" means it is the only user message there —
-        // and only once the session's history has landed, since an unreplayed
-        // old session shows the same empty transcript (see chatFirstMessage).
-        const isFirstMessage = isFirstCommittedUserMessage(sessionId);
-        // An override with `id: null` is an explicit "send without a persona";
-        // no override falls back to the session's selected persona.
-        const hasPersona = overridePersona
-          ? overridePersona.id !== null
-          : Boolean(selectedPersonaId);
-        const provider = selectedProvider;
-        const model =
-          session?.executionTarget?.modelId ?? effectiveModelSelection?.id;
-        if (isFirstMessage) {
-          trackChatSessionStarted({
-            sessionId,
-            sourceSurface: chatSourceSurface,
-            hasProject: Boolean(effectiveProjectId),
-            hasPersona,
-            provider,
-            model,
-          });
-        }
-        trackChatMessageSent({
-          sessionId,
-          isFirstMessage,
-          hasAttachments: (attachments?.length ?? 0) > 0,
-          hasPersona,
-          provider,
-          model,
-        });
-      } catch (error) {
-        perfLog(`[telemetry] chat send telemetry failed: ${String(error)}`);
-      }
-    },
-    [
-      chatSourceSurface,
-      effectiveModelSelection?.id,
-      effectiveProjectId,
-      selectedPersonaId,
-      selectedProvider,
-      session?.executionTarget?.modelId,
-      sessionId,
-    ],
-  );
   const sendWithAutoCompact = useCallback(
     (
       text: string,
@@ -2336,47 +2172,15 @@ export function useChatSessionController({
           ...baseSendOptions,
           onUserMessageCommitted: () => {
             baseSendOptions?.onUserMessageCommitted?.();
-            fireChatSendTelemetry(overridePersona, attachments);
           },
         });
       };
 
-      if (
-        !canAutoCompactBeforeSend(
-          overridePersona,
-          sendOptions?.sessionSelection,
-        )
-      ) {
-        recordDraftSubmission();
-        return dispatchSend();
-      }
-
-      return (async () => {
-        const compactionResult = await compactConversation(
-          overridePersona,
-          sendOptions?.sessionSelection
-            ? {
-                sessionSelection: sendOptions.sessionSelection,
-                sessionSelectionToken: sendOptions.sessionSelectionToken,
-              }
-            : undefined,
-        );
-        if (
-          compactionResult !== "completed" &&
-          compactionResult !== "completed-with-refresh-warning"
-        ) {
-          return false;
-        }
-
-        recordDraftSubmission();
-        return dispatchSend();
-      })();
+      recordDraftSubmission();
+      return dispatchSend();
     },
     [
       artifactFolderInstructions,
-      canAutoCompactBeforeSend,
-      compactConversation,
-      fireChatSendTelemetry,
       isQueuedSendBlockedNow,
       recordSubmittedDraft,
       sendMessage,
@@ -2732,11 +2536,6 @@ export function useChatSessionController({
         ...(executionSystemPrompt !== undefined
           ? { executionSystemPrompt }
           : {}),
-        // A captured payload can be dispatched outside this controller — a
-        // deferred-workspace first send is released to the background
-        // queued-send pipeline — so its send telemetry keeps the surface that
-        // accepted it instead of losing it to that pipeline.
-        telemetrySourceSurface: chatSourceSurface,
       };
       return {
         ...payload,
@@ -2753,7 +2552,6 @@ export function useChatSessionController({
     [
       appSkillsCatalogPrompt,
       availableSkillsCatalogPrompt,
-      chatSourceSurface,
       includedWorkspacesPrompt,
       projectWikiPrompt,
       selectedPersona,
@@ -3066,7 +2864,6 @@ export function useChatSessionController({
         // retained record can still emit when it later drains or re-steers.
         onUserMessageCommitted: () => {
           queuedMessage.sendOptions?.onUserMessageCommitted?.();
-          fireChatSendTelemetry(undefined, queuedMessage.attachments);
         },
       },
     );
@@ -3074,14 +2871,7 @@ export function useChatSessionController({
       queue.dismiss();
     }
     return accepted;
-  }, [
-    fireChatSendTelemetry,
-    queue,
-    readOnly,
-    sessionId,
-    steerMessage,
-    supportsSteering,
-  ]);
+  }, [queue, readOnly, sessionId, steerMessage, supportsSteering]);
 
   const steerDraftMessage = useCallback(
     async (
@@ -3104,18 +2894,10 @@ export function useChatSessionController({
         // Same telemetry anchor as dispatchSend; see steerQueuedMessage.
         onUserMessageCommitted: () => {
           sendOptions?.onUserMessageCommitted?.();
-          fireChatSendTelemetry(undefined, attachments);
         },
       });
     },
-    [
-      chatState,
-      fireChatSendTelemetry,
-      readOnly,
-      sessionId,
-      steerMessage,
-      supportsSteering,
-    ],
+    [chatState, readOnly, sessionId, steerMessage, supportsSteering],
   );
 
   const handleCreatePersona = useCallback(() => {
@@ -3352,7 +3134,7 @@ export function useChatSessionController({
       const requestedModelProviderId =
         pendingExecutionTarget?.modelProviderId ??
         requestedHomeModel?.modelProviderId ??
-        (nextHarnessId === "goose" ? undefined : nextHarnessId);
+        nextHarnessId;
       const nextTarget =
         !hasPendingExecutionTarget && !hasPendingModel
           ? previousTarget
@@ -3406,7 +3188,7 @@ export function useChatSessionController({
             homePendingModel?.modelProviderId ?? nextTarget.harnessId;
           const selectionRequestId = createModelSelectionRequestId();
           const nextWireProviderId =
-            gooseServeSelectionFromExecutionTarget(nextTarget).providerId ??
+            hostSelectionFromExecutionTarget(nextTarget).providerId ??
             nextHarnessId;
 
           beginModelSelectionIntent(sessionId, {

@@ -1,6 +1,8 @@
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
+import { syncConductorDisplayNameFromTitle } from "@/features/conductor/syncConductorDisplayName";
+import { isPersonaHandoffText } from "@/shared/api/acpPersonaHandoff";
 import { completeReplayAssistantMessage } from "./acpReplayAssistant";
 import { flushBufferedStreamingUpdatesForSession } from "./liveStreamingUpdates";
 
@@ -27,10 +29,9 @@ export function handleSessionInfoUpdate(
     : isRecord(info.meta)
       ? info.meta
       : {};
-  const gooseMeta = isRecord(meta.goose) ? meta.goose : null;
-  if (gooseMeta && "activeRunId" in gooseMeta) {
+  if ("activeRunId" in meta) {
     const activeRunId =
-      typeof gooseMeta.activeRunId === "string" ? gooseMeta.activeRunId : null;
+      typeof meta.activeRunId === "string" ? meta.activeRunId : null;
     const chatStore = useChatStore.getState();
     if (activeRunId === null) {
       flushBufferedStreamingUpdatesForSession(sessionId, {
@@ -50,7 +51,12 @@ export function handleSessionInfoUpdate(
 
   const patch: Parameters<typeof sessionStore.patchSession>[1] = {};
 
-  if (typeof info.title === "string" && info.title && !session.userSetName) {
+  if (
+    typeof info.title === "string" &&
+    info.title &&
+    !session.userSetName &&
+    !isPersonaHandoffText(info.title)
+  ) {
     patch.title = info.title;
   }
   if (typeof info.updatedAt === "string" && info.updatedAt) {
@@ -68,5 +74,8 @@ export function handleSessionInfoUpdate(
 
   if (Object.keys(patch).length > 0) {
     sessionStore.patchSession(sessionId, patch);
+  }
+  if (typeof patch.title === "string") {
+    syncConductorDisplayNameFromTitle(sessionId, patch.title);
   }
 }

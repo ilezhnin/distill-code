@@ -1,6 +1,5 @@
 packages:
   - "."
-  - "sdk"
 
 overrides:
   "@babel/core": "7.29.6"

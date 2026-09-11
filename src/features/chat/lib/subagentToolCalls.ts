@@ -36,11 +36,11 @@ export interface SubagentToolCallInfo {
   agentNames?: string[];
   /** Source-only Goose delegates run the configured task owned by the source. */
   sourceDefinesTask?: boolean;
-  /** Goose background-task id (e.g. `20260807_72`) for await/peek/cancel. */
+  /** Background-task id (e.g. `20260807_72`) for await/peek/cancel. */
   taskId?: string;
 }
 
-/** Goose background-task ids look like `20260807_72`. */
+/** Background-task ids look like `20260807_72`. */
 const GOOSE_TASK_ID_PATTERN = /^\d{8}_\w+$/;
 
 function escapeRegExp(value: string): string {
@@ -227,7 +227,7 @@ export function getSubagentToolCallInfo(input: {
     };
   }
 
-  // Goose: load(task_id) waits on / peeks at / cancels a background subagent.
+  // load(task_id) waits on / peeks at / cancels a background subagent.
   if (toolName === "load") {
     const source = stringArg(args, "source");
     if (!source || !GOOSE_TASK_ID_PATTERN.test(source.trim())) {

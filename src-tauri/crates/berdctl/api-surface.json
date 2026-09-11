@@ -20,7 +20,7 @@
               "name": "harness_id",
               "required": false,
               "kind": "string",
-              "description": "Agent harness to run the session on (from `berdctl info harnesses`, e.g. \"goose\", \"claude-acp\", \"codex-acp\"). Defaults to the app default."
+              "description": "Agent harness to run the session on (from `berdctl info harnesses`, e.g. \"claude-acp\", \"codex-acp\"). Defaults to the app default."
             },
             {
               "name": "model_id",
@@ -68,7 +68,7 @@
                 "description": "The message to send in the new session (1-50000 chars)."
               },
               "harness_id": {
-                "description": "Agent harness to run the session on (from `berdctl info harnesses`, e.g. \"goose\", \"claude-acp\", \"codex-acp\"). Defaults to the app default.",
+                "description": "Agent harness to run the session on (from `berdctl info harnesses`, e.g. \"claude-acp\", \"codex-acp\"). Defaults to the app default.",
                 "type": "string"
               },
               "model_id": {
@@ -463,7 +463,7 @@
           }
         },
         "archive": {
-          "description": "Archive a chat session, then remove eligible Goose-managed worktrees and branches. Refuses cleanup that would discard local files or changes unless --discard-changes is set.",
+          "description": "Archive a chat session, then remove eligible Distill-managed worktrees and branches. Refuses cleanup that would discard local files or changes unless --discard-changes is set.",
           "fields": [
             {
               "name": "session_id",
@@ -1019,7 +1019,7 @@
       "description": "Read-only app information: installed agent harnesses, available models, and the current app context.",
       "actions": {
         "list_harnesses": {
-          "description": "List the agent harnesses sessions can run on (goose, Claude Code, Codex, ...) with their readiness; only \"ready\" harnesses accept new sessions.",
+          "description": "List the agent harnesses sessions can run on (Claude Code, Codex, ...) with their readiness; only \"ready\" harnesses accept new sessions.",
           "fields": [],
           "schema": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",

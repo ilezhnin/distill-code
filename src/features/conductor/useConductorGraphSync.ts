@@ -3,9 +3,9 @@ import { useEffect } from "react";
 import { acpGetSessionInfo } from "@/shared/api/acp";
 import { mergeAcpSessionInfo } from "@/features/chat/lib/acpSessionMapping";
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
-import { updateSessionTitle } from "@/features/chat/stores/chatSessionOperations";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
+import { syncConductorDisplayNameFromTitle } from "./syncConductorDisplayName";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
 import { publishTerminalGroupDigests } from "./digestPublisher";
@@ -258,18 +258,57 @@ function remapPromotedSessions(): void {
       session.clientSessionId !== session.id &&
       graph.nodesById[session.clientSessionId]
     ) {
-      const previous = graph.nodesById[session.clientSessionId];
       graph.remapSessionId(session.clientSessionId, session.id);
-      if (previous?.role === "conductor") {
-        void updateSessionTitle(session.id, previous.displayName).catch(() => {
-          useChatSessionStore.getState().patchSession(session.id, {
-            title: previous.displayName,
-            userSetName: true,
-          });
-        });
-      }
     }
   }
+  unlockConductorRolePlaceholderTitles();
+  syncConductorTitlesFromSessions();
+}
+
+function syncConductorTitlesFromSessions(): void {
+  const graph = useConductorGraphStore.getState();
+  const sessions = useChatSessionStore.getState();
+  for (const node of Object.values(graph.nodesById)) {
+    if (node.role !== "conductor") {
+      continue;
+    }
+    const session = sessions.getSession(node.sessionId);
+    if (!session) {
+      continue;
+    }
+    syncConductorDisplayNameFromTitle(node.sessionId, session.title);
+  }
+}
+
+function unlockConductorRolePlaceholderTitles(): void {
+  const graph = useConductorGraphStore.getState();
+  for (const node of Object.values(graph.nodesById)) {
+    if (node.role !== "conductor") {
+      continue;
+    }
+    unlockConductorRolePlaceholderTitle(node.sessionId, node.displayName);
+  }
+}
+
+/**
+ * Older conductors were created as "Producer N" with userSetName, which
+ * blocked harness title generation. If the chat title is still that role
+ * placeholder, allow the next naming pass to replace it.
+ */
+function unlockConductorRolePlaceholderTitle(
+  sessionId: string,
+  displayName: string,
+): void {
+  const session = useChatSessionStore.getState().getSession(sessionId);
+  if (!session?.userSetName) {
+    return;
+  }
+  if (session.title.trim() !== displayName.trim()) {
+    return;
+  }
+  useChatSessionStore.getState().patchSession(sessionId, {
+    userSetName: false,
+  });
 }
 
 /**

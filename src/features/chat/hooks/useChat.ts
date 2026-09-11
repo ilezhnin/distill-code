@@ -32,6 +32,7 @@ import {
   flushBufferedStreamingUpdatesForSession,
 } from "../acp/liveStreamingUpdates";
 import { useWorkspaceRepository } from "@/features/workspaces/workspaceRepository";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
 // TODO: Remove this fallback once goose2 has first-class /-commands.
 const MANUAL_COMPACT_TRIGGER = "/compact";
@@ -190,7 +191,8 @@ export function useChat(
         overridePersona?.name,
       );
       const agent = useAgentStore.getState().getActiveAgent();
-      const providerId = providerOverride ?? agent?.provider ?? "goose";
+      const providerId =
+        providerOverride ?? agent?.provider ?? DEFAULT_HARNESS_ID;
       const systemPrompt =
         sendOptions?.executionSystemPrompt ??
         systemPromptOverride ??
@@ -212,7 +214,7 @@ export function useChat(
           displayText: sendOptions?.displayText,
           chips: sendOptions?.chips,
           userMessageMetadata: sendOptions?.userMessageMetadata,
-          acpGooseMetadata: sendOptions?.acpGooseMetadata,
+          acpPromptMetadata: sendOptions?.acpPromptMetadata,
           providerId,
           systemPrompt,
           beforeUserMessageCommitted: sendOptions?.beforeUserMessageCommitted,

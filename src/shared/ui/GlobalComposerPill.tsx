@@ -8,12 +8,7 @@ import {
   type CSSProperties,
   type MouseEvent,
 } from "react";
-import {
-  IconArrowUp,
-  IconHeadphones,
-  IconMicrophone,
-  IconPlus,
-} from "@tabler/icons-react";
+import { IconArrowUp, IconPlus } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { useProviderSelection } from "@/features/agents/hooks/useProviderSelection";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
@@ -34,8 +29,6 @@ import { ReasoningEffortPill } from "@/features/chat/ui/ReasoningEffortPill";
 import { resolveEffectiveReasoningEffort } from "@/features/chat/lib/effectiveReasoningEffort";
 import { ProjectInputSelector } from "@/features/chat/ui/ProjectInputSelector";
 import type { SkillMentionItem } from "@/features/chat/ui/mentionDetection";
-import { useVoiceDictation } from "@/features/chat/hooks/useVoiceDictation";
-import { useVoiceConversationStore } from "@/features/voice-conversation/stores/voiceConversationStore";
 import { getStoredModelPreference } from "@/features/chat/lib/modelPreferences";
 import {
   normalizeSessionExecutionTarget,
@@ -52,7 +45,6 @@ import type {
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 import { resolveAgentProviderCatalogIdStrict } from "@/features/providers/providerCatalog";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
-import { useDefaultProviderReadinessStore } from "@/features/providers/stores/defaultProviderReadinessStore";
 import { cn } from "@/shared/lib/cn";
 import { isInteractiveElement } from "@/shared/lib/isInteractiveElement";
 import { Button } from "@/shared/ui/button";
@@ -61,7 +53,6 @@ import { Popover, PopoverAnchor } from "@/shared/ui/popover";
 import type { ChatAttachmentDraft } from "@/shared/types/messages";
 import { useFocusRegion } from "@/app/focus/FocusRegionProvider";
 import { useTextareaAutosize } from "@/shared/hooks/useTextareaAutosize";
-import { useVoiceDictationShortcutTarget } from "@/features/chat/lib/voiceDictationShortcutController";
 
 export interface GlobalComposeOptions {
   executionTarget?: SessionExecutionTarget;
@@ -114,11 +105,6 @@ interface GlobalComposerPillProps {
   handoffTargetRect?: GlobalComposerHandoffRect | null;
   starterRequest?: GlobalComposerStarterRequest | null;
   onStarterRequestConsumed?: (requestId: number) => void;
-  voiceConversation?: {
-    enabled: boolean;
-    ready: boolean;
-    onStart: (payload: GlobalComposerExpandPayload) => Promise<boolean>;
-  };
 }
 
 interface ModelSelection {
@@ -130,15 +116,10 @@ interface ModelSelection {
 function executionTargetForSelection(
   harnessId: string,
   model: ModelSelection | null,
-  selectedProviderId: string,
 ): SessionExecutionTarget {
   return normalizeSessionExecutionTarget({
     harnessId,
-    modelProviderId:
-      model?.modelProviderId ??
-      (harnessId === "goose" && selectedProviderId !== harnessId
-        ? selectedProviderId
-        : undefined),
+    modelProviderId: model?.modelProviderId,
     modelId: model?.modelId,
     modelName: model?.modelName,
   });
@@ -225,7 +206,6 @@ export function GlobalComposerPill({
   handoffTargetRect,
   starterRequest = null,
   onStarterRequestConsumed,
-  voiceConversation,
 }: GlobalComposerPillProps) {
   const { t } = useTranslation("chat");
   const { providers, providersLoading, selectedProvider, setSelectedProvider } =
@@ -242,14 +222,11 @@ export function GlobalComposerPill({
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(
     null,
   );
-  const [gooseDefaultSelection, setGooseDefaultSelection] =
-    useState<ModelSelection | null>(null);
   const [selectedPersonaId, setSelectedPersonaId] = useState<string | null>(
     null,
   );
   const [selectedSkills, setSelectedSkills] = useState<ChatSkillDraft[]>([]);
   const [attachmentWorkCount, setAttachmentWorkCount] = useState(0);
-  const [voiceStartPending, setVoiceStartPending] = useState(false);
   const personas = useAgentStore(selectPersonas);
   const catalogEntries = useProviderCatalogStore((state) => state.entries);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -287,7 +264,7 @@ export function GlobalComposerPill({
   } = useChatInputAttachments();
   const attachmentWorkPending = attachmentWorkCount > 0;
   const [expandPending, setExpandPending] = useState(false);
-  const { resetHeight: resetTextarea } = useTextareaAutosize({
+  useTextareaAutosize({
     textareaRef,
     value: text,
     getMaxHeightPx: getTextareaMaxHeightPx,
@@ -469,11 +446,7 @@ export function GlobalComposerPill({
       personaOverrideUserOverrideForRef.current = selectedPersonaId;
       personaOverrideActiveRef.current = false;
       const nextModel = getPreferredModel(providerModels, providerId);
-      const nextTarget = executionTargetForSelection(
-        providerId,
-        nextModel,
-        providerId,
-      );
+      const nextTarget = executionTargetForSelection(providerId, nextModel);
       onExecutionTargetChange?.(nextTarget);
       setProviderOverride(providerId);
       setModelOverride(nextModel);
@@ -487,11 +460,7 @@ export function GlobalComposerPill({
       personaOverrideUserOverrideForRef.current = selectedPersonaId;
       personaOverrideActiveRef.current = false;
       onExecutionTargetChange?.(
-        executionTargetForSelection(
-          selectedAgentId,
-          selection,
-          selectedProviderForPicker,
-        ),
+        executionTargetForSelection(selectedAgentId, selection),
       );
       setProviderOverride(selectedAgentId);
       setModelOverride(selection);
@@ -505,7 +474,7 @@ export function GlobalComposerPill({
         selectedPersona,
         {
           providers,
-          models: getModelsForAgent("goose"),
+          models: [],
           getModelsForHarness: getModelsForAgent,
           catalogEntries,
         },
@@ -597,7 +566,7 @@ export function GlobalComposerPill({
       ) {
         const modelProviderId =
           matchingModel?.providerId ?? storedPreference.providerId;
-        if (!modelProviderId || modelProviderId === "goose") {
+        if (!modelProviderId) {
           return null;
         }
         return {
@@ -608,29 +577,6 @@ export function GlobalComposerPill({
               ? getModelName(matchingModel)
               : storedPreference.modelName,
         };
-      }
-    }
-
-    if (
-      gooseDefaultSelection &&
-      (!concreteSelectedProviderId ||
-        gooseDefaultSelection.modelProviderId === concreteSelectedProviderId)
-    ) {
-      const matchingDefault = findMatchingModel(
-        availableModels,
-        gooseDefaultSelection.modelId,
-        gooseDefaultSelection.modelProviderId,
-      );
-      if (matchingDefault) {
-        return modelOptionToSelection(
-          matchingDefault,
-          selectedProviderForPicker,
-        );
-      }
-      if (
-        !isModelInventoryAuthoritative(gooseDefaultSelection.modelProviderId)
-      ) {
-        return gooseDefaultSelection;
       }
     }
 
@@ -646,7 +592,6 @@ export function GlobalComposerPill({
   }, [
     availableModels,
     concreteSelectedProviderId,
-    gooseDefaultSelection,
     isModelInventoryAuthoritative,
     selectedAgentId,
     selectedProviderForPicker,
@@ -676,11 +621,7 @@ export function GlobalComposerPill({
   const localExecutionTarget = useMemo(
     () =>
       hasLocalExecutionOverride || currentExecutionTarget === undefined
-        ? executionTargetForSelection(
-            selectedAgentId,
-            effectiveModelSelection,
-            selectedProviderForPicker,
-          )
+        ? executionTargetForSelection(selectedAgentId, effectiveModelSelection)
         : undefined,
     [
       currentExecutionTarget,
@@ -971,101 +912,16 @@ export function GlobalComposerPill({
     text,
   ]);
 
-  const nativeVoiceLifecycle = useVoiceConversationStore(
-    (state) => state.status.lifecycle,
-  );
-  const nativeVoiceOwnsMicrophone =
-    nativeVoiceLifecycle === "starting" ||
-    nativeVoiceLifecycle === "running" ||
-    nativeVoiceLifecycle === "stopping";
-
-  const dictation = useVoiceDictation({
-    text,
-    setText,
-    attachments,
-    clearAttachments,
-    selectedPersonaId: null,
-    onSend: (draftText) =>
-      attachmentWorkPending ? false : submitCompose(draftText),
-    resetTextarea,
-    isSendLocked: attachmentWorkPending,
-  });
-  const dictationOwnsMicrophone =
-    dictation.isRecording || dictation.isTranscribing || dictation.isStarting();
-
-  const handleVoiceDictationShortcut = useVoiceDictationShortcutTarget(
-    textareaRef,
-    {
-      surface: placement === "centered" ? "centered-global" : "home-global",
-      canStart: dictation.isEnabled && !handoffActive,
-      isRecording: dictation.isRecording,
-      toggle: dictation.toggleRecording,
-    },
-  );
-
-  useEffect(() => {
-    if (selectedAgentId !== "goose") {
-      setGooseDefaultSelection(null);
-      return;
-    }
-
-    let cancelled = false;
-    void (async () => {
-      try {
-        const readiness =
-          useDefaultProviderReadinessStore.getState().readiness ??
-          (await useDefaultProviderReadinessStore
-            .getState()
-            .refresh({ coalesce: true }));
-
-        if (cancelled) {
-          return;
-        }
-
-        const providerId =
-          readiness.status === "ready"
-            ? readiness.providerId
-            : selectedProvider;
-        const modelId =
-          readiness.status === "ready" ? readiness.modelId : undefined;
-
-        setGooseDefaultSelection(
-          modelId
-            ? {
-                modelProviderId: providerId,
-                modelId,
-                modelName: modelId,
-              }
-            : null,
-        );
-      } catch {
-        if (!cancelled) {
-          setGooseDefaultSelection(null);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedAgentId, selectedProvider]);
-
   const expanded =
     focused ||
     modelPickerOpen ||
     projectPickerOpen ||
-    dictation.isRecording ||
-    dictation.isTranscribing ||
     text.trim().length > 0 ||
     attachments.length > 0 ||
     selectedPersona !== null ||
     selectedSkills.length > 0;
 
-  const effectivePlaceholder = dictation.isRecording
-    ? t("toolbar.voiceInputRecording")
-    : dictation.isTranscribing
-      ? t("toolbar.voiceInputTranscribing")
-      : placeholder;
+  const effectivePlaceholder = placeholder;
   const visiblePlaceholder = handoffActive ? "" : effectivePlaceholder;
   useFocusRegion(
     useMemo(
@@ -1086,76 +942,8 @@ export function GlobalComposerPill({
       return;
     }
 
-    if (
-      dictation.isRecording ||
-      dictation.isTranscribing ||
-      dictation.isStarting()
-    ) {
-      dictation.stopRecording();
-    }
-
     submitCompose(text);
-  }, [canSend, dictation, submitCompose, text]);
-
-  const handleStartVoiceConversation = useCallback(async () => {
-    if (
-      !voiceConversation?.enabled ||
-      !effectiveExecutionTarget ||
-      effectiveExecutionTarget.harnessId !== "goose" ||
-      voiceStartPending ||
-      handoffActive ||
-      attachmentWorkPending ||
-      dictationOwnsMicrophone
-    ) {
-      return;
-    }
-
-    const options: GlobalComposeOptions = {};
-    const remountSafeAttachments = makeRemountSafeDraftAttachments(attachments);
-    if (remountSafeAttachments.length > 0) {
-      options.attachments = remountSafeAttachments;
-    }
-    options.executionTarget = effectiveExecutionTarget;
-    if (selectedProjectId) options.projectId = selectedProjectId;
-    options.personaId = selectedPersonaId;
-    if (activeReasoningEffort?.config) {
-      options.reasoningEffort = {
-        configId: activeReasoningEffort.config.configId,
-        value: activeReasoningEffort.config.currentValue,
-      };
-    }
-
-    setVoiceStartPending(true);
-    try {
-      const accepted = await voiceConversation.onStart({
-        text,
-        selectedSkills,
-        options,
-      });
-      if (!accepted) return;
-      clearSentContent();
-      clearComposerSelections();
-    } catch (error) {
-      console.error("Failed to start voice conversation:", error);
-    } finally {
-      setVoiceStartPending(false);
-    }
-  }, [
-    activeReasoningEffort?.config,
-    attachmentWorkPending,
-    attachments,
-    clearComposerSelections,
-    clearSentContent,
-    dictationOwnsMicrophone,
-    effectiveExecutionTarget,
-    handoffActive,
-    selectedPersonaId,
-    selectedProjectId,
-    selectedSkills,
-    text,
-    voiceConversation,
-    voiceStartPending,
-  ]);
+  }, [canSend, submitCompose, text]);
 
   const handlePaste = useCallback(
     (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -1217,10 +1005,7 @@ export function GlobalComposerPill({
   // textarea have to reserve its width themselves. Derive that from the number
   // of buttons actually rendered: a hardcoded inset silently overlaps the
   // project chip as soon as an optional button (voice conversation) appears.
-  const trailingActionCount =
-    1 +
-    (voiceConversation?.enabled ? 1 : 0) +
-    (dictation.isEnabled || dictation.isRecording ? 1 : 0);
+  const trailingActionCount = 1;
   const actionsInset = `${
     trailingActionCount * COMPOSER_ACTION_BUTTON_WIDTH_PX +
     (trailingActionCount - 1) * COMPOSER_ACTION_GAP_PX +
@@ -1386,10 +1171,6 @@ export function GlobalComposerPill({
                   const isComposing =
                     event.nativeEvent.isComposing ||
                     event.nativeEvent.keyCode === 229;
-                  if (handleVoiceDictationShortcut(event.nativeEvent)) {
-                    event.stopPropagation();
-                    return;
-                  }
                   if (
                     !isComposing &&
                     handleMentionCategoryKey(event.nativeEvent)
@@ -1571,59 +1352,6 @@ export function GlobalComposerPill({
         </div>
 
         <div className="pointer-events-auto absolute inset-y-0 right-0 z-10 flex items-center gap-2">
-          {voiceConversation?.enabled ? (
-            <ComposerActionButton
-              type="button"
-              disabled={
-                selectedAgentId !== "goose" ||
-                voiceStartPending ||
-                handoffActive ||
-                attachmentWorkPending ||
-                dictationOwnsMicrophone
-              }
-              onClick={() => void handleStartVoiceConversation()}
-              size="icon-pill-sm"
-              aria-label={t("globalPill.startVoiceConversation")}
-              tooltip={
-                selectedAgentId === "goose"
-                  ? t("globalPill.startVoiceConversation")
-                  : t("globalPill.voiceConversationRequiresGoose")
-              }
-            >
-              <IconHeadphones aria-hidden="true" />
-            </ComposerActionButton>
-          ) : null}
-          {(dictation.isEnabled || dictation.isRecording) && (
-            <ComposerActionButton
-              type="button"
-              disabled={
-                (!dictation.isRecording && !dictation.isEnabled) ||
-                nativeVoiceOwnsMicrophone
-              }
-              onClick={dictation.toggleRecording}
-              size="icon-pill-sm"
-              className={cn(
-                dictation.isRecording &&
-                  "bg-destructive/12 text-destructive hover:bg-destructive/16 hover:text-destructive active:bg-destructive/16 active:text-destructive",
-                dictation.isTranscribing && "animate-pulse",
-              )}
-              aria-label={
-                dictation.isRecording
-                  ? t("toolbar.voiceInputRecording")
-                  : t("toolbar.voiceInput")
-              }
-              aria-pressed={dictation.isRecording}
-              tooltip={
-                dictation.isRecording
-                  ? t("toolbar.voiceInputRecording")
-                  : dictation.isTranscribing
-                    ? t("toolbar.voiceInputTranscribing")
-                    : t("toolbar.voiceInput")
-              }
-            >
-              <IconMicrophone aria-hidden="true" />
-            </ComposerActionButton>
-          )}
           <ComposerActionButton
             type="button"
             onClick={handleSend}

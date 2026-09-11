@@ -74,7 +74,7 @@ describe("sessionCwdSelection", () => {
           workingDirs: [],
         }),
       ),
-    ).resolves.toBe("~/goose artifacts");
+    ).resolves.toBe("~/.distill/artifacts");
 
     expect(resolvePath).not.toHaveBeenCalled();
   });
@@ -82,7 +82,7 @@ describe("sessionCwdSelection", () => {
   describe("defaultGlobalArtifactRoot", () => {
     it("returns the default artifact root", async () => {
       await expect(defaultGlobalArtifactRoot()).resolves.toBe(
-        "~/goose artifacts",
+        "~/.distill/artifacts",
       );
 
       expect(resolvePath).not.toHaveBeenCalled();

@@ -66,8 +66,6 @@
     "clipboard-manager:allow-write-text",
     "app-test-driver:default",
     "berdctl:default",
-    "updater:default",
-    "process:allow-restart",
     "notification:default"
   ]
 }

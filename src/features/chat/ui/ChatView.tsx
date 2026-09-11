@@ -79,12 +79,6 @@ import {
 import type { TranscriptSearchBackend } from "@/features/chat/lib/transcriptSearchBackend";
 import { scheduleAfterNextPaint } from "@/app/lib/scheduleAfterNextPaint";
 import type { GlobalComposerHandoffRect } from "@/shared/ui/GlobalComposerPill";
-import { useVoiceConversationController } from "@/features/voice-conversation/hooks/useVoiceConversationController";
-import { usePocketVoiceSetup } from "@/features/voice-conversation/hooks/usePocketVoiceSetup";
-import { PocketVoiceSetupDialog } from "@/features/voice-conversation/ui/PocketVoiceSetupDialog";
-import { useProfileCapabilities } from "@/shared/profile/capabilities";
-import { consumePendingVoiceStart } from "@/features/voice-conversation/lib/pendingVoiceStart";
-import { useVoiceConversationStore } from "@/features/voice-conversation/stores/voiceConversationStore";
 import { SecurityConfirmationPanel } from "@/features/security/ui/SecurityConfirmationPanel";
 import {
   useHasPendingSecurityConfirmation,
@@ -343,44 +337,6 @@ export function ChatView({
   );
   const { fallbackCwd: terminalFallbackCwd } =
     useTerminalFallbackCwdPreference();
-  const capabilities = useProfileCapabilities();
-  const pocketVoiceSetup = usePocketVoiceSetup(capabilities.voiceConversation);
-  const requestVoiceConversationStart = useVoiceConversationStore(
-    (state) => state.requestStart,
-  );
-  const [pocketVoiceSetupOpen, setPocketVoiceSetupOpen] = useState(false);
-  const pendingPocketVoiceStartRef = useRef<string | null>(null);
-  const voiceConversation = useVoiceConversationController({
-    sessionId,
-    // Voice delivery only needs to wait for admission. Holding its per-session
-    // queue through the full run would prevent later utterances from steering
-    // the active run.
-    onSend: controller.handleSend,
-    enabled: capabilities.voiceConversation,
-    isGooseSession: controller.selectedProvider === "goose",
-    pocketReady: pocketVoiceSetup.status?.installed === true,
-    onPocketSetupRequired: () => {
-      pendingPocketVoiceStartRef.current = sessionId;
-      setPocketVoiceSetupOpen(true);
-    },
-    readOnly: Boolean(readOnlyStatus),
-    disabled:
-      controller.projectMetadataPending ||
-      controller.isCompactingContext ||
-      controller.isLoadingHistory ||
-      !controller.workspaceContextReady ||
-      controller.queue.queuedMessage !== null,
-  });
-  const handlePocketVoiceSetupOpenChange = useCallback((open: boolean) => {
-    if (!open) pendingPocketVoiceStartRef.current = null;
-    setPocketVoiceSetupOpen(open);
-  }, []);
-  const handlePocketVoiceUseSelected = useCallback(() => {
-    const shouldStart =
-      consumePendingVoiceStart(pendingPocketVoiceStartRef) === sessionId;
-    setPocketVoiceSetupOpen(false);
-    if (shouldStart) requestVoiceConversationStart(sessionId);
-  }, [requestVoiceConversationStart, sessionId]);
   const isAgentBuilderOpen = agentBuilderOpenForLayout;
   const patchSession = useChatSessionStore((s) => s.patchSession);
   const agentBuilderContextState = effectiveSession?.agentBuilderContextState;
@@ -723,7 +679,6 @@ export function ChatView({
         fileMentions: false,
         projectPicker: false,
         skills: false,
-        voice: false,
       };
     }
 
@@ -1086,7 +1041,6 @@ export function ChatView({
               !isReadOnly &&
               (controller.chatState === "streaming" ||
                 controller.chatState === "thinking"),
-            voiceConversation,
           }}
           onRecallLastUserMessage={
             isReadOnly ? undefined : handleRecallLastUserMessage
@@ -1201,7 +1155,6 @@ export function ChatView({
       onScrollTargetHandled={controller.handleScrollTargetHandled}
       searchContentRef={transcriptSearchRootRef}
       searchBackendRef={transcriptSearchBackendRef}
-      onSendMcpAppMessage={isReadOnly ? undefined : controller.handleSend}
       onRunShellCommand={
         !isReadOnly && terminalAvailable ? handleRunShellCommand : undefined
       }
@@ -1249,12 +1202,6 @@ export function ChatView({
         sessionCwd={controller.sessionArtifactCwd}
         sessionId={sessionId}
       >
-        <PocketVoiceSetupDialog
-          open={pocketVoiceSetupOpen}
-          onOpenChange={handlePocketVoiceSetupOpenChange}
-          onUseSelected={handlePocketVoiceUseSelected}
-          setup={pocketVoiceSetup}
-        />
         <ArtifactAutoOpenMount
           sessionId={sessionId}
           isHistoryLoading={controller.isLoadingHistory}

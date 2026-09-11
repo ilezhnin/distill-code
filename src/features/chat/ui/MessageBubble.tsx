@@ -31,12 +31,10 @@ import {
   ReasoningTrigger,
   ReasoningContent,
 } from "@/shared/ui/ai-elements/reasoning";
-import type { McpAppMessageHandler } from "./mcpAppTypes";
 import { ToolChainCards, type ToolChainItem } from "./ToolChainCards";
 import { ClickableImage } from "./ClickableImage";
 import { MarkdownImage } from "./MarkdownImage";
 import { resolveImageContentSrc } from "./resolveImageContentSrc";
-import { McpAppView } from "./McpAppView";
 import { useArtifactLinkHandler } from "@/features/chat/hooks/useArtifactLinkHandler";
 import { detectProviderErrorNotice } from "@/features/chat/lib/providerErrorNotice";
 import type { CustomRenderer } from "streamdown";
@@ -47,8 +45,6 @@ import type {
   MessageContent,
   TextContent,
   ImageContent,
-  McpAppContent,
-  ToolRequestContent,
   ToolResponseContent,
   ThinkingContent,
   ReasoningContent as ReasoningContentType,
@@ -377,8 +373,6 @@ interface MessageBubbleProps {
   showJumpToResponseStartHint?: boolean;
   onJumpToResponseStartHintClose?: (messageId: string) => void;
   onJumpToResponseStartHintDismiss?: (messageId: string) => void;
-  onSendMcpAppMessage?: McpAppMessageHandler;
-  onMcpAppAutoScroll?: (element: HTMLElement | null) => void;
   onRunShellCommand?: (command: string, options?: RunCommandOptions) => void;
   onEditProject?: (projectId: string) => void;
   onChangeFolder?: () => void;
@@ -561,8 +555,6 @@ function renderContentBlock(
     voiceSpeechNotSpokenLabel: string;
     voiceSpeechFailedLabel: string;
     contentBlocks: readonly MessageContent[];
-    onSendMcpAppMessage?: McpAppMessageHandler;
-    onMcpAppAutoScroll?: (element: HTMLElement | null) => void;
     onRunShellCommand?: (command: string, options?: RunCommandOptions) => void;
     runItCodeRenderers?: CustomRenderer[];
     onEditProject?: (projectId: string) => void;
@@ -648,30 +640,9 @@ function renderContentBlock(
     case "toolResponse":
       // Handled by groupContentSections toolChain rendering
       return null;
-    case "mcpApp": {
-      const mcpApp = content as McpAppContent;
-      const matchingToolInput = options.contentBlocks.find(
-        (block): block is ToolRequestContent =>
-          block.type === "toolRequest" &&
-          block.id === mcpApp.payload.toolCallId,
-      );
-      const matchingToolResponse = options.contentBlocks.find(
-        (block): block is ToolResponseContent =>
-          block.type === "toolResponse" &&
-          block.id === mcpApp.payload.toolCallId,
-      );
-
-      return (
-        <McpAppView
-          key={`mcp-app-${index}`}
-          payload={mcpApp.payload}
-          toolInput={matchingToolInput?.arguments}
-          toolResponse={matchingToolResponse}
-          onSendMessage={options.onSendMcpAppMessage}
-          onAutoScrollRequest={options.onMcpAppAutoScroll}
-        />
-      );
-    }
+    case "mcpApp":
+      // Embedded MCP app resources are not rendered.
+      return null;
     case "thinking":
     case "reasoning": {
       const text = (content as ThinkingContent | ReasoningContentType).text;
@@ -755,8 +726,6 @@ export const MessageBubble = memo(function MessageBubble({
   showJumpToResponseStartHint,
   onJumpToResponseStartHintClose,
   onJumpToResponseStartHintDismiss,
-  onSendMcpAppMessage,
-  onMcpAppAutoScroll,
   onRunShellCommand,
   onEditProject,
   onChangeFolder,
@@ -1238,8 +1207,6 @@ export const MessageBubble = memo(function MessageBubble({
                           "message.voiceSpeechFailedLabel",
                         ),
                         contentBlocks: renderingContext,
-                        onSendMcpAppMessage,
-                        onMcpAppAutoScroll,
                         onRunShellCommand,
                         runItCodeRenderers,
                         stateKey: section.key,

@@ -356,7 +356,7 @@ export interface ProjectIconData {
 
 export async function listProjects(): Promise<ProjectInfo[]> {
   const client = await getClient();
-  const raw = await client.goose.GooseUnstableSourcesList({
+  const raw = await client.host.sourcesList({
     type: "project",
   });
   const sources = (raw.sources ?? []) as unknown as SourceEntry[];
@@ -407,7 +407,7 @@ export async function createProject(
     color,
     workingDirs: normalizedWorkingDirs,
   });
-  const raw = await client.goose.GooseUnstableSourcesCreate({
+  const raw = await client.host.sourcesCreate({
     type: "project",
     name: id,
     description,
@@ -479,7 +479,7 @@ export async function updateProject(
   merged.workingDirs = projectWorkspacePaths(mergedProjectWorkspaces);
   const artifact = artifactForUpdate(existing, updates, merged);
   const client = await getClient();
-  const raw = await client.goose.GooseUnstableSourcesUpdate({
+  const raw = await client.host.sourcesUpdate({
     type: "project",
     path: existing.path,
     name: existing.id,
@@ -509,7 +509,7 @@ export async function deleteProject(
     typeof idOrProject === "string"
       ? (await getProject(idOrProject)).path
       : idOrProject.path;
-  await client.goose.GooseUnstableSourcesDelete({
+  await client.host.sourcesDelete({
     type: "project",
     path,
   });
@@ -525,7 +525,7 @@ export async function getProject(id: string): Promise<ProjectInfo> {
 /** List both archived and active projects. */
 async function listAllProjects(): Promise<ProjectInfo[]> {
   const client = await getClient();
-  const raw = await client.goose.GooseUnstableSourcesList({
+  const raw = await client.host.sourcesList({
     type: "project",
   });
   const sources = (raw.sources ?? []) as unknown as SourceEntry[];

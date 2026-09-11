@@ -35,8 +35,8 @@ describe("providerModelCacheStore", () => {
       runtimeManagedProviderIds: new Set(),
     });
     mocks.getClient.mockResolvedValue({
-      goose: {
-        GooseUnstableProvidersSupportedModelsList: mocks.supportedModelsList,
+      host: {
+        providersSupportedModelsList: mocks.supportedModelsList,
       },
     });
   });
@@ -164,7 +164,7 @@ describe("providerModelCacheStore", () => {
       ...(error ? { error } : {}),
     };
     window.localStorage.setItem(
-      "goose:providerModelCache:v1",
+      "distill:providerModelCache:v1",
       JSON.stringify([cachedEntry]),
     );
     useProviderModelCacheStore.getState().loadPersisted();
@@ -185,7 +185,7 @@ describe("providerModelCacheStore", () => {
     ).toEqual(retryableEntry);
     expect(
       JSON.parse(
-        window.localStorage.getItem("goose:providerModelCache:v1") ?? "[]",
+        window.localStorage.getItem("distill:providerModelCache:v1") ?? "[]",
       ),
     ).toEqual([retryableEntry]);
     expect(useProviderModelCacheStore.getState().getError("openrouter")).toBe(
@@ -287,7 +287,7 @@ describe("providerModelCacheStore", () => {
 
   it("recovers from a persisted fresh-empty cache entry", async () => {
     window.localStorage.setItem(
-      "goose:providerModelCache:v1",
+      "distill:providerModelCache:v1",
       JSON.stringify([
         {
           providerId: "openrouter",
@@ -665,7 +665,7 @@ describe("providerModelCacheStore", () => {
     ).toEqual([]);
     expect(
       JSON.parse(
-        window.localStorage.getItem("goose:providerModelCache:v1") ?? "[]",
+        window.localStorage.getItem("distill:providerModelCache:v1") ?? "[]",
       ),
     ).toEqual([]);
   });

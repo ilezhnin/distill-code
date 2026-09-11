@@ -102,16 +102,8 @@ pub struct Contract {
     pub surface: Surface,
 }
 
-pub(crate) const API_SURFACE: &str = if cfg!(feature = "block-feedback") {
-    include_str!("../api-surface-feedback.json")
-} else {
-    include_str!("../api-surface.json")
-};
-pub(crate) const CLI_SURFACE: &str = if cfg!(feature = "block-feedback") {
-    include_str!("../cli-surface-feedback.json")
-} else {
-    include_str!("../cli-surface.json")
-};
+pub(crate) const API_SURFACE: &str = include_str!("../api-surface.json");
+pub(crate) const CLI_SURFACE: &str = include_str!("../cli-surface.json");
 
 impl Contract {
     /// The artifacts are embedded at compile time, so a parse failure is a

@@ -9,7 +9,7 @@ import type { Page } from "@playwright/test";
 async function listAgentSources(page: Page) {
   return page.evaluate(() => {
     const e2eWindow = window as typeof window & {
-      __GOOSE_E2E__?: {
+      __DISTILL_E2E__?: {
         listAgentSources: () => Array<{
           name: string;
           path: string;
@@ -18,7 +18,7 @@ async function listAgentSources(page: Page) {
         }>;
       };
     };
-    return e2eWindow.__GOOSE_E2E__?.listAgentSources() ?? [];
+    return e2eWindow.__DISTILL_E2E__?.listAgentSources() ?? [];
   });
 }
 

@@ -26,7 +26,7 @@ interface Doc {
 function doc() {
   return distillDocument<Doc>({
     path: "planner.json",
-    legacyStorageKey: "goose:planner",
+    legacyStorageKey: "distill:planner",
     // Salvaging: anything unreadable becomes an empty list, never a throw.
     parse: (raw) => ({
       items: Array.isArray((raw as Doc | null)?.items)
@@ -63,7 +63,7 @@ describe("distillDocument on the desktop", () => {
 
   it("moves an old browser copy into the folder, once", async () => {
     window.localStorage.setItem(
-      "goose:planner",
+      "distill:planner",
       JSON.stringify({ items: ["inherited"] }),
     );
 
@@ -75,21 +75,21 @@ describe("distillDocument on the desktop", () => {
       JSON.stringify({ version: 1, items: ["inherited"] }),
     );
     // Removed, so a later reinstall cannot resurrect a stale second copy.
-    expect(window.localStorage.getItem("goose:planner")).toBeNull();
+    expect(window.localStorage.getItem("distill:planner")).toBeNull();
   });
 
   it("keeps the browser copy when the move fails", async () => {
     // Dropping it would lose the data outright.
-    window.localStorage.setItem("goose:planner", '{"items":["fragile"]}');
+    window.localStorage.setItem("distill:planner", '{"items":["fragile"]}');
     mocks.writeDistillDocument.mockRejectedValue(new Error("read-only"));
 
     await expect(doc().read()).resolves.toEqual({ items: ["fragile"] });
-    expect(window.localStorage.getItem("goose:planner")).not.toBeNull();
+    expect(window.localStorage.getItem("distill:planner")).not.toBeNull();
   });
 
   it("prefers the folder over an old browser copy", async () => {
     mocks.readDistillDocument.mockResolvedValue('{"items":["current"]}');
-    window.localStorage.setItem("goose:planner", '{"items":["stale"]}');
+    window.localStorage.setItem("distill:planner", '{"items":["stale"]}');
 
     await expect(doc().read()).resolves.toEqual({ items: ["current"] });
   });

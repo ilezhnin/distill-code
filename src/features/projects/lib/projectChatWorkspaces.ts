@@ -368,7 +368,7 @@ function attachmentForCreatedWorktree(
     repositoryPath,
     worktreePath: classification.worktreePath ?? worktree.path,
     lifecycle: {
-      owner: "goose",
+      owner: "distill",
       cleanup: "worktree",
       branch: worktree.branch,
       baseBranch,
@@ -410,7 +410,7 @@ function attachmentForCreatedBranch(
       workspace.worktreePath ??
       context.operationPath,
     lifecycle: {
-      owner: "goose",
+      owner: "distill",
       cleanup: "branch",
       branch: branchName,
       baseBranch,

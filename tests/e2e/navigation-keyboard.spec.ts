@@ -6,7 +6,7 @@ test.describe("keyboard pane navigation", () => {
   }) => {
     await page.addInitScript(() => {
       window.localStorage.setItem(
-        "goose:experimental-features",
+        "distill:experimental-features",
         JSON.stringify({
           version: 2,
           experiments: {

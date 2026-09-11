@@ -16,19 +16,13 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 vi.mock("@/shared/api/acpConnection", () => ({
   getClient: async () => ({
-    goose: {
-      GooseUnstableSourcesList: (...args: unknown[]) =>
-        mockGooseSourcesList(...args),
-      GooseUnstableSourcesCreate: (...args: unknown[]) =>
-        mockGooseSourcesCreate(...args),
-      GooseUnstableSourcesUpdate: (...args: unknown[]) =>
-        mockGooseSourcesUpdate(...args),
-      GooseUnstableSourcesDelete: (...args: unknown[]) =>
-        mockGooseSourcesDelete(...args),
-      GooseUnstableSourcesExport: (...args: unknown[]) =>
-        mockGooseSourcesExport(...args),
-      GooseUnstableSourcesImport: (...args: unknown[]) =>
-        mockGooseSourcesImport(...args),
+    host: {
+      sourcesList: (...args: unknown[]) => mockGooseSourcesList(...args),
+      sourcesCreate: (...args: unknown[]) => mockGooseSourcesCreate(...args),
+      sourcesUpdate: (...args: unknown[]) => mockGooseSourcesUpdate(...args),
+      sourcesDelete: (...args: unknown[]) => mockGooseSourcesDelete(...args),
+      sourcesExport: (...args: unknown[]) => mockGooseSourcesExport(...args),
+      sourcesImport: (...args: unknown[]) => mockGooseSourcesImport(...args),
     },
   }),
 }));
@@ -858,7 +852,7 @@ describe("agents API", () => {
       // a user wrote on purpose, so export substitutes a real fallback
       // rather than writing "Agent" into the exported file's frontmatter.
       contents:
-        "---\nname: scout\ndisplay_name: Scout\ndescription: Imported Goose agent\nmodel: openai:gpt-4.1\navatar: https://example.test/scout.png\n---\n\nResearch carefully.\n",
+        "---\nname: scout\ndisplay_name: Scout\ndescription: Imported agent\nmodel: openai:gpt-4.1\navatar: https://example.test/scout.png\n---\n\nResearch carefully.\n",
       filename: "scout.persona.md",
       mimeType: "text/markdown",
     });
@@ -1323,7 +1317,7 @@ Research carefully.
     expect(result).toEqual({
       // Same placeholder-description substitution as above.
       contents:
-        '---\nname: scout\ndisplay_name: Scout\ndescription: Imported Goose agent\nmodel: openai:gpt-4.1\navatar: https://example.test/scout.png\nsubscribe:\n  - "#agents"\ntags:\n  - research\n  - support\ntools:\n  web: true\n---\n\nResearch carefully.\n',
+        '---\nname: scout\ndisplay_name: Scout\ndescription: Imported agent\nmodel: openai:gpt-4.1\navatar: https://example.test/scout.png\nsubscribe:\n  - "#agents"\ntags:\n  - research\n  - support\ntools:\n  web: true\n---\n\nResearch carefully.\n',
       filename: "scout.persona.md",
       mimeType: "text/markdown",
     });
@@ -1473,8 +1467,8 @@ Research carefully.
       content: "Research carefully.",
       target: { scope: "global" },
       properties: {
-        provider: "goose",
-        modelProviderId: "openai",
+        provider: "openai",
+        modelProviderId: null,
         model: "gpt-4.1",
         avatar: "https://example.test/scout.png",
         sprout: {
@@ -1594,8 +1588,8 @@ Research carefully.
     expect(mockGooseSourcesCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         properties: {
-          provider: "goose",
-          modelProviderId: "bedrock",
+          provider: "bedrock",
+          modelProviderId: null,
           model: "anthropic.claude:v1",
           sprout: {
             name: "scout",

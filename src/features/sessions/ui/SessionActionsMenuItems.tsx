@@ -179,25 +179,23 @@ function SessionActionsMenuItems({
       ) : null}
 
       {showAttentionGroup ? (
-        <>
-          {markAction ? (
-            <Item
-              onClick={() => invoke(markAction)}
-              disabled={appliesToSelection && selectionActionsDisabled}
-            >
-              {hasUnread ? (
-                <MailOpen className="size-3.5" />
-              ) : (
-                <Mail className="size-3.5" />
-              )}
-              {t(
-                hasUnread
-                  ? "sidebar:actions.markRead"
-                  : "sidebar:actions.markUnread",
-              )}
-            </Item>
-          ) : null}
-        </>
+        markAction ? (
+          <Item
+            onClick={() => invoke(markAction)}
+            disabled={appliesToSelection && selectionActionsDisabled}
+          >
+            {hasUnread ? (
+              <MailOpen className="size-3.5" />
+            ) : (
+              <Mail className="size-3.5" />
+            )}
+            {t(
+              hasUnread
+                ? "sidebar:actions.markRead"
+                : "sidebar:actions.markUnread",
+            )}
+          </Item>
+        ) : null
       ) : null}
 
       {showAttentionGroup && (showMiddleGroup || showLifecycleGroup) ? (

@@ -71,3 +71,4 @@ src-tauri/resources/release-channels.json
 # Local lefthook overrides (per-machine, never committed)
 lefthook-local.yml
 lefthook.local.yml
+graphify-out/

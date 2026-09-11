@@ -1,9 +1,12 @@
+import { getDistillRoot } from "@/shared/api/distillStore";
 import { resolvePath } from "@/shared/api/pathResolver";
 import { ensureDirectory } from "@/shared/api/system";
 
-export const ARTIFACT_ROOT_STORAGE_KEY = "goose:artifact-root-path";
-export const ARTIFACT_ROOT_CHANGED_EVENT = "goose:artifact-root-path-changed";
-export const DEFAULT_ARTIFACT_ROOT_FOLDER_NAME = "goose artifacts";
+export const ARTIFACT_ROOT_STORAGE_KEY = "distill:artifact-root-path";
+export const ARTIFACT_ROOT_CHANGED_EVENT = "distill:artifact-root-path-changed";
+/** Generated files land under the Distill folder, beside projects and memory. */
+export const DEFAULT_ARTIFACT_ROOT_FOLDER_NAME = "artifacts";
+const FALLBACK_DISTILL_ROOT_FOLDER_NAME = ".distill";
 
 export interface SessionArtifactLocationOptions {
   artifactRootOverride?: string | null;
@@ -25,7 +28,7 @@ function hasTauriRuntime(): boolean {
 }
 
 function fallbackDefaultArtifactRootPath(): string {
-  return `~/${DEFAULT_ARTIFACT_ROOT_FOLDER_NAME}`;
+  return `~/${FALLBACK_DISTILL_ROOT_FOLDER_NAME}/${DEFAULT_ARTIFACT_ROOT_FOLDER_NAME}`;
 }
 
 export async function defaultArtifactRootPath(): Promise<string> {
@@ -34,9 +37,16 @@ export async function defaultArtifactRootPath(): Promise<string> {
   }
 
   try {
+    const distillRoot = (await getDistillRoot())?.root?.trim();
     return (
       await resolvePath({
-        parts: ["~", DEFAULT_ARTIFACT_ROOT_FOLDER_NAME],
+        parts: distillRoot
+          ? [distillRoot, DEFAULT_ARTIFACT_ROOT_FOLDER_NAME]
+          : [
+              "~",
+              FALLBACK_DISTILL_ROOT_FOLDER_NAME,
+              DEFAULT_ARTIFACT_ROOT_FOLDER_NAME,
+            ],
       })
     ).path;
   } catch {

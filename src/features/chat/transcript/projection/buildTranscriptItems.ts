@@ -217,7 +217,7 @@ function collectSubagentLinkage(
 }
 
 /** Whether this content awaits a Goose background task (`load <task-id>`). */
-function awaitsGooseTask(content: readonly MessageContent[]): boolean {
+function awaitsBackgroundTask(content: readonly MessageContent[]): boolean {
   return content.some(
     (block) => block.type === "toolRequest" && block.toolName === "load",
   );
@@ -1377,7 +1377,7 @@ function buildAgentWorkItems({
           workEntryGroups.length === 1
             ? "agent-work"
             : `agent-work-${groupIndex}`,
-        ...(subagentLinkage && awaitsGooseTask(content)
+        ...(subagentLinkage && awaitsBackgroundTask(content)
           ? { subagentLinkage }
           : {}),
       }),
@@ -1395,7 +1395,7 @@ function buildAgentWorkItems({
         responseStartMessageId: message.id,
         // The answer bubble reads the chips off the whole message, so the
         // linkage gate looks at the whole message too.
-        ...(subagentLinkage && awaitsGooseTask(message.content)
+        ...(subagentLinkage && awaitsBackgroundTask(message.content)
           ? { subagentLinkage }
           : {}),
         // The answer renders only its own text, but it is the row that hosts

@@ -1,4 +1,4 @@
-export const OPEN_SETTINGS_EVENT = "goose:open-settings";
+export const OPEN_SETTINGS_EVENT = "distill:open-settings";
 
 export interface AgentBuilderProviderSetupReturnTarget {
   type: "agent-builder-provider-setup";

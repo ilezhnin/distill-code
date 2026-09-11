@@ -558,7 +558,11 @@ describe("MemorySettings", () => {
 
       await user.click(screen.getByTestId("memory-write-switch"));
 
-      expect(getMemoryPreferences()).toEqual({ write: false, read: true });
+      expect(getMemoryPreferences()).toEqual({
+        write: false,
+        read: true,
+        wikiGraph: false,
+      });
       // A pause is not a deletion (LAWS/MEMORY.md, Sovereignty): the list
       // below the switches is untouched.
       expect(useMemoryStore.getState().entries).toHaveLength(1);
@@ -571,7 +575,11 @@ describe("MemorySettings", () => {
 
       await user.click(screen.getByTestId("memory-read-switch"));
 
-      expect(getMemoryPreferences()).toEqual({ write: true, read: false });
+      expect(getMemoryPreferences()).toEqual({
+        write: true,
+        read: false,
+        wikiGraph: false,
+      });
       expect(screen.getByTestId("memory-read-switch")).not.toBeChecked();
       expect(screen.getByTestId("memory-write-switch")).toBeChecked();
     });

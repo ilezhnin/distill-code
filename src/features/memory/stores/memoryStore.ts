@@ -43,7 +43,7 @@ import {
 export const MEMORY_DOCUMENT_PATH = "memory.json";
 
 /** Where memory lived before the move; read once, then removed. */
-export const MEMORY_STORAGE_KEY = "goose:memory";
+export const MEMORY_STORAGE_KEY = "distill:memory";
 
 /** Upper bound on stored memories. Oldest go first. */
 export const MAX_MEMORY_ENTRIES = 300;

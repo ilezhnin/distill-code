@@ -111,7 +111,7 @@ export function sendPromptInBackground(
     displayText: sendOptions.displayText,
     chips: sendOptions.chips,
     userMessageMetadata: sendOptions.userMessageMetadata,
-    acpGooseMetadata: sendOptions.acpGooseMetadata,
+    acpPromptMetadata: sendOptions.acpPromptMetadata,
     // Compose only caller-provided target-session context, the requested
     // persona and the operator's memory/planner protocols (scoped to the
     // target session) — never foreground UI state.

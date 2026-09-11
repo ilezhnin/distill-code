@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import {
   IconArrowDownToArc,
   IconChevronDown,
-  IconRefresh,
   IconPlus,
   IconSearch,
 } from "@tabler/icons-react";
@@ -24,8 +23,6 @@ import {
 import { PageShell } from "@/shared/ui/page-shell";
 import { PageToolbarButton } from "@/shared/ui/page-toolbar-button";
 import { SearchBar } from "@/shared/ui/SearchBar";
-import { Spinner } from "@/shared/ui/spinner";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import { revealInFileManager } from "@/shared/lib/fileManager";
 import { useSkillImportExport } from "../hooks/useSkillImportExport";
 import { SkillDetailPage } from "./SkillDetailPage";
@@ -33,12 +30,6 @@ import { SkillsDialogs } from "./SkillsDialogs";
 import { SkillsGrid } from "./SkillsGrid";
 import { hydrateProjectNames } from "../lib/projectHydration";
 import { listenSkillsChanged } from "../lib/skillsEvents";
-import { SkillDiscoveryView } from "./SkillDiscoveryView";
-import { RemoteSkillDetailPage } from "./RemoteSkillDetailPage";
-import { useRemoteSkills } from "../hooks/useRemoteSkills";
-import type { RemoteSkill } from "../api/skillMarketplace";
-import { useExperiment } from "@/features/experiments/experimentPreferences";
-import { SKILL_DISCOVERY_EXPERIMENT_ID } from "@/features/experiments/experimentDefinitions";
 import type { AppNavigationUpdateOptions } from "@/app/types/appNavigation";
 import {
   deleteSkill,
@@ -58,11 +49,6 @@ interface SkillsViewProps {
 }
 
 type SkillScope = "all" | "global" | `project:${string}`;
-
-// Discovered (remote) skills reuse the installed-skill active-id navigation
-// channel so the top-bar breadcrumb handles back navigation. This prefix keeps
-// their ids from ever colliding with real installed-skill ids.
-const REMOTE_SKILL_PREFIX = "remote:";
 
 function skillMatchesQuery(skill: SkillInfo, query: string): boolean {
   const normalizedQuery = query.trim().toLowerCase();
@@ -172,21 +158,6 @@ export function SkillsView({
   const searchTriggerRef = useRef<HTMLButtonElement>(null);
   const restoreSearchFocusRef = useRef(false);
   const [skillScope, setSkillScope] = useState<SkillScope>("all");
-  const [viewMode, setViewMode] = useState<"installed" | "discover">(
-    "installed",
-  );
-  // Skill discovery is an opt-in experiment: when off, the Discover tab, its
-  // hook, and the remote detail route are all inert and only installed skills
-  // render.
-  const discoveryEnabled =
-    useExperiment(SKILL_DISCOVERY_EXPERIMENT_ID)?.enabled === true;
-  // Discovered skills navigate through the same active-skill channel as
-  // installed skills (with a `remote:` prefix) so the top-bar breadcrumb owns
-  // back navigation — no bespoke on-page back control, matching the installed
-  // detail page. `selectedRemoteSkill` caches the picked object so the detail
-  // renders instantly even before the catalog refetches.
-  const [selectedRemoteSkill, setSelectedRemoteSkill] =
-    useState<RemoteSkill | null>(null);
   const [internalActiveSkillId, setInternalActiveSkillId] = useState<
     string | null
   >(null);
@@ -194,25 +165,6 @@ export function SkillsView({
   const currentActiveSkillId = isActiveSkillControlled
     ? activeSkillId
     : internalActiveSkillId;
-  const remoteSkillName =
-    discoveryEnabled && currentActiveSkillId?.startsWith(REMOTE_SKILL_PREFIX)
-      ? currentActiveSkillId.slice(REMOTE_SKILL_PREFIX.length)
-      : null;
-  // Load the catalog while discovery is enabled so both tab counts are
-  // available before the user switches views and remote detail routes can
-  // resolve immediately after a remount.
-  const remote = useRemoteSkills(
-    discoveryEnabled,
-    viewMode === "discover" || remoteSkillName !== null,
-  );
-
-  useEffect(() => {
-    if (!discoveryEnabled && viewMode === "discover") {
-      setViewMode("installed");
-      setSelectedRemoteSkill(null);
-    }
-  }, [discoveryEnabled, viewMode]);
-
   const setActiveSkill = useCallback(
     (skillId: string | null, options?: AppNavigationUpdateOptions) => {
       if (!isActiveSkillControlled) {
@@ -273,31 +225,16 @@ export function SkillsView({
     if (
       !projectsWithSkillDirs.some((project) => project.id === selectedProjectId)
     ) {
-      setSkillScope(viewMode === "discover" ? "global" : "all");
+      setSkillScope("all");
     }
-  }, [projectsWithSkillDirs, skillScope, viewMode]);
+  }, [projectsWithSkillDirs, skillScope]);
 
-  const activeSkill = remoteSkillName
-    ? null
-    : (skills.find((skill) => skill.id === currentActiveSkillId) ?? null);
-
-  // Resolve the active remote skill from the (possibly refreshed) catalog,
-  // falling back to the cached pick so the detail renders before the catalog
-  // finishes loading.
-  const activeRemoteSkill = remoteSkillName
-    ? (remote.skills.find((skill) => skill.name === remoteSkillName) ??
-      (remote.catalogState !== "ready" &&
-      remote.catalogState !== "error" &&
-      selectedRemoteSkill?.name === remoteSkillName
-        ? selectedRemoteSkill
-        : null))
-    : null;
+  const activeSkill =
+    skills.find((skill) => skill.id === currentActiveSkillId) ?? null;
 
   useEffect(() => {
-    onBreadcrumbLabelChange?.(
-      activeRemoteSkill?.name ?? activeSkill?.name ?? null,
-    );
-  }, [activeSkill?.name, onBreadcrumbLabelChange, activeRemoteSkill?.name]);
+    onBreadcrumbLabelChange?.(activeSkill?.name ?? null);
+  }, [activeSkill?.name, onBreadcrumbLabelChange]);
 
   useEffect(() => {
     return () => onBreadcrumbLabelChange?.(null);
@@ -316,18 +253,6 @@ export function SkillsView({
   const selectedProjectId = skillScope.startsWith("project:")
     ? skillScope.replace(/^project:/, "")
     : null;
-  // When a project scope is selected (the scope selector is visible on both
-  // tabs), install discovered skills into that project (`--project`) so they
-  // land in the project-scoped Installed tab; otherwise installs go global.
-  const selectedProjectScopeDir = useMemo(() => {
-    if (!selectedProjectId) {
-      return null;
-    }
-    return (
-      projects.find((project) => project.id === selectedProjectId)
-        ?.workingDirs[0] ?? null
-    );
-  }, [projects, selectedProjectId]);
   const resolveSkillForSelectedScope = useCallback(
     (skill: SkillInfo) => resolveSkillForProjectScope(skill, selectedProjectId),
     [selectedProjectId],
@@ -346,37 +271,10 @@ export function SkillsView({
   }, [projects, selectedProjectId, skillScope, t]);
 
   useEffect(() => {
-    if (currentActiveSkillId && !remoteSkillName && !loading && !activeSkill) {
+    if (currentActiveSkillId && !loading && !activeSkill) {
       setActiveSkill(null, { replace: true });
     }
-  }, [
-    activeSkill,
-    currentActiveSkillId,
-    loading,
-    remoteSkillName,
-    setActiveSkill,
-  ]);
-
-  // Companion guard for remote routes: if a `remote:` route is active but the
-  // skill can't be resolved once the catalog has finished loading (removed
-  // upstream, team-scope mismatch, or a failed load), clear the stale route so
-  // the user lands on the grid instead of a route that can never render.
-  useEffect(() => {
-    if (
-      remoteSkillName &&
-      remote.catalogState === "ready" &&
-      remote.cliState === "available" &&
-      !activeRemoteSkill
-    ) {
-      setActiveSkill(null, { replace: true });
-    }
-  }, [
-    remoteSkillName,
-    remote.cliState,
-    remote.catalogState,
-    activeRemoteSkill,
-    setActiveSkill,
-  ]);
+  }, [activeSkill, currentActiveSkillId, loading, setActiveSkill]);
 
   const handleDelete = (skill: SkillInfo) => {
     const scopedSkill = resolveSkillForSelectedScope(skill);
@@ -576,14 +474,6 @@ export function SkillsView({
     setActiveSkill(skill.id);
   };
 
-  const handleSelectRemoteSkill = useCallback(
-    (skill: RemoteSkill) => {
-      setSelectedRemoteSkill(skill);
-      setActiveSkill(`${REMOTE_SKILL_PREFIX}${skill.name}`);
-    },
-    [setActiveSkill],
-  );
-
   const dialogs = (
     <SkillsDialogs
       dialogOpen={dialogOpen}
@@ -597,58 +487,6 @@ export function SkillsView({
       onDeleteFromEditor={handleDeleteFromEditor}
     />
   );
-
-  if (activeRemoteSkill) {
-    return (
-      <PageShell contentWidth="full">
-        <RemoteSkillDetailPage
-          skill={activeRemoteSkill}
-          installing={remote.installing.has(activeRemoteSkill.name)}
-          onInstall={(skill) =>
-            void remote.install(skill, {
-              projectDir: selectedProjectScopeDir,
-              destinationLabel: selectedProjectScopeDir
-                ? `${selectedScopeLabel} (${selectedProjectScopeDir})`
-                : null,
-            })
-          }
-        />
-      </PageShell>
-    );
-  }
-
-  // A remote route is active but the skill hasn't resolved yet because the
-  // catalog is still loading (e.g. restored via app Back/Forward after a
-  // remount). Show a loading or retry state instead of flashing the installed
-  // grid until the skill resolves.
-  if (remoteSkillName) {
-    return (
-      <PageShell contentWidth="full">
-        {remote.catalogState === "error" ? (
-          <div className="flex min-h-[60vh] flex-col items-center justify-center gap-4 text-center">
-            <p className="text-sm font-medium">{t("discover.loadError")}</p>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => void remote.reload()}
-              leftIcon={<IconRefresh />}
-            >
-              {t("discover.retry")}
-            </Button>
-          </div>
-        ) : (
-          <div
-            role="status"
-            aria-label={t("common:loading")}
-            className="flex min-h-[60vh] items-center justify-center"
-          >
-            <Spinner className="size-5 text-muted-foreground" />
-          </div>
-        )}
-      </PageShell>
-    );
-  }
 
   if (activeSkill) {
     const scopedActiveSkill = resolveSkillForSelectedScope(activeSkill);
@@ -673,246 +511,157 @@ export function SkillsView({
         aria-labelledby="skills-heading"
         className="mx-auto flex w-full max-w-[70rem] flex-col gap-10"
       >
-        <Tabs
-          value={viewMode}
-          onValueChange={(value) => {
-            const nextView = value as "installed" | "discover";
-            setViewMode(nextView);
-            if (nextView === "discover" && skillScope === "all") {
-              setSkillScope("global");
-            }
-            setSelectedRemoteSkill(null);
-            if (remoteSkillName) {
-              setActiveSkill(null, { replace: true });
-            }
-          }}
-          className="contents"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            {discoveryEnabled ? (
-              <TabsList variant="segmented">
-                <TabsTrigger
-                  value="installed"
-                  variant="segmented"
-                  aria-label={t("discover.tabInstalledCount", {
-                    count: skills.length,
-                  })}
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <PageToolbarButton
+                  type="button"
+                  size="xs"
+                  className="max-w-44 text-sm"
+                  aria-label={t("view.scope.ariaLabel")}
+                  rightIcon={<IconChevronDown />}
                 >
-                  {t("discover.tabInstalled")}
-                  <span className="relative -top-px ml-1 inline-flex items-center justify-center text-[10px] leading-none tabular-nums text-muted-foreground">
-                    {skills.length}
-                  </span>
-                </TabsTrigger>
-                <TabsTrigger
-                  value="discover"
-                  variant="segmented"
-                  aria-label={t("discover.tabDiscoverCount", {
-                    count:
-                      remote.catalogState === "ready"
-                        ? remote.skills.length
-                        : "–",
-                  })}
+                  <span className="min-w-0 truncate">{selectedScopeLabel}</span>
+                </PageToolbarButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuRadioGroup
+                  value={skillScope}
+                  onValueChange={(value) => setSkillScope(value as SkillScope)}
                 >
-                  {t("discover.tabDiscover")}
-                  <span className="relative -top-px ml-1 inline-flex items-center justify-center text-[10px] leading-none tabular-nums text-muted-foreground">
-                    {remote.catalogState === "ready"
-                      ? remote.skills.length
-                      : "–"}
-                  </span>
-                </TabsTrigger>
-              </TabsList>
-            ) : null}
-            <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <PageToolbarButton
-                    type="button"
-                    size="xs"
-                    className="max-w-44 text-sm"
-                    aria-label={t(
-                      viewMode === "discover"
-                        ? "view.scope.installDestinationAriaLabel"
-                        : "view.scope.ariaLabel",
-                    )}
-                    rightIcon={<IconChevronDown />}
-                  >
-                    <span className="min-w-0 truncate">
-                      {selectedScopeLabel}
-                    </span>
-                  </PageToolbarButton>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuRadioGroup
-                    value={skillScope}
-                    onValueChange={(value) =>
-                      setSkillScope(value as SkillScope)
-                    }
-                  >
-                    {viewMode === "installed" ? (
-                      <DropdownMenuRadioItem value="all" indicatorSide="end">
-                        {t("view.scope.all")}
-                      </DropdownMenuRadioItem>
-                    ) : null}
-                    <DropdownMenuRadioItem value="global" indicatorSide="end">
-                      {t("view.scope.personal")}
-                    </DropdownMenuRadioItem>
-                    {projectsWithSkillDirs.length > 0 ? (
-                      <DropdownMenuLabel className="pt-4 text-sm text-muted-foreground/60">
-                        {t("view.scope.projects")}
-                      </DropdownMenuLabel>
-                    ) : null}
-                    {projectsWithSkillDirs.map((project) => (
-                      <DropdownMenuRadioItem
-                        key={project.id}
-                        value={`project:${project.id}`}
-                        indicatorSide="end"
-                      >
-                        {project.name}
-                      </DropdownMenuRadioItem>
-                    ))}
-                  </DropdownMenuRadioGroup>
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <AnimatePresence initial={false} mode="popLayout">
-                {searchOpen || searchQuery ? (
-                  <motion.div
-                    key="search-field"
-                    initial={{ width: 32, opacity: 0 }}
-                    animate={{
-                      width: "min(256px, calc(100vw - 96px))",
-                      opacity: 1,
-                    }}
-                    exit={{ width: 32, opacity: 0 }}
-                    transition={
-                      reduceMotion
-                        ? { duration: 0 }
-                        : { type: "spring", stiffness: 420, damping: 38 }
-                    }
-                    data-search-field-container
-                    data-search-motion={reduceMotion ? "reduced" : "full"}
-                    className="relative overflow-hidden rounded-full"
-                  >
-                    <SearchBar
-                      size="pill-card"
-                      value={searchQuery}
-                      onChange={setSearchQuery}
-                      onKeyDown={(event) => {
-                        if (event.key === "Escape") {
-                          closeSearch();
-                        }
-                      }}
-                      placeholder={t("view.searchPlaceholder")}
-                      aria-label={t("view.searchAriaLabel")}
-                      inputRef={searchInputRef}
-                      className="w-64 pr-9"
-                    />
-                    {searchCloseVisible ? (
-                      <div className="absolute right-1 top-1/2 -translate-y-1/2">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-xs"
-                          aria-label={t("common:actions.close")}
-                          title={t("common:actions.close")}
-                          onClick={closeSearch}
-                        >
-                          <svg
-                            viewBox="0 0 16 16"
-                            aria-hidden="true"
-                            className="!size-4"
-                          >
-                            <path
-                              d="M3.5 3.5l9 9m0-9l-9 9"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="1.5"
-                              strokeLinecap="round"
-                            />
-                          </svg>
-                        </Button>
-                      </div>
-                    ) : null}
-                  </motion.div>
-                ) : (
-                  <motion.div
-                    key="search-action"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={reduceMotion ? { duration: 0 } : undefined}
-                  >
-                    <PageToolbarButton
-                      ref={searchTriggerRef}
-                      type="button"
-                      size="icon-xs"
-                      aria-label={t("view.searchAriaLabel")}
-                      title={t("view.searchAriaLabel")}
-                      onClick={() => setSearchOpen(true)}
+                  <DropdownMenuRadioItem value="all" indicatorSide="end">
+                    {t("view.scope.all")}
+                  </DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value="global" indicatorSide="end">
+                    {t("view.scope.personal")}
+                  </DropdownMenuRadioItem>
+                  {projectsWithSkillDirs.length > 0 ? (
+                    <DropdownMenuLabel className="pt-4 text-sm text-muted-foreground/60">
+                      {t("view.scope.projects")}
+                    </DropdownMenuLabel>
+                  ) : null}
+                  {projectsWithSkillDirs.map((project) => (
+                    <DropdownMenuRadioItem
+                      key={project.id}
+                      value={`project:${project.id}`}
+                      indicatorSide="end"
                     >
-                      <IconSearch className="!size-4" />
-                    </PageToolbarButton>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-              <PageToolbarButton
-                type="button"
-                size="icon-xs"
-                aria-label={t("common:actions.import")}
-                tooltip={t("common:actions.import")}
-                onClick={openFilePicker}
-              >
-                <IconArrowDownToArc className="!size-4" />
-              </PageToolbarButton>
-              <PageToolbarButton
-                type="button"
-                size="icon-xs"
-                aria-label={t("view.newSkill")}
-                tooltip={t("view.newSkill")}
-                onClick={handleNewSkill}
-              >
-                <IconPlus className="!size-4" />
-              </PageToolbarButton>
-            </div>
-          </div>
-          {discoveryEnabled ? (
-            <>
-              <TabsContent value="installed">
-                <SkillsGrid
-                  skills={visibleSkills}
-                  isLoading={loading}
-                  onSelectSkill={handleSelectSkill}
-                  onCreateSkill={handleNewSkill}
-                  onEditSkill={handleEdit}
-                  onDeleteSkill={handleDelete}
-                />
-              </TabsContent>
-              <TabsContent value="discover">
-                <SkillDiscoveryView
-                  searchQuery={searchQuery}
-                  remote={remote}
-                  onSelectSkill={handleSelectRemoteSkill}
-                  onInstallSkill={(skill) =>
-                    void remote.install(skill, {
-                      projectDir: selectedProjectScopeDir,
-                      destinationLabel: selectedProjectScopeDir
-                        ? `${selectedScopeLabel} (${selectedProjectScopeDir})`
-                        : null,
-                    })
+                      {project.name}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <AnimatePresence initial={false} mode="popLayout">
+              {searchOpen || searchQuery ? (
+                <motion.div
+                  key="search-field"
+                  initial={{ width: 32, opacity: 0 }}
+                  animate={{
+                    width: "min(256px, calc(100vw - 96px))",
+                    opacity: 1,
+                  }}
+                  exit={{ width: 32, opacity: 0 }}
+                  transition={
+                    reduceMotion
+                      ? { duration: 0 }
+                      : { type: "spring", stiffness: 420, damping: 38 }
                   }
-                />
-              </TabsContent>
-            </>
-          ) : (
-            <SkillsGrid
-              skills={visibleSkills}
-              isLoading={loading}
-              onSelectSkill={handleSelectSkill}
-              onCreateSkill={handleNewSkill}
-              onEditSkill={handleEdit}
-              onDeleteSkill={handleDelete}
-            />
-          )}
-        </Tabs>
+                  data-search-field-container
+                  data-search-motion={reduceMotion ? "reduced" : "full"}
+                  className="relative overflow-hidden rounded-full"
+                >
+                  <SearchBar
+                    size="pill-card"
+                    value={searchQuery}
+                    onChange={setSearchQuery}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        closeSearch();
+                      }
+                    }}
+                    placeholder={t("view.searchPlaceholder")}
+                    aria-label={t("view.searchAriaLabel")}
+                    inputRef={searchInputRef}
+                    className="w-64 pr-9"
+                  />
+                  {searchCloseVisible ? (
+                    <div className="absolute right-1 top-1/2 -translate-y-1/2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        aria-label={t("common:actions.close")}
+                        title={t("common:actions.close")}
+                        onClick={closeSearch}
+                      >
+                        <svg
+                          viewBox="0 0 16 16"
+                          aria-hidden="true"
+                          className="!size-4"
+                        >
+                          <path
+                            d="M3.5 3.5l9 9m0-9l-9 9"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                          />
+                        </svg>
+                      </Button>
+                    </div>
+                  ) : null}
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="search-action"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={reduceMotion ? { duration: 0 } : undefined}
+                >
+                  <PageToolbarButton
+                    ref={searchTriggerRef}
+                    type="button"
+                    size="icon-xs"
+                    aria-label={t("view.searchAriaLabel")}
+                    title={t("view.searchAriaLabel")}
+                    onClick={() => setSearchOpen(true)}
+                  >
+                    <IconSearch className="!size-4" />
+                  </PageToolbarButton>
+                </motion.div>
+              )}
+            </AnimatePresence>
+            <PageToolbarButton
+              type="button"
+              size="icon-xs"
+              aria-label={t("common:actions.import")}
+              tooltip={t("common:actions.import")}
+              onClick={openFilePicker}
+            >
+              <IconArrowDownToArc className="!size-4" />
+            </PageToolbarButton>
+            <PageToolbarButton
+              type="button"
+              size="icon-xs"
+              aria-label={t("view.newSkill")}
+              tooltip={t("view.newSkill")}
+              onClick={handleNewSkill}
+            >
+              <IconPlus className="!size-4" />
+            </PageToolbarButton>
+          </div>
+        </div>
+        <SkillsGrid
+          skills={visibleSkills}
+          isLoading={loading}
+          onSelectSkill={handleSelectSkill}
+          onCreateSkill={handleNewSkill}
+          onEditSkill={handleEdit}
+          onDeleteSkill={handleDelete}
+        />
       </section>
 
       <input

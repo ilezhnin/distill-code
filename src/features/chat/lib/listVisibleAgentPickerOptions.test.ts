@@ -8,34 +8,30 @@ describe("listVisibleAgentPickerOptions", () => {
       catalogEntries: CURATED_PROVIDER_CATALOG,
       catalogLoaded: true,
       agentReadiness: new Map([
-        ["goose", "ready"],
         ["claude-acp", "ready"],
         ["codex-acp", "ready"],
         ["grok-acp", "ready"],
       ]),
       extraProviders: [],
       selectedAgentId: "claude-acp",
-      readyAgentIds: new Set(["goose", "claude-acp", "codex-acp", "grok-acp"]),
+      readyAgentIds: new Set(["claude-acp", "codex-acp", "grok-acp"]),
     });
 
     expect(agents.map((agent) => agent.id)).toEqual([
-      "goose",
       "claude-acp",
       "codex-acp",
       "grok-acp",
     ]);
   });
 
-  it("hides uninstalled harnesses and Goose without a model provider", () => {
+  it("hides uninstalled harnesses", () => {
     const agents = listVisibleAgentPickerOptions({
       catalogEntries: CURATED_PROVIDER_CATALOG,
       catalogLoaded: true,
       agentReadiness: new Map([
-        ["goose", "not_ready"],
         ["claude-acp", "ready"],
         ["codex-acp", "ready"],
         ["grok-acp", "ready"],
-        ["cursor-agent", "not_installed"],
         ["copilot-acp", "not_installed"],
         ["amp-acp", "not_installed"],
       ]),
@@ -56,11 +52,9 @@ describe("listVisibleAgentPickerOptions", () => {
       catalogEntries: CURATED_PROVIDER_CATALOG,
       catalogLoaded: true,
       agentReadiness: new Map([
-        ["goose", "not_ready"],
         ["claude-acp", "not_ready"],
         ["codex-acp", "ready"],
         ["grok-acp", "ready"],
-        ["cursor-agent", "not_installed"],
         ["copilot-acp", "not_installed"],
         ["amp-acp", "not_installed"],
       ]),
@@ -80,23 +74,26 @@ describe("listVisibleAgentPickerOptions", () => {
     });
   });
 
-  it("keeps the selected harness visible even when it is not ready", () => {
+  it("keeps the selected harness visible even when it is not installed", () => {
     const agents = listVisibleAgentPickerOptions({
       catalogEntries: CURATED_PROVIDER_CATALOG,
       catalogLoaded: true,
       agentReadiness: new Map([
-        ["goose", "not_ready"],
+        ["claude-acp", "not_installed"],
         ["codex-acp", "ready"],
       ]),
       extraProviders: [],
-      selectedAgentId: "goose",
+      selectedAgentId: "claude-acp",
       readyAgentIds: new Set(["codex-acp"]),
     });
 
-    expect(agents.map((agent) => agent.id)).toEqual(["goose", "codex-acp"]);
-    expect(agents.find((agent) => agent.id === "goose")).toMatchObject({
-      readiness: "not_ready",
-      setupAction: "connect",
+    expect(agents.map((agent) => agent.id)).toEqual([
+      "claude-acp",
+      "codex-acp",
+    ]);
+    expect(agents.find((agent) => agent.id === "claude-acp")).toMatchObject({
+      readiness: "not_installed",
+      setupAction: "install",
     });
   });
 
@@ -105,7 +102,7 @@ describe("listVisibleAgentPickerOptions", () => {
       catalogEntries: CURATED_PROVIDER_CATALOG,
       catalogLoaded: true,
       agentReadiness: new Map([
-        ["goose", "ready"],
+        ["claude-acp", "ready"],
         ["custom-acp", "ready"],
       ]),
       extraProviders: [{ id: "custom-acp", label: "Custom" }],

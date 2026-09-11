@@ -1,17 +1,10 @@
 import type { AcpProvider } from "@/shared/api/acp";
 import type { ProviderCatalogEntry } from "@/shared/types/providers";
 
+/** Harness a new chat runs on when nothing else chose one. */
+export const DEFAULT_HARNESS_ID = "claude-acp";
+
 export const CURATED_PROVIDER_CATALOG: ProviderCatalogEntry[] = [
-  {
-    id: "goose",
-    displayName: "Goose",
-    category: "agent",
-    description:
-      "Open-source agent harness with your configured model providers",
-    setupMethod: "none",
-    group: "default",
-    aliases: ["goose"],
-  },
   {
     id: "claude-acp",
     displayName: "Claude Code",
@@ -81,48 +74,6 @@ export const CURATED_PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     supportsModelList: false,
     modelSelectionHint: "Use the Amp CLI to configure the model.",
   },
-  {
-    id: "cursor-agent",
-    displayName: "Cursor Agent",
-    category: "agent",
-    description: "Cursor command-line agent",
-    setupMethod: "cli_auth",
-    binaryName: "cursor-agent",
-    group: "default",
-    aliases: ["cursor-agent", "cursor"],
-    supportsInstall: true,
-    supportsAuth: true,
-    supportsAuthStatus: true,
-  },
-  // full pi support in a future update
-  // {
-  //   id: "pi-acp",
-  //   displayName: "Pi",
-  //   category: "agent",
-  //   description: "Pi ACP agent",
-  //   setupMethod: "cli_auth",
-  //   binaryName: "pi-acp",
-  //   group: "default",
-  //   aliases: ["pi-acp", "pi"],
-  //   supportsInstall: false,
-  //   supportsAuth: false,
-  //   supportsAuthStatus: false,
-  //   supportsModelList: false,
-  //   modelSelectionHint: "Use the Pi CLI to configure the model.",
-  // },
-  {
-    id: "databricks_v2",
-    displayName: "Databricks AI Gateway",
-    category: "model",
-    description: "Databricks AI Gateway models",
-    setupMethod: "host_with_oauth_fallback",
-    nativeConnectQuery: "databricks",
-    group: "default",
-    aliases: ["databricks_v2", "databricks", "databricks-ai-gateway"],
-    supportsInstall: false,
-    supportsAuth: false,
-    supportsAuthStatus: false,
-  },
 ];
 
 export const CURATED_PROVIDER_CATALOG_BY_ID = new Map(
@@ -130,7 +81,8 @@ export const CURATED_PROVIDER_CATALOG_BY_ID = new Map(
 );
 
 export function getCuratedAgentProviders(): AcpProvider[] {
-  return CURATED_PROVIDER_CATALOG.filter(
-    (provider) => provider.category === "agent",
-  ).map((provider) => ({ id: provider.id, label: provider.displayName }));
+  return CURATED_PROVIDER_CATALOG.map((provider) => ({
+    id: provider.id,
+    label: provider.displayName,
+  }));
 }

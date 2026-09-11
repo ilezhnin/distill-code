@@ -128,6 +128,7 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
 
+    #[cfg(unix)]
     #[test]
     fn extended_path_starts_with_login_shell_path_and_tool_manager_shims() {
         let path = build_extended_path_from_path(Some("/shell/bin:/another/bin:/shell/bin"));
@@ -174,6 +175,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn extended_path_filters_hermit_paths() {
         let path = build_extended_path_from_path(Some("/shell/bin:/repo/.hermit/bin:/another/bin"));
@@ -242,6 +244,7 @@ mod tests {
         assert!(!paths.iter().any(|p| p.to_string_lossy().contains("weird")));
     }
 
+    #[cfg(unix)]
     #[test]
     fn env_vars_with_extended_path_sanitizes_and_normalizes_path() {
         let env = HashMap::from([

@@ -5,6 +5,9 @@ import {
 } from "@/features/chat/hooks/replayBuffer";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
+import { buildPersonaHandoffPreamble } from "@/shared/api/acpPersonaHandoff";
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import type { SessionNode } from "@/features/conductor/types";
 import {
   clearReplayAssistantTracking,
   ensureReplayAssistantMessage,
@@ -33,6 +36,7 @@ describe("ACP session info updates", () => {
       isRightRailOpen: false,
       activeWorkspaceBySession: {},
     });
+    useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
   });
 
   it("applies generated session info updates to non-user-named sessions", async () => {
@@ -70,6 +74,43 @@ describe("ACP session info updates", () => {
     });
   });
 
+  it("syncs a generated title onto the conductor graph label", async () => {
+    useChatSessionStore.getState().addSession({
+      id: "goose-session-title",
+      title: "New Chat",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      messageCount: 0,
+      userSetName: false,
+    });
+    useConductorGraphStore.getState().registerNode({
+      sessionId: "goose-session-title",
+      projectId: "project",
+      role: "conductor",
+      managedBy: "ui",
+      parentSessionId: null,
+      rootConductorId: "goose-session-title",
+      runId: null,
+      harnessId: "goose",
+      displayName: "Producer",
+      status: "stopped",
+    } satisfies SessionNode);
+
+    await handleSessionNotification({
+      sessionId: "goose-session-title",
+      update: {
+        sessionUpdate: "session_info_update",
+        title: "Refund timeout fix",
+        _meta: { userSetName: false },
+      },
+    } as never);
+
+    expect(
+      useConductorGraphStore.getState().getNode("goose-session-title")
+        ?.displayName,
+    ).toBe("Refund timeout fix");
+  });
+
   it("ignores generated titles for user-named sessions", async () => {
     useChatSessionStore.getState().addSession({
       id: "goose-session-user-title",
@@ -103,6 +144,33 @@ describe("ACP session info updates", () => {
     });
   });
 
+  it("ignores bridge titles derived from the in-band persona handoff", async () => {
+    useChatSessionStore.getState().addSession({
+      id: "handoff-title-session",
+      title: "New Chat",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      messageCount: 0,
+      userSetName: false,
+    });
+
+    await handleSessionNotification({
+      sessionId: "handoff-title-session",
+      update: {
+        sessionUpdate: "session_info_update",
+        title: buildPersonaHandoffPreamble("Be terse.").slice(0, 120),
+        updatedAt: "2026-01-01T00:01:00.000Z",
+      },
+    } as never);
+
+    expect(
+      useChatSessionStore.getState().getSession("handoff-title-session"),
+    ).toMatchObject({
+      title: "New Chat",
+      updatedAt: "2026-01-01T00:01:00.000Z",
+    });
+  });
+
   it("stores the active run id from Goose session metadata", async () => {
     useChatStore
       .getState()
@@ -113,9 +181,7 @@ describe("ACP session info updates", () => {
       update: {
         sessionUpdate: "session_info_update",
         _meta: {
-          goose: {
-            activeRunId: "run-123",
-          },
+          activeRunId: "run-123",
         },
       },
     } as never);
@@ -134,9 +200,7 @@ describe("ACP session info updates", () => {
       update: {
         sessionUpdate: "session_info_update",
         _meta: {
-          goose: {
-            activeRunId: null,
-          },
+          activeRunId: null,
         },
       },
     } as never);
@@ -166,7 +230,7 @@ describe("ACP session info updates", () => {
       sessionId,
       update: {
         sessionUpdate: "session_info_update",
-        _meta: { goose: { activeRunId: null } },
+        _meta: { activeRunId: null },
       },
     } as never);
 
@@ -191,7 +255,7 @@ describe("ACP session info updates", () => {
       sessionId: "goose-session-late-stream",
       update: {
         sessionUpdate: "session_info_update",
-        _meta: { goose: { activeRunId: null } },
+        _meta: { activeRunId: null },
       },
     } as never);
 
@@ -212,9 +276,7 @@ describe("ACP session info updates", () => {
       update: {
         sessionUpdate: "session_info_update",
         meta: {
-          goose: {
-            activeRunId: "run-from-meta",
-          },
+          activeRunId: "run-from-meta",
         },
       },
     } as never);

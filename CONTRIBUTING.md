@@ -113,11 +113,9 @@ archives:
 | Linux | `~/.local/share/xyz.block.berd/logs/` |
 | Windows | `%LOCALAPPDATA%\xyz.block.berd\logs\` |
 
-If the problem involves the agent backend rather than the app shell — a hung
-turn, a tool that never returns, a model error — the backend keeps its own logs
-under the Goose state directory (`~/Library/Application Support/Block/goose/state/logs/`
-on macOS, `~/.local/state/Block/goose/logs/` on Linux). The `server/` subtree is
-usually the interesting one.
+If the problem involves an agent harness rather than the app shell — a hung
+turn, a tool that never returns, a model error — the bridge's stderr is
+captured into the same app log with a `[bridge stderr]` prefix.
 
 Find the lines around when the problem happened and paste those, in a fenced
 code block. **Scrub them first** — logs can contain file paths, prompts, and

@@ -88,8 +88,6 @@ const MAIN_NAV_SCROLL_TARGETS: ReadonlySet<AppView> = new Set([
   "planner",
   "agents",
   "skills",
-  "automations",
-  "builderbot",
   "session-history",
 ]);
 
@@ -416,8 +414,6 @@ export function NavigationPanesView({
         settingsSections={visibleSettingsSections}
         showBottomMask={showBottomMask}
         showTopMask={showTopMask}
-        showAutomationsSurface={capabilities.automations}
-        showBuilderbotSurface={capabilities.builderbot}
         showSecondaryBottomMask={showSecondaryBottomMask}
         width={width}
       />

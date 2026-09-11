@@ -17,7 +17,7 @@ const createSessionSchema = z
       .optional()
       .describe(
         "Agent harness to run the session on (from `berdctl info harnesses`, " +
-          'e.g. "goose", "claude-acp", "codex-acp"). Defaults to the app default.',
+          'e.g. "claude-acp", "codex-acp"). Defaults to the app default.',
       ),
     model_id: z
       .string()
@@ -59,7 +59,7 @@ const createSessionSchema = z
 const CREATE_DEADLINE_MARGIN_MS = 3_000;
 
 // Spawn ACL (P42): the wire now carries an optional `actor` — the calling
-// session's AGENT_SESSION_ID, read from the shell env goose injects — and
+// session's AGENT_SESSION_ID, read from the shell env when the harness sets it — and
 // this command enforces the same ACL as the in-app chokepoint against it
 // (runtime/spawnGate.ts). Anonymous calls are the operator and stay allowed.
 
@@ -111,11 +111,11 @@ Result:
         rollbackProjectChatWorkspacePlan,
       },
       { berdctlCrossSessionSendOptions },
-      { GOOSE_PROVIDER_ID },
+      { DEFAULT_HARNESS_ID },
       { normalizeSessionExecutionTarget, targetFromAgentModelSelection },
       { findPersonaOrThrow },
       { findProjectOrThrow },
-      { findReadyHarnessOrThrow, gooseModelOptions, harnessModelOptions },
+      { findReadyHarnessOrThrow, harnessModelOptions },
     ] = await Promise.all([
       import("../runtime/spawnGate"),
       import("@/features/chat/lib/firstWorkspaceSend"),
@@ -123,23 +123,18 @@ Result:
       import("@/features/projects/lib/sessionCwdSelection"),
       import("@/features/projects/lib/projectChatWorkspaces"),
       import("../runtime/sessionSend"),
-      import("@/shared/api/acpPersonaHandoff"),
+      import("@/features/providers/curatedProviders"),
       import("@/features/chat/lib/sessionExecutionTarget"),
       import("../runtime/agents"),
       import("../runtime/projects"),
       import("../runtime/providers"),
     ]);
-    const harnessId = args.harness_id ?? GOOSE_PROVIDER_ID;
+    const harnessId = args.harness_id ?? DEFAULT_HARNESS_ID;
     // The validation legs are independent I/O; overlap them.
     const [project, , models, persona] = await Promise.all([
       args.project_id ? findProjectOrThrow(args.project_id) : null,
       args.harness_id ? findReadyHarnessOrThrow(args.harness_id) : null,
-      args.model_id
-        ? (harnessId === GOOSE_PROVIDER_ID
-            ? gooseModelOptions()
-            : harnessModelOptions(harnessId)
-          ).catch(() => [])
-        : null,
+      args.model_id ? harnessModelOptions(harnessId).catch(() => []) : null,
       args.agent_id ? findPersonaOrThrow(args.agent_id) : null,
     ]);
     // Enforced after validation resolved the target persona (the named
@@ -151,31 +146,19 @@ Result:
       targetPersona: persona,
     });
     // Soft model validation: only reject when the harness's model list is
-    // known and the id is not in it. On goose a model belongs to a model
-    // provider (anthropic, openai, ...), so a match also resolves the
-    // provider the session should run against — mirroring the in-app picker.
-    let modelProviderId =
-      harnessId === GOOSE_PROVIDER_ID ? undefined : harnessId;
+    // known and the id is not in it.
     if (args.model_id && models) {
       const match = models.find((model) => model.model_id === args.model_id);
-      if (match) {
-        modelProviderId = match.provider ?? modelProviderId;
-      } else if (models.length > 0) {
+      if (!match && models.length > 0) {
         throw new CommandError(
           "model_not_found",
           `Model "${args.model_id}" is not available on "${harnessId}"; list models with \`berdctl info models\`.`,
         );
       }
     }
-    if (args.model_id && !modelProviderId && harnessId === GOOSE_PROVIDER_ID) {
-      throw new CommandError(
-        "model_not_found",
-        `Could not resolve a provider for model "${args.model_id}"; list models with \`berdctl info models\` and retry.`,
-      );
-    }
     const executionTarget = args.model_id
       ? targetFromAgentModelSelection(harnessId, {
-          modelProviderId: modelProviderId ?? harnessId,
+          modelProviderId: harnessId,
           modelId: args.model_id,
           modelName: args.model_id,
         })

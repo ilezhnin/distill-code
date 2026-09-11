@@ -10,7 +10,7 @@ import {
 import { usePersistedState } from "@/shared/hooks/usePersistedState";
 
 const AGENT_BUILDER_RAIL_FRACTION_STORAGE_KEY =
-  "goose:agent-builder-rail-fraction";
+  "distill:agent-builder-rail-fraction";
 /**
  * Builder column as a fraction of the split (0..1). Clamped so neither the
  * chat nor the builder can be squeezed away while both are visible.

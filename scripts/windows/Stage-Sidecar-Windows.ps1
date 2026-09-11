@@ -44,26 +44,6 @@ Write-WindowsDevInfo "Staging Windows sidecars for target: $Triple"
 
 $binDir = Join-Path (Join-Path (Get-BerdRepoRoot) "src-tauri") "binaries"
 
-# ── goosed ───────────────────────────────────────────────────
-# Reuse the same pinned managed Goose binary dev/release already build; a
-# GOOSE_BIN override takes precedence exactly as the Unix script honours it.
-# Either source is identity-probed (`goose --version`) before staging so a
-# binary that is not actually Goose — a wrong or tampered file that still
-# happens to be a loadable PE — is rejected rather than shipped.
-$gooseBinName = (Get-GooseBackendSettings).Bin
-$gooseSource = $env:GOOSE_BIN
-if ([string]::IsNullOrWhiteSpace($gooseSource)) {
-    $goose = Invoke-EnsureLocalGoose -Action Check
-    if (-not $goose.Ready) {
-        throw "Pinned Goose binary is not ready. Run 'just setup-windows' first. $($goose.Message)"
-    }
-    $gooseSource = $goose.BinPath
-}
-Assert-GooseBinaryIdentity -Path $gooseSource -BinName $gooseBinName
-Assert-DistillGooseBinary -BinPath $gooseSource
-$staged = Stage-WindowsSidecar -SourcePath $gooseSource -Triple $Triple -Stem "goosed" -BinDir $binDir
-Write-WindowsDevInfo "Staged Goose sidecar: $staged"
-
 # ── berdctl ──────────────────────────────────────────────────
 # Build the workspace crate for the target triple, then stage its .exe. Cargo
 # writes to the Tauri target dir the rest of the build shares. Passing --target
@@ -73,9 +53,6 @@ $tauriTargetDir = Get-TauriCargoTargetDir
 $env:CARGO_TARGET_DIR = $tauriTargetDir
 $hostTriple = Get-RustHostTriple
 $cargoArgs = @("build", "-p", "berdctl", "-p", "berd-monitor", "--release")
-if ($env:VITE_FEEDBACK -eq "1") {
-    $cargoArgs += @("--features", "berdctl/block-feedback")
-}
 if (-not [string]::IsNullOrWhiteSpace($hostTriple) -and $Triple -ne $hostTriple) {
     $cargoArgs += @("--target", $Triple)
     $berdctlReleaseDir = Join-Path (Join-Path $tauriTargetDir $Triple) "release"

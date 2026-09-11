@@ -20,9 +20,9 @@ describe("settingsSectionUrl", () => {
       expect(getInitialSettingsSection()).toBe("providers");
     });
 
-    it("returns the resolved section for /settings?section=experiments", () => {
-      window.history.replaceState({}, "", "/settings?section=experiments");
-      expect(getInitialSettingsSection()).toBe("experiments");
+    it("returns the resolved section for /settings?section=security", () => {
+      window.history.replaceState({}, "", "/settings?section=security");
+      expect(getInitialSettingsSection()).toBe("security");
     });
 
     it("returns the default section when /settings has no section param", () => {

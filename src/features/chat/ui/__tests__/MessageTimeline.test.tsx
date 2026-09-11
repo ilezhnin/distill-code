@@ -10,7 +10,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders } from "@/test/render";
 import { ASSISTIVE_UX_STORAGE_KEY } from "@/shared/assistive-ux/registry";
 import { RESPONSE_START_GUTTER_STORAGE_KEY } from "@/features/chat/lib/responseStartGutterPreference";
-import { EXPERIMENT_PREFERENCES_STORAGE_KEY } from "@/features/experiments/experimentPreferences";
 import { MessageTimeline } from "../MessageTimeline";
 import { REDUCED_MOTION_QUERY } from "../messageTimelineShared";
 import type { Message } from "@/shared/types/messages";
@@ -36,7 +35,6 @@ function triggerResizeObservers() {
 }
 
 beforeEach(() => {
-  localStorage.removeItem(EXPERIMENT_PREFERENCES_STORAGE_KEY);
   localStorage.removeItem(ASSISTIVE_UX_STORAGE_KEY);
   localStorage.removeItem(RESPONSE_START_GUTTER_STORAGE_KEY);
   resizeObserverCallbacks.length = 0;
@@ -120,35 +118,6 @@ function message(id: string, role: Message["role"], text: string): Message {
   };
 }
 
-function mcpAppMessage(id: string): Message {
-  return {
-    id,
-    role: "assistant",
-    created: Date.UTC(2026, 4, 20, 12, 0, 0),
-    content: [
-      {
-        type: "mcpApp",
-        id: "mcp-app-1",
-        payload: {
-          sessionId: "session-1",
-          toolCallId: "tool-1",
-          toolCallTitle: "Preview",
-          source: "toolCallUpdateMeta",
-          tool: {
-            name: "preview",
-            extensionName: "goose",
-            resourceUri: "ui://preview",
-          },
-          resource: {
-            result: null,
-          },
-        },
-      },
-    ],
-    metadata: { userVisible: true },
-  };
-}
-
 function setScrollMetrics(
   element: HTMLElement,
   {
@@ -214,19 +183,6 @@ function attachNativeSmoothScrollTo(element: HTMLElement) {
     value: scrollTo,
   });
   return scrollTo;
-}
-
-function attachScrollBy(element: HTMLElement) {
-  const scrollBy = vi.fn((options: ScrollToOptions) => {
-    if (typeof options.top === "number") {
-      element.scrollTop += options.top;
-    }
-  });
-  Object.defineProperty(element, "scrollBy", {
-    configurable: true,
-    value: scrollBy,
-  });
-  return scrollBy;
 }
 
 function mockRequestAnimationFrame() {
@@ -299,14 +255,6 @@ describe("MessageTimeline", () => {
       ],
       metadata: { userVisible: true },
     };
-
-    localStorage.setItem(
-      EXPERIMENT_PREFERENCES_STORAGE_KEY,
-      JSON.stringify({
-        version: 2,
-        experiments: { "agent-work-transcript": { enabled: false } },
-      }),
-    );
     renderWithProviders(
       <MessageTimeline messages={[userMessage, assistantMessage]} />,
     );
@@ -1387,62 +1335,6 @@ describe("MessageTimeline", () => {
     );
   });
 
-  it("keeps MCP app auto-scroll above the footer and skips it while detached", async () => {
-    const animationFrame = mockRequestAnimationFrame();
-    const messages = [
-      message("user-1", "user", "Question"),
-      message("assistant-1", "assistant", "First token"),
-    ];
-    const { rerender } = renderWithProviders(
-      <MessageTimeline
-        messages={messages}
-        footer={<div data-testid="composer-footer" />}
-      />,
-    );
-    const scroller = getTimelineScroller();
-    setScrollMetrics(scroller, { scrollTop: 450 });
-    setElementRect(scroller, { bottom: 500 });
-    setElementRect(screen.getByTestId("message-timeline-footer"), {
-      top: 400,
-    });
-    const scrollBy = attachScrollBy(scroller);
-
-    rerender(
-      <MessageTimeline
-        messages={[messages[0], mcpAppMessage("assistant-1")]}
-        footer={<div data-testid="composer-footer" />}
-      />,
-    );
-
-    await waitFor(() =>
-      expect(scrollBy).toHaveBeenCalledWith({
-        top: 76,
-        behavior: "auto",
-      }),
-    );
-    animationFrame.run(1000);
-
-    scrollBy.mockClear();
-    setScrollMetrics(scroller, {
-      scrollTop: 300,
-      scrollHeight: 1000,
-      clientHeight: 500,
-    });
-    fireEvent.wheel(scroller, { deltaY: -40 });
-
-    rerender(
-      <MessageTimeline
-        messages={[messages[0], mcpAppMessage("assistant-2")]}
-        footer={<div data-testid="composer-footer" />}
-      />,
-    );
-
-    expect(
-      await screen.findByRole("button", { name: "Jump to latest" }),
-    ).toBeInTheDocument();
-    expect(scrollBy).not.toHaveBeenCalled();
-  });
-
   it("resumes pinned behavior when a new user message becomes latest", async () => {
     const messages = [
       message("user-1", "user", "Question"),
@@ -1479,127 +1371,6 @@ describe("MessageTimeline", () => {
       top: 500,
       behavior: "auto",
     });
-  });
-
-  it("follows a new voice user turn like a composer submission", async () => {
-    const messages = [
-      message("user-1", "user", "Question"),
-      message("assistant-1", "assistant", "Answer"),
-    ];
-    const { rerender } = renderWithProviders(
-      <MessageTimeline messages={messages} />,
-    );
-    const scroller = getTimelineScroller();
-    setScrollMetrics(scroller, { scrollTop: 500 });
-    const scrollTo = attachScrollTo(scroller);
-    fireEvent.wheel(scroller, { deltaY: -120 });
-    scroller.scrollTop = 100;
-    fireEvent.scroll(scroller);
-    expect(
-      await screen.findByRole("button", { name: "Jump to latest" }),
-    ).toBeInTheDocument();
-    scrollTo.mockClear();
-    const voiceMessage = {
-      ...message("voice-local", "user", "Spoken follow-up"),
-      metadata: {
-        userVisible: true,
-        origin: "voice_conversation" as const,
-        voiceConversationLifecycleId: "lifecycle-1",
-        voiceUtteranceId: "utterance-1",
-        voiceConversationRevision: 0,
-      },
-    };
-
-    rerender(<MessageTimeline messages={[...messages, voiceMessage]} />);
-
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("button", { name: "Jump to latest" }),
-      ).not.toBeInTheDocument(),
-    );
-    expect(scrollTo).toHaveBeenCalledWith({
-      top: 500,
-      behavior: "auto",
-    });
-
-    fireEvent.wheel(scroller, { deltaY: -120 });
-    scroller.scrollTop = 100;
-    fireEvent.scroll(scroller);
-    expect(
-      await screen.findByRole("button", { name: "Jump to latest" }),
-    ).toBeInTheDocument();
-    scrollTo.mockClear();
-
-    rerender(
-      <MessageTimeline
-        messages={[...messages, { ...voiceMessage, id: "voice-backend" }]}
-      />,
-    );
-
-    await waitFor(() => expect(scroller.scrollTop).toBe(100));
-    expect(scrollTo).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole("button", { name: "Jump to latest" }),
-    ).toBeInTheDocument();
-  });
-
-  it("follows a new voice turn appended with an assistant continuation", async () => {
-    const messages = [
-      message("user-1", "user", "Question"),
-      message("assistant-1", "assistant", "Answer"),
-    ];
-    const { rerender } = renderWithProviders(
-      <MessageTimeline messages={messages} />,
-    );
-    const scroller = getTimelineScroller();
-    setScrollMetrics(scroller, {
-      scrollTop: 500,
-      scrollHeight: 1000,
-      clientHeight: 500,
-    });
-    const scrollTo = attachScrollTo(scroller);
-    fireEvent.wheel(scroller, { deltaY: -120 });
-    scroller.scrollTop = 100;
-    fireEvent.scroll(scroller);
-    expect(
-      await screen.findByRole("button", { name: "Jump to latest" }),
-    ).toBeInTheDocument();
-    scrollTo.mockClear();
-
-    setScrollMetrics(scroller, {
-      scrollTop: 100,
-      scrollHeight: 1200,
-      clientHeight: 500,
-    });
-    rerender(
-      <MessageTimeline
-        messages={[
-          ...messages,
-          {
-            ...message("voice-local", "user", "Spoken follow-up"),
-            metadata: {
-              userVisible: true,
-              origin: "voice_conversation",
-              voiceConversationLifecycleId: "lifecycle-1",
-              voiceUtteranceId: "utterance-1",
-              voiceConversationRevision: 0,
-            },
-          },
-          message("assistant-2", "assistant", "Working"),
-        ]}
-        streamingMessageId="assistant-2"
-      />,
-    );
-
-    await waitFor(() =>
-      expect(scrollTo).toHaveBeenCalledWith({
-        top: 700,
-        behavior: "auto",
-      }),
-    );
-    expect(
-      screen.queryByRole("button", { name: "Jump to latest" }),
-    ).not.toBeInTheDocument();
   });
 
   it("keeps manual position stable and shows Jump when resize leaves latest behind", () => {

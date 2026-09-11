@@ -185,7 +185,7 @@ describe("agentStore.setProviders", () => {
       providersLoading: false,
       selectedProvider: "claude-acp",
     });
-    localStorage.setItem("goose:defaultProvider", "claude-acp");
+    localStorage.setItem("distill:defaultProvider", "claude-acp");
   });
 
   afterEach(() => {
@@ -198,7 +198,7 @@ describe("agentStore.setProviders", () => {
       .setProviders([{ id: "goose", label: "Goose" }], false);
 
     expect(useAgentStore.getState().selectedProvider).toBe("claude-acp");
-    expect(localStorage.getItem("goose:defaultProvider")).toBe("claude-acp");
+    expect(localStorage.getItem("distill:defaultProvider")).toBe("claude-acp");
   });
 
   it("falls back and persists when validated and provider is missing", () => {
@@ -207,7 +207,7 @@ describe("agentStore.setProviders", () => {
       .setProviders([{ id: "goose", label: "Goose" }], true);
 
     expect(useAgentStore.getState().selectedProvider).toBe("goose");
-    expect(localStorage.getItem("goose:defaultProvider")).toBe("goose");
+    expect(localStorage.getItem("distill:defaultProvider")).toBe("goose");
   });
 
   it("keeps valid provider during validated hydration", () => {
@@ -220,6 +220,6 @@ describe("agentStore.setProviders", () => {
     );
 
     expect(useAgentStore.getState().selectedProvider).toBe("claude-acp");
-    expect(localStorage.getItem("goose:defaultProvider")).toBe("claude-acp");
+    expect(localStorage.getItem("distill:defaultProvider")).toBe("claude-acp");
   });
 });

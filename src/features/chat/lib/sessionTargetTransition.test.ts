@@ -46,8 +46,8 @@ describe("transitionSessionTarget", () => {
     await transitionSessionTarget({
       sessionId: "session-owned",
       target: {
-        harnessId: "goose",
-        modelProviderId: "databricks_v2",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
         modelId: "goose-gpt-5-6-sol",
         modelName: "GPT-5.6 Sol",
       },
@@ -58,7 +58,7 @@ describe("transitionSessionTarget", () => {
 
     expect(mockAcpPrepareSession).toHaveBeenCalledWith(
       "session-owned",
-      "databricks_v2",
+      "claude-acp",
       "/project",
       {
         modelId: "goose-gpt-5-6-sol",

@@ -3,8 +3,6 @@ import type { DoctorCheck, DoctorReport } from "@/shared/api/doctor";
 import { useDoctorReport } from "@/shared/api/useDoctorReport";
 import { crateCheckIdToProviderId } from "@/features/providers/lib/agentIdMap";
 import { CURATED_PROVIDER_CATALOG_BY_ID } from "@/features/providers/curatedProviders";
-import { useDefaultProviderReadinessStore } from "@/features/providers/stores/defaultProviderReadinessStore";
-import { getBuildFeatureState } from "@/shared/profile/buildProfile";
 
 export type AgentProviderReadiness = "ready" | "not_installed" | "not_ready";
 
@@ -18,47 +16,17 @@ interface UseAgentProviderStatusReturn {
   refresh: () => Promise<Map<string, AgentProviderReadiness>>;
 }
 
-function gooseReadinessFromDefaultProviderStatus(
-  defaultProviderStatus: string | undefined,
-): AgentProviderReadiness {
-  return getBuildFeatureState().byoKeyProviders &&
-    defaultProviderStatus === "needs_setup"
-    ? "not_ready"
-    : "ready";
-}
-
-function currentGooseReadiness(): AgentProviderReadiness {
-  return gooseReadinessFromDefaultProviderStatus(
-    useDefaultProviderReadinessStore.getState().readiness?.status,
-  );
-}
-
-function initialReadiness(
-  gooseReadiness: AgentProviderReadiness = currentGooseReadiness(),
-): Map<string, AgentProviderReadiness> {
-  return new Map<string, AgentProviderReadiness>([["goose", gooseReadiness]]);
-}
-
 // Derive per-agent readiness from the doctor report. The crate identifies
 // agents by `ai-agent-<name>`; map those back to the frontend's provider ids
 // before recording readiness. Exported for non-hook consumers (berdctl)
 // that share the agent picker's readiness semantics.
 export function readinessFromReport(
   report: DoctorReport,
-  options: { gooseReadiness?: AgentProviderReadiness } = {},
 ): Map<string, AgentProviderReadiness> {
-  const readiness = initialReadiness(options.gooseReadiness);
+  const readiness = new Map<string, AgentProviderReadiness>();
   for (const check of report.checks) {
     const providerId = crateCheckIdToProviderId(check.id);
     if (!providerId) continue;
-
-    // The in-app Goose provider is served by the bundled `goosed` sidecar and
-    // does not depend on the system `goose` CLI. The `ai-agent-goose` doctor
-    // check only probes that external CLI, so it must not gate readiness for
-    // the served backend: leave the seeded value untouched. In BYO-key builds
-    // that seed can still be "not_ready" when no default model provider has
-    // been configured.
-    if (providerId === "goose") continue;
 
     const provider = CURATED_PROVIDER_CATALOG_BY_ID.get(providerId);
 
@@ -135,19 +103,15 @@ function readyIdsFromReadiness(
   );
 }
 
+const EMPTY_READINESS = new Map<string, AgentProviderReadiness>();
+
 export function useAgentProviderStatus(): UseAgentProviderStatusReturn {
   const query = useDoctorReport();
-  const defaultProviderReadinessStatus = useDefaultProviderReadinessStore(
-    (state) => state.readiness?.status,
-  );
-  const gooseReadiness = gooseReadinessFromDefaultProviderStatus(
-    defaultProviderReadinessStatus,
-  );
 
-  const agentReadiness = useMemo(() => {
-    if (!query.data) return initialReadiness(gooseReadiness);
-    return readinessFromReport(query.data, { gooseReadiness });
-  }, [gooseReadiness, query.data]);
+  const agentReadiness = useMemo(
+    () => (query.data ? readinessFromReport(query.data) : EMPTY_READINESS),
+    [query.data],
+  );
 
   const readyAgentIds = useMemo(
     () => readyIdsFromReadiness(agentReadiness),
@@ -162,10 +126,8 @@ export function useAgentProviderStatus(): UseAgentProviderStatusReturn {
   const refetch = query.refetch;
   const refresh = useCallback(async () => {
     const result = await refetch();
-    return result.data
-      ? readinessFromReport(result.data, { gooseReadiness })
-      : initialReadiness(gooseReadiness);
-  }, [gooseReadiness, refetch]);
+    return result.data ? readinessFromReport(result.data) : EMPTY_READINESS;
+  }, [refetch]);
 
   return {
     readyAgentIds,

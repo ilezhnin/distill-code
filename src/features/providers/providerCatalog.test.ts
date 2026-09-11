@@ -3,22 +3,11 @@ import type { ProviderCatalogEntry } from "@/shared/types/providers";
 import {
   getAgentProviders,
   getCatalogEntry,
-  getModelProviders,
   resolveAgentProviderCatalogId,
 } from "./providerCatalog";
 import { useProviderCatalogStore } from "./stores/providerCatalogStore";
 
 const catalogEntries: ProviderCatalogEntry[] = [
-  {
-    id: "goose",
-    displayName: "Goose",
-    category: "agent",
-    description:
-      "Open-source agent harness with your configured model providers",
-    setupMethod: "none",
-    group: "default",
-    aliases: ["goose"],
-  },
   {
     id: "claude-acp",
     displayName: "Claude Code",
@@ -42,25 +31,6 @@ const catalogEntries: ProviderCatalogEntry[] = [
     group: "default",
     aliases: ["codex-acp", "codex_cli", "codex"],
   },
-  {
-    id: "ollama",
-    displayName: "Ollama",
-    category: "model",
-    description: "Run local or self-hosted models",
-    setupMethod: "config_fields",
-    fields: [
-      {
-        key: "OLLAMA_HOST",
-        label: "Host",
-        secret: false,
-        required: true,
-        placeholder: "localhost or http://localhost:11434",
-        defaultValue: "http://localhost:11434",
-      },
-    ],
-    docsUrl: "https://ollama.com",
-    group: "default",
-  },
 ];
 
 describe("provider catalog selectors", () => {
@@ -68,21 +38,13 @@ describe("provider catalog selectors", () => {
     useProviderCatalogStore.getState().reset();
   });
 
-  it("returns the curated providers by default", () => {
-    expect(getCatalogEntry("databricks_v2")?.displayName).toBe(
-      "Databricks AI Gateway",
-    );
+  it("returns the curated harnesses by default", () => {
     expect(getAgentProviders().map((provider) => provider.id)).toEqual([
-      "goose",
       "claude-acp",
       "codex-acp",
       "grok-acp",
       "copilot-acp",
       "amp-acp",
-      "cursor-agent",
-    ]);
-    expect(getModelProviders().map((provider) => provider.id)).toEqual([
-      "databricks_v2",
     ]);
   });
 
@@ -100,22 +62,8 @@ describe("provider catalog selectors", () => {
     useProviderCatalogStore.getState().setEntries(catalogEntries);
 
     expect(getAgentProviders().map((provider) => provider.id)).toEqual([
-      "goose",
       "claude-acp",
       "codex-acp",
-    ]);
-    expect(getModelProviders().map((provider) => provider.id)).toEqual([
-      "ollama",
-    ]);
-    expect(getCatalogEntry("ollama")?.fields).toEqual([
-      {
-        key: "OLLAMA_HOST",
-        label: "Host",
-        secret: false,
-        required: true,
-        placeholder: "localhost or http://localhost:11434",
-        defaultValue: "http://localhost:11434",
-      },
     ]);
   });
 
@@ -155,11 +103,5 @@ describe("provider catalog selectors", () => {
     expect(
       resolveAgentProviderCatalogId("custom-id", "Codex compatible API"),
     ).toBeNull();
-  });
-
-  it("does not treat model providers as agents", () => {
-    useProviderCatalogStore.getState().setEntries(catalogEntries);
-
-    expect(resolveAgentProviderCatalogId("ollama", "Ollama")).toBeNull();
   });
 });

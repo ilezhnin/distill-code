@@ -19,7 +19,6 @@ export type InferredExplanationState =
   | { status: "idle" }
   | { status: "loading" }
   | { status: "done"; text: string }
-  | { status: "needs_setup" }
   | { status: "failed" };
 
 interface SecurityConfirmationState {

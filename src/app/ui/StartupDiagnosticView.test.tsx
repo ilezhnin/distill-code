@@ -44,7 +44,7 @@ describe("StartupDiagnosticView", () => {
 
   it("renders startup copy while keeping raw text in technical details", () => {
     const issue = buildStartupDiagnosticIssue(
-      new Error("Failed to spawn goose serve: denied"),
+      new Error("Failed to start the agent host: denied"),
     );
 
     render(<StartupDiagnosticView issue={issue} onRetry={vi.fn()} />);
@@ -54,7 +54,7 @@ describe("StartupDiagnosticView", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "The local Goose service didn't start. Try again, or copy the startup details and open the logs folder to share them with support.",
+        "The local agent host didn't start. Try again, or copy the startup details and open the logs folder to share them with support.",
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("Technical details")).toBeInTheDocument();
@@ -104,82 +104,5 @@ describe("StartupDiagnosticView", () => {
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     expect(onRetry).toHaveBeenCalledTimes(1);
-  });
-
-  it("renders an emphasized steps list for WARP failures", () => {
-    const issue = buildStartupDiagnosticIssue(new Error("Invalid params"), {
-      likelyWarpFailure: true,
-      status: 302,
-      kind: "http_status",
-      message: "kgoose probe to https://kgoose/ returned 302 Found",
-    });
-
-    render(<StartupDiagnosticView issue={issue} onRetry={vi.fn()} />);
-
-    const list = screen.getByRole("list");
-    const items = screen.getAllByRole("listitem");
-    expect(items).toHaveLength(2);
-    expect(list).toContainElement(items[0]);
-    expect(items[0]).toHaveTextContent("Connect to WARP");
-    expect(items[1]).toHaveTextContent("Click Retry");
-  });
-
-  it("omits the steps list for non-WARP failures", () => {
-    const issue = buildStartupDiagnosticIssue(
-      new Error("Failed to spawn goose serve: denied"),
-    );
-
-    render(<StartupDiagnosticView issue={issue} onRetry={vi.fn()} />);
-
-    expect(screen.queryByRole("list")).not.toBeInTheDocument();
-    expect(screen.queryByText("Connect to WARP")).not.toBeInTheDocument();
-  });
-
-  it("renders the connectivity probe response in technical details whenever a probe was run", () => {
-    const warpIssue = buildStartupDiagnosticIssue(new Error("Invalid params"), {
-      likelyWarpFailure: true,
-      status: 302,
-      kind: "http_status",
-      message: "kgoose probe to https://kgoose/ returned 302 Found",
-    });
-
-    const { unmount } = render(
-      <StartupDiagnosticView issue={warpIssue} onRetry={vi.fn()} />,
-    );
-
-    expect(screen.getByText("Connectivity probe")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        (_, element) => element?.textContent === warpIssue.connectivityProbe,
-      ),
-    ).toBeInTheDocument();
-    unmount();
-
-    const nonWarpIssue = buildStartupDiagnosticIssue(
-      new Error("Invalid params"),
-      {
-        likelyWarpFailure: false,
-        status: 404,
-        kind: "http_status",
-        message: "upstream 404",
-      },
-    );
-
-    render(<StartupDiagnosticView issue={nonWarpIssue} onRetry={vi.fn()} />);
-
-    expect(screen.getByText("Connectivity probe")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        (_, element) => element?.textContent === nonWarpIssue.connectivityProbe,
-      ),
-    ).toBeInTheDocument();
-  });
-
-  it("omits the connectivity probe block when no probe report is attached", () => {
-    const issue = buildStartupDiagnosticIssue(new Error("boom"));
-
-    render(<StartupDiagnosticView issue={issue} onRetry={vi.fn()} />);
-
-    expect(screen.queryByText("Connectivity probe")).not.toBeInTheDocument();
   });
 });

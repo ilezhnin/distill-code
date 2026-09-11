@@ -6,7 +6,7 @@ import {
 /**
  * App context preamble injected into every agent session while the berdctl
  * broker is running. It exists to make berdctl discoverable: the CLI is on
- * the harness's PATH (goose_serve.rs sets the shim and BERDCTL_BIN), but
+ * the harness's PATH (the agent host sets the shim and BERDCTL_BIN), but
  * nothing else ever tells the model it exists.
  *
  * Kept deliberately small (~85 tokens): nouns and verbs only — enough for

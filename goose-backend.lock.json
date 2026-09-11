@@ -1,9 +1,0 @@
-{
-  "repo": "https://github.com/ilezhnin/distill-goose.git",
-  "ref": "distill/main",
-  "commit": "2a81d88e448a7513a776786bcd2aa0aac72995a3",
-  "package": "goose-cli",
-  "bin": "goose",
-  "local": true,
-  "localRepo": "../distill-goose"
-}

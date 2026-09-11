@@ -5,8 +5,6 @@ export type AppView =
   | "home"
   | "planner"
   | "chat"
-  | "automations"
-  | "builderbot"
   | "design-system"
   | "skills"
   | "agents"
@@ -15,36 +13,10 @@ export type AppView =
   | "session-history"
   | "settings";
 
-export type AutomationRunLocation = {
-  automationId: string;
-  runKey: string;
-};
-
-export type AutomationNavigationRoute =
-  | { surface: "overview" }
-  | { surface: "builder"; automationId?: string }
-  | {
-      surface: "history";
-      selectedRun: AutomationRunLocation | null;
-    }
-  | {
-      surface: "detail";
-      automationId: string;
-      tab: "details" | "history";
-      selectedRunKey: string | null;
-    };
-
-export type BuilderbotNavigationRoute =
-  | { surface: "overview"; tab?: "tasks" | "automations" }
-  | { surface: "task"; taskKey: string }
-  | { surface: "automation"; automationId: string };
-
 export type AppNavigationLocation =
   | { view: "home" }
   | { view: "planner" }
   | { view: "chat"; sessionId: string | null }
-  | { view: "automations"; route: AutomationNavigationRoute }
-  | { view: "builderbot"; route: BuilderbotNavigationRoute }
   | { view: "design-system"; designSystemSection: DesignSystemSection }
   | { view: "skills"; skillId: string | null }
   | { view: "agents"; personaId: string | null }

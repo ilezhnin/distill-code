@@ -236,6 +236,24 @@ function New-BerdTemporaryFile {
     return Get-Item -LiteralPath ([System.IO.Path]::GetTempFileName())
 }
 
+# Wait for exactly one process to exit.
+#
+# `Start-Process -Wait` does not do this: PowerShell puts the child in a job
+# object and waits for every process it spawned as well. An MSVC-backed cargo
+# build leaves `vctip.exe` (the Visual C++ telemetry helper) running long after
+# cl.exe and cargo are gone, so `-Wait` hangs there indefinitely -- the launcher
+# would print "cargo build berdctl", finish the build, and then sit forever with
+# no output. Starting with -PassThru but no -Wait and joining on the process
+# handle waits for that process only.
+function Wait-ForProcessExit {
+    param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
+    $Process.WaitForExit()
+    # WaitForExit() returns as soon as the process object is signalled, which
+    # can be before ExitCode is populated on the PowerShell-side object.
+    $Process.Refresh()
+    return $Process
+}
+
 function Invoke-CaptureCommand {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -247,7 +265,8 @@ function Invoke-CaptureCommand {
     $stderr = New-BerdTemporaryFile
     try {
         $arguments = Join-WindowsProcessArguments $ArgumentList
-        $process = Start-Process -FilePath $FilePath -ArgumentList $arguments -WorkingDirectory $WorkingDirectory -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdout.FullName -RedirectStandardError $stderr.FullName
+        $process = Start-Process -FilePath $FilePath -ArgumentList $arguments -WorkingDirectory $WorkingDirectory -PassThru -NoNewWindow -RedirectStandardOutput $stdout.FullName -RedirectStandardError $stderr.FullName
+        Wait-ForProcessExit -Process $process | Out-Null
         $output = @()
         if (Test-Path $stdout.FullName) {
             $output += @(Get-Content $stdout.FullName -ErrorAction SilentlyContinue)
@@ -283,11 +302,12 @@ function Invoke-CheckedCommand {
 
     if ([System.IO.Path]::GetExtension($FilePath) -ieq ".cmd" -or [System.IO.Path]::GetExtension($FilePath) -ieq ".bat") {
         $command = "`"$FilePath`" $(Join-WindowsProcessArguments $ArgumentList)"
-        $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/d /s /c `"$command`"" -WorkingDirectory $WorkingDirectory -Wait -PassThru -NoNewWindow
+        $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/d /s /c `"$command`"" -WorkingDirectory $WorkingDirectory -PassThru -NoNewWindow
     } else {
         $arguments = Join-WindowsProcessArguments $ArgumentList
-        $process = Start-Process -FilePath $FilePath -ArgumentList $arguments -WorkingDirectory $WorkingDirectory -Wait -PassThru -NoNewWindow
+        $process = Start-Process -FilePath $FilePath -ArgumentList $arguments -WorkingDirectory $WorkingDirectory -PassThru -NoNewWindow
     }
+    Wait-ForProcessExit -Process $process | Out-Null
     if ($process.ExitCode -ne 0) {
         throw "$Label failed with exit code $($process.ExitCode)."
     }
@@ -329,7 +349,8 @@ function Invoke-WindowsChildScript {
     $shellArgs += $ArgumentList
 
     Write-WindowsDevInfo $Label
-    $process = Start-Process -FilePath $shell -ArgumentList (Join-WindowsProcessArguments $shellArgs) -Wait -PassThru -NoNewWindow
+    $process = Start-Process -FilePath $shell -ArgumentList (Join-WindowsProcessArguments $shellArgs) -PassThru -NoNewWindow
+    Wait-ForProcessExit -Process $process | Out-Null
     if ($process.ExitCode -ne 0) {
         throw "$Label failed with exit code $($process.ExitCode)."
     }
@@ -415,67 +436,6 @@ function Invoke-BoundedCommand {
     }
 }
 
-# Classify bounded Goose identity probes. Current Goose prints bare semver for
-# `--version`, so identity cannot be inferred from that output alone. Require a
-# successful help banner with Goose-specific commands when accepting bare semver;
-# still accept older clap banners that explicitly name the expected binary.
-function Test-GooseVersionOutput {
-    param(
-        [AllowNull()]$ExitCode,
-        [AllowNull()][string]$Output,
-        [bool]$TimedOut,
-        [Parameter(Mandatory = $true)][string]$BinName,
-        [AllowNull()]$HelpExitCode,
-        [AllowNull()][string]$HelpOutput,
-        [bool]$HelpTimedOut
-    )
-
-    if ($TimedOut) {
-        return [pscustomobject]@{ Ok = $false; Message = "Goose --version probe timed out." }
-    }
-    if ($ExitCode -ne 0) {
-        return [pscustomobject]@{ Ok = $false; Message = "Goose --version exited with code $ExitCode." }
-    }
-    if ([string]::IsNullOrWhiteSpace($Output)) {
-        return [pscustomobject]@{ Ok = $false; Message = "Goose --version produced no output." }
-    }
-
-    $escaped = [regex]::Escape($BinName)
-    if ($Output -match "(?im)^\s*$escaped\s+v?\d+\.\d+") {
-        return [pscustomobject]@{ Ok = $true; Message = $Output.Trim() }
-    }
-    if ($Output -match '^\s*v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\s*$') {
-        if ($HelpTimedOut -or $HelpExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($HelpOutput)) {
-            return [pscustomobject]@{ Ok = $false; Message = "Goose --help identity probe failed." }
-        }
-        $hasUsage = $HelpOutput -match '(?im)^Usage:\s+goose(?:\.exe)?\s+'
-        $hasCommands = $HelpOutput -match '(?im)^\s+configure\s+' -and $HelpOutput -match '(?im)^\s+session\s+' -and $HelpOutput -match '(?im)^\s+serve\s+'
-        if ($hasUsage -and $hasCommands) {
-            return [pscustomobject]@{ Ok = $true; Message = $Output.Trim() }
-        }
-    }
-    return [pscustomobject]@{ Ok = $false; Message = "Goose identity probes did not identify '$BinName': $Output" }
-}
-
-function Assert-GooseBinaryIdentity {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$BinName,
-        [int]$TimeoutSeconds = 15
-    )
-
-    if (-not (Test-Path $Path -PathType Leaf)) {
-        throw "Goose binary not found for identity probe: $Path"
-    }
-
-    $versionProbe = Invoke-BoundedCommand -FilePath $Path -ArgumentList @("--version") -TimeoutSeconds $TimeoutSeconds
-    $helpProbe = Invoke-BoundedCommand -FilePath $Path -ArgumentList @("--help") -TimeoutSeconds $TimeoutSeconds
-    $verdict = Test-GooseVersionOutput -ExitCode $versionProbe.ExitCode -Output $versionProbe.Output -TimedOut $versionProbe.TimedOut -BinName $BinName -HelpExitCode $helpProbe.ExitCode -HelpOutput $helpProbe.Output -HelpTimedOut $helpProbe.TimedOut
-    if (-not $verdict.Ok) {
-        throw "Goose identity probe failed for $Path. $($verdict.Message)"
-    }
-}
-
 function Join-WindowsProcessArguments {
     param([string[]]$Arguments)
     $quoted = foreach ($argument in $Arguments) {
@@ -493,12 +453,7 @@ function Join-WindowsProcessArguments {
     return ($quoted -join " ")
 }
 
-# Single source of truth for mapping the seven renderer build gates onto the
-# matching Tauri Cargo feature set. Callers may add posture features (for
-# example berdctl/app-test-driver/devtools) without duplicating gate policy.
-# Windows cannot call scripts/block-feature-gates.sh (no guaranteed bash in the
-# release image), so this table is pinned equal to that mapper by
-# scripts/release/tests/release-scripts.test.mjs.
+# Maps the renderer build gates onto the matching Tauri Cargo feature set.
 function Get-BerdAppFeatures {
     param([string[]]$BaseFeatures = @("berdctl", "app-test-driver"))
 
@@ -507,26 +462,6 @@ function Get-BerdAppFeatures {
         if (-not [string]::IsNullOrWhiteSpace($feature)) {
             $features.Add($feature)
         }
-    }
-    $gates = @(
-        @{ Env = "VITE_AGENT_TOOLS"; Feature = "block-agent-tools" },
-        @{ Env = "VITE_AUTOMATIONS"; Feature = "block-automations" },
-        @{ Env = "VITE_BUILDERBOT"; Feature = "block-builderbot" },
-        @{ Env = "VITE_FEEDBACK"; Feature = "block-feedback" },
-        @{ Env = "VITE_MANAGED_CONNECTIONS"; Feature = "block-managed-connections" },
-        @{ Env = "VITE_TELEMETRY_ENFORCED"; Feature = "block-telemetry-enforced" },
-        @{ Env = "VITE_VOICE_DICTATION"; Feature = "block-voice-dictation" }
-    )
-    foreach ($gate in $gates) {
-        $value = [Environment]::GetEnvironmentVariable($gate.Env, "Process")
-        if ([string]::IsNullOrWhiteSpace($value)) { $value = "0" }
-        if ($value -ne "0" -and $value -ne "1") {
-            throw "$($gate.Env) must be 0 or 1 (got: $value)"
-        }
-        if ($value -eq "1") { $features.Add($gate.Feature) }
-    }
-    if ([Environment]::GetEnvironmentVariable("VITE_VOICE_DICTATION", "Process") -ne "1") {
-        $features.Add("no-voice-dictation")
     }
     return ($features -join ",")
 }
@@ -617,17 +552,19 @@ function Resolve-WindowsCleanupPaths {
     $repoRoot = Get-BerdRepoRoot
 
     # Honor the same overrides the rest of the lane uses so cleanup targets
-    # the state that setup/dev actually created. A BERD_TAURI_CARGO_TARGET_DIR
-    # override points directly at a cargo target dir; only that dir is
-    # Berd-owned, not its parent.
-    $berdTauriRoot = Join-Path $localAppData "berd-tauri"
-    if (-not [string]::IsNullOrWhiteSpace($env:BERD_TAURI_CARGO_TARGET_DIR)) {
-        $berdTauriRoot = $env:BERD_TAURI_CARGO_TARGET_DIR
+    # the state that setup/dev actually created: the active cargo target dir
+    # (repo-local unless BERD_TAURI_CARGO_TARGET_DIR overrides it), plus the
+    # %LOCALAPPDATA%\berd-tauri tree older checkouts left behind.
+    $berdTauriRoot = Get-TauriCargoTargetDir
+    $legacyBerdTauriRoot = Get-LegacyTauriCargoTargetRoot
+    if ($legacyBerdTauriRoot -eq $berdTauriRoot) {
+        $legacyBerdTauriRoot = $null
     }
 
     return [pscustomobject]@{
-        BerdDevRoot = (Resolve-GooseDevPaths).DevRoot
+        BerdDevRoot = (Get-BerdDevRoot)
         BerdTauriRoot = $berdTauriRoot
+        LegacyBerdTauriRoot = $legacyBerdTauriRoot
         BlockCertDir = $blockCertDir
         BlockCertFile = Join-Path $blockCertDir "root-certs.pem"
         CorepackPnpmVersionDir = Join-Path $localAppData "node\corepack\v1\pnpm\$(Get-RequiredPnpmVersion)"
@@ -637,8 +574,6 @@ function Resolve-WindowsCleanupPaths {
         RepoNodeModules = Join-Path $repoRoot "node_modules"
         RepoPnpmStore = Join-Path $repoRoot ".pnpm-store"
         RepoDist = Join-Path $repoRoot "dist"
-        SdkNodeModules = Join-Path $repoRoot "sdk\node_modules"
-        SdkDist = Join-Path $repoRoot "sdk\dist"
         GitHooksDir = Join-Path $repoRoot ".git\hooks"
     }
 }
@@ -654,40 +589,44 @@ function Get-BlockNpmEnvironmentTargets {
     )
 }
 
-function Resolve-GooseDevPaths {
-    $devRoot = $env:GOOSE_DEV_ROOT
+function Get-BerdDevRoot {
+    $devRoot = $env:BERD_DEV_ROOT
     if ([string]::IsNullOrWhiteSpace($devRoot)) {
         $devRoot = Join-Path (Get-LocalAppDataRoot) "berd-dev"
     }
-
-    $repo = $env:GOOSE_DEV_REPO
-    if ([string]::IsNullOrWhiteSpace($repo)) {
-        $repo = Join-Path $devRoot "goose"
-    }
-
-    $cargoTarget = $env:GOOSE_DEV_CARGO_TARGET_DIR
-    if ([string]::IsNullOrWhiteSpace($cargoTarget)) {
-        $cargoTarget = Join-Path $devRoot "cargo-target"
-    }
-
-    $stampFile = $env:GOOSE_DEV_STAMP_FILE
-    if ([string]::IsNullOrWhiteSpace($stampFile)) {
-        $stampFile = Join-Path $devRoot "stamp.json"
-    }
-
-    return [pscustomobject]@{
-        DevRoot = $devRoot
-        Repo = $repo
-        CargoTargetDir = $cargoTarget
-        StampFile = $stampFile
-    }
+    return $devRoot
 }
 
 function Get-TauriCargoTargetDir {
     if (-not [string]::IsNullOrWhiteSpace($env:BERD_TAURI_CARGO_TARGET_DIR)) {
         return $env:BERD_TAURI_CARGO_TARGET_DIR
     }
-    return (Join-Path (Get-LocalAppDataRoot) "berd-tauri\cargo-target")
+    # Repo-local by default. A debug Tauri build of this workspace is 30-60 GB
+    # (deps + incremental + PDBs); parking that under %LOCALAPPDATA% fills the
+    # system drive and, when the checkout lives on another drive, keeps a
+    # second full copy alive next to the one `Launch-Distill.ps1` builds.
+    # Point BERD_TAURI_CARGO_TARGET_DIR somewhere else to override.
+    return (Join-Path (Get-BerdRepoRoot) "src-tauri\target")
+}
+
+# Where pre-2026-09 checkouts wrote the Tauri cargo target. Kept only so
+# cleanup can reclaim it; nothing builds here any more.
+function Get-LegacyTauriCargoTargetRoot {
+    return (Join-Path (Get-LocalAppDataRoot) "berd-tauri")
+}
+
+# $true when $Path sits on the drive Windows booted from. Used to warn before
+# a multi-tens-of-GB build cache lands on the system drive.
+function Test-PathOnSystemDrive {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $systemDrive = $env:SystemDrive
+    if ([string]::IsNullOrWhiteSpace($systemDrive)) { return $false }
+    try {
+        $full = [System.IO.Path]::GetFullPath($Path)
+    } catch {
+        return $false
+    }
+    return $full.StartsWith(($systemDrive.TrimEnd("\") + "\"), [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 function Read-JsonFile {
@@ -848,125 +787,6 @@ function Get-CargoMetadataTargetDirectory {
     return $Fallback
 }
 
-function Get-GooseBackendSettings {
-    $lockFile = $env:GOOSE_BACKEND_LOCK_FILE
-    if ([string]::IsNullOrWhiteSpace($lockFile)) {
-        $lockFile = Join-Path $script:RepoRoot "goose-backend.lock.json"
-    }
-
-    $lock = $null
-    if (Test-Path $lockFile -PathType Leaf) {
-        $lock = Read-JsonFile $lockFile
-    }
-
-    $repo = $env:GOOSE_DEV_CLONE_URL
-    if ([string]::IsNullOrWhiteSpace($repo)) {
-        $repo = Get-ObjectValue $lock "repo"
-    }
-    if ([string]::IsNullOrWhiteSpace($repo)) {
-        $repo = "https://github.com/aaif-goose/goose.git"
-    }
-
-    $ref = $env:GOOSE_DEV_REF
-    if ([string]::IsNullOrWhiteSpace($ref)) {
-        $ref = $env:GOOSE_DEV_BRANCH
-    }
-    if ([string]::IsNullOrWhiteSpace($ref)) {
-        $ref = Get-ObjectValue $lock "ref"
-    }
-    if ([string]::IsNullOrWhiteSpace($ref)) {
-        $ref = "main"
-    }
-
-    $commit = $env:GOOSE_DEV_COMMIT
-    if ([string]::IsNullOrWhiteSpace($commit)) {
-        $commit = Get-ObjectValue $lock "commit"
-    }
-
-    $package = $env:GOOSE_DEV_PACKAGE
-    if ([string]::IsNullOrWhiteSpace($package)) {
-        $package = Get-ObjectValue $lock "package"
-    }
-    if ([string]::IsNullOrWhiteSpace($package)) {
-        $package = "goose-cli"
-    }
-
-    $bin = $env:GOOSE_DEV_BIN
-    if ([string]::IsNullOrWhiteSpace($bin)) {
-        $bin = Get-ObjectValue $lock "bin"
-    }
-    if ([string]::IsNullOrWhiteSpace($bin)) {
-        $bin = "goose"
-    }
-
-    $mode = $env:GOOSE_DEV_MODE
-    if ([string]::IsNullOrWhiteSpace($mode)) {
-        $mode = "auto"
-    }
-
-    $buildProfile = $env:GOOSE_BUILD_PROFILE
-    if ([string]::IsNullOrWhiteSpace($buildProfile)) {
-        $buildProfile = "debug"
-    }
-    if ($buildProfile -notin @("debug", "release")) {
-        throw "GOOSE_BUILD_PROFILE must be debug or release, got: $buildProfile"
-    }
-
-    $remote = $env:GOOSE_DEV_REMOTE
-    if ([string]::IsNullOrWhiteSpace($remote)) {
-        $remote = "origin"
-    }
-
-    $patchDir = $env:GOOSE_DEV_PATCH_DIR
-    if ([string]::IsNullOrWhiteSpace($patchDir)) {
-        $patchDir = Join-Path $script:RepoRoot "patches\goose"
-    }
-
-    # Local source mode: build Goose straight out of a working copy the
-    # developer owns instead of the disposable managed clone. The path comes
-    # from GOOSE_DEV_REPO or the lockfile's "localRepo"; a relative value is
-    # resolved against this repo's root, so a sibling checkout
-    # ("../distill-goose") works on any machine without hardcoding a drive.
-    $localRepo = $env:GOOSE_DEV_REPO
-    if ([string]::IsNullOrWhiteSpace($localRepo)) {
-        $localRepo = Get-ObjectValue $lock "localRepo"
-    }
-    if (-not [string]::IsNullOrWhiteSpace($localRepo) -and -not [System.IO.Path]::IsPathRooted($localRepo)) {
-        $localRepo = [System.IO.Path]::GetFullPath((Join-Path $script:RepoRoot $localRepo))
-    }
-
-    $localSource = ($env:GOOSE_DEV_LOCAL -eq "1")
-    if (-not $localSource -and $env:GOOSE_DEV_LOCAL -ne "0") {
-        $lockLocal = Get-ObjectValue $lock "local"
-        if ($lockLocal -is [bool]) {
-            $localSource = $lockLocal
-        }
-        elseif ("$lockLocal" -in @("1", "true")) {
-            $localSource = $true
-        }
-    }
-    if ($localSource -and [string]::IsNullOrWhiteSpace($localRepo)) {
-        throw "Local Goose source mode is enabled but no checkout path is set. Set GOOSE_DEV_REPO or 'localRepo' in $lockFile."
-    }
-
-    return [pscustomobject]@{
-        LockFile = $lockFile
-        CloneUrl = $repo
-        Ref = $ref
-        Commit = $commit
-        Package = $package
-        Bin = $bin
-        Mode = $mode
-        BuildProfile = $buildProfile
-        Remote = $remote
-        AllowDirty = ($env:GOOSE_DEV_ALLOW_DIRTY -eq "1")
-        PatchDir = $patchDir
-        PatchFingerprint = (Get-GoosePatchFingerprint -PatchDir $patchDir)
-        LocalSource = $localSource
-        LocalRepo = $localRepo
-    }
-}
-
 function Get-WindowsExeName {
     param([Parameter(Mandatory = $true)][string]$Name)
     if ($Name.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -991,8 +811,8 @@ $script:PeMachineI386 = 0x014C
 $script:PeCharacteristicsExecutableImage = 0x0002
 
 # Return the exact Tauri-resolved sidecar file name for a stem/triple, e.g.
-# Get-WindowsSidecarName "goosed" "x86_64-pc-windows-msvc"
-#   -> goosed-x86_64-pc-windows-msvc.exe
+# Get-WindowsSidecarName "berdctl" "x86_64-pc-windows-msvc"
+#   -> berdctl-x86_64-pc-windows-msvc.exe
 function Get-WindowsSidecarName {
     param(
         [Parameter(Mandatory = $true)][string]$Stem,
@@ -1217,239 +1037,6 @@ function Stage-WindowsSidecar {
     return $stagedPath
 }
 
-function Resolve-GooseBinaryPath {
-    param(
-        [Parameter(Mandatory = $true)]$Paths,
-        [Parameter(Mandatory = $true)]$Settings
-    )
-
-    $targetDir = $Paths.CargoTargetDir
-    if (Test-Path $Paths.Repo -PathType Container) {
-        $targetDir = Get-CargoMetadataTargetDirectory -WorkingDirectory $Paths.Repo -Fallback $Paths.CargoTargetDir
-    }
-
-    return (Join-Path (Join-Path $targetDir $Settings.BuildProfile) (Get-WindowsExeName $Settings.Bin))
-}
-
-function Test-GooseBinaryIncludesGrokAcp {
-    param([Parameter(Mandatory = $true)][string]$BinPath)
-    if (-not (Test-Path -LiteralPath $BinPath -PathType Leaf)) {
-        return $false
-    }
-    $result = Invoke-CaptureCommand -FilePath "findstr.exe" -ArgumentList @("/C:grok-acp", "/M", $BinPath)
-    return ($result.ExitCode -eq 0)
-}
-
-function Assert-DistillGooseBinary {
-    param([Parameter(Mandatory = $true)][string]$BinPath)
-    $patchDir = Join-Path $script:RepoRoot "patches\goose"
-    $hasGrokPatch = @((Get-GoosePatchFiles -PatchDir $patchDir) | Where-Object { $_.Name -match "grok-acp" }).Count -gt 0
-    if (-not $hasGrokPatch) {
-        return
-    }
-    if (-not (Test-Path -LiteralPath $BinPath -PathType Leaf)) {
-        throw "Goose binary not found at $BinPath. Unset GOOSE_BIN and run 'just setup-windows'."
-    }
-    if (-not (Test-GooseBinaryIncludesGrokAcp -BinPath $BinPath)) {
-        throw "Goose at $BinPath does not include grok-acp. Distill patches that provider into the managed Goose checkout. Unset GOOSE_BIN and run 'just setup-windows'."
-    }
-}
-
-function Get-GoosePatchFiles {
-    param([AllowEmptyString()][string]$PatchDir)
-
-    if ([string]::IsNullOrWhiteSpace($PatchDir) -or -not (Test-Path -LiteralPath $PatchDir -PathType Container)) {
-        return @()
-    }
-
-    return @(Get-ChildItem -LiteralPath $PatchDir -File -Filter "*.patch" | Sort-Object -Property Name)
-}
-
-function Get-GoosePatchFingerprint {
-    param([AllowEmptyString()][string]$PatchDir)
-
-    $files = @(Get-GoosePatchFiles -PatchDir $PatchDir)
-    if ($files.Count -eq 0) {
-        return "none"
-    }
-
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $zero = [byte[]](0)
-        foreach ($file in $files) {
-            $nameBytes = [System.Text.Encoding]::UTF8.GetBytes($file.Name)
-            $data = [System.IO.File]::ReadAllBytes($file.FullName)
-            $lengthBytes = [System.Text.Encoding]::ASCII.GetBytes("$($data.Length)")
-            [void]$sha.TransformBlock($nameBytes, 0, $nameBytes.Length, $null, 0)
-            [void]$sha.TransformBlock($zero, 0, 1, $null, 0)
-            [void]$sha.TransformBlock($lengthBytes, 0, $lengthBytes.Length, $null, 0)
-            [void]$sha.TransformBlock($zero, 0, 1, $null, 0)
-            if ($data.Length -gt 0) {
-                [void]$sha.TransformBlock($data, 0, $data.Length, $null, 0)
-            }
-            [void]$sha.TransformBlock($zero, 0, 1, $null, 0)
-        }
-        [void]$sha.TransformFinalBlock([byte[]]@(), 0, 0)
-        return ([System.BitConverter]::ToString($sha.Hash) -replace "-", "").ToLowerInvariant()
-    } finally {
-        $sha.Dispose()
-    }
-}
-
-function Test-GoosePatchesAlreadyApplied {
-    param(
-        [Parameter(Mandatory = $true)][string]$Repo,
-        [AllowEmptyString()][string]$PatchDir
-    )
-
-    $files = @(Get-GoosePatchFiles -PatchDir $PatchDir)
-    if ($files.Count -eq 0) {
-        return $false
-    }
-
-    foreach ($file in $files) {
-        $check = Invoke-CaptureCommand -FilePath "git" -ArgumentList @("-C", $Repo, "apply", "--reverse", "--check", $file.FullName)
-        if ($check.ExitCode -ne 0) {
-            return $false
-        }
-    }
-    return $true
-}
-
-function Apply-GoosePatches {
-    param(
-        [Parameter(Mandatory = $true)]$Paths,
-        [Parameter(Mandatory = $true)]$Settings,
-        [Parameter(Mandatory = $true)][string]$Action
-    )
-
-    $files = @(Get-GoosePatchFiles -PatchDir $Settings.PatchDir)
-    foreach ($file in $files) {
-        Write-WindowsDevInfo "Applying Goose patch $($file.Name)."
-        $apply = Invoke-CaptureCommand -FilePath "git" -ArgumentList @("-C", $Paths.Repo, "apply", "--whitespace=nowarn", $file.FullName)
-        if ($apply.ExitCode -ne 0) {
-            return (Resolve-GooseFailure -Message "Failed to apply Goose patch $($file.FullName) to managed checkout at $($Paths.Repo)." -Action $Action -Mode $Settings.Mode)
-        }
-    }
-    return $null
-}
-
-function Test-GooseCheckoutDirtyAllowed {
-    param([Parameter(Mandatory = $true)][string]$Repo)
-
-    $dirty = Invoke-CaptureCommand -FilePath "git" -ArgumentList @("-C", $Repo, "status", "--porcelain")
-    if ($dirty.ExitCode -ne 0) {
-        return [pscustomobject]@{ Allowed = $false; Message = "Could not inspect managed Goose checkout at $Repo." }
-    }
-    if ([string]::IsNullOrWhiteSpace($dirty.Output)) {
-        return [pscustomobject]@{ Allowed = $true; Message = "" }
-    }
-
-    return [pscustomobject]@{ Allowed = $false; Message = "Managed Goose checkout at $Repo is dirty. Use a dedicated checkout or set GOOSE_DEV_ALLOW_DIRTY=1." }
-}
-
-function Read-GooseStamp {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    if (-not (Test-Path $Path -PathType Leaf)) {
-        return $null
-    }
-    return Read-JsonFile $Path
-}
-
-function Write-GooseStamp {
-    param(
-        [Parameter(Mandatory = $true)]$Paths,
-        [Parameter(Mandatory = $true)]$Settings,
-        [Parameter(Mandatory = $true)][string]$Commit,
-        [Parameter(Mandatory = $true)][string]$BinPath
-    )
-
-    $parent = Split-Path -Parent $Paths.StampFile
-    New-Item -ItemType Directory -Force -Path $parent | Out-Null
-    $patchFingerprint = Get-ObjectValue $Settings "PatchFingerprint"
-    if ([string]::IsNullOrWhiteSpace($patchFingerprint)) {
-        $patchFingerprint = "none"
-    }
-    $stamp = [ordered]@{
-        repo = $Paths.Repo
-        lockFile = $Settings.LockFile
-        ref = $Settings.Ref
-        commit = $Commit
-        package = $Settings.Package
-        binName = $Settings.Bin
-        patchFingerprint = $patchFingerprint
-        buildProfile = $Settings.BuildProfile
-        bin = $BinPath
-        sha256 = (Get-FileSha256 -Path $BinPath)
-    }
-    $stamp | ConvertTo-Json -Depth 4 | Set-Content -Path $Paths.StampFile -Encoding UTF8
-}
-
-function Test-GooseStampRecordMatches {
-    param(
-        [AllowNull()]$Stamp,
-        [Parameter(Mandatory = $true)]$Paths,
-        [Parameter(Mandatory = $true)]$Settings,
-        [Parameter(Mandatory = $true)][string]$BinPath,
-        [AllowNull()][string]$LocalHead
-    )
-
-    if ($null -eq $Stamp) {
-        return $false
-    }
-    if ((Get-ObjectValue $Stamp "repo") -ne $Paths.Repo) {
-        return $false
-    }
-    if ((Get-ObjectValue $Stamp "ref") -ne $Settings.Ref) {
-        return $false
-    }
-    if ((Get-ObjectValue $Stamp "commit") -ne $Settings.Commit) {
-        return $false
-    }
-    if ((Get-ObjectValue $Stamp "package") -ne $Settings.Package) {
-        return $false
-    }
-    if ((Get-ObjectValue $Stamp "binName") -ne $Settings.Bin) {
-        return $false
-    }
-    $expectedFingerprint = Get-ObjectValue $Settings "PatchFingerprint"
-    if ([string]::IsNullOrWhiteSpace($expectedFingerprint)) {
-        $expectedFingerprint = "none"
-    }
-    $recordedFingerprint = Get-ObjectValue $Stamp "patchFingerprint"
-    if ([string]::IsNullOrWhiteSpace($recordedFingerprint)) {
-        $recordedFingerprint = "none"
-    }
-    if ($recordedFingerprint -ne $expectedFingerprint) {
-        return $false
-    }
-    if ((Get-ObjectValue $Stamp "buildProfile") -ne $Settings.BuildProfile) {
-        return $false
-    }
-    if ((Get-ObjectValue $Stamp "bin") -ne $BinPath) {
-        return $false
-    }
-    if (-not (Test-Path $BinPath -PathType Leaf)) {
-        return $false
-    }
-    # Bind the readiness record to the binary's content, not just its path. A
-    # stamp without a recorded digest predates this gate and cannot be trusted
-    # as ready; a recorded digest that no longer matches the on-disk bytes means
-    # the binary was replaced or corrupted after it was stamped, so reuse must
-    # rebuild rather than stage stale/unknown bytes.
-    $recordedSha = Get-ObjectValue $Stamp "sha256"
-    if ([string]::IsNullOrWhiteSpace($recordedSha)) {
-        return $false
-    }
-    if ((Get-FileSha256 -Path $BinPath) -ne $recordedSha) {
-        return $false
-    }
-    if (-not [string]::IsNullOrWhiteSpace($LocalHead) -and (Get-ObjectValue $Stamp "commit") -ne $LocalHead) {
-        return $false
-    }
-    return $true
-}
-
 function Get-GitHead {
     param([Parameter(Mandatory = $true)][string]$Repo)
     $result = Invoke-CaptureCommand -FilePath "git" -ArgumentList @("-C", $Repo, "rev-parse", "HEAD")
@@ -1457,246 +1044,6 @@ function Get-GitHead {
         return $null
     }
     return $result.Output.Trim()
-}
-
-function New-GooseResult {
-    param(
-        [Parameter(Mandatory = $true)][int]$ExitCode,
-        [Parameter(Mandatory = $true)][bool]$Ready,
-        [AllowNull()][string]$BinPath,
-        [Parameter(Mandatory = $true)][string]$Message
-    )
-    return [pscustomobject]@{
-        ExitCode = $ExitCode
-        Ready = $Ready
-        BinPath = $BinPath
-        Message = $Message
-    }
-}
-
-function Resolve-GooseFailure {
-    param(
-        [Parameter(Mandatory = $true)][string]$Message,
-        [Parameter(Mandatory = $true)][string]$Action,
-        [Parameter(Mandatory = $true)][string]$Mode
-    )
-    if ($Mode -eq "required") {
-        throw $Message
-    }
-    Write-WindowsDevInfo $Message
-    if ($Action -eq "Check") {
-        return (New-GooseResult -ExitCode 2 -Ready $false -BinPath $null -Message $Message)
-    }
-    return (New-GooseResult -ExitCode 0 -Ready $false -BinPath $null -Message $Message)
-}
-
-function Initialize-GooseManagedCheckout {
-    param(
-        [Parameter(Mandatory = $true)]$Paths,
-        [Parameter(Mandatory = $true)]$Settings,
-        [Parameter(Mandatory = $true)][string]$Action
-    )
-
-    if (Test-Path (Join-Path $Paths.Repo ".git") -PathType Container) {
-        return $null
-    }
-
-    if ($Action -eq "Check") {
-        return (Resolve-GooseFailure -Message "Managed Goose checkout not found at $($Paths.Repo). Run 'just setup-windows'." -Action $Action -Mode $Settings.Mode)
-    }
-
-    Write-WindowsDevInfo "Cloning managed Goose checkout into $($Paths.Repo)."
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Paths.Repo) | Out-Null
-    Invoke-CheckedCommand -FilePath "git" -ArgumentList @("clone", $Settings.CloneUrl, $Paths.Repo) -Label "git clone Goose"
-    return $null
-}
-
-function Resolve-GooseManagedCommit {
-    param(
-        [Parameter(Mandatory = $true)]$Paths,
-        [Parameter(Mandatory = $true)]$Settings,
-        [Parameter(Mandatory = $true)][string]$Action
-    )
-
-    if (-not [string]::IsNullOrWhiteSpace($Settings.Commit)) {
-        return $null
-    }
-
-    $resolved = Invoke-CaptureCommand -FilePath "git" -ArgumentList @("-C", $Paths.Repo, "ls-remote", $Settings.Remote, $Settings.Ref)
-    if ($resolved.ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($resolved.Output)) {
-        return (Resolve-GooseFailure -Message "Could not resolve Goose ref $($Settings.Remote)/$($Settings.Ref) for managed checkout at $($Paths.Repo)." -Action $Action -Mode $Settings.Mode)
-    }
-
-    $Settings.Commit = ($resolved.Output -split "\s+")[0]
-    return $null
-}
-
-function Sync-GooseManagedCheckout {
-    param(
-        [Parameter(Mandatory = $true)]$Paths,
-        [Parameter(Mandatory = $true)]$Settings,
-        [Parameter(Mandatory = $true)][string]$Action
-    )
-
-    Write-WindowsDevInfo "Fetching pinned Goose ref $($Settings.Ref)."
-    $fetch = Invoke-CaptureCommand -FilePath "git" -ArgumentList @("-C", $Paths.Repo, "fetch", $Settings.Remote, $Settings.Ref)
-    if ($fetch.ExitCode -ne 0) {
-        Write-WindowsDevInfo "Direct fetch of $($Settings.Ref) failed; fetching all remote heads and tags."
-        $fetchAll = Invoke-CaptureCommand -FilePath "git" -ArgumentList @("-C", $Paths.Repo, "fetch", $Settings.Remote, "--tags", "+refs/heads/*:refs/remotes/$($Settings.Remote)/*")
-        if ($fetchAll.ExitCode -ne 0) {
-            return (Resolve-GooseFailure -Message "Failed to fetch Goose ref $($Settings.Ref) from $($Settings.Remote)." -Action $Action -Mode $Settings.Mode)
-        }
-    }
-
-    $commitExists = Invoke-CaptureCommand -FilePath "git" -ArgumentList @("-C", $Paths.Repo, "cat-file", "-e", "$($Settings.Commit)^{commit}")
-    if ($commitExists.ExitCode -ne 0) {
-        return (Resolve-GooseFailure -Message "Pinned Goose commit $($Settings.Commit) is not available after fetching $($Settings.Ref)." -Action $Action -Mode $Settings.Mode)
-    }
-
-    Invoke-CheckedCommand -FilePath "git" -ArgumentList @("-C", $Paths.Repo, "checkout", "--detach", $Settings.Commit) -Label "checkout pinned Goose commit"
-    Invoke-CheckedCommand -FilePath "git" -ArgumentList @("-C", $Paths.Repo, "reset", "--hard", $Settings.Commit) -Label "reset managed Goose checkout"
-    return (Apply-GoosePatches -Paths $Paths -Settings $Settings -Action $Action)
-}
-
-function Build-GooseManagedBinary {
-    param(
-        [Parameter(Mandatory = $true)]$Paths,
-        [Parameter(Mandatory = $true)]$Settings,
-        [Parameter(Mandatory = $true)][string]$BinPath
-    )
-
-    Write-WindowsDevInfo "Building Goose from $($Paths.Repo) at $($Settings.Commit)."
-    # --locked pins the managed checkout to the commit's own Cargo.lock. A local
-    # source tree is one the developer edits, so a dependency change that needs
-    # a lockfile refresh is expected there rather than a sign of tampering.
-    $cargoArguments = @("build")
-    if (-not $Settings.LocalSource) {
-        $cargoArguments += "--locked"
-    }
-    if ($Settings.BuildProfile -eq "release") {
-        $cargoArguments += "--release"
-    }
-    $cargoArguments += @("-p", $Settings.Package, "--bin", $Settings.Bin)
-    Invoke-CheckedCommand -FilePath "cargo" -ArgumentList $cargoArguments -WorkingDirectory $Paths.Repo -Label "cargo build Goose ($($Settings.BuildProfile))"
-
-    if (-not (Test-Path $BinPath -PathType Leaf)) {
-        throw "Expected Goose binary at $BinPath, but it was not built."
-    }
-
-    # The stamp exists so the managed path can skip a rebuild next time. Local
-    # source mode never reads it back — it always rebuilds and lets cargo decide
-    # — so writing it would only buy a SHA-256 pass over a ~300 MB binary on
-    # every single launch, with nothing on the other side to consume the digest.
-    if (-not $Settings.LocalSource) {
-        $headAfterBuild = Get-GitHead -Repo $Paths.Repo
-        Write-GooseStamp -Paths $Paths -Settings $Settings -Commit $headAfterBuild -BinPath $BinPath
-    }
-    Write-WindowsDevInfo "Local Goose binary ready at $BinPath."
-    return (New-GooseResult -ExitCode 0 -Ready $true -BinPath $BinPath -Message "Local Goose binary is ready.")
-}
-
-# Build Goose from a checkout the developer owns rather than the managed
-# clone. Nothing here fetches, resets, or patches: whatever is checked out is
-# what gets built, so editing Goose sources and relaunching picks the change
-# up. Readiness is deliberately not cached against the stamp either, because a
-# working tree changes without the commit changing — cargo's own incremental
-# build keeps the no-op case cheap.
-function Invoke-EnsureGooseFromLocalSource {
-    param(
-        [Parameter(Mandatory = $true)]$Paths,
-        [Parameter(Mandatory = $true)]$Settings,
-        [Parameter(Mandatory = $true)][string]$Action
-    )
-
-    if (-not (Test-Path (Join-Path $Paths.Repo ".git") -PathType Container)) {
-        return (Resolve-GooseFailure -Message "Local Goose source checkout not found at $($Paths.Repo). Clone your Goose fork there or point 'localRepo' in $($Settings.LockFile) at it." -Action $Action -Mode $Settings.Mode)
-    }
-
-    $binPath = Resolve-GooseBinaryPath -Paths $Paths -Settings $Settings
-
-    if ($Action -eq "Check") {
-        # A binary on disk proves nothing here. The one sitting in the shared
-        # target dir may have been built from a different checkout entirely, and
-        # a source tree the developer edits changes without its commit changing,
-        # so there is no artifact this mode can trust. Report not-ready and let
-        # the caller run the build; cargo settles an unchanged tree in seconds.
-        $message = "Local Goose source at $($Paths.Repo) needs a build before it can be called ready."
-        Write-WindowsDevInfo $message
-        return (New-GooseResult -ExitCode 2 -Ready $false -BinPath $null -Message $message)
-    }
-
-    $head = Get-GitHead -Repo $Paths.Repo
-    if ([string]::IsNullOrWhiteSpace($head)) {
-        return (Resolve-GooseFailure -Message "Could not read HEAD of the local Goose checkout at $($Paths.Repo)." -Action $Action -Mode $Settings.Mode)
-    }
-
-    Write-WindowsDevInfo "Building Goose from local source at $($Paths.Repo) (HEAD $head); fetch, reset, and patching are skipped."
-    Assert-MsvcEnvironment
-    Assert-LibClangEnvironment
-
-    $Settings.Commit = $head
-    return (Build-GooseManagedBinary -Paths $Paths -Settings $Settings -BinPath $binPath)
-}
-
-function Invoke-EnsureLocalGoose {
-    param(
-        [ValidateSet("Build", "Check")][string]$Action = "Build"
-    )
-
-    Assert-WindowsHost
-
-    $settings = Get-GooseBackendSettings
-    $paths = Resolve-GooseDevPaths
-    $env:CARGO_TARGET_DIR = $paths.CargoTargetDir
-
-    if ($settings.LocalSource) {
-        $paths.Repo = $settings.LocalRepo
-        return (Invoke-EnsureGooseFromLocalSource -Paths $paths -Settings $settings -Action $Action)
-    }
-
-    $checkoutFailure = Initialize-GooseManagedCheckout -Paths $paths -Settings $settings -Action $Action
-    if ($null -ne $checkoutFailure) {
-        return $checkoutFailure
-    }
-
-    $binPath = Resolve-GooseBinaryPath -Paths $paths -Settings $settings
-
-    if (-not $settings.AllowDirty) {
-        $dirty = Test-GooseCheckoutDirtyAllowed -Repo $paths.Repo
-        if (-not $dirty.Allowed -and -not (Test-GoosePatchesAlreadyApplied -Repo $paths.Repo -PatchDir $settings.PatchDir)) {
-            return (Resolve-GooseFailure -Message $dirty.Message -Action $Action -Mode $settings.Mode)
-        }
-    }
-
-    $localHead = Get-GitHead -Repo $paths.Repo
-    $stamp = Read-GooseStamp -Path $paths.StampFile
-
-    if ($Action -eq "Check") {
-        if (Test-GooseStampRecordMatches -Stamp $stamp -Paths $paths -Settings $settings -BinPath $binPath -LocalHead $localHead) {
-            return (New-GooseResult -ExitCode 0 -Ready $true -BinPath $binPath -Message "Local Goose binary is ready.")
-        }
-        return (Resolve-GooseFailure -Message "Local Goose binary is not ready for $($settings.Ref) at $($settings.Commit). Run 'just setup-windows'." -Action $Action -Mode $settings.Mode)
-    }
-
-    $commitFailure = Resolve-GooseManagedCommit -Paths $paths -Settings $settings -Action $Action
-    if ($null -ne $commitFailure) {
-        return $commitFailure
-    }
-
-    if (Test-GooseStampRecordMatches -Stamp $stamp -Paths $paths -Settings $settings -BinPath $binPath -LocalHead $localHead) {
-        Write-WindowsDevInfo "Local Goose binary already matches $($settings.Ref) at $($settings.Commit)."
-        return (New-GooseResult -ExitCode 0 -Ready $true -BinPath $binPath -Message "Local Goose binary is ready.")
-    }
-
-    Assert-MsvcEnvironment
-    Assert-LibClangEnvironment
-
-    $syncFailure = Sync-GooseManagedCheckout -Paths $paths -Settings $settings -Action $Action
-    if ($null -ne $syncFailure) {
-        return $syncFailure
-    }
-
-    return (Build-GooseManagedBinary -Paths $paths -Settings $settings -BinPath $binPath)
 }
 
 function Get-GitDescribeVersion {
@@ -1966,9 +1313,12 @@ function Initialize-MsvcEnvironment {
         # Capturing `cmd.exe` output directly through Windows PowerShell can
         # return no pipeline records for batch files on some hosts. Have cmd
         # write the environment itself, then import the stable file contents.
-        $command = "call `"$vsDevCmd`" -no_logo -arch=$arch -host_arch=$arch >nul && set > `"$($environmentFile.FullName)`""
+        # VsDevCmd otherwise spawns vctip.exe (the VC telemetry sender),
+        # which outlives cmd.exe and would keep any job-based wait blocked.
+        $command = "set VSCMD_SKIP_SENDTELEMETRY=1 && call `"$vsDevCmd`" -no_logo -arch=$arch -host_arch=$arch >nul && set > `"$($environmentFile.FullName)`""
         $arguments = "/d /s /c `"$command`""
-        $process = Start-Process cmd.exe -ArgumentList $arguments -Wait -PassThru -NoNewWindow
+        $process = Start-Process cmd.exe -ArgumentList $arguments -PassThru -NoNewWindow
+        Wait-ForProcessExit -Process $process | Out-Null
         if ($process.ExitCode -ne 0) {
             return $false
         }
@@ -2167,6 +1517,87 @@ function Invoke-NpmInstallPnpm {
         Write-WindowsDevInfo "npm could not install pnpm: $($_.Exception.Message)"
         return $false
     }
+}
+
+# npm's global prefix (%APPDATA%\npm by default). It is user-writable and
+# already on the user PATH, unlike the Node install dir under Program Files.
+function Get-NpmGlobalPrefix {
+    $npm = Get-NpmCommand
+    if ([string]::IsNullOrWhiteSpace($npm)) {
+        return $null
+    }
+    $result = Invoke-CaptureCommand -FilePath $npm -ArgumentList @("prefix", "-g")
+    if ($result.ExitCode -ne 0) {
+        return $null
+    }
+    $prefix = $result.Output.Trim()
+    if ([string]::IsNullOrWhiteSpace($prefix)) {
+        return $null
+    }
+    return $prefix
+}
+
+# Put the pinned pnpm on PATH without elevation, and report whether it worked.
+#
+# `corepack prepare --activate` only fills Corepack's cache: it exits 0 while
+# leaving `pnpm` unresolvable, so its exit code cannot be the success signal.
+# `corepack enable` is what writes the shims, and by default it writes them
+# next to node.exe -- under "C:\Program Files\nodejs" that needs admin. Both
+# problems go away by pointing the shims at npm's global prefix, with a global
+# npm install of the same pin as the last resort. Every step is verified by
+# re-resolving pnpm.
+function Install-PnpmForUser {
+    if (-not [string]::IsNullOrWhiteSpace((Get-PnpmCommand))) {
+        return $true
+    }
+    if ([string]::IsNullOrWhiteSpace((Get-CommandSource "node"))) {
+        Write-WindowsDevInfo "node is unavailable, so pnpm cannot be provisioned"
+        return $false
+    }
+
+    Initialize-PublicNpmEnvironment
+    $prefix = Get-NpmGlobalPrefix
+    $corepack = Get-CorepackCommand
+    if (-not [string]::IsNullOrWhiteSpace($corepack)) {
+        Invoke-CorepackPreparePnpm | Out-Null
+        $enableArgs = @("enable")
+        if (-not [string]::IsNullOrWhiteSpace($prefix)) {
+            $enableArgs += @("--install-directory", $prefix)
+        }
+        $enable = Invoke-CaptureCommand -FilePath $corepack -ArgumentList $enableArgs
+        if ($enable.ExitCode -ne 0) {
+            Write-WindowsDevInfo "corepack enable failed: $($enable.Output)"
+        }
+    }
+
+    Add-SessionPathEntry -Path $prefix
+    Update-SessionPathFromRegistry
+    Add-SessionPathEntry -Path $prefix
+    if (-not [string]::IsNullOrWhiteSpace((Get-PnpmCommand))) {
+        return $true
+    }
+
+    Invoke-NpmInstallPnpm | Out-Null
+    Update-SessionPathFromRegistry
+    Add-SessionPathEntry -Path $prefix
+    return (-not [string]::IsNullOrWhiteSpace((Get-PnpmCommand)))
+}
+
+# Prepend $Path to the session PATH when it is a real directory that is not
+# already there. Update-SessionPathFromRegistry rebuilds PATH from the
+# registry, so callers that create a directory mid-run have to re-add it.
+function Add-SessionPathEntry {
+    param([AllowNull()][AllowEmptyString()][string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return
+    }
+    $existing = @($env:Path -split ";" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    foreach ($part in $existing) {
+        if ($part.TrimEnd("\") -eq $Path.TrimEnd("\")) {
+            return
+        }
+    }
+    $env:Path = ($Path + ";" + $env:Path)
 }
 
 function Assert-PnpmReady {

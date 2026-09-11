@@ -1,10 +1,10 @@
 import { useCallback, useSyncExternalStore } from "react";
 
-export const AUTO_ARCHIVE_STORAGE_KEY = "goose:auto-archive-unpinned-after";
+export const AUTO_ARCHIVE_STORAGE_KEY = "distill:auto-archive-unpinned-after";
 export const AUTO_ARCHIVE_CHANGED_EVENT =
-  "goose:auto-archive-unpinned-after-changed";
+  "distill:auto-archive-unpinned-after-changed";
 export const AUTO_ARCHIVE_CONSENT_STORAGE_KEY =
-  "goose:auto-archive-unpinned-consented";
+  "distill:auto-archive-unpinned-consented";
 
 export type AutoArchiveAfter =
   | "never"

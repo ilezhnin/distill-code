@@ -11,13 +11,7 @@ const mocks = vi.hoisted(() => ({
   extMethod: vi.fn(),
 }));
 
-const includeLastMessageSnippetMeta = {
-  _meta: {
-    goose: {
-      includeLastMessageSnippet: true,
-    },
-  },
-};
+const includeLastMessageSnippetMeta = {};
 
 function createConfigOptionsResponse() {
   return {
@@ -309,14 +303,14 @@ describe("listSessionsPage", () => {
           title: null,
           updatedAt: null,
           cwd: "/tmp/active",
-          _meta: { goose: { activeRunId: "run-1" } },
+          _meta: { activeRunId: "run-1" },
         },
         {
           sessionId: "settled-session",
           title: null,
           updatedAt: null,
           cwd: "/tmp/settled",
-          _meta: { goose: { activeRunId: null } },
+          _meta: { activeRunId: null },
         },
         {
           sessionId: "unknown-session",
@@ -324,13 +318,6 @@ describe("listSessionsPage", () => {
           updatedAt: null,
           cwd: "/tmp/unknown",
           _meta: {},
-        },
-        {
-          sessionId: "unsupported-top-level-session",
-          title: null,
-          updatedAt: null,
-          cwd: "/tmp/unsupported",
-          _meta: { activeRunId: null },
         },
       ],
       nextCursor: null,
@@ -342,7 +329,6 @@ describe("listSessionsPage", () => {
     expect(page.sessions[0]).toHaveProperty("activeRunId", "run-1");
     expect(page.sessions[1]).toHaveProperty("activeRunId", null);
     expect(page.sessions[2]).not.toHaveProperty("activeRunId");
-    expect(page.sessions[3]).not.toHaveProperty("activeRunId");
   });
 
   it("omits an empty or blank cursor at the API boundary", async () => {
@@ -636,18 +622,6 @@ describe("provider wire translation", () => {
     setSessionConfigSnapshotHandlers({});
   });
 
-  it("sends the default model provider when newSession is given the goose sentinel", async () => {
-    const { newSession } = await import("../acpApi");
-
-    await newSession("/tmp/project", { providerId: "goose" });
-
-    expect(mocks.newSession).toHaveBeenCalledWith({
-      cwd: "/tmp/project",
-      mcpServers: [],
-      _meta: { provider: "goose" },
-    });
-  });
-
   it("passes a real provider id through newSession unchanged", async () => {
     const { newSession } = await import("../acpApi");
 
@@ -672,18 +646,6 @@ describe("provider wire translation", () => {
       cwd: "/tmp",
       mcpServers: [],
       _meta: { hidden: true },
-    });
-  });
-
-  it("persists the default model provider when setProvider is given the goose sentinel", async () => {
-    const { setProvider } = await import("../acpApi");
-
-    await setProvider("session-9", "goose");
-
-    expect(mocks.setSessionConfigOption).toHaveBeenCalledWith({
-      sessionId: "session-9",
-      configId: "provider",
-      value: "goose",
     });
   });
 
@@ -842,7 +804,9 @@ describe("provider wire translation", () => {
 describe("steerSession", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.getClient.mockResolvedValue({ extMethod: mocks.extMethod });
+    mocks.getClient.mockResolvedValue({
+      host: { sessionSteer: mocks.extMethod },
+    });
   });
 
   it("returns the backend message id used to correlate steer delivery", async () => {
@@ -860,14 +824,11 @@ describe("steerSession", () => {
         "run-1",
       ),
     ).resolves.toEqual({ runId: "run-2", messageId: "steer-message" });
-    expect(mocks.extMethod).toHaveBeenCalledWith(
-      "_goose/unstable/session/steer",
-      {
-        sessionId: "session-1",
-        prompt: [{ type: "text", text: "make it shorter" }],
-        expectedRunId: "run-1",
-      },
-    );
+    expect(mocks.extMethod).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      prompt: [{ type: "text", text: "make it shorter" }],
+      expectedRunId: "run-1",
+    });
   });
 
   it("keeps the delivery message id when retrying with the actual run", async () => {
@@ -887,14 +848,10 @@ describe("steerSession", () => {
         "run-1",
       ),
     ).resolves.toEqual({ runId: "run-2", messageId: "steer-message" });
-    expect(mocks.extMethod).toHaveBeenNthCalledWith(
-      2,
-      "_goose/unstable/session/steer",
-      {
-        sessionId: "session-1",
-        prompt: [{ type: "text", text: "make it shorter" }],
-        expectedRunId: "run-2",
-      },
-    );
+    expect(mocks.extMethod).toHaveBeenNthCalledWith(2, {
+      sessionId: "session-1",
+      prompt: [{ type: "text", text: "make it shorter" }],
+      expectedRunId: "run-2",
+    });
   });
 });

@@ -7,13 +7,12 @@
     so nothing has to be started by hand in separate terminals:
 
       1. toolchain environment: MSVC, fnm-managed Node, pnpm on PATH
-      2. dependencies: pnpm install, the vendored SDK build
-      3. the pinned + Distill-patched managed Goose backend (built if stale)
-      4. berdctl.exe
-      5. stale leftovers from a previous run (orphaned Vite on this checkout's
-         port, Berd.exe / goosed whose dev session is gone)
-      6. Vite + the Tauri dev app; the app itself starts `goose serve`, which
-         starts the per-session ACP bridges (Claude / Codex / Grok)
+      2. dependencies: pnpm install
+      3. berdctl.exe
+      4. stale leftovers from a previous run (orphaned Vite on this checkout's
+         port, Berd.exe whose dev session is gone)
+      5. Vite + the Tauri dev app; the app itself starts the per-session ACP
+         bridges (Claude / Codex / Grok)
 
     The Tauri build reuses this checkout's `src-tauri\target` so a warm cache
     is never thrown away (override with BERD_TAURI_CARGO_TARGET_DIR).
@@ -26,7 +25,7 @@
     script, then exit without launching.
 
 .PARAMETER SkipSetup
-    Skip the dependency checks (pnpm install / SDK / managed Goose / berdctl)
+    Skip the dependency checks (pnpm install / berdctl)
     for a faster relaunch. Artifacts must already exist.
 
 .PARAMETER NoPause
@@ -86,7 +85,7 @@ function Install-DesktopShortcut {
         $link.TargetPath = Get-PowerShellHostPath
         $link.Arguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
         $link.WorkingDirectory = $RepoRoot
-        $link.Description = "Distill Code (dev): Vite + Tauri app + goosed + ACP bridges"
+        $link.Description = "Distill Code (dev): Vite + Tauri app + ACP bridges"
         if (Test-Path -LiteralPath $icon -PathType Leaf) {
             $link.IconLocation = "$icon,0"
         }
@@ -214,19 +213,12 @@ function Get-CheckoutAppProcesses {
 function Stop-StaleDevProcesses {
     param(
         [Parameter(Mandatory = $true)][string]$TargetDir,
-        [Parameter(Mandatory = $true)][string]$GooseTargetDir,
         [Parameter(Mandatory = $true)][int]$VitePort
     )
     foreach ($app in (Get-CheckoutAppProcesses -TargetDir $TargetDir)) {
         if (-not $app.Live) {
             Stop-ProcessQuietly -ProcessId $app.ProcessId -Reason "orphaned Berd.exe from a previous run"
         }
-    }
-    foreach ($process in (Get-CimInstance Win32_Process -Filter "Name = 'goose.exe'" -ErrorAction SilentlyContinue)) {
-        if (-not (Test-PathUnder -Path ([string]$process.ExecutablePath) -Root $GooseTargetDir)) { continue }
-        if (([string]$process.CommandLine) -notmatch '\bserve\b') { continue }
-        if (Test-ProcessAlive -ProcessId ([int]$process.ParentProcessId)) { continue }
-        Stop-ProcessQuietly -ProcessId ([int]$process.ProcessId) -Reason "orphaned goose serve"
     }
     if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
         $listener = Get-NetTCPConnection -LocalPort $VitePort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -266,7 +258,6 @@ $launched = $false
 $alreadyRunning = $false
 $launchMutex = $null
 $tauriTargetDir = $null
-$gooseTargetDir = $null
 $vitePort = 0
 
 try {
@@ -286,6 +277,11 @@ try {
     Write-Host "repo: $repoRoot"
 
     Write-Step "Toolchain environment"
+    # pnpm is reached through a Corepack shim, which asks for confirmation
+    # before downloading a package manager it has not cached. Started from
+    # a desktop shortcut that prompt has nothing to read from, so the
+    # launcher hangs with no output instead of failing.
+    $env:COREPACK_ENABLE_DOWNLOAD_PROMPT = "0"
     Update-SessionPathFromRegistry
     Assert-MsvcEnvironment
     if (-not (Initialize-FnmEnvironment)) {
@@ -295,16 +291,25 @@ try {
     Update-SessionPathFromRegistry
     $pnpm = Get-PnpmCommand
     if ([string]::IsNullOrWhiteSpace($pnpm)) {
-        throw "pnpm is not available. Run 'just bootstrap-windows install', open a new PowerShell, then retry."
+        # The launcher is the desktop shortcut, so a missing package manager
+        # has to be provisioned here rather than bounced back to the user as a
+        # terminal command. Corepack ships with Node, so this works from a
+        # plain Node install with no fnm.
+        Write-WindowsDevInfo "pnpm not found; provisioning pnpm@$(Get-RequiredPnpmVersion)"
+        Install-PnpmForUser | Out-Null
+        $pnpm = Get-PnpmCommand
+    }
+    if ([string]::IsNullOrWhiteSpace($pnpm)) {
+        throw "pnpm is not available and could not be installed automatically. Run 'just bootstrap-windows install', open a new PowerShell, then retry."
     }
     Write-WindowsDevInfo "pnpm: $pnpm"
 
-    $tauriTargetDir = $env:BERD_TAURI_CARGO_TARGET_DIR
-    if ([string]::IsNullOrWhiteSpace($tauriTargetDir)) {
-        $tauriTargetDir = Join-Path $repoRoot "src-tauri\target"
+    $tauriTargetDir = Get-TauriCargoTargetDir
+    if (Test-PathOnSystemDrive $tauriTargetDir) {
+        Write-Host ("Cargo target dir is on the system drive ($tauriTargetDir); a debug build there grows to tens of GB. " +
+            "Set BERD_TAURI_CARGO_TARGET_DIR to a path on another drive to move it.") -ForegroundColor Yellow
     }
-    $goosePaths = Resolve-GooseDevPaths
-    $gooseTargetDir = $goosePaths.CargoTargetDir
+    $devRoot = Get-BerdDevRoot
     $vitePort = Get-StableVitePort
 
     Write-Step "Previous run leftovers"
@@ -327,13 +332,10 @@ try {
         $alreadyRunning = $true
         exit 0
     }
-    Stop-StaleDevProcesses -TargetDir $tauriTargetDir -GooseTargetDir $gooseTargetDir -VitePort $vitePort
+    Stop-StaleDevProcesses -TargetDir $tauriTargetDir -VitePort $vitePort
 
     if ($SkipSetup) {
         Write-Step "Dependencies (skipped: -SkipSetup)"
-        if ([string]::IsNullOrWhiteSpace($env:GOOSE_BIN)) {
-            $env:GOOSE_BIN = Join-Path $gooseTargetDir "debug\goose.exe"
-        }
     } else {
         Write-Step "Dependencies"
         $modulesStamp = Join-Path $repoRoot "node_modules\.modules.yaml"
@@ -343,41 +345,8 @@ try {
             Write-WindowsDevInfo "pnpm dependencies are current"
         }
 
-        $sdkArtifact = Join-Path $repoRoot "sdk\dist\index.js"
-        if (Test-NewerThan -Artifact $sdkArtifact -SourceDirs @((Join-Path $repoRoot "sdk\src"), (Join-Path $repoRoot "sdk\schema"), (Join-Path $repoRoot "sdk\package.json"))) {
-            Invoke-CheckedCommand -FilePath $pnpm -ArgumentList @("build") -WorkingDirectory (Join-Path $repoRoot "sdk") -Label "sdk pnpm build"
-        } else {
-            Write-WindowsDevInfo "SDK build is current"
-        }
-
-        if ([string]::IsNullOrWhiteSpace($env:GOOSE_BIN)) {
-            $env:GOOSE_BUILD_PROFILE = "debug"
-            # "auto" so a stale binary comes back as Ready=$false instead of
-            # throwing; the rebuild below runs in "required" mode.
-            $env:GOOSE_DEV_MODE = "auto"
-            $goose = Invoke-EnsureLocalGoose -Action Check
-            if (-not $goose.Ready) {
-                Write-WindowsDevInfo "Managed Goose is stale or missing: $($goose.Message)"
-                Write-WindowsDevInfo "Building the pinned Goose backend (this can take a while on a cold cache)..."
-                $env:GOOSE_DEV_MODE = "required"
-                $goose = Invoke-EnsureLocalGoose -Action Build
-            }
-            if (-not $goose.Ready) {
-                throw "Managed Goose is not ready: $($goose.Message)"
-            }
-            $env:GOOSE_BIN = $goose.BinPath
-        } else {
-            Write-WindowsDevInfo "Using explicitly set GOOSE_BIN: $env:GOOSE_BIN"
-        }
     }
-    # Invoke-EnsureLocalGoose points CARGO_TARGET_DIR at the Goose checkout;
-    # the app build must go back to this checkout's warm target dir.
     $env:CARGO_TARGET_DIR = $tauriTargetDir
-    if (-not (Test-Path -LiteralPath $env:GOOSE_BIN -PathType Leaf)) {
-        throw "Goose binary missing at $env:GOOSE_BIN. Run 'just setup-windows' (or relaunch without -SkipSetup)."
-    }
-    Assert-DistillGooseBinary -BinPath $env:GOOSE_BIN
-    Write-WindowsDevInfo "goose: $env:GOOSE_BIN"
 
     $srcTauri = Join-Path $repoRoot "src-tauri"
     $env:BERDCTL_BIN = Join-Path $tauriTargetDir "debug\berdctl.exe"
@@ -391,22 +360,13 @@ try {
 
     Write-Step "App"
     $distroDir = Join-Path $repoRoot "distro"
-    if ([string]::IsNullOrWhiteSpace($env:GOOSE_DISTRO_DIR) -and (Test-Path -LiteralPath $distroDir -PathType Container)) {
-        $env:GOOSE_DISTRO_DIR = $distroDir
+    if ([string]::IsNullOrWhiteSpace($env:DISTILL_DISTRO_DIR) -and (Test-Path -LiteralPath $distroDir -PathType Container)) {
+        $env:DISTILL_DISTRO_DIR = $distroDir
     }
     $env:VITE_PORT = [string]$vitePort
     $env:VITE_DESIGN_SYSTEM_EXPLORER = "1"
     if ([string]::IsNullOrWhiteSpace($env:RUST_LOG)) {
         $env:RUST_LOG = "perf=debug,info"
-    }
-    $env:VITE_AUTH_GATE = if ($env:VITE_BUILDERBOT -eq "1") { "1" } else { "0" }
-    foreach ($name in @("VITE_TELEMETRY", "VITE_TELEMETRY_ENFORCED", "VITE_FEEDBACK")) {
-        if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name, "Process"))) {
-            [Environment]::SetEnvironmentVariable($name, "0", "Process")
-        }
-    }
-    if ([string]::IsNullOrWhiteSpace($env:VITE_UPDATER_ENABLED)) {
-        $env:VITE_UPDATER_ENABLED = "false"
     }
     $version = Resolve-AppVersion
     $env:VITE_APP_VERSION = $version.RichVersion
@@ -423,7 +383,7 @@ try {
             }
         }
     }
-    $devConfigPath = Join-Path $goosePaths.DevRoot "tauri-dev-windows.config.json"
+    $devConfigPath = Join-Path $devRoot "tauri-dev-windows.config.json"
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $devConfigPath) | Out-Null
     [System.IO.File]::WriteAllText($devConfigPath, ($devConfig | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
 
@@ -433,7 +393,7 @@ try {
     Write-WindowsDevInfo "cargo target: $tauriTargetDir"
     Write-WindowsDevInfo "features: $features"
     Write-Host ""
-    Write-Host "Starting Vite + Tauri dev app (goosed and the ACP bridges start inside the app)." -ForegroundColor Green
+    Write-Host "Starting Vite + Tauri dev app (the ACP bridges start inside the app)." -ForegroundColor Green
     Write-Host "Close the app window or press Ctrl+C here to stop everything." -ForegroundColor DarkGray
     Write-Host ""
 
@@ -449,10 +409,10 @@ try {
         Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
     }
 } finally {
-    if ($launched -and $tauriTargetDir -and $gooseTargetDir -and $vitePort -gt 0) {
+    if ($launched -and $tauriTargetDir -and $vitePort -gt 0) {
         Write-Step "Cleanup"
         try {
-            Stop-StaleDevProcesses -TargetDir $tauriTargetDir -GooseTargetDir $gooseTargetDir -VitePort $vitePort
+            Stop-StaleDevProcesses -TargetDir $tauriTargetDir -VitePort $vitePort
         } catch {
             Write-Host "    $($_.Exception.Message)" -ForegroundColor Yellow
         }

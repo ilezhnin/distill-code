@@ -1,17 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { addExtension, listExtensions, toggleExtension } from "./extensions";
 
-const mockGooseUnstableConfigExtensionsList = vi.fn();
-const mockGooseUnstableConfigExtensionsAdd = vi.fn();
-const mockGooseUnstableConfigExtensionsSetEnabled = vi.fn();
+const mockConfigExtensionsList = vi.fn();
+const mockConfigExtensionsAdd = vi.fn();
+const mockConfigExtensionsSetEnabled = vi.fn();
 
 vi.mock("@/shared/api/acpConnection", () => ({
   getClient: async () => ({
-    goose: {
-      GooseUnstableConfigExtensionsList: mockGooseUnstableConfigExtensionsList,
-      GooseUnstableConfigExtensionsAdd: mockGooseUnstableConfigExtensionsAdd,
-      GooseUnstableConfigExtensionsSetEnabled:
-        mockGooseUnstableConfigExtensionsSetEnabled,
+    host: {
+      configExtensionsList: mockConfigExtensionsList,
+      configExtensionsAdd: mockConfigExtensionsAdd,
+      configExtensionsSetEnabled: mockConfigExtensionsSetEnabled,
     },
   }),
 }));
@@ -21,48 +20,31 @@ describe("extensions api", () => {
     vi.clearAllMocks();
   });
 
-  it("normalizes configured extensions from the Goose SDK shape", async () => {
-    mockGooseUnstableConfigExtensionsList.mockResolvedValue({
+  it("flattens stored extensions with their config key and enabled flag", async () => {
+    mockConfigExtensionsList.mockResolvedValue({
       extensions: [
         {
           configKey: "github",
           enabled: true,
           extension: {
-            type: "mcp",
+            type: "stdio",
+            name: "github",
             description: "GitHub MCP",
-            envKeys: ["GITHUB_TOKEN"],
-            server: {
-              name: "github",
-              command: "npx",
-              args: ["-y", "@modelcontextprotocol/server-github"],
-              env: [{ name: "DEBUG", value: "1" }],
-            },
+            cmd: "npx",
+            args: ["-y", "@modelcontextprotocol/server-github"],
+            envs: { DEBUG: "1" },
+            env_keys: ["GITHUB_TOKEN"],
           },
         },
         {
-          configKey: "remote",
+          configKey: null,
           enabled: false,
           extension: {
-            type: "mcp",
+            type: "streamable_http",
+            name: "remote",
             description: "Remote MCP",
-            server: {
-              type: "http",
-              name: "remote",
-              url: "https://example.test/mcp",
-              headers: [{ name: "Authorization", value: "Bearer token" }],
-            },
-          },
-        },
-        {
-          configKey: "local-acp",
-          enabled: true,
-          extension: {
-            type: "mcp",
-            description: "ACP MCP",
-            server: {
-              name: "local-acp",
-              serverId: "acp-server-1",
-            },
+            uri: "https://example.test/mcp",
+            headers: { Authorization: "Bearer token" },
           },
         },
       ],
@@ -89,23 +71,15 @@ describe("extensions api", () => {
         config_key: "remote",
         enabled: false,
       },
-      {
-        type: "acp",
-        name: "local-acp",
-        description: "ACP MCP",
-        id: "acp-server-1",
-        config_key: "local-acp",
-        enabled: true,
-      },
     ]);
   });
 
-  it("adds extensions using the nested Goose SDK shape", async () => {
+  it("adds extensions verbatim under the given name", async () => {
     await addExtension(
       "github",
       {
         type: "stdio",
-        name: "github",
+        name: "draft",
         description: "GitHub MCP",
         cmd: "npx",
         args: ["-y", "@modelcontextprotocol/server-github"],
@@ -115,28 +89,24 @@ describe("extensions api", () => {
       true,
     );
 
-    expect(mockGooseUnstableConfigExtensionsAdd).toHaveBeenCalledWith({
+    expect(mockConfigExtensionsAdd).toHaveBeenCalledWith({
       enabled: true,
       extension: {
-        type: "mcp",
+        type: "stdio",
+        name: "github",
         description: "GitHub MCP",
-        bundled: undefined,
-        timeout: undefined,
-        envKeys: ["GITHUB_TOKEN"],
-        server: {
-          name: "github",
-          command: "npx",
-          args: ["-y", "@modelcontextprotocol/server-github"],
-          env: [{ name: "DEBUG", value: "1" }],
-        },
+        cmd: "npx",
+        args: ["-y", "@modelcontextprotocol/server-github"],
+        envs: { DEBUG: "1" },
+        env_keys: ["GITHUB_TOKEN"],
       },
     });
   });
 
-  it("sets extension enabled state with the renamed SDK method", async () => {
+  it("sets extension enabled state", async () => {
     await toggleExtension("github", false);
 
-    expect(mockGooseUnstableConfigExtensionsSetEnabled).toHaveBeenCalledWith({
+    expect(mockConfigExtensionsSetEnabled).toHaveBeenCalledWith({
       configKey: "github",
       enabled: false,
     });

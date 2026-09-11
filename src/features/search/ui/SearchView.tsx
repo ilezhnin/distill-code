@@ -26,7 +26,6 @@ import {
   type SectionId,
 } from "@/features/settings/ui/settingsSections";
 import { useProfileCapabilities } from "@/shared/profile/capabilities";
-import { telemetryConsentEnforced } from "@/shared/telemetry/consent";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { selectLocalMessageCountsBySession } from "@/features/chat/stores/chatSelectors";
 import {
@@ -48,7 +47,6 @@ import {
   useExtensionSearch,
 } from "../hooks/useExtensionSearch";
 import { useAgentSearch } from "../hooks/useAgentSearch";
-import { useAutomationSearch } from "../hooks/useAutomationSearch";
 import { useSkillSearch } from "../hooks/useSkillSearch";
 import {
   buildResultNavigationModel,
@@ -58,7 +56,6 @@ import {
   searchResultId,
 } from "../lib/searchResultModel";
 import { AgentResultRow } from "./AgentResultRow";
-import { AutomationResultRow } from "./AutomationResultRow";
 import { ChatResultRow } from "./ChatResultRow";
 import { ExtensionResultRow } from "./ExtensionResultRow";
 import { SearchHeadingInput } from "./SearchHeadingInput";
@@ -79,7 +76,6 @@ interface SearchViewProps {
   ) => void;
   onOpenExtension: (entry: ExtensionEntry) => void;
   onOpenAgent: (agentId: string) => void;
-  onOpenAutomation: (automationId: string) => void;
   onOpenSkill: (skill: SkillInfo) => void;
   onOpenSettings?: (sectionId: SectionId) => void;
   escapeRequest?: number;
@@ -97,7 +93,6 @@ export function SearchView({
   onSelectSearchResult,
   onOpenExtension,
   onOpenAgent,
-  onOpenAutomation,
   onOpenSkill,
   onOpenSettings,
   escapeRequest = 0,
@@ -197,7 +192,6 @@ export function SearchView({
   } = chatSearch;
   const extensionResults = useExtensionSearch(debouncedQuery);
   const agentResults = useAgentSearch(debouncedQuery);
-  const automationResults = useAutomationSearch(debouncedQuery);
   const skillResults = useSkillSearch(debouncedQuery);
   const settingsResults = useMemo(
     () =>
@@ -206,27 +200,9 @@ export function SearchView({
         enabled: Boolean(onOpenSettings),
         translate: (key) => t(`settings:${key}`),
         visibleSections: visibleSettingsSections,
-        // Hidden entries mirror rows their pages do not render: chat tips
-        // without agent tools, and the telemetry toggle both in enforced
-        // builds and without the `telemetry` capability, which is what
-        // TelemetryConsentRow itself hides on
-        // (telemetryConsentEnforced() is a build constant, so it needs no
-        // memo dependency; the capability is reactive and does).
-        hiddenItemIds: [
-          ...(capabilities.agentTools ? [] : ["chat-tips"]),
-          ...(telemetryConsentEnforced() || !capabilities.telemetry
-            ? ["telemetry"]
-            : []),
-        ],
+        hiddenItemIds: [],
       }),
-    [
-      capabilities.agentTools,
-      capabilities.telemetry,
-      onOpenSettings,
-      t,
-      trimmedDebouncedQuery,
-      visibleSettingsSections,
-    ],
+    [onOpenSettings, t, trimmedDebouncedQuery, visibleSettingsSections],
   );
 
   // Sweeps are keyed on who is in the list and what version of them we hold,
@@ -328,7 +304,6 @@ export function SearchView({
     extensionResults.length,
     agentResults.length,
     skillResults.length,
-    automationResults.length,
   ]);
 
   const recentChatResults = useMemo<SessionSearchDisplayResult[]>(
@@ -347,7 +322,6 @@ export function SearchView({
     displayedChatResults.length > 0 ||
     extensionResults.length > 0 ||
     agentResults.length > 0 ||
-    automationResults.length > 0 ||
     skillResults.length > 0 ||
     settingsResults.length > 0;
   const showResults = hasAnyResults;
@@ -368,16 +342,12 @@ export function SearchView({
       ),
       agents: agentResults.map((agent) => searchResultId("agent", agent.id)),
       skills: skillResults.map((skill) => searchResultId("skill", skill.name)),
-      automations: automationResults.flatMap((automation) =>
-        automation.id ? [searchResultId("automation", automation.id)] : [],
-      ),
       settings: settingsResults.map((section) =>
         searchResultId("settings", section.id),
       ),
     }),
     [
       agentResults,
-      automationResults,
       displayedChatResults,
       extensionResults,
       settingsResults,
@@ -633,34 +603,6 @@ export function SearchView({
           onSelect={onOpenSkill}
         />
       )),
-    });
-  }
-
-  if (automationResults.length > 0) {
-    const automationFallback = t("fallbackTitles.automation");
-    resultSections.push({
-      key: "automations",
-      label: t("sections.automations"),
-      tone: "automation",
-      children: automationResults.map((automation) => {
-        const displayName = automation.title?.trim() || automationFallback;
-        const resultId = automation.id
-          ? searchResultId("automation", automation.id)
-          : undefined;
-        return (
-          <AutomationResultRow
-            id={resultId}
-            key={automation.id ?? displayName}
-            automation={automation}
-            fallbackTitle={automationFallback}
-            ariaLabel={t("actions.openAutomation", { name: displayName })}
-            query={trimmedQuery}
-            isActive={activeResultId === resultId}
-            onActive={resultId ? () => setActiveResultId(resultId) : undefined}
-            onSelect={onOpenAutomation}
-          />
-        );
-      }),
     });
   }
 

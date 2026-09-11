@@ -9,7 +9,6 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MessageBubble } from "../MessageBubble";
-import { EXPERIMENT_PREFERENCES_STORAGE_KEY } from "@/features/experiments/experimentPreferences";
 import { findTranscriptMatches } from "@/features/chat/lib/transcriptSearch";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
@@ -177,7 +176,6 @@ function restoreScrollHeight() {
 
 describe("MessageBubble", () => {
   beforeEach(() => {
-    localStorage.removeItem(EXPERIMENT_PREFERENCES_STORAGE_KEY);
     useAgentStore.setState({ personas: [] });
     useProviderCatalogStore.getState().setEntries(providerCatalogEntries);
     vi.mocked(openPath).mockClear();
@@ -1413,14 +1411,7 @@ describe("MessageBubble", () => {
     expect(screen.queryByText("Tool result")).not.toBeInTheDocument();
   });
 
-  it("renders thinking content regardless of stored experiment state", () => {
-    localStorage.setItem(
-      EXPERIMENT_PREFERENCES_STORAGE_KEY,
-      JSON.stringify({
-        version: 2,
-        experiments: { "agent-work-transcript": { enabled: false } },
-      }),
-    );
+  it("renders thinking content", () => {
     const msg = assistantMessage([{ type: "thinking", text: "deep thoughts" }]);
 
     render(<MessageBubble message={msg} />);

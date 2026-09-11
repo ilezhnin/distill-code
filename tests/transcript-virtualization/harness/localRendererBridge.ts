@@ -1061,7 +1061,7 @@ const LOCAL_RENDERER_HTML = `<!doctype html>
             acceptedOffscreenRealMeasurements: 0,
             offscreenShellRowCount: shellRows,
           };
-          window.__GOOSE_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__ = diagnostics;
+          window.__DISTILL_TRANSCRIPT_VIRTUALIZATION_DIAGNOSTICS__ = diagnostics;
         }
 
         function render() {
@@ -1829,7 +1829,7 @@ const LOCAL_RENDERER_HTML = `<!doctype html>
         );
         document.addEventListener("selectionchange", syncDomSelectionProtection);
         window.addEventListener(
-          "goose:transcript-selected-text-context-menu",
+          "distill:transcript-selected-text-context-menu",
           (event) => {
             syncSelectedTextMenuProtection(event.detail);
           },

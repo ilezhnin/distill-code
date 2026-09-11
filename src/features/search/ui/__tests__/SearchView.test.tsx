@@ -21,7 +21,6 @@ import { SearchView } from "../SearchView";
 
 const mockListSkills = vi.hoisted(() => vi.fn());
 const mockListExtensions = vi.hoisted(() => vi.fn());
-const mockGetAutomationTiles = vi.hoisted(() => vi.fn());
 const mockAcpSearchSessions = vi.hoisted(() => vi.fn());
 
 vi.mock("@/features/extensions/api/extensions", () => ({
@@ -38,12 +37,8 @@ vi.mock("@/shared/api/acp", async (importOriginal) => ({
 // `listSkills` fallback, so both discovery legs need stubs too.
 vi.mock("@/features/skills/api/skills", () => ({
   listSkills: (...args: unknown[]) => mockListSkills(...args),
-  listGooseSourceSkills: (...args: unknown[]) => mockListSkills(...args),
+  listAgentFileSkills: (...args: unknown[]) => mockListSkills(...args),
   listBerdAppSkills: () => Promise.resolve([]),
-}));
-
-vi.mock("@/features/automations/api/kgooseAutomations", () => ({
-  getAutomationTiles: (...args: unknown[]) => mockGetAutomationTiles(...args),
 }));
 
 // useAutomationSearch reads the shared automation tile list through
@@ -63,11 +58,8 @@ function render(ui: ReactElement) {
 
 describe("SearchView", () => {
   beforeEach(() => {
-    vi.stubEnv("VITE_AUTOMATIONS", "1");
     mockListExtensions.mockReset();
     mockListExtensions.mockResolvedValue([]);
-    mockGetAutomationTiles.mockReset();
-    mockGetAutomationTiles.mockResolvedValue({ tiles: [] });
     mockAcpSearchSessions.mockReset();
     // Coverage is reported per sweep, derived from the targets the boundary was
     // handed, so tests never have to restate which sessions a sweep covered.
@@ -149,7 +141,6 @@ describe("SearchView", () => {
         onSelectSearchResult={vi.fn()}
         onOpenExtension={vi.fn()}
         onOpenAgent={vi.fn()}
-        onOpenAutomation={vi.fn()}
         onOpenSkill={vi.fn()}
       />,
     );
@@ -192,7 +183,6 @@ describe("SearchView", () => {
         onSelectSearchResult={vi.fn()}
         onOpenExtension={vi.fn()}
         onOpenAgent={vi.fn()}
-        onOpenAutomation={vi.fn()}
         onOpenSkill={vi.fn()}
       />,
     );
@@ -254,7 +244,6 @@ describe("SearchView", () => {
         onSelectSearchResult={vi.fn()}
         onOpenExtension={vi.fn()}
         onOpenAgent={vi.fn()}
-        onOpenAutomation={vi.fn()}
         onOpenSkill={vi.fn()}
       />,
     );
@@ -289,7 +278,6 @@ describe("SearchView", () => {
         onSelectSearchResult={vi.fn()}
         onOpenExtension={vi.fn()}
         onOpenAgent={vi.fn()}
-        onOpenAutomation={vi.fn()}
         onOpenSkill={vi.fn()}
       />,
     );
@@ -312,7 +300,6 @@ describe("SearchView", () => {
         onSelectSearchResult={vi.fn()}
         onOpenExtension={vi.fn()}
         onOpenAgent={vi.fn()}
-        onOpenAutomation={vi.fn()}
         onOpenSkill={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
@@ -334,123 +321,9 @@ describe("SearchView", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("finds the telemetry toggle while the telemetry capability is available", async () => {
-    // Telemetry is an opt-in build feature (VITE_TELEMETRY === "1"), so the
-    // capability this test is about has to be arranged, not assumed.
-    vi.stubEnv("VITE_TELEMETRY", "1");
-    const user = userEvent.setup();
-    render(
-      <SearchView
-        variant="dialog"
-        onExit={vi.fn()}
-        onSelectSearchResult={vi.fn()}
-        onOpenExtension={vi.fn()}
-        onOpenAgent={vi.fn()}
-        onOpenAutomation={vi.fn()}
-        onOpenSkill={vi.fn()}
-        onOpenSettings={vi.fn()}
-      />,
-    );
-
-    const input = screen.getByRole("textbox", { name: "Universal search" });
-    await user.type(input, "usage data");
-
-    expect(
-      await screen.findByRole("button", {
-        name: "Open Share usage data settings",
-      }),
-    ).toHaveTextContent("Settings > Share usage data");
-  });
-
   // The row itself is hidden without the capability (TelemetryConsentRow), so
   // the search hit has to go with it — otherwise the result navigates to a
   // System page that renders no such control.
-  it("hides the telemetry toggle when runtime config disables telemetry", async () => {
-    // Build feature on, runtime toggle off: the runtime toggle alone has to
-    // remove the hit, which is only a real assertion once the build gate is up.
-    vi.stubEnv("VITE_TELEMETRY", "1");
-    useRuntimeConfigStore.setState({
-      loaded: true,
-      config: {
-        ...DEFAULT_RUNTIME_CONFIG,
-        featureToggles: { telemetry: false },
-      },
-    });
-    mockListSkills.mockResolvedValue([]);
-    useAgentStore.setState({ personas: [] });
-    const user = userEvent.setup();
-    render(
-      <SearchView
-        variant="dialog"
-        onExit={vi.fn()}
-        onSelectSearchResult={vi.fn()}
-        onOpenExtension={vi.fn()}
-        onOpenAgent={vi.fn()}
-        onOpenAutomation={vi.fn()}
-        onOpenSkill={vi.fn()}
-        onOpenSettings={vi.fn()}
-      />,
-    );
-
-    const input = screen.getByRole("textbox", { name: "Universal search" });
-    await user.type(input, "usage data");
-
-    expect(
-      await screen.findByText('No matches for "usage data"'),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Open Share usage data settings" }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("excludes automations without IDs from results and counts", async () => {
-    mockListSkills.mockResolvedValue([]);
-    useAgentStore.setState({ personas: [] });
-    mockGetAutomationTiles.mockResolvedValue({
-      tiles: [
-        {
-          title: "Weekly planning",
-          instructions: ["Prepare the planning brief"],
-        },
-        {
-          id: "automation-weekly-planning",
-          title: "Weekly planning",
-          schedule: "hidden midnight schedule",
-          instructions: ["Prepare the planning brief"],
-        },
-      ],
-    });
-
-    const user = userEvent.setup();
-    render(
-      <SearchView
-        variant="dialog"
-        onExit={vi.fn()}
-        onSelectSearchResult={vi.fn()}
-        onOpenExtension={vi.fn()}
-        onOpenAgent={vi.fn()}
-        onOpenAutomation={vi.fn()}
-        onOpenSkill={vi.fn()}
-      />,
-    );
-
-    const input = screen.getByRole("textbox", { name: "Universal search" });
-    await user.type(input, "weekly planning");
-
-    expect(
-      await screen.findByRole("tab", { name: "Automations (1)" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getAllByRole("button", { name: /Open automation/i }),
-    ).toHaveLength(1);
-
-    await user.clear(input);
-    await user.type(input, "hidden midnight schedule");
-    expect(
-      await screen.findByText('No matches for "hidden midnight schedule"'),
-    ).toBeInTheDocument();
-  });
-
   it("sweeps chat search once per query and re-sweeps only on membership or stamp changes", async () => {
     const baseSession = {
       id: "session-1",
@@ -475,7 +348,6 @@ describe("SearchView", () => {
         onSelectSearchResult={vi.fn()}
         onOpenExtension={vi.fn()}
         onOpenAgent={vi.fn()}
-        onOpenAutomation={vi.fn()}
         onOpenSkill={vi.fn()}
       />,
     );
@@ -628,7 +500,6 @@ describe("SearchView", () => {
         onSelectSearchResult={vi.fn()}
         onOpenExtension={vi.fn()}
         onOpenAgent={vi.fn()}
-        onOpenAutomation={vi.fn()}
         onOpenSkill={vi.fn()}
       />,
     );
@@ -703,7 +574,6 @@ describe("SearchView", () => {
         onSelectSearchResult={vi.fn()}
         onOpenExtension={vi.fn()}
         onOpenAgent={vi.fn()}
-        onOpenAutomation={vi.fn()}
         onOpenSkill={vi.fn()}
       />,
     );
@@ -735,7 +605,6 @@ describe("SearchView", () => {
         onSelectSearchResult={vi.fn()}
         onOpenExtension={vi.fn()}
         onOpenAgent={onOpenAgent}
-        onOpenAutomation={vi.fn()}
         onOpenSkill={onOpenSkill}
       />,
     );
@@ -774,7 +643,6 @@ describe("SearchView", () => {
         onSelectSearchResult={vi.fn()}
         onOpenExtension={vi.fn()}
         onOpenAgent={onOpenAgent}
-        onOpenAutomation={vi.fn()}
         onOpenSkill={onOpenSkill}
       />,
     );

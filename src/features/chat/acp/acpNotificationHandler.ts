@@ -33,7 +33,6 @@ import {
   handleReplayUserMessageChunk,
 } from "./acpSkillReplayChips";
 import {
-  attachMcpAppPayload,
   extractToolResultImages,
   extractToolStructuredContent,
   extractToolResultText,
@@ -52,10 +51,7 @@ import {
   getReplayUserMetadata,
 } from "@/shared/api/acpReplayMetadata";
 import { handleSessionInfoUpdate } from "./acpSessionInfoUpdate";
-import {
-  getToolCallIdentity,
-  getToolChainSummary,
-} from "@/shared/api/acpToolCallIdentity";
+import { getToolCallIdentity } from "@/shared/api/acpToolCallIdentity";
 import {
   getSubagentToolCallContext,
   resolveSubagentContext,
@@ -215,9 +211,12 @@ function locationsFromUpdate(
     }));
 }
 
-function toolCallUpdatePatch(
-  update: SessionUpdate,
-): Pick<Partial<ToolRequestContent>, "toolKind" | "locations"> {
+type ToolCallUpdatePatch = Pick<
+  Partial<ToolRequestContent>,
+  "toolKind" | "locations"
+>;
+
+function toolCallUpdatePatch(update: SessionUpdate): ToolCallUpdatePatch {
   const toolKind = toolKindFromUpdate(update);
   const locations = locationsFromUpdate(update);
 
@@ -225,6 +224,31 @@ function toolCallUpdatePatch(
     ...(toolKind ? { toolKind } : {}),
     ...(locations ? { locations } : {}),
   };
+}
+
+/**
+ * The patch to apply onto a tool request that already exists.
+ *
+ * `other` is ACP's default kind — "no better category" — so an update that
+ * carries it after the `tool_call` already named a specific kind is saying
+ * less, not correcting itself, and the specific kind stays. The grok bridge
+ * does exactly this: its `list_dir` arrives as `kind: "list"` (off-spec, but
+ * clearly a read) and every following `tool_call_update` says `other`. Letting
+ * the update win turned a directory listing into "the conductor changed
+ * something itself" and picked the generic icon for a call the bridge had
+ * classified.
+ */
+function toolCallUpdatePatchFor(
+  update: SessionUpdate,
+  existing: Pick<ToolRequestContent, "toolKind"> | undefined,
+): ToolCallUpdatePatch {
+  const patch = toolCallUpdatePatch(update);
+  const keepsSpecificKind =
+    patch.toolKind === "other" &&
+    existing?.toolKind !== undefined &&
+    existing.toolKind !== "other";
+  if (!keepsSpecificKind) return patch;
+  return patch.locations ? { locations: patch.locations } : {};
 }
 
 export async function handleSessionNotification(
@@ -281,11 +305,9 @@ function isRunInterventionBoundary(update: SessionUpdate): boolean {
   if (!isRecord(meta)) {
     return false;
   }
-  // Goose currently marks a mid-run steer echo as the intervention boundary.
-  // Keep that backend-specific shape at the ACP edge so the chat store only
-  // has to reason about generic intervention boundaries.
-  const goose = meta.goose;
-  return isRecord(goose) && goose.steer === true;
+  // The host marks a mid-run steer echo as the intervention boundary.
+  const host = meta.distill;
+  return isRecord(host) && host.steer === true;
 }
 
 function markSteerDelivered(sessionId: string, update: SessionUpdate): void {
@@ -430,7 +452,7 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
       handleReplayAssistantBoundary(sessionId, update);
       const created = getReplayCreated(update);
       const identity = getToolCallIdentity(update);
-      const chainSummary = getToolChainSummary(update);
+      const chainSummary = undefined;
       const msg = ensureReplayAssistantMessage(
         sessionId,
         getReplayMessageId(update),
@@ -465,7 +487,7 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
       const created = getReplayCreated(update);
       const replayMessageId = getReplayMessageId(update);
       const identity = getToolCallIdentity(update);
-      const chainSummary = getToolChainSummary(update);
+      const chainSummary = undefined;
       const trackedMessageId = getTrackedReplayAssistantMessageId(sessionId);
       const replayMsg = replayMessageId
         ? getBufferedMessage(sessionId, replayMessageId)
@@ -497,7 +519,7 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
             Object.assign(tc as ToolRequestContent, {
               ...(update.title ? { name: update.title } : {}),
               ...identity,
-              ...patch,
+              ...toolCallUpdatePatchFor(update, tc),
               ...(chainSummary ? { chainSummary } : {}),
             });
             // The wire tool name can arrive after the initial tool_call
@@ -529,7 +551,7 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
               msg.content[idx] = {
                 ...tc,
                 ...identity,
-                ...toolCallUpdatePatch(update),
+                ...toolCallUpdatePatchFor(update, tc),
                 status: update.status,
               } as ToolRequestContent;
             }
@@ -547,18 +569,6 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
           // so image-producing MCPs render inline on replay too.
           for (const image of extractToolResultImages(update)) {
             msg.content.push(image);
-          }
-          if (update.status === "completed") {
-            attachMcpAppPayload(
-              sessionId,
-              update.toolCallId,
-              (tc as ToolRequestContent)?.name ?? update.title ?? "",
-              update,
-              true,
-              {
-                replayMessageId,
-              },
-            );
           }
         }
       }
@@ -640,7 +650,7 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
       flushBufferedStreamingUpdatesForSession(sessionId);
       const messageId = ensureLiveAssistantMessage(sessionId);
       const identity = getToolCallIdentity(update);
-      const chainSummary = getToolChainSummary(update);
+      const chainSummary = undefined;
 
       const liveArguments = rawInputToArguments(update.rawInput);
       const liveSubagentContext =
@@ -670,7 +680,7 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
     case "tool_call_update": {
       flushBufferedStreamingUpdatesForSession(sessionId);
       const identity = getToolCallIdentity(update);
-      const chainSummary = getToolChainSummary(update);
+      const chainSummary = undefined;
       // Late-arriving updates (chain summaries, async titles) can target a
       // tool call whose request lives in an older message than the currently
       // streaming one. Patch the message that actually owns the tool call,
@@ -711,7 +721,7 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
                   ...c,
                   ...(update.title ? { name: update.title } : {}),
                   ...identity,
-                  ...patch,
+                  ...toolCallUpdatePatchFor(update, c),
                   ...(chainSummary ? { chainSummary } : {}),
                   ...(lateSubagentContext ?? {}),
                 }
@@ -742,7 +752,7 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
               ? {
                   ...block,
                   ...identity,
-                  ...toolCallUpdatePatch(update),
+                  ...toolCallUpdatePatchFor(update, block),
                   status: resolvedStatus,
                 }
               : block,
@@ -771,15 +781,6 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
             content: [...msg.content, ...toolImages],
           }));
         }
-        if (update.status === "completed") {
-          attachMcpAppPayload(
-            sessionId,
-            update.toolCallId,
-            toolRequest?.name ?? update.title ?? "",
-            update,
-            false,
-          );
-        }
       }
       break;
     }
@@ -802,15 +803,15 @@ function readNumber(value: unknown): number | undefined {
     : undefined;
 }
 
-function gooseMeta(update: SessionUpdate): Record<string, unknown> | null {
+function hostMeta(update: SessionUpdate): Record<string, unknown> | null {
   if (
     !isRecord(update) ||
     !isRecord(update._meta) ||
-    !isRecord(update._meta.goose)
+    !isRecord(update._meta.distill)
   ) {
     return null;
   }
-  return update._meta.goose;
+  return update._meta.distill;
 }
 
 function recordUsageNotification(
@@ -827,7 +828,7 @@ function recordUsageNotification(
       accumulatedOutputTokens?: number;
       accumulatedCost?: number | null;
     };
-    const meta = gooseMeta(update);
+    const meta = hostMeta(update);
     const inputTokens =
       readNumber(usage.accumulatedInputTokens) ??
       readNumber(meta?.accumulatedInputTokens);

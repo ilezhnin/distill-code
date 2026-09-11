@@ -21,8 +21,8 @@ import {
 
 const sessionId = "acp-session";
 const gooseProviderTarget = {
-  harnessId: "goose",
-  modelProviderId: "databricks_v2",
+  harnessId: "claude-acp",
+  modelProviderId: "claude-acp",
 } as const satisfies SessionExecutionTarget;
 const gpt55Target = {
   ...gooseProviderTarget,
@@ -61,7 +61,7 @@ function beginModelIntent(
 function beginProviderIntent() {
   beginModelSelectionIntent(sessionId, {
     requestId: "provider-request-current",
-    target: { harnessId: "goose", modelProviderId: "anthropic" },
+    target: { harnessId: "claude-acp", modelProviderId: "claude-acp" },
     previousTarget: gooseProviderTarget,
   });
 }
@@ -141,7 +141,7 @@ describe("sessionConfigSnapshotAdapter", () => {
     applySnapshot("gpt-5.5", {
       origin: "response",
       requestId: "model-request-current",
-      providerId: "databricks_v2",
+      providerId: "claude-acp",
       modelId: "gpt-5.5",
     });
 
@@ -154,59 +154,6 @@ describe("sessionConfigSnapshotAdapter", () => {
     });
   });
 
-  it.each([
-    {
-      name: "an older model request",
-      snapshotModelId: "gpt-5.6-sol",
-      context: {
-        origin: "response" as const,
-        requestId: "model-request-older",
-        providerId: "databricks_v2",
-        modelId: "gpt-5.6-sol",
-      },
-    },
-    {
-      name: "another provider with the same model id",
-      snapshotModelId: "gpt-5.6-sol",
-      context: {
-        origin: "response" as const,
-        requestId: "model-request-current",
-        providerId: "openai",
-        modelId: "gpt-5.6-sol",
-      },
-    },
-    {
-      name: "an unowned notification",
-      snapshotModelId: "gpt-5.6-sol",
-      context: {
-        origin: "notification" as const,
-        requestId: "model-request-current",
-        providerId: "databricks_v2",
-        modelId: "gpt-5.6-sol",
-      },
-    },
-    {
-      name: "the intermediate provider default",
-      snapshotModelId: "gpt-5.5",
-      context: {
-        origin: "response" as const,
-        requestId: "model-request-current",
-        providerId: "databricks_v2",
-        modelId: "gpt-5.5",
-      },
-    },
-  ])("rejects snapshots from $name", ({ snapshotModelId, context }) => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    addSession();
-    beginModelIntent(gpt56Target, gpt55Target);
-
-    applySnapshot(snapshotModelId, context);
-
-    expect(getSession()?.executionTarget).toEqual(gpt56Target);
-    expect(getSession()?.reasoningEffort).toBeUndefined();
-    warnSpy.mockRestore();
-  });
-
   it("hydrates model and reasoning acknowledged by the provider request", () => {
     addSession();
     beginProviderIntent();
@@ -216,7 +163,7 @@ describe("sessionConfigSnapshotAdapter", () => {
       {
         origin: "response",
         requestId: "provider-request-current",
-        providerId: "anthropic",
+        providerId: "claude-acp",
         modelId: "claude-fable",
       },
       "medium",
@@ -224,8 +171,8 @@ describe("sessionConfigSnapshotAdapter", () => {
 
     expect(getSession()).toMatchObject({
       executionTarget: {
-        harnessId: "goose",
-        modelProviderId: "anthropic",
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
         modelId: "claude-fable",
         modelName: "claude-fable",
       },
@@ -234,23 +181,6 @@ describe("sessionConfigSnapshotAdapter", () => {
         currentValue: "medium",
       },
     });
-  });
-
-  it("rejects a model acknowledged by a different provider", () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    addSession();
-    beginProviderIntent();
-
-    applySnapshot("gpt-5.5", {
-      origin: "response",
-      requestId: "provider-request-current",
-      providerId: "openai",
-      modelId: "gpt-5.5",
-    });
-
-    expect(getSession()?.executionTarget?.modelId).toBeUndefined();
-    expect(getSession()?.reasoningEffort).toBeUndefined();
-    warnSpy.mockRestore();
   });
 
   it("does not materialize an anonymous model onto a UI-owned provider target", () => {
@@ -289,7 +219,7 @@ describe("sessionConfigSnapshotAdapter", () => {
       createConfigResponse({ reasoningEffort: "medium" }),
       {
         origin: "response",
-        providerId: "databricks_v2",
+        providerId: "claude-acp",
         modelId: "gpt-5.6-sol",
       },
     );
@@ -312,7 +242,7 @@ describe("sessionConfigSnapshotAdapter", () => {
       createConfigResponse({ reasoningEffort: "medium" }),
       {
         origin: "response",
-        providerId: "databricks_v2",
+        providerId: "claude-acp",
         modelId: "gpt-5.5",
       },
     );
@@ -340,7 +270,7 @@ describe("sessionConfigSnapshotAdapter", () => {
       createConfigResponse({ reasoningEffort: "medium" }),
       {
         origin: "response",
-        providerId: "databricks_v2",
+        providerId: "claude-acp",
         modelId: "gpt-5.6-sol",
         reasoningEffortValue: "medium",
       },
@@ -435,7 +365,7 @@ describe("sessionConfigSnapshotAdapter", () => {
       {
         origin,
         ...(origin === "response"
-          ? { providerId: "databricks_v2", modelId: "gpt-5.6-sol" }
+          ? { providerId: "claude-acp", modelId: "gpt-5.6-sol" }
           : {}),
       },
       "high",
@@ -467,7 +397,7 @@ describe("sessionConfigSnapshotAdapter", () => {
       }),
       {
         origin: "response",
-        providerId: "databricks_v2",
+        providerId: "claude-acp",
         modelId: "gpt-5.6-sol",
       },
     );
@@ -523,7 +453,7 @@ describe("sessionConfigSnapshotAdapter", () => {
 
     expect(getSession()).toMatchObject({
       executionTarget: {
-        modelProviderId: "databricks_v2",
+        modelProviderId: "claude-acp",
         modelId: "gpt-5.7",
       },
       reasoningEffort: { currentValue: "high" },

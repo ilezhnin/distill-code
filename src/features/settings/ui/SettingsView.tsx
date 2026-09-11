@@ -10,26 +10,18 @@ import { SecuritySettings } from "./SecuritySettings";
 import { StatsSettings } from "./StatsSettings";
 import { SystemSettings } from "./SystemSettings";
 import type { SectionId } from "./settingsSections";
-import { ExperimentsSettings } from "@/features/experiments/ExperimentsSettings";
 import { KeyboardShortcutsSettings } from "@/features/shortcuts/ui/KeyboardShortcutsSettings";
-import { ConnectionsSettings } from "@/features/connections/ui/ConnectionsSettings";
-import { VoiceSettings } from "@/features/voice-conversation/ui/VoiceSettings";
-import type { AuthStatus } from "@/features/auth/api/auth";
+import { ExtensionsSettings } from "@/features/extensions/ui/ExtensionsSettings";
 import { SettingsPane } from "@/shared/ui/SettingsPage";
-import type { SetupChatRequest } from "@/features/chat/lib/setupChatRequest";
 import type { AgentSetupTroubleshootingRequest } from "@/features/providers/lib/agentSetupTroubleshooting";
 import { refreshDoctorReportFreshness } from "@/shared/api/useDoctorReport";
 import { useProfileCapability } from "@/shared/profile/capabilities";
 
 interface SettingsViewProps {
   activeSection: SectionId;
-  authStatus?: AuthStatus;
-  onLoggedOut?: (status: AuthStatus) => void;
   onStartTroubleshootingChat?: (
     request: AgentSetupTroubleshootingRequest,
   ) => void;
-  onStartConnectionSetupChat?: (request: SetupChatRequest) => void;
-  onReturnToAgentDraft?: () => void;
 }
 
 // Rev 3 (Aug 10): "general" split into appearance/chat/system/about (see
@@ -48,15 +40,10 @@ interface SettingsViewProps {
 // the AI providers page and the Doctor dialog both read that same cache.
 export function SettingsView({
   activeSection,
-  authStatus,
-  onLoggedOut,
   onStartTroubleshootingChat,
-  onStartConnectionSetupChat,
-  onReturnToAgentDraft,
 }: SettingsViewProps) {
   const queryClient = useQueryClient();
   const doctorEnabled = useProfileCapability("doctor");
-  const voiceConversationEnabled = useProfileCapability("voiceConversation");
 
   // Warm the shared doctor report once per Settings visit. SettingsView mounts
   // whenever Settings opens (every entry path: sidebar, restored URL, returning
@@ -79,28 +66,19 @@ export function SettingsView({
     <SettingsPane>
       {activeSection === "appearance" && <AppearanceSettings />}
       {activeSection === "behavior" && <BehaviorSettings />}
-      {activeSection === "connections" && (
-        <ConnectionsSettings onAskAgentToAddMcp={onStartConnectionSetupChat} />
-      )}
+      {activeSection === "extensions" && <ExtensionsSettings />}
       {activeSection === "providers" && (
         <ProvidersSettings
           onStartTroubleshootingChat={onStartTroubleshootingChat}
-          onReturnToAgentDraft={onReturnToAgentDraft}
         />
       )}
       {activeSection === "notifications" && <NotificationSettings />}
       {activeSection === "shortcuts" && <KeyboardShortcutsSettings />}
       {activeSection === "stats" && <StatsSettings />}
-      {activeSection === "voice" && voiceConversationEnabled && (
-        <VoiceSettings />
-      )}
       {activeSection === "memory" && <MemorySettings />}
       {activeSection === "archive" && <ArchiveSettings />}
       {activeSection === "security" && <SecuritySettings />}
-      {activeSection === "system" && (
-        <SystemSettings authStatus={authStatus} onLoggedOut={onLoggedOut} />
-      )}
-      {activeSection === "experiments" && <ExperimentsSettings />}
+      {activeSection === "system" && <SystemSettings />}
     </SettingsPane>
   );
 }

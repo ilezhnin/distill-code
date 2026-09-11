@@ -118,7 +118,7 @@ describe("berdctl command schema bounds", () => {
     ).toBe(true);
   });
 
-  it("agents.create requires a concrete provider for a model", () => {
+  it("agents.create requires a provider for a model", () => {
     const base = { name: "reviewer", system_prompt: "review code" };
     expect(
       createAgentSchema.safeParse({ ...base, model: "gpt-5.6" }).success,
@@ -126,14 +126,7 @@ describe("berdctl command schema bounds", () => {
     expect(
       createAgentSchema.safeParse({
         ...base,
-        provider: "goose",
-        model: "gpt-5.6",
-      }).success,
-    ).toBe(false);
-    expect(
-      createAgentSchema.safeParse({
-        ...base,
-        provider: "openai",
+        provider: "codex-acp",
         model: "gpt-5.6",
       }).success,
     ).toBe(true);

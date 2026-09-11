@@ -29,11 +29,8 @@ function normalizeSupportedLocale(locale?: string | null): AppLocale | null {
 const localeResourceLoaders = {
   en: {
     agents: () => import("./locales/en/agents.json"),
-    automations: () => import("./locales/en/automations.json"),
-    builderbot: () => import("./locales/en/builderbot.json"),
     common: () => import("./locales/en/common.json"),
     chat: () => import("./locales/en/chat.json"),
-    feedback: () => import("./locales/en/feedback.json"),
     home: () => import("./locales/en/home.json"),
     memory: () => import("./locales/en/memory.json"),
     planner: () => import("./locales/en/planner.json"),
@@ -49,11 +46,8 @@ const localeResourceLoaders = {
   },
   es: {
     agents: () => import("./locales/es/agents.json"),
-    automations: () => import("./locales/es/automations.json"),
-    builderbot: () => import("./locales/es/builderbot.json"),
     common: () => import("./locales/es/common.json"),
     chat: () => import("./locales/es/chat.json"),
-    feedback: () => import("./locales/es/feedback.json"),
     home: () => import("./locales/es/home.json"),
     memory: () => import("./locales/es/memory.json"),
     planner: () => import("./locales/es/planner.json"),

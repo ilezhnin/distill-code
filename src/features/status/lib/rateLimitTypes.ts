@@ -1,6 +1,6 @@
-export const STATUS_BAR_USAGE_MODE_KEY = "goose:status-bar-usage-mode";
+export const STATUS_BAR_USAGE_MODE_KEY = "distill:status-bar-usage-mode";
 export const STATUS_BAR_EMPTY_CTA_DISMISSED_KEY =
-  "goose:status-bar-empty-cta-dismissed";
+  "distill:status-bar-empty-cta-dismissed";
 
 export const TRACKED_AGENT_PLATFORM_IDS = [
   "claude-acp",

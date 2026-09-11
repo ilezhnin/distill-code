@@ -1,10 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
-  DEFAULT_GOOSE_MCP_HOST_CAPABILITIES,
-  GooseClient,
-  type GooseInitializeRequest,
-} from "@aaif/goose-sdk";
-import {
   PROTOCOL_VERSION,
   type Client,
   type SessionNotification,
@@ -13,6 +8,7 @@ import {
 } from "@agentclientprotocol/sdk";
 import packageJson from "../../../package.json";
 import { createWebSocketStream } from "./createWebSocketStream";
+import { HostClient } from "./hostClient";
 import { perfLog } from "@/shared/lib/perfLog";
 
 let notificationHandler: AcpNotificationHandler | null = null;
@@ -58,8 +54,8 @@ export function setPermissionHandler(handler: PermissionRequestHandler): void {
   permissionHandler = handler;
 }
 
-let clientPromise: Promise<GooseClient> | null = null;
-let resolvedClient: GooseClient | null = null;
+let clientPromise: Promise<HostClient> | null = null;
+let resolvedClient: HostClient | null = null;
 let activeStream: ReturnType<typeof createWebSocketStream> | null = null;
 
 function createClientCallbacks(): () => Client {
@@ -93,7 +89,7 @@ function createClientCallbacks(): () => Client {
 }
 
 function monitorConnection(
-  client: GooseClient,
+  client: HostClient,
   stream: ReturnType<typeof createWebSocketStream>,
 ): void {
   const clearCurrentConnection = () => {
@@ -134,62 +130,26 @@ export async function invalidateClientConnection(): Promise<void> {
   }
 }
 
-async function initializeConnection(): Promise<GooseClient> {
-  // Dev-only: inject a real failure into startup so the WARP probe runs
-  // for real against kgoose. `VITE_DEV_STARTUP_ERROR=warp just dev` lets
-  // us experience the diagnostic UI with whatever real WARP state the
-  // machine has, rather than simulating the probe result.
-  if (import.meta.env.DEV) {
-    const variant = import.meta.env.VITE_DEV_STARTUP_ERROR;
-    // Treat empty string as unset so an accidental `VITE_DEV_STARTUP_ERROR=`
-    // in a shell profile or `.env.local` doesn't lock the app into the
-    // diagnostic UI with no way out.
-    if (typeof variant === "string" && variant !== "") {
-      if (variant === "goose-serve") {
-        throw new Error(
-          "Failed to spawn goose serve (binary: goosed): simulated dev failure",
-        );
-      }
-      if (variant === "unknown") {
-        throw new Error("Simulated dev startup failure");
-      }
-      // Default ("warp" or anything else non-empty) mimics the upstream
-      // "Invalid params" we saw in the wild — the probe decides the copy.
-      throw new Error("Invalid params (simulated dev failure)");
-    }
-  }
-
+async function initializeConnection(): Promise<HostClient> {
   const tStart = performance.now();
-  const wsUrl: string = await invoke("get_goose_serve_url");
+  const wsUrl: string = await invoke("get_agent_host_url");
   perfLog(
-    `[perf:conn] get_goose_serve_url in ${(performance.now() - tStart).toFixed(1)}ms`,
+    `[perf:conn] get_agent_host_url in ${(performance.now() - tStart).toFixed(1)}ms`,
   );
 
-  const tStream = performance.now();
   const stream = createWebSocketStream(wsUrl);
   activeStream = stream;
-
-  const client = new GooseClient(createClientCallbacks(), stream);
-  perfLog(
-    `[perf:conn] ws stream + client created in ${(performance.now() - tStream).toFixed(1)}ms`,
-  );
+  const client = new HostClient(createClientCallbacks(), stream);
 
   const tInit = performance.now();
   await client.initialize({
     protocolVersion: PROTOCOL_VERSION,
-    clientCapabilities: {
-      _meta: {
-        goose: {
-          mcpHostCapabilities: DEFAULT_GOOSE_MCP_HOST_CAPABILITIES,
-          toolCallLabelEnrichment: true,
-        },
-      },
-    },
+    clientCapabilities: {},
     clientInfo: {
       name: packageJson.name,
       version: packageJson.version,
     },
-  } satisfies GooseInitializeRequest);
+  });
   perfLog(
     `[perf:conn] client.initialize in ${(performance.now() - tInit).toFixed(1)}ms (total ${(performance.now() - tStart).toFixed(1)}ms)`,
   );
@@ -199,7 +159,7 @@ async function initializeConnection(): Promise<GooseClient> {
   return client;
 }
 
-export async function getClient(): Promise<GooseClient> {
+export async function getClient(): Promise<HostClient> {
   if (resolvedClient) {
     return resolvedClient;
   }
@@ -226,6 +186,6 @@ export function isClientReady(): boolean {
   return resolvedClient !== null;
 }
 
-export function getClientSync(): GooseClient | null {
+export function getClientSync(): HostClient | null {
   return resolvedClient;
 }

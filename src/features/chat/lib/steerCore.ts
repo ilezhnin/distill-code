@@ -107,7 +107,7 @@ export async function steerPromptInSession(
         ...(sendOptions?.assistantPrompt
           ? { assistantPrompt: sendOptions.assistantPrompt }
           : {}),
-        goose: sendOptions?.acpGooseMetadata,
+        promptMeta: sendOptions?.acpPromptMetadata,
         images: images?.map(
           (img) => [img.base64, img.mimeType] as [string, string],
         ),

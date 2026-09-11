@@ -325,7 +325,7 @@ describe("workspace cleanup targets", () => {
       repositoryPath: "/repo",
       worktreePath: "/repo-worktrees/chat-123",
       lifecycle: {
-        owner: "goose",
+        owner: "distill",
         cleanup: "worktree",
         branch: "chat-123",
         baseBranch: "main",
@@ -380,7 +380,7 @@ describe("workspace cleanup targets", () => {
       repositoryPath: "/repo",
       worktreePath: "/repo",
       lifecycle: {
-        owner: "goose",
+        owner: "distill",
         cleanup: "branch",
         branch: "chat-123",
         baseBranch: "main",
@@ -426,7 +426,7 @@ describe("workspace cleanup targets", () => {
       repositoryPath: "/Users/test/repo",
       worktreePath: "/Users/test/repo",
       lifecycle: {
-        owner: "goose",
+        owner: "distill",
         cleanup: "branch",
         branch: "chat-123",
         baseBranch: "main",
@@ -465,7 +465,7 @@ describe("workspace cleanup targets", () => {
       source: "created",
       branch: "chat-123",
       lifecycle: {
-        owner: "goose",
+        owner: "distill",
         cleanup: "branch",
         branch: "chat-123",
         baseBranch: "main",

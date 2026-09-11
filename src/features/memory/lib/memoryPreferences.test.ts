@@ -30,18 +30,34 @@ describe("memoryPreferences", () => {
   });
 
   it("carries memory both ways until the operator says otherwise", () => {
-    expect(getMemoryPreferences()).toEqual({ write: true, read: true });
+    expect(getMemoryPreferences()).toEqual({
+      write: true,
+      read: true,
+      wikiGraph: false,
+    });
   });
 
   it("keeps each switch apart from the other", () => {
     setMemoryWriteEnabled(false);
-    expect(getMemoryPreferences()).toEqual({ write: false, read: true });
+    expect(getMemoryPreferences()).toEqual({
+      write: false,
+      read: true,
+      wikiGraph: false,
+    });
 
     setMemoryReadEnabled(false);
-    expect(getMemoryPreferences()).toEqual({ write: false, read: false });
+    expect(getMemoryPreferences()).toEqual({
+      write: false,
+      read: false,
+      wikiGraph: false,
+    });
 
     setMemoryWriteEnabled(true);
-    expect(getMemoryPreferences()).toEqual({ write: true, read: false });
+    expect(getMemoryPreferences()).toEqual({
+      write: true,
+      read: false,
+      wikiGraph: false,
+    });
   });
 
   it("stores what it read back", () => {
@@ -69,7 +85,11 @@ describe("memoryPreferences", () => {
 
   it("falls back to both on when the stored record is unreadable", () => {
     window.localStorage.setItem(MEMORY_PREFERENCES_STORAGE_KEY, "{not json");
-    expect(getMemoryPreferences()).toEqual({ write: true, read: true });
+    expect(getMemoryPreferences()).toEqual({
+      write: true,
+      read: true,
+      wikiGraph: false,
+    });
   });
 
   it("refuses to write over a record a newer build left", () => {
@@ -88,7 +108,11 @@ describe("memoryPreferences", () => {
     );
     // Unreadable here, so this build treats it as the default rather than
     // acting on a version it does not understand.
-    expect(getMemoryPreferences()).toEqual({ write: true, read: true });
+    expect(getMemoryPreferences()).toEqual({
+      write: true,
+      read: true,
+      wikiGraph: false,
+    });
   });
 
   it("does not leave a stale change event behind a refused write", () => {

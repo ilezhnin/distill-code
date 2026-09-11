@@ -1,10 +1,10 @@
 import { createBooleanLocalStoragePreference } from "@/shared/preferences/createBooleanLocalStoragePreference";
 
 export const SIDEBAR_GROUP_CHATS_BY_PROJECT_STORAGE_KEY =
-  "goose:sidebar:group-chats-by-project";
+  "distill:sidebar:group-chats-by-project";
 
 const SIDEBAR_GROUP_CHATS_BY_PROJECT_CHANGED_EVENT =
-  "goose:sidebar:group-chats-by-project-changed";
+  "distill:sidebar:group-chats-by-project-changed";
 
 /**
  * One-time migration from the retired sidebar-flat-chat-list experiment.
@@ -17,7 +17,7 @@ function migrateFromRetiredFlatChatListExperiment() {
     if (localStorage.getItem(SIDEBAR_GROUP_CHATS_BY_PROJECT_STORAGE_KEY)) {
       return;
     }
-    const stored = localStorage.getItem("goose:experimental-features");
+    const stored = localStorage.getItem("distill:experimental-features");
     if (!stored) {
       return;
     }

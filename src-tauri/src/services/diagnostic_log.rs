@@ -22,7 +22,7 @@ pub enum DiagnosticLevel {
 #[serde(rename_all = "camelCase")]
 pub enum DiagnosticCategory {
     Startup,
-    GooseServe,
+    AgentHost,
     Renderer,
 }
 
@@ -120,15 +120,6 @@ pub(crate) fn record_event(
     if let Err(error) = write_event(input) {
         log::debug!("[diagnostic] write skipped: {error}");
     }
-}
-
-pub(crate) fn fields<const N: usize>(
-    pairs: [(&str, DiagnosticFieldValue); N],
-) -> BTreeMap<String, DiagnosticFieldValue> {
-    pairs
-        .into_iter()
-        .map(|(key, value)| (key.to_string(), value))
-        .collect()
 }
 
 pub(crate) fn record_panic(message: String, backtrace: String) {
@@ -322,7 +313,7 @@ fn format_record(record: &DiagnosticLogRecord) -> String {
 fn category_name(category: DiagnosticCategory) -> &'static str {
     match category {
         DiagnosticCategory::Startup => "startup",
-        DiagnosticCategory::GooseServe => "gooseServe",
+        DiagnosticCategory::AgentHost => "agentHost",
         DiagnosticCategory::Renderer => "renderer",
     }
 }
@@ -450,7 +441,7 @@ mod tests {
     fn rejects_high_cardinality_or_nested_diagnostic_input() {
         assert!(build_record(DiagnosticEventInput {
             level: DiagnosticLevel::Info,
-            category: DiagnosticCategory::GooseServe,
+            category: DiagnosticCategory::AgentHost,
             event: "SpawnStarted".to_string(),
             elapsed_ms: None,
             fields: None,
@@ -459,7 +450,7 @@ mod tests {
 
         assert!(serde_json::from_value::<DiagnosticEventInput>(json!({
             "level": "info",
-            "category": "gooseServe",
+            "category": "agentHost",
             "event": "spawn_start",
             "fields": { "nested": { "x": 1 } }
         }))

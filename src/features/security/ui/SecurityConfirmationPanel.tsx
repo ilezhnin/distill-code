@@ -12,7 +12,6 @@ import {
   extractConfidence,
   meaningfulAlertExplanation,
 } from "@/features/security/lib/inferExplanation";
-import { requestOpenSettings } from "@/features/settings/lib/settingsEvents";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 
 const FINDING_ID_PREFIX = "Finding ID:";
@@ -62,7 +61,6 @@ export function SecurityConfirmationPanel({
   const resolveWith = useSecurityConfirmationStore(
     (state) => state.resolveWith,
   );
-  const blockAll = useSecurityConfirmationStore((state) => state.blockAll);
 
   if (
     pending &&
@@ -112,13 +110,6 @@ export function SecurityConfirmationPanel({
 
   const handleAllow = () => {
     resolveWith(sessionId, pending.request, allowOptionId(pending.request));
-  };
-
-  const handleConnectGoose = () => {
-    // Setup replaces this composer, so fail closed for every queued tool call
-    // in this session before navigating away to provider settings.
-    blockAll(sessionId);
-    requestOpenSettings("providers");
   };
 
   return (
@@ -202,25 +193,6 @@ export function SecurityConfirmationPanel({
                 <p className="text-muted-foreground text-xs">
                   {t("securityConfirmation.inferenceFailed")}
                 </p>
-              </div>
-            ) : null}
-
-            {inferredExplanation.status === "needs_setup" ? (
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/50 p-3">
-                <div className="flex min-w-0 items-start gap-2">
-                  <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
-                  <p className="text-muted-foreground text-xs">
-                    {t("securityConfirmation.connectGooseDescription")}
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handleConnectGoose}
-                >
-                  {t("securityConfirmation.connectGoose")}
-                </Button>
               </div>
             ) : null}
           </div>

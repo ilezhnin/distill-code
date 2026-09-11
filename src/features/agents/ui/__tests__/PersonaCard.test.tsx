@@ -69,7 +69,7 @@ describe("PersonaCard", () => {
     expect(container.querySelector("video")).toBeNull();
     expect(container.querySelector("img")).toHaveAttribute(
       "src",
-      expect.stringContaining("goose-"),
+      expect.stringContaining("agent-avatar-"),
     );
   });
 

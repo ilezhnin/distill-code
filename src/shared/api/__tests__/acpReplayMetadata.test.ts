@@ -12,15 +12,15 @@ describe("getReplayMessageId", () => {
 
   it("returns messageId from _meta.goose", () => {
     const source = {
-      _meta: { goose: { messageId: "msg_2" } },
+      _meta: { distill: { messageId: "msg_2" } },
     };
     expect(getReplayMessageId(source)).toBe("msg_2");
   });
 
-  it("prefers top-level messageId over _meta.goose.messageId", () => {
+  it("prefers top-level messageId over _meta.distill.messageId", () => {
     const source = {
       messageId: "top",
-      _meta: { goose: { messageId: "nested" } },
+      _meta: { distill: { messageId: "nested" } },
     };
     expect(getReplayMessageId(source)).toBe("top");
   });
@@ -38,7 +38,7 @@ describe("getReplayMessageId", () => {
   });
 
   it("returns null when _meta.goose is not an object", () => {
-    expect(getReplayMessageId({ _meta: { goose: "not-object" } })).toBeNull();
+    expect(getReplayMessageId({ _meta: { distill: "not-object" } })).toBeNull();
   });
 
   it("returns null when _meta is an array", () => {
@@ -50,17 +50,17 @@ describe("getReplayMessageId", () => {
 
 describe("getReplayCreated", () => {
   it("returns milliseconds from a seconds-epoch timestamp", () => {
-    const source = { _meta: { goose: { created: 1_700_000_000 } } };
+    const source = { _meta: { distill: { created: 1_700_000_000 } } };
     expect(getReplayCreated(source)).toBe(1_700_000_000_000);
   });
 
   it("returns milliseconds directly when already in milliseconds", () => {
-    const source = { _meta: { goose: { created: 1_700_000_000_000 } } };
+    const source = { _meta: { distill: { created: 1_700_000_000_000 } } };
     expect(getReplayCreated(source)).toBe(1_700_000_000_000);
   });
 
   it("falls back to createdAt if created is missing", () => {
-    const source = { _meta: { goose: { createdAt: 1_700_000_000 } } };
+    const source = { _meta: { distill: { createdAt: 1_700_000_000 } } };
     expect(getReplayCreated(source)).toBe(1_700_000_000_000);
   });
 
@@ -69,52 +69,52 @@ describe("getReplayCreated", () => {
   });
 
   it("returns undefined for non-numeric values", () => {
-    const source = { _meta: { goose: { created: "2024-01-01T00:00:00Z" } } };
+    const source = { _meta: { distill: { created: "not-a-date" } } };
     expect(getReplayCreated(source)).toBeUndefined();
   });
 
   it("returns undefined for NaN", () => {
-    const source = { _meta: { goose: { created: NaN } } };
+    const source = { _meta: { distill: { created: NaN } } };
     expect(getReplayCreated(source)).toBeUndefined();
   });
 
   it("returns undefined for Infinity", () => {
-    const source = { _meta: { goose: { created: Infinity } } };
+    const source = { _meta: { distill: { created: Infinity } } };
     expect(getReplayCreated(source)).toBeUndefined();
   });
 
   it("returns undefined for negative timestamps", () => {
-    const source = { _meta: { goose: { created: -1 } } };
+    const source = { _meta: { distill: { created: -1 } } };
     expect(getReplayCreated(source)).toBeUndefined();
   });
 
   it("returns undefined for negative epoch values", () => {
-    const source = { _meta: { goose: { created: -1_000_000_000 } } };
+    const source = { _meta: { distill: { created: -1_000_000_000 } } };
     expect(getReplayCreated(source)).toBeUndefined();
   });
 
   it("handles the boundary between seconds and milliseconds", () => {
     // Just below the threshold: treated as seconds
     const belowSource = {
-      _meta: { goose: { created: 999_999_999_999 } },
+      _meta: { distill: { created: 999_999_999_999 } },
     };
     expect(getReplayCreated(belowSource)).toBe(999_999_999_999_000);
 
     // At the threshold: treated as milliseconds
     const atSource = {
-      _meta: { goose: { created: 1_000_000_000_000 } },
+      _meta: { distill: { created: 1_000_000_000_000 } },
     };
     expect(getReplayCreated(atSource)).toBe(1_000_000_000_000);
   });
 
   it("returns zero as a valid timestamp", () => {
-    const source = { _meta: { goose: { created: 0 } } };
+    const source = { _meta: { distill: { created: 0 } } };
     expect(getReplayCreated(source)).toBe(0);
   });
 
   it("returns undefined when _meta.goose is an array", () => {
     const source = {
-      _meta: { goose: [{ created: 1_700_000_000 }] },
+      _meta: { distill: [{ created: 1_700_000_000 }] },
     };
     expect(getReplayCreated(source)).toBeUndefined();
   });
@@ -124,7 +124,7 @@ describe("getReplayUserMetadata", () => {
   it("restores delivered steer metadata", () => {
     expect(
       getReplayUserMetadata({
-        _meta: { goose: { steer: true } },
+        _meta: { distill: { steer: true } },
       }),
     ).toEqual({ delivery: "steer" });
   });
@@ -132,7 +132,7 @@ describe("getReplayUserMetadata", () => {
   it("restores known berdctl cross-session origin metadata", () => {
     expect(
       getReplayUserMetadata({
-        _meta: { goose: { origin: "berdctl_cross_session" } },
+        _meta: { distill: { origin: "berdctl_cross_session" } },
       }),
     ).toEqual({ origin: "berdctl_cross_session" });
   });
@@ -141,7 +141,7 @@ describe("getReplayUserMetadata", () => {
     expect(
       getReplayUserMetadata({
         _meta: {
-          goose: {
+          distill: {
             origin: "berdctl_cross_session",
             berdSenderLabel: "berd-monitor",
             berdDeliveryId: "monitor-event-1",
@@ -155,30 +155,10 @@ describe("getReplayUserMetadata", () => {
     });
   });
 
-  it("restores voice conversation origin metadata", () => {
-    expect(
-      getReplayUserMetadata({
-        _meta: {
-          goose: {
-            origin: "voice_conversation",
-            voiceUtteranceId: "7",
-            voiceConversationLifecycleId: "lifecycle-1",
-            voiceConversationRevision: 3,
-          },
-        },
-      }),
-    ).toEqual({
-      origin: "voice_conversation",
-      voiceUtteranceId: "7",
-      voiceConversationLifecycleId: "lifecycle-1",
-      voiceConversationRevision: 3,
-    });
-  });
-
   it("ignores unknown origins", () => {
     expect(
       getReplayUserMetadata({
-        _meta: { goose: { origin: "some_future_origin" } },
+        _meta: { distill: { origin: "some_future_origin" } },
       }),
     ).toBeUndefined();
   });

@@ -1,11 +1,12 @@
 import { getCatalogEntry } from "@/features/providers/providerCatalog";
 import type { SessionExecutionTarget } from "@/features/chat/lib/sessionExecutionTarget";
 import { formatProviderLabel } from "@/shared/ui/icons/ProviderIcons";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
 export function providerIdFromExecutionTarget(
   target: SessionExecutionTarget | null | undefined,
 ): string {
-  return target?.harnessId ?? "goose";
+  return target?.harnessId ?? DEFAULT_HARNESS_ID;
 }
 
 export function modelIdFromExecutionTarget(

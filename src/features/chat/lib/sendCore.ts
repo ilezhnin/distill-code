@@ -25,21 +25,10 @@ import {
   isLegacyOrchestratorShellSession,
   useConductorGraphStore,
 } from "@/features/conductor/conductorGraphStore";
+import { syncConductorDisplayNameFromTitle } from "@/features/conductor/syncConductorDisplayName";
 import { composeConductorSystemPrompt } from "@/features/conductor/wavePrompts";
 import { acpSendMessage } from "@/shared/api/acp";
-import {
-  formatAcpErrorMessage,
-  isProviderNotSetError,
-} from "@/shared/api/acpErrors";
-import {
-  CHAT_TURN_ERROR_KIND,
-  CHAT_TURN_OUTCOME,
-  trackChatTurnEnded,
-} from "@/features/chat/lib/chatTelemetry";
-import type {
-  DistillChatTurnErrorKind,
-  DistillChatTurnOutcome,
-} from "@/shared/telemetry/events";
+import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import {
   formatAttachmentsTooLargeMessage,
   MAX_PROMPT_ATTACHMENT_BYTES,
@@ -66,6 +55,7 @@ import {
   createSystemNotificationMessage,
   createUserMessage,
 } from "@/shared/types/messages";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
 /** Persona recorded on the user message and forwarded to the ACP send. */
 export interface SendCorePersona {
@@ -85,8 +75,8 @@ export interface SendCoreOptions {
   chips?: MessageChip[];
   /** Extra renderer-only metadata to stamp on the local user message. */
   userMessageMetadata?: Partial<MessageMetadata>;
-  /** Extra metadata persisted through ACP under `_meta.goose`. */
-  acpGooseMetadata?: Record<string, unknown>;
+  /** Extra metadata persisted through ACP under `_meta`. */
+  acpPromptMetadata?: Record<string, unknown>;
   /** Pending-assistant provider; defaults to the active agent's provider. */
   providerId?: string;
   /**
@@ -204,38 +194,6 @@ export function resolveAssistantCancellation(
 }
 
 /**
- * The closed error kind for a failed turn. Only the classifications the send
- * path already makes for its own recovery are reported; everything else is
- * OTHER rather than a parsed message, because the message is harness output
- * and can carry paths and prompt fragments.
- */
-function reportTurnEnded(
-  params: Parameters<typeof trackChatTurnEnded>[0],
-): void {
-  // One of the two call sites is a `finally`, where a throw would replace the
-  // error on its way out and turn a harness failure into a telemetry stack
-  // trace. Never let reporting decide what the caller sees.
-  try {
-    trackChatTurnEnded(params);
-  } catch {
-    // Telemetry is not load-bearing.
-  }
-}
-
-function turnErrorKind(error: unknown): DistillChatTurnErrorKind {
-  if (error instanceof PromptPayloadTooLargeError) {
-    return CHAT_TURN_ERROR_KIND.PAYLOAD_TOO_LARGE;
-  }
-  if (isHarnessRejectedModelError(error)) {
-    return CHAT_TURN_ERROR_KIND.REJECTED_MODEL;
-  }
-  if (isProviderNotSetError(error)) {
-    return CHAT_TURN_ERROR_KIND.PROVIDER_NOT_SET;
-  }
-  return CHAT_TURN_ERROR_KIND.OTHER;
-}
-
-/**
  * Foreground send core: commits the user message, drives the
  * thinking-to-streaming-to-idle chat-state transitions, patches the session
  * title, and dispatches the prompt over ACP.
@@ -255,7 +213,7 @@ export async function dispatchPrompt(
   const tSendStart = performance.now();
   const {
     assistantPrompt,
-    acpGooseMetadata,
+    acpPromptMetadata,
     attachments,
     background,
     beforeUserMessageCommitted,
@@ -281,18 +239,6 @@ export async function dispatchPrompt(
     const errorMessage = formatAttachmentsTooLargeMessage(attachmentBytes);
     useChatStore.getState().setError(sessionId, errorMessage);
     const tooLarge = new PromptPayloadTooLargeError(errorMessage);
-    // Thrown before the prompt is even claimed, so it never reaches the
-    // `finally` below; reported here so an oversized attachment is a failed
-    // turn on the wire rather than a send that never happened.
-    reportTurnEnded({
-      sessionId,
-      outcome: CHAT_TURN_OUTCOME.ERROR,
-      messageCommitted: false,
-      hasPersona: Boolean(persona),
-      durationMs: performance.now() - tSendStart,
-      errorKind: turnErrorKind(tooLarge),
-      provider: providerId,
-    });
     throw tooLarge;
   }
 
@@ -300,14 +246,13 @@ export async function dispatchPrompt(
   const isCurrent = () => ownsSessionPrompt(sessionId, promptOwner);
   let userMessageCommitted = false;
   let preCommitRejected = false;
-  let turnOutcome: DistillChatTurnOutcome = CHAT_TURN_OUTCOME.COMPLETED;
-  let turnErrorKindForOutcome: DistillChatTurnErrorKind | undefined;
 
   const { addMessage, setChatState, setError, setPendingAssistantProvider } =
     useChatStore.getState();
 
   const agent = useAgentStore.getState().getActiveAgent();
-  const pendingAssistantProvider = providerId ?? agent?.provider ?? "goose";
+  const pendingAssistantProvider =
+    providerId ?? agent?.provider ?? DEFAULT_HARNESS_ID;
 
   setPendingAssistantProvider(sessionId, pendingAssistantProvider);
   clearLiveSubtitleUpdate(sessionId);
@@ -370,10 +315,12 @@ export async function dispatchPrompt(
       const sessionStore = useChatSessionStore.getState();
       const session = sessionStore.getSession(sessionId);
       if (session && isDefaultChatTitle(session.title)) {
+        const title = getSessionTitleFromDraft(text, attachments);
         sessionStore.patchSession(sessionId, {
-          title: getSessionTitleFromDraft(text, attachments),
+          title,
           updatedAt: new Date().toISOString(),
         });
+        syncConductorDisplayNameFromTitle(sessionId, title);
       } else {
         sessionStore.patchSession(sessionId, {
           updatedAt: new Date().toISOString(),
@@ -431,7 +378,7 @@ export async function dispatchPrompt(
       ...(assistantPrompt ? { assistantPrompt } : {}),
       personaId: persona?.id,
       personaName: persona?.name,
-      goose: acpGooseMetadata,
+      promptMeta: acpPromptMetadata,
       images: images?.map(
         (img) => [img.base64, img.mimeType] as [string, string],
       ),
@@ -472,14 +419,6 @@ export async function dispatchPrompt(
       if (cancellationRace) {
         recordAssistantPromptOutcome(promptOwner, "error");
       }
-    }
-    // Classified before the recovery branches so the outcome does not depend
-    // on which of them the ownership checks let run.
-    if (err instanceof DOMException && err.name === "AbortError") {
-      turnOutcome = CHAT_TURN_OUTCOME.CANCELLED;
-    } else if (!preCommitRejected) {
-      turnOutcome = CHAT_TURN_OUTCOME.ERROR;
-      turnErrorKindForOutcome = turnErrorKind(err);
     }
     if (preCommitRejected) {
       // Ownership/readiness changed at the last reversible boundary. This
@@ -548,20 +487,6 @@ export async function dispatchPrompt(
     }
     throw err;
   } finally {
-    // Every way a turn can end passes through here. A pre-commit rejection is
-    // the one exception: it hands the session to a newer owner having changed
-    // nothing, so counting it would report a turn that never ran.
-    if (!preCommitRejected) {
-      reportTurnEnded({
-        sessionId,
-        outcome: turnOutcome,
-        messageCommitted: userMessageCommitted,
-        hasPersona: Boolean(persona),
-        durationMs: performance.now() - tSendStart,
-        errorKind: turnErrorKindForOutcome,
-        provider: pendingAssistantProvider,
-      });
-    }
     if (!isCurrent()) {
       clearBufferedStreamingUpdatesForSession(sessionId, {
         owner: promptOwner,

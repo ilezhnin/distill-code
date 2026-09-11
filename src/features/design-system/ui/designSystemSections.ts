@@ -20,7 +20,6 @@ export type DesignSystemSection =
   | "component-calendar"
   | "component-card"
   | "component-carousel"
-  | "component-chart-container"
   | "component-checkbox"
   | "component-collapsible"
   | "component-command"
@@ -62,9 +61,7 @@ export type DesignSystemSection =
   | "component-settings-section"
   | "component-settings-row"
   | "component-sheet"
-  | "component-sidebar"
   | "component-skeleton"
-  | "component-slider"
   | "component-toaster"
   | "component-spinner"
   | "component-split-button"
@@ -104,8 +101,6 @@ export const DESIGN_SYSTEM_COMPONENT_SECTIONS: Array<{
   { id: "component-collapsible", label: "Collapsible" },
   { id: "component-command", label: "Command" },
   { id: "component-confirm-dialog", label: "Confirm Dialog" },
-  { id: "component-contextual-tip", label: "Contextual Tip" },
-  { id: "component-detail-field", label: "Detail Field" },
   { id: "component-dialog", label: "Dialog" },
   { id: "component-tabs", label: "Tabs" },
   { id: "component-select", label: "Select" },
@@ -125,7 +120,6 @@ export const DESIGN_SYSTEM_COMPONENT_SECTIONS: Array<{
   { id: "component-progress", label: "Progress" },
   { id: "component-radio-group", label: "Radio Group" },
   { id: "component-scroll-area", label: "Scroll Area" },
-  { id: "component-searchable-select", label: "Searchable Select" },
   { id: "component-search-bar", label: "Search Bar" },
   {
     id: "component-session-activity-indicator",
@@ -136,7 +130,6 @@ export const DESIGN_SYSTEM_COMPONENT_SECTIONS: Array<{
   { id: "component-settings-row", label: "Settings Row" },
   { id: "component-sheet", label: "Sheet" },
   { id: "component-skeleton", label: "Skeleton" },
-  { id: "component-slider", label: "Slider" },
   { id: "component-toaster", label: "Toaster" },
   { id: "component-spinner", label: "Spinner" },
   { id: "component-switch", label: "Switch" },
@@ -157,7 +150,6 @@ export const DESIGN_SYSTEM_UNUSED_COMPONENT_SECTIONS: Array<{
   { id: "component-breadcrumb", label: "Breadcrumb" },
   { id: "component-calendar", label: "Calendar" },
   { id: "component-carousel", label: "Carousel" },
-  { id: "component-chart-container", label: "Chart Container" },
   { id: "component-drawer", label: "Drawer" },
   { id: "component-form", label: "Form" },
   { id: "component-berd-logo", label: "Berd Logo" },
@@ -169,7 +161,6 @@ export const DESIGN_SYSTEM_UNUSED_COMPONENT_SECTIONS: Array<{
   { id: "component-pagination", label: "Pagination" },
   { id: "component-resizable-handle", label: "Resizable Handle" },
   { id: "component-separator", label: "Separator" },
-  { id: "component-sidebar", label: "Sidebar" },
   { id: "component-table", label: "Table" },
   { id: "component-toggle", label: "Toggle" },
 ];

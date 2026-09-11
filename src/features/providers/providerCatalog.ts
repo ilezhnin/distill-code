@@ -15,11 +15,7 @@ export function getCatalogEntry(
 }
 
 export function getAgentProviders(): ProviderCatalogEntry[] {
-  return getAgentProvidersFromEntries(getProviderCatalog());
-}
-
-export function getModelProviders(): ProviderCatalogEntry[] {
-  return getModelProvidersFromEntries(getProviderCatalog());
+  return getProviderCatalog();
 }
 
 export function getCatalogEntryFromEntries(
@@ -32,34 +28,21 @@ export function getCatalogEntryFromEntries(
 export function getAgentProvidersFromEntries(
   entries: ProviderCatalogEntry[],
 ): ProviderCatalogEntry[] {
-  return entries.filter((provider) => provider.category === "agent");
-}
-
-export function getModelProvidersFromEntries(
-  entries: ProviderCatalogEntry[],
-): ProviderCatalogEntry[] {
-  return entries.filter((provider) => provider.category === "model");
+  return entries;
 }
 
 function resolveCatalogIdStrict(
   entries: ProviderCatalogEntry[],
   providerId: string,
-  category?: ProviderCatalogEntry["category"],
 ): string | null {
-  const matchesCategory = (provider: ProviderCatalogEntry) =>
-    category == null || provider.category === category;
-  const directMatch = entries.find(
-    (provider) => matchesCategory(provider) && provider.id === providerId,
-  );
+  const directMatch = entries.find((provider) => provider.id === providerId);
   if (directMatch) return directMatch.id;
 
   const normalized = normalizeProviderKey(providerId);
-  const aliasMatch = entries.find(
-    (provider) =>
-      matchesCategory(provider) &&
-      [provider.id, ...(provider.aliases ?? [])].some(
-        (alias) => normalizeProviderKey(alias) === normalized,
-      ),
+  const aliasMatch = entries.find((provider) =>
+    [provider.id, ...(provider.aliases ?? [])].some(
+      (alias) => normalizeProviderKey(alias) === normalized,
+    ),
   );
   return aliasMatch?.id ?? null;
 }
@@ -68,29 +51,13 @@ export function resolveAgentProviderCatalogIdStrictFromEntries(
   entries: ProviderCatalogEntry[],
   providerId: string,
 ): string | null {
-  return resolveCatalogIdStrict(entries, providerId, "agent");
+  return resolveCatalogIdStrict(entries, providerId);
 }
 
 export function resolveAgentProviderCatalogIdStrict(
   providerId: string,
 ): string | null {
   return resolveAgentProviderCatalogIdStrictFromEntries(
-    getProviderCatalog(),
-    providerId,
-  );
-}
-
-export function resolveModelProviderCatalogIdStrictFromEntries(
-  entries: ProviderCatalogEntry[],
-  providerId: string,
-): string | null {
-  return resolveCatalogIdStrict(entries, providerId, "model");
-}
-
-export function resolveModelProviderCatalogIdStrict(
-  providerId: string,
-): string | null {
-  return resolveModelProviderCatalogIdStrictFromEntries(
     getProviderCatalog(),
     providerId,
   );
@@ -143,9 +110,6 @@ export function resolveAgentProviderCatalogIdFromEntries(
 
   for (const candidate of normalizedCandidates) {
     for (const provider of entries) {
-      if (provider.category !== "agent") {
-        continue;
-      }
       for (const alias of [provider.id, ...(provider.aliases ?? [])]) {
         if (normalizedAliasMatchesCandidate(alias, candidate)) {
           return provider.id;

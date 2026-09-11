@@ -2,15 +2,11 @@ import {
   readinessFromReport,
   type AgentProviderReadiness,
 } from "@/features/providers/hooks/useAgentProviderStatus";
-import { filterModelProvidersForRuntimeConfig } from "@/features/providers/runtimeProviderConstraints";
 import { getProviderModelSelectionHint } from "@/features/providers/modelSelectionHints";
-import { getModelProviders } from "@/features/providers/providerCatalog";
 import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
 import { discoverAcpProviders } from "@/shared/api/acp";
-import { GOOSE_PROVIDER_ID } from "@/shared/api/acpPersonaHandoff";
 import { runDoctor, type DoctorReport } from "@/shared/api/doctor";
 import { prefetchDoctorReport } from "@/shared/api/useDoctorReport";
-import { useRuntimeConfigStore } from "@/shared/runtime-config/runtimeConfigStore";
 
 import { getBerdctlQueryClient } from "../../bridge/runtimeContext";
 import { CommandError } from "../types";
@@ -24,7 +20,6 @@ export interface HarnessStatus {
 export interface ModelEntry {
   model_id: string;
   name: string;
-  provider?: string;
 }
 
 function sharedDoctorReport(): Promise<DoctorReport | null> {
@@ -71,22 +66,6 @@ export async function findReadyHarnessOrThrow(
   return match;
 }
 
-export async function gooseModelOptions(): Promise<ModelEntry[]> {
-  const providerIds = filterModelProvidersForRuntimeConfig(
-    getModelProviders(),
-    useRuntimeConfigStore.getState().config,
-  ).map((provider) => provider.id);
-  const store = useProviderModelCacheStore.getState();
-  await store.refreshAllModelProviders(providerIds);
-  return providerIds.flatMap((providerId) =>
-    store.getModelsForProvider(providerId).map((model) => ({
-      model_id: model.id,
-      name: model.displayName ?? model.name,
-      provider: model.providerId ?? providerId,
-    })),
-  );
-}
-
 export async function harnessModelOptions(
   harnessId: string,
 ): Promise<ModelEntry[]> {
@@ -100,5 +79,3 @@ export async function harnessModelOptions(
     name: model.displayName ?? model.name,
   }));
 }
-
-export { GOOSE_PROVIDER_ID };

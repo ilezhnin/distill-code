@@ -1,18 +1,8 @@
 import { useMemo, useState } from "react";
-import {
-  Mic,
-  Headphones,
-  ArrowUp,
-  File,
-  FolderOpen,
-  Settings2,
-  Plus,
-  Volume2,
-} from "lucide-react";
+import { ArrowUp, File, FolderOpen, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { useSessionCostPreference } from "@/features/chat/lib/sessionCostPreference";
-import { useAnyVoiceDictationActive } from "@/features/chat/hooks/useVoiceDictation";
 import { IconCornerDownLeft, IconPlayerStopFilled } from "@tabler/icons-react";
 import { cn } from "@/shared/lib/cn";
 import { ContextRing } from "./ContextRing";
@@ -27,7 +17,6 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Progress } from "@/shared/ui/progress";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/shared/ui/tooltip";
-import { Kbd } from "@/shared/ui/kbd";
 import { AgentModelPicker } from "./AgentModelPicker";
 import { FastModePill } from "./FastModePill";
 import { ReasoningEffortPill } from "./ReasoningEffortPill";
@@ -36,8 +25,6 @@ import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProvi
 import { getCatalogEntryFromEntries } from "@/features/providers/providerCatalog";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import { listVisibleAgentPickerOptions } from "../lib/listVisibleAgentPickerOptions";
-import { supportsContextCompactionControls } from "../lib/autoCompact";
-import { requestOpenSettings } from "@/features/settings/lib/settingsEvents";
 import { ProjectInputSelector } from "./ProjectInputSelector";
 import type {
   AgentPickerOption,
@@ -46,8 +33,8 @@ import type {
   ChatInputFastMode,
   ChatInputProjectPicker,
   ChatInputReasoningEffort,
-  ChatInputVoiceConversation,
 } from "../types";
+import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
 interface ChatInputToolbarComposerActions {
   canSend: boolean;
@@ -62,42 +49,6 @@ interface ChatInputToolbarComposerActions {
   attachmentsEnabled?: boolean;
   disabled?: boolean;
   sendDisabledReason?: string;
-  voiceEnabled?: boolean;
-  voiceStarting?: boolean;
-  voiceRecording?: boolean;
-  voiceTranscribing?: boolean;
-  voiceShortcutDisplayParts?: string[];
-  onVoiceToggle?: () => void;
-  voiceConversation?: ChatInputVoiceConversation;
-}
-
-function UserVoiceActivityIndicator() {
-  return (
-    <span
-      data-role="voice-activity-indicator"
-      data-activity="user-speaking"
-      aria-hidden="true"
-      className="flex size-4 items-center justify-center gap-0.5"
-    >
-      <span className="voice-waveform-bar h-2 w-0.5 rounded-full bg-current motion-reduce:animate-none" />
-      <span className="voice-waveform-bar h-3 w-0.5 rounded-full bg-current [animation-delay:-480ms] motion-reduce:animate-none" />
-      <span className="voice-waveform-bar h-2.5 w-0.5 rounded-full bg-current [animation-delay:-240ms] motion-reduce:animate-none" />
-    </span>
-  );
-}
-
-function AgentVoiceActivityIndicator() {
-  return (
-    <span
-      data-role="agent-voice-activity-indicator"
-      data-activity="agent-speaking"
-      aria-hidden="true"
-      className="relative flex size-4 items-center justify-center"
-    >
-      <Volume2 className="size-4" strokeWidth={2.25} />
-      <span className="absolute -right-0.5 size-1 animate-ping rounded-full bg-current motion-reduce:animate-none" />
-    </span>
-  );
 }
 
 type OpenToolbarMenu =
@@ -130,7 +81,6 @@ export function ChatInputToolbar({
 }: ChatInputToolbarProps) {
   const { t } = useTranslation("chat");
   const { formatNumber } = useLocaleFormatting();
-  const anyVoiceDictationActive = useAnyVoiceDictationActive();
   const catalogEntries = useProviderCatalogStore((state) => state.entries);
   const catalogLoaded = useProviderCatalogStore((state) => state.loaded);
   const { agentReadiness, readyAgentIds } = useAgentProviderStatus();
@@ -142,7 +92,7 @@ export function ChatInputToolbar({
   const {
     providers = [],
     providersLoading,
-    selectedProvider = "goose",
+    selectedProvider = DEFAULT_HARNESS_ID,
     onProviderChange,
     currentModelId,
     currentModelProviderId,
@@ -184,58 +134,11 @@ export function ChatInputToolbar({
     attachmentsEnabled = true,
     disabled = false,
     sendDisabledReason,
-    voiceEnabled = false,
-    voiceStarting = false,
-    voiceRecording = false,
-    voiceTranscribing = false,
-    voiceShortcutDisplayParts,
-    onVoiceToggle,
-    voiceConversation,
   } = composerActions;
-  const compactionControlsSupported =
-    supportsCompactionControls ??
-    supportsContextCompactionControls(selectedProvider);
+  const compactionControlsSupported = supportsCompactionControls ?? false;
   const sendButtonTooltip = canSend
     ? t("toolbar.sendMessage")
     : sendDisabledReason;
-  const voiceConversationState = voiceConversation?.state ?? "off";
-  const voiceConversationRunning = voiceConversation?.active === true;
-  const voiceConversationMicrophoneMuted =
-    voiceConversation?.microphoneMuted ?? false;
-  const voiceConversationTooltip =
-    voiceConversationRunning && voiceConversationMicrophoneMuted
-      ? t("toolbar.voiceConversation.states.muted", {
-          sessionId: voiceConversation?.boundSessionId ?? "",
-        })
-      : voiceConversationState !== "off"
-        ? t(`toolbar.voiceConversation.states.${voiceConversationState}`, {
-            sessionId: voiceConversation?.boundSessionId ?? "",
-            error: voiceConversation?.error ?? "",
-          })
-        : t("toolbar.voiceConversation.start");
-  const voiceInputTooltip = voiceConversationRunning
-    ? voiceConversationMicrophoneMuted
-      ? t("toolbar.voiceConversation.unmuteMicrophone")
-      : t("toolbar.voiceConversation.muteMicrophone")
-    : voiceRecording
-      ? t("toolbar.voiceInputRecording")
-      : voiceTranscribing
-        ? t("toolbar.voiceInputTranscribing")
-        : t("toolbar.voiceInput");
-  const voiceConversationFeedbackState =
-    voiceConversationState === "error"
-      ? "error"
-      : voiceConversationRunning
-        ? "active"
-        : undefined;
-  const nativeVoiceOwnsMicrophone =
-    voiceConversationState === "starting" ||
-    voiceConversationState === "stopping";
-  const dictationOwnsMicrophone =
-    anyVoiceDictationActive ||
-    voiceStarting ||
-    voiceRecording ||
-    voiceTranscribing;
 
   const agentProviders = useMemo((): AgentPickerOption[] => {
     return listVisibleAgentPickerOptions({
@@ -327,13 +230,6 @@ export function ChatInputToolbar({
 
     setOpenMenu(null);
     void onCompactContext();
-  };
-
-  const handleOpenAutoCompactSettings = () => {
-    setOpenMenu(null);
-    // Auto-compact settings live in the Behavior section (BOT-1430 redesign,
-    // "chat" was renamed "behavior" -- see settingsSections.ts).
-    requestOpenSettings("behavior");
   };
 
   if (!showContextUsage && isContextPopoverOpen) {
@@ -546,102 +442,11 @@ export function ChatInputToolbar({
                           ? t("toolbar.compacting")
                           : t("toolbar.compactNow")}
                       </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-xs"
-                        className="shrink-0 rounded-sm"
-                        onClick={handleOpenAutoCompactSettings}
-                        aria-label={t("toolbar.settings")}
-                        tooltip={t("toolbar.settings")}
-                      >
-                        <Settings2 className="size-4" />
-                      </Button>
                     </div>
                   ) : null}
                 </div>
               </PopoverContent>
             </Popover>
-          )}
-
-          {voiceConversation?.visible ? (
-            <ComposerActionButton
-              type="button"
-              size="icon-pill-sm"
-              disabled={voiceConversation.disabled || dictationOwnsMicrophone}
-              onClick={() => void voiceConversation.onToggle()}
-              aria-label={voiceConversationTooltip}
-              aria-pressed={voiceConversationRunning}
-              visualState={voiceConversationFeedbackState}
-              tooltip={voiceConversationTooltip}
-            >
-              {voiceConversationState === "user-speaking" ? (
-                <UserVoiceActivityIndicator />
-              ) : voiceConversationState === "agent-speaking" ? (
-                <AgentVoiceActivityIndicator />
-              ) : (
-                <Headphones aria-hidden="true" />
-              )}
-            </ComposerActionButton>
-          ) : null}
-
-          {(voiceEnabled || voiceRecording || voiceConversationRunning) && (
-            <ComposerActionButton
-              type="button"
-              size="icon-pill-sm"
-              disabled={
-                nativeVoiceOwnsMicrophone ||
-                (!voiceConversationRunning &&
-                  !voiceRecording &&
-                  (!voiceEnabled || disabled))
-              }
-              onClick={
-                voiceConversationRunning
-                  ? () => void voiceConversation?.onMicrophoneMuteToggle()
-                  : onVoiceToggle
-              }
-              aria-label={
-                voiceConversationRunning
-                  ? voiceConversationMicrophoneMuted
-                    ? t("toolbar.voiceConversation.unmuteMicrophone")
-                    : t("toolbar.voiceConversation.muteMicrophone")
-                  : voiceRecording
-                    ? t("toolbar.voiceInputRecording")
-                    : t("toolbar.voiceInput")
-              }
-              aria-pressed={
-                voiceConversationRunning
-                  ? voiceConversationMicrophoneMuted
-                  : voiceRecording
-              }
-              tooltip={
-                !voiceConversationRunning &&
-                !voiceRecording &&
-                !voiceTranscribing &&
-                voiceShortcutDisplayParts?.length ? (
-                  <span className="flex items-center gap-2">
-                    <span>{voiceInputTooltip}</span>
-                    <span className="flex items-center gap-1">
-                      {voiceShortcutDisplayParts.map((part) => (
-                        <Kbd key={part}>{part}</Kbd>
-                      ))}
-                    </span>
-                  </span>
-                ) : (
-                  voiceInputTooltip
-                )
-              }
-              className={cn(
-                voiceConversationRunning &&
-                  !voiceConversationMicrophoneMuted &&
-                  "bg-destructive text-destructive-foreground hover:bg-destructive/90 hover:text-destructive-foreground active:bg-destructive active:text-destructive-foreground",
-                voiceRecording &&
-                  "bg-destructive text-destructive-foreground hover:bg-destructive/90 hover:text-destructive-foreground active:bg-destructive active:text-destructive-foreground",
-                voiceTranscribing && "animate-pulse",
-              )}
-            >
-              <Mic aria-hidden="true" />
-            </ComposerActionButton>
           )}
         </div>
 

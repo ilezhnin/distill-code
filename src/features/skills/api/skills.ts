@@ -1,6 +1,5 @@
-import type { SourceEntry } from "@aaif/goose-sdk";
+import type { SourceEntry } from "@/shared/api/hostTypes";
 import { invoke } from "@tauri-apps/api/core";
-import { getSkillProviderCapabilities } from "@/features/chat/lib/skillProviderCapabilities";
 import { getClient } from "@/shared/api/acpConnection";
 import { shareInFlight } from "@/shared/lib/shareInFlight";
 import { isHexColor } from "@/features/projects/lib/customPillColor";
@@ -41,7 +40,6 @@ export interface SkillInfo {
    *  for (a pre-#974 Personal-skill migration, and/or a rename retiring an
    *  old-named copy from more than one legacy location). Omitted or empty
    *  when there's no historical pin to preserve. */
-  legacyPinIds?: string[];
   /** User-chosen pill tone or custom pastel hex, persisted to frontmatter as `color`. Null for
    *  legacy skills created before the picker existed — consumers fall back
    *  to the deterministic hash-from-name tone in that case. */
@@ -69,7 +67,6 @@ interface AgentSkillEntry {
   fileLocation: string;
   sourceKind: SkillSourceKind;
   sourceLabel: string;
-  legacyPinIds?: string[];
 }
 
 interface ListAgentSkillsResponse {
@@ -159,7 +156,7 @@ function toSkillInfo(source: SkillSourceEntry): SkillInfo {
     sourceLabel:
       sourceKind === "global" ? "Personal" : projectName || "Project",
     projectLinks,
-    readonly: props.berdBundled === true || props.gooseInternalBundled === true,
+    readonly: props.berdBundled === true,
     color: readStoredColor(source.properties),
   };
 }
@@ -314,7 +311,6 @@ function toAgentSkillInfo(
         ]
       : [],
     readonly: true,
-    legacyPinIds: source.legacyPinIds ?? [],
     color: null,
   };
 }
@@ -333,7 +329,7 @@ export async function createSkill(
   options: CreateSkillOptions = {},
 ): Promise<SkillInfo> {
   const client = await getClient();
-  const response = await client.goose.GooseUnstableSourcesCreate({
+  const response = await client.host.sourcesCreate({
     type: SKILL_SOURCE_TYPE,
     name,
     description,
@@ -390,7 +386,7 @@ export async function listAgentFileSkills(
   return response.skills.map((skill) => toAgentSkillInfo(skill, providerId));
 }
 
-export async function listGooseSourceSkills(
+export async function listHostSourceSkills(
   projectDirs: string[],
 ): Promise<SkillInfo[]> {
   const client = await getClient();
@@ -398,7 +394,7 @@ export async function listGooseSourceSkills(
     type: typeof SKILL_SOURCE_TYPE | typeof BUILTIN_SKILL_SOURCE_TYPE,
     projectDir?: string,
   ) =>
-    client.goose.GooseUnstableSourcesList({
+    client.host.sourcesList({
       type,
       ...(projectDir ? { projectDir } : {}),
     });
@@ -454,29 +450,15 @@ export async function listSkills(
   projectDirs: string[] = [],
   options: ListSkillsOptions = {},
 ): Promise<SkillInfo[]> {
-  const capabilities = getSkillProviderCapabilities(options.providerId);
-  if (capabilities.discoveryMode === "agent-skill-files") {
-    const skills = await listAgentFileSkills(projectDirs, options.providerId);
-    return options.includeAppSkills === false
-      ? skills.filter((skill) => skill.sourceKind !== "app")
-      : skills;
-  }
-
-  const [gooseSkills, appSkills] = await Promise.all([
-    listGooseSourceSkills(projectDirs),
-    options.includeAppSkills === false
-      ? []
-      : listBerdAppSkills({ coalesce: !options.fresh }),
-  ]);
-  // Goose already orders project and Personal sources by its own precedence.
-  // Append Berd app skills so a same-named Personal skill wins bare-name
-  // activation while exact selection can still target either source by id.
-  return [...gooseSkills, ...appSkills];
+  const skills = await listAgentFileSkills(projectDirs, options.providerId);
+  return options.includeAppSkills === false
+    ? skills.filter((skill) => skill.sourceKind !== "app")
+    : skills;
 }
 
 export async function deleteSkill(path: string): Promise<void> {
   const client = await getClient();
-  await client.goose.GooseUnstableSourcesDelete({
+  await client.host.sourcesDelete({
     type: SKILL_SOURCE_TYPE,
     path,
   });
@@ -496,7 +478,7 @@ export async function updateSkill(
   // client-side. projectDir/projectName/berdBundled and legacy
   // gooseInternalBundled are derived by the backend at list time, not
   // persisted through this path.
-  const response = await client.goose.GooseUnstableSourcesUpdate({
+  const response = await client.host.sourcesUpdate({
     type: SKILL_SOURCE_TYPE,
     path,
     name,
@@ -518,7 +500,7 @@ export async function exportSkill(
   path: string,
 ): Promise<{ json: string; filename: string }> {
   const client = await getClient();
-  const response = await client.goose.GooseUnstableSourcesExport({
+  const response = await client.host.sourcesExport({
     type: SKILL_SOURCE_TYPE,
     path,
   });
@@ -542,7 +524,7 @@ export async function importSkills(
 
   const data = new TextDecoder().decode(new Uint8Array(fileBytes));
   const client = await getClient();
-  const response = await client.goose.GooseUnstableSourcesImport({
+  const response = await client.host.sourcesImport({
     data,
     target: { scope: "global" },
   });

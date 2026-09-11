@@ -58,35 +58,6 @@ describe("SystemSettings", () => {
     ).__TAURI_INTERNALS__ = undefined;
   });
 
-  it("renders the Updates card above the language row and the About subhead below it", async () => {
-    updatesEnabled = true;
-    (
-      window as unknown as { __TAURI_INTERNALS__?: boolean }
-    ).__TAURI_INTERNALS__ = true;
-
-    renderSystem();
-
-    await waitFor(() => {
-      expect(screen.getByText("Tauri version")).toBeInTheDocument();
-    });
-
-    const updatesCard = screen.getByText("updates.card");
-    const languageRow = screen.getByText("Language");
-    const aboutHeading = screen.getByRole("heading", { name: "About" });
-
-    // Updates card is first: it's the row people open System for most.
-    expect(
-      updatesCard.compareDocumentPosition(languageRow) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    // The About subhead, and everything under it, comes after System's own
-    // rows (language row here stands in for the install-level content).
-    expect(
-      languageRow.compareDocumentPosition(aboutHeading) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-  });
-
   // Builderbot review (carried over from About): in updater-disabled builds,
   // the embedded Updates card (which normally shows the app version) doesn't
   // render at all, and System had no other version row -- restricted/custom
@@ -104,22 +75,5 @@ describe("SystemSettings", () => {
       expect(screen.getByText("App version")).toBeInTheDocument();
       expect(screen.getByText("1.2.3")).toBeInTheDocument();
     });
-  });
-
-  it("omits the app version row when the updates card is present", async () => {
-    updatesEnabled = true;
-    (
-      window as unknown as { __TAURI_INTERNALS__?: boolean }
-    ).__TAURI_INTERNALS__ = true;
-
-    renderSystem();
-
-    expect(screen.getByText("updates.card")).toBeInTheDocument();
-    await waitFor(() => {
-      expect(screen.getByText("Tauri version")).toBeInTheDocument();
-    });
-    // The Updates card (mocked here) is the only place the version shows
-    // when updates are enabled -- no second "App version" row underneath.
-    expect(screen.queryByText("App version")).not.toBeInTheDocument();
   });
 });

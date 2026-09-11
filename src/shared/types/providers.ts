@@ -1,59 +1,31 @@
-import type {
-  ProviderSetupCatalogEntryDto,
-  ProviderSetupCategoryDto,
-  ProviderSetupFieldDto,
-  ProviderSetupMethodDto,
-  ProviderSetupGroupDto,
-} from "@aaif/goose-sdk";
+export type ProviderSetupMethod = "none" | "cli_auth";
+export type ProviderGroup = "default" | "additional";
 
-export type ProviderCategory = ProviderSetupCategoryDto;
-export type ProviderSetupMethod = ProviderSetupMethodDto;
-export type ProviderGroup = ProviderSetupGroupDto;
-export type ProviderField = ProviderSetupFieldDto;
-
-export type { ProviderConfigFieldValueDto as ProviderFieldValue } from "@aaif/goose-sdk";
-
-export type ProviderCatalogEntry = Omit<
-  ProviderSetupCatalogEntryDto,
-  | "providerId"
-  | "name"
-  | "nativeConnectQuery"
-  | "binaryName"
-  | "docUrl"
-  | "showOnlyWhenInstalled"
-  | "supportsInstall"
-  | "supportsAuth"
-  | "supportsAuthStatus"
-> & {
+/** A curated ACP agent harness the app knows how to install, sign in, and run. */
+export interface ProviderCatalogEntry {
   id: string;
   displayName: string;
-  nativeConnectQuery?: NonNullable<
-    ProviderSetupCatalogEntryDto["nativeConnectQuery"]
-  >;
-  binaryName?: NonNullable<ProviderSetupCatalogEntryDto["binaryName"]>;
-  docsUrl?: NonNullable<ProviderSetupCatalogEntryDto["docUrl"]>;
-  showOnlyWhenInstalled?: ProviderSetupCatalogEntryDto["showOnlyWhenInstalled"];
-  supportsInstall?: ProviderSetupCatalogEntryDto["supportsInstall"];
-  supportsAuth?: ProviderSetupCatalogEntryDto["supportsAuth"];
-  supportsAuthStatus?: ProviderSetupCatalogEntryDto["supportsAuthStatus"];
-  customProvider?: boolean;
+  category: "agent";
+  description: string;
+  setupMethod: ProviderSetupMethod;
+  group: ProviderGroup;
+  aliases?: string[];
+  /** Executable the doctor probes for; also what the host spawns. */
+  binaryName?: string;
+  docsUrl?: string;
+  supportsInstall?: boolean;
+  supportsAuth?: boolean;
+  supportsAuthStatus?: boolean;
+  /** The bridge vendors the full harness CLI, so it is the only binary. */
   bundledBridge?: boolean;
+  /** False when the harness manages its model list outside the app. */
   supportsModelList?: boolean;
   modelSelectionHint?: string;
-  /** Where Berd learned about this provider's primary inventory/presentation. */
-  catalogSource?: "setup" | "runtime" | "custom";
-  /** Goose also exposes first-class setup behavior for this provider. */
-  setupCatalogProvider?: boolean;
-};
+}
 
 export type ProviderSetupStatus =
   | "built_in"
   | "connected"
-  /**
-   * Goose reports the provider configured and a saved user-supplied value
-   * exists, but the setup path is ambiguous (defaults/ambient access could
-   * also explain it). Shown as "Configured", never promoted to connected.
-   */
   | "configured"
   | "not_installed"
   | "not_configured"

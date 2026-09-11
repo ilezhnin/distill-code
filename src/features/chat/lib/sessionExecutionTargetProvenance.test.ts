@@ -60,7 +60,7 @@ const ALLOWED_MINTING_MODULES: Record<string, string> = {
 
   // (c) The goose-serve boundary canonicalizes what goose reports the session
   // is running; the snapshot path in the coordinator materializes the same.
-  "src/features/chat/lib/gooseServeExecutionTarget.ts": "c",
+  "src/features/chat/lib/hostExecutionTarget.ts": "c",
   "src/features/chat/lib/sessionTargetCoordinator.ts": "c",
 
   // (-) Re-normalizers: they canonicalize a target another module already

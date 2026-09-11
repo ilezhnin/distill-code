@@ -19,6 +19,6 @@ describe("skillsEvents", () => {
   });
 
   it("exports the skills changed event name", () => {
-    expect(SKILLS_CHANGED_EVENT).toBe("goose:skills-changed");
+    expect(SKILLS_CHANGED_EVENT).toBe("distill:skills-changed");
   });
 });

@@ -1133,7 +1133,7 @@ describe("useChat", () => {
           sessionUpdate: "user_message_chunk",
           messageId: "backend-steer-message",
           content: { type: "text", text: "make it shorter" },
-          _meta: { goose: { steer: true } },
+          _meta: { distill: { steer: true } },
         },
       } as never);
     });
@@ -1502,7 +1502,7 @@ describe("useChat", () => {
         content: [
           {
             type: "systemNotification",
-            text: "Steering is not available in this Goose backend. Restart with the steering backend branch and try again.",
+            text: "Steering is not available for this agent.",
           },
         ],
       },

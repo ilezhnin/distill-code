@@ -15,7 +15,7 @@ const listBerdAppSkillsInvoke = vi.fn<() => Promise<SkillInfo[]>>();
 // same shared-slot semantics. Recreated per test so an unsettled slot can't
 // leak across tests.
 let listBerdAppSkills = shareInFlight(() => listBerdAppSkillsInvoke());
-const listGooseSourceSkills =
+const listHostSourceSkills =
   vi.fn<(...args: unknown[]) => Promise<SkillInfo[]>>();
 const listSkills = vi.fn<(...args: unknown[]) => Promise<SkillInfo[]>>();
 
@@ -23,7 +23,7 @@ vi.mock("./skills", () => ({
   listAgentFileSkills: (...args: unknown[]) => listAgentFileSkills(...args),
   listBerdAppSkills: (options?: ShareInFlightOptions) =>
     listBerdAppSkills(options),
-  listGooseSourceSkills: (...args: unknown[]) => listGooseSourceSkills(...args),
+  listHostSourceSkills: (...args: unknown[]) => listHostSourceSkills(...args),
   listSkills: (...args: unknown[]) => listSkills(...args),
 }));
 

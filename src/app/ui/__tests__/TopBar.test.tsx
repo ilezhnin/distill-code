@@ -8,13 +8,7 @@ vi.mock("@/features/updates/ui/BetaBadge", () => ({
 import { TopBar } from "../TopBar";
 
 function renderTopBar(props: Partial<Parameters<typeof TopBar>[0]> = {}) {
-  return render(
-    <TopBar
-      breadcrumbs={[{ label: "Home" }]}
-      onFeedbackClick={vi.fn()}
-      {...props}
-    />,
-  );
+  return render(<TopBar breadcrumbs={[{ label: "Home" }]} {...props} />);
 }
 
 describe("TopBar", () => {
@@ -53,14 +47,6 @@ describe("TopBar", () => {
 
     expect(
       screen.queryByRole("button", { name: /search/i }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("omits feedback when onFeedbackClick is not provided", () => {
-    renderTopBar({ onFeedbackClick: undefined });
-
-    expect(
-      screen.queryByRole("button", { name: /feedback/i }),
     ).not.toBeInTheDocument();
   });
 
@@ -104,9 +90,6 @@ describe("TopBar", () => {
     });
 
     expect(screen.getByRole("button", { name: /search/i })).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /feedback/i }),
-    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /details/i })).toHaveAttribute(
       "data-right-rail-toggle",
       "true",

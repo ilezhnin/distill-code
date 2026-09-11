@@ -155,7 +155,7 @@ describe("useCompletionNotifications", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetStores();
-    window.localStorage.removeItem("goose:notifications");
+    window.localStorage.removeItem("distill:notifications");
     window.localStorage.removeItem(ASSISTIVE_UX_STORAGE_KEY);
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
@@ -341,7 +341,7 @@ describe("useCompletionNotifications", () => {
     const onOpenSettings = (event: Event) => {
       settingsEvents.push(event as CustomEvent);
     };
-    window.addEventListener("goose:open-settings", onOpenSettings);
+    window.addEventListener("distill:open-settings", onOpenSettings);
 
     mocks.getCurrentWindow.mockReturnValue({
       onFocusChanged: vi.fn((handler) => {
@@ -397,7 +397,7 @@ describe("useCompletionNotifications", () => {
         ).moments[ASSISTIVE_UX_RULES.notificationsChangeSound.id].retiredReason,
       ).toBe("accepted");
     } finally {
-      window.removeEventListener("goose:open-settings", onOpenSettings);
+      window.removeEventListener("distill:open-settings", onOpenSettings);
     }
   });
 
@@ -451,7 +451,7 @@ describe("useCompletionNotifications", () => {
   it("passes null sound to desktop notifications when desktop sound is silent", async () => {
     let focusChanged: ((event: { payload: boolean }) => void) | null = null;
     window.localStorage.setItem(
-      "goose:notifications",
+      "distill:notifications",
       JSON.stringify({ desktopSound: "silent" }),
     );
 

@@ -18,10 +18,7 @@ import { SearchBar } from "@/shared/ui/SearchBar";
 import { Button } from "@/shared/ui/button";
 import { ScrollArea } from "@/shared/ui/scroll-area";
 import { cn } from "@/shared/lib/cn";
-import {
-  formatProviderLabel,
-  getProviderIcon,
-} from "@/shared/ui/icons/ProviderIcons";
+import { formatProviderLabel } from "@/shared/ui/icons/ProviderIcons";
 import { groupModelsByGeneration } from "../lib/modelGenerations";
 import type { ModelOption } from "../types";
 import { PickerItem } from "./AgentModelPickerItem";
@@ -37,7 +34,7 @@ function getModelDisplayName(model: ModelOption) {
   return model.displayName ?? model.name;
 }
 
-function getGooseModelProviderLabel(model: ModelOption) {
+function getModelProviderLabel(model: ModelOption) {
   if (model.providerName) {
     return model.providerName;
   }
@@ -80,8 +77,8 @@ function sortModels(
       return 1;
     }
 
-    const leftProvider = getGooseModelProviderLabel(left) ?? "";
-    const rightProvider = getGooseModelProviderLabel(right) ?? "";
+    const leftProvider = getModelProviderLabel(left) ?? "";
+    const rightProvider = getModelProviderLabel(right) ?? "";
     if (leftProvider !== rightProvider) {
       return leftProvider.localeCompare(rightProvider);
     }
@@ -123,7 +120,6 @@ export const RecommendedModelList = forwardRef<
     models,
     currentModelId,
     currentModelProviderId,
-    selectedAgentId,
     onModelSelect,
     onBrowseChange,
     t,
@@ -287,11 +283,8 @@ export const RecommendedModelList = forwardRef<
   };
 
   const renderModelRow = (model: ModelOption) => {
-    const providerLabel = getGooseModelProviderLabel(model);
-    const providerIcon =
-      selectedAgentId === "goose" && model.providerId
-        ? getProviderIcon(model.providerId, "size-3.5")
-        : null;
+    const providerLabel = getModelProviderLabel(model);
+    const providerIcon = null;
     const isSelected = modelMatchesSelection(
       model,
       currentModelId,
