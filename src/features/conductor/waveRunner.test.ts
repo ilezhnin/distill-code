@@ -947,6 +947,41 @@ describe("wave stall detector (P61)", () => {
     }
   });
 
+  it("does not count a child that keeps working as a stall", async () => {
+    vi.useFakeTimers();
+    try {
+      useConductorGraphStore.getState().registerNode(conductorNode());
+      setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+      runWaveEngineTick();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
+
+      // The child streams for five sample windows: its transcript grows
+      // every half window while the wave's own state has nothing to say.
+      for (let i = 0; i < 10; i += 1) {
+        useChatStore.setState((state) => ({
+          messagesBySession: {
+            ...state.messagesBySession,
+            "child-0": [
+              ...(state.messagesBySession["child-0"] ?? []),
+              assistant(`child-message-${i}`, "still working"),
+            ],
+          },
+        }));
+        runWaveEngineTick();
+        await vi.advanceTimersByTimeAsync(WAVE_STALL_SAMPLE_MS / 2);
+      }
+
+      const wave = getWaveEngineState().waves[0];
+      expect(wave?.phase).toBe("running");
+      expect(wave?.stalled).toBeUndefined();
+      expect(wave?.stallCount ?? 0).toBe(0);
+      expect(stopOrchestratorSession).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("any movement resets the stall count", async () => {
     vi.useFakeTimers();
     try {
