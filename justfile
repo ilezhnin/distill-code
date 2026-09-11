@@ -186,6 +186,7 @@ tauri-test:
     just _tauri-cargo-windows test -p berd-monitor
 
 # Run the local CI gate.
+[windows]
 ci: check tauri-fmt-check tauri-check tauri-test clippy test agent-driver-test build
 
 # Native x64 MSVC CI gate for the managed Node runtime + ACP bridge.
