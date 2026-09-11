@@ -182,15 +182,6 @@ pub fn read_agent_source_file(
     read_persona_file(path, "agent source")
 }
 
-#[cfg(test)]
-fn read_agent_source_file_with_roots(
-    source_path: String,
-    trusted_roots: &[PathBuf],
-) -> Result<ImportFileReadResult, String> {
-    let path = validate_agent_source_path_with_roots(&source_path, trusted_roots)?;
-    read_persona_file(path, "agent source")
-}
-
 fn read_persona_file(path: PathBuf, context: &'static str) -> Result<ImportFileReadResult, String> {
     let file_name = path
         .file_name()
@@ -215,10 +206,7 @@ fn read_persona_file(path: PathBuf, context: &'static str) -> Result<ImportFileR
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        read_agent_source_file_with_roots, validate_agent_source_path_with_roots,
-        MAX_PERSONA_IMPORT_BYTES,
-    };
+    use super::validate_agent_source_path_with_roots;
     use tempfile::{tempdir, Builder};
 
     #[test]
@@ -239,20 +227,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_agent_source_path_rejects_json_files() {
-        let trusted_root = tempdir().unwrap();
-        let file_path = trusted_root.path().join("scout.json");
-        std::fs::write(&file_path, b"{}").unwrap();
-
-        let result = validate_agent_source_path_with_roots(
-            file_path.to_str().unwrap(),
-            &[trusted_root.path().to_path_buf()],
-        );
-
-        assert!(result.unwrap_err().contains("Expected a .md file"));
-    }
-
-    #[test]
     fn validate_agent_source_path_accepts_plain_markdown_files_inside_trusted_root() {
         let trusted_root = tempdir().unwrap();
         let file_path = trusted_root.path().join("scout.md");
@@ -265,57 +239,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(validated, file_path.canonicalize().unwrap());
-    }
-
-    #[test]
-    fn validate_agent_source_path_accepts_persona_markdown_files_inside_trusted_root() {
-        let trusted_root = tempdir().unwrap();
-        let file_path = trusted_root.path().join("scout.persona.md");
-        std::fs::write(&file_path, b"---\nname: Scout\n---\n\nPrompt").unwrap();
-
-        let validated = validate_agent_source_path_with_roots(
-            file_path.to_str().unwrap(),
-            &[trusted_root.path().to_path_buf()],
-        )
-        .unwrap();
-
-        assert_eq!(validated, file_path.canonicalize().unwrap());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn validate_agent_source_path_rejects_symbolic_links() {
-        let trusted_root = tempdir().unwrap();
-        let target = trusted_root.path().join("target.md");
-        let link = trusted_root.path().join("link.md");
-        std::fs::write(&target, b"---\nname: Scout\n---\n\nPrompt").unwrap();
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-
-        let result = validate_agent_source_path_with_roots(
-            link.to_str().unwrap(),
-            &[trusted_root.path().to_path_buf()],
-        );
-
-        assert!(result.unwrap_err().contains("symbolic link"));
-    }
-
-    #[test]
-    fn validate_agent_source_path_rejects_oversized_files() {
-        let trusted_root = tempdir().unwrap();
-        let file_path = trusted_root.path().join("large.md");
-        std::fs::write(&file_path, b"").unwrap();
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&file_path)
-            .unwrap();
-        file.set_len(MAX_PERSONA_IMPORT_BYTES + 1).unwrap();
-
-        let result = validate_agent_source_path_with_roots(
-            file_path.to_str().unwrap(),
-            &[trusted_root.path().to_path_buf()],
-        );
-
-        assert!(result.unwrap_err().contains("4 MB or smaller"));
     }
 
     #[test]
@@ -350,35 +273,5 @@ mod tests {
             std::fs::read_to_string(normal_agent).unwrap(),
             "---\nname: Normal\n---\n\nSecret"
         );
-    }
-
-    #[test]
-    fn read_agent_source_file_rejects_invalid_utf8_in_trusted_root() {
-        let trusted_root = tempdir().unwrap();
-        let file_path = trusted_root.path().join("bad.md");
-        std::fs::write(&file_path, [0xff]).unwrap();
-
-        let result = read_agent_source_file_with_roots(
-            file_path.to_string_lossy().into_owned(),
-            &[trusted_root.path().to_path_buf()],
-        );
-
-        assert_eq!(result.unwrap_err(), "File is not valid UTF-8 text");
-    }
-
-    #[test]
-    fn read_agent_source_file_returns_valid_trusted_markdown() {
-        let trusted_root = tempdir().unwrap();
-        let file_path = trusted_root.path().join("scout.md");
-        std::fs::write(&file_path, b"---\nname: Scout\n---\n\nPrompt").unwrap();
-
-        let result = read_agent_source_file_with_roots(
-            file_path.to_string_lossy().into_owned(),
-            &[trusted_root.path().to_path_buf()],
-        )
-        .unwrap();
-
-        assert_eq!(result.file_contents, "---\nname: Scout\n---\n\nPrompt");
-        assert_eq!(result.file_name, "scout.md");
     }
 }

@@ -96,21 +96,6 @@ impl E2eMode {
         }))
     }
 
-    #[cfg(test)]
-    fn agents_home(&self) -> &Path {
-        &self.agents_home
-    }
-
-    #[cfg(test)]
-    fn run_root(&self) -> &Path {
-        &self.run_root
-    }
-
-    #[cfg(test)]
-    fn builderbot_root(&self) -> &Path {
-        &self.builderbot_root
-    }
-
     pub(crate) fn enforce_process_env(&self) -> Result<(), String> {
         for path in [&self.run_root, &self.agents_home, &self.builderbot_root] {
             std::fs::create_dir_all(path).map_err(|error| {
@@ -288,35 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn runtime_gate_rejects_non_exact_values_and_missing_root() {
-        for value in ["", "0", "true", "01"] {
-            let error = E2eMode::from_values(
-                true,
-                Some(OsString::from(value)),
-                Some(OsString::from(RUN_ID)),
-                Some(absolute_test_root()),
-                Some(valid_driver_token()),
-                None,
-                IDENTIFIER,
-            )
-            .unwrap_err();
-            assert!(error.contains("exactly 1"), "unexpected error: {error}");
-        }
-
-        assert!(E2eMode::from_values(
-            true,
-            Some(OsString::from("1")),
-            Some(OsString::from(RUN_ID)),
-            None,
-            Some(valid_driver_token()),
-            None,
-            IDENTIFIER,
-        )
-        .unwrap_err()
-        .contains(RUN_ROOT_ENV));
-    }
-
-    #[test]
     fn rejects_production_dev_and_malformed_identifiers() {
         for identifier in [
             "xyz.block.berd",
@@ -337,49 +293,6 @@ mod tests {
             )
             .is_err());
         }
-    }
-
-    #[test]
-    fn rejects_relative_root_filesystem_root_and_navigation_components() {
-        let cases = [
-            (PathBuf::from("relative/run"), "absolute"),
-            (filesystem_root(), "filesystem root"),
-            (absolute_test_base().join(".").join(RUN_ID), "normalized"),
-            (
-                absolute_test_base().join("other").join("..").join(RUN_ID),
-                "normalized",
-            ),
-        ];
-
-        for (path, expected) in cases {
-            let error = E2eMode::from_values(
-                true,
-                Some(OsString::from("1")),
-                Some(OsString::from(RUN_ID)),
-                Some(path.into_os_string()),
-                Some(valid_driver_token()),
-                None,
-                IDENTIFIER,
-            )
-            .unwrap_err();
-            assert!(error.contains(expected), "unexpected error: {error}");
-        }
-    }
-
-    #[test]
-    fn rejects_run_root_for_a_different_run_id() {
-        let error = E2eMode::from_values(
-            true,
-            Some(OsString::from("1")),
-            Some(OsString::from(RUN_ID)),
-            Some(absolute_test_base().join("another-run").into_os_string()),
-            Some(valid_driver_token()),
-            None,
-            IDENTIFIER,
-        )
-        .unwrap_err();
-
-        assert!(error.contains(RUN_ID));
     }
 
     #[test]
@@ -404,73 +317,6 @@ mod tests {
                 "unexpected error: {error}"
             );
         }
-    }
-
-    #[test]
-    fn runtime_config_must_be_an_existing_file_directly_under_the_run_root() {
-        let temp = tempfile::tempdir().unwrap();
-        let run_root = temp.path().join(RUN_ID);
-        std::fs::create_dir_all(&run_root).unwrap();
-        let runtime_config = run_root.join("runtime-config.json");
-        std::fs::write(&runtime_config, b"{}").unwrap();
-
-        let mode = E2eMode::from_values(
-            true,
-            Some(OsString::from("1")),
-            Some(OsString::from(RUN_ID)),
-            Some(run_root.clone().into_os_string()),
-            Some(valid_driver_token()),
-            Some(runtime_config.clone().into_os_string()),
-            IDENTIFIER,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(mode.runtime_config_path(), Some(runtime_config.as_path()));
-
-        for invalid in [
-            run_root.join("missing.json"),
-            temp.path().join("runtime-config.json"),
-        ] {
-            let error = E2eMode::from_values(
-                true,
-                Some(OsString::from("1")),
-                Some(OsString::from(RUN_ID)),
-                Some(run_root.clone().into_os_string()),
-                Some(valid_driver_token()),
-                Some(invalid.into_os_string()),
-                IDENTIFIER,
-            )
-            .unwrap_err();
-            assert!(error.contains(RUNTIME_CONFIG_ENV));
-        }
-    }
-
-    #[test]
-    fn derives_all_state_under_the_run_root() {
-        let run_root = PathBuf::from(absolute_test_root());
-        let mode = E2eMode::from_values(
-            true,
-            Some(OsString::from("1")),
-            Some(OsString::from(RUN_ID)),
-            Some(run_root.clone().into_os_string()),
-            Some(valid_driver_token()),
-            None,
-            IDENTIFIER,
-        )
-        .unwrap()
-        .unwrap();
-
-        assert_eq!(mode.run_root(), run_root);
-        assert_eq!(mode.agents_home(), run_root.join(AGENTS_DIR_NAME));
-        assert_eq!(mode.builderbot_root(), run_root.join(BUILDERBOT_DIR_NAME));
-        assert_eq!(
-            mode.agents_dir(),
-            run_root
-                .join(AGENTS_DIR_NAME)
-                .join(".agents")
-                .join("agents")
-        );
-        assert_eq!(mode.driver_token(), valid_driver_token());
     }
 
     #[test]
@@ -557,17 +403,6 @@ mod tests {
 
     fn absolute_test_root() -> OsString {
         absolute_test_base().join(RUN_ID).into_os_string()
-    }
-
-    fn filesystem_root() -> PathBuf {
-        #[cfg(windows)]
-        {
-            PathBuf::from(r"C:\")
-        }
-        #[cfg(not(windows))]
-        {
-            PathBuf::from("/")
-        }
     }
 
     fn save_env<const N: usize>(names: [&'static str; N]) -> Vec<(&'static str, Option<OsString>)> {

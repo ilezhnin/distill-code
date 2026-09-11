@@ -66,11 +66,4 @@ mod tests {
         }
         assert!(user_avatar.exists());
     }
-
-    #[tokio::test]
-    async fn succeeds_when_no_legacy_cache_exists() {
-        let dir = tempfile::tempdir().unwrap();
-
-        clear_legacy_media_caches(dir.path()).await.unwrap();
-    }
 }

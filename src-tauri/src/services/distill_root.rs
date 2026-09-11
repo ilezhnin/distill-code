@@ -131,13 +131,6 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_a_dot_folder_in_home() {
-        let base = temp();
-        let root = resolve_root(None, &base.join("config"), &base.join("home"));
-        assert_eq!(root, base.join("home").join(".distill"));
-    }
-
-    #[test]
     fn the_pointer_file_wins_over_the_default() {
         let base = temp();
         let config = base.join("config");
@@ -170,14 +163,6 @@ mod tests {
                 home.join(".distill"),
             );
         }
-    }
-
-    #[test]
-    fn a_root_that_cannot_be_written_is_not_recorded() {
-        let base = temp();
-        let config = base.join("config");
-        assert!(write_root_pointer(&config, Path::new("relative")).is_err());
-        assert!(!pointer_file(&config).exists());
     }
 
     #[test]

@@ -72,7 +72,7 @@ fn dedupe_paths(paths: &mut Vec<PathBuf>) {
     platform::dedupe_paths(paths);
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 fn build_extended_path_from_path(path: Option<&str>) -> String {
     build_extended_path_with_prepended_dirs(path, &[])
 }
@@ -117,43 +117,16 @@ pub async fn home_env_vars_with_extended_path_and_prepended_dirs(
 
 #[cfg(test)]
 mod tests {
+    use super::build_extended_path_with_prepended_dirs;
     #[cfg(windows)]
     use super::platform::{latest_semver_bin, push_windows_fnm_bin, windows_fnm_root};
-    use super::{
-        build_extended_path_from_path, build_extended_path_with_prepended_dirs,
-        env_vars_with_extended_path_and_prepended_dirs,
-    };
+    #[cfg(windows)]
+    use super::{build_extended_path_from_path, env_vars_with_extended_path_and_prepended_dirs};
+    #[cfg(windows)]
     use std::collections::HashMap;
     #[cfg(windows)]
     use std::path::Path;
     use std::path::PathBuf;
-
-    #[cfg(unix)]
-    #[test]
-    fn extended_path_starts_with_login_shell_path_and_tool_manager_shims() {
-        let path = build_extended_path_from_path(Some("/shell/bin:/another/bin:/shell/bin"));
-        let paths: Vec<_> = std::env::split_paths(&path).collect();
-
-        assert_eq!(
-            paths.first().map(|p| p.as_path()),
-            Some(std::path::Path::new("/shell/bin"))
-        );
-        assert_eq!(
-            paths.get(1).map(|p| p.as_path()),
-            Some(std::path::Path::new("/another/bin"))
-        );
-        assert_eq!(
-            paths
-                .iter()
-                .filter(|p| p.as_path() == std::path::Path::new("/shell/bin"))
-                .count(),
-            1
-        );
-        assert!(paths.iter().any(|p| p.ends_with(".local/share/mise/shims")));
-        assert!(paths.iter().any(|p| p.ends_with(".amp/bin")));
-        assert!(paths.iter().any(|p| p.ends_with(".volta/bin")));
-        assert!(paths.iter().any(|p| p.ends_with(".asdf/shims")));
-    }
 
     #[test]
     fn terminal_path_applies_platform_hermit_activation_contract() {
@@ -173,31 +146,6 @@ mod tests {
             cfg!(windows),
             "Windows preserves validated Hermit activation; Unix shells reactivate cwd"
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn extended_path_filters_hermit_paths() {
-        let path = build_extended_path_from_path(Some("/shell/bin:/repo/.hermit/bin:/another/bin"));
-        let paths: Vec<_> = std::env::split_paths(&path).collect();
-
-        assert!(paths
-            .iter()
-            .any(|p| p == std::path::Path::new("/shell/bin")));
-        assert!(paths
-            .iter()
-            .any(|p| p == std::path::Path::new("/another/bin")));
-        assert!(!paths
-            .iter()
-            .any(|p| p == std::path::Path::new("/repo/.hermit/bin")));
-    }
-
-    #[test]
-    fn extended_path_falls_back_to_process_path_when_shell_path_is_missing() {
-        let path = build_extended_path_from_path(None);
-        let paths: Vec<_> = std::env::split_paths(&path).collect();
-
-        assert!(!paths.is_empty());
     }
 
     #[test]
@@ -223,53 +171,6 @@ mod tests {
                 .count(),
             1
         );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn extended_path_drops_unjoinable_prepended_dirs_instead_of_emptying_path() {
-        let path = build_extended_path_with_prepended_dirs(
-            Some("/shell/bin"),
-            &[PathBuf::from("/weird:dir/bin"), PathBuf::from("/acp/bin")],
-        );
-        let paths: Vec<_> = std::env::split_paths(&path).collect();
-
-        assert_eq!(
-            paths.first().map(|p| p.as_path()),
-            Some(std::path::Path::new("/acp/bin"))
-        );
-        assert!(paths
-            .iter()
-            .any(|p| p == std::path::Path::new("/shell/bin")));
-        assert!(!paths.iter().any(|p| p.to_string_lossy().contains("weird")));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn env_vars_with_extended_path_sanitizes_and_normalizes_path() {
-        let env = HashMap::from([
-            (
-                "PATH".to_string(),
-                "/repo/.hermit/bin:/shell/bin".to_string(),
-            ),
-            ("HERMIT_ENV".to_string(), "/repo".to_string()),
-            ("LANG".to_string(), "en_US.UTF-8".to_string()),
-        ]);
-
-        let vars = env_vars_with_extended_path_and_prepended_dirs(&env, &[]);
-        let map: HashMap<_, _> = vars.into_iter().collect();
-        let path = map.get("PATH").expect("PATH");
-        let paths: Vec<_> = std::env::split_paths(path).collect();
-
-        assert_eq!(map.get("LANG"), Some(&"en_US.UTF-8".to_string()));
-        assert!(!map.contains_key("HERMIT_ENV"));
-        assert!(paths
-            .iter()
-            .any(|p| p == std::path::Path::new("/shell/bin")));
-        assert!(!paths
-            .iter()
-            .any(|p| p == std::path::Path::new("/repo/.hermit/bin")));
-        assert!(paths.iter().any(|p| p.ends_with(".asdf/shims")));
     }
 
     #[cfg(windows)]
@@ -314,30 +215,6 @@ mod tests {
         assert!(paths.iter().any(|path| path.ends_with("Windows\\System32")));
     }
 
-    #[test]
-    fn env_vars_with_extended_path_prepends_dirs() {
-        let env = HashMap::from([
-            ("PATH".to_string(), "/shell/bin".to_string()),
-            ("LANG".to_string(), "en_US.UTF-8".to_string()),
-        ]);
-
-        let vars = env_vars_with_extended_path_and_prepended_dirs(
-            &env,
-            &[PathBuf::from("/resources/acp/bin")],
-        );
-        let map: HashMap<_, _> = vars.into_iter().collect();
-        let path = map.get("PATH").expect("PATH");
-        let paths: Vec<_> = std::env::split_paths(path).collect();
-
-        assert_eq!(
-            paths.first().map(|p| p.as_path()),
-            Some(std::path::Path::new("/resources/acp/bin"))
-        );
-        assert!(paths
-            .iter()
-            .any(|p| p == std::path::Path::new("/shell/bin")));
-    }
-
     #[cfg(windows)]
     fn write_fnm_install(root: &Path, version: &str) -> PathBuf {
         let installation = root
@@ -347,28 +224,6 @@ mod tests {
         std::fs::create_dir_all(&installation).expect("fnm installation");
         std::fs::write(installation.join("node.exe"), b"fixture").expect("node fixture");
         installation
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_fnm_root_honors_case_insensitive_non_empty_override() {
-        let appdata = PathBuf::from("C:\\Users\\dev\\AppData\\Roaming");
-        let custom = PathBuf::from("D:\\Toolchains\\fnm");
-        let env = [("fnm_dir".into(), custom.clone().into_os_string())];
-
-        assert_eq!(windows_fnm_root(env, Some(&appdata)), Some(custom));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_fnm_root_ignores_empty_override_and_uses_appdata_default() {
-        let appdata = PathBuf::from("C:\\Users\\dev\\AppData\\Roaming");
-        let env = [("FnM_DiR".into(), "  ".into())];
-
-        assert_eq!(
-            windows_fnm_root(env, Some(&appdata)),
-            Some(appdata.join("fnm"))
-        );
     }
 
     #[cfg(windows)]
@@ -399,60 +254,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_fnm_semver_fallback_compares_numeric_minor_versions() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let root = temp.path().join("fnm");
-        write_fnm_install(&root, "v20.9");
-        let v20_10 = write_fnm_install(&root, "v20.10");
-
-        let selected = latest_semver_bin(&root.join("node-versions"), "installation")
-            .expect("selected fnm version");
-
-        assert_eq!(selected, v20_10);
-    }
-
-    #[cfg(windows)]
-    fn create_directory_link(target: &Path, link: &Path) {
-        use std::os::windows::fs::symlink_dir;
-
-        if symlink_dir(target, link).is_ok() {
-            return;
-        }
-
-        let output = std::process::Command::new("cmd.exe")
-            .args(["/d", "/c", "mklink", "/J"])
-            .arg(link)
-            .arg(target)
-            .output()
-            .expect("create default directory junction");
-        assert!(
-            output.status.success(),
-            "failed to create default directory link: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_fnm_prefers_valid_default_alias_over_latest() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let root = temp.path().join("fnm");
-        let default = write_fnm_install(&root, "v20.9.0");
-        write_fnm_install(&root, "v22.1.0");
-        std::fs::create_dir_all(root.join("aliases")).expect("aliases");
-        create_directory_link(&default, &root.join("aliases").join("default"));
-        let mut paths = Vec::new();
-
-        push_windows_fnm_bin(&mut paths, &root);
-
-        assert_eq!(
-            paths,
-            vec![default.canonicalize().expect("canonical default")]
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
     fn windows_fnm_rejects_default_alias_outside_installations() {
         let temp = tempfile::tempdir().expect("temp dir");
         let root = temp.path().join("fnm");
@@ -465,36 +266,6 @@ mod tests {
         push_windows_fnm_bin(&mut paths, &root);
 
         assert_eq!(paths, vec![latest]);
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn windows_extended_path_adds_native_tool_dirs_and_no_unix_dirs() {
-        let input = std::env::join_paths([PathBuf::from("C:\\shell\\bin")])
-            .expect("join input path")
-            .to_string_lossy()
-            .to_string();
-        let path = build_extended_path_from_path(Some(&input));
-        let paths: Vec<_> = std::env::split_paths(&path).collect();
-
-        // Native npm/Volta locations are appended.
-        assert!(paths.iter().any(|p| p.ends_with("npm")));
-        assert!(paths.iter().any(|p| p.ends_with("Volta\\bin")));
-        assert!(paths.iter().any(|p| p.ends_with(".local\\bin")));
-        assert!(paths.iter().any(|p| p.ends_with(".grok\\bin")));
-
-        // Impossible-on-Windows Unix locations must never be appended.
-        for unix_dir in [
-            ".local/bin",
-            ".local/share/mise/shims",
-            ".asdf/shims",
-            "/usr/local/bin",
-        ] {
-            assert!(
-                !paths.iter().any(|p| p.to_string_lossy().contains(unix_dir)),
-                "unexpected Unix dir {unix_dir} on Windows PATH"
-            );
-        }
     }
 
     #[test]

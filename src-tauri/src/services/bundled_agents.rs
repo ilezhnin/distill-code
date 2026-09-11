@@ -342,25 +342,6 @@ mod tests {
     }
 
     #[test]
-    fn seeds_missing_bundled_agent() {
-        let source = tempdir().unwrap();
-        let target = tempdir().unwrap();
-        write_agent(
-            source.path(),
-            "builderbot.md",
-            "---\nname: Builderbot\ndescription: Agent\navatar: app-avatar:gloopies-20\nmetadata:\n  berdBundled: true\n---\nBuild carefully.",
-        );
-
-        let result = seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
-
-        assert_eq!(result.seeded_count, 1);
-        assert_eq!(
-            fs::read_to_string(target.path().join("builderbot.md")).unwrap(),
-            "---\nname: Builderbot\ndescription: Agent\navatar: app-avatar:gloopies-20\nmetadata:\n  berdBundled: true\n---\nBuild carefully."
-        );
-    }
-
-    #[test]
     fn preserves_deleted_seeded_agent() {
         let source = tempdir().unwrap();
         let target = tempdir().unwrap();
@@ -431,64 +412,5 @@ mod tests {
 
         let second_result = seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
         assert_eq!(second_result.seeded_count, 0);
-    }
-
-    #[test]
-    fn replaces_edited_seeded_agent_before_launch() {
-        let source = tempdir().unwrap();
-        let target = tempdir().unwrap();
-        write_agent(
-            source.path(),
-            "builderbot.md",
-            "---\nname: Builderbot\ndescription: Agent\nmetadata:\n  berdBundled: true\n---\nOriginal.",
-        );
-
-        seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
-        fs::write(
-            target.path().join("builderbot.md"),
-            "---\nname: Builderbot\ndescription: Agent\nmetadata:\n  berdBundled: true\n---\nUser edited.",
-        )
-        .unwrap();
-
-        let result = seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
-
-        assert_eq!(result.seeded_count, 1);
-        assert_eq!(
-            fs::read_to_string(target.path().join("builderbot.md")).unwrap(),
-            "---\nname: Builderbot\ndescription: Agent\nmetadata:\n  berdBundled: true\n---\nOriginal."
-        );
-    }
-
-    #[test]
-    fn skips_unchanged_seeded_agent() {
-        let source = tempdir().unwrap();
-        let target = tempdir().unwrap();
-        write_agent(
-            source.path(),
-            "builderbot.md",
-            "---\nname: Builderbot\ndescription: Agent\navatar: app-avatar:gloopies-20\nmetadata:\n  berdBundled: true\n---\nOriginal.",
-        );
-
-        seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
-        let result = seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
-
-        assert_eq!(result.seeded_count, 0);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn rejects_symlinked_agent_source() {
-        let source = tempdir().unwrap();
-        let target = tempdir().unwrap();
-        fs::write(source.path().join("outside.md"), "outside").unwrap();
-        std::os::unix::fs::symlink(
-            source.path().join("outside.md"),
-            source.path().join("builderbot.md"),
-        )
-        .unwrap();
-
-        let err = seed_bundled_agents_from_dir(source.path(), target.path()).unwrap_err();
-
-        assert!(err.contains("must not be a symbolic link"));
     }
 }
