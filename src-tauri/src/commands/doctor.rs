@@ -113,59 +113,6 @@ pub struct DoctorReport {
     pub checks: Vec<DoctorCheck>,
 }
 
-impl DoctorReport {
-    /// Render the report as human-readable diagnostic text for attaching to a
-    /// feedback report. Checks are grouped by category in first-seen order. The
-    /// values surfaced here are already vetted by the checks themselves
-    /// (sensitive settings are reported as keys only, never values), so the
-    /// output is safe to include verbatim.
-    pub fn to_diagnostic_text(&self) -> String {
-        let mut out = String::from("Berd doctor report\n");
-
-        let mut category_order: Vec<&str> = Vec::new();
-        for check in &self.checks {
-            if !category_order.contains(&check.category.as_str()) {
-                category_order.push(check.category.as_str());
-            }
-        }
-
-        for category in category_order {
-            let label = self
-                .checks
-                .iter()
-                .find(|check| check.category == category)
-                .map(|check| check.category_label.as_str())
-                .unwrap_or(category);
-            out.push_str(&format!("\n== {label} ==\n"));
-
-            for check in self
-                .checks
-                .iter()
-                .filter(|check| check.category == category)
-            {
-                out.push_str(&format!(
-                    "[{}] {} ({})\n",
-                    status_name(&check.status),
-                    check.label,
-                    check.id
-                ));
-                out.push_str(&format!("  message: {}\n", check.message));
-                if let Some(path) = &check.path {
-                    out.push_str(&format!("  path: {path}\n"));
-                }
-                if let Some(raw) = &check.raw_output {
-                    out.push_str("  details:\n");
-                    for line in raw.lines() {
-                        out.push_str(&format!("    {line}\n"));
-                    }
-                }
-            }
-        }
-
-        out
-    }
-}
-
 #[derive(Clone)]
 struct LocalDoctorFix {
     fix_type: FixType,
@@ -480,14 +427,6 @@ fn build_local_result(
         bridge: None,
         category: check.category.to_string(),
         category_label: check.category_label.to_string(),
-    }
-}
-
-fn status_name(status: &CheckStatus) -> &'static str {
-    match status {
-        CheckStatus::Pass => "pass",
-        CheckStatus::Warn => "warn",
-        CheckStatus::Fail => "fail",
     }
 }
 
@@ -1244,8 +1183,8 @@ async fn node_runtime_offered_fix(app_handle: &AppHandle) -> Option<FixType> {
 }
 
 /// The provider id of a managed bridge, when this crate check id maps to one
-/// on this build/target — `ai-agent-claude` → `claude-acp`, unless the dev
-/// override or the disable feature has emptied the managed set.
+/// on this target — `ai-agent-claude` → `claude-acp`, unless the dev override
+/// has emptied the managed set.
 fn managed_provider_for_check(check_id: &str) -> Option<&'static str> {
     managed_acp_tools::managed_tools()
         .into_iter()
@@ -1267,8 +1206,8 @@ async fn ensure_managed_node_runtime_logged(app_handle: &AppHandle) -> Result<()
 /// Binary search dirs for doctor checks and fixes: the lock-pinned bridge
 /// shims in `packages/bin` (or the `BERD_ACP_TOOLS_DIR` dev override), then the
 /// Berd-private npm prefix and the managed Node runtime its shims run on.
-/// Same order as the goose-serve and agent-setup prepends, so the doctor
-/// reports the binary goosed would spawn.
+/// Same order as the agent host's bridge spawn env and agent setup, so the
+/// doctor reports the binary the agent host would spawn.
 fn doctor_prepend_dirs(app_handle: &AppHandle) -> Vec<PathBuf> {
     managed_acp_tools::managed_prepend_dirs(app_handle)
 }
@@ -1424,36 +1363,6 @@ mod tests {
             .expect_err("freshness timeout should be an error");
 
         assert!(error.contains("Doctor freshness checks timed out"));
-    }
-
-    #[test]
-    fn doctor_report_renders_diagnostic_text_grouped_by_category() {
-        let report = DoctorReport {
-            checks: vec![
-                DoctorCheck {
-                    category: "tools".to_string(),
-                    category_label: "Tools".to_string(),
-                    raw_output: Some("exit status: 0\nstdout:\nv1.2.3".to_string()),
-                    path: Some("/usr/bin/git".to_string()),
-                    ..DoctorCheck::from(upstream_check("git"))
-                },
-                DoctorCheck {
-                    category: "environment-health".to_string(),
-                    category_label: "Environment Health".to_string(),
-                    ..DoctorCheck::from(upstream_check("internal-service-connectivity"))
-                },
-            ],
-        };
-
-        let text = report.to_diagnostic_text();
-
-        assert!(text.contains("== Tools =="));
-        assert!(text.contains("== Environment Health =="));
-        assert!(text.contains("[pass] Check (git)"));
-        assert!(text.contains("  path: /usr/bin/git"));
-        assert!(text.contains("  details:\n    exit status: 0"));
-        // Category headers appear before the checks that belong to them.
-        assert!(text.find("== Tools ==").unwrap() < text.find("(git)").unwrap());
     }
 
     #[test]

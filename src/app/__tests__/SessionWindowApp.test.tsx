@@ -35,18 +35,8 @@ const handoffListeners = vi.hoisted(() => ({
     | undefined,
 }));
 
-const mocks = vi.hoisted(() => ({
-  buildFeatures: {
-    securityMl: true,
-  },
-}));
-
 vi.mock("@/app/lib/chatRuntimeStartup", () => ({
   runChatRuntimeStartup: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock("@/shared/profile/buildProfile", () => ({
-  getBuildFeatureState: () => mocks.buildFeatures,
 }));
 
 vi.mock("@/features/chat/lib/sessionActivation", () => ({

@@ -39,14 +39,6 @@ vi.mock("@/features/providers/api/credentials", () => ({
     mocks.checkAllProviderStatus(...args),
 }));
 
-vi.mock("@/shared/profile/buildProfile", () => ({
-  getBuildFeatureState: () => ({
-    telemetry: true,
-    securityMl: true,
-    updater: true,
-  }),
-}));
-
 vi.mock("@/shared/api/acpApi", () => ({
   archiveSession: (...args: unknown[]) => mocks.archiveSession(...args),
   unarchiveSession: (...args: unknown[]) => mocks.unarchiveSession(...args),

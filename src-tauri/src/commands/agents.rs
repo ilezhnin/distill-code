@@ -3,13 +3,10 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
 };
-use tauri::{Manager, State};
-
-use crate::services::{bundled_agents, distro_bundle::DistroBundleState};
+use tauri::Manager;
 
 const MAX_PERSONA_IMPORT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_AGENT_IMAGE_IMPORT_BYTES: u64 = 10 * 1024 * 1024;
-const PERSONA_MARKDOWN_SUFFIX: &str = ".persona.md";
 const AGENT_MARKDOWN_SUFFIX: &str = ".md";
 
 #[derive(Debug, Clone, Serialize)]
@@ -24,27 +21,6 @@ pub struct ImportFileReadResult {
 pub struct ImportBinaryFileReadResult {
     pub file_bytes: Vec<u8>,
     pub file_name: String,
-}
-
-fn validate_import_persona_path(source_path: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(source_path);
-    let metadata = validate_existing_regular_file(&path, "import")?;
-    validate_supported_import_extension(&path)?;
-    validate_file_size(metadata.len(), "Persona import file")?;
-    canonicalize_path(&path, "import")
-}
-
-fn validate_import_agent_image_path(source_path: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(source_path);
-    let metadata = validate_existing_regular_file(&path, "agent image import")?;
-    let lower_name = lower_file_name(&path)?;
-    if !lower_name.ends_with(".png") {
-        return Err("Unsupported file type. Expected a PNG file.".to_string());
-    }
-    if metadata.len() > MAX_AGENT_IMAGE_IMPORT_BYTES {
-        return Err("Agent image import file must be 10 MB or smaller.".to_string());
-    }
-    canonicalize_path(&path, "agent image import")
 }
 
 fn validate_agent_import_path(source_path: &str) -> Result<PathBuf, String> {
@@ -154,14 +130,6 @@ fn lower_file_name(path: &Path) -> Result<String, String> {
     Ok(file_name.to_ascii_lowercase())
 }
 
-fn validate_supported_import_extension(path: &Path) -> Result<(), String> {
-    let lower_name = lower_file_name(path)?;
-    if !lower_name.ends_with(".json") && !lower_name.ends_with(PERSONA_MARKDOWN_SUFFIX) {
-        return Err("Unsupported file type. Expected a .persona.md or .json file.".to_string());
-    }
-    Ok(())
-}
-
 fn validate_supported_agent_source_extension(path: &Path) -> Result<(), String> {
     let lower_name = lower_file_name(path)?;
     if !lower_name.ends_with(AGENT_MARKDOWN_SUFFIX) {
@@ -180,27 +148,6 @@ fn validate_file_size(size: u64, label: &'static str) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn repair_bundled_agent(
-    app: tauri::AppHandle,
-    file_name: String,
-    state: State<'_, DistroBundleState>,
-) -> Result<(), String> {
-    let bundle = state
-        .bundle()
-        .ok_or_else(|| "Bundled agent distribution is unavailable".to_string())?;
-    let e2e_agents_dir = app
-        .try_state::<crate::services::e2e_mode::E2eMode>()
-        .map(|mode| mode.agents_dir());
-    bundled_agents::repair_bundled_agent(bundle, e2e_agents_dir.as_deref(), &file_name)
-}
-
-#[tauri::command]
-pub fn read_import_persona_file(source_path: String) -> Result<ImportFileReadResult, String> {
-    let path = validate_import_persona_path(&source_path)?;
-    read_persona_file(path, "import")
-}
-
-#[tauri::command]
 pub fn read_import_agent_file(source_path: String) -> Result<ImportBinaryFileReadResult, String> {
     let path = validate_agent_import_path(&source_path)?;
     let file_name = path
@@ -216,29 +163,6 @@ pub fn read_import_agent_file(source_path: String) -> Result<ImportBinaryFileRea
         .map_err(|err| format!("Failed to read agent import '{}': {err}", path.display()))?;
     if file_bytes.len() as u64 > MAX_AGENT_IMAGE_IMPORT_BYTES {
         return Err("Agent import file must be 10 MB or smaller.".to_string());
-    }
-    Ok(ImportBinaryFileReadResult {
-        file_bytes,
-        file_name,
-    })
-}
-
-#[tauri::command]
-pub fn read_import_agent_image(source_path: String) -> Result<ImportBinaryFileReadResult, String> {
-    let path = validate_import_agent_image_path(&source_path)?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| "Selected file is missing a valid filename".to_string())?
-        .to_string();
-    let file = std::fs::File::open(&path)
-        .map_err(|err| format!("Failed to open agent image '{}': {err}", path.display()))?;
-    let mut file_bytes = Vec::new();
-    file.take(MAX_AGENT_IMAGE_IMPORT_BYTES + 1)
-        .read_to_end(&mut file_bytes)
-        .map_err(|err| format!("Failed to read agent image '{}': {err}", path.display()))?;
-    if file_bytes.len() as u64 > MAX_AGENT_IMAGE_IMPORT_BYTES {
-        return Err("Agent image import file must be 10 MB or smaller.".to_string());
     }
     Ok(ImportBinaryFileReadResult {
         file_bytes,
@@ -292,117 +216,10 @@ fn read_persona_file(path: PathBuf, context: &'static str) -> Result<ImportFileR
 #[cfg(test)]
 mod tests {
     use super::{
-        read_agent_source_file_with_roots, read_import_agent_image, read_import_persona_file,
-        validate_agent_source_path_with_roots, validate_import_agent_image_path,
-        validate_import_persona_path, MAX_AGENT_IMAGE_IMPORT_BYTES, MAX_PERSONA_IMPORT_BYTES,
+        read_agent_source_file_with_roots, validate_agent_source_path_with_roots,
+        MAX_PERSONA_IMPORT_BYTES,
     };
     use tempfile::{tempdir, Builder};
-
-    #[test]
-    fn validate_import_persona_path_rejects_unsupported_files() {
-        let file = Builder::new()
-            .prefix("persona-import-")
-            .suffix(".txt")
-            .tempfile()
-            .unwrap();
-
-        let result = validate_import_persona_path(file.path().to_str().unwrap());
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn validate_import_persona_path_rejects_directories() {
-        let directory = tempdir().unwrap();
-
-        let result = validate_import_persona_path(directory.path().to_str().unwrap());
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn validate_import_persona_path_accepts_json_and_persona_markdown_files() {
-        let file = Builder::new()
-            .prefix("persona-import-")
-            .suffix(".json")
-            .tempfile()
-            .unwrap();
-        std::fs::write(file.path(), b"{}").unwrap();
-
-        let validated = validate_import_persona_path(file.path().to_str().unwrap()).unwrap();
-
-        assert_eq!(validated, file.path().canonicalize().unwrap());
-
-        let file = Builder::new()
-            .prefix("persona-import-")
-            .suffix(".persona.md")
-            .tempfile()
-            .unwrap();
-        std::fs::write(file.path(), b"---\nname: scout\n---").unwrap();
-
-        let validated = validate_import_persona_path(file.path().to_str().unwrap()).unwrap();
-
-        assert_eq!(validated, file.path().canonicalize().unwrap());
-    }
-
-    #[test]
-    fn validate_import_persona_path_rejects_plain_markdown_files() {
-        let file = Builder::new()
-            .prefix("persona-import-")
-            .suffix(".md")
-            .tempfile()
-            .unwrap();
-
-        let result = validate_import_persona_path(file.path().to_str().unwrap());
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn validate_import_agent_image_path_accepts_agent_png() {
-        let file = Builder::new()
-            .prefix("scout-")
-            .suffix(".agent.png")
-            .tempfile()
-            .unwrap();
-        std::fs::write(file.path(), b"png bytes").unwrap();
-
-        let validated = validate_import_agent_image_path(file.path().to_str().unwrap()).unwrap();
-
-        assert_eq!(validated, file.path().canonicalize().unwrap());
-    }
-
-    #[test]
-    fn validate_import_agent_image_path_accepts_plain_png_for_compatibility_detection() {
-        let file = Builder::new().suffix(".png").tempfile().unwrap();
-
-        let validated = validate_import_agent_image_path(file.path().to_str().unwrap()).unwrap();
-
-        assert_eq!(validated, file.path().canonicalize().unwrap());
-    }
-
-    #[test]
-    fn read_import_agent_image_rejects_oversized_files() {
-        let file = Builder::new().suffix(".agent.png").tempfile().unwrap();
-        file.as_file()
-            .set_len(MAX_AGENT_IMAGE_IMPORT_BYTES + 1)
-            .unwrap();
-
-        let result = read_import_agent_image(file.path().to_string_lossy().into_owned());
-
-        assert!(result.unwrap_err().contains("10 MB or smaller"));
-    }
-
-    #[test]
-    fn read_import_agent_image_returns_binary_bytes() {
-        let file = Builder::new().suffix(".agent.png").tempfile().unwrap();
-        std::fs::write(file.path(), [0x89, 0x50, 0x4e, 0x47]).unwrap();
-
-        let result = read_import_agent_image(file.path().to_string_lossy().into_owned()).unwrap();
-
-        assert_eq!(result.file_bytes, [0x89, 0x50, 0x4e, 0x47]);
-        assert!(result.file_name.ends_with(".agent.png"));
-    }
 
     #[test]
     fn validate_agent_source_path_rejects_files_outside_trusted_root() {
@@ -465,68 +282,6 @@ mod tests {
         assert_eq!(validated, file_path.canonicalize().unwrap());
     }
 
-    #[test]
-    fn read_import_persona_file_rejects_oversized_files() {
-        let file = Builder::new()
-            .prefix("persona-import-")
-            .suffix(".json")
-            .tempfile()
-            .unwrap();
-        file.as_file()
-            .set_len(MAX_PERSONA_IMPORT_BYTES + 1)
-            .unwrap();
-
-        let result = read_import_persona_file(file.path().to_string_lossy().into_owned());
-
-        assert!(result.unwrap_err().contains("4 MB or smaller"));
-    }
-
-    #[test]
-    fn read_import_persona_file_rejects_invalid_utf8() {
-        let file = Builder::new()
-            .prefix("persona-import-")
-            .suffix(".json")
-            .tempfile()
-            .unwrap();
-        std::fs::write(file.path(), [0xff]).unwrap();
-
-        let result = read_import_persona_file(file.path().to_string_lossy().into_owned());
-
-        assert_eq!(result.unwrap_err(), "File is not valid UTF-8 text");
-    }
-
-    #[test]
-    fn read_import_persona_file_returns_utf8_contents() {
-        let file = Builder::new()
-            .prefix("persona-import-")
-            .suffix(".json")
-            .tempfile()
-            .unwrap();
-        std::fs::write(file.path(), b"{\"name\":\"Scout\"}").unwrap();
-
-        let result = read_import_persona_file(file.path().to_string_lossy().into_owned()).unwrap();
-
-        assert_eq!(result.file_contents, "{\"name\":\"Scout\"}");
-        assert_eq!(
-            result.file_name,
-            file.path().file_name().unwrap().to_string_lossy()
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn validate_import_persona_path_rejects_symbolic_links() {
-        let directory = tempdir().unwrap();
-        let target = directory.path().join("target.json");
-        let link = directory.path().join("link.json");
-        std::fs::write(&target, b"{}").unwrap();
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-
-        let result = validate_import_persona_path(link.to_str().unwrap());
-
-        assert!(result.unwrap_err().contains("symbolic link"));
-    }
-
     #[cfg(unix)]
     #[test]
     fn validate_agent_source_path_rejects_symbolic_links() {
@@ -569,7 +324,7 @@ mod tests {
         let isolated_root = tmp
             .path()
             .join("run")
-            .join("goose")
+            .join("isolated")
             .join(".agents")
             .join("agents");
         let normal_root = tmp.path().join("home").join(".agents").join("agents");

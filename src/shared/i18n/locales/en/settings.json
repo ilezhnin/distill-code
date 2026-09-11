@@ -395,30 +395,8 @@
     "title": "Runtime config"
   },
   "security": {
-    "commandClassifier": {
-      "description": "Scans tool calls for malicious content using an ML classifier, with fallback to pattern-based detection.",
-      "label": "Command injection detection"
-    },
-    "description": "Protect against prompt injection and command injection attacks.",
-    "managedByOrg": "These protections are managed by your organization and cannot be disabled.",
-    "promptInjection": {
-      "description": "Scans conversation context for prompt injection attacks. Uses ML-based classification.",
-      "label": "Prompt injection detection"
-    },
-    "status": {
-      "active": "Active"
-    },
-    "threshold": {
-      "description": "The confidence level at which a flagged action prompts you to allow or block it. Lower values are more sensitive (more prompts); higher values are less sensitive. Range 0.0–1.0.",
-      "label": "Detection sensitivity",
-      "rangeError": "Enter a value between 0.0 and 1.0.",
-      "restartHint": "Changes take effect after restarting Distill.",
-      "save": "Save",
-      "saveError": "Failed to update detection sensitivity.",
-      "saved": "Detection sensitivity updated."
-    },
-    "title": "Security",
-    "warpNotice": "ML classification requires a connection to WARP to reach the classification service."
+    "description": "Manage the link domains you trust.",
+    "title": "Security"
   },
   "stats": {
     "activeDays": "Active days",

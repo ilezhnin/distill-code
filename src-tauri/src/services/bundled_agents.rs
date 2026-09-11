@@ -55,70 +55,6 @@ pub fn seed_bundled_agents(
     seed_bundled_agents_from_dir(&bundle.root_dir.join(DISTRO_AGENTS_DIR_NAME), &target_root)
 }
 
-/// Explicitly restores one bundled agent after a user invokes a feature that
-/// depends on it. Unlike startup seeding, this may restore a previously seeded
-/// file that is now missing. It never overwrites an unmarked user-owned file.
-pub fn repair_bundled_agent(
-    bundle: &DistroBundle,
-    target_root: Option<&Path>,
-    file_name: &str,
-) -> Result<(), String> {
-    let target_root = match target_root {
-        Some(target_root) => target_root.to_path_buf(),
-        None => {
-            let Some(home_dir) = dirs::home_dir() else {
-                return Err("Failed to resolve home directory for bundled agents".to_string());
-            };
-            home_dir.join(GLOBAL_AGENTS_DIR_NAME).join(AGENTS_DIR_NAME)
-        }
-    };
-
-    repair_bundled_agent_from_dir(
-        &bundle.root_dir.join(DISTRO_AGENTS_DIR_NAME),
-        &target_root,
-        file_name,
-    )
-}
-
-fn repair_bundled_agent_from_dir(
-    source_root: &Path,
-    target_root: &Path,
-    file_name: &str,
-) -> Result<(), String> {
-    let source_name = Path::new(file_name);
-    if source_name.file_name().and_then(|name| name.to_str()) != Some(file_name)
-        || source_name.extension().and_then(|ext| ext.to_str()) != Some("md")
-    {
-        return Err("Bundled agent filename must be a plain .md filename".to_string());
-    }
-
-    let source = source_root.join(file_name);
-    let source_metadata = fs::symlink_metadata(&source).map_err(|err| {
-        format!(
-            "Failed to access bundled agent '{}': {err}",
-            source.display()
-        )
-    })?;
-    if source_metadata.file_type().is_symlink() || !source_metadata.is_file() {
-        return Err(format!(
-            "Bundled agent '{}' must be a regular file",
-            source.display()
-        ));
-    }
-    if !is_installed_bundled_agent(&source)? {
-        return Err(format!(
-            "Bundled agent '{}' is missing its bundled marker",
-            source.display()
-        ));
-    }
-
-    let mut marker = read_seed_marker(target_root)?;
-    let target = target_root.join(file_name);
-    install_agent_file(&source, &target)?;
-    marker.seeded_files.insert(file_name.to_string());
-    write_seed_marker(target_root, &marker)
-}
-
 #[derive(Debug, PartialEq, Eq)]
 enum InstalledAgentPathState {
     Missing,
@@ -465,66 +401,6 @@ mod tests {
             fs::read_to_string(target.path().join("builderbot.md")).unwrap(),
             "---\nname: Builderbot\ndescription: Agent\navatar: app-avatar:gloopies-20\nmetadata:\n  berdBundled: true\n---\nBuild carefully."
         );
-    }
-
-    #[test]
-    fn explicitly_repairs_a_deleted_seeded_agent() {
-        let source = tempdir().unwrap();
-        let target = tempdir().unwrap();
-        let contents = "---\nname: Berdy\ndescription: Agent\nmetadata:\n  berdBundled: true\n---\nHelp carefully.";
-        write_agent(source.path(), "berdy.md", contents);
-
-        seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
-        fs::remove_file(target.path().join("berdy.md")).unwrap();
-
-        repair_bundled_agent_from_dir(source.path(), target.path(), "berdy.md").unwrap();
-
-        assert_eq!(
-            fs::read_to_string(target.path().join("berdy.md")).unwrap(),
-            contents
-        );
-    }
-
-    #[test]
-    fn explicit_repair_preserves_an_unmarked_user_agent() {
-        let source = tempdir().unwrap();
-        let target = tempdir().unwrap();
-        write_agent(
-            source.path(),
-            "berdy.md",
-            "---\nname: Berdy\nmetadata:\n  berdBundled: true\n---\nBundled.",
-        );
-        write_agent(target.path(), "berdy.md", "---\nname: Mine\n---\nPersonal.");
-
-        let error =
-            repair_bundled_agent_from_dir(source.path(), target.path(), "berdy.md").unwrap_err();
-
-        assert!(error.contains("user-owned"));
-        assert_eq!(
-            fs::read_to_string(target.path().join("berdy.md")).unwrap(),
-            "---\nname: Mine\n---\nPersonal."
-        );
-        assert!(!target.path().join("berdy2.md").exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn explicit_repair_rejects_a_broken_primary_symlink() {
-        let source = tempdir().unwrap();
-        let target = tempdir().unwrap();
-        let outside = tempdir().unwrap().path().join("outside.md");
-        write_agent(
-            source.path(),
-            "berdy.md",
-            "---\nname: Berdy\nmetadata:\n  berdBundled: true\n---\nBundled.",
-        );
-        std::os::unix::fs::symlink(&outside, target.path().join("berdy.md")).unwrap();
-
-        let error =
-            repair_bundled_agent_from_dir(source.path(), target.path(), "berdy.md").unwrap_err();
-
-        assert!(error.contains("must not be a symbolic link"));
-        assert!(!outside.exists());
     }
 
     #[test]

@@ -81,14 +81,7 @@ export async function startAgentSetup(
   return invoke("start_agent_setup", { providerId, action, plan });
 }
 
-export async function getAgentSetupStatus(
-  providerId: string,
-): Promise<AgentSetupOperation | null> {
-  return invoke("get_agent_setup_status", { providerId });
-}
-
-// One call rehydrates every card on mount — cheaper than N `get`s when the
-// providers screen mounts many cards.
+// One call rehydrates every card on mount.
 export async function listAgentSetupStatus(): Promise<
   [string, AgentSetupOperation][]
 > {

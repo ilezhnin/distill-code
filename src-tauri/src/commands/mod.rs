@@ -22,7 +22,6 @@ pub mod project_store;
 pub mod provider_rate_limits;
 pub mod renderer;
 pub mod runtime_config;
-pub mod security_threshold;
 pub mod system;
 pub mod terminal;
 pub mod window_session;
