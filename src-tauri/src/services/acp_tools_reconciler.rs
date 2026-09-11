@@ -18,8 +18,7 @@
 //! old runtime must outlive the last shim that references it.
 //!
 //! Silent when there is nothing to manage: the `BERD_ACP_TOOLS_DIR` dev
-//! override is active, the `no-managed-acp-tools` build feature is set, or the
-//! target is unsupported.
+//! override is active or the target is unsupported.
 //!
 //! Completion is broadcast to the renderer as [`ACP_TOOLS_RECONCILED_EVENT`]:
 //! on a fresh profile the frontend caches its Doctor report (bridges missing)
