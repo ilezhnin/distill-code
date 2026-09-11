@@ -36,11 +36,11 @@ if ($All) {
 
 # Categories beyond this line remove machine- or user-shared software that
 # other projects may rely on (global Node state, rustup toolchains, CMake,
-# LLVM, Python, ...). Selecting them (-Include*/-All) is one decision;
+# just, ...). Selecting them (-Include*/-All) is one decision;
 # executing their removal requires the second -YesShared acknowledgment.
 $sharedSelected = $IncludeNodeState -or $IncludeSharedTools -or $IncludeVisualStudioBuildTools -or $IncludeWebView2
 if ($Mode -eq "remove" -and $sharedSelected -and -not $YesShared) {
-    throw ("The selected categories uninstall software shared beyond Berd (Node state, rustup, CMake, LLVM, jq, Python, just, Lefthook, Build Tools" +
+    throw ("The selected categories uninstall software shared beyond Berd (Node state, rustup, CMake, just, Lefthook, Build Tools" +
         $(if ($IncludeWebView2) { ", WebView2 Runtime" } else { "" }) +
         "). Review the dry run, then re-run with both -Yes and -YesShared, or drop -All/-Include* to remove only Berd-owned state.")
 }
@@ -327,15 +327,12 @@ Invoke-FnmNodeUninstall -Version (Get-RequiredNodeVersion) -VersionDir $paths.Fn
 
 Write-WindowsDevSection "Shared WinGet tools"
 if (-not $IncludeSharedTools) {
-    Add-Skip "Shared tools" "pass -IncludeSharedTools or -All to uninstall rustup, fnm, CMake, LLVM, jq, Python, just, and Lefthook"
+    Add-Skip "Shared tools" "pass -IncludeSharedTools or -All to uninstall rustup, fnm, CMake, just, and Lefthook"
 } else {
     Invoke-RustupSelfUninstall
     $sharedPackages = @(
         [pscustomobject]@{ Name = "fnm"; Id = "Schniz.fnm" },
         [pscustomobject]@{ Name = "CMake"; Id = "Kitware.CMake" },
-        [pscustomobject]@{ Name = "LLVM"; Id = "LLVM.LLVM" },
-        [pscustomobject]@{ Name = "jq"; Id = "jqlang.jq" },
-        [pscustomobject]@{ Name = "Python 3.12"; Id = "Python.Python.3.12" },
         [pscustomobject]@{ Name = "just"; Id = "Casey.Just" },
         [pscustomobject]@{ Name = "Lefthook"; Id = "evilmartians.lefthook" }
     )

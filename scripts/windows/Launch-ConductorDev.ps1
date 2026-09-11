@@ -7,7 +7,6 @@ Set-Location (Get-BerdRepoRoot)
 Update-SessionPathFromRegistry
 Assert-MsvcEnvironment
 Initialize-FnmEnvironment | Out-Null
-Assert-LibClangEnvironment
 Update-SessionPathFromRegistry
 
 $pnpm = Get-PnpmCommand

@@ -25,7 +25,6 @@ Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChe
 Assert-WindowsHost
 Update-SessionPathFromRegistry
 Assert-MsvcEnvironment
-Assert-LibClangEnvironment
 Initialize-FnmEnvironment | Out-Null
 Initialize-PublicNpmEnvironment
 Update-SessionPathFromRegistry

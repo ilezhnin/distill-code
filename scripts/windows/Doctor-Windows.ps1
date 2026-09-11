@@ -48,19 +48,6 @@ function Check-Command {
     return $source
 }
 
-function Check-Python {
-    param([AllowNull()]$Python = $null)
-    $python = $Python
-    if ($null -eq $python) {
-        $python = Find-RunnablePython
-    }
-    if ($null -eq $python) {
-        Fail "python" "no runnable Python 3 interpreter found. Run: winget install --id Python.Python.3.12 -e, or disable the Microsoft Store app execution alias."
-        return
-    }
-    Pass "python" "$($python.Path) ($($python.Version))"
-}
-
 Write-WindowsDevSection "Berd Windows doctor"
 
 $prereqs = Get-WindowsPrerequisiteSnapshot
@@ -167,15 +154,6 @@ if ($npmReachability.Ready) {
 }
 
 Check-Command "cmake" "Run: winget install --id Kitware.CMake -e" $prereqs.Cmake | Out-Null
-$libClangPath = $prereqs.LibClangPath
-if ([string]::IsNullOrWhiteSpace($libClangPath)) {
-    Fail "libclang" "libclang.dll not found. Run: winget install --id LLVM.LLVM -e"
-} else {
-    Initialize-LibClangEnvironment | Out-Null
-    Pass "libclang" $libClangPath
-}
-Check-Command "jq" "Run: winget install --id jqlang.jq -e" $prereqs.Jq | Out-Null
-Check-Python -Python $prereqs.Python
 Check-Command "lefthook" "Install Lefthook, then rerun 'just setup-windows' to install hooks." $prereqs.Lefthook | Out-Null
 
 Write-Host ""

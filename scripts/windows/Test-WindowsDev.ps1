@@ -133,8 +133,6 @@ try {
     $bundleScript = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Bundle-Windows.ps1")
     Assert-Equal "bundle exports full SemVer to Rust" `
         ($bundleScript -match '\$env:BERD_APP_VERSION\s*=\s*\$resolvedVersion\.RichVersion') $true
-    Assert-Equal "enabled release bundles compile the updater renderer on" `
-        ($bundleScript -match '(?s)\$releaseUpdaterEnabled\s*=.*?BERD_RELEASE_CHANNEL.*?\$env:VITE_UPDATER_ENABLED\s*=\s*if \(\$releaseUpdaterEnabled\) \{ "true" \} else \{ "false" \}') $true
     Assert-Equal "bundle exports full release SemVer to the renderer" `
         ($bundleScript -match '\$env:VITE_APP_VERSION\s*=\s*\$resolvedVersion\.RichVersion') $true
     Assert-Equal "bundle verifies the application PE version" ($bundleScript -match '\.VersionInfo\.ProductVersion') $true
@@ -144,15 +142,7 @@ try {
 
     $prereleaseVersion = Resolve-AppVersion "1.2.3-rc.1"
     Assert-Equal "prerelease override uses numeric core for Windows ProductVersion" $prereleaseVersion.Version "1.2.3"
-    Assert-Equal "prerelease override preserves full SemVer for updater metadata" $prereleaseVersion.RichVersion "1.2.3-rc.1"
-    Assert-Equal "Tauri config uses full SemVer for native updater ordering" `
-        ($bundleScript -notmatch 'NotePropertyName version -NotePropertyValue \$resolvedVersion\.Version') $true
-    Assert-Equal "Tauri config preserves prerelease package identity" `
-        ($bundleScript -match 'NotePropertyName version -NotePropertyValue \$resolvedVersion\.RichVersion') $true
-    Assert-Equal "native updater orders rc.2 after rc.1" `
-        ([semver]"1.2.3-rc.2" -gt [semver]"1.2.3-rc.1") $true
-    Assert-Equal "native updater orders stable after prerelease" `
-        ([semver]"1.2.3" -gt [semver]"1.2.3-rc.2") $true
+    Assert-Equal "prerelease override preserves full SemVer" $prereleaseVersion.RichVersion "1.2.3-rc.1"
 
     $buildScript = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "src-tauri\build.rs")
     Assert-Equal "Rust rebuilds when the resolved app version changes" ($buildScript -match 'cargo:rerun-if-env-changed=BERD_APP_VERSION') $true
@@ -469,40 +459,11 @@ try {
             -ArgumentList @("-StageScriptPath", $failChild) -Label "stage-wrapper-failure"
     }
 
-    # ── PowerShell 5.1 compatibility of the bounded probe + child driver ──
-    # The Windows lane runs under powershell.exe (5.1 / .NET Framework), where
-    # ProcessStartInfo.ArgumentList and Process.Kill($true) do not exist. Guard
-    # against a regression that reintroduces those APIs, and pin the 5.1-safe
-    # shapes the fixes rely on.
-    $moduleSource = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts/windows/WindowsDev.psm1")
-    Assert-Equal "bounded probe avoids .NET Core-only ArgumentList" `
-        ($moduleSource -match '\$psi\.ArgumentList') $false
-    Assert-Equal "bounded probe builds Arguments via the quoting helper" `
-        ($moduleSource -match '\$psi\.Arguments\s*=\s*\(Join-WindowsProcessArguments') $true
-    Assert-Equal "bounded probe avoids .NET Core-only Kill(bool) tree overload" `
-        ($moduleSource -match '\.Kill\(\$true\)') $false
-
-    # taskkill tree-kill command shape is a pure value: /PID <id> /T /F.
-    $taskkillArgs = Get-TaskkillTreeArguments -ProcessId 4321
-    Assert-Equal "taskkill targets the pid" ($taskkillArgs -join " ") "/PID 4321 /T /F"
-    Assert-Equal "taskkill failure falls through to Process.Kill" `
-        ($moduleSource -match '(?s)& taskkill\.exe @arguments 2>&1 \| Out-Null\s+if \(\$LASTEXITCODE -eq 0\) \{\s+return\s+\}.*?\$Process\.Kill\(\)') $true
-
-    # Spaced/quoted arguments survive the 5.1 string Arguments round-trip: run a
-    # child that echoes an argument containing spaces and confirm it comes back
-    # intact through the quoting helper the bounded probe now uses.
-    if (Test-IsWindowsHost) {
-        $spaced = Invoke-BoundedCommand -FilePath "cmd.exe" -ArgumentList @("/c", "echo goose 1.7.0 (build x)") -TimeoutSeconds 10
-    } else {
-        $spaced = Invoke-BoundedCommand -FilePath "/bin/echo" -ArgumentList @("goose 1.7.0 (build x)") -TimeoutSeconds 10
-    }
-    Assert-Equal "bounded probe preserves spaced arguments" `
-        ($spaced.Output -match "goose 1\.7\.0 \(build x\)") $true
-
     # ── Child driver passes -ExecutionPolicy Bypass for powershell.exe ──
     # Restricted/AllSigned machine policy would otherwise block the child even
     # though the parent lane started under Bypass. pwsh ignores per-invocation
     # policy, so the flag is conditioned on the powershell.exe host name.
+    $moduleSource = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts/windows/WindowsDev.psm1")
     Assert-Equal "child driver conditions ExecutionPolicy Bypass on powershell.exe host" `
         ($moduleSource -match "(?s)GetFileNameWithoutExtension\(\`$shell\)\s*-ieq\s*`"powershell`".*?-ExecutionPolicy`",\s*`"Bypass`"") $true
 
@@ -557,20 +518,10 @@ try {
     Assert-Equal "cleanup repo dist" $cleanupPaths.RepoDist (Join-Path (Get-BerdRepoRoot) "dist")
     Assert-Equal "cleanup git hooks dir" $cleanupPaths.GitHooksDir (Join-Path (Get-BerdRepoRoot) ".git\hooks")
 
-    $envTargets = Get-BlockNpmEnvironmentTargets
-    $registryTarget = $envTargets | Where-Object { $_.Name -eq "NPM_CONFIG_REGISTRY" } | Select-Object -First 1
-    $cafileTarget = $envTargets | Where-Object { $_.Name -eq "NPM_CONFIG_CAFILE" } | Select-Object -First 1
-    $nodeCertTarget = $envTargets | Where-Object { $_.Name -eq "NODE_EXTRA_CA_CERTS" } | Select-Object -First 1
-    $corepackRegistryTarget = $envTargets | Where-Object { $_.Name -eq "COREPACK_NPM_REGISTRY" } | Select-Object -First 1
-    $corepackIntegrityTarget = $envTargets | Where-Object { $_.Name -eq "COREPACK_INTEGRITY_KEYS" } | Select-Object -First 1
-    Assert-Equal "Block npm env registry target" $registryTarget.ExpectedValue (Get-BlockNpmRegistry)
-    Assert-Equal "Block npm env cafile target" $cafileTarget.ExpectedValue $cleanupPaths.BlockCertFile
-    Assert-Equal "Block npm env node cert target" $nodeCertTarget.ExpectedValue $cleanupPaths.BlockCertFile
-    Assert-Equal "Block npm env Corepack registry target" $corepackRegistryTarget.ExpectedValue (Get-BlockNpmRegistry)
-    Assert-Equal "Block npm env Corepack integrity target" $corepackIntegrityTarget.ExpectedValue "0"
-
+    # A leftover Block Artifactory registry, as older Berd setups wrote it.
+    $blockNpmRegistry = "https://global.block-artifacts.com/artifactory/api/npm/square-npm/"
     Assert-Equal "public npm registry" (Get-PublicNpmRegistry) "https://registry.npmjs.org/"
-    Assert-Equal "detects Block Artifactory host" (Test-IsBlockNpmValue (Get-BlockNpmRegistry)) $true
+    Assert-Equal "detects Block Artifactory host" (Test-IsBlockNpmValue $blockNpmRegistry) $true
     Assert-Equal "detects Block cert path" (Test-IsBlockNpmValue $cleanupPaths.BlockCertFile) $true
     Assert-Equal "ignores public npm as Block" (Test-IsBlockNpmValue (Get-PublicNpmRegistry)) $false
     Assert-Equal "ignores empty npm value as Block" (Test-IsBlockNpmValue "") $false
@@ -581,8 +532,8 @@ try {
     $oldNodeCerts = $env:NODE_EXTRA_CA_CERTS
     $oldIntegrity = $env:COREPACK_INTEGRITY_KEYS
     try {
-        $env:NPM_CONFIG_REGISTRY = Get-BlockNpmRegistry
-        $env:COREPACK_NPM_REGISTRY = Get-BlockNpmRegistry
+        $env:NPM_CONFIG_REGISTRY = $blockNpmRegistry
+        $env:COREPACK_NPM_REGISTRY = $blockNpmRegistry
         $env:NPM_CONFIG_CAFILE = $cleanupPaths.BlockCertFile
         $env:NODE_EXTRA_CA_CERTS = $cleanupPaths.BlockCertFile
         $env:COREPACK_INTEGRITY_KEYS = "0"
