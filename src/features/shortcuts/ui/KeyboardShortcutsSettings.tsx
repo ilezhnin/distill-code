@@ -18,7 +18,6 @@ import {
   keyboardShortcutFromEvent,
 } from "@/shared/keyboard/keyboardShortcut";
 import { cn } from "@/shared/lib/cn";
-import { getPlatform } from "@/shared/lib/platform";
 import { Button } from "@/shared/ui/button";
 import { Kbd } from "@/shared/ui/kbd";
 import { SearchBar } from "@/shared/ui/SearchBar";
@@ -51,7 +50,6 @@ function rowErrorId(commandId: ShortcutCommandId): string {
 
 export function KeyboardShortcutsSettings() {
   const { t } = useTranslation("shortcuts");
-  const isMac = getPlatform() === "mac";
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [recordingId, setRecordingId] = useState<ShortcutCommandId | null>(
@@ -174,9 +172,7 @@ export function KeyboardShortcutsSettings() {
     // aria-label replaces the button's content for screen readers, so the
     // current combo has to ride along in the label itself.
     const comboLabel = binding
-      ? keyboardShortcutDisplayParts(binding.shortcut, isMac).join(
-          isMac ? "" : "+",
-        )
+      ? keyboardShortcutDisplayParts(binding.shortcut, false).join("+")
       : null;
     const editLabel = t("settings.editLabel", { command: label });
 
@@ -190,8 +186,8 @@ export function KeyboardShortcutsSettings() {
             ? t("settings.default", {
                 shortcut: keyboardShortcutDisplayParts(
                   defaultBinding.shortcut,
-                  isMac,
-                ).join(isMac ? "" : "+"),
+                  false,
+                ).join("+"),
               })
             : undefined
         }
@@ -249,7 +245,7 @@ export function KeyboardShortcutsSettings() {
                 </span>
               ) : binding ? (
                 <span className="flex items-center gap-1">
-                  {keyboardShortcutDisplayParts(binding.shortcut, isMac).map(
+                  {keyboardShortcutDisplayParts(binding.shortcut, false).map(
                     (part) => (
                       <Kbd key={part} className="shadow-none">
                         {part}

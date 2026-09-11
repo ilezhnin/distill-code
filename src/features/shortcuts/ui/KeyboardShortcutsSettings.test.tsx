@@ -7,7 +7,7 @@ import { renderWithProviders } from "@/test/render";
 import { KeyboardShortcutsSettings } from "./KeyboardShortcutsSettings";
 
 vi.mock("@/shared/lib/platform", () => ({
-  getPlatform: () => "mac",
+  getPlatform: () => "windows",
 }));
 
 function storedOverrides(): Record<string, string> | null {
@@ -25,7 +25,7 @@ function seedOverrides(overrides: Record<string, string>) {
 
 function getShortcutButton(commandLabel: string) {
   // The accessible name carries the current combo, e.g.
-  // "Change shortcut for Open search (⌘K)".
+  // "Change shortcut for Open search (Ctrl+K)".
   return screen.getByRole("button", {
     name: new RegExp(`^Change shortcut for ${commandLabel}`),
   });
@@ -69,7 +69,7 @@ describe("KeyboardShortcutsSettings", () => {
 
     expect(screen.getByText("Open search")).toBeInTheDocument();
     const button = getShortcutButton("Open search");
-    expect(button).toHaveTextContent("⌘K");
+    expect(button).toHaveTextContent("CtrlK");
     expect(button).toHaveClass("w-fit", "px-1.5");
     expect(button).not.toHaveClass("min-w-24");
     for (const keycap of button.querySelectorAll('[data-slot="kbd"]')) {
@@ -82,16 +82,16 @@ describe("KeyboardShortcutsSettings", () => {
     renderWithProviders(<KeyboardShortcutsSettings />);
 
     const button = getShortcutButton("Open search");
-    expect(button).toHaveTextContent("⌘K");
+    expect(button).toHaveTextContent("CtrlK");
 
     await user.click(button);
     expect(button).toHaveTextContent("Press shortcut…");
 
-    fireEvent.keyDown(button, { key: "x", metaKey: true, shiftKey: true });
+    fireEvent.keyDown(button, { key: "x", ctrlKey: true, shiftKey: true });
 
-    expect(storedOverrides()).toEqual({ "navigation.search": "meta+shift+x" });
-    expect(button).toHaveTextContent("⌘⇧X");
-    expect(screen.getByText("Default: ⌘K")).toBeInTheDocument();
+    expect(storedOverrides()).toEqual({ "navigation.search": "ctrl+shift+x" });
+    expect(button).toHaveTextContent("CtrlShiftX");
+    expect(screen.getByText("Default: Ctrl+K")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Reset to default" }),
     ).toBeInTheDocument();
@@ -106,19 +106,19 @@ describe("KeyboardShortcutsSettings", () => {
     await user.click(searchButton);
     fireEvent.keyDown(searchButton, { key: "k" });
     expect(
-      screen.getByText("Shortcuts need a modifier key like Cmd, Ctrl, or Alt"),
+      screen.getByText("Shortcuts need a modifier key like Ctrl or Alt"),
     ).toBeInTheDocument();
     // Still recording so the user can try again.
     expect(searchButton).toHaveTextContent("Press shortcut…");
     expect(storedOverrides(), "after invalid global key").toBeNull();
 
     // Conflict with another command: error names it, recording exits.
-    fireEvent.keyDown(searchButton, { key: "n", metaKey: true });
+    fireEvent.keyDown(searchButton, { key: "n", ctrlKey: true });
     expect(
       screen.getByText('Already used by "New conversation"'),
     ).toBeInTheDocument();
     // Recording exited; the current binding is shown again.
-    expect(searchButton).toHaveTextContent("⌘K");
+    expect(searchButton).toHaveTextContent("CtrlK");
     expect(storedOverrides(), "after conflict").toBeNull();
 
     // Unmodified text-editing key on a composer command: tailored message.
@@ -140,12 +140,12 @@ describe("KeyboardShortcutsSettings", () => {
     // Pure-modifier presses do not capture.
     const searchButton = getShortcutButton("Open search");
     await user.click(searchButton);
-    fireEvent.keyDown(searchButton, { key: "Meta", metaKey: true });
+    fireEvent.keyDown(searchButton, { key: "Control", ctrlKey: true });
     expect(searchButton).toHaveTextContent("Press shortcut…");
     expect(storedOverrides(), "after pure-modifier press").toBeNull();
 
     fireEvent.keyDown(searchButton, { key: "Escape" });
-    expect(searchButton).toHaveTextContent("⌘K");
+    expect(searchButton).toHaveTextContent("CtrlK");
     expect(storedOverrides(), "after Escape cancel").toBeNull();
 
     // The held Enter that activated the button must not record on repeat.
@@ -182,30 +182,30 @@ describe("KeyboardShortcutsSettings", () => {
     const newConversationButton = getShortcutButton("New conversation");
     fireEvent.click(newConversationButton);
 
-    expect(searchButton).toHaveTextContent("⌘K");
+    expect(searchButton).toHaveTextContent("CtrlK");
     expect(newConversationButton).toHaveTextContent("Press shortcut…");
   });
 
   it("resets a single override back to its default", async () => {
     const user = userEvent.setup();
-    seedOverrides({ "navigation.search": "meta+shift+x" });
+    seedOverrides({ "navigation.search": "ctrl+shift+x" });
     renderWithProviders(<KeyboardShortcutsSettings />);
 
-    expect(screen.getByText("Default: ⌘K")).toBeInTheDocument();
-    expect(getShortcutButton("Open search")).toHaveTextContent("⌘⇧X");
+    expect(screen.getByText("Default: Ctrl+K")).toBeInTheDocument();
+    expect(getShortcutButton("Open search")).toHaveTextContent("CtrlShiftX");
 
     await user.click(screen.getByRole("button", { name: "Reset to default" }));
 
     expect(localStorage.getItem(SHORTCUT_PREFERENCES_STORAGE_KEY)).toBeNull();
-    expect(screen.queryByText("Default: ⌘K")).not.toBeInTheDocument();
-    expect(getShortcutButton("Open search")).toHaveTextContent("⌘K");
+    expect(screen.queryByText("Default: Ctrl+K")).not.toBeInTheDocument();
+    expect(getShortcutButton("Open search")).toHaveTextContent("CtrlK");
   });
 
   it("resets all overrides and clears the storage key", async () => {
     const user = userEvent.setup();
     seedOverrides({
-      "navigation.search": "meta+shift+x",
-      "navigation.newConversation": "meta+shift+y",
+      "navigation.search": "ctrl+shift+x",
+      "navigation.newConversation": "ctrl+shift+y",
     });
     renderWithProviders(<KeyboardShortcutsSettings />);
 
