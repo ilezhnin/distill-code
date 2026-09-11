@@ -42,9 +42,11 @@ async fn get_changed_files_inner(path: String) -> Result<Vec<ChangedFile>, Strin
         return Ok(Vec::new());
     }
 
+    // `-z`: paths come through verbatim. Without it git C-quotes any path with
+    // a non-ASCII character (`"\320\237...txt"`), which was shown as-is.
     let status_output = run_git_success_async(
         &repo_path,
-        &["status", "--porcelain", "--untracked-files=all"],
+        &["status", "--porcelain", "-z", "--untracked-files=all"],
         GIT_STATUS_COMMAND_TIMEOUT,
     )
     .await?;
@@ -57,24 +59,7 @@ async fn get_changed_files_inner(path: String) -> Result<Vec<ChangedFile>, Strin
 
     let mut files: Vec<ChangedFile> = Vec::new();
 
-    for line in status_output.lines() {
-        if line.len() < 4 {
-            continue;
-        }
-
-        let index_status = line.as_bytes()[0];
-        let worktree_status = line.as_bytes()[1];
-        let file_path = unquote_porcelain(line[3..].trim());
-        let file_path = if file_path.contains(" -> ") {
-            file_path
-                .split(" -> ")
-                .last()
-                .unwrap_or(&file_path)
-                .to_string()
-        } else {
-            file_path
-        };
-
+    for (index_status, worktree_status, file_path) in parse_porcelain_status(&status_output) {
         let status = parse_status_codes(index_status, worktree_status);
 
         let (additions, deletions) = match head_stats.get(&file_path).copied() {
@@ -97,7 +82,7 @@ async fn get_changed_files_inner(path: String) -> Result<Vec<ChangedFile>, Strin
 async fn read_head_numstat(repo_path: &Path) -> Result<String, String> {
     match run_git_success_async(
         repo_path,
-        &["diff", "HEAD", "--numstat"],
+        &["diff", "HEAD", "--numstat", "-z"],
         GIT_STATUS_COMMAND_TIMEOUT,
     )
     .await
@@ -146,42 +131,86 @@ fn parse_status_codes(index: u8, worktree: u8) -> String {
     "modified".to_string()
 }
 
+/// Parses `git status --porcelain -z` into `(X, Y, path)` entries.
+///
+/// Each entry is `XY <path>` terminated by NUL; a rename or copy is followed
+/// by one more NUL-terminated field holding the original path, which is
+/// skipped because the changed file is the new one.
+fn parse_porcelain_status(output: &str) -> Vec<(u8, u8, String)> {
+    let mut entries = Vec::new();
+    let mut fields = output.split('\0');
+    while let Some(field) = fields.next() {
+        let bytes = field.as_bytes();
+        if bytes.len() < 4 || bytes[2] != b' ' {
+            continue;
+        }
+        let (index_status, worktree_status) = (bytes[0], bytes[1]);
+        if matches!(index_status, b'R' | b'C') || matches!(worktree_status, b'R' | b'C') {
+            fields.next();
+        }
+        entries.push((index_status, worktree_status, field[3..].to_string()));
+    }
+    entries
+}
+
+/// Parses `git diff --numstat -z` into additions/deletions per path.
+///
+/// A plain entry is `<added>\t<deleted>\t<path>` terminated by NUL. A rename
+/// leaves the path empty and is followed by two NUL-terminated fields, the
+/// old path and the new one; the new one is the key.
 fn parse_numstat(output: &str) -> std::collections::HashMap<String, (u32, u32)> {
     let mut map = std::collections::HashMap::new();
-    for line in output.lines() {
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() >= 3 {
-            let additions = parts[0].parse::<u32>().unwrap_or(0);
-            let deletions = parts[1].parse::<u32>().unwrap_or(0);
-            let path = parts[2..].join("\t");
-            let path = expand_rename_path(&path);
-            map.insert(path, (additions, deletions));
-        }
+    let mut fields = output.split('\0');
+    while let Some(field) = fields.next() {
+        let mut parts = field.splitn(3, '\t');
+        let (Some(additions), Some(deletions), Some(path)) =
+            (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let path = if path.is_empty() {
+            fields.next();
+            match fields.next() {
+                Some(new_path) => new_path,
+                None => break,
+            }
+        } else {
+            path
+        };
+        let additions = additions.parse::<u32>().unwrap_or(0);
+        let deletions = deletions.parse::<u32>().unwrap_or(0);
+        map.insert(path.to_string(), (additions, deletions));
     }
     map
 }
 
-fn unquote_porcelain(s: &str) -> String {
-    if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-        s[1..s.len() - 1].to_string()
-    } else {
-        s.to_string()
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::{parse_numstat, parse_porcelain_status};
 
-fn expand_rename_path(path: &str) -> String {
-    if let Some(brace_start) = path.find('{') {
-        if let Some(brace_end) = path.find('}') {
-            let prefix = &path[..brace_start];
-            let inner = &path[brace_start + 1..brace_end];
-            let suffix = &path[brace_end + 1..];
-            let new_name = inner.split(" => ").last().unwrap_or(inner);
-            return format!("{}{}{}", prefix, new_name, suffix);
-        }
+    #[test]
+    fn porcelain_paths_arrive_unquoted_and_renames_report_the_new_path() {
+        let output = "R  new name.txt\0old name.txt\0 M Привет.txt\0?? unt räcked.txt\0";
+
+        assert_eq!(
+            parse_porcelain_status(output),
+            vec![
+                (b'R', b' ', "new name.txt".to_string()),
+                (b' ', b'M', "Привет.txt".to_string()),
+                (b'?', b'?', "unt räcked.txt".to_string()),
+            ]
+        );
     }
-    if path.contains(" => ") {
-        path.split(" => ").last().unwrap_or(path).to_string()
-    } else {
-        path.to_string()
+
+    #[test]
+    fn numstat_keys_renames_by_their_new_path() {
+        let output = "0\t0\t\0old name.txt\0new name.txt\x001\t0\tПривет.txt\0-\t-\timage.png\0";
+
+        let stats = parse_numstat(output);
+
+        assert_eq!(stats.get("new name.txt"), Some(&(0, 0)));
+        assert_eq!(stats.get("Привет.txt"), Some(&(1, 0)));
+        assert_eq!(stats.get("image.png"), Some(&(0, 0)));
+        assert_eq!(stats.len(), 3);
     }
 }
