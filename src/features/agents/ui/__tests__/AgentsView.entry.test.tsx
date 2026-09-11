@@ -109,7 +109,6 @@ vi.mock("@/shared/api/agents", async (importOriginal) => ({
   ).previewPersonaImport,
   exportPersona: vi.fn(),
   importPersonas: vi.fn(),
-  readImportPersonaFile: vi.fn(),
   listPersonaSources: vi.fn().mockResolvedValue([mockDraftSource]),
   readAgentSourceFile: vi.fn().mockResolvedValue(mockDraftSource),
   updatePersonaSource: vi.fn().mockResolvedValue(mockDraftSource),
@@ -126,7 +125,6 @@ vi.mock("@/shared/api/agents", async (importOriginal) => ({
 
 vi.mock("@/shared/api/system", () => ({
   saveExportedAgentFile: vi.fn(),
-  saveExportedAgentImage: vi.fn(),
 }));
 
 vi.mock("sonner", () => ({

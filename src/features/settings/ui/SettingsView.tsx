@@ -25,9 +25,8 @@ interface SettingsViewProps {
 }
 
 // Rev 3 (Aug 10): "general" split into appearance/chat/system/about (see
-// settingsSections.ts for the full rationale). Security is now permanent --
-// no more securityMl gate at this level; SecuritySettings.tsx gates its own
-// ML rows internally.
+// settingsSections.ts for the full rationale). Security is permanent and
+// ungated.
 //
 // Rev 5 (Aug 19): "about" is no longer a routable section -- its content
 // (app identity, Account, and the embedded Updates card) moved into

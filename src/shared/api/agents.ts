@@ -294,10 +294,9 @@ function withoutBundledMarkerRecord(
  * survived the session and silently vanished on the next restart.
  *
  * So an operator-driven save takes ownership: the marker is stripped from the
- * write, the reseeder then treats the file as user-owned and never touches
- * it, and the explicit repair_bundled_agent command remains the way to
- * restore the shipped copy. Background/system writes must NOT use this —
- * a repair write does not make an agent the operator's.
+ * write, and the reseeder then treats the file as user-owned and never
+ * touches it. Background/system writes must NOT use this — a repair write
+ * does not make an agent the operator's.
  *
  * The marker can sit in two places depending on which reader produced the
  * bag: the backend and the direct file parser keep frontmatter keys verbatim
@@ -1302,10 +1301,6 @@ export async function refreshPersonas(): Promise<Persona[]> {
   return listPersonas();
 }
 
-export async function repairBundledAgent(fileName: string): Promise<void> {
-  await invoke("repair_bundled_agent", { fileName });
-}
-
 export interface ExportResult {
   contents: string;
   filename: string;
@@ -1478,22 +1473,6 @@ export async function readImportAgentFile(
   sourcePath: string,
 ): Promise<ImportBinaryFileReadResult> {
   return invoke<ImportBinaryFileReadResult>("read_import_agent_file", {
-    sourcePath,
-  });
-}
-
-export async function readImportAgentImage(
-  sourcePath: string,
-): Promise<ImportBinaryFileReadResult> {
-  return invoke<ImportBinaryFileReadResult>("read_import_agent_image", {
-    sourcePath,
-  });
-}
-
-export async function readImportPersonaFile(
-  sourcePath: string,
-): Promise<ImportFileReadResult> {
-  return invoke<ImportFileReadResult>("read_import_persona_file", {
     sourcePath,
   });
 }

@@ -73,11 +73,8 @@ type SettingsSectionDefinition = {
 // main. Keyboard shortcuts is also its own top-level section (see below),
 // so there's no link to it from "behavior" either.
 //
-// Security is now permanent (previously gated behind the whole-section
-// `securityMl` build flag). Trusted link domains -- previously buried in
-// General/Storage -- moved in as real, always-available content, so the
-// section isn't empty for people without the ML build flag. ML rows stay
-// gated *inside* the page, not at the nav level.
+// Security is permanent and ungated. It holds the trusted link domains --
+// previously buried in General/Storage.
 //
 // Doctor is not a settings section at all (rev 4): it opens as a dialog from
 // a row inside System instead of navigating anywhere. It was previously a

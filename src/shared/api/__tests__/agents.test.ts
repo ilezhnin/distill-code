@@ -72,17 +72,6 @@ describe("agents API", () => {
     mockedInvoke.mockReset();
   });
 
-  it("requests repair of a bundled agent", async () => {
-    mockedInvoke.mockResolvedValue(undefined);
-    const { repairBundledAgent } = await import("../agents");
-
-    await repairBundledAgent("berdy.md");
-
-    expect(mockedInvoke).toHaveBeenCalledWith("repair_bundled_agent", {
-      fileName: "berdy.md",
-    });
-  });
-
   it("lists personas through ACP agent sources", async () => {
     mockGooseSourcesList.mockResolvedValue({
       sources: [
@@ -1948,24 +1937,6 @@ Research carefully.
     );
     expect(mockGooseSourcesCreate).not.toHaveBeenCalled();
     expect(mockGooseSourcesImport).not.toHaveBeenCalled();
-  });
-
-  it("keeps native import file reads on the Tauri command", async () => {
-    mockedInvoke.mockResolvedValue({
-      fileContents: "{}",
-      fileName: "scout.agent.json",
-    });
-
-    const { readImportPersonaFile } = await import("../agents");
-    const result = await readImportPersonaFile("/tmp/scout.agent.json");
-
-    expect(mockedInvoke).toHaveBeenCalledWith("read_import_persona_file", {
-      sourcePath: "/tmp/scout.agent.json",
-    });
-    expect(result).toEqual({
-      fileContents: "{}",
-      fileName: "scout.agent.json",
-    });
   });
 
   it("reads and maps native agent source markdown files", async () => {

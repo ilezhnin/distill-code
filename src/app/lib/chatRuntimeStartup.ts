@@ -11,17 +11,11 @@ import { personaTargetMigration } from "@/features/agents/lib/personaExecutionTa
 import { useAgentSetupStore } from "@/features/providers/stores/agentSetupStore";
 import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
 import { useDistroStore } from "@/features/settings/stores/distroStore";
-import {
-  getClient,
-  setNotificationHandler,
-  setPermissionHandler,
-} from "@/shared/api/acpConnection";
-import { handleSecurityPermissionRequest } from "@/features/security/acp/securityPermissionHandler";
+import { getClient, setNotificationHandler } from "@/shared/api/acpConnection";
 import notificationHandler from "@/features/chat/acp/acpNotificationHandler";
 import { registerChatSessionConfigSnapshotHandlers } from "@/features/chat/acp/sessionConfigSnapshotAdapter";
 import { perfLog } from "@/shared/lib/perfLog";
 import { prefetchSessionLoadModules } from "@/features/chat/lib/sessionActivation";
-import { getBuildFeatureState } from "@/shared/profile/buildProfile";
 import { useRuntimeConfigStore } from "@/shared/runtime-config/runtimeConfigStore";
 
 let startupLatch: Promise<void> | null = null;
@@ -74,9 +68,6 @@ async function startChatRuntime(
   if (options.hydrateMessageQueues !== false) {
     const persistedMessageQueues = await loadPersistedMessageQueues();
     useChatStore.getState().replaceQueuedMessages(persistedMessageQueues);
-  }
-  if (getBuildFeatureState().securityMl) {
-    setPermissionHandler(handleSecurityPermissionRequest);
   }
 
   // The harness catalog is static. Publish it before waiting on the host so

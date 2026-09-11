@@ -14,9 +14,8 @@ const enabledCapabilities: ProfileCapabilityState = {
 // Rev 3 (Aug 10): rewritten for the appearance/behavior/system/about split.
 // "general" and "updates" are gone as real sections -- "general" resolves
 // to "appearance" via legacy redirect, "updates" redirects to "about"
-// (the update check now lives embedded there). Security is permanent now
-// (no securityMl-gated omission at the nav level -- SecuritySettings.tsx
-// gates its ML rows internally instead). Doctor is a hidden, routable
+// (the update check now lives embedded there). Security is permanent now,
+// with no gate at the nav level. Doctor is a hidden, routable
 // sub-page reached from a row inside System, not a nav destination.
 //
 // Rev 5 (Aug 19): "about" is gone as a section too -- both "about" and
@@ -64,10 +63,7 @@ describe("settingsSections", () => {
     expect(resolveSettingsSection("security")).toBe("security");
 
     // Security has no capability gate at the nav level -- it's always
-    // visible even when the caller's capability state has nothing to do
-    // with security ML. SecuritySettings.tsx itself gates the ML rows via
-    // getBuildFeatureState().securityMl, which is a build-time flag, not a
-    // capability, so it's not exercised by getVisibleSettingsSections.
+    // visible whatever the caller's capability state.
     expect(isSettingsSectionEnabled("security", enabledCapabilities)).toBe(
       true,
     );

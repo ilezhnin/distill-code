@@ -398,30 +398,8 @@
     "title": "Configuración de runtime"
   },
   "security": {
-    "commandClassifier": {
-      "description": "Analiza las llamadas a herramientas para detectar contenido malicioso con un clasificador de ML, con respaldo basado en patrones.",
-      "label": "Detección de inyección de comandos"
-    },
-    "description": "Protege contra ataques de inyección de instrucciones y de comandos.",
-    "managedByOrg": "Estas protecciones están gestionadas por tu organización y no se pueden desactivar.",
-    "promptInjection": {
-      "description": "Analiza el contexto de la conversación para detectar ataques de inyección de instrucciones. Usa clasificación basada en ML.",
-      "label": "Detección de inyección de instrucciones"
-    },
-    "status": {
-      "active": "Activo"
-    },
-    "threshold": {
-      "description": "El nivel de confianza al que una acción marcada te pedirá permitirla o bloquearla. Valores más bajos son más sensibles (más avisos); valores más altos son menos sensibles. Rango 0.0–1.0.",
-      "label": "Sensibilidad de detección",
-      "rangeError": "Ingresa un valor entre 0.0 y 1.0.",
-      "restartHint": "Los cambios surten efecto después de reiniciar Distill.",
-      "save": "Guardar",
-      "saveError": "No se pudo actualizar la sensibilidad de detección.",
-      "saved": "Sensibilidad de detección actualizada."
-    },
-    "title": "Seguridad",
-    "warpNotice": "La clasificación por ML requiere una conexión a WARP para acceder al servicio de clasificación."
+    "description": "Gestiona los dominios de enlaces en los que confías.",
+    "title": "Seguridad"
   },
   "stats": {
     "activeDays": "Días activos",

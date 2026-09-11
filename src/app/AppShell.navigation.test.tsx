@@ -47,7 +47,6 @@ const mockAcpCreateSession = vi.hoisted(() => vi.fn());
 const mockAcpPrepareSession = vi.hoisted(() => vi.fn());
 const mockAcpSetSessionConfigOption = vi.hoisted(() => vi.fn());
 const mockAcpListSessionsPage = vi.hoisted(() => vi.fn());
-const mockBuildFeatures = vi.hoisted(() => ({ byoKeyProviders: false }));
 const mockAcpArchiveSession = vi.hoisted(() => vi.fn());
 const mockAcpGetSessionInfo = vi.hoisted(() => vi.fn());
 const mockAcpLoadSession = vi.hoisted(() => vi.fn());
@@ -74,7 +73,6 @@ const mockListPersonaSources = vi.hoisted(() => vi.fn());
 const mockReadAgentSourceFile = vi.hoisted(() => vi.fn());
 const mockDeletePersonaSource = vi.hoisted(() => vi.fn());
 const mockListPersonas = vi.hoisted(() => vi.fn());
-const mockRepairBundledAgent = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
 const mockListenSessionDeepLinkErrors = vi.hoisted(() => vi.fn());
 const mockAfterNextPaint = vi.hoisted(() => ({
@@ -235,10 +233,6 @@ function setReadyRuntimeConfig(config: RuntimeConfig = DEFAULT_RUNTIME_CONFIG) {
   });
 }
 
-function requireByoDefaultProviderSetup() {
-  mockBuildFeatures.byoKeyProviders = true;
-}
-
 function selectCodexProvider() {
   useAgentStore.setState({
     providers: [
@@ -292,15 +286,6 @@ function seedProviderModels(
     ]),
   );
 }
-
-vi.mock("@/shared/profile/buildProfile", () => ({
-  getBuildFeatureState: () => ({
-    telemetry: true,
-    securityMl: true,
-    updater: true,
-    ...mockBuildFeatures,
-  }),
-}));
 
 const mockGetPlatform = vi.hoisted(() => vi.fn(() => "mac"));
 vi.mock("@/shared/lib/platform", () => ({
@@ -452,7 +437,6 @@ vi.mock("@/shared/api/agents", () => ({
   createPersonaSource: (...args: unknown[]) => mockCreatePersonaSource(...args),
   listPersonaSources: (...args: unknown[]) => mockListPersonaSources(...args),
   listPersonas: (...args: unknown[]) => mockListPersonas(...args),
-  repairBundledAgent: (...args: unknown[]) => mockRepairBundledAgent(...args),
   readAgentSourceFile: (...args: unknown[]) => mockReadAgentSourceFile(...args),
   deletePersonaSource: (...args: unknown[]) => mockDeletePersonaSource(...args),
   promotePersonaSource: vi.fn().mockResolvedValue(null),
@@ -650,7 +634,6 @@ describe("AppShell global navigation", () => {
     );
     window.history.replaceState(null, "", "/");
     window.localStorage.clear();
-    mockBuildFeatures.byoKeyProviders = false;
     mockGetPlatform.mockReturnValue("mac");
     mockDesignSystemExplorerEnabled.mockReturnValue(false);
     mockAfterNextPaint.callbacks = [];
@@ -752,8 +735,6 @@ describe("AppShell global navigation", () => {
     mockListPersonaSources.mockResolvedValue([]);
     mockListPersonas.mockReset();
     mockListPersonas.mockResolvedValue([]);
-    mockRepairBundledAgent.mockReset();
-    mockRepairBundledAgent.mockResolvedValue(undefined);
     mockReadAgentSourceFile.mockReset();
     mockReadAgentSourceFile.mockRejectedValue(new Error("not found"));
     mockDeletePersonaSource.mockReset();
@@ -955,7 +936,6 @@ describe("AppShell global navigation", () => {
   });
 
   it("allows a ready external ACP agent when the BYO default is missing", async () => {
-    requireByoDefaultProviderSetup();
     selectCodexProvider();
     mockIsExternalAgentReady.mockResolvedValue(true);
     mockAgentStatus.readyAgentIds = new Set(["claude-acp", "codex-acp"]);
@@ -1007,7 +987,6 @@ describe("AppShell global navigation", () => {
   });
 
   it("preserves the stored model for a ready external ACP agent", async () => {
-    requireByoDefaultProviderSetup();
     selectCodexProvider();
     mockAgentStatus.readyAgentIds = new Set(["codex-acp"]);
     window.localStorage.setItem(

@@ -1,10 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SettingsView } from "../SettingsView";
-
-let securityMlEnabled = true;
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -18,10 +16,6 @@ vi.mock("@/shared/api/acpConnection", () => ({}));
 
 vi.mock("@/shared/profile/capabilities", () => ({
   useProfileCapability: () => true,
-}));
-
-vi.mock("@/shared/profile/buildProfile", () => ({
-  getBuildFeatureState: () => ({ securityMl: securityMlEnabled }),
 }));
 
 vi.mock("../ProvidersSettings", () => ({
@@ -61,22 +55,10 @@ function renderSettingsView(
 }
 
 describe("SettingsView", () => {
-  afterEach(() => {
-    securityMlEnabled = true;
-  });
-
-  // Rev 3: Security is a permanent section now -- SettingsView no longer
-  // gates it on the securityMl build flag. SecuritySettings.tsx gates its
-  // own ML rows internally instead, which is out of scope for this mock.
-  it("renders security settings regardless of the security ML flag", () => {
+  it("renders security settings", () => {
     renderSettingsView();
 
     expect(screen.getByText("security.title")).toBeInTheDocument();
-
-    securityMlEnabled = false;
-    renderSettingsView();
-
-    expect(screen.getAllByText("security.title").length).toBeGreaterThan(0);
   });
 
   it("renders extensions inside the shared settings pane", () => {

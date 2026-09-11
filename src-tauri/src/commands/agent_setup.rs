@@ -765,14 +765,6 @@ pub fn start_agent_setup(
 }
 
 #[tauri::command]
-pub fn get_agent_setup_status(
-    registry: State<'_, AgentSetupRegistry>,
-    provider_id: String,
-) -> Option<SetupOperation> {
-    registry.get(&provider_id)
-}
-
-#[tauri::command]
 pub fn list_agent_setup_status(
     registry: State<'_, AgentSetupRegistry>,
 ) -> Vec<(String, SetupOperation)> {

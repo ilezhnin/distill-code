@@ -20,14 +20,12 @@ import { AGENT_SETUP_FAILURE_SIMULATION_KEY } from "@/features/providers/lib/age
 // transitions), so these tests assert the *plan* the card builds and the view
 // it renders from the store, not the in-card orchestration that used to exist.
 const startAgentSetup = vi.fn();
-const getAgentSetupStatus = vi.fn();
 const listAgentSetupStatus = vi.fn();
 const clearAgentSetupStatus = vi.fn();
 const onAgentSetupState = vi.fn();
 
 vi.mock("@/features/providers/api/agentSetup", () => ({
   startAgentSetup: (...args: unknown[]) => startAgentSetup(...args),
-  getAgentSetupStatus: (...args: unknown[]) => getAgentSetupStatus(...args),
   listAgentSetupStatus: (...args: unknown[]) => listAgentSetupStatus(...args),
   clearAgentSetupStatus: (...args: unknown[]) => clearAgentSetupStatus(...args),
   onAgentSetupState: (...args: unknown[]) => onAgentSetupState(...args),

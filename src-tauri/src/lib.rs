@@ -411,11 +411,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::agents::read_import_persona_file,
             commands::agents::read_import_agent_file,
-            commands::agents::read_import_agent_image,
             commands::agents::read_agent_source_file,
-            commands::agents::repair_bundled_agent,
             commands::avatars::get_avatar_library_snapshot,
             commands::avatars::refresh_avatar_cache,
             commands::avatars::get_cached_avatars_for_refs,
@@ -452,7 +449,6 @@ pub fn run() {
             commands::local_mcp_inventory::list_local_mcp_inventory,
             commands::notifications::show_completion_notification,
             commands::agent_setup::start_agent_setup,
-            commands::agent_setup::get_agent_setup_status,
             commands::agent_setup::list_agent_setup_status,
             commands::agent_setup::clear_agent_setup_status,
             commands::provider_rate_limits::get_provider_rate_limits,
@@ -465,11 +461,8 @@ pub fn run() {
             commands::runtime_config::set_fake_runtime_config,
             commands::runtime_config::clear_fake_runtime_config,
             commands::runtime_config::refresh_runtime_config,
-            commands::security_threshold::get_security_threshold,
-            commands::security_threshold::set_security_threshold,
             commands::system::get_home_dir,
             commands::system::save_exported_agent_file,
-            commands::system::save_exported_agent_image,
             commands::system::save_exported_session_file,
             commands::system::save_exported_session_files,
             commands::system::path_exists,
