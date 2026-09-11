@@ -648,5 +648,4 @@ describe("AgentProviderCard", () => {
     expect(await screen.findByText("Setup hit a snag.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
-
 });

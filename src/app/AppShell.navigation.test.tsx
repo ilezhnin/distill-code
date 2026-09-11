@@ -1,12 +1,6 @@
 import { getModelSelectionIntent } from "@/features/chat/model-selection/modelSelectionIntent";
 import { beginModelSelectionIntent } from "@/features/chat/model-selection/modelSelectionIntent";
-import {
-  act,
-  cleanup,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
@@ -1500,5 +1494,4 @@ describe("AppShell global navigation", () => {
     });
     expect(mockDeletePersonaSource).not.toHaveBeenCalled();
   });
-
 });
