@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import {
   IconFile,
   IconFileCode,
@@ -73,8 +74,15 @@ export function ArtifactsWidget({
   const artifacts = useSessionArtifacts();
   const { openInApp, openResolvedPath } = useArtifactActionsContext();
 
+  // The list is built from the transcript, so a file the agent later moved or
+  // deleted still has a row; say so instead of failing silently.
+  const reportOpenFailure = (artifact: SessionArtifact) => () => {
+    toast.error(t("artifactChips.openFailed", { name: artifact.filename }));
+  };
   const handleOpen = (artifact: SessionArtifact) => {
-    void openInApp(artifact.resolvedPath, artifact.filename);
+    void openInApp(artifact.resolvedPath, artifact.filename).catch(
+      reportOpenFailure(artifact),
+    );
   };
 
   if (artifacts.length === 0) {
@@ -102,7 +110,7 @@ export function ArtifactsWidget({
             path={artifact.resolvedPath}
             onOpenInViewer={
               isViewableArtifact(artifact.resolvedPath)
-                ? () => void openInApp(artifact.resolvedPath, artifact.filename)
+                ? () => handleOpen(artifact)
                 : undefined
             }
             onOpenExternally={
@@ -111,7 +119,9 @@ export function ArtifactsWidget({
               // everything else the primary click already opens externally.
               isViewableArtifact(artifact.resolvedPath)
                 ? () =>
-                    void openResolvedPath(artifact.resolvedPath).catch(() => {})
+                    void openResolvedPath(artifact.resolvedPath).catch(
+                      reportOpenFailure(artifact),
+                    )
                 : undefined
             }
           >

@@ -149,7 +149,6 @@ function shouldStageInitialTranscript(
 interface ChatViewProps {
   sessionId: string;
   activeSession?: ChatSession | null;
-  readOnlyStatus?: string;
   onCreatePersona?: () => void;
   onCreateProject?: (options?: {
     onCreated?: (projectId: string) => void;
@@ -175,7 +174,6 @@ interface ChatViewProps {
 export function ChatView({
   sessionId,
   activeSession,
-  readOnlyStatus,
   onCreatePersona,
   onCreateProject,
   onOpenProjectSettings,
@@ -219,7 +217,6 @@ export function ChatView({
   const { close: closeSearch } = search;
   const controller = useChatSessionController({
     sessionId,
-    readOnly: Boolean(readOnlyStatus),
     onCreatePersonaRequested: onCreatePersona,
     onWorkspaceNameRequest,
   });
@@ -303,15 +300,12 @@ export function ChatView({
     conductorNode?.role === "conductor" ||
     conductorNode?.role === "orchestrator" ||
     conductorChildren.length > 0;
-  const isReadOnly = Boolean(readOnlyStatus);
   // While the viewer panel is open it occupies row width much like the
   // sidebar occludes the viewport: include its floor allowance in the
   // compact-mode query so the right rail only docks when rail + viewer +
   // conversation genuinely fit side by side. Below that, the rail uses its
   // own compact overlay behavior instead of overflowing the row.
-  const agentBuilderOpenForLayout = isAgentBuilderVisible(effectiveSession, {
-    readOnly: isReadOnly,
-  });
+  const agentBuilderOpenForLayout = isAgentBuilderVisible(effectiveSession);
   const chatRowOcclusionPx =
     leftViewportOcclusionPx +
     (isSidePanelOpen ? SIDE_PANEL_RAIL_ALLOWANCE_PX : 0) +
@@ -335,7 +329,6 @@ export function ChatView({
   const contextVisible = isContextPanelVisible(
     effectiveSession,
     isRightRailOpen,
-    { readOnly: isReadOnly },
   );
 
   useEffect(() => {
@@ -649,8 +642,9 @@ export function ChatView({
         Boolean(controller.project?.name),
     },
   );
-  const onTimelineChangeFolder =
-    !isReadOnly && changeFolderSessionId ? handleChangeFolder : undefined;
+  const onTimelineChangeFolder = changeFolderSessionId
+    ? handleChangeFolder
+    : undefined;
 
   const showIndicator =
     controller.chatState === "thinking" ||
@@ -663,17 +657,6 @@ export function ChatView({
     | "waiting"
     | "compacting";
   const chatInputControls = useMemo<ChatInputControls | undefined>(() => {
-    if (isReadOnly) {
-      return {
-        agentModelPicker: false,
-        attachments: false,
-        autoFocus: false,
-        fileMentions: false,
-        projectPicker: false,
-        skills: false,
-      };
-    }
-
     if (!controller.skillsEnabled || composerHandoffActive) {
       return {
         ...(!controller.skillsEnabled ? { skills: false } : {}),
@@ -682,7 +665,7 @@ export function ChatView({
     }
 
     return undefined;
-  }, [composerHandoffActive, controller.skillsEnabled, isReadOnly]);
+  }, [composerHandoffActive, controller.skillsEnabled]);
   const shouldStageTranscript = shouldStageInitialTranscript(
     controller.messages,
     controller.isLoadingHistory,
@@ -815,7 +798,7 @@ export function ChatView({
     composerHandoffInProgress || controller.queue.queuedMessage !== null;
   const handleForkFromMessage = useCallback(
     (messageId: string) => {
-      if (isReadOnly || !effectiveSession?.id || !onForkChat) {
+      if (!effectiveSession?.id || !onForkChat) {
         return;
       }
 
@@ -829,7 +812,7 @@ export function ChatView({
 
       void onForkChat(effectiveSession.id, { conversationBefore });
     },
-    [controller.messages, effectiveSession?.id, isReadOnly, onForkChat],
+    [controller.messages, effectiveSession?.id, onForkChat],
   );
 
   // Only gate the first render for a session. Later live updates should stream
@@ -861,9 +844,7 @@ export function ChatView({
   }, [sessionId]);
 
   let sendDisabledReason: string | undefined;
-  if (readOnlyStatus) {
-    sendDisabledReason = readOnlyStatus;
-  } else if (effectiveSession?.creationState === "failed") {
+  if (effectiveSession?.creationState === "failed") {
     sendDisabledReason =
       effectiveSession.creationError ?? t("toolbar.sessionStartFailed");
   } else if (isAgentBuilderTargetFailed) {
@@ -872,34 +853,25 @@ export function ChatView({
 
   // The composer is owned by the timeline so it stays mounted across loading,
   // empty, and populated states without losing focus or draft text.
-  const footerStatus = composerHandoffActive ? null : readOnlyStatus ? (
-    <div
-      className={cn(
-        "chat-response-status-enter flex h-8 items-center gap-2 px-3 text-sm",
-        CHAT_RESPONDING_PILL_CLASS,
-      )}
-    >
-      <ActiveChatBerdIndicator size={14} />
-      <span>{readOnlyStatus}</span>
-    </div>
-  ) : shouldShowLoadingIndicator ? (
-    <AnimatePresence initial={false}>
-      <div
-        className={cn(
-          "chat-response-status-enter flex h-8 items-center gap-2 px-3",
-          CHAT_RESPONDING_PILL_CLASS,
-        )}
-      >
-        <ActiveChatBerdIndicator size={14} />
-        <LoadingBerd
-          key="loading-indicator"
-          chatState={loadingChatState}
-          className="mb-0 px-0"
-          motionPreset="responding"
-        />
-      </div>
-    </AnimatePresence>
-  ) : null;
+  const footerStatus =
+    !composerHandoffActive && shouldShowLoadingIndicator ? (
+      <AnimatePresence initial={false}>
+        <div
+          className={cn(
+            "chat-response-status-enter flex h-8 items-center gap-2 px-3",
+            CHAT_RESPONDING_PILL_CLASS,
+          )}
+        >
+          <ActiveChatBerdIndicator size={14} />
+          <LoadingBerd
+            key="loading-indicator"
+            chatState={loadingChatState}
+            className="mb-0 px-0"
+            motionPreset="responding"
+          />
+        </div>
+      </AnimatePresence>
+    ) : null;
 
   // ↑-to-edit: recall the text of the most recent user message in this session.
   const handleRecallLastUserMessage = useCallback((): string | null => {
@@ -948,8 +920,7 @@ export function ChatView({
               <p className="text-xs text-destructive" role="alert">
                 {controller.deferredWorkspaceError}
               </p>
-            ) : !isReadOnly &&
-              deferredWorkspaceStartup.worktreeCount > 0 &&
+            ) : deferredWorkspaceStartup.worktreeCount > 0 &&
               (workspaceSetup?.status === "choice" ||
                 workspaceSetup?.status === "naming" ||
                 workspaceSetup?.status === "creating") ? (
@@ -983,11 +954,9 @@ export function ChatView({
             onSteerQueuedMessage: controller.steerQueuedMessage,
             canSteerQueuedMessage: controller.canSteerQueuedMessage,
             disabled:
-              isReadOnly ||
               controller.projectMetadataPending ||
               controller.isCompactingContext,
             sendDisabled:
-              isReadOnly ||
               effectiveSession?.creationState === "failed" ||
               isAgentBuilderTargetFailed ||
               controller.workspaceSetupInProgress,
@@ -1012,7 +981,6 @@ export function ChatView({
             onEditQueue: controller.queue.beginEditing,
             onCancelQueueEdit: controller.queue.cancelEditing,
             onSendQueue:
-              !isReadOnly &&
               !controller.unresolvedDeferredSend &&
               (controller.deferredWorkspaceRecord?.state.status === "failed" ||
                 controller.deferredWorkspaceRecord?.state.status === "held") &&
@@ -1021,20 +989,16 @@ export function ChatView({
                 : undefined,
             onDismissQueue:
               composerHandoffInProgress ||
-              isReadOnly ||
               controller.deferredWorkspaceRecord?.state.status === "creating" ||
               controller.deferredWorkspaceRecord?.state.status === "naming"
                 ? undefined
                 : controller.queue.dismiss,
-            onStop: isReadOnly ? undefined : controller.stopStreaming,
+            onStop: controller.stopStreaming,
             isStreaming:
-              !isReadOnly &&
-              (controller.chatState === "streaming" ||
-                controller.chatState === "thinking"),
+              controller.chatState === "streaming" ||
+              controller.chatState === "thinking",
           }}
-          onRecallLastUserMessage={
-            isReadOnly ? undefined : handleRecallLastUserMessage
-          }
+          onRecallLastUserMessage={handleRecallLastUserMessage}
           attachmentDropTargetRef={conversationDropTargetRef}
           onAttachmentDragOverChange={setConversationAttachmentDragOver}
           initialValue={controller.draftValue}
@@ -1145,15 +1109,11 @@ export function ChatView({
       onScrollTargetHandled={controller.handleScrollTargetHandled}
       searchContentRef={transcriptSearchRootRef}
       searchBackendRef={transcriptSearchBackendRef}
-      onRunShellCommand={
-        !isReadOnly && terminalAvailable ? handleRunShellCommand : undefined
-      }
+      onRunShellCommand={terminalAvailable ? handleRunShellCommand : undefined}
       onEditProject={onOpenProjectSettings}
       onChangeFolder={onTimelineChangeFolder}
       onOpenContextPanel={handleOpenContextPanel}
-      onForkFromMessage={
-        !isReadOnly && onForkChat ? handleForkFromMessage : undefined
-      }
+      onForkFromMessage={onForkChat ? handleForkFromMessage : undefined}
       showPlaceholder={showTimelineLoading}
       placeholder={conversationPlaceholder}
       footer={composerFooter}
@@ -1399,7 +1359,6 @@ export function ChatView({
                 ?.path ?? effectiveSession?.workingDir
             }
             contextVisible={contextVisible}
-            agentBuilderReadOnly={isReadOnly}
             agentBuilderChatCollapsed={isAgentBuilderChatCollapsed}
             builderRailSeparatorProps={builderRailSeparatorProps}
             onExpandAgentBuilderChat={toggleAgentBuilderChat}

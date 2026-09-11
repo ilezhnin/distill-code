@@ -23,6 +23,7 @@ import {
 } from "@/shared/ui/alert-dialog";
 import { Button, buttonVariants } from "@/shared/ui/button";
 import { cn } from "@/shared/lib/cn";
+import { isSamePath } from "@/shared/lib/pathIdentity";
 import { SIDEBAR_MENU_HOVER_TRANSITION_CLASS } from "@/shared/ui/sidebar-tokens";
 import type { GitState } from "@/shared/types/git";
 import type { ActiveWorkspace } from "../../stores/chatSessionStore";
@@ -53,14 +54,6 @@ function worktreeName(fullPath: string): string {
 
 function normalizeComparablePath(path: string) {
   return path.replace(/\\/g, "/").replace(/\/+$/, "");
-}
-
-function isSamePath(
-  a: string | null | undefined,
-  b: string | null | undefined,
-): boolean {
-  if (!a || !b) return false;
-  return normalizeComparablePath(a) === normalizeComparablePath(b);
 }
 
 function includesSearch(value: string | null | undefined, query: string) {

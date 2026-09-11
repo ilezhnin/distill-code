@@ -6,6 +6,7 @@ import { useGitState } from "@/shared/hooks/useGitState";
 import { useChangedFiles } from "@/shared/hooks/useChangedFiles";
 import { useHomeDir } from "@/shared/hooks/useHomeDir";
 import { usePersistedState } from "@/shared/hooks/usePersistedState";
+import { toIdentityKey } from "@/shared/lib/pathIdentity";
 import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import {
   createBranch,
@@ -135,13 +136,12 @@ function uniquePaths(paths: Array<string | null | undefined>): string[] {
   );
 }
 
+// Git reports worktree paths with forward slashes and its own drive-letter
+// case, while session and event paths keep whatever spelling they came in
+// with; compare filesystem identities, not strings.
 function normalizeComparablePath(path: string | null | undefined) {
   if (!path) return null;
-  let normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
-  if (normalized.startsWith("/private/var/")) {
-    normalized = normalized.replace(/^\/private\/var\//, "/var/");
-  }
-  return normalized;
+  return toIdentityKey(path);
 }
 
 export function ContextPanelWorktreeTracker({

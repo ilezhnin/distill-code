@@ -41,7 +41,6 @@ interface ChatRightRailProps {
   builderColumnStyle?: CSSProperties;
   sessionWorkingDir?: string | null;
   contextVisible: boolean;
-  agentBuilderReadOnly?: boolean;
   /**
    * When editing an agent, whether the chat column is collapsed so the builder
    * takes the full surface. Owned by ChatView as per-session view state.
@@ -88,7 +87,6 @@ export const ChatRightRail = forwardRef<HTMLDivElement, ChatRightRailProps>(
       builderColumnStyle,
       sessionWorkingDir,
       contextVisible,
-      agentBuilderReadOnly = false,
       agentBuilderChatCollapsed = false,
       builderRailSeparatorProps,
       onExpandAgentBuilderChat,
@@ -127,7 +125,6 @@ export const ChatRightRail = forwardRef<HTMLDivElement, ChatRightRailProps>(
     const dockingTimerRef = useRef<number | null>(null);
     const [isDockingFromOverlay, setIsDockingFromOverlay] = useState(false);
     const agentBuilderVisible =
-      !agentBuilderReadOnly &&
       session?.intent === "build-agent" &&
       session.agentBuilderOpen !== false;
     const railTerminalDocked =

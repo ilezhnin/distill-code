@@ -5,6 +5,11 @@ import { ArtifactChips } from "../ArtifactChips";
 
 const mockOpenInApp = vi.fn().mockResolvedValue(undefined);
 const mockOpenResolvedPath = vi.fn().mockResolvedValue(undefined);
+const mockToastError = vi.hoisted(() => vi.fn());
+
+vi.mock("sonner", () => ({
+  toast: { error: mockToastError },
+}));
 
 vi.mock("@/features/chat/hooks/ArtifactPolicyContext", () => ({
   useArtifactActionsContext: () => ({
@@ -23,6 +28,7 @@ describe("ArtifactChips", () => {
   beforeEach(() => {
     mockOpenInApp.mockClear();
     mockOpenResolvedPath.mockClear();
+    mockToastError.mockClear();
   });
 
   it("renders nothing when there are no artifacts", () => {
@@ -44,6 +50,19 @@ describe("ArtifactChips", () => {
 
     await user.click(screen.getByRole("button", { name: /open report\.md/i }));
     expect(mockOpenInApp).toHaveBeenCalledWith("/p/report.md", "report.md");
+  });
+
+  it("reports a chip whose file can no longer be opened", async () => {
+    const user = userEvent.setup();
+    mockOpenInApp.mockRejectedValueOnce(new Error("File not found"));
+    render(<ArtifactChips artifacts={[target("/p/gone.md")]} />);
+
+    await user.click(screen.getByRole("button", { name: /open gone\.md/i }));
+    await vi.waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith(
+        expect.stringContaining("gone.md"),
+      );
+    });
   });
 
   it("still offers a chip for files auto-open ignores (screenshots, machinery)", () => {

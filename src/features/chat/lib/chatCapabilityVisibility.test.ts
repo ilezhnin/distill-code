@@ -28,13 +28,4 @@ describe("chat capability visibility", () => {
       ),
     ).toBe(true);
   });
-
-  it("suppresses Agent Builder and uses ordinary Context state when read-only", () => {
-    expect(isAgentBuilderVisible(builderSession, { readOnly: true })).toBe(
-      false,
-    );
-    expect(
-      isContextPanelVisible(builderSession, true, { readOnly: true }),
-    ).toBe(true);
-  });
 });

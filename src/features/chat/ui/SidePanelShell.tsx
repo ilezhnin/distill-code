@@ -1,6 +1,7 @@
 import { motion, useIsPresent, useReducedMotion } from "motion/react";
 import {
   useCallback,
+  useEffect,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -97,6 +98,11 @@ export function SidePanelShell({
   // Enter animation finished: hand layout back to flexbox (yielding), and
   // let the content fill the rendered width instead of holding the target.
   const [entered, setEntered] = useState(false);
+  // Ends the drag in progress, if any. Held so an unmount mid-drag (the panel
+  // closed from the keyboard, the surface swapped) still releases the window
+  // listeners and the body cursor.
+  const endResizeRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => endResizeRef.current?.(), []);
   const settled = entered && isPresent;
   const autoSplit = !fillWorkspace && widthIsAuto(width);
   const usesFlexSize = fillWorkspace || autoSplit;
@@ -106,6 +112,7 @@ export function SidePanelShell({
       if (event.button !== 0 && event.button !== undefined) return;
       event.preventDefault();
       event.stopPropagation();
+      endResizeRef.current?.();
       setIsResizing(true);
       const startX = Number.isFinite(event.clientX) ? event.clientX : 0;
       // Drag from the rendered width (which may be flex-squeezed below the
@@ -122,15 +129,21 @@ export function SidePanelShell({
       const cleanup = () => {
         window.removeEventListener("pointermove", handlePointerMove);
         window.removeEventListener("pointerup", cleanup);
+        window.removeEventListener("pointercancel", cleanup);
         window.removeEventListener("blur", cleanup);
+        if (endResizeRef.current === cleanup) endResizeRef.current = null;
         setIsResizing(false);
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
       };
+      endResizeRef.current = cleanup;
       document.body.style.cursor = "col-resize";
       document.body.style.userSelect = "none";
       window.addEventListener("pointermove", handlePointerMove);
       window.addEventListener("pointerup", cleanup, { once: true });
+      // A pen or touch drag the OS takes over ends in pointercancel, with no
+      // pointerup to follow.
+      window.addEventListener("pointercancel", cleanup, { once: true });
       window.addEventListener("blur", cleanup);
     },
     [width, setWidth],
