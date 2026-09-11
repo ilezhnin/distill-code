@@ -5,19 +5,17 @@
 #                           (CFBundleShortVersionString garbles pre-release/+build
 #                           suffixes, so this stays strictly numeric).
 #   BERD_APP_VERSION_RICH  the most descriptive version string available, for
-#                           telemetry and agent context; may carry a
+#                           agent context; may carry a
 #                           `-dev.<commits>+g<sha>` suffix on non-release builds.
 #
 # Consume with:  eval "$(scripts/resolve-app-version.sh)"
 #
 # Precedence:
-#   1. Explicit override — first arg, else $BERD_APP_VERSION_OVERRIDE. The
-#      release pipeline owns the version, so it can pass the operator-entered
-#      value straight through.
+#   1. Explicit override — first arg, else $BERD_APP_VERSION_OVERRIDE, passed
+#      straight through for a build that must carry a specific version.
 #   2. git describe --tags — the latest vX.Y.Z tag. When the build is ahead of
 #      or dirty against that tag, patch-bump (Z+1) and append the dev suffix so a
-#      locally built bundle reads as NEWER than the last release. This is what
-#      makes the installer-media upgrade prompt testable from a local build.
+#      locally built bundle reads as NEWER than the last release.
 #   3. package.json version — shallow/no-git checkouts and source tarballs, where
 #      `git describe` has nothing to work with.
 

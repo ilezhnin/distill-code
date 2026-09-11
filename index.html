@@ -74,7 +74,6 @@
             normalizeHexColor(localStorage.getItem("goose-primary-color")) ||
             getDefaultAccent(resolvedTheme);
           const foreground = getContrastColor(accent);
-          const density = localStorage.getItem("goose-density") || "comfortable";
 
           root.classList.add(resolvedTheme === "dark" ? "dark" : "light");
           root.style.colorScheme = resolvedTheme === "dark" ? "dark" : "light";
@@ -83,9 +82,6 @@
           root.style.setProperty("--color-brand", accent);
           root.style.setProperty("--color-brand-foreground", foreground);
           root.style.accentColor = accent;
-          if (density === "compact" || density === "spacious") {
-            root.dataset.density = density;
-          }
 
           const isDark = resolvedTheme === "dark";
           // Pre-stylesheet paint: keep in sync with --canvas-base and

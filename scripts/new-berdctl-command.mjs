@@ -273,7 +273,7 @@ Scaffolded \`berdctl ${noun} ${verb}\` (${group}.${verb}). Authored work left:
      registry.ts, the noun table in tree.rs (TOP_LEVEL_LONG_ABOUT — its pin
      is EXPECTED_TOP_LEVEL_HELP in src-tauri/crates/berdctl/src/main.rs,
      refreshed via dump_rendered_help_for_pin_update), and — if the
-     one-paragraph overview changes — distro/skills/berdctl/SKILL.md
+     one-paragraph overview changes — distro/skills/berd-help/references/berdctl.md
   4. Re-run \`pnpm generate:berdctl-contract\` after schema edits
 
 Reviewer checklist (from .agents/skills/berdctl-new-command/SKILL.md):
