@@ -30,8 +30,6 @@ Thumbs.db
 .scratch/
 .docker-cache/
 .docker-home/
-avatar-manifest.json
-project-artifacts-manifest.json
 resources/bb
 # Legacy staged ACP bundle dir; bridges now install at runtime from the npm
 # registry onto the managed Node runtime. Kept ignored so stale staged trees
