@@ -199,6 +199,10 @@ function New-BerdTemporaryFile {
 # would print "cargo build berdctl", finish the build, and then sit forever with
 # no output. Starting with -PassThru but no -Wait and joining on the process
 # handle waits for that process only.
+# Every `Start-Process -PassThru` call site reads `$process.Handle` right
+# after starting: .NET only records the exit code for a Process object that
+# holds its handle, and without it ExitCode comes back $null, which every
+# `-ne 0` check then reads as a failure (CI lost the MSVC environment to it).
 function Wait-ForProcessExit {
     param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
     $Process.WaitForExit()
@@ -220,6 +224,7 @@ function Invoke-CaptureCommand {
     try {
         $arguments = Join-WindowsProcessArguments $ArgumentList
         $process = Start-Process -FilePath $FilePath -ArgumentList $arguments -WorkingDirectory $WorkingDirectory -PassThru -NoNewWindow -RedirectStandardOutput $stdout.FullName -RedirectStandardError $stderr.FullName
+        $null = $process.Handle
         Wait-ForProcessExit -Process $process | Out-Null
         $output = @()
         if (Test-Path $stdout.FullName) {
@@ -257,9 +262,11 @@ function Invoke-CheckedCommand {
     if ([System.IO.Path]::GetExtension($FilePath) -ieq ".cmd" -or [System.IO.Path]::GetExtension($FilePath) -ieq ".bat") {
         $command = "`"$FilePath`" $(Join-WindowsProcessArguments $ArgumentList)"
         $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/d /s /c `"$command`"" -WorkingDirectory $WorkingDirectory -PassThru -NoNewWindow
+        $null = $process.Handle
     } else {
         $arguments = Join-WindowsProcessArguments $ArgumentList
         $process = Start-Process -FilePath $FilePath -ArgumentList $arguments -WorkingDirectory $WorkingDirectory -PassThru -NoNewWindow
+        $null = $process.Handle
     }
     Wait-ForProcessExit -Process $process | Out-Null
     if ($process.ExitCode -ne 0) {
@@ -304,6 +311,7 @@ function Invoke-WindowsChildScript {
 
     Write-WindowsDevInfo $Label
     $process = Start-Process -FilePath $shell -ArgumentList (Join-WindowsProcessArguments $shellArgs) -PassThru -NoNewWindow
+    $null = $process.Handle
     Wait-ForProcessExit -Process $process | Out-Null
     if ($process.ExitCode -ne 0) {
         throw "$Label failed with exit code $($process.ExitCode)."
@@ -1146,6 +1154,7 @@ function Initialize-MsvcEnvironment {
         $command = "set VSCMD_SKIP_SENDTELEMETRY=1 && call `"$vsDevCmd`" -no_logo -arch=$arch -host_arch=$arch >nul && set > `"$($environmentFile.FullName)`""
         $arguments = "/d /s /c `"$command`""
         $process = Start-Process cmd.exe -ArgumentList $arguments -PassThru -NoNewWindow
+        $null = $process.Handle
         Wait-ForProcessExit -Process $process | Out-Null
         if ($process.ExitCode -ne 0) {
             return $false
