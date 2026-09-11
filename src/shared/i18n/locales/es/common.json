@@ -73,11 +73,6 @@
       "openDownloads": "Abrir Descargas",
       "openDownloadsError": "No se pudo abrir Descargas."
     },
-    "messageBranch": {
-      "next": "Siguiente rama",
-      "page": "{{current}} de {{total}}",
-      "previous": "Rama anterior"
-    },
     "plan": {
       "toggle": "Alternar plan"
     }

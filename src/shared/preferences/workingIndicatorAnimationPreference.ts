@@ -12,8 +12,6 @@ const workingIndicatorAnimationPreference = createBooleanLocalStoragePreference(
   },
 );
 
-export const getWorkingIndicatorAnimationEnabled =
-  workingIndicatorAnimationPreference.get;
 export const setWorkingIndicatorAnimationEnabled =
   workingIndicatorAnimationPreference.set;
 export const useWorkingIndicatorAnimationPreference =

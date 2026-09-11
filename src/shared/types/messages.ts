@@ -304,17 +304,8 @@ export interface Message {
 export function isTextContent(c: MessageContent): c is TextContent {
   return c.type === "text";
 }
-export function isImageContent(c: MessageContent): c is ImageContent {
-  return c.type === "image";
-}
 export function isToolRequest(c: MessageContent): c is ToolRequestContent {
   return c.type === "toolRequest";
-}
-export function isToolResponse(c: MessageContent): c is ToolResponseContent {
-  return c.type === "toolResponse";
-}
-export function isMcpApp(c: MessageContent): c is McpAppContent {
-  return c.type === "mcpApp";
 }
 export function isThinking(c: MessageContent): c is ThinkingContent {
   return c.type === "thinking";

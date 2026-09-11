@@ -88,10 +88,6 @@ export function setAutoArchiveAfter(value: AutoArchiveAfter): void {
   persistAutoArchivePreference(value, true);
 }
 
-export function resetAutoArchiveAfter(): void {
-  persistAutoArchivePreference(DEFAULT_AUTO_ARCHIVE_AFTER, false);
-}
-
 const listeners = new Set<() => void>();
 let removeWindowListeners: (() => void) | undefined;
 

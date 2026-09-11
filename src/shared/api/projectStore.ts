@@ -23,9 +23,6 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { isDesktopRuntime } from "./distillStore";
 
-/** The folder these documents live in, inside the project. */
-export const PROJECT_STORE_DIR = ".distill";
-
 export async function readProjectDocument(
   projectRoot: string,
   path: string,

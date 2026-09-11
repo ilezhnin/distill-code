@@ -115,12 +115,6 @@ export function writeAssistiveUxState(nextState: StoredAssistiveUxState): void {
   }
 }
 
-export function resetAssistiveUxMoment(id: AssistiveUxMomentId): void {
-  const state = readAssistiveUxState();
-  const { [id]: _removed, ...moments } = state.moments;
-  writeAssistiveUxState({ ...state, moments });
-}
-
 export function updateAssistiveUxMoment(
   id: AssistiveUxMomentId,
   update: (

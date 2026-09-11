@@ -149,5 +149,3 @@ export function summarizeToolChainSteps(
     kind,
   };
 }
-
-export const TOOL_CHAIN_ACTIVE_TITLE_KEY = ACTIVE_TITLE_KEY;

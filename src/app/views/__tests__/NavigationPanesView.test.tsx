@@ -18,7 +18,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { INITIAL_SESSION_CHAT_RUNTIME } from "@/shared/types/chat";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { setSidebarGroupChatsByProjectEnabled } from "@/features/sidebar/lib/sidebarChatGroupingPreference";
-import { SIDEBAR_GIT_BRANCH_SUBTITLE_STORAGE_KEY } from "@/features/sidebar/lib/sidebarBranchSubtitlePreference";
 import { useRuntimeConfigStore } from "@/shared/runtime-config/runtimeConfigStore";
 import {
   DEFAULT_RUNTIME_CONFIG,
@@ -405,7 +404,10 @@ describe("NavigationPanesView", () => {
   });
 
   it("ignores the retired Git branch subtitle preference", async () => {
-    localStorage.setItem(SIDEBAR_GIT_BRANCH_SUBTITLE_STORAGE_KEY, "true");
+    localStorage.setItem(
+      "distill:sidebar:git-branch-subtitles-enabled",
+      "true",
+    );
     mockGetGitState.mockResolvedValue({
       isGitRepo: true,
       currentBranch: "feature/sidebar-branch",

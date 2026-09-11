@@ -2,7 +2,6 @@ import {
   TRANSCRIPT_AUTO_SCROLL_THRESHOLD_PX,
   TRANSCRIPT_PINNED_BOTTOM_THRESHOLD_PX,
 } from "../transcript/virtual/transcriptVirtualTypes";
-import type { Message } from "@/shared/types/messages";
 
 export const TIMELINE_AUTO_SCROLL_THRESHOLD_PX =
   TRANSCRIPT_AUTO_SCROLL_THRESHOLD_PX;
@@ -129,32 +128,4 @@ export function shouldShowTimelineJumpToLatest({
     getTimelineRealContentDistanceFromBottom({ metrics, bottomPaddingPx }) >
     TIMELINE_JUMP_TO_LATEST_CONTENT_THRESHOLD_PX
   );
-}
-
-export function getTimelineTurnKeyForStreamingMessage({
-  messages,
-  streamingMessageId,
-}: {
-  messages: readonly Message[];
-  streamingMessageId: string | null | undefined;
-}): string | null {
-  if (!streamingMessageId) {
-    return null;
-  }
-
-  const streamingIndex = messages.findIndex(
-    (message) => message.id === streamingMessageId,
-  );
-  if (streamingIndex < 0) {
-    return streamingMessageId;
-  }
-
-  for (let index = streamingIndex - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role === "user") {
-      return message.id;
-    }
-  }
-
-  return streamingMessageId;
 }

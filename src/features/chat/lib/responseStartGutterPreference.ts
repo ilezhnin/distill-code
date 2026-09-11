@@ -11,7 +11,5 @@ const responseStartGutterPreference = createBooleanLocalStoragePreference({
   defaultValue: false,
 });
 
-export const getResponseStartGutterEnabled = responseStartGutterPreference.get;
-export const setResponseStartGutterEnabled = responseStartGutterPreference.set;
 export const useResponseStartGutterPreference =
   responseStartGutterPreference.useValue;

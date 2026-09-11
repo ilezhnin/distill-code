@@ -202,15 +202,6 @@ export function flushPlannerWrites(): Promise<void> {
   return document.flush();
 }
 
-/** Test seam: forces the store back to its pre-hydration state. */
-export function resetPlannerHydrationForTests(): void {
-  usePlannerStore.setState({
-    tasks: [],
-    appliedMessageIds: [],
-    hydrated: false,
-  });
-}
-
 /** Trims to the bound, oldest completed first, then oldest open. */
 export function capTasks(tasks: PlannerTask[]): PlannerTask[] {
   if (tasks.length <= MAX_PLANNER_TASKS) return tasks;

@@ -296,9 +296,7 @@ const componentPageDescriptions: Partial<Record<string, string>> = {
     "Top-level command menus with keyboard navigation, nested groups, shortcuts, and selected states.",
   "Navigation Menu":
     "Structured navigation primitives for larger destination sets and nested menus.",
-  "Page Columns":
-    "Two-column page structure for detail and settings screens that need adjustable balance.",
-  "Detail Page Shell":
+  "Page Shell":
     "Detail-page framing for back navigation, headers, metadata, and main content.",
   Pagination:
     "Paged navigation controls with active, previous, next, and overflow affordances.",
@@ -2539,17 +2537,7 @@ const componentPreviewRenderers: Record<string, () => React.ReactNode> = {
       </NavigationMenuList>
     </NavigationMenu>
   ),
-  "Page Columns": () => (
-    <div className="grid w-80 grid-cols-[110px_1fr] gap-3 rounded-md border border-border p-3">
-      <div className="rounded-md bg-muted p-3 text-xs text-muted-foreground">
-        Sidebar
-      </div>
-      <div className="rounded-md bg-card p-3 text-xs text-muted-foreground">
-        Content
-      </div>
-    </div>
-  ),
-  "Detail Page Shell": () => (
+  "Page Shell": () => (
     <PageHeader
       eyebrow={<Badge variant="outline">Detail</Badge>}
       title="Agent profile"
@@ -4674,12 +4662,8 @@ function NavigationMenuPage() {
   return <GenericComponentPage name="Navigation Menu" />;
 }
 
-function PageColumnsPage() {
-  return <GenericComponentPage name="Page Columns" />;
-}
-
-function DetailPageShellPage() {
-  return <GenericComponentPage name="Detail Page Shell" />;
+function PageShellPage() {
+  return <GenericComponentPage name="Page Shell" />;
 }
 
 function PaginationPage() {
@@ -5595,10 +5579,8 @@ function renderSection(section: DesignSystemSection) {
       return <MenubarPage />;
     case "component-navigation-menu":
       return <NavigationMenuPage />;
-    case "component-page-columns":
-      return <PageColumnsPage />;
-    case "component-detail-page-shell":
-      return <DetailPageShellPage />;
+    case "component-page-shell":
+      return <PageShellPage />;
     case "component-pagination":
       return <PaginationPage />;
     case "component-popover":

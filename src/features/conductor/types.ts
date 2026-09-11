@@ -127,5 +127,4 @@ export interface StructuredReport {
   operatorIntervened?: boolean;
 }
 
-export const CONDUCTOR_CHAT_TITLE = "Conductor";
 export const DEFAULT_ORCHESTRATOR_NAME = "Atlas";

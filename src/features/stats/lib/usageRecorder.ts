@@ -75,48 +75,6 @@ export function recordLiveTokenState(
   });
 }
 
-export function recordPromptResponseUsage(
-  sessionId: string,
-  usage:
-    | {
-        inputTokens?: number | null;
-        outputTokens?: number | null;
-        totalTokens?: number | null;
-        cachedReadTokens?: number | null;
-        cachedWriteTokens?: number | null;
-      }
-    | null
-    | undefined,
-  providerId?: string | null,
-): void {
-  if (!usage) return;
-  const inputTokens = usage.inputTokens ?? 0;
-  const outputTokens = usage.outputTokens ?? 0;
-  const cacheTokens =
-    (usage.cachedReadTokens ?? 0) + (usage.cachedWriteTokens ?? 0);
-  const totalTokens =
-    usage.totalTokens ?? inputTokens + outputTokens + cacheTokens;
-  if (
-    inputTokens <= 0 &&
-    outputTokens <= 0 &&
-    cacheTokens <= 0 &&
-    totalTokens <= 0
-  ) {
-    return;
-  }
-  recordSessionTokens(
-    sessionId,
-    {
-      inputTokens,
-      outputTokens,
-      cacheTokens,
-      totalTokens,
-      turnsDelta: 1,
-    },
-    providerId ? { providerId } : undefined,
-  );
-}
-
 export function syncConductorNodesIntoUsageLedger(
   nodes: ReadonlyArray<{
     sessionId: string;

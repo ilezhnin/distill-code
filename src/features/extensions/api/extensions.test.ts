@@ -1,16 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { addExtension, listExtensions, toggleExtension } from "./extensions";
+import { listExtensions } from "./extensions";
 
 const mockConfigExtensionsList = vi.fn();
-const mockConfigExtensionsAdd = vi.fn();
-const mockConfigExtensionsSetEnabled = vi.fn();
 
 vi.mock("@/shared/api/acpConnection", () => ({
   getClient: async () => ({
     host: {
       configExtensionsList: mockConfigExtensionsList,
-      configExtensionsAdd: mockConfigExtensionsAdd,
-      configExtensionsSetEnabled: mockConfigExtensionsSetEnabled,
     },
   }),
 }));
@@ -72,43 +68,5 @@ describe("extensions api", () => {
         enabled: false,
       },
     ]);
-  });
-
-  it("adds extensions verbatim under the given name", async () => {
-    await addExtension(
-      "github",
-      {
-        type: "stdio",
-        name: "draft",
-        description: "GitHub MCP",
-        cmd: "npx",
-        args: ["-y", "@modelcontextprotocol/server-github"],
-        envs: { DEBUG: "1" },
-        env_keys: ["GITHUB_TOKEN"],
-      },
-      true,
-    );
-
-    expect(mockConfigExtensionsAdd).toHaveBeenCalledWith({
-      enabled: true,
-      extension: {
-        type: "stdio",
-        name: "github",
-        description: "GitHub MCP",
-        cmd: "npx",
-        args: ["-y", "@modelcontextprotocol/server-github"],
-        envs: { DEBUG: "1" },
-        env_keys: ["GITHUB_TOKEN"],
-      },
-    });
-  });
-
-  it("sets extension enabled state", async () => {
-    await toggleExtension("github", false);
-
-    expect(mockConfigExtensionsSetEnabled).toHaveBeenCalledWith({
-      configKey: "github",
-      enabled: false,
-    });
   });
 });

@@ -1,5 +1,4 @@
 export const BERD_LOADER_FRAME_COUNT = 5;
-export const BERD_LOADER_FRAME_PX = 16;
 
 /** One full pass through the Distill loader frames (startup screen). */
 export const BERD_LOADER_LOOP_MS = BERD_LOADER_FRAME_COUNT * 160;

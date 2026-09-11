@@ -18,7 +18,6 @@ export interface RoleDefinition {
 
 export const DEFAULT_CONDUCTOR_ROLE_ID = "producer";
 export const DEFAULT_ORCHESTRATOR_ROLE_ID = "planner";
-export const DEFAULT_WORKER_ROLE_ID = "brigade";
 
 export const ROLE_CATALOG: readonly RoleDefinition[] = [
   {

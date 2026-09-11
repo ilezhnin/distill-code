@@ -59,25 +59,6 @@ export function PageShell({
   );
 }
 
-export function DetailPageShell({
-  children,
-  className,
-  contentClassName,
-  contentWidth = "default",
-  showBottomFade = true,
-}: ShellProps) {
-  return (
-    <PageScrollFrame
-      className={className}
-      contentClassName={contentClassName}
-      contentWidth={contentWidth}
-      showBottomFade={showBottomFade}
-    >
-      {children}
-    </PageScrollFrame>
-  );
-}
-
 function PageScrollFrame({
   children,
   className,
@@ -198,20 +179,6 @@ export function PageHeader({
           {actions}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-export function FilterRow({
-  children,
-  className,
-}: {
-  children: ReactNode;
-  className?: string;
-}) {
-  return (
-    <div className={cn("flex flex-wrap items-center gap-2", className)}>
-      {children}
     </div>
   );
 }

@@ -51,10 +51,7 @@ export function isPlaceholderAgentName(name: string): boolean {
 // @/shared/api/agents, which needs it for create/update/export — this module
 // only imports a *type* from there (erased at build time), so re-exporting
 // its values here doesn't create a real circular dependency.
-export {
-  hasRealAgentDescription,
-  isPlaceholderAgentDescription,
-} from "@/shared/api/agents";
+export { hasRealAgentDescription } from "@/shared/api/agents";
 
 export function isEmptyPlaceholderDraft(source: AgentSourceEntry): boolean {
   const builderSessionId =
