@@ -17,7 +17,11 @@ vi.mock("@/shared/api/distillStore", () => ({
   writeDistillDocument: mocks.writeDistillDocument,
 }));
 
-import { distillDocument, DISTILL_WRITE_DEBOUNCE_MS } from "../distillDocument";
+import {
+  corruptCopyPath,
+  DISTILL_WRITE_DEBOUNCE_MS,
+  distillDocument,
+} from "../distillDocument";
 
 interface Doc {
   items: string[];
@@ -94,10 +98,38 @@ describe("distillDocument on the desktop", () => {
     await expect(doc().read()).resolves.toEqual({ items: ["current"] });
   });
 
-  it("survives a document that is not JSON at all", async () => {
+  it("survives a document that is not JSON at all, keeping a copy", async () => {
     mocks.readDistillDocument.mockResolvedValue("}{ broken");
 
     await expect(doc().read()).resolves.toBeNull();
+    // The next write replaces planner.json; the unparseable text is kept.
+    expect(mocks.writeDistillDocument).toHaveBeenCalledWith(
+      expect.stringMatching(/^planner\.corrupt-\d+\.json$/),
+      "}{ broken",
+    );
+  });
+
+  it("does not start from empty when the corrupt copy cannot be kept", async () => {
+    mocks.readDistillDocument.mockResolvedValue("}{ broken");
+    mocks.writeDistillDocument.mockRejectedValue(new Error("read-only"));
+
+    await expect(doc().read()).rejects.toThrow("read-only");
+  });
+
+  it("rejects when the folder cannot be read, rather than reading empty", async () => {
+    // An empty result would let the store's next write replace the file.
+    mocks.readDistillDocument.mockRejectedValue(new Error("sharing violation"));
+    window.localStorage.setItem("distill:planner", '{"items":["stale"]}');
+
+    await expect(doc().read()).rejects.toThrow("sharing violation");
+    expect(mocks.writeDistillDocument).not.toHaveBeenCalled();
+  });
+
+  it("names the corrupt copy beside the original", () => {
+    expect(corruptCopyPath("planner.json", 42)).toBe("planner.corrupt-42.json");
+    expect(corruptCopyPath("conductor/graph.json", 7)).toBe(
+      "conductor/graph.corrupt-7.json",
+    );
   });
 
   it("coalesces a burst of writes into one", async () => {
