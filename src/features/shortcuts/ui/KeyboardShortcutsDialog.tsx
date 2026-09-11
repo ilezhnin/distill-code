@@ -5,7 +5,6 @@ import {
   useShortcutPreferences,
 } from "@/features/shortcuts/lib/shortcutRegistry";
 import { keyboardShortcutDisplayParts } from "@/shared/keyboard/keyboardShortcut";
-import { getPlatform } from "@/shared/lib/platform";
 import {
   Dialog,
   DialogContent,
@@ -25,7 +24,6 @@ export function KeyboardShortcutsDialog({
   onOpenChange,
 }: KeyboardShortcutsDialogProps) {
   const { t } = useTranslation("shortcuts");
-  const isMac = getPlatform() === "mac";
   // Subscribe to shortcut preferences so override changes while the dialog
   // is open re-render the resolved groups.
   void useShortcutPreferences();
@@ -56,7 +54,7 @@ export function KeyboardShortcutsDialog({
                     <span className="flex shrink-0 items-center gap-1">
                       {keyboardShortcutDisplayParts(
                         shortcut.shortcut,
-                        isMac,
+                        false,
                       ).map((part) => (
                         <Kbd key={part}>{part}</Kbd>
                       ))}
