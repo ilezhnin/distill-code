@@ -11,7 +11,6 @@ import { toast } from "sonner";
 import { KeyboardShortcutsDialog } from "@/features/shortcuts/ui/KeyboardShortcutsDialog";
 import { eventMatchesShortcutCommand } from "@/features/shortcuts/lib/shortcutRegistry";
 import { useShortcutsDialogStore } from "@/features/shortcuts/stores/shortcutsDialogStore";
-import { prefetchProjectArtifactRenderer } from "@/features/projects/artifact/prefetchProjectArtifactRenderer";
 import { getPlatform, type Platform } from "@/shared/lib/platform";
 import {
   archiveProject,
@@ -940,10 +939,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   }, [fetchProjects]);
 
   useEffect(() => {
-    void prefetchProjectArtifactRenderer();
-  }, []);
-
-  useEffect(() => {
     if (
       !activeSessionId ||
       !activeSessionWindowLabel ||
@@ -975,13 +970,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     if (activeView !== "settings" && activeView !== "design-system") {
       lastNonSecondaryViewRef.current = activeView;
     }
-  }, [activeView]);
-
-  useEffect(() => {
-    if (activeView === "home") {
-      return;
-    }
-    void prefetchProjectArtifactRenderer();
   }, [activeView]);
 
   useEffect(() => {
