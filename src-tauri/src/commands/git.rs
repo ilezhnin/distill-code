@@ -919,6 +919,11 @@ fn validate_worktree_name(value: &str) -> Result<String, String> {
     if worktree_name.contains('/') || worktree_name.contains('\\') {
         return Err("Worktree name cannot contain path separators".to_string());
     }
+    // `C:name` is drive-relative on Windows: joining it replaces the base
+    // path, so the worktree would land outside `<repo>-worktrees`.
+    if worktree_name.contains(':') {
+        return Err("Worktree name cannot contain ':'".to_string());
+    }
     Ok(worktree_name)
 }
 
@@ -1083,6 +1088,26 @@ mod tests {
         assert_eq!(
             main_worktree_path,
             Some(normalize_path_string(&current_root))
+        );
+    }
+
+    #[test]
+    fn worktree_names_cannot_leave_the_worktrees_folder() {
+        for name in [
+            "",
+            ".",
+            "..",
+            "a/b",
+            "a\\b",
+            "C:evil",
+            "C:\\evil",
+            "name:stream",
+        ] {
+            assert!(validate_worktree_name(name).is_err(), "accepted {name:?}");
+        }
+        assert_eq!(
+            validate_worktree_name(" feature-x ").as_deref(),
+            Ok("feature-x")
         );
     }
 
