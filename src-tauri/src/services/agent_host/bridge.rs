@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
 
@@ -178,8 +178,9 @@ impl Bridge {
         if let Some(stderr) = stderr {
             let harness = spec.id.to_string();
             tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
+                let mut reader = BufReader::new(stderr);
+                let mut buf = Vec::new();
+                while let Some(line) = next_line_lossy(&mut reader, &mut buf).await {
                     log::info!("[{harness}] {line}");
                 }
             });
@@ -191,8 +192,9 @@ impl Bridge {
             let pending = Arc::clone(&pending);
             let alive = Arc::clone(&alive);
             tokio::spawn(async move {
-                let mut lines = BufReader::new(stdout).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
+                let mut reader = BufReader::new(stdout);
+                let mut buf = Vec::new();
+                while let Some(line) = next_line_lossy(&mut reader, &mut buf).await {
                     if line.trim().is_empty() {
                         continue;
                     }
@@ -367,6 +369,26 @@ pub fn error_text(error: &Value) -> String {
     }
 }
 
+/// The next line of a bridge pipe, or `None` at end of stream. Bytes that
+/// are not UTF-8 (a Windows tool writing in the OEM code page) are replaced
+/// rather than ending the stream: `lines()` stops at the first such line,
+/// which on stdout cut the bridge off as if it had exited and on stderr
+/// stopped draining the pipe until the bridge blocked writing to it.
+async fn next_line_lossy<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+) -> Option<String> {
+    buf.clear();
+    match reader.read_until(b'\n', buf).await {
+        Ok(0) | Err(_) => None,
+        Ok(_) => Some(
+            String::from_utf8_lossy(buf.as_slice())
+                .trim_end_matches(['\r', '\n'])
+                .to_string(),
+        ),
+    }
+}
+
 fn truncate(text: &str, max: usize) -> &str {
     match text.char_indices().nth(max) {
         Some((index, _)) => &text[..index],
@@ -377,4 +399,27 @@ fn truncate(text: &str, max: usize) -> &str {
 /// Executable presence check used by the provider inventory.
 pub fn is_installed(spec: &HarnessSpec, env: &SpawnEnv) -> bool {
     resolve_executable(spec.command, &env.prepend_dirs, path_value(&env.shell_env)).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_line_that_is_not_utf8_does_not_end_the_stream() {
+        let bytes: &[u8] = b"{\"a\":1}\r\n\xcf\xf0\xe8\n{\"b\":2}";
+        let mut reader = BufReader::new(bytes);
+        let mut buf = Vec::new();
+        assert_eq!(
+            next_line_lossy(&mut reader, &mut buf).await.as_deref(),
+            Some("{\"a\":1}")
+        );
+        let garbled = next_line_lossy(&mut reader, &mut buf).await;
+        assert!(garbled.is_some_and(|line| line.contains('\u{fffd}')));
+        assert_eq!(
+            next_line_lossy(&mut reader, &mut buf).await.as_deref(),
+            Some("{\"b\":2}")
+        );
+        assert_eq!(next_line_lossy(&mut reader, &mut buf).await, None);
+    }
 }
