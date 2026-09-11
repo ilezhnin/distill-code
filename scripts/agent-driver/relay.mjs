@@ -104,8 +104,15 @@ export function resolveExecutable(
   env = process.env,
   platform = process.platform,
 ) {
-  const pathExt = (env.PATHEXT ?? "").split(";").filter(Boolean);
-  const extensions = platform === "win32" ? ["", ...pathExt] : [""];
+  // Windows cannot execute an extensionless file, yet npm drops one next to
+  // every `.cmd` shim (a bash script for Git Bash). Trying the bare name first
+  // picked that script for `pnpm` and the spawn failed with ENOENT, so on
+  // Windows only the PATHEXT forms count unless the name already carries one.
+  const pathExt = (env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .filter(Boolean);
+  const extensions =
+    platform !== "win32" || path.extname(name) !== "" ? [""] : pathExt;
   for (const dir of (env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
     for (const ext of extensions) {
       const candidate = path.join(dir, name + ext);

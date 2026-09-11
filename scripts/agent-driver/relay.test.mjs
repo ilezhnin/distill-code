@@ -17,6 +17,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import net from "node:net";
@@ -95,6 +96,22 @@ describe("resolveCwd", () => {
 describe("resolveExecutable", () => {
   it("finds a real binary on PATH", () => {
     assert.ok(resolveExecutable("node", process.env, process.platform));
+  });
+
+  it("prefers the .cmd shim over npm's extensionless bash script on Windows", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "relay-exe-"));
+    try {
+      writeFileSync(path.join(dir, "pnpm"), "#!/bin/sh\n");
+      writeFileSync(path.join(dir, "pnpm.cmd"), "@echo off\r\n");
+      // Lower-case: the test also runs on case-sensitive file systems.
+      const env = { PATH: dir, PATHEXT: ".exe;.cmd" };
+      assert.equal(
+        resolveExecutable("pnpm", env, "win32"),
+        path.join(dir, "pnpm.cmd"),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("returns null for something that is not there", () => {
