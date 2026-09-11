@@ -737,7 +737,7 @@ export function WorkspaceAddDialog({
   onIncludeCreatedWorktree,
 }: WorkspaceAddDialogProps) {
   const { t } = useTranslation(["chat", "common"]);
-  const closeLabel = t("labels.close", { ns: "common" });
+  const closeLabel = t("actions.close", { ns: "common" });
   const isProjectContext = context === "project";
   const dialogTitle =
     title ??
