@@ -443,8 +443,14 @@ fn transcript_messages(events: &[Value]) -> Vec<Value> {
             continue;
         };
         let meta = update.get("_meta").and_then(|meta| meta.get("distill"));
-        let message_id = meta
-            .and_then(|meta| meta.get("messageId"))
+        // A reply carries its own id next to the prompt's; older history
+        // stamped agent chunks with the prompt's id only.
+        let own_id = match role {
+            "assistant" => meta.and_then(|meta| meta.get("assistantMessageId")),
+            _ => None,
+        };
+        let message_id = own_id
+            .or_else(|| meta.and_then(|meta| meta.get("messageId")))
             .and_then(Value::as_str)
             .map(str::to_string)
             .unwrap_or_else(|| format!("{role}-{}", messages.len()));
@@ -470,4 +476,81 @@ fn transcript_messages(events: &[Value]) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chunk(kind: &str, text: &str, distill: Value) -> Value {
+        json!({
+            "sessionId": "s1",
+            "update": {
+                "sessionUpdate": kind,
+                "content": { "type": "text", "text": text },
+                "_meta": { "distill": distill },
+            }
+        })
+    }
+
+    #[test]
+    fn a_reply_is_its_own_message_when_it_carries_an_assistant_id() {
+        let events = [
+            chunk("user_message_chunk", "hi", json!({ "messageId": "u1" })),
+            chunk(
+                "agent_message_chunk",
+                "hel",
+                json!({ "messageId": "u1", "assistantMessageId": "a1" }),
+            ),
+            chunk(
+                "agent_message_chunk",
+                "lo",
+                json!({ "messageId": "u1", "assistantMessageId": "a1" }),
+            ),
+            chunk("user_message_chunk", "again", json!({ "messageId": "u2" })),
+            chunk(
+                "agent_message_chunk",
+                "ok",
+                json!({ "messageId": "u2", "assistantMessageId": "a2" }),
+            ),
+        ];
+        let messages = transcript_messages(&events);
+        let summary: Vec<(String, String, String)> = messages
+            .iter()
+            .map(|message| {
+                (
+                    message["id"].as_str().unwrap_or_default().to_string(),
+                    message["role"].as_str().unwrap_or_default().to_string(),
+                    message["content"][0]["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                )
+            })
+            .collect();
+        let expected: Vec<(String, String, String)> = [
+            ("u1", "user", "hi"),
+            ("a1", "assistant", "hello"),
+            ("u2", "user", "again"),
+            ("a2", "assistant", "ok"),
+        ]
+        .iter()
+        .map(|(id, role, text)| (id.to_string(), role.to_string(), text.to_string()))
+        .collect();
+        assert_eq!(summary, expected);
+    }
+
+    #[test]
+    fn older_history_without_an_assistant_id_still_folds_by_the_prompt_id() {
+        let events = [
+            chunk("user_message_chunk", "hi", json!({ "messageId": "u1" })),
+            chunk("agent_message_chunk", "a", json!({ "messageId": "u1" })),
+            chunk("agent_message_chunk", "b", json!({ "messageId": "u1" })),
+        ];
+        let messages = transcript_messages(&events);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["id"], "u1");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[1]["content"][0]["text"], "ab");
+    }
 }
