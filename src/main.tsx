@@ -1,3 +1,4 @@
+import "@/app/lib/legacyStorageMigration";
 import {
   focusManager,
   QueryClient,
@@ -26,23 +27,6 @@ import "@xterm/xterm/css/xterm.css";
 import "@/shared/styles/globals.css";
 
 document.title = "Distill";
-
-// One-time cleanup of retired onboarding state from previous builds, and the
-// rename of every persisted preference from the goose-era `goose:` prefix.
-try {
-  localStorage.removeItem("berd:onboarding:v1");
-  for (const key of Object.keys(localStorage)) {
-    if (!key.startsWith("distill:") && !key.startsWith("goose.")) continue;
-    const renamed = `distill${key.slice("goose".length)}`;
-    const value = localStorage.getItem(key);
-    if (value !== null && localStorage.getItem(renamed) === null) {
-      localStorage.setItem(renamed, value);
-    }
-    localStorage.removeItem(key);
-  }
-} catch {
-  // localStorage may be unavailable in some environments; ignore.
-}
 
 // React Query's default focus detection relies on `visibilitychange`, which
 // the Tauri webview does not fire when the app window merely loses or regains

@@ -3,7 +3,7 @@
  *
  * Enabled when any of the following is true:
  *   - Running under Vite dev (`import.meta.env.DEV`)
- *   - `localStorage.getItem("goose.perf") === "1"`
+ *   - `localStorage.getItem("distill.perf") === "1"`
  *
  * Otherwise a no-op, so perf call sites add zero runtime cost in release
  * builds for users who have not opted in.
@@ -26,7 +26,7 @@ function isEnabled(): boolean {
   try {
     if (
       typeof localStorage !== "undefined" &&
-      localStorage.getItem("goose.perf") === "1"
+      localStorage.getItem("distill.perf") === "1"
     ) {
       return true;
     }
