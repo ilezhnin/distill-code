@@ -65,9 +65,9 @@ if ($Debug) {
 }
 $features = Get-BerdAppFeatures -BaseFeatures $baseFeatures
 
-# Build the config overlay. Keep main's bundle target and updater controls;
-# debug bundles also fold in the base config with devtools enabled. Write
-# without a BOM: Tauri's serde --config parsing rejects BOM-prefixed JSON.
+# Build the config overlay: the version and bundle target; debug bundles also
+# fold in the base config with devtools enabled. Write without a BOM: Tauri's
+# serde --config parsing rejects BOM-prefixed JSON.
 $configPath = Join-Path ([System.IO.Path]::GetTempPath()) ("berd-tauri-{0}.{1}.json" -f ($(if ($Debug) { "debug" } else { "version" }), [System.IO.Path]::GetRandomFileName()))
 if ($Debug) {
     if ($Bundle -ne "nsis") {
