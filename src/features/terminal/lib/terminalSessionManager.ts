@@ -462,6 +462,15 @@ export class TerminalSession {
           return;
         }
 
+        // The event channel is not ordered against the invoke reply: a shell
+        // that dies at once can deliver `started` and `exited` first. Only a
+        // session still starting takes the id here, so a dead shell is not
+        // reported as running (and runCommand restarts it instead of writing
+        // into the void).
+        if (this.statusValue !== "starting") {
+          return;
+        }
+
         this.terminalId = terminalId;
         this.setStatus("running", "start");
         this.scheduleFitAndResize();
