@@ -442,20 +442,6 @@
       "factConductor": "Waves planned on {{model}}: {{accepted}} of {{waves}} accepted"
     }
   },
-  "securityConfirmation": {
-    "allow": "Allow once",
-    "backgroundChat": "From chat: {{title}}",
-    "backgroundChatUnknown": "From another chat",
-    "block": "Block",
-    "commandLabel": "Flagged command",
-    "description": "This action was flagged as a potential security risk. Review the details below before deciding whether to allow it.",
-    "detectionConfidence": "Detection confidence",
-    "findingId": "Finding ID: {{id}}",
-    "inferenceFailed": "An explanation could not be generated. Review the command carefully before allowing it.",
-    "inferredLabel": "Why this may have been flagged (inferred)",
-    "inferring": "Analyzing why this was flagged…",
-    "title": "Security alert"
-  },
   "storage": {
     "cachedMedia": {
       "clear": "Clear cached media",

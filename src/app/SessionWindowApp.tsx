@@ -41,8 +41,6 @@ import { BackgroundQueuedMessageDrain } from "@/features/chat/ui/BackgroundQueue
 import { useWorkspaceNameRequestQueue } from "@/features/chat/hooks/useWorkspaceNameRequestQueue";
 import { ProjectWorkspaceStartupNameDialog } from "@/features/projects/ui/ProjectWorkspaceStartupNameDialog";
 import { Button } from "@/shared/ui/button";
-import { SecurityConfirmationFallback } from "@/features/security/ui/SecurityConfirmationPanel";
-import { useSecurityConfirmationStore } from "@/features/security/stores/securityConfirmationStore";
 
 type Phase = "loading" | "mirror" | "recoverable" | "ready" | "missing";
 
@@ -187,16 +185,6 @@ export function SessionWindowApp({
     }
     setRightRailOpen(nextOpen);
   }, [isContextVisible, isReadOnly, session, setRightRailOpen]);
-
-  useEffect(() => {
-    const cancelPendingOnWindowClose = () => {
-      useSecurityConfirmationStore.getState().cancelAll(sessionId);
-    };
-    window.addEventListener("beforeunload", cancelPendingOnWindowClose);
-    return () => {
-      window.removeEventListener("beforeunload", cancelPendingOnWindowClose);
-    };
-  }, [sessionId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -456,7 +444,6 @@ export function SessionWindowApp({
         onSkip={() => submitWorkspaceNameRequest(null)}
         onSubmit={submitWorkspaceNameRequest}
       />
-      <SecurityConfirmationFallback />
     </>
   );
 }

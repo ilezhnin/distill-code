@@ -6,7 +6,6 @@ import { ThemeProvider } from "@/shared/theme/ThemeProvider";
 
 const mocks = vi.hoisted(() => ({
   appShellRender: vi.fn(),
-  securityConfirmationFallbackRender: vi.fn(),
 }));
 
 vi.mock("@/app/AppShell", () => ({
@@ -18,13 +17,6 @@ vi.mock("@/app/AppShell", () => ({
 
 vi.mock("@/app/ui/SelectedTextContextMenu", () => ({
   SelectedTextContextMenu: () => null,
-}));
-
-vi.mock("@/features/security/ui/SecurityConfirmationPanel", () => ({
-  SecurityConfirmationFallback: () => {
-    mocks.securityConfirmationFallbackRender();
-    return null;
-  },
 }));
 
 vi.mock("@/shared/ui/sonner", () => ({
@@ -61,11 +53,10 @@ describe("App", () => {
     expect(drop.defaultPrevented).toBe(true);
   });
 
-  it("mounts the app shell and the security confirmation fallback", () => {
+  it("mounts the app shell", () => {
     renderApp();
 
     expect(screen.getByText("App Shell")).toBeInTheDocument();
     expect(mocks.appShellRender).toHaveBeenCalled();
-    expect(mocks.securityConfirmationFallbackRender).toHaveBeenCalled();
   });
 });
