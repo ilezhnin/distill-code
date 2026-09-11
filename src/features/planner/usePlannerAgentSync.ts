@@ -22,6 +22,11 @@ function drainPlannerFences(): void {
   // recursive in principle — the tombstone makes a second pass find nothing —
   // but the conductor's graph sync taught us not to rely on that in
   // principle, so nested entry is dropped outright.
+  // Not before the stored list is read. Until then the filed tombstones are
+  // empty, so every fence in every cached transcript looks new and a task
+  // completed long ago would be filed again. The drain runs again when the
+  // read lands.
+  if (!usePlannerStore.getState().hydrated) return;
   if (draining) return;
   draining = true;
   try {
@@ -47,8 +52,17 @@ function drainPlannerFences(): void {
 export function usePlannerAgentSync(): void {
   useEffect(() => {
     drainPlannerFences();
-    return useChatStore.subscribe(() => {
+    const stopWatchingMessages = useChatStore.subscribe(() => {
       drainPlannerFences();
     });
+    const stopWatchingHydration = usePlannerStore.subscribe(
+      (state, previous) => {
+        if (state.hydrated && !previous.hydrated) drainPlannerFences();
+      },
+    );
+    return () => {
+      stopWatchingMessages();
+      stopWatchingHydration();
+    };
   }, []);
 }

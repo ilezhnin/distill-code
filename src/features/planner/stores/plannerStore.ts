@@ -192,9 +192,27 @@ const document = distillDocument<PlannerState>({
 export async function hydratePlannerStore(): Promise<void> {
   if (usePlannerStore.getState().hydrated) return;
   const stored = await document.read();
-  usePlannerStore.setState(
-    stored ?? { tasks: [], appliedMessageIds: [], hydrated: true },
-  );
+  const current = usePlannerStore.getState();
+  // A second hydration raced this one and already landed.
+  if (current.hydrated) return;
+  const base = stored ?? { tasks: [], appliedMessageIds: [], hydrated: true };
+  // A task added before the read landed joins the stored list instead of
+  // being replaced by it.
+  const storedIds = new Set(base.tasks.map((task) => task.id));
+  const next: PlannerState = {
+    tasks: capTasks([
+      ...base.tasks,
+      ...current.tasks.filter((task) => !storedIds.has(task.id)),
+    ]),
+    appliedMessageIds: [
+      ...new Set([...base.appliedMessageIds, ...current.appliedMessageIds]),
+    ].slice(-MAX_APPLIED_MESSAGE_IDS),
+    hydrated: true,
+  };
+  usePlannerStore.setState(next);
+  if (current.tasks.length > 0 || current.appliedMessageIds.length > 0) {
+    document.write(next);
+  }
 }
 
 /** Waits for a queued write to land. For tests and for shutdown. */
@@ -223,14 +241,19 @@ function commit(
   tasks: PlannerTask[],
   appliedMessageIds: string[],
 ): PlannerState {
+  // The flag is carried, never raised, here. Raising it on any write made
+  // the first change before the read landed mark the store as read: the
+  // hydration then skipped the document, and the next write replaced the
+  // stored list with that one change.
+  const hydrated = usePlannerStore.getState().hydrated;
   const next = {
     tasks: capTasks(tasks),
     appliedMessageIds: appliedMessageIds.slice(-MAX_APPLIED_MESSAGE_IDS),
-    hydrated: true,
+    hydrated,
   };
   // Never before the read lands: an empty list written over a full one during
   // startup would delete the operator's tasks, and they would not know why.
-  if (usePlannerStore.getState().hydrated) document.write(next);
+  if (hydrated) document.write(next);
   return next;
 }
 

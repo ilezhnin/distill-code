@@ -4,17 +4,8 @@ import { useShallow } from "zustand/react/shallow";
 import { History } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
-import {
-  sessionActivityAt,
-  sessionNeedsWindowHandoff,
-} from "@/features/chat/lib/sessionActivity";
+import { sessionActivityAt } from "@/features/chat/lib/sessionActivity";
 import { getDisplaySessionTitle } from "@/features/chat/lib/sessionTitle";
-import {
-  focusSessionWindow,
-  openSessionWindow,
-} from "@/features/chat/lib/sessionWindowCommands";
-import { useSessionWindowSupport } from "@/features/chat/hooks/useSessionWindowSupport";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import { cn } from "@/shared/lib/cn";
 import { BottomFade } from "@/shared/ui/BottomFade";
 import { Button } from "@/shared/ui/button";
@@ -164,9 +155,6 @@ export function SessionHistoryView({
   );
   const loadMoreSessions = useChatSessionStore((s) => s.loadMoreSessions);
   const removeSession = useChatSessionStore((s) => s.removeSession);
-  const sessionWindowSupport = useSessionWindowSupport();
-  const isMultiWindowEnabled = sessionWindowSupport.supported;
-  const openSessions = useSessionWindowStore((s) => s.openSessions);
   const loadMoreInFlightRef = useRef(false);
   const [scope, setScope] = useState<SessionScope>("active");
   const [view, setView] = useState<SessionListView>(readStoredView);
@@ -791,33 +779,6 @@ export function SessionHistoryView({
     [activeSessions, defaultSessionTitle, getDisplayTitle, removeSession],
   );
 
-  const handleOpenInWindow = useCallback(
-    (sessionId: string) => {
-      const isOpenInWindow =
-        sessionId in useSessionWindowStore.getState().openSessions;
-      const runtime = useChatStore.getState().sessionStateById[sessionId];
-      const needsHandoff = runtime ? sessionNeedsWindowHandoff(runtime) : false;
-      const action = isOpenInWindow
-        ? () => focusSessionWindow(sessionId)
-        : () => openSessionWindow(sessionId, { handoff: needsHandoff });
-
-      void action().catch((error) => {
-        console.error(
-          isOpenInWindow
-            ? "Failed to focus session window:"
-            : "Failed to open session window:",
-          error,
-        );
-        toast.error(
-          t(
-            isOpenInWindow ? "card.focusWindowFailed" : "card.openWindowFailed",
-          ),
-        );
-      });
-    },
-    [t],
-  );
-
   const handleMarkSelectedRead = useCallback(() => {
     const markSessionRead = useChatStore.getState().markSessionRead;
     selectedSessionIds.forEach(markSessionRead);
@@ -939,12 +900,6 @@ export function SessionHistoryView({
           onArchiveSelected={requestArchiveSelected}
           onExport={handleExport}
           onExportSelected={handleExportSelected}
-          onOpenInWindow={
-            isMultiWindowEnabled && !session.archivedAt
-              ? handleOpenInWindow
-              : undefined
-          }
-          isOpenInWindow={isMultiWindowEnabled && session.id in openSessions}
           onMarkSelectedRead={handleMarkSelectedRead}
           onMarkSelectedUnread={handleMarkSelectedUnread}
         />
@@ -964,15 +919,12 @@ export function SessionHistoryView({
       clearSelection,
       handleExport,
       handleExportSelected,
-      handleOpenInWindow,
       handleMarkSelectedRead,
       handleMarkSelectedUnread,
-      isMultiWindowEnabled,
       handleSelectResult,
       isApplyingSelectionAction,
       onRenameChat,
       onSelectSession,
-      openSessions,
       selectedCount,
       selectedSessionIds,
       toggleSessionSelection,

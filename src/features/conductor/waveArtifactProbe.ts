@@ -96,24 +96,51 @@ export function artifactPathsOf(
   return paths;
 }
 
+/** A URI scheme — two characters or more, so `C://x` stays a drive path. */
+const URI_SCHEME_PATTERN = /^[a-z][a-z0-9+.-]+:\/\//i;
+
+/**
+ * True when `path_exists` can give an honest answer about this path.
+ *
+ * The backend asks the filesystem about the string as given: it does not
+ * expand `~`, and a URI is not a file on this disk. Asking about either can
+ * only come back "missing", and a missing artifact refuses the conductor's
+ * `accept` — so a verifier that cited its CI run by URL, or a home-relative
+ * note, was accused of naming files that do not exist. Such paths are not
+ * checked at all rather than checked wrongly.
+ */
+export function isCheckableArtifactPath(reported: string): boolean {
+  const path = reported.trim();
+  if (!path) return false;
+  if (path.startsWith("~")) return false;
+  return !URI_SCHEME_PATTERN.test(path);
+}
+
 /**
  * Resolve a reported path the way a worker meant it.
  *
  * Workers write repository-relative paths because that is what they see. An
- * absolute path, a `~` path, or a URI is left alone: the first two are already
- * answerable, and the third is not this check's business.
+ * absolute path — POSIX, a Windows drive path, a UNC or root-relative Windows
+ * path — a `~` path, or a URI is left alone: the absolute ones are already
+ * answerable, and the others are not this check's business. A trailing
+ * `:line` or `:line:col` (how workers cite a place in a file) is dropped:
+ * no Windows file name can contain a colon, so it never names the file.
  */
 export function resolveArtifactPath(
   reported: string,
   workingDir: string | undefined,
 ): string {
-  const path = reported.trim();
+  const trimmed = reported.trim();
+  const path = URI_SCHEME_PATTERN.test(trimmed)
+    ? trimmed
+    : trimmed.replace(/^(.+?):\d+(?::\d+)?$/, "$1");
   if (!workingDir) return path;
   if (
     path.startsWith("/") ||
+    path.startsWith("\\") ||
     path.startsWith("~") ||
     /^[A-Za-z]:[\\/]/.test(path) ||
-    /^[a-z][a-z0-9+.-]*:\/\//i.test(path)
+    URI_SCHEME_PATTERN.test(path)
   ) {
     return path;
   }
@@ -153,7 +180,7 @@ export function startWaveArtifactProbe(args: {
 }): boolean {
   if (inFlightProbes.has(args.waveId)) return true;
   if (!io.canProbe()) return false;
-  const paths = artifactPathsOf(args.reports);
+  const paths = artifactPathsOf(args.reports).filter(isCheckableArtifactPath);
   if (paths.length === 0) return false;
 
   inFlightProbes.add(args.waveId);

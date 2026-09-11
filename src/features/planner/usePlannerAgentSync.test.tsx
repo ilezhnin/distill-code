@@ -43,7 +43,11 @@ function putMessages(sessionId: string, messages: Message[]) {
 describe("usePlannerAgentSync", () => {
   beforeEach(() => {
     window.localStorage.clear();
-    usePlannerStore.setState({ tasks: [], appliedMessageIds: [] });
+    usePlannerStore.setState({
+      tasks: [],
+      appliedMessageIds: [],
+      hydrated: true,
+    });
     useChatStore.setState({ messagesBySession: {} });
   });
 
@@ -80,6 +84,23 @@ describe("usePlannerAgentSync", () => {
     putMessages("s-1", [filed, assistant("m-2", '{"add":[]}')]);
     act(() => {
       useChatStore.setState({ activeSessionId: "s-1" });
+    });
+
+    expect(usePlannerStore.getState().tasks).toHaveLength(1);
+  });
+
+  it("waits for the stored list before filing anything", () => {
+    act(() => {
+      usePlannerStore.setState({ hydrated: false });
+    });
+    putMessages("s-1", [assistant("m-1", '{"add":["Filed after the read"]}')]);
+    renderHook(() => usePlannerAgentSync());
+
+    // Without the stored tombstones every old fence would look new.
+    expect(usePlannerStore.getState().tasks).toHaveLength(0);
+
+    act(() => {
+      usePlannerStore.setState({ hydrated: true });
     });
 
     expect(usePlannerStore.getState().tasks).toHaveLength(1);

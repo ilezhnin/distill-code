@@ -84,8 +84,6 @@ export interface UseSessionActionsMenuOptions {
   onUnarchiveSelected?: () => void;
   onExport?: (id: string) => void;
   onExportSelected?: () => void;
-  onOpenInWindow?: (id: string) => void;
-  isOpenInWindow?: boolean;
   onMarkSelectedRead?: () => void;
   onMarkSelectedUnread?: () => void;
 }
@@ -109,8 +107,6 @@ export function useSessionActionsMenu({
   onUnarchiveSelected,
   onExport,
   onExportSelected,
-  onOpenInWindow,
-  isOpenInWindow = false,
   onMarkSelectedRead,
   onMarkSelectedUnread,
 }: UseSessionActionsMenuOptions) {
@@ -125,7 +121,6 @@ export function useSessionActionsMenu({
     sessionId: id,
     archived: Boolean(archivedAt),
     hasUnread,
-    isOpenInWindow,
     selectionCount: shouldApplyToSelection ? selectionCount : 0,
     selectionActionsDisabled,
     onMarkRead: shouldApplyToSelection
@@ -134,7 +129,6 @@ export function useSessionActionsMenu({
     onMarkUnread: shouldApplyToSelection
       ? onMarkSelectedUnread
       : () => markSessionUnread(id),
-    onOpenInWindow: onOpenInWindow ? () => onOpenInWindow(id) : undefined,
     onDuplicate: onFork ? () => onFork(id) : undefined,
     // The menu content discriminates between the single and bulk export
     // callbacks itself (showing the item during multi-select only when the

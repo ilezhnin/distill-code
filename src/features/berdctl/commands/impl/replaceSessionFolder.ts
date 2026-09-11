@@ -32,15 +32,11 @@ Example:
 Result:
   {"ok": true, "oldPath": "...", "newPath": "...", "kind": "...", "branch": "..."|null}`,
   schema: replaceSessionFolderSchema,
-  precheck: async (args) => {
-    const { refuseWindowedTarget } = await import("../runtime/sessions");
-    refuseWindowedTarget(args.session_id, "replace a folder for");
-  },
   execute: async (args, ctx) => {
     const [
       { replaceSessionFolder, FolderAttachmentError },
       { refusePastDeadline },
-      { loadSessionForBerdctl, refuseWindowedTarget },
+      { loadSessionForBerdctl },
     ] = await Promise.all([
       import("@/features/chat/lib/sessionFolderRegistration"),
       import("../runtime/deadline"),
@@ -55,7 +51,6 @@ Result:
         {
           beforeMutation: () => {
             refusePastDeadline(ctx, "the folder was not replaced");
-            refuseWindowedTarget(args.session_id, "replace a folder for");
           },
         },
       );

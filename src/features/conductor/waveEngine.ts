@@ -1079,6 +1079,8 @@ export function advanceWave(
     const existing = previous.runId
       ? context.reportOf(previous.runId)
       : undefined;
+    const previousStatus =
+      statusByStepIndex.get(previous.stepIndex) ?? "completed";
     const report =
       existing ??
       (previous.phase === "failed"
@@ -1089,7 +1091,13 @@ export function advanceWave(
           )
         : synthesizeMissingStepReport(
             fallbackRunId,
-            statusByStepIndex.get(previous.stepIndex) ?? "completed",
+            previousStatus,
+            // The same wording the digest uses: a child that was stopped or
+            // failed did not "finish without a report", and telling the next
+            // worker it did hands it a result that may never have existed.
+            previousStatus === "completed"
+              ? MISSING_STEP_REPORT_SUMMARY
+              : INTERRUPTED_STEP_REPORT_SUMMARY,
           ));
     return {
       stepIndex: previous.stepIndex,

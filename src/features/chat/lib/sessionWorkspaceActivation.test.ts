@@ -37,9 +37,6 @@ vi.mock("@/shared/api/acpApi", () => ({
     return mocks.updateWorkingDir(sessionId, path);
   },
 }));
-vi.mock("@/features/chat/lib/sessionWindowCommands", () => ({
-  releaseSession: vi.fn(),
-}));
 
 function session(): ChatSession {
   return {

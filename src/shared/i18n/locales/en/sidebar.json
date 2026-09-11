@@ -27,13 +27,8 @@
     "groupChats": "Group chats by project",
     "markRead": "Mark read",
     "markUnread": "Mark unread",
-    "openInNewWindow": "Open in new window",
-    "openInNewWindows": "Open in new windows",
-    "openInWindow": "Open in window",
     "editProject": "Edit {{name}} Project",
     "editProjectFallback": "Edit Project",
-    "openWindowFailed": "Couldn't open this chat in a new window.",
-    "focusWindowFailed": "Couldn't focus this chat window.",
     "selectChat": "Select {{title}}",
     "deselectChat": "Deselect {{title}}",
     "renameHint": "Double-click to rename"

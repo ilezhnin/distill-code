@@ -31,13 +31,7 @@ import {
   compareSessionsByActivityDesc,
   isSessionRunning,
   sessionActivityAt,
-  sessionNeedsWindowHandoff,
 } from "@/features/chat/lib/sessionActivity";
-import {
-  focusSessionWindow,
-  openSessionWindow,
-} from "@/features/chat/lib/sessionWindowCommands";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { useBulkSessionActions } from "@/features/sessions/hooks/useBulkSessionActions";
 import {
@@ -564,18 +558,6 @@ export function SessionListCapability({
     onFailure: reportBulkFailure,
   });
 
-  const handleOpenSelectedInWindows = useCallback(() => {
-    void applySelectionAction((sessionId) => {
-      if (useSessionWindowStore.getState().isOpenInWindow(sessionId)) {
-        return focusSessionWindow(sessionId);
-      }
-      const runtime = sessionStateById[sessionId];
-      return openSessionWindow(sessionId, {
-        handoff: runtime ? sessionNeedsWindowHandoff(runtime) : false,
-      });
-    });
-  }, [applySelectionAction, sessionStateById]);
-
   const selectSession = useCallback(
     (sessionId: string) => {
       onSessionSelectForScroll?.(sessionId);
@@ -830,7 +812,6 @@ export function SessionListCapability({
     onSelectionChange: toggleSessionSelection,
     onRangeSelect: rangeSelectSessions,
     onArchiveSelected: requestArchiveSelected,
-    onOpenSelectedInWindows: handleOpenSelectedInWindows,
     onMarkSelectedRead: () => void applySelectionAction(onMarkChatRead),
     onMarkSelectedUnread: () => void applySelectionAction(onMarkChatUnread),
     onReorderProject,

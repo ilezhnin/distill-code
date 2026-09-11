@@ -9,7 +9,6 @@ import {
   useChatSessionStore,
 } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import { acpGetSessionInfo, acpListSessionsPage } from "@/shared/api/acp";
 import { sessionNotFoundMessage } from "../helpers";
 import { CommandError } from "../types";
@@ -98,17 +97,7 @@ export function requireSession(sessionId: string): ChatSession {
   return session;
 }
 
-export function refuseWindowedTarget(sessionId: string, verb: string): void {
-  if (useSessionWindowStore.getState().isOpenInWindow(sessionId)) {
-    throw new CommandError(
-      "target_session_running",
-      `Refusing to ${verb} session "${sessionId}" while it is open in a separate window; close that window first or ask the user.`,
-    );
-  }
-}
-
 export function refuseRunningTarget(sessionId: string, verb: string): void {
-  refuseWindowedTarget(sessionId, verb);
   const runtime = useChatStore.getState().getSessionRuntime(sessionId);
   if (isSessionRunning(runtime.chatState) || runtime.isRunCancellationPending) {
     throw new CommandError(
@@ -120,9 +109,6 @@ export function refuseRunningTarget(sessionId: string, verb: string): void {
 
 export function sessionMetadata(session: ChatSession) {
   const runtime = useChatStore.getState().getSessionRuntime(session.id);
-  const isOpenInWindow = useSessionWindowStore
-    .getState()
-    .isOpenInWindow(session.id);
   return {
     session_id: session.id,
     title: session.title,
@@ -136,7 +122,9 @@ export function sessionMetadata(session: ChatSession) {
     archived: session.archivedAt != null,
     is_running:
       isSessionRunning(runtime.chatState) || runtime.isRunCancellationPending,
-    is_open_in_window: isOpenInWindow,
+    // Kept in the berdctl result shape; sessions only ever live in the main
+    // window now that pop-out session windows are gone.
+    is_open_in_window: false,
     chat_state: runtime.chatState,
     message_count: session.messageCount,
   };

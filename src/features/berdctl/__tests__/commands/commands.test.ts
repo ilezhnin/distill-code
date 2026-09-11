@@ -25,7 +25,6 @@ import {
   type ChatSession,
 } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { DEFAULT_PROJECT_COLOR } from "@/features/projects/lib/projectDefaults";
 import { DEFAULT_PROJECT_ICON } from "@/features/projects/lib/projectIcons";
@@ -140,10 +139,6 @@ vi.mock("@/shared/api/doctor", () => ({
 vi.mock("@/features/providers/hooks/useAgentProviderStatus", () => ({
   readinessFromReport: (...args: unknown[]) =>
     mocks.readinessFromReport(...args),
-}));
-
-vi.mock("@/features/chat/lib/sessionWindowCommands", () => ({
-  releaseSession: vi.fn(),
 }));
 
 vi.mock("@/features/chat/stores/chatSessionOperations", () => ({
@@ -333,7 +328,6 @@ beforeEach(() => {
     loadingSessionIds: new Set(),
     scrollTargetMessageBySession: {},
   });
-  useSessionWindowStore.getState().setSnapshot([]);
   useProjectStore.setState({
     projects: [],
     loading: false,
@@ -1219,30 +1213,6 @@ describe("sessions.send", () => {
     expect(mocks.acpSendMessage).not.toHaveBeenCalled();
   });
 
-  it("refuses pop-out target sessions even when steering or queueing is requested", async () => {
-    for (const ifRunning of ["steer", "queue"] as const) {
-      mockSessionFound();
-      useSessionWindowStore
-        .getState()
-        .setSnapshot([{ sessionId: "session-1", windowLabel: "session" }]);
-
-      await expectCommandError(
-        dispatchCommand(
-          "sessions",
-          {
-            action: "send",
-            session_id: "session-1",
-            prompt: "follow up",
-            if_running: ifRunning,
-          },
-          ctx,
-        ),
-        "target_session_running",
-      );
-      useSessionWindowStore.getState().setSnapshot([]);
-    }
-  });
-
   it("refuses to steer a cancellation-pending target", async () => {
     mockSessionFound();
     useChatStore.getState().setActiveRunId("session-1", "run-1");
@@ -1720,9 +1690,6 @@ describe("sessions.send", () => {
     };
     useChatStore.getState().addMessage("session-1", accepted);
     useChatStore.getState().setChatState("session-1", "streaming");
-    useSessionWindowStore
-      .getState()
-      .setSnapshot([{ sessionId: "session-1", windowLabel: "session" }]);
 
     const duplicate = await dispatchCommand(
       "sessions",
@@ -1832,11 +1799,7 @@ describe("sessions.open", () => {
   it("maps a failed facade outcome to a CommandError with its reason code", async () => {
     // The facade reports these as outcomes; the command must throw so the
     // CLI exits non-zero instead of printing an exit-0 "success".
-    for (const reason of [
-      "session_not_found",
-      "blocked_unsaved_changes",
-      "focus_failed",
-    ]) {
+    for (const reason of ["session_not_found", "blocked_unsaved_changes"]) {
       mockSessionFound();
       controller.openSession.mockResolvedValue({ ok: false, reason });
       await expectCommandError(
@@ -2062,22 +2025,14 @@ describe("sessions.get", () => {
   });
 
   it.each([
-    { chatState: "idle" as const, isOpenInWindow: false, isRunning: false },
-    { chatState: "streaming" as const, isOpenInWindow: false, isRunning: true },
-    { chatState: "idle" as const, isOpenInWindow: true, isRunning: false },
-    { chatState: "streaming" as const, isOpenInWindow: true, isRunning: true },
-  ])("reports chat=$chatState and open-window=$isOpenInWindow independently", async ({
+    { chatState: "idle" as const, isRunning: false },
+    { chatState: "streaming" as const, isRunning: true },
+  ])("reports chat=$chatState and never an open window", async ({
     chatState,
-    isOpenInWindow,
     isRunning,
   }) => {
     mockSessionFound();
     useChatStore.getState().setChatState("session-1", chatState);
-    if (isOpenInWindow) {
-      useSessionWindowStore
-        .getState()
-        .setSnapshot([{ sessionId: "session-1", windowLabel: "session" }]);
-    }
 
     const result = (await dispatchCommand(
       "sessions",
@@ -2087,7 +2042,7 @@ describe("sessions.get", () => {
 
     expect(result).toMatchObject({
       is_running: isRunning,
-      is_open_in_window: isOpenInWindow,
+      is_open_in_window: false,
     });
   });
 
@@ -2296,26 +2251,6 @@ describe("sessions.archive", () => {
     expect(controller.archiveSession).not.toHaveBeenCalled();
   });
 
-  it("refuses a session open in a pop-out window even when its runtime reads idle", async () => {
-    // A pop-out-hosted session streams in a separate webview, so this
-    // window's chatState stays "idle"; the window snapshot is the guard.
-    seedSessions(makeSession({ id: "session-1" }));
-    useSessionWindowStore
-      .getState()
-      .setSnapshot([{ sessionId: "session-1", windowLabel: "session-win-1" }]);
-
-    const error = await expectCommandError(
-      dispatchCommand(
-        "sessions",
-        { action: "archive", session_id: "session-1" },
-        ctx,
-      ),
-      "target_session_running",
-    );
-    expect(error.message).toContain("separate window");
-    expect(controller.archiveSession).not.toHaveBeenCalled();
-  });
-
   it("archives through the facade", async () => {
     mockSessionFound({ title: "Old Chat" });
 
@@ -2414,23 +2349,6 @@ describe("sessions.move", () => {
   it("refuses to move a running session", async () => {
     seedSessions(makeSession({ id: "session-1" }));
     useChatStore.getState().setChatState("session-1", "thinking");
-
-    await expectCommandError(
-      dispatchCommand(
-        "sessions",
-        { action: "move", session_id: "session-1", project_id: "p" },
-        ctx,
-      ),
-      "target_session_running",
-    );
-    expect(mocks.moveSessionToProject).not.toHaveBeenCalled();
-  });
-
-  it("refuses to move a session open in a pop-out window", async () => {
-    seedSessions(makeSession({ id: "session-1" }));
-    useSessionWindowStore
-      .getState()
-      .setSnapshot([{ sessionId: "session-1", windowLabel: "session-win-1" }]);
 
     await expectCommandError(
       dispatchCommand(
@@ -2998,31 +2916,6 @@ describe("folders.attach", () => {
       cwd: "/repo-wt",
       cwdStatus: "pending",
     });
-  });
-
-  it("refuses detach and replace for sessions owned by another window", async () => {
-    mockSessionFound({ workingDir: "/repo" });
-    useSessionWindowStore
-      .getState()
-      .setSnapshot([
-        { sessionId: "session-1", windowLabel: "session-session-1" },
-      ]);
-
-    for (const args of [
-      { action: "detach", session_id: "session-1", path: "/repo" },
-      {
-        action: "replace",
-        session_id: "session-1",
-        old_path: "/repo",
-        new_path: "/repo-wt",
-      },
-    ] as const) {
-      const error = await expectCommandError(
-        dispatchCommand("folders", args, ctx),
-        "target_session_running",
-      );
-      expect(error.message).toContain("separate window");
-    }
   });
 
   it("lists attached folders and marks cwd", async () => {

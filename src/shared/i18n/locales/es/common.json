@@ -77,6 +77,21 @@
       "toggle": "Alternar plan"
     }
   },
+  "completionNotification": {
+    "agent": "Agente",
+    "body": {
+      "completed": "{{name}} terminó",
+      "error": "{{name}} encontró un error",
+      "stopped": "{{name}} se detuvo"
+    },
+    "description": {
+      "completed": "Respuesta del agente completa",
+      "error": "La respuesta del agente necesita atención",
+      "stopped": "Respuesta del agente detenida"
+    },
+    "changeSound": "Cambiar sonido",
+    "view": "Ver"
+  },
   "errors": {
     "clipboardUnavailable": "La API del portapapeles no está disponible"
   },

@@ -5,6 +5,7 @@ import { startOfLocalDay, type PlannerTask } from "../lib/plannerTask";
 import {
   capTasks,
   flushPlannerWrites,
+  hydratePlannerStore,
   MAX_APPLIED_MESSAGE_IDS,
   MAX_PLANNER_TASKS,
   parseAppliedMessageIds,
@@ -156,6 +157,42 @@ describe("capTasks", () => {
   it("leaves a list under the bound exactly as it is", () => {
     const tasks = [task({ id: "a" }), task({ id: "b" })];
     expect(capTasks(tasks)).toEqual(tasks);
+  });
+});
+
+describe("hydratePlannerStore", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    usePlannerStore.setState({
+      tasks: [],
+      appliedMessageIds: [],
+      hydrated: false,
+    });
+  });
+
+  it("keeps the stored list beside an early task", async () => {
+    window.localStorage.setItem(
+      PLANNER_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        tasks: [task({ id: "stored", title: "Stored" })],
+        appliedMessageIds: ["m-old"],
+      }),
+    );
+    usePlannerStore.getState().addTask({ title: "Early" }, NOW);
+    // A change is not a read: the store must still go and fetch the list.
+    expect(usePlannerStore.getState().hydrated).toBe(false);
+
+    await hydratePlannerStore();
+
+    const state = usePlannerStore.getState();
+    expect(state.hydrated).toBe(true);
+    expect(state.tasks.map((entry) => entry.title)).toEqual([
+      "Stored",
+      "Early",
+    ]);
+    expect(state.appliedMessageIds).toEqual(["m-old"]);
+    await flushPlannerWrites();
   });
 });
 

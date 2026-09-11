@@ -7,7 +7,7 @@ import {
   type PointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import { ExternalLink, MoreHorizontal } from "lucide-react";
+import { MoreHorizontal } from "lucide-react";
 import { IconCheck, IconGitBranch } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import {
@@ -15,12 +15,6 @@ import {
   getEditableSessionTitle,
   isSessionTitleUnchanged,
 } from "@/features/chat/lib/sessionTitle";
-import {
-  focusSessionWindow,
-  openSessionWindow,
-} from "@/features/chat/lib/sessionWindowCommands";
-import { useSessionWindowSupport } from "@/features/chat/hooks/useSessionWindowSupport";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import { exportSessionAction } from "@/features/sessions/lib/exportSessionAction";
 import {
   isMultiSelectModifier,
@@ -69,7 +63,6 @@ import { ConductorLeadingIcon } from "@/features/conductor/ui/ConductorLeadingIc
 import { ActiveChatPulseDot } from "@/shared/ui/SessionActivityIndicator";
 import { useWorkingIndicatorAnimationPreference } from "@/shared/preferences/workingIndicatorAnimationPreference";
 import { useSidebarChatDrag } from "./SidebarChatDragContext";
-import { toast } from "sonner";
 import { formatSidebarChatTimestamp } from "./sidebarChatTimestamp";
 
 const INACTIVE_CHAT_ROW_CLASS = cn(
@@ -156,7 +149,6 @@ interface SidebarChatRowProps {
   onFork?: (id: string) => void;
   onArchive?: (id: string) => void;
   onArchiveSelected?: () => void;
-  onOpenSelectedInWindows?: () => void;
   onMenuOpenChange?: (open: boolean) => void;
   onMarkRead?: (id: string) => void;
   onMarkUnread?: (id: string) => void;
@@ -203,7 +195,6 @@ export function SidebarChatRow({
   onFork,
   onArchive,
   onArchiveSelected,
-  onOpenSelectedInWindows,
   onMenuOpenChange,
   onMarkRead,
   onMarkUnread,
@@ -239,8 +230,6 @@ export function SidebarChatRow({
   const pointerDragCleanupRef = useRef<(() => void) | null>(null);
   const suppressNextClickRef = useRef(false);
   const suppressNextClickResetRef = useRef<number | null>(null);
-  const sessionWindowSupport = useSessionWindowSupport();
-  const isMultiWindowEnabled = sessionWindowSupport.supported;
   const isConductor = useConductorGraphStore(
     (state) => state.nodesById[id]?.role === "conductor",
   );
@@ -294,14 +283,8 @@ export function SidebarChatRow({
   const shouldApplyToSelection = selected && selectionCount > 1;
   const showSelectionCheck =
     selectionEnabled && selected && onSelectionChange != null;
-  const isOpenInWindow = useSessionWindowStore((s) =>
-    isMultiWindowEnabled ? s.isOpenInWindow(id) : false,
-  );
-  const openWindowLabel = t("actions.openInWindow");
-  const rowTooltipLabel = isOpenInWindow
-    ? openWindowLabel
-    : t("actions.renameHint");
-  const showRowTooltip = isOpenInWindow || showRenameTooltip;
+  const rowTooltipLabel = t("actions.renameHint");
+  const showRowTooltip = showRenameTooltip;
   const projectEditLabel = flatProjectName?.trim()
     ? t("actions.editProject", { name: flatProjectName })
     : t("actions.editProjectFallback");
@@ -393,10 +376,6 @@ export function SidebarChatRow({
     if (selectionEnabled) {
       onSelectionClear?.();
     }
-    if (isOpenInWindow) {
-      focusExistingWindow();
-      return;
-    }
     onSelect?.(id);
   };
 
@@ -430,15 +409,6 @@ export function SidebarChatRow({
       aria-pressed={selectionEnabled ? selected : undefined}
     >
       {rowTitleContent}
-      {isMultiWindowEnabled && isOpenInWindow ? (
-        <span
-          className="flex size-4 shrink-0 items-center justify-center text-sidebar-foreground/60"
-          role="img"
-          aria-label={openWindowLabel}
-        >
-          <ExternalLink className="size-3" aria-hidden="true" />
-        </span>
-      ) : null}
     </Button>
   );
   const rowButton = showRowTooltip ? (
@@ -491,23 +461,6 @@ export function SidebarChatRow({
       return;
     }
     onRename?.(id, nextTitle);
-  };
-
-  const focusExistingWindow = () => {
-    void focusSessionWindow(id).catch((error) => {
-      console.error("Failed to focus session window:", error);
-      toast.error(t("actions.focusWindowFailed"));
-    });
-  };
-
-  const handleOpenInWindow = () => {
-    closeMenus();
-    void (async () => {
-      await openSessionWindow(id, { handoff: isRunning });
-    })().catch((error) => {
-      console.error("Failed to open session window:", error);
-      toast.error(t("actions.openWindowFailed"));
-    });
   };
 
   const handleExport = () => {
@@ -627,7 +580,6 @@ export function SidebarChatRow({
     sessionId: id,
     onClose: closeMenus,
     hasUnread,
-    isOpenInWindow,
     selectionCount: shouldApplyToSelection ? selectionCount : 0,
     selectionActionsDisabled,
     onMarkRead: shouldApplyToSelection
@@ -637,12 +589,6 @@ export function SidebarChatRow({
       ? onMarkSelectedUnread
       : () => onMarkUnread?.(id),
     onRename: startRename,
-    onOpenInWindow: isMultiWindowEnabled
-      ? isOpenInWindow
-        ? focusExistingWindow
-        : handleOpenInWindow
-      : undefined,
-    onOpenSelectedInWindows,
     onDuplicate: onFork ? () => onFork(id) : undefined,
     editProjectLabel: projectEditLabel,
     onEditProject:

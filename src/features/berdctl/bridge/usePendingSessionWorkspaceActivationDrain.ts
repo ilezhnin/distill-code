@@ -10,31 +10,15 @@ import {
   useChatStore,
 } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
-import { useSessionWindowStore } from "@/features/chat/stores/sessionWindowStore";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
 const drainingSessionIds = new Set<string>();
 const reportedFailureRequestIds = new Set<string>();
 
-interface ActivationDrainOptions {
-  allowWindowed?: boolean;
-  sessionId?: string;
-}
-
-function drainReadyActivations(options: ActivationDrainOptions = {}): void {
+function drainReadyActivations(): void {
   for (const activation of listPendingSessionWorkspaceActivations()) {
-    if (options.sessionId && activation.sessionId !== options.sessionId)
-      continue;
     if (drainingSessionIds.has(activation.sessionId)) continue;
     if (!useChatSessionStore.getState().getSession(activation.sessionId)) {
-      continue;
-    }
-    const windowState = useSessionWindowStore.getState();
-    if (!options.allowWindowed && !windowState.hasLoadedSnapshot) continue;
-    if (
-      !options.allowWindowed &&
-      windowState.isOpenInWindow(activation.sessionId)
-    ) {
       continue;
     }
     const runtime = useChatStore
@@ -71,21 +55,16 @@ function drainReadyActivations(options: ActivationDrainOptions = {}): void {
           (pending) => pending.sessionId === activation.sessionId,
         );
         if (latest && latest.requestId !== activation.requestId) {
-          drainReadyActivations(options);
+          drainReadyActivations();
         }
       });
   }
 }
 
 /** Applies persisted workspace switches as soon as their sessions settle. */
-export function usePendingSessionWorkspaceActivationDrain(
-  options: ActivationDrainOptions = {},
-): void {
-  const allowWindowed = options.allowWindowed ?? false;
-  const sessionId = options.sessionId;
+export function usePendingSessionWorkspaceActivationDrain(): void {
   useEffect(() => {
-    const drainOptions = { allowWindowed, sessionId };
-    const drain = () => drainReadyActivations(drainOptions);
+    const drain = () => drainReadyActivations();
     drain();
     const unsubscribePending =
       subscribeToPendingSessionWorkspaceActivations(drain);
@@ -94,13 +73,6 @@ export function usePendingSessionWorkspaceActivationDrain(
         drain();
       }
     });
-    const unsubscribeWindows = useSessionWindowStore.subscribe(
-      (state, previousState) => {
-        if (state.openSessions !== previousState.openSessions) {
-          drain();
-        }
-      },
-    );
     const unsubscribeSessions = useChatSessionStore.subscribe(
       (state, previousState) => {
         if (
@@ -114,8 +86,7 @@ export function usePendingSessionWorkspaceActivationDrain(
     return () => {
       unsubscribePending();
       unsubscribeChat();
-      unsubscribeWindows();
       unsubscribeSessions();
     };
-  }, [allowWindowed, sessionId]);
+  }, []);
 }

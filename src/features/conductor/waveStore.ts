@@ -522,11 +522,24 @@ export function getWaveEngineState(): WaveEngineState {
  * by the engine, so this is how it sees them. Deliberately not a window
  * event: the wave state is written and read inside one renderer.
  */
-const waveStateListeners = new Set<(state: WaveEngineState) => void>();
+const waveStateListeners = new Set<
+  (state: WaveEngineState, change: WaveStateChange) => void
+>();
+
+/** What kind of change a listener is being told about. */
+export interface WaveStateChange {
+  /**
+   * True when the change is the folder's waves joining memory at startup.
+   * Nothing moved: those waves were already in that state before this
+   * process began, and a reader that diffs transitions must not report them
+   * as newly admitted.
+   */
+  hydration: boolean;
+}
 
 /** Subscribes to wave-state changes. Returns the unsubscribe. */
 export function subscribeWaveEngineState(
-  listener: (state: WaveEngineState) => void,
+  listener: (state: WaveEngineState, change: WaveStateChange) => void,
 ): () => void {
   waveStateListeners.add(listener);
   return () => {
@@ -535,12 +548,16 @@ export function subscribeWaveEngineState(
 }
 
 /** Replaces the live state and writes it through. A no-op change is skipped. */
-export function setWaveEngineState(next: WaveEngineState): void {
+export function setWaveEngineState(
+  next: WaveEngineState,
+  change: Partial<WaveStateChange> = {},
+): void {
   if (cached === next) return;
   cached = next;
+  const notice: WaveStateChange = { hydration: change.hydration === true };
   for (const listener of [...waveStateListeners]) {
     try {
-      listener(next);
+      listener(next, notice);
     } catch {
       // A reader that throws must not take the engine's write path with it.
     }
@@ -575,6 +592,57 @@ export function setWaveEngineState(next: WaveEngineState): void {
  * an old plan as a new root request.
  */
 export async function hydrateWaveEngineState(): Promise<void> {
+  try {
+    await mergeStoredWaveEngineState();
+  } finally {
+    markWaveEngineStateHydrated();
+  }
+}
+
+/**
+ * True once the folder's waves have been folded in — or when there is no
+ * folder to wait for.
+ *
+ * The engine must not tick before this. On the desktop the synchronous load
+ * finds an empty `localStorage` (the folder is the only copy after the P24
+ * migration), so a tick in that window sees no waves and no tombstones: it
+ * spends the one-shot "resume orphaned spawns" pass on nothing, and a plan
+ * message already admitted in a previous run looks brand new and is admitted
+ * again beside the children it already has.
+ */
+export function isWaveEngineStateHydrated(): boolean {
+  if (wavesHydratedForTests !== null) return wavesHydratedForTests;
+  return wavesHydrated || !wavesDocument.active;
+}
+
+let wavesHydratedForTests: boolean | null = null;
+
+let wavesHydrated = false;
+const hydrationWaiters = new Set<() => void>();
+
+function markWaveEngineStateHydrated(): void {
+  wavesHydrated = true;
+  const waiters = [...hydrationWaiters];
+  hydrationWaiters.clear();
+  for (const waiter of waiters) {
+    try {
+      waiter();
+    } catch {
+      // One waiter that throws must not keep the others waiting.
+    }
+  }
+}
+
+/** Calls `callback` once the waves are hydrated (immediately if they are). */
+export function whenWaveEngineStateHydrated(callback: () => void): void {
+  if (isWaveEngineStateHydrated()) {
+    callback();
+    return;
+  }
+  hydrationWaiters.add(callback);
+}
+
+async function mergeStoredWaveEngineState(): Promise<void> {
   if (!wavesDocument.active) return;
   const stored = await wavesDocument.read();
   if (!stored) return;
@@ -583,20 +651,23 @@ export async function hydrateWaveEngineState(): Promise<void> {
   const liveTombstoneIds = new Set(
     live.tombstones.map((tombstone) => tombstone.planMessageId),
   );
-  setWaveEngineState({
-    ...stored,
-    ...live,
-    waves: [
-      ...stored.waves.filter((wave) => !liveWaveIds.has(wave.waveId)),
-      ...live.waves,
-    ],
-    tombstones: [
-      ...stored.tombstones.filter(
-        (tombstone) => !liveTombstoneIds.has(tombstone.planMessageId),
-      ),
-      ...live.tombstones,
-    ],
-  });
+  setWaveEngineState(
+    {
+      ...stored,
+      ...live,
+      waves: [
+        ...stored.waves.filter((wave) => !liveWaveIds.has(wave.waveId)),
+        ...live.waves,
+      ],
+      tombstones: [
+        ...stored.tombstones.filter(
+          (tombstone) => !liveTombstoneIds.has(tombstone.planMessageId),
+        ),
+        ...live.tombstones,
+      ],
+    },
+    { hydration: true },
+  );
 }
 
 /** Pushes a queued wave write to disk. Shutdown, and tests. */
@@ -616,4 +687,18 @@ export function updateWaveEngineState(
 /** Drops the in-memory copy so the next read re-hydrates. Tests only. */
 export function resetWaveEngineStateCache(): void {
   cached = null;
+}
+
+/**
+ * Pins the hydration answer, or (`null`) returns it to the real one. When
+ * pinned to true, parked waiters run. Tests only.
+ */
+export function setWaveEngineStateHydratedForTests(
+  hydrated: boolean | null,
+): void {
+  wavesHydratedForTests = hydrated;
+  // Pinning "not read" also forgets a real read, so that returning to the
+  // real answer waits for the next hydration.
+  if (hydrated === false) wavesHydrated = false;
+  if (hydrated === true) markWaveEngineStateHydrated();
 }

@@ -89,7 +89,6 @@ export function SidebarProjectSection({
   onSelectionChange,
   onRangeSelect,
   onArchiveSelected,
-  onOpenSelectedInWindows,
   onMarkSelectedRead,
   onMarkSelectedUnread,
   showChatIcons,
@@ -124,7 +123,6 @@ export function SidebarProjectSection({
   onSelectionChange?: (sessionId: string, selected: boolean) => void;
   onRangeSelect?: (sessionId: string) => void;
   onArchiveSelected?: () => void;
-  onOpenSelectedInWindows?: () => void;
   onMarkSelectedRead?: () => void;
   onMarkSelectedUnread?: () => void;
   showChatIcons: boolean;
@@ -469,7 +467,6 @@ export function SidebarProjectSection({
                   onMarkUnread={onMarkChatUnread}
                   onArchive={onArchiveChat}
                   onArchiveSelected={onArchiveSelected}
-                  onOpenSelectedInWindows={onOpenSelectedInWindows}
                   onMarkSelectedRead={onMarkSelectedRead}
                   onMarkSelectedUnread={onMarkSelectedUnread}
                 />
@@ -509,7 +506,6 @@ export function SidebarProjectSection({
                       onMarkUnread={onMarkChatUnread}
                       onArchive={onArchiveChat}
                       onArchiveSelected={onArchiveSelected}
-                      onOpenSelectedInWindows={onOpenSelectedInWindows}
                       onMarkSelectedRead={onMarkSelectedRead}
                       onMarkSelectedUnread={onMarkSelectedUnread}
                     />

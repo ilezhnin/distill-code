@@ -283,6 +283,13 @@ function missingVerificationEvidence(
   if (!step) {
     return "This wave built something inspectable and did not close its work with a verification step, so nothing external checked the result.";
   }
+  // A report the P62 gate quarantined is not evidence: the digest and every
+  // dependent already received the "failed verification" stub in its place,
+  // and honouring an accept on the report's own words would let the one
+  // claim the app refused to pass on close the loop.
+  if (step.verificationFailed) {
+    return `The verification step (step ${step.stepIndex + 1}) reported, but its report failed the app's own check and was quarantined${step.verificationDetail ? ` (${step.verificationDetail})` : ""}, so it is not evidence.`;
+  }
   const report = step.runId ? reportOf(step.runId) : undefined;
   if (!report || report.status !== "completed") {
     return `The verification step (step ${step.stepIndex + 1}) did not complete, so its evidence never arrived.`;

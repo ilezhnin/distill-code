@@ -174,7 +174,6 @@ pub fn run() {
             app.manage(bundled_skills::BundledSkillsState::default());
             app.manage(commands::terminal::TerminalState::default());
             app.manage(services::agent_host::AgentHost::new());
-            app.manage(commands::window_session::WindowSessionRegistry::default());
             app.manage(commands::agent_setup::AgentSetupRegistry::default());
 
             // With all command state registered, it is now safe to run blocking,
@@ -314,16 +313,6 @@ pub fn run() {
             commands::terminal::write_terminal,
             commands::terminal::resize_terminal,
             commands::terminal::stop_terminal,
-            commands::window_session::get_session_window_support,
-            commands::window_session::open_session_window,
-            commands::window_session::release_session,
-            commands::window_session::join_session_handoff,
-            commands::window_session::publish_session_handoff_snapshot,
-            commands::window_session::finish_session_handoff,
-            commands::window_session::read_session_handoff_snapshot,
-            commands::window_session::recover_session_handoff,
-            commands::window_session::focus_session_window,
-            commands::window_session::list_session_windows,
             commands::agent_skills::list_agent_skills,
             commands::agent_skills::list_berd_app_skills,
             commands::workspace_context::load_workspace_context,

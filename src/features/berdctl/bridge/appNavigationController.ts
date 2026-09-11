@@ -6,7 +6,6 @@ export type CommandFailureReason =
   | "blocked_unsaved_changes"
   | "cleanup_requires_discard"
   | "git_inspection_failed"
-  | "focus_failed"
   | "workspace_cleanup_failed"
   | "timed_out"
   | "backend_archive_failed";
