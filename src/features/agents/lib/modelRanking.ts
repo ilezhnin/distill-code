@@ -30,6 +30,7 @@ export type ModelPreferenceClassId =
   | "coding-simple"
   | "coding-complex"
   | "one-shot"
+  | "planning"
   | "testing-heavy"
   | "testing-light"
   | "general-medium"
@@ -64,19 +65,60 @@ export interface ModelPreferenceClass {
   ranking: RankedModelCandidate[];
 }
 
+/**
+ * The same model at a different reasoning effort.
+ *
+ * A profile is the pair (order, effort): the operator ranks the same four
+ * models for heavy and for medium engineering and asks for xhigh on one and
+ * medium on the other. The label stays the model's, so the settings pane and
+ * the pool still speak about one "Astra".
+ */
+function atEffort(
+  candidate: RankedModelCandidate,
+  effort: EmbeddedReasoningEffort,
+): RankedModelCandidate {
+  return { ...candidate, effort };
+}
+
+const ASTRA: RankedModelCandidate = {
+  label: "Astra",
+  platform: "codex-acp",
+  needles: [["astra"]],
+  effort: "xhigh",
+};
+const FABLE: RankedModelCandidate = {
+  label: "Fable 5.1",
+  platform: "claude-acp",
+  needles: [["fable"]],
+  effort: "xhigh",
+  // Fable spends its own weekly allowance on top of the account's windows.
+  scopedWindow: "fableWeekly",
+};
 const OPUS: RankedModelCandidate = {
   label: "Opus 5",
   platform: "claude-acp",
   needles: [["opus"]],
   effort: "xhigh",
 };
-const FABLE: RankedModelCandidate = {
-  label: "Fable 5",
-  platform: "claude-acp",
-  needles: [["fable"]],
+const GROK: RankedModelCandidate = {
+  label: "Grok 4.6",
+  platform: "grok-acp",
+  needles: [["grok"]],
   effort: "xhigh",
-  // Fable spends its own weekly allowance on top of the account's windows.
-  scopedWindow: "fableWeekly",
+};
+// Luna and Tera carry an effort so a harness that serves each tier as its
+// own id seeds the tier named here, not the `[low]` the inventory lists
+// first (the same trap pickCandidateMatch closes for Sol). On a harness with
+// one id per model the effort is ignored and the first match wins as before.
+const LUNA: RankedModelCandidate = {
+  label: "Luna",
+  needles: [["luna"]],
+  effort: "xhigh",
+};
+const TERA: RankedModelCandidate = {
+  label: "Tera",
+  needles: [["tera"]],
+  effort: "high",
 };
 const CODEX_SOL: RankedModelCandidate = {
   label: "Codex Sol",
@@ -84,51 +126,49 @@ const CODEX_SOL: RankedModelCandidate = {
   needles: [["sol"]],
   effort: "xhigh",
 };
-const GROK: RankedModelCandidate = {
-  label: "Grok 4.6",
-  platform: "grok-acp",
-  needles: [["grok"]],
-};
-// Tera and Luna carry an effort so a harness that serves each tier as its
-// own id seeds the middle of its range, not the `[low]` the inventory lists
-// first (the same trap pickCandidateMatch closes for Sol). On a harness with
-// one id per model the effort is ignored and the first match wins as before.
-const TERA: RankedModelCandidate = {
-  label: "Tera",
-  needles: [["tera"]],
-  effort: "high",
-};
-const LUNA: RankedModelCandidate = {
-  label: "Luna",
-  needles: [["luna"]],
-  effort: "medium",
-};
 
 /**
- * The operator's rankings, verbatim (2026-08-30), as three profiles:
- * very heavy / research / design work runs Fable → Opus 5 → Sol; medium
- * work runs Grok 4.6 → Opus 5 → Tera; light work with no serious coding or
- * design runs Grok 4.6 → Luna → Opus 5. The six original class ids keep
- * working — persona frontmatter references them — and each now carries the
- * profile its kind of work falls under; `general-medium` / `general-light`
- * exist so non-testing roles of those weights stop borrowing the testing
- * classes' names. (Superseded rankings of 2026-08-23 kept in git history.)
+ * The operator's rankings, verbatim (2026-09-12), as four profiles.
+ *
+ * Anthropic's models take design and planning, OpenAI's take heavy and medium
+ * coding, and Grok plus the small models of either provider take the simple
+ * plugs where there is nothing much to think about:
+ *
+ * - heavy engineering: Astra → Fable 5.1 → Opus 5 → Grok 4.6, all at xhigh;
+ * - medium engineering: the same order at medium, except Grok, which is worth
+ *   running at xhigh or not at all;
+ * - design and planning: Fable 5.1 → Astra → Opus 5, all at xhigh;
+ * - simpler work: Opus 5 at medium → Grok 4.6 at high → Luna at xhigh.
+ *
+ * The class ids keep working — persona frontmatter references them — and each
+ * carries the profile its kind of work falls under; `planning` splits the
+ * coordinating roles (planner, producer, oracle) out of `one-shot` so they get
+ * the Anthropic-first order rather than the coding one. Tera and Codex Sol are
+ * in no profile but stay in KNOWN_MODEL_CANDIDATES, so they remain pinnable per
+ * agent and per class. (Superseded rankings of 2026-08-30 kept in git history.)
  */
-const HEAVY_PROFILE = [FABLE, OPUS, CODEX_SOL];
-const MEDIUM_PROFILE = [GROK, OPUS, TERA];
-const LIGHT_PROFILE = [GROK, LUNA, OPUS];
+const ENGINEERING_HEAVY = [ASTRA, FABLE, OPUS, GROK];
+const ENGINEERING_MEDIUM = [
+  atEffort(ASTRA, "medium"),
+  atEffort(FABLE, "medium"),
+  atEffort(OPUS, "medium"),
+  GROK,
+];
+const DESIGN_PROFILE = [FABLE, ASTRA, OPUS];
+const LIGHT_PROFILE = [atEffort(OPUS, "medium"), atEffort(GROK, "high"), LUNA];
 
 export const MODEL_PREFERENCE_CLASSES: Record<
   ModelPreferenceClassId,
   ModelPreferenceClass
 > = {
-  "frontend-ui": { id: "frontend-ui", ranking: [...HEAVY_PROFILE] },
-  "coding-simple": { id: "coding-simple", ranking: [...MEDIUM_PROFILE] },
-  "coding-complex": { id: "coding-complex", ranking: [...HEAVY_PROFILE] },
-  "one-shot": { id: "one-shot", ranking: [...HEAVY_PROFILE] },
-  "testing-heavy": { id: "testing-heavy", ranking: [...HEAVY_PROFILE] },
+  "frontend-ui": { id: "frontend-ui", ranking: [...DESIGN_PROFILE] },
+  "coding-simple": { id: "coding-simple", ranking: [...ENGINEERING_MEDIUM] },
+  "coding-complex": { id: "coding-complex", ranking: [...ENGINEERING_HEAVY] },
+  "one-shot": { id: "one-shot", ranking: [...ENGINEERING_HEAVY] },
+  planning: { id: "planning", ranking: [...DESIGN_PROFILE] },
+  "testing-heavy": { id: "testing-heavy", ranking: [...ENGINEERING_HEAVY] },
   "testing-light": { id: "testing-light", ranking: [...LIGHT_PROFILE] },
-  "general-medium": { id: "general-medium", ranking: [...MEDIUM_PROFILE] },
+  "general-medium": { id: "general-medium", ranking: [...ENGINEERING_MEDIUM] },
   "general-light": { id: "general-light", ranking: [...LIGHT_PROFILE] },
 };
 
@@ -153,7 +193,7 @@ export function isModelPreferenceClassId(
  */
 export const MODEL_CLASS_BY_AGENT_SLUG: Record<string, ModelPreferenceClassId> =
   {
-    // frontend / UI-UX
+    // frontend / UI-UX — design work, Anthropic first
     ux: "frontend-ui",
     designer: "frontend-ui",
     artist: "frontend-ui",
@@ -169,10 +209,15 @@ export const MODEL_CLASS_BY_AGENT_SLUG: Record<string, ModelPreferenceClassId> =
     "unity-asset-integrator": "coding-simple",
     "asset-integrator": "coding-simple",
     tinker: "coding-simple",
-    // one-shot capability (research, synthesis, coordination) — including
-    // the companion agents, which are conversations with a strong generalist
-    // rather than pipeline steps: the class is the strongest available
-    // model, not a coding specialist.
+    // planning and coordination — the same Anthropic-first order as design
+    // (2026-09-12): these roles decide and sequence work, they do not write it.
+    planner: "planning",
+    producer: "planning",
+    oracle: "planning",
+    // one-shot capability (research, synthesis) — including the companion
+    // agents, which are conversations with a strong generalist rather than
+    // pipeline steps: the class is the strongest available model, not a coding
+    // specialist.
     "agt.-builder": "one-shot",
     "agt-builder": "one-shot",
     distill: "one-shot",
@@ -180,10 +225,7 @@ export const MODEL_CLASS_BY_AGENT_SLUG: Record<string, ModelPreferenceClassId> =
     copycat: "one-shot",
     pushback: "one-shot",
     wildcard: "one-shot",
-    producer: "one-shot",
-    planner: "one-shot",
     researcher: "one-shot",
-    oracle: "one-shot",
     // medium weight: careful reading, structured output, no deep design
     // decisions — mapping a project, packaging a handoff, sourcing assets,
     // spec'ing audio (gamedev recalibration 2026-08-30)
@@ -437,34 +479,48 @@ export function modelPreferenceClassForPersona(persona: {
 }
 
 /**
- * Every candidate the built-in classes know about, unique by label.
+ * The pool an operator's own class ranking is written from.
  *
- * The pool an operator's own class ranking is written from. Deliberately not
- * "every installed model": a candidate carries the platform whose meter guards
- * it, the reasoning effort it is worth running at, and the needles that find
- * it across provider renames — none of which a bare model id has. An operator
- * who wants a model that appears in no class can still pin it per agent, which
- * is what the per-agent ranking editor is for.
+ * Deliberately not "every installed model": a candidate carries the platform
+ * whose meter guards it, the reasoning effort it is worth running at, and the
+ * needles that find it across provider renames — none of which a bare model id
+ * has. Equally deliberately not "every model some profile names": Tera and
+ * Codex Sol are in no profile as of 2026-09-12 and are still here, because
+ * dropping a model from the default order is not the same as saying the
+ * operator may no longer choose it. An operator who wants a model that appears
+ * nowhere here can still pin it per agent, which is what the per-agent ranking
+ * editor is for.
  */
-export const KNOWN_MODEL_CANDIDATES: readonly RankedModelCandidate[] =
-  Object.values(MODEL_PREFERENCE_CLASSES).reduce<RankedModelCandidate[]>(
-    (pool, preferenceClass) => {
-      for (const candidate of preferenceClass.ranking) {
-        if (!pool.some((known) => known.label === candidate.label)) {
-          pool.push(candidate);
-        }
-      }
-      return pool;
-    },
-    [],
-  );
+export const KNOWN_MODEL_CANDIDATES: readonly RankedModelCandidate[] = [
+  ASTRA,
+  FABLE,
+  OPUS,
+  GROK,
+  LUNA,
+  CODEX_SOL,
+  TERA,
+];
+
+/**
+ * Labels a stored override may still spell the old way.
+ *
+ * A renamed candidate would otherwise drop out of the operator's saved order
+ * silently and the class would snap back to the shipped one — a reset nobody
+ * asked for, dressed as a default.
+ */
+const LEGACY_CANDIDATE_LABELS: Record<string, string> = {
+  "Fable 5": "Fable 5.1",
+};
 
 /**
  * A class's ranking with the operator's own order applied, when they set one.
  *
- * Labels that name no known candidate are dropped rather than guessed at, and
- * an override that survives to nothing falls back to the built-in list: a
- * class that resolves to no candidates would silently stop retargeting
+ * The class's own candidates are consulted before the shared pool, so a
+ * reordered class keeps the effort that class asks for — the medium profile
+ * ranks the same models as the heavy one and must not silently come back at
+ * xhigh. Labels that name no known candidate are dropped rather than guessed
+ * at, and an override that survives to nothing falls back to the built-in
+ * list: a class that resolves to no candidates would silently stop retargeting
  * anything, which looks exactly like the feature being broken.
  */
 export function applyClassOverride(
@@ -473,10 +529,11 @@ export function applyClassOverride(
 ): readonly RankedModelCandidate[] {
   if (!labels || labels.length === 0) return ranking;
   const chosen: RankedModelCandidate[] = [];
-  for (const label of labels) {
-    const candidate = KNOWN_MODEL_CANDIDATES.find(
-      (known) => known.label === label,
-    );
+  for (const stored of labels) {
+    const label = LEGACY_CANDIDATE_LABELS[stored] ?? stored;
+    const candidate =
+      ranking.find((known) => known.label === label) ??
+      KNOWN_MODEL_CANDIDATES.find((known) => known.label === label);
     if (candidate && !chosen.includes(candidate)) chosen.push(candidate);
   }
   return chosen.length > 0 ? chosen : ranking;

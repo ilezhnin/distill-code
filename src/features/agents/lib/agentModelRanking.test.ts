@@ -18,19 +18,32 @@ import {
   type RankedModelResolutionInput,
 } from "./modelRanking";
 
+const INSTALLED_OPUS = {
+  platform: "claude-acp" as const,
+  modelId: "claude-opus-5",
+  label: "Opus 5",
+};
+const INSTALLED_FABLE = {
+  platform: "claude-acp" as const,
+  modelId: "claude-fable-5-1",
+  label: "Claude Fable 5.1",
+};
+const INSTALLED_ASTRA = {
+  platform: "codex-acp" as const,
+  modelId: "codex-astra",
+  label: "Codex Astra",
+};
+const INSTALLED_GROK = {
+  platform: "grok-acp" as const,
+  modelId: "grok-4-6",
+  label: "Grok 4.6",
+};
 const INSTALLED = [
-  {
-    platform: "claude-acp" as const,
-    modelId: "claude-opus-5",
-    label: "Opus 5",
-  },
-  {
-    platform: "claude-acp" as const,
-    modelId: "claude-fable-5",
-    label: "Fable 5",
-  },
+  INSTALLED_OPUS,
+  INSTALLED_FABLE,
+  INSTALLED_ASTRA,
   { platform: "codex-acp" as const, modelId: "gpt-5-codex-sol", label: "Sol" },
-  { platform: "grok-acp" as const, modelId: "grok-4-6", label: "Grok 4.6" },
+  INSTALLED_GROK,
 ];
 
 function ranking(): AgentModelRanking {
@@ -215,42 +228,44 @@ describe("an agent's own list, resolved", () => {
 describe("rankingFromClass", () => {
   it("renders a class against what is actually installed", () => {
     const built = rankingFromClass("frontend-ui", INSTALLED);
-    // frontend-ui is heavy-profile: Fable → Opus 5 → Sol, all installed here.
+    // frontend-ui is the design profile: Fable 5.1 → Astra → Opus 5, all
+    // installed here.
     expect(built.entries.map((entry) => entry.label)).toEqual([
-      "Fable 5",
+      "Fable 5.1",
+      "Astra",
       "Opus 5",
-      "Codex Sol",
     ]);
-    expect(built.entries[0].modelId).toBe("claude-fable-5");
+    expect(built.entries[0].modelId).toBe("claude-fable-5-1");
     expect(built.entries[0].effort).toBe("xhigh");
   });
 
   it("drops a candidate nothing installed can serve", () => {
-    const built = rankingFromClass("testing-light", [INSTALLED[3]]);
-    // testing-light: Grok → Luna → Opus 5; only Grok exists on this machine.
+    const built = rankingFromClass("testing-light", [INSTALLED_GROK]);
+    // testing-light: Opus 5 → Grok 4.6 → Luna; only Grok exists here.
     expect(built.entries.map((entry) => entry.label)).toEqual(["Grok 4.6"]);
+    expect(built.entries[0].effort).toBe("high");
   });
 
   it("seeds the effort-tier variant the class asks for, not the first match", () => {
     // Codex serves each tier as its own id, ascending. Seeding used to pin
     // an xhigh candidate to [low] — the acceptor persona shipped that way.
     const built = rankingFromClass("coding-complex", [
-      INSTALLED[1],
+      INSTALLED_FABLE,
       {
         platform: "codex-acp" as const,
-        modelId: "gpt-5.6-sol[low]",
-        label: "GPT 5.6 Sol[low]",
+        modelId: "codex-astra[low]",
+        label: "Codex Astra[low]",
       },
       {
         platform: "codex-acp" as const,
-        modelId: "gpt-5.6-sol[xhigh]",
-        label: "GPT 5.6 Sol[xhigh]",
+        modelId: "codex-astra[xhigh]",
+        label: "Codex Astra[xhigh]",
       },
     ]);
-    // coding-complex: Fable → Sol.
+    // coding-complex: Astra → Fable 5.1.
     expect(built.entries.map((entry) => entry.modelId)).toEqual([
-      "claude-fable-5",
-      "gpt-5.6-sol[xhigh]",
+      "codex-astra[xhigh]",
+      "claude-fable-5-1",
     ]);
   });
 });

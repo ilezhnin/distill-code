@@ -511,6 +511,7 @@
       "coding-simple": "Simple coding",
       "coding-complex": "Complex coding",
       "one-shot": "One-shot work",
+      "planning": "Planning and coordination",
       "testing-heavy": "Heavy testing and audit",
       "testing-light": "Light testing",
       "general-medium": "Medium general work",
