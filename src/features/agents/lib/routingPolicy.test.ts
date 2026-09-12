@@ -97,4 +97,35 @@ describe("applyClassOverride", () => {
       }
     }
   });
+
+  it("keeps a model the default order dropped in the pool", () => {
+    // Taking a model out of every shipped order is not the same as saying the
+    // operator may no longer choose it (Tera and Sol, 2026-09-12).
+    const labels = KNOWN_MODEL_CANDIDATES.map((c) => c.label);
+    expect(labels).toContain("Codex Sol");
+    expect(labels).toContain("Tera");
+  });
+
+  it("reads an override saved under a model's old label", () => {
+    // A rename would otherwise drop the model out of the saved order and snap
+    // the class back to the shipped one — a reset nobody asked for.
+    expect(
+      applyClassOverride(shipped, ["Fable 5"]).map((c) => c.label),
+    ).toEqual(["Fable 5.1"]);
+  });
+
+  it("keeps the class's own effort when the operator reorders it", () => {
+    // The medium profile ranks the same models as the heavy one; a reorder
+    // must not silently bring them back at xhigh.
+    const medium = MODEL_PREFERENCE_CLASSES["coding-simple"].ranking;
+    expect(
+      applyClassOverride(medium, ["Opus 5", "Astra"]).map((candidate) => [
+        candidate.label,
+        candidate.effort,
+      ]),
+    ).toEqual([
+      ["Opus 5", "medium"],
+      ["Astra", "medium"],
+    ]);
+  });
 });

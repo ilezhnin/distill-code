@@ -12,9 +12,10 @@ import {
 
 const CLAUDE_MODELS: RankableModel[] = [
   { id: "claude-opus-5", displayName: "Claude Opus 5" },
-  { id: "claude-fable-5", displayName: "Claude Fable 5" },
+  { id: "claude-fable-5-1", displayName: "Claude Fable 5.1" },
 ];
 const CODEX_MODELS: RankableModel[] = [
+  { id: "codex-astra", displayName: "Codex Astra" },
   { id: "gpt-5-codex-sol", displayName: "Codex Sol" },
 ];
 const GROK_MODELS: RankableModel[] = [
@@ -41,13 +42,70 @@ function input(
   };
 }
 
+describe("the operator's profiles", () => {
+  it("runs heavy engineering at xhigh throughout", () => {
+    expect(
+      MODEL_PREFERENCE_CLASSES["coding-complex"].ranking.map((candidate) => [
+        candidate.label,
+        candidate.effort,
+      ]),
+    ).toEqual([
+      ["Astra", "xhigh"],
+      ["Fable 5.1", "xhigh"],
+      ["Opus 5", "xhigh"],
+      ["Grok 4.6", "xhigh"],
+    ]);
+  });
+
+  it("runs medium engineering at medium, Grok excepted", () => {
+    // "the same but medium for everyone except Grok, Grok stays xhigh"
+    // (2026-09-12): Grok is worth xhigh or nothing.
+    expect(
+      MODEL_PREFERENCE_CLASSES["coding-simple"].ranking.map((candidate) => [
+        candidate.label,
+        candidate.effort,
+      ]),
+    ).toEqual([
+      ["Astra", "medium"],
+      ["Fable 5.1", "medium"],
+      ["Opus 5", "medium"],
+      ["Grok 4.6", "xhigh"],
+    ]);
+  });
+
+  it("puts Anthropic first for design and for planning", () => {
+    for (const classId of ["frontend-ui", "planning"] as const) {
+      expect(
+        MODEL_PREFERENCE_CLASSES[classId].ranking.map(
+          (candidate) => candidate.label,
+        ),
+      ).toEqual(["Fable 5.1", "Astra", "Opus 5"]);
+    }
+  });
+
+  it("keeps the simple plugs off the heavy models", () => {
+    for (const classId of ["testing-light", "general-light"] as const) {
+      expect(
+        MODEL_PREFERENCE_CLASSES[classId].ranking.map((candidate) => [
+          candidate.label,
+          candidate.effort,
+        ]),
+      ).toEqual([
+        ["Opus 5", "medium"],
+        ["Grok 4.6", "high"],
+        ["Luna", "xhigh"],
+      ]);
+    }
+  });
+});
+
 describe("resolveRankedModel", () => {
   it("picks the top preference when everything is available", () => {
     const result = resolveRankedModel("frontend-ui", input());
-    // Design work is heavy-profile: Fable → Opus 5 → Sol (2026-08-30).
-    expect(result.choice?.label).toBe("Fable 5");
+    // Design work is Anthropic-first: Fable 5.1 → Astra → Opus 5 (2026-09-12).
+    expect(result.choice?.label).toBe("Fable 5.1");
     expect(result.choice?.harnessId).toBe("claude-acp");
-    expect(result.choice?.model.id).toBe("claude-fable-5");
+    expect(result.choice?.model.id).toBe("claude-fable-5-1");
     expect(result.choice?.rankIndex).toBe(0);
     expect(result.skipped).toEqual([]);
   });
@@ -57,14 +115,16 @@ describe("resolveRankedModel", () => {
       "one-shot",
       input({
         platformLimitState: (platform) =>
-          platform === "claude-acp" ? "at-limit" : "clear",
+          platform === "grok-acp" ? "clear" : "at-limit",
       }),
     );
-    // one-shot: Fable → Opus 5 → Sol; both claude candidates are gated.
-    expect(result.choice?.label).toBe("Codex Sol");
-    expect(result.choice?.rankIndex).toBe(2);
+    // one-shot: Astra → Fable 5.1 → Opus 5 → Grok 4.6; everything but Grok
+    // is gated here.
+    expect(result.choice?.label).toBe("Grok 4.6");
+    expect(result.choice?.rankIndex).toBe(3);
     expect(result.skipped).toEqual([
-      { label: "Fable 5", reason: "at-limit" },
+      { label: "Astra", reason: "at-limit" },
+      { label: "Fable 5.1", reason: "at-limit" },
       { label: "Opus 5", reason: "at-limit" },
     ]);
   });
@@ -76,18 +136,24 @@ describe("resolveRankedModel", () => {
     const result = resolveRankedModel(
       "one-shot",
       input({
-        platformLimitState: (platform, scopedWindow) =>
-          platform === "claude-acp" && scopedWindow === "fableWeekly"
+        platformLimitState: (platform, scopedWindow) => {
+          if (platform === "codex-acp") return "at-limit";
+          return platform === "claude-acp" && scopedWindow === "fableWeekly"
             ? "at-limit"
-            : "clear",
+            : "clear";
+        },
       }),
     );
 
-    // one-shot: Fable → Opus 5 → Sol. Fable is out on its own window; Opus
-    // is next on the same platform and was never gated — exactly the
-    // operator's case, and the ranking now says it directly.
+    // one-shot: Astra → Fable 5.1 → Opus 5 → Grok. Astra's platform is spent
+    // and Fable is out on its own window; Opus is next on the same platform as
+    // Fable and was never gated — exactly the operator's case, and the ranking
+    // now says it directly.
     expect(result.choice?.label).toBe("Opus 5");
-    expect(result.skipped).toEqual([{ label: "Fable 5", reason: "at-limit" }]);
+    expect(result.skipped).toEqual([
+      { label: "Astra", reason: "at-limit" },
+      { label: "Fable 5.1", reason: "at-limit" },
+    ]);
   });
 
   it("passes over a platform that is merely close to its limit", () => {
@@ -99,14 +165,12 @@ describe("resolveRankedModel", () => {
       }),
     );
 
-    // frontend-ui: Fable → Opus 5 → Sol. Both claude candidates are near
-    // their limit, so the work goes to Sol rather than being cut off
-    // mid-flight.
-    expect(result.choice?.label).toBe("Codex Sol");
+    // frontend-ui: Fable 5.1 → Astra → Opus 5. Fable is near its limit, so
+    // the work goes to Astra rather than being cut off mid-flight.
+    expect(result.choice?.label).toBe("Astra");
     expect(result.choice?.nearLimit).toBeUndefined();
     expect(result.skipped).toEqual([
-      { label: "Fable 5", reason: "near-limit" },
-      { label: "Opus 5", reason: "near-limit" },
+      { label: "Fable 5.1", reason: "near-limit" },
     ]);
   });
 
@@ -118,7 +182,7 @@ describe("resolveRankedModel", () => {
 
     // Every candidate is close to its limit. Falling through to the caller's
     // untargeted default would be worse than the model the operator ranked.
-    expect(result.choice?.label).toBe("Fable 5");
+    expect(result.choice?.label).toBe("Fable 5.1");
     expect(result.choice?.nearLimit).toBe(true);
     // The skips reported are the strict pass — what it would have used.
     expect(result.skipped.map((skip) => skip.reason)).toEqual([
@@ -133,7 +197,7 @@ describe("resolveRankedModel", () => {
     expect(result.choice?.effort).toBe("xhigh");
   });
 
-  it("falls through a model that is not installed", () => {
+  it("falls through a model that is not installed, keeping the class effort", () => {
     const result = resolveRankedModel(
       "coding-simple",
       input({
@@ -141,27 +205,21 @@ describe("resolveRankedModel", () => {
           platform === "claude-acp" ? CLAUDE_MODELS : [],
       }),
     );
-    // coding-simple (medium profile): Grok 4.6 → Opus 5 → Tera.
-    expect(result.choice?.label).toBe("Opus 5");
+    // coding-simple (medium profile): Astra → Fable 5.1 → Opus 5 → Grok 4.6.
+    expect(result.choice?.label).toBe("Fable 5.1");
+    expect(result.choice?.effort).toBe("medium");
     expect(result.skipped).toEqual([
-      { label: "Grok 4.6", reason: "not-installed" },
+      { label: "Astra", reason: "not-installed" },
     ]);
-  });
-
-  it("starts every medium and light class at Grok 4.6", () => {
-    const medium = resolveRankedModel("coding-simple", input());
-    expect(medium.choice?.harnessId).toBe("grok-acp");
-    const light = resolveRankedModel("testing-light", input());
-    expect(light.choice?.harnessId).toBe("grok-acp");
   });
 
   it("prefers the effort-tier variant the candidate asks for", () => {
     // Codex serves every tier as its own id, ascending — first-match used to
     // hand an xhigh candidate the [low] variant (L1, 2026-08-28).
     const tiers: RankableModel[] = [
-      { id: "gpt-5.6-sol[low]", displayName: "GPT 5.6 Sol[low]" },
-      { id: "gpt-5.6-sol[medium]", displayName: "GPT 5.6 Sol[medium]" },
-      { id: "gpt-5.6-sol[xhigh]", displayName: "GPT 5.6 Sol[xhigh]" },
+      { id: "codex-astra[low]", displayName: "Codex Astra[low]" },
+      { id: "codex-astra[medium]", displayName: "Codex Astra[medium]" },
+      { id: "codex-astra[xhigh]", displayName: "Codex Astra[xhigh]" },
     ];
     const result = resolveRankedModel(
       "coding-complex",
@@ -170,15 +228,15 @@ describe("resolveRankedModel", () => {
           platform === "codex-acp" ? tiers : [],
       }),
     );
-    // coding-complex: Fable → Sol; Fable is not installed here.
-    expect(result.choice?.label).toBe("Codex Sol");
-    expect(result.choice?.model.id).toBe("gpt-5.6-sol[xhigh]");
+    // coding-complex: Astra first, and nothing else is installed here.
+    expect(result.choice?.label).toBe("Astra");
+    expect(result.choice?.model.id).toBe("codex-astra[xhigh]");
   });
 
   it("keeps the first match when no variant embeds the asked effort", () => {
     const tiers: RankableModel[] = [
-      { id: "gpt-5.6-sol[low]", displayName: "GPT 5.6 Sol[low]" },
-      { id: "gpt-5.6-sol[ultra]", displayName: "GPT 5.6 Sol[ultra]" },
+      { id: "codex-astra[low]", displayName: "Codex Astra[low]" },
+      { id: "codex-astra[ultra]", displayName: "Codex Astra[ultra]" },
     ];
     const result = resolveRankedModel(
       "coding-complex",
@@ -189,7 +247,7 @@ describe("resolveRankedModel", () => {
     );
     // The preference cannot be honoured, so behavior stays what it was —
     // the first advertised match — rather than resolving to nothing.
-    expect(result.choice?.model.id).toBe("gpt-5.6-sol[low]");
+    expect(result.choice?.model.id).toBe("codex-astra[low]");
   });
 
   it("searches every harness for a platformless candidate", () => {
@@ -204,6 +262,7 @@ describe("resolveRankedModel", () => {
     );
     expect(result.choice?.label).toBe("Luna");
     expect(result.choice?.harnessId).toBe("goose");
+    expect(result.choice?.effort).toBe("xhigh");
   });
 
   it("returns no choice when nothing in the ranking is usable", () => {
@@ -230,11 +289,23 @@ describe("modelPreferenceClassForPersona", () => {
 
   it("falls back to the bundled slug, normalizing spaces", () => {
     expect(modelPreferenceClassForPersona({ displayName: "Producer" })).toBe(
-      "one-shot",
+      "planning",
     );
     expect(
       modelPreferenceClassForPersona({ displayName: "Unity Worker" }),
     ).toBe("coding-complex");
+  });
+
+  it("routes the coordinating roles to planning, not to coding", () => {
+    // Planning and design are Anthropic-first work (2026-09-12); the roles
+    // that decide and sequence rather than implement moved out of one-shot.
+    for (const displayName of ["Planner", "Producer", "Oracle"]) {
+      expect(modelPreferenceClassForPersona({ displayName })).toBe("planning");
+    }
+    // Research still ends in a brief, not a plan, so it stays one-shot.
+    expect(modelPreferenceClassForPersona({ displayName: "Researcher" })).toBe(
+      "one-shot",
+    );
   });
 
   it("resolves bundled agents whose display name differs from the file stem", () => {
