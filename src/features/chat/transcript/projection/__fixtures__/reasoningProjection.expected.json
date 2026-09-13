@@ -26,9 +26,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "text-row-requires-audit"
-      ],
+      "measurementSafetyReasons": ["text-row-requires-audit"],
       "capabilities": {
         "stateful": false,
         "hasMcpApp": false,
@@ -60,9 +58,7 @@
       "messageId": "u-1",
       "syntheticMessageId": "u-1",
       "responseStartMessageId": null,
-      "blockIds": [
-        "text:0"
-      ],
+      "blockIds": ["text:0"],
       "searchableText": "please fix the conflicts",
       "isStreaming": false,
       "visibleContent": [
@@ -156,10 +152,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -191,9 +184,7 @@
       "messageId": "tr-1",
       "syntheticMessageId": "tr-1",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-1"
-      ],
+      "blockIds": ["toolResponse:t-1"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -287,10 +278,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -322,9 +310,7 @@
       "messageId": "tr-2",
       "syntheticMessageId": "tr-2",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-2"
-      ],
+      "blockIds": ["toolResponse:t-2"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -418,10 +404,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -453,9 +436,7 @@
       "messageId": "tr-3",
       "syntheticMessageId": "tr-3",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-3"
-      ],
+      "blockIds": ["toolResponse:t-3"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -549,10 +530,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -584,9 +562,7 @@
       "messageId": "tr-4",
       "syntheticMessageId": "tr-4",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-4"
-      ],
+      "blockIds": ["toolResponse:t-4"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -690,10 +666,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -725,10 +698,7 @@
       "messageId": "tr-5",
       "syntheticMessageId": "tr-5",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-5",
-        "toolResponse:t-6"
-      ],
+      "blockIds": ["toolResponse:t-5", "toolResponse:t-6"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -830,10 +800,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -865,9 +832,7 @@
       "messageId": "tr-8",
       "syntheticMessageId": "tr-8",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-8"
-      ],
+      "blockIds": ["toolResponse:t-8"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -961,10 +926,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -996,9 +958,7 @@
       "messageId": "tr-9",
       "syntheticMessageId": "tr-9",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-9"
-      ],
+      "blockIds": ["toolResponse:t-9"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -1096,10 +1056,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -1131,9 +1088,7 @@
       "messageId": "tr-10",
       "syntheticMessageId": "tr-10",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-10"
-      ],
+      "blockIds": ["toolResponse:t-10"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -1227,10 +1182,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -1262,9 +1214,7 @@
       "messageId": "tr-11",
       "syntheticMessageId": "tr-11",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-11"
-      ],
+      "blockIds": ["toolResponse:t-11"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -1358,10 +1308,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -1393,9 +1340,7 @@
       "messageId": "tr-12",
       "syntheticMessageId": "tr-12",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-12"
-      ],
+      "blockIds": ["toolResponse:t-12"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -1498,10 +1443,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -1533,10 +1475,7 @@
       "messageId": "tr-13",
       "syntheticMessageId": "tr-13",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-13",
-        "toolResponse:t-14"
-      ],
+      "blockIds": ["toolResponse:t-13", "toolResponse:t-14"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -1633,9 +1572,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "text-row-requires-audit"
-      ],
+      "measurementSafetyReasons": ["text-row-requires-audit"],
       "capabilities": {
         "stateful": false,
         "hasMcpApp": false,
@@ -1667,9 +1604,7 @@
       "messageId": "a-section-reemitted:answer",
       "syntheticMessageId": "a-section-reemitted:answer",
       "responseStartMessageId": "a-section-reemitted",
-      "blockIds": [
-        "text:0"
-      ],
+      "blockIds": ["text:0"],
       "searchableText": "Done with the sections.",
       "isStreaming": false,
       "visibleContent": [
@@ -1772,10 +1707,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -1807,9 +1739,7 @@
       "messageId": "tr-16",
       "syntheticMessageId": "tr-16",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-16"
-      ],
+      "blockIds": ["toolResponse:t-16"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -1903,10 +1833,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -1938,9 +1865,7 @@
       "messageId": "tr-17",
       "syntheticMessageId": "tr-17",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-17"
-      ],
+      "blockIds": ["toolResponse:t-17"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -1967,9 +1892,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "text-row-requires-audit"
-      ],
+      "measurementSafetyReasons": ["text-row-requires-audit"],
       "capabilities": {
         "stateful": false,
         "hasMcpApp": false,
@@ -2001,9 +1924,7 @@
       "messageId": "u-2",
       "syntheticMessageId": "u-2",
       "responseStartMessageId": null,
-      "blockIds": [
-        "text:0"
-      ],
+      "blockIds": ["text:0"],
       "searchableText": "continue",
       "isStreaming": false,
       "visibleContent": [
@@ -2097,9 +2018,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "text-row-requires-audit"
-      ],
+      "measurementSafetyReasons": ["text-row-requires-audit"],
       "capabilities": {
         "stateful": false,
         "hasMcpApp": false,
@@ -2131,9 +2050,7 @@
       "messageId": "a-leading-3:answer",
       "syntheticMessageId": "a-leading-3:answer",
       "responseStartMessageId": "a-leading-3",
-      "blockIds": [
-        "text:0"
-      ],
+      "blockIds": ["text:0"],
       "searchableText": "Final answer after the plan.",
       "isStreaming": false,
       "visibleContent": [
@@ -2236,10 +2153,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -2271,9 +2185,7 @@
       "messageId": "tr-19",
       "syntheticMessageId": "tr-19",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-19"
-      ],
+      "blockIds": ["toolResponse:t-19"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -2374,10 +2286,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -2409,9 +2318,7 @@
       "messageId": "tr-20",
       "syntheticMessageId": "tr-20",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-20"
-      ],
+      "blockIds": ["toolResponse:t-20"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -2509,10 +2416,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -2544,9 +2448,7 @@
       "messageId": "tr-21",
       "syntheticMessageId": "tr-21",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-21"
-      ],
+      "blockIds": ["toolResponse:t-21"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -2648,10 +2550,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "stateful-row",
-        "tool-content"
-      ],
+      "measurementSafetyReasons": ["stateful-row", "tool-content"],
       "capabilities": {
         "stateful": true,
         "hasMcpApp": false,
@@ -2683,9 +2582,7 @@
       "messageId": "tr-24",
       "syntheticMessageId": "tr-24",
       "responseStartMessageId": null,
-      "blockIds": [
-        "toolResponse:t-24"
-      ],
+      "blockIds": ["toolResponse:t-24"],
       "searchableText": "",
       "isStreaming": false,
       "visibleContent": [
@@ -2844,9 +2741,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "text-row-requires-audit"
-      ],
+      "measurementSafetyReasons": ["text-row-requires-audit"],
       "capabilities": {
         "stateful": false,
         "hasMcpApp": false,
@@ -2878,9 +2773,7 @@
       "messageId": "a-trailing:answer",
       "syntheticMessageId": "a-trailing:answer",
       "responseStartMessageId": "a-trailing",
-      "blockIds": [
-        "text:0"
-      ],
+      "blockIds": ["text:0"],
       "searchableText": "Answer: I should remove any markers that are causing confusion before editing.",
       "isStreaming": false,
       "visibleContent": [
@@ -2924,9 +2817,7 @@
       "measurementPolicy": "measure-shell",
       "layoutPendingPolicy": "can-finalize",
       "keepAlivePriority": "none",
-      "measurementSafetyReasons": [
-        "text-row-requires-audit"
-      ],
+      "measurementSafetyReasons": ["text-row-requires-audit"],
       "capabilities": {
         "stateful": false,
         "hasMcpApp": false,
@@ -2958,9 +2849,7 @@
       "messageId": "u-3",
       "syntheticMessageId": "u-3",
       "responseStartMessageId": null,
-      "blockIds": [
-        "text:0"
-      ],
+      "blockIds": ["text:0"],
       "searchableText": "and now?",
       "isStreaming": false,
       "visibleContent": [
