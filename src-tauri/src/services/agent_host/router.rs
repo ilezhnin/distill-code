@@ -363,6 +363,16 @@ impl Inner {
         while let Some(message) = source.next().await {
             match message {
                 Ok(WsMessage::Text(text)) => {
+                    // One task per frame, deliberately: `session/prompt` runs
+                    // for as long as the agent works on the turn, so handling
+                    // frames in arrival order would block every other call on
+                    // this socket — a `session/cancel`, another chat's prompt —
+                    // for that whole turn. The cost is that two frames sent back
+                    // to back can reach the bridge in either order; the renderer
+                    // serialises the mutations where that matters
+                    // (`serializeSessionMutation`), and a cancel that loses the
+                    // race is a no-op. Sequencing per *session* inside the host
+                    // is the real fix and a design change.
                     let host = Arc::clone(&self);
                     let line = text.to_string();
                     let reply_to = tx.clone();
