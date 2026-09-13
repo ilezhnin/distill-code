@@ -463,7 +463,7 @@
           }
         },
         "archive": {
-          "description": "Archive a chat session, then remove eligible Distill-managed worktrees and branches. Refuses cleanup that would discard local files or changes unless --discard-changes is set.",
+          "description": "Archive a chat session, then remove eligible Distill-managed worktrees and branches. Refuses when cleanup would discard local files or changes; the user must confirm that in the app.",
           "fields": [
             {
               "name": "session_id",
@@ -475,7 +475,7 @@
               "name": "discard_changes",
               "required": false,
               "kind": "boolean",
-              "description": "Discard local files and changes when removing managed worktrees or branches."
+              "description": "No effect; kept for compatibility. berdctl never discards local files or changes: when Git cleanup would, the command refuses and the user must confirm in the app."
             }
           ],
           "schema": {
@@ -487,7 +487,7 @@
                 "description": "Id of the session to archive."
               },
               "discard_changes": {
-                "description": "Discard local files and changes when removing managed worktrees or branches.",
+                "description": "No effect; kept for compatibility. berdctl never discards local files or changes: when Git cleanup would, the command refuses and the user must confirm in the app.",
                 "type": "boolean"
               }
             },

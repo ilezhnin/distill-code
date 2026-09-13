@@ -588,15 +588,16 @@ describe("action schemas", () => {
 });
 
 describe("command safety metadata", () => {
-  it("keeps mutations visible and limits destructive metadata to session archive", () => {
+  it("keeps mutations visible and marks no command destructive", () => {
+    // v1 has no auth: the broker accepts any same-user process, so no
+    // command may carry a destructive escape hatch (session archive lost
+    // its --discard-changes effect for exactly that reason).
     for (const [groupName, group] of Object.entries(TOOL_GROUPS)) {
       for (const [actionName, command] of Object.entries(group.actions)) {
         const key = `${groupName}.${actionName}`;
         const metadata = command as AppCommand<unknown, unknown>;
 
-        expect(metadata.destructive, `${key} destructive`).toBe(
-          key === "sessions.archive",
-        );
+        expect(metadata.destructive, `${key} destructive`).toBe(false);
         expect(
           ["read", "create", "update", "archive"],
           `${key} effect`,
@@ -2278,7 +2279,10 @@ describe("sessions.archive", () => {
     expect(result).toEqual({ ok: true });
   });
 
-  it("passes the explicit discard policy through the facade", async () => {
+  it("never hands the facade the discard policy, even when --discard-changes is set", async () => {
+    // The broker is unauthenticated: any same-user process can reach this
+    // command, so berdctl must not be able to force-remove a dirty worktree.
+    // The flag stays on the wire for CLI compatibility and has no effect.
     mockSessionFound();
     const deadlineMs = Date.now() + 5_000;
 
@@ -2294,28 +2298,48 @@ describe("sessions.archive", () => {
 
     expect(controller.archiveSession).toHaveBeenCalledWith(
       "session-1",
-      "discard",
+      "reject",
       deadlineMs,
+    );
+    expect(controller.archiveSession).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "discard",
+      expect.anything(),
     );
   });
 
-  it("tells callers how to opt into discarding changes", async () => {
+  it("refuses cleanup that would discard changes and points the caller at the app", async () => {
     mockSessionFound();
     controller.archiveSession.mockResolvedValue({
       ok: false,
       reason: "cleanup_requires_discard",
     });
 
-    const error = await expectCommandError(
-      dispatchCommand(
-        "sessions",
-        { action: "archive", session_id: "session-1" },
-        ctx,
-      ),
-      "cleanup_requires_discard",
-    );
+    for (const discardChanges of [undefined, true]) {
+      const error = await expectCommandError(
+        dispatchCommand(
+          "sessions",
+          {
+            action: "archive",
+            session_id: "session-1",
+            ...(discardChanges === undefined
+              ? {}
+              : { discard_changes: discardChanges }),
+          },
+          ctx,
+        ),
+        "cleanup_requires_discard",
+      );
+      expect(error.message).toContain("in the app");
+      expect(error.message).not.toContain("--discard-changes");
+    }
+  });
 
-    expect(error.message).toContain("--discard-changes");
+  it("documents --discard-changes as having no effect", () => {
+    const command = TOOL_GROUPS.sessions.actions.archive;
+    expect(command.destructive).toBe(false);
+    expect(command.helpFooter).toContain("has no effect");
+    expect(command.description).not.toMatch(/unless --discard-changes/);
   });
 
   it("returns a failure after archival when Git cleanup is incomplete", async () => {
