@@ -206,11 +206,13 @@ impl SessionStore {
         Ok(rows.iter().map(Self::row_to_session).collect())
     }
 
+    /// Name a session. An empty `title` clears the name rather than storing a
+    /// blank one, so `Option<String>` still means "named or not".
     pub async fn set_title(&self, id: &str, title: &str, user_set: bool) -> Result<(), String> {
         sqlx::query(
             "UPDATE sessions SET title = ?, user_set_name = ?, updated_at = ? WHERE id = ?",
         )
-        .bind(title)
+        .bind(Some(title).filter(|title| !title.is_empty()))
         .bind(user_set as i64)
         .bind(now_iso())
         .bind(id)
@@ -962,5 +964,26 @@ mod tests {
         store.set_agent_title("a", "Other").await.expect("title");
         let renamed = store.get_session("a").await.expect("read").expect("row");
         assert_eq!(renamed.title.as_deref(), Some("Mine"));
+    }
+
+    #[tokio::test]
+    async fn clearing_a_name_hands_the_naming_back_to_the_agent() {
+        let (_dir, store) = store_with_history().await;
+        store.set_title("a", "Mine", true).await.expect("rename");
+
+        // An empty rename is "I have no name for this", not "its name is the
+        // empty string": it must not be stored as a name the user chose, or the
+        // agent's proposed title would be blocked forever.
+        store.set_title("a", "", false).await.expect("clear");
+        let cleared = store.get_session("a").await.expect("read").expect("row");
+        assert_eq!(cleared.title, None);
+        assert!(!cleared.user_set_name);
+
+        store
+            .set_agent_title("a", "Fix the build")
+            .await
+            .expect("title");
+        let named = store.get_session("a").await.expect("read").expect("row");
+        assert_eq!(named.title.as_deref(), Some("Fix the build"));
     }
 }
