@@ -12,6 +12,7 @@
  */
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
@@ -25,11 +26,12 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   ALLOWED_COMMANDS,
   buildCmdLine,
+  clamp,
   createRelay,
   parseArgs,
   quoteForCmd,
@@ -85,6 +87,20 @@ describe("buildCmdLine", () => {
 
   it("survives with no arguments at all", () => {
     assert.equal(buildCmdLine("just.cmd", []), '""just.cmd""');
+  });
+});
+
+describe("clamp", () => {
+  it("passes a value already inside the range through", () => {
+    assert.equal(clamp(5, 0, 10), 5);
+  });
+
+  it("floors a value below the minimum", () => {
+    assert.equal(clamp(-10_000, 0, 10), 0);
+  });
+
+  it("ceils a value above the maximum", () => {
+    assert.equal(clamp(999_999, 0, 10), 10);
   });
 });
 
@@ -435,5 +451,50 @@ describe("when the outbox cannot be written", () => {
     );
     assert.equal(answer.ok, true);
     assert.equal(readFileSync(counter, "utf8"), "1");
+  });
+});
+
+describe("a driver envelope with an out-of-range timeout", () => {
+  // Regression: `socket.setTimeout(negative)` throws synchronously, and that
+  // throw used to happen before the socket's `'error'` listener was
+  // attached. With the app not running (ECONNREFUSED), the resulting
+  // listener-less `'error'` event crashed the whole relay process, not just
+  // this one command — so this must run out of process to be a meaningful
+  // check: an in-process crash would take the entire test file down with it
+  // rather than fail cleanly.
+  it("answers with a failure instead of crashing the relay", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "agent-driver-timeout-"));
+    const relayUrl = pathToFileURL(path.join(HERE, "relay.mjs")).href;
+    const child = [
+      `import { createRelay } from ${JSON.stringify(relayUrl)};`,
+      `import { readFileSync, renameSync, writeFileSync } from "node:fs";`,
+      `import path from "node:path";`,
+      // Port 1 is privileged and nothing on this machine listens there, so
+      // the connection attempt refuses immediately (ECONNREFUSED) instead of
+      // hanging — exactly the "app not running" case the finding describes.
+      `const relay = createRelay({ root: ${JSON.stringify(root)}, port: 1, repoRoot: ${JSON.stringify(REPO_ROOT)} });`,
+      `const target = path.join(relay.paths.inbox, "d1.json");`,
+      `writeFileSync(\`\${target}.tmp\`, JSON.stringify({ kind: "driver", action: "snapshot", timeout: -10000 }), "utf8");`,
+      `renameSync(\`\${target}.tmp\`, target);`,
+      `const outFile = path.join(relay.paths.outbox, "d1.json");`,
+      `const deadline = Date.now() + 5_000;`,
+      `while (Date.now() < deadline) {`,
+      `  try { readFileSync(outFile, "utf8"); break; } catch {}`,
+      `  await new Promise((r) => setTimeout(r, 50));`,
+      `}`,
+      `relay.stop();`,
+    ].join("\n");
+
+    // Throws (non-zero exit / signal) if the child process crashed instead
+    // of exiting cleanly once the answer was written.
+    execFileSync(process.execPath, ["--input-type=module", "-e", child], {
+      timeout: 10_000,
+    });
+
+    const answer = JSON.parse(
+      readFileSync(path.join(root, "outbox", "d1.json"), "utf8"),
+    );
+    assert.equal(answer.ok, false);
+    assert.match(answer.error, /Cannot reach the app test driver/);
   });
 });

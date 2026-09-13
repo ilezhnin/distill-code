@@ -53,6 +53,16 @@ const HEARTBEAT_INTERVAL_MS = 2_000;
 /** How often the relay checks whether the app's driver port answers at all. */
 const PROBE_INTERVAL_MS = 10_000;
 const DEFAULT_DRIVER_TIMEOUT_MS = 15_000;
+/**
+ * Bound on a `driver` envelope's requested `timeout`. `socket.setTimeout`
+ * throws synchronously on a negative value, and that throw used to happen
+ * before the socket's `'error'` listener was attached — an envelope like
+ * `{ "timeout": -10000 }` with the app closed took the whole relay process
+ * down. Clamping keeps every value `sendToDriver` sees safely non-negative
+ * (and away from an unreasonably long hang) regardless of what the caller
+ * sends.
+ */
+const MAX_DRIVER_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_EXEC_TIMEOUT_MS = 15 * 60_000;
 /** How much of each stream rides back inside the answer file. */
 const TAIL_LIMIT = 8_000;
@@ -103,6 +113,11 @@ export function buildCmdLine(resolved, argv) {
     " ",
   );
   return `"${shellCommand}"`;
+}
+
+/** Confine a value to `[min, max]`. */
+export function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
 }
 
 /** Keep the end of a stream, which is where the failure is. */
@@ -244,6 +259,18 @@ export function createRelay({
       };
 
       const socket = net.createConnection({ port, host: "127.0.0.1" });
+      // Attached before `setTimeout`: a connection failure (ECONNREFUSED, the
+      // app not running) can arrive before anything else, and an `'error'`
+      // event with no listener at all crashes the whole relay process — not
+      // just this one command.
+      socket.on("error", (error) =>
+        finish({
+          ok: false,
+          error:
+            `Cannot reach the app test driver on 127.0.0.1:${port} (${error.message}). ` +
+            "Is the app running from a build with the app-test-driver feature?",
+        }),
+      );
       socket.setTimeout(timeoutMs);
       socket.on("connect", () => socket.write(`${JSON.stringify(command)}\n`));
       socket.on("data", (chunk) => {
@@ -266,14 +293,6 @@ export function createRelay({
           error: `Driver did not answer within ${timeoutMs}ms on port ${port}.`,
         }),
       );
-      socket.on("error", (error) =>
-        finish({
-          ok: false,
-          error:
-            `Cannot reach the app test driver on 127.0.0.1:${port} (${error.message}). ` +
-            "Is the app running from a build with the app-test-driver feature?",
-        }),
-      );
       socket.on("close", () =>
         finish({
           ok: false,
@@ -288,7 +307,7 @@ export function createRelay({
       return { ok: false, error: 'A driver envelope needs an "action".' };
     }
     const timeoutMs = Number.isInteger(envelope.timeout)
-      ? envelope.timeout + 5_000
+      ? clamp(envelope.timeout, 0, MAX_DRIVER_TIMEOUT_MS) + 5_000
       : DEFAULT_DRIVER_TIMEOUT_MS;
     const command = { action: envelope.action };
     if (token) command.token = token;
