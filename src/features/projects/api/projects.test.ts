@@ -294,6 +294,43 @@ describe("projects API artifact metadata", () => {
     expect(updateRequest.properties.chatGroups).toEqual(chatGroups);
     expect(project.chatGroups).toEqual(chatGroups);
   });
+
+  it("rewrites only the projects whose order actually changed", async () => {
+    const projects = [
+      { ...projectInfo({ id: "a", order: 0 }), path: "/tmp/projects/a.md" },
+      { ...projectInfo({ id: "b", order: 1 }), path: "/tmp/projects/b.md" },
+      { ...projectInfo({ id: "c", order: 2 }), path: "/tmp/projects/c.md" },
+    ];
+    mocks.sourcesList.mockResolvedValue({
+      sources: projects.map((project) => ({
+        ...source({
+          name: project.name,
+          icon: project.icon,
+          color: project.color,
+          workingDirs: project.workingDirs,
+          useWorktrees: project.useWorktrees,
+          order: project.order,
+        }),
+        name: project.id,
+        path: project.path,
+      })),
+    });
+    mocks.sourcesUpdate.mockImplementation(async (request) => ({
+      source: source(request.properties),
+    }));
+
+    const { reorderProjects } = await import("./projects");
+    await reorderProjects([
+      ["a", 0],
+      ["b", 2],
+      ["c", 1],
+    ]);
+
+    expect(mocks.sourcesList).toHaveBeenCalledTimes(1);
+    expect(
+      mocks.sourcesUpdate.mock.calls.map(([request]) => request.path),
+    ).toEqual(["/tmp/projects/b.md", "/tmp/projects/c.md"]);
+  });
 });
 
 describe("normalizeProjectWorkspaces dedupe identity", () => {
