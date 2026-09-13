@@ -1,22 +1,38 @@
+import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { resetSessionTargetCoordinatorsForTests } from "@/features/chat/lib/sessionTargetCoordinator";
+import { useMessageQueue } from "@/features/chat/hooks/useMessageQueue";
 import { isSystemNotification } from "@/shared/types/messages";
 import type { SessionChatRuntime } from "@/shared/types/chat";
 import { QueuedMessageOwnershipLostError } from "./preCommitSendRejection";
+import { isQueuedSessionReady } from "./queuedMessageReadiness";
 import { dispatchPrompt } from "./sendCore";
+import { steerPromptInSession } from "./steerCore";
 
 const mocks = vi.hoisted(() => ({
   acpSendMessage: vi.fn(),
+  acpSteerMessage: vi.fn(),
   acpPrepareSession: vi.fn(),
 }));
 
 vi.mock("@/shared/api/acp", () => ({
   acpSendMessage: (...args: unknown[]) => mocks.acpSendMessage(...args),
+  acpSteerMessage: (...args: unknown[]) => mocks.acpSteerMessage(...args),
   acpPrepareSession: (...args: unknown[]) => mocks.acpPrepareSession(...args),
 }));
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
 
 describe("dispatchPrompt pre-commit rejection", () => {
   beforeEach(() => {
@@ -177,3 +193,166 @@ describe("dispatchPrompt model rejection recovery", () => {
 // answered: none. These pin that all three ways out report, and that a
 // pre-commit rejection — which hands the session on having changed nothing —
 // still does not.
+
+// A steer stores the steer response's run id on the runtime while the prompt
+// is still in flight, and the host drains the steer inside that same
+// `session/prompt`. Nothing but the prompt's own settlement can therefore
+// clear the run: every send gate (`isQueuedSessionReady`) requires
+// `activeRunId === null`, so a run id left behind wedges the chat until the
+// app restarts.
+describe("dispatchPrompt run settlement after a steer", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetSessionTargetCoordinatorsForTests();
+    useChatStore.setState({
+      messagesBySession: {},
+      sessionStateById: {},
+      queuedMessageBySession: {},
+      draftsBySession: {},
+      activeSessionId: null,
+      isConnected: true,
+    });
+    useChatSessionStore.setState({
+      sessions: [
+        {
+          id: "session-1",
+          title: "Chat",
+          executionTarget: { harnessId: "claude-acp" },
+          createdAt: "now",
+          updatedAt: "now",
+          messageCount: 0,
+        },
+      ],
+      activeSessionId: null,
+      activeWorkspaceBySession: {},
+      hasHydratedSessions: true,
+    });
+  });
+
+  function startPrompt() {
+    const send = deferred<void>();
+    mocks.acpSendMessage.mockImplementationOnce(
+      (
+        _sessionId: string,
+        _prompt: string,
+        options: { onPromptDispatching(): void },
+      ) => {
+        options.onPromptDispatching();
+        return send.promise;
+      },
+    );
+    const dispatch = dispatchPrompt("session-1", "first prompt", {});
+    return { send, dispatch };
+  }
+
+  it("clears the steered run when the prompt resolves and drains the queue", async () => {
+    mocks.acpSteerMessage.mockResolvedValue({
+      runId: "run-2",
+      messageId: "steer-1",
+    });
+    const { send, dispatch } = startPrompt();
+    await Promise.resolve();
+
+    expect(await steerPromptInSession("session-1", "also do X")).toBe(true);
+    const runtime = () =>
+      useChatStore.getState().getSessionRuntime("session-1");
+    expect(runtime().activeRunId).toBe("run-2");
+
+    const sendMessage = vi.fn().mockReturnValue(true);
+    useChatStore.getState().enqueueTransportReadyMessage("session-1", {
+      persona: { kind: "inherit" },
+      text: "after the turn",
+    });
+    renderHook(() => useMessageQueue("session-1", "streaming", sendMessage));
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    send.resolve();
+    await dispatch;
+
+    expect(runtime().chatState).toBe("idle");
+    expect(runtime().activeRunId).toBeNull();
+    expect(isQueuedSessionReady(runtime())).toBe(true);
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledOnce());
+    expect(sendMessage.mock.calls[0]?.[0]).toBe("after the turn");
+  });
+
+  it("clears the steered run when the prompt fails", async () => {
+    mocks.acpSteerMessage.mockResolvedValue({
+      runId: "run-2",
+      messageId: "steer-1",
+    });
+    const { send, dispatch } = startPrompt();
+    await Promise.resolve();
+    expect(await steerPromptInSession("session-1", "also do X")).toBe(true);
+
+    send.reject(new Error("bridge died"));
+    await expect(dispatch).rejects.toThrow("bridge died");
+
+    const runtime = useChatStore.getState().getSessionRuntime("session-1");
+    expect(runtime.activeRunId).toBeNull();
+    expect(isQueuedSessionReady(runtime)).toBe(true);
+  });
+
+  it("settles a stop issued after a steer once the prompt settles", async () => {
+    mocks.acpSteerMessage.mockResolvedValue({
+      runId: "run-2",
+      messageId: "steer-1",
+    });
+    const { send, dispatch } = startPrompt();
+    await Promise.resolve();
+    expect(await steerPromptInSession("session-1", "also do X")).toBe(true);
+
+    // Stop: the cancel request is in flight and the prompt is the only thing
+    // that can settle it (useChat's stop path leaves the run to the prompt
+    // whenever `activeRunId` is set).
+    const store = useChatStore.getState();
+    store.setRunCancellationPending("session-1", true);
+    store.setChatState("session-1", "idle");
+
+    send.reject(new DOMException("The operation was aborted.", "AbortError"));
+    await expect(dispatch).rejects.toThrow();
+
+    const runtime = useChatStore.getState().getSessionRuntime("session-1");
+    expect(runtime.activeRunId).toBeNull();
+    expect(runtime.isRunCancellationPending).toBe(false);
+    expect(isQueuedSessionReady(runtime)).toBe(true);
+  });
+
+  it("leaves a newer owner's run alone when a superseded prompt settles", async () => {
+    mocks.acpSteerMessage.mockResolvedValue({
+      runId: "run-2",
+      messageId: "steer-1",
+    });
+    const { send, dispatch } = startPrompt();
+    await Promise.resolve();
+    expect(await steerPromptInSession("session-1", "also do X")).toBe(true);
+
+    // A newer prompt takes the session over while the first is still pending.
+    const newer = deferred<void>();
+    mocks.acpSendMessage.mockImplementationOnce(
+      (
+        _sessionId: string,
+        _prompt: string,
+        options: { onPromptDispatching(): void },
+      ) => {
+        options.onPromptDispatching();
+        return newer.promise;
+      },
+    );
+    const newerDispatch = dispatchPrompt("session-1", "second prompt", {});
+    await Promise.resolve();
+    useChatStore.getState().setActiveRunId("session-1", "run-3");
+
+    send.resolve();
+    await dispatch;
+    expect(
+      useChatStore.getState().getSessionRuntime("session-1").activeRunId,
+    ).toBe("run-3");
+
+    newer.resolve();
+    await newerDispatch;
+    expect(
+      useChatStore.getState().getSessionRuntime("session-1").activeRunId,
+    ).toBeNull();
+  });
+});
