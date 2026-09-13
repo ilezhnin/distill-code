@@ -5,6 +5,7 @@ import {
   isConductorGraphHydrating,
   useConductorGraphStore,
 } from "./conductorGraphStore";
+import { notePersistReadOutage } from "./persistHealth";
 import type { SessionNode, StructuredReport } from "./types";
 import type { WaveState } from "./waveEngine";
 import {
@@ -214,6 +215,9 @@ function readJournalDocument(
           `Could not read the run journal for wave ${journal.waveId}; this session's events will not be written to it.`,
           error,
         );
+        // Durability outage, same channel as the others: the trace LAWS/WAVES
+        // requires is not gaining this run, and nothing else would say so.
+        notePersistReadOutage("run-journal", error);
         notifyRunEventListeners();
         return;
       }
