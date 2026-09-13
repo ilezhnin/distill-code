@@ -52,6 +52,17 @@ every two seconds and says whether the app's driver port is answering.
 Driver and exec run in separate lanes: a fifteen-minute test run does not
 block a snapshot.
 
+An envelope is always spent before its answer is written: it is deleted from
+`inbox/`, or — when even the delete fails, because something else holds the file
+open — moved to `<root>/failed/`. `poll()` only ever reads `inbox/`, so an
+envelope parked in `failed/` will never run again; the directory is a record of
+envelopes whose command already ran and whose file could not be cleaned up, and
+it is safe to delete. An answer that cannot be written is held in memory and
+retried on each poll — bounded, so a permanently unwritable `outbox/` (a stale
+directory at an answer's path, a read-only mount) drops the oldest held answers
+and gives up on one that will not land, rather than growing forever and logging
+once per poll.
+
 ### `driver` envelopes
 
 ```json
