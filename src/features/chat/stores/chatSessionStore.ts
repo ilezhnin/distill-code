@@ -20,6 +20,7 @@ import {
   unarchiveSession as acpUnarchiveSession,
 } from "@/shared/api/acpApi";
 import { mergeAcpSessionPage } from "@/features/chat/lib/acpSessionMapping";
+import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
   logReasoningEffortInfo,
   reasoningEffortConfigLogFields,
@@ -77,6 +78,15 @@ export interface ChatSession {
   messageCount: number;
   /** First ~10 words of the session's latest real text message, or null. */
   subtitle?: string | null;
+  /**
+   * The host's run for this session as of the last `session/list` (or
+   * `session/info`) response: a run id while a turn is in flight, `null` when
+   * none is, `undefined` when no response has said. Kept because it is the only
+   * thing an ordinary load can ask whether the transcript's last reply is still
+   * being written; the list is refreshed every 60 s, so a local run in flight
+   * always outranks it.
+   */
+  activeRunId?: string | null;
   userSetName?: boolean;
   creationState?: "pending" | "failed";
   creationError?: string;
@@ -280,6 +290,55 @@ interface ChatSessionStoreActions {
 
 export type ChatSessionStore = ChatSessionStoreState & ChatSessionStoreActions;
 
+/**
+ * True when the patch asks for nothing the session does not already have, and
+ * touches no field whose merge has effects of its own (the workspace fields go
+ * through `ensureWorkspaceAttachment`/`withWorkspaceBackfill` and persist, and
+ * `reasoningEffort` compares by value and logs).
+ */
+function isPlainNoopSessionPatch(
+  existing: ChatSession,
+  patch: ChatSessionPatch,
+): boolean {
+  const keys = Object.keys(patch) as (keyof ChatSessionPatch)[];
+  if (keys.length === 0) return true;
+  for (const key of keys) {
+    if (
+      key === "workingDir" ||
+      key === "workspaceAttachments" ||
+      key === "activeWorkspaceId" ||
+      key === "reasoningEffort"
+    ) {
+      return false;
+    }
+    if (patch[key] !== existing[key]) return false;
+  }
+  return true;
+}
+
+/**
+ * Id lookup without a scan.
+ *
+ * `sessions` grows to thousands and `getSession` is called for every streamed
+ * notification chunk (and again inside `patchSession`), which made session
+ * lookup O(sessions) per chunk. The index is rebuilt only when the array
+ * identity changes — every store write replaces it, so a stale index cannot
+ * survive an update.
+ */
+let indexedSessions: readonly ChatSession[] | null = null;
+let sessionIndex = new Map<string, ChatSession>();
+
+function findSessionById(
+  sessions: readonly ChatSession[],
+  id: string,
+): ChatSession | undefined {
+  if (indexedSessions !== sessions) {
+    sessionIndex = new Map(sessions.map((session) => [session.id, session]));
+    indexedSessions = sessions;
+  }
+  return sessionIndex.get(id);
+}
+
 function patchIncludesReasoningEffort(patch: Partial<ChatSession>): boolean {
   return Object.hasOwn(patch, "reasoningEffort");
 }
@@ -361,7 +420,7 @@ function recordArchiveMutationSuccess(
   };
 
   if (!currentMutation) {
-    if (!state.sessions.some((candidate) => candidate.id === sessionId)) {
+    if (!findSessionById(state.sessions, sessionId)) {
       return state;
     }
 
@@ -383,7 +442,7 @@ function recordArchiveMutationSuccess(
   }
 
   if (currentMutation.operationId === completedMutation.operationId) {
-    if (!state.sessions.some((candidate) => candidate.id === sessionId)) {
+    if (!findSessionById(state.sessions, sessionId)) {
       const { [sessionId]: _completed, ...archiveMutationBySessionId } =
         state.archiveMutationBySessionId;
       return { archiveMutationBySessionId };
@@ -762,6 +821,18 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
       const page = await acpListSessionsPage();
       if (sessionLoadEpoch !== loadEpoch) return;
       set((state) => mergeAcpSessionPage(state, page, null));
+      const { sessions, hasMoreSessions } = get();
+      if (!hasMoreSessions) {
+        // With the whole list in hand, an unread flag for an id the host does
+        // not list belongs to a session that was archived away or deleted (in
+        // this window or another one): nothing can ever open it to mark it
+        // read, so it would sit in `distill:unread-sessions` forever. Only done
+        // when there is no further page — a partial list would clear flags of
+        // sessions that simply have not been loaded yet.
+        useChatStore
+          .getState()
+          .pruneUnreadSessions(sessions.map((session) => session.id));
+      }
     } catch (error) {
       if (sessionLoadEpoch === loadEpoch) {
         console.error("Failed to load sessions from ACP:", error);
@@ -803,7 +874,7 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
     const includesReasoningEffort = patchIncludesReasoningEffort(patch);
     let sessionForWorkspacePersistence: ChatSession | null = null;
     set((state) => {
-      const existing = state.sessions.find((session) => session.id === id);
+      const existing = findSessionById(state.sessions, id);
       if (!existing) {
         if (includesReasoningEffort) {
           logReasoningEffortInfo("patchSession missing session", {
@@ -821,6 +892,13 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
           patch.reasoningEffort,
         );
       if (reasoningEffortUnchanged && Object.keys(patch).length === 1) {
+        return state;
+      }
+      // The live-subtitle path patches the streaming session once a second
+      // with a value that is often the one it already has. Answering that
+      // before merging skips a session-sized object spread and the workspace
+      // backfill on every one of them.
+      if (isPlainNoopSessionPatch(existing, patch)) {
         return state;
       }
       const effectivePatch = reasoningEffortUnchanged
@@ -1310,12 +1388,12 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
     });
   },
 
-  getSession: (id) => get().sessions.find((session) => session.id === id),
+  getSession: (id) => findSessionById(get().sessions, id),
 
   getActiveSession: () => {
     const { activeSessionId, sessions } = get();
     if (!activeSessionId) return null;
-    return sessions.find((session) => session.id === activeSessionId) ?? null;
+    return findSessionById(sessions, activeSessionId) ?? null;
   },
 
   getArchivedSessions: () =>

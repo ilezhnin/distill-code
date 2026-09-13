@@ -26,11 +26,75 @@ function acpDebug(label: string, payload: unknown): void {
   console.debug(`[acp] ${label}`, payload);
 }
 
+/**
+ * Maps the SDK's per-connection request ids to and from a space that is
+ * unique to one socket.
+ *
+ * The SDK numbers requests from 0 on every new connection, and the host
+ * keeps running a request whose socket went away and answers it on whatever
+ * socket is current. Without this, a late reply for old request 7 resolves
+ * whichever new request happens to be 7. Outgoing request ids are prefixed
+ * with the connection's epoch (`"<epoch>:<id>"`; the host echoes ids
+ * verbatim) and replies are mapped back; a reply carrying another epoch is
+ * dropped instead of delivered.
+ */
+export interface RequestIdSpace {
+  /** Rewrite an outgoing message; only this side's requests are touched. */
+  toWire(message: AnyMessage): AnyMessage;
+  /**
+   * Map an incoming message back; `null` for a reply that answers a request
+   * of another connection. Host-originated requests and notifications pass
+   * through untouched.
+   */
+  fromWire(message: AnyMessage): AnyMessage | null;
+}
+
+export function createRequestIdSpace(epoch: string): RequestIdSpace {
+  const prefix = `${epoch}:`;
+  return {
+    toWire(message) {
+      if (!("method" in message) || !("id" in message)) {
+        return message;
+      }
+      if (typeof message.id !== "number") {
+        return message;
+      }
+      return { ...message, id: `${prefix}${message.id}` };
+    },
+    fromWire(message) {
+      if ("method" in message || !("id" in message)) {
+        return message;
+      }
+      const { id } = message;
+      if (typeof id !== "string" || !id.startsWith(prefix)) {
+        return null;
+      }
+      const local = Number(id.slice(prefix.length));
+      if (!Number.isInteger(local)) {
+        return null;
+      }
+      return { ...message, id: local };
+    },
+  };
+}
+
+// A reload of the renderer restarts the connection counter while the host
+// keeps running requests of the previous renderer instance, so the epoch
+// carries a per-instance token as well as the counter.
+const instanceToken = Math.random().toString(36).slice(2, 10);
+let connectionCounter = 0;
+
+function nextConnectionEpoch(): string {
+  connectionCounter += 1;
+  return `${instanceToken}.${connectionCounter}`;
+}
+
 /** An ACP stream over one WebSocket; `close` drops the socket itself. */
 export type WebSocketStream = Stream & { close: () => void };
 
 export function createWebSocketStream(wsUrl: string): WebSocketStream {
   const ws = new WebSocket(wsUrl);
+  const ids = createRequestIdSpace(nextConnectionEpoch());
 
   const incoming: AnyMessage[] = [];
   const waiters: Array<() => void> = [];
@@ -63,7 +127,15 @@ export function createWebSocketStream(wsUrl: string): WebSocketStream {
     try {
       const msg = JSON.parse(event.data) as AnyMessage;
       acpDebug("WS → client", msg);
-      pushMessage(msg);
+      const mapped = ids.fromWire(msg);
+      if (!mapped) {
+        console.warn(
+          "[acp] Dropped a reply addressed to a request of another connection",
+          "id" in msg ? msg.id : undefined,
+        );
+        return;
+      }
+      pushMessage(mapped);
     } catch {
       // ignore malformed JSON
     }
@@ -98,7 +170,7 @@ export function createWebSocketStream(wsUrl: string): WebSocketStream {
     async write(msg) {
       await openPromise;
       acpDebug("WS → agent", msg);
-      ws.send(JSON.stringify(msg));
+      ws.send(JSON.stringify(ids.toWire(msg)));
     },
     close() {
       ws.close();

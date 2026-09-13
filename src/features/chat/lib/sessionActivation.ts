@@ -255,6 +255,27 @@ export function prefetchSessionLoadModules(): void {
   });
 }
 
+/**
+ * The chat-side report of a load that could not finish: one inline error
+ * notice, replacing any earlier one. Deliberately no `setError` — parking
+ * `chatState` at "error" would route the next send into a queue that never
+ * flushes, and re-opening the session retries the load because the guard
+ * ignores system-only messages.
+ */
+function reportSessionLoadFailure(sessionId: string, error: unknown): void {
+  console.error("Failed to load session messages:", error);
+  const errorMessage = formatAcpErrorMessage(
+    error,
+    i18n.t("chat:toolbar.sessionLoadFailed"),
+  );
+  const chatStore = useChatStore.getState();
+  chatStore.removeMessage(sessionId, loaderNoticeMessageId(sessionId, "error"));
+  chatStore.addMessage(sessionId, {
+    ...createSystemNotificationMessage(errorMessage, "error"),
+    id: loaderNoticeMessageId(sessionId, "error"),
+  });
+}
+
 export async function loadSessionMessagesAndPrepare(
   sessionId: string,
   options: LoadSessionMessagesOptions = {},
@@ -271,8 +292,23 @@ export async function loadSessionMessagesAndPrepare(
           .projects.find((candidate) => candidate.id === session.projectId) ??
         null)
       : null;
-    const { workingDir, missingCwdWarning } =
-      await resolveWorkingDirForSessionLoad(session, project);
+    let resolvedWorkingDir: SessionLoadWorkingDir;
+    try {
+      resolvedWorkingDir = await resolveWorkingDirForSessionLoad(
+        session,
+        project,
+      );
+    } catch (error) {
+      // Resolving the folder touches the disk (`resolvePath`,
+      // `checkDirectoriesExist`) and can reject on an unmounted drive or
+      // before the backend's state is managed. Every caller here is a `void`
+      // call, so an escaping rejection became an unhandled one with nothing
+      // said in the chat. Report it the way the replay path reports a failed
+      // load, and leave the session unprepared rather than half-prepared.
+      reportSessionLoadFailure(sessionId, error);
+      return false;
+    }
+    const { workingDir, missingCwdWarning } = resolvedWorkingDir;
     if (missingCwdWarning) {
       // Reaching here with a warning means the load itself was skipped (the
       // transcript was still cached), so the replay path never surfaced the
@@ -480,7 +516,25 @@ async function performSessionMessagesLoad(
     }
 
     const replayMessages = replayResult.messages;
-    if (sessionInfo?.activeRunId === null) {
+    // Whether the transcript's last reply is still being written. `session/info`
+    // is only fetched for a pinned load, but every `session/list` row carries
+    // `_meta.activeRunId`, so an ordinary load can answer it too — otherwise the
+    // last bubble of every finished chat keeps its in-progress affordances until
+    // the next turn. A run the renderer itself knows about outranks the listed
+    // value, which can be up to a refresh interval old.
+    const runtimeBeforeCompletion =
+      useChatStore.getState().sessionStateById[sessionId];
+    const rendererKnowsOfARun =
+      runtimeBeforeCompletion?.activeRunId != null ||
+      isSessionRunning(runtimeBeforeCompletion?.chatState ?? "idle") ||
+      Boolean(runtimeBeforeCompletion?.isRunCancellationPending);
+    const knownActiveRunId =
+      sessionInfo?.activeRunId !== undefined
+        ? sessionInfo.activeRunId
+        : rendererKnowsOfARun
+          ? undefined
+          : latestSessionBeforeReplay?.activeRunId;
+    if (knownActiveRunId === null) {
       completeReplayAssistantMessage(sessionId);
     }
     const latestSession = useChatSessionStore.getState().getSession(sessionId);
@@ -516,11 +570,11 @@ async function performSessionMessagesLoad(
     const runtimeAfterReplay =
       useChatStore.getState().sessionStateById[sessionId];
     reportInterruptedTurn(sessionId, replayMessages, {
-      // Both sources of "still working" are consulted. The ACP snapshot is
-      // only fetched for a pinned load, so on the ordinary path the local
-      // runtime is the only thing that knows a run is in flight.
+      // Both sources of "still working" are consulted: the host's run for this
+      // session (from `session/info` on a pinned load, otherwise the listed
+      // one) and the local runtime.
       isRunning:
-        (sessionInfo?.activeRunId ?? null) !== null ||
+        (knownActiveRunId ?? null) !== null ||
         isSessionRunning(runtimeAfterReplay?.chatState ?? "idle") ||
         Boolean(runtimeAfterReplay?.isRunCancellationPending),
       hasError: (runtimeAfterReplay?.chatState ?? "idle") === "error",
@@ -535,27 +589,11 @@ async function performSessionMessagesLoad(
     );
     return true;
   } catch (err) {
-    console.error("Failed to load session messages:", err);
-    const errorMessage = formatAcpErrorMessage(
-      err,
-      i18n.t("chat:toolbar.sessionLoadFailed"),
-    );
     clearReplayBuffer(sessionId);
     const chatStore = useChatStore.getState();
     clearIdleStreamingMessageAfterReplay(sessionId);
     chatStore.setSessionLoading(sessionId, false);
-    chatStore.removeMessage(
-      sessionId,
-      loaderNoticeMessageId(sessionId, "error"),
-    );
-    chatStore.addMessage(sessionId, {
-      ...createSystemNotificationMessage(errorMessage, "error"),
-      id: loaderNoticeMessageId(sessionId, "error"),
-    });
-    // Deliberately no setError here: parking chatState at "error" would
-    // route the next send into a queue that never flushes, and the inline
-    // notification already reports the failure. Re-opening the session
-    // retries the load because the guard ignores system-only messages.
+    reportSessionLoadFailure(sessionId, err);
     return false;
   }
 }
