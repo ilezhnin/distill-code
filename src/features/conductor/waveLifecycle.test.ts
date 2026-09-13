@@ -53,6 +53,7 @@ const { resetWaveRunnerForTests, runWaveEngineTick } = await import(
 const { getWaveEngineState, resetWaveEngineStateCache, hasWaveTombstone } =
   await import("./waveStore");
 const { retryWaveDigest } = await import("./waveRetry");
+const { stopWaveByOperator } = await import("./waveStop");
 const { WAVE_VERDICT_SILENCE_SAMPLE_MS } = await import("./waveLifecycle");
 const { getWaveTelemetry } = await import("./waveTelemetryStore");
 
@@ -855,6 +856,47 @@ describe("wave closed loop", () => {
       expect(digest).toContain("ended without completing");
       expect(digest).not.toContain("Treat its result as unknown");
     });
+  });
+
+  it("does not re-park a wave the operator stopped inside the delivery window", async () => {
+    // The stop now reaches `dispatchingDigest`. A send that then fails used to
+    // append a second closure notice — with a retry button that would
+    // re-digest a wave whose children are already dead — and `recordWaveClose`
+    // upserted over the `operator-stopped` reason, so the telemetry record
+    // forgot the stop.
+    let failDelivery!: () => void;
+    deliverEnvelope.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          failDelivery = () =>
+            resolve({ status: "failed" as const, detail: "bridge gone" });
+        }),
+    );
+    await settle();
+    completeAllSteps();
+    await settle();
+    const waveId = getWaveEngineState().waves[0].waveId;
+    expect(getWaveEngineState().waves[0].phase).toBe("dispatchingDigest");
+
+    await stopWaveByOperator(CONDUCTOR_ID, waveId);
+    await settle();
+    const noticesAfterStop = noticeTexts().length;
+    expect(getWaveEngineState().waves[0].phase).toBe("needsOperator");
+
+    failDelivery();
+    await settle();
+
+    expect(noticeTexts()).toHaveLength(noticesAfterStop);
+    expect(noticeActions()).not.toContainEqual({
+      type: "retryWaveDigest",
+      sessionId: CONDUCTOR_ID,
+      waveId,
+    });
+    // The record still says the operator stopped it.
+    const record = getWaveTelemetry().records.find(
+      (candidate) => candidate.waveId === waveId,
+    );
+    expect(record?.closureReason).toBe("operator-stopped");
   });
 
   it("re-asks a different question when the operator retries a verdict (M3)", async () => {
