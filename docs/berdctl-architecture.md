@@ -93,7 +93,11 @@ user-requested product actions, such as creating a session or sending a prompt.
 
 Required command properties:
 
-- destructive work requires an explicit caller opt-in and must remain visible in the app
+- no destructive work: the broker cannot tell the operator from any other
+  same-user process, so no flag may let a call discard local files or
+  changes (`session archive` refuses with `cleanup_requires_discard` and the
+  user confirms the loss in the app; its `--discard-changes` flag is kept on
+  the wire for compatibility and has no effect)
 - no invisible non-read mutations
 - mutations are visible immediately or discoverable in normal app UI
 - one-way verbs are limited to visible product actions the caller explicitly
@@ -103,11 +107,10 @@ Required command properties:
   optional `actor` (the calling session's `AGENT_SESSION_ID`); anonymous
   calls are the operator and stay allowed (`runtime/spawnGate.ts`)
 
-Delete, bulk, silent, invisible, or broadly destructive verbs require
-reopening the auth/confirmation design before implementation. A visible command
-may expose narrowly scoped destructive behavior only through an explicit flag
-that names the loss and defaults to refusal; do not add interactive prompts or
-piecemeal auth in a command PR.
+Delete, bulk, silent, invisible, or destructive verbs require reopening the
+auth/confirmation design before implementation: until the broker can
+authenticate the caller, a flag cannot stand in for the user's consent to lose
+work. Do not add interactive prompts or piecemeal auth in a command PR.
 
 ## Versioning
 
