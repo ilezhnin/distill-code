@@ -15,6 +15,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::harness::HarnessSpec;
 use super::protocol::{self, Message};
+use crate::services::managed_acp_tools;
 
 /// How long a freshly started bridge gets to answer `initialize`. A process
 /// that is alive but silent — a CLI waiting on a login prompt or a TTY,
@@ -168,9 +169,29 @@ pub fn resolve_executable(
 /// users see as orphaned `node.exe` in Task Manager after quitting. Spawning
 /// node directly makes the child the process we actually want to kill.
 ///
+/// This does **not** cover the whole tree: node is the direct child, but the
+/// agent CLI node spawns (`claude.exe`, `codex`) is a grandchild and Windows
+/// kills no process tree for us, so quitting mid-turn can still leave it behind.
+/// A kill-on-close Job Object the bridge is assigned to is what would cover it;
+/// until then this removes one level, the one that used to leave *node itself*
+/// running.
+///
 /// Returns `None` for anything that is not a launcher we wrote (see
 /// `managed_acp_tools::shim_contents`), so an unrecognised or hand-edited
-/// `.cmd` keeps being launched the old way.
+/// `.cmd` keeps being launched the old way. Callers apply it only to harnesses
+/// we installed ourselves — see [`Bridge::spawn`].
+/// The `node <entrypoint>` pair to start `harness_id` with, or `None` to start
+/// the resolved executable itself. Only a harness this build installs is read as
+/// a launcher: the shim shape is one *we* write, and a third-party `.cmd` that
+/// happens to match it would be re-spelled with any further arguments on its
+/// line silently dropped.
+fn managed_launcher(harness_id: &str, executable: &Path) -> Option<(PathBuf, PathBuf)> {
+    if !managed_acp_tools::is_managed(harness_id) {
+        return None;
+    }
+    managed_cmd_launcher(executable)
+}
+
 fn managed_cmd_launcher(shim: &Path) -> Option<(PathBuf, PathBuf)> {
     if !shim
         .extension()
@@ -234,10 +255,13 @@ impl Bridge {
                 spec.label, spec.command
             )
                 })?;
-        // A managed bridge resolves to a `.cmd` launcher; run what it runs, so
-        // the child we hold (and kill) is node rather than the `cmd.exe` that
-        // would leave node behind.
-        let launcher = managed_cmd_launcher(&executable);
+        // A managed bridge resolves to a `.cmd` launcher we wrote ourselves; run
+        // what it runs, so the child we hold (and kill) is node rather than the
+        // `cmd.exe` that would leave node behind. Only for harnesses we
+        // installed: a third-party `.cmd` on the user's PATH whose last line
+        // happens to hold two quoted paths must keep being launched the way
+        // `cmd.exe` reads it, arguments and all.
+        let launcher = managed_launcher(spec.id, &executable);
         let program = launcher
             .as_ref()
             .map_or(executable.as_path(), |(node, _)| node.as_path());
@@ -789,6 +813,33 @@ mod tests {
         let plain = dir.path().join("claude-agent-acp");
         std::fs::write(&plain, b"#!/bin/sh\nexec node x\n").expect("write");
         assert!(managed_cmd_launcher(&plain).is_none());
+    }
+
+    #[test]
+    fn only_a_harness_we_installed_has_its_launcher_rewritten() {
+        let packages = tempfile::tempdir().expect("temp dir");
+        let shim_dir = packages.path().join("bin");
+        let shim = shim_dir.join("third-party.cmd");
+        let node = packages.path().join("node").join("node.exe");
+        std::fs::create_dir_all(&shim_dir).expect("bin");
+        std::fs::create_dir_all(node.parent().expect("parent")).expect("node dir");
+        std::fs::write(&node, b"").expect("node");
+        std::fs::write(
+            &shim,
+            windows_shim_body("%~dp0..\\node\\node.exe", "%~dp0..\\dist\\index.js"),
+        )
+        .expect("shim");
+        std::fs::create_dir_all(packages.path().join("dist")).expect("dist");
+        std::fs::write(packages.path().join("dist").join("index.js"), b"").expect("entrypoint");
+
+        // A `.cmd` on the user's own PATH keeps being launched the way cmd.exe
+        // reads it, whatever its last line looks like — the re-spelling is for
+        // the shims this build writes itself.
+        assert!(!managed_acp_tools::is_managed("grok-acp"));
+        assert!(managed_launcher("grok-acp", &shim).is_none());
+        // The body itself is one we would have written, so the gate is the only
+        // thing refusing it.
+        assert!(managed_cmd_launcher(&shim).is_some());
     }
 
     #[tokio::test]
