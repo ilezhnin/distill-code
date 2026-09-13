@@ -185,8 +185,14 @@ fn sanitize_field_value(
             if is_sensitive_field_key(key) {
                 return Ok(DiagnosticFieldValue::String("[redacted]".to_string()));
             }
+            // Truncate first. Redaction costs O(keys x matches x len), and the
+            // renderer can hand us a multi-megabyte field (a stringified
+            // transcript, a stack trace) that is going to be cut to 4 KB anyway —
+            // redacting it whole was megabytes of scanning for a result nobody
+            // sees. The second truncate bounds the output again, because
+            // "[redacted]" can be longer than the value it replaces.
             Ok(DiagnosticFieldValue::String(truncate_string(
-                &redact_log_line(&value),
+                &redact_log_line(&truncate_string(&value)),
             )))
         }
     }
@@ -358,6 +364,65 @@ fn quote_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sanitized_string(value: &str) -> String {
+        match sanitize_field_value("message", DiagnosticFieldValue::String(value.to_string()))
+            .expect("sanitize")
+        {
+            DiagnosticFieldValue::String(value) => value,
+            other => panic!("expected a string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_huge_field_is_cut_down_before_it_is_scanned_for_secrets() {
+        // Redaction is O(keys x matches x len). Before the field was truncated
+        // first, a renderer-supplied transcript like this one meant tens of GB of
+        // copying inside a *sync* command — seconds of frozen UI — for a result
+        // that was then cut to 4 KB anyway.
+        let mut huge = String::new();
+        while huge.len() < 2 * 1024 * 1024 {
+            huge.push_str("token=abcdefgh secret: 0123456789 ok=value ");
+        }
+
+        let started = std::time::Instant::now();
+        let sanitized = sanitized_string(&huge);
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "sanitizing one field took {:?}",
+            started.elapsed()
+        );
+        assert!(sanitized.len() <= MAX_FIELD_STRING_BYTES);
+        assert!(sanitized.ends_with(TRUNCATION_MARKER));
+        assert!(!sanitized.contains("abcdefgh"), "{sanitized}");
+        assert!(!sanitized.contains("0123456789"), "{sanitized}");
+    }
+
+    #[test]
+    fn a_secret_straddling_the_truncation_boundary_is_still_redacted() {
+        // Truncating before redacting must not leave the visible half of a secret
+        // behind.
+        let prefix = "x".repeat(MAX_FIELD_STRING_BYTES - 30);
+        let sanitized = sanitized_string(&format!("{prefix} token=sk-do-not-log-this-value"));
+
+        assert!(!sanitized.contains("sk-do-not-log"), "{sanitized}");
+        assert!(sanitized.contains("[redacted]"), "{sanitized}");
+    }
+
+    #[test]
+    fn every_occurrence_is_redacted_whatever_its_case() {
+        // Guards the single lowercase copy staying in step with the redacted one.
+        let sanitized = sanitized_string(
+            "TOKEN=aaa then token=bbb then Api_Key: ccc then AUTHORIZATION: Bearer ddd, end=1",
+        );
+
+        for leaked in ["aaa", "bbb", "ccc", "ddd"] {
+            assert!(!sanitized.contains(leaked), "leaked {leaked}: {sanitized}");
+        }
+        assert_eq!(sanitized.matches("[redacted]").count(), 4, "{sanitized}");
+        assert!(sanitized.ends_with("end=1"), "{sanitized}");
+    }
 
     #[test]
     fn validates_and_sanitizes_diagnostic_event_fields() {

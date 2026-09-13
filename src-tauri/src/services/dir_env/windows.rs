@@ -91,7 +91,10 @@ pub(crate) fn find_project_hermit_bin(dir: &Path) -> Option<PathBuf> {
 }
 
 pub(crate) fn resolve_control_executable(name: &str) -> Option<PathBuf> {
-    resolve_control_executable_in_env(name, dedupe_env_case_insensitive(std::env::vars()))
+    resolve_control_executable_in_env(
+        name,
+        dedupe_env_case_insensitive(env_key::process_vars_lossy()),
+    )
 }
 
 pub(crate) fn resolve_control_executable_in_env(
@@ -108,11 +111,7 @@ pub(crate) fn resolve_control_executable_in_env(
 }
 
 pub(crate) fn find_file_on_windows_path(file_name: &str, path: Option<&str>) -> Option<PathBuf> {
-    std::env::split_paths(path?)
-        .map(|dir| dir.join(file_name))
-        .find(|candidate| candidate.is_file())?
-        .canonicalize()
-        .ok()
+    super::find_file_on_path_dirs(file_name, path)
 }
 
 fn prepend_dir_to_windows_path(env: &mut HashMap<String, String>, dir: &Path) {

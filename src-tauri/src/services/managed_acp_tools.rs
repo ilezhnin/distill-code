@@ -968,7 +968,9 @@ fn transaction_trash_dir(journal: &Path) -> PathBuf {
 const TRANSIENT_IO_ATTEMPTS: u32 = 6;
 const TRANSIENT_IO_INITIAL_DELAY: Duration = Duration::from_millis(20);
 
-fn retry_transient_io<T>(mut operation: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+pub(crate) fn retry_transient_io<T>(
+    mut operation: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
     let mut delay = TRANSIENT_IO_INITIAL_DELAY;
     for _ in 1..TRANSIENT_IO_ATTEMPTS {
         match operation() {

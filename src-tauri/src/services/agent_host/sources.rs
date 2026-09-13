@@ -6,8 +6,34 @@
 use serde_json::{json, Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::protocol::{self, invalid_params};
+use crate::services::windows_names::reject_unusable_windows_name;
+
+static WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Write `contents` to `path` through a temporary file in the same directory.
+///
+/// `fs::write` truncates the live file before writing it, so an agent whose turn
+/// reads a skill while the user is editing it sees an empty `SKILL.md` — and a
+/// crash in that window leaves it empty for good. Writing beside the file and
+/// renaming makes the replacement all-or-nothing; the temporary file is fsynced
+/// first so a power cut cannot persist the rename without the bytes.
+fn write_source_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let sequence = WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!(
+        ".berd-source-write-{}-{sequence}.tmp",
+        std::process::id()
+    ));
+    let result = crate::commands::distill_store::write_file_synced(&temp, contents.as_bytes())
+        .and_then(|()| fs::rename(&temp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceType {
@@ -370,6 +396,10 @@ fn validate_skill_name(name: &str) -> Result<(), Value> {
             "Skill name may only contain letters, digits, '-' and '_'",
         ));
     }
+    // `create_dir_all("...\\CON")` fails with "The parameter is incorrect" and
+    // `Path::exists("...\\NUL")` reports the directory as already there, so a
+    // reserved name produces a baffling failure rather than a skill.
+    reject_unusable_windows_name(name, "Skill name").map_err(invalid_params)?;
     Ok(())
 }
 
@@ -404,8 +434,12 @@ fn slugify(name: &str) -> String {
         }
     }
     let slug = slug.trim_end_matches('-').to_string();
-    if slug.is_empty() {
-        "agent".to_string()
+    // An agent called "con" or "nul" would become `<agents>/con.md`, which on
+    // Windows is the console device rather than a file. Derived names cannot be
+    // rejected — the caller chose a perfectly reasonable display name — so give
+    // them the same fallback shape an empty slug gets.
+    if slug.is_empty() || crate::services::windows_names::is_reserved_windows_device_name(&slug) {
+        format!("{slug}-agent").trim_start_matches('-').to_string()
     } else {
         slug
     }
@@ -538,6 +572,8 @@ fn validate_slug(slug: &str) -> Result<(), Value> {
             "Project id may only contain letters, digits, '-' and '_'",
         ));
     }
+    // `<projects>/con.md` addresses the console device, not a project file.
+    reject_unusable_windows_name(slug, "Project id").map_err(invalid_params)?;
     Ok(())
 }
 
@@ -721,9 +757,9 @@ pub fn create(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
             fs::create_dir_all(&dir).map_err(|error| {
                 protocol::internal(format!("failed to create skill dir: {error}"))
             })?;
-            fs::write(
-                dir.join("SKILL.md"),
-                build_skill_markdown(&name, &description, &content, &properties),
+            write_source_file(
+                &dir.join("SKILL.md"),
+                &build_skill_markdown(&name, &description, &content, &properties),
             )
             .map_err(|error| protocol::internal(format!("failed to write SKILL.md: {error}")))?;
             let root = Root {
@@ -759,9 +795,9 @@ pub fn create(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
                 file = base.join(format!("{slug}-{counter}.md"));
                 counter += 1;
             }
-            fs::write(
+            write_source_file(
                 &file,
-                build_markdown(&name, &description, &content, &properties),
+                &build_markdown(&name, &description, &content, &properties),
             )
             .map_err(|error| protocol::internal(format!("failed to write agent file: {error}")))?;
             let root = Root {
@@ -784,9 +820,9 @@ pub fn create(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
                 .remove("title")
                 .and_then(|value| value.as_str().map(str::to_string))
                 .unwrap_or_else(|| name.clone());
-            fs::write(
+            write_source_file(
                 &file,
-                build_markdown(&title, &description, &content, &properties),
+                &build_markdown(&title, &description, &content, &properties),
             )
             .map_err(|error| {
                 protocol::internal(format!("failed to write project file: {error}"))
@@ -840,9 +876,9 @@ pub fn update(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
                     protocol::internal(format!("failed to rename skill: {error}"))
                 })?;
             }
-            fs::write(
-                target_dir.join("SKILL.md"),
-                build_skill_markdown(&name, &description, &content, &properties),
+            write_source_file(
+                &target_dir.join("SKILL.md"),
+                &build_skill_markdown(&name, &description, &content, &properties),
             )
             .map_err(|error| protocol::internal(format!("failed to write SKILL.md: {error}")))?;
             skill_entry(&target_dir, &root)
@@ -864,9 +900,9 @@ pub fn update(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
                     .and_then(|agent| agent["properties"].as_object().cloned())
                     .unwrap_or_default()
             });
-            fs::write(
+            write_source_file(
                 &file,
-                build_markdown(&name, &description, &content, &properties),
+                &build_markdown(&name, &description, &content, &properties),
             )
             .map_err(|error| protocol::internal(format!("failed to write agent file: {error}")))?;
             agent_entry(&file, &root)
@@ -887,9 +923,9 @@ pub fn update(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
                 .remove("title")
                 .and_then(|value| value.as_str().map(str::to_string))
                 .unwrap_or(slug);
-            fs::write(
+            write_source_file(
                 &file,
-                build_markdown(&title, &description, &content, &properties),
+                &build_markdown(&title, &description, &content, &properties),
             )
             .map_err(|error| {
                 protocol::internal(format!("failed to write project file: {error}"))
@@ -1081,4 +1117,79 @@ pub fn import(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
         roots,
     )?;
     Ok(json!({ "sources": [created["source"]] }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_names_that_windows_reads_as_a_device_are_refused() {
+        for name in ["CON", "nul", "Aux", "COM1", "lpt9", "PRN"] {
+            assert!(
+                validate_skill_name(name).is_err(),
+                "skill name '{name}' must be refused"
+            );
+            assert!(
+                validate_slug(name).is_err(),
+                "project id '{name}' must be refused"
+            );
+        }
+        // Names that merely start with a device word are ordinary names.
+        for name in ["console", "com10", "auxiliary", "nullable"] {
+            assert!(validate_skill_name(name).is_ok(), "{name}");
+            assert!(validate_slug(name).is_ok(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_derived_agent_slug_is_never_a_device_name() {
+        // Slugs come from a display name the user is entitled to choose, so they
+        // are steered away from the device names rather than rejected.
+        for name in ["con", "NUL", "Com1", "lpt 9"] {
+            let slug = slugify(name);
+            assert!(
+                !crate::services::windows_names::is_reserved_windows_device_name(&slug),
+                "'{name}' produced the device name '{slug}'"
+            );
+        }
+        assert_eq!(slugify("con"), "con-agent");
+        // The existing fallbacks are unchanged.
+        assert_eq!(slugify(""), "agent");
+        assert_eq!(slugify("   "), "agent");
+        assert_eq!(slugify("Release Manager"), "release-manager");
+    }
+
+    #[test]
+    fn a_source_file_is_never_visible_half_written() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("SKILL.md");
+        write_source_file(&file, "first version").expect("first write");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "first version");
+
+        write_source_file(&file, "second version").expect("second write");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "second version");
+        // The replacement is a rename, so nothing is left beside the file for a
+        // reader (or the skill scanner) to trip over.
+        let leftovers = fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(leftovers, vec!["SKILL.md".to_string()]);
+    }
+
+    #[test]
+    fn a_write_that_cannot_start_leaves_the_previous_version_in_place() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("nested").join("SKILL.md");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        write_source_file(&file, "keep me").expect("first write");
+
+        // A path whose parent does not exist: the temporary file cannot even be
+        // created, so the live file must be untouched rather than truncated.
+        let missing = dir.path().join("absent").join("SKILL.md");
+        assert!(write_source_file(&missing, "never lands").is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "keep me");
+    }
 }
