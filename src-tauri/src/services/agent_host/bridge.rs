@@ -25,13 +25,20 @@ const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
 /// The deadline for every other request but `session/prompt`, which runs
 /// for as long as the agent works on the turn.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long a `session/close` gets. It is a courtesy call — the host has
+/// already stopped using the session — and it happens while the user waits for
+/// a chat to be deleted or moved, so a bridge that accepts the request and then
+/// goes quiet must cost seconds, not the full request deadline.
+const CLOSE_SESSION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long a bridge gets to answer `method`; `None` is unbounded.
 fn request_deadline(method: &str) -> Option<Duration> {
-    if method == "session/prompt" {
-        None
-    } else {
-        Some(REQUEST_TIMEOUT)
+    match method {
+        // The agent works on the turn for as long as it takes.
+        "session/prompt" => None,
+        "initialize" => Some(INITIALIZE_TIMEOUT),
+        "session/close" => Some(CLOSE_SESSION_TIMEOUT),
+        _ => Some(REQUEST_TIMEOUT),
     }
 }
 
@@ -382,7 +389,7 @@ impl Bridge {
         });
 
         let init = bridge
-            .request_within(
+            .request(
                 "initialize",
                 json!({
                     "protocolVersion": 1,
@@ -395,7 +402,6 @@ impl Bridge {
                         "version": env!("CARGO_PKG_VERSION")
                     }
                 }),
-                Some(INITIALIZE_TIMEOUT),
             )
             .await
             .map_err(|error| {
@@ -450,7 +456,9 @@ impl Bridge {
 
     /// Let go of a bridge session we will never talk to again. Best effort:
     /// bridges without the capability keep it until the process exits, which
-    /// is the behaviour we had for every session.
+    /// is the behaviour we had for every session. Bounded by
+    /// [`CLOSE_SESSION_TIMEOUT`], because the host has already stopped using
+    /// the session and nothing it could answer changes what happens next.
     pub async fn close_session(&self, bridge_session_id: &str) {
         if !self.supports_close_session() {
             return;
@@ -657,7 +665,39 @@ mod tests {
         assert_eq!(request_deadline("session/new"), Some(REQUEST_TIMEOUT));
         assert_eq!(request_deadline("session/load"), Some(REQUEST_TIMEOUT));
         assert_eq!(request_deadline("session/set_mode"), Some(REQUEST_TIMEOUT));
-        assert_eq!(request_deadline("initialize"), Some(REQUEST_TIMEOUT));
+        // `initialize` and `session/close` have deadlines of their own, and the
+        // calls make them through this one function rather than passing their
+        // own value, so the deadline a method runs under is readable here.
+        assert_eq!(request_deadline("initialize"), Some(INITIALIZE_TIMEOUT));
+        assert_eq!(
+            request_deadline("session/close"),
+            Some(CLOSE_SESSION_TIMEOUT)
+        );
+    }
+
+    #[tokio::test]
+    async fn letting_go_of_a_session_gives_up_long_before_an_ordinary_request_would() {
+        // Deleting a chat or moving it to another folder waits on nothing else:
+        // a bridge that takes the `session/close` and never answers costs
+        // seconds, not the two minutes every other request is allowed.
+        assert!(
+            CLOSE_SESSION_TIMEOUT <= Duration::from_secs(5)
+                && CLOSE_SESSION_TIMEOUT * 10 < REQUEST_TIMEOUT,
+            "{CLOSE_SESSION_TIMEOUT:?} is not a short deadline next to {REQUEST_TIMEOUT:?}"
+        );
+
+        let (bridge, mut written) = silent_bridge();
+        *bridge.agent_capabilities.write().expect("capabilities") =
+            json!({ "sessionCapabilities": { "close": {} } });
+        // Nothing answers: the request is given up on and its slot released, so
+        // the caller is not left holding a turn's worth of time.
+        tokio::time::timeout(Duration::from_millis(20), bridge.close_session("bridge-1"))
+            .await
+            .unwrap_or(());
+        assert!(written
+            .recv()
+            .await
+            .is_some_and(|line| line.contains("\"method\":\"session/close\"")));
     }
 
     #[tokio::test]
