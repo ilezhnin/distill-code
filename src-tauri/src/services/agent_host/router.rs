@@ -1253,6 +1253,10 @@ impl Inner {
             if !cwd.is_empty() && cwd != "~" && cwd != record.cwd {
                 let _ = self.store.set_cwd(&session_id, cwd).await;
                 record.cwd = cwd.to_string();
+                // The bridge session it may still be attached to was created
+                // in the old folder and cannot move; stop using it so the
+                // background attach below opens one in the new folder.
+                self.release_bridge_session(&session_id).await;
             }
         }
         // The transcript is ours: replay it from the local log and answer
@@ -1403,13 +1407,66 @@ impl Inner {
     async fn delete_session(&self, params: Value) -> Result<Value, Value> {
         let session_id =
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
+        // Tell the agent first: forgetting the runtime does not stop the turn,
+        // and a bridge session nobody will ever talk to again keeps its agent
+        // context (and whatever it is doing) alive until the process exits.
+        let attached = self.attached_route(&session_id).await;
         self.sessions.lock().await.remove(&session_id);
         self.attach_locks.lock().await.remove(&session_id);
+        if let Some((bridge, bridge_session_id)) = attached {
+            bridge.notify(
+                "session/cancel",
+                json!({ "sessionId": bridge_session_id.clone() }),
+            );
+            bridge.close_session(&bridge_session_id).await;
+        }
         self.store
             .delete_session(&session_id)
             .await
             .map_err(protocol::internal)?;
         Ok(json!({}))
+    }
+
+    /// Cancel and hand back a bridge session nobody will talk to again, so the
+    /// agent stops holding its context and whatever it was doing. Best effort:
+    /// a bridge without `session/close` keeps it until the process exits.
+    async fn let_go_of(&self, runtime: &SessionRuntime) {
+        let Some(bridge) = self.live_bridge(&runtime.harness).await else {
+            return;
+        };
+        if bridge.generation() != runtime.generation {
+            return;
+        }
+        bridge.notify(
+            "session/cancel",
+            json!({ "sessionId": runtime.bridge_session_id.clone() }),
+        );
+        bridge.close_session(&runtime.bridge_session_id).await;
+    }
+
+    /// Stop using a session's bridge session, so the next prompt attaches a
+    /// fresh one. A bridge session's working directory is fixed when the bridge
+    /// creates it, so this is the only way a chat that moved folders runs in
+    /// the new one. Refuses (returns `false`) while a turn is running or an
+    /// attach is in flight: dropping the runtime then would strand that turn's
+    /// updates, which `host_session_for` routes through it.
+    pub async fn release_bridge_session(&self, session_id: &str) -> bool {
+        let released = {
+            let mut sessions = self.sessions.lock().await;
+            let busy = sessions
+                .get(session_id)
+                .is_some_and(|runtime| runtime.loading || runtime.run.is_some());
+            if busy {
+                None
+            } else {
+                sessions.remove(session_id)
+            }
+        };
+        let Some(runtime) = released else {
+            return false;
+        };
+        self.let_go_of(&runtime).await;
+        true
     }
 
     async fn fork_session(self: &Arc<Self>, params: Value) -> Result<Value, Value> {
@@ -1635,7 +1692,16 @@ impl Inner {
             .await
             .map_err(protocol::internal)?
         {
+            // The move was refused: the session we just opened on the new
+            // harness is never going to be used, so hand it back.
+            bridge.close_session(&bridge_session_id).await;
             return Err(started());
+        }
+        // The session it used to be is nobody's any more: cancel and close it
+        // so the old agent stops holding its context.
+        let previously = self.sessions.lock().await.remove(session_id);
+        if let Some(previously) = previously {
+            self.let_go_of(&previously).await;
         }
         let has_model_option = Self::has_model_option(&snapshot);
         self.sessions.lock().await.insert(
@@ -2055,6 +2121,12 @@ impl Inner {
         let result = bridge
             .request("session/new", json!({ "cwd": cwd, "mcpServers": [] }))
             .await?;
+        // Nothing will ever prompt this session: hand it straight back so the
+        // probe does not leave one behind on the bridge every time the model
+        // list is refreshed.
+        if let Some(probe_session_id) = protocol::session_id(&result) {
+            bridge.close_session(&probe_session_id).await;
+        }
         let mut models: Vec<Value> = result
             .pointer("/models/availableModels")
             .and_then(Value::as_array)

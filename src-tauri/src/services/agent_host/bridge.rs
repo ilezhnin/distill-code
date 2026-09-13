@@ -349,6 +349,39 @@ impl Bridge {
             .unwrap_or(false)
     }
 
+    /// Whether the bridge advertises `session/close`, which cancels whatever
+    /// the session is doing and frees the agent-side resources behind it. The
+    /// capability is an object, so its mere presence is the answer.
+    pub fn supports_close_session(&self) -> bool {
+        self.agent_capabilities
+            .read()
+            .ok()
+            .is_some_and(|capabilities| {
+                capabilities
+                    .pointer("/sessionCapabilities/close")
+                    .is_some_and(|close| !close.is_null())
+            })
+    }
+
+    /// Let go of a bridge session we will never talk to again. Best effort:
+    /// bridges without the capability keep it until the process exits, which
+    /// is the behaviour we had for every session.
+    pub async fn close_session(&self, bridge_session_id: &str) {
+        if !self.supports_close_session() {
+            return;
+        }
+        if let Err(error) = self
+            .request("session/close", json!({ "sessionId": bridge_session_id }))
+            .await
+        {
+            log::debug!(
+                "[agent-host] {} could not close session {bridge_session_id}: {}",
+                self.harness,
+                error_text(&error)
+            );
+        }
+    }
+
     /// Send `method` and wait for its answer, for as long as a request of
     /// that method is allowed to take (see [`request_deadline`]).
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, Value> {
@@ -543,6 +576,43 @@ mod tests {
         let line = written.recv().await.expect("written");
         assert!(line.contains("\"method\":\"session/new\""));
         assert_eq!(pending_count(&bridge), 0);
+    }
+
+    #[tokio::test]
+    async fn a_session_is_only_handed_back_to_a_bridge_that_offers_to_take_it() {
+        let (bridge, mut written) = silent_bridge();
+        assert!(!bridge.supports_close_session());
+        // No capability: nothing is sent, and nothing is waited for either.
+        bridge.close_session("bridge-1").await;
+        assert!(written.try_recv().is_err());
+
+        *bridge.agent_capabilities.write().expect("capabilities") =
+            json!({ "sessionCapabilities": { "close": {} } });
+        assert!(bridge.supports_close_session());
+        // Nothing answers, so this returns at its deadline rather than hanging;
+        // the request still went out.
+        tokio::time::timeout(Duration::from_millis(50), bridge.close_session("bridge-1"))
+            .await
+            .unwrap_or(());
+        let line = written.recv().await.expect("written");
+        assert!(line.contains("\"method\":\"session/close\""), "{line}");
+        assert!(line.contains("bridge-1"), "{line}");
+    }
+
+    #[test]
+    fn a_bridge_that_says_nothing_about_closing_sessions_cannot_close_them() {
+        let (bridge, _written) = silent_bridge();
+        for capabilities in [
+            json!({}),
+            json!({ "sessionCapabilities": {} }),
+            json!({ "sessionCapabilities": { "close": null } }),
+        ] {
+            *bridge.agent_capabilities.write().expect("capabilities") = capabilities.clone();
+            assert!(
+                !bridge.supports_close_session(),
+                "{capabilities} must not count as support"
+            );
+        }
     }
 
     #[tokio::test]
