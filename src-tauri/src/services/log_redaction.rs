@@ -29,10 +29,16 @@ pub(crate) fn redact_log_line(line: &str) -> String {
 
 fn redact_sensitive_key(line: String, key: &str) -> String {
     let mut redacted = line;
+    // Lowercased once, then kept in step with `redacted` by applying every
+    // replacement to both. `to_ascii_lowercase` preserves byte length and
+    // `"[redacted]"` is already lowercase, so the two stay byte-aligned — which
+    // is what lets the indices found in `lower` be used on `redacted`. Rebuilding
+    // this copy inside the loop made the pass O(matches x len) per key, so a
+    // large field with many matches cost quadratic copying.
+    let mut lower = redacted.to_ascii_lowercase();
     let mut search_start = 0;
 
     loop {
-        let lower = redacted.to_ascii_lowercase();
         let Some(relative_key_start) = lower[search_start..].find(key) else {
             break;
         };
@@ -81,6 +87,7 @@ fn redact_sensitive_key(line: String, key: &str) -> String {
         }
 
         redacted.replace_range(value_start..value_end, "[redacted]");
+        lower.replace_range(value_start..value_end, "[redacted]");
         search_start = value_start + "[redacted]".len();
     }
 
