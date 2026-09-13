@@ -3,6 +3,17 @@ import type {
   MessageAttachment,
 } from "@/shared/types/messages";
 
+/**
+ * A non-image attachment reaches the agent as its path in the prompt text.
+ *
+ * One per line and quoted: the Windows default user folder is
+ * `C:\Users\First Last\…`, and space-separated bare paths made the model read
+ * `C:\Users\First`, `Last\Documents\spec` and `v2.docx` as three files. A
+ * double quote cannot occur in a Windows path, so quoting needs no escaping —
+ * and a path that somehow contains one is left as it is rather than rewritten,
+ * since its own line already separates it. The transcript still shows
+ * `displayText` (without the paths).
+ */
 export function appendAttachmentPaths(
   text: string,
   attachments: ChatAttachmentDraft[] | undefined,
@@ -15,8 +26,10 @@ export function appendAttachmentPaths(
     return text;
   }
 
-  const joined = paths.join(" ");
-  return text ? `${text} ${joined}` : joined;
+  const block = paths
+    .map((path) => (path.includes('"') ? path : `"${path}"`))
+    .join("\n");
+  return text ? `${text}\n\n${block}` : block;
 }
 
 export function buildMessageAttachments(
