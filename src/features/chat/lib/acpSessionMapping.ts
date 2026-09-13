@@ -43,6 +43,11 @@ export function acpSessionToChatSession(session: AcpSessionInfo): ChatSession {
     messageCount: session.messageCount,
     subtitle: session.subtitle ?? undefined,
     userSetName: session.userSetName,
+    // `null` ("no run") is as meaningful as a run id here, so it is kept as
+    // sent; only an absent field leaves the previous answer standing.
+    ...(session.activeRunId !== undefined
+      ? { activeRunId: session.activeRunId }
+      : {}),
   });
 }
 
