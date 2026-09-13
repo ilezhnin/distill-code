@@ -254,6 +254,30 @@ describe("waveRunner", () => {
     ).toEqual(["plan-next"]);
   });
 
+  it("still admits a plan this process produced when the watermark is in the future", async () => {
+    // A machine whose clock was a day fast stored a mark a day ahead; Windows
+    // Time then resynced. Without the pre-process requirement every later plan
+    // from that conductor is silently dropped — before `markScanned`, so there
+    // is no wave, no refusal and no telemetry to find it by.
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setWaveEngineState({
+      ...getWaveEngineState(),
+      newestProcessedMessageCreatedAt: {
+        [CONDUCTOR_ID]: Date.now() + 86_400_000,
+      },
+    });
+    setTranscript([
+      { ...assistant("plan-now", TWO_STEP_PLAN), created: Date.now() },
+    ]);
+
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(
+        getWaveEngineState().waves.map((wave) => wave.planMessageId),
+      ).toEqual(["plan-now"]),
+    );
+  });
+
   it("spawns the access:[] step immediately and holds the access:all step", async () => {
     useConductorGraphStore.getState().registerNode(conductorNode());
     setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
