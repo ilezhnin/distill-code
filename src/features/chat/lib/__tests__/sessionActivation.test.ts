@@ -981,6 +981,29 @@ describe("loadSessionMessages", () => {
     expect(warning.action).toEqual({ type: "openContextPanel" });
   });
 
+  // Resolving the folder on the cached-transcript path touches the disk, and
+  // every caller is a `void` call: a rejection used to escape as an unhandled
+  // rejection with nothing said in the chat and the session left unprepared.
+  it("reports a folder resolution that fails on the cached-transcript path", async () => {
+    seedSession(
+      { id: "s-cached-throws", workingDir: "/missing/session" },
+      { replay: false },
+    );
+    useChatStore
+      .getState()
+      .addMessage("s-cached-throws", replayUserMessage("m-old"));
+    resolvePath.mockRejectedValue(new Error("state not managed"));
+
+    await expect(
+      loadSessionMessagesAndPrepare("s-cached-throws"),
+    ).resolves.toBe(false);
+
+    const failure = notificationFromLastMessage("s-cached-throws");
+    expect(failure.notificationType).toBe("error");
+    expect(failure.text).toContain("state not managed");
+    expect(acpPrepareSession).not.toHaveBeenCalled();
+  });
+
   it("does not stack duplicate warnings across repeated activations", async () => {
     seedSession(
       { id: "s-repeat", workingDir: "/missing/session" },

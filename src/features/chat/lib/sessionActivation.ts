@@ -255,6 +255,27 @@ export function prefetchSessionLoadModules(): void {
   });
 }
 
+/**
+ * The chat-side report of a load that could not finish: one inline error
+ * notice, replacing any earlier one. Deliberately no `setError` — parking
+ * `chatState` at "error" would route the next send into a queue that never
+ * flushes, and re-opening the session retries the load because the guard
+ * ignores system-only messages.
+ */
+function reportSessionLoadFailure(sessionId: string, error: unknown): void {
+  console.error("Failed to load session messages:", error);
+  const errorMessage = formatAcpErrorMessage(
+    error,
+    i18n.t("chat:toolbar.sessionLoadFailed"),
+  );
+  const chatStore = useChatStore.getState();
+  chatStore.removeMessage(sessionId, loaderNoticeMessageId(sessionId, "error"));
+  chatStore.addMessage(sessionId, {
+    ...createSystemNotificationMessage(errorMessage, "error"),
+    id: loaderNoticeMessageId(sessionId, "error"),
+  });
+}
+
 export async function loadSessionMessagesAndPrepare(
   sessionId: string,
   options: LoadSessionMessagesOptions = {},
@@ -271,8 +292,23 @@ export async function loadSessionMessagesAndPrepare(
           .projects.find((candidate) => candidate.id === session.projectId) ??
         null)
       : null;
-    const { workingDir, missingCwdWarning } =
-      await resolveWorkingDirForSessionLoad(session, project);
+    let resolvedWorkingDir: SessionLoadWorkingDir;
+    try {
+      resolvedWorkingDir = await resolveWorkingDirForSessionLoad(
+        session,
+        project,
+      );
+    } catch (error) {
+      // Resolving the folder touches the disk (`resolvePath`,
+      // `checkDirectoriesExist`) and can reject on an unmounted drive or
+      // before the backend's state is managed. Every caller here is a `void`
+      // call, so an escaping rejection became an unhandled one with nothing
+      // said in the chat. Report it the way the replay path reports a failed
+      // load, and leave the session unprepared rather than half-prepared.
+      reportSessionLoadFailure(sessionId, error);
+      return false;
+    }
+    const { workingDir, missingCwdWarning } = resolvedWorkingDir;
     if (missingCwdWarning) {
       // Reaching here with a warning means the load itself was skipped (the
       // transcript was still cached), so the replay path never surfaced the
@@ -553,27 +589,11 @@ async function performSessionMessagesLoad(
     );
     return true;
   } catch (err) {
-    console.error("Failed to load session messages:", err);
-    const errorMessage = formatAcpErrorMessage(
-      err,
-      i18n.t("chat:toolbar.sessionLoadFailed"),
-    );
     clearReplayBuffer(sessionId);
     const chatStore = useChatStore.getState();
     clearIdleStreamingMessageAfterReplay(sessionId);
     chatStore.setSessionLoading(sessionId, false);
-    chatStore.removeMessage(
-      sessionId,
-      loaderNoticeMessageId(sessionId, "error"),
-    );
-    chatStore.addMessage(sessionId, {
-      ...createSystemNotificationMessage(errorMessage, "error"),
-      id: loaderNoticeMessageId(sessionId, "error"),
-    });
-    // Deliberately no setError here: parking chatState at "error" would
-    // route the next send into a queue that never flushes, and the inline
-    // notification already reports the failure. Re-opening the session
-    // retries the load because the guard ignores system-only messages.
+    reportSessionLoadFailure(sessionId, err);
     return false;
   }
 }
