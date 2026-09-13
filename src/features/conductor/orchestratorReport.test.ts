@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_BLOCKED_REASON_LENGTH,
+  MAX_REPORT_ENTRY_LENGTH,
+  MAX_REPORT_LIST_ENTRIES,
+  MAX_REPORT_SUMMARY_LENGTH,
   MISSING_BLOCKED_REASON,
   parseStructuredReport,
   stripReportFence,
@@ -69,6 +72,86 @@ describe("orchestratorReport", () => {
 
   it("strips the report fence from leftover prose", () => {
     expect(stripReportFence("Hello\n```distill-report\n{}\n```")).toBe("Hello");
+  });
+});
+
+describe("a report's size", () => {
+  it("caps a runaway summary and says it was cut", () => {
+    // The summary falls back to the worker's whole final message, and from
+    // there it is copied into the digest, into every later access:"all"
+    // prompt, into waves.json on a revision and into the task-memory file.
+    const report = parseStructuredReport(
+      "run-1",
+      "completed",
+      `Here is the file I read:\n${"x".repeat(80_000)}`,
+    );
+    expect(report.summary.length).toBeLessThan(MAX_REPORT_SUMMARY_LENGTH + 100);
+    expect(report.summary).toContain("truncated");
+  });
+
+  it("caps the summary inside a well-formed fence too", () => {
+    const report = parseStructuredReport(
+      "run-1",
+      "completed",
+      blockedFence(
+        JSON.stringify({ status: "completed", summary: "y".repeat(50_000) }),
+      ),
+    );
+    expect(report.summary.length).toBeLessThan(MAX_REPORT_SUMMARY_LENGTH + 100);
+    expect(report.summary).toContain("truncated");
+  });
+
+  it("caps how many decisions, risks and artifacts it carries, and how long each is", () => {
+    const report = parseStructuredReport(
+      "run-1",
+      "completed",
+      blockedFence(
+        JSON.stringify({
+          status: "completed",
+          summary: "Did it",
+          decisions: Array.from(
+            { length: MAX_REPORT_LIST_ENTRIES + 10 },
+            (_, index) => `decision ${index}`,
+          ),
+          risks: ["r".repeat(5_000)],
+          artifacts: Array.from(
+            { length: MAX_REPORT_LIST_ENTRIES + 10 },
+            (_, index) => ({
+              label: `file-${index}.ts`,
+              path: "p".repeat(900),
+            }),
+          ),
+        }),
+      ),
+    );
+    // One extra line says what was dropped, so nothing reads as complete.
+    expect(report.decisions).toHaveLength(MAX_REPORT_LIST_ENTRIES + 1);
+    expect(report.decisions.at(-1)).toContain("10 more");
+    expect(report.artifacts).toHaveLength(MAX_REPORT_LIST_ENTRIES);
+    expect(report.artifacts[0].path?.length).toBeLessThan(
+      MAX_REPORT_ENTRY_LENGTH + 100,
+    );
+    expect(report.risks[0].length).toBeLessThan(MAX_REPORT_ENTRY_LENGTH + 100);
+    expect(report.risks[0]).toContain("truncated");
+  });
+
+  it("leaves an ordinary report untouched", () => {
+    const report = parseStructuredReport(
+      "run-1",
+      "completed",
+      blockedFence(
+        JSON.stringify({
+          status: "completed",
+          summary: "Found three callers",
+          decisions: ["Kept the old signature"],
+          risks: [],
+          artifacts: [{ label: "a.ts", path: "src/a.ts" }],
+        }),
+      ),
+    );
+    expect(report.summary).toBe("Found three callers");
+    expect(report.decisions).toEqual(["Kept the old signature"]);
+    expect(report.artifacts).toEqual([{ label: "a.ts", path: "src/a.ts" }]);
   });
 });
 

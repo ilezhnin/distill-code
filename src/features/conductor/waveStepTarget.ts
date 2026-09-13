@@ -33,9 +33,13 @@ import {
   normalizeSessionExecutionTarget,
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
+import {
+  splitEmbeddedReasoning,
+  type EmbeddedReasoningEffort,
+} from "@/features/chat/lib/modelReasoningVariants";
 import type { ModelOption } from "@/features/chat/types";
 import {
-  isCachedModelInventoryAuthoritative,
+  isCachedModelInventoryAuthoritativeForRouting,
   useProviderModelCacheStore,
 } from "@/features/providers/stores/providerModelCacheStore";
 import type { AgentPlatformId } from "@/features/status/lib/rateLimitTypes";
@@ -56,6 +60,18 @@ export interface WaveStepTarget {
   fallback: boolean;
   /** True when nothing was clear of its limit and this one was taken anyway. */
   nearLimit: boolean;
+  /**
+   * Reasoning effort the ranking asked for, when it named one (P36).
+   *
+   * The ranking's profiles differ by effort as much as by model — "medium
+   * engineering at medium, heavy at xhigh" is the whole difference between two
+   * of them — and only harnesses that serve each tier as its own model id get
+   * that from `modelId` alone. For every other harness the effort has to be
+   * composed onto the child session after it is created, which is what the
+   * spawn does with this; without it `coding-simple` and `coding-complex`
+   * routed identically on claude-acp and grok-acp.
+   */
+  effort?: EmbeddedReasoningEffort;
 }
 
 /** Test seam: everything about the world this resolution reads. */
@@ -85,11 +101,19 @@ const liveIo: WaveStepTargetIo = {
     // stopped serving, and a step spawned on one of those ids dies on every
     // send with "Failed to set ACP model option: Invalid params". Reporting
     // nothing instead makes the step inherit the conductor, which runs.
+    //
+    // The routing test is the stricter one: a poll that *failed* (a bridge
+    // that is not installed, crashed on start, or lost its auth) keeps the
+    // previous list with its `fetchedAt`, and the crew profiles put that same
+    // harness first for most worker roles — so every step of the wave resolved
+    // onto a bridge the app already knew was failing and each one died with no
+    // retry (Q2). An unusable harness reports nothing here, which the ranking
+    // reads as "not installed" and skips.
     const entry = useProviderModelCacheStore
       .getState()
       .providers.get(harnessId);
-    return entry && isCachedModelInventoryAuthoritative(entry)
-      ? entry.models
+    return isCachedModelInventoryAuthoritativeForRouting(entry)
+      ? (entry?.models ?? [])
       : [];
   },
   rateLimits: () =>
@@ -181,6 +205,7 @@ export function resolveWaveStepTarget(
       label: choice.label,
       fallback: choice.rankIndex > 0,
       nearLimit: choice.nearLimit === true,
+      ...(choice.effort ? { effort: choice.effort } : {}),
     };
   } catch {
     return undefined;
@@ -278,7 +303,8 @@ function modelDisplayName(model: ModelOption): string {
  * Matching mirrors the ranking's own two tiers (`candidateForEntry`): the
  * exact model id first, then every word of the request against the model's id
  * and display name — "opus" finds claude-opus-5 the same way a renamed
- * ranking entry does. The first match in inventory order wins.
+ * ranking entry does. Unlike the ranking, an ambiguous word is refused rather
+ * than resolved to the first hit: see {@link matchExplicitModel}.
  *
  * The rate-limit answer is reported, not judged: admission refuses an
  * `at-limit` model (there is still time to replan), while the spawn — which
@@ -305,18 +331,10 @@ export function resolveExplicitWaveStepModel(
       };
     }
 
-    const tokens = needle
-      .split(/[^a-z0-9.]+/)
-      .filter((word) => word.length > 0);
-    const matched =
-      installed.find(({ model }) => model.id.trim().toLowerCase() === needle) ??
-      installed.find(({ model }) => {
-        const haystack =
-          `${model.id} ${model.displayName ?? ""} ${model.name ?? ""}`.toLowerCase();
-        return (
-          tokens.length > 0 && tokens.every((word) => haystack.includes(word))
-        );
-      });
+    const exact = installed.find(
+      ({ model }) => model.id.trim().toLowerCase() === needle,
+    );
+    const matched = exact ?? matchExplicitModel(needle, installed);
     if (!matched) {
       const names = [
         ...new Set(installed.map(({ model }) => modelDisplayName(model))),
@@ -325,6 +343,9 @@ export function resolveExplicitWaveStepModel(
         ok: false,
         detail: `No installed model matches "${requested}". Installed models: ${names.join(", ")}.`,
       };
+    }
+    if ("ambiguous" in matched) {
+      return { ok: false, detail: matched.ambiguous(requested) };
     }
 
     const { harnessId, model } = matched;
@@ -361,6 +382,94 @@ export function resolveExplicitWaveStepModel(
       }`,
     };
   }
+}
+
+/** One installed model, as this resolution sees it. */
+interface InstalledModel {
+  harnessId: string;
+  model: ModelOption;
+}
+
+/** A word specific enough to be a model name rather than a wildcard. */
+const MIN_MODEL_TOKEN_LENGTH = 3;
+
+/**
+ * Finds the one installed model a plan's word means, or says why there is not
+ * exactly one.
+ *
+ * The ranking may take the first hit — it is expressing a preference over a
+ * list the operator wrote. A plan's `model` is an instruction, and WAVES is
+ * explicit that a step naming a model the harness does not serve must refuse
+ * the plan rather than run on something else. "The first id containing all
+ * these letters" is precisely running on something else:
+ *
+ * - `"5"` or `"."` matched almost every id in the inventory, so a degenerate
+ *   name silently picked whatever happened to be listed first. A name now has
+ *   to carry one word of at least {@link MIN_MODEL_TOKEN_LENGTH} characters.
+ * - `"gpt-5"` matches `gpt-5.6-sol[low]`, `[medium]` and `[ultra]`, and
+ *   inventories list tiers ascending — so the plan's word resolved to the
+ *   weakest tier of a model it never asked for (the same shape as the L1
+ *   incident). Several ids for one model are a refusal unless the plan named
+ *   the tier, which `splitEmbeddedReasoning` reads out of the word itself.
+ * - Two different models matching one word is a refusal outright; nothing here
+ *   is entitled to prefer one model over another.
+ *
+ * The refusal carries the candidates, so the conductor's replan can name one.
+ */
+function matchExplicitModel(
+  needle: string,
+  installed: readonly InstalledModel[],
+): InstalledModel | { ambiguous: (requested: string) => string } | undefined {
+  const tokens = needle.split(/[^a-z0-9.]+/).filter((word) => word.length > 0);
+  if (tokens.length === 0) return undefined;
+  if (!tokens.some((word) => word.length >= MIN_MODEL_TOKEN_LENGTH)) {
+    return {
+      ambiguous: (requested) =>
+        `Step model "${requested}" is too vague to match a model; name at least ${MIN_MODEL_TOKEN_LENGTH} characters of the model's name.`,
+    };
+  }
+
+  const matches = installed.filter(({ model }) => {
+    const haystack =
+      `${model.id} ${model.displayName ?? ""} ${model.name ?? ""}`.toLowerCase();
+    return tokens.every((word) => haystack.includes(word));
+  });
+  if (matches.length === 0) return undefined;
+
+  const idOf = ({ model }: InstalledModel) => model.id.trim().toLowerCase();
+  const distinctIds = new Set(matches.map(idOf));
+  // One model, however many providers list it: the step runs on that model
+  // either way, which is what the plan named.
+  if (distinctIds.size === 1) return matches[0];
+
+  const baseOf = (entry: InstalledModel) =>
+    splitEmbeddedReasoning(entry.model.id)?.base.trim().toLowerCase() ??
+    idOf(entry);
+  const bases = new Set(matches.map(baseOf));
+  const candidates = [
+    ...new Set(matches.map(({ model }) => modelDisplayName(model))),
+  ].join(", ");
+  if (bases.size > 1) {
+    return {
+      ambiguous: (requested) =>
+        `Step model "${requested}" matches more than one installed model (${candidates}); name one of them exactly.`,
+    };
+  }
+
+  // One model served as several reasoning tiers. The plan may name the tier
+  // ("gpt-5.6-sol[medium]"); otherwise picking one for it would be choosing
+  // how hard the step thinks on the plan's behalf.
+  const wanted = splitEmbeddedReasoning(needle)?.effort;
+  if (wanted) {
+    const tier = matches.filter(
+      (entry) => splitEmbeddedReasoning(entry.model.id)?.effort === wanted,
+    );
+    if (tier.length > 0) return tier[0];
+  }
+  return {
+    ambiguous: (requested) =>
+      `Step model "${requested}" matches several reasoning tiers of the same model (${candidates}); name the one you want.`,
+  };
 }
 
 /**

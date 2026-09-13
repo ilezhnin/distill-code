@@ -174,6 +174,8 @@ export const WAVE_CLOSURE_REASON_KEYS: Record<WaveClosureReason, string> = {
   "wave-interrupted": "waveInterrupted",
   "operator-stopped": "operatorStopped",
   "step-blocked": "stepBlocked",
+  "digest-lost": "digestLost",
+  "verdict-unanswered": "verdictUnanswered",
 };
 
 /**

@@ -21,7 +21,6 @@ import {
   updateWaveEngineState,
   withRemappedConductorSessionId,
 } from "./waveStore";
-import { isWaveLive } from "./waveVerdict";
 
 import {
   CONDUCTOR_GRAPH_DOCUMENT,
@@ -265,6 +264,15 @@ const graphDocument = conductorDocument<ConductorGraphState>({
 function persistGraph(state: ConductorGraphState): void {
   if (typeof window === "undefined") return;
   if (graphDocument.active) {
+    // Never before the folder has been read. The file is the only copy of
+    // every past executor and report; a write from the in-memory copy before
+    // the read landed — or after it failed — would replace them all with the
+    // one node this session just registered. The change stays in memory and
+    // is written the moment a read succeeds.
+    if (!graphReadSucceeded) {
+      graphWriteHeld = true;
+      return;
+    }
     // Debounced, atomic, and in the operator's own folder. A refused write
     // still reaches `persistHealth` — through the document's error hook now
     // rather than a `catch` here.
@@ -291,16 +299,33 @@ function persistGraph(state: ConductorGraphState): void {
  * `localStorage` load and this read landing, a session can already have
  * registered a node — replacing the state wholesale would drop it, and the
  * node the app just created is more certainly true than the file on disk.
+ *
+ * Rejects when the folder has a graph that could not be read, and leaves the
+ * store exactly as it was: not hydrated, writes still held. The caller may
+ * try again; when it gives up it says so through
+ * {@link markConductorGraphHydrationFailed}, so nothing waits forever.
  */
 export async function hydrateConductorGraph(): Promise<void> {
-  try {
-    await mergeStoredGraph();
-  } finally {
-    markConductorGraphHydrated();
+  if (!graphDocument.active) return;
+  const stored = await graphDocument.read();
+  // From here the file is known, so writing over it is safe.
+  graphReadSucceeded = true;
+  if (stored) mergeStoredGraph(stored);
+  // A write the gate refused is owed now — with the folder's entries folded
+  // in, so the file gains this session's node without losing its own.
+  if (graphWriteHeld) {
+    graphWriteHeld = false;
+    persistGraph(useConductorGraphStore.getState());
   }
+  markConductorGraphHydrated();
 }
 
-let graphHydrated = false;
+/** Where the folder read stands. `pending` until it settles either way. */
+let graphHydration: "pending" | "hydrated" | "failed" = "pending";
+/** True once one read succeeded — the write gate, distinct from the phase. */
+let graphReadSucceeded = false;
+/** True when a write was refused by the gate and is owed after the read. */
+let graphWriteHeld = false;
 const graphHydrationWaiters = new Set<() => void>();
 
 /**
@@ -313,16 +338,26 @@ const graphHydrationWaiters = new Set<() => void>();
  * honoured), the startup reconcile would run over an empty graph once and
  * never demote the stale nodes that arrive a moment later, and the wave
  * engine would reset a `spawning` step whose child is in the file.
+ *
+ * False after a failed read too — an unreadable file is not an empty one.
  */
 export function isConductorGraphHydrated(): boolean {
-  if (graphHydratedForTests !== null) return graphHydratedForTests;
-  return graphHydrated || !graphDocument.active;
+  if (graphHydratedForTests !== null) return graphHydratedForTests === true;
+  return graphHydration === "hydrated" || !graphDocument.active;
 }
 
-let graphHydratedForTests: boolean | null = null;
+/**
+ * True when the caller stopped trying to read the folder's graph. The store
+ * is then neither hydrated nor going to be this session.
+ */
+export function hasConductorGraphHydrationFailed(): boolean {
+  if (graphHydratedForTests !== null) return graphHydratedForTests === "failed";
+  return graphHydration === "failed";
+}
 
-function markConductorGraphHydrated(): void {
-  graphHydrated = true;
+let graphHydratedForTests: boolean | "failed" | null = null;
+
+function releaseGraphHydrationWaiters(): void {
   const waiters = [...graphHydrationWaiters];
   graphHydrationWaiters.clear();
   for (const waiter of waiters) {
@@ -334,9 +369,31 @@ function markConductorGraphHydrated(): void {
   }
 }
 
-/** Calls `callback` once the graph is hydrated (immediately if it is). */
+function markConductorGraphHydrated(): void {
+  graphHydration = "hydrated";
+  releaseGraphHydrationWaiters();
+}
+
+/**
+ * Records that the folder's graph will not be read this session.
+ *
+ * Called by the startup hydration after its last retry. The waiters run — a
+ * waiter that never runs is an engine that never learns it must stay off —
+ * and each one reads {@link isConductorGraphHydrated} (still false) and
+ * {@link hasConductorGraphHydrationFailed} (now true) to decide.
+ */
+export function markConductorGraphHydrationFailed(): void {
+  if (graphHydration === "hydrated") return;
+  graphHydration = "failed";
+  releaseGraphHydrationWaiters();
+}
+
+/**
+ * Calls `callback` once the folder read has settled — hydrated, or given up
+ * on — and immediately when it already has. Never parks a caller forever.
+ */
 export function whenConductorGraphHydrated(callback: () => void): void {
-  if (isConductorGraphHydrated()) {
+  if (isConductorGraphHydrated() || hasConductorGraphHydrationFailed()) {
     callback();
     return;
   }
@@ -344,31 +401,66 @@ export function whenConductorGraphHydrated(callback: () => void): void {
 }
 
 /**
- * Pins the hydration answer, or (`null`) returns it to the real one. When
- * pinned to true, parked waiters run. Tests only.
+ * Pins the hydration answer — read, not read, or given up on — or (`null`)
+ * returns it to the real one. When pinned to true, parked waiters run.
+ * Tests only.
  */
 export function setConductorGraphHydratedForTests(
-  hydrated: boolean | null,
+  hydrated: boolean | "failed" | null,
 ): void {
   graphHydratedForTests = hydrated;
   // Pinning "not read" also forgets a real read, so that returning to the
   // real answer waits for the next hydration.
-  if (hydrated === false) graphHydrated = false;
+  if (hydrated === false) graphHydration = "pending";
   if (hydrated === true) markConductorGraphHydrated();
+  if (hydrated === "failed") markConductorGraphHydrationFailed();
 }
 
-async function mergeStoredGraph(): Promise<void> {
-  if (!graphDocument.active) return;
-  const stored = await graphDocument.read();
-  if (!stored) return;
-  useConductorGraphStore.setState((current) => {
-    const nodesById = { ...stored.nodesById, ...current.nodesById };
-    const reportsByRunId = {
-      ...stored.reportsByRunId,
-      ...current.reportsByRunId,
-    };
-    return { nodesById, reportsByRunId };
-  });
+/** Forgets every read, held write and waiter. Tests only. */
+export function resetConductorGraphHydrationForTests(): void {
+  graphHydratedForTests = null;
+  graphHydration = "pending";
+  graphReadSucceeded = false;
+  graphWriteHeld = false;
+  graphHydrationWaiters.clear();
+}
+
+function mergeStoredGraph(stored: ConductorGraphState): void {
+  // Subscribers run synchronously inside `setState`, so this flag is exactly
+  // the window in which a listener is looking at the folder's entries joining
+  // memory rather than at something that just happened.
+  mergingStoredGraph = true;
+  try {
+    useConductorGraphStore.setState((current) => {
+      const nodesById = { ...stored.nodesById, ...current.nodesById };
+      const reportsByRunId = {
+        ...stored.reportsByRunId,
+        ...current.reportsByRunId,
+      };
+      return { nodesById, reportsByRunId };
+    });
+  } finally {
+    mergingStoredGraph = false;
+  }
+}
+
+/** True only while {@link hydrateConductorGraph} is folding the file in. */
+let mergingStoredGraph = false;
+
+/**
+ * True while the notification a subscriber is handling is the folder's graph
+ * joining memory.
+ *
+ * The wave store says the same thing through its change notice; the graph store
+ * has no notice to carry it, so it is a flag. It exists for the run journal
+ * (P27), which derives "what happened" from store transitions: nothing happens
+ * when the file lands — those executors were spawned and those reports arrived
+ * in an earlier run — and diffing them against an empty baseline wrote a
+ * "spawned now" and a "report arrived now" for every one of them, timestamped
+ * at startup, into the record WAVES requires to be readable without the app.
+ */
+export function isConductorGraphHydrating(): boolean {
+  return mergingStoredGraph;
 }
 
 /** Pushes a queued graph write to disk. Shutdown, and tests. */
@@ -385,13 +477,19 @@ function remapId(
   return value === fromId ? toId : value;
 }
 
-/** Wave ids the bound must not touch: their children are still reconciled. */
-function liveWaveIds(): ReadonlySet<string> {
-  return new Set(
-    getWaveEngineState()
-      .waves.filter(isWaveLive)
-      .map((wave) => wave.waveId),
-  );
+/**
+ * Wave ids the bound must not touch.
+ *
+ * Every wave the engine still holds, which is the live ones *and* the ones
+ * parked on `needsOperator` — `state.waves` drops accepted and superseded waves
+ * and keeps precisely those two kinds. It used to be `isWaveLive` alone, so a
+ * parked wave's children and reports were evictable the moment the graph went
+ * over its bound: pressing the retry the parked wave exists to back then
+ * digested five "result unknown" stubs instead of the work that was actually
+ * done.
+ */
+function heldWaveIds(): ReadonlySet<string> {
+  return new Set(getWaveEngineState().waves.map((wave) => wave.waveId));
 }
 
 /**
@@ -405,7 +503,7 @@ function liveWaveIds(): ReadonlySet<string> {
 function boundAndPersist(state: ConductorGraphState): ConductorGraphState {
   let bounded = state;
   try {
-    bounded = boundConductorGraph(state, liveWaveIds());
+    bounded = boundConductorGraph(state, heldWaveIds());
   } catch {
     // Fail open: an unreadable wave store must not fail the graph write.
   }

@@ -316,4 +316,60 @@ describe("finishedAt stamping", () => {
     store.getState().patchNode("w2", { status: "completed", finishedAt: 42 });
     expect(store.getState().nodesById.w2?.finishedAt).toBe(42);
   });
+
+  it("keeps the children of a wave parked for the operator when the bound bites", async () => {
+    // The parked wave backs the operator's retry, and the retry rebuilds its
+    // digest from these nodes and reports. The bound used to protect only
+    // *live* waves, so pressing the button after the graph had grown past its
+    // bound digested "result unknown" for every step.
+    const store = await loadGraph();
+    const { MAX_GRAPH_NODES } = await import("./graphBounds");
+    const { createWaveState, withWavePhase } = await import("./waveEngine");
+    const {
+      emptyWaveEngineState,
+      resetWaveEngineStateCache,
+      setWaveEngineState,
+      withWave,
+    } = await import("./waveStore");
+
+    resetWaveEngineStateCache();
+    setWaveEngineState(
+      withWave(
+        emptyWaveEngineState(),
+        withWavePhase(
+          createWaveState({
+            waveId: "w-parked",
+            conductorSessionId: "conductor-1",
+            planMessageId: "plan-1",
+            steps: [{ role: "scout", subtask: "Look", access: [] }],
+            createdAt: 1,
+          }),
+          "needsOperator",
+        ),
+      ),
+    );
+
+    store.getState().registerNode({
+      ...worker("parked-child"),
+      status: "completed",
+      waveId: "w-parked",
+      stepIndex: 0,
+      createdAt: 0,
+      finishedAt: 1,
+    });
+    for (let index = 0; index < MAX_GRAPH_NODES + 1; index += 1) {
+      store.getState().registerNode({
+        ...worker(`old-${index}`),
+        status: "completed",
+        createdAt: 100 + index,
+        finishedAt: 101 + index,
+      });
+    }
+
+    expect(store.getState().getNode("parked-child")).toBeDefined();
+    expect(Object.keys(store.getState().nodesById).length).toBeLessThanOrEqual(
+      MAX_GRAPH_NODES,
+    );
+    resetWaveEngineStateCache();
+  });
 });

@@ -8,6 +8,7 @@ import type { StructuredReport } from "./types";
 import { admitWavePlan } from "./waveEngine";
 import {
   CONDUCTOR_PROTOCOL_PROMPT,
+  MAX_PREVIOUS_REPORTS_CHARS,
   type CompletedWaveStepReport,
   buildWaveStepPrompt,
 } from "./wavePrompts";
@@ -89,6 +90,40 @@ describe("buildWaveStepPrompt", () => {
     expect(prompt).toContain("Dropped the unmaintained one");
     expect(prompt).toContain("notes.md");
     expect(prompt).toContain("not their transcripts");
+  });
+
+  it("bounds the whole handoff, keeping the most recent reports", () => {
+    // Each report is capped on its own, but five capped reports are still
+    // five: every access:"all" step re-embeds all of them, so the sum has to
+    // be bounded too. The newest are what the step is continuing from.
+    const fat = (stepIndex: number, marker: string): CompletedWaveStepReport =>
+      completedStep({
+        stepIndex,
+        subtask: `Step ${stepIndex}`,
+        report: report({ summary: `${marker} ${"x".repeat(9_000)}` }),
+      });
+    const prompt = buildWaveStepPrompt(allAccessStep, [
+      fat(0, "OLDEST"),
+      fat(1, "MIDDLE"),
+      fat(2, "NEWEST"),
+    ]);
+
+    expect(prompt.length).toBeLessThan(MAX_PREVIOUS_REPORTS_CHARS + 4_000);
+    expect(prompt).toContain("NEWEST");
+    expect(prompt).not.toContain("OLDEST");
+    // The step is told what it is missing rather than left to assume it has
+    // everything.
+    expect(prompt).toContain("omitted here");
+  });
+
+  it("keeps a single oversized report rather than handing on none", () => {
+    const prompt = buildWaveStepPrompt(allAccessStep, [
+      completedStep({
+        report: report({ summary: `ONLY ONE ${"x".repeat(40_000)}` }),
+      }),
+    ]);
+    expect(prompt).toContain("ONLY ONE");
+    expect(prompt).not.toContain("omitted here");
   });
 
   it("labels a revision's carried reports as coming from the previous wave", () => {

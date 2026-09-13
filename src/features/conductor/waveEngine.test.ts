@@ -359,6 +359,42 @@ describe("advanceWave scheduling", () => {
     expect(patched.steps[0].model).toBe("opus");
   });
 
+  it("carries a step's budget and class from plan to state to spawn request (P49/P36)", () => {
+    // Both are parsed and validated at admission and only matter at spawn:
+    // the budget is what the guard stops the child on, the class is what
+    // routes it. A rebuild that drops either makes the plan's ceiling and
+    // routing silently a no-op.
+    const wave = waveOf([
+      {
+        ...step("brigade", "Rename the field"),
+        budget: { minutes: 5, tokens: 20_000 },
+        modelClass: "coding-simple",
+      },
+    ]);
+    expect(wave.steps[0].budget).toEqual({ minutes: 5, tokens: 20_000 });
+    expect(wave.steps[0].modelClass).toBe("coding-simple");
+    const advanced = advanceWave(wave, { nodes: [], reportOf: noReports });
+    expect(advanced.spawn[0]?.step.budget).toEqual({
+      minutes: 5,
+      tokens: 20_000,
+    });
+    expect(advanced.spawn[0]?.step.modelClass).toBe("coding-simple");
+    const patched = withWaveStepPhase(wave, 0, { phase: "spawning" });
+    expect(patched.steps[0].budget).toEqual({ minutes: 5, tokens: 20_000 });
+    expect(patched.steps[0].modelClass).toBe("coding-simple");
+    // The restart path rebuilds an orphaned spawn from scratch too.
+    const resumed = advanceWave(patched, {
+      nodes: [],
+      reportOf: noReports,
+      resumeOrphanedSpawns: true,
+    });
+    expect(resumed.spawn[0]?.step.budget).toEqual({
+      minutes: 5,
+      tokens: 20_000,
+    });
+    expect(resumed.spawn[0]?.step.modelClass).toBe("coding-simple");
+  });
+
   it("spawns every access:[] step at once", () => {
     const wave = waveOf([
       step("scout", "one"),

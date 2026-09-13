@@ -127,13 +127,37 @@ describe("stopWaveByOperator", () => {
     }
   });
 
-  it("declines silently when the wave has already left running", () => {
-    seed(withWavePhase(runningWave(), "digestPending"));
+  it("stops a wave that is waiting on its digest or verdict", () => {
+    // Past `running` there are no workers left to interrupt, but the wave
+    // itself still holds this conductor's only wave slot: until it closes,
+    // every later plan the conductor makes is refused as concurrent. The stop
+    // used to be offered for `running` alone, which left the states where the
+    // loop can actually wedge with no lever at all.
+    for (const phase of [
+      "digestPending",
+      "dispatchingDigest",
+      "awaitingVerdict",
+    ] as const) {
+      seed(withWavePhase(runningWave(), phase));
+
+      expect(stopWaveByOperator(CONDUCTOR_ID, "wave-1")).toBe(true);
+      expect(getWaveEngineState().waves[0]?.phase).toBe("needsOperator");
+      expect(noticeTexts()).toEqual([
+        expect.stringContaining(
+          i18n.t("chat:conductor.wave.verdict.reason.operatorStopped"),
+        ),
+      ]);
+      useChatStore.setState({ messagesBySession: {} });
+    }
+  });
+
+  it("declines silently when the wave is already parked for the operator", () => {
+    seed(withWavePhase(runningWave(), "needsOperator"));
 
     expect(stopWaveByOperator(CONDUCTOR_ID, "wave-1")).toBe(false);
     expect(stopOrchestratorSession).not.toHaveBeenCalled();
     expect(noticeTexts()).toEqual([]);
-    expect(getWaveEngineState().waves[0]?.phase).toBe("digestPending");
+    expect(getWaveEngineState().waves[0]?.phase).toBe("needsOperator");
   });
 
   it("declines when the wave is unknown or belongs to another conductor", () => {
