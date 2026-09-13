@@ -4,7 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
+};
 use sqlx::{Row, SqlitePool};
 use std::path::Path;
 
@@ -57,6 +59,13 @@ impl SessionStore {
             .filename(db_path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
+            // Every streamed chunk of every chat is one commit here, and
+            // sqlx leaves `synchronous` at FULL, which fsyncs the WAL on each
+            // of them. In WAL mode NORMAL keeps the database consistent after
+            // a crash and only risks the very last commits after a power cut
+            // — a cheap trade for the transcript of a chat the user is
+            // watching arrive.
+            .synchronous(SqliteSynchronous::Normal)
             .foreign_keys(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
@@ -394,6 +403,43 @@ impl SessionStore {
         .await
         .map_err(|error| db_error("failed to append session event", error))?;
         Ok(())
+    }
+
+    /// Append several events of one session in one transaction, in the order
+    /// given, and return the row ids they were stored under. One commit for a
+    /// whole prompt instead of one per content block, and the ids are what
+    /// makes a turn the bridge then rejects removable again.
+    pub async fn append_events(
+        &self,
+        session_id: &str,
+        payloads: &[Value],
+    ) -> Result<Vec<i64>, String> {
+        if payloads.is_empty() {
+            return Ok(Vec::new());
+        }
+        let now = now_iso();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db_error("failed to start append transaction", error))?;
+        let mut ids = Vec::with_capacity(payloads.len());
+        for payload in payloads {
+            let inserted = sqlx::query(
+                "INSERT INTO session_events (session_id, created_at, payload_json) VALUES (?, ?, ?)",
+            )
+            .bind(session_id)
+            .bind(&now)
+            .bind(payload.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| db_error("failed to append session event", error))?;
+            ids.push(inserted.last_insert_rowid());
+        }
+        tx.commit()
+            .await
+            .map_err(|error| db_error("failed to commit session events", error))?;
+        Ok(ids)
     }
 
     pub async fn list_events(&self, session_id: &str) -> Result<Vec<Value>, String> {
@@ -735,6 +781,49 @@ mod tests {
         let kept = store.get_session("a").await.expect("read").expect("row");
         assert_eq!(kept.harness, "claude-acp");
         assert_eq!(store.list_events("a").await.expect("events").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_batch_of_events_is_stored_in_order_under_the_ids_it_reports() {
+        let (_dir, store) = store_with_history().await;
+        let of_b = |text: &str| {
+            let mut payload = event(text);
+            payload["sessionId"] = json!("b");
+            payload
+        };
+        let ids = store
+            .append_events("b", &[of_b("first"), of_b("second")])
+            .await
+            .expect("append");
+        assert_eq!(ids.len(), 2);
+        assert!(ids[0] < ids[1], "{ids:?}");
+        let stored: Vec<String> = texts_and_times(&store, "b")
+            .await
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        assert_eq!(stored, vec!["first".to_string(), "second".to_string()]);
+        assert!(store
+            .append_events("b", &[])
+            .await
+            .expect("empty append")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_database_fsyncs_only_at_checkpoints() {
+        let (_dir, store) = store_with_history().await;
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&store.pool)
+            .await
+            .expect("journal mode");
+        assert_eq!(mode.to_ascii_lowercase(), "wal");
+        let synchronous: i64 = sqlx::query_scalar("PRAGMA synchronous")
+            .fetch_one(&store.pool)
+            .await
+            .expect("synchronous");
+        // 1 == NORMAL; sqlx's default is 2 (FULL), an fsync per commit.
+        assert_eq!(synchronous, 1);
     }
 
     #[tokio::test]

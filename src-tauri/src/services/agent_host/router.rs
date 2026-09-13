@@ -1634,10 +1634,10 @@ impl Inner {
         steer: bool,
     ) {
         let events = Self::user_prompt_events(session_id, prompt, meta, ids, &now_iso(), steer);
-        for event in &events {
-            if let Err(error) = self.store.append_event(session_id, event).await {
-                log::warn!("[agent-host] failed to persist prompt: {error}");
-            }
+        // One commit for the whole prompt: its blocks are one message and
+        // half of them in the log is never a state anyone wants to read.
+        if let Err(error) = self.store.append_events(session_id, &events).await {
+            log::warn!("[agent-host] failed to persist prompt: {error}");
         }
         if steer {
             if let Some(mut echo) = events.into_iter().next() {
