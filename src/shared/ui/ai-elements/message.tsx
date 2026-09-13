@@ -310,11 +310,14 @@ function buildStreamdownComponents(imageRenderer?: MarkdownImageRenderer) {
  * `rehype-harden` treats only `/`, `./`, and `../` as relative URLs. Bare
  * filesystem paths such as `wiki/report.md` are therefore replaced with a
  * `[blocked]` indicator before Berd's artifact click handler can resolve them
- * against the session working directory. It also blocks Berd's custom deep-link
- * scheme. Prefix only bare path-like destinations and parseable Berd session
- * links for the sanitizer, then remove the prefixes afterwards so the renderer
- * and click-routing policy receive the original href. Other custom schemes and
- * malformed `berd:` links remain blocked.
+ * against the session working directory, and the dot-relative forms it does
+ * accept are normalised as *web* paths — `./report.md` and `../report.md`
+ * both come out as the root-relative `/report.md`, which the artifact policy
+ * would then read as an absolute filesystem path. It also blocks Berd's
+ * custom deep-link scheme. Prefix every relative path-like destination and
+ * parseable Berd session link for the sanitizer, then remove the prefixes
+ * afterwards so the renderer and click-routing policy receive the original
+ * href. Other custom schemes and malformed `berd:` links remain blocked.
  */
 const BERD_LOCAL_PATH_PREFIX = "/__berd_local_path__/";
 const BERD_SESSION_LINK_PREFIX_ROOT = "/__berd_session_link__/";
@@ -352,14 +355,20 @@ function hasControlCharacter(value: string): boolean {
   });
 }
 
+/**
+ * `report.md`, `docs/report.md`, `./report.md`, `../report.md`: paths that
+ * resolve against the session working directory. In this app a relative
+ * destination is a filesystem path, never a web path, so the dot-relative
+ * spellings are protected from the sanitizer's URL normalisation exactly
+ * like bare ones. Root-relative (`/x`) values are left for the artifact
+ * policy to classify.
+ */
 function isBareLocalMarkdownPath(value: string): boolean {
   const trimmed = value.trim();
   return (
     trimmed.length > 0 &&
     !trimmed.startsWith("#") &&
     !trimmed.startsWith("/") &&
-    !trimmed.startsWith("./") &&
-    !trimmed.startsWith("../") &&
     !hasControlCharacter(trimmed) &&
     !/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed)
   );

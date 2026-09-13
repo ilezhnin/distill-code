@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { MessageResponse } from "./message";
+import { type MarkdownImageRenderer, MessageResponse } from "./message";
 
 describe("MessageResponse local Markdown links", () => {
   it("preserves a bare relative filesystem path as a link", () => {
@@ -28,6 +28,44 @@ describe("MessageResponse local Markdown links", () => {
       "href",
       "wiki/research/my%20report.md",
     );
+  });
+
+  it.each([
+    ["./report.md", "dot"],
+    ["../report.md", "dotdot"],
+    ["./out/nested/report.md", "nested"],
+    ["../../other/report.md", "double"],
+  ])("keeps the dot-relative path %s intact instead of rewriting it to a root path", (path, label) => {
+    render(
+      <MessageResponse mode="static">
+        {`Open the [${label}](${path}).`}
+      </MessageResponse>,
+    );
+
+    const link = screen.getByRole("link", { name: label });
+    expect(link).toHaveAttribute("href", path);
+    expect(screen.queryByText("[blocked]", { exact: false })).toBeNull();
+  });
+
+  it.each([
+    "./photo.png",
+    "../out/diagram.png",
+    "photo.png",
+    "out/diagram.png",
+  ])("hands the image renderer the relative src %s unchanged", (src) => {
+    const seen: string[] = [];
+    const imageRenderer: MarkdownImageRenderer = ({ node: _node, ...rest }) => {
+      seen.push(String(rest.src));
+      return <img alt={rest.alt ?? ""} src={rest.src} />;
+    };
+
+    render(
+      <MessageResponse imageRenderer={imageRenderer} mode="static">
+        {`Look: ![picture](${src})`}
+      </MessageResponse>,
+    );
+
+    expect(seen).toEqual([src]);
   });
 
   it.each([
