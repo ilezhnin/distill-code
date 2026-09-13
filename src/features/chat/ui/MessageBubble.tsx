@@ -36,6 +36,7 @@ import { ClickableImage } from "./ClickableImage";
 import { MarkdownImage } from "./MarkdownImage";
 import { resolveImageContentSrc } from "./resolveImageContentSrc";
 import { useArtifactLinkHandler } from "@/features/chat/hooks/useArtifactLinkHandler";
+import { LocalMarkdownLinkProvider } from "@/shared/ui/ai-elements/local-link-context";
 import { detectProviderErrorNotice } from "@/features/chat/lib/providerErrorNotice";
 import type { CustomRenderer } from "streamdown";
 import { RUNNABLE_SHELL_LANGUAGES } from "@/shared/lib/runnableShellCommand";
@@ -742,7 +743,7 @@ export const MessageBubble = memo(function MessageBubble({
       ? filterUserVisibleContent(rawContent)
       : rawContent;
   const renderingContext = contentContext ?? content;
-  const { handleContentClick, pathNotice } = useArtifactLinkHandler();
+  const { openLocalLink, pathNotice } = useArtifactLinkHandler();
   const persona = useAgentStore((state) =>
     message.metadata?.personaId
       ? state.getPersonaById(message.metadata.personaId)
@@ -1082,81 +1083,83 @@ export const MessageBubble = memo(function MessageBubble({
             </div>
           ) : null}
 
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: delegated link handler */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated link handler */}
-          <div
-            className={cn(
-              "min-w-0 text-sm leading-relaxed",
-              isUser && !digestEnvelope
-                ? "rounded-sm bg-message-user-bg px-4 py-2 leading-normal"
-                : "w-full",
-            )}
-            onClick={handleContentClick}
-          >
-            {isBerdctlCrossSessionMessage ||
-            isSteeredMessage ||
-            isPendingSteerMessage ? (
-              <div className="mb-1 flex flex-col items-start gap-0.5 text-xs font-normal leading-4 text-muted-foreground">
-                {isBerdctlCrossSessionMessage ? (
-                  <span
-                    data-role="berdctl-cross-session-message-label"
-                    className="leading-4"
-                  >
-                    {berdSenderLabel
-                      ? t("message.berdctlCrossSessionNamedLabel", {
-                          sender: berdSenderLabel,
-                        })
-                      : t("message.berdctlCrossSessionLabel")}
-                  </span>
-                ) : null}
-                {isSteeredMessage ? (
-                  <span data-role="steer-message-label" className="leading-4">
-                    {t("message.steerLabel")}
-                  </span>
-                ) : null}
-                {isPendingSteerMessage ? (
-                  <span
-                    data-role="steer-pending-message-label"
-                    className="leading-4"
-                  >
-                    {t("message.steerPendingLabel")}
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
-            {digestEnvelope ? (
-              /* Each report leads back to the agent that wrote it — a digest
+          {/* Local Markdown links inside this bubble report a failure below
+              rather than as a toast; MarkdownLink routes them here. */}
+          <LocalMarkdownLinkProvider value={openLocalLink}>
+            <div
+              className={cn(
+                "min-w-0 text-sm leading-relaxed",
+                isUser && !digestEnvelope
+                  ? "rounded-sm bg-message-user-bg px-4 py-2 leading-normal"
+                  : "w-full",
+              )}
+            >
+              {isBerdctlCrossSessionMessage ||
+              isSteeredMessage ||
+              isPendingSteerMessage ? (
+                <div className="mb-1 flex flex-col items-start gap-0.5 text-xs font-normal leading-4 text-muted-foreground">
+                  {isBerdctlCrossSessionMessage ? (
+                    <span
+                      data-role="berdctl-cross-session-message-label"
+                      className="leading-4"
+                    >
+                      {berdSenderLabel
+                        ? t("message.berdctlCrossSessionNamedLabel", {
+                            sender: berdSenderLabel,
+                          })
+                        : t("message.berdctlCrossSessionLabel")}
+                    </span>
+                  ) : null}
+                  {isSteeredMessage ? (
+                    <span data-role="steer-message-label" className="leading-4">
+                      {t("message.steerLabel")}
+                    </span>
+                  ) : null}
+                  {isPendingSteerMessage ? (
+                    <span
+                      data-role="steer-pending-message-label"
+                      className="leading-4"
+                    >
+                      {t("message.steerPendingLabel")}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+              {digestEnvelope ? (
+                /* Each report leads back to the agent that wrote it — a digest
                  that names four executors and offers no way to any of them is
                  the same dead end the wait line used to be. */
-              <ConductorDigestCard
-                body={digestEnvelope.body}
-                agents={conductorTranscript.children}
-                onOpen={
-                  conductorTranscript.onOpenChild
-                    ? (sessionId) =>
-                        conductorTranscript.onOpenChild?.(
-                          sessionId,
-                          "openInTab",
-                        )
-                    : undefined
-                }
-              />
-            ) : null}
-            {!digestEnvelope && isUser && messageChips.length > 0 && (
-              <div className="mb-1.5 flex flex-wrap gap-1.5">
-                {messageChips.map((chip) => (
-                  <MessageMetadataChip
-                    key={`${chip.type}-${chip.id ?? chip.label}`}
-                    chip={chip}
-                  />
-                ))}
-              </div>
-            )}
-            {!digestEnvelope && attachmentPreviewItems.length > 0 && (
-              <MessageAttachmentGrid items={attachmentPreviewItems} />
-            )}
-            {(digestEnvelope ? [] : groupContentSections(renderedContent)).map(
-              (section, sectionIdx) => {
+                <ConductorDigestCard
+                  body={digestEnvelope.body}
+                  agents={conductorTranscript.children}
+                  onOpen={
+                    conductorTranscript.onOpenChild
+                      ? (sessionId) =>
+                          conductorTranscript.onOpenChild?.(
+                            sessionId,
+                            "openInTab",
+                          )
+                      : undefined
+                  }
+                />
+              ) : null}
+              {!digestEnvelope && isUser && messageChips.length > 0 && (
+                <div className="mb-1.5 flex flex-wrap gap-1.5">
+                  {messageChips.map((chip) => (
+                    <MessageMetadataChip
+                      key={`${chip.type}-${chip.id ?? chip.label}`}
+                      chip={chip}
+                    />
+                  ))}
+                </div>
+              )}
+              {!digestEnvelope && attachmentPreviewItems.length > 0 && (
+                <MessageAttachmentGrid items={attachmentPreviewItems} />
+              )}
+              {(digestEnvelope
+                ? []
+                : groupContentSections(renderedContent)
+              ).map((section, sectionIdx) => {
                 if (section.type === "toolChain") {
                   const toolItems = section.items as ToolChainItem[];
                   return (
@@ -1217,14 +1220,14 @@ export const MessageBubble = memo(function MessageBubble({
                     )}
                   </div>
                 );
-              },
-            )}
-            {pathNotice && (
-              <p className="mt-2 text-xs text-destructive" role="status">
-                {pathNotice}
-              </p>
-            )}
-          </div>
+              })}
+              {pathNotice && (
+                <p className="mt-2 text-xs text-destructive" role="status">
+                  {pathNotice}
+                </p>
+              )}
+            </div>
+          </LocalMarkdownLinkProvider>
 
           {showMessageActions ? (
             <div

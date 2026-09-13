@@ -177,12 +177,15 @@ describe("MessageBubble", () => {
   it("opens artifact links against the latest cwd after it changes", async () => {
     const user = userEvent.setup();
     mockPathExists.mockResolvedValue(true);
-    const message = assistantMessage([{ type: "text", text: "open report" }], {
-      id: "artifact-link",
-      created: 1,
-    });
+    const message = assistantMessage(
+      [{ type: "text", text: "open [report](report.md)" }],
+      {
+        id: "artifact-link",
+        created: 1,
+      },
+    );
 
-    const { container, rerender } = render(
+    const { rerender } = render(
       <ArtifactPolicyProvider messages={[message]} sessionCwd="/old">
         <MessageBubble message={message} animateEntry={false} />
       </ArtifactPolicyProvider>,
@@ -194,16 +197,7 @@ describe("MessageBubble", () => {
       </ArtifactPolicyProvider>,
     );
 
-    const content = container.querySelector<HTMLElement>(
-      '[data-role="assistant-message-content"] > div',
-    );
-    if (!content) throw new Error("expected assistant content container");
-    const link = document.createElement("a");
-    link.setAttribute("href", "report.md");
-    link.textContent = "report";
-    content.appendChild(link);
-
-    await user.click(link);
+    await user.click(await screen.findByRole("link", { name: "report" }));
 
     await waitFor(() => {
       expect(mockPathExists).toHaveBeenCalledWith("/new/report.md");

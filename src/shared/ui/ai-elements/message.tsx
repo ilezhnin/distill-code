@@ -9,6 +9,7 @@ import { parseSessionDeepLink } from "@/features/sessions/lib/sessionDeepLink";
 import { isExternalHref } from "@/shared/lib/isExternalHref";
 import { isUrlTrusted } from "@/shared/lib/trustedDomains";
 import { LinkSafetyModal } from "@/shared/ui/ai-elements/link-safety-modal";
+import { useOpenLocalMarkdownLink } from "@/shared/ui/ai-elements/local-link-context";
 import { cn } from "@/shared/lib/cn";
 import { useVirtualLayoutPendingForStreamdown } from "@/features/chat/transcript/measurement";
 import { useStreamdownTableScrollbarSizing } from "@/shared/ui/ai-elements/streamdown-table-scrollbar";
@@ -136,13 +137,22 @@ const LinkSafetyContext = createContext<OpenLinkSafetyModal | null>(null);
 /**
  * Custom link component that splits behavior by link type:
  * - External links → <a> with preventDefault that opens a LinkSafetyModal via context
- * - Internal links → plain <a> so useArtifactLinkHandler can intercept via closest("a")
+ * - Berd session deep links → <a> that routes in-app
+ * - Everything else is a local filesystem destination → <a> whose click is
+ *   cancelled and routed through `LocalMarkdownLinkProvider`
  *
- * Both render as <a> elements. useArtifactLinkHandler has an early return for external
- * hrefs, so there is no conflict with its delegated click handler.
+ * All of them render as <a> elements, and every one of them cancels the
+ * click. That last part is load-bearing: `rehype-harden` stamps
+ * `target="_blank"` on every anchor, and the opener plugin installs a global
+ * click listener that turns any `_blank` anchor whose *resolved* href is
+ * http(s) into an OS-browser open. A local path resolves against the app
+ * origin, so an uncancelled click opens `http://tauri.localhost/report.md` in
+ * the user's browser — a dead tab. Cancelling here means every surface that
+ * renders Markdown is covered, not just the ones that install a delegated
+ * container handler.
  *
  * This replaces Streamdown's built-in linkSafety which renders <button> for ALL
- * links, breaking artifact navigation since useArtifactLinkHandler matches on <a>.
+ * links, breaking artifact navigation since the local-link routing matches on <a>.
  */
 const MarkdownLink = memo(
   ({
@@ -152,6 +162,7 @@ const MarkdownLink = memo(
     ...rest
   }: ComponentProps<"a"> & { node?: unknown }) => {
     const openModal = useContext(LinkSafetyContext);
+    const openLocalLink = useOpenLocalMarkdownLink();
 
     if (isExternalHref(href)) {
       return (
@@ -221,6 +232,11 @@ const MarkdownLink = memo(
         href={href}
         rel="noreferrer"
         {...rest}
+        // After `rest` on purpose: harden's own attributes must not win.
+        onClick={(event) => {
+          event.preventDefault();
+          openLocalLink?.(href ?? "");
+        }}
       >
         {children}
       </a>
@@ -398,13 +414,17 @@ function isValidBerdSessionDeepLink(value: string): boolean {
 
 function visitMarkdownDestinations(
   node: MarkdownHastNode,
-  transform: (value: string, property: string) => string,
+  transform: (
+    value: string,
+    property: string,
+    node: MarkdownHastNode,
+  ) => string,
 ) {
   if (node.properties) {
     for (const property of MARKDOWN_DESTINATION_PROPERTY) {
       const value = node.properties[property];
       if (typeof value === "string") {
-        node.properties[property] = transform(value, property);
+        node.properties[property] = transform(value, property, node);
       }
     }
   }
@@ -427,30 +447,53 @@ function prefixBerdMarkdownDestinations() {
   };
 }
 
+function restoreBerdLocalPath(value: string): string {
+  const encodedPath = value.slice(BERD_LOCAL_PATH_PREFIX.length);
+  try {
+    const decodedPath = decodeURIComponent(encodedPath);
+    return isLocalMarkdownPath(decodedPath) ? decodedPath : value;
+  } catch {
+    return value;
+  }
+}
+
+function restoreBerdSessionLink(value: string): string {
+  const encodedHref = value.slice(BERD_SESSION_LINK_PREFIX.length);
+  try {
+    const decodedHref = decodeURIComponent(encodedHref);
+    return isValidBerdSessionDeepLink(decodedHref) ? decodedHref : value;
+  } catch {
+    return value;
+  }
+}
+
 function restoreBerdMarkdownDestinations() {
   return (tree: MarkdownHastNode) => {
-    visitMarkdownDestinations(tree, (value, property) => {
+    visitMarkdownDestinations(tree, (value, property, node) => {
+      let restored = value;
       if (value.startsWith(BERD_LOCAL_PATH_PREFIX)) {
-        const encodedPath = value.slice(BERD_LOCAL_PATH_PREFIX.length);
-        try {
-          const decodedPath = decodeURIComponent(encodedPath);
-          return isLocalMarkdownPath(decodedPath) ? decodedPath : value;
-        } catch {
-          return value;
-        }
+        restored = restoreBerdLocalPath(value);
+      } else if (
+        property === "href" &&
+        value.startsWith(BERD_SESSION_LINK_PREFIX)
+      ) {
+        restored = restoreBerdSessionLink(value);
       }
 
-      if (property === "href" && value.startsWith(BERD_SESSION_LINK_PREFIX)) {
-        const encodedHref = value.slice(BERD_SESSION_LINK_PREFIX.length);
-        try {
-          const decodedHref = decodeURIComponent(encodedHref);
-          return isValidBerdSessionDeepLink(decodedHref) ? decodedHref : value;
-        } catch {
-          return value;
-        }
+      // `rehype-harden` stamps `target="_blank" rel="noopener noreferrer"` on
+      // every anchor, which is right for a web URL and wrong for anything the
+      // app opens itself. A `_blank` anchor is exactly what the opener
+      // plugin's global click listener hands to the OS browser, and a local
+      // path resolves against the app origin — so a filesystem destination
+      // would open a dead `http://tauri.localhost/<path>` tab. `MarkdownLink`
+      // cancels those clicks, but the attribute is meaningless on them either
+      // way, so it is removed rather than left to be defended against.
+      if (property === "href" && node.properties && !isExternalHref(restored)) {
+        delete node.properties.target;
+        delete node.properties.rel;
       }
 
-      return value;
+      return restored;
     });
   };
 }
