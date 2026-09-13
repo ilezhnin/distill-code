@@ -458,9 +458,10 @@ export function SessionListCapability({
     Date.now(),
   );
   const attemptedChatLoadMoreCursorRef = useRef<string | null>(null);
-  const chatLoadMoreFailuresRef = useRef(0);
   const chatLoadMoreRetryTimerRef = useRef<number | null>(null);
-  const [chatLoadMoreRetryToken, setChatLoadMoreRetryToken] = useState(0);
+  // Failed attempts for the current cursor. Part of the attempt key, so a
+  // scheduled retry re-runs the auto-load effect for the same cursor.
+  const [chatLoadMoreAttempt, setChatLoadMoreAttempt] = useState(0);
   useEffect(
     () => () => {
       if (chatLoadMoreRetryTimerRef.current != null) {
@@ -671,6 +672,8 @@ export function SessionListCapability({
     : standaloneChatCount >= MAX_FLAT_SIDEBAR_CHATS;
   const chatLoadMoreCursorKey = chatAutoLoadCursorKey(sessionPageCursor);
 
+  const chatLoadMoreAttemptKey = `${chatLoadMoreCursorKey}#${chatLoadMoreAttempt}`;
+
   useEffect(() => {
     if (
       surface.preview ||
@@ -680,11 +683,11 @@ export function SessionListCapability({
     ) {
       return;
     }
-    if (attemptedChatLoadMoreCursorRef.current === chatLoadMoreCursorKey) {
+    if (attemptedChatLoadMoreCursorRef.current === chatLoadMoreAttemptKey) {
       return;
     }
 
-    attemptedChatLoadMoreCursorRef.current = chatLoadMoreCursorKey;
+    attemptedChatLoadMoreCursorRef.current = chatLoadMoreAttemptKey;
     void (async () => {
       await loadMoreSessions();
       // The store logs and swallows a failed page, so "nothing arrived" is the
@@ -697,24 +700,24 @@ export function SessionListCapability({
         hasMoreSessions: state.hasMoreSessions,
       });
       if (landed) {
-        chatLoadMoreFailuresRef.current = 0;
+        setChatLoadMoreAttempt((current) => (current === 0 ? current : 0));
         return;
       }
-      const attempt = chatLoadMoreFailuresRef.current + 1;
-      chatLoadMoreFailuresRef.current = attempt;
+      // Back off, and give up after a few tries: the effect re-runs as soon as
+      // `isLoadingMoreSessions` flips back, so an unbounded retry would spin
+      // against a host that keeps failing.
+      const attempt = chatLoadMoreAttempt + 1;
       const retryInMs = chatAutoLoadRetryDelayMs(attempt);
       if (retryInMs === null) return;
       chatLoadMoreRetryTimerRef.current = window.setTimeout(() => {
         chatLoadMoreRetryTimerRef.current = null;
-        if (attemptedChatLoadMoreCursorRef.current === chatLoadMoreCursorKey) {
-          attemptedChatLoadMoreCursorRef.current = null;
-        }
-        setChatLoadMoreRetryToken((token) => token + 1);
+        setChatLoadMoreAttempt(attempt);
       }, retryInMs);
     })();
   }, [
+    chatLoadMoreAttempt,
+    chatLoadMoreAttemptKey,
     chatLoadMoreCursorKey,
-    chatLoadMoreRetryToken,
     hasMoreSessions,
     isLoadingMoreSessions,
     loadMoreSessions,
