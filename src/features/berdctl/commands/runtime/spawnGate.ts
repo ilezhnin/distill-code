@@ -2,15 +2,15 @@
  * The spawn ACL for the berdctl path (P42).
  *
  * `berdctl session create` / `session fork` create sessions programmatically.
- * Until the wire carried an `actor`, these calls arrived anonymous and the
- * ACL reached them through prompt text alone. Now the CLI reads
- * AGENT_SESSION_ID — when the harness exports it into the session's shell — and sends
- * it on the call envelope, so the app can resolve who asked and run the same
- * check `spawnConductorChildSession` runs.
+ * The CLI sends an `actor` on the call envelope when the harness exports
+ * AGENT_SESSION_ID into the session's shell, and this gate then runs the
+ * same check `spawnConductorChildSession` runs.
  *
  * Semantics, deliberately conservative:
  * - No actor → the operator's own terminal, a deep link, or an app-internal
- *   dispatch. Allowed: the ACL constrains agents, not the person.
+ *   dispatch. Allowed: the ACL constrains agents, not the person. Logged to
+ *   the app log so the reading is auditable (see below for why it is the
+ *   common case).
  * - Actor that resolves to no conductor-graph node → an ordinary chat's
  *   session. Treated as the operator acting through that chat (allowed) —
  *   the same reading `sessionSpawnPolicyPrompt` gives a personaless chat.
@@ -18,13 +18,17 @@
  *   chokepoint: role + persona override → `checkSpawnAllowed`, refusal
  *   posted into the actor's own transcript first (D5), then a CommandError.
  *
- * The identity is whatever the harness exports, which is not secret. An agent
- * that deliberately exports a different session's id before calling berdctl
- * can still impersonate it; closing that needs a per-session nonce minted by
- * the agent host and is P42's documented residue. The built-in host does not
- * export AGENT_SESSION_ID yet, so its calls arrive anonymous.
- * This gate still moves the path from "a sentence in the prompt" to "checked
- * in code for every honest call".
+ * What this gate does NOT do today: the built-in agent host never exports
+ * AGENT_SESSION_ID — it runs one bridge process per harness, serving every
+ * session of that harness, so a process-level env var cannot carry a
+ * per-session id. Every production call therefore arrives anonymous and is
+ * treated as the operator; the ACL reaches agents through the prompt insert
+ * (`formatSpawnPolicyPrompt`), which says so honestly. The actor branch is
+ * exercised by tests and by harnesses that do export the variable. Making
+ * the identity real needs a per-session token minted by the host and passed
+ * to the shell per session (P42's documented residue). Even then, the
+ * identity is not secret: an agent that exports another session's id can
+ * impersonate it.
  */
 
 import { useAgentStore } from "@/features/agents/stores/agentStore";
@@ -36,9 +40,31 @@ import { checkSpawnAllowed } from "@/features/conductor/spawnAcl";
 import type { RoleLayer } from "@/features/conductor/roleCatalog";
 import type { SessionNode, SessionRole } from "@/features/conductor/types";
 import { spawnAclDeniedNoticeText } from "@/features/conductor/waveNotices";
+import { logRendererEvent } from "@/shared/api/rendererLog";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
 import { CommandError } from "../types";
+
+/**
+ * Records an anonymous spawn in the app log (`berd.log`, the same channel
+ * the renderer's other diagnostics use). The reading — anonymous is the
+ * operator — is a product decision; the log line makes it visible that a
+ * session was started without any attributable caller, which with the
+ * built-in host is every berdctl spawn.
+ */
+export function logAnonymousBerdctlSpawn(args: {
+  verb: "create" | "fork";
+  targetLayer: RoleLayer;
+  targetPersonaName?: string;
+}): void {
+  const target = args.targetPersonaName
+    ? `${args.targetLayer} (agent "${args.targetPersonaName}")`
+    : args.targetLayer;
+  void logRendererEvent(
+    "info",
+    `[berdctl] session ${args.verb} carried no actor (the agent host does not export AGENT_SESSION_ID); treating the call as the operator and allowing a ${target} session without a spawn ACL check`,
+  );
+}
 
 /** The actor's graph node, when the actor names a registered agent session. */
 export function actorNode(
@@ -83,14 +109,25 @@ export function forkTargetPersona(
  * Enforces the spawn ACL for one berdctl-created session. Resolves the
  * actor, and when it is a registered agent session, refuses layers outside
  * its effective ACL — posting the refusal into the actor's transcript before
- * throwing, so no caller can turn it into a silent failure (D5).
+ * throwing, so no caller can turn it into a silent failure (D5). An
+ * anonymous call is allowed as the operator and logged.
  */
 export function enforceBerdctlSpawnAcl(args: {
   actor: string | null | undefined;
+  /** The spawning verb, named in the anonymous-call log line. */
+  verb: "create" | "fork";
   targetLayer: RoleLayer;
   /** Persona the new session will run, when the call named one. */
   targetPersona?: Persona | null;
 }): void {
+  if (!args.actor) {
+    logAnonymousBerdctlSpawn({
+      verb: args.verb,
+      targetLayer: args.targetLayer,
+      targetPersonaName: args.targetPersona?.displayName,
+    });
+    return;
+  }
   const node = actorNode(args.actor);
   if (!node) return;
   const persona = node.personaId

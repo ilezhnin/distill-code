@@ -1,15 +1,18 @@
 import { z } from "zod/v4";
 
+import { BERDCTL_BOUNDS } from "../helpers";
 import { defineCommand } from "../types";
 
 const listSessionsSchema = z
   .object({
     project_id: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .optional()
       .describe("Only list sessions belonging to this project."),
     query: z
       .string()
+      .max(BERDCTL_BOUNDS.query)
       .optional()
       .describe("Case-insensitive substring to match against session titles."),
     limit: z
@@ -63,7 +66,11 @@ Result:
     const [
       { useChatSessionStore },
       { findProjectOrThrow },
-      { loadAllSessionsForBerdctl, sessionMetadata },
+      {
+        loadAllSessionsForBerdctl,
+        loadRecentSessionsForBerdctl,
+        sessionMetadata,
+      },
     ] = await Promise.all([
       import("@/features/chat/stores/chatSessionStore"),
       import("../runtime/projects"),
@@ -74,7 +81,15 @@ Result:
     if (args.project_id) {
       await findProjectOrThrow(args.project_id);
     }
-    await loadAllSessionsForBerdctl();
+    // A filter can match a session on any page, so those read the whole
+    // table; an unfiltered list stops as soon as it has `limit` rows. Agents
+    // (and berd-monitor's delivery loop) poll this command, and every page
+    // costs an IPC round-trip plus a session-store write the sidebar renders.
+    if (args.project_id || args.query) {
+      await loadAllSessionsForBerdctl();
+    } else {
+      await loadRecentSessionsForBerdctl(args.limit);
+    }
     const query = args.query?.toLowerCase();
     const sessions = useChatSessionStore
       .getState()

@@ -1,5 +1,6 @@
 import { z } from "zod/v4";
 
+import { BERDCTL_BOUNDS } from "../helpers";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
 import { createDeferredQueuedMessagePayload } from "@/features/chat/lib/admittedSend";
 
@@ -14,6 +15,7 @@ const createSessionSchema = z
       .describe("The message to send in the new session (1-50000 chars)."),
     harness_id: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .optional()
       .describe(
         "Agent harness to run the session on (from `berdctl info harnesses`, " +
@@ -21,16 +23,19 @@ const createSessionSchema = z
       ),
     model_id: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .optional()
       .describe("Id of the model to use (from `berdctl info models`)."),
     agent_id: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .optional()
       .describe(
         "Id of the agent (persona) to use (from `berdctl agent list`).",
       ),
     project_id: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .optional()
       .describe("Id of the project to create the session in."),
     startup_name: z
@@ -58,10 +63,12 @@ const createSessionSchema = z
 // never create a session the caller has already been told timed out.
 const CREATE_DEADLINE_MARGIN_MS = 3_000;
 
-// Spawn ACL (P42): the wire now carries an optional `actor` — the calling
-// session's AGENT_SESSION_ID, read from the shell env when the harness sets it — and
-// this command enforces the same ACL as the in-app chokepoint against it
-// (runtime/spawnGate.ts). Anonymous calls are the operator and stay allowed.
+// Spawn ACL (P42): the wire carries an optional `actor` — the calling
+// session's AGENT_SESSION_ID, read from the shell env when the harness sets
+// it — and this command enforces the same ACL as the in-app chokepoint
+// against it (runtime/spawnGate.ts). Anonymous calls are the operator and
+// stay allowed; with the built-in host every call is anonymous, so the ACL
+// reaches agents through the prompt insert only (spawnGate.ts explains).
 
 interface CreateSessionResult {
   session_id: string;
@@ -130,10 +137,14 @@ Result:
       import("../runtime/providers"),
     ]);
     const harnessId = args.harness_id ?? DEFAULT_HARNESS_ID;
-    // The validation legs are independent I/O; overlap them.
+    // The validation legs are independent I/O; overlap them. Readiness is
+    // checked for the resolved harness, default included: creating on a
+    // harness that is not installed or not signed in would either run a
+    // multi-minute managed install inside this call or fail as an opaque
+    // `internal_error` long after the caller was told "dispatched".
     const [project, , models, persona] = await Promise.all([
       args.project_id ? findProjectOrThrow(args.project_id) : null,
-      args.harness_id ? findReadyHarnessOrThrow(args.harness_id) : null,
+      findReadyHarnessOrThrow(harnessId),
       args.model_id ? harnessModelOptions(harnessId).catch(() => []) : null,
       args.agent_id ? findPersonaOrThrow(args.agent_id) : null,
     ]);
@@ -142,6 +153,7 @@ Result:
     // created, so a refusal still costs nothing to roll back.
     enforceBerdctlSpawnAcl({
       actor: ctx.actor,
+      verb: "create",
       targetLayer: "worker",
       targetPersona: persona,
     });

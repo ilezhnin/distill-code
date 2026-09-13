@@ -1,11 +1,13 @@
 import { z } from "zod/v4";
 
+import { BERDCTL_BOUNDS } from "../helpers";
 import { defineCommand } from "../types";
 
 const clearSessionProjectSchema = z
   .object({
     session_id: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .describe("Id of the session to move out of its project."),
   })
   .strict();

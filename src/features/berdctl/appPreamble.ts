@@ -30,13 +30,31 @@ Usage: berdctl <noun> <verb> [--json]
 
 Run \`berdctl <noun> <verb> --help\` for arguments. When asked to switch or move this chat to a new worktree/folder, use \`folder replace\` on the current cwd attachment so the old folder is removed from context. Use \`folder set-cwd\` to select an already attached folder, or only when the old folder should remain additional context. Use \`folder attach\` only to add context without changing cwd; \`folder detach\` removes context without deleting files.`;
 
+/**
+ * The preamble for one session: the shared text plus the session's own id.
+ *
+ * Nothing else tells an agent which session it is. The agent host runs one
+ * bridge process per harness, so it cannot export a per-session env var
+ * (AGENT_SESSION_ID stays unset), and `berdctl info context` reports the
+ * chat the user is looking at, which need not be the caller's. berd-monitor
+ * and any cross-session berdctl verb therefore need the id passed
+ * explicitly, and this line is where the agent learns it.
+ */
+export function formatBerdctlPreamble(sessionId: string): string {
+  const id = sessionId.trim();
+  if (!id) return BERDCTL_PREAMBLE;
+  return `${BERDCTL_PREAMBLE}
+
+Your own session id is ${id}. Pass it explicitly as \`--session-id ${id}\` whenever a berdctl or berd-monitor command needs your session; there is no environment variable for it, \`berdctl info context\` reports the chat the user is viewing (not necessarily this one), and the working directory never identifies a session.`;
+}
+
 /** Set once an invoke rejection shows the plugin is not in this build or
  *  not granted; later sends skip the doomed IPC round-trip. */
 let pluginUnavailable = false;
 
 /**
- * The berdctl app preamble when an agent can actually reach the app, or
- * `null` when it cannot (plugin off, broker not running).
+ * The berdctl app preamble for `sessionId` when an agent can actually reach
+ * the app, or `null` when it cannot (plugin off, broker not running).
  *
  * Availability is asked of the plugin per send rather than cached in the
  * renderer: the broker lifecycle runs in the main window, but popped-out
@@ -44,13 +62,15 @@ let pluginUnavailable = false;
  * be set there (each window is its own renderer). The plugin owns the
  * broker, so it is the one source of truth every window can query.
  */
-export async function getBerdctlPreamble(): Promise<string | null> {
+export async function getBerdctlPreamble(
+  sessionId: string,
+): Promise<string | null> {
   if (pluginUnavailable || !window.__TAURI_INTERNALS__) {
     return null;
   }
   try {
     const { running } = await getBerdctlBrokerStatus();
-    return running ? BERDCTL_PREAMBLE : null;
+    return running ? formatBerdctlPreamble(sessionId) : null;
   } catch (error) {
     if (isPluginUnavailableError(error)) {
       pluginUnavailable = true;

@@ -3,7 +3,7 @@
   "nouns": {
     "session": {
       "group": "sessions",
-      "about": "Manage chat sessions: create, send, open, list, get, rename, move, move to group, clear project, fork, archive",
+      "about": "Manage chat sessions: create, send, open, list, get, rename, move, clear project, fork, archive",
       "verbs": {
         "create": {
           "action": "create",
@@ -40,11 +40,6 @@
           "about": "Move a chat session into a project",
           "afterHelp": "Example:\n  berdctl session move --session-id <session-id> --project-id <project-id>\n\nResult:\n  {\"ok\": true} — the app's session list regroups immediately."
         },
-        "move-to-group": {
-          "action": "move_to_group",
-          "about": "Move a chat session into an existing project group",
-          "afterHelp": "Find the destination group id with:\n  berdctl project get --project-id <project-id> --json\n\nExample:\n  berdctl session move-to-group --session-id <session-id> \\\n    --group-id <group-id>\n\nResult:\n  {\"ok\": true, \"project_id\": \"...\", \"group_id\": \"...\",\n   \"group_name\": \"...\"} — the project chat list regroups immediately."
-        },
         "clear-project": {
           "action": "clear_project",
           "about": "Move a chat session out of any project",
@@ -58,7 +53,7 @@
         "archive": {
           "action": "archive",
           "about": "Archive a chat and clean up its Distill-managed Git resources",
-          "afterHelp": "By default, the command refuses to archive when Git cleanup would discard local files or changes.\nUse --discard-changes to allow that loss. The command never opens an interactive prompt.\n\nExamples:\n  berdctl session archive --session-id <session-id>\n  berdctl session archive --session-id <session-id> --discard-changes\n\nResult:\n  {\"ok\": true} — the session was archived and eligible worktrees and branches were removed."
+          "afterHelp": "The command refuses to archive when Git cleanup would discard local files or changes,\nand berdctl cannot override that: only the user can confirm the loss, in the app.\n--discard-changes is accepted for compatibility and has no effect. The command\nnever opens an interactive prompt.\n\nExample:\n  berdctl session archive --session-id <session-id>\n\nResult:\n  {\"ok\": true} — the session was archived and eligible worktrees and branches were removed."
         }
       }
     },
@@ -110,7 +105,7 @@
         "get": {
           "action": "get",
           "about": "Read one project's details",
-          "afterHelp": "Example:\n  berdctl project get --project-id <project-id> --json\n\nResult:\n  {\"project_id\": \"...\", \"name\": \"...\", \"description\": \"...\",\n   \"instructions\": \"...\", \"working_dirs\": [\"...\"], \"workspaces\": [\n     {\"path\": \"...\", \"startup_mode\": \"worktree\"}\n   ], \"archived\": false, \"session_count\": 4, \"chat_groups\": [\n     {\"group_id\": \"...\", \"name\": \"Launch\", \"session_ids\": [\"...\"]}\n   ]}"
+          "afterHelp": "Example:\n  berdctl project get --project-id <project-id> --json\n\nResult:\n  {\"project_id\": \"...\", \"name\": \"...\", \"description\": \"...\",\n   \"instructions\": \"...\", \"working_dirs\": [\"...\"], \"workspaces\": [\n     {\"path\": \"...\", \"startup_mode\": \"worktree\"}\n   ], \"archived\": false, \"session_count\": 4}"
         },
         "set-startup-mode": {
           "action": "set_startup_mode",
