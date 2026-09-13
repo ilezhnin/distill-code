@@ -544,6 +544,11 @@ export async function restoreProject(id: string): Promise<void> {
   await updateProject(project, { archivedAt: null });
 }
 
+/**
+ * Writes the new `order` of the listed projects. Every project file is a full
+ * property bag rewrite, so projects that already carry their target order are
+ * left alone: a drag usually moves one project past a few others.
+ */
 export async function reorderProjects(
   order: [string, number][],
 ): Promise<void> {
@@ -551,6 +556,7 @@ export async function reorderProjects(
   for (const [id, orderValue] of order) {
     const existing = all.find((p) => p.id === id);
     if (!existing) continue;
+    if (existing.order === orderValue) continue;
     await updateProject(existing, { order: orderValue });
   }
 }
