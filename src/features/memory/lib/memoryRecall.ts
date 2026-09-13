@@ -20,6 +20,7 @@ import { getTextContent, type Message } from "@/shared/types/messages";
 
 import { appliesToProject, type MemoryEntry } from "./memoryEntry";
 import type { MemorySearchHit } from "./memorySearch";
+import { messageMentions } from "./transcriptScan";
 
 export const RECALL_FENCE_TAG = "distill-recall";
 
@@ -260,6 +261,7 @@ function isSettledAssistantMessage(message: Message): boolean {
  */
 export function detectRecallFenceCandidates(args: {
   messagesBySession: Readonly<Record<string, readonly Message[] | undefined>>;
+  /** Expected to be cheap — a set lookup, not a search through a list. */
   isAnswered: (messageId: string) => boolean;
 }): MemoryRecallCandidate[] {
   const candidates: MemoryRecallCandidate[] = [];
@@ -270,9 +272,10 @@ export function detectRecallFenceCandidates(args: {
     for (const message of tail) {
       if (!isSettledAssistantMessage(message)) continue;
       if (args.isAnswered(message.id)) continue;
-      const text = getTextContent(message);
-      if (!text.includes(RECALL_FENCE_TAG)) continue;
-      const request = parseRecallFence(text);
+      // The tag test rejects nearly every message, so it runs on the parts
+      // as they are; the text is only joined for the ones it lets through.
+      if (!messageMentions(message, RECALL_FENCE_TAG)) continue;
+      const request = parseRecallFence(getTextContent(message));
       if (!request) continue;
       recentTexts ??= messages
         .slice(-RECALL_LOOP_WINDOW)

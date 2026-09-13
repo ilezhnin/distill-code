@@ -89,6 +89,23 @@ function putMessages(sessionId: string, messages: Message[]) {
   });
 }
 
+/**
+ * Transcripts that count the scans that read them.
+ *
+ * A scan starts by listing the sessions, so the key enumeration is the
+ * cheapest honest proxy for "the drain looked at the transcripts".
+ */
+function countingTranscripts(inner: Record<string, Message[]>) {
+  let reads = 0;
+  const proxy = new Proxy(inner, {
+    ownKeys(target) {
+      reads += 1;
+      return Reflect.ownKeys(target);
+    },
+  });
+  return { proxy, reads: () => reads };
+}
+
 function putSession(sessionId: string, projectId: string | null) {
   act(() => {
     useChatSessionStore.setState({
@@ -191,6 +208,32 @@ describe("useMemoryRecallSync", () => {
     });
     expect(delivered()).toHaveLength(1);
     expect(useMemoryStore.getState().recallAnsweredMessageIds).toEqual(["m-1"]);
+  });
+
+  it("does not read the transcripts when only a runtime flag changed", () => {
+    // The chat store carries the transcripts and, beside them, per-session
+    // runtime state that moves on every token's bookkeeping. No flag can turn
+    // a message into a question, so a run that changed no transcript must not
+    // cost a scan — this drain is on the streaming path.
+    putSession("s-1", null);
+    renderHook(() => useMemoryRecallSync());
+    const transcripts = countingTranscripts({
+      "s-1": [assistant("m-1", '{"query":"kubernetes"}')],
+    });
+    act(() => {
+      useChatStore.setState({ messagesBySession: transcripts.proxy });
+    });
+    expect(delivered()).toHaveLength(1);
+
+    const readsAfterTheQuestion = transcripts.reads();
+    act(() => {
+      useChatStore.setState({ activeSessionId: "s-1" });
+    });
+    act(() => {
+      useChatStore.setState({ isViewingActiveSession: false });
+    });
+
+    expect(transcripts.reads()).toBe(readsAfterTheQuestion);
   });
 
   it("never hands over another project's memories", () => {
