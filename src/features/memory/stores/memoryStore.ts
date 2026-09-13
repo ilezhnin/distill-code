@@ -17,6 +17,7 @@ import { create } from "zustand";
 
 import { distillDocument } from "@/shared/lib/distillDocument";
 
+import type { ProjectInfo } from "@/features/projects/api/projects";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 
 import type {
@@ -25,8 +26,12 @@ import type {
 } from "../lib/memoryFence";
 import { findSecret, type SecretKind } from "../lib/memoryRedaction";
 import {
+  foldProjectMemories,
   mergeProjectMemories,
+  type ProjectMemories,
+  projectMemoryRoot,
   readProjectMemories,
+  readProjectMemoryFolder,
   writeProjectMemories,
 } from "../lib/projectMemoryDocuments";
 import {
@@ -348,7 +353,7 @@ function commit(
     // was learned about it when it moves (P31). Fire-and-forget: the global
     // document is the one that must not fail, and a folder that cannot be
     // written costs that project's mirror and nothing else.
-    queueProjectMemoryMirror(next.entries, next.archived);
+    queueProjectMemoryMirror();
   }
   return next;
 }
@@ -362,39 +367,218 @@ function commit(
  * debounce the global document uses.
  */
 let mirrorTimer: ReturnType<typeof setTimeout> | null = null;
-let mirrorPending: {
-  entries: MemoryEntry[];
-  archived: ArchivedMemoryEntry[];
-} | null = null;
+let mirrorPending = false;
 
-function queueProjectMemoryMirror(
-  entries: MemoryEntry[],
-  archived: ArchivedMemoryEntry[],
-): void {
-  mirrorPending = { entries, archived };
+function queueProjectMemoryMirror(): void {
+  mirrorPending = true;
   if (mirrorTimer !== null) clearTimeout(mirrorTimer);
   mirrorTimer = setTimeout(() => {
     void flushProjectMemoryMirror();
   }, PROJECT_MEMORY_MIRROR_DEBOUNCE_MS);
 }
 
-/** Test seam and shutdown: pushes a queued mirror without waiting for it. */
-export async function flushProjectMemoryMirror(): Promise<void> {
+/**
+ * Test seam and shutdown: pushes a queued mirror without waiting for it.
+ *
+ * Resolves once every piece of folder work queued so far has landed — a
+ * project read that a store change set off included — so a test that awaits
+ * this sees the folders and the store as they will stay.
+ */
+export function flushProjectMemoryMirror(): Promise<void> {
   if (mirrorTimer !== null) {
     clearTimeout(mirrorTimer);
     mirrorTimer = null;
   }
-  const pending = mirrorPending;
-  mirrorPending = null;
-  if (!pending) return;
-  await writeProjectMemories(
-    useProjectStore.getState().projects,
-    pending.entries,
-    pending.archived,
-  );
+  if (!mirrorPending) return folderWork;
+  mirrorPending = false;
+  return enqueueFolderWork(mirrorProjectMemories);
 }
 
 const PROJECT_MEMORY_MIRROR_DEBOUNCE_MS = 250;
+
+/**
+ * Everything that touches a project folder, one thing at a time.
+ *
+ * A mirror reads every folder before it writes any, and a project that joins
+ * sets off a read of its own; two of those interleaving would have one write
+ * a file the other had just read and not yet folded in. Serialised, each
+ * step sees the folders as the previous one left them. A step that fails is
+ * logged and does not take the chain down with it.
+ */
+let folderWork: Promise<void> = Promise.resolve();
+
+function enqueueFolderWork(task: () => Promise<void>): Promise<void> {
+  const run = folderWork.then(task).catch((error: unknown) => {
+    console.error("Failed to mirror project memories:", error);
+  });
+  folderWork = run;
+  return run;
+}
+
+/**
+ * The folder each project was last read from this run, by project id.
+ *
+ * A project's folder is read once per folder: at hydration for the projects
+ * known then, and when the project joins or is pointed elsewhere after that.
+ * Until a project's folder has been read, its file is not written — see
+ * `mirrorProjectMemories`.
+ */
+const readProjectRoots = new Map<string, string>();
+
+/**
+ * Ids the operator deleted in this run.
+ *
+ * A folder the app could not reach when the operator pressed delete still
+ * holds the line, and would hand it back the next time it is read. The
+ * operator's delete is the one action a copy on disk must not outrank
+ * (LAWS/MEMORY.md, Sovereignty): these are excluded from every fold, and
+ * so from every mirror written after the delete.
+ */
+const forgottenIds = new Set<string>();
+
+function noteForgotten(ids: Iterable<string>): void {
+  for (const id of ids) forgottenIds.add(id);
+}
+
+function markProjectsRead(
+  projects: readonly ProjectInfo[],
+  readProjectIds: readonly string[],
+): void {
+  const read = new Set(readProjectIds);
+  for (const project of projects) {
+    const root = projectMemoryRoot(project);
+    if (root && read.has(project.id)) readProjectRoots.set(project.id, root);
+  }
+}
+
+/**
+ * Takes into the store what the folders hold and it does not.
+ *
+ * By id, across both lists, and never a line the operator deleted this run.
+ * The global document is written so the lines survive a restart on their
+ * own; the mirror is not queued, because the caller is either the mirror
+ * itself, about to write, or a read whose only source was the folder that
+ * already has them.
+ */
+function adoptProjectMemories(fromFolders: ProjectMemories): void {
+  const current = useMemoryStore.getState();
+  if (!current.hydrated) return;
+  const folded = foldProjectMemories(current, fromFolders, forgottenIds);
+  if (folded.added === 0) return;
+  const capped = capWithArchive(folded.entries);
+  const next: MemoryState = {
+    entries: capped.kept,
+    archived: withCapacityEvictions(
+      folded.archived,
+      capped.evicted,
+      Date.now(),
+    ),
+    appliedMessageIds: current.appliedMessageIds,
+    recallAnsweredMessageIds: current.recallAnsweredMessageIds,
+    hydrated: true,
+  };
+  useMemoryStore.setState(next);
+  document.write(next);
+}
+
+/**
+ * Reads the folders of the projects this run has not read yet.
+ *
+ * Which is every project that was added, fetched, or pointed at a new folder
+ * after hydration — the ones whose file may hold memories the store has
+ * never seen (P31's "project copied from another machine" arrives exactly
+ * this way on a fresh install, since the project can only be created after
+ * startup). Their lines join the store here rather than at the next mirror,
+ * so they reach the panel and the prompts as soon as the project does.
+ */
+function adoptUnreadProjectFolders(): Promise<void> {
+  return enqueueFolderWork(async () => {
+    if (!useMemoryStore.getState().hydrated) return;
+    const unread = useProjectStore.getState().projects.filter((project) => {
+      const root = projectMemoryRoot(project);
+      return root !== null && readProjectRoots.get(project.id) !== root;
+    });
+    if (unread.length === 0) return;
+    const read = await readProjectMemories(
+      unread,
+      parseMemoryEntries,
+      parseArchivedMemoryEntries,
+    );
+    markProjectsRead(unread, read.readProjectIds);
+    adoptProjectMemories(read);
+  });
+}
+
+/**
+ * The mirror: each project's own memories into its folder.
+ *
+ * Read first, then write, and only what was read. The file being replaced
+ * may be the only copy of lines this process has never merged — a project
+ * that joined after hydration, a drive mounted after startup, a colleague's
+ * file that arrived with a pull — so a folder that cannot be read is left
+ * as it is, and one that can has its lines folded into the store before the
+ * store's own are written over it. The fold honours this run's deletes, so
+ * a delete made while the folder was away still reaches it.
+ */
+async function mirrorProjectMemories(): Promise<void> {
+  const readable: ProjectInfo[] = [];
+  const hasFile = new Map<string, boolean>();
+  const fromFolders: ProjectMemories = { entries: [], archived: [] };
+  await Promise.all(
+    useProjectStore.getState().projects.map(async (project) => {
+      const root = projectMemoryRoot(project);
+      if (!root) return;
+      const folder = await readProjectMemoryFolder(
+        project,
+        parseMemoryEntries,
+        parseArchivedMemoryEntries,
+      );
+      if (!folder) return;
+      readProjectRoots.set(project.id, root);
+      hasFile.set(project.id, folder.hasFile);
+      readable.push(project);
+      fromFolders.entries.push(...folder.entries);
+      fromFolders.archived.push(...folder.archived);
+    }),
+  );
+  adoptProjectMemories(fromFolders);
+  const state = useMemoryStore.getState();
+  await writeProjectMemories(readable, state.entries, state.archived, hasFile);
+}
+
+let stopWatchingProjects: (() => void) | null = null;
+
+/**
+ * Reads a project's folder when the project list changes under the store.
+ *
+ * Installed by hydration, since before it nothing may be folded in anyway.
+ * A project that leaves the list is forgotten here too, so one that comes
+ * back under the same id is read again rather than assumed known.
+ */
+function watchProjectsForMemories(): void {
+  if (stopWatchingProjects) return;
+  stopWatchingProjects = useProjectStore.subscribe((state, previous) => {
+    if (state.projects === previous.projects) return;
+    const present = new Set(state.projects.map((project) => project.id));
+    for (const id of [...readProjectRoots.keys()]) {
+      if (!present.has(id)) readProjectRoots.delete(id);
+    }
+    void adoptUnreadProjectFolders();
+  });
+}
+
+/** Forgets which folders were read and what was deleted. Tests only. */
+export function resetProjectMemoryMirrorForTests(): void {
+  if (mirrorTimer !== null) {
+    clearTimeout(mirrorTimer);
+    mirrorTimer = null;
+  }
+  mirrorPending = false;
+  readProjectRoots.clear();
+  forgottenIds.clear();
+  stopWatchingProjects?.();
+  stopWatchingProjects = null;
+}
 
 function stateFromDocument(parsed: unknown): MemoryState {
   // A document written over a larger bound is capped on the way in, and the
@@ -443,21 +627,24 @@ export async function hydrateMemoryStore(): Promise<void> {
   // Then whatever the project folders themselves know (P31). A project copied
   // from another machine arrives with its memories in it, and this is where
   // they join the list; entries already in memory win, so nothing the
-  // operator has edited in this session is reverted by a copy on disk.
+  // operator has edited in this session is reverted by a copy on disk. Only
+  // the projects known right now: the ones that join later are read as they
+  // do, by `watchProjectsForMemories`.
   let entries = base.entries;
   let archived = base.archived;
   try {
+    const projects = useProjectStore.getState().projects;
     const fromFolders = await readProjectMemories(
-      useProjectStore.getState().projects,
+      projects,
       parseMemoryEntries,
       parseArchivedMemoryEntries,
     );
-    const capped = capWithArchive(
-      mergeProjectMemories(base.entries, fromFolders.entries),
-    );
+    markProjectsRead(projects, fromFolders.readProjectIds);
+    const folded = foldProjectMemories(base, fromFolders, forgottenIds);
+    const capped = capWithArchive(folded.entries);
     entries = capped.kept;
     archived = withCapacityEvictions(
-      mergeProjectMemories(base.archived, fromFolders.archived),
+      folded.archived,
       capped.evicted,
       Date.now(),
     );
@@ -496,8 +683,13 @@ export async function hydrateMemoryStore(): Promise<void> {
   useMemoryStore.setState(next);
   if (pending) {
     document.write(next);
-    queueProjectMemoryMirror(next.entries, next.archived);
+    queueProjectMemoryMirror();
   }
+  // From here on a project that joins is read as it does — and one that
+  // joined while the folders above were being read is read now, since it was
+  // in neither that read nor, without this, any later one.
+  watchProjectsForMemories();
+  void adoptUnreadProjectFolders();
 }
 
 function unionMessageIds(
@@ -725,6 +917,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
   forget: (id) => {
     set((state) => {
       const chain = supersededChain(state.archived, id);
+      noteForgotten([id, ...chain]);
       return commit(
         state.entries.filter((entry) => entry.id !== id),
         chain.size === 0
@@ -792,6 +985,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
   },
 
   deleteArchived: (id) => {
+    noteForgotten([id]);
     set((state) =>
       commit(
         state.entries,
@@ -804,14 +998,18 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
 
   forgetProject: (projectId) => {
     if (!projectId) return;
-    set((state) =>
-      commit(
-        state.entries.filter((entry) => entry.projectId !== projectId),
-        state.archived.filter((entry) => entry.projectId !== projectId),
+    set((state) => {
+      const swept = (entry: MemoryEntry) => entry.projectId === projectId;
+      noteForgotten(
+        [...state.entries, ...state.archived].filter(swept).map((e) => e.id),
+      );
+      return commit(
+        state.entries.filter((entry) => !swept(entry)),
+        state.archived.filter((entry) => !swept(entry)),
         state.appliedMessageIds,
         state.recallAnsweredMessageIds,
-      ),
-    );
+      );
+    });
   },
 
   applyAgentRequest: (
