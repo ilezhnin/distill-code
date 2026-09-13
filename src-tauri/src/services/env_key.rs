@@ -108,3 +108,53 @@ mod tests {
         assert_eq!(vars, vec![("Path".to_string(), "extended".to_string())]);
     }
 }
+
+#[cfg(test)]
+mod source_rules {
+    /// `std::env::vars()` panics on the first environment entry that is not valid
+    /// Unicode, which a Windows session can hold (UTF-16, unpaired surrogates
+    /// from a broken installer). Two separate fixes have already had to remove
+    /// re-introduced call sites, so the rule is enforced rather than remembered:
+    /// use [`process_vars_lossy`] instead.
+    #[test]
+    fn no_source_file_snapshots_the_environment_with_env_vars() {
+        fn scan(dir: &std::path::Path, offenders: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).expect("read source dir").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    scan(&path, offenders);
+                    continue;
+                }
+                if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+                    continue;
+                }
+                // This module states the rule, so it spells the banned call out.
+                if path.file_name().and_then(|value| value.to_str()) == Some("env_key.rs") {
+                    continue;
+                }
+                let Ok(contents) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for (number, line) in contents.lines().enumerate() {
+                    // The doc comments in this module name the function on purpose.
+                    if line.trim_start().starts_with("//") {
+                        continue;
+                    }
+                    if line.contains("env::vars()") {
+                        offenders.push(format!("{}:{}", path.display(), number + 1));
+                    }
+                }
+            }
+        }
+
+        let mut offenders = Vec::new();
+        scan(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut offenders,
+        );
+        assert!(
+            offenders.is_empty(),
+            "use env_key::process_vars_lossy() instead of env::vars(): {offenders:?}"
+        );
+    }
+}
