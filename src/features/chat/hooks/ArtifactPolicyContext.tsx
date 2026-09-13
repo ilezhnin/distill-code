@@ -5,20 +5,30 @@ import {
   useContext,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
+import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import type {
   Message,
   ToolCallLocation,
   ToolKind,
 } from "@/shared/types/messages";
 import { pathExists } from "@/shared/api/system";
+import { useResolvedArtifactRoot } from "@/shared/artifacts/useResolvedArtifactRoot";
+import { revealInFileManager } from "@/shared/lib/fileManager";
+import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
 import { useArtifactViewerStore } from "@/features/chat/stores/artifactViewerStore";
+import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
   artifactBasename,
   isViewableArtifact,
 } from "@/features/chat/lib/artifactViewerTypes";
-import { isWithinBase } from "@/features/chat/lib/artifactAutoOpenPolicy";
+import {
+  isWithinBase,
+  isWithinWorkRoots,
+} from "@/features/chat/lib/artifactAutoOpenPolicy";
 import {
   fileUrlToPath,
   toComparablePath,
@@ -112,6 +122,54 @@ function inferPathKind(path: string): SessionArtifact["kind"] {
   if (normalized.endsWith("/")) return "folder";
   if (hasExtension(normalized)) return "file";
   return "path";
+}
+
+/**
+ * Extensions whose default "open" verb on Windows executes the file instead
+ * of displaying it: programs, scripts (and the script hosts' variants),
+ * shortcuts, installers, registry merges, control-panel applets and the
+ * other ShellExecute-runs-it families. A link or chip that lands on one of
+ * these is revealed in the file manager rather than opened, because the
+ * click was made to *read* something the agent named, and an agent-written
+ * file carries no mark-of-the-web to trigger SmartScreen.
+ */
+const EXECUTABLE_OPEN_EXTENSIONS: ReadonlySet<string> = new Set([
+  "exe",
+  "com",
+  "bat",
+  "cmd",
+  "lnk",
+  "hta",
+  "js",
+  "jse",
+  "vbs",
+  "vbe",
+  "wsf",
+  "wsh",
+  "ps1",
+  "psm1",
+  "msi",
+  "msp",
+  "scr",
+  "reg",
+  "url",
+  "cpl",
+  "inf",
+  "pif",
+  "application",
+  "gadget",
+]);
+
+/**
+ * True when opening `path` with its default handler would run it rather than
+ * show it. Win32 drops trailing dots and spaces from a name before looking
+ * it up, so `tool.exe.` is `tool.exe`; the extension is read the same way.
+ */
+export function isExecutableOpenTarget(path: string): boolean {
+  const name = basenameOf(normalizePath(path)).replace(/[. ]+$/, "");
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return false;
+  return EXECUTABLE_OPEN_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
 }
 
 // "C:/x", "C:\x" and — once the markdown renderer has percent-encoded the
@@ -291,6 +349,11 @@ function getArtifactSignature(
   return parts.join("\n");
 }
 
+interface PendingOpenConfirmation {
+  path: string;
+  resolve: (confirmed: boolean) => void;
+}
+
 export function ArtifactPolicyProvider({
   messages,
   sessionCwd,
@@ -302,11 +365,34 @@ export function ArtifactPolicyProvider({
   sessionId?: string | null;
   children: ReactNode;
 }) {
+  const { t } = useTranslation("chat");
   const openInViewer = useArtifactViewerStore((s) => s.open);
   const normalizedSessionCwd = useMemo(
     () => sessionCwd?.trim() || null,
     [sessionCwd],
   );
+  // Places the user has deliberately pointed this chat at. A local target
+  // inside one of them opens straight away; anything else is confirmed
+  // first, because the path came from agent output (a markdown link, a tool
+  // location) rather than from the user.
+  const artifactRoot = useResolvedArtifactRoot();
+  const workspaceAttachments = useChatSessionStore((state) =>
+    sessionId
+      ? state.sessions.find((session) => session.id === sessionId)
+          ?.workspaceAttachments
+      : undefined,
+  );
+  const trustedOpenRoots = useMemo(
+    () => [
+      normalizedSessionCwd,
+      artifactRoot,
+      ...(workspaceAttachments ?? []).map((attachment) => attachment.path),
+    ],
+    [normalizedSessionCwd, artifactRoot, workspaceAttachments],
+  );
+  const [pendingOpen, setPendingOpen] =
+    useState<PendingOpenConfirmation | null>(null);
+  const pendingOpenRef = useRef<PendingOpenConfirmation | null>(null);
   const artifactCacheRef = useRef<{
     artifacts: SessionArtifact[];
     signature: string;
@@ -381,12 +467,41 @@ export function ArtifactPolicyProvider({
     [resolveOpenTarget],
   );
 
+  const settlePendingOpen = useCallback((confirmed: boolean) => {
+    const pending = pendingOpenRef.current;
+    pendingOpenRef.current = null;
+    setPendingOpen(null);
+    pending?.resolve(confirmed);
+  }, []);
+
+  const confirmOpenOutsideRoots = useCallback(
+    (path: string) =>
+      new Promise<boolean>((resolve) => {
+        // A second request while one is still waiting supersedes it; the
+        // earlier caller sees a cancel rather than hanging forever.
+        pendingOpenRef.current?.resolve(false);
+        const pending = { path, resolve };
+        pendingOpenRef.current = pending;
+        setPendingOpen(pending);
+      }),
+    [],
+  );
+
+  /**
+   * Every external open funnels through here — markdown links, artifact
+   * chips, the files list, tool-card locations and `openInApp`'s fallback —
+   * so the gate lives here rather than in any one caller:
+   *
+   * 1. Anything Windows would *run* rather than show is revealed in the file
+   *    manager instead, with a notice saying so.
+   * 2. A target outside the session cwd, the attached workspaces and the
+   *    artifact root asks first, the way an external URL does.
+   */
   const openResolvedPath = useCallback(
     async (path: string) => {
       const resolvedTarget = await resolveOpenTarget(path);
       if (!resolvedTarget) {
-        const cwdMessage = normalizedSessionCwd ?? "<none>";
-        throw new Error(`File not found: ${path} (session cwd: ${cwdMessage})`);
+        throw new Error(t("tools.fileNotFound", { path }));
       }
 
       const key = resolvedTarget.trim().toLowerCase();
@@ -396,9 +511,25 @@ export function ArtifactPolicyProvider({
         return;
       }
       lastOpenAtByPathRef.current.set(key, now);
+
+      if (isExecutableOpenTarget(resolvedTarget)) {
+        await revealInFileManager(resolvedTarget);
+        toast.message(
+          t("openPath.revealedInsteadOfRun", {
+            name: basenameOf(resolvedTarget),
+          }),
+        );
+        return;
+      }
+
+      if (!isWithinWorkRoots(trustedOpenRoots, resolvedTarget)) {
+        const confirmed = await confirmOpenOutsideRoots(resolvedTarget);
+        if (!confirmed) return;
+      }
+
       await openPath(resolvedTarget);
     },
-    [resolveOpenTarget, normalizedSessionCwd],
+    [resolveOpenTarget, trustedOpenRoots, confirmOpenOutsideRoots, t],
   );
 
   const openInApp = useCallback(
@@ -433,6 +564,20 @@ export function ArtifactPolicyProvider({
       <ArtifactListContext.Provider value={artifacts}>
         {children}
       </ArtifactListContext.Provider>
+      <ConfirmDialog
+        open={pendingOpen !== null}
+        onOpenChange={(open) => {
+          if (!open) settlePendingOpen(false);
+        }}
+        title={t("openPath.confirmTitle")}
+        description={
+          <span className="break-all font-mono">{pendingOpen?.path ?? ""}</span>
+        }
+        cancelLabel={t("openPath.confirmCancel")}
+        confirmLabel={t("openPath.confirmOpen")}
+        destructive={false}
+        onConfirm={() => settlePendingOpen(true)}
+      />
     </ArtifactActionsContext.Provider>
   );
 }
