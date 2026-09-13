@@ -70,6 +70,7 @@ function emptySessionRecord(): UsageSessionRecord {
     cacheTokens: 0,
     totalTokens: 0,
     costUsd: null,
+    costCurrency: null,
     turns: 0,
     workedMs: 0,
   };
@@ -96,6 +97,7 @@ function emptyArchivedRecord(): UsageArchivedRecord {
     cacheTokens: 0,
     totalTokens: 0,
     costUsd: null,
+    costCurrency: null,
     workedMs: 0,
     activeDays: 0,
   };
@@ -131,6 +133,17 @@ function cloneLedger(ledger: UsageLedger): UsageLedger {
   };
 }
 
+/**
+ * A reported currency, trimmed and upper-cased so "usd" and "USD" are one
+ * currency. `null` means the source did not say, which every consumer reads as
+ * USD — that is what the "$" figures on the stats page have always assumed.
+ */
+export function normalizeCostCurrency(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.toUpperCase() : null;
+}
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
@@ -159,6 +172,7 @@ function parseSessionRecord(value: unknown): UsageSessionRecord | null {
     cacheTokens: asNonNegativeInt(raw.cacheTokens) ?? 0,
     totalTokens: asNonNegativeInt(raw.totalTokens) ?? 0,
     costUsd: isFiniteNumber(raw.costUsd) ? raw.costUsd : null,
+    costCurrency: normalizeCostCurrency(raw.costCurrency),
     turns: asNonNegativeInt(raw.turns) ?? 0,
     workedMs: asNonNegativeInt(raw.workedMs) ?? 0,
   };
@@ -196,6 +210,7 @@ function parseArchivedRecord(value: unknown): UsageArchivedRecord | null {
     cacheTokens: asNonNegativeInt(raw.cacheTokens) ?? 0,
     totalTokens: asNonNegativeInt(raw.totalTokens) ?? 0,
     costUsd: isFiniteNumber(raw.costUsd) ? raw.costUsd : null,
+    costCurrency: normalizeCostCurrency(raw.costCurrency),
     workedMs: asNonNegativeInt(raw.workedMs) ?? 0,
     activeDays: asNonNegativeInt(raw.activeDays) ?? 0,
   };
@@ -286,6 +301,8 @@ function foldSessionIntoArchive(
   const current = archived.get(providerId) ?? emptyArchivedRecord();
   const started =
     session.started || session.messageCount > 0 || session.totalTokens > 0;
+  const foldsCost =
+    current.costUsd == null || current.costCurrency === session.costCurrency;
   archived.set(providerId, {
     sessions: current.sessions + 1,
     chatsStarted: current.chatsStarted + (started ? 1 : 0),
@@ -295,10 +312,16 @@ function foldSessionIntoArchive(
     outputTokens: current.outputTokens + session.outputTokens,
     cacheTokens: current.cacheTokens + session.cacheTokens,
     totalTokens: current.totalTokens + session.totalTokens,
+    // Only same-currency costs are summed; a session in another currency
+    // contributes its tokens but not its cost (`costUsd` would be a lie).
     costUsd:
-      session.costUsd == null
+      session.costUsd == null || !foldsCost
         ? current.costUsd
         : (current.costUsd ?? 0) + session.costUsd,
+    costCurrency:
+      current.costUsd == null && session.costUsd != null && foldsCost
+        ? session.costCurrency
+        : current.costCurrency,
     workedMs: current.workedMs + session.workedMs,
     activeDays: current.activeDays,
   });
@@ -597,9 +620,19 @@ export function recordSessionTokens(
     }
 
     if (snapshot.costUsd !== undefined) {
-      next.costUsd = add
-        ? (next.costUsd ?? 0) + (snapshot.costUsd ?? 0)
-        : snapshot.costUsd;
+      // A bridge that reports credits or EUR must not have its amounts added
+      // to a USD running total: a changed currency replaces the cost instead.
+      const currency =
+        snapshot.costCurrency === undefined
+          ? next.costCurrency
+          : normalizeCostCurrency(snapshot.costCurrency);
+      const mixesCurrencies =
+        next.costUsd != null && currency !== next.costCurrency;
+      next.costUsd =
+        add && !mixesCurrencies
+          ? (next.costUsd ?? 0) + (snapshot.costUsd ?? 0)
+          : snapshot.costUsd;
+      next.costCurrency = currency;
     }
     if (snapshot.turnsDelta) {
       next.turns += Math.max(0, snapshot.turnsDelta);

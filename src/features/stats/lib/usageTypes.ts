@@ -17,6 +17,11 @@ export interface UsageSessionRecord {
   cacheTokens: number;
   totalTokens: number;
   costUsd: number | null;
+  /**
+   * Currency of `costUsd` as the bridge reported it (`usage_update.cost`).
+   * `null` means it did not say, which is read as USD.
+   */
+  costCurrency: string | null;
   turns: number;
   workedMs: number;
 }
@@ -43,6 +48,7 @@ export interface UsageArchivedRecord {
   cacheTokens: number;
   totalTokens: number;
   costUsd: number | null;
+  costCurrency: string | null;
   workedMs: number;
   activeDays: number;
 }
@@ -75,6 +81,8 @@ export interface UsageTokenSnapshot {
   cacheTokens?: number;
   totalTokens?: number;
   costUsd?: number | null;
+  /** Omit when the source does not say; `null` also means unknown (USD). */
+  costCurrency?: string | null;
   turnsDelta?: number;
 }
 
@@ -91,6 +99,8 @@ export interface UsageProviderOverview {
   outputTokens: number;
   cacheTokens: number;
   estimatedCostUsd: number | null;
+  /** Currency the cost is in; `null` when unknown (read as USD). */
+  costCurrency: string | null;
   topModel: string | null;
   activeDays: number;
 }
@@ -116,6 +126,7 @@ export interface UsageOverviewModel {
   activityCount: number;
   activeDays: number;
   estimatedCostUsd: number | null;
+  costCurrency: string | null;
   hasPartialCost: boolean;
   cacheShare: number | null;
   daily: UsageOverviewDailyPoint[];

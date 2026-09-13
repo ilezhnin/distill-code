@@ -20,6 +20,7 @@ const ledger: UsageLedger = {
       cacheTokens: 100,
       totalTokens: 200,
       costUsd: 1.5,
+      costCurrency: null,
       turns: 3,
       workedMs: 0,
     },
@@ -36,6 +37,7 @@ const ledger: UsageLedger = {
       cacheTokens: 0,
       totalTokens: 15,
       costUsd: null,
+      costCurrency: null,
       turns: 0,
       workedMs: 0,
     },
@@ -140,6 +142,7 @@ describe("usageOverviewModel", () => {
             cacheTokens: 0,
             totalTokens: 0,
             costUsd: null,
+            costCurrency: null,
             turns: 0,
             workedMs: 0,
           },
@@ -168,6 +171,7 @@ describe("usageOverviewModel", () => {
             cacheTokens: 40,
             totalTokens: 100,
             costUsd: 0.5,
+            costCurrency: null,
             workedMs: 1_000,
             activeDays: 3,
           },
@@ -184,5 +188,43 @@ describe("usageOverviewModel", () => {
     expect(goose?.activeDays).toBe(4);
     expect(overview.totalTokens).toBe(315);
     expect(overview.estimatedCostUsd).toBe(2);
+  });
+  it("does not add up costs a provider reported in different currencies", () => {
+    const { a } = ledger.sessions;
+    const overview = buildUsageOverview({
+      ledger: {
+        ...ledger,
+        sessions: {
+          a,
+          credits: { ...a, costUsd: 200, costCurrency: "CREDITS" },
+        },
+      },
+      enabledProviderIds: ["goose"],
+    });
+
+    const goose = overview.providers.find(
+      (provider) => provider.id === "goose",
+    );
+    expect(goose?.estimatedCostUsd).toBeNull();
+    expect(overview.estimatedCostUsd).toBeNull();
+    expect(overview.hasPartialCost).toBe(true);
+  });
+
+  it("keeps a single non-USD currency on the figure it belongs to", () => {
+    const { a } = ledger.sessions;
+    const overview = buildUsageOverview({
+      ledger: {
+        ...ledger,
+        sessions: { a: { ...a, costUsd: 12, costCurrency: "EUR" } },
+      },
+      enabledProviderIds: ["goose"],
+    });
+
+    expect(overview.estimatedCostUsd).toBe(12);
+    expect(overview.costCurrency).toBe("EUR");
+    expect(
+      overview.providers.find((provider) => provider.id === "goose")
+        ?.costCurrency,
+    ).toBe("EUR");
   });
 });
