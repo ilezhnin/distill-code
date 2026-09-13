@@ -1939,6 +1939,104 @@ describe("sessions.list", () => {
     expect(result.sessions.map((s) => s.session_id)).toEqual(["s-2"]);
   });
 
+  it("stops paging once it has as many unarchived rows as --limit", async () => {
+    // An unfiltered list cannot show more than `limit` rows, and the host
+    // pages by updated_at desc, so walking the rest of the table only buys
+    // IPC round-trips and sidebar re-renders. Agents poll this command.
+    mockSessionPages(
+      {
+        sessions: [
+          makeAcpSession({ sessionId: "s-1" }),
+          makeAcpSession({ sessionId: "s-2" }),
+        ],
+        nextCursor: "page-2",
+      },
+      {
+        sessions: [makeAcpSession({ sessionId: "s-3" })],
+        nextCursor: null,
+      },
+    );
+
+    const result = (await dispatchCommand(
+      "sessions",
+      { action: "list", limit: 2 },
+      ctx,
+    )) as { sessions: Array<{ session_id: string }> };
+
+    expect(mocks.acpListSessionsPage).toHaveBeenCalledTimes(1);
+    expect(result.sessions.map((s) => s.session_id).sort()).toEqual([
+      "s-1",
+      "s-2",
+    ]);
+  });
+
+  it("does not count archived rows towards the limit", async () => {
+    // Archived sessions are filtered out of the result, so a page of them
+    // must not be mistaken for a page that satisfied the limit.
+    mockSessionPages(
+      {
+        sessions: [
+          makeAcpSession({
+            sessionId: "s-archived",
+            archivedAt: "2026-04-01T00:00:00.000Z",
+          }),
+        ],
+        nextCursor: "page-2",
+      },
+      {
+        sessions: [makeAcpSession({ sessionId: "s-live" })],
+        nextCursor: null,
+      },
+    );
+
+    const result = (await dispatchCommand(
+      "sessions",
+      { action: "list", limit: 1 },
+      ctx,
+    )) as { sessions: Array<{ session_id: string }> };
+
+    expect(mocks.acpListSessionsPage).toHaveBeenCalledTimes(2);
+    expect(result.sessions.map((s) => s.session_id)).toEqual(["s-live"]);
+  });
+
+  it("merges every fetched page in a single session-store write", async () => {
+    // The sidebar subscribes to this store; one write per page turned an
+    // agent's polling into one full re-render per 200 sessions.
+    mockSessionPages(
+      {
+        sessions: [makeAcpSession({ sessionId: "s-1", title: "one" })],
+        nextCursor: "page-2",
+      },
+      {
+        sessions: [makeAcpSession({ sessionId: "s-2", title: "two" })],
+        nextCursor: "page-3",
+      },
+      {
+        sessions: [makeAcpSession({ sessionId: "s-3", title: "three" })],
+        nextCursor: null,
+      },
+    );
+
+    let writes = 0;
+    const unsubscribe = useChatSessionStore.subscribe(() => {
+      writes += 1;
+    });
+    try {
+      await dispatchCommand("sessions", { action: "list", query: "e" }, ctx);
+    } finally {
+      unsubscribe();
+    }
+
+    expect(mocks.acpListSessionsPage).toHaveBeenCalledTimes(3);
+    expect(writes).toBe(1);
+    expect(
+      useChatSessionStore
+        .getState()
+        .sessions.map((session) => session.id)
+        .sort(),
+    ).toEqual(["s-1", "s-2", "s-3"]);
+  });
+
   it("excludes archived sessions and filters by project and query", async () => {
     const project = makeProject({ id: "p-1" });
     useProjectStore.setState({
