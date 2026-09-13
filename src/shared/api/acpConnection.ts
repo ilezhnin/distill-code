@@ -45,6 +45,9 @@ function allowOnce(args: RequestPermissionRequest): RequestPermissionResponse {
 let clientPromise: Promise<HostClient> | null = null;
 let resolvedClient: HostClient | null = null;
 let activeStream: WebSocketStream | null = null;
+// Bumped by every invalidation so a connection attempt that was still
+// waiting on the host URL when the invalidation happened knows it lost.
+let connectionGeneration = 0;
 
 function createClientCallbacks(): () => Client {
   return () => ({
@@ -96,6 +99,7 @@ function monitorConnection(client: HostClient, stream: WebSocketStream): void {
  */
 export async function invalidateClientConnection(): Promise<void> {
   const stream = activeStream;
+  connectionGeneration += 1;
   activeStream = null;
   resolvedClient = null;
   clientPromise = null;
@@ -190,12 +194,27 @@ export async function invalidateClientConnectionIfUnresponsive(): Promise<boolea
   return true;
 }
 
+export class AcpConnectionSupersededError extends Error {
+  constructor() {
+    super("ACP connection attempt was superseded by a reconnect.");
+    this.name = "AcpConnectionSupersededError";
+  }
+}
+
 async function initializeConnection(): Promise<HostClient> {
+  const generation = connectionGeneration;
+  const isCurrentAttempt = () => connectionGeneration === generation;
   const tStart = performance.now();
   const wsUrl: string = await invoke("get_agent_host_url");
   perfLog(
     `[perf:conn] get_agent_host_url in ${(performance.now() - tStart).toFixed(1)}ms`,
   );
+  // An invalidation that ran while the host URL was still being fetched has
+  // nothing to close yet; opening this socket now would make it the host's
+  // "newest" socket while nobody holds its client.
+  if (!isCurrentAttempt()) {
+    throw new AcpConnectionSupersededError();
+  }
 
   const stream = createWebSocketStream(wsUrl);
   activeStream = stream;
@@ -211,10 +230,14 @@ async function initializeConnection(): Promise<HostClient> {
         version: packageJson.version,
       },
     });
+    if (!isCurrentAttempt()) {
+      throw new AcpConnectionSupersededError();
+    }
   } catch (error) {
-    // A socket that never finished the handshake must not linger: the host
-    // treats the newest socket as the renderer's, and this one would stay
-    // open, unanswered, next to the retry's.
+    // A socket that never finished the handshake, or was superseded while
+    // finishing it, must not linger: the host treats the newest socket as
+    // the renderer's, and this one would stay open, unanswered, next to the
+    // retry's.
     if (activeStream === stream) {
       activeStream = null;
     }
@@ -250,6 +273,11 @@ export async function getClient(): Promise<HostClient> {
       .catch((error) => {
         if (clientPromise === pending) {
           clientPromise = null;
+        }
+        // The caller still wants a client; the reconnect that superseded
+        // this attempt is the one to hand out.
+        if (error instanceof AcpConnectionSupersededError) {
+          return getClient();
         }
         throw error;
       });
