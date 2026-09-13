@@ -560,6 +560,53 @@ describe("terminalSessionManager", () => {
     expect(mocks.stopTerminal).not.toHaveBeenCalled();
   });
 
+  it("stops every terminal of one chat and leaves the others alone", async () => {
+    const {
+      getChatSessionIdsWithTerminals,
+      getOrCreateTerminalSession,
+      queueTerminalCommand,
+      stopTerminalSessionsForChat,
+    } = await import("./terminalSessionManager");
+    mocks.startTerminal
+      .mockResolvedValueOnce("terminal-1")
+      .mockResolvedValueOnce("terminal-2")
+      .mockResolvedValueOnce("terminal-3");
+
+    for (const key of ["chat-a:tab-1", "chat-a:tab-2", "chat-b:tab-1"]) {
+      getOrCreateTerminalSession({
+        key,
+        cwd: "/repo",
+        labels,
+        theme: {},
+        fontFamily: "monospace",
+      });
+    }
+    await Promise.resolve();
+    queueTerminalCommand("chat-a:tab-3", "pnpm dev");
+    mocks.startTerminal.mockResolvedValueOnce("terminal-4");
+
+    expect(stopTerminalSessionsForChat("chat-a")).toBe(2);
+
+    expect(mocks.stopTerminal).toHaveBeenCalledWith("terminal-1");
+    expect(mocks.stopTerminal).toHaveBeenCalledWith("terminal-2");
+    expect(mocks.stopTerminal).not.toHaveBeenCalledWith("terminal-3");
+    expect(getChatSessionIdsWithTerminals()).toEqual(new Set(["chat-b"]));
+
+    // The command queued for a tab that had not started yet is gone too.
+    getOrCreateTerminalSession({
+      key: "chat-a:tab-3",
+      cwd: "/repo",
+      labels,
+      theme: {},
+      fontFamily: "monospace",
+    });
+    await Promise.resolve();
+    expect(mocks.writeTerminal).not.toHaveBeenCalledWith(
+      "terminal-4",
+      "pnpm dev\r",
+    );
+  });
+
   it("keeps errored terminals in the chat-session terminal registry", async () => {
     const { getChatSessionIdsWithTerminals, getOrCreateTerminalSession } =
       await import("./terminalSessionManager");
