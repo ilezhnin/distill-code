@@ -24,6 +24,7 @@ import {
 } from "@/shared/types/messages";
 
 import {
+  hasConductorGraphHydrationFailed,
   isConductorGraphHydrated,
   useConductorGraphStore,
   whenConductorGraphHydrated,
@@ -92,6 +93,7 @@ import {
 import { resetConductorTranscriptsForTests } from "./waveTranscripts";
 import {
   getWaveEngineState,
+  hasWaveEngineStateHydrationFailed,
   hasWaveTombstone,
   isWaveEngineStateHydrated,
   pruneOrphanedWaves,
@@ -136,6 +138,22 @@ let awaitingWaveHydration = false;
 
 function conductorDocumentsHydrated(): boolean {
   return isWaveEngineStateHydrated() && isConductorGraphHydrated();
+}
+
+/**
+ * True when the startup hydration gave up on either document.
+ *
+ * The engine then stays off for the session. A file that could not be read
+ * is not a file that held nothing: a tick on the empty in-memory copy would
+ * re-admit every plan in every loaded conductor transcript (no tombstones),
+ * reset every `spawning` step whose child is on disk, and the first write
+ * would replace the only copy of it all. Doing nothing is the only honest
+ * move, and the startup log says why.
+ */
+function conductorDocumentsUnreadable(): boolean {
+  return (
+    hasWaveEngineStateHydrationFailed() || hasConductorGraphHydrationFailed()
+  );
 }
 
 /**
@@ -1000,13 +1018,22 @@ export function runWaveEngineTick(): void {
   if (ticking) return;
   if (!useChatSessionStore.getState().hasHydratedSessions) return;
   if (!conductorDocumentsHydrated()) {
+    // A document the startup hydration could not read, even after retrying:
+    // the engine stays off rather than run on an empty copy of it.
+    if (conductorDocumentsUnreadable()) return;
     // The folder's waves, tombstones and graph are not all in memory yet: a
     // tick now would re-admit plans the tombstones record, or reset a
     // `spawning` step whose child is in the graph file and spawn it twice.
-    // One wake-up once both have landed.
+    // One wake-up once both have landed. Each waiter fires exactly once, when
+    // its document settles — read, or given up on — so the wake that finds
+    // one still pending leaves the other waiter to finish the job.
     if (!awaitingWaveHydration) {
       awaitingWaveHydration = true;
       const wake = () => {
+        if (conductorDocumentsUnreadable()) {
+          awaitingWaveHydration = false;
+          return;
+        }
         if (!conductorDocumentsHydrated()) return;
         awaitingWaveHydration = false;
         runWaveEngineTick();

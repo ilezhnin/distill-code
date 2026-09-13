@@ -367,7 +367,15 @@ const telemetryDocument = conductorDocument<WaveTelemetryState>({
 export async function hydrateWaveTelemetry(): Promise<void> {
   if (!telemetryDocument.active) return;
   const stored = await telemetryDocument.read();
-  if (!stored) return;
+  // From here the file is known, so writing over it is safe; the merge below
+  // is the first write and carries everything the file had.
+  telemetryReadSucceeded = true;
+  if (!stored) {
+    if (telemetryWriteHeld) save(getWaveTelemetry());
+    telemetryWriteHeld = false;
+    markWaveTelemetryHydrated();
+    return;
+  }
   const live = getWaveTelemetry();
   const liveWaveIds = new Set(live.records.map((record) => record.waveId));
   const liveCounted =
@@ -388,6 +396,70 @@ export async function hydrateWaveTelemetry(): Promise<void> {
       ...live.records,
     ]),
   });
+  telemetryWriteHeld = false;
+  markWaveTelemetryHydrated();
+}
+
+/** Where the folder read stands. `pending` until it settles either way. */
+let telemetryHydration: "pending" | "hydrated" | "failed" = "pending";
+/** True once one read succeeded — the write gate, distinct from the phase. */
+let telemetryReadSucceeded = false;
+/** True when a write was refused by the gate and is owed after the read. */
+let telemetryWriteHeld = false;
+const telemetryHydrationWaiters = new Set<() => void>();
+
+/**
+ * True once the folder's telemetry has been folded in — or when there is no
+ * folder to wait for. False after a failed read: an unreadable file is not
+ * an empty one, and counting on top of "empty" is how lifetime counters
+ * come back as this session's few.
+ */
+export function isWaveTelemetryHydrated(): boolean {
+  return telemetryHydration === "hydrated" || !telemetryDocument.active;
+}
+
+/** True when the caller stopped trying to read the folder's telemetry. */
+export function hasWaveTelemetryHydrationFailed(): boolean {
+  return telemetryHydration === "failed";
+}
+
+function releaseTelemetryHydrationWaiters(): void {
+  const waiters = [...telemetryHydrationWaiters];
+  telemetryHydrationWaiters.clear();
+  for (const waiter of waiters) {
+    try {
+      waiter();
+    } catch {
+      // One waiter that throws must not keep the others waiting.
+    }
+  }
+}
+
+function markWaveTelemetryHydrated(): void {
+  telemetryHydration = "hydrated";
+  releaseTelemetryHydrationWaiters();
+}
+
+/**
+ * Records that the folder's telemetry will not be read this session. The
+ * waiters run so nothing parks forever; the write gate stays shut.
+ */
+export function markWaveTelemetryHydrationFailed(): void {
+  if (telemetryHydration === "hydrated") return;
+  telemetryHydration = "failed";
+  releaseTelemetryHydrationWaiters();
+}
+
+/**
+ * Calls `callback` once the folder read has settled — hydrated, or given up
+ * on — and immediately when it already has.
+ */
+export function whenWaveTelemetryHydrated(callback: () => void): void {
+  if (isWaveTelemetryHydrated() || hasWaveTelemetryHydrationFailed()) {
+    callback();
+    return;
+  }
+  telemetryHydrationWaiters.add(callback);
 }
 
 /** Pushes a queued telemetry write to disk. Shutdown, and tests. */
@@ -398,7 +470,14 @@ export function flushWaveTelemetryWrites(): Promise<void> {
 function save(next: WaveTelemetryState): void {
   cache = next;
   if (telemetryDocument.active) {
-    telemetryDocument.write(next);
+    // Never before the folder has been read: the file holds the lifetime
+    // counters and every past record, and a write from the in-memory copy
+    // before the read landed — or after it failed — would replace them.
+    if (telemetryReadSucceeded) {
+      telemetryDocument.write(next);
+    } else {
+      telemetryWriteHeld = true;
+    }
   } else if (typeof window !== "undefined") {
     try {
       window.localStorage.setItem(
@@ -613,6 +692,10 @@ export function useWaveTelemetry(): WaveTelemetryState {
 
 export function resetWaveTelemetryForTests(): void {
   cache = null;
+  telemetryHydration = "pending";
+  telemetryReadSucceeded = false;
+  telemetryWriteHeld = false;
+  telemetryHydrationWaiters.clear();
   if (typeof window !== "undefined") {
     try {
       window.localStorage.removeItem(WAVE_TELEMETRY_STORAGE_KEY);

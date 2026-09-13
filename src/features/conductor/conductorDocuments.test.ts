@@ -26,8 +26,11 @@ const {
 const {
   CONDUCTOR_GRAPH_STORAGE_KEY,
   flushConductorGraphWrites,
+  hasConductorGraphHydrationFailed,
   hydrateConductorGraph,
   isConductorGraphHydrated,
+  markConductorGraphHydrationFailed,
+  resetConductorGraphHydrationForTests,
   setConductorGraphHydratedForTests,
   useConductorGraphStore,
   whenConductorGraphHydrated,
@@ -37,18 +40,24 @@ const {
   emptyWaveEngineState,
   flushWaveEngineWrites,
   getWaveEngineState,
+  hasWaveEngineStateHydrationFailed,
   hydrateWaveEngineState,
   isWaveEngineStateHydrated,
+  markWaveEngineStateHydrationFailed,
   resetWaveEngineStateCache,
+  resetWaveEngineStateHydrationForTests,
   setWaveEngineState,
   setWaveEngineStateHydratedForTests,
   whenWaveEngineStateHydrated,
+  withWaveTombstone,
 } = await import("./waveStore");
 const { createWaveState } = await import("./waveEngine");
 const {
+  bumpWaveTelemetryCounter,
   flushWaveTelemetryWrites,
   getWaveTelemetry,
   hydrateWaveTelemetry,
+  isWaveTelemetryHydrated,
   resetWaveTelemetryForTests,
 } = await import("./waveTelemetryStore");
 
@@ -69,17 +78,35 @@ function node(sessionId: string): SessionNode {
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  // A debounced write the previous case left queued would land in this one.
+  await flushConductorGraphWrites();
+  await flushWaveEngineWrites();
+  await flushWaveTelemetryWrites();
   files.clear();
   window.localStorage.clear();
+  readDistillDocument.mockImplementation(
+    async (path: string) => files.get(path) ?? null,
+  );
   useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
+  resetConductorGraphHydrationForTests();
   resetWaveEngineStateCache();
+  resetWaveEngineStateHydrationForTests();
   setWaveEngineState(emptyWaveEngineState());
   resetWaveTelemetryForTests();
 });
 
+/** One rejected read of `path`, then the file map answers as usual. */
+function rejectNextRead(path: string): void {
+  readDistillDocument.mockImplementationOnce(async (requested: string) => {
+    if (requested === path) throw new Error("EPERM: sharing violation");
+    return files.get(requested) ?? null;
+  });
+}
+
 describe("the conductor's state lives in the Distill folder (P24)", () => {
   it("writes the graph to the folder instead of localStorage", async () => {
+    await hydrateConductorGraph();
     useConductorGraphStore.getState().registerNode(node("w1"));
     await flushConductorGraphWrites();
     expect(files.has(CONDUCTOR_GRAPH_DOCUMENT)).toBe(true);
@@ -206,5 +233,164 @@ describe("the conductor's state lives in the Distill folder (P24)", () => {
     expect(getWaveTelemetry().counters.planlessTurns).toBe(7);
     await flushWaveTelemetryWrites();
     expect(files.has(WAVE_TELEMETRY_DOCUMENT)).toBe(true);
+  });
+});
+
+describe("a folder that could not be read is never overwritten", () => {
+  // The three documents are the only copy of every past executor, report and
+  // tombstone. A read that fails — a locked file at startup, say — must leave
+  // the store unhydrated for writing: the first mutation of the session used
+  // to replace the file with the near-empty in-memory copy.
+  const storedGraph = JSON.stringify({
+    version: 1,
+    nodes: [{ ...node("old"), status: "completed" }],
+    reports: [],
+  });
+
+  it("keeps the graph unhydrated and holds its writes until a read succeeds", async () => {
+    files.set(CONDUCTOR_GRAPH_DOCUMENT, storedGraph);
+    rejectNextRead(CONDUCTOR_GRAPH_DOCUMENT);
+
+    await expect(hydrateConductorGraph()).rejects.toThrow("sharing violation");
+    expect(isConductorGraphHydrated()).toBe(false);
+    expect(hasConductorGraphHydrationFailed()).toBe(false);
+
+    // This session's work still lands in memory…
+    useConductorGraphStore.getState().registerNode(node("w1"));
+    await flushConductorGraphWrites();
+    // …but the file is untouched.
+    expect(files.get(CONDUCTOR_GRAPH_DOCUMENT)).toBe(storedGraph);
+
+    // The read is tried again and succeeds: the folder joins memory, memory
+    // wins on conflict, and the held write goes through with both.
+    await hydrateConductorGraph();
+    expect(isConductorGraphHydrated()).toBe(true);
+    const nodes = useConductorGraphStore.getState().nodesById;
+    expect(Object.keys(nodes).sort()).toEqual(["old", "w1"]);
+    await flushConductorGraphWrites();
+    const written = JSON.parse(files.get(CONDUCTOR_GRAPH_DOCUMENT) ?? "{}");
+    expect(
+      written.nodes.map((entry: SessionNode) => entry.sessionId).sort(),
+    ).toEqual(["old", "w1"]);
+  });
+
+  it("keeps the waves unhydrated and holds its writes until a read succeeds", async () => {
+    const storedWaves = JSON.stringify({
+      version: 2,
+      waves: [],
+      tombstones: [
+        {
+          planMessageId: "m0",
+          conductorSessionId: "c1",
+          outcome: "spawned",
+          at: 1,
+        },
+      ],
+    });
+    files.set(CONDUCTOR_WAVES_DOCUMENT, storedWaves);
+    rejectNextRead(CONDUCTOR_WAVES_DOCUMENT);
+
+    await expect(hydrateWaveEngineState()).rejects.toThrow("sharing violation");
+    expect(isWaveEngineStateHydrated()).toBe(false);
+
+    setWaveEngineState(
+      withWaveTombstone(getWaveEngineState(), {
+        planMessageId: "m1",
+        conductorSessionId: "c1",
+        outcome: "rejected",
+        at: 2,
+      }),
+    );
+    await flushWaveEngineWrites();
+    expect(files.get(CONDUCTOR_WAVES_DOCUMENT)).toBe(storedWaves);
+
+    await hydrateWaveEngineState();
+    expect(isWaveEngineStateHydrated()).toBe(true);
+    expect(
+      getWaveEngineState().tombstones.map((entry) => entry.planMessageId),
+    ).toEqual(["m0", "m1"]);
+    await flushWaveEngineWrites();
+    const written = JSON.parse(files.get(CONDUCTOR_WAVES_DOCUMENT) ?? "{}");
+    expect(
+      written.tombstones.map(
+        (entry: { planMessageId: string }) => entry.planMessageId,
+      ),
+    ).toEqual(["m0", "m1"]);
+  });
+
+  it("keeps the telemetry unhydrated and holds its writes until a read succeeds", async () => {
+    const storedTelemetry = JSON.stringify({
+      version: 1,
+      counters: {
+        planlessTurns: 7,
+        admittedWaves: 3,
+        rejectedPlans: 1,
+        concurrentRefusals: 0,
+      },
+      records: [],
+      planlessHighWater: {},
+    });
+    files.set(WAVE_TELEMETRY_DOCUMENT, storedTelemetry);
+    rejectNextRead(WAVE_TELEMETRY_DOCUMENT);
+
+    await expect(hydrateWaveTelemetry()).rejects.toThrow("sharing violation");
+    expect(isWaveTelemetryHydrated()).toBe(false);
+
+    bumpWaveTelemetryCounter("rejectedPlans");
+    await flushWaveTelemetryWrites();
+    expect(files.get(WAVE_TELEMETRY_DOCUMENT)).toBe(storedTelemetry);
+
+    await hydrateWaveTelemetry();
+    expect(isWaveTelemetryHydrated()).toBe(true);
+    await flushWaveTelemetryWrites();
+    // The held write lands once the file is known.
+    expect(files.get(WAVE_TELEMETRY_DOCUMENT)).not.toBe(storedTelemetry);
+    const written = JSON.parse(files.get(WAVE_TELEMETRY_DOCUMENT) ?? "{}");
+    expect(written.counters.rejectedPlans).toBeGreaterThanOrEqual(1);
+  });
+
+  it("writes this session's early changes once the folder has been read", async () => {
+    // No file at all: the read succeeds with nothing to merge, and the write
+    // held back before it lands now rather than waiting for the next change.
+    rejectNextRead(CONDUCTOR_GRAPH_DOCUMENT);
+    await expect(hydrateConductorGraph()).rejects.toThrow();
+    useConductorGraphStore.getState().registerNode(node("w1"));
+    await flushConductorGraphWrites();
+    expect(files.has(CONDUCTOR_GRAPH_DOCUMENT)).toBe(false);
+
+    await hydrateConductorGraph();
+    await flushConductorGraphWrites();
+    const written = JSON.parse(files.get(CONDUCTOR_GRAPH_DOCUMENT) ?? "{}");
+    expect(written.nodes.map((entry: SessionNode) => entry.sessionId)).toEqual([
+      "w1",
+    ]);
+  });
+
+  it("releases the waiters when the caller gives up on the read, and says so", () => {
+    // A waiter parked on a document that will never arrive must not park for
+    // the rest of the session; it runs, finds the store unhydrated and failed,
+    // and decides for itself. The engine tick, for one, then stays off.
+    const graphWoken = vi.fn();
+    const wavesWoken = vi.fn();
+    setConductorGraphHydratedForTests(false);
+    setWaveEngineStateHydratedForTests(false);
+    whenConductorGraphHydrated(graphWoken);
+    whenWaveEngineStateHydrated(wavesWoken);
+    setConductorGraphHydratedForTests(null);
+    setWaveEngineStateHydratedForTests(null);
+
+    markConductorGraphHydrationFailed();
+    markWaveEngineStateHydrationFailed();
+
+    expect(graphWoken).toHaveBeenCalledTimes(1);
+    expect(wavesWoken).toHaveBeenCalledTimes(1);
+    expect(isConductorGraphHydrated()).toBe(false);
+    expect(hasConductorGraphHydrationFailed()).toBe(true);
+    expect(isWaveEngineStateHydrated()).toBe(false);
+    expect(hasWaveEngineStateHydrationFailed()).toBe(true);
+    // A waiter added after the failure runs at once, for the same reason.
+    const late = vi.fn();
+    whenConductorGraphHydrated(late);
+    expect(late).toHaveBeenCalledTimes(1);
   });
 });
