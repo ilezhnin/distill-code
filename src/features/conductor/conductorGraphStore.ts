@@ -427,14 +427,41 @@ export function resetConductorGraphHydrationForTests(): void {
 }
 
 function mergeStoredGraph(stored: ConductorGraphState): void {
-  useConductorGraphStore.setState((current) => {
-    const nodesById = { ...stored.nodesById, ...current.nodesById };
-    const reportsByRunId = {
-      ...stored.reportsByRunId,
-      ...current.reportsByRunId,
-    };
-    return { nodesById, reportsByRunId };
-  });
+  // Subscribers run synchronously inside `setState`, so this flag is exactly
+  // the window in which a listener is looking at the folder's entries joining
+  // memory rather than at something that just happened.
+  mergingStoredGraph = true;
+  try {
+    useConductorGraphStore.setState((current) => {
+      const nodesById = { ...stored.nodesById, ...current.nodesById };
+      const reportsByRunId = {
+        ...stored.reportsByRunId,
+        ...current.reportsByRunId,
+      };
+      return { nodesById, reportsByRunId };
+    });
+  } finally {
+    mergingStoredGraph = false;
+  }
+}
+
+/** True only while {@link hydrateConductorGraph} is folding the file in. */
+let mergingStoredGraph = false;
+
+/**
+ * True while the notification a subscriber is handling is the folder's graph
+ * joining memory.
+ *
+ * The wave store says the same thing through its change notice; the graph store
+ * has no notice to carry it, so it is a flag. It exists for the run journal
+ * (P27), which derives "what happened" from store transitions: nothing happens
+ * when the file lands — those executors were spawned and those reports arrived
+ * in an earlier run — and diffing them against an empty baseline wrote a
+ * "spawned now" and a "report arrived now" for every one of them, timestamped
+ * at startup, into the record WAVES requires to be readable without the app.
+ */
+export function isConductorGraphHydrating(): boolean {
+  return mergingStoredGraph;
 }
 
 /** Pushes a queued graph write to disk. Shutdown, and tests. */
