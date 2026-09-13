@@ -67,6 +67,15 @@ export interface SessionArtifact {
 export interface ArtifactPolicyContextValue {
   resolveMarkdownHref: (href: string) => ArtifactLinkCandidate | null;
   pathExists: (path: string) => Promise<boolean>;
+  /**
+   * True when `path` resolves inside one of the places the user pointed this
+   * chat at: the session working directory, an attached workspace, or the
+   * artifact root. This is the policy for *rendering* a local file the agent
+   * named — an inline image — where there is no click to confirm: an agent can
+   * hand over any `file://` URI or `asset:` URL it likes, and the webview
+   * would happily fetch anything the asset scope allows (`$HOME/**`).
+   */
+  isPathWithinTrustedRoots: (path: string) => boolean;
   openResolvedPath: (path: string) => Promise<void>;
   /**
    * Primary "open this file" action for UI surfaces: viewable files
@@ -79,6 +88,7 @@ export interface ArtifactPolicyContextValue {
 const DEFAULT_ACTIONS_CONTEXT_VALUE: ArtifactPolicyContextValue = {
   resolveMarkdownHref: () => null,
   pathExists: async () => false,
+  isPathWithinTrustedRoots: () => false,
   openResolvedPath: async () => {},
   openInApp: async () => {},
 };
@@ -507,6 +517,15 @@ export function ArtifactPolicyProvider({
     [resolveOpenTarget],
   );
 
+  const isPathWithinTrustedRoots = useCallback(
+    (path: string) => {
+      const resolvedPath = resolvePath(path, normalizedSessionCwd);
+      if (!resolvedPath) return false;
+      return isWithinWorkRoots(trustedOpenRoots, resolvedPath);
+    },
+    [normalizedSessionCwd, trustedOpenRoots],
+  );
+
   const settlePendingOpen = useCallback((confirmed: boolean) => {
     const pending = pendingOpenRef.current;
     pendingOpenRef.current = null;
@@ -593,10 +612,17 @@ export function ArtifactPolicyProvider({
     () => ({
       resolveMarkdownHref,
       pathExists: checkPathExists,
+      isPathWithinTrustedRoots,
       openResolvedPath,
       openInApp,
     }),
-    [checkPathExists, openResolvedPath, openInApp, resolveMarkdownHref],
+    [
+      checkPathExists,
+      isPathWithinTrustedRoots,
+      openResolvedPath,
+      openInApp,
+      resolveMarkdownHref,
+    ],
   );
 
   // Every surface in this chat that renders Markdown — the agent-work panel's
