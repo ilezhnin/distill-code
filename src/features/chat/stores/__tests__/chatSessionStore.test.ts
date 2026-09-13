@@ -14,6 +14,7 @@ import {
   SessionNotFoundError,
   useChatSessionStore,
 } from "../chatSessionStore";
+import { useChatStore } from "../chatStore";
 
 const mocks = vi.hoisted(() => ({
   acpCreateSession: vi.fn(),
@@ -129,6 +130,8 @@ describe("chatSessionStore", () => {
     window.localStorage.removeItem("distill:right-rail-open");
     window.localStorage.removeItem("distill:context-panel-open");
     window.localStorage.removeItem(CHAT_WORKSPACE_METADATA_STORAGE_KEY);
+    window.localStorage.removeItem("distill:unread-sessions");
+    useChatStore.setState({ sessionStateById: {} });
     resetStore();
     vi.clearAllMocks();
     mocks.archiveSession.mockResolvedValue(undefined);
@@ -853,6 +856,39 @@ describe("chatSessionStore", () => {
   });
 
   describe("loadSessions", () => {
+    // An unread flag for a session the host does not list belongs to a chat
+    // that was archived away or deleted; nothing can ever open it to mark it
+    // read, so it would sit in localStorage forever.
+    it("prunes unread flags for sessions the full list no longer contains", async () => {
+      useChatStore.getState().markSessionUnread("acp-1");
+      useChatStore.getState().markSessionUnread("gone-for-good");
+      mocks.acpListSessionsPage.mockResolvedValue(
+        mockPage([makeAcpSession({ sessionId: "acp-1" })], null),
+      );
+
+      await useChatSessionStore.getState().loadSessions();
+
+      expect(useChatStore.getState().getSessionRuntime("acp-1").hasUnread).toBe(
+        true,
+      );
+      expect(
+        useChatStore.getState().getSessionRuntime("gone-for-good").hasUnread,
+      ).toBe(false);
+    });
+
+    it("keeps unread flags while the list still has further pages", async () => {
+      useChatStore.getState().markSessionUnread("not-loaded-yet");
+      mocks.acpListSessionsPage.mockResolvedValue(
+        mockPage([makeAcpSession({ sessionId: "acp-1" })], "cursor-2"),
+      );
+
+      await useChatSessionStore.getState().loadSessions();
+
+      expect(
+        useChatStore.getState().getSessionRuntime("not-loaded-yet").hasUnread,
+      ).toBe(true);
+    });
+
     it("loads sessions from ACP and maps them correctly", async () => {
       mocks.acpListSessionsPage.mockResolvedValue(
         mockPage(

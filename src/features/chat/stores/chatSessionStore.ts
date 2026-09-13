@@ -20,6 +20,7 @@ import {
   unarchiveSession as acpUnarchiveSession,
 } from "@/shared/api/acpApi";
 import { mergeAcpSessionPage } from "@/features/chat/lib/acpSessionMapping";
+import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
   logReasoningEffortInfo,
   reasoningEffortConfigLogFields,
@@ -771,6 +772,18 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
       const page = await acpListSessionsPage();
       if (sessionLoadEpoch !== loadEpoch) return;
       set((state) => mergeAcpSessionPage(state, page, null));
+      const { sessions, hasMoreSessions } = get();
+      if (!hasMoreSessions) {
+        // With the whole list in hand, an unread flag for an id the host does
+        // not list belongs to a session that was archived away or deleted (in
+        // this window or another one): nothing can ever open it to mark it
+        // read, so it would sit in `distill:unread-sessions` forever. Only done
+        // when there is no further page — a partial list would clear flags of
+        // sessions that simply have not been loaded yet.
+        useChatStore
+          .getState()
+          .pruneUnreadSessions(sessions.map((session) => session.id));
+      }
     } catch (error) {
       if (sessionLoadEpoch === loadEpoch) {
         console.error("Failed to load sessions from ACP:", error);
