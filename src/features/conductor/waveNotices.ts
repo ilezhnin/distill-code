@@ -257,6 +257,35 @@ export function persistFailureNoticeText(facts: {
 }
 
 /**
+ * The notice posted when a conductor document could not be read at startup.
+ *
+ * Louder than a refused write, and said even though no wave is live — because
+ * none ever will be. The engine is off for the session, so a conductor can
+ * answer with a perfectly good plan and nothing will happen to it: no wave, no
+ * refusal, nothing in the transcript. This is the "nothing" being fixed, and it
+ * names the retry, because the usual cause (a file held by an antivirus pass or
+ * a sync client for a few seconds at launch) is gone by the time it is read.
+ */
+export function conductorDocumentsUnreadableNoticeText(facts: {
+  documents: readonly string[];
+  reason?: string;
+}): string {
+  const lines = [
+    i18n.t("chat:conductor.unreadable.title"),
+    i18n.t("chat:conductor.unreadable.body", {
+      documents: facts.documents.join(", "),
+    }),
+    i18n.t("chat:conductor.unreadable.retry"),
+  ];
+  if (facts.reason) {
+    lines.push(
+      i18n.t("chat:conductor.unreadable.reason", { reason: facts.reason }),
+    );
+  }
+  return lines.join("\n\n");
+}
+
+/**
  * The notice posted when a fresh plan follows a request that spent its cap.
  *
  * The cap is counted per *plan message*, not per conversation, so any word

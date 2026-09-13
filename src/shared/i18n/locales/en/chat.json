@@ -614,6 +614,12 @@
       "title": "Step {{step}} ({{name}}) reported success, but its report failed verification and was quarantined.",
       "detail": "Reason: {{detail}} The digest and later steps receive a stub instead of its claims.",
       "noDetail": "The digest and later steps receive a stub instead of its claims."
+    },
+    "unreadable": {
+      "title": "The conductor is off for this session: its saved state could not be read.",
+      "body": "{{documents}} could not be read from the Distill folder, even after retrying. Waves are not started at all while that is true — a plan in this chat will simply be ignored — because running on an empty copy would re-run old plans and then overwrite the only record of them.",
+      "retry": "Something else was probably holding the file when the app started, such as an antivirus scan or a sync client. Settings → Stats has a Try again button that re-reads it without restarting.",
+      "reason": "The read failed with: {{reason}}"
     }
   },
   "harnessBrigade": {

@@ -59,6 +59,7 @@ const {
 const { createWaveState } = await import("./waveEngine");
 const { stopWaveByOperator } = await import("./waveStop");
 const { getWaveTelemetry } = await import("./waveTelemetryStore");
+const { notePersistReadOutage } = await import("./persistHealth");
 
 const CONDUCTOR_ID = "conductor-1";
 
@@ -202,6 +203,37 @@ describe("waveRunner", () => {
       await Promise.resolve();
       expect(spawnConductorChildSession).not.toHaveBeenCalled();
       expect(getWaveEngineState().waves).toHaveLength(0);
+    } finally {
+      setWaveEngineStateHydratedForTests(null);
+    }
+  });
+
+  it("tells every conductor chat that it is off for the session", async () => {
+    // The engine never starts a wave while a document is unread, so the
+    // write-refusal notice (which waits for a live wave) would wait forever.
+    // Without this the operator sees a conductor answering with a plan and an
+    // app doing nothing at all about it.
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    notePersistReadOutage(
+      "waves",
+      Object.assign(new Error("read failed"), { name: "EPERM" }),
+    );
+    setWaveEngineStateHydratedForTests("failed");
+    try {
+      runWaveEngineTick();
+      await Promise.resolve();
+
+      const notices = noticeTexts();
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain("conductor/waves.json");
+      expect(notices[0]).toContain("EPERM");
+
+      // Said once per chat, not once per tick — the tick runs on every
+      // chat-store change.
+      runWaveEngineTick();
+      await Promise.resolve();
+      expect(noticeTexts()).toHaveLength(1);
     } finally {
       setWaveEngineStateHydratedForTests(null);
     }

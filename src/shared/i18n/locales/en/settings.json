@@ -469,7 +469,11 @@
       "facts": "What this installation has measured",
       "factsDescription": "Counts from waves that ran here, shown once a model has at least {{count}} observations. These same lines are given to the conductor as facts, never as advice.",
       "factStep": "{{model}} on \"{{role}}\" steps: {{completed}} of {{runs}} completed",
-      "factConductor": "Waves planned on {{model}}: {{accepted}} of {{waves}} accepted"
+      "factConductor": "Waves planned on {{model}}: {{accepted}} of {{waves}} accepted",
+      "readOutage": "The conductor is off for this session: {{documents}} could not be read from the Distill folder. Waves are not started at all while that is true, so a plan in a conductor chat is ignored. Something was most likely holding the file at launch, such as an antivirus scan or a sync client.",
+      "readOutageRetry": "Try again",
+      "readOutageRetrying": "Reading…",
+      "readOutageRetryFailed": "Still could not read it. Close whatever is holding the file, or restart the app."
     }
   },
   "storage": {
