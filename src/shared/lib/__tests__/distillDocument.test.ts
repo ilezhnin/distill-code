@@ -199,6 +199,23 @@ describe("distillDocument on the desktop", () => {
     await second;
   });
 
+  it.each([
+    "pagehide",
+    "beforeunload",
+  ])("flushes a debounced write when the window goes away (%s)", async (event) => {
+    const document = doc();
+    document.write({ items: ["last change"] });
+    expect(mocks.writeDistillDocument).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new Event(event));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mocks.writeDistillDocument).toHaveBeenCalledWith(
+      "planner.json",
+      JSON.stringify({ version: 1, items: ["last change"] }),
+    );
+  });
+
   it("survives a folder it cannot write to", async () => {
     mocks.writeDistillDocument.mockRejectedValue(new Error("disk full"));
     const document = doc();
