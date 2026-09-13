@@ -1866,7 +1866,7 @@ export const designSystemComponentManifest = [
     name: "Linkified Text",
     source: "src/shared/ui/LinkifiedText.tsx",
     description:
-      "Renders plain text while turning bare http(s) URLs into real links.\n\nIntended for user-authored text (e.g. chat messages the user typed or\npasted). Because the user is the source of these URLs, links open directly\nwithout the LinkSafetyModal confirmation — that guard is reserved for\nagent-generated Markdown links, where the URL may be untrusted.",
+      'Renders plain text while turning bare http(s) URLs into real links.\n\nUsed for the text of "user" messages — which are not necessarily written by\nthe local operator: a `berdctl session send` from another agent and a\nconductor-generated wave prompt both render as user bubbles with only a\n`from` label. So a click goes through the same link-safety gate as an agent\nMarkdown link: a trusted domain opens straight away, anything else is\nconfirmed first.',
     exports: ["LinkifiedText", "LinkifiedTextProps"],
     slots: [],
     cva: [],
