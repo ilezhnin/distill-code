@@ -60,14 +60,20 @@ pub fn resolve_project_document_path(
 }
 
 /// Reads one of a project's documents. A document never written is `None`.
+///
+/// `async` + `spawn_blocking` and the shared size cap, for the reasons given on
+/// `distill_store::read_distill_document` and
+/// `distill_store::MAX_DOCUMENT_BYTES` — a project `.md` in particular can be
+/// replaced out-of-band by something arbitrarily large.
 #[tauri::command]
-pub fn read_project_document(project_root: String, path: String) -> Result<Option<String>, String> {
+pub async fn read_project_document(
+    project_root: String,
+    path: String,
+) -> Result<Option<String>, String> {
     let target = resolve_project_document_path(Path::new(project_root.trim()), &path)?;
-    match fs::read_to_string(&target) {
-        Ok(contents) => Ok(Some(contents)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("Cannot read '{}': {error}", target.display())),
-    }
+    tokio::task::spawn_blocking(move || super::distill_store::read_document_capped(&target))
+        .await
+        .map_err(|error| format!("Cannot read '{path}': {error}"))?
 }
 
 /// Writes one of a project's documents, atomically.
@@ -76,8 +82,23 @@ pub fn read_project_document(project_root: String, path: String) -> Result<Optio
 /// version rather than half of the new one. The first write into a project
 /// also arranges for git to ignore what this tool creates there; see
 /// `exclude_agent_folders`.
+///
+/// `async` + `spawn_blocking`: the write ends in an `fsync`, which must not run
+/// on the UI thread. See `distill_store::write_distill_document`.
 #[tauri::command]
-pub fn write_project_document(
+pub async fn write_project_document(
+    project_root: String,
+    path: String,
+    contents: String,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        write_project_document_blocking(project_root, path, contents)
+    })
+    .await
+    .map_err(|error| format!("Cannot write the project document: {error}"))?
+}
+
+fn write_project_document_blocking(
     project_root: String,
     path: String,
     contents: String,
@@ -112,8 +133,23 @@ pub fn write_project_document(
 /// Sorted, files only, and never recursive: the callers list a folder of
 /// agents or of memory documents, and a caller that wants a subfolder asks for
 /// it by name.
+///
+/// `async` + `spawn_blocking`: a `read_dir` of an unbounded folder on a slow or
+/// network drive must not run on the UI thread.
 #[tauri::command]
-pub fn list_project_documents(project_root: String, path: String) -> Result<Vec<String>, String> {
+pub async fn list_project_documents(
+    project_root: String,
+    path: String,
+) -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(move || list_project_documents_blocking(project_root, path))
+        .await
+        .map_err(|error| format!("Cannot list the project documents: {error}"))?
+}
+
+fn list_project_documents_blocking(
+    project_root: String,
+    path: String,
+) -> Result<Vec<String>, String> {
     let root = PathBuf::from(project_root.trim());
     if !root.is_absolute() {
         return Err("Project path must be absolute".into());
@@ -159,8 +195,23 @@ pub const PROJECT_RUNS_DIR: &str = "docs/runs";
 /// `.md` enforced. A narrow command rather than a general file write, because
 /// "the app may write anywhere in your repository" is not a capability this
 /// tool should have for the sake of one feature.
+///
+/// `async` + `spawn_blocking`: the write ends in an `fsync`, which must not run
+/// on the UI thread. See `distill_store::write_distill_document`.
 #[tauri::command]
-pub fn write_project_run_closeout(
+pub async fn write_project_run_closeout(
+    project_root: String,
+    name: String,
+    contents: String,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        write_project_run_closeout_blocking(project_root, name, contents)
+    })
+    .await
+    .map_err(|error| format!("Cannot write the run closeout: {error}"))?
+}
+
+fn write_project_run_closeout_blocking(
     project_root: String,
     name: String,
     contents: String,
@@ -179,6 +230,8 @@ pub fn write_project_run_closeout(
     {
         return Err("A closeout file name must be a plain '.md' name".into());
     }
+    // `docs/runs/CON.md` addresses the console device rather than a document.
+    crate::services::windows_names::reject_unusable_windows_name(file, "A closeout file name")?;
     let dir = PROJECT_RUNS_DIR
         .split('/')
         .fold(root.clone(), |path, part| path.join(part));
@@ -287,20 +340,18 @@ mod tests {
     #[test]
     fn writes_and_reads_back_a_document() {
         let root = temp();
-        write_project_document(
+        write_project_document_blocking(
             root.to_string_lossy().to_string(),
             "memory/facts.json".into(),
             "{\"a\":1}".into(),
         )
         .unwrap();
-        let read = read_project_document(
-            root.to_string_lossy().to_string(),
-            "memory/facts.json".into(),
-        )
-        .unwrap();
+        let target = resolve_project_document_path(&root, "memory/facts.json").unwrap();
+        let read = super::super::distill_store::read_document_capped(&target).unwrap();
         assert_eq!(read.as_deref(), Some("{\"a\":1}"));
         assert_eq!(
-            list_project_documents(root.to_string_lossy().to_string(), "memory".into()).unwrap(),
+            list_project_documents_blocking(root.to_string_lossy().to_string(), "memory".into())
+                .unwrap(),
             vec!["facts.json".to_string()]
         );
     }
@@ -317,23 +368,32 @@ mod tests {
             "",
             "C:escape.md",
             "note.md:stream.md",
+            // DOS devices: `docs/runs/CON.md` is the console, not a document.
+            "CON.md",
+            "nul.md",
+            "COM1.md",
+            "lpt9.md",
+            "PRN.md",
+            "aux.md",
         ] {
-            assert!(write_project_run_closeout(
-                root.to_string_lossy().to_string(),
-                name.into(),
-                "x".into(),
-            )
-            .is_err());
+            assert!(
+                write_project_run_closeout_blocking(
+                    root.to_string_lossy().to_string(),
+                    name.into(),
+                    "x".into(),
+                )
+                .is_err(),
+                "{name}"
+            );
         }
     }
 
     #[test]
     fn a_document_never_written_reads_as_nothing() {
         let root = temp();
-        assert!(
-            read_project_document(root.to_string_lossy().to_string(), "nope.json".into())
-                .unwrap()
-                .is_none()
-        );
+        let target = resolve_project_document_path(&root, "nope.json").unwrap();
+        assert!(super::super::distill_store::read_document_capped(&target)
+            .unwrap()
+            .is_none());
     }
 }
