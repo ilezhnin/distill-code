@@ -1006,10 +1006,13 @@ impl Inner {
             last_snippet: None,
             snapshot: Some(snapshot.clone()),
         };
-        self.store
-            .insert_session(&record)
-            .await
-            .map_err(protocol::internal)?;
+        if let Err(error) = self.store.insert_session(&record).await {
+            // There is no chat to reach it through, so the session the bridge
+            // just opened for us is unreachable: hand it back instead of
+            // leaving the agent holding it until the process exits.
+            bridge.close_session(&bridge_session_id).await;
+            return Err(protocol::internal(error));
+        }
         self.sessions.lock().await.insert(
             session_id.clone(),
             SessionRuntime {
