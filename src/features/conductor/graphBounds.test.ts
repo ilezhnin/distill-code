@@ -110,6 +110,37 @@ describe("boundConductorGraph", () => {
     expect(Object.keys(bounded.nodesById)).toHaveLength(MAX_GRAPH_NODES);
   });
 
+  it("never evicts a parked wave's children or their reports", () => {
+    // A wave parked on needsOperator backs the operator's retry, and the retry
+    // rebuilds its digest from exactly these nodes and reports. Evicting them
+    // turned the button into a digest of "result unknown" stubs — the work was
+    // done, and the only record of it was thrown away to make room.
+    const parkedChild = node("parked-child", "completed", {
+      waveId: "wave-parked",
+      runId: "run-parked",
+      createdAt: 0,
+      finishedAt: 1,
+    });
+    const filler = Array.from({ length: MAX_GRAPH_NODES + 1 }, (_, index) =>
+      node(`old-${index}`, "completed", { createdAt: 100 + index }),
+    );
+    const reports = [
+      report("run-parked"),
+      ...Array.from({ length: MAX_GRAPH_REPORTS }, (_, index) =>
+        report(`run-orphan-${index}`),
+      ),
+    ];
+    const bounded = boundConductorGraph(
+      stateOf([parkedChild, ...filler], reports),
+      new Set(["wave-parked"]),
+    );
+
+    expect(bounded.nodesById["parked-child"]).toBeDefined();
+    // Its report is referenced by a surviving node, so the report bound leaves
+    // it alone too.
+    expect(bounded.reportsByRunId["run-parked"]).toBeDefined();
+  });
+
   it("warns — once — when everything over the bound is unevictable", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const nodes = Array.from({ length: MAX_GRAPH_NODES + 2 }, (_, index) =>

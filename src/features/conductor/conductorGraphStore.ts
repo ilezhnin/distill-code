@@ -21,7 +21,6 @@ import {
   updateWaveEngineState,
   withRemappedConductorSessionId,
 } from "./waveStore";
-import { isWaveLive } from "./waveVerdict";
 
 import {
   CONDUCTOR_GRAPH_DOCUMENT,
@@ -478,13 +477,19 @@ function remapId(
   return value === fromId ? toId : value;
 }
 
-/** Wave ids the bound must not touch: their children are still reconciled. */
-function liveWaveIds(): ReadonlySet<string> {
-  return new Set(
-    getWaveEngineState()
-      .waves.filter(isWaveLive)
-      .map((wave) => wave.waveId),
-  );
+/**
+ * Wave ids the bound must not touch.
+ *
+ * Every wave the engine still holds, which is the live ones *and* the ones
+ * parked on `needsOperator` — `state.waves` drops accepted and superseded waves
+ * and keeps precisely those two kinds. It used to be `isWaveLive` alone, so a
+ * parked wave's children and reports were evictable the moment the graph went
+ * over its bound: pressing the retry the parked wave exists to back then
+ * digested five "result unknown" stubs instead of the work that was actually
+ * done.
+ */
+function heldWaveIds(): ReadonlySet<string> {
+  return new Set(getWaveEngineState().waves.map((wave) => wave.waveId));
 }
 
 /**
@@ -498,7 +503,7 @@ function liveWaveIds(): ReadonlySet<string> {
 function boundAndPersist(state: ConductorGraphState): ConductorGraphState {
   let bounded = state;
   try {
-    bounded = boundConductorGraph(state, liveWaveIds());
+    bounded = boundConductorGraph(state, heldWaveIds());
   } catch {
     // Fail open: an unreadable wave store must not fail the graph write.
   }
