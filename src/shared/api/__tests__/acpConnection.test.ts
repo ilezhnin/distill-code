@@ -160,3 +160,61 @@ describe("acpConnection liveness after a timed-out request", () => {
     expect(mocks.initialize).not.toHaveBeenCalled();
   });
 });
+
+// The host treats the newest socket as the renderer's. An attempt that was
+// superseded by an invalidation must therefore never open (or keep) a socket
+// nobody holds the client of, and must never hand that client to its caller.
+describe("acpConnection attempt superseded by a reconnect", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    mocks.invoke.mockResolvedValue("ws://127.0.0.1:1/acp");
+    mocks.initialize.mockResolvedValue({ protocolVersion: 1 });
+  });
+
+  it("opens no socket when invalidated while the host URL is still resolving", async () => {
+    const url = deferred<string>();
+    mocks.invoke.mockReturnValueOnce(url.promise);
+    const connection = await importConnection();
+    const pending = connection.getClient();
+    await Promise.resolve();
+    expect(mocks.createWebSocketStream).not.toHaveBeenCalled();
+
+    await connection.invalidateClientConnection();
+
+    const stream = fakeStream();
+    mocks.createWebSocketStream.mockReturnValue(stream);
+    url.resolve("ws://127.0.0.1:1/acp");
+
+    const client = await pending;
+    // One socket total: the superseded attempt never created its own.
+    expect(mocks.createWebSocketStream).toHaveBeenCalledTimes(1);
+    expect(stream.close).not.toHaveBeenCalled();
+    await expect(connection.getClient()).resolves.toBe(client);
+  });
+
+  it("closes the superseded socket and returns the live client when invalidated mid-handshake", async () => {
+    const orphan = fakeStream();
+    mocks.createWebSocketStream.mockReturnValueOnce(orphan);
+    const handshake = deferred<{ protocolVersion: number }>();
+    mocks.initialize.mockReturnValueOnce(handshake.promise);
+    const connection = await importConnection();
+    const pending = connection.getClient();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mocks.createWebSocketStream).toHaveBeenCalledTimes(1);
+
+    await connection.invalidateClientConnection();
+
+    const live = fakeStream();
+    mocks.createWebSocketStream.mockReturnValue(live);
+    handshake.resolve({ protocolVersion: 1 });
+
+    const client = await pending;
+    expect(orphan.close).toHaveBeenCalled();
+    expect(live.close).not.toHaveBeenCalled();
+    // The caller gets the reconnect's client, not the orphan's.
+    await expect(connection.getClient()).resolves.toBe(client);
+  });
+});
