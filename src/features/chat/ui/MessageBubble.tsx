@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { Check, FileText, FolderClosed, ImageIcon } from "lucide-react";
 import { IconRobot } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -191,6 +192,9 @@ function MessageAttachmentTile({
 }) {
   const { t } = useTranslation("chat");
   const { attachment, imageSrc } = item;
+  const reportOpenFailure = () => {
+    toast.error(t("artifactChips.openFailed", { name: attachment.name }));
+  };
   const [failedImageSrc, setFailedImageSrc] = useState<string | null>(null);
   const displayedImageSrc =
     imageSrc && failedImageSrc !== imageSrc ? imageSrc : null;
@@ -214,12 +218,15 @@ function MessageAttachmentTile({
           onViewImage(item);
           return;
         }
+        // A tile outlives its file: the attachment can be moved or deleted, or
+        // the opener scope can refuse the path. Say so instead of leaving the
+        // click to do nothing and log an unhandled rejection.
         if (attachment.path) {
-          void openPath(attachment.path);
+          void openPath(attachment.path).catch(reportOpenFailure);
           return;
         }
         if (attachment.url) {
-          void openUrl(attachment.url);
+          void openUrl(attachment.url).catch(reportOpenFailure);
         }
       }}
       disabled={!canOpen}
