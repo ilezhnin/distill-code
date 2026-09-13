@@ -220,12 +220,26 @@ const EXECUTABLE_OPEN_EXTENSIONS: ReadonlySet<string> = new Set([
  * True when opening `path` with its default handler would run it rather than
  * show it. Win32 drops trailing dots and spaces from a name before looking
  * it up, so `tool.exe.` is `tool.exe`; the extension is read the same way.
+ *
+ * A `:` after the last separator names an NTFS alternate data stream
+ * (`payload.exe::$DATA`, `notes.txt:run.exe`). `Path::exists` accepts those
+ * spellings, and a naive extension read sees `exe::$data` — which is in no
+ * denylist. The stream suffix is cut off before the extension is read, and a
+ * name that carried one is never treated as an ordinary document: nothing the
+ * app links to needs stream syntax.
  */
 export function isExecutableOpenTarget(path: string): boolean {
-  const name = basenameOf(normalizePath(path)).replace(/[. ]+$/, "");
+  const rawName = basenameOf(normalizePath(path));
+  const streamIndex = rawName.indexOf(":");
+  const name = (
+    streamIndex === -1 ? rawName : rawName.slice(0, streamIndex)
+  ).replace(/[. ]+$/, "");
   const dot = name.lastIndexOf(".");
-  if (dot <= 0 || dot === name.length - 1) return false;
-  return EXECUTABLE_OPEN_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+  if (dot <= 0 || dot === name.length - 1) return streamIndex !== -1;
+  return (
+    streamIndex !== -1 ||
+    EXECUTABLE_OPEN_EXTENSIONS.has(name.slice(dot + 1).toLowerCase())
+  );
 }
 
 // "C:/x", "C:\x" and — once the markdown renderer has percent-encoded the
