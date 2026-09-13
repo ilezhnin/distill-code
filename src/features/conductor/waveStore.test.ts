@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { setConductorProcessStartedAtForTests } from "./processClock";
 import {
   WAVE_PHASES,
   WAVE_STEP_PHASES,
@@ -603,7 +604,14 @@ describe("tombstones", () => {
 });
 
 describe("the per-conductor watermark", () => {
+  afterEach(() => {
+    setConductorProcessStartedAtForTests(null);
+  });
+
   it("only moves forward, and calls anything at or before it superseded", () => {
+    // Every stamp here is decades before this process started, so the
+    // pre-process requirement is satisfied and the marks alone decide.
+    setConductorProcessStartedAtForTests(() => 1_000_000);
     let state = withProcessedMessageWatermark(
       emptyWaveEngineState(),
       "conductor-1",
@@ -624,6 +632,33 @@ describe("the per-conductor watermark", () => {
     // the tombstones.
     expect(isSupersededPlanMessage(state, "conductor-2", 1)).toBe(false);
     expect(isSupersededPlanMessage(state, "conductor-1", 0)).toBe(false);
+  });
+
+  it("never supersedes a plan this process produced, whatever the mark says", () => {
+    // The machine's clock was a day fast when the mark was stored; Windows Time
+    // then resynced. Every new plan that conductor makes is now "older" than
+    // its own mark, and the candidate is dropped before it is even scanned — no
+    // wave, no refusal notice, nothing in the transcript. A genuinely new plan
+    // can only come from this process, so this process's messages are exempt.
+    const processStartedAt = 1_000_000;
+    setConductorProcessStartedAtForTests(() => processStartedAt);
+    const state = withProcessedMessageWatermark(
+      emptyWaveEngineState(),
+      "conductor-1",
+      processStartedAt + 86_400_000,
+    );
+
+    expect(
+      isSupersededPlanMessage(state, "conductor-1", processStartedAt + 1),
+    ).toBe(false);
+    expect(
+      isSupersededPlanMessage(state, "conductor-1", processStartedAt),
+    ).toBe(false);
+    // A replayed transcript from before this process still is superseded —
+    // that is the eviction hazard the mark exists for.
+    expect(
+      isSupersededPlanMessage(state, "conductor-1", processStartedAt - 1),
+    ).toBe(true);
   });
 
   it("round-trips through the document, dropping junk marks", () => {

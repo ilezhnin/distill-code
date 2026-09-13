@@ -18,6 +18,7 @@ import {
 } from "./conductorDocuments";
 import type { WaveStepBudget } from "./distillWave";
 import { notePersistFailure } from "./persistHealth";
+import { conductorProcessStartedAt } from "./processClock";
 import {
   WAVE_PHASES,
   WAVE_STEP_PHASES,
@@ -510,6 +511,16 @@ export function withProcessedMessageWatermark(
  * stamped at the mark itself is that very message coming round again and is
  * superseded too. Messages with no usable time (0, or a replay that could not
  * stamp one) are left to the tombstones, which is where this guard started.
+ *
+ * A candidate this process produced is never superseded, however the marks
+ * read. The mark is only as good as the system clock that stamped it: a machine
+ * whose clock ran a day fast stores a mark a day in the future, and after the
+ * clock resyncs every new plan that conductor makes would be refused — with no
+ * wave, no refusal notice and nothing in the transcript, because the candidate
+ * is dropped before it is even scanned. The hazard the mark exists for (a
+ * replayed transcript whose tombstones were evicted) is entirely in messages
+ * that predate this process, so requiring that loses nothing and removes every
+ * clock-skew false positive at once.
  */
 export function isSupersededPlanMessage(
   state: WaveEngineState,
@@ -517,6 +528,7 @@ export function isSupersededPlanMessage(
   createdAt: number,
 ): boolean {
   if (!Number.isFinite(createdAt) || createdAt <= 0) return false;
+  if (createdAt >= conductorProcessStartedAt()) return false;
   const mark = newestProcessedMessageAt(state, conductorSessionId);
   return mark > 0 && createdAt <= mark;
 }

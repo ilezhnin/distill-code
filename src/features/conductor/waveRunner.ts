@@ -436,6 +436,8 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       // new, whatever the tombstone list still remembers. Without it, opening
       // an old conductor chat after the cap evicted its tombstones replays its
       // first plan as a fresh root request and spawns real workers from it.
+      // It only ever supersedes a message that predates this process, so a
+      // system clock set backwards cannot silently stop plan admission.
       isSupersededPlanMessage(
         state,
         context.conductorSessionId,
