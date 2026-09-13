@@ -12,6 +12,7 @@ const mockPathExists = vi.hoisted(() =>
   vi.fn<(path: string) => Promise<boolean>>(),
 );
 const mockWriteText = vi.fn().mockResolvedValue(undefined);
+const mockToastError = vi.hoisted(() => vi.fn());
 
 const providerCatalogEntries: ProviderCatalogEntry[] = [
   {
@@ -92,6 +93,10 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(),
 }));
 
+vi.mock("sonner", () => ({
+  toast: { error: mockToastError, message: vi.fn(), success: vi.fn() },
+}));
+
 function userMessage(text: string, overrides: Partial<Message> = {}): Message {
   return {
     id: "u1",
@@ -159,6 +164,7 @@ describe("MessageBubble", () => {
     mockPathExists.mockReset();
     mockPathExists.mockResolvedValue(false);
     mockWriteText.mockClear();
+    mockToastError.mockClear();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: {
@@ -364,5 +370,54 @@ describe("MessageBubble", () => {
 
     expect(screen.getAllByText(/readfile/i)).toHaveLength(1);
     expect(screen.queryByText("Tool result")).not.toBeInTheDocument();
+  });
+
+  // The tile outlives the file it points at; a rejected open used to do nothing
+  // visible and log an unhandled rejection.
+  describe("attachment tiles", () => {
+    const attachedMessage = () =>
+      userMessage("see the spec", {
+        metadata: {
+          attachments: [
+            {
+              type: "file" as const,
+              name: "spec.pdf",
+              path: "/Users/me/Downloads/spec.pdf",
+              mimeType: "application/pdf",
+            },
+          ],
+        },
+      });
+
+    it("reports a failed attachment open", async () => {
+      const user = userEvent.setup();
+      vi.mocked(openPath).mockRejectedValue(new Error("not found"));
+      const message = attachedMessage();
+
+      render(<MessageBubble message={message} animateEntry={false} />);
+
+      await user.click(screen.getByRole("button", { name: /spec\.pdf/ }));
+
+      await waitFor(() => {
+        expect(mockToastError).toHaveBeenCalledWith(
+          "Couldn't open spec.pdf. It may have been moved or deleted.",
+        );
+      });
+    });
+
+    it("says nothing when the attachment opens", async () => {
+      const user = userEvent.setup();
+      vi.mocked(openPath).mockResolvedValue(undefined);
+      const message = attachedMessage();
+
+      render(<MessageBubble message={message} animateEntry={false} />);
+
+      await user.click(screen.getByRole("button", { name: /spec\.pdf/ }));
+
+      await waitFor(() => {
+        expect(openPath).toHaveBeenCalledWith("/Users/me/Downloads/spec.pdf");
+      });
+      expect(mockToastError).not.toHaveBeenCalled();
+    });
   });
 });
