@@ -26,6 +26,8 @@ import {
   useState,
 } from "react";
 
+import { useTranslation } from "react-i18next";
+
 import { CodeBlock } from "./code-block";
 
 export type ToolProps = ComponentProps<typeof Collapsible>;
@@ -86,14 +88,14 @@ export type ToolHeaderProps = {
     }
 );
 
-const statusLabels: Record<ToolPart["state"], string> = {
-  "approval-requested": "Awaiting Approval",
-  "approval-responded": "Responded",
-  "input-available": "Running",
-  "input-streaming": "Pending",
-  "output-available": "Completed",
-  "output-denied": "Denied",
-  "output-error": "Error",
+const statusLabelKeys: Record<ToolPart["state"], string> = {
+  "approval-requested": "components.tool.status.approvalRequested",
+  "approval-responded": "components.tool.status.approvalResponded",
+  "input-available": "components.tool.status.inputAvailable",
+  "input-streaming": "components.tool.status.inputStreaming",
+  "output-available": "components.tool.status.outputAvailable",
+  "output-denied": "components.tool.status.outputDenied",
+  "output-error": "components.tool.status.outputError",
 };
 
 const statusIconComponents: Record<ToolPart["state"], LucideIcon> = {
@@ -132,11 +134,20 @@ export const ToolStatusIcon = ({
   );
 };
 
-export const getStatusBadge = (
-  status: ToolPart["state"],
-  className?: string,
-) => {
-  if (status === "output-available") return null;
+/**
+ * The status text needs a translation, and a bare function cannot hold a hook —
+ * hence a component, with `getStatusBadge` kept as the call shape its callers
+ * already use.
+ */
+const ToolStatusBadge = ({
+  status,
+  className,
+}: {
+  status: ToolPart["state"];
+  className?: string;
+}) => {
+  const { t } = useTranslation("common");
+
   return (
     <span
       className={cn(
@@ -145,9 +156,17 @@ export const getStatusBadge = (
       )}
     >
       <ToolStatusIcon status={status} />
-      {statusLabels[status]}
+      {t(statusLabelKeys[status])}
     </span>
   );
+};
+
+export const getStatusBadge = (
+  status: ToolPart["state"],
+  className?: string,
+) => {
+  if (status === "output-available") return null;
+  return <ToolStatusBadge status={status} className={className} />;
 };
 
 export const ToolHeader = ({
@@ -166,6 +185,7 @@ export const ToolHeader = ({
   elapsedSeconds,
   ...props
 }: ToolHeaderProps) => {
+  const { t } = useTranslation("common");
   const derivedName =
     type === "dynamic-tool" ? toolName : type.split("-").slice(1).join("-");
   const isFitLayout = layout === "fit";
@@ -189,7 +209,7 @@ export const ToolHeader = ({
       {showStatusBadge && getStatusBadge(state)}
       {elapsedSeconds != null && (
         <span className="shrink-0 tabular-nums text-xs text-muted-foreground">
-          {elapsedSeconds}s
+          {t("components.tool.elapsedSeconds", { seconds: elapsedSeconds })}
         </span>
       )}
       {showChevron && (
@@ -389,12 +409,14 @@ export type ToolInputProps = ComponentProps<"div"> & {
 export const ToolInput = ({
   className,
   input,
-  label = "Parameters",
+  label,
   showLabel = true,
   summary,
   embedded = false,
   ...props
 }: ToolInputProps) => {
+  const { t } = useTranslation("common");
+  const sectionLabel = label ?? t("components.tool.parameters");
   const [isJsonOpen, setIsJsonOpen] = useState(false);
   const hasStructuredInput =
     input !== undefined &&
@@ -411,7 +433,7 @@ export const ToolInput = ({
     typeof summary === "function"
       ? summary({ isOpen: isJsonOpen })
       : (summary ?? (
-          <span className="text-xs text-muted-foreground">{label}</span>
+          <span className="text-xs text-muted-foreground">{sectionLabel}</span>
         ));
 
   const inputBody = hasStructuredInput ? (
@@ -455,7 +477,7 @@ export const ToolInput = ({
 
   return (
     <ToolSection
-      label={label}
+      label={sectionLabel}
       className={cn("overflow-hidden", className)}
       {...props}
     >
@@ -488,6 +510,8 @@ export const ToolOutput = ({
   embeddedMaxHeightClass = "max-h-32",
   ...props
 }: ToolOutputProps) => {
+  const { t } = useTranslation("common");
+
   if (output === undefined && errorText === undefined) {
     return null;
   }
@@ -584,7 +608,10 @@ export const ToolOutput = ({
 
   return (
     <ToolSection
-      label={label ?? (errorText ? "Error" : "Result")}
+      label={
+        label ??
+        t(errorText ? "components.tool.error" : "components.tool.result")
+      }
       className={className}
       {...props}
     >
