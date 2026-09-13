@@ -724,6 +724,63 @@ describe("terminalSessionManager", () => {
     );
   });
 
+  it("keeps only the newest output of a parked terminal that never stops talking", async () => {
+    const frames = mockAnimationFrames();
+    let emitTerminalEvent: (event: TerminalEvent) => void = () => undefined;
+    const { getOrCreateTerminalSession } = await import(
+      "./terminalSessionManager"
+    );
+    mocks.startTerminal.mockImplementationOnce(({ onEvent }) => {
+      emitTerminalEvent = onEvent;
+      return Promise.resolve("terminal-1");
+    });
+    const session = getOrCreateTerminalSession({
+      key: "chat-session-id:tab-1",
+      cwd: "/repo",
+      labels,
+      theme: {},
+      fontFamily: "monospace",
+    });
+    const detach = session.attach(document.createElement("div"));
+    await Promise.resolve();
+    detach();
+
+    // 1.5 MB of chatty output while parked: the 1 MB buffer overflows and the
+    // oldest chunks are dropped a chunk at a time.
+    const chunk = "x".repeat(10_000);
+    emitTerminalEvent({
+      event: "output",
+      data: { terminalId: "terminal-1", data: "OLDEST" },
+    });
+    for (let index = 0; index < 150; index++) {
+      emitTerminalEvent({
+        event: "output",
+        data: { terminalId: "terminal-1", data: chunk },
+      });
+    }
+    emitTerminalEvent({
+      event: "output",
+      data: { terminalId: "terminal-1", data: "NEWEST" },
+    });
+
+    session.attach(document.createElement("div"));
+    let drained = "";
+    let consumedWrites = 0;
+    for (let pass = 0; pass < 60; pass++) {
+      frames.runAll();
+      const writes = vi.mocked(session.terminal.write).mock.calls;
+      if (writes.length === consumedWrites) break;
+      for (; consumedWrites < writes.length; consumedWrites++) {
+        drained += writes[consumedWrites]?.[0] ?? "";
+      }
+      mocks.terminalWriteCallbacks.shift()?.();
+    }
+
+    expect(drained.length).toBe(1_000_000);
+    expect(drained.startsWith("OLDEST")).toBe(false);
+    expect(drained.endsWith("NEWEST")).toBe(true);
+  });
+
   it("buffers terminal output while rendering is suspended and resumes after", async () => {
     const frames = mockAnimationFrames();
     let emitTerminalEvent: (event: TerminalEvent) => void = () => undefined;

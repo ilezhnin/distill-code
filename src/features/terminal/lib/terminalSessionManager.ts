@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import type { IDisposable, ITheme } from "@xterm/xterm";
+import { TerminalOutputBuffer } from "./terminalOutputBuffer";
 import {
   resizeTerminal,
   startTerminal,
@@ -196,7 +197,7 @@ export class TerminalSession {
   private pendingBackendRows: number | null = null;
   private fontReadyToken = 0;
   private animationFrame = 0;
-  private queuedOutput = "";
+  private queuedOutput = new TerminalOutputBuffer(MAX_BUFFERED_OUTPUT_CHARS);
   private outputAnimationFrame = 0;
   private outputWriteInFlight = false;
   private outputWriteToken = 0;
@@ -551,10 +552,7 @@ export class TerminalSession {
       return;
     }
 
-    this.queuedOutput += data;
-    if (this.queuedOutput.length > MAX_BUFFERED_OUTPUT_CHARS) {
-      this.queuedOutput = this.queuedOutput.slice(-MAX_BUFFERED_OUTPUT_CHARS);
-    }
+    this.queuedOutput.push(data);
     this.scheduleOutputDrain();
   }
 
@@ -568,7 +566,7 @@ export class TerminalSession {
       this.outputAnimationFrame ||
       this.outputWriteInFlight ||
       !this.attachedContainer ||
-      !this.queuedOutput
+      this.queuedOutput.length === 0
     ) {
       return;
     }
@@ -585,13 +583,12 @@ export class TerminalSession {
       renderingSuspended ||
       this.outputWriteInFlight ||
       !this.attachedContainer ||
-      !this.queuedOutput
+      this.queuedOutput.length === 0
     ) {
       return;
     }
 
-    const output = this.queuedOutput.slice(0, MAX_OUTPUT_WRITE_CHARS_PER_FRAME);
-    this.queuedOutput = this.queuedOutput.slice(output.length);
+    const output = this.queuedOutput.take(MAX_OUTPUT_WRITE_CHARS_PER_FRAME);
     this.outputWriteInFlight = true;
     const token = this.outputWriteToken;
     this.terminal.write(output, () => {
@@ -605,7 +602,7 @@ export class TerminalSession {
   }
 
   private clearQueuedOutput(): void {
-    this.queuedOutput = "";
+    this.queuedOutput.clear();
     this.outputWriteInFlight = false;
     this.cancelOutputDrain();
     this.outputWriteToken += 1;
