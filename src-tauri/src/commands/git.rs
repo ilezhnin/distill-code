@@ -1010,6 +1010,9 @@ fn validate_worktree_name(value: &str) -> Result<String, String> {
     if worktree_name.contains(':') {
         return Err("Worktree name cannot contain ':'".to_string());
     }
+    // `CON` is a device, not a folder, and `foo ` is silently trimmed to `foo`:
+    // either way the worktree is not where the caller was told it is.
+    crate::services::windows_names::reject_unusable_windows_name(&worktree_name, "Worktree name")?;
     Ok(worktree_name)
 }
 
@@ -1441,6 +1444,16 @@ mod tests {
             "C:evil",
             "C:\\evil",
             "name:stream",
+            // DOS devices, which are not folders at all.
+            "CON",
+            "nul",
+            "Aux",
+            "COM1",
+            "lpt9",
+            "PRN.md",
+            // Windows trims these, so the worktree would not be where the
+            // caller was told it is.
+            "feature.",
         ] {
             assert!(validate_worktree_name(name).is_err(), "accepted {name:?}");
         }
@@ -1448,6 +1461,11 @@ mod tests {
             validate_worktree_name(" feature-x ").as_deref(),
             Ok("feature-x")
         );
+        // Only the exact device names: a name that merely starts with one is a
+        // perfectly good folder.
+        for name in ["console", "contrib", "com10", "auxiliary"] {
+            assert_eq!(validate_worktree_name(name).as_deref(), Ok(name));
+        }
     }
 
     #[test]
