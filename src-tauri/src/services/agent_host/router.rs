@@ -126,6 +126,17 @@ impl SessionRuntime {
     fn served_by(&self, harness: &str, generation: u64) -> bool {
         self.harness == harness && self.generation == generation
     }
+
+    /// Forget the messages steered into the running turn, and report how many
+    /// there were. A queued steer is only persisted and echoed when it is
+    /// actually sent, so a sequence the user stopped — or one the bridge cut
+    /// short with an error — must drop them instead of starting fresh turns
+    /// nobody asked for and recording them as sent.
+    fn drop_queued_steers(&mut self) -> usize {
+        let dropped = self.steer_queue.len();
+        self.steer_queue.clear();
+        dropped
+    }
 }
 
 pub struct Inner {
@@ -409,6 +420,21 @@ impl Inner {
     async fn handle_client_notification(&self, method: &str, params: Value) {
         if method == "session/cancel" {
             if let Some(session_id) = protocol::session_id(&params) {
+                // Stop means stop: the messages steered into the turn being
+                // cancelled are not started as turns of their own once it
+                // returns.
+                let dropped = self
+                    .sessions
+                    .lock()
+                    .await
+                    .get_mut(&session_id)
+                    .map(SessionRuntime::drop_queued_steers)
+                    .unwrap_or(0);
+                if dropped > 0 {
+                    log::info!(
+                        "[agent-host] session {session_id} cancelled: dropped {dropped} queued steer(s)"
+                    );
+                }
                 if let Some((bridge, bridge_session_id)) = self.attached_route(&session_id).await {
                     let mut params = params.clone();
                     params["sessionId"] = json!(bridge_session_id);
@@ -1726,6 +1752,19 @@ impl Inner {
         self.start_turn(params, TurnIds::new(), false).await
     }
 
+    /// The update that tells the renderer a turn has ended when no request of
+    /// its own will carry the answer. `_meta.activeRunId == null` is what
+    /// `acpSessionInfoUpdate.ts` settles a chat's active run on.
+    fn run_settled_update(session_id: &str) -> Value {
+        json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": { "activeRunId": Value::Null },
+            }
+        })
+    }
+
     /// Run one user turn and then every message steered into it, in order.
     /// A steered turn (`steer`) that finds another turn already running is
     /// queued behind it instead of failing: the steer was acknowledged with
@@ -1783,6 +1822,21 @@ impl Inner {
                 let Some(runtime) = sessions.get_mut(&session_id) else {
                     break;
                 };
+                // The turn failed (the bridge exited, the prompt was
+                // rejected): the queued steers were never sent, so they are
+                // dropped rather than persisted and echoed as sent messages
+                // that will never get a reply — and the caller keeps the real
+                // error instead of the last steer's.
+                if result.is_err() {
+                    let dropped = runtime.drop_queued_steers();
+                    runtime.run = None;
+                    if dropped > 0 {
+                        log::warn!(
+                            "[agent-host] session {session_id} turn failed: dropped {dropped} queued steer(s)"
+                        );
+                    }
+                    break;
+                }
                 let Some(queued) = runtime.steer_queue.pop_front() else {
                     runtime.run = None;
                     break;
@@ -1888,10 +1942,20 @@ impl Inner {
             self.attach_session(&record).await?;
             let host = Arc::clone(self);
             let turn = ids.clone();
+            let settle_id = session_id.clone();
             tokio::spawn(async move {
-                let params = json!({ "sessionId": session_id, "prompt": prompt, "_meta": meta });
+                let params =
+                    json!({ "sessionId": settle_id.clone(), "prompt": prompt, "_meta": meta });
                 if let Err(error) = host.start_turn(params, turn, true).await {
                     log::warn!("[agent-host] steer prompt failed: {}", error_text(&error));
+                }
+                // Nobody is awaiting this turn's answer — the renderer got its
+                // ids from the `session/steer` reply and nothing else will ever
+                // tell it the turn is over. Only settle when the session is
+                // genuinely idle: a steer that raced a prompt was queued behind
+                // it and that turn is still running.
+                if host.active_run_id(&settle_id).await.is_none() {
+                    host.notify_frontend("session/update", Self::run_settled_update(&settle_id));
                 }
             });
         }
@@ -2146,6 +2210,40 @@ mod tests {
             protocol::response(json!(0), json!({ "sessionId": "s2" })),
         );
         assert!(heard_b.try_recv().is_err());
+    }
+
+    #[test]
+    fn stopping_a_turn_forgets_the_messages_steered_into_it() {
+        let mut live = runtime("claude-acp", "a", 1);
+        live.run = Some(RunState::start(&ids()));
+        for _ in 0..2 {
+            live.steer_queue.push_back(QueuedPrompt {
+                prompt: json!([{ "type": "text", "text": "also this" }]),
+                meta: json!({}),
+                ids: TurnIds::new(),
+            });
+        }
+
+        assert_eq!(live.drop_queued_steers(), 2);
+        assert!(live.steer_queue.is_empty());
+        // Cancelling does not end the turn itself: its `session/prompt` is
+        // still in flight and its run state still stamps the updates arriving.
+        assert!(live.run.is_some());
+        assert_eq!(live.drop_queued_steers(), 0);
+    }
+
+    #[test]
+    fn a_turn_nobody_awaits_reports_its_end_as_a_cleared_active_run() {
+        let update = Inner::run_settled_update("s1");
+        assert_eq!(update["sessionId"], "s1");
+        assert_eq!(update["update"]["sessionUpdate"], "session_info_update");
+        // `acpSessionInfoUpdate.ts` keys off `"activeRunId" in meta` and treats
+        // a non-string as null, so the key has to be present and explicitly
+        // null rather than omitted.
+        let meta = &update["update"]["_meta"];
+        assert!(meta
+            .as_object()
+            .is_some_and(|meta| meta.get("activeRunId").is_some_and(Value::is_null)));
     }
 
     #[test]
