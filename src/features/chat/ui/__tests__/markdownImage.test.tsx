@@ -6,6 +6,7 @@ import { MarkdownImage } from "../MarkdownImage";
 const mocks = vi.hoisted(() => ({
   resolveMarkdownHref: vi.fn(),
   pathExists: vi.fn<(path: string) => Promise<boolean>>(),
+  isPathWithinTrustedRoots: vi.fn<(path: string) => boolean>(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -16,6 +17,7 @@ vi.mock("@/features/chat/hooks/ArtifactPolicyContext", () => ({
   useArtifactActionsContext: () => ({
     resolveMarkdownHref: mocks.resolveMarkdownHref,
     pathExists: mocks.pathExists,
+    isPathWithinTrustedRoots: mocks.isPathWithinTrustedRoots,
   }),
 }));
 
@@ -29,6 +31,8 @@ describe("MarkdownImage", () => {
   beforeEach(() => {
     mocks.resolveMarkdownHref.mockReset();
     mocks.pathExists.mockReset();
+    mocks.isPathWithinTrustedRoots.mockReset();
+    mocks.isPathWithinTrustedRoots.mockReturnValue(false);
   });
 
   it("renders an eligible local image via the asset: scheme by default", async () => {
@@ -184,5 +188,62 @@ describe("MarkdownImage", () => {
     // A rejection must not leave a stale image or surface as unhandled.
     expect(screen.queryByTestId("clickable-image")).toBeNull();
     expect(screen.getByAltText("boom").getAttribute("src")).toBe("./boom.png");
+  });
+
+  // `http://asset.localhost/<encoded path>` names a local file while looking
+  // remote. Markdown can spell one directly, and the asset scope the webview
+  // enforces covers all of $HOME, so it gets the same scoping as `./photo.png`
+  // instead of being passed to the browser as a remote URL.
+  describe("asset: URLs in Markdown", () => {
+    const privateAssetSrc =
+      "http://asset.localhost/C%3A%2FUsers%2Fme%2FPictures%2Fprivate.png";
+    const workAssetSrc = "http://asset.localhost/C%3A%2Fwork%2Fdiagram.png";
+
+    it("renders nothing for an asset url outside the chat's folders", () => {
+      mocks.isPathWithinTrustedRoots.mockReturnValue(false);
+      mocks.pathExists.mockResolvedValue(true);
+
+      const { container } = render(
+        <MarkdownImage src={privateAssetSrc} alt="private" />,
+      );
+
+      expect(mocks.isPathWithinTrustedRoots).toHaveBeenCalledWith(
+        "C:/Users/me/Pictures/private.png",
+      );
+      // Neither the rescued image nor a plain <img> that the webview would
+      // fetch anyway.
+      expect(screen.queryByTestId("clickable-image")).toBeNull();
+      expect(container.querySelector("img")).toBeNull();
+      expect(mocks.pathExists).not.toHaveBeenCalled();
+      // The asset URL is local, so it never goes through the Markdown-href
+      // resolution used for relative destinations.
+      expect(mocks.resolveMarkdownHref).not.toHaveBeenCalled();
+    });
+
+    it("renders an asset url inside the chat's folders", async () => {
+      mocks.isPathWithinTrustedRoots.mockReturnValue(true);
+      mocks.pathExists.mockResolvedValue(true);
+
+      render(<MarkdownImage src={workAssetSrc} alt="diagram" />);
+
+      const img = await screen.findByTestId("clickable-image");
+      expect(img.getAttribute("src")).toBe("asset://C:/work/diagram.png");
+      expect(mocks.pathExists).toHaveBeenCalledWith("C:/work/diagram.png");
+    });
+
+    it("renders nothing for an allowed asset url whose file is gone", async () => {
+      mocks.isPathWithinTrustedRoots.mockReturnValue(true);
+      mocks.pathExists.mockResolvedValue(false);
+
+      const { container } = render(
+        <MarkdownImage src={workAssetSrc} alt="diagram" />,
+      );
+
+      await waitFor(() => {
+        expect(mocks.pathExists).toHaveBeenCalledWith("C:/work/diagram.png");
+      });
+      expect(screen.queryByTestId("clickable-image")).toBeNull();
+      expect(container.querySelector("img")).toBeNull();
+    });
   });
 });

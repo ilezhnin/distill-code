@@ -721,3 +721,55 @@ describe("ArtifactPolicyContext open gate", () => {
     expect(openPath).not.toHaveBeenCalled();
   });
 });
+
+function TrustedRootProbe({ path }: { path: string }) {
+  const { isPathWithinTrustedRoots } = useArtifactActionsContext();
+
+  return (
+    <span data-testid="within-trusted-roots">
+      {String(isPathWithinTrustedRoots(path))}
+    </span>
+  );
+}
+
+// The predicate inline images are scoped with: there is no click to confirm a
+// rendered image, so an agent-named file is either inside the chat's folders or
+// it is not shown.
+describe("ArtifactPolicyContext trusted-root predicate", () => {
+  beforeEach(() => {
+    mockArtifactRoot = null;
+    useChatSessionStore.setState({ sessions: [] });
+  });
+
+  it.each([
+    ["diagram.png", "true"],
+    ["out/diagram.png", "true"],
+    ["C:/Users/me/repo/out/diagram.png", "true"],
+    ["C:/Users/me/Pictures/private.png", "false"],
+    ["../../Pictures/private.png", "false"],
+    ["//attacker/share/private.png", "false"],
+  ])("reports %s as within the chat's folders: %s", (path, expected) => {
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <TrustedRootProbe path={path} />
+      </ArtifactPolicyProvider>,
+    );
+
+    expect(screen.getByTestId("within-trusted-roots")).toHaveTextContent(
+      expected,
+    );
+  });
+
+  it("accepts a path under the artifact root", () => {
+    mockArtifactRoot = "C:/Users/me/Distill/artifacts";
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <TrustedRootProbe path="C:/Users/me/Distill/artifacts/session/plot.png" />
+      </ArtifactPolicyProvider>,
+    );
+
+    expect(screen.getByTestId("within-trusted-roots")).toHaveTextContent(
+      "true",
+    );
+  });
+});

@@ -35,6 +35,7 @@ import { ToolChainCards, type ToolChainItem } from "./ToolChainCards";
 import { ClickableImage } from "./ClickableImage";
 import { MarkdownImage } from "./MarkdownImage";
 import { resolveImageContentSrc } from "./resolveImageContentSrc";
+import { useArtifactActionsContext } from "@/features/chat/hooks/ArtifactPolicyContext";
 import { useArtifactLinkHandler } from "@/features/chat/hooks/useArtifactLinkHandler";
 import { LocalMarkdownLinkProvider } from "@/shared/ui/ai-elements/local-link-context";
 import { detectProviderErrorNotice } from "@/features/chat/lib/providerErrorNotice";
@@ -115,9 +116,12 @@ function getAttachmentExtension(attachment: MessageAttachment): string {
 
 function resolveAttachmentImageSrc(
   attachment: MessageAttachment,
-  imageContent?: ImageContent,
+  imageContent: ImageContent | undefined,
+  isPathAllowed: (path: string) => boolean,
 ): string | null {
-  const contentSrc = imageContent ? resolveImageContentSrc(imageContent) : null;
+  const contentSrc = imageContent
+    ? resolveImageContentSrc(imageContent, isPathAllowed)
+    : null;
   if (contentSrc) {
     return contentSrc;
   }
@@ -136,6 +140,7 @@ function resolveAttachmentImageSrc(
 function buildAttachmentPreviewItems(
   attachments: readonly MessageAttachment[],
   content: readonly MessageContent[],
+  isPathAllowed: (path: string) => boolean,
 ): MessageAttachmentPreviewItem[] {
   const imageContentBlocks = content.flatMap((block, contentIndex) =>
     block.type === "image"
@@ -157,7 +162,11 @@ function buildAttachmentPreviewItems(
       key: `${attachment.type}-${attachment.path ?? attachment.url ?? attachment.name}-${attachmentIndex}`,
       attachment,
       attachmentIndex,
-      imageSrc: resolveAttachmentImageSrc(attachment, imageContent?.block),
+      imageSrc: resolveAttachmentImageSrc(
+        attachment,
+        imageContent?.block,
+        isPathAllowed,
+      ),
       ...(imageContent ? { imageContentIndex: imageContent.contentIndex } : {}),
     };
   });
@@ -556,6 +565,12 @@ function renderContentBlock(
     voiceSpeechNotSpokenLabel: string;
     voiceSpeechFailedLabel: string;
     contentBlocks: readonly MessageContent[];
+    /**
+     * Whether a local file an image block names may be rendered. Image block
+     * URIs are agent-supplied, so they are scoped to the chat's folders the
+     * same way inline Markdown images are.
+     */
+    isLocalImagePathAllowed: (path: string) => boolean;
     onRunShellCommand?: (command: string, options?: RunCommandOptions) => void;
     runItCodeRenderers?: CustomRenderer[];
     onEditProject?: (projectId: string) => void;
@@ -625,7 +640,7 @@ function renderContentBlock(
       const ic = content as ImageContent;
       // Prefer inline base64 `data` over a `file://` `uri` (which the webview
       // cannot load); convert local file URIs through the asset scheme.
-      const src = resolveImageContentSrc(ic);
+      const src = resolveImageContentSrc(ic, options.isLocalImagePathAllowed);
       if (!src) {
         return null;
       }
@@ -744,6 +759,8 @@ export const MessageBubble = memo(function MessageBubble({
       : rawContent;
   const renderingContext = contentContext ?? content;
   const { openLocalLink, pathNotice } = useArtifactLinkHandler();
+  const { isPathWithinTrustedRoots: isLocalImagePathAllowed } =
+    useArtifactActionsContext();
   const persona = useAgentStore((state) =>
     message.metadata?.personaId
       ? state.getPersonaById(message.metadata.personaId)
@@ -817,8 +834,14 @@ export const MessageBubble = memo(function MessageBubble({
     message.metadata?.attachments ?? EMPTY_MESSAGE_ATTACHMENTS;
   const attachmentPreviewItems = useMemo(
     () =>
-      isUser ? buildAttachmentPreviewItems(messageAttachments, content) : [],
-    [isUser, messageAttachments, content],
+      isUser
+        ? buildAttachmentPreviewItems(
+            messageAttachments,
+            content,
+            isLocalImagePathAllowed,
+          )
+        : [],
+    [isUser, messageAttachments, content, isLocalImagePathAllowed],
   );
   const attachedImageContentIndexes = useMemo(
     () => collectAttachedImageContentIndexes(attachmentPreviewItems),
@@ -866,6 +889,7 @@ export const MessageBubble = memo(function MessageBubble({
               voiceSpeechNotSpokenLabel: t("message.voiceSpeechNotSpokenLabel"),
               voiceSpeechFailedLabel: t("message.voiceSpeechFailedLabel"),
               contentBlocks: renderingContext,
+              isLocalImagePathAllowed,
               onEditProject,
               onChangeFolder,
               onOpenContextPanel,
@@ -1210,6 +1234,7 @@ export const MessageBubble = memo(function MessageBubble({
                           "message.voiceSpeechFailedLabel",
                         ),
                         contentBlocks: renderingContext,
+                        isLocalImagePathAllowed,
                         onRunShellCommand,
                         runItCodeRenderers,
                         stateKey: section.key,
