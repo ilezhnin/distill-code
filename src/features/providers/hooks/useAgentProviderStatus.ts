@@ -65,7 +65,10 @@ export function readinessFromReport(
     // bridge-missing, genuine no-auth), so leaning on it would flip
     // supportsAuth-without-a-probe agents to "ready" pre-sign-in.
     if (provider?.supportsAuthStatus) {
-      // Case 1: real CLI probe — trust the crate's authStatus.
+      // Case 1: real CLI probe — trust the crate's authStatus. Only a probe
+      // that actually reported "signed out" blocks the agent: `unknown` means
+      // the probe could not run (a PATH-shadowed CLI), which the crate says to
+      // treat as informational, so it stays usable and offers no sign-in fix.
       readiness.set(
         providerId,
         check.authStatus === "notAuthenticated" ? "not_ready" : "ready",
