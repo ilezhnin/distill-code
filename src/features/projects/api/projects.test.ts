@@ -61,6 +61,7 @@ function projectInfo(overrides: Partial<ProjectInfo> = {}): ProjectInfo {
 describe("projects API artifact metadata", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.sourcesList.mockResolvedValue({ sources: [] });
     mocks.getClient.mockResolvedValue({
       host: {
         sourcesList: mocks.sourcesList,
@@ -295,6 +296,48 @@ describe("projects API artifact metadata", () => {
     expect(project.chatGroups).toEqual(chatGroups);
   });
 
+  it("keeps fields another writer changed while the caller held its snapshot", async () => {
+    const chatGroups = {
+      groups: [
+        {
+          id: "launch:chat-group:readiness",
+          name: "Readiness",
+          chatIds: ["session-1"],
+        },
+      ],
+    };
+    // What is on disk now: another writer added a chat group and bumped order.
+    mocks.sourcesList.mockResolvedValue({
+      sources: [
+        source({
+          title: "Launch",
+          icon: "tabler:folder-code",
+          color: "olive",
+          workingDirs: ["/tmp/launch"],
+          useWorktrees: false,
+          order: 3,
+          chatGroups,
+        }),
+      ],
+    });
+    mocks.sourcesUpdate.mockImplementation(async (request) => ({
+      source: source(request.properties),
+    }));
+
+    const { updateProject } = await import("./projects");
+    // The dialog's snapshot predates both changes.
+    const project = await updateProject(
+      projectInfo({ order: 0, chatGroups: null }),
+      { name: "Launch v2" },
+    );
+
+    const updateRequest = mocks.sourcesUpdate.mock.calls[0]?.[0];
+    expect(updateRequest.properties.title).toBe("Launch v2");
+    expect(updateRequest.properties.chatGroups).toEqual(chatGroups);
+    expect(updateRequest.properties.order).toBe(3);
+    expect(project.chatGroups).toEqual(chatGroups);
+  });
+
   it("rewrites only the projects whose order actually changed", async () => {
     const projects = [
       { ...projectInfo({ id: "a", order: 0 }), path: "/tmp/projects/a.md" },
@@ -304,7 +347,7 @@ describe("projects API artifact metadata", () => {
     mocks.sourcesList.mockResolvedValue({
       sources: projects.map((project) => ({
         ...source({
-          name: project.name,
+          title: project.name,
           icon: project.icon,
           color: project.color,
           workingDirs: project.workingDirs,
