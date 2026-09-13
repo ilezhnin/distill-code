@@ -1,12 +1,19 @@
 import { z } from "zod/v4";
+
+import { BERDCTL_BOUNDS } from "../helpers";
 import { defineCommand, CommandError } from "../types";
 
 const setSessionFolderCwdSchema = z
   .object({
-    session_id: z.string().min(1).describe("Id of the session to update."),
+    session_id: z
+      .string()
+      .min(1)
+      .max(BERDCTL_BOUNDS.id)
+      .describe("Id of the session to update."),
     path: z
       .string()
       .min(1)
+      .max(BERDCTL_BOUNDS.path)
       .describe(
         "Existing authorized folder to use as cwd; implicitly attached if needed.",
       ),

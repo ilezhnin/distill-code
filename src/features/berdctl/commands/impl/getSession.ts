@@ -1,11 +1,14 @@
 import { z } from "zod/v4";
 
-import { truncate } from "../helpers";
+import { BERDCTL_BOUNDS, truncate } from "../helpers";
 import { defineCommand } from "../types";
 
 const getSessionSchema = z
   .object({
-    session_id: z.string().describe("Id of the session to read."),
+    session_id: z
+      .string()
+      .max(BERDCTL_BOUNDS.id)
+      .describe("Id of the session to read."),
     messages: z
       .number()
       .int()

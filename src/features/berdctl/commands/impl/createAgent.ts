@@ -1,17 +1,28 @@
 import { z } from "zod/v4";
 
+import { BERDCTL_BOUNDS } from "../helpers";
 import { defineCommand } from "../types";
 
 const createAgentSchema = z
   .object({
-    name: z.string().min(1).describe("Name of the new agent (persona)."),
+    name: z
+      .string()
+      .min(1)
+      .max(BERDCTL_BOUNDS.name)
+      .describe("Name of the new agent (persona)."),
     system_prompt: z
       .string()
       .min(1)
+      .max(BERDCTL_BOUNDS.document)
       .describe("System prompt that defines the agent's behavior."),
-    model: z.string().optional().describe("Model the agent should use."),
+    model: z
+      .string()
+      .max(BERDCTL_BOUNDS.id)
+      .optional()
+      .describe("Model the agent should use."),
     provider: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .optional()
       .describe("Provider of the model the agent should use."),
   })

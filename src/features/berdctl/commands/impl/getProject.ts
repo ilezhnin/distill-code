@@ -1,10 +1,14 @@
 import { z } from "zod/v4";
 
+import { BERDCTL_BOUNDS } from "../helpers";
 import { defineCommand } from "../types";
 
 const getProjectSchema = z
   .object({
-    project_id: z.string().describe("Id of the project to read."),
+    project_id: z
+      .string()
+      .max(BERDCTL_BOUNDS.id)
+      .describe("Id of the project to read."),
   })
   .strict();
 

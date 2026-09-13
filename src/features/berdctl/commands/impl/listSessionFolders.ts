@@ -1,9 +1,15 @@
 import { z } from "zod/v4";
+
+import { BERDCTL_BOUNDS } from "../helpers";
 import { defineCommand } from "../types";
 
 const listSessionFoldersSchema = z
   .object({
-    session_id: z.string().min(1).describe("Id of the session to inspect."),
+    session_id: z
+      .string()
+      .min(1)
+      .max(BERDCTL_BOUNDS.id)
+      .describe("Id of the session to inspect."),
   })
   .strict();
 

@@ -1,5 +1,6 @@
 import { z } from "zod/v4";
 
+import { BERDCTL_BOUNDS } from "../helpers";
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
 import {
   assertQueuedSessionReady,
@@ -19,6 +20,7 @@ const sendSessionSchema = z
   .object({
     session_id: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .describe("Id of the existing session to send the prompt into."),
     prompt: z
       .string()
