@@ -26,6 +26,11 @@ import {
   getVisibleSessions,
   useChatSessionStore,
 } from "@/features/chat/stores/chatSessionStore";
+import {
+  chatAutoLoadCursorKey,
+  chatAutoLoadPageLanded,
+  chatAutoLoadRetryDelayMs,
+} from "@/features/sessions/lib/sidebarChatAutoLoad";
 import type { SessionAction } from "@/features/sessions/lib/sessionSelection";
 import {
   compareSessionsByActivityDesc,
@@ -453,6 +458,17 @@ export function SessionListCapability({
     Date.now(),
   );
   const attemptedChatLoadMoreCursorRef = useRef<string | null>(null);
+  const chatLoadMoreFailuresRef = useRef(0);
+  const chatLoadMoreRetryTimerRef = useRef<number | null>(null);
+  const [chatLoadMoreRetryToken, setChatLoadMoreRetryToken] = useState(0);
+  useEffect(
+    () => () => {
+      if (chatLoadMoreRetryTimerRef.current != null) {
+        window.clearTimeout(chatLoadMoreRetryTimerRef.current);
+      }
+    },
+    [],
+  );
   const projectIds = useMemo(
     () => new Set(projects.map((project) => project.id)),
     [projects],
@@ -653,7 +669,7 @@ export function SessionListCapability({
     ? standaloneChatCount >= MAX_FLAT_SIDEBAR_CHATS ||
       groupedChatCount >= MAX_AUTO_LOADED_GROUPED_CHATS
     : standaloneChatCount >= MAX_FLAT_SIDEBAR_CHATS;
-  const chatLoadMoreCursorKey = sessionPageCursor ?? "__initial__";
+  const chatLoadMoreCursorKey = chatAutoLoadCursorKey(sessionPageCursor);
 
   useEffect(() => {
     if (
@@ -669,9 +685,36 @@ export function SessionListCapability({
     }
 
     attemptedChatLoadMoreCursorRef.current = chatLoadMoreCursorKey;
-    void loadMoreSessions();
+    void (async () => {
+      await loadMoreSessions();
+      // The store logs and swallows a failed page, so "nothing arrived" is the
+      // only signal: the cursor did not move and there is still more to load.
+      // Without a retry the sidebar would stay short for the rest of the run.
+      const state = useChatSessionStore.getState();
+      const landed = chatAutoLoadPageLanded({
+        cursorKeyBefore: chatLoadMoreCursorKey,
+        cursorKeyAfter: chatAutoLoadCursorKey(state.sessionPageCursor),
+        hasMoreSessions: state.hasMoreSessions,
+      });
+      if (landed) {
+        chatLoadMoreFailuresRef.current = 0;
+        return;
+      }
+      const attempt = chatLoadMoreFailuresRef.current + 1;
+      chatLoadMoreFailuresRef.current = attempt;
+      const retryInMs = chatAutoLoadRetryDelayMs(attempt);
+      if (retryInMs === null) return;
+      chatLoadMoreRetryTimerRef.current = window.setTimeout(() => {
+        chatLoadMoreRetryTimerRef.current = null;
+        if (attemptedChatLoadMoreCursorRef.current === chatLoadMoreCursorKey) {
+          attemptedChatLoadMoreCursorRef.current = null;
+        }
+        setChatLoadMoreRetryToken((token) => token + 1);
+      }, retryInMs);
+    })();
   }, [
     chatLoadMoreCursorKey,
+    chatLoadMoreRetryToken,
     hasMoreSessions,
     isLoadingMoreSessions,
     loadMoreSessions,
