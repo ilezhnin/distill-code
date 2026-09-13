@@ -325,6 +325,18 @@ export function resolveExplicitWaveStepModel(
           .map((model) => ({ harnessId: provider.id, model })),
       );
     if (installed.length === 0) {
+      // Deliberate, and a behaviour change worth stating: `modelsForHarness`
+      // reports nothing for a harness whose last poll failed, so a transient
+      // outage across every provider turns a plan that names a real, installed
+      // model into a whole-plan refusal where it used to be admitted with the
+      // step inheriting the conductor's model.
+      //
+      // That is the better of the two failures. WAVES requires that "a step
+      // that names a model the harness does not serve MUST cause the whole plan
+      // to be refused rather than the step to be run on something else", and
+      // silently running the step on the conductor's model is exactly running
+      // it on something else. This refusal is loud, says what happened, and is
+      // retryable by the conductor's own replan the moment a poll succeeds.
       return {
         ok: false,
         detail: `Step model "${requested}" cannot be checked: no agent provider reports any installed models right now.`,
