@@ -4,7 +4,9 @@ import type {
   ArchiveSessionMutation,
   ChatSession,
 } from "@/features/chat/stores/chatSessionStore";
+import type { WorkspaceAttachment } from "@/shared/types/chat";
 import { compareSessionsByActivityDesc } from "@/features/chat/lib/sessionActivity";
+import { sameSessionExecutionTarget } from "@/features/chat/lib/sessionExecutionTarget";
 import { normalizeAcpTitle } from "@/features/chat/lib/sessionTitle";
 import { withWorkspaceBackfill } from "@/features/chat/lib/workspaceAttachments";
 import { loadPersistedChatWorkspaceMetadata } from "@/features/chat/stores/workspaceAttachmentPersistence";
@@ -51,6 +53,68 @@ export function acpSessionToChatSession(session: AcpSessionInfo): ChatSession {
   });
 }
 
+/**
+ * Whether two session rows say the same thing.
+ *
+ * `loadSessions` maps every listed session into a fresh object every 60 s (and
+ * on every window focus). Handing those out replaces `sessions` and every
+ * session object in it, so every list subscriber re-renders and every `useMemo`
+ * keyed on a session recomputes — for data that is almost always identical.
+ * Two fields are rebuilt by the mapping itself and so are compared by value:
+ * `executionTarget` (built per row from the host's provider/model) and
+ * `workspaceAttachments` (normalized into new objects on every backfill).
+ */
+function sameChatSession(left: ChatSession, right: ChatSession): boolean {
+  const keys = new Set([
+    ...(Object.keys(left) as (keyof ChatSession)[]),
+    ...(Object.keys(right) as (keyof ChatSession)[]),
+  ]);
+  for (const key of keys) {
+    if (key === "executionTarget") {
+      if (
+        !sameSessionExecutionTarget(left.executionTarget, right.executionTarget)
+      ) {
+        return false;
+      }
+      continue;
+    }
+    if (key === "workspaceAttachments") {
+      if (
+        !sameWorkspaceAttachmentLists(
+          left.workspaceAttachments,
+          right.workspaceAttachments,
+        )
+      ) {
+        return false;
+      }
+      continue;
+    }
+    if (left[key] !== right[key]) return false;
+  }
+  return true;
+}
+
+function sameWorkspaceAttachmentLists(
+  left: ChatSession["workspaceAttachments"],
+  right: ChatSession["workspaceAttachments"],
+): boolean {
+  if (left === right) return true;
+  if (!left || !right || left.length !== right.length) return false;
+  return left.every((attachment, index) => {
+    const other = right[index];
+    if (attachment === other) return true;
+    if (!other) return false;
+    const keys = new Set([
+      ...(Object.keys(attachment) as (keyof WorkspaceAttachment)[]),
+      ...(Object.keys(other) as (keyof WorkspaceAttachment)[]),
+    ]);
+    for (const key of keys) {
+      if (attachment[key] !== other[key]) return false;
+    }
+    return true;
+  });
+}
+
 function mergeSessionMetadata(
   existingSessions: ChatSession[],
   loadedSessions: ChatSession[],
@@ -88,21 +152,24 @@ function mergeSessionMetadata(
       ? existing.executionTargetSource
       : session.executionTargetSource;
     const personaId = session.personaId ?? existing?.personaId;
+    const merged = withWorkspaceBackfill({
+      ...existing,
+      ...session,
+      executionTarget,
+      executionTargetSource,
+      personaId,
+      workspaceAttachments:
+        existing?.workspaceAttachments ?? session.workspaceAttachments,
+      activeWorkspaceId:
+        existing?.activeWorkspaceId ?? session.activeWorkspaceId,
+      creationState: undefined,
+      creationError: undefined,
+    });
+    // Keeping the existing object when nothing changed is what keeps a refresh
+    // that found no news from re-rendering every list subscriber.
     byId.set(
       session.id,
-      withWorkspaceBackfill({
-        ...existing,
-        ...session,
-        executionTarget,
-        executionTargetSource,
-        personaId,
-        workspaceAttachments:
-          existing?.workspaceAttachments ?? session.workspaceAttachments,
-        activeWorkspaceId:
-          existing?.activeWorkspaceId ?? session.activeWorkspaceId,
-        creationState: undefined,
-        creationError: undefined,
-      }),
+      existing && sameChatSession(existing, merged) ? existing : merged,
     );
   }
 
@@ -117,8 +184,16 @@ function mergeSessionMetadata(
     delete nextArchiveMutationBySessionId[sessionId];
   }
 
+  const sessions = [...byId.values()].sort(compareSessionsByActivityDesc);
+  const unchanged =
+    sessions.length === existingSessions.length &&
+    sessions.every((session, index) => session === existingSessions[index]);
+
   return {
-    sessions: [...byId.values()].sort(compareSessionsByActivityDesc),
+    // Same rows in the same order: hand back the array the store already has,
+    // so `selectSessions` subscribers do not re-render for a refresh that found
+    // nothing new.
+    sessions: unchanged ? existingSessions : sessions,
     archiveMutationBySessionId: nextArchiveMutationBySessionId,
   };
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   acpSessionToChatSession,
   mergeAcpSessionPage,
@@ -69,5 +69,104 @@ describe("acpSessionToChatSession", () => {
     expect(
       merged.sessions.find((session) => session.id === "settled")?.activeRunId,
     ).toBeNull();
+  });
+});
+
+// `loadSessions` runs at startup, every 60 s and on every window focus. It used
+// to rebuild every session object (and the array) even when the host reported
+// exactly what the store already had, re-rendering every list subscriber.
+describe("mergeAcpSessionPage identity", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  function page(sessions: AcpSessionInfo[], nextCursor: string | null = null) {
+    return { sessions, nextCursor };
+  }
+
+  it("returns the very same sessions and array when nothing changed", () => {
+    const listed = [
+      listedSession({ sessionId: "s1" }),
+      listedSession({ sessionId: "s2", updatedAt: "2026-06-10T00:00:00.000Z" }),
+    ];
+    const first = mergeAcpSessionPage(emptyState(), page(listed), null);
+
+    const second = mergeAcpSessionPage(
+      {
+        sessions: first.sessions,
+        archiveMutationBySessionId: first.archiveMutationBySessionId,
+      },
+      page(listed),
+      null,
+    );
+
+    expect(second.sessions).toBe(first.sessions);
+    expect(second.sessions[0]).toBe(first.sessions[0]);
+    expect(second.sessions[1]).toBe(first.sessions[1]);
+  });
+
+  it("keeps a session object whose workspace attachments were only re-normalized", () => {
+    window.localStorage.setItem(
+      "distill:chat-workspace-metadata",
+      JSON.stringify({
+        s1: {
+          workspaceAttachments: [
+            {
+              id: "ws-1",
+              path: "C:\\repo",
+              kind: "directory",
+              source: "selected",
+              branch: null,
+              usedByAgent: false,
+            },
+          ],
+          activeWorkspaceId: "ws-1",
+        },
+      }),
+    );
+    const listed = [listedSession({ sessionId: "s1", workingDir: "C:\\repo" })];
+    const first = mergeAcpSessionPage(emptyState(), page(listed), null);
+    expect(first.sessions[0]?.workspaceAttachments).toHaveLength(1);
+
+    const second = mergeAcpSessionPage(
+      {
+        sessions: first.sessions,
+        archiveMutationBySessionId: first.archiveMutationBySessionId,
+      },
+      page(listed),
+      null,
+    );
+
+    expect(second.sessions).toBe(first.sessions);
+  });
+
+  it("replaces the row the host actually changed, and only that one", () => {
+    const first = mergeAcpSessionPage(
+      emptyState(),
+      page([
+        listedSession({ sessionId: "s1" }),
+        listedSession({ sessionId: "s2" }),
+      ]),
+      null,
+    );
+    const before = first.sessions;
+
+    const second = mergeAcpSessionPage(
+      {
+        sessions: before,
+        archiveMutationBySessionId: first.archiveMutationBySessionId,
+      },
+      page([
+        listedSession({ sessionId: "s1", title: "Renamed" }),
+        listedSession({ sessionId: "s2" }),
+      ]),
+      null,
+    );
+
+    expect(second.sessions).not.toBe(before);
+    const renamed = second.sessions.find((session) => session.id === "s1");
+    const untouched = second.sessions.find((session) => session.id === "s2");
+    expect(renamed?.title).toBe("Renamed");
+    expect(untouched).toBe(before.find((session) => session.id === "s2"));
   });
 });
