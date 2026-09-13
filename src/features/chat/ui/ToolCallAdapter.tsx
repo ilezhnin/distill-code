@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronRight, FolderOpen } from "lucide-react";
 import { isViewableArtifact } from "@/features/chat/lib/artifactViewerTypes";
@@ -285,6 +285,75 @@ function formatToolValue(value: unknown): string | null {
   }
 }
 
+/**
+ * The agent-work layout's detail strings — several `JSON.stringify` passes over
+ * the tool's arguments, result and structured content, which for a `Write` call
+ * can be hundreds of kilobytes.
+ *
+ * They are built here, inside the collapsible body, rather than in
+ * `ToolCallAdapter`'s render: a closed card unmounts this subtree, so a settled
+ * panel of dozens of cards does no JSON work when its row re-renders.
+ */
+function AgentWorkToolDetails({
+  args,
+  hasStructuredArgs,
+  hasCommandRow,
+  commandValue,
+  inputDetails,
+  result,
+  isError,
+  showResultBody,
+  structuredContent,
+  hasStructuredContent,
+}: {
+  args: Record<string, unknown>;
+  hasStructuredArgs: boolean;
+  hasCommandRow: boolean;
+  commandValue: string | null;
+  inputDetails: string | null;
+  result?: string;
+  isError?: boolean;
+  showResultBody: boolean;
+  structuredContent?: unknown;
+  hasStructuredContent: boolean;
+}) {
+  const { t } = useTranslation("chat");
+  const rawInputDetails = useMemo(
+    () => (hasStructuredArgs && !hasCommandRow ? formatToolValue(args) : null),
+    [args, hasStructuredArgs, hasCommandRow],
+  );
+  const resultDetails = useMemo(
+    () => (isError || showResultBody ? formatToolValue(result) : null),
+    [isError, showResultBody, result],
+  );
+  const structuredDetails = useMemo(
+    () => (hasStructuredContent ? formatToolValue(structuredContent) : null),
+    [hasStructuredContent, structuredContent],
+  );
+
+  return (
+    <>
+      <AgentWorkToolSection
+        label={t("tools.inputSummary.command")}
+        value={commandValue}
+      />
+      <AgentWorkToolSection
+        label={t("tools.input")}
+        value={inputDetails ?? rawInputDetails}
+      />
+      <AgentWorkToolSection
+        label={isError ? t("tools.error") : t("tools.result")}
+        value={resultDetails}
+        destructive={isError}
+      />
+      <AgentWorkToolSection
+        label={t("tools.structuredContent")}
+        value={structuredDetails}
+      />
+    </>
+  );
+}
+
 function AgentWorkToolSection({
   label,
   value,
@@ -428,7 +497,11 @@ function splitHeaderTitleByPath(name: string, fileLabel: string) {
   };
 }
 
-export function ToolCallAdapter({
+/**
+ * Memoised: a tool card sits in a row that re-renders on every streaming frame,
+ * row-state change and hint toggle, and its own props are stable between those.
+ */
+export const ToolCallAdapter = memo(function ToolCallAdapter({
   className,
   name,
   toolName,
@@ -498,10 +571,15 @@ export function ToolCallAdapter({
   // copy of the structured payload (hide), short enough to hoist into the
   // header subtitle (lift), or worth rendering in the body alongside the
   // structured block (keep).
-  const textIsStringifiedCopy =
-    hasOutput &&
-    hasStructuredContent &&
-    isStringifiedCopyOfStructured(result, structuredContent);
+  // `JSON.parse` of the result text plus two `JSON.stringify`s, so it is not
+  // redone for every frame of a streaming transcript.
+  const textIsStringifiedCopy = useMemo(
+    () =>
+      hasOutput &&
+      hasStructuredContent &&
+      isStringifiedCopyOfStructured(result, structuredContent),
+    [hasOutput, hasStructuredContent, result, structuredContent],
+  );
   const canHoistResultIntoHeader =
     hasOutput &&
     hasStructuredContent &&
@@ -565,16 +643,6 @@ export function ToolCallAdapter({
           })
           .join("\n")
       : null;
-  const rawInputDetails =
-    hasStructuredArgs && !commandRow ? formatToolValue(args) : null;
-  const resultDetails = isError
-    ? formatToolValue(result)
-    : showResultBody
-      ? formatToolValue(result)
-      : null;
-  const structuredDetails = hasStructuredContent
-    ? formatToolValue(structuredContent)
-    : null;
   return (
     <div className={cn("w-full min-w-0 max-w-full", className)}>
       <Tool open={open} onOpenChange={onOpenChange}>
@@ -602,22 +670,17 @@ export function ToolCallAdapter({
               aria-label={t("tools.details")}
               className="max-h-48 space-y-3 overflow-y-auto overscroll-contain py-1"
             >
-              <AgentWorkToolSection
-                label={t("tools.inputSummary.command")}
-                value={commandRow?.value ?? null}
-              />
-              <AgentWorkToolSection
-                label={t("tools.input")}
-                value={inputDetails ?? rawInputDetails}
-              />
-              <AgentWorkToolSection
-                label={isError ? t("tools.error") : t("tools.result")}
-                value={resultDetails}
-                destructive={isError}
-              />
-              <AgentWorkToolSection
-                label={t("tools.structuredContent")}
-                value={structuredDetails}
+              <AgentWorkToolDetails
+                args={args}
+                hasStructuredArgs={hasStructuredArgs}
+                hasCommandRow={commandRow !== undefined}
+                commandValue={commandRow?.value ?? null}
+                inputDetails={inputDetails}
+                result={result}
+                isError={isError}
+                showResultBody={showResultBody}
+                structuredContent={structuredContent}
+                hasStructuredContent={hasStructuredContent}
               />
             </ToolDetailsViewport>
           ) : showCombinedSurface ? (
@@ -674,4 +737,4 @@ export function ToolCallAdapter({
       <ArtifactActions locations={locations} />
     </div>
   );
-}
+});
