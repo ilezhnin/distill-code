@@ -54,6 +54,7 @@ const {
 const { createWaveState } = await import("./waveEngine");
 const {
   bumpWaveTelemetryCounter,
+  countPlanlessConductorTurn,
   flushWaveTelemetryWrites,
   getWaveTelemetry,
   hydrateWaveTelemetry,
@@ -233,6 +234,63 @@ describe("the conductor's state lives in the Distill folder (P24)", () => {
     expect(getWaveTelemetry().counters.planlessTurns).toBe(7);
     await flushWaveTelemetryWrites();
     expect(files.has(WAVE_TELEMETRY_DOCUMENT)).toBe(true);
+  });
+
+  it("adds what a tick counted before telemetry.json landed to the lifetime totals", async () => {
+    // The tick is gated on telemetry now, but a count that slips through must
+    // still be an increment rather than a replacement: this used to be "live
+    // counters if they counted anything, else the folder's", so one planless
+    // turn counted early turned admittedWaves 300 into 1.
+    files.set(
+      WAVE_TELEMETRY_DOCUMENT,
+      JSON.stringify({
+        version: 1,
+        counters: {
+          planlessTurns: 40,
+          admittedWaves: 300,
+          rejectedPlans: 2,
+          concurrentRefusals: 1,
+        },
+        records: [],
+        planlessHighWater: { "conductor-1": 5_000 },
+      }),
+    );
+
+    bumpWaveTelemetryCounter("admittedWaves");
+    countPlanlessConductorTurn("conductor-1", 9_000);
+    await hydrateWaveTelemetry();
+
+    const counters = getWaveTelemetry().counters;
+    expect(counters.admittedWaves).toBe(301);
+    expect(counters.planlessTurns).toBe(41);
+    expect(counters.rejectedPlans).toBe(2);
+    // The mark only moves forward, so nothing the previous run counted is
+    // counted again.
+    expect(getWaveTelemetry().planlessHighWater["conductor-1"]).toBe(9_000);
+
+    // And from here an increment lands on the merged total, once.
+    bumpWaveTelemetryCounter("admittedWaves");
+    expect(getWaveTelemetry().counters.admittedWaves).toBe(302);
+  });
+
+  it("does not count a turn the previous run already counted", async () => {
+    files.set(
+      WAVE_TELEMETRY_DOCUMENT,
+      JSON.stringify({
+        version: 1,
+        counters: {
+          planlessTurns: 40,
+          admittedWaves: 0,
+          rejectedPlans: 0,
+          concurrentRefusals: 0,
+        },
+        records: [],
+        planlessHighWater: { "conductor-1": 9_000 },
+      }),
+    );
+    await hydrateWaveTelemetry();
+    countPlanlessConductorTurn("conductor-1", 8_000);
+    expect(getWaveTelemetry().counters.planlessTurns).toBe(40);
   });
 });
 
