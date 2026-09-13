@@ -353,6 +353,49 @@ describe("chatSessionStore", () => {
       expect(mocks.unarchiveSession).not.toHaveBeenCalled();
     });
 
+    // Archiving tells the chat store to ignore the chat's trailing updates, so
+    // that a reply arriving after the chat is gone cannot persist an unread id
+    // nobody can clear. Unarchiving brings the chat back: the badge has to work
+    // again even for someone who never opens it.
+    it("lets a later reply mark the chat unread again", async () => {
+      seedSession({ id: "session-1", archivedAt: "2026-03-15T00:00:00.000Z" });
+      useChatStore.getState().cleanupSession("session-1");
+
+      await useChatSessionStore.getState().unarchiveSession("session-1");
+      useChatStore.getState().addMessage("session-1", {
+        id: "assistant-1",
+        role: "assistant",
+        created: Date.now(),
+        content: [{ type: "text", text: "done" }],
+        metadata: { userVisible: true },
+      });
+
+      expect(
+        useChatStore.getState().getSessionRuntime("session-1").hasUnread,
+      ).toBe(true);
+    });
+
+    it("keeps ignoring the chat's updates when the unarchive failed", async () => {
+      seedSession({ id: "session-1", archivedAt: "2026-03-15T00:00:00.000Z" });
+      useChatStore.getState().cleanupSession("session-1");
+      mocks.unarchiveSession.mockRejectedValue(new Error("backend down"));
+
+      await expect(
+        useChatSessionStore.getState().unarchiveSession("session-1"),
+      ).rejects.toThrow("backend down");
+      useChatStore.getState().addMessage("session-1", {
+        id: "assistant-1",
+        role: "assistant",
+        created: Date.now(),
+        content: [{ type: "text", text: "done" }],
+        metadata: { userVisible: true },
+      });
+
+      expect(
+        useChatStore.getState().getSessionRuntime("session-1").hasUnread,
+      ).toBe(false);
+    });
+
     it("rolls back to the backend-known unarchived state when overlapping archive and unarchive both fail", async () => {
       const archive = createDeferredPromise<void>();
       const unarchive = createDeferredPromise<void>();
