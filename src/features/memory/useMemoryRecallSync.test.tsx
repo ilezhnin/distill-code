@@ -24,7 +24,10 @@ import {
   setMemoryWriteEnabled,
 } from "./lib/memoryPreferences";
 import { RECALL_LIMIT_REACHED_TEXT } from "./lib/memoryRecall";
-import { useMemoryStore } from "./stores/memoryStore";
+import {
+  resetWaveExecutorWatchForTests,
+  useMemoryStore,
+} from "./stores/memoryStore";
 import { useMemoryRecallSync } from "./useMemoryRecallSync";
 
 const mocks = vi.hoisted(() => ({
@@ -89,6 +92,23 @@ function putMessages(sessionId: string, messages: Message[]) {
   });
 }
 
+/**
+ * Transcripts that count the scans that read them.
+ *
+ * A scan starts by listing the sessions, so the key enumeration is the
+ * cheapest honest proxy for "the drain looked at the transcripts".
+ */
+function countingTranscripts(inner: Record<string, Message[]>) {
+  let reads = 0;
+  const proxy = new Proxy(inner, {
+    ownKeys(target) {
+      reads += 1;
+      return Reflect.ownKeys(target);
+    },
+  });
+  return { proxy, reads: () => reads };
+}
+
 function putSession(sessionId: string, projectId: string | null) {
   act(() => {
     useChatSessionStore.setState({
@@ -139,11 +159,13 @@ describe("useMemoryRecallSync", () => {
     window.localStorage.clear();
     vi.clearAllMocks();
     mocks.deliverEnvelope.mockResolvedValue({ status: "dispatched" });
+    resetWaveExecutorWatchForTests();
     useMemoryStore.setState({
       entries: [],
       archived: [],
       appliedMessageIds: [],
       recallAnsweredMessageIds: [],
+      waveExecutorSessionIds: [],
       hydrated: true,
     });
     useChatStore.setState({ messagesBySession: {} });
@@ -191,6 +213,32 @@ describe("useMemoryRecallSync", () => {
     });
     expect(delivered()).toHaveLength(1);
     expect(useMemoryStore.getState().recallAnsweredMessageIds).toEqual(["m-1"]);
+  });
+
+  it("does not read the transcripts when only a runtime flag changed", () => {
+    // The chat store carries the transcripts and, beside them, per-session
+    // runtime state that moves on every token's bookkeeping. No flag can turn
+    // a message into a question, so a run that changed no transcript must not
+    // cost a scan — this drain is on the streaming path.
+    putSession("s-1", null);
+    renderHook(() => useMemoryRecallSync());
+    const transcripts = countingTranscripts({
+      "s-1": [assistant("m-1", '{"query":"kubernetes"}')],
+    });
+    act(() => {
+      useChatStore.setState({ messagesBySession: transcripts.proxy });
+    });
+    expect(delivered()).toHaveLength(1);
+
+    const readsAfterTheQuestion = transcripts.reads();
+    act(() => {
+      useChatStore.setState({ activeSessionId: "s-1" });
+    });
+    act(() => {
+      useChatStore.setState({ isViewingActiveSession: false });
+    });
+
+    expect(transcripts.reads()).toBe(readsAfterTheQuestion);
   });
 
   it("never hands over another project's memories", () => {
@@ -264,6 +312,30 @@ describe("useMemoryRecallSync", () => {
       useChatStore.setState({ activeSessionId: "s-w" });
     });
     expect(warn).not.toHaveBeenCalled();
+    expect(useMemoryStore.getState().recallAnsweredMessageIds).toContain("m-1");
+  });
+
+  it("leaves a wave child unanswered after the graph has evicted its node", () => {
+    // The graph is bounded and drops a finished wave child's node first; the
+    // answer would hand the operator's list to an executor that was never
+    // taught to ask for it (LAWS/MEMORY.md, Writing).
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    putSession("s-w", "p-1");
+    putGraphNode("s-w", "wave");
+    useMemoryStore.setState({
+      entries: [entry({ id: "g", text: "Secretish" })],
+    });
+    renderHook(() => useMemoryRecallSync());
+    act(() => {
+      useConductorGraphStore.setState({ nodesById: {} });
+    });
+
+    putMessages("s-w", [assistant("m-1", '{"query":"Secretish"}')]);
+
+    expect(mocks.deliverEnvelope).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("was not answered"),
+    );
     expect(useMemoryStore.getState().recallAnsweredMessageIds).toContain("m-1");
   });
 

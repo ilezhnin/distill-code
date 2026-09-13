@@ -13,6 +13,7 @@ import {
   parseMemoryFences,
   type MemoryFenceRequest,
 } from "./memoryFence";
+import { messageMentions } from "./transcriptScan";
 
 export interface MemoryFenceCandidate {
   sessionId: string;
@@ -50,6 +51,7 @@ function isSettledAssistantMessage(message: Message): boolean {
 
 export function detectMemoryFenceCandidates(args: {
   messagesBySession: Readonly<Record<string, readonly Message[] | undefined>>;
+  /** Expected to be cheap — a set lookup, not a search through a list. */
   isApplied: (messageId: string) => boolean;
   /**
    * True the first time this process sees a session's messages. Callers that
@@ -66,9 +68,10 @@ export function detectMemoryFenceCandidates(args: {
     for (const message of messages.slice(-depth)) {
       if (!isSettledAssistantMessage(message)) continue;
       if (args.isApplied(message.id)) continue;
-      const text = getTextContent(message);
-      if (!text.includes(MEMORY_FENCE_TAG)) continue;
-      const request = parseMemoryFences(text);
+      // The tag test rejects nearly every message, so it runs on the parts
+      // as they are; the text is only joined for the ones it lets through.
+      if (!messageMentions(message, MEMORY_FENCE_TAG)) continue;
+      const request = parseMemoryFences(getTextContent(message));
       if (!request) continue;
       candidates.push({ sessionId, messageId: message.id, request });
     }
