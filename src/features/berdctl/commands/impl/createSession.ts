@@ -132,10 +132,14 @@ Result:
       import("../runtime/providers"),
     ]);
     const harnessId = args.harness_id ?? DEFAULT_HARNESS_ID;
-    // The validation legs are independent I/O; overlap them.
+    // The validation legs are independent I/O; overlap them. Readiness is
+    // checked for the resolved harness, default included: creating on a
+    // harness that is not installed or not signed in would either run a
+    // multi-minute managed install inside this call or fail as an opaque
+    // `internal_error` long after the caller was told "dispatched".
     const [project, , models, persona] = await Promise.all([
       args.project_id ? findProjectOrThrow(args.project_id) : null,
-      args.harness_id ? findReadyHarnessOrThrow(args.harness_id) : null,
+      findReadyHarnessOrThrow(harnessId),
       args.model_id ? harnessModelOptions(harnessId).catch(() => []) : null,
       args.agent_id ? findPersonaOrThrow(args.agent_id) : null,
     ]);
