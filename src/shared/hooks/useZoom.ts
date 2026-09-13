@@ -11,9 +11,28 @@ function adjust(n: number) {
   return Math.round(Math.min(MAX, Math.max(MIN, n)) * 100) / 100;
 }
 
+/**
+ * WebView2 throws `SecurityError` when DOM storage is blocked (policy, a
+ * corrupt storage database, a read-only user-data folder). An unguarded read
+ * threw inside the effect and put the whole app on the error screen.
+ */
 function getStored(): number {
-  const v = Number.parseFloat(localStorage.getItem(KEY) ?? "");
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem(KEY);
+  } catch {
+    return 1.0;
+  }
+  const v = Number.parseFloat(stored ?? "");
   return Number.isNaN(v) ? 1.0 : adjust(v);
+}
+
+function storeZoom(level: number): void {
+  try {
+    localStorage.setItem(KEY, String(level));
+  } catch {
+    // Storage is unavailable; the zoom still applies for this run.
+  }
 }
 
 function applyZoom(level: number) {
@@ -42,7 +61,7 @@ export function useZoom() {
       }
 
       e.preventDefault();
-      localStorage.setItem(KEY, String(level));
+      storeZoom(level);
       applyZoom(level);
     };
 
