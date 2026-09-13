@@ -29,11 +29,6 @@ interface GetProjectResult {
   }>;
   archived: boolean;
   session_count: number;
-  chat_groups: Array<{
-    group_id: string;
-    name: string;
-    session_ids: string[];
-  }>;
 }
 
 export const getProjectCommand = defineCommand({
@@ -42,7 +37,7 @@ export const getProjectCommand = defineCommand({
   destructive: false,
   summary: "Read one project's details",
   description:
-    "Read one project's details (instructions, working directories, per-workspace startup modes, chat groups, session count); " +
+    "Read one project's details (instructions, working directories, per-workspace startup modes, session count); " +
     "does not change anything on screen.",
   helpFooter: `Example:
   berdctl project get --project-id <project-id> --json
@@ -51,9 +46,7 @@ Result:
   {"project_id": "...", "name": "...", "description": "...",
    "instructions": "...", "working_dirs": ["..."], "workspaces": [
      {"path": "...", "startup_mode": "worktree"}
-   ], "archived": false, "session_count": 4, "chat_groups": [
-     {"group_id": "...", "name": "Launch", "session_ids": ["..."]}
-   ]}`,
+   ], "archived": false, "session_count": 4}`,
   schema: getProjectSchema,
   execute: async (args): Promise<GetProjectResult> => {
     const [
@@ -73,14 +66,6 @@ Result:
     const sessionCount = sessions.filter(
       (session) => session.projectId === project.id && !session.archivedAt,
     ).length;
-    const sessionsById = new Map(
-      sessions.map((session) => [session.id, session]),
-    );
-    const sessionsByClientId = new Map(
-      sessions
-        .filter((session) => session.clientSessionId)
-        .map((session) => [session.clientSessionId as string, session]),
-    );
     return {
       project_id: project.id,
       name: project.name,
@@ -93,17 +78,6 @@ Result:
       })),
       archived: project.archivedAt != null,
       session_count: sessionCount,
-      chat_groups: (project.chatGroups?.groups ?? []).map((group) => ({
-        group_id: group.id,
-        name: group.name,
-        session_ids: group.chatIds.flatMap((sessionId) => {
-          const session =
-            sessionsById.get(sessionId) ?? sessionsByClientId.get(sessionId);
-          return session?.projectId === project.id && !session.archivedAt
-            ? [session.id]
-            : [];
-        }),
-      })),
     };
   },
 });
