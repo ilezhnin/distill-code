@@ -49,6 +49,21 @@ describe("parseRoutingPolicy", () => {
     ).toEqual({});
   });
 
+  it("keeps only overrides for classes that exist", () => {
+    // A JSON document carries whatever keys were written into it, including
+    // ones that resolve to Object.prototype members: `__proto__` would
+    // re-parent the overrides object and `constructor` would shadow a
+    // function with a list nothing can index. Neither is a class.
+    const policy = parseRoutingPolicy({
+      classOverrides: JSON.parse(
+        '{"__proto__":["Opus 5"],"constructor":["Astra"],"retired-class":["Grok 4.6"],"one-shot":["Opus 5"]}',
+      ),
+    });
+    expect(policy.classOverrides).toEqual({ "one-shot": ["Opus 5"] });
+    expect(Object.getPrototypeOf(policy.classOverrides)).toBe(Object.prototype);
+    expect(Object.keys(policy.classOverrides)).toEqual(["one-shot"]);
+  });
+
   it("is stricter about waves than about chats by default", () => {
     // A wave runs unattended and several sessions at once against one meter.
     expect(DEFAULT_ROUTING_POLICY.waveNearLimitPercent).toBeLessThan(

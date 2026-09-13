@@ -44,6 +44,7 @@ export function ProvidersSettings({
     agentReadiness,
     agentChecks,
     loading: agentStatusLoading,
+    statusUnavailable: agentStatusUnavailable,
   } = useAgentProviderStatus();
   // `agentStatusLoading` is `isPending` (first-load only). The shared query's
   // `isFetching` tracks the fast `runDoctor` queryFn (covers manual reruns
@@ -105,6 +106,7 @@ export function ProvidersSettings({
                 readiness={agentReadiness.get(agent.id)}
                 versionCheck={agentChecks.get(agent.id)}
                 statusLoading={agentStatusRefreshing}
+                statusUnavailable={agentStatusUnavailable}
                 onStartTroubleshootingChat={onStartTroubleshootingChat}
               />
             </div>

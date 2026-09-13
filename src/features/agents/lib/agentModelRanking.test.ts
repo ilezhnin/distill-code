@@ -158,6 +158,15 @@ describe("parseAgentRankingSource", () => {
     expect(parseAgentRankingSource("{not json")).toBeUndefined();
     expect(parseAgentRankingSource('{"entries":[]}')).toBeUndefined();
   });
+
+  it("does not take an Object.prototype member for a class id", () => {
+    // `model_ranking: constructor` in an agent-writable frontmatter used to
+    // parse as a class and then throw in every consumer that indexed the
+    // class table with it.
+    for (const raw of ["constructor", "toString", "__proto__"]) {
+      expect(parseAgentRankingSource(raw)).toBeUndefined();
+    }
+  });
 });
 
 describe("candidateForEntry", () => {

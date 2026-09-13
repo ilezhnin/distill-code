@@ -14,7 +14,10 @@
  * a step that ends up somewhere other than its first choice says so.
  */
 
-import type { ModelPreferenceClassId } from "./modelRanking";
+import {
+  isModelPreferenceClassId,
+  type ModelPreferenceClassId,
+} from "./modelRanking";
 
 /**
  * Percent of a window that has to be spent before new work goes elsewhere.
@@ -78,12 +81,15 @@ export function parseRoutingPolicy(raw: unknown): RoutingPolicy {
   const overrides = stored.classOverrides;
   if (overrides && typeof overrides === "object") {
     for (const [classId, labels] of Object.entries(overrides)) {
+      // Only classes that exist: a JSON document can carry any key, and
+      // assigning `__proto__` here would re-parent the overrides object.
+      if (!isModelPreferenceClassId(classId)) continue;
       if (!Array.isArray(labels)) continue;
       const kept = labels.filter(
         (label): label is string => typeof label === "string" && !!label.trim(),
       );
       if (kept.length > 0) {
-        classOverrides[classId as ModelPreferenceClassId] = kept;
+        classOverrides[classId] = kept;
       }
     }
   }

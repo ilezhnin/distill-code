@@ -330,11 +330,14 @@
       "status": {
         "checking": "Checking...",
         "inProgress": "Setup in progress",
-        "setupFailed": "Setup failed"
+        "setupFailed": "Setup failed",
+        "unknown": "Couldn't check"
       },
       "title": "Agent harnesses",
       "troubleshootInChat": "Troubleshoot in chat",
-      "updateLabel": "Update {{name}}"
+      "updateLabel": "Update {{name}}",
+      "recheck": "Check again",
+      "recheckLabel": "Check {{name}} again"
     },
     "setupOutput": {
       "copyDeviceCode": "Copy device code",
@@ -521,6 +524,8 @@
     "moveDown": "Move {{label}} down",
     "remove": "Remove {{label}}",
     "add": "Add a model",
-    "reset": "Reset routing to the built-in settings"
+    "reset": "Reset routing to the built-in settings",
+    "notPersisted": "Routing settings could not be read, so changes here apply to this run only and will be gone after a restart.",
+    "retryLoad": "Try reading again"
   }
 }

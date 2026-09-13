@@ -212,6 +212,7 @@ export function ProviderUsageRow({
           {formatUsageCost(
             provider.estimatedCostUsd,
             t("stats.costUnavailable"),
+            provider.costCurrency,
           )}
         </span>
       </div>

@@ -192,5 +192,10 @@
     "output": "Salida",
     "reasoning": "Razonamiento",
     "totalCost": "Costo total"
+  },
+  "viewError": {
+    "title": "Esta vista dejó de funcionar.",
+    "description": "El resto de la aplicación sigue funcionando: inténtalo de nuevo o abre otra cosa.",
+    "retry": "Intentar de nuevo"
   }
 }

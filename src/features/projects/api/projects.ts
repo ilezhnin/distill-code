@@ -465,7 +465,12 @@ function artifactForUpdate(
   return createArtifactMetadata(existing.id, merged);
 }
 
-export async function updateProject(
+/**
+ * Sends the full property bag of `existing` with `updates` applied. The host
+ * has no partial update, so callers must pass the current on-disk project as
+ * `existing` — use `updateProject` unless the entry was just listed.
+ */
+async function writeProject(
   existing: ProjectInfo,
   updates: Partial<Omit<ProjectInfo, "id" | "path">>,
 ): Promise<ProjectInfo> {
@@ -501,6 +506,22 @@ export async function updateProject(
   return toProjectInfo(raw.source as SourceEntry);
 }
 
+/**
+ * Applies `updates` to the project as it is on disk right now. Callers hold
+ * snapshots that can be minutes old (an open edit dialog, the localStorage
+ * seed of the project store), and other writers — berdctl chat-group moves,
+ * startup-mode changes — touch fields those callers do not own; merging onto
+ * the stored copy keeps those changes instead of writing the snapshot back.
+ */
+export async function updateProject(
+  existing: ProjectInfo,
+  updates: Partial<Omit<ProjectInfo, "id" | "path">>,
+): Promise<ProjectInfo> {
+  const all = await listAllProjects();
+  const current = all.find((project) => project.id === existing.id) ?? existing;
+  return writeProject(current, updates);
+}
+
 export async function deleteProject(
   idOrProject: string | ProjectInfo,
 ): Promise<void> {
@@ -533,17 +554,23 @@ async function listAllProjects(): Promise<ProjectInfo[]> {
 }
 
 export async function archiveProject(id: string): Promise<void> {
+  // `getProject` already read the current copy, so write it straight back.
   const project = await getProject(id);
-  await updateProject(project, {
+  await writeProject(project, {
     archivedAt: new Date().toISOString(),
   });
 }
 
 export async function restoreProject(id: string): Promise<void> {
   const project = await getProject(id);
-  await updateProject(project, { archivedAt: null });
+  await writeProject(project, { archivedAt: null });
 }
 
+/**
+ * Writes the new `order` of the listed projects. Every project file is a full
+ * property bag rewrite, so projects that already carry their target order are
+ * left alone: a drag usually moves one project past a few others.
+ */
 export async function reorderProjects(
   order: [string, number][],
 ): Promise<void> {
@@ -551,7 +578,8 @@ export async function reorderProjects(
   for (const [id, orderValue] of order) {
     const existing = all.find((p) => p.id === id);
     if (!existing) continue;
-    await updateProject(existing, { order: orderValue });
+    if (existing.order === orderValue) continue;
+    await writeProject(existing, { order: orderValue });
   }
 }
 

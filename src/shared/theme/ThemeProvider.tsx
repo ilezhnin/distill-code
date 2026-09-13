@@ -115,8 +115,33 @@ function applyResolvedMode(isDark: boolean) {
   root.style.colorScheme = isDark ? "dark" : "light";
 }
 
+/**
+ * WebView2 throws `SecurityError` when DOM storage is blocked — enterprise
+ * cookie/storage policy, a corrupt `Local Storage` database, a read-only
+ * user-data folder. Every other storage reader in the tree guards for that;
+ * these did not, and a throw here (during render, and in the write effects)
+ * took the whole app to the error screen although all persistent data lives in
+ * the Distill folder and would have worked.
+ */
+function readStoredValue(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredValue(key: string, value: string | null): void {
+  try {
+    if (value === null) window.localStorage.removeItem(key);
+    else window.localStorage.setItem(key, value);
+  } catch {
+    // Storage is unavailable; the choice still holds for this run.
+  }
+}
+
 function readInitialThemeMode(): ThemeMode {
-  const storedThemeMode = window.localStorage.getItem(THEME_MODE_STORAGE_KEY);
+  const storedThemeMode = readStoredValue(THEME_MODE_STORAGE_KEY);
 
   if (isThemeMode(storedThemeMode)) {
     return storedThemeMode;
@@ -152,9 +177,7 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
   );
   const [customPrimaryColor, setCustomPrimaryColor] = React.useState<
     string | null
-  >(() =>
-    normalizeHexColor(window.localStorage.getItem(PRIMARY_COLOR_STORAGE_KEY)),
-  );
+  >(() => normalizeHexColor(readStoredValue(PRIMARY_COLOR_STORAGE_KEY)));
 
   const resolvedTheme = getResolvedMode(themeMode, systemPrefersDark);
   const isDark = resolvedTheme === "dark";
@@ -162,8 +185,8 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
   const primaryColor = customPrimaryColor ?? themePrimaryColor;
 
   React.useEffect(() => {
-    window.localStorage.removeItem(LEGACY_THEME_CACHE_STORAGE_KEY);
-    window.localStorage.removeItem(DEPRECATED_DENSITY_STORAGE_KEY);
+    writeStoredValue(LEGACY_THEME_CACHE_STORAGE_KEY, null);
+    writeStoredValue(DEPRECATED_DENSITY_STORAGE_KEY, null);
     window.document.documentElement.removeAttribute("data-density");
   }, []);
 
@@ -187,18 +210,11 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
   }, []);
 
   React.useEffect(() => {
-    window.localStorage.setItem(THEME_MODE_STORAGE_KEY, themeMode);
+    writeStoredValue(THEME_MODE_STORAGE_KEY, themeMode);
   }, [themeMode]);
 
   React.useEffect(() => {
-    if (customPrimaryColor) {
-      window.localStorage.setItem(
-        PRIMARY_COLOR_STORAGE_KEY,
-        customPrimaryColor,
-      );
-    } else {
-      window.localStorage.removeItem(PRIMARY_COLOR_STORAGE_KEY);
-    }
+    writeStoredValue(PRIMARY_COLOR_STORAGE_KEY, customPrimaryColor);
   }, [customPrimaryColor]);
 
   const setThemeMode = React.useCallback((nextThemeMode: ThemeMode) => {

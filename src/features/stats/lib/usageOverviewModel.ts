@@ -133,6 +133,8 @@ export function buildUsageOverview({
       hasMissingCost: boolean;
       modelCounts: Map<string, number>;
       activeDays: Set<string>;
+      archivedActiveDays: number;
+      costCurrencies: Set<string | null>;
     }
   >();
 
@@ -153,6 +155,8 @@ export function buildUsageOverview({
       hasMissingCost: false,
       modelCounts: new Map<string, number>(),
       activeDays: new Set<string>(),
+      archivedActiveDays: 0,
+      costCurrencies: new Set<string | null>(),
     };
     byProvider.set(id, created);
     return created;
@@ -160,6 +164,28 @@ export function buildUsageOverview({
 
   for (const id of enabled) {
     ensureProvider(id);
+  }
+
+  // Sessions that aged out of the ledger only survive as per-provider totals.
+  for (const [providerId, record] of Object.entries(ledger.archived ?? {})) {
+    if (providerFilter && providerId !== providerFilter) continue;
+    const provider = ensureProvider(providerId);
+    provider.sessions += record.sessions;
+    provider.totalTokens += record.totalTokens;
+    provider.newInputTokens += record.inputTokens;
+    provider.outputTokens += record.outputTokens;
+    provider.cacheTokens += record.cacheTokens;
+    provider.turns += record.turns;
+    provider.events += record.messageCount;
+    provider.archivedActiveDays += record.activeDays;
+    if (record.costUsd != null) {
+      provider.estimatedCostUsd =
+        (provider.estimatedCostUsd ?? 0) + record.costUsd;
+      provider.hasKnownCost = true;
+      provider.costCurrencies.add(record.costCurrency);
+    } else if (record.totalTokens > 0) {
+      provider.hasMissingCost = true;
+    }
   }
 
   for (const session of sessions) {
@@ -175,6 +201,7 @@ export function buildUsageOverview({
       provider.estimatedCostUsd =
         (provider.estimatedCostUsd ?? 0) + session.costUsd;
       provider.hasKnownCost = true;
+      provider.costCurrencies.add(session.costCurrency);
     } else if (session.totalTokens > 0) {
       provider.hasMissingCost = true;
     }
@@ -200,6 +227,12 @@ export function buildUsageOverview({
       const activityCount =
         activityLabel === "turns" ? provider.turns : provider.events;
       const hasData = provider.totalTokens > 0 || provider.sessions > 0;
+      // Amounts in different currencies cannot be one figure: report no cost
+      // (which already reads as partial) rather than a mixed-unit total.
+      const currencies = [...provider.costCurrencies];
+      const singleCurrency = currencies.length === 1 ? currencies[0] : null;
+      const costIsComparable = currencies.length <= 1;
+      if (!costIsComparable) provider.hasMissingCost = true;
       return {
         id,
         label: providerDisplayName(id),
@@ -212,11 +245,13 @@ export function buildUsageOverview({
         newInputTokens: provider.newInputTokens,
         outputTokens: provider.outputTokens,
         cacheTokens: provider.cacheTokens,
-        estimatedCostUsd: provider.hasKnownCost
-          ? provider.estimatedCostUsd
-          : null,
+        estimatedCostUsd:
+          provider.hasKnownCost && costIsComparable
+            ? provider.estimatedCostUsd
+            : null,
+        costCurrency: singleCurrency,
         topModel,
-        activeDays: provider.activeDays.size,
+        activeDays: provider.activeDays.size + provider.archivedActiveDays,
       } satisfies UsageProviderOverview;
     })
     .sort((left, right) => {
@@ -263,21 +298,33 @@ export function buildUsageOverview({
   const hasKnownCost = providers.some(
     (provider) => provider.estimatedCostUsd !== null,
   );
-  // Partial when a provider with data has no cost at all, or when some of
-  // its sessions carry tokens without a cost (its sum then undercounts).
+  // Same rule across providers: only sum costs that share one currency.
+  const costCurrencies = new Set(
+    providers
+      .filter((provider) => provider.estimatedCostUsd !== null)
+      .map((provider) => provider.costCurrency),
+  );
+  const totalCostCurrency =
+    costCurrencies.size === 1 ? [...costCurrencies][0] : null;
+  const costsAreComparable = costCurrencies.size <= 1;
+  // Partial when a provider with data has no cost at all, when some of its
+  // sessions carry tokens without a cost (its sum then undercounts), or when
+  // providers reported costs in currencies that cannot be added up.
   const hasPartialCost =
     providers.some(
       (provider) => provider.hasData && provider.estimatedCostUsd === null,
     ) ||
+    !costsAreComparable ||
     [...byProvider.values()].some(
       (provider) => provider.hasKnownCost && provider.hasMissingCost,
     );
-  const estimatedCostUsd = hasKnownCost
-    ? providers.reduce(
-        (sum, provider) => sum + (provider.estimatedCostUsd ?? 0),
-        0,
-      )
-    : null;
+  const estimatedCostUsd =
+    hasKnownCost && costsAreComparable
+      ? providers.reduce(
+          (sum, provider) => sum + (provider.estimatedCostUsd ?? 0),
+          0,
+        )
+      : null;
 
   return {
     providers,
@@ -298,6 +345,7 @@ export function buildUsageOverview({
         .map((entry) => entry.day),
     ).size,
     estimatedCostUsd,
+    costCurrency: totalCostCurrency,
     hasPartialCost,
     cacheShare:
       newInputTokens + cacheTokens > 0

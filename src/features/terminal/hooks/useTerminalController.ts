@@ -58,6 +58,25 @@ export function useTerminalController({
     stateRef.current = state;
   }, [state]);
 
+  // The chat id changes exactly once, when a draft is promoted to its backend
+  // id. The tab state carries over in memory and is written under the new key
+  // above; the draft's key would otherwise stay in storage forever.
+  const previousSessionIdRef = useRef(sessionId);
+  useEffect(() => {
+    const previous = previousSessionIdRef.current;
+    previousSessionIdRef.current = sessionId;
+    if (previous === sessionId) {
+      return;
+    }
+    try {
+      window.localStorage.removeItem(
+        `${TERMINAL_STORAGE_KEY_PREFIX}:${previous}`,
+      );
+    } catch {
+      // localStorage may be unavailable
+    }
+  }, [sessionId]);
+
   const commitState = useCallback(
     (updater: (state: TerminalState) => TerminalState): TerminalState => {
       const nextState = updater(stateRef.current);
