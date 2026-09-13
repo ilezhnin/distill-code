@@ -278,10 +278,13 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Record which bridge session a chat is running on, or clear it (`None`)
+    /// once that bridge session must never be resumed again — see
+    /// `Inner::release_bridge_session`.
     pub async fn set_bridge_session_id(
         &self,
         id: &str,
-        bridge_session_id: &str,
+        bridge_session_id: Option<&str>,
     ) -> Result<(), String> {
         sqlx::query("UPDATE sessions SET bridge_session_id = ? WHERE id = ?")
             .bind(bridge_session_id)
@@ -955,6 +958,39 @@ mod tests {
         // them: orphan rows here are never read, listed or reclaimed again.
         assert!(texts_and_times(&store, "a").await.is_empty());
         assert!(store.get_session("b").await.expect("get").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_bridge_session_can_be_recorded_and_given_up_again() {
+        let (_dir, store) = store_with_history().await;
+        store
+            .set_bridge_session_id("b", Some("bridge-1"))
+            .await
+            .expect("record");
+        assert_eq!(
+            store
+                .get_session("b")
+                .await
+                .expect("read")
+                .expect("row")
+                .bridge_session_id
+                .as_deref(),
+            Some("bridge-1")
+        );
+
+        // A chat that moved folders lets go of its bridge session for good: the
+        // row must stop naming it, or the next attach resumes it and the chat
+        // keeps running in the folder it was created in.
+        store.set_bridge_session_id("b", None).await.expect("clear");
+        assert_eq!(
+            store
+                .get_session("b")
+                .await
+                .expect("read")
+                .expect("row")
+                .bridge_session_id,
+            None
+        );
     }
 
     #[tokio::test]
