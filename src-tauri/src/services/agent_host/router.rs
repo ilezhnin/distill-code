@@ -32,6 +32,13 @@ const BACKGROUND_ATTACH_DELAY: std::time::Duration = std::time::Duration::from_m
 const SNIPPET_CHARS: usize = 200;
 pub const EXT_PREFIX: &str = "_distill/";
 
+/// The renderer socket a request arrived on. Its reply goes back there and
+/// nowhere else: request ids are per socket (the SDK numbers them from 0 on
+/// every connection), so a reply delivered to a later socket would resolve
+/// whatever request happens to carry that id there. Once the socket is gone
+/// the sender fails and the reply is dropped.
+type ReplyTo = mpsc::UnboundedSender<String>;
+
 /// The ids one user turn is recorded under: `message_id` is the user
 /// prompt's message, `assistant_message_id` the agent's reply to it, and
 /// `run_id` the turn.
@@ -307,7 +314,8 @@ impl Inner {
                 Ok(WsMessage::Text(text)) => {
                     let host = Arc::clone(&self);
                     let line = text.to_string();
-                    tokio::spawn(async move { host.handle_frontend_line(line).await });
+                    let reply_to = tx.clone();
+                    tokio::spawn(async move { host.handle_frontend_line(line, reply_to).await });
                 }
                 Ok(WsMessage::Close(_)) | Err(_) => break,
                 Ok(_) => {}
@@ -345,7 +353,18 @@ impl Inner {
         self.send_to_frontend(protocol::notification(method, params));
     }
 
-    async fn handle_frontend_line(self: Arc<Self>, line: String) {
+    /// Answer a request on the socket it arrived on, never on whichever socket
+    /// is current when the answer is ready: request ids are numbered per
+    /// connection, so the same id belongs to a different request on the next
+    /// socket and the answer would resolve that one. A renderer that dropped
+    /// the socket has given up on the answer, so it is dropped with it.
+    fn reply_on(reply_to: &ReplyTo, method: &str, reply: String) {
+        if reply_to.send(reply).is_err() {
+            log::debug!("[agent-host] dropped the answer to {method}: its socket is gone");
+        }
+    }
+
+    async fn handle_frontend_line(self: Arc<Self>, line: String, reply_to: ReplyTo) {
         let Some(message) = protocol::parse(&line) else {
             log::warn!("[agent-host] unparseable frontend message");
             return;
@@ -357,7 +376,7 @@ impl Inner {
                     Ok(result) => protocol::response(id, result),
                     Err(error) => protocol::error_response(id, error),
                 };
-                self.send_to_frontend(reply);
+                Self::reply_on(&reply_to, &method, reply);
             }
             Message::Notification { method, params } => {
                 self.handle_client_notification(&method, params).await;
@@ -2025,6 +2044,29 @@ mod tests {
             loading.route(),
             Some(("claude-acp".to_string(), "stored-id".to_string()))
         );
+    }
+
+    #[test]
+    fn an_answer_goes_to_the_socket_that_asked_and_nowhere_else() {
+        let (socket_a, mut heard_a) = mpsc::unbounded_channel::<String>();
+        let (_socket_b, mut heard_b) = mpsc::unbounded_channel::<String>();
+        Inner::reply_on(
+            &socket_a,
+            "session/new",
+            protocol::response(json!(0), json!({ "sessionId": "s1" })),
+        );
+        assert!(heard_a.try_recv().is_ok());
+        assert!(heard_b.try_recv().is_err());
+
+        // The renderer gave up on that socket: its answer is dropped rather
+        // than delivered to the next connection, where id 0 is another call.
+        drop(heard_a);
+        Inner::reply_on(
+            &socket_a,
+            "session/new",
+            protocol::response(json!(0), json!({ "sessionId": "s2" })),
+        );
+        assert!(heard_b.try_recv().is_err());
     }
 
     #[test]
