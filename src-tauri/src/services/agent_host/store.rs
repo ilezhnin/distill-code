@@ -31,6 +31,17 @@ pub struct SessionRecord {
     pub snapshot: Option<Value>,
 }
 
+/// The session-list fields a prompt's [`SessionStore::touch`] overwrites, read
+/// before the prompt is recorded so that a prompt the bridge then rejects can
+/// be taken back out of the list as well as out of the event log.
+#[derive(Debug, Clone)]
+pub struct SessionTouchUndo {
+    pub updated_at: String,
+    pub last_message_at: Option<String>,
+    pub last_snippet: Option<String>,
+    pub message_count: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct McpServerRecord {
     pub config_key: String,
@@ -373,6 +384,65 @@ impl SessionStore {
             }
         }
         .map_err(|error| db_error("failed to touch session", error))?;
+        Ok(())
+    }
+
+    /// The session-list fields as they are now, to hand back to
+    /// [`Self::discard_prompt`] if the prompt about to be recorded is rejected.
+    pub async fn touch_undo(&self, id: &str) -> Result<Option<SessionTouchUndo>, String> {
+        let row = sqlx::query(
+            "SELECT updated_at, last_message_at, last_snippet, message_count FROM sessions WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| db_error("failed to read session", error))?;
+        Ok(row.map(|row| SessionTouchUndo {
+            updated_at: row.get("updated_at"),
+            last_message_at: row.get("last_message_at"),
+            last_snippet: row.get("last_snippet"),
+            message_count: row.get("message_count"),
+        }))
+    }
+
+    /// Take a prompt the bridge rejected back out: drop the events it was
+    /// recorded under and put the session-list fields back where they were, so
+    /// a retry of the same message is not a second copy of it and the message
+    /// count still counts only turns that were accepted. One transaction — the
+    /// log and the count must never disagree.
+    pub async fn discard_prompt(
+        &self,
+        session_id: &str,
+        event_ids: &[i64],
+        undo: &SessionTouchUndo,
+    ) -> Result<(), String> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db_error("failed to start discard transaction", error))?;
+        for id in event_ids {
+            sqlx::query("DELETE FROM session_events WHERE id = ? AND session_id = ?")
+                .bind(id)
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| db_error("failed to remove a rejected prompt", error))?;
+        }
+        sqlx::query(
+            "UPDATE sessions SET updated_at = ?, last_message_at = ?, last_snippet = ?, message_count = ? WHERE id = ?",
+        )
+        .bind(&undo.updated_at)
+        .bind(undo.last_message_at.as_deref())
+        .bind(undo.last_snippet.as_deref())
+        .bind(undo.message_count)
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| db_error("failed to restore the session after a rejected prompt", error))?;
+        tx.commit()
+            .await
+            .map_err(|error| db_error("failed to commit the prompt discard", error))?;
         Ok(())
     }
 
@@ -806,6 +876,59 @@ mod tests {
             .await
             .expect("empty append")
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_prompt_the_bridge_rejects_leaves_no_trace_in_the_log_or_the_count() {
+        let (_dir, store) = store_with_history().await;
+        let of_b = |text: &str| {
+            let mut payload = event(text);
+            payload["sessionId"] = json!("b");
+            payload
+        };
+        // Session b already carries one accepted message.
+        store
+            .append_events("b", &[of_b("accepted")])
+            .await
+            .expect("append");
+        store.touch("b", 1, Some("accepted")).await.expect("touch");
+
+        let undo = store
+            .touch_undo("b")
+            .await
+            .expect("read")
+            .expect("session b exists");
+        assert_eq!(undo.message_count, 1);
+        assert_eq!(undo.last_snippet.as_deref(), Some("accepted"));
+
+        // A send the bridge then rejects: recorded first, withdrawn after.
+        let rejected = store
+            .append_events("b", &[of_b("rejected"), of_b("second block")])
+            .await
+            .expect("append");
+        store.touch("b", 1, Some("rejected")).await.expect("touch");
+        store
+            .discard_prompt("b", &rejected, &undo)
+            .await
+            .expect("discard");
+
+        let stored: Vec<String> = texts_and_times(&store, "b")
+            .await
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        assert_eq!(stored, vec!["accepted".to_string()]);
+        let after = store
+            .touch_undo("b")
+            .await
+            .expect("read")
+            .expect("session b exists");
+        assert_eq!(after.message_count, 1);
+        assert_eq!(after.last_snippet.as_deref(), Some("accepted"));
+        assert_eq!(after.updated_at, undo.updated_at);
+        assert_eq!(after.last_message_at, undo.last_message_at);
+        // The other session's history is none of the discard's business.
+        assert_eq!(texts_and_times(&store, "a").await.len(), 3);
     }
 
     #[tokio::test]

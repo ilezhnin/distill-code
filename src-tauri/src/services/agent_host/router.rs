@@ -21,7 +21,7 @@ use super::harness_env::build_spawn_env;
 use super::legacy_import;
 use super::protocol::{self, invalid_params, now_iso, Message};
 use super::sources::SourceRoots;
-use super::store::{SessionRecord, SessionStore};
+use super::store::{SessionRecord, SessionStore, SessionTouchUndo};
 use crate::services::managed_acp_tools;
 
 const SESSION_PAGE_SIZE: i64 = 200;
@@ -68,6 +68,10 @@ struct RunState {
     assistant_message_id: String,
     agent_text: String,
     saw_agent_message: bool,
+    /// Whether the bridge sent *any* `session/update` for this turn. A turn
+    /// that produced nothing and then failed never happened, so its prompt is
+    /// taken back out of the log instead of sitting there unanswered.
+    saw_update: bool,
 }
 
 impl RunState {
@@ -78,8 +82,16 @@ impl RunState {
             assistant_message_id: ids.assistant_message_id.clone(),
             agent_text: String::new(),
             saw_agent_message: false,
+            saw_update: false,
         }
     }
+}
+
+/// What it takes to undo [`Inner::record_user_prompt`]: the event rows the
+/// prompt was stored as, and the session-list fields its `touch` overwrote.
+struct RecordedPrompt {
+    event_ids: Vec<i64>,
+    undo: SessionTouchUndo,
 }
 
 struct QueuedPrompt {
@@ -749,6 +761,7 @@ impl Inner {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
+        run.saw_update = true;
         if kind == "agent_message_chunk" {
             run.saw_agent_message = true;
             if let Some(text) = update
@@ -1683,6 +1696,9 @@ impl Inner {
     /// picks up after the turn it was steered into) is marked `steer` and
     /// echoed live once: the renderer already shows the message and needs
     /// the echo as the boundary between the previous reply and this one.
+    ///
+    /// Returns what it takes to undo these writes, for the case where the
+    /// bridge rejects the prompt outright.
     async fn record_user_prompt(
         &self,
         session_id: &str,
@@ -1690,13 +1706,24 @@ impl Inner {
         meta: &Value,
         ids: &TurnIds,
         steer: bool,
-    ) {
+    ) -> Option<RecordedPrompt> {
         let events = Self::user_prompt_events(session_id, prompt, meta, ids, &now_iso(), steer);
+        let undo = match self.store.touch_undo(session_id).await {
+            Ok(undo) => undo,
+            Err(error) => {
+                log::warn!("[agent-host] failed to read session {session_id}: {error}");
+                None
+            }
+        };
         // One commit for the whole prompt: its blocks are one message and
         // half of them in the log is never a state anyone wants to read.
-        if let Err(error) = self.store.append_events(session_id, &events).await {
-            log::warn!("[agent-host] failed to persist prompt: {error}");
-        }
+        let event_ids = match self.store.append_events(session_id, &events).await {
+            Ok(ids) => ids,
+            Err(error) => {
+                log::warn!("[agent-host] failed to persist prompt: {error}");
+                Vec::new()
+            }
+        };
         if steer {
             if let Some(mut echo) = events.into_iter().next() {
                 echo["update"]["messageId"] = json!(ids.message_id);
@@ -1707,6 +1734,41 @@ impl Inner {
         let _ = self.store.touch(session_id, 1, snippet.as_deref()).await;
         if snippet.is_none() {
             let _ = self.store.touch(session_id, 0, None).await;
+        }
+        undo.map(|undo| RecordedPrompt { event_ids, undo })
+    }
+
+    /// Take a prompt the bridge rejected back out of the log and off the
+    /// message count. Only when the turn produced nothing at all: once any
+    /// `session/update` has arrived the turn happened, whatever `session/prompt`
+    /// answered with, and the transcript has to keep it.
+    ///
+    /// The renderer's queue law re-dispatches a message whose send failed, so
+    /// leaving it behind is what turns one rejected send into two, three, …
+    /// copies of the same message with no replies — and a `message_count` that
+    /// refuses to move the still-unanswered chat to another agent.
+    async fn discard_rejected_prompt(&self, session_id: &str, recorded: Option<RecordedPrompt>) {
+        let Some(recorded) = recorded else {
+            return;
+        };
+        let saw_update = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .and_then(|runtime| runtime.run.as_ref())
+            .is_some_and(|run| run.saw_update);
+        if saw_update {
+            return;
+        }
+        if let Err(error) = self
+            .store
+            .discard_prompt(session_id, &recorded.event_ids, &recorded.undo)
+            .await
+        {
+            log::warn!(
+                "[agent-host] failed to withdraw the rejected prompt of session {session_id}: {error}"
+            );
         }
     }
 
@@ -1809,11 +1871,15 @@ impl Inner {
             }
             runtime.run = Some(RunState::start(&ids));
         }
-        self.record_user_prompt(&session_id, &prompt, &meta, &ids, steer)
+        let recorded = self
+            .record_user_prompt(&session_id, &prompt, &meta, &ids, steer)
             .await;
         let mut result = self
             .run_prompt(&bridge, &session_id, &bridge_session_id, prompt, meta)
             .await;
+        if result.is_err() {
+            self.discard_rejected_prompt(&session_id, recorded).await;
+        }
         // Steering while the turn ran: send the queued messages one after the
         // other so the agent sees them in order.
         loop {
@@ -1844,7 +1910,8 @@ impl Inner {
                 runtime.run = Some(RunState::start(&queued.ids));
                 queued
             };
-            self.record_user_prompt(&session_id, &queued.prompt, &queued.meta, &queued.ids, true)
+            let recorded = self
+                .record_user_prompt(&session_id, &queued.prompt, &queued.meta, &queued.ids, true)
                 .await;
             result = self
                 .run_prompt(
@@ -1855,6 +1922,9 @@ impl Inner {
                     queued.meta,
                 )
                 .await;
+            if result.is_err() {
+                self.discard_rejected_prompt(&session_id, recorded).await;
+            }
         }
         result
     }
