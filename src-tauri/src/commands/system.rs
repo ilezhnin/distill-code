@@ -945,8 +945,7 @@ fn insert_parent_file_mention_directories(
 }
 
 fn load_git_file_mention_paths(root_path: &Path) -> Option<Vec<String>> {
-    let mut command = Command::new("git");
-    command.arg("-C").arg(root_path).args([
+    const LS_FILES_ARGS: [&str; 7] = [
         "ls-files",
         "-z",
         "--cached",
@@ -954,7 +953,16 @@ fn load_git_file_mention_paths(root_path: &Path) -> Option<Vec<String>> {
         "--exclude-standard",
         "--",
         ".",
-    ]);
+    ];
+    let git = crate::services::dir_env::resolve_control_executable("git")?;
+    let mut command = Command::new(git);
+    // Same overrides as every other git call: the indexed folder may not be
+    // one the user trusts, and reading its index must not run its config.
+    command
+        .args(super::git::git_hardening_args(&LS_FILES_ARGS))
+        .arg("-C")
+        .arg(root_path)
+        .args(LS_FILES_ARGS);
     crate::services::process::apply_no_window(&mut command);
     let output = command.output().ok()?;
 
