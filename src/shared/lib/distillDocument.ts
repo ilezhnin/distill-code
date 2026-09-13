@@ -104,17 +104,20 @@ export function distillDocument<T>(
       writeLegacy(options.legacyStorageKey, payload);
       return inFlight;
     }
-    inFlight = writeDistillDocument(
-      options.path,
-      JSON.stringify(payload),
-    ).catch((error: unknown) => {
-      console.error(`Failed to write ${options.path}:`, error);
-      try {
-        options.onWriteError?.(error);
-      } catch {
-        // A reporter that throws must not reach the caller's write path.
-      }
-    });
+    // Chained, not concurrent: two flushes close together would otherwise run
+    // two `write_distill_document` invokes at once, and the temp-file rename of
+    // the older payload can land after the newer one — leaving the previous
+    // version on disk while memory holds the newer one.
+    inFlight = inFlight
+      .then(() => writeDistillDocument(options.path, JSON.stringify(payload)))
+      .catch((error: unknown) => {
+        console.error(`Failed to write ${options.path}:`, error);
+        try {
+          options.onWriteError?.(error);
+        } catch {
+          // A reporter that throws must not reach the caller's write path.
+        }
+      });
     return inFlight;
   };
 
