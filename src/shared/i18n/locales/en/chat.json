@@ -7,6 +7,7 @@
     "groupLabel_one": "1 attachment",
     "groupLabel_other": "{{count}} attachments",
     "imagePreviewTitle": "Image preview",
+    "noPathForBrowserFile": "“{{name}}” was not attached: this drop carries no file path, so the agent could not read the file. Use the paperclip button, or drag the file in from a folder.",
     "open": "Open attachment {{name}}",
     "previewAlt": "Preview of {{name}}",
     "remove": "Remove attachment",
@@ -845,6 +846,9 @@
   "interruptedTurn": {
     "notice": "This message was never answered — the run was interrupted before the agent replied. It was not sent again on its own: the agent may have finished real work before it stopped.",
     "resend": "Send it again"
+  },
+  "permissionRequest": {
+    "cancelledTurn": "The agent asked for permission to run {{tool}} and offered only permanent answers, which this app never gives. The turn was cancelled instead; ask again, or change the agent's own permission settings."
   },
   "openPath": {
     "revealedInsteadOfRun": "{{name}} is a program or script, so it was shown in File Explorer instead of being run.",

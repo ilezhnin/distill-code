@@ -6,6 +6,8 @@ import type {
   SessionNotification,
   SessionUpdate,
 } from "@agentclientprotocol/sdk";
+import { i18n } from "@/shared/i18n";
+import { createSystemNotificationMessage } from "@/shared/types/messages";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
@@ -28,7 +30,10 @@ import {
   getActiveMessagePreset,
   recordLiveAgentMessageChunk,
 } from "@/shared/api/acpActiveMessageTracking";
-import type { AcpNotificationHandler } from "@/shared/api/acpConnection";
+import type {
+  AcpNotificationHandler,
+  AcpPermissionAnswerReport,
+} from "@/shared/api/acpConnection";
 import {
   clearSkillReplayChips,
   handleReplayUserMessageChunk,
@@ -1203,8 +1208,31 @@ export function clearMessageTracking(): void {
   clearWorkspaceToolCallObservations();
 }
 
+/**
+ * The app answers permission requests itself (`answerPermissionRequest`), and
+ * one of those answers is worth a transcript row: when a harness offers only
+ * permanent options there is nothing to refuse once with, and the `cancelled`
+ * outcome ACP leaves us ends the whole turn. Without this the operator sees a
+ * turn that simply stopped, and the only trace is a line in berd.log.
+ */
+export function reportPermissionAnswer(
+  report: AcpPermissionAnswerReport,
+): void {
+  if (report.answer !== "cancelled" || !report.sessionId) return;
+  useChatStore.getState().addMessage(
+    report.sessionId,
+    createSystemNotificationMessage(
+      i18n.t("chat:permissionRequest.cancelledTurn", {
+        tool: report.toolLabel ?? "",
+      }),
+      "warning",
+    ),
+  );
+}
+
 const handler: AcpNotificationHandler = {
   handleSessionNotification,
+  reportPermissionAnswer,
 };
 
 export default handler;

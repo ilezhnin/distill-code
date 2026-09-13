@@ -9,6 +9,7 @@ import { setMultiWorkspaceEnabled } from "@/features/workspaces/multiWorkspacePr
 import type { Persona } from "@/shared/types/agents";
 import type { ChatAttachmentDraft } from "@/shared/types/messages";
 import { resetProjectWikiPresenceForTests } from "@/features/memory/lib/projectWikiPrompt";
+import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { useChatStore } from "../../stores/chatStore";
 import {
   type ChatSession,
@@ -378,6 +379,11 @@ describe("useChatSessionController", () => {
       config: DEFAULT_RUNTIME_CONFIG,
     });
     window.localStorage.clear();
+    useMemoryStore.setState({
+      entries: [],
+      archived: [],
+      waveExecutorSessionIds: [],
+    });
     setMultiWorkspaceEnabled(true);
     mockUseChatSendMessage.mockImplementation(
       async (options?: {
@@ -3006,4 +3012,47 @@ describe("useChatSessionController", () => {
   // fire from the user-message-commit callback, so an attempt that fails
   // before committing emits nothing and the queue's automatic retry of the
   // same payload emits exactly once, when it finally commits.
+
+  // LAWS/MEMORY.md, Writing: "A wave-spawned executor MUST NOT receive the
+  // operator's memories or the protocols that reach them." The conductor
+  // evicts a finished child's node, after which the graph reports an ordinary
+  // chat and only the memory store's record still knows.
+  describe("the operator's memory block", () => {
+    function composedSystemPrompt(): string {
+      const calls = mockUseChatHook.mock.calls;
+      const [, , systemPromptOverride] = (calls[calls.length - 1] ?? []) as [
+        string,
+        string | undefined,
+        string | undefined,
+      ];
+      return systemPromptOverride ?? "";
+    }
+
+    const globalFact = {
+      id: "memory-1",
+      text: "A global fact",
+      scope: "global" as const,
+      projectId: null,
+      createdAt: 0,
+    };
+
+    it("reaches an ordinary chat", () => {
+      useMemoryStore.setState({ entries: [globalFact] });
+
+      renderHook(() => useChatSessionController({ sessionId: "session-1" }));
+
+      expect(composedSystemPrompt()).toContain("A global fact");
+    });
+
+    it("stays away from a wave child whose graph node was evicted", () => {
+      useMemoryStore.setState({
+        entries: [globalFact],
+        waveExecutorSessionIds: ["session-1"],
+      });
+
+      renderHook(() => useChatSessionController({ sessionId: "session-1" }));
+
+      expect(composedSystemPrompt()).not.toContain("A global fact");
+    });
+  });
 });

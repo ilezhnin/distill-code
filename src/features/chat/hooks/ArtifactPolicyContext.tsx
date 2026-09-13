@@ -139,10 +139,17 @@ function inferPathKind(path: string): SessionArtifact["kind"] {
  * Extensions whose default "open" verb on Windows executes the file instead
  * of displaying it: programs, scripts (and the script hosts' variants),
  * shortcuts, installers, registry merges, control-panel applets and the
- * other ShellExecute-runs-it families. A link or chip that lands on one of
- * these is revealed in the file manager rather than opened, because the
- * click was made to *read* something the agent named, and an agent-written
- * file carries no mark-of-the-web to trigger SmartScreen.
+ * other ShellExecute-runs-it families, plus the interpreters a developer
+ * machine registers a run verb for (`.py`, `.jar`) and the shell documents
+ * that run a command of their own choosing (`.scf`, `.settingcontent-ms`,
+ * `.library-ms`). A link or chip that lands on one of these is revealed in
+ * the file manager rather than opened, because the click was made to *read*
+ * something the agent named, and an agent-written file carries no
+ * mark-of-the-web to trigger SmartScreen.
+ *
+ * This is a denylist and therefore never complete; a type nobody listed here
+ * still opens with its default verb. Anything reached through `openInApp`
+ * prefers the in-app viewer, which is the allowlist half of the same gate.
  */
 const EXECUTABLE_OPEN_EXTENSIONS: ReadonlySet<string> = new Set([
   "exe",
@@ -169,18 +176,70 @@ const EXECUTABLE_OPEN_EXTENSIONS: ReadonlySet<string> = new Set([
   "pif",
   "application",
   "gadget",
+  // Interpreters a developer machine registers a run verb for: the python.org
+  // installer associates `.py`/`.pyw`, and a JRE associates `.jar`.
+  "py",
+  "pyw",
+  "pyz",
+  "pyzw",
+  "jar",
+  // More script-host spellings of the families above.
+  "sct",
+  "wsc",
+  "ps1xml",
+  "psc1",
+  "msh",
+  "msh1",
+  "msh2",
+  "mshxml",
+  // Shell documents whose "open" verb runs a command or hands the shell a
+  // target of the document's choosing.
+  "msc",
+  "scf",
+  "settingcontent-ms",
+  "library-ms",
+  "searchconnector-ms",
+  "appref-ms",
+  "website",
+  // Help and diagnostics containers: compiled help runs script in its own
+  // host, and a `.diagcab`/`.msdt` package runs a troubleshooter.
+  "chm",
+  "hlp",
+  "diagcab",
+  "msdt",
+  // Installer transforms and app packages.
+  "mst",
+  "msix",
+  "msixbundle",
+  "appx",
+  "appxbundle",
+  "appinstaller",
 ]);
 
 /**
  * True when opening `path` with its default handler would run it rather than
  * show it. Win32 drops trailing dots and spaces from a name before looking
  * it up, so `tool.exe.` is `tool.exe`; the extension is read the same way.
+ *
+ * A `:` after the last separator names an NTFS alternate data stream
+ * (`payload.exe::$DATA`, `notes.txt:run.exe`). `Path::exists` accepts those
+ * spellings, and a naive extension read sees `exe::$data` — which is in no
+ * denylist. The stream suffix is cut off before the extension is read, and a
+ * name that carried one is never treated as an ordinary document: nothing the
+ * app links to needs stream syntax.
  */
 export function isExecutableOpenTarget(path: string): boolean {
-  const name = basenameOf(normalizePath(path)).replace(/[. ]+$/, "");
+  const rawName = basenameOf(normalizePath(path));
+  const streamIndex = rawName.indexOf(":");
+  const name = (
+    streamIndex === -1 ? rawName : rawName.slice(0, streamIndex)
+  ).replace(/[. ]+$/, "");
   const dot = name.lastIndexOf(".");
-  if (dot <= 0 || dot === name.length - 1) return false;
-  return EXECUTABLE_OPEN_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+  if (dot <= 0 || dot === name.length - 1) return streamIndex !== -1;
+  return (
+    streamIndex !== -1 ||
+    EXECUTABLE_OPEN_EXTENSIONS.has(name.slice(dot + 1).toLowerCase())
+  );
 }
 
 // "C:/x", "C:\x" and — once the markdown renderer has percent-encoded the

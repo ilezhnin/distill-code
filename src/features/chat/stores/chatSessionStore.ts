@@ -1098,11 +1098,16 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
         [id]: mutation,
       },
     }));
+    // The chat exists again, so a reply arriving before anyone opens it must
+    // mark it unread; archiving had told the chat store to ignore its updates.
+    const wasCleanedUp = useChatStore.getState().isSessionCleanedUp(id);
+    useChatStore.getState().setSessionCleanedUp(id, false);
     try {
       await acpUnarchiveSession(session.id);
       set((state) => recordArchiveMutationSuccess(state, id, mutation));
     } catch (error) {
       set((state) => rollbackFailedArchiveMutation(state, id, operationId));
+      useChatStore.getState().setSessionCleanedUp(id, wasCleanedUp);
       throw error;
     }
   },

@@ -7,6 +7,7 @@
     "groupLabel_one": "1 adjunto",
     "groupLabel_other": "{{count}} adjuntos",
     "imagePreviewTitle": "Vista previa de imagen",
+    "noPathForBrowserFile": "No se adjuntó «{{name}}»: esta acción no incluye la ruta del archivo, así que el agente no podría leerlo. Usa el botón de clip o arrastra el archivo desde una carpeta.",
     "open": "Abrir adjunto {{name}}",
     "previewAlt": "Vista previa de {{name}}",
     "remove": "Eliminar adjunto",
@@ -845,6 +846,9 @@
   "interruptedTurn": {
     "notice": "Este mensaje nunca recibió respuesta: la ejecución se interrumpió antes de que el agente contestara. No se reenvió por su cuenta, porque el agente pudo haber terminado trabajo real antes de detenerse.",
     "resend": "Enviarlo de nuevo"
+  },
+  "permissionRequest": {
+    "cancelledTurn": "El agente pidió permiso para ejecutar {{tool}} y solo ofreció respuestas permanentes, que esta aplicación nunca concede. En su lugar se canceló el turno; vuelve a pedirlo o cambia la configuración de permisos del propio agente."
   },
   "openPath": {
     "revealedInsteadOfRun": "{{name}} es un programa o script, así que se mostró en el Explorador de archivos en lugar de ejecutarse.",
