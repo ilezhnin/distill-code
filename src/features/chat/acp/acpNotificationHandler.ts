@@ -419,6 +419,13 @@ function getReplayAssistantMessageMetadata(
   };
 }
 
+/**
+ * Thought chunks are token deltas: the bridges the app hosts stream reasoning
+ * the same way they stream text, and the host persists every chunk verbatim,
+ * so replay re-feeds those deltas. They are appended as they arrive — a delta
+ * that repeats the tail of the reasoning so far (a second `1` after `…201`, a
+ * closing `)` after `…(baz)`) is real text, not a duplicate.
+ */
 function upsertThinkingContent(content: MessageContent[], text: string): void {
   const last = content[content.length - 1];
   if (last?.type !== "thinking") {
@@ -426,13 +433,6 @@ function upsertThinkingContent(content: MessageContent[], text: string): void {
     return;
   }
 
-  if (text.startsWith(last.text)) {
-    last.text = text;
-    return;
-  }
-  if (last.text.endsWith(text)) {
-    return;
-  }
   last.text += text;
 }
 

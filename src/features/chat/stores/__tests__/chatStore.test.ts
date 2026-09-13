@@ -415,8 +415,7 @@ describe("chatStore", () => {
     useChatStore.getState().setMessages("s1", [streaming]);
     useChatStore.getState().setStreamingMessageId("s1", "stream-1");
     useChatStore.getState().updateStreamingThinking("s1", "Plan");
-    useChatStore.getState().updateStreamingThinking("s1", "Plan next");
-    useChatStore.getState().updateStreamingThinking("s1", "Plan next");
+    useChatStore.getState().updateStreamingThinking("s1", " next");
     useChatStore.getState().updateStreamingThinking("s1", " step");
 
     const updated = useChatStore.getState().messagesBySession.s1[0];
@@ -425,6 +424,36 @@ describe("chatStore", () => {
       { type: "thinking", text: "Plan next step" },
     ]);
     expect(getRuntime("s2").streamingMessageId).toBeNull();
+  });
+
+  // Token deltas repeat the tail of the reasoning all the time; every chunk
+  // the bridge sent has to survive into the bubble.
+  it("appends thinking deltas that repeat the accumulated tail", () => {
+    const streaming = makeMessage({ id: "stream-1", content: [] });
+
+    useChatStore.getState().setMessages("s1", [streaming]);
+    useChatStore.getState().setStreamingMessageId("s1", "stream-1");
+    for (const chunk of ["The year was 201", "1", " and foo(bar(baz)", ")"]) {
+      useChatStore.getState().updateStreamingThinking("s1", chunk);
+    }
+
+    expect(useChatStore.getState().messagesBySession.s1[0].content).toEqual([
+      { type: "thinking", text: "The year was 2011 and foo(bar(baz))" },
+    ]);
+  });
+
+  it("keeps a thinking delta identical to the reasoning so far", () => {
+    const streaming = makeMessage({ id: "stream-1", content: [] });
+
+    useChatStore.getState().setMessages("s1", [streaming]);
+    useChatStore.getState().setStreamingMessageId("s1", "stream-1");
+    useChatStore.getState().updateStreamingThinking("s1", "1");
+    useChatStore.getState().updateStreamingThinking("s1", "1");
+    useChatStore.getState().updateStreamingThinking("s1", "1");
+
+    expect(useChatStore.getState().messagesBySession.s1[0].content).toEqual([
+      { type: "thinking", text: "111" },
+    ]);
   });
 
   it("transitions a session to error without affecting another session", () => {
