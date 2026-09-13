@@ -448,17 +448,29 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Delete a session and its events together. One transaction: the schema
+    /// has no cascade, so a crash or an error between the two statements would
+    /// leave the events behind as rows no session ever reads, lists or
+    /// reclaims.
     pub async fn delete_session(&self, id: &str) -> Result<(), String> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db_error("failed to start delete transaction", error))?;
         sqlx::query("DELETE FROM session_events WHERE session_id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|error| db_error("failed to delete session events", error))?;
         sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|error| db_error("failed to delete session", error))?;
+        tx.commit()
+            .await
+            .map_err(|error| db_error("failed to commit the session delete", error))?;
         Ok(())
     }
 
@@ -931,6 +943,18 @@ mod tests {
         assert_eq!(after.last_message_at, undo.last_message_at);
         // The other session's history is none of the discard's business.
         assert_eq!(texts_and_times(&store, "a").await.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_session_takes_its_events_with_it() {
+        let (_dir, store) = store_with_history().await;
+        assert_eq!(texts_and_times(&store, "a").await.len(), 3);
+        store.delete_session("a").await.expect("delete");
+        assert!(store.get_session("a").await.expect("get").is_none());
+        // The schema has no cascade, so the events only go if the delete takes
+        // them: orphan rows here are never read, listed or reclaimed again.
+        assert!(texts_and_times(&store, "a").await.is_empty());
+        assert!(store.get_session("b").await.expect("get").is_some());
     }
 
     #[tokio::test]
