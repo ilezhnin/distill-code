@@ -48,7 +48,10 @@ import { startWaveGitProbe } from "./waveGitProbe";
 import {
   bumpWaveTelemetryCounter,
   countPlanlessConductorTurn,
+  hasWaveTelemetryHydrationFailed,
+  isWaveTelemetryHydrated,
   recordWaveClose,
+  whenWaveTelemetryHydrated,
 } from "./waveTelemetryStore";
 import {
   processWaveDigests,
@@ -139,7 +142,18 @@ let ticking = false;
 let awaitingWaveHydration = false;
 
 function conductorDocumentsHydrated(): boolean {
-  return isWaveEngineStateHydrated() && isConductorGraphHydrated();
+  return (
+    isWaveEngineStateHydrated() &&
+    isConductorGraphHydrated() &&
+    // Telemetry too, and for a reason of its own: the first tick of a session
+    // whose active chat is a conductor counts that transcript's planless turns
+    // and any wave it admits, and the lifetime counters those land on used to
+    // be *replaced* by this session's few when telemetry.json arrived a moment
+    // later (admittedWaves 300 → 1). A counter that only ever goes up is worth
+    // one wake-up. A telemetry read that gave up does not hold the engine:
+    // unlike the other two, nothing about correctness depends on it.
+    (isWaveTelemetryHydrated() || hasWaveTelemetryHydrationFailed())
+  );
 }
 
 /**
@@ -1069,6 +1083,7 @@ export function runWaveEngineTick(): void {
       };
       whenWaveEngineStateHydrated(wake);
       whenConductorGraphHydrated(wake);
+      whenWaveTelemetryHydrated(wake);
     }
     return;
   }
