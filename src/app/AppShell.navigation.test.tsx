@@ -35,6 +35,7 @@ const mockAcpListSessionsPage = vi.hoisted(() => vi.fn());
 const mockAcpArchiveSession = vi.hoisted(() => vi.fn());
 const mockAcpGetSessionInfo = vi.hoisted(() => vi.fn());
 const mockAcpLoadSession = vi.hoisted(() => vi.fn());
+const mockRenameTerminalSessionPrefix = vi.hoisted(() => vi.fn());
 const mockListExtensions = vi.hoisted(() => vi.fn());
 const mockCheckDirectoriesExist = vi.hoisted(() => vi.fn());
 const mockPathExists = vi.hoisted(() => vi.fn());
@@ -255,6 +256,14 @@ vi.mock("@/shared/api/acp", () => ({
   acpListSessionsPage: (...args: unknown[]) => mockAcpListSessionsPage(...args),
   acpLoadSession: (...args: unknown[]) => mockAcpLoadSession(...args),
   discoverAcpProviders: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("@/features/terminal/lib/terminalSessionManager", async () => ({
+  ...(await vi.importActual<
+    typeof import("@/features/terminal/lib/terminalSessionManager")
+  >("@/features/terminal/lib/terminalSessionManager")),
+  renameTerminalSessionPrefix: (...args: unknown[]) =>
+    mockRenameTerminalSessionPrefix(...args),
 }));
 
 vi.mock("@/shared/api/acpApi", () => ({
@@ -498,6 +507,7 @@ describe("AppShell global navigation", () => {
     mockListExtensions.mockResolvedValue([]);
     mockAcpCreateSession.mockReset();
     mockAcpCreateSession.mockResolvedValue({ sessionId: "created-session" });
+    mockRenameTerminalSessionPrefix.mockReset();
     mockAcpPrepareSession.mockReset();
     mockAcpPrepareSession.mockResolvedValue({});
     mockAcpSetSessionConfigOption.mockReset();
@@ -1242,6 +1252,41 @@ describe("AppShell global navigation", () => {
       creationState: undefined,
       workingDir: draftWorkingDir,
     });
+  });
+
+  it("re-keys the draft's terminals to the created session before the id swaps", async () => {
+    const pendingSession = deferred<{ sessionId: string }>();
+    mockAcpCreateSession.mockReturnValueOnce(pendingSession.promise);
+    const draftStillPresentAtRename: boolean[] = [];
+    mockRenameTerminalSessionPrefix.mockImplementation((from: string) => {
+      draftStillPresentAtRename.push(
+        Boolean(useChatSessionStore.getState().getSession(from)),
+      );
+    });
+    const user = userEvent.setup();
+    renderAppShell();
+
+    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
+    await waitFor(() => expect(mockAcpCreateSession).toHaveBeenCalled());
+    const draftSessionId = useChatSessionStore.getState().activeSessionId ?? "";
+
+    act(() => {
+      pendingSession.resolve({ sessionId: "created-session" });
+    });
+
+    await waitFor(() => {
+      expect(useChatSessionStore.getState().activeSessionId).toBe(
+        "created-session",
+      );
+    });
+    // A shell opened while the bridge was still spawning is keyed by the
+    // draft id; the panel re-keys to the backend id on the very render that
+    // swaps ids, so the registry must already answer under the new key.
+    expect(mockRenameTerminalSessionPrefix).toHaveBeenCalledWith(
+      draftSessionId,
+      "created-session",
+    );
+    expect(draftStillPresentAtRename).toEqual([true]);
   });
 
   it("applies the latest pending draft selection before promotion", async () => {

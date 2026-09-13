@@ -155,6 +155,7 @@ import { cn } from "@/shared/lib/cn";
 import { isEditableTarget } from "@/shared/keyboard/isEditableTarget";
 import {
   getChatSessionIdsWithTerminals,
+  renameTerminalSessionPrefix,
   setTerminalRenderingSuspended,
 } from "@/features/terminal/lib/terminalSessionManager";
 import type { AgentSetupTroubleshootingRequest } from "@/features/providers/lib/agentSetupTroubleshooting";
@@ -1544,6 +1545,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
             }
             promoteChatSessionId(session.id, sessionId);
             transferSessionTargetOwnership(session.id, sessionId);
+            // Terminals are keyed by the chat id. Re-key the draft's shells
+            // before the store swaps the id, so the panel's re-render finds
+            // its own shell instead of starting a second one and orphaning
+            // the first.
+            renameTerminalSessionPrefix(session.id, sessionId);
             promoteDraftSession(session.id, sessionId, {
               executionTarget: promotedTarget,
               workingDir: latestSessionAfterReady.workingDir ?? workingDir,

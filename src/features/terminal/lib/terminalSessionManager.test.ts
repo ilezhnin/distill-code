@@ -486,6 +486,80 @@ describe("terminalSessionManager", () => {
     unsubscribe();
   });
 
+  it("carries a draft chat's terminals over to the promoted session id", async () => {
+    // A draft chat gets its backend id after acpCreateSession resolves. The
+    // terminal panel then re-keys to `${backendId}:${tab}`; without a remap
+    // that is a map miss, a second shell, and the first PTY left running
+    // under a key nothing can reach.
+    const {
+      getChatSessionIdsWithTerminals,
+      getOrCreateTerminalSession,
+      getTerminalSessionStatus,
+      queueTerminalCommand,
+      renameTerminalSessionPrefix,
+      subscribeTerminalSessionStatus,
+    } = await import("./terminalSessionManager");
+    let emitTerminalEvent: (event: TerminalEvent) => void = () => undefined;
+    let resolveStart: (terminalId: string) => void = () => undefined;
+    mocks.startTerminal.mockImplementationOnce(
+      ({ onEvent }) =>
+        new Promise<string>((resolve) => {
+          emitTerminalEvent = onEvent;
+          resolveStart = resolve;
+        }),
+    );
+
+    const draftSession = getOrCreateTerminalSession({
+      key: "draft-1:tab-1",
+      cwd: "/repo",
+      labels,
+      theme: {},
+      fontFamily: "monospace",
+    });
+    queueTerminalCommand("draft-1:tab-1", "pnpm dev");
+    const statuses: string[] = [];
+    subscribeTerminalSessionStatus("draft-1:tab-1", (change) => {
+      statuses.push(`${change.key}:${change.status}`);
+    });
+
+    renameTerminalSessionPrefix("draft-1", "backend-1");
+
+    // The same session answers under the new key, and the old one is gone.
+    const promoted = getOrCreateTerminalSession({
+      key: "backend-1:tab-1",
+      cwd: "/repo",
+      labels,
+      theme: {},
+      fontFamily: "monospace",
+    });
+    expect(promoted).toBe(draftSession);
+    expect(promoted.key).toBe("backend-1:tab-1");
+    expect(mocks.startTerminal).toHaveBeenCalledTimes(1);
+    expect(getTerminalSessionStatus("draft-1:tab-1")).toBeNull();
+    expect(getTerminalSessionStatus("backend-1:tab-1")).toBe("starting");
+    expect(getChatSessionIdsWithTerminals()).toEqual(new Set(["backend-1"]));
+
+    // Queued commands and status subscriptions follow the session.
+    resolveStart("terminal-1");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mocks.writeTerminal).toHaveBeenCalledWith(
+      "terminal-1",
+      "pnpm dev\r",
+    );
+    expect(statuses).toEqual(["backend-1:tab-1:running"]);
+
+    emitTerminalEvent({
+      event: "exited",
+      data: { terminalId: "terminal-1", exitCode: 0, signal: null },
+    });
+    expect(statuses).toEqual([
+      "backend-1:tab-1:running",
+      "backend-1:tab-1:exited",
+    ]);
+    expect(mocks.stopTerminal).not.toHaveBeenCalled();
+  });
+
   it("keeps errored terminals in the chat-session terminal registry", async () => {
     const { getChatSessionIdsWithTerminals, getOrCreateTerminalSession } =
       await import("./terminalSessionManager");
