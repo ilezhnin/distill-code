@@ -1153,6 +1153,24 @@ impl Inner {
         attached
     }
 
+    /// The bridge session an attach is allowed to resume: the one the record
+    /// carries, which is either the id the bridge itself gave us or — for a chat
+    /// imported from another tool — the agent's own session id.
+    ///
+    /// `None` means "open a fresh one". That is what
+    /// [`Inner::release_bridge_session`] leaves behind: a bridge session runs in
+    /// the folder it was created in, so a chat that moved folders must not
+    /// resume it, and every bridge that supports `loadSession` but not
+    /// `session/close` would happily resume it forever. Falling back to the
+    /// host's own session id here (the record's `id`) would do exactly that for
+    /// an imported chat, whose two ids are the same.
+    fn resumable_bridge_session(record: &SessionRecord) -> Option<&str> {
+        record
+            .bridge_session_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+    }
+
     /// The bridge round trips of an attach, for a session already registered
     /// as loading: resume the stored bridge session (or open a fresh one),
     /// apply the mode and model, and only then make the runtime routable.
@@ -1167,18 +1185,26 @@ impl Inner {
         let mcp_servers = self.mcp_servers(&Value::Null).await;
         let mut bridge_session_id = stored_bridge_id.clone();
         let mut resumed = false;
-        if bridge.supports_load_session() {
+        if let Some(resume_id) = Self::resumable_bridge_session(record)
+            .filter(|_| bridge.supports_load_session())
+            .map(str::to_string)
+        {
             match bridge
                 .request(
                     "session/load",
-                    json!({ "sessionId": stored_bridge_id, "cwd": record.cwd, "mcpServers": mcp_servers }),
+                    json!({ "sessionId": resume_id, "cwd": record.cwd, "mcpServers": mcp_servers }),
                 )
                 .await
             {
                 Ok(result) => {
                     resumed = true;
                     let loaded = Self::snapshot_from(&result);
-                    if !loaded["configOptions"].as_array().map(Vec::is_empty).unwrap_or(true) || !loaded["models"].is_null() {
+                    if !loaded["configOptions"]
+                        .as_array()
+                        .map(Vec::is_empty)
+                        .unwrap_or(true)
+                        || !loaded["models"].is_null()
+                    {
                         snapshot = loaded;
                     }
                 }
@@ -1210,7 +1236,7 @@ impl Inner {
             }
             if let Err(error) = self
                 .store
-                .set_bridge_session_id(&record.id, &bridge_session_id)
+                .set_bridge_session_id(&record.id, Some(bridge_session_id.as_str()))
                 .await
             {
                 log::warn!("[agent-host] failed to record bridge session id: {error}");
@@ -1468,6 +1494,12 @@ impl Inner {
     /// the new one. Refuses (returns `false`) while a turn is running or an
     /// attach is in flight: dropping the runtime then would strand that turn's
     /// updates, which `host_session_for` routes through it.
+    ///
+    /// The stored id is cleared too, not just the runtime. Without that the next
+    /// attach reads the id straight back out of the row and resumes the same
+    /// bridge session — which, for a bridge that supports `loadSession` but not
+    /// `session/close` (every bridge shipped today), is still alive in the old
+    /// folder, so the chat would keep running there.
     pub async fn release_bridge_session(&self, session_id: &str) -> bool {
         let released = {
             let mut sessions = self.sessions.lock().await;
@@ -1484,6 +1516,9 @@ impl Inner {
             return false;
         };
         self.let_go_of(&runtime).await;
+        if let Err(error) = self.store.set_bridge_session_id(session_id, None).await {
+            log::warn!("[agent-host] failed to forget the bridge session of {session_id}: {error}");
+        }
         true
     }
 
@@ -2350,6 +2385,43 @@ mod tests {
             snapshot: Value::Null,
             has_model_option: false,
         }
+    }
+
+    #[test]
+    fn a_chat_that_let_go_of_its_bridge_session_does_not_resume_it() {
+        let mut record = SessionRecord {
+            id: "session-1".to_string(),
+            harness: "claude-acp".to_string(),
+            bridge_session_id: Some("bridge-1".to_string()),
+            cwd: "C:\\work".to_string(),
+            title: None,
+            user_set_name: false,
+            project_id: None,
+            persona_id: None,
+            model_id: None,
+            hidden: false,
+            created_at: "2026-09-11T00:00:00.000Z".to_string(),
+            updated_at: "2026-09-11T00:00:00.000Z".to_string(),
+            last_message_at: None,
+            archived_at: None,
+            message_count: 0,
+            last_snippet: None,
+            snapshot: None,
+        };
+        assert_eq!(
+            Inner::resumable_bridge_session(&record),
+            Some("bridge-1"),
+            "an attach resumes the bridge session the row names"
+        );
+
+        // What `release_bridge_session` leaves behind after a folder move: the
+        // bridge session it ran in is gone for good, so the attach has to open a
+        // new one in the new folder instead of loading the old one — never the
+        // chat's own id, which for an imported chat *is* the old bridge session.
+        record.bridge_session_id = None;
+        assert_eq!(Inner::resumable_bridge_session(&record), None);
+        record.bridge_session_id = Some(String::new());
+        assert_eq!(Inner::resumable_bridge_session(&record), None);
     }
 
     #[test]
