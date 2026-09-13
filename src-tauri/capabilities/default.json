@@ -34,21 +34,6 @@
           "path": "$TEMP/**"
         },
         {
-          "path": "/mnt/**"
-        },
-        {
-          "path": "/workspace/**"
-        },
-        {
-          "path": "/workspaces/**"
-        },
-        {
-          "path": "/opt/**"
-        },
-        {
-          "path": "/srv/**"
-        },
-        {
           "path": "*:/**"
         }
       ]
