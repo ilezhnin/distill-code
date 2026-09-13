@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -12,7 +13,11 @@ import {
   DialogTitle,
 } from "@/shared/ui/dialog";
 import { Label } from "@/shared/ui/label";
-import { extractDomain, trustDomain } from "@/shared/lib/trustedDomains";
+import {
+  extractDomain,
+  isUrlTrusted,
+  trustDomain,
+} from "@/shared/lib/trustedDomains";
 
 interface LinkSafetyModalProps {
   isOpen: boolean;
@@ -124,4 +129,45 @@ export function LinkSafetyModal({
       </DialogContent>
     </Dialog>
   );
+}
+
+/**
+ * The app's one answer to "open this URL that the local operator may not have
+ * written": a trusted domain opens straight away, anything else asks first.
+ *
+ * It lives here as a hook so every surface that shows a clickable URL shares
+ * one implementation and one modal. Agent Markdown links reach it through
+ * `MessageResponse`; user bubbles reach it through `LinkifiedText`, because a
+ * "user" message can be written by another agent (`berdctl session send`, a
+ * conductor wave prompt) and renders with only a `from` label to say so.
+ */
+export function useLinkSafetyGate(): {
+  openExternalUrl: (url: string) => void;
+  linkSafetyModal: ReactNode;
+} {
+  const [pendingUrl, setPendingUrl] = useState<string | null>(null);
+
+  const openExternalUrl = useCallback((url: string) => {
+    if (!url) return;
+    if (isUrlTrusted(url)) {
+      void openUrl(url).catch((error: unknown) => {
+        console.error("[linkSafety] openUrl failed:", error);
+      });
+      return;
+    }
+    setPendingUrl(url);
+  }, []);
+
+  const closeModal = useCallback(() => setPendingUrl(null), []);
+
+  return {
+    openExternalUrl,
+    linkSafetyModal: (
+      <LinkSafetyModal
+        isOpen={pendingUrl !== null}
+        onClose={closeModal}
+        url={pendingUrl ?? ""}
+      />
+    ),
+  };
 }

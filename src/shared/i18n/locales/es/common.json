@@ -80,6 +80,26 @@
     },
     "plan": {
       "toggle": "Alternar plan"
+    },
+    "reasoning": {
+      "thinking": "Pensando...",
+      "thoughtForAFewSeconds": "Pensó durante unos segundos",
+      "thoughtForSeconds": "Pensó durante {{seconds}} segundos"
+    },
+    "tool": {
+      "parameters": "Parámetros",
+      "result": "Resultado",
+      "error": "Error",
+      "elapsedSeconds": "{{seconds}} s",
+      "status": {
+        "approvalRequested": "Esperando aprobación",
+        "approvalResponded": "Respondido",
+        "inputAvailable": "En ejecución",
+        "inputStreaming": "Pendiente",
+        "outputAvailable": "Completado",
+        "outputDenied": "Denegado",
+        "outputError": "Error"
+      }
     }
   },
   "completionNotification": {

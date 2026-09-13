@@ -1,4 +1,5 @@
 import { useControllableState } from "@radix-ui/react-use-controllable-state";
+import { useTranslation } from "react-i18next";
 import {
   Collapsible,
   CollapsibleContent,
@@ -233,24 +234,45 @@ export type ReasoningTriggerProps = ComponentProps<
   getThinkingMessage?: (isStreaming: boolean, duration?: number) => ReactNode;
 };
 
-const defaultGetThinkingMessage = (isStreaming: boolean, duration?: number) => {
-  if (isStreaming || duration === 0) {
-    return <Shimmer duration={1}>Thinking...</Shimmer>;
-  }
-  if (duration === undefined) {
-    return <p>Thought for a few seconds</p>;
-  }
-  return <p>Thought for {duration} seconds</p>;
-};
+/**
+ * The default message is built here rather than as a module-level function so
+ * it can be translated: a bare function cannot hold the translation hook, and
+ * the `getThinkingMessage` prop stays a plain function for callers that
+ * override it.
+ */
+function useDefaultThinkingMessage() {
+  const { t } = useTranslation("common");
+
+  return useCallback(
+    (isStreaming: boolean, duration?: number): ReactNode => {
+      if (isStreaming || duration === 0) {
+        return (
+          <Shimmer duration={1}>{t("components.reasoning.thinking")}</Shimmer>
+        );
+      }
+      if (duration === undefined) {
+        return <p>{t("components.reasoning.thoughtForAFewSeconds")}</p>;
+      }
+      return (
+        <p>
+          {t("components.reasoning.thoughtForSeconds", { seconds: duration })}
+        </p>
+      );
+    },
+    [t],
+  );
+}
 
 export const ReasoningTrigger = memo(
   ({
     className,
     children,
-    getThinkingMessage = defaultGetThinkingMessage,
+    getThinkingMessage,
     ...props
   }: ReasoningTriggerProps) => {
     const { isStreaming, isOpen, duration } = useReasoning();
+    const defaultThinkingMessage = useDefaultThinkingMessage();
+    const thinkingMessage = getThinkingMessage ?? defaultThinkingMessage;
 
     return (
       <CollapsibleTrigger
@@ -263,7 +285,7 @@ export const ReasoningTrigger = memo(
         {children ?? (
           <>
             <BrainIcon className="size-4" />
-            {getThinkingMessage(isStreaming, duration)}
+            {thinkingMessage(isStreaming, duration)}
             <ChevronDownIcon
               className={cn(
                 "size-4 transition-transform",

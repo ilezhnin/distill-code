@@ -710,6 +710,7 @@
     "input": "Input",
     "result": "Result",
     "fileNotFound": "File not found: {{path}}",
+    "runningCommand": "Running command",
     "inputSummary": {
       "command": "Command",
       "line": "Line",
@@ -841,5 +842,11 @@
   "interruptedTurn": {
     "notice": "This message was never answered — the run was interrupted before the agent replied. It was not sent again on its own: the agent may have finished real work before it stopped.",
     "resend": "Send it again"
+  },
+  "openPath": {
+    "revealedInsteadOfRun": "{{name}} is a program or script, so it was shown in File Explorer instead of being run.",
+    "confirmTitle": "Open a file outside this chat's folders?",
+    "confirmOpen": "Open",
+    "confirmCancel": "Cancel"
   }
 }

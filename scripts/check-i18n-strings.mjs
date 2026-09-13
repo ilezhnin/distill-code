@@ -14,6 +14,8 @@ const CHECKED_PATHS = [
   "src/features/sessions",
   "src/shared/ui/ai-elements/code-block.tsx",
   "src/shared/ui/ai-elements/message.tsx",
+  "src/shared/ui/ai-elements/reasoning.tsx",
+  "src/shared/ui/ai-elements/tool.tsx",
 ];
 
 const EXCLUDED_PATH_SEGMENTS = ["__tests__"];
