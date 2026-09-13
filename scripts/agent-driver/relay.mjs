@@ -84,6 +84,27 @@ export function quoteForCmd(arg) {
   return `"${escaped}"`;
 }
 
+/**
+ * Build the `/c` argument for `cmd.exe /d /s /c` that launches a
+ * `.cmd`/`.bat` entry point.
+ *
+ * `cmd /s` strips only the very first and the very last quote character off
+ * the whole command line — not each token's own quotes. Quoting just the
+ * resolved executable (`"C:\...\pnpm.cmd" "vitest" "run"`) leaves cmd
+ * reading `C:\...\pnpm.cmd" "vitest" "run` once that strip runs, which is
+ * where the classic `'C:\Program' is not recognized` failure comes from.
+ * Node's own `shell: true`, cross-spawn, and this repo's own
+ * `Invoke-CheckedCommand` (WindowsDev.psm1) all wrap the *entire* line in
+ * one more pair of quotes for exactly this reason: the strip then removes
+ * only that outer pair, and every inner quote survives untouched.
+ */
+export function buildCmdLine(resolved, argv) {
+  const shellCommand = [quoteForCmd(resolved), ...argv.map(quoteForCmd)].join(
+    " ",
+  );
+  return `"${shellCommand}"`;
+}
+
 /** Keep the end of a stream, which is where the failure is. */
 export function tail(text, limit = TAIL_LIMIT) {
   if (text.length <= limit) return text;
@@ -384,12 +405,7 @@ export function createRelay({
     const [file, spawnArgs, extra] = isBatch
       ? [
           process.env.ComSpec ?? "cmd.exe",
-          [
-            "/d",
-            "/s",
-            "/c",
-            [quoteForCmd(resolved), ...argv.map(quoteForCmd)].join(" "),
-          ],
+          ["/d", "/s", "/c", buildCmdLine(resolved, argv)],
           { windowsVerbatimArguments: true },
         ]
       : [resolved, argv, {}];
