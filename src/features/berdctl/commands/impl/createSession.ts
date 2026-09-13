@@ -58,10 +58,12 @@ const createSessionSchema = z
 // never create a session the caller has already been told timed out.
 const CREATE_DEADLINE_MARGIN_MS = 3_000;
 
-// Spawn ACL (P42): the wire now carries an optional `actor` — the calling
-// session's AGENT_SESSION_ID, read from the shell env when the harness sets it — and
-// this command enforces the same ACL as the in-app chokepoint against it
-// (runtime/spawnGate.ts). Anonymous calls are the operator and stay allowed.
+// Spawn ACL (P42): the wire carries an optional `actor` — the calling
+// session's AGENT_SESSION_ID, read from the shell env when the harness sets
+// it — and this command enforces the same ACL as the in-app chokepoint
+// against it (runtime/spawnGate.ts). Anonymous calls are the operator and
+// stay allowed; with the built-in host every call is anonymous, so the ACL
+// reaches agents through the prompt insert only (spawnGate.ts explains).
 
 interface CreateSessionResult {
   session_id: string;
@@ -142,6 +144,7 @@ Result:
     // created, so a refusal still costs nothing to roll back.
     enforceBerdctlSpawnAcl({
       actor: ctx.actor,
+      verb: "create",
       targetLayer: "worker",
       targetPersona: persona,
     });

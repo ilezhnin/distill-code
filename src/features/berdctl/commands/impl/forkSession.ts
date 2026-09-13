@@ -71,6 +71,7 @@ Result:
     const targetLayer = forkTargetLayer(args.session_id);
     enforceBerdctlSpawnAcl({
       actor: ctx.actor,
+      verb: "fork",
       targetLayer,
       targetPersona: forkTargetPersona(args.session_id),
     });
