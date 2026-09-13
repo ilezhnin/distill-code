@@ -180,7 +180,12 @@ export function modelPreferenceClassIds(): ModelPreferenceClassId[] {
 export function isModelPreferenceClassId(
   value: unknown,
 ): value is ModelPreferenceClassId {
-  return typeof value === "string" && value in MODEL_PREFERENCE_CLASSES;
+  // Own keys only: `in` also answers yes for `constructor`, `toString` and
+  // the rest of Object.prototype, and a class id that indexes to a function
+  // throws in every consumer that reads `.ranking` off it.
+  return (
+    typeof value === "string" && Object.hasOwn(MODEL_PREFERENCE_CLASSES, value)
+  );
 }
 
 /**
@@ -475,7 +480,11 @@ export function modelPreferenceClassForPersona(persona: {
     return persona.modelRanking;
   }
   const slug = persona.displayName?.trim().toLowerCase().replace(/\s+/g, "-");
-  return slug ? MODEL_CLASS_BY_AGENT_SLUG[slug] : undefined;
+  // An agent named "Constructor" slugs to a key Object.prototype answers for;
+  // only the table's own entries are role defaults.
+  return slug && Object.hasOwn(MODEL_CLASS_BY_AGENT_SLUG, slug)
+    ? MODEL_CLASS_BY_AGENT_SLUG[slug]
+    : undefined;
 }
 
 /**
@@ -508,9 +517,9 @@ export const KNOWN_MODEL_CANDIDATES: readonly RankedModelCandidate[] = [
  * silently and the class would snap back to the shipped one — a reset nobody
  * asked for, dressed as a default.
  */
-const LEGACY_CANDIDATE_LABELS: Record<string, string> = {
-  "Fable 5": "Fable 5.1",
-};
+const LEGACY_CANDIDATE_LABELS: ReadonlyMap<string, string> = new Map([
+  ["Fable 5", "Fable 5.1"],
+]);
 
 /**
  * A class's ranking with the operator's own order applied, when they set one.
@@ -530,7 +539,7 @@ export function applyClassOverride(
   if (!labels || labels.length === 0) return ranking;
   const chosen: RankedModelCandidate[] = [];
   for (const stored of labels) {
-    const label = LEGACY_CANDIDATE_LABELS[stored] ?? stored;
+    const label = LEGACY_CANDIDATE_LABELS.get(stored) ?? stored;
     const candidate =
       ranking.find((known) => known.label === label) ??
       KNOWN_MODEL_CANDIDATES.find((known) => known.label === label);

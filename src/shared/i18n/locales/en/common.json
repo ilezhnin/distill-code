@@ -192,5 +192,10 @@
     "output": "Output",
     "reasoning": "Reasoning",
     "totalCost": "Total cost"
+  },
+  "viewError": {
+    "title": "This view stopped working.",
+    "description": "The rest of the app is still running — try again, or open something else.",
+    "retry": "Try again"
   }
 }

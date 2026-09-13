@@ -34,6 +34,12 @@ interface RoutingPolicyState {
   policy: RoutingPolicy;
   /** False until the stored document has been read. Writes wait for it. */
   hydrated: boolean;
+  /**
+   * True when the stored document exists but could not be read. Writes stay
+   * disabled (replacing a document we could not read would discard it), so the
+   * settings pane has to say that edits will not survive a restart.
+   */
+  hydrationFailed: boolean;
   setThreshold: (
     key: "waveNearLimitPercent" | "chatNearLimitPercent",
     percent: number,
@@ -52,6 +58,7 @@ function persist(policy: RoutingPolicy, hydrated: boolean): void {
 export const useRoutingPolicyStore = create<RoutingPolicyState>((set, get) => ({
   policy: { ...DEFAULT_ROUTING_POLICY },
   hydrated: false,
+  hydrationFailed: false,
   setThreshold: (key, percent) =>
     set((state) => {
       const policy = parseRoutingPolicy({ ...state.policy, [key]: percent });
@@ -78,11 +85,30 @@ export const useRoutingPolicyStore = create<RoutingPolicyState>((set, get) => ({
 }));
 
 export async function hydrateRoutingPolicyStore(): Promise<void> {
-  const stored = await document.read();
-  useRoutingPolicyStore.setState({
-    policy: stored ?? { ...DEFAULT_ROUTING_POLICY },
-    hydrated: true,
-  });
+  try {
+    const stored = await document.read();
+    useRoutingPolicyStore.setState({
+      policy: stored ?? { ...DEFAULT_ROUTING_POLICY },
+      hydrated: true,
+      hydrationFailed: false,
+    });
+  } catch (error) {
+    useRoutingPolicyStore.setState({ hydrationFailed: true });
+    throw error;
+  }
+}
+
+/**
+ * Re-runs hydration for the settings pane's retry. Resolves to whether the
+ * policy is now being persisted; a failure is already recorded in the store.
+ */
+export async function retryRoutingPolicyHydration(): Promise<boolean> {
+  try {
+    await hydrateRoutingPolicyStore();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function flushRoutingPolicyWrites(): Promise<void> {

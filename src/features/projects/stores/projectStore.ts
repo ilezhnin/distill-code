@@ -1,4 +1,6 @@
+import { toast } from "sonner";
 import { create } from "zustand";
+import { i18n } from "@/shared/i18n";
 import {
   listProjects,
   createProject,
@@ -50,6 +52,33 @@ function persistProjects(projects: ProjectInfo[]): void {
   } catch {
     // localStorage may be unavailable
   }
+}
+
+let reorderChain: Promise<void> = Promise.resolve();
+let pendingReorder: [string, number][] | null = null;
+
+/**
+ * Persists a reorder through a single chain: two drags inside the write window
+ * would otherwise run two passes over the same project files and could leave
+ * the older pass's `order` on disk. The latest order wins; an order that is
+ * superseded before its turn is never written.
+ */
+function queueProjectReorder(
+  order: [string, number][],
+  onFailure: (error: unknown) => void,
+): Promise<void> {
+  pendingReorder = order;
+  reorderChain = reorderChain.then(async () => {
+    const next = pendingReorder;
+    pendingReorder = null;
+    if (!next) return;
+    try {
+      await apiReorderProjects(next);
+    } catch (error) {
+      onFailure(error);
+    }
+  });
+  return reorderChain;
 }
 
 export interface ProjectStore {
@@ -203,7 +232,15 @@ export const useProjectStore = create<ProjectStore>((set, get) => ({
     });
     const projects = get().projects;
     persistProjects(projects);
-    void apiReorderProjects(projects.map((p, i) => [p.id, i]));
+    void queueProjectReorder(
+      projects.map((p, i) => [p.id, i]),
+      (error) => {
+        console.warn("Failed to persist the project order:", error);
+        toast.error(i18n.t("projects:view.reorderFailed"));
+        // The local order no longer matches disk; re-read what was written.
+        void get().fetchProjects();
+      },
+    );
   },
 
   setActiveProject: (id) => set({ activeProjectId: id }),

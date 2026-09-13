@@ -78,7 +78,11 @@ export function UsageOverviewPane({
           />
           <StatCard
             label={t("stats.estCost")}
-            value={formatUsageCost(overview.estimatedCostUsd, unavailable)}
+            value={formatUsageCost(
+              overview.estimatedCostUsd,
+              unavailable,
+              overview.costCurrency,
+            )}
             icon={<Coins className="size-4" />}
           />
           <StatCard

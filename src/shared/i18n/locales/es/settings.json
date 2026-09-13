@@ -330,11 +330,14 @@
       "status": {
         "checking": "Comprobando...",
         "inProgress": "Configuración en curso",
-        "setupFailed": "La configuración falló"
+        "setupFailed": "La configuración falló",
+        "unknown": "No se pudo comprobar"
       },
       "title": "Arneses de agentes",
       "troubleshootInChat": "Solucionar en chat",
-      "updateLabel": "Actualizar {{name}}"
+      "updateLabel": "Actualizar {{name}}",
+      "recheck": "Comprobar de nuevo",
+      "recheckLabel": "Comprobar {{name}} de nuevo"
     },
     "setupOutput": {
       "copyDeviceCode": "Copiar código de dispositivo",
@@ -521,6 +524,8 @@
     "moveDown": "Bajar {{label}}",
     "remove": "Quitar {{label}}",
     "add": "Añadir un modelo",
-    "reset": "Restablecer el enrutado original"
+    "reset": "Restablecer el enrutado original",
+    "notPersisted": "No se pudieron leer los ajustes de enrutamiento, así que los cambios solo se aplican a esta sesión y se perderán al reiniciar.",
+    "retryLoad": "Intentar leer de nuevo"
   }
 }

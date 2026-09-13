@@ -74,9 +74,39 @@ function reportSubscriptionFailed(what: string) {
   };
 }
 
-/** Test seam: the once-per-window latch would otherwise leak between cases. */
+let warnedDesktopNotificationUnavailable = false;
+
+/**
+ * Shows the OS notification for a finished turn.
+ *
+ * The invoke can reject — Windows toasts need a registered AppUserModelID,
+ * which dev builds and some portable installs do not have — and a
+ * fire-and-forget invoke turned every completed turn into an unhandled
+ * rejection (one diagnostic event and one `berd.log` line each) while never
+ * telling anyone why notifications were silent. Said once per window.
+ */
+export async function showDesktopCompletionNotification(args: {
+  body: string;
+  sessionId: string;
+  sound: string | null;
+}): Promise<void> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("show_completion_notification", args);
+  } catch (error) {
+    if (warnedDesktopNotificationUnavailable) return;
+    warnedDesktopNotificationUnavailable = true;
+    console.warn(
+      "Desktop completion notifications are unavailable in this build:",
+      error,
+    );
+  }
+}
+
+/** Test seam: the once-per-window latches would otherwise leak between cases. */
 export function resetNotificationAvailabilityLogForTests(): void {
   loggedNotificationActionsUnavailable = false;
+  warnedDesktopNotificationUnavailable = false;
 }
 
 function focusCurrentWindow(): void {
@@ -100,12 +130,37 @@ export function getCompletionOutcome(
   return "completed";
 }
 
+/** How much of a chat title the OS notification body may carry. */
+const MAX_NOTIFICATION_NAME_CHARS = 80;
+
+/**
+ * A chat title, fit for an OS notification body.
+ *
+ * Titles are agent-settable (`berdctl session rename`), so this text is not
+ * ours: collapse the control characters a title could use to fake extra lines,
+ * and cap the length so the fixed "… finished" suffix is not pushed out of
+ * view by a long one.
+ */
+export function clampNotificationName(sessionTitle: string): string {
+  const flattened = sessionTitle
+    .replace(/[\p{Cc}\p{Cf}]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const characters = Array.from(flattened);
+  if (characters.length <= MAX_NOTIFICATION_NAME_CHARS) return flattened;
+  return `${characters
+    .slice(0, MAX_NOTIFICATION_NAME_CHARS - 1)
+    .join("")
+    .trimEnd()}\u2026`;
+}
+
 export function getNotificationBody(
   outcome: "completed" | "error" | "stopped",
   sessionTitle: string,
 ): string {
   const name =
-    sessionTitle.trim() || i18n.t("common:completionNotification.agent");
+    clampNotificationName(sessionTitle) ||
+    i18n.t("common:completionNotification.agent");
   return i18n.t(`common:completionNotification.body.${outcome}`, { name });
 }
 
@@ -160,12 +215,17 @@ export function useCompletionNotifications(
     import("@tauri-apps/plugin-notification")
       .then(({ onAction }) =>
         onAction((notification) => {
+          // Bringing the window forward is the part that always works: the
+          // host command currently drops `session_id`, so `extra` carries no
+          // session to open and clicking a toast used to do nothing at all.
+          // FOLLOW-UP (src-tauri/src/commands/notifications.rs): pass
+          // `extra: { sessionId }` so the click can open the chat again.
+          focusCurrentWindow();
           const sessionId =
             typeof notification.extra?.sessionId === "string"
               ? notification.extra.sessionId
               : undefined;
           if (!sessionId) return;
-          focusCurrentWindow();
           navigateRef.current(sessionId);
         }),
       )
@@ -242,13 +302,10 @@ export function useCompletionNotifications(
 
             if (!windowFocusedRef.current) {
               if (!prefs.desktop) continue;
-              import("@tauri-apps/api/core").then(({ invoke }) => {
-                void invoke("show_completion_notification", {
-                  body,
-                  sessionId,
-                  sound:
-                    getNotificationSoundResource(prefs.desktopSound) ?? null,
-                });
+              void showDesktopCompletionNotification({
+                body,
+                sessionId,
+                sound: getNotificationSoundResource(prefs.desktopSound) ?? null,
               });
             } else {
               if (!prefs.inApp) continue;

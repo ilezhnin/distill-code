@@ -27,6 +27,7 @@ import {
   IconAlertTriangle,
   IconMessageCircle,
   IconPlus,
+  IconRefresh,
   IconTool,
 } from "@tabler/icons-react";
 import { ArrowUpCircle } from "lucide-react";
@@ -41,6 +42,14 @@ import {
 } from "../lib/agentVersionDisplay";
 import { rerunDoctorReport } from "@/shared/api/useDoctorReport";
 import type { AgentProviderReadiness } from "@/features/providers/hooks/useAgentProviderStatus";
+
+/**
+ * What the card paints. `"unknown"` is not a readiness the doctor report can
+ * produce: it is what the card shows when the report itself failed, so an
+ * errored probe is never read as "nothing is installed" (which would offer an
+ * Install that reruns the install command for a working agent).
+ */
+type ResolvedProviderState = AgentProviderReadiness | "unknown";
 import type { DoctorCheck, FixType } from "@/shared/api/doctor";
 import { ProviderSetupOutput } from "./ProviderSetupOutput";
 import { AgentVersionInfo } from "./AgentVersionInfo";
@@ -68,6 +77,11 @@ interface AgentProviderCardProps {
   // True only during the shared report's cold first fetch, so a warm-cache
   // revisit paints instantly instead of re-spinning.
   statusLoading?: boolean;
+  // True when the doctor report failed. Readiness is then unknown rather than
+  // "not installed": the card says it could not check and offers a recheck
+  // instead of an Install that would re-run the install command for a working
+  // agent.
+  statusUnavailable?: boolean;
   onStartTroubleshootingChat?: (
     request: AgentSetupTroubleshootingRequest,
   ) => void;
@@ -104,6 +118,7 @@ export function AgentProviderCard({
   readiness,
   versionCheck,
   statusLoading = false,
+  statusUnavailable = false,
   onStartTroubleshootingChat,
   onProviderReady,
   onInstallComplete,
@@ -176,11 +191,11 @@ export function AgentProviderCard({
   // present). The spinner is gated on the report's cold first fetch only.
   const isChecking =
     !isBuiltIn && !forceMissingForSimulation && hasBinary && statusLoading;
-  const resolvedReadiness: AgentProviderReadiness = forceMissingForSimulation
+  const resolvedReadiness: ResolvedProviderState = forceMissingForSimulation
     ? "not_installed"
     : isBuiltIn || !hasBinary
       ? "ready"
-      : (readiness ?? "not_installed");
+      : (readiness ?? (statusUnavailable ? "unknown" : "not_installed"));
 
   // Version / update / partial-install readout from the shared report. Derived
   // here (above the setup handlers) so the handlers and rendered actions share
@@ -632,6 +647,26 @@ export function AgentProviderCard({
             aria-hidden="true"
             className="size-4 text-foreground"
           />
+        </div>
+      );
+    }
+
+    // The report itself failed: say so and offer a recheck. Painting Install
+    // here would invite a reinstall of an agent that is most likely fine.
+    if (resolvedReadiness === "unknown") {
+      return (
+        <div className="flex flex-shrink-0 items-center gap-1.5">
+          <span className="text-xs text-muted-foreground" role="status">
+            {t("providers.agents.status.unknown")}
+          </span>
+          {renderActionButton(
+            t("providers.agents.recheck"),
+            t("providers.agents.recheckLabel", { name: provider.displayName }),
+            <IconRefresh aria-hidden="true" />,
+            () => {
+              void rerunDoctorReport(queryClient);
+            },
+          )}
         </div>
       );
     }

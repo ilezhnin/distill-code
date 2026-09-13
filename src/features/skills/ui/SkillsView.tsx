@@ -331,6 +331,9 @@ export function SkillsView({
         setActiveSkill(null, { replace: true });
       }
       toast.success(t("view.deleteSuccess", { name: skillToDelete.name }));
+      // The editor may still be open on the skill that was just deleted.
+      setDialogOpen(false);
+      setEditingSkill(undefined);
     } catch (error) {
       toast.error(formatAcpErrorMessage(error, t("view.deleteError")));
     }
@@ -379,8 +382,11 @@ export function SkillsView({
     setEditingSkill(undefined);
   };
 
-  // Wire Delete from inside the SkillEditor footer: close the editor sheet,
-  // then surface the existing AlertDialog delete confirmation.
+  // Wire Delete from inside the SkillEditor footer: surface the existing
+  // AlertDialog delete confirmation over the still-open editor sheet. Closing
+  // the sheet first would bypass its unsaved-changes guard, so cancelling the
+  // delete would throw the operator's edits away; the sheet is closed once the
+  // delete is confirmed instead.
   const handleDeleteFromEditor = useCallback(
     (editing: EditingSkill) => {
       const match = skills.find(
@@ -388,11 +394,13 @@ export function SkillsView({
           skill.path === editing.path ||
           skill.projectLinks.some((project) => project.path === editing.path),
       );
-      setDialogOpen(false);
-      setEditingSkill(undefined);
-      if (match) {
-        setDeletingSkill(resolveSkillForPath(match, editing.path));
+      if (!match) {
+        // Nothing left to delete (the file is gone); just close the editor.
+        setDialogOpen(false);
+        setEditingSkill(undefined);
+        return;
       }
+      setDeletingSkill(resolveSkillForPath(match, editing.path));
     },
     [skills],
   );

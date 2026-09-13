@@ -109,6 +109,7 @@
     "optionsAria": "Opciones de {{name}}",
     "searchPlaceholder": "Buscar proyectos por nombre o descripción...",
     "startChat": "Iniciar chat",
-    "title": "Proyectos"
+    "title": "Proyectos",
+    "reorderFailed": "No se pudo guardar el nuevo orden de proyectos."
   }
 }
