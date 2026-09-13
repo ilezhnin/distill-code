@@ -19,6 +19,7 @@ import { pathExists } from "@/shared/api/system";
 import { useResolvedArtifactRoot } from "@/shared/artifacts/useResolvedArtifactRoot";
 import { revealInFileManager } from "@/shared/lib/fileManager";
 import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
+import { LocalMarkdownLinkProvider } from "@/shared/ui/ai-elements/local-link-context";
 import { useArtifactViewerStore } from "@/features/chat/stores/artifactViewerStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
@@ -598,10 +599,30 @@ export function ArtifactPolicyProvider({
     [checkPathExists, openResolvedPath, openInApp, resolveMarkdownHref],
   );
 
+  // Every surface in this chat that renders Markdown — the agent-work panel's
+  // progress text, the artifact viewer's preview, reasoning blocks, detail
+  // panes — opens a local destination through the same resolution and the same
+  // gate. Previously only the message bubble installed a click delegate, so a
+  // local link anywhere else fell through to the OS browser as
+  // `http://tauri.localhost/<path>`. The message bubble provides its own
+  // handler over this one so a failure is reported inside the bubble.
+  const openLocalMarkdownLink = useCallback(
+    (href: string) => {
+      const candidate = resolveMarkdownHref(href);
+      if (!candidate) return;
+      void openResolvedPath(candidate.resolvedPath).catch((error: unknown) => {
+        toast.error(error instanceof Error ? error.message : String(error));
+      });
+    },
+    [resolveMarkdownHref, openResolvedPath],
+  );
+
   return (
     <ArtifactActionsContext.Provider value={actionsValue}>
       <ArtifactListContext.Provider value={artifacts}>
-        {children}
+        <LocalMarkdownLinkProvider value={openLocalMarkdownLink}>
+          {children}
+        </LocalMarkdownLinkProvider>
       </ArtifactListContext.Provider>
       <ConfirmDialog
         open={pendingOpen !== null}
