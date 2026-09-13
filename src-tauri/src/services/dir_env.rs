@@ -229,6 +229,16 @@ fn put_cached(key: PathBuf, env: HashMap<String, String>) {
     );
 }
 
+/// The validated project Hermit `bin` directory, in a form PATH consumers accept.
+///
+/// Canonicalization is what makes the containment check trustworthy, but on
+/// Windows `Path::canonicalize` always returns a verbatim `\\?\C:\…` path, and
+/// this value is prepended to the terminal/project PATH. cmd.exe and anything
+/// that resolves a program by concatenating a PATH entry with a file name do not
+/// accept the `\\?\` prefix, so the "validated Hermit entry" would be unusable
+/// from the spawned terminal. Compare canonical paths, hand back a simplified
+/// one. `dunce::simplified` is a no-op off Windows and for paths that need the
+/// prefix (UNC, over-long), which stay verbatim.
 #[cfg(any(windows, test))]
 fn find_project_hermit_bin_within(start: &Path, repo_root: &Path) -> Option<PathBuf> {
     let canonical_repo = repo_root.canonicalize().ok()?;
@@ -246,7 +256,7 @@ fn find_project_hermit_bin_within(start: &Path, repo_root: &Path) -> Option<Path
             if canonical_hermit.starts_with(&canonical_repo)
                 && canonical_bin.starts_with(&canonical_hermit)
             {
-                return Some(canonical_bin);
+                return Some(dunce::simplified(&canonical_bin).to_path_buf());
             }
         }
         if project_dir == canonical_repo {
@@ -536,9 +546,20 @@ mod tests {
         std::fs::create_dir_all(&target).expect("target");
         std::fs::create_dir_all(&hermit_bin).expect("hermit bin");
 
+        // `dunce::canonicalize`, not `Path::canonicalize`: this path is prepended
+        // to the terminal PATH, and cmd.exe cannot use the `\\?\` prefix that
+        // Windows canonicalization always adds.
+        let discovered = find_project_hermit_bin_within(&target, &repo);
         assert_eq!(
-            find_project_hermit_bin_within(&target, &repo),
-            Some(hermit_bin.canonicalize().expect("canonical Hermit bin"))
+            discovered,
+            Some(dunce::canonicalize(&hermit_bin).expect("canonical Hermit bin"))
+        );
+        assert!(
+            !discovered
+                .expect("discovered Hermit bin")
+                .to_string_lossy()
+                .starts_with(r"\\?\"),
+            "a PATH entry must not carry the verbatim prefix"
         );
     }
 
