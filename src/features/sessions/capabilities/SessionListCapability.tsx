@@ -565,6 +565,7 @@ export function SessionListCapability({
     applySelectionAction,
     archiveConfirmOpen,
     archiveSelectionCount,
+    archiveTerminalCount,
     confirmArchiveSelected,
     isApplyingSelectionAction,
     requestArchiveSelected,
@@ -879,13 +880,25 @@ export function SessionListCapability({
             count: archiveSelectionCount,
             displayCount: archiveSelectionCount,
           })}
-          description={t("common:bulkActions.archiveConfirmDescription", {
-            count: archiveSelectionCount,
-            displayCount: archiveSelectionCount,
-          })}
+          description={[
+            t("common:bulkActions.archiveConfirmDescription", {
+              count: archiveSelectionCount,
+              displayCount: archiveSelectionCount,
+            }),
+            // Archiving stops the chat's shells and unarchiving restores none of
+            // them, so the reversibility the line above promises is not the whole
+            // story whenever one is running.
+            archiveTerminalCount > 0
+              ? t("common:bulkActions.archiveConfirmTerminals", {
+                  count: archiveTerminalCount,
+                })
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" ")}
           cancelLabel={t("common:actions.cancel")}
           confirmLabel={t("common:actions.archive")}
-          destructive={false}
+          destructive={archiveTerminalCount > 0}
           loadingLabel={t("common:bulkActions.archiving")}
           isLoading={isApplyingSelectionAction}
           onConfirm={() => confirmArchiveSelected(onArchiveChat)}

@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { getChatSessionIdsWithTerminals } from "@/features/terminal/lib/terminalSessionManager";
 import {
   applySessionActionToIds,
   type SessionAction,
@@ -19,6 +20,7 @@ export function useBulkSessionActions({
   const [archiveSelectionSnapshot, setArchiveSelectionSnapshot] = useState<
     Set<string>
   >(() => new Set());
+  const [archiveTerminalCount, setArchiveTerminalCount] = useState(0);
   const [isApplyingSelectionAction, setIsApplyingSelectionAction] =
     useState(false);
 
@@ -43,6 +45,16 @@ export function useBulkSessionActions({
 
   const requestArchiveSelected = useCallback(() => {
     setArchiveSelectionSnapshot(new Set(selectedSessionIds));
+    // Archiving a chat stops its shells, and unarchiving brings none of them
+    // back. Counted at the moment the confirmation opens, so the dialog can say
+    // what the operator is about to lose instead of promising a restore that
+    // only covers the chat.
+    const withTerminals = getChatSessionIdsWithTerminals();
+    let terminals = 0;
+    for (const sessionId of selectedSessionIds) {
+      if (withTerminals.has(sessionId)) terminals += 1;
+    }
+    setArchiveTerminalCount(terminals);
     setArchiveConfirmOpen(true);
   }, [selectedSessionIds]);
 
@@ -51,6 +63,7 @@ export function useBulkSessionActions({
       const sessionIds = new Set(archiveSelectionSnapshot);
       setArchiveConfirmOpen(false);
       setArchiveSelectionSnapshot(new Set());
+      setArchiveTerminalCount(0);
       await applySelectionAction(action, sessionIds);
     },
     [applySelectionAction, archiveSelectionSnapshot],
@@ -60,6 +73,8 @@ export function useBulkSessionActions({
     applySelectionAction,
     archiveConfirmOpen,
     archiveSelectionCount: archiveSelectionSnapshot.size,
+    /** How many of the chats about to be archived still have a live shell. */
+    archiveTerminalCount,
     confirmArchiveSelected,
     isApplyingSelectionAction,
     requestArchiveSelected,
