@@ -29,6 +29,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   ALLOWED_COMMANDS,
+  buildCmdLine,
   createRelay,
   parseArgs,
   quoteForCmd,
@@ -57,6 +58,33 @@ describe("quoteForCmd", () => {
     // Without this, cmd.exe reads the final \" as an escaped quote and the
     // argument swallows everything after it.
     assert.equal(quoteForCmd("C:\\dir\\"), '"C:\\dir\\\\"');
+  });
+});
+
+describe("buildCmdLine", () => {
+  // `cmd /s` strips only the first and last quote character of the whole
+  // line it is handed, not each token's own quotes — so the line must carry
+  // one extra pair around everything, matching WindowsDev.psm1's
+  // `` "/d /s /c `"$command`"" `` and Node's own `shell: true` behaviour.
+
+  it("wraps the resolved path and every argument, then wraps the lot again", () => {
+    assert.equal(
+      buildCmdLine("C:\\...\\pnpm.cmd", ["vitest", "run"]),
+      '""C:\\...\\pnpm.cmd" "vitest" "run""',
+    );
+  });
+
+  it("keeps a path with spaces intact after both strips", () => {
+    // After cmd removes the outer pair: `"C:\Program Files\pnpm.cmd" "-v"`,
+    // which is exactly what tokenizes back into two arguments.
+    assert.equal(
+      buildCmdLine("C:\\Program Files\\pnpm.cmd", ["-v"]),
+      '""C:\\Program Files\\pnpm.cmd" "-v""',
+    );
+  });
+
+  it("survives with no arguments at all", () => {
+    assert.equal(buildCmdLine("just.cmd", []), '""just.cmd""');
   });
 });
 
