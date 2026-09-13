@@ -578,7 +578,10 @@
         "minutes": "{{spent}} of {{allowed}} minutes"
       },
       "closeout": "The summary of this request was written to {{path}}. It is an ordinary file — commit it with the work so the next person has it.",
-      "awaitingVerdict": "The brigade has finished; this chat is waiting for the conductor's verdict."
+      "awaitingVerdict": "The brigade has finished; this chat is waiting for the conductor's verdict.",
+      "spawning": "This chat is starting its brigade.",
+      "digestPending": "The brigade has finished; this chat is collecting their reports.",
+      "dispatchingDigest": "This chat is handing the brigade's reports to the conductor."
     },
     "spawnAcl": {
       "deniedTitle": "A session asked to start an agent it is not allowed to start, so nothing was started.",

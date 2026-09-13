@@ -753,7 +753,14 @@ export function startDigestDispatch(
           const current = state.waves.find(
             (candidate) => candidate.waveId === dispatch.waveId,
           );
-          if (!current) return state;
+          // Same guard as the success branch below, and for the same reason:
+          // the operator's stop can land inside the delivery window. Parking a
+          // wave they just stopped would append a second closure notice with a
+          // retry button on it, and `recordWaveClose` would upsert over the
+          // `operator-stopped` reason — so the telemetry record would forget
+          // the stop and the button would re-digest a wave whose children are
+          // already dead.
+          if (!current || current.phase !== "dispatchingDigest") return state;
           parked = withWavePhase(current, decision.phase);
           return withWave(state, parked);
         });
@@ -764,6 +771,7 @@ export function startDigestDispatch(
             decision.closure?.reason ?? "digest-undeliverable",
           );
         }
+        if (!parked) return;
         // One notice, carrying the reason *and* the digest itself: the reports
         // are already flagged published, so this transcript entry is the only
         // remaining copy of what the workers said. It also carries the retry
