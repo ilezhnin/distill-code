@@ -22,14 +22,18 @@
  */
 
 import { loadSessionMessages } from "@/features/chat/lib/sessionActivation";
+import { hasConversationMessages } from "@/features/chat/lib/sessionReplayReplacement";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import type { Message } from "@/shared/types/messages";
 
 /**
  * What is known about a session's transcript right now.
  *
- * `loaded` carries the messages — possibly an empty array, which is a real
- * answer ("this transcript holds nothing"), not an absence of one.
+ * `loaded` carries the messages of a transcript that has really been read:
+ * one holding at least one message that is not a system notice. Anything else
+ * — no key, an empty array, or nothing but the notices a failed load leaves
+ * behind — is `unknown`, because none of them can tell a delivered digest from
+ * a lost one.
  */
 export type ConductorTranscript =
   | { kind: "loaded"; messages: readonly Message[] }
@@ -75,9 +79,16 @@ function requestHydration(sessionId: string, onHydrated: () => void): void {
  * Reads a session's transcript, or says it does not know it yet and starts a
  * load in the background.
  *
- * The cache key's *presence* is the witness, not its length: the chat store
- * deletes the key when it evicts a session, so `undefined` means "never loaded
- * or since evicted" while `[]` means "loaded, and genuinely empty".
+ * The witness is a *conversation* message under the cache key, not the key
+ * itself. The key's presence used to be enough, and the loader's own failure
+ * paths defeated that: a replay judged invalid, or any thrown load error,
+ * appends a system notice under this very key — so one failed load turned
+ * "never read" into `{loaded, [notice]}`, and the lifecycle then re-delivered a
+ * digest whose marker it could not find, or parked a wave and never asked
+ * again. A transcript with nothing but system notices in it is exactly as
+ * uninformative as a missing one, so it reads as `unknown` and the 5 s backoff
+ * paces the retry. The chat's own loader uses the same test to decide whether
+ * an activation needs to replay.
  *
  * `onHydrated` is called after a background load settles, so the caller can
  * re-run its own pass instead of waiting for an unrelated store change.
@@ -87,7 +98,9 @@ export function readConductorTranscript(
   onHydrated: () => void,
 ): ConductorTranscript {
   const messages = useChatStore.getState().messagesBySession[sessionId];
-  if (messages) return { kind: "loaded", messages };
+  if (messages && hasConversationMessages(messages)) {
+    return { kind: "loaded", messages };
+  }
   requestHydration(sessionId, onHydrated);
   return { kind: "unknown" };
 }
