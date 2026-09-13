@@ -495,6 +495,15 @@ interface ChatStoreActions {
   markSessionRead: (sessionId: string) => void;
   markSessionUnread: (sessionId: string) => void;
   /**
+   * Record whether this window still considers the session gone. Archiving or
+   * deleting sets it (see `cleanedUpSessionIds`); unarchiving clears it, so a
+   * reply that arrives before the chat is ever opened again marks it unread
+   * instead of being swallowed. A failed unarchive sets it back.
+   */
+  setSessionCleanedUp: (sessionId: string, cleanedUp: boolean) => void;
+  /** Whether this window currently treats the session as archived or deleted. */
+  isSessionCleanedUp: (sessionId: string) => boolean;
+  /**
    * Drop unread flags for sessions that no longer exist. Callers pass the
    * complete set of live session ids — a partial page would clear flags of
    * sessions that are merely not loaded yet.
@@ -1389,6 +1398,16 @@ const createChatStore: StateCreator<
       get().sessionStateById,
     );
   },
+
+  setSessionCleanedUp: (sessionId, cleanedUp) => {
+    if (cleanedUp) {
+      rememberCleanedUpSession(sessionId);
+    } else {
+      forgetCleanedUpSession(sessionId);
+    }
+  },
+
+  isSessionCleanedUp: (sessionId) => cleanedUpSessionIds.has(sessionId),
 
   pruneUnreadSessions: (liveSessionIds) => {
     const live = new Set(liveSessionIds);
