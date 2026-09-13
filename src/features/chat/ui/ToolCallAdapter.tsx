@@ -403,13 +403,16 @@ function subagentTitle(
   return t(plain);
 }
 
-function sentenceCaseToolTitle(name: string): string {
+function sentenceCaseToolTitle(
+  name: string,
+  runningCommandLabel: string,
+): string {
   const trimmed = name.trim();
   if (!trimmed) return name;
 
   const shellTitle = trimmed.replace(
     /^shell(?=\s*(?:·|$))/i,
-    "Running command",
+    () => runningCommandLabel,
   );
   const acronymTitle = shellTitle.replace(/^mcp(?=\s*(?::|·|$))/i, "MCP");
   return acronymTitle.charAt(0).toLocaleUpperCase() + acronymTitle.slice(1);
@@ -471,7 +474,7 @@ export function ToolCallAdapter({
         subagentTaskLabel,
         subagentTaskIsConfigured,
       )
-    : sentenceCaseToolTitle(name);
+    : sentenceCaseToolTitle(name, t("tools.runningCommand"));
 
   const pathRow = summaryRows.find((row) => row.kind === "path");
   const headerFileLabel = pathRow?.value;

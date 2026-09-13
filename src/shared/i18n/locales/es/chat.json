@@ -710,6 +710,7 @@
     "input": "Entrada",
     "result": "Resultado",
     "fileNotFound": "Archivo no encontrado: {{path}}",
+    "runningCommand": "Ejecutando comando",
     "inputSummary": {
       "command": "Comando",
       "line": "Línea",
