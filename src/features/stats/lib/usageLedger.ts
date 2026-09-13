@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import type { ChatState } from "@/shared/types/chat";
 import { formatLocalDay, parseTimestamp } from "./usageFormatters";
 import type {
+  UsageArchivedRecord,
   UsageDailyRecord,
   UsageLedger,
   UsageSessionRecord,
@@ -31,12 +32,29 @@ const EMPTY_LEDGER: UsageLedger = {
   daily: {},
 };
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+/**
+ * Usage events arrive in bursts (a turn records tokens, worked time and a
+ * usage replace within milliseconds), so the ledger is kept in memory and
+ * persisted at most once per window. Pending writes are flushed when the
+ * window hides so a close cannot drop them.
+ */
+const LEDGER_WRITE_DEBOUNCE_MS = 1_000;
+/** Detailed session records are kept while they stay this recent. */
+const SESSION_RETENTION_MS = 90 * DAY_MS;
+/** Daily token rollups are kept for this long. */
+const DAILY_RETENTION_MS = 400 * DAY_MS;
+
 const workStartedAtBySession = new Map<string, number>();
 const listeners = new Set<() => void>();
 
 let cachedLedger: UsageLedger | null = null;
 let cachedSerialized: string | null = null;
 let removeWindowListener: (() => void) | undefined;
+let pendingWrite = false;
+let writeTimer: ReturnType<typeof setTimeout> | null = null;
+let removeFlushListeners: (() => void) | undefined;
+let storageWriteWarned = false;
 
 function emptySessionRecord(): UsageSessionRecord {
   return {
@@ -67,6 +85,22 @@ function emptyDailyRecord(): UsageDailyRecord {
   };
 }
 
+function emptyArchivedRecord(): UsageArchivedRecord {
+  return {
+    sessions: 0,
+    chatsStarted: 0,
+    messageCount: 0,
+    turns: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheTokens: 0,
+    totalTokens: 0,
+    costUsd: null,
+    workedMs: 0,
+    activeDays: 0,
+  };
+}
+
 function cloneLedger(ledger: UsageLedger): UsageLedger {
   return {
     version: USAGE_LEDGER_VERSION,
@@ -84,6 +118,16 @@ function cloneLedger(ledger: UsageLedger): UsageLedger {
         { ...record, byProvider: { ...record.byProvider } },
       ]),
     ),
+    ...(ledger.archived
+      ? {
+          archived: Object.fromEntries(
+            Object.entries(ledger.archived).map(([providerId, record]) => [
+              providerId,
+              { ...record },
+            ]),
+          ),
+        }
+      : {}),
   };
 }
 
@@ -139,6 +183,24 @@ function parseDailyRecord(value: unknown): UsageDailyRecord | null {
   };
 }
 
+function parseArchivedRecord(value: unknown): UsageArchivedRecord | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<UsageArchivedRecord>;
+  return {
+    sessions: asNonNegativeInt(raw.sessions) ?? 0,
+    chatsStarted: asNonNegativeInt(raw.chatsStarted) ?? 0,
+    messageCount: asNonNegativeInt(raw.messageCount) ?? 0,
+    turns: asNonNegativeInt(raw.turns) ?? 0,
+    inputTokens: asNonNegativeInt(raw.inputTokens) ?? 0,
+    outputTokens: asNonNegativeInt(raw.outputTokens) ?? 0,
+    cacheTokens: asNonNegativeInt(raw.cacheTokens) ?? 0,
+    totalTokens: asNonNegativeInt(raw.totalTokens) ?? 0,
+    costUsd: isFiniteNumber(raw.costUsd) ? raw.costUsd : null,
+    workedMs: asNonNegativeInt(raw.workedMs) ?? 0,
+    activeDays: asNonNegativeInt(raw.activeDays) ?? 0,
+  };
+}
+
 function parseLedger(raw: unknown): UsageLedger | null {
   if (!raw || typeof raw !== "object") return null;
   const parsed = raw as Partial<UsageLedger> & { version?: number };
@@ -160,18 +222,34 @@ function parseLedger(raw: unknown): UsageLedger | null {
     }
   }
 
+  const archivedEntries: [string, UsageArchivedRecord][] = [];
+  if (parsed.archived && typeof parsed.archived === "object") {
+    for (const [providerId, record] of Object.entries(parsed.archived)) {
+      const archivedRecord = parseArchivedRecord(record);
+      if (archivedRecord) archivedEntries.push([providerId, archivedRecord]);
+    }
+  }
+
   return {
     version: USAGE_LEDGER_VERSION,
     firstEventAt: asNonNegativeInt(parsed.firstEventAt),
     lastUpdatedAt: asNonNegativeInt(parsed.lastUpdatedAt),
     sessions,
     daily,
+    ...(archivedEntries.length > 0
+      ? { archived: Object.fromEntries(archivedEntries) }
+      : {}),
   };
 }
 
 function readLedger(): UsageLedger {
   if (typeof window === "undefined") {
     return cloneLedger(EMPTY_LEDGER);
+  }
+  // A debounced write is still pending, so the in-memory ledger is newer than
+  // whatever localStorage holds.
+  if (pendingWrite && cachedLedger) {
+    return cachedLedger;
   }
   try {
     const stored = window.localStorage.getItem(USAGE_LEDGER_STORAGE_KEY);
@@ -200,6 +278,138 @@ function notifyListeners(): void {
   }
 }
 
+function foldSessionIntoArchive(
+  archived: Map<string, UsageArchivedRecord>,
+  session: UsageSessionRecord,
+): void {
+  const providerId = session.providerId || DEFAULT_HARNESS_ID;
+  const current = archived.get(providerId) ?? emptyArchivedRecord();
+  const started =
+    session.started || session.messageCount > 0 || session.totalTokens > 0;
+  archived.set(providerId, {
+    sessions: current.sessions + 1,
+    chatsStarted: current.chatsStarted + (started ? 1 : 0),
+    messageCount: current.messageCount + session.messageCount,
+    turns: current.turns + session.turns,
+    inputTokens: current.inputTokens + session.inputTokens,
+    outputTokens: current.outputTokens + session.outputTokens,
+    cacheTokens: current.cacheTokens + session.cacheTokens,
+    totalTokens: current.totalTokens + session.totalTokens,
+    costUsd:
+      session.costUsd == null
+        ? current.costUsd
+        : (current.costUsd ?? 0) + session.costUsd,
+    workedMs: current.workedMs + session.workedMs,
+    activeDays: current.activeDays,
+  });
+}
+
+/**
+ * Keeps the persisted ledger bounded: detailed session records live for
+ * `SESSION_RETENTION_MS` and are then folded into per-provider totals, daily
+ * rollups are kept for `DAILY_RETENTION_MS`. Returns the same object when
+ * nothing aged out.
+ */
+function pruneLedger(ledger: UsageLedger, now: number): UsageLedger {
+  const sessionCutoff = now - SESSION_RETENTION_MS;
+  const dailyCutoff = formatLocalDay(new Date(now - DAILY_RETENTION_MS));
+
+  const archived = new Map<string, UsageArchivedRecord>(
+    Object.entries(ledger.archived ?? {}).map(([providerId, record]) => [
+      providerId,
+      { ...record },
+    ]),
+  );
+  const sessions: Record<string, UsageSessionRecord> = {};
+  const prunedDays = new Map<string, Set<string>>();
+  let prunedSessions = 0;
+  for (const [id, session] of Object.entries(ledger.sessions)) {
+    const lastSeenAt = session.lastActivityAt || session.createdAt;
+    if (lastSeenAt > 0 && lastSeenAt < sessionCutoff) {
+      prunedSessions += 1;
+      foldSessionIntoArchive(archived, session);
+      const providerId = session.providerId || DEFAULT_HARNESS_ID;
+      const days = prunedDays.get(providerId) ?? new Set<string>();
+      days.add(formatLocalDay(new Date(lastSeenAt)));
+      prunedDays.set(providerId, days);
+      continue;
+    }
+    sessions[id] = session;
+  }
+  for (const [providerId, days] of prunedDays) {
+    const record = archived.get(providerId);
+    if (!record) continue;
+    // Approximate: days seen in earlier prunes are already counted, and a
+    // prune batch only covers sessions that just crossed the retention edge.
+    archived.set(providerId, {
+      ...record,
+      activeDays: record.activeDays + days.size,
+    });
+  }
+
+  const dailyEntries = Object.entries(ledger.daily).filter(
+    ([day]) => day >= dailyCutoff,
+  );
+  const prunedDaily = dailyEntries.length !== Object.keys(ledger.daily).length;
+  if (prunedSessions === 0 && !prunedDaily) return ledger;
+
+  return {
+    ...ledger,
+    sessions,
+    daily: Object.fromEntries(dailyEntries),
+    ...(archived.size > 0 ? { archived: Object.fromEntries(archived) } : {}),
+  };
+}
+
+function warnAboutStorageFailureOnce(error: unknown): void {
+  if (storageWriteWarned) return;
+  storageWriteWarned = true;
+  console.warn(
+    "Usage stats could not be saved; they will stay in memory only for this run:",
+    error,
+  );
+}
+
+function installFlushListeners(): void {
+  if (removeFlushListeners || typeof window === "undefined") return;
+  const flushOnHide = () => {
+    flushUsageLedger();
+  };
+  const flushOnVisibilityChange = () => {
+    if (document.visibilityState === "hidden") flushUsageLedger();
+  };
+  window.addEventListener("pagehide", flushOnHide);
+  window.addEventListener("beforeunload", flushOnHide);
+  document.addEventListener("visibilitychange", flushOnVisibilityChange);
+  removeFlushListeners = () => {
+    window.removeEventListener("pagehide", flushOnHide);
+    window.removeEventListener("beforeunload", flushOnHide);
+    document.removeEventListener("visibilitychange", flushOnVisibilityChange);
+  };
+}
+
+/** Persists a pending ledger change immediately. */
+export function flushUsageLedger(): void {
+  if (writeTimer != null) {
+    clearTimeout(writeTimer);
+    writeTimer = null;
+  }
+  if (!pendingWrite || typeof window === "undefined") return;
+  const pruned = pruneLedger(cachedLedger ?? EMPTY_LEDGER, Date.now());
+  cachedLedger = pruned;
+  try {
+    const serialized = JSON.stringify(pruned);
+    window.localStorage.setItem(USAGE_LEDGER_STORAGE_KEY, serialized);
+    cachedSerialized = serialized;
+    pendingWrite = false;
+  } catch (error) {
+    // Keep `pendingWrite` set: reads then keep returning the in-memory ledger
+    // instead of rolling back to the stored copy, and the next mutation
+    // retries the write.
+    warnAboutStorageFailureOnce(error);
+  }
+}
+
 function writeLedger(next: UsageLedger): void {
   const stamped: UsageLedger = {
     ...next,
@@ -210,12 +420,13 @@ function writeLedger(next: UsageLedger): void {
     notifyListeners();
     return;
   }
-  try {
-    const serialized = JSON.stringify(stamped);
-    cachedSerialized = serialized;
-    window.localStorage.setItem(USAGE_LEDGER_STORAGE_KEY, serialized);
-  } catch {
-    // localStorage can be unavailable in restricted contexts.
+  pendingWrite = true;
+  installFlushListeners();
+  if (writeTimer == null) {
+    writeTimer = setTimeout(() => {
+      writeTimer = null;
+      flushUsageLedger();
+    }, LEDGER_WRITE_DEBOUNCE_MS);
   }
   window.dispatchEvent(new Event(USAGE_LEDGER_CHANGED_EVENT));
   notifyListeners();
@@ -501,8 +712,17 @@ export function buildUsageSummary(
     startedIds.add(id);
   }
 
+  // Sessions pruned from the ledger only survive as per-provider totals, so
+  // their counts are added instead of their ids.
+  let archivedChatsStarted = 0;
+  for (const record of Object.values(ledger.archived ?? {})) {
+    archivedChatsStarted += record.chatsStarted;
+    workedMs += record.workedMs;
+  }
+  chatsStarted += archivedChatsStarted;
+
   return {
-    agentsSpawned: startedIds.size,
+    agentsSpawned: startedIds.size + archivedChatsStarted,
     chatsStarted,
     workedMs,
     firstEventAt: ledger.firstEventAt,
@@ -513,6 +733,9 @@ function handleStorageChange(event: StorageEvent): void {
   if (event.key !== USAGE_LEDGER_STORAGE_KEY && event.key !== null) {
     return;
   }
+  // Persist our own pending change before adopting the stored copy, so a
+  // debounced mutation is not dropped by another window's write.
+  flushUsageLedger();
   cachedLedger = null;
   cachedSerialized = null;
   notifyListeners();
@@ -544,6 +767,14 @@ export function useUsageLedger(): UsageLedger {
 
 export function resetUsageLedgerForTests(): void {
   workStartedAtBySession.clear();
+  if (writeTimer != null) {
+    clearTimeout(writeTimer);
+    writeTimer = null;
+  }
+  pendingWrite = false;
+  storageWriteWarned = false;
+  removeFlushListeners?.();
+  removeFlushListeners = undefined;
   cachedLedger = cloneLedger(EMPTY_LEDGER);
   cachedSerialized = null;
   if (typeof window !== "undefined") {
