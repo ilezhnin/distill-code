@@ -29,12 +29,31 @@ export interface UsageDailyRecord {
   byProvider: Record<string, number>;
 }
 
+/**
+ * Totals of session records that aged out of the ledger, kept per provider so
+ * the stats page still reports them after the detailed records are pruned.
+ */
+export interface UsageArchivedRecord {
+  sessions: number;
+  chatsStarted: number;
+  messageCount: number;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheTokens: number;
+  totalTokens: number;
+  costUsd: number | null;
+  workedMs: number;
+  activeDays: number;
+}
+
 export interface UsageLedger {
   version: typeof USAGE_LEDGER_VERSION;
   firstEventAt: number | null;
   lastUpdatedAt: number | null;
   sessions: Record<string, UsageSessionRecord>;
   daily: Record<string, UsageDailyRecord>;
+  archived?: Record<string, UsageArchivedRecord>;
 }
 
 export interface UsageSessionSource {

@@ -133,6 +133,7 @@ export function buildUsageOverview({
       hasMissingCost: boolean;
       modelCounts: Map<string, number>;
       activeDays: Set<string>;
+      archivedActiveDays: number;
     }
   >();
 
@@ -153,6 +154,7 @@ export function buildUsageOverview({
       hasMissingCost: false,
       modelCounts: new Map<string, number>(),
       activeDays: new Set<string>(),
+      archivedActiveDays: 0,
     };
     byProvider.set(id, created);
     return created;
@@ -160,6 +162,27 @@ export function buildUsageOverview({
 
   for (const id of enabled) {
     ensureProvider(id);
+  }
+
+  // Sessions that aged out of the ledger only survive as per-provider totals.
+  for (const [providerId, record] of Object.entries(ledger.archived ?? {})) {
+    if (providerFilter && providerId !== providerFilter) continue;
+    const provider = ensureProvider(providerId);
+    provider.sessions += record.sessions;
+    provider.totalTokens += record.totalTokens;
+    provider.newInputTokens += record.inputTokens;
+    provider.outputTokens += record.outputTokens;
+    provider.cacheTokens += record.cacheTokens;
+    provider.turns += record.turns;
+    provider.events += record.messageCount;
+    provider.archivedActiveDays += record.activeDays;
+    if (record.costUsd != null) {
+      provider.estimatedCostUsd =
+        (provider.estimatedCostUsd ?? 0) + record.costUsd;
+      provider.hasKnownCost = true;
+    } else if (record.totalTokens > 0) {
+      provider.hasMissingCost = true;
+    }
   }
 
   for (const session of sessions) {
@@ -216,7 +239,7 @@ export function buildUsageOverview({
           ? provider.estimatedCostUsd
           : null,
         topModel,
-        activeDays: provider.activeDays.size,
+        activeDays: provider.activeDays.size + provider.archivedActiveDays,
       } satisfies UsageProviderOverview;
     })
     .sort((left, right) => {
