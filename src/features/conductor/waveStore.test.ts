@@ -363,6 +363,59 @@ describe("parseWaveEngineState", () => {
     expect(parsed.waves[0]?.steps[0]?.model).toBeUndefined();
   });
 
+  it("round-trips a step's budget and class, and drops junk values", () => {
+    // A pending step resumed after a restart is spawned from this record, so
+    // a reload that lost the budget would run the step with no ceiling and one
+    // that lost the class would route it by the role's default (P49/P36).
+    const base = wave("w1");
+    const state = withWave(emptyWaveEngineState(), {
+      ...base,
+      steps: [
+        {
+          ...base.steps[0],
+          budget: { minutes: 5, usd: 1.5 },
+          modelClass: "coding-simple",
+        },
+      ],
+    });
+    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
+      state,
+    );
+
+    const parsed = parseWaveEngineState({
+      version: 2,
+      waves: [
+        {
+          ...JSON.parse(JSON.stringify(base)),
+          steps: [
+            {
+              ...base.steps[0],
+              budget: { minutes: -1, tokens: "lots", usd: 2 },
+              modelClass: "not-a-class",
+            },
+          ],
+        },
+      ],
+      tombstones: [],
+    });
+    // A budget with any unreadable member is not the ceiling the plan set:
+    // the readable members are kept and the rest read as "not set".
+    expect(parsed.waves[0]?.steps[0]?.budget).toEqual({ usd: 2 });
+    expect(parsed.waves[0]?.steps[0]?.modelClass).toBeUndefined();
+
+    const junkBudget = parseWaveEngineState({
+      version: 2,
+      waves: [
+        {
+          ...JSON.parse(JSON.stringify(base)),
+          steps: [{ ...base.steps[0], budget: "five minutes" }],
+        },
+      ],
+      tombstones: [],
+    });
+    expect(junkBudget.waves[0]?.steps[0]?.budget).toBeUndefined();
+  });
+
   it("survives every phase either union can hold", () => {
     // The C1 regression, as a property over the unions themselves: a phase
     // that exists in `waveEngine.ts` but not in this module's guard used to
