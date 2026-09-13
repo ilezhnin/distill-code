@@ -15,7 +15,10 @@ import { setActiveMessageId } from "@/shared/api/acpActiveMessageTracking";
 import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
 import { registerPreparedSession } from "@/shared/api/acpSessionRegistry";
 import { claimSessionPrompt } from "@/features/chat/lib/sessionPromptOwnership";
-import { resetUsageLedgerForTests } from "@/features/stats/lib/usageLedger";
+import {
+  getUsageLedger,
+  resetUsageLedgerForTests,
+} from "@/features/stats/lib/usageLedger";
 
 const workspaceObservationMocks = vi.hoisted(() => ({
   clearWorkspaceToolCallObservations: vi.fn(),
@@ -59,6 +62,50 @@ describe("acpNotificationHandler", () => {
       activeWorkspaceBySession: {},
     });
     useAgentStore.setState({ personas: [] });
+  });
+
+  // Reopening a chat replays every usage_update the host persisted. Feeding
+  // those to the ledger moves the chat's activity to today and rewrites the
+  // whole ledger once per replayed turn; only the live turn is real usage.
+  it("does not record usage into the ledger while replaying history", async () => {
+    const usageUpdate = {
+      sessionUpdate: "usage_update",
+      used: 1200,
+      size: 200000,
+      cost: { amount: 0.42, currency: "USD" },
+      accumulatedInputTokens: 1000,
+      accumulatedOutputTokens: 200,
+    } as const;
+
+    markSessionReplayLoading();
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: usageUpdate,
+    } as never);
+
+    expect(getUsageLedger().sessions["acp-session"]).toBeUndefined();
+    // The chat's own context/cost readout is still restored on replay.
+    expect(
+      useChatStore.getState().sessionStateById["acp-session"]?.tokenState,
+    ).toMatchObject({
+      accumulatedTotal: 1200,
+      accumulatedInput: 1000,
+      accumulatedOutput: 200,
+      accumulatedCost: 0.42,
+    });
+
+    useChatStore.setState({ loadingSessionIds: new Set<string>() });
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: usageUpdate,
+    } as never);
+
+    expect(getUsageLedger().sessions["acp-session"]).toMatchObject({
+      inputTokens: 1000,
+      outputTokens: 200,
+      costUsd: 0.42,
+      started: true,
+    });
   });
 
   it("observes live tool updates for workspace registration", async () => {
