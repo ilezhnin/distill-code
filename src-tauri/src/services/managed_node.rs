@@ -34,6 +34,9 @@ const MAX_EXTRACTED_BYTES: u64 = 600 * 1024 * 1024;
 const MAX_EXTRACTED_ENTRIES: u64 = 100_000;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// `node --version` on a healthy runtime answers in milliseconds; anything near
+/// this bound is a stuck process, not a slow one.
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct NodeRuntimeLock {
@@ -533,14 +536,35 @@ async fn runtime_ready(final_dir: &Path, version: &str, platform: &str) -> bool 
     }) {
         return false;
     }
-    let output = {
-        let mut cmd = tokio::process::Command::new(&node);
-        cmd.arg("--version")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
-        crate::services::process::apply_no_window_async(&mut cmd);
-        cmd.output().await
+    node_reports_version(&node, version, VERSION_PROBE_TIMEOUT).await
+}
+
+/// Run `<node> --version` and compare it with the pin, giving up after `timeout`.
+///
+/// The probe runs under the global install lock. A `node` that never exits — held
+/// by an endpoint-protection scan, or replaced by something that ignores the
+/// closed stdin — would otherwise keep that lock forever and leave every managed
+/// bridge awaiting a reconcile that never finishes, with no error and no log. A
+/// timeout means "not ready", which makes `ensure` repair the runtime;
+/// `kill_on_drop` stops the abandoned child from outliving the probe.
+async fn node_reports_version(node: &Path, version: &str, timeout: Duration) -> bool {
+    let mut cmd = tokio::process::Command::new(node);
+    cmd.arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    crate::services::process::apply_no_window_async(&mut cmd);
+    let output = match tokio::time::timeout(timeout, cmd.output()).await {
+        Ok(output) => output,
+        Err(_) => {
+            log::warn!(
+                "Managed Node.js version probe timed out after {}s: {}",
+                timeout.as_secs(),
+                node.display()
+            );
+            return false;
+        }
     };
     output
         .ok()
@@ -1196,6 +1220,33 @@ mod tests {
         // proceeds to execute node.exe, which is covered by the Windows gate.
         std::fs::write(runtime.join("npm.cmd"), b"@echo off\n").unwrap();
         assert!(npm_cli.is_file() && runtime.join("npm.cmd").is_file());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_version_probe_that_never_answers_reports_not_ready() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let node = dir.path().join("node");
+        std::fs::write(&node, "#!/bin/sh\nsleep 120\n").unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let started = std::time::Instant::now();
+        assert!(
+            !node_reports_version(&node, TEST_VERSION, Duration::from_millis(250)).await,
+            "a probe that never answers must not report the runtime ready"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the probe must give up rather than hold the install lock"
+        );
+
+        // A runtime that answers with the pinned version is still ready.
+        std::fs::write(&node, format!("#!/bin/sh\necho {TEST_VERSION}\n")).unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(node_reports_version(&node, TEST_VERSION, Duration::from_secs(15)).await);
+        assert!(!node_reports_version(&node, "v0.0.0", Duration::from_secs(15)).await);
     }
 
     #[test]
