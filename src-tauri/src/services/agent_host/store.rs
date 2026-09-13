@@ -477,19 +477,6 @@ impl SessionStore {
         Ok(())
     }
 
-    pub async fn append_event(&self, session_id: &str, payload: &Value) -> Result<(), String> {
-        sqlx::query(
-            "INSERT INTO session_events (session_id, created_at, payload_json) VALUES (?, ?, ?)",
-        )
-        .bind(session_id)
-        .bind(now_iso())
-        .bind(payload.to_string())
-        .execute(&self.pool)
-        .await
-        .map_err(|error| db_error("failed to append session event", error))?;
-        Ok(())
-    }
-
     /// Append several events of one session in one transaction, in the order
     /// given, and return the row ids they were stored under. One commit for a
     /// whole prompt instead of one per content block, and the ids are what
@@ -837,7 +824,7 @@ mod tests {
     async fn an_unstarted_session_moves_to_another_harness_without_its_old_events() {
         let (_dir, store) = store_with_history().await;
         store
-            .append_event("b", &event("commands"))
+            .append_events("b", &[event("commands")])
             .await
             .expect("event");
         let snapshot = json!({ "models": { "currentModelId": "gpt-5" } });

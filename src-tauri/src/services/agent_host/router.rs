@@ -33,6 +33,11 @@ const SNIPPET_CHARS: usize = 200;
 /// How long an attach waits for the bridge event loop to catch up with the
 /// history the bridge replayed before it gives up and goes live anyway.
 const EVENT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// How many streamed updates may wait for their commit before the bridge event
+/// loop stops taking new ones and writes what it has. A burst of chunks then
+/// costs one transaction instead of one per chunk, and nothing waits longer than
+/// the burst.
+const APPEND_BATCH_LIMIT: usize = 64;
 pub const EXT_PREFIX: &str = "_distill/";
 
 /// The renderer socket a request arrived on. Its reply goes back there and
@@ -615,14 +620,46 @@ impl Inner {
             .collect()
     }
 
+    /// The one loop that handles every bridge's events, in the order they
+    /// arrived. Writing each streamed chunk to SQLite from here is what used to
+    /// make every chat's persistence queue behind every other chat's — and made
+    /// [`Self::drain_bridge_events`], which every attach and every withdrawn
+    /// prompt waits on, wait for that whole backlog. The chunks are therefore
+    /// stamped and forwarded to the renderer immediately and committed together
+    /// as soon as the loop runs out of queued work, at the latest at the drain
+    /// marker or after [`APPEND_BATCH_LIMIT`] of them.
     async fn bridge_event_loop(self: Arc<Self>, mut events: mpsc::UnboundedReceiver<BridgeEvent>) {
-        while let Some(event) = events.recv().await {
+        let mut pending: Vec<(String, Value)> = Vec::new();
+        loop {
+            let event = match events.try_recv() {
+                Ok(event) => event,
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    // Nothing else is waiting: store what the burst produced
+                    // before parking on the channel, so a chat is never more
+                    // than one idle moment away from being on disk.
+                    self.flush_pending_events(&mut pending).await;
+                    match events.recv().await {
+                        Some(event) => event,
+                        None => break,
+                    }
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => break,
+            };
             match event {
                 BridgeEvent::Notification {
                     harness,
                     method,
                     params,
-                } => self.on_bridge_notification(&harness, &method, params).await,
+                } => {
+                    if let Some(event) =
+                        self.on_bridge_notification(&harness, &method, params).await
+                    {
+                        pending.push(event);
+                        if pending.len() >= APPEND_BATCH_LIMIT {
+                            self.flush_pending_events(&mut pending).await;
+                        }
+                    }
+                }
                 BridgeEvent::Request {
                     harness,
                     id,
@@ -630,6 +667,10 @@ impl Inner {
                     params,
                 } => self.on_bridge_request(&harness, id, &method, params).await,
                 BridgeEvent::Drained { ack } => {
+                    // Whoever waits for this marker reads the transcript, the
+                    // run state, or both: everything queued before it is now
+                    // handled *and* committed.
+                    self.flush_pending_events(&mut pending).await;
                     let _ = ack.send(());
                 }
                 BridgeEvent::Exited {
@@ -655,15 +696,51 @@ impl Inner {
                 }
             }
         }
+        self.flush_pending_events(&mut pending).await;
+    }
+
+    /// Commit the session updates a burst of events produced. Consecutive
+    /// events of one chat go in one transaction; the order they were handled in
+    /// is the order the transcript keeps.
+    async fn flush_pending_events(&self, pending: &mut Vec<(String, Value)>) {
+        for (session_id, payloads) in Self::group_events_by_session(std::mem::take(pending)) {
+            if let Err(error) = self.store.append_events(&session_id, &payloads).await {
+                log::warn!(
+                    "[agent-host] failed to persist {} update(s) of session {session_id}: {error}",
+                    payloads.len()
+                );
+            }
+        }
+    }
+
+    /// Runs of *consecutive* events belonging to the same chat. Two chats
+    /// streaming at once interleave, and merging across the interleaving would
+    /// reorder the log, so only neighbours are merged.
+    fn group_events_by_session(events: Vec<(String, Value)>) -> Vec<(String, Vec<Value>)> {
+        let mut grouped: Vec<(String, Vec<Value>)> = Vec::new();
+        for (session_id, payload) in events {
+            match grouped.last_mut() {
+                Some((current, payloads)) if *current == session_id => payloads.push(payload),
+                _ => grouped.push((session_id, vec![payload])),
+            }
+        }
+        grouped
     }
 
     /// Wait until the bridge event loop has handled everything that was
-    /// already queued. A `session/load` replays the whole transcript as
-    /// notifications into that queue and only then answers; the replay is
-    /// swallowed because the session is still `loading`, so the session must
-    /// not become live until the loop has actually reached the marker behind
-    /// it — otherwise the tail of the replay is persisted a second time.
-    async fn drain_bridge_events(&self) {
+    /// already queued, and has stored it. A `session/load` replays the whole
+    /// transcript as notifications into that queue and only then answers; the
+    /// replay is swallowed because the session is still `loading`, so the
+    /// session must not become live until the loop has actually reached the
+    /// marker behind it — otherwise the tail of the replay is persisted a
+    /// second time. It is also how a caller that is about to read the
+    /// transcript, or a turn's run state, knows the queue holds nothing about
+    /// it any more.
+    ///
+    /// The queue is shared by every bridge, so this waits for other harnesses'
+    /// events too — bounded by what the loop does per event, which is stamping
+    /// and forwarding, not a database round trip.
+    pub(super) async fn drain_bridge_events(&self) {
         let (ack, drained) = oneshot::channel();
         if self.events_tx.send(BridgeEvent::Drained { ack }).is_err() {
             return;
@@ -695,25 +772,31 @@ impl Inner {
         sessions.get(session_id).and_then(SessionRuntime::route)
     }
 
-    async fn on_bridge_notification(&self, harness: &str, method: &str, mut params: Value) {
+    /// Handle one notification and report the update the transcript has to
+    /// keep, for the loop to commit with the rest of the burst. `None` when
+    /// there is nothing to store: a notification that is not a session update,
+    /// one of a session nobody is watching, or a replay of history the session
+    /// already has.
+    async fn on_bridge_notification(
+        &self,
+        harness: &str,
+        method: &str,
+        mut params: Value,
+    ) -> Option<(String, Value)> {
         if method != "session/update" {
             self.notify_frontend(method, params);
-            return;
+            return None;
         }
-        let Some(bridge_session_id) = protocol::session_id(&params) else {
-            return;
-        };
-        let Some(session_id) = self.host_session_for(harness, &bridge_session_id).await else {
-            // Probe sessions and history replays we asked for are not
-            // surfaced to the renderer.
-            return;
-        };
+        let bridge_session_id = protocol::session_id(&params)?;
+        // Probe sessions and history replays we asked for are not surfaced to
+        // the renderer.
+        let session_id = self.host_session_for(harness, &bridge_session_id).await?;
         let mut persist = false;
         {
             let mut sessions = self.sessions.lock().await;
             if let Some(runtime) = sessions.get_mut(&session_id) {
                 if runtime.loading {
-                    return;
+                    return None;
                 }
                 persist = true;
                 if let Some(run) = runtime.run.as_mut() {
@@ -722,17 +805,20 @@ impl Inner {
             }
         }
         params["sessionId"] = json!(session_id);
-        if persist {
-            if let Err(error) = self.store.append_event(&session_id, &params).await {
-                log::warn!("[agent-host] failed to persist session update: {error}");
-            }
+        let stored = if persist {
+            // A title the agent proposes is a session-list field, not a log
+            // entry, and one arrives per chat rather than per chunk.
             if let Some(title) = Self::agent_title(&params) {
                 if let Err(error) = self.store.set_agent_title(&session_id, title).await {
                     log::warn!("[agent-host] failed to store the agent's title: {error}");
                 }
             }
-        }
+            Some((session_id, params.clone()))
+        } else {
+            None
+        };
         self.notify_frontend("session/update", params);
+        stored
     }
 
     /// The title a `session_info_update` proposes, when it is one the chat
@@ -1297,6 +1383,11 @@ impl Inner {
         // bridge, resuming its own context) is only needed for the next
         // prompt, so it happens in the background — the user may just read
         // the chat and never send anything.
+        //
+        // The log is read, so the event loop's own buffer has to be committed
+        // first: a chat that is streaming right now has its last chunks there,
+        // and replaying without them would show a transcript missing its tail.
+        self.drain_bridge_events().await;
         let events = self
             .store
             .list_event_payloads(&session_id)
@@ -2491,6 +2582,42 @@ mod tests {
         // still in flight and its run state still stamps the updates arriving.
         assert!(live.run.is_some());
         assert_eq!(live.drop_queued_steers(), 0);
+    }
+
+    #[test]
+    fn a_burst_of_updates_is_stored_per_chat_without_reordering_the_log() {
+        let chunk = |text: &str| json!({ "update": { "content": { "text": text } } });
+        let grouped = Inner::group_events_by_session(vec![
+            ("a".to_string(), chunk("a1")),
+            ("a".to_string(), chunk("a2")),
+            // Another chat streaming at the same time: merging across it would
+            // put "a3" in the log before "b1", which is not the order the
+            // updates arrived in.
+            ("b".to_string(), chunk("b1")),
+            ("a".to_string(), chunk("a3")),
+        ]);
+
+        let shape: Vec<(&str, Vec<&str>)> = grouped
+            .iter()
+            .map(|(session_id, payloads)| {
+                (
+                    session_id.as_str(),
+                    payloads
+                        .iter()
+                        .map(|payload| payload["update"]["content"]["text"].as_str().unwrap_or(""))
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("a", vec!["a1", "a2"]),
+                ("b", vec!["b1"]),
+                ("a", vec!["a3"])
+            ]
+        );
+        assert!(Inner::group_events_by_session(Vec::new()).is_empty());
     }
 
     #[test]
