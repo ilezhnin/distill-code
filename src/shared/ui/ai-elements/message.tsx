@@ -7,8 +7,7 @@ import {
 } from "@/shared/ui/tooltip";
 import { parseSessionDeepLink } from "@/features/sessions/lib/sessionDeepLink";
 import { isExternalHref } from "@/shared/lib/isExternalHref";
-import { isUrlTrusted } from "@/shared/lib/trustedDomains";
-import { LinkSafetyModal } from "@/shared/ui/ai-elements/link-safety-modal";
+import { useLinkSafetyGate } from "@/shared/ui/ai-elements/link-safety-modal";
 import { useOpenLocalMarkdownLink } from "@/shared/ui/ai-elements/local-link-context";
 import { cn } from "@/shared/lib/cn";
 import { useVirtualLayoutPendingForStreamdown } from "@/features/chat/transcript/measurement";
@@ -26,7 +25,6 @@ import {
   useContext,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import {
   type Components as StreamdownComponents,
@@ -130,9 +128,14 @@ async function openDownloadsFolder() {
   await openPath(await downloadDir());
 }
 
-type OpenLinkSafetyModal = (url: string) => void;
+/**
+ * Opens an external URL through the link-safety gate. Streamdown renders
+ * `MarkdownLink` deep inside its own tree, so the gate reaches it by context
+ * rather than by prop.
+ */
+type OpenExternalUrl = (url: string) => void;
 
-const LinkSafetyContext = createContext<OpenLinkSafetyModal | null>(null);
+const LinkSafetyContext = createContext<OpenExternalUrl | null>(null);
 
 /**
  * Custom link component that splits behavior by link type:
@@ -161,7 +164,7 @@ const MarkdownLink = memo(
     node: _node,
     ...rest
   }: ComponentProps<"a"> & { node?: unknown }) => {
-    const openModal = useContext(LinkSafetyContext);
+    const openExternalUrl = useContext(LinkSafetyContext);
     const openLocalLink = useOpenLocalMarkdownLink();
 
     if (isExternalHref(href)) {
@@ -173,15 +176,7 @@ const MarkdownLink = memo(
           rel="noreferrer"
           onClick={(e) => {
             e.preventDefault();
-            if (isUrlTrusted(href ?? "")) {
-              void import("@tauri-apps/plugin-opener")
-                .then(({ openUrl }) => openUrl(href ?? ""))
-                .catch((error: unknown) => {
-                  console.error("[linkSafety] openUrl failed:", error);
-                });
-            } else {
-              openModal?.(href ?? "");
-            }
+            openExternalUrl?.(href ?? "");
           }}
           {...rest}
         >
@@ -525,7 +520,7 @@ export const MessageResponse = memo(
     ...props
   }: MessageResponseProps) => {
     const { t } = useTranslation("common");
-    const [modalUrl, setModalUrl] = useState<string | null>(null);
+    const { openExternalUrl, linkSafetyModal } = useLinkSafetyGate();
     const streamdownComponents = useMemo(
       () => buildStreamdownComponents(imageRenderer),
       [imageRenderer],
@@ -539,14 +534,6 @@ export const MessageResponse = memo(
       onAnimationStart,
     });
     useStreamdownTableScrollbarSizing(streamdownRootRef, children);
-
-    const openModal = useCallback((url: string) => {
-      setModalUrl(url);
-    }, []);
-
-    const closeModal = useCallback(() => {
-      setModalUrl(null);
-    }, []);
 
     const handleClickCapture = useCallback(
       (event: MouseEvent<HTMLDivElement>) => {
@@ -579,7 +566,7 @@ export const MessageResponse = memo(
     );
 
     return (
-      <LinkSafetyContext.Provider value={openModal}>
+      <LinkSafetyContext.Provider value={openExternalUrl}>
         <div
           className="contents"
           onClickCapture={handleClickCapture}
@@ -608,17 +595,13 @@ export const MessageResponse = memo(
             {children}
           </Streamdown>
         </div>
-        <LinkSafetyModal
-          isOpen={modalUrl !== null}
-          onClose={closeModal}
-          url={modalUrl ?? ""}
-        />
+        {linkSafetyModal}
       </LinkSafetyContext.Provider>
     );
   },
-  // Internal state (modalUrl) is intentionally outside this comparator —
-  // React always re-renders when local state changes regardless of memo.
-  // If modalUrl is ever lifted to a prop, this comparator must be updated.
+  // The link-safety gate's internal state is intentionally outside this
+  // comparator — React always re-renders when local state changes regardless
+  // of memo. If that state is ever lifted to a prop, update this comparator.
   (prevProps, nextProps) =>
     prevProps.children === nextProps.children &&
     nextProps.isAnimating === prevProps.isAnimating &&
