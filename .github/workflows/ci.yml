@@ -53,6 +53,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
 
+      - name: Audit shipped npm dependencies
+        run: pnpm audit --prod --audit-level=high
+
       - name: Run frontend checks
         run: just check
 
@@ -91,6 +94,19 @@ jobs:
         uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
         with:
           tool: just@1.48.0
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
+        with:
+          tool: cargo-audit@0.22.2
+
+      # Reads src-tauri/.cargo/audit.toml, which explains every ignored
+      # advisory. A new advisory against a crate the app actually compiles
+      # fails the job.
+      - name: Audit Rust dependencies
+        shell: powershell
+        working-directory: src-tauri
+        run: cargo audit
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
