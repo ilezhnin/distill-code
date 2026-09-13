@@ -794,6 +794,30 @@ export function stopTerminalSession(
   return true;
 }
 
+/**
+ * Stops every `${chatSessionId}:*` terminal and drops the commands queued for
+ * them. Archiving hides the chat, and a shell nobody can see is a process
+ * nobody can stop (a dev server keeps its port until the app exits), so the
+ * archive takes the shells with it.
+ */
+export function stopTerminalSessionsForChat(chatSessionId: string): number {
+  if (!chatSessionId) {
+    return 0;
+  }
+
+  const prefix = `${chatSessionId}:`;
+  let stopped = 0;
+  for (const [key, session] of [...sessions]) {
+    if (!key.startsWith(prefix)) continue;
+    session.stop();
+    stopped += 1;
+  }
+  for (const key of [...queuedCommands.keys()]) {
+    if (key.startsWith(prefix)) clearQueuedCommands(key);
+  }
+  return stopped;
+}
+
 export function subscribeTerminalSessionStatus(
   sessionKey: string,
   listener: TerminalSessionStatusListener,

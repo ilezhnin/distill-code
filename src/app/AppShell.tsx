@@ -157,6 +157,7 @@ import {
   getChatSessionIdsWithTerminals,
   renameTerminalSessionPrefix,
   setTerminalRenderingSuspended,
+  stopTerminalSessionsForChat,
 } from "@/features/terminal/lib/terminalSessionManager";
 import type { AgentSetupTroubleshootingRequest } from "@/features/providers/lib/agentSetupTroubleshooting";
 import type { SkillInfo } from "@/features/skills/api/skills";
@@ -2902,8 +2903,18 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           return { ok: false as const, reason: "session_not_found" as const };
         }
 
+        // Automatic archiving must never remove a worktree or branch. A
+        // renderer-side status check cannot make a subsequent force-delete
+        // atomic with respect to editor or process writes, so preserve all Git
+        // resources and let the user clean them up explicitly later — which
+        // also means there is nothing to inspect: the sweep must not pay a
+        // full session pagination and a Git probe per candidate for a plan it
+        // would discard.
         let plans: InspectedSessionWorkspaceCleanupPlan[] = [];
-        if (hasSessionWorkspaceCleanupTargets(session)) {
+        if (
+          !revalidateBeforeMutation &&
+          hasSessionWorkspaceCleanupTargets(session)
+        ) {
           try {
             const allSessions = await loadAllSessionsForWorkspaceCleanup();
             // Resolve the home dir so the used-elsewhere check can match a
@@ -2930,14 +2941,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               reason: "git_inspection_failed" as const,
             };
           }
-        }
-
-        // Automatic archiving must never remove a worktree or branch. A
-        // renderer-side status check cannot make a subsequent force-delete
-        // atomic with respect to editor or process writes, so preserve all Git
-        // resources and let the user clean them up explicitly later.
-        if (revalidateBeforeMutation) {
-          plans = [];
         }
 
         const wouldDiscardFiles = plans.some(
@@ -2997,6 +3000,12 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                 : ("backend_archive_failed" as const),
           };
         }
+
+        // The chat is gone from the sidebar now; a shell left running under
+        // it would be a process with no UI to stop it (a dev server holding
+        // its port until the app exits). Product decision: archiving stops
+        // the chat's terminals rather than keeping them for an unarchive.
+        stopTerminalSessionsForChat(sessionId);
 
         let cleanupFailureReason:
           | "target_session_running"

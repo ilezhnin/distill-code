@@ -15,6 +15,7 @@ import {
   AUTO_ARCHIVE_CHANGED_EVENT,
   getAutoArchiveAfterMs,
 } from "@/features/settings/lib/autoArchivePreference";
+import { getChatSessionIdsWithTerminals } from "@/features/terminal/lib/terminalSessionManager";
 import { getAutoArchiveSessionCandidates } from "../lib/autoArchiveSessions";
 
 const AUTO_ARCHIVE_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
@@ -34,6 +35,7 @@ interface RunAutoArchiveSweepOptions {
 }
 
 let sweepPromise: Promise<void> | null = null;
+let lastSweepStartedAtMs: number | null = null;
 
 function hasLocalAutoArchiveBlocker(sessionId: string): boolean {
   const chatState = useChatStore.getState();
@@ -44,8 +46,29 @@ function hasLocalAutoArchiveBlocker(sessionId: string): boolean {
     chatState.nonEmptyDraftSessionIds.has(sessionId) ||
     (chatState.queuedMessageBySession[sessionId]?.length ?? 0) > 0 ||
     (chatState.skillDraftsBySession[sessionId]?.length ?? 0) > 0 ||
-    (chatState.draftAttachmentsBySession[sessionId]?.length ?? 0) > 0
+    (chatState.draftAttachmentsBySession[sessionId]?.length ?? 0) > 0 ||
+    // A live shell is work in progress the transcript cannot see: archiving
+    // the chat would hide a dev server that keeps its port until the app
+    // exits. Manual archiving stops the shells; the sweep leaves them be.
+    getChatSessionIdsWithTerminals().has(sessionId)
   );
+}
+
+/**
+ * Whether a sweep prompted by the window becoming visible is worth running.
+ *
+ * Every restore from the taskbar fires `visibilitychange`; a sweep is a full
+ * session pagination plus a host round trip per candidate, and nothing ages
+ * into the window between two restores a few minutes apart. The hourly
+ * timer's cadence is the bound: a visibility sweep runs only when no sweep
+ * has started within the last interval.
+ */
+export function shouldSweepOnVisibility(
+  lastStartedAtMs: number | null,
+  nowMs: number,
+  intervalMs: number = AUTO_ARCHIVE_SWEEP_INTERVAL_MS,
+): boolean {
+  return lastStartedAtMs === null || nowMs - lastStartedAtMs >= intervalMs;
 }
 
 async function revalidateAutoArchiveCandidate(
@@ -156,6 +179,7 @@ export function useAutoArchiveSessions(
       if (cancelled || document.visibilityState === "hidden") return;
       if (sweepPromise) return;
 
+      lastSweepStartedAtMs = Date.now();
       sweepPromise = runAutoArchiveSweep({ archiveSession })
         .catch((error) => {
           console.error(
@@ -168,7 +192,12 @@ export function useAutoArchiveSessions(
         });
     };
     const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") sweep();
+      if (
+        document.visibilityState === "visible" &&
+        shouldSweepOnVisibility(lastSweepStartedAtMs, Date.now())
+      ) {
+        sweep();
+      }
     };
 
     sweep();

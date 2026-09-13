@@ -20,6 +20,7 @@ import { useProviderModelCacheStore } from "@/features/providers/stores/provider
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import { useRuntimeConfigStore } from "@/shared/runtime-config/runtimeConfigStore";
 import { hostSelectionFromExecutionTarget } from "@/features/chat/lib/hostExecutionTarget";
+import { setAutoArchiveAfter } from "@/features/settings/lib/autoArchivePreference";
 import {
   DEFAULT_RUNTIME_CONFIG,
   type RuntimeConfig,
@@ -36,6 +37,7 @@ const mockAcpArchiveSession = vi.hoisted(() => vi.fn());
 const mockAcpGetSessionInfo = vi.hoisted(() => vi.fn());
 const mockAcpLoadSession = vi.hoisted(() => vi.fn());
 const mockRenameTerminalSessionPrefix = vi.hoisted(() => vi.fn());
+const mockStopTerminalSessionsForChat = vi.hoisted(() => vi.fn(() => 0));
 const mockListExtensions = vi.hoisted(() => vi.fn());
 const mockCheckDirectoriesExist = vi.hoisted(() => vi.fn());
 const mockPathExists = vi.hoisted(() => vi.fn());
@@ -264,6 +266,8 @@ vi.mock("@/features/terminal/lib/terminalSessionManager", async () => ({
   >("@/features/terminal/lib/terminalSessionManager")),
   renameTerminalSessionPrefix: (...args: unknown[]) =>
     mockRenameTerminalSessionPrefix(...args),
+  stopTerminalSessionsForChat: (...args: unknown[]) =>
+    mockStopTerminalSessionsForChat(...args),
 }));
 
 vi.mock("@/shared/api/acpApi", () => ({
@@ -508,6 +512,7 @@ describe("AppShell global navigation", () => {
     mockAcpCreateSession.mockReset();
     mockAcpCreateSession.mockResolvedValue({ sessionId: "created-session" });
     mockRenameTerminalSessionPrefix.mockReset();
+    mockStopTerminalSessionsForChat.mockReset();
     mockAcpPrepareSession.mockReset();
     mockAcpPrepareSession.mockResolvedValue({});
     mockAcpSetSessionConfigOption.mockReset();
@@ -727,6 +732,117 @@ describe("AppShell global navigation", () => {
     });
     expect(mockAcpListSessionsPage).not.toHaveBeenCalled();
     expect(mockToastError).not.toHaveBeenCalled();
+  });
+
+  it("stops the chat's terminals once the backend has archived it", async () => {
+    useChatSessionStore.setState({
+      sessions: [
+        {
+          id: "session-1",
+          title: "Dev server",
+          executionTarget: { harnessId: "claude-acp" },
+          createdAt: "2026-07-10T00:00:00.000Z",
+          updatedAt: "2026-07-10T00:00:00.000Z",
+          messageCount: 1,
+        },
+      ],
+    });
+    const order: string[] = [];
+    mockAcpArchiveSession.mockImplementation(async () => {
+      order.push("archive");
+    });
+    mockStopTerminalSessionsForChat.mockImplementation(() => {
+      order.push("stop-terminals");
+      return 1;
+    });
+    renderAppShell();
+
+    const outcome = await getAppNavigationController().archiveSession(
+      "session-1",
+      "reject",
+    );
+
+    expect(outcome).toEqual({ ok: true });
+    // An archived chat leaves the sidebar, so a shell still running under it
+    // would have no UI left to stop it from.
+    expect(mockStopTerminalSessionsForChat).toHaveBeenCalledWith("session-1");
+    expect(order).toEqual(["archive", "stop-terminals"]);
+  });
+
+  it("keeps the terminals of a chat whose archive failed", async () => {
+    useChatSessionStore.setState({
+      sessions: [
+        {
+          id: "session-1",
+          title: "Dev server",
+          executionTarget: { harnessId: "claude-acp" },
+          createdAt: "2026-07-10T00:00:00.000Z",
+          updatedAt: "2026-07-10T00:00:00.000Z",
+          messageCount: 1,
+        },
+      ],
+    });
+    mockAcpArchiveSession.mockRejectedValue(new Error("offline"));
+    renderAppShell();
+
+    const outcome = await getAppNavigationController().archiveSession(
+      "session-1",
+      "reject",
+    );
+
+    expect(outcome).toEqual({ ok: false, reason: "backend_archive_failed" });
+    expect(mockStopTerminalSessionsForChat).not.toHaveBeenCalled();
+  });
+
+  it("auto-archives a worktree chat without inspecting its Git resources", async () => {
+    const worktreePath = "/repo-worktrees/idle";
+    useChatStore.setState({ hasHydratedMessageQueues: true });
+    useChatSessionStore.setState({
+      sessions: [
+        {
+          id: "session-1",
+          title: "Idle worktree chat",
+          executionTarget: { harnessId: "claude-acp" },
+          workingDir: worktreePath,
+          workspaceAttachments: [
+            {
+              id: `path:${worktreePath}`,
+              path: worktreePath,
+              kind: "git-linked-worktree",
+              source: "created",
+              branch: "idle",
+              repositoryPath: "/repo",
+              worktreePath,
+              usedByAgent: true,
+              lifecycle: {
+                owner: "distill",
+                cleanup: "worktree",
+                branch: "idle",
+                baseBranch: "main",
+                repositoryPath: "/repo",
+                worktreePath,
+                createdBranch: true,
+              },
+            },
+          ],
+          createdAt: "2026-07-10T00:00:00.000Z",
+          updatedAt: "2026-07-10T00:00:00.000Z",
+          messageCount: 1,
+        },
+      ],
+    });
+    setAutoArchiveAfter("7-days");
+    renderAppShell();
+
+    await waitFor(() => {
+      expect(mockAcpArchiveSession).toHaveBeenCalledWith("session-1");
+    });
+    // The sweep never removes a worktree or branch, so there is no plan to
+    // inspect: no second pagination per candidate, no Git probe, and the
+    // worktree stays exactly where it is.
+    expect(gitMocks.getGitState).not.toHaveBeenCalled();
+    expect(gitMocks.removeWorktree).not.toHaveBeenCalled();
+    expect(mockAcpListSessionsPage).toHaveBeenCalledTimes(1);
   });
 
   it("rejects noninteractive archive before local-file loss", async () => {
