@@ -8,12 +8,32 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
 
 use super::harness::HarnessSpec;
 use super::protocol::{self, Message};
+
+/// How long a freshly started bridge gets to answer `initialize`. A process
+/// that is alive but silent — a CLI waiting on a login prompt or a TTY,
+/// reading our JSON as its input — never closes stdout, so without a
+/// deadline it would hold its harness (and every caller queued on the spawn
+/// lock) forever.
+const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
+/// The deadline for every other request but `session/prompt`, which runs
+/// for as long as the agent works on the turn.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How long a bridge gets to answer `method`; `None` is unbounded.
+fn request_deadline(method: &str) -> Option<Duration> {
+    if method == "session/prompt" {
+        None
+    } else {
+        Some(REQUEST_TIMEOUT)
+    }
+}
 
 pub enum BridgeEvent {
     Notification {
@@ -254,7 +274,7 @@ impl Bridge {
         });
 
         let init = bridge
-            .request(
+            .request_within(
                 "initialize",
                 json!({
                     "protocolVersion": 1,
@@ -267,9 +287,13 @@ impl Bridge {
                         "version": env!("CARGO_PKG_VERSION")
                     }
                 }),
+                Some(INITIALIZE_TIMEOUT),
             )
             .await
             .map_err(|error| {
+                // Whatever the process is doing, it is not speaking ACP to
+                // us: do not leave it running behind the error.
+                bridge.kill();
                 format!(
                     "{} bridge failed to initialize: {}",
                     spec.label,
@@ -297,7 +321,22 @@ impl Bridge {
             .unwrap_or(false)
     }
 
+    /// Send `method` and wait for its answer, for as long as a request of
+    /// that method is allowed to take (see [`request_deadline`]).
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, Value> {
+        self.request_within(method, params, request_deadline(method))
+            .await
+    }
+
+    /// [`request`](Self::request) with an explicit deadline; `None` waits
+    /// until the bridge answers or exits. A request that runs out of time
+    /// fails and is forgotten: a late answer is logged as unknown.
+    pub async fn request_within(
+        &self,
+        method: &str,
+        params: Value,
+        deadline: Option<Duration>,
+    ) -> Result<Value, Value> {
         if !self.is_alive() {
             return Err(protocol::internal(format!(
                 "{} bridge is not running",
@@ -311,20 +350,38 @@ impl Bridge {
         }
         let line = protocol::request(json!(id), method, params);
         if self.writer.send(line).is_err() {
-            if let Ok(mut pending) = self.pending.lock() {
-                pending.remove(&id);
-            }
+            self.forget(id);
             return Err(protocol::internal(format!(
                 "{} bridge stdin closed",
                 self.harness
             )));
         }
-        rx.await.unwrap_or_else(|_| {
+        let answer = match deadline {
+            Some(deadline) => match tokio::time::timeout(deadline, rx).await {
+                Ok(answer) => answer,
+                Err(_) => {
+                    self.forget(id);
+                    return Err(protocol::internal(format!(
+                        "{} bridge did not answer {method} within {} seconds",
+                        self.harness,
+                        deadline.as_secs()
+                    )));
+                }
+            },
+            None => rx.await,
+        };
+        answer.unwrap_or_else(|_| {
             Err(protocol::internal(format!(
                 "{} bridge dropped the request",
                 self.harness
             )))
         })
+    }
+
+    fn forget(&self, id: u64) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.remove(&id);
+        }
     }
 
     pub fn notify(&self, method: &str, params: Value) {
@@ -404,6 +461,60 @@ pub fn is_installed(spec: &HarnessSpec, env: &SpawnEnv) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bridge with no process behind it: whatever is written to it lands
+    /// in the returned receiver, and nothing ever answers.
+    fn silent_bridge() -> (Bridge, mpsc::UnboundedReceiver<String>) {
+        let (writer, written) = mpsc::unbounded_channel();
+        let bridge = Bridge {
+            harness: "test-acp".to_string(),
+            agent_capabilities: RwLock::new(Value::Null),
+            writer,
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            next_id: AtomicU64::new(1),
+            alive: Arc::new(AtomicBool::new(true)),
+            child: Mutex::new(None),
+        };
+        (bridge, written)
+    }
+
+    fn pending_count(bridge: &Bridge) -> usize {
+        bridge
+            .pending
+            .lock()
+            .map(|pending| pending.len())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn only_a_prompt_may_run_for_as_long_as_it_takes() {
+        assert_eq!(request_deadline("session/prompt"), None);
+        assert_eq!(request_deadline("session/new"), Some(REQUEST_TIMEOUT));
+        assert_eq!(request_deadline("session/load"), Some(REQUEST_TIMEOUT));
+        assert_eq!(request_deadline("session/set_mode"), Some(REQUEST_TIMEOUT));
+        assert_eq!(request_deadline("initialize"), Some(REQUEST_TIMEOUT));
+    }
+
+    #[tokio::test]
+    async fn a_request_the_bridge_never_answers_fails_at_its_deadline() {
+        let (bridge, mut written) = silent_bridge();
+        let error = bridge
+            .request_within(
+                "session/new",
+                json!({ "cwd": "C:\\work" }),
+                Some(Duration::from_millis(20)),
+            )
+            .await
+            .expect_err("no answer");
+        assert!(
+            error_text(&error).contains("did not answer session/new"),
+            "{error}"
+        );
+        // The request went out, and its slot is not kept for a late answer.
+        let line = written.recv().await.expect("written");
+        assert!(line.contains("\"method\":\"session/new\""));
+        assert_eq!(pending_count(&bridge), 0);
+    }
 
     #[tokio::test]
     async fn a_line_that_is_not_utf8_does_not_end_the_stream() {
