@@ -539,7 +539,9 @@
           "acceptedWithMissingArtifacts": "The conductor accepted the result, but the reports named files that are not on disk, so the acceptance was not honoured.",
           "waveInterrupted": "This wave was interrupted before any executor reported back, so there is nothing to judge. Its work was not finished.",
           "operatorStopped": "You stopped this wave. Its executors were told to stop, and nothing was digested or judged.",
-          "stepBlocked": "An executor reported it cannot do its step, so the wave was stopped."
+          "stepBlocked": "An executor reported it cannot do its step, so the wave was stopped.",
+          "digestLost": "The brigade's report was never delivered to the conductor — it was cleared from the queue before it was sent — so nothing was decided. Asking again below re-sends it.",
+          "verdictUnanswered": "The conductor never answered the brigade's report, so nothing was decided. Its turn on the report ended without a reply. Asking again below re-sends it."
         },
         "prose": {
           "accept": "Accepted the brigade's result.",
@@ -575,7 +577,8 @@
         "tokens": "{{spent}} of {{allowed}} tokens",
         "minutes": "{{spent}} of {{allowed}} minutes"
       },
-      "closeout": "The summary of this request was written to {{path}}. It is an ordinary file — commit it with the work so the next person has it."
+      "closeout": "The summary of this request was written to {{path}}. It is an ordinary file — commit it with the work so the next person has it.",
+      "awaitingVerdict": "The brigade has finished; this chat is waiting for the conductor's verdict."
     },
     "spawnAcl": {
       "deniedTitle": "A session asked to start an agent it is not allowed to start, so nothing was started.",

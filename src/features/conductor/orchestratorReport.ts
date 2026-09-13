@@ -18,6 +18,53 @@ const REPORT_FENCE_PATTERN = /```distill-report\s*([\s\S]*?)```/i;
 export const MAX_BLOCKED_REASON_LENGTH = 500;
 
 /**
+ * Cap on a report's `summary`, and on each entry of its list fields.
+ *
+ * The summary falls back to the worker's entire final message when the fence is
+ * missing or unparseable, and from there it is quoted verbatim into the digest,
+ * into every later `access: "all"` step's prompt as escaped JSON, into
+ * `carriedReports` in waves.json on a revision, and into the task-memory file.
+ * A worker that pasted a 60 KB file listing into its last message therefore
+ * bought four copies of it, one of them persisted. Truncated rather than
+ * refused, like the blocked reason: the tail of an oversized summary is
+ * recoverable from the worker's own chat, the report is not.
+ *
+ * Generous on purpose — a real summary is a paragraph or three, and this is an
+ * order of magnitude above that.
+ */
+export const MAX_REPORT_SUMMARY_LENGTH = 4_000;
+
+/** Cap on one decision, risk or artifact label. Each is a line, not an essay. */
+export const MAX_REPORT_ENTRY_LENGTH = 500;
+
+/**
+ * Cap on how many decisions, risks or artifacts one report may carry.
+ *
+ * A report that named forty risks has a different problem from one that named
+ * three, and the count is what says that — the fortieth line does not.
+ */
+export const MAX_REPORT_LIST_ENTRIES = 40;
+
+/** The marker an oversized field ends with, so nothing reads as complete. */
+export const TRUNCATION_MARKER = " […truncated]";
+
+function cappedText(value: string, limit: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= limit) return trimmed;
+  return `${trimmed.slice(0, limit)}${TRUNCATION_MARKER}`;
+}
+
+function cappedList(values: readonly string[]): string[] {
+  const entries = values
+    .slice(0, MAX_REPORT_LIST_ENTRIES)
+    .map((entry) => cappedText(entry, MAX_REPORT_ENTRY_LENGTH));
+  const dropped = values.length - entries.length;
+  return dropped > 0
+    ? [...entries, `…and ${dropped} more, not shown.`]
+    : entries;
+}
+
+/**
  * Stand-in reason for a `blocked` report whose worker gave none.
  *
  * A blocked report with no reason still blocks — downgrading it to "done"
@@ -92,10 +139,12 @@ export function parseStructuredReport(
       // unfenced path already does) keeps every report's summary non-empty:
       // an empty one reads as "no report yet" to every consumer, and one of
       // them re-attached it on every graph pass until the renderer crashed.
-      const summary =
+      const summary = cappedText(
         typeof parsed.summary === "string" && parsed.summary.trim()
-          ? parsed.summary.trim()
-          : stripReportFence(assistantText) || assistantText.trim();
+          ? parsed.summary
+          : stripReportFence(assistantText) || assistantText,
+        MAX_REPORT_SUMMARY_LENGTH,
+      );
       const claimedStatus = (parsed as { status?: unknown }).status;
       const reportedStatus =
         claimedStatus === "completed" ||
@@ -120,35 +169,45 @@ export function parseStructuredReport(
           ? { reason: blockedReasonOf((parsed as { reason?: unknown }).reason) }
           : {}),
         summary,
-        decisions: Array.isArray(parsed.decisions)
-          ? parsed.decisions.filter(
-              (item): item is string => typeof item === "string",
-            )
-          : [],
-        artifacts: Array.isArray(parsed.artifacts)
+        decisions: cappedList(
+          Array.isArray(parsed.decisions)
+            ? parsed.decisions.filter(
+                (item): item is string => typeof item === "string",
+              )
+            : [],
+        ),
+        artifacts: (Array.isArray(parsed.artifacts)
           ? parsed.artifacts.flatMap((item) => {
               if (!item || typeof item !== "object") return [];
               const artifact = item as StructuredReport["artifacts"][number];
               if (typeof artifact.label !== "string") return [];
               return [
                 {
-                  label: artifact.label,
+                  label: cappedText(artifact.label, MAX_REPORT_ENTRY_LENGTH),
                   ...(typeof artifact.path === "string"
-                    ? { path: artifact.path }
+                    ? {
+                        path: cappedText(
+                          artifact.path,
+                          MAX_REPORT_ENTRY_LENGTH,
+                        ),
+                      }
                     : {}),
                   ...(typeof artifact.url === "string"
-                    ? { url: artifact.url }
+                    ? { url: cappedText(artifact.url, MAX_REPORT_ENTRY_LENGTH) }
                     : {}),
                 },
               ];
             })
-          : [],
+          : []
+        ).slice(0, MAX_REPORT_LIST_ENTRIES),
         risks: [
-          ...(Array.isArray(parsed.risks)
-            ? parsed.risks.filter(
-                (item): item is string => typeof item === "string",
-              )
-            : []),
+          ...cappedList(
+            Array.isArray(parsed.risks)
+              ? parsed.risks.filter(
+                  (item): item is string => typeof item === "string",
+                )
+              : [],
+          ),
           ...statusRisks,
         ],
         // A blocked step is by definition the operator's to unblock, whatever
@@ -157,7 +216,7 @@ export function parseStructuredReport(
           parsed.needsOperator === true || reportedStatus === "blocked",
         nextSuggestedTask:
           typeof parsed.nextSuggestedTask === "string"
-            ? parsed.nextSuggestedTask
+            ? cappedText(parsed.nextSuggestedTask, MAX_REPORT_ENTRY_LENGTH)
             : null,
       };
     } catch {
@@ -168,7 +227,10 @@ export function parseStructuredReport(
   return {
     runId,
     status,
-    summary: stripReportFence(assistantText) || assistantText.trim(),
+    summary: cappedText(
+      stripReportFence(assistantText) || assistantText,
+      MAX_REPORT_SUMMARY_LENGTH,
+    ),
     decisions: [],
     artifacts: [],
     risks: [],

@@ -24,6 +24,7 @@ import {
 } from "@/shared/types/messages";
 
 import {
+  hasConductorGraphHydrationFailed,
   isConductorGraphHydrated,
   useConductorGraphStore,
   whenConductorGraphHydrated,
@@ -47,7 +48,10 @@ import { startWaveGitProbe } from "./waveGitProbe";
 import {
   bumpWaveTelemetryCounter,
   countPlanlessConductorTurn,
+  hasWaveTelemetryHydrationFailed,
+  isWaveTelemetryHydrated,
   recordWaveClose,
+  whenWaveTelemetryHydrated,
 } from "./waveTelemetryStore";
 import {
   processWaveDigests,
@@ -92,12 +96,15 @@ import {
 import { resetConductorTranscriptsForTests } from "./waveTranscripts";
 import {
   getWaveEngineState,
+  hasWaveEngineStateHydrationFailed,
   hasWaveTombstone,
+  isSupersededPlanMessage,
   isWaveEngineStateHydrated,
   pruneOrphanedWaves,
   setWaveEngineState,
   updateWaveEngineState,
   whenWaveEngineStateHydrated,
+  withProcessedMessageWatermark,
   withWave,
   withWaveTombstone,
   withoutParkedWavesFor,
@@ -135,7 +142,34 @@ let ticking = false;
 let awaitingWaveHydration = false;
 
 function conductorDocumentsHydrated(): boolean {
-  return isWaveEngineStateHydrated() && isConductorGraphHydrated();
+  return (
+    isWaveEngineStateHydrated() &&
+    isConductorGraphHydrated() &&
+    // Telemetry too, and for a reason of its own: the first tick of a session
+    // whose active chat is a conductor counts that transcript's planless turns
+    // and any wave it admits, and the lifetime counters those land on used to
+    // be *replaced* by this session's few when telemetry.json arrived a moment
+    // later (admittedWaves 300 → 1). A counter that only ever goes up is worth
+    // one wake-up. A telemetry read that gave up does not hold the engine:
+    // unlike the other two, nothing about correctness depends on it.
+    (isWaveTelemetryHydrated() || hasWaveTelemetryHydrationFailed())
+  );
+}
+
+/**
+ * True when the startup hydration gave up on either document.
+ *
+ * The engine then stays off for the session. A file that could not be read
+ * is not a file that held nothing: a tick on the empty in-memory copy would
+ * re-admit every plan in every loaded conductor transcript (no tombstones),
+ * reset every `spawning` step whose child is on disk, and the first write
+ * would replace the only copy of it all. Doing nothing is the only honest
+ * move, and the startup log says why.
+ */
+function conductorDocumentsUnreadable(): boolean {
+  return (
+    hasWaveEngineStateHydrationFailed() || hasConductorGraphHydrationFailed()
+  );
 }
 
 /**
@@ -388,7 +422,7 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
   const candidates = detectWavePlanCandidates({
     conductorSessionIds: conductors.map((node) => node.sessionId),
     messagesBySession: chat.messagesBySession,
-    isProcessed: (planMessageId) =>
+    isProcessed: (planMessageId, context) =>
       scannedWithoutPlan.has(planMessageId) ||
       inFlightPlans.has(planMessageId) ||
       hasWaveTombstone(state, planMessageId) ||
@@ -396,7 +430,17 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       // the tombstone cannot give once the tombstone list has evicted it
       // (P19a). Without this an old plan message could be re-admitted as a
       // second wave beside the one it already produced.
-      state.waves.some((wave) => wave.planMessageId === planMessageId),
+      state.waves.some((wave) => wave.planMessageId === planMessageId) ||
+      // The guard that outlives the tombstones: a plan older than the newest
+      // message this engine has already handled for this conductor cannot be
+      // new, whatever the tombstone list still remembers. Without it, opening
+      // an old conductor chat after the cap evicted its tombstones replays its
+      // first plan as a fresh root request and spawns real workers from it.
+      isSupersededPlanMessage(
+        state,
+        context.conductorSessionId,
+        context.createdAt,
+      ),
     markScanned: (messageId, context) => {
       scannedWithoutPlan.add(messageId);
       // The wave-rate denominator: a settled conductor turn that answered
@@ -420,12 +464,16 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
     // error because nobody did anything wrong.
     const liveWave = liveWaveFor(next, candidate.conductorSessionId);
     if (liveWave) {
-      next = withWaveTombstone(next, {
-        planMessageId: candidate.planMessageId,
-        conductorSessionId: candidate.conductorSessionId,
-        outcome: "rejected",
-        at: Date.now(),
-      });
+      next = withProcessedMessageWatermark(
+        withWaveTombstone(next, {
+          planMessageId: candidate.planMessageId,
+          conductorSessionId: candidate.conductorSessionId,
+          outcome: "rejected",
+          at: Date.now(),
+        }),
+        candidate.conductorSessionId,
+        candidate.createdAt,
+      );
       setWaveEngineState(next);
       bumpWaveTelemetryCounter("concurrentRefusals");
       noteConcurrentRefusal(
@@ -446,12 +494,16 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
     if (admission.kind === "rejected") {
       // Tombstone first: a rejected plan must never re-error, even if
       // appending the notice throws.
-      next = withWaveTombstone(next, {
-        planMessageId: candidate.planMessageId,
-        conductorSessionId: candidate.conductorSessionId,
-        outcome: "rejected",
-        at: Date.now(),
-      });
+      next = withProcessedMessageWatermark(
+        withWaveTombstone(next, {
+          planMessageId: candidate.planMessageId,
+          conductorSessionId: candidate.conductorSessionId,
+          outcome: "rejected",
+          at: Date.now(),
+        }),
+        candidate.conductorSessionId,
+        candidate.createdAt,
+      );
       setWaveEngineState(next);
       bumpWaveTelemetryCounter("rejectedPlans");
       appendConductorNotice(
@@ -488,12 +540,16 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       // A new plan is a new root request, so this conductor's wave parked on
       // `needsOperator` (and the retry it backed) is stale and goes away.
       withoutParkedWavesFor(
-        withWaveTombstone(next, {
-          planMessageId: candidate.planMessageId,
-          conductorSessionId: candidate.conductorSessionId,
-          outcome: "spawned",
-          at: Date.now(),
-        }),
+        withProcessedMessageWatermark(
+          withWaveTombstone(next, {
+            planMessageId: candidate.planMessageId,
+            conductorSessionId: candidate.conductorSessionId,
+            outcome: "spawned",
+            at: Date.now(),
+          }),
+          candidate.conductorSessionId,
+          candidate.createdAt,
+        ),
         candidate.conductorSessionId,
       ),
       wave,
@@ -671,6 +727,11 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
         // the conductor", which is what every wave child did before rankings
         // reached this path.
         ...(executionTarget ? { executionTarget } : {}),
+        // P36: the profile the step was routed by names a model *and* an
+        // effort, and only codex-style ids carry the effort with the model.
+        // A step whose model came from the plan carries no ranked effort —
+        // the plan pinned the model, not how hard to think about it.
+        ...(stepTarget?.effort ? { reasoningEffort: stepTarget.effort } : {}),
         task: request.step.subtask,
         prompt: buildWaveStepPrompt(step, request.previousReports, {
           stepIndex: request.stepIndex,
@@ -1000,19 +1061,29 @@ export function runWaveEngineTick(): void {
   if (ticking) return;
   if (!useChatSessionStore.getState().hasHydratedSessions) return;
   if (!conductorDocumentsHydrated()) {
+    // A document the startup hydration could not read, even after retrying:
+    // the engine stays off rather than run on an empty copy of it.
+    if (conductorDocumentsUnreadable()) return;
     // The folder's waves, tombstones and graph are not all in memory yet: a
     // tick now would re-admit plans the tombstones record, or reset a
     // `spawning` step whose child is in the graph file and spawn it twice.
-    // One wake-up once both have landed.
+    // One wake-up once both have landed. Each waiter fires exactly once, when
+    // its document settles — read, or given up on — so the wake that finds
+    // one still pending leaves the other waiter to finish the job.
     if (!awaitingWaveHydration) {
       awaitingWaveHydration = true;
       const wake = () => {
+        if (conductorDocumentsUnreadable()) {
+          awaitingWaveHydration = false;
+          return;
+        }
         if (!conductorDocumentsHydrated()) return;
         awaitingWaveHydration = false;
         runWaveEngineTick();
       };
       whenWaveEngineStateHydrated(wake);
       whenConductorGraphHydrated(wake);
+      whenWaveTelemetryHydrated(wake);
     }
     return;
   }
@@ -1049,8 +1120,15 @@ export function runWaveEngineTick(): void {
     setWaveEngineState(digested.state);
     // P61's heartbeat: a wedged child streams nothing, and nothing else
     // re-ticks a quiet engine — so as long as any wave is running, the next
-    // stall sample is guaranteed a wake-up. One timer, self-rearming.
-    if (digested.state.waves.some((wave) => wave.phase === "running")) {
+    // stall sample is guaranteed a wake-up. One timer, self-rearming. A wave
+    // waiting on a verdict needs the same heartbeat for the same reason: a
+    // conductor that will never answer changes nothing, so without a wake-up
+    // the silence samples would never be taken and the wave would sit live.
+    if (
+      digested.state.waves.some(
+        (wave) => wave.phase === "running" || wave.phase === "awaitingVerdict",
+      )
+    ) {
       scheduleStallTick(WAVE_STALL_SAMPLE_MS);
     }
     pending = advanced.pending;

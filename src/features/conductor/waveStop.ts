@@ -20,10 +20,15 @@
  * - **Late spawns are covered elsewhere.** A spawn still in flight when the
  *   stop lands resolves into a wave that is no longer `running`, and the
  *   runner's adoption guard stops that session instead of adopting it.
- * - **Only `running` waves.** Past `running` there is nothing left to stop —
- *   the workers are done and the digest/verdict cycle is between the app and
- *   the conductor. The parked wave is cleaned up by the same rule as every
- *   other `needsOperator` wave: the conductor's next admitted plan sweeps it.
+ * - **Any live wave.** It used to be `running` only, on the reasoning that
+ *   past `running` there is nothing left to stop. There is: the wave itself.
+ *   A wave waiting on a digest or a verdict holds the conductor's only wave
+ *   slot, so every later plan it makes is refused as concurrent — and if the
+ *   answer never comes, that is permanent. The operator's lever has to reach
+ *   the states where the loop can actually get stuck, not only the one where
+ *   there are workers to interrupt. The parked wave is cleaned up by the same
+ *   rule as every other `needsOperator` wave: the conductor's next admitted
+ *   plan sweeps it.
  */
 
 import { useChatStore } from "@/features/chat/stores/chatStore";
@@ -37,6 +42,7 @@ import {
   type WaveState,
 } from "./waveEngine";
 import { waveClosureNoticeText } from "./waveNotices";
+import { isWaveLive } from "./waveVerdict";
 import { updateWaveEngineState, withWave } from "./waveStore";
 import { recordWaveClose } from "./waveTelemetryStore";
 
@@ -69,7 +75,7 @@ export function stopWaveChildSessions(wave: WaveState): void {
  *
  * Returns `true` when the wave was stopped, `false` when there was nothing to
  * stop — the wave is gone, belongs to another conductor, or has already left
- * `running`. The false case is deliberate silence: the operator may be
+ * the live phases. The false case is deliberate silence: the operator may be
  * pressing a button rendered for a state that has since moved on, and the
  * honest response to that is "nothing happened", not a second notice.
  */
@@ -78,7 +84,7 @@ export function stopWaveByOperator(sessionId: string, waveId: string): boolean {
   updateWaveEngineState((state) => {
     const wave = state.waves.find((candidate) => candidate.waveId === waveId);
     if (!wave || wave.conductorSessionId !== sessionId) return state;
-    if (wave.phase !== "running") return state;
+    if (!isWaveLive(wave)) return state;
     parked = withWavePhase(wave, "needsOperator");
     return withWave(state, parked);
   });

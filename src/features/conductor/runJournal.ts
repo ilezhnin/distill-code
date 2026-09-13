@@ -1,7 +1,10 @@
 import { isDesktopRuntime } from "@/shared/api/distillStore";
 import { distillDocument } from "@/shared/lib/distillDocument";
 
-import { useConductorGraphStore } from "./conductorGraphStore";
+import {
+  isConductorGraphHydrating,
+  useConductorGraphStore,
+} from "./conductorGraphStore";
 import type { SessionNode, StructuredReport } from "./types";
 import type { WaveState } from "./waveEngine";
 import {
@@ -424,6 +427,17 @@ export function installRunJournal(): () => void {
       state.nodesById === previousNodes &&
       state.reportsByRunId === previousReports
     ) {
+      return;
+    }
+    // The same rule as the wave store's `hydration` notice, one level down:
+    // the folder's nodes and reports joining memory are not transitions this
+    // run observed. Diffing them against the baseline this journal installed
+    // with wrote a "spawned now" and a "report arrived now" for every executor
+    // of every persisted wave, at startup, into a record that is supposed to
+    // say what actually happened.
+    if (isConductorGraphHydrating()) {
+      previousNodes = state.nodesById;
+      previousReports = state.reportsByRunId;
       return;
     }
     const waveById = new Map(

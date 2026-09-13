@@ -41,6 +41,7 @@
  * `admitCandidates` looks, that message id is already spent.
  */
 
+import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
@@ -84,8 +85,10 @@ import {
 } from "./waveNotices";
 import {
   decideWaveVerdict,
+  digestLostDecision,
   digestUndeliverableDecision,
   isWaveRetired,
+  verdictUnansweredDecision,
   waveInterruptedDecision,
   type WaveVerdictDecision,
 } from "./waveVerdict";
@@ -102,6 +105,7 @@ import { readConductorTranscript } from "./waveTranscripts";
 import {
   setWaveEngineState,
   updateWaveEngineState,
+  withProcessedMessageWatermark,
   withWave,
   withWaveTombstone,
   withoutWave,
@@ -249,6 +253,117 @@ function markWaveReportsPublished(wave: WaveState): void {
 }
 
 /**
+ * One sample per this much wall clock before a wave waiting on a verdict that
+ * is never coming is parked.
+ *
+ * Sized like the stall detector's window, and for the same reason: the states
+ * this watches — "the queue no longer holds the digest", "the conductor is
+ * idle and has not answered" — are both true for a moment in the healthy path,
+ * between a digest being committed and the turn on it starting. Two samples a
+ * minute apart cannot be that moment.
+ */
+export const WAVE_VERDICT_SILENCE_SAMPLE_MS = 60_000;
+
+/** Consecutive silent samples that park the wave. */
+export const WAVE_VERDICT_SILENCE_THRESHOLD = 2;
+
+/** `waveId#attempt` → how long this wave has looked unanswerable. */
+const verdictSilence = new Map<string, { strikes: number; at: number }>();
+
+/**
+ * Records one "this verdict is not coming" observation for a wave and says
+ * whether enough of them have piled up, far enough apart, to act on.
+ */
+function noteVerdictSilence(wave: WaveState): boolean {
+  const key = digestKey(wave.waveId, wave.digestAttempt);
+  const now = Date.now();
+  const seen = verdictSilence.get(key);
+  if (!seen) {
+    verdictSilence.set(key, { strikes: 1, at: now });
+    return false;
+  }
+  if (now - seen.at < WAVE_VERDICT_SILENCE_SAMPLE_MS) {
+    return seen.strikes >= WAVE_VERDICT_SILENCE_THRESHOLD;
+  }
+  const strikes = seen.strikes + 1;
+  verdictSilence.set(key, { strikes, at: now });
+  return strikes >= WAVE_VERDICT_SILENCE_THRESHOLD;
+}
+
+/** Forgets a wave's samples: whatever looked lost is back. */
+function clearVerdictSilence(wave: WaveState): void {
+  verdictSilence.delete(digestKey(wave.waveId, wave.digestAttempt));
+}
+
+/** True while the conductor's queue still holds this wave's digest. */
+function isDigestQueued(conductorSessionId: string, marker: string): boolean {
+  const queued =
+    useChatStore.getState().queuedMessageBySession[conductorSessionId] ?? [];
+  return queued.some(
+    (record) =>
+      record.kind === "transport-ready" && record.payload.text.includes(marker),
+  );
+}
+
+/**
+ * True while the conductor could still be about to answer: it is working, or
+ * it has something queued that will put it to work.
+ */
+function conductorMayStillAnswer(conductorSessionId: string): boolean {
+  const chat = useChatStore.getState();
+  if ((chat.queuedMessageBySession[conductorSessionId]?.length ?? 0) > 0) {
+    return true;
+  }
+  return isSessionRunning(chat.getSessionRuntime(conductorSessionId).chatState);
+}
+
+/**
+ * Parks a wave whose verdict will never arrive, and offers the re-ask.
+ *
+ * Phase first, notice second, like every other transition here: the persisted
+ * park is what stops the next tick from repeating the whole judgement.
+ */
+function parkUndecidedWave(
+  state: WaveEngineState,
+  wave: WaveState,
+  decision: WaveVerdictDecision,
+): WaveEngineState {
+  clearVerdictSilence(wave);
+  const parked = withWavePhase(
+    withVerdictIssue(wave, decision.verdictIssue),
+    decision.phase,
+  );
+  const next = withWave(state, parked);
+  setWaveEngineState(next);
+  recordWaveClose(
+    parked,
+    "needs-operator",
+    decision.closure?.reason ?? "verdict-missing",
+  );
+  void recordTaskMemoryVerdict({
+    conductorSessionId: wave.conductorSessionId,
+    rootRequestId: wave.rootRequestId,
+    waveId: wave.waveId,
+    verdict: "needs-operator",
+  });
+  if (decision.closure) {
+    appendNotice(
+      wave.conductorSessionId,
+      waveClosureNoticeText(decision.closure),
+      "error",
+      decision.offerRetry
+        ? {
+            type: "retryWaveDigest",
+            sessionId: wave.conductorSessionId,
+            waveId: wave.waveId,
+          }
+        : undefined,
+    );
+  }
+  return next;
+}
+
+/**
  * Verdict pass. Runs first in the tick.
  *
  * For every wave in `awaitingVerdict`, finds its digest by marker and reads the
@@ -272,22 +387,57 @@ export function processWaveVerdicts(
     );
     if (transcript.kind === "unknown") continue;
     const messages = transcript.messages;
-    const digestIndex = findDigestMessageIndex(
-      messages,
-      waveDigestMarker(wave.waveId, wave.digestAttempt),
-    );
-    if (digestIndex < 0) continue;
+    const marker = waveDigestMarker(wave.waveId, wave.digestAttempt);
+    const digestIndex = findDigestMessageIndex(messages, marker);
+    if (digestIndex < 0) {
+      // The digest is in neither the transcript nor the queue: it was cleared
+      // from the queue, or the session it was queued on is gone. Nothing will
+      // ever answer it, and a live wave the conductor cannot close refuses
+      // every later plan it makes — so the wave is parked and the operator is
+      // given the same "ask again" button an unreadable verdict earns (WAVES:
+      // an undecided wave MUST offer the operator the ability to ask again).
+      if (isDigestQueued(wave.conductorSessionId, marker)) {
+        clearVerdictSilence(wave);
+        continue;
+      }
+      if (noteVerdictSilence(wave)) {
+        next = parkUndecidedWave(next, wave, digestLostDecision());
+      }
+      continue;
+    }
     const answer = findVerdictMessageAfter(messages, digestIndex);
-    if (!answer) continue;
+    if (!answer) {
+      // The digest landed and no answer followed it. While the conductor is
+      // working, that is the normal state of the loop; once it is idle or in
+      // error with nothing queued, its turn on the digest is over and it
+      // produced no answer — a failed turn, or one lost with a previous
+      // process. Sampled over a minute apiece so the window between the
+      // digest being committed and the turn starting is never mistaken for it.
+      if (conductorMayStillAnswer(wave.conductorSessionId)) {
+        clearVerdictSilence(wave);
+        continue;
+      }
+      if (noteVerdictSilence(wave)) {
+        next = parkUndecidedWave(next, wave, verdictUnansweredDecision());
+      }
+      continue;
+    }
+    clearVerdictSilence(wave);
 
     // Tombstone before deciding: this message is the wave's verdict and is
-    // never a plan, whatever fences it carries.
-    next = withWaveTombstone(next, {
-      planMessageId: answer.id,
-      conductorSessionId: wave.conductorSessionId,
-      outcome: "spawned",
-      at: Date.now(),
-    });
+    // never a plan, whatever fences it carries. The watermark moves with it,
+    // so a verdict whose tombstone is evicted years later is still not read as
+    // a plan the next time this chat is opened.
+    next = withProcessedMessageWatermark(
+      withWaveTombstone(next, {
+        planMessageId: answer.id,
+        conductorSessionId: wave.conductorSessionId,
+        outcome: "spawned",
+        at: Date.now(),
+      }),
+      wave.conductorSessionId,
+      answer.created,
+    );
     setWaveEngineState(next);
 
     const decision = decideWaveVerdict({
@@ -441,7 +591,6 @@ export function processWaveDigests(
   state: WaveEngineState;
   pending: PendingDigestDispatch[];
 } {
-  const chat = useChatStore.getState();
   let next = state;
   const pending: PendingDigestDispatch[] = [];
 
@@ -508,14 +657,7 @@ export function processWaveDigests(
         next = withWave(next, withWavePhase(wave, "awaitingVerdict"));
         continue;
       }
-      const queued = chat.queuedMessageBySession[wave.conductorSessionId] ?? [];
-      if (
-        queued.some(
-          (record) =>
-            record.kind === "transport-ready" &&
-            record.payload.text.includes(marker),
-        )
-      ) {
+      if (isDigestQueued(wave.conductorSessionId, marker)) {
         // Still parked in the parent's queue; it will commit when it drains.
         continue;
       }
@@ -666,6 +808,7 @@ export function startDigestDispatch(
 /** Clears the process-local guards. Tests only. */
 export function resetWaveLifecycleForTests(): void {
   inFlightDigests.clear();
+  verdictSilence.clear();
   resetWaveGitProbeForTests();
   resetWaveArtifactProbeForTests();
   resetWaveTelemetryForTests();
