@@ -89,6 +89,19 @@ pub struct SessionRuntime {
     has_model_option: bool,
 }
 
+impl SessionRuntime {
+    /// The bridge session calls on this session go to. There is none while
+    /// the session is still being attached: the bridge has not accepted the
+    /// stored id yet (and may never), so a caller waits on the attach lock
+    /// instead of routing at a session the bridge does not know.
+    fn route(&self) -> Option<(String, String)> {
+        if self.loading {
+            return None;
+        }
+        Some((self.harness.clone(), self.bridge_session_id.clone()))
+    }
+}
+
 pub struct Inner {
     pub app: tauri::AppHandle,
     pub store: SessionStore,
@@ -568,9 +581,7 @@ impl Inner {
 
     async fn runtime_route(&self, session_id: &str) -> Option<(String, String)> {
         let sessions = self.sessions.lock().await;
-        sessions
-            .get(session_id)
-            .map(|runtime| (runtime.harness.clone(), runtime.bridge_session_id.clone()))
+        sessions.get(session_id).and_then(SessionRuntime::route)
     }
 
     async fn on_bridge_notification(&self, harness: &str, method: &str, mut params: Value) {
@@ -983,12 +994,11 @@ impl Inner {
         let spec = harness::harness(&record.harness)
             .ok_or_else(|| invalid_params(format!("Unknown harness {}", record.harness)))?;
         let bridge = self.ensure_bridge(&record.harness).await?;
-        let mcp_servers = self.mcp_servers(&Value::Null).await;
         let stored_bridge_id = record
             .bridge_session_id
             .clone()
             .unwrap_or_else(|| record.id.clone());
-        let mut snapshot = record
+        let snapshot = record
             .snapshot
             .clone()
             .unwrap_or_else(|| Self::snapshot_from(&Value::Null));
@@ -1007,7 +1017,30 @@ impl Inner {
                 has_model_option: Self::has_model_option(&snapshot),
             },
         );
+        let attached = self
+            .attach_registered_session(record, spec, &bridge, stored_bridge_id, snapshot)
+            .await;
+        if attached.is_err() {
+            // The bridge accepted nothing: leave no runtime behind, or every
+            // later call would route at a bridge session it never opened
+            // instead of attaching again once the cause is fixed.
+            self.sessions.lock().await.remove(&record.id);
+        }
+        attached
+    }
 
+    /// The bridge round trips of an attach, for a session already registered
+    /// as loading: resume the stored bridge session (or open a fresh one),
+    /// apply the mode and model, and only then make the runtime routable.
+    async fn attach_registered_session(
+        self: &Arc<Self>,
+        record: &SessionRecord,
+        spec: &HarnessSpec,
+        bridge: &Arc<Bridge>,
+        stored_bridge_id: String,
+        mut snapshot: Value,
+    ) -> Result<(Arc<Bridge>, String), Value> {
+        let mcp_servers = self.mcp_servers(&Value::Null).await;
         let mut bridge_session_id = stored_bridge_id.clone();
         let mut resumed = false;
         if bridge.supports_load_session() {
@@ -1059,12 +1092,12 @@ impl Inner {
                 log::warn!("[agent-host] failed to record bridge session id: {error}");
             }
         }
-        self.apply_mode(&bridge, spec, &bridge_session_id).await;
+        self.apply_mode(bridge, spec, &bridge_session_id).await;
         if let Some(model_id) = record.model_id.as_deref() {
             if Self::current_model(&snapshot).as_deref() != Some(model_id) {
                 let _ = self
                     .apply_model(
-                        &bridge,
+                        bridge,
                         &bridge_session_id,
                         model_id,
                         Self::has_model_option(&snapshot),
@@ -1083,7 +1116,7 @@ impl Inner {
                 runtime.has_model_option = has_model_option;
             }
         }
-        Ok((bridge, bridge_session_id))
+        Ok((Arc::clone(bridge), bridge_session_id))
     }
 
     async fn load_session(self: &Arc<Self>, params: Value) -> Result<Value, Value> {
@@ -1968,6 +2001,30 @@ mod tests {
             "update": { "sessionUpdate": "agent_message_chunk", "title": "no" }
         });
         assert_eq!(Inner::agent_title(&chunk), None);
+    }
+
+    fn runtime(harness: &str, bridge_session_id: &str) -> SessionRuntime {
+        SessionRuntime {
+            harness: harness.to_string(),
+            bridge_session_id: bridge_session_id.to_string(),
+            loading: false,
+            run: None,
+            steer_queue: VecDeque::new(),
+            snapshot: Value::Null,
+            has_model_option: false,
+        }
+    }
+
+    #[test]
+    fn a_session_still_being_attached_has_no_route() {
+        let mut loading = runtime("claude-acp", "stored-id");
+        loading.loading = true;
+        assert_eq!(loading.route(), None);
+        loading.loading = false;
+        assert_eq!(
+            loading.route(),
+            Some(("claude-acp".to_string(), "stored-id".to_string()))
+        );
     }
 
     #[test]
