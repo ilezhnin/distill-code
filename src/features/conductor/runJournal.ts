@@ -90,6 +90,19 @@ export const MAX_RUN_EVENTS = 500;
 /** Waves whose journals stay in memory. Older ones live on in the folder. */
 const MAX_OPEN_JOURNALS = 24;
 
+/**
+ * Backoff for re-reading a journal whose file could not be read.
+ *
+ * Same discipline as the other three conductor documents: a read that fails
+ * because something else held the file for a moment (an antivirus pass, a
+ * backup agent) is retried, and only a genuinely unreadable file gives up.
+ * Giving up means the journal stays unloaded, so this session's events are
+ * kept in memory and the file is never overwritten — LAWS/WAVES.md requires the
+ * transition record to be readable without the app, and replacing a previous
+ * run's whole trace with this run's few events is the way to lose it.
+ */
+export const RUN_JOURNAL_READ_RETRY_DELAYS_MS: readonly number[] = [500, 2_000];
+
 interface Journal {
   waveId: string;
   events: RunEvent[];
@@ -101,6 +114,12 @@ interface Journal {
    * of this session alone.
    */
   loaded: boolean;
+  /**
+   * True once every read attempt has failed. The journal stays unloaded — this
+   * session keeps appending in memory and never writes — so an unreadable file
+   * costs the live trace rather than the recorded one.
+   */
+  readFailed: boolean;
   write: (events: RunEvent[]) => void;
   flush: () => Promise<void>;
 }
@@ -148,14 +167,12 @@ function journalFor(waveId: string): Journal {
     waveId,
     events: [],
     loaded: !isDesktopRuntime(),
+    readFailed: false,
     write: (events) => document.write(events),
     flush: () => document.flush(),
   };
   if (!journal.loaded) {
-    void document.read().then(
-      (stored) => settleJournalLoad(journal, stored ?? []),
-      () => settleJournalLoad(journal, []),
-    );
+    readJournalDocument(journal, document, 0);
   }
   journals.set(waveId, journal);
   // Insertion-ordered: the first key is the least recently opened journal.
@@ -170,6 +187,44 @@ function journalFor(waveId: string): Journal {
 }
 
 /**
+ * Reads a wave's journal file, retrying a failed read before giving up.
+ *
+ * A rejected read must never settle the journal as empty. `settleJournalLoad`
+ * writes this session's events over the file, so treating "could not read" as
+ * "there is nothing there" replaces the previous run's whole trace with the
+ * handful of events this session has seen — the exact defect the other three
+ * conductor documents were fixed for, in the one document that is the record
+ * LAWS/WAVES.md requires to survive the app.
+ */
+function readJournalDocument(
+  journal: Journal,
+  document: { read: () => Promise<RunEvent[] | null> },
+  attempt: number,
+): void {
+  void document.read().then(
+    (stored) => settleJournalLoad(journal, stored ?? []),
+    (error) => {
+      const delay = RUN_JOURNAL_READ_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined) {
+        // Retries spent. Staying unloaded holds every write: the file keeps
+        // the run it already has, and this session's events live in memory,
+        // which is what the run panel renders from anyway.
+        journal.readFailed = true;
+        console.error(
+          `Could not read the run journal for wave ${journal.waveId}; this session's events will not be written to it.`,
+          error,
+        );
+        notifyRunEventListeners();
+        return;
+      }
+      setTimeout(() => {
+        readJournalDocument(journal, document, attempt + 1);
+      }, delay);
+    },
+  );
+}
+
+/**
  * Puts the file's events in front of whatever this session appended while
  * the read was in flight, renumbering the new ones to follow on, and writes
  * the result if this session added anything.
@@ -177,6 +232,7 @@ function journalFor(waveId: string): Journal {
 function settleJournalLoad(journal: Journal, stored: RunEvent[]): void {
   try {
     journal.loaded = true;
+    journal.readFailed = false;
     if (stored.length > 0) {
       let seq = stored[stored.length - 1]?.seq ?? stored.length - 1;
       const appended = journal.events.map((event) => {
@@ -217,6 +273,20 @@ export function appendRunEvent(event: RunEvent): void {
   } catch {
     // A trace that cannot be written is a worse day, not a broken run.
   }
+}
+
+/**
+ * True while any open journal's file could not be read.
+ *
+ * The events of such a wave are only in memory: the run panel still shows
+ * them, and the folder still holds whatever it held before, but this session's
+ * transitions will not reach it. Read by the engine's health notice.
+ */
+export function hasUnreadableRunJournal(): boolean {
+  for (const journal of journals.values()) {
+    if (journal.readFailed) return true;
+  }
+  return false;
 }
 
 /** This session's events for one wave, oldest first. */
