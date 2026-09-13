@@ -2,8 +2,16 @@
 //!
 //! This mode is intentionally gated twice: the binary must include the
 //! `app-test-driver` feature and the launcher must explicitly set
-//! `BERD_E2E_MODE=1`. A feature-only developer build therefore does not expose
-//! the loopback driver or redirect persistent state.
+//! `BERD_E2E_MODE=1`. Only then is persistent state redirected into the run
+//! root and the driver socket bound on a random port behind a required token.
+//!
+//! A feature-only developer build still exposes the driver: `lib.rs` falls back
+//! to `DriverMode::Legacy`, which binds `127.0.0.1:9999` (or
+//! `APP_TEST_DRIVER_PORT`) and accepts unauthenticated loopback commands
+//! against the real app profile. That is deliberate - `just dev-windows` and
+//! the agent-driver relay rely on it (docs/app-e2e.md) - and it is why the
+//! shipped NSIS bundle and the desktop-shortcut launcher
+//! (`scripts/windows/Launch-Distill.ps1`) are built without the feature.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
