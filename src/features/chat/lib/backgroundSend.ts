@@ -2,14 +2,16 @@ import { dispatchPrompt } from "@/features/chat/lib/sendCore";
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { sessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
-import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
 import {
   composeGatedMemorySection,
   getMemoryPreferences,
 } from "@/features/memory/lib/memoryPreferences";
 import { archivedCountForProject } from "@/features/memory/lib/memoryPrompt";
 import { sessionProjectWikiPrompt } from "@/features/memory/lib/projectWikiPrompt";
-import { sessionMemoryWriteAccess } from "@/features/memory/lib/memoryWriteAccess";
+import {
+  isWaveExecutorSession,
+  sessionMemoryWriteAccess,
+} from "@/features/memory/lib/memoryWriteAccess";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import {
@@ -37,10 +39,13 @@ import type { ChatSendOptions } from "../types";
  * conductor, not to the operator's list — its prompt ends "with this report
  * block and no extra commentary after it", and a one-shot task runner has no
  * business writing to memory or the planner. berdctl can address a
- * wave-managed session directly, so the guard is checked here too.
+ * wave-managed session directly, so the guard is checked here too — through
+ * `isWaveExecutorSession`, which also answers for a child whose graph node the
+ * conductor has already evicted (the graph alone forgets it and the chat then
+ * presents as an ordinary one).
  */
 function composeOperatorProtocols(sessionId: string): string | undefined {
-  if (isWaveManagedSession(sessionId)) return undefined;
+  if (isWaveExecutorSession(sessionId)) return undefined;
   const projectId =
     useChatSessionStore.getState().getSession(sessionId)?.projectId ?? null;
   const memory = useMemoryStore.getState();

@@ -791,6 +791,14 @@ export function useChatSessionController({
   const isWaveChild = useConductorGraphStore((state) =>
     sessionId ? state.nodesById[sessionId]?.managedBy === "wave" : false,
   );
+  // The graph drops a wave child's node when the conductor is done with it,
+  // and the chat then presents as an ordinary one. The memory store's own
+  // record is the half that still knows — subscribed, so an eviction reaches
+  // the next send of a chat that is already open.
+  const wasWaveExecutor = useMemoryStore((state) =>
+    sessionId ? state.waveExecutorSessionIds.includes(sessionId) : false,
+  );
+  const isWaveExecutorChat = isWaveChild || wasWaveExecutor;
   // The session's conductor-graph layer, for the spawn-policy prompt insert
   // and the memory write ACL below. Undefined for a session outside the
   // graph (an ordinary chat). Primitive selectors on purpose — the node
@@ -804,27 +812,41 @@ export function useChatSessionController({
   const graphNodePersonaId = useConductorGraphStore((state) =>
     sessionId ? state.nodesById[sessionId]?.personaId : undefined,
   );
-  const memoryWriteAllowed = useMemo(() => {
-    if (sessionNodeRole === undefined) return true;
-    return decideMemoryWrite(
-      {
-        role: sessionNodeRole,
-        managedBy: isWaveChild ? "wave" : "ui",
-        ...(graphNodePersonaId ? { personaId: graphNodePersonaId } : {}),
-      },
-      (personaId) =>
-        personas.some(
-          (persona) => persona.id === personaId && persona.memoryWrite === true,
-        ),
-    ).allowed;
-  }, [sessionNodeRole, graphNodePersonaId, isWaveChild, personas]);
+  const memoryWriteAllowed = useMemo(
+    () =>
+      // No short-circuit for a session outside the graph: an evicted wave
+      // child is exactly that, and `decideMemoryWrite` answers ALLOWED for an
+      // absent node itself once the record has had its say.
+      decideMemoryWrite(
+        sessionNodeRole === undefined
+          ? undefined
+          : {
+              role: sessionNodeRole,
+              managedBy: isWaveChild ? "wave" : "ui",
+              ...(graphNodePersonaId ? { personaId: graphNodePersonaId } : {}),
+            },
+        (personaId) =>
+          personas.some(
+            (persona) =>
+              persona.id === personaId && persona.memoryWrite === true,
+          ),
+        wasWaveExecutor,
+      ).allowed,
+    [
+      sessionNodeRole,
+      graphNodePersonaId,
+      isWaveChild,
+      wasWaveExecutor,
+      personas,
+    ],
+  );
   // The operator's read switch. Subscribed rather than read inside the
   // composer below, because this prompt is memoised: a switch flipped in
   // settings has to reach an open chat's next send, not the one after it.
   const memoryPreferences = useMemoryPreferences();
   const operatorProtocols = useMemo(
     () =>
-      isWaveChild
+      isWaveExecutorChat
         ? undefined
         : composeSystemPrompt(
             composeGatedMemorySection(
@@ -838,7 +860,7 @@ export function useChatSessionController({
           ),
     [
       effectiveProjectId,
-      isWaveChild,
+      isWaveExecutorChat,
       memoryArchived,
       memoryEntries,
       memoryPreferences,
