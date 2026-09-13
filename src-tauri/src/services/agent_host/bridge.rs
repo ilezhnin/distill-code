@@ -5,7 +5,7 @@
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -150,6 +150,63 @@ pub fn resolve_executable(
     None
 }
 
+/// The `node <entrypoint>` pair a managed bridge's Windows `.cmd` launcher
+/// runs, read out of the launcher itself so the bridge can be started without
+/// it.
+///
+/// `Command::new("x.cmd")` on Windows runs the batch file through `cmd.exe /c`,
+/// which makes the tokio `Child` — and everything `start_kill`, `kill_on_drop`
+/// and the app-exit sweep can reach — `cmd.exe` rather than node. Killing it
+/// leaves node (and the agent CLI it spawned) running the turn, which is what
+/// users see as orphaned `node.exe` in Task Manager after quitting. Spawning
+/// node directly makes the child the process we actually want to kill.
+///
+/// Returns `None` for anything that is not a launcher we wrote (see
+/// `managed_acp_tools::shim_contents`), so an unrecognised or hand-edited
+/// `.cmd` keeps being launched the old way.
+fn managed_cmd_launcher(shim: &Path) -> Option<(PathBuf, PathBuf)> {
+    if !shim
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("cmd"))
+    {
+        return None;
+    }
+    let body = std::fs::read_to_string(shim).ok()?;
+    parse_cmd_launcher(&body, shim.parent()?)
+}
+
+/// The command line out of a managed `.cmd` launcher's body. `shim_dir` is the
+/// directory the launcher lives in, which is what `%~dp0` stands for.
+fn parse_cmd_launcher(body: &str, shim_dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    let line = body.lines().map(str::trim).rfind(|line| {
+        !line.is_empty()
+            && !line.starts_with('@')
+            && !line[..3.min(line.len())].eq_ignore_ascii_case("rem")
+    })?;
+    // `%*` forwards the bridge's own arguments; `spec.args` supplies those.
+    let line = line.strip_suffix("%*").unwrap_or(line).trim_end();
+    let mut quoted = line.split('"').skip(1).step_by(2);
+    let node = cmd_launcher_target(quoted.next()?, shim_dir);
+    let entrypoint = cmd_launcher_target(quoted.next()?, shim_dir);
+    if quoted.next().is_some() {
+        // More than the two paths we write: not our launcher.
+        return None;
+    }
+    // The launcher is only worth bypassing if it points at a node that is
+    // really there; otherwise let cmd.exe report the failure as before.
+    node.is_file().then_some((node, entrypoint))
+}
+
+/// One double-quoted path out of a launcher body: `%%` is cmd's escape for a
+/// literal `%`, and a `%~dp0` prefix means "relative to the launcher".
+fn cmd_launcher_target(quoted: &str, shim_dir: &Path) -> PathBuf {
+    let unescaped = quoted.replace("%%", "%");
+    match unescaped.strip_prefix("%~dp0") {
+        Some(relative) => shim_dir.join(relative.replace('\\', std::path::MAIN_SEPARATOR_STR)),
+        None => PathBuf::from(unescaped),
+    }
+}
+
 fn path_value(env: &HashMap<String, String>) -> Option<&str> {
     env.iter()
         .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
@@ -170,7 +227,17 @@ impl Bridge {
                 spec.label, spec.command
             )
                 })?;
-        let mut command = Command::new(&executable);
+        // A managed bridge resolves to a `.cmd` launcher; run what it runs, so
+        // the child we hold (and kill) is node rather than the `cmd.exe` that
+        // would leave node behind.
+        let launcher = managed_cmd_launcher(&executable);
+        let program = launcher
+            .as_ref()
+            .map_or(executable.as_path(), |(node, _)| node.as_path());
+        let mut command = Command::new(program);
+        if let Some((_, entrypoint)) = &launcher {
+            command.arg(entrypoint);
+        }
         command.args(spec.args);
         let extended_path = crate::services::path_env::build_extended_path_with_prepended_dirs(
             path_value(&env.shell_env),
@@ -197,16 +264,20 @@ impl Bridge {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         log::info!(
-            "[agent-host] spawning {} bridge: {} {}",
+            "[agent-host] spawning {} bridge: {}{} {}",
             spec.id,
-            executable.display(),
+            program.display(),
+            launcher
+                .as_ref()
+                .map(|(_, entrypoint)| format!(" {}", entrypoint.display()))
+                .unwrap_or_default(),
             spec.args.join(" ")
         );
         let mut child = command.spawn().map_err(|error| {
             format!(
                 "failed to start the {} bridge ({}): {error}",
                 spec.label,
-                executable.display()
+                program.display()
             )
         })?;
 
@@ -608,6 +679,76 @@ mod tests {
         let line = written.recv().await.expect("written");
         assert!(line.contains("\"method\":\"session/new\""));
         assert_eq!(pending_count(&bridge), 0);
+    }
+
+    /// The exact body `managed_acp_tools::shim_contents` writes on Windows.
+    fn windows_shim_body(node: &str, entrypoint: &str) -> String {
+        format!(
+            "@echo off\r\nREM Written by Berd's managed ACP tools installer; do not edit.\r\n\"{node}\" \"{entrypoint}\" %*\r\n"
+        )
+    }
+
+    #[test]
+    fn a_managed_launcher_resolves_to_the_node_and_entrypoint_it_runs() {
+        let packages = tempfile::tempdir().expect("temp dir");
+        let shim_dir = packages.path().join("bin");
+        let node = packages.path().join("node").join("node.exe");
+        std::fs::create_dir_all(&shim_dir).expect("bin");
+        std::fs::create_dir_all(node.parent().expect("parent")).expect("node dir");
+        std::fs::write(&node, b"").expect("node");
+
+        // Both paths written relative to the launcher, and a `%` doubled the way
+        // cmd.exe needs it.
+        let body = windows_shim_body(
+            "%~dp0..\\node\\node.exe",
+            "%~dp0..\\tools\\100%%\\dist\\index.js",
+        );
+        let (program, entrypoint) = parse_cmd_launcher(&body, &shim_dir).expect("our launcher");
+        assert_eq!(
+            std::fs::canonicalize(&program).expect("node"),
+            std::fs::canonicalize(&node).expect("node")
+        );
+        assert!(
+            entrypoint.ends_with("dist/index.js") || entrypoint.ends_with("dist\\index.js"),
+            "{}",
+            entrypoint.display()
+        );
+        // `%%` is cmd's escape for one literal `%`.
+        assert!(entrypoint.to_string_lossy().contains("100%"));
+        assert!(!entrypoint.to_string_lossy().contains("100%%"));
+        // `%*` is the launcher's own argument forwarding, not a path.
+        assert!(!entrypoint.to_string_lossy().contains('*'));
+    }
+
+    #[test]
+    fn anything_but_a_launcher_we_wrote_is_started_the_ordinary_way() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let shim_dir = dir.path().join("bin");
+        std::fs::create_dir_all(&shim_dir).expect("bin");
+
+        // A node that is not there: let cmd.exe report the failure as before.
+        assert!(parse_cmd_launcher(
+            &windows_shim_body("%~dp0..\\node\\node.exe", "%~dp0..\\dist\\index.js"),
+            &shim_dir
+        )
+        .is_none());
+
+        // Not the shape we write.
+        for body in [
+            "@echo off\r\n".to_string(),
+            "@echo off\r\nnode index.js %*\r\n".to_string(),
+            windows_shim_body("%~dp0..\\node\\node.exe", "%~dp0a\" \"%~dp0b\" \"%~dp0c"),
+        ] {
+            assert!(
+                parse_cmd_launcher(&body, &shim_dir).is_none(),
+                "{body:?} must not be treated as our launcher"
+            );
+        }
+
+        // A non-`.cmd` executable is never read as one.
+        let plain = dir.path().join("claude-agent-acp");
+        std::fs::write(&plain, b"#!/bin/sh\nexec node x\n").expect("write");
+        assert!(managed_cmd_launcher(&plain).is_none());
     }
 
     #[tokio::test]
