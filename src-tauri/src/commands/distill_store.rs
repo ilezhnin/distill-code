@@ -123,6 +123,17 @@ pub async fn read_distill_document(
 /// autosave path and it ends in an `fsync`. A synchronous `#[tauri::command]`
 /// runs inline in the WebView2 IPC callback, so the flush would block the
 /// window every time someone ticks a planner item.
+///
+/// CONTRACT: **the caller must serialise its writes per path.** A synchronous
+/// command ran inline in the IPC callback and so completed in message order;
+/// this one is spawned onto the Tokio pool, so two `invoke`s that are in flight
+/// at the same time can land in either order and the older document can be the
+/// one that survives. Every read-modify-write of a document therefore has to
+/// await the previous write of that same document before starting the next —
+/// which is what `distillDocument.ts` (a per-path promise chain),
+/// `taskMemory.ts` (`documentQueues`) and `memoryStore.ts` (`enqueueFolderWork`)
+/// do. A new caller that fires two writes of one path without awaiting is a
+/// last-writer-wins bug, and nothing here can detect it.
 #[tauri::command]
 pub async fn write_distill_document(
     state: State<'_, DistillRootState>,

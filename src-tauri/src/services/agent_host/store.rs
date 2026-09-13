@@ -278,10 +278,13 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Record which bridge session a chat is running on, or clear it (`None`)
+    /// once that bridge session must never be resumed again — see
+    /// `Inner::release_bridge_session`.
     pub async fn set_bridge_session_id(
         &self,
         id: &str,
-        bridge_session_id: &str,
+        bridge_session_id: Option<&str>,
     ) -> Result<(), String> {
         sqlx::query("UPDATE sessions SET bridge_session_id = ? WHERE id = ?")
             .bind(bridge_session_id)
@@ -471,19 +474,6 @@ impl SessionStore {
         tx.commit()
             .await
             .map_err(|error| db_error("failed to commit the session delete", error))?;
-        Ok(())
-    }
-
-    pub async fn append_event(&self, session_id: &str, payload: &Value) -> Result<(), String> {
-        sqlx::query(
-            "INSERT INTO session_events (session_id, created_at, payload_json) VALUES (?, ?, ?)",
-        )
-        .bind(session_id)
-        .bind(now_iso())
-        .bind(payload.to_string())
-        .execute(&self.pool)
-        .await
-        .map_err(|error| db_error("failed to append session event", error))?;
         Ok(())
     }
 
@@ -834,7 +824,7 @@ mod tests {
     async fn an_unstarted_session_moves_to_another_harness_without_its_old_events() {
         let (_dir, store) = store_with_history().await;
         store
-            .append_event("b", &event("commands"))
+            .append_events("b", &[event("commands")])
             .await
             .expect("event");
         let snapshot = json!({ "models": { "currentModelId": "gpt-5" } });
@@ -955,6 +945,39 @@ mod tests {
         // them: orphan rows here are never read, listed or reclaimed again.
         assert!(texts_and_times(&store, "a").await.is_empty());
         assert!(store.get_session("b").await.expect("get").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_bridge_session_can_be_recorded_and_given_up_again() {
+        let (_dir, store) = store_with_history().await;
+        store
+            .set_bridge_session_id("b", Some("bridge-1"))
+            .await
+            .expect("record");
+        assert_eq!(
+            store
+                .get_session("b")
+                .await
+                .expect("read")
+                .expect("row")
+                .bridge_session_id
+                .as_deref(),
+            Some("bridge-1")
+        );
+
+        // A chat that moved folders lets go of its bridge session for good: the
+        // row must stop naming it, or the next attach resumes it and the chat
+        // keeps running in the folder it was created in.
+        store.set_bridge_session_id("b", None).await.expect("clear");
+        assert_eq!(
+            store
+                .get_session("b")
+                .await
+                .expect("read")
+                .expect("row")
+                .bridge_session_id,
+            None
+        );
     }
 
     #[tokio::test]

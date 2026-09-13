@@ -106,6 +106,10 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
         "session/extensions/remove" => Ok(json!({})),
         "session/messages" => {
             let id = session_id(&params)?;
+            // The updates of a chat that is streaming right now may still be
+            // waiting for their commit in the event loop; a transcript read has
+            // to wait for them or it stops short of the live reply.
+            host.drain_bridge_events().await;
             let events = host
                 .store
                 .list_events(&id)
