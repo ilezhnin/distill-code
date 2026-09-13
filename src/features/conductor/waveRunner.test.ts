@@ -53,6 +53,7 @@ const {
   hasWaveTombstone,
   resetWaveEngineStateCache,
   setWaveEngineState,
+  setWaveEngineStateHydratedForTests,
   withWave,
 } = await import("./waveStore");
 const { createWaveState } = await import("./waveEngine");
@@ -171,6 +172,26 @@ describe("waveRunner", () => {
     setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
     runWaveEngineTick();
     expect(spawnConductorChildSession).not.toHaveBeenCalled();
+  });
+
+  it("stays off for the session when a folder document could not be read", async () => {
+    // A waves.json that never loaded has no tombstones in it: a tick would
+    // read every plan in the transcript as new and spawn its workers again.
+    // The hydration gave up, the waiter was released, and the engine's answer
+    // is to sit out — not to run on the empty copy.
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    setWaveEngineStateHydratedForTests(false);
+    try {
+      runWaveEngineTick();
+      setWaveEngineStateHydratedForTests("failed");
+      runWaveEngineTick();
+      await Promise.resolve();
+      expect(spawnConductorChildSession).not.toHaveBeenCalled();
+      expect(getWaveEngineState().waves).toHaveLength(0);
+    } finally {
+      setWaveEngineStateHydratedForTests(null);
+    }
   });
 
   it("spawns the access:[] step immediately and holds the access:all step", async () => {

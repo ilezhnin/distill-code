@@ -593,6 +593,15 @@ export function setWaveEngineState(
   }
   if (typeof window === "undefined") return;
   if (wavesDocument.active) {
+    // Never before the folder has been read. The file is the only copy of
+    // every tombstone and every parked wave of previous runs; a write from
+    // the near-empty in-memory copy before the read landed — or after it
+    // failed — would replace them all. The change is kept in memory and
+    // written the moment a read succeeds.
+    if (!wavesReadSucceeded) {
+      wavesWriteHeld = true;
+      return;
+    }
     wavesDocument.write(next);
     return;
   }
@@ -619,13 +628,25 @@ export function setWaveEngineState(
  * Tombstones merge the same way, because a tombstone the file holds and
  * memory does not is exactly the record that stops a restart from re-admitting
  * an old plan as a new root request.
+ *
+ * Rejects when the folder has a document that could not be read, and leaves
+ * the store exactly as it was: not hydrated, writes still held. The caller
+ * may try again; when it gives up it says so through
+ * {@link markWaveEngineStateHydrationFailed}, so nothing waits forever.
  */
 export async function hydrateWaveEngineState(): Promise<void> {
-  try {
-    await mergeStoredWaveEngineState();
-  } finally {
-    markWaveEngineStateHydrated();
+  if (!wavesDocument.active) return;
+  const stored = await wavesDocument.read();
+  // From here the file is known, so writing over it is safe: the merge
+  // below is the first write, and it carries everything the file had.
+  wavesReadSucceeded = true;
+  if (stored) {
+    mergeStoredWaveEngineState(stored);
+  } else if (wavesWriteHeld) {
+    wavesDocument.write(getWaveEngineState());
   }
+  wavesWriteHeld = false;
+  markWaveEngineStateHydrated();
 }
 
 /**
@@ -638,19 +659,37 @@ export async function hydrateWaveEngineState(): Promise<void> {
  * spends the one-shot "resume orphaned spawns" pass on nothing, and a plan
  * message already admitted in a previous run looks brand new and is admitted
  * again beside the children it already has.
+ *
+ * False after a failed read too — "the file could not be read" is not "the
+ * file was read and held nothing", and the tick must not run on the second
+ * story when the first is true.
  */
 export function isWaveEngineStateHydrated(): boolean {
-  if (wavesHydratedForTests !== null) return wavesHydratedForTests;
-  return wavesHydrated || !wavesDocument.active;
+  if (wavesHydratedForTests !== null) return wavesHydratedForTests === true;
+  return wavesHydration === "hydrated" || !wavesDocument.active;
 }
 
-let wavesHydratedForTests: boolean | null = null;
+/**
+ * True when the caller stopped trying to read the folder's waves. The store
+ * is then neither hydrated nor going to be, and the engine stays off for the
+ * session rather than running on an empty tombstone list.
+ */
+export function hasWaveEngineStateHydrationFailed(): boolean {
+  if (wavesHydratedForTests !== null) return wavesHydratedForTests === "failed";
+  return wavesHydration === "failed";
+}
 
-let wavesHydrated = false;
+let wavesHydratedForTests: boolean | "failed" | null = null;
+
+/** Where the folder read stands. `pending` until it settles either way. */
+let wavesHydration: "pending" | "hydrated" | "failed" = "pending";
+/** True once one read succeeded — the write gate, distinct from the phase. */
+let wavesReadSucceeded = false;
+/** True when a write was refused by the gate and is owed after the read. */
+let wavesWriteHeld = false;
 const hydrationWaiters = new Set<() => void>();
 
-function markWaveEngineStateHydrated(): void {
-  wavesHydrated = true;
+function releaseHydrationWaiters(): void {
   const waiters = [...hydrationWaiters];
   hydrationWaiters.clear();
   for (const waiter of waiters) {
@@ -662,19 +701,38 @@ function markWaveEngineStateHydrated(): void {
   }
 }
 
-/** Calls `callback` once the waves are hydrated (immediately if they are). */
+function markWaveEngineStateHydrated(): void {
+  wavesHydration = "hydrated";
+  releaseHydrationWaiters();
+}
+
+/**
+ * Records that the folder's waves will not be read this session.
+ *
+ * Called by the startup hydration after its last retry. The waiters run — a
+ * waiter that never runs is an engine that never learns it must stay off —
+ * and each one reads {@link isWaveEngineStateHydrated} (still false) and
+ * {@link hasWaveEngineStateHydrationFailed} (now true) to decide.
+ */
+export function markWaveEngineStateHydrationFailed(): void {
+  if (wavesHydration === "hydrated") return;
+  wavesHydration = "failed";
+  releaseHydrationWaiters();
+}
+
+/**
+ * Calls `callback` once the folder read has settled — hydrated, or given up
+ * on — and immediately when it already has. Never parks a caller forever.
+ */
 export function whenWaveEngineStateHydrated(callback: () => void): void {
-  if (isWaveEngineStateHydrated()) {
+  if (isWaveEngineStateHydrated() || hasWaveEngineStateHydrationFailed()) {
     callback();
     return;
   }
   hydrationWaiters.add(callback);
 }
 
-async function mergeStoredWaveEngineState(): Promise<void> {
-  if (!wavesDocument.active) return;
-  const stored = await wavesDocument.read();
-  if (!stored) return;
+function mergeStoredWaveEngineState(stored: WaveEngineState): void {
   const live = getWaveEngineState();
   const liveWaveIds = new Set(live.waves.map((wave) => wave.waveId));
   const liveTombstoneIds = new Set(
@@ -719,15 +777,26 @@ export function resetWaveEngineStateCache(): void {
 }
 
 /**
- * Pins the hydration answer, or (`null`) returns it to the real one. When
- * pinned to true, parked waiters run. Tests only.
+ * Pins the hydration answer — read, not read, or given up on — or (`null`)
+ * returns it to the real one. When pinned to true, parked waiters run.
+ * Tests only.
  */
 export function setWaveEngineStateHydratedForTests(
-  hydrated: boolean | null,
+  hydrated: boolean | "failed" | null,
 ): void {
   wavesHydratedForTests = hydrated;
   // Pinning "not read" also forgets a real read, so that returning to the
   // real answer waits for the next hydration.
-  if (hydrated === false) wavesHydrated = false;
+  if (hydrated === false) wavesHydration = "pending";
   if (hydrated === true) markWaveEngineStateHydrated();
+  if (hydrated === "failed") markWaveEngineStateHydrationFailed();
+}
+
+/** Forgets every read, held write and waiter. Tests only. */
+export function resetWaveEngineStateHydrationForTests(): void {
+  wavesHydratedForTests = null;
+  wavesHydration = "pending";
+  wavesReadSucceeded = false;
+  wavesWriteHeld = false;
+  hydrationWaiters.clear();
 }
