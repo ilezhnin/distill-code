@@ -709,6 +709,13 @@ async fn run_git_once_async(
         .map_err(GitRunError::Spawn)
 }
 
+/// Which environment a command runs with. `Captured` — the user's own
+/// directory environment, Hermit shims and all — is for the commands whose work
+/// still reaches programs the user's setup names: checkout *filters*
+/// (`filter.lfs.smudge` on a `switch`/`worktree add`/`stash`, which git runs
+/// itself, not through a hook) and credential helpers plus `GIT_SSH_COMMAND` on
+/// `fetch`/`pull`. Repository *hooks* are no longer a reason: they do not run for
+/// these commands at all (see [`git_args_mutate_repository`]).
 fn env_source_for_git_args(args: &[&str]) -> EnvSource {
     match args {
         ["switch", ..]
@@ -1770,9 +1777,20 @@ mod tests {
         assert!(env_is_removed(&command, "GIT_FUTURE_REPOSITORY_CONTROL"));
     }
 
+    /// What a captured environment hands a git child on Windows, observed
+    /// through a hook because a hook is the one place a child of git can report
+    /// the environment it received.
+    ///
+    /// It is NOT a test of app behaviour: it builds the command directly instead
+    /// of through [`build_git_command`], so it does not carry the
+    /// `core.hooksPath` override, and a repository's hooks deliberately do not
+    /// run for any git command the app issues (see `git_args_mutate_repository`;
+    /// `repository_hooks_do_not_run_during_branch_switch` is the pin for that).
+    /// The environment it checks is what checkout filters — `git lfs` through
+    /// `filter.lfs.smudge` — and credential helpers still need.
     #[cfg(windows)]
     #[tokio::test]
-    async fn windows_captured_env_runs_hermit_managed_cmd_git_hook() {
+    async fn windows_captured_env_reaches_a_git_child_with_the_hermit_path() {
         let temp = tempfile::tempdir().expect("temp dir");
         let repo = temp.path().join("Project With Spaces");
         let hook = repo.join(".git").join("hooks").join("post-checkout");
@@ -1892,7 +1910,7 @@ mod tests {
     }
 
     #[test]
-    fn env_source_policy_uses_captured_for_hook_sensitive_mutations() {
+    fn env_source_policy_uses_captured_for_filter_and_credential_sensitive_commands() {
         assert_eq!(
             env_source_for_git_args(&["switch", "main"]),
             EnvSource::Captured
