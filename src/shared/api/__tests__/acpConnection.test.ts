@@ -4,6 +4,11 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   createWebSocketStream: vi.fn(),
   initialize: vi.fn(),
+  logRendererEvent: vi.fn(),
+}));
+
+vi.mock("../rendererLog", () => ({
+  logRendererEvent: (...args: unknown[]) => mocks.logRendererEvent(...args),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -216,5 +221,66 @@ describe("acpConnection attempt superseded by a reconnect", () => {
     expect(live.close).not.toHaveBeenCalled();
     // The caller gets the reconnect's client, not the orphan's.
     await expect(connection.getClient()).resolves.toBe(client);
+  });
+});
+
+// No screen in the app asks the operator about a tool call, so the answer this
+// function picks IS the app's permission policy. An "always" answer rewrites
+// the harness's own saved permissions for every future session, and nothing in
+// the app can take it back.
+describe("permission requests the renderer answers on its own", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+  });
+
+  function request(kinds: string[]) {
+    return {
+      sessionId: "acp-session-1234",
+      toolCall: { toolCallId: "call-1", title: "Bash(rm -rf /)" },
+      options: kinds.map((kind) => ({
+        optionId: `${kind}-id`,
+        name: kind,
+        kind,
+      })),
+    } as never;
+  }
+
+  it("takes the one-time allow when the harness offers one", async () => {
+    const { answerPermissionRequest } = await importConnection();
+
+    expect(
+      answerPermissionRequest(
+        request(["allow_once", "allow_always", "reject_once"]),
+      ),
+    ).toEqual({ outcome: { outcome: "selected", optionId: "allow_once-id" } });
+  });
+
+  it("refuses once rather than whitelisting a tool forever", async () => {
+    const { answerPermissionRequest } = await importConnection();
+
+    expect(
+      answerPermissionRequest(request(["allow_always", "reject_once"])),
+    ).toEqual({ outcome: { outcome: "selected", optionId: "reject_once-id" } });
+  });
+
+  it("cancels when every offered option is permanent", async () => {
+    const { answerPermissionRequest } = await importConnection();
+
+    expect(
+      answerPermissionRequest(request(["allow_always", "reject_always"])),
+    ).toEqual({ outcome: { outcome: "cancelled" } });
+  });
+
+  it("logs what it answered, since nothing else records it", async () => {
+    const { answerPermissionRequest } = await importConnection();
+
+    answerPermissionRequest(request(["allow_always", "reject_once"]));
+
+    const [level, message] = mocks.logRendererEvent.mock.calls[0] ?? [];
+    expect(level).toBe("warn");
+    expect(message).toContain("Bash(rm -rf /)");
+    expect(message).toContain("answer=reject_once");
+    expect(message).toContain("offered=[allow_always,reject_once]");
   });
 });
