@@ -57,6 +57,16 @@ pub fn run() {
     // Single-instance enforcement: on Windows, a second launch exits early
     // and focuses the existing window instead of starting a duplicate app
     // (log files, db connections, agent host, etc.).
+    //
+    // This plugin must stay registered *before* `tauri_plugin_deep_link` so
+    // that the deep-link state exists by the time this callback runs. Because
+    // the dependency enables the plugin's `deep-link` feature, the plugin
+    // itself hands `args` to `DeepLink::handle_cli_arguments` before invoking
+    // the closure below — that is what turns a `berd://…` link clicked while
+    // the app is running into a `deep-link://new-url` event for
+    // `deep_links::install`. The closure therefore only has to reveal the
+    // window for a plain second launch; a session link additionally reveals it
+    // from `deep_links::handle_urls` once the session opens.
     #[cfg(target_os = "windows")]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
         if let Some(window) = app.get_webview_window("main") {
