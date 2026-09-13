@@ -99,6 +99,29 @@ export function registerStreamingMessageOwner(
   }
 }
 
+/**
+ * A prompt's settlement ends the renderer's side of the turn, not the host's:
+ * a rejected `session/prompt` (a closed socket, a host error) leaves the bridge
+ * running, and the rest of that reply still arrives. Those chunks target a
+ * message whose owner symbol has just been released, and no flush can ever
+ * match it again — they would pile up in `bufferedStreamingUpdates` unrendered
+ * until the chat is cleared. Forgetting the released owner's messages lets the
+ * next chunk re-bind them to whoever owns the session then (nobody, or the
+ * prompt that took over), so the remainder of the reply is applied and the
+ * buffer stays bounded.
+ */
+export function releaseStreamingMessageOwner(
+  sessionId: string,
+  owner: symbol,
+): void {
+  const prefix = `${sessionId}\0`;
+  for (const [key, value] of streamOwnerByMessage) {
+    if (value === owner && key.startsWith(prefix)) {
+      streamOwnerByMessage.delete(key);
+    }
+  }
+}
+
 function resolveStreamOwner(sessionId: string, messageId: string) {
   const key = streamingMessageKey(sessionId, messageId);
   if (streamOwnerByMessage.has(key)) {
