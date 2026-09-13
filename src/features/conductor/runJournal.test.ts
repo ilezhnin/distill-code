@@ -251,6 +251,47 @@ describe("the journal in the folder", () => {
     });
   });
 
+  it("does not report the folder's executors as spawned just now", async () => {
+    // graph.json usually lands after waves.json (it is much larger), so the
+    // journal of every persisted wave used to gain a "spawned" and a "report
+    // arrived" for each of its steps, stamped at startup — a reader of the
+    // record would see executors starting after the wave was already parked.
+    const { CONDUCTOR_GRAPH_DOCUMENT } = await import("./conductorDocuments");
+    const {
+      hydrateConductorGraph,
+      resetConductorGraphHydrationForTests,
+      useConductorGraphStore,
+    } = await import("./conductorGraphStore");
+    files.set(
+      CONDUCTOR_GRAPH_DOCUMENT,
+      JSON.stringify({
+        version: 1,
+        nodes: [node({ sessionId: "s-old", runId: "r-old" })],
+        reports: [report({ runId: "r-old" })],
+      }),
+    );
+    resetConductorGraphHydrationForTests();
+    useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
+    const stop = installRunJournal();
+    try {
+      setWaveEngineState(state([wave({ waveId: "w1" })]), { hydration: true });
+      await hydrateConductorGraph();
+      expect(runEventsFor("w1")).toHaveLength(0);
+
+      // An executor that really does move now is still recorded.
+      useConductorGraphStore
+        .getState()
+        .patchNode("s-old", { status: "completed" });
+      expect(runEventsFor("w1").map((event) => event.kind)).toEqual([
+        "step-status",
+      ]);
+    } finally {
+      stop();
+      resetConductorGraphHydrationForTests();
+      useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
+    }
+  });
+
   it("does not report the previous run's waves as newly admitted", () => {
     const stop = installRunJournal();
     try {
