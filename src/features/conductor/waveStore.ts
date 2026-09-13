@@ -533,13 +533,37 @@ export function isSupersededPlanMessage(
   return mark > 0 && createdAt <= mark;
 }
 
+/**
+ * Tombstoned plan ids, as a set, built once per tombstone list.
+ *
+ * The engine asks this per candidate message, on a tick that runs on every
+ * chat-store change — while a reply streams, once per token — and the list is
+ * capped at {@link MAX_WAVE_TOMBSTONES}, so the linear scan was up to 500
+ * comparisons per message per token. Every mutation helper replaces the array,
+ * so an entry keyed on the array is valid for exactly as long as the answer is,
+ * and a replaced array can be collected.
+ */
+const tombstoneIdsByList = new WeakMap<
+  readonly WaveTombstone[],
+  ReadonlySet<string>
+>();
+
+function tombstonedPlanMessageIds(
+  tombstones: readonly WaveTombstone[],
+): ReadonlySet<string> {
+  let ids = tombstoneIdsByList.get(tombstones);
+  if (!ids) {
+    ids = new Set(tombstones.map((tombstone) => tombstone.planMessageId));
+    tombstoneIdsByList.set(tombstones, ids);
+  }
+  return ids;
+}
+
 export function hasWaveTombstone(
   state: WaveEngineState,
   planMessageId: string,
 ): boolean {
-  return state.tombstones.some(
-    (tombstone) => tombstone.planMessageId === planMessageId,
-  );
+  return tombstonedPlanMessageIds(state.tombstones).has(planMessageId);
 }
 
 /** Adds a tombstone (idempotent per plan message) and trims the oldest. */
