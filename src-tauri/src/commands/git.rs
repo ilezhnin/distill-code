@@ -560,12 +560,34 @@ async fn run_git_output_with_env_source_async(
 /// config with the same authority as the user's own, and several keys name
 /// programs to run: `core.fsmonitor` during the index refresh every `status`
 /// and `diff` performs — which the sidebar triggers on its own — hook scripts
-/// on checkout and ref updates, and the `ext::` remote helper on fetch. These
-/// command-line overrides outrank every config file, so the repository's
-/// settings cannot run code through the app. The user's global config
-/// (credential helpers, `safe.directory`, `autocrlf`) still applies.
+/// on checkout and ref updates, the `ext::` remote helper on fetch, and
+/// `remote.<name>.uploadpack` (see [`git_transport_args`]).
+///
+/// What these overrides do and do not cover, precisely, because the difference
+/// matters when the next key is added:
+///
+/// * A command-line `-c` outranks every config file, so the four keys spelled
+///   out here cannot run code through the app, whatever the repository says.
+/// * The vectors that need no user action at all — the sidebar's `status` and
+///   `diff` on mount and on window focus — are closed by the `core.fsmonitor`
+///   override, which every git command the app issues carries.
+/// * Keys with no `-c` spelling that would neutralise them are *not* covered:
+///   `credential.helper`, `filter.<driver>.smudge`/`clean` (checkout filters)
+///   and `core.gitProxy` still run what the repository names. Disabling them
+///   would break the user's own global setup (Git Credential Manager, Git LFS),
+///   which is the reason `GIT_CONFIG_NOSYSTEM`/`GIT_CONFIG_GLOBAL` are
+///   deliberately not used either. They all need a fetch, push or checkout the
+///   user asked for, so none of them is a zero-click vector.
 const GIT_FSMONITOR_OVERRIDE: &str = "core.fsmonitor=false";
 const GIT_EXT_PROTOCOL_OVERRIDE: &str = "protocol.ext.allow=never";
+/// The remote-side program `fetch`/`pull` ask for, spelled out so
+/// `remote.<name>.uploadpack` from the repository's own config cannot name
+/// another one. There is no useful `-c` form: the key is per remote, and the
+/// app does not know what the repository called its remotes — the option,
+/// however, outranks the config for every remote at once. (Git's own default is
+/// exactly this program, so nothing changes for an honest repository; HTTP
+/// transports ignore both the key and the option.)
+const GIT_UPLOAD_PACK_OVERRIDE: &str = "--upload-pack=git-upload-pack";
 
 /// The hooks directory git is pointed at for mutating commands. It never
 /// exists: a fresh per-process name under the temp dir, so neither the
@@ -583,6 +605,17 @@ fn disabled_git_hooks_dir() -> &'static Path {
 /// Commands that update refs or the worktree, and so would run the
 /// repository's hooks (`post-checkout`, `reference-transaction`, `post-merge`)
 /// or contact its remotes.
+///
+/// BEHAVIOUR: these commands run with `core.hooksPath` pointed at a directory
+/// that does not exist, so a repository's own hooks do **not** run for an
+/// app-initiated `switch`/`checkout`, `worktree add|remove`, `fetch`, `pull`,
+/// `stash`, `branch` or `init` — the same operation in the user's terminal still
+/// runs them. Setups that bootstrap through `post-checkout` (husky, lefthook) or
+/// `git lfs post-checkout`, and `post-merge` hooks, will therefore diverge from
+/// the terminal. That is the accepted trade for closing the vector; it is the
+/// one difference to remember when a git operation "works in the terminal".
+/// The match is deliberately coarse: read-only `git branch --show-current` and
+/// `git stash list` take the override too, where it has nothing to suppress.
 fn git_args_mutate_repository(args: &[&str]) -> bool {
     matches!(
         args,
@@ -611,11 +644,37 @@ pub(crate) fn git_hardening_args(args: &[&str]) -> Vec<String> {
     hardening
 }
 
+/// The hardening a command needs *after* its subcommand, because it is an
+/// option of that subcommand rather than a config key. Empty for everything
+/// that does not talk to a remote.
+fn git_transport_args(args: &[&str]) -> &'static [&'static str] {
+    match args {
+        ["fetch", ..] | ["pull", ..] => std::slice::from_ref(&GIT_UPLOAD_PACK_OVERRIDE),
+        _ => &[],
+    }
+}
+
+/// Everything the app hands to git: the `-c` overrides first (they have to
+/// precede the subcommand), then the subcommand, then its own transport
+/// hardening, then the caller's remaining arguments.
+fn git_command_args(args: &[&str]) -> Vec<String> {
+    let mut built = git_hardening_args(args);
+    let transport = git_transport_args(args);
+    match args.split_first().filter(|_| !transport.is_empty()) {
+        Some((subcommand, rest)) => {
+            built.push((*subcommand).to_string());
+            built.extend(transport.iter().map(|arg| (*arg).to_string()));
+            built.extend(rest.iter().map(|arg| (*arg).to_string()));
+        }
+        None => built.extend(args.iter().map(|arg| (*arg).to_string())),
+    }
+    built
+}
+
 fn build_git_command(git: &Path, path: &Path, args: &[&str]) -> TokioCommand {
     let mut command = TokioCommand::new(git);
     command
-        .args(git_hardening_args(args))
-        .args(args)
+        .args(git_command_args(args))
         .current_dir(path)
         .kill_on_drop(true);
     command
@@ -1209,8 +1268,65 @@ mod tests {
                 args.join(" ")
             );
             assert!(
-                built.ends_with(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>()),
+                built.ends_with(
+                    &args[1..]
+                        .iter()
+                        .map(|arg| arg.to_string())
+                        .collect::<Vec<_>>()
+                ),
                 "git {} must keep its own arguments last, got {built:?}",
+                args.join(" ")
+            );
+            let subcommand_at = built
+                .iter()
+                .position(|arg| arg == args[0])
+                .expect("the subcommand is passed");
+            for own in &args[1..] {
+                let own_at = built
+                    .iter()
+                    .position(|arg| arg == own)
+                    .expect("the caller's argument is passed");
+                assert!(
+                    own_at > subcommand_at,
+                    "git {} must pass its subcommand first, got {built:?}",
+                    args.join(" ")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fetching_names_the_remote_side_program_itself() {
+        let git = Path::new("git");
+        let repo = Path::new("/repo");
+
+        // `remote.<name>.uploadpack` in the repository's own config names a
+        // program git runs on every fetch, and `-c` cannot neutralise a
+        // per-remote key the app does not know the name of. The option can, and
+        // it has to sit after the subcommand it belongs to.
+        for args in [
+            ["fetch", "--prune"].as_slice(),
+            ["pull", "--ff-only"].as_slice(),
+        ] {
+            let built = command_args(&build_git_command(git, repo, args));
+            assert_eq!(
+                &built[built.len() - 3..],
+                [args[0], "--upload-pack=git-upload-pack", args[1]],
+                "git {} must name the upload-pack program, got {built:?}",
+                args.join(" ")
+            );
+        }
+
+        // Nothing else carries it: it is not a valid option for them.
+        for args in [
+            ["status", "--porcelain"].as_slice(),
+            ["switch", "main"].as_slice(),
+            ["worktree", "add", "../wt", "main"].as_slice(),
+        ] {
+            let built = command_args(&build_git_command(git, repo, args));
+            assert!(
+                !built.iter().any(|arg| arg.starts_with("--upload-pack")),
+                "git {} must not take a transport option, got {built:?}",
                 args.join(" ")
             );
         }
@@ -1418,6 +1534,62 @@ mod tests {
         assert!(
             !marker.exists(),
             "the repository's ext:: remote command ran during git fetch"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn repository_upload_pack_program_does_not_run_on_fetch() {
+        let (temp, repo) = untrusted_repo_fixture().await;
+        let marker = temp.path().join("upload-pack-ran");
+        let script = temp.path().join("upload-pack.sh");
+        // Still a working upload-pack, so a fetch that honours the key succeeds
+        // and the only observable difference is the marker.
+        write_executable(
+            &script,
+            &format!(
+                "#!/bin/sh\ntouch '{}'\nexec git-upload-pack \"$@\"\n",
+                marker.display()
+            ),
+        );
+        // The remote is the fixture itself: a fetch needs no network, and the
+        // program git runs for it comes from the repository's own config.
+        let origin = temp.path().join("origin");
+        std::fs::create_dir_all(&origin).expect("origin dir");
+        let clone = std::process::Command::new("git")
+            .args(["clone", "-q", "--bare", ".", &origin.to_string_lossy()])
+            .current_dir(&repo)
+            .output()
+            .expect("clone the fixture");
+        assert!(
+            clone.status.success(),
+            "clone failed: {}",
+            String::from_utf8_lossy(&clone.stderr)
+        );
+        for args in [
+            ["remote", "add", "origin", &origin.to_string_lossy()].as_slice(),
+            [
+                "config",
+                "remote.origin.uploadpack",
+                &script.to_string_lossy(),
+            ]
+            .as_slice(),
+        ] {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("configure the remote");
+            assert!(output.status.success());
+        }
+
+        run_git_success_async(&repo, &["fetch", "--prune"], GIT_MUTATING_COMMAND_TIMEOUT)
+            .await
+            .expect("git fetch");
+
+        assert!(
+            !marker.exists(),
+            "the repository's remote.origin.uploadpack program ran during git fetch"
         );
     }
 
