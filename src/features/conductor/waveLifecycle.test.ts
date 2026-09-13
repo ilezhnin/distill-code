@@ -53,6 +53,7 @@ const { resetWaveRunnerForTests, runWaveEngineTick } = await import(
 const { getWaveEngineState, resetWaveEngineStateCache, hasWaveTombstone } =
   await import("./waveStore");
 const { retryWaveDigest } = await import("./waveRetry");
+const { WAVE_VERDICT_SILENCE_SAMPLE_MS } = await import("./waveLifecycle");
 const { getWaveTelemetry } = await import("./waveTelemetryStore");
 
 const CONDUCTOR_ID = "conductor-1";
@@ -878,6 +879,152 @@ describe("wave closed loop", () => {
     expect(retry).toContain("no distill-verdict block at all");
     // Q5 is intact: the retry was the operator's, and it cost no revision.
     expect(getWaveEngineState().waves[0].revisionCount).toBe(0);
+  });
+
+  describe("a verdict that is never coming", () => {
+    /** Pins the clock so the silence samples can be stepped by hand. */
+    function pinClock(): {
+      advance: (ms: number) => void;
+      restore: () => void;
+    } {
+      let now = 10_000;
+      const spy = vi.spyOn(Date, "now").mockImplementation(() => now);
+      return {
+        advance: (ms: number) => {
+          now += ms;
+        },
+        restore: () => spy.mockRestore(),
+      };
+    }
+
+    it("parks the wave when the digest reached neither the transcript nor the queue", async () => {
+      // The digest was queued because the conductor was busy and the queue was
+      // then cleared (or the session went away). Nothing will ever answer it,
+      // and the wave used to stay live for the rest of the session — refusing
+      // every later plan the conductor made as concurrent.
+      deliverEnvelope.mockImplementation(async () => ({
+        status: "queued" as const,
+      }));
+      const clock = pinClock();
+      try {
+        await runWaveToDigest();
+        expect(getWaveEngineState().waves[0].phase).toBe("awaitingVerdict");
+
+        // One sample decides nothing: the healthy path looks exactly like this
+        // for the moment between the queue draining and the message landing.
+        await settle();
+        expect(getWaveEngineState().waves[0].phase).toBe("awaitingVerdict");
+
+        clock.advance(WAVE_VERDICT_SILENCE_SAMPLE_MS + 1);
+        await settle();
+        const [wave] = getWaveEngineState().waves;
+        expect(wave.phase).toBe("needsOperator");
+        // No revision spent, and the operator can re-ask — WAVES: an
+        // undecided wave MUST offer the ability to ask again.
+        expect(wave.revisionCount).toBe(0);
+        expect(noticeTexts().join("\n")).toContain(
+          i18n.t("chat:conductor.wave.verdict.reason.digestLost"),
+        );
+        expect(noticeActions()).toContainEqual({
+          type: "retryWaveDigest",
+          sessionId: CONDUCTOR_ID,
+          waveId: wave.waveId,
+        });
+      } finally {
+        clock.restore();
+      }
+    });
+
+    it("waits while the digest is still in the conductor's queue", async () => {
+      const digests: string[] = [];
+      deliverEnvelope.mockImplementation(
+        async (_sessionId: string, text: string) => {
+          digests.push(text);
+          useChatStore.setState({
+            queuedMessageBySession: {
+              [CONDUCTOR_ID]: [
+                {
+                  id: "queued-1",
+                  kind: "transport-ready",
+                  payload: { text },
+                } as never,
+              ],
+            },
+          });
+          return { status: "queued" as const };
+        },
+      );
+      const clock = pinClock();
+      try {
+        await runWaveToDigest();
+        clock.advance(WAVE_VERDICT_SILENCE_SAMPLE_MS * 5);
+        await settle();
+        // Still on its way: the queue drains when the conductor frees.
+        expect(getWaveEngineState().waves[0].phase).toBe("awaitingVerdict");
+        expect(digests).toHaveLength(1);
+      } finally {
+        clock.restore();
+      }
+    });
+
+    it("parks the wave when the conductor's turn on the digest ended without an answer", async () => {
+      const clock = pinClock();
+      try {
+        await runWaveToDigest();
+        const [delivered] = getWaveEngineState().waves;
+        expect(delivered.phase).toBe("awaitingVerdict");
+
+        // While the conductor is working, silence is just work in progress.
+        useChatStore.getState().setChatState(CONDUCTOR_ID, "thinking");
+        clock.advance(WAVE_VERDICT_SILENCE_SAMPLE_MS * 4);
+        await settle();
+        expect(getWaveEngineState().waves[0].phase).toBe("awaitingVerdict");
+
+        // Its turn then ends in an error notice with no answer in it.
+        useChatStore.getState().setChatState(CONDUCTOR_ID, "error");
+        await settle();
+        expect(getWaveEngineState().waves[0].phase).toBe("awaitingVerdict");
+        clock.advance(WAVE_VERDICT_SILENCE_SAMPLE_MS + 1);
+        await settle();
+
+        const [wave] = getWaveEngineState().waves;
+        expect(wave.phase).toBe("needsOperator");
+        expect(noticeTexts().join("\n")).toContain(
+          i18n.t("chat:conductor.wave.verdict.reason.verdictUnanswered"),
+        );
+        expect(noticeActions()).toContainEqual({
+          type: "retryWaveDigest",
+          sessionId: CONDUCTOR_ID,
+          waveId: wave.waveId,
+        });
+        // The digest was not sent again behind the operator's back.
+        expect(deliverEnvelope).toHaveBeenCalledTimes(1);
+      } finally {
+        clock.restore();
+      }
+    });
+
+    it("reads a late answer as the verdict rather than parking", async () => {
+      const clock = pinClock();
+      try {
+        // The digest landed and the conductor is idle, so one silent sample is
+        // already recorded against this wave when the answer arrives.
+        await runWaveToDigest();
+        appendConductorMessage(
+          assistant(
+            "verdict-1",
+            'Good.\n\n```distill-verdict\n{"verdict":"accept"}\n```',
+          ),
+        );
+        await settle();
+        expect(getWaveEngineState().waves).toHaveLength(0);
+        expect(getWaveTelemetry().records[0]).toMatchObject({
+          outcome: "accepted",
+        });
+      } finally {
+        clock.restore();
+      }
+    });
   });
 
   it("drops a parked wave when the conductor starts a new root request", async () => {

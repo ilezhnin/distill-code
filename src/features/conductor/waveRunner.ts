@@ -1100,8 +1100,15 @@ export function runWaveEngineTick(): void {
     setWaveEngineState(digested.state);
     // P61's heartbeat: a wedged child streams nothing, and nothing else
     // re-ticks a quiet engine — so as long as any wave is running, the next
-    // stall sample is guaranteed a wake-up. One timer, self-rearming.
-    if (digested.state.waves.some((wave) => wave.phase === "running")) {
+    // stall sample is guaranteed a wake-up. One timer, self-rearming. A wave
+    // waiting on a verdict needs the same heartbeat for the same reason: a
+    // conductor that will never answer changes nothing, so without a wake-up
+    // the silence samples would never be taken and the wave would sit live.
+    if (
+      digested.state.waves.some(
+        (wave) => wave.phase === "running" || wave.phase === "awaitingVerdict",
+      )
+    ) {
       scheduleStallTick(WAVE_STALL_SAMPLE_MS);
     }
     pending = advanced.pending;

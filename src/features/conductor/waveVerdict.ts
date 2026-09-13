@@ -101,7 +101,21 @@ export type WaveClosureReason =
    * same way it does after 5b: from the operator's next message, with the
    * parked wave swept by the next admitted plan.
    */
-  | "step-blocked";
+  | "step-blocked"
+  /**
+   * The digest is in neither the conductor's transcript nor its queue: the
+   * operator cleared the queue, or the session it was parked on went away.
+   * Nothing will ever answer it, so the wave would stay live forever — and a
+   * conductor with a live wave refuses every later plan it makes.
+   */
+  | "digest-lost"
+  /**
+   * The digest landed and the conductor's turn on it ended without an answer —
+   * a turn that failed, or one lost with a previous process. WAVES requires an
+   * undecided wave to offer the operator the ability to ask again; this is that
+   * case, and before it existed the wave simply never left `awaitingVerdict`.
+   */
+  | "verdict-unanswered";
 
 export interface WaveClosure {
   reason: WaveClosureReason;
@@ -333,6 +347,38 @@ export function digestUndeliverableDecision(
     phase: "needsOperator",
     closure: { reason: "digest-undeliverable", detail },
     offerRetry: true,
+  };
+}
+
+/**
+ * The decision for a digest that is neither in the transcript nor in the queue.
+ *
+ * The retry is offered and re-delivers the digest under a new attempt marker,
+ * which is exactly what this case needs: the reports are all still there, and
+ * the only thing that went missing is the question.
+ */
+export function digestLostDecision(): WaveVerdictDecision {
+  return {
+    phase: "needsOperator",
+    closure: { reason: "digest-lost" },
+    offerRetry: true,
+    verdictIssue: { reason: "missing" },
+  };
+}
+
+/**
+ * The decision for a digest the conductor never answered.
+ *
+ * Like an unreadable verdict (Q5) this spends no revision and offers the
+ * re-ask, and the `missing` issue is what makes the re-asked digest say so
+ * rather than repeating the same question verbatim.
+ */
+export function verdictUnansweredDecision(): WaveVerdictDecision {
+  return {
+    phase: "needsOperator",
+    closure: { reason: "verdict-unanswered" },
+    offerRetry: true,
+    verdictIssue: { reason: "missing" },
   };
 }
 

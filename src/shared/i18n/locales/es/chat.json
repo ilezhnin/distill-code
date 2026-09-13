@@ -539,7 +539,9 @@
           "acceptedWithMissingArtifacts": "El conductor aceptó el resultado, pero los informes nombraron archivos que no están en el disco, así que no se respetó la aceptación.",
           "waveInterrupted": "Esta ola se interrumpió antes de que ningún ejecutor informara, así que no hay nada que juzgar. Su trabajo no se completó.",
           "operatorStopped": "Detuviste esta ola. Se pidió a sus ejecutores que se detuvieran y nada se resumió ni se juzgó.",
-          "stepBlocked": "Un ejecutor informó que no puede hacer su paso, así que la ola se detuvo."
+          "stepBlocked": "Un ejecutor informó que no puede hacer su paso, así que la ola se detuvo.",
+          "digestLost": "El informe de la brigada nunca se entregó al conductor —se quitó de la cola antes de enviarse—, así que no se decidió nada. Volver a preguntar abajo lo reenvía.",
+          "verdictUnanswered": "El conductor nunca respondió al informe de la brigada, así que no se decidió nada. Su turno sobre el informe terminó sin respuesta. Volver a preguntar abajo lo reenvía."
         },
         "prose": {
           "accept": "Aceptó el resultado de la brigada.",
@@ -575,7 +577,8 @@
         "tokens": "{{spent}} de {{allowed}} tokens",
         "minutes": "{{spent}} de {{allowed}} minutos"
       },
-      "closeout": "El resumen de esta petición se escribió en {{path}}. Es un archivo normal: haz commit junto con el trabajo para que lo tenga la siguiente persona."
+      "closeout": "El resumen de esta petición se escribió en {{path}}. Es un archivo normal: haz commit junto con el trabajo para que lo tenga la siguiente persona.",
+      "awaitingVerdict": "La brigada ha terminado; este chat espera el veredicto del conductor."
     },
     "spawnAcl": {
       "deniedTitle": "Una sesión pidió iniciar un agente que no tiene permitido iniciar, así que no se inició nada.",
