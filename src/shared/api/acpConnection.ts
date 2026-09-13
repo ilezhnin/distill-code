@@ -13,6 +13,7 @@ import {
 } from "./createWebSocketStream";
 import { HostClient } from "./hostClient";
 import { perfLog } from "@/shared/lib/perfLog";
+import { logRendererEvent } from "./rendererLog";
 
 let notificationHandler: AcpNotificationHandler | null = null;
 
@@ -25,17 +26,28 @@ export function setNotificationHandler(handler: AcpNotificationHandler): void {
 }
 
 /**
- * Nothing in the app asks the operator about individual tool calls: a
- * harness that still sends a permission request gets a one-time allow. An
- * "always" answer would change the harness's own saved permissions, so it is
- * only chosen when the request offers no one-time allow.
+ * Nothing in the app asks the operator about individual tool calls: a harness
+ * that still sends a permission request gets a one-time allow. An "always"
+ * answer is never chosen — it rewrites the harness's own saved permissions for
+ * every future session, which nobody asked for and nothing in the app can undo
+ * — so a request that offers no one-time allow is refused once instead, and
+ * cancelled when it offers nothing to refuse with either. There is no UI where
+ * the operator could see any of this, so every answer goes to the app log.
  */
-function allowOnce(args: RequestPermissionRequest): RequestPermissionResponse {
+export function answerPermissionRequest(
+  args: RequestPermissionRequest,
+): RequestPermissionResponse {
   const options = args.options ?? [];
   const option =
     options.find((candidate) => candidate.kind === "allow_once") ??
-    options.find((candidate) => candidate.kind === "allow_always") ??
-    options[0];
+    options.find((candidate) => candidate.kind === "reject_once");
+  const offered = options
+    .map((candidate) => candidate.kind ?? "unknown")
+    .join(",");
+  void logRendererEvent(
+    "warn",
+    `[acp] permission request answered without asking: session=${args.sessionId?.slice(0, 8) ?? "?"} tool=${args.toolCall?.title ?? args.toolCall?.toolCallId ?? "?"} offered=[${offered}] answer=${option?.kind ?? "cancelled"}`,
+  );
   if (!option) {
     return { outcome: { outcome: "cancelled" } };
   }
@@ -45,12 +57,15 @@ function allowOnce(args: RequestPermissionRequest): RequestPermissionResponse {
 let clientPromise: Promise<HostClient> | null = null;
 let resolvedClient: HostClient | null = null;
 let activeStream: WebSocketStream | null = null;
+// Bumped by every invalidation so a connection attempt that was still
+// waiting on the host URL when the invalidation happened knows it lost.
+let connectionGeneration = 0;
 
 function createClientCallbacks(): () => Client {
   return () => ({
     requestPermission: async (
       args: RequestPermissionRequest,
-    ): Promise<RequestPermissionResponse> => allowOnce(args),
+    ): Promise<RequestPermissionResponse> => answerPermissionRequest(args),
 
     sessionUpdate: async (notification: SessionNotification): Promise<void> => {
       if (notificationHandler) {
@@ -85,9 +100,10 @@ function monitorConnection(client: HostClient, stream: WebSocketStream): void {
 }
 
 /**
- * Abort the current transport after an ACP request exceeds its liveness bound.
- * A timed-out request leaves the connection state unknowable; reconnecting is
- * safer than allowing later mutations to race work still running remotely.
+ * Drop the current transport. Every request still pending on it is rejected
+ * with "ACP connection closed", so this is reserved for a socket that is
+ * known to be dead or was never established; a request that merely timed out
+ * goes through `invalidateClientConnectionIfUnresponsive` instead.
  *
  * The socket is closed directly: aborting the writable side is refused while
  * a writer holds it, which would leave the old socket open and every request
@@ -95,18 +111,122 @@ function monitorConnection(client: HostClient, stream: WebSocketStream): void {
  */
 export async function invalidateClientConnection(): Promise<void> {
   const stream = activeStream;
+  connectionGeneration += 1;
   activeStream = null;
   resolvedClient = null;
   clientPromise = null;
   stream?.close();
 }
 
+const CONNECTION_PROBE_TIMEOUT_MS = 10_000;
+
+let pendingPromptCount = 0;
+
+/**
+ * Count a `session/prompt` for as long as it is in flight. The one socket is
+ * shared by every chat, so closing it fails every streaming turn at once;
+ * the count is what keeps a timed-out config call in one chat from doing
+ * that to the others.
+ */
+export function trackPendingPrompt<T>(prompt: Promise<T>): Promise<T> {
+  pendingPromptCount += 1;
+  return prompt.finally(() => {
+    pendingPromptCount -= 1;
+  });
+}
+
+export function hasPendingPrompts(): boolean {
+  return pendingPromptCount > 0;
+}
+
+async function probeConnection(client: HostClient): Promise<boolean> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // `initialize` is answered by the host itself, from its own task, so it
+    // is not held up by whatever bridge call the timed-out request is stuck
+    // behind: a missing answer means the transport, not one bridge, is gone.
+    await Promise.race([
+      client.initialize({
+        protocolVersion: PROTOCOL_VERSION,
+        clientCapabilities: {},
+        clientInfo: {
+          name: packageJson.name,
+          version: packageJson.version,
+        },
+      }),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error("ACP connection probe timed out"));
+        }, CONNECTION_PROBE_TIMEOUT_MS);
+      }),
+    ]);
+    return true;
+  } catch (error) {
+    console.warn("[acp] Connection probe failed:", error);
+    return false;
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
+/**
+ * After a bounded request timed out: decide whether the transport itself is
+ * dead. The timeout says nothing about the socket — the host answers every
+ * request from its own task, so one hung bridge call (a bridge install, an
+ * `initialize` that never answers) leaves the socket healthy and every other
+ * chat's prompt streaming over it. The socket is dropped only when a probe
+ * gets no answer and no prompt is pending on it; a connection that never
+ * came up within the bound is dropped so the next `getClient()` can retry.
+ * Returns whether the connection was invalidated.
+ */
+export async function invalidateClientConnectionIfUnresponsive(): Promise<boolean> {
+  const client = resolvedClient;
+  if (!client) {
+    if (clientPromise) {
+      await invalidateClientConnection();
+      return true;
+    }
+    return false;
+  }
+  if (await probeConnection(client)) {
+    return false;
+  }
+  if (resolvedClient !== client) {
+    return false;
+  }
+  if (hasPendingPrompts()) {
+    console.warn(
+      "[acp] Connection probe failed while prompts are pending; keeping the socket open.",
+    );
+    return false;
+  }
+  await invalidateClientConnection();
+  return true;
+}
+
+export class AcpConnectionSupersededError extends Error {
+  constructor() {
+    super("ACP connection attempt was superseded by a reconnect.");
+    this.name = "AcpConnectionSupersededError";
+  }
+}
+
 async function initializeConnection(): Promise<HostClient> {
+  const generation = connectionGeneration;
+  const isCurrentAttempt = () => connectionGeneration === generation;
   const tStart = performance.now();
   const wsUrl: string = await invoke("get_agent_host_url");
   perfLog(
     `[perf:conn] get_agent_host_url in ${(performance.now() - tStart).toFixed(1)}ms`,
   );
+  // An invalidation that ran while the host URL was still being fetched has
+  // nothing to close yet; opening this socket now would make it the host's
+  // "newest" socket while nobody holds its client.
+  if (!isCurrentAttempt()) {
+    throw new AcpConnectionSupersededError();
+  }
 
   const stream = createWebSocketStream(wsUrl);
   activeStream = stream;
@@ -122,10 +242,14 @@ async function initializeConnection(): Promise<HostClient> {
         version: packageJson.version,
       },
     });
+    if (!isCurrentAttempt()) {
+      throw new AcpConnectionSupersededError();
+    }
   } catch (error) {
-    // A socket that never finished the handshake must not linger: the host
-    // treats the newest socket as the renderer's, and this one would stay
-    // open, unanswered, next to the retry's.
+    // A socket that never finished the handshake, or was superseded while
+    // finishing it, must not linger: the host treats the newest socket as
+    // the renderer's, and this one would stay open, unanswered, next to the
+    // retry's.
     if (activeStream === stream) {
       activeStream = null;
     }
@@ -161,6 +285,11 @@ export async function getClient(): Promise<HostClient> {
       .catch((error) => {
         if (clientPromise === pending) {
           clientPromise = null;
+        }
+        // The caller still wants a client; the reconnect that superseded
+        // this attempt is the one to hand out.
+        if (error instanceof AcpConnectionSupersededError) {
+          return getClient();
         }
         throw error;
       });

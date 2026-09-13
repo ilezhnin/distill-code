@@ -94,9 +94,14 @@ export function unansweredSendToReport(
 export function resendUnansweredMessage(sessionId: string, text: string): void {
   const prompt = text.trim();
   if (!prompt) return;
-  void sendPromptToExistingSessionInBackground(sessionId, prompt).catch(
-    (error: unknown) => {
-      console.error("Failed to send the interrupted message again:", error);
-    },
-  );
+  void sendPromptToExistingSessionInBackground(sessionId, prompt, undefined, {
+    // The background sender is shared with berdctl, whose defaults stamp the
+    // message — locally and in the `_meta` the host persists — as a delivery
+    // from another chat. This one is the operator's own words, re-sent from
+    // their own chat, so it carries no berdctl origin: the bubble renders as
+    // theirs, and a reload still reads it as theirs.
+    sendOptions: {},
+  }).catch((error: unknown) => {
+    console.error("Failed to send the interrupted message again:", error);
+  });
 }

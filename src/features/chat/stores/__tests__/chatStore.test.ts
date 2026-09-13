@@ -415,8 +415,7 @@ describe("chatStore", () => {
     useChatStore.getState().setMessages("s1", [streaming]);
     useChatStore.getState().setStreamingMessageId("s1", "stream-1");
     useChatStore.getState().updateStreamingThinking("s1", "Plan");
-    useChatStore.getState().updateStreamingThinking("s1", "Plan next");
-    useChatStore.getState().updateStreamingThinking("s1", "Plan next");
+    useChatStore.getState().updateStreamingThinking("s1", " next");
     useChatStore.getState().updateStreamingThinking("s1", " step");
 
     const updated = useChatStore.getState().messagesBySession.s1[0];
@@ -425,6 +424,36 @@ describe("chatStore", () => {
       { type: "thinking", text: "Plan next step" },
     ]);
     expect(getRuntime("s2").streamingMessageId).toBeNull();
+  });
+
+  // Token deltas repeat the tail of the reasoning all the time; every chunk
+  // the bridge sent has to survive into the bubble.
+  it("appends thinking deltas that repeat the accumulated tail", () => {
+    const streaming = makeMessage({ id: "stream-1", content: [] });
+
+    useChatStore.getState().setMessages("s1", [streaming]);
+    useChatStore.getState().setStreamingMessageId("s1", "stream-1");
+    for (const chunk of ["The year was 201", "1", " and foo(bar(baz)", ")"]) {
+      useChatStore.getState().updateStreamingThinking("s1", chunk);
+    }
+
+    expect(useChatStore.getState().messagesBySession.s1[0].content).toEqual([
+      { type: "thinking", text: "The year was 2011 and foo(bar(baz))" },
+    ]);
+  });
+
+  it("keeps a thinking delta identical to the reasoning so far", () => {
+    const streaming = makeMessage({ id: "stream-1", content: [] });
+
+    useChatStore.getState().setMessages("s1", [streaming]);
+    useChatStore.getState().setStreamingMessageId("s1", "stream-1");
+    useChatStore.getState().updateStreamingThinking("s1", "1");
+    useChatStore.getState().updateStreamingThinking("s1", "1");
+    useChatStore.getState().updateStreamingThinking("s1", "1");
+
+    expect(useChatStore.getState().messagesBySession.s1[0].content).toEqual([
+      { type: "thinking", text: "111" },
+    ]);
   });
 
   it("transitions a session to error without affecting another session", () => {
@@ -667,6 +696,48 @@ describe("chatStore", () => {
       role: "assistant",
       metadata: { completionStatus: "inProgress" },
     });
+  });
+
+  // Archiving or deleting a chat does not cancel its turn, so a trailing
+  // assistant chunk can still land. It used to re-create the session's rows and
+  // persist an unread id that no session owns — nothing can open it to mark it
+  // read, so it came back as unread on every start.
+  it("does not mark a session unread after it was archived away", () => {
+    const store = useChatStore.getState();
+    store.addMessage("gone", makeMessage());
+    store.cleanupSession("gone");
+
+    store.addMessage("gone", makeMessage());
+
+    expect(getRuntime("gone").hasUnread).toBe(false);
+    expect(loadCachedUnreadSessionIds()).toEqual([]);
+  });
+
+  it("marks the session unread again once it is loaded back", () => {
+    const store = useChatStore.getState();
+    store.cleanupSession("returning");
+    store.setSessionLoading("returning", true);
+
+    store.addMessage("returning", makeMessage());
+
+    expect(getRuntime("returning").hasUnread).toBe(true);
+    expect(loadCachedUnreadSessionIds()).toEqual(["returning"]);
+  });
+
+  it("prunes unread flags for sessions the host no longer lists", () => {
+    const store = useChatStore.getState();
+    store.markSessionUnread("still-there");
+    store.markSessionUnread("deleted-elsewhere");
+    expect(loadCachedUnreadSessionIds().sort()).toEqual([
+      "deleted-elsewhere",
+      "still-there",
+    ]);
+
+    store.pruneUnreadSessions(["still-there", "never-unread"]);
+
+    expect(getRuntime("still-there").hasUnread).toBe(true);
+    expect(getRuntime("deleted-elsewhere").hasUnread).toBe(false);
+    expect(loadCachedUnreadSessionIds()).toEqual(["still-there"]);
   });
 
   it("clears messages and runtime state for a single session", () => {

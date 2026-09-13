@@ -7,13 +7,17 @@ import {
   enqueueStreamingThinkingUpdate,
   flushAllBufferedStreamingUpdates,
   flushBufferedStreamingUpdatesForSession,
+  releaseStreamingMessageOwner,
 } from "../liveStreamingUpdates";
 import {
   type ChatSession,
   useChatSessionStore,
 } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
-import { claimSessionPrompt } from "@/features/chat/lib/sessionPromptOwnership";
+import {
+  claimSessionPrompt,
+  releaseSessionPrompt,
+} from "@/features/chat/lib/sessionPromptOwnership";
 import type { Message } from "@/shared/types/messages";
 
 const sessionId = "acp-session";
@@ -65,16 +69,7 @@ describe("liveStreamingUpdates", () => {
     });
 
     enqueueStreamingThinkingUpdate(sessionId, "assistant-1", "thinking");
-    enqueueStreamingThinkingUpdate(
-      sessionId,
-      "assistant-1",
-      "thinking through",
-    );
-    enqueueStreamingThinkingUpdate(
-      sessionId,
-      "assistant-1",
-      "thinking through",
-    );
+    enqueueStreamingThinkingUpdate(sessionId, "assistant-1", " through");
     enqueueStreamingThinkingUpdate(sessionId, "assistant-1", " it");
     enqueueStreamingTextUpdate(sessionId, "assistant-1", "hello ");
     enqueueStreamingTextUpdate(sessionId, "assistant-1", "world");
@@ -88,6 +83,45 @@ describe("liveStreamingUpdates", () => {
       { type: "thinking", text: "thinking through it" },
       { type: "text", text: "hello world" },
     ]);
+  });
+
+  // A prompt that settles while the host keeps streaming (a rejected
+  // `session/prompt` does not stop the bridge) used to strand the rest of the
+  // reply: every later chunk was buffered under the released owner symbol,
+  // which no flush can match, so it was never rendered and never freed.
+  it("renders chunks that arrive after the owning prompt was released", () => {
+    const owner = claimSessionPrompt(sessionId);
+    useChatStore.getState().setMessages(sessionId, [makeAssistantMessage()]);
+    useChatStore.getState().setStreamingMessageId(sessionId, "assistant-1");
+    enqueueStreamingTextUpdate(sessionId, "assistant-1", "before");
+    flushAllBufferedStreamingUpdates();
+
+    releaseSessionPrompt(sessionId, owner);
+    releaseStreamingMessageOwner(sessionId, owner);
+
+    enqueueStreamingTextUpdate(sessionId, "assistant-1", " after");
+    enqueueStreamingThinkingUpdate(
+      sessionId,
+      "assistant-1",
+      "trailing thought",
+    );
+    flushAllBufferedStreamingUpdates();
+
+    expect(
+      useChatStore.getState().messagesBySession[sessionId]?.[0]?.content,
+    ).toEqual([
+      { type: "text", text: "before after" },
+      { type: "thinking", text: "trailing thought" },
+    ]);
+    // And every further chunk keeps flowing, rather than piling up for a flush
+    // that can never match.
+    enqueueStreamingTextUpdate(sessionId, "assistant-1", "!");
+    flushAllBufferedStreamingUpdates();
+    expect(
+      useChatStore
+        .getState()
+        .messagesBySession[sessionId]?.[0]?.content?.at(-1),
+    ).toEqual({ type: "text", text: "!" });
   });
 
   it("batches stale-owner updates without moving the current stream", () => {

@@ -286,8 +286,6 @@ export async function handleSessionNotification(
   const { update } = notification;
   const isReplay = useChatStore.getState().loadingSessionIds.has(sessionId);
 
-  recordUsageNotification(sessionId, update);
-
   if (isReplay) {
     const sid = sessionId.slice(0, 8);
     let perf = replayPerf.get(sessionId);
@@ -301,6 +299,13 @@ export async function handleSessionNotification(
     perf.count += 1;
     handleReplay(sessionId, update);
   } else {
+    // Usage is recorded only while the turn is live. Replay re-feeds every
+    // `usage_update` the host persisted, and the ledger would take each one
+    // as activity happening now: `lastActivityAt` jumps to today (Stats moves
+    // the whole chat into today's bucket) and the whole ledger is serialized
+    // to localStorage once per replayed turn. The chat's own token/cost
+    // display is restored by `handleShared` on the replay path instead.
+    recordUsageNotification(sessionId, update);
     observeWorkspaceToolCall(sessionId, update);
     if (update.sessionUpdate === "agent_message_chunk") {
       recordLiveAgentMessageChunk(sessionId);
@@ -419,6 +424,13 @@ function getReplayAssistantMessageMetadata(
   };
 }
 
+/**
+ * Thought chunks are token deltas: the bridges the app hosts stream reasoning
+ * the same way they stream text, and the host persists every chunk verbatim,
+ * so replay re-feeds those deltas. They are appended as they arrive — a delta
+ * that repeats the tail of the reasoning so far (a second `1` after `…201`, a
+ * closing `)` after `…(baz)`) is real text, not a duplicate.
+ */
 function upsertThinkingContent(content: MessageContent[], text: string): void {
   const last = content[content.length - 1];
   if (last?.type !== "thinking") {
@@ -426,13 +438,6 @@ function upsertThinkingContent(content: MessageContent[], text: string): void {
     return;
   }
 
-  if (text.startsWith(last.text)) {
-    last.text = text;
-    return;
-  }
-  if (last.text.endsWith(text)) {
-    return;
-  }
   last.text += text;
 }
 
