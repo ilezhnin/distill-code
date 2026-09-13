@@ -21,6 +21,33 @@ export function exportFilenameFromPath(
   return filename?.trim() ? filename : fallbackFilename;
 }
 
+export interface SettledExports<T> {
+  items: T[];
+  failures: unknown[];
+}
+
+/**
+ * Loads every export of a bulk selection and keeps the ones that came back: a
+ * single unreadable chat must not throw away the rest of the batch. Callers
+ * report `failures.length` next to the saved count.
+ */
+export async function collectSettledExports<T>(
+  ids: readonly string[],
+  load: (id: string) => Promise<T>,
+): Promise<SettledExports<T>> {
+  const results = await Promise.allSettled(ids.map((id) => load(id)));
+  const items: T[] = [];
+  const failures: unknown[] = [];
+  for (const result of results) {
+    if (result.status === "fulfilled") {
+      items.push(result.value);
+      continue;
+    }
+    failures.push(result.reason);
+  }
+  return { items, failures };
+}
+
 export function downloadJson(json: string, filename: string): void {
   const blob = new Blob([json], { type: "application/json" });
   const url = URL.createObjectURL(blob);

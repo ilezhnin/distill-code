@@ -29,7 +29,11 @@ import { acpExportSession } from "@/shared/api/acp";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { exportSessionAction } from "../lib/exportSessionAction";
 import { saveExportedSessionFiles } from "@/shared/api/system";
-import { defaultExportFilename, downloadJson } from "../lib/exportSession";
+import {
+  collectSettledExports,
+  defaultExportFilename,
+  downloadJson,
+} from "../lib/exportSession";
 import {
   areSetsEqual,
   normalizeSelectedSessionIds,
@@ -800,12 +804,25 @@ export function SessionHistoryView({
     );
 
     try {
-      const items = await Promise.all(
-        sessionIds.map(async (id) => ({
+      const { items, failures } = await collectSettledExports(
+        sessionIds,
+        async (id) => ({
           filename: defaultExportFilename(titleById.get(id) ?? "session"),
           contents: await acpExportSession(id),
-        })),
+        }),
       );
+      if (failures.length > 0) {
+        console.error("Some chats could not be exported:", failures);
+      }
+      if (items.length === 0) {
+        toast.error(
+          formatAcpErrorMessage(
+            failures[0],
+            t("common:bulkActions.exportFailed"),
+          ),
+        );
+        return;
+      }
 
       if (window.__TAURI_INTERNALS__) {
         const result = await saveExportedSessionFiles(items);
@@ -828,6 +845,9 @@ export function SessionHistoryView({
           }),
         );
       }
+      if (failures.length > 0) {
+        reportBulkFailure(failures.length);
+      }
       clearSelection();
     } catch (error) {
       console.error("Bulk export failed:", error);
@@ -835,7 +855,13 @@ export function SessionHistoryView({
         formatAcpErrorMessage(error, t("common:bulkActions.exportFailed")),
       );
     }
-  }, [activeSessions, clearSelection, selectedSessionIds, t]);
+  }, [
+    activeSessions,
+    clearSelection,
+    reportBulkFailure,
+    selectedSessionIds,
+    t,
+  ]);
 
   const handleSelectResult = useCallback(
     (sessionId: string, messageId?: string) => {
