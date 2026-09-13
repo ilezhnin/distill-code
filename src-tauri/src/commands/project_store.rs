@@ -230,6 +230,8 @@ fn write_project_run_closeout_blocking(
     {
         return Err("A closeout file name must be a plain '.md' name".into());
     }
+    // `docs/runs/CON.md` addresses the console device rather than a document.
+    crate::services::windows_names::reject_unusable_windows_name(file, "A closeout file name")?;
     let dir = PROJECT_RUNS_DIR
         .split('/')
         .fold(root.clone(), |path, part| path.join(part));
@@ -366,6 +368,13 @@ mod tests {
             "",
             "C:escape.md",
             "note.md:stream.md",
+            // DOS devices: `docs/runs/CON.md` is the console, not a document.
+            "CON.md",
+            "nul.md",
+            "COM1.md",
+            "lpt9.md",
+            "PRN.md",
+            "aux.md",
         ] {
             assert!(
                 write_project_run_closeout_blocking(
