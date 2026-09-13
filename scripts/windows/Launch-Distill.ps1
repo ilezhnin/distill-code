@@ -394,7 +394,13 @@ try {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $devConfigPath) | Out-Null
     [System.IO.File]::WriteAllText($devConfigPath, ($devConfig | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
 
-    $features = Get-BerdAppFeatures
+    # This launcher is the desktop-shortcut/daily-driver entry point, so it
+    # builds without `app-test-driver`: that feature binds an unauthenticated
+    # UI-driving socket on 127.0.0.1:9999 that any local process - including a
+    # command an agent runs - can use to read the rendered transcript and input
+    # values and to click any control. Use `just dev-windows` when you want the
+    # driver (see docs/app-e2e.md).
+    $features = Get-BerdAppFeatures -BaseFeatures @("berdctl")
     Write-WindowsDevInfo "version: $($version.RichVersion)"
     Write-WindowsDevInfo "vite: http://localhost:$vitePort"
     Write-WindowsDevInfo "cargo target: $tauriTargetDir"

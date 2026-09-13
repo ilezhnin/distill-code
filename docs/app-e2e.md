@@ -1,10 +1,16 @@
 # Driving the running app
 
-Dev builds include the `app-test-driver` Tauri plugin (`app_features` in the
-`justfile` is `berdctl,app-test-driver`), so a running Distill can be clicked,
-typed into and read from outside. There is no checked-in end-to-end suite
-built on it: you use the driver by hand, or an agent uses it through the
-[agent-driver relay](../scripts/agent-driver/README.md).
+Dev builds started through `just dev-windows` include the `app-test-driver`
+Tauri plugin (`app_features` in the `justfile` is `berdctl,app-test-driver`), so
+a running Distill can be clicked, typed into and read from outside. There is no
+checked-in end-to-end suite built on it: you use the driver by hand, or an agent
+uses it through the [agent-driver relay](../scripts/agent-driver/README.md).
+
+Two entry points deliberately leave the feature out, because the driver accepts
+unauthenticated local commands (see the warning below): the NSIS/MSI bundles
+(`just bundle`), and `scripts\windows\Launch-Distill.ps1` — the one-click
+launcher behind the "Distill Code" desktop shortcut. Launch the app with
+`just dev-windows` when you want to drive it.
 
 Automated UI coverage lives elsewhere: component tests next to the code in
 `src/` (`just test`), and the renderer-only Playwright specs in
@@ -18,6 +24,14 @@ A dev build started with `just dev-windows` (or
 listens on `127.0.0.1:9999`, or on `APP_TEST_DRIVER_PORT` when that is set,
 and logs `[app-test-driver] Listening on 127.0.0.1:<port>` at startup. It uses
 your normal app profile and accepts unauthenticated loopback connections.
+
+> **Anything running on the machine can drive that socket.** No token, no
+> origin check: a postinstall script or a shell command an agent runs can read
+> the whole rendered transcript and every input value (`getText`, `snapshot`
+> prints `value="…"`, password fields included) and click any control —
+> including approving its own permission prompt. Prefer isolated mode below for
+> unattended runs, and do not leave a driver-enabled build running while you
+> work in a real session with agents that have shell access.
 
 The protocol is one JSON object per line in each direction:
 

@@ -31,6 +31,12 @@ build puts the driver (`justfile`'s `app_features` includes
 `app-test-driver`; the app logs `[app-test-driver] Listening on
 127.0.0.1:9999` at startup).
 
+Start the app with `just dev-windows` for that. The desktop-shortcut launcher
+(`scripts/windows/Launch-Distill.ps1`) and the installer builds leave
+`app-test-driver` out on purpose — the socket is unauthenticated — so `driver`
+envelopes against an app started that way answer with a connection failure.
+`exec` envelopes do not need the app at all.
+
 Options: `--root <dir>`, `--port <n>`, `--token <s>` (only for the isolated
 driver mode, which mints its own port and token).
 
