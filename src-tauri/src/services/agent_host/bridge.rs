@@ -50,6 +50,12 @@ pub enum BridgeEvent {
     Exited {
         harness: String,
     },
+    /// Not a bridge event at all: a marker the host puts in the same queue to
+    /// learn when everything queued before it has been handled. Answering
+    /// `ack` is the event loop's only work for it.
+    Drained {
+        ack: oneshot::Sender<()>,
+    },
 }
 
 type Pending = Mutex<HashMap<u64, oneshot::Sender<Result<Value, Value>>>>;

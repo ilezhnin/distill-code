@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use tauri::Manager;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -30,6 +30,9 @@ const SESSION_PAGE_SIZE: i64 = 200;
 /// attaches on demand regardless.
 const BACKGROUND_ATTACH_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
 const SNIPPET_CHARS: usize = 200;
+/// How long an attach waits for the bridge event loop to catch up with the
+/// history the bridge replayed before it gives up and goes live anyway.
+const EVENT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 pub const EXT_PREFIX: &str = "_distill/";
 
 /// The renderer socket a request arrived on. Its reply goes back there and
@@ -570,6 +573,9 @@ impl Inner {
                     method,
                     params,
                 } => self.on_bridge_request(&harness, id, &method, params).await,
+                BridgeEvent::Drained { ack } => {
+                    let _ = ack.send(());
+                }
                 BridgeEvent::Exited { harness } => {
                     log::warn!("[agent-host] {harness} bridge exited");
                     let mut bridges = self.bridges.lock().await;
@@ -584,6 +590,28 @@ impl Inner {
                     sessions.retain(|_, runtime| runtime.harness != harness);
                 }
             }
+        }
+    }
+
+    /// Wait until the bridge event loop has handled everything that was
+    /// already queued. A `session/load` replays the whole transcript as
+    /// notifications into that queue and only then answers; the replay is
+    /// swallowed because the session is still `loading`, so the session must
+    /// not become live until the loop has actually reached the marker behind
+    /// it — otherwise the tail of the replay is persisted a second time.
+    async fn drain_bridge_events(&self) {
+        let (ack, drained) = oneshot::channel();
+        if self.events_tx.send(BridgeEvent::Drained { ack }).is_err() {
+            return;
+        }
+        if tokio::time::timeout(EVENT_DRAIN_TIMEOUT, drained)
+            .await
+            .is_err()
+        {
+            log::warn!(
+                "[agent-host] bridge events still backlogged after {} seconds",
+                EVENT_DRAIN_TIMEOUT.as_secs()
+            );
         }
     }
 
@@ -1126,6 +1154,10 @@ impl Inner {
         }
         let has_model_option = Self::has_model_option(&snapshot);
         let _ = self.store.set_snapshot(&record.id, &snapshot).await;
+        // Everything the bridge replayed for this session is already in the
+        // event queue; let the loop swallow it all before the session is live,
+        // or its tail would be appended to the transcript a second time.
+        self.drain_bridge_events().await;
         {
             let mut sessions = self.sessions.lock().await;
             if let Some(runtime) = sessions.get_mut(&record.id) {
