@@ -216,10 +216,12 @@ bundle-debug:
 
 # ── Test ─────────────────────────────────────────────────────
 
-# Unit tests, plus the hook launcher's plain `node --test` cases.
+# Unit tests, plus the plain `node --test` cases for the hook launcher and the
+# repo scripts (neither can assume the vitest toolchain is available).
 test:
     pnpm test
     pnpm test:hooks
+    pnpm test:scripts
 
 test-watch:
     pnpm test:watch

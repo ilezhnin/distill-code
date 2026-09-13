@@ -1,11 +1,10 @@
 /**
  * Tests for the Node-version gate in update-acp-tools-lock.mjs.
  *
- * `node --test`, matching scripts/agent-driver and scripts/hooks/tests: this
- * script has no wired-in check today (it is a manual, network-touching
- * maintenance tool — see AGENTS.md/README on refreshing acp-tools.lock.json),
- * so this file is not invoked by `just check` or `pnpm test`; run it
- * directly with `node --test scripts/update-acp-tools-lock.test.mjs`.
+ * `node --test`, matching scripts/agent-driver and scripts/hooks/tests. The
+ * script itself is a manual, network-touching maintenance tool (see
+ * AGENTS.md/README on refreshing acp-tools.lock.json), but its Node-version
+ * gate is pure and is covered here; wired into `pnpm test:scripts`.
  */
 
 import assert from "node:assert/strict";

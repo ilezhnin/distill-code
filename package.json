@@ -29,6 +29,7 @@
     "test:transcript-virtualization:ci": "node ./scripts/transcript-virtualization.mjs ci",
     "test:agent-driver": "node --test scripts/agent-driver/relay.test.mjs",
     "test:hooks": "node --test scripts/hooks/tests/dev-tool.test.mjs scripts/hooks/tests/no-ai-attribution.test.mjs",
+    "test:scripts": "node --test scripts/check-i18n-strings.test.mjs scripts/update-acp-tools-lock.test.mjs",
     "validate:bundled-agents": "tsx scripts/validate-bundled-agents.ts"
   },
   "dependencies": {
