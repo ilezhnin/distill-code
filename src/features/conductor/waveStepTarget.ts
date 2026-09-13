@@ -35,7 +35,7 @@ import {
 } from "@/features/chat/lib/sessionExecutionTarget";
 import type { ModelOption } from "@/features/chat/types";
 import {
-  isCachedModelInventoryAuthoritative,
+  isCachedModelInventoryAuthoritativeForRouting,
   useProviderModelCacheStore,
 } from "@/features/providers/stores/providerModelCacheStore";
 import type { AgentPlatformId } from "@/features/status/lib/rateLimitTypes";
@@ -85,11 +85,19 @@ const liveIo: WaveStepTargetIo = {
     // stopped serving, and a step spawned on one of those ids dies on every
     // send with "Failed to set ACP model option: Invalid params". Reporting
     // nothing instead makes the step inherit the conductor, which runs.
+    //
+    // The routing test is the stricter one: a poll that *failed* (a bridge
+    // that is not installed, crashed on start, or lost its auth) keeps the
+    // previous list with its `fetchedAt`, and the crew profiles put that same
+    // harness first for most worker roles — so every step of the wave resolved
+    // onto a bridge the app already knew was failing and each one died with no
+    // retry (Q2). An unusable harness reports nothing here, which the ranking
+    // reads as "not installed" and skips.
     const entry = useProviderModelCacheStore
       .getState()
       .providers.get(harnessId);
-    return entry && isCachedModelInventoryAuthoritative(entry)
-      ? entry.models
+    return isCachedModelInventoryAuthoritativeForRouting(entry)
+      ? (entry?.models ?? [])
       : [];
   },
   rateLimits: () =>
