@@ -65,16 +65,7 @@ describe("liveStreamingUpdates", () => {
     });
 
     enqueueStreamingThinkingUpdate(sessionId, "assistant-1", "thinking");
-    enqueueStreamingThinkingUpdate(
-      sessionId,
-      "assistant-1",
-      "thinking through",
-    );
-    enqueueStreamingThinkingUpdate(
-      sessionId,
-      "assistant-1",
-      "thinking through",
-    );
+    enqueueStreamingThinkingUpdate(sessionId, "assistant-1", " through");
     enqueueStreamingThinkingUpdate(sessionId, "assistant-1", " it");
     enqueueStreamingTextUpdate(sessionId, "assistant-1", "hello ");
     enqueueStreamingTextUpdate(sessionId, "assistant-1", "world");

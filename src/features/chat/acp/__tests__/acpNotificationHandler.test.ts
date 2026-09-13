@@ -1257,33 +1257,57 @@ describe("acpNotificationHandler", () => {
     });
   });
 
-  it("replay replaces cumulative thought snapshots instead of appending them", async () => {
+  it("replay appends thought deltas verbatim", async () => {
     const replaySessionId = "replay-thought-session";
     useChatStore.setState({
       loadingSessionIds: new Set<string>([replaySessionId]),
     });
 
-    await handleSessionNotification({
-      sessionId: replaySessionId,
-      update: {
-        sessionUpdate: "agent_thought_chunk",
-        messageId: "assistant-thought-1",
-        content: { type: "text", text: "Plan" },
-      },
-    } as never);
-
-    await handleSessionNotification({
-      sessionId: replaySessionId,
-      update: {
-        sessionUpdate: "agent_thought_chunk",
-        messageId: "assistant-thought-1",
-        content: { type: "text", text: "Plan next step" },
-      },
-    } as never);
+    for (const text of ["Plan", " next", " step"]) {
+      await handleSessionNotification({
+        sessionId: replaySessionId,
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          messageId: "assistant-thought-1",
+          content: { type: "text", text },
+        },
+      } as never);
+    }
 
     const buffer = getReplayBuffer(replaySessionId);
     expect(buffer?.[0]?.content).toEqual([
       { type: "thinking", text: "Plan next step" },
+    ]);
+  });
+
+  // The host stores the raw chunks, so replay sees the same token deltas the
+  // live stream did: one that repeats the accumulated tail is real text.
+  it("replay keeps thought deltas that repeat the accumulated tail", async () => {
+    const replaySessionId = "replay-thought-tail-session";
+    useChatStore.setState({
+      loadingSessionIds: new Set<string>([replaySessionId]),
+    });
+
+    for (const text of [
+      "The year was 201",
+      "1",
+      " and foo(bar(baz)",
+      ")",
+      ")",
+    ]) {
+      await handleSessionNotification({
+        sessionId: replaySessionId,
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          messageId: "assistant-thought-tail",
+          content: { type: "text", text },
+        },
+      } as never);
+    }
+
+    const buffer = getReplayBuffer(replaySessionId);
+    expect(buffer?.[0]?.content).toEqual([
+      { type: "thinking", text: "The year was 2011 and foo(bar(baz)))" },
     ]);
   });
 

@@ -300,22 +300,13 @@ function appendThinkingChunksToMessage(
       continue;
     }
 
-    // Goose Core can emit thought updates either as deltas or as repeated /
-    // cumulative snapshots depending on provider and replay path.
-    let nextText: string;
-    if (text === lastContent.text) {
-      continue;
-    }
-    if (text.startsWith(lastContent.text)) {
-      nextText = text;
-    } else {
-      nextText = lastContent.text + text;
-    }
-
+    // Thought chunks are token deltas, appended as they arrive: a chunk that
+    // repeats what the reasoning already ends with (a second `1`, a closing
+    // bracket, a repeated word) is real text, not a duplicate.
     const updatedContent = [...nextContent];
     updatedContent[updatedContent.length - 1] = {
       type: "thinking" as const,
-      text: nextText,
+      text: lastContent.text + text,
     };
     nextContent = updatedContent;
     changed = true;
