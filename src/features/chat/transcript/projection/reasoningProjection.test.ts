@@ -22,9 +22,11 @@ const LOCALE_KEY = "en-US";
 
 /**
  * Re-record with `RECORD_REASONING_PROJECTION=1 pnpm vitest run <this file>`
- * after an intentional projection change. The expected data was first captured
- * from the projection before the reasoning de-duplication was memoised, so the
- * comparison pins that the faster path projects exactly the same items.
+ * after an intentional projection change, then `pnpm exec biome check --fix` the
+ * fixture (this writes plain `JSON.stringify` output, which biome reformats).
+ * The expected data was first captured from the projection before the reasoning
+ * de-duplication was memoised, so the comparison pins that the faster path
+ * projects exactly the same items.
  */
 const RECORD = process.env.RECORD_REASONING_PROJECTION === "1";
 const FIXTURE_DIR = resolve(
