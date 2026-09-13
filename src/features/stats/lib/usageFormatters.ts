@@ -29,12 +29,35 @@ export function formatUsageTokens(value: number): string {
   return value.toLocaleString();
 }
 
+/**
+ * A reported cost. `currency` is what the bridge said (`usage_update.cost`):
+ * unknown or USD keeps the "$" figures this page always showed, an ISO code is
+ * formatted in that currency, and anything else (a bridge reporting "credits")
+ * is shown as an amount with its unit rather than dressed up as dollars.
+ */
 export function formatUsageCost(
   value: number | null,
   unavailableLabel: string,
+  currency?: string | null,
 ): string {
   if (value === null) {
     return unavailableLabel;
+  }
+  const code = currency?.trim().toUpperCase() ?? "";
+  if (code && code !== "USD") {
+    const amount = value < 0.01 ? value.toFixed(4) : value.toFixed(2);
+    if (/^[A-Z]{3}$/.test(code)) {
+      try {
+        return new Intl.NumberFormat(undefined, {
+          style: "currency",
+          currency: code,
+          maximumFractionDigits: value < 0.01 ? 4 : 2,
+        }).format(value);
+      } catch {
+        // Not a currency Intl knows; fall through to the plain unit form.
+      }
+    }
+    return `${amount} ${code}`;
   }
   if (value > 0 && value < 0.005) {
     return "<$0.01";

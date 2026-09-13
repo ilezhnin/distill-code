@@ -272,3 +272,47 @@ describe("usageLedger persistence", () => {
     expect(buildUsageSummary().agentsSpawned).toBe(3);
   });
 });
+
+describe("usageLedger cost currency", () => {
+  afterEach(() => {
+    resetUsageLedgerForTests();
+  });
+
+  it("keeps the reported currency with the cost", () => {
+    recordSessionTokens("s1", {
+      mode: "add",
+      totalTokens: 10,
+      costUsd: 1.5,
+      costCurrency: "eur",
+    });
+    recordSessionTokens("s1", {
+      mode: "add",
+      totalTokens: 10,
+      costUsd: 0.5,
+      costCurrency: "EUR",
+    });
+
+    const session = getUsageLedger().sessions.s1;
+    expect(session?.costUsd).toBe(2);
+    expect(session?.costCurrency).toBe("EUR");
+  });
+
+  it("replaces rather than sums a cost that arrives in another currency", () => {
+    recordSessionTokens("s1", {
+      mode: "add",
+      totalTokens: 10,
+      costUsd: 4,
+      costCurrency: "USD",
+    });
+    recordSessionTokens("s1", {
+      mode: "add",
+      totalTokens: 10,
+      costUsd: 120,
+      costCurrency: "credits",
+    });
+
+    const session = getUsageLedger().sessions.s1;
+    expect(session?.costUsd).toBe(120);
+    expect(session?.costCurrency).toBe("CREDITS");
+  });
+});

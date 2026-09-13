@@ -886,7 +886,7 @@ function recordUsageNotification(
     const usage = update as SessionUpdate & {
       sessionUpdate: "usage_update";
       used?: number;
-      cost?: { amount?: number | null } | null;
+      cost?: { amount?: number | null; currency?: string | null } | null;
       accumulatedInputTokens?: number;
       accumulatedOutputTokens?: number;
       accumulatedCost?: number | null;
@@ -919,6 +919,9 @@ function recordUsageNotification(
           ? (inputTokens ?? 0) + (outputTokens ?? 0)
           : undefined,
       costUsd,
+      // The ledger needs the unit: a bridge reporting credits or EUR must not
+      // have its amounts summed into the "$" figures on the stats page.
+      costCurrency: usage.cost?.currency ?? null,
     });
     return;
   }
@@ -967,7 +970,7 @@ function handleShared(sessionId: string, update: SessionUpdate): void {
         used?: number;
         size?: number;
         contextLimit?: number;
-        cost?: { amount?: number | null } | null;
+        cost?: { amount?: number | null; currency?: string | null } | null;
         accumulatedInputTokens?: number;
         accumulatedOutputTokens?: number;
         accumulatedCost?: number | null;
