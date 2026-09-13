@@ -713,6 +713,11 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
         // the conductor", which is what every wave child did before rankings
         // reached this path.
         ...(executionTarget ? { executionTarget } : {}),
+        // P36: the profile the step was routed by names a model *and* an
+        // effort, and only codex-style ids carry the effort with the model.
+        // A step whose model came from the plan carries no ranked effort —
+        // the plan pinned the model, not how hard to think about it.
+        ...(stepTarget?.effort ? { reasoningEffort: stepTarget.effort } : {}),
         task: request.step.subtask,
         prompt: buildWaveStepPrompt(step, request.previousReports, {
           stepIndex: request.stepIndex,
