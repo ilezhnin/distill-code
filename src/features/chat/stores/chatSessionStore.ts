@@ -77,6 +77,15 @@ export interface ChatSession {
   messageCount: number;
   /** First ~10 words of the session's latest real text message, or null. */
   subtitle?: string | null;
+  /**
+   * The host's run for this session as of the last `session/list` (or
+   * `session/info`) response: a run id while a turn is in flight, `null` when
+   * none is, `undefined` when no response has said. Kept because it is the only
+   * thing an ordinary load can ask whether the transcript's last reply is still
+   * being written; the list is refreshed every 60 s, so a local run in flight
+   * always outranks it.
+   */
+  activeRunId?: string | null;
   userSetName?: boolean;
   creationState?: "pending" | "failed";
   creationError?: string;

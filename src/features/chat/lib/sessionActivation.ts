@@ -480,7 +480,25 @@ async function performSessionMessagesLoad(
     }
 
     const replayMessages = replayResult.messages;
-    if (sessionInfo?.activeRunId === null) {
+    // Whether the transcript's last reply is still being written. `session/info`
+    // is only fetched for a pinned load, but every `session/list` row carries
+    // `_meta.activeRunId`, so an ordinary load can answer it too — otherwise the
+    // last bubble of every finished chat keeps its in-progress affordances until
+    // the next turn. A run the renderer itself knows about outranks the listed
+    // value, which can be up to a refresh interval old.
+    const runtimeBeforeCompletion =
+      useChatStore.getState().sessionStateById[sessionId];
+    const rendererKnowsOfARun =
+      runtimeBeforeCompletion?.activeRunId != null ||
+      isSessionRunning(runtimeBeforeCompletion?.chatState ?? "idle") ||
+      Boolean(runtimeBeforeCompletion?.isRunCancellationPending);
+    const knownActiveRunId =
+      sessionInfo?.activeRunId !== undefined
+        ? sessionInfo.activeRunId
+        : rendererKnowsOfARun
+          ? undefined
+          : latestSessionBeforeReplay?.activeRunId;
+    if (knownActiveRunId === null) {
       completeReplayAssistantMessage(sessionId);
     }
     const latestSession = useChatSessionStore.getState().getSession(sessionId);
@@ -516,11 +534,11 @@ async function performSessionMessagesLoad(
     const runtimeAfterReplay =
       useChatStore.getState().sessionStateById[sessionId];
     reportInterruptedTurn(sessionId, replayMessages, {
-      // Both sources of "still working" are consulted. The ACP snapshot is
-      // only fetched for a pinned load, so on the ordinary path the local
-      // runtime is the only thing that knows a run is in flight.
+      // Both sources of "still working" are consulted: the host's run for this
+      // session (from `session/info` on a pinned load, otherwise the listed
+      // one) and the local runtime.
       isRunning:
-        (sessionInfo?.activeRunId ?? null) !== null ||
+        (knownActiveRunId ?? null) !== null ||
         isSessionRunning(runtimeAfterReplay?.chatState ?? "idle") ||
         Boolean(runtimeAfterReplay?.isRunCancellationPending),
       hasError: (runtimeAfterReplay?.chatState ?? "idle") === "error",
