@@ -493,11 +493,16 @@ export async function dispatchPrompt(
       });
     }
     if (releaseSessionPrompt(sessionId, promptOwner) && !preCommitRejected) {
-      const liveStore = useChatStore.getState();
-      const liveRuntime = liveStore.getSessionRuntime(sessionId);
-      if (liveRuntime.isRunCancellationPending) {
-        liveStore.settleActiveRun(sessionId);
-      }
+      // This prompt's settlement is the renderer's turn boundary. A steer
+      // during the turn stored the steer's run id on the runtime, and the host
+      // drains that steer inside this same `session/prompt`, so nothing else
+      // ever clears it: every send gate requires `activeRunId === null`, and
+      // an unsettled run leaves the chat accepting messages into a queue that
+      // never drains. Settle whenever the prompt still owns the session, not
+      // only when a stop is pending. A `session_info_update` carrying
+      // `_meta.activeRunId: null` for a steer the host ran as its own
+      // background turn remains handled separately.
+      useChatStore.getState().settleActiveRun(sessionId);
     }
   }
 }
