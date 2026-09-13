@@ -763,12 +763,14 @@ fn apply_lite_git_env(command: &mut TokioCommand) {
                 .filter(|key| is_preserved_git_transport_key(key))
         })
         .collect::<Vec<_>>();
-    let inherited_transport = std::env::vars().filter(|(key, _)| {
-        is_preserved_git_transport_key(key)
-            && !explicitly_configured_transport_keys
-                .iter()
-                .any(|explicit| env_key::matches(explicit, key))
-    });
+    let inherited_transport = env_key::process_vars_lossy()
+        .into_iter()
+        .filter(|(key, _)| {
+            is_preserved_git_transport_key(key)
+                && !explicitly_configured_transport_keys
+                    .iter()
+                    .any(|explicit| env_key::matches(explicit, key))
+        });
 
     for key in std::env::vars_os()
         .map(|(key, _)| key)

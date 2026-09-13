@@ -91,7 +91,10 @@ pub(crate) fn find_project_hermit_bin(dir: &Path) -> Option<PathBuf> {
 }
 
 pub(crate) fn resolve_control_executable(name: &str) -> Option<PathBuf> {
-    resolve_control_executable_in_env(name, dedupe_env_case_insensitive(std::env::vars()))
+    resolve_control_executable_in_env(
+        name,
+        dedupe_env_case_insensitive(env_key::process_vars_lossy()),
+    )
 }
 
 pub(crate) fn resolve_control_executable_in_env(
