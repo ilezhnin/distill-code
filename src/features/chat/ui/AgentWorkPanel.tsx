@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
   IconChevronRight,
@@ -264,10 +264,15 @@ function AgentWorkItemRow({
   item,
   isLast,
   usePrimaryText = false,
+  toolOpen,
+  onToolOpenChange,
 }: {
   item: AgentWorkTimelineItem;
   isLast: boolean;
   usePrimaryText?: boolean;
+  /** Durable expansion of this row's tool card, when it has one. */
+  toolOpen?: boolean;
+  onToolOpenChange?: (key: string, open: boolean) => void;
 }) {
   const { t } = useTranslation("chat");
   if (item.kind === "thought") {
@@ -354,6 +359,11 @@ function AgentWorkItemRow({
       <WorkRail isLast={isLast} status={status} />
       <div className="min-w-0 flex-1 pb-2">
         <ToolCallAdapter
+          // Controlled so the expansion survives virtual eviction. `Tool`
+          // defaults to closed when uncontrolled, and the durable set starts
+          // empty, so the mount state is unchanged.
+          open={toolOpen ?? false}
+          onOpenChange={(nextOpen) => onToolOpenChange?.(item.key, nextOpen)}
           name={getToolName(item)}
           toolName={item.request?.toolName}
           subagentAgentName={item.request?.subagentAgentName}
@@ -387,7 +397,14 @@ export function AgentWorkPanel({
 }) {
   const { t } = useTranslation("chat");
   const prefersReducedMotion = useReducedMotion();
-  const { markRowInteracted, pinScrollAnchor } = useTranscriptRowStateAdapter();
+  const { rowState, updateRowState, markRowInteracted, pinScrollAnchor } =
+    useTranscriptRowStateAdapter();
+  // `markRowInteracted` only pins this row for 60 s and only 20 rows per
+  // session, so an expanded settled panel used to come back collapsed once the
+  // row was evicted. The disclosure therefore lives in the durable row state,
+  // exactly as `ToolChainCards` keeps `chainExpanded`/`expandedToolKeys`.
+  const durableWorkState = rowState?.agentWorkPanels?.[payload.workId];
+  const userInteractedRef = useRef(durableWorkState?.userInteracted ?? false);
   const items = useMemo(
     () => buildAgentWorkTimeline(payload.content),
     [payload.content],
@@ -423,10 +440,63 @@ export function AgentWorkPanel({
   );
   const showsHarnessBrigade = payload.isActiveWork || payload.hostsTurnFooters;
   const shouldOpenActiveWork = payload.isActiveWork;
-  const [open, setOpen] = useState(shouldOpenActiveWork || settleOnMount);
-  const [previousStepsOpen, setPreviousStepsOpen] = useState(false);
+  const [open, setOpen] = useState(() =>
+    userInteractedRef.current
+      ? (durableWorkState?.open ?? false)
+      : shouldOpenActiveWork || settleOnMount,
+  );
+  const [previousStepsOpen, setPreviousStepsOpen] = useState(
+    () => durableWorkState?.previousStepsOpen ?? false,
+  );
+  const [expandedToolKeys, setExpandedToolKeys] = useState<ReadonlySet<string>>(
+    () => new Set(durableWorkState?.expandedToolKeys ?? []),
+  );
   const wasActiveRef = useRef(shouldOpenActiveWork || settleOnMount);
   const settleCloseFrameRef = useRef<number | null>(null);
+
+  const setToolOpen = useCallback((key: string, nextOpen: boolean) => {
+    userInteractedRef.current = true;
+    setExpandedToolKeys((current) => {
+      if (current.has(key) === nextOpen) return current;
+      const next = new Set(current);
+      if (nextOpen) {
+        next.add(key);
+      } else {
+        next.delete(key);
+      }
+      return next;
+    });
+  }, []);
+
+  const expandedToolKeyList = useMemo(
+    () => [...expandedToolKeys].sort(),
+    [expandedToolKeys],
+  );
+
+  useEffect(() => {
+    updateRowState(
+      (current) => ({
+        ...current,
+        agentWorkPanels: {
+          ...current.agentWorkPanels,
+          [payload.workId]: {
+            ...current.agentWorkPanels?.[payload.workId],
+            open,
+            previousStepsOpen,
+            expandedToolKeys: expandedToolKeyList,
+            userInteracted: userInteractedRef.current,
+          },
+        },
+      }),
+      { markRecent: false },
+    );
+  }, [
+    expandedToolKeyList,
+    open,
+    payload.workId,
+    previousStepsOpen,
+    updateRowState,
+  ]);
 
   useEffect(() => {
     const cancelScheduledSettleClose = () => {
@@ -442,6 +512,13 @@ export function AgentWorkPanel({
     if (payload.isActiveWork) {
       setOpen(shouldOpenActiveWork);
       wasActiveRef.current = shouldOpenActiveWork;
+      return cancelScheduledSettleClose;
+    }
+
+    // A panel the user has opened themselves keeps what they chose: neither the
+    // settle animation nor a later remount may collapse it behind their back.
+    if (userInteractedRef.current) {
+      wasActiveRef.current = false;
       return cancelScheduledSettleClose;
     }
 
@@ -476,6 +553,9 @@ export function AgentWorkPanel({
           (item) => item.kind === "tool" && item.request?.id === toolCallId,
         );
         if (!owned) return;
+        // A chip reveal is a user action on this panel, so the panel it opens
+        // must stay open the way a click on the trigger would.
+        userInteractedRef.current = true;
         setOpen(true);
         if (
           payload.isActiveWork &&
@@ -505,6 +585,7 @@ export function AgentWorkPanel({
       onOpenChange={(nextOpen) => {
         markRowInteracted("agent-work-disclosure");
         pinScrollAnchor();
+        userInteractedRef.current = true;
         setOpen(nextOpen);
       }}
       data-role="agent-work-panel"
@@ -574,6 +655,7 @@ export function AgentWorkPanel({
                   onOpenChange={(nextOpen) => {
                     markRowInteracted("agent-work-previous-steps");
                     pinScrollAnchor();
+                    userInteractedRef.current = true;
                     setPreviousStepsOpen(nextOpen);
                   }}
                 >
@@ -608,6 +690,8 @@ export function AgentWorkPanel({
                         item={item}
                         isLast={false}
                         usePrimaryText={open}
+                        toolOpen={expandedToolKeys.has(item.key)}
+                        onToolOpenChange={setToolOpen}
                       />
                     ))}
                   </CollapsibleContent>
@@ -665,6 +749,8 @@ export function AgentWorkPanel({
                       item={item}
                       isLast={index === visibleItems.length - 1}
                       usePrimaryText={open}
+                      toolOpen={expandedToolKeys.has(item.key)}
+                      onToolOpenChange={setToolOpen}
                     />
                   </motion.div>
                 ))}

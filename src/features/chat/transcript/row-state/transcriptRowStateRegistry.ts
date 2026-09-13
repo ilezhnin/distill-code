@@ -68,6 +68,25 @@ export interface TranscriptToolChainRowState {
   expandedToolKeys?: readonly string[];
 }
 
+/**
+ * An agent-work panel's disclosure state, durable for the same reason the tool
+ * chain's is: `markRowInteracted` only pins the row for `recentTtlMs` (and at
+ * most `recentRowsPerSessionCap` rows), so a settled panel the user opened is
+ * eventually evicted in bounded-virtual mode and remounts from scratch.
+ */
+export interface TranscriptAgentWorkRowState {
+  open?: boolean;
+  previousStepsOpen?: boolean;
+  /** `AgentWorkTimelineItem.key` of every tool card the user expanded. */
+  expandedToolKeys?: readonly string[];
+  /**
+   * Whether the user ever touched this panel. Until they have, the panel keeps
+   * its automatic open/settle-closed behaviour; afterwards the stored `open`
+   * wins on remount.
+   */
+  userInteracted?: boolean;
+}
+
 export interface TranscriptReasoningRowState {
   open?: boolean;
   userControlled?: boolean;
@@ -102,6 +121,8 @@ export interface TranscriptOverlayRowState {
 export interface TranscriptDurableRowState {
   toolChain?: TranscriptToolChainRowState;
   toolChains?: Readonly<Record<string, TranscriptToolChainRowState>>;
+  /** Keyed by `TranscriptAgentWorkPayload.workId`. */
+  agentWorkPanels?: Readonly<Record<string, TranscriptAgentWorkRowState>>;
   reasoning?: TranscriptReasoningRowState;
   reasoningBlocks?: Readonly<Record<string, TranscriptReasoningRowState>>;
   mcpApp?: TranscriptMcpAppRowState;
