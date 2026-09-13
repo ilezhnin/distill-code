@@ -19,6 +19,7 @@ import {
   clearBufferedStreamingUpdatesForSession,
   clearLiveSubtitleUpdate,
   flushBufferedStreamingUpdatesForSession,
+  releaseStreamingMessageOwner,
 } from "@/features/chat/acp/liveStreamingUpdates";
 import {
   isConductorSession,
@@ -492,7 +493,22 @@ export async function dispatchPrompt(
         owner: promptOwner,
       });
     }
-    if (releaseSessionPrompt(sessionId, promptOwner) && !preCommitRejected) {
+    const stillOwnedSession = releaseSessionPrompt(sessionId, promptOwner);
+    if (!preCommitRejected) {
+      if (stillOwnedSession) {
+        // Anything this prompt buffered and did not flush above belongs to a
+        // turn that is over: apply it as a settled stream instead of leaving it
+        // for a flush that can no longer match its owner.
+        flushBufferedStreamingUpdatesForSession(sessionId, {
+          owner: promptOwner,
+        });
+      }
+      // The host can keep streaming this reply after the prompt settled (a
+      // rejection does not stop the bridge). Hand the released owner's messages
+      // back so those chunks are rendered instead of accumulating forever.
+      releaseStreamingMessageOwner(sessionId, promptOwner);
+    }
+    if (stillOwnedSession && !preCommitRejected) {
       // This prompt's settlement is the renderer's turn boundary. A steer
       // during the turn stored the steer's run id on the runtime, and the host
       // drains that steer inside this same `session/prompt`, so nothing else

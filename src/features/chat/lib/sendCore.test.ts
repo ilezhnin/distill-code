@@ -1,6 +1,10 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
+import {
+  enqueueStreamingTextUpdate,
+  flushAllBufferedStreamingUpdates,
+} from "@/features/chat/acp/liveStreamingUpdates";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { resetSessionTargetCoordinatorsForTests } from "@/features/chat/lib/sessionTargetCoordinator";
@@ -316,6 +320,39 @@ describe("dispatchPrompt run settlement after a steer", () => {
     expect(runtime.activeRunId).toBeNull();
     expect(runtime.isRunCancellationPending).toBe(false);
     expect(isQueuedSessionReady(runtime)).toBe(true);
+  });
+
+  // A rejected `session/prompt` does not stop the bridge, so the rest of the
+  // reply keeps arriving after the prompt settled. Those chunks used to be
+  // buffered under the owner the prompt had just released — matched by no
+  // flush, so never rendered and never freed.
+  it("still renders the reply the host streams after the prompt failed", async () => {
+    const { send, dispatch } = startPrompt();
+    await Promise.resolve();
+
+    const store = useChatStore.getState();
+    store.setMessages("session-1", [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        created: 1,
+        content: [],
+        metadata: { userVisible: true, completionStatus: "inProgress" },
+      },
+    ]);
+    store.setStreamingMessageId("session-1", "assistant-1");
+    enqueueStreamingTextUpdate("session-1", "assistant-1", "half a rep");
+    flushAllBufferedStreamingUpdates();
+
+    send.reject(new Error("ACP connection closed"));
+    await expect(dispatch).rejects.toThrow("ACP connection closed");
+
+    enqueueStreamingTextUpdate("session-1", "assistant-1", "ly");
+    flushAllBufferedStreamingUpdates();
+
+    expect(
+      useChatStore.getState().messagesBySession["session-1"]?.[0]?.content,
+    ).toEqual([{ type: "text", text: "half a reply" }]);
   });
 
   it("leaves a newer owner's run alone when a superseded prompt settles", async () => {
