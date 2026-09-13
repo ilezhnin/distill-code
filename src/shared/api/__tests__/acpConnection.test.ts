@@ -48,11 +48,12 @@ function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 
-function fakeStream() {
+function fakeStream(socketClosed = false) {
   return {
     readable: {},
     writable: {},
     close: vi.fn(),
+    isSocketClosed: vi.fn(() => socketClosed),
   };
 }
 
@@ -135,6 +136,90 @@ describe("acpConnection liveness after a timed-out request", () => {
     prompt.resolve({ stopReason: "end_turn" });
     await tracked;
     expect(connection.hasPendingPrompts()).toBe(false);
+  });
+
+  // Nothing aborts an in-flight `client.prompt`, so a prompt on a socket that
+  // is really dead never settles and the pending count never drops. The
+  // transport's own verdict overrides it: otherwise the socket could never be
+  // replaced and every later request on it would hang too.
+  it("drops a socket the transport reports closed even while a prompt is pending", async () => {
+    vi.useFakeTimers();
+    const stream = fakeStream(true);
+    mocks.createWebSocketStream.mockReturnValue(stream);
+    mocks.initialize.mockResolvedValueOnce({ protocolVersion: 1 });
+    const connection = await importConnection();
+    const client = await connection.getClient();
+    const prompt = deferred<{ stopReason: string }>();
+    void connection.trackPendingPrompt(prompt.promise);
+
+    mocks.initialize.mockReturnValueOnce(new Promise(() => {}));
+    const check = connection.invalidateClientConnectionIfUnresponsive();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(check).resolves.toBe(true);
+    expect(stream.close).toHaveBeenCalledOnce();
+
+    const nextStream = fakeStream();
+    mocks.createWebSocketStream.mockReturnValue(nextStream);
+    mocks.initialize.mockResolvedValueOnce({ protocolVersion: 1 });
+    await expect(connection.getClient()).resolves.not.toBe(client);
+  });
+
+  // The host task serving the socket stops answering while a turn is in
+  // flight. The first unanswered probe defers to the pending prompt; the
+  // second one is the bound, or the socket would be kept forever.
+  it("drops a socket whose probe went unanswered twice while a prompt is pending", async () => {
+    vi.useFakeTimers();
+    const stream = fakeStream();
+    mocks.createWebSocketStream.mockReturnValue(stream);
+    mocks.initialize.mockResolvedValueOnce({ protocolVersion: 1 });
+    const connection = await importConnection();
+    await connection.getClient();
+    const prompt = deferred<{ stopReason: string }>();
+    void connection.trackPendingPrompt(prompt.promise);
+
+    mocks.initialize.mockReturnValueOnce(new Promise(() => {}));
+    const first = connection.invalidateClientConnectionIfUnresponsive();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(first).resolves.toBe(false);
+    expect(stream.close).not.toHaveBeenCalled();
+
+    mocks.initialize.mockReturnValueOnce(new Promise(() => {}));
+    const second = connection.invalidateClientConnectionIfUnresponsive();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(second).resolves.toBe(true);
+    expect(stream.close).toHaveBeenCalledOnce();
+  });
+
+  // One hung bridge call between two healthy ones must not add up to a
+  // reconnect: an answered probe proves the transport and resets the count.
+  it("forgets an unanswered probe once the host answers again", async () => {
+    vi.useFakeTimers();
+    const stream = fakeStream();
+    mocks.createWebSocketStream.mockReturnValue(stream);
+    mocks.initialize.mockResolvedValueOnce({ protocolVersion: 1 });
+    const connection = await importConnection();
+    await connection.getClient();
+    const prompt = deferred<{ stopReason: string }>();
+    void connection.trackPendingPrompt(prompt.promise);
+
+    mocks.initialize.mockReturnValueOnce(new Promise(() => {}));
+    const failing = connection.invalidateClientConnectionIfUnresponsive();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(failing).resolves.toBe(false);
+
+    mocks.initialize.mockResolvedValueOnce({ protocolVersion: 1 });
+    await expect(
+      connection.invalidateClientConnectionIfUnresponsive(),
+    ).resolves.toBe(false);
+
+    mocks.initialize.mockReturnValueOnce(new Promise(() => {}));
+    const again = connection.invalidateClientConnectionIfUnresponsive();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(again).resolves.toBe(false);
+    expect(stream.close).not.toHaveBeenCalled();
   });
 
   it("drops a connection that never finished coming up", async () => {

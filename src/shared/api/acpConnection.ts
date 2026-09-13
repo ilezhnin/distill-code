@@ -115,10 +115,23 @@ export async function invalidateClientConnection(): Promise<void> {
   activeStream = null;
   resolvedClient = null;
   clientPromise = null;
+  consecutiveProbeFailures = 0;
   stream?.close();
 }
 
 const CONNECTION_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * How many probes in a row may go unanswered before a pending prompt stops
+ * protecting the socket. A prompt on a black-holed socket never settles —
+ * nothing aborts `client.prompt` — so the pending count alone would keep a
+ * dead transport forever; two unanswered probes (10 s each, each raised by a
+ * separate timed-out mutation) is the point where "one bridge call is stuck"
+ * stops being the better explanation.
+ */
+const MAX_CONSECUTIVE_PROBE_FAILURES = 2;
+
+let consecutiveProbeFailures = 0;
 
 let pendingPromptCount = 0;
 
@@ -176,10 +189,14 @@ async function probeConnection(client: HostClient): Promise<boolean> {
  * dead. The timeout says nothing about the socket — the host answers every
  * request from its own task, so one hung bridge call (a bridge install, an
  * `initialize` that never answers) leaves the socket healthy and every other
- * chat's prompt streaming over it. The socket is dropped only when a probe
- * gets no answer and no prompt is pending on it; a connection that never
- * came up within the bound is dropped so the next `getClient()` can retry.
- * Returns whether the connection was invalidated.
+ * chat's prompt streaming over it. A probe that gets no answer while a prompt
+ * is pending therefore keeps the socket — but only up to a bound: the socket
+ * is dropped anyway once the transport itself reports the socket closed or
+ * closing, or once the probe has gone unanswered
+ * `MAX_CONSECUTIVE_PROBE_FAILURES` times in a row, because a prompt pending on
+ * a dead socket never settles and would otherwise protect it forever. A
+ * connection that never came up within the bound is dropped so the next
+ * `getClient()` can retry. Returns whether the connection was invalidated.
  */
 export async function invalidateClientConnectionIfUnresponsive(): Promise<boolean> {
   const client = resolvedClient;
@@ -191,12 +208,21 @@ export async function invalidateClientConnectionIfUnresponsive(): Promise<boolea
     return false;
   }
   if (await probeConnection(client)) {
+    consecutiveProbeFailures = 0;
     return false;
   }
   if (resolvedClient !== client) {
     return false;
   }
-  if (hasPendingPrompts()) {
+  consecutiveProbeFailures += 1;
+  // A socket the transport has already given up on cannot answer anything,
+  // pending prompt or not: keeping it only hides the reconnect.
+  const socketIsGone = activeStream?.isSocketClosed() ?? true;
+  if (
+    hasPendingPrompts() &&
+    !socketIsGone &&
+    consecutiveProbeFailures < MAX_CONSECUTIVE_PROBE_FAILURES
+  ) {
     console.warn(
       "[acp] Connection probe failed while prompts are pending; keeping the socket open.",
     );
