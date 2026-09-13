@@ -87,9 +87,13 @@ impl RunState {
     }
 }
 
-/// What it takes to undo [`Inner::record_user_prompt`]: the event rows the
-/// prompt was stored as, and the session-list fields its `touch` overwrote.
+/// What it takes to undo [`Inner::record_user_prompt`]: the turn the rows
+/// belong to, the event rows the prompt was stored as, and the session-list
+/// fields its `touch` overwrote. The run id is part of it because the undo is
+/// only allowed for the turn it was recorded for — see
+/// [`Inner::discard_rejected_prompt`].
 struct RecordedPrompt {
+    run_id: String,
     event_ids: Vec<i64>,
     undo: SessionTouchUndo,
 }
@@ -1804,7 +1808,11 @@ impl Inner {
         if snippet.is_none() {
             let _ = self.store.touch(session_id, 0, None).await;
         }
-        undo.map(|undo| RecordedPrompt { event_ids, undo })
+        undo.map(|undo| RecordedPrompt {
+            run_id: ids.run_id.clone(),
+            event_ids,
+            undo,
+        })
     }
 
     /// Take a prompt the bridge rejected back out of the log and off the
@@ -1816,18 +1824,26 @@ impl Inner {
     /// leaving it behind is what turns one rejected send into two, three, …
     /// copies of the same message with no replies — and a `message_count` that
     /// refuses to move the still-unanswered chat to another agent.
+    ///
+    /// The decision fails *closed*: without proof that this very turn produced
+    /// nothing, the prompt stays. Leaving an unanswered message behind costs a
+    /// duplicate the user can see and delete; withdrawing a message whose reply
+    /// was persisted leaves a transcript holding an answer to nothing and loses
+    /// what the user typed.
     async fn discard_rejected_prompt(&self, session_id: &str, recorded: Option<RecordedPrompt>) {
         let Some(recorded) = recorded else {
             return;
         };
-        let saw_update = self
-            .sessions
-            .lock()
-            .await
-            .get(session_id)
-            .and_then(|runtime| runtime.run.as_ref())
-            .is_some_and(|run| run.saw_update);
-        if saw_update {
+        // The evidence lives in the bridge event queue: an update the bridge
+        // emitted before it answered with an error is only stamped onto the run
+        // when the event loop gets to it. Wait for the loop to catch up, or a
+        // chunk that is about to be persisted reads as "nothing happened".
+        self.drain_bridge_events().await;
+        let produced_nothing = {
+            let sessions = self.sessions.lock().await;
+            Self::turn_produced_nothing(sessions.get(session_id), &recorded.run_id)
+        };
+        if !produced_nothing {
             return;
         }
         if let Err(error) = self
@@ -1839,6 +1855,23 @@ impl Inner {
                 "[agent-host] failed to withdraw the rejected prompt of session {session_id}: {error}"
             );
         }
+    }
+
+    /// Whether `runtime` positively says that turn `run_id` produced nothing:
+    /// the session is still there, the turn it is running is this one, and no
+    /// `session/update` of it has been seen.
+    ///
+    /// Anything else means "it happened, keep the prompt". A runtime that is
+    /// gone is the case that matters: when a bridge dies mid-turn the outstanding
+    /// `session/prompt` is failed and the `Exited` that follows removes the
+    /// runtime, so the state that would prove the reply exists is exactly the
+    /// state that has been thrown away — while the reply's chunks are already in
+    /// the transcript. A `run` belonging to another turn says nothing about this
+    /// one either.
+    fn turn_produced_nothing(runtime: Option<&SessionRuntime>, run_id: &str) -> bool {
+        runtime
+            .and_then(|runtime| runtime.run.as_ref())
+            .is_some_and(|run| run.run_id == run_id && !run.saw_update)
     }
 
     fn user_prompt_events(
@@ -2375,6 +2408,33 @@ mod tests {
         // still in flight and its run state still stamps the updates arriving.
         assert!(live.run.is_some());
         assert_eq!(live.drop_queued_steers(), 0);
+    }
+
+    #[test]
+    fn a_rejected_prompt_is_withdrawn_only_on_proof_that_its_turn_produced_nothing() {
+        let mut live = runtime("claude-acp", "a", 1);
+        live.run = Some(RunState::start(&ids()));
+
+        // The bridge answered the prompt with an error and sent nothing at all:
+        // the turn never happened, so the message comes back out of the log.
+        assert!(Inner::turn_produced_nothing(Some(&live), "run-1"));
+
+        // One update is enough to make it a turn that happened.
+        live.run.as_mut().expect("run").saw_update = true;
+        assert!(!Inner::turn_produced_nothing(Some(&live), "run-1"));
+
+        // The bridge died mid-turn: `fail_pending_on_exit` failed the prompt and
+        // the `Exited` behind it removed the runtime while the turn was still
+        // unwinding. The reply it streamed is in the transcript, so the absence
+        // of evidence must not be read as "nothing happened".
+        assert!(!Inner::turn_produced_nothing(None, "run-1"));
+
+        // Same for a runtime that is no longer running this turn, or is running
+        // the next one.
+        live.run = None;
+        assert!(!Inner::turn_produced_nothing(Some(&live), "run-1"));
+        live.run = Some(RunState::start(&TurnIds::new()));
+        assert!(!Inner::turn_produced_nothing(Some(&live), "run-1"));
     }
 
     #[test]
