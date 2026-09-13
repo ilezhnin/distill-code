@@ -85,9 +85,10 @@ function monitorConnection(client: HostClient, stream: WebSocketStream): void {
 }
 
 /**
- * Abort the current transport after an ACP request exceeds its liveness bound.
- * A timed-out request leaves the connection state unknowable; reconnecting is
- * safer than allowing later mutations to race work still running remotely.
+ * Drop the current transport. Every request still pending on it is rejected
+ * with "ACP connection closed", so this is reserved for a socket that is
+ * known to be dead or was never established; a request that merely timed out
+ * goes through `invalidateClientConnectionIfUnresponsive` instead.
  *
  * The socket is closed directly: aborting the writable side is refused while
  * a writer holds it, which would leave the old socket open and every request
@@ -99,6 +100,94 @@ export async function invalidateClientConnection(): Promise<void> {
   resolvedClient = null;
   clientPromise = null;
   stream?.close();
+}
+
+const CONNECTION_PROBE_TIMEOUT_MS = 10_000;
+
+let pendingPromptCount = 0;
+
+/**
+ * Count a `session/prompt` for as long as it is in flight. The one socket is
+ * shared by every chat, so closing it fails every streaming turn at once;
+ * the count is what keeps a timed-out config call in one chat from doing
+ * that to the others.
+ */
+export function trackPendingPrompt<T>(prompt: Promise<T>): Promise<T> {
+  pendingPromptCount += 1;
+  return prompt.finally(() => {
+    pendingPromptCount -= 1;
+  });
+}
+
+export function hasPendingPrompts(): boolean {
+  return pendingPromptCount > 0;
+}
+
+async function probeConnection(client: HostClient): Promise<boolean> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // `initialize` is answered by the host itself, from its own task, so it
+    // is not held up by whatever bridge call the timed-out request is stuck
+    // behind: a missing answer means the transport, not one bridge, is gone.
+    await Promise.race([
+      client.initialize({
+        protocolVersion: PROTOCOL_VERSION,
+        clientCapabilities: {},
+        clientInfo: {
+          name: packageJson.name,
+          version: packageJson.version,
+        },
+      }),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error("ACP connection probe timed out"));
+        }, CONNECTION_PROBE_TIMEOUT_MS);
+      }),
+    ]);
+    return true;
+  } catch (error) {
+    console.warn("[acp] Connection probe failed:", error);
+    return false;
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
+/**
+ * After a bounded request timed out: decide whether the transport itself is
+ * dead. The timeout says nothing about the socket — the host answers every
+ * request from its own task, so one hung bridge call (a bridge install, an
+ * `initialize` that never answers) leaves the socket healthy and every other
+ * chat's prompt streaming over it. The socket is dropped only when a probe
+ * gets no answer and no prompt is pending on it; a connection that never
+ * came up within the bound is dropped so the next `getClient()` can retry.
+ * Returns whether the connection was invalidated.
+ */
+export async function invalidateClientConnectionIfUnresponsive(): Promise<boolean> {
+  const client = resolvedClient;
+  if (!client) {
+    if (clientPromise) {
+      await invalidateClientConnection();
+      return true;
+    }
+    return false;
+  }
+  if (await probeConnection(client)) {
+    return false;
+  }
+  if (resolvedClient !== client) {
+    return false;
+  }
+  if (hasPendingPrompts()) {
+    console.warn(
+      "[acp] Connection probe failed while prompts are pending; keeping the socket open.",
+    );
+    return false;
+  }
+  await invalidateClientConnection();
+  return true;
 }
 
 async function initializeConnection(): Promise<HostClient> {

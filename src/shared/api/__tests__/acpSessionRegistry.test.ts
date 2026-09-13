@@ -17,7 +17,7 @@ const noRequestModelContext = (providerId: string) => ({
 });
 
 vi.mock("../acpConnection", () => ({
-  invalidateClientConnection: (...args: unknown[]) =>
+  invalidateClientConnectionIfUnresponsive: (...args: unknown[]) =>
     mockInvalidateClientConnection(...args),
 }));
 
@@ -334,7 +334,11 @@ describe("applySessionModel", () => {
     }
   });
 
-  it("times out a stuck mutation, invalidates ACP, and admits queued work", async () => {
+  // The timeout is per request: the stuck mutation is rejected and its
+  // prepared entry dropped, but the socket every other chat shares is only
+  // checked for liveness, never closed outright (a timed-out config call in
+  // one chat used to fail every other chat's in-flight prompt).
+  it("times out a stuck mutation, checks the transport, and admits queued work", async () => {
     vi.useFakeTimers();
     try {
       const registry = await importPreparedRegistry("openai", "gpt-5.5");
@@ -343,6 +347,7 @@ describe("applySessionModel", () => {
       mockLoadSession.mockResolvedValueOnce(
         executionConfigResponse("openai", "gpt-5.5"),
       );
+      mockInvalidateClientConnection.mockResolvedValueOnce(false);
 
       const reasoning = registry.applySessionConfigOption(
         "session-1",
@@ -358,6 +363,35 @@ describe("applySessionModel", () => {
       expect(mockInvalidateClientConnection).toHaveBeenCalledOnce();
       expect(mockLoadSession).toHaveBeenCalledOnce();
       expect(registry.getPreparedProviderId("session-1")).toBe("openai");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops only the timed-out session's prepared entry", async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = await importPreparedRegistry("openai", "gpt-5.5");
+      registry.registerPreparedSession(
+        "session-2",
+        "anthropic",
+        "/other",
+        "claude",
+      );
+      const stuck = deferred<AcpSessionConfigSnapshots>();
+      mockSetSessionConfigOption.mockReturnValueOnce(stuck.promise);
+      mockInvalidateClientConnection.mockResolvedValueOnce(false);
+
+      const reasoning = registry.applySessionConfigOption(
+        "session-1",
+        "thinking_effort",
+        "high",
+      );
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await expect(reasoning).rejects.toThrow("ACP operation timed out");
+      expect(registry.isSessionPrepared("session-1")).toBe(false);
+      expect(registry.isSessionPrepared("session-2")).toBe(true);
     } finally {
       vi.useRealTimers();
     }

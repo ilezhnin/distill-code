@@ -1,5 +1,5 @@
 import * as acpApi from "./acpApi";
-import { invalidateClientConnection } from "./acpConnection";
+import { invalidateClientConnectionIfUnresponsive } from "./acpConnection";
 import {
   readSessionExecutionConfigSnapshot,
   type AcpSessionConfigSnapshotContext,
@@ -83,13 +83,18 @@ async function runBoundedSessionMutation<T>(
     ]);
   } catch (error) {
     if (didTimeOut) {
+      // The timeout is this mutation's alone: its prepared state is unknown,
+      // so drop it, but the socket is shared by every chat and is only torn
+      // down when the transport itself stops answering.
       prepared.delete(sessionId);
-      await invalidateClientConnection().catch((invalidationError) => {
-        console.error(
-          "Failed to invalidate timed-out ACP connection:",
-          invalidationError,
-        );
-      });
+      await invalidateClientConnectionIfUnresponsive().catch(
+        (invalidationError) => {
+          console.error(
+            "Failed to check the ACP connection after a timed-out request:",
+            invalidationError,
+          );
+        },
+      );
     }
     throw error;
   } finally {
