@@ -75,18 +75,20 @@ describe("tool card labels", () => {
   });
 
   it("translates the default output label", async () => {
-    const { unmount } = render(<ToolOutput output="done" />);
+    const { unmount } = render(
+      <ToolOutput output="done" errorText={undefined} />,
+    );
     expect(screen.getByText("Result")).toBeInTheDocument();
     unmount();
 
     await i18n.changeLanguage("es");
-    render(<ToolOutput output="done" />);
+    render(<ToolOutput output="done" errorText={undefined} />);
     expect(screen.getByText("Resultado")).toBeInTheDocument();
   });
 
   it("translates the default output label for a failure", async () => {
     await i18n.changeLanguage("es");
-    render(<ToolOutput errorText="boom" />);
+    render(<ToolOutput output={undefined} errorText="boom" />);
 
     // The Spanish word for the error label is the same, so assert the key
     // resolved at all rather than a distinct spelling.
