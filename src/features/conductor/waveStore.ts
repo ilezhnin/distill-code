@@ -10,10 +10,13 @@
  * keeps one in-memory copy and writes it through to localStorage.
  */
 
+import { isModelPreferenceClassId } from "@/features/agents/lib/modelRanking";
+
 import {
   CONDUCTOR_WAVES_DOCUMENT,
   conductorDocument,
 } from "./conductorDocuments";
+import type { WaveStepBudget } from "./distillWave";
 import { notePersistFailure } from "./persistHealth";
 import {
   WAVE_PHASES,
@@ -108,6 +111,7 @@ function parseStep(value: unknown): WaveStepState | null {
         ? ([] as const)
         : null;
   if (access === null) return null;
+  const budget = parseStepBudget(raw.budget);
   return {
     stepIndex: raw.stepIndex,
     role: raw.role,
@@ -115,6 +119,10 @@ function parseStep(value: unknown): WaveStepState | null {
     access,
     ...(typeof raw.label === "string" && raw.label ? { label: raw.label } : {}),
     ...(typeof raw.model === "string" && raw.model ? { model: raw.model } : {}),
+    ...(budget ? { budget } : {}),
+    ...(isModelPreferenceClassId(raw.modelClass)
+      ? { modelClass: raw.modelClass }
+      : {}),
     phase: raw.phase,
     ...(typeof raw.sessionId === "string" ? { sessionId: raw.sessionId } : {}),
     ...(typeof raw.runId === "string" ? { runId: raw.runId } : {}),
@@ -125,6 +133,27 @@ function parseStep(value: unknown): WaveStepState | null {
       ? { verificationDetail: raw.verificationDetail }
       : {}),
   };
+}
+
+/**
+ * A persisted step budget (P49), keeping only the readable ceilings.
+ *
+ * Same salvage discipline as the rest of the record: one junk member drops
+ * that member, not the step. A budget with nothing readable left reads as
+ * "not set" rather than as an empty object, which the parser refuses too.
+ */
+function parseStepBudget(value: unknown): WaveStepBudget | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const budget: WaveStepBudget = {};
+  for (const key of ["usd", "tokens", "minutes"] as const) {
+    const amount = raw[key];
+    if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+      continue;
+    }
+    budget[key] = amount;
+  }
+  return Object.keys(budget).length > 0 ? budget : null;
 }
 
 function isWavePhase(value: unknown): value is WavePhase {

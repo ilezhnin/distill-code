@@ -10,6 +10,8 @@
  * notice. `waveRunner.ts` is the thin effectful shell around it.
  */
 
+import type { ModelPreferenceClassId } from "@/features/agents/lib/modelRanking";
+
 import type {
   DistillWaveParse,
   WaveInvalid,
@@ -17,6 +19,7 @@ import type {
   WavePlan,
   WaveStep,
   WaveStepAccess,
+  WaveStepBudget,
 } from "./distillWave";
 import { roleStage, workerRoleIdsForStage } from "./roleLayers";
 import type { RunStatus, SessionNode, StructuredReport } from "./types";
@@ -56,6 +59,14 @@ export interface WaveStepState {
   label?: string;
   /** The plan's explicit model for this step (4a), when it named one. */
   model?: string;
+  /**
+   * The plan's spending ceiling for this step (P49), when it set one. Read at
+   * spawn, not at admission — a spawn is rebuilt from this record, so a field
+   * missing here is a ceiling that never applies.
+   */
+  budget?: WaveStepBudget;
+  /** The plan's complexity class for this step (P36), when it named one. */
+  modelClass?: ModelPreferenceClassId;
   phase: WaveStepPhase;
   /** Child session id, once the spawn produced one. */
   sessionId?: string;
@@ -635,10 +646,29 @@ export function createWaveState(args: {
       role: step.role,
       subtask: step.subtask,
       access: step.access,
-      ...(step.label ? { label: step.label } : {}),
-      ...(step.model ? { model: step.model } : {}),
+      ...optionalPlanFields(step),
       phase: "pending" as const,
     })),
+  };
+}
+
+/**
+ * The optional fields a plan may set on a step, exactly as given.
+ *
+ * Every place that rebuilds a step — admission, a phase patch, the restart
+ * resume, the spawn request — copies these through this one function. A
+ * hand-written copy per site is how `budget` and `class` were parsed,
+ * validated and then dropped on the floor before the spawn ever saw them
+ * (P49/P36), so the list lives in one place.
+ */
+function optionalPlanFields(
+  step: Pick<WaveStep, "label" | "model" | "budget" | "modelClass">,
+): Pick<WaveStep, "label" | "model" | "budget" | "modelClass"> {
+  return {
+    ...(step.label ? { label: step.label } : {}),
+    ...(step.model ? { model: step.model } : {}),
+    ...(step.budget ? { budget: step.budget } : {}),
+    ...(step.modelClass ? { modelClass: step.modelClass } : {}),
   };
 }
 
@@ -779,8 +809,7 @@ export function withWaveStepPhase(
       role: step.role,
       subtask: step.subtask,
       access: step.access,
-      ...(step.label ? { label: step.label } : {}),
-      ...(step.model ? { model: step.model } : {}),
+      ...optionalPlanFields(step),
       phase: patch.phase,
       ...((patch.sessionId ?? step.sessionId)
         ? { sessionId: patch.sessionId ?? step.sessionId }
@@ -896,8 +925,7 @@ function stepToWaveStep(state: WaveStepState): WaveStep {
     role: state.role,
     subtask: state.subtask,
     access: state.access,
-    ...(state.label ? { label: state.label } : {}),
-    ...(state.model ? { model: state.model } : {}),
+    ...optionalPlanFields(state),
   };
 }
 
@@ -962,8 +990,7 @@ export function advanceWave(
         role: step.role,
         subtask: step.subtask,
         access: step.access,
-        ...(step.label ? { label: step.label } : {}),
-        ...(step.model ? { model: step.model } : {}),
+        ...optionalPlanFields(step),
         phase: "pending",
       };
     }

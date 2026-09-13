@@ -26,6 +26,19 @@ const stopOrchestratorSession = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("./orchestratorControls", () => ({ stopOrchestratorSession }));
 
+/** Calls through to the real resolver; exists so a test can see its inputs. */
+const resolveWaveStepTarget = vi.hoisted(() =>
+  vi.fn<(roleId: string, classId?: string) => unknown>(),
+);
+
+vi.mock("./waveStepTarget", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./waveStepTarget")>();
+  resolveWaveStepTarget.mockImplementation((roleId, classId) =>
+    actual.resolveWaveStepTarget(roleId, classId as never),
+  );
+  return { ...actual, resolveWaveStepTarget };
+});
+
 const {
   WAVE_REPORT_GRACE_MS,
   WAVE_SPAWN_TIMEOUT_MS,
@@ -352,6 +365,39 @@ describe("waveRunner", () => {
     } finally {
       resetWaveStepTargetIoForTests();
     }
+  });
+
+  it("spawns a step with the budget and class the plan gave it (P49/P36)", async () => {
+    // The plan's ceiling is what the budget guard stops the child on, and the
+    // plan's class is what routes it. Both are parsed at admission and only
+    // used at spawn, which is rebuilt from the persisted wave — so this is the
+    // whole path, not the parser.
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([
+      assistant(
+        "plan-1",
+        fence(
+          '{"steps":[{"role":"scout","subtask":"Look","access":[],"budget":{"minutes":5,"tokens":20000},"class":"coding-simple"}]}',
+        ),
+      ),
+    ]);
+
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    const [args] = spawnConductorChildSession.mock.calls[0];
+    expect(args.budget).toEqual({ minutes: 5, tokens: 20000 });
+    expect(resolveWaveStepTarget).toHaveBeenCalledWith(
+      "scout",
+      "coding-simple",
+    );
+    // The persisted record carries both, so a restart resumes the same step.
+    expect(getWaveEngineState().waves[0]?.steps[0]).toMatchObject({
+      budget: { minutes: 5, tokens: 20000 },
+      modelClass: "coding-simple",
+    });
   });
 
   it("never re-processes a plan message, however often the tick fires", async () => {
