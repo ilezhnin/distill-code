@@ -38,10 +38,7 @@ fn redact_sensitive_key(line: String, key: &str) -> String {
     let mut lower = redacted.to_ascii_lowercase();
     let mut search_start = 0;
 
-    loop {
-        let Some(relative_key_start) = lower[search_start..].find(key) else {
-            break;
-        };
+    while let Some(relative_key_start) = lower[search_start..].find(key) {
         let key_start = search_start + relative_key_start;
         let key_end = key_start + key.len();
 
