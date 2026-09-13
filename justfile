@@ -65,8 +65,8 @@ test-windows-dev:
 
 # ── Build & Check ────────────────────────────────────────────
 
-# Run the frontend non-test checks: design-system guardrails, berdctl contract freshness, formatting, lint, i18n, and TypeScript.
-check: design-system-check berdctl-contract-check frontend-fmt-check lint i18n-check typecheck
+# Run the frontend non-test checks: design-system guardrails, berdctl contract freshness, formatting, lint, i18n, bundled agents, and TypeScript.
+check: design-system-check berdctl-contract-check frontend-fmt-check lint i18n-check bundled-agents-check typecheck
 
 # Regenerate the berdctl CLI contract artifacts from the command registry.
 berdctl-contract-generate:
@@ -122,6 +122,10 @@ lint:
 # Check frontend i18n string conventions.
 i18n-check:
     {{ dev_tool }} pnpm check:i18n
+
+# Validate the frontmatter contract of every bundled agent in distro/agents.
+bundled-agents-check:
+    {{ dev_tool }} pnpm validate:bundled-agents
 
 # Type-check frontend TypeScript.
 typecheck:
