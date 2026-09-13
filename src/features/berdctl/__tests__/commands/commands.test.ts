@@ -760,6 +760,39 @@ describe("sessions.create", () => {
     expect(mocks.acpCreateSession).not.toHaveBeenCalled();
   });
 
+  it("rejects the default harness too when it is not ready", async () => {
+    // Without --harness-id the readiness check used to be skipped entirely, so
+    // a machine with only codex-acp set up spent the whole 900 s budget
+    // installing claude-acp or failed as an opaque internal_error after the
+    // session already existed. The default resolves first and is checked.
+    mocks.readinessFromReport.mockReturnValue(
+      new Map([
+        ["claude-acp", "not_installed"],
+        ["codex-acp", "ready"],
+      ]),
+    );
+
+    const error = await expectCommandError(
+      dispatchCommand("sessions", { action: "create", prompt: "hi" }, ctx),
+      "harness_not_ready",
+    );
+    expect(error.message).toContain("claude-acp");
+    expect(mocks.discoverAcpProviders).toHaveBeenCalledTimes(1);
+    expect(mocks.acpCreateSession).not.toHaveBeenCalled();
+    expect(mocks.acpSendMessage).not.toHaveBeenCalled();
+  });
+
+  it("checks readiness for the default harness on the happy path as well", async () => {
+    await dispatchCommand("sessions", { action: "create", prompt: "hi" }, ctx);
+
+    expect(mocks.discoverAcpProviders).toHaveBeenCalledTimes(1);
+    expect(mocks.acpCreateSession).toHaveBeenCalledWith(
+      "claude-acp",
+      "/resolved/cwd",
+      expect.objectContaining({ modelId: undefined }),
+    );
+  });
+
   it("rejects a model the harness does not list with model_not_found", async () => {
     seedModelCache("codex-acp", ["gpt-6"]);
 
