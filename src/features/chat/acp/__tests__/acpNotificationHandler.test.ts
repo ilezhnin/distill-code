@@ -9,6 +9,7 @@ import { useAgentStore } from "@/features/agents/stores/agentStore";
 import {
   clearMessageTracking,
   handleSessionNotification,
+  reportPermissionAnswer,
 } from "../acpNotificationHandler";
 import { flushBufferedStreamingUpdatesForSession } from "../liveStreamingUpdates";
 import { setActiveMessageId } from "@/shared/api/acpActiveMessageTracking";
@@ -2057,5 +2058,44 @@ describe("acpNotificationHandler", () => {
     expect(messages[1].content).toEqual([
       { type: "text", text: "Roses are red" },
     ]);
+  });
+});
+
+// The app answers permission requests itself. A `cancelled` answer ends the
+// harness's turn, so the transcript has to say what happened — otherwise the
+// operator sees a turn that stopped for no visible reason.
+describe("permission answers the operator never saw", () => {
+  beforeEach(() => {
+    useChatStore.setState({ messagesBySession: {} });
+  });
+
+  it("records a system notice when the app could only cancel the request", () => {
+    reportPermissionAnswer({
+      sessionId: "acp-session",
+      toolLabel: "Bash(rm -rf /)",
+      answer: "cancelled",
+    });
+
+    const messages =
+      useChatStore.getState().messagesBySession["acp-session"] ?? [];
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.role).toBe("system");
+    expect(messages[0]?.content[0]).toMatchObject({
+      type: "systemNotification",
+      notificationType: "warning",
+      text: expect.stringContaining("Bash(rm -rf /)"),
+    });
+  });
+
+  it("records nothing for an answer the app actually gave", () => {
+    reportPermissionAnswer({
+      sessionId: "acp-session",
+      toolLabel: "Bash(ls)",
+      answer: "allow_once",
+    });
+
+    expect(
+      useChatStore.getState().messagesBySession["acp-session"],
+    ).toBeUndefined();
   });
 });

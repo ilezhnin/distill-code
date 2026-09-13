@@ -357,6 +357,64 @@ describe("permission requests the renderer answers on its own", () => {
     ).toEqual({ outcome: { outcome: "cancelled" } });
   });
 
+  // Per ACP a `cancelled` outcome ends the *turn* rather than refusing one
+  // tool call, so the harness stops mid-task. The operator has to be able to
+  // see why; a berd.log line is not a trace they will ever look for.
+  it("reports the cancelled answer to the chat so the stopped turn is explained", async () => {
+    const connection = await importConnection();
+    const reportPermissionAnswer = vi.fn();
+    connection.setNotificationHandler({
+      handleSessionNotification: async () => {},
+      reportPermissionAnswer,
+    });
+
+    connection.answerPermissionRequest(
+      request(["allow_always", "reject_always"]),
+    );
+
+    expect(reportPermissionAnswer).toHaveBeenCalledWith({
+      sessionId: "acp-session-1234",
+      toolLabel: "Bash(rm -rf /)",
+      answer: "cancelled",
+    });
+  });
+
+  it("reports nothing when a one-time answer was available", async () => {
+    const connection = await importConnection();
+    const reportPermissionAnswer = vi.fn();
+    connection.setNotificationHandler({
+      handleSessionNotification: async () => {},
+      reportPermissionAnswer,
+    });
+
+    connection.answerPermissionRequest(request(["allow_once"]));
+
+    expect(reportPermissionAnswer).not.toHaveBeenCalled();
+  });
+
+  // The title is bridge-authored, unbounded text and `log_renderer_event`
+  // writes what it is given, so a harness must not be able to compose extra
+  // lines in the app log.
+  it("clamps the agent-authored tool title it logs to one bounded line", async () => {
+    const { answerPermissionRequest } = await importConnection();
+    const noisy = {
+      sessionId: "acp-session-1234",
+      toolCall: {
+        toolCallId: "call-1",
+        title: `Bash\n[fake] injected line\n${"x".repeat(400)}`,
+      },
+      options: [
+        { optionId: "allow_once-id", name: "allow", kind: "allow_once" },
+      ],
+    } as never;
+
+    answerPermissionRequest(noisy);
+
+    const [, message] = mocks.logRendererEvent.mock.calls[0] ?? [];
+    expect(String(message)).not.toContain("\n");
+    expect(String(message).length).toBeLessThan(300);
+  });
+
   it("logs what it answered, since nothing else records it", async () => {
     const { answerPermissionRequest } = await importConnection();
 

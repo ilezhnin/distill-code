@@ -17,12 +17,40 @@ import { logRendererEvent } from "./rendererLog";
 
 let notificationHandler: AcpNotificationHandler | null = null;
 
+/**
+ * A permission request the renderer answered on its own, reported so the chat
+ * can say so where the operator will see it.
+ */
+export interface AcpPermissionAnswerReport {
+  sessionId?: string;
+  /** The harness's own name for the tool call, already clamped for display. */
+  toolLabel?: string;
+  /** `cancelled` means nothing refusable was offered — see below. */
+  answer: "allow_once" | "reject_once" | "cancelled";
+}
+
 export interface AcpNotificationHandler {
   handleSessionNotification(notification: SessionNotification): Promise<void>;
+  /**
+   * Optional. Called for an answer the operator would want to know about — a
+   * request the app could only cancel. Nothing about the transport depends on
+   * it, so a handler that does not implement it simply gets the log line.
+   */
+  reportPermissionAnswer?(report: AcpPermissionAnswerReport): void;
 }
 
 export function setNotificationHandler(handler: AcpNotificationHandler): void {
   notificationHandler = handler;
+}
+
+/** Agent-controlled text, made safe for one log line and one transcript row. */
+function permissionToolLabel(args: RequestPermissionRequest): string {
+  const raw = args.toolCall?.title ?? args.toolCall?.toolCallId ?? "?";
+  // The title comes from the bridge and is neither bounded nor single-line,
+  // and `log_renderer_event` writes what it is given: clamp it here so a
+  // harness cannot author arbitrary multi-line content in berd.log.
+  const oneLine = raw.replace(/[\r\n\t]+/g, " ").trim();
+  return oneLine.length > 120 ? `${oneLine.slice(0, 117)}…` : oneLine;
 }
 
 /**
@@ -31,8 +59,11 @@ export function setNotificationHandler(handler: AcpNotificationHandler): void {
  * answer is never chosen — it rewrites the harness's own saved permissions for
  * every future session, which nobody asked for and nothing in the app can undo
  * — so a request that offers no one-time allow is refused once instead, and
- * cancelled when it offers nothing to refuse with either. There is no UI where
- * the operator could see any of this, so every answer goes to the app log.
+ * cancelled when it offers nothing to refuse with either. Every answer goes to
+ * the app log, and the one the operator would otherwise never notice — the
+ * cancel — is also reported to the chat (see `reportPermissionAnswer`): per
+ * ACP, `cancelled` ends the *turn* rather than refusing one tool call, so a
+ * harness offering only permanent options stops mid-task with no other trace.
  */
 export function answerPermissionRequest(
   args: RequestPermissionRequest,
@@ -44,11 +75,17 @@ export function answerPermissionRequest(
   const offered = options
     .map((candidate) => candidate.kind ?? "unknown")
     .join(",");
+  const toolLabel = permissionToolLabel(args);
   void logRendererEvent(
     "warn",
-    `[acp] permission request answered without asking: session=${args.sessionId?.slice(0, 8) ?? "?"} tool=${args.toolCall?.title ?? args.toolCall?.toolCallId ?? "?"} offered=[${offered}] answer=${option?.kind ?? "cancelled"}`,
+    `[acp] permission request answered without asking: session=${args.sessionId?.slice(0, 8) ?? "?"} tool=${toolLabel} offered=[${offered}] answer=${option?.kind ?? "cancelled"}`,
   );
   if (!option) {
+    notificationHandler?.reportPermissionAnswer?.({
+      ...(args.sessionId ? { sessionId: args.sessionId } : {}),
+      toolLabel,
+      answer: "cancelled",
+    });
     return { outcome: { outcome: "cancelled" } };
   }
   return { outcome: { outcome: "selected", optionId: option.optionId } };
