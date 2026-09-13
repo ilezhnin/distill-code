@@ -1,4 +1,7 @@
-import type { TranscriptFixtureName } from "../../../src/features/chat/transcript/testing/transcriptFixtures";
+import type {
+  TranscriptFixtureLabel,
+  TranscriptFixtureName,
+} from "../../../src/features/chat/transcript/testing/transcriptFixtures";
 
 export interface TranscriptMetricThresholds {
   timeToFirstVisibleTailMs: number;
@@ -152,13 +155,15 @@ export function isRealBridgeProofMetricClassified({
   profile = REAL_BRIDGE_PROOF_PROFILE,
 }: {
   bridgeKind: string | null | undefined;
-  fixtureName: TranscriptFixtureName;
+  fixtureName: TranscriptFixtureLabel;
   classification: RealBridgeProofMetricClassification;
   profile?: RealBridgeProofProfile;
 }): boolean {
   return (
     isRealBridgeProofRun(bridgeKind) &&
-    profile.classifiedScenarios[classification].includes(fixtureName)
+    profile.classifiedScenarios[classification].some(
+      (classified) => classified === fixtureName,
+    )
   );
 }
 
@@ -168,7 +173,7 @@ export function getRealBridgeProofMcpRowChromeTolerancePx({
   profile = REAL_BRIDGE_PROOF_PROFILE,
 }: {
   bridgeKind: string | null | undefined;
-  fixtureName: TranscriptFixtureName;
+  fixtureName: TranscriptFixtureLabel;
   profile?: RealBridgeProofProfile;
 }): number | null {
   if (

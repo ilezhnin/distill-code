@@ -15,6 +15,7 @@
     "design-system:tokens": "node ./scripts/design-system-tokens.mjs",
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
     "check:i18n": "node ./scripts/check-i18n-strings.mjs",
     "lint": "biome lint .",
     "check": "biome check . && pnpm check:i18n",
