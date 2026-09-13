@@ -89,8 +89,15 @@ function nextConnectionEpoch(): string {
   return `${instanceToken}.${connectionCounter}`;
 }
 
-/** An ACP stream over one WebSocket; `close` drops the socket itself. */
-export type WebSocketStream = Stream & { close: () => void };
+/**
+ * An ACP stream over one WebSocket; `close` drops the socket itself and
+ * `isSocketClosed` reports the transport's own verdict — true once the socket
+ * is closing or closed, i.e. once nothing pending on it can ever be answered.
+ */
+export type WebSocketStream = Stream & {
+  close: () => void;
+  isSocketClosed: () => boolean;
+};
 
 export function createWebSocketStream(wsUrl: string): WebSocketStream {
   const ws = new WebSocket(wsUrl);
@@ -180,5 +187,11 @@ export function createWebSocketStream(wsUrl: string): WebSocketStream {
     },
   });
 
-  return { readable, writable, close: () => ws.close() };
+  return {
+    readable,
+    writable,
+    close: () => ws.close(),
+    isSocketClosed: () =>
+      ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED,
+  };
 }
