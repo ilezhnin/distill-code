@@ -20,6 +20,9 @@ const SKILL_FILE_NAME: &str = "SKILL.md";
 /// skill scanner — which treats every direct child holding a `SKILL.md` as a
 /// skill, dot-prefixed or not — never sees a half-installed or retired copy.
 const TRANSACTIONS_DIR_NAME: &str = ".berd-skill-transactions";
+/// Suffix a directory is kept under when a bundled skill had to be installed
+/// over something we could not recognise as ours — see [`keep_replaced_copy`].
+const REPLACED_SUFFIX: &str = ".berd-replaced";
 static INSTALL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Default)]
@@ -93,15 +96,15 @@ fn seed_bundled_skills_from_dir(source_root: &Path, target_root: &Path) -> Resul
         let target = target_root.join(&skill_name);
         // One skill that cannot be installed must not cost every skill after it
         // its seeding — the loop used to abort on the first error.
-        match should_install_skill(&source, &target) {
-            Ok(false) => continue,
-            Ok(true) => {}
+        let previous = match install_plan(&source, &target) {
+            Ok(Some(previous)) => previous,
+            Ok(None) => continue,
             Err(error) => {
                 log::warn!("{error}");
                 continue;
             }
-        }
-        match install_skill_dir(&source, &target) {
+        };
+        match install_skill_dir(&source, &target, previous) {
             Ok(()) => seeded += 1,
             Err(error) => log::warn!("{error}"),
         }
@@ -170,13 +173,81 @@ fn installed_skill_state(skill_dir: &Path) -> Result<InstalledSkillState, String
     }
 }
 
-fn should_install_skill(source: &Path, target: &Path) -> Result<bool, String> {
+/// What was at a bundled skill's install path, from the point of view of the
+/// copy that replaces it.
+#[derive(Debug, PartialEq, Eq)]
+enum PreviousCopy {
+    /// Nothing, or a copy of ours that is merely out of date: ours to delete
+    /// once the new tree is live.
+    Ours,
+    /// A directory we could not recognise as ours, because it holds no readable
+    /// `SKILL.md`. Nearly always an install of our own that was interrupted —
+    /// which is why it is repaired at all — but it is also exactly what a skill
+    /// the user is still writing under a name we happen to use looks like, so
+    /// its contents are kept instead of deleted.
+    Unrecognised,
+}
+
+/// Whether `source` has to be installed at `target`, and what the install would
+/// be replacing. `None` means "leave it alone".
+fn install_plan(source: &Path, target: &Path) -> Result<Option<PreviousCopy>, String> {
     match installed_skill_state(target)? {
-        InstalledSkillState::Nothing | InstalledSkillState::Partial => Ok(true),
-        InstalledSkillState::UserOwned => Ok(false),
+        InstalledSkillState::Nothing => Ok(Some(PreviousCopy::Ours)),
+        InstalledSkillState::Partial => Ok(Some(PreviousCopy::Unrecognised)),
+        InstalledSkillState::UserOwned => Ok(None),
         // The usual case on every launch after the first: the installed copy is
         // already what we would write, so touching it is pure risk.
-        InstalledSkillState::Bundled => Ok(!dirs_have_equal_contents(source, target)?),
+        InstalledSkillState::Bundled => {
+            Ok((!dirs_have_equal_contents(source, target)?).then_some(PreviousCopy::Ours))
+        }
+    }
+}
+
+/// Where a replaced directory is kept: beside the skill that replaced it, under
+/// a suffixed name. The skill scanner only reads direct children of the skills
+/// root that hold a `SKILL.md`, and a directory kept here has none — that is
+/// what made it unrecognisable — so it is invisible to the app either way.
+/// The first free name wins, so a second repair cannot overwrite the copy the
+/// first one kept.
+fn replaced_copy_path(target: &Path) -> Option<std::path::PathBuf> {
+    let parent = target.parent()?;
+    let name = target.file_name()?.to_string_lossy().into_owned();
+    (0..100)
+        .map(|attempt| {
+            let suffix = if attempt == 0 {
+                String::new()
+            } else {
+                format!("-{attempt}")
+            };
+            parent.join(format!("{name}{REPLACED_SUFFIX}{suffix}"))
+        })
+        .find(|candidate| fs::symlink_metadata(candidate).is_err())
+}
+
+/// Keep what was at a bundled skill's path instead of deleting it. Losing a
+/// half-written skill of the user's own — or a bundled one whose `SKILL.md` they
+/// renamed while working on it — must not be the price of repairing an
+/// interrupted install.
+fn keep_replaced_copy(retired: &Path, target: &Path) {
+    let Some(kept) = replaced_copy_path(target) else {
+        log::warn!(
+            "Kept nothing of the directory replaced at '{}': no free name beside it",
+            target.display()
+        );
+        return;
+    };
+    match retry_transient_io(|| fs::rename(retired, &kept)) {
+        // Not an error, but the user has to be able to find their files again.
+        Ok(()) => log::warn!(
+            "Bundled skill '{}' was installed over a directory with no readable {SKILL_FILE_NAME}; its previous contents are kept at '{}'",
+            target.display(),
+            kept.display()
+        ),
+        Err(err) => log::warn!(
+            "Failed to keep the directory replaced at '{}' as '{}': {err}",
+            target.display(),
+            kept.display()
+        ),
     }
 }
 
@@ -262,7 +333,10 @@ struct SkillMetadata {
 /// was then classified user-authored and never repaired. Here the replacement is
 /// built to the side first and the live copy is only ever moved aside, so a
 /// failure at any step leaves either the old tree or the new one, never neither.
-fn install_skill_dir(source: &Path, target: &Path) -> Result<(), String> {
+///
+/// `previous` decides what happens to the copy that was moved aside: ours is
+/// deleted, anything else is kept beside the skill (see [`keep_replaced_copy`]).
+fn install_skill_dir(source: &Path, target: &Path, previous: PreviousCopy) -> Result<(), String> {
     let parent = target.parent().ok_or_else(|| {
         format!(
             "Bundled skill target '{}' has no parent directory",
@@ -310,10 +384,16 @@ fn install_skill_dir(source: &Path, target: &Path) -> Result<(), String> {
         ));
     }
 
-    // The new tree is live; the retired one is only disk space, and the sweep at
-    // the start of the next seeding run picks up whatever resists deletion now.
+    // The new tree is live. A retired copy of ours is only disk space, and the
+    // sweep at the start of the next seeding run picks up whatever resists
+    // deletion now; one that was not recognisably ours is kept instead.
     if had_previous {
-        let _ = fs::remove_dir_all(&retired);
+        match previous {
+            PreviousCopy::Ours => {
+                let _ = fs::remove_dir_all(&retired);
+            }
+            PreviousCopy::Unrecognised => keep_replaced_copy(&retired, target),
+        }
     }
     Ok(())
 }
@@ -486,6 +566,82 @@ mod tests {
             !target.path().join("berd-help").join("references").exists(),
             "the repaired skill is the bundled tree, not a merge"
         );
+    }
+
+    #[test]
+    fn what_a_repaired_skill_replaced_is_kept_beside_it() {
+        let source = tempdir().unwrap();
+        let target = tempdir().unwrap();
+        write_skill(source.path(), "berd-help", BUNDLED);
+        // A directory with no readable SKILL.md is repaired — but it can just as
+        // well be a skill the user is still writing under a name we also use, or
+        // a bundled one whose SKILL.md they renamed while working on it. Their
+        // work must survive the repair.
+        let drafted = target.path().join("berd-help");
+        fs::create_dir_all(drafted.join("references")).unwrap();
+        fs::write(drafted.join("references").join("notes.md"), "my notes").unwrap();
+        fs::write(drafted.join("SKILL.md.bak"), "my draft").unwrap();
+
+        assert_eq!(
+            seed_bundled_skills_from_dir(source.path(), target.path()).unwrap(),
+            1
+        );
+
+        let kept = target.path().join("berd-help.berd-replaced");
+        assert_eq!(
+            fs::read_to_string(kept.join("references").join("notes.md")).unwrap(),
+            "my notes"
+        );
+        assert_eq!(
+            fs::read_to_string(kept.join("SKILL.md.bak")).unwrap(),
+            "my draft"
+        );
+        // Kept where the skill scanner cannot see it: it holds no SKILL.md, which
+        // is what made it unrecognisable in the first place.
+        assert!(!kept.join(SKILL_FILE_NAME).is_file());
+
+        // A second repair does not overwrite the copy the first one kept.
+        fs::remove_file(target.path().join("berd-help").join(SKILL_FILE_NAME)).unwrap();
+        fs::write(target.path().join("berd-help").join("second.md"), "later").unwrap();
+        assert_eq!(
+            seed_bundled_skills_from_dir(source.path(), target.path()).unwrap(),
+            1
+        );
+        assert_eq!(
+            fs::read_to_string(kept.join("references").join("notes.md")).unwrap(),
+            "my notes"
+        );
+        assert_eq!(
+            fs::read_to_string(
+                target
+                    .path()
+                    .join("berd-help.berd-replaced-1")
+                    .join("second.md")
+            )
+            .unwrap(),
+            "later"
+        );
+    }
+
+    #[test]
+    fn an_out_of_date_bundled_skill_leaves_nothing_behind_when_it_is_replaced() {
+        let source = tempdir().unwrap();
+        let target = tempdir().unwrap();
+        write_skill(source.path(), "berd-help", BUNDLED);
+        write_skill(
+            target.path(),
+            "berd-help",
+            "---\nmetadata:\n  berdBundled: true\n---\nold",
+        );
+
+        assert_eq!(
+            seed_bundled_skills_from_dir(source.path(), target.path()).unwrap(),
+            1
+        );
+
+        // Our own out-of-date copy is not the user's work: keeping it would grow
+        // one directory per update.
+        assert!(!target.path().join("berd-help.berd-replaced").exists());
     }
 
     #[test]
