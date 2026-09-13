@@ -62,6 +62,25 @@ pub enum BridgeEvent {
 
 type Pending = Mutex<HashMap<u64, oneshot::Sender<Result<Value, Value>>>>;
 
+/// The bridge's stdout has ended: mark it dead and fail every request still
+/// waiting for an answer that will never come.
+///
+/// `alive` is set while the `pending` lock is held, which is the same lock
+/// [`Bridge::register_pending`] registers under. That is what closes the race:
+/// a request either registers before this drain (and is failed by it) or sees
+/// the bridge as gone. Registering *after* the drain would wait forever — the
+/// writer channel is still open so nothing errors, and `session/prompt` has no
+/// deadline to rescue it.
+fn fail_pending_on_exit(pending: &Pending, alive: &AtomicBool) {
+    let guard = pending.lock();
+    alive.store(false, Ordering::SeqCst);
+    if let Ok(mut pending) = guard {
+        for (_, sender) in pending.drain() {
+            let _ = sender.send(Err(protocol::internal("bridge exited")));
+        }
+    }
+}
+
 /// Hands out [`Bridge::generation`]. Process-wide, so no two bridges of a run
 /// ever share one, whatever harness they belong to.
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -272,12 +291,7 @@ impl Bridge {
                         ),
                     }
                 }
-                alive.store(false, Ordering::SeqCst);
-                if let Ok(mut pending) = pending.lock() {
-                    for (_, sender) in pending.drain() {
-                        let _ = sender.send(Err(protocol::internal("bridge exited")));
-                    }
-                }
+                fail_pending_on_exit(&pending, &alive);
                 let _ = events.send(BridgeEvent::Exited {
                     harness,
                     generation,
@@ -406,8 +420,11 @@ impl Bridge {
         }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.insert(id, tx);
+        if !self.register_pending(id, tx) {
+            return Err(protocol::internal(format!(
+                "{} bridge is not running",
+                self.harness
+            )));
         }
         let line = protocol::request(json!(id), method, params);
         if self.writer.send(line).is_err() {
@@ -437,6 +454,21 @@ impl Bridge {
                 self.harness
             )))
         })
+    }
+
+    /// Claim a slot for request `id`'s answer, or report that the bridge is
+    /// already gone. The liveness check happens under the `pending` lock, the
+    /// same one [`fail_pending_on_exit`] drains under, so a request can never
+    /// end up registered behind the drain with nothing left to answer it.
+    fn register_pending(&self, id: u64, tx: oneshot::Sender<Result<Value, Value>>) -> bool {
+        let Ok(mut pending) = self.pending.lock() else {
+            return false;
+        };
+        if !self.alive.load(Ordering::SeqCst) {
+            return false;
+        }
+        pending.insert(id, tx);
+        true
     }
 
     fn forget(&self, id: u64) {
@@ -576,6 +608,44 @@ mod tests {
         let line = written.recv().await.expect("written");
         assert!(line.contains("\"method\":\"session/new\""));
         assert_eq!(pending_count(&bridge), 0);
+    }
+
+    #[tokio::test]
+    async fn a_request_cannot_register_behind_the_exit_drain() {
+        let pending: Arc<Pending> = Arc::new(Mutex::new(HashMap::new()));
+        let alive = Arc::new(AtomicBool::new(true));
+        let bridge = Bridge {
+            harness: "test-acp".to_string(),
+            generation: NEXT_GENERATION.fetch_add(1, Ordering::SeqCst),
+            agent_capabilities: RwLock::new(Value::Null),
+            writer: mpsc::unbounded_channel().0,
+            pending: Arc::clone(&pending),
+            next_id: AtomicU64::new(1),
+            alive: Arc::clone(&alive),
+            child: Mutex::new(None),
+        };
+
+        // A request that got in before the drain is failed by it.
+        let (tx, rx) = oneshot::channel();
+        assert!(bridge.register_pending(1, tx));
+        assert_eq!(pending_count(&bridge), 1);
+        fail_pending_on_exit(&pending, &alive);
+        assert!(!bridge.is_alive());
+        assert_eq!(pending_count(&bridge), 0);
+        let answer = rx.await.expect("the drain answers").expect_err("failed");
+        assert!(error_text(&answer).contains("bridge exited"), "{answer}");
+
+        // One that arrives after it is refused instead of waiting for an answer
+        // nothing is left to send.
+        let (tx, mut rx) = oneshot::channel();
+        assert!(!bridge.register_pending(2, tx));
+        assert_eq!(pending_count(&bridge), 0);
+        assert!(rx.try_recv().is_err());
+        let error = bridge
+            .request_within("session/prompt", json!({}), None)
+            .await
+            .expect_err("a dead bridge answers nothing");
+        assert!(error_text(&error).contains("is not running"), "{error}");
     }
 
     #[tokio::test]
