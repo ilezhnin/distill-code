@@ -179,7 +179,7 @@ function emitStatusChange(change: TerminalSessionStatusChange): void {
 }
 
 export class TerminalSession {
-  readonly key: string;
+  private keyValue: string;
   readonly cwd: string;
   readonly terminal: Terminal;
   readonly fitAddon: FitAddon;
@@ -207,7 +207,7 @@ export class TerminalSession {
   private listeners = new Set<TerminalSessionListener>();
 
   constructor({ key, cwd, labels, theme, fontFamily }: TerminalSessionOptions) {
-    this.key = key;
+    this.keyValue = key;
     this.cwd = cwd;
     this.labels = labels;
     this.fitAddon = new FitAddon();
@@ -237,6 +237,19 @@ export class TerminalSession {
 
   get status(): TerminalStatus {
     return this.statusValue;
+  }
+
+  get key(): string {
+    return this.keyValue;
+  }
+
+  /**
+   * Re-keys the session in place. Only the registry may call this (see
+   * `renameTerminalSessionPrefix`): the shell, its scrollback and its queued
+   * output stay exactly where they are; only the name they answer to moves.
+   */
+  rekey(key: string): void {
+    this.keyValue = key;
   }
 
   updateLabels(labels: TerminalSessionLabels): void {
@@ -861,6 +874,70 @@ export function getOrCreateTerminalSession(
   sessions.set(options.key, session);
   emitRegistryChange();
   return session;
+}
+
+/**
+ * Moves every `${fromSessionId}:*` terminal — the live sessions, the commands
+ * queued for them and the status subscriptions on them — under
+ * `${toSessionId}:*`.
+ *
+ * A draft chat is keyed by its draft id until the backend answers with the
+ * real one. The chat view keeps rendering (its React key is the client id)
+ * but the terminal panel re-keys to the backend id, and a plain map miss
+ * there would start a second shell while the first kept running under a key
+ * nothing could reach. Called at promotion, before the store swaps the id,
+ * so the re-keyed panel finds its own shell.
+ */
+export function renameTerminalSessionPrefix(
+  fromSessionId: string,
+  toSessionId: string,
+): void {
+  if (!fromSessionId || !toSessionId || fromSessionId === toSessionId) {
+    return;
+  }
+
+  const fromPrefix = `${fromSessionId}:`;
+  const toPrefix = `${toSessionId}:`;
+  const renamed = (key: string) => `${toPrefix}${key.slice(fromPrefix.length)}`;
+
+  for (const [key, session] of [...sessions]) {
+    if (!key.startsWith(fromPrefix)) continue;
+    const nextKey = renamed(key);
+    // A session already living under the target key is the newer one — the
+    // panel re-rendered before the promotion could rename — keep it and stop
+    // the draft's shell rather than leaving both running.
+    if (sessions.has(nextKey)) {
+      session.stop();
+      continue;
+    }
+    sessions.delete(key);
+    session.rekey(nextKey);
+    sessions.set(nextKey, session);
+  }
+
+  for (const [key, commands] of [...queuedCommands]) {
+    if (!key.startsWith(fromPrefix)) continue;
+    const nextKey = renamed(key);
+    queuedCommands.delete(key);
+    queuedCommands.set(nextKey, [
+      ...(queuedCommands.get(nextKey) ?? []),
+      ...commands,
+    ]);
+  }
+
+  for (const [key, listeners] of [...statusListeners]) {
+    if (!key.startsWith(fromPrefix)) continue;
+    const nextKey = renamed(key);
+    statusListeners.delete(key);
+    const existing = statusListeners.get(nextKey);
+    if (existing) {
+      for (const listener of listeners) existing.add(listener);
+    } else {
+      statusListeners.set(nextKey, listeners);
+    }
+  }
+
+  emitRegistryChange();
 }
 
 function chatSessionIdFromTerminalKey(key: string): string | null {
