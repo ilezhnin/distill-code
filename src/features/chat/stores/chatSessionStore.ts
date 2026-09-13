@@ -290,6 +290,55 @@ interface ChatSessionStoreActions {
 
 export type ChatSessionStore = ChatSessionStoreState & ChatSessionStoreActions;
 
+/**
+ * True when the patch asks for nothing the session does not already have, and
+ * touches no field whose merge has effects of its own (the workspace fields go
+ * through `ensureWorkspaceAttachment`/`withWorkspaceBackfill` and persist, and
+ * `reasoningEffort` compares by value and logs).
+ */
+function isPlainNoopSessionPatch(
+  existing: ChatSession,
+  patch: ChatSessionPatch,
+): boolean {
+  const keys = Object.keys(patch) as (keyof ChatSessionPatch)[];
+  if (keys.length === 0) return true;
+  for (const key of keys) {
+    if (
+      key === "workingDir" ||
+      key === "workspaceAttachments" ||
+      key === "activeWorkspaceId" ||
+      key === "reasoningEffort"
+    ) {
+      return false;
+    }
+    if (patch[key] !== existing[key]) return false;
+  }
+  return true;
+}
+
+/**
+ * Id lookup without a scan.
+ *
+ * `sessions` grows to thousands and `getSession` is called for every streamed
+ * notification chunk (and again inside `patchSession`), which made session
+ * lookup O(sessions) per chunk. The index is rebuilt only when the array
+ * identity changes — every store write replaces it, so a stale index cannot
+ * survive an update.
+ */
+let indexedSessions: readonly ChatSession[] | null = null;
+let sessionIndex = new Map<string, ChatSession>();
+
+function findSessionById(
+  sessions: readonly ChatSession[],
+  id: string,
+): ChatSession | undefined {
+  if (indexedSessions !== sessions) {
+    sessionIndex = new Map(sessions.map((session) => [session.id, session]));
+    indexedSessions = sessions;
+  }
+  return sessionIndex.get(id);
+}
+
 function patchIncludesReasoningEffort(patch: Partial<ChatSession>): boolean {
   return Object.hasOwn(patch, "reasoningEffort");
 }
@@ -371,7 +420,7 @@ function recordArchiveMutationSuccess(
   };
 
   if (!currentMutation) {
-    if (!state.sessions.some((candidate) => candidate.id === sessionId)) {
+    if (!findSessionById(state.sessions, sessionId)) {
       return state;
     }
 
@@ -393,7 +442,7 @@ function recordArchiveMutationSuccess(
   }
 
   if (currentMutation.operationId === completedMutation.operationId) {
-    if (!state.sessions.some((candidate) => candidate.id === sessionId)) {
+    if (!findSessionById(state.sessions, sessionId)) {
       const { [sessionId]: _completed, ...archiveMutationBySessionId } =
         state.archiveMutationBySessionId;
       return { archiveMutationBySessionId };
@@ -825,7 +874,7 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
     const includesReasoningEffort = patchIncludesReasoningEffort(patch);
     let sessionForWorkspacePersistence: ChatSession | null = null;
     set((state) => {
-      const existing = state.sessions.find((session) => session.id === id);
+      const existing = findSessionById(state.sessions, id);
       if (!existing) {
         if (includesReasoningEffort) {
           logReasoningEffortInfo("patchSession missing session", {
@@ -843,6 +892,13 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
           patch.reasoningEffort,
         );
       if (reasoningEffortUnchanged && Object.keys(patch).length === 1) {
+        return state;
+      }
+      // The live-subtitle path patches the streaming session once a second
+      // with a value that is often the one it already has. Answering that
+      // before merging skips a session-sized object spread and the workspace
+      // backfill on every one of them.
+      if (isPlainNoopSessionPatch(existing, patch)) {
         return state;
       }
       const effectivePatch = reasoningEffortUnchanged
@@ -1332,12 +1388,12 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
     });
   },
 
-  getSession: (id) => get().sessions.find((session) => session.id === id),
+  getSession: (id) => findSessionById(get().sessions, id),
 
   getActiveSession: () => {
     const { activeSessionId, sessions } = get();
     if (!activeSessionId) return null;
-    return sessions.find((session) => session.id === activeSessionId) ?? null;
+    return findSessionById(sessions, activeSessionId) ?? null;
   },
 
   getArchivedSessions: () =>

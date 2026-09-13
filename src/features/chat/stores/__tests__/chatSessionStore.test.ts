@@ -1450,6 +1450,67 @@ describe("chatSessionStore", () => {
   });
 
   describe("patchSession", () => {
+    // `getSession` is called for every streamed notification chunk, so it is
+    // answered from an index rather than a scan — the index must follow every
+    // write to `sessions`.
+    it("finds sessions by id after they are added, patched and removed", () => {
+      const first = seedSession({ id: "indexed-1", title: "First" });
+      seedSession({ id: "indexed-2", title: "Second" });
+
+      expect(
+        useChatSessionStore.getState().getSession("indexed-2")?.title,
+      ).toBe("Second");
+
+      useChatSessionStore
+        .getState()
+        .patchSession(first.id, { title: "Renamed" });
+      expect(useChatSessionStore.getState().getSession(first.id)?.title).toBe(
+        "Renamed",
+      );
+
+      useChatSessionStore.getState().removeSession("indexed-2");
+      expect(
+        useChatSessionStore.getState().getSession("indexed-2"),
+      ).toBeUndefined();
+      expect(useChatSessionStore.getState().getSession(first.id)?.title).toBe(
+        "Renamed",
+      );
+
+      // Including a wholesale replacement of the list, which is what a
+      // `loadSessions` merge does.
+      useChatSessionStore.setState({
+        sessions: [makeSession({ id: "indexed-3", title: "Third" })],
+      });
+      expect(
+        useChatSessionStore.getState().getSession(first.id),
+      ).toBeUndefined();
+      expect(
+        useChatSessionStore.getState().getSession("indexed-3")?.title,
+      ).toBe("Third");
+    });
+
+    // Live streaming patches the subtitle once a second per streaming chat, and
+    // every accepted patch replaces the `sessions` array — which re-renders
+    // every list subscriber. A patch that changes nothing must not.
+    it("keeps the sessions array when the patch changes nothing", () => {
+      const session = seedSession({ subtitle: "same snippet" });
+      const before = useChatSessionStore.getState().sessions;
+
+      useChatSessionStore
+        .getState()
+        .patchSession(session.id, { subtitle: "same snippet" });
+      useChatSessionStore
+        .getState()
+        .updateSessionSubtitleFromText(session.id, "same snippet");
+
+      expect(useChatSessionStore.getState().sessions).toBe(before);
+
+      useChatSessionStore
+        .getState()
+        .patchSession(session.id, { subtitle: "a new snippet" });
+      expect(useChatSessionStore.getState().sessions).not.toBe(before);
+    });
+
     it("patches session properties while preserving updatedAt when omitted", () => {
       const session = seedSession();
       const originalUpdatedAt = session.updatedAt;
