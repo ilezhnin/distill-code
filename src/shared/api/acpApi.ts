@@ -9,7 +9,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 import { messageSnippet } from "@/features/chat/lib/messageSnippet";
 import { getCuratedAgentProviders } from "@/features/providers/curatedProviders";
-import { getClient } from "./acpConnection";
+import { getClient, trackPendingPrompt } from "./acpConnection";
 import {
   applySessionConfigOptionsSnapshot,
   readSessionConfigOptionsSnapshots,
@@ -421,11 +421,13 @@ export async function prompt(
 ): Promise<PromptResponse> {
   const client = await getClient();
   callbacks.onPromptDispatching?.();
-  const promptPromise = client.prompt({
-    sessionId,
-    prompt: content,
-    _meta: meta,
-  });
+  const promptPromise = trackPendingPrompt(
+    client.prompt({
+      sessionId,
+      prompt: content,
+      _meta: meta,
+    }),
+  );
   callbacks.onPromptDispatched?.();
   return promptPromise;
 }
