@@ -58,7 +58,9 @@
     "exported_one": "Exported 1 chat",
     "exported_other": "Exported {{displayCount}} chats",
     "failed_one": "{{displayCount}} action failed",
-    "failed_other": "{{displayCount}} actions failed"
+    "failed_other": "{{displayCount}} actions failed",
+    "archiveConfirmTerminals_one": "1 running terminal will be stopped; unarchiving does not bring it back.",
+    "archiveConfirmTerminals_other": "{{count}} running terminals will be stopped; unarchiving does not bring them back."
   },
   "components": {
     "codeBlock": {
