@@ -783,4 +783,59 @@ describe("ChatInput", () => {
     expect(input).toHaveValue("look at this");
     expect(onDraftAttachmentsChange).not.toHaveBeenCalledWith([]);
   });
+
+  it("keeps one queued-pill observer alive across re-renders while streaming", () => {
+    // `ChatView` re-renders the composer once per streamed frame with a fresh
+    // `queuedMessages` array. The pill's height effect must not rebuild its
+    // ResizeObserver (or force a layout read) each time.
+    // Other parts of the composer observe their own elements, so only
+    // observers pointed at the queued-pill group are counted.
+    const isPillTarget = (target: Element) =>
+      Boolean(target.closest?.('[data-slot="queued-message-group"]'));
+    let pillObservers = 0;
+    let pillDisconnects = 0;
+    const originalResizeObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class CountingResizeObserver {
+      private watchesPill = false;
+      observe(target: Element) {
+        if (!isPillTarget(target)) return;
+        this.watchesPill = true;
+        pillObservers += 1;
+      }
+      unobserve() {}
+      disconnect() {
+        if (this.watchesPill) pillDisconnects += 1;
+      }
+    } as unknown as typeof ResizeObserver;
+
+    try {
+      const queued = () => [
+        {
+          recordId: "head",
+          payload: { persona: { kind: "none" as const }, text: "queued one" },
+        },
+      ];
+      const view = render(
+        <ChatInput onSend={vi.fn()} isStreaming queuedMessages={queued()} />,
+      );
+      expect(screen.getByText("queued one")).toBeInTheDocument();
+      expect(pillObservers).toBe(1);
+
+      for (let frame = 0; frame < 5; frame += 1) {
+        view.rerender(
+          <ChatInput onSend={vi.fn()} isStreaming queuedMessages={queued()} />,
+        );
+      }
+      expect(pillObservers).toBe(1);
+      expect(pillDisconnects).toBe(0);
+
+      // A pill actually leaving still tears the observer down.
+      view.rerender(
+        <ChatInput onSend={vi.fn()} isStreaming queuedMessages={[]} />,
+      );
+      expect(pillDisconnects).toBe(1);
+    } finally {
+      globalThis.ResizeObserver = originalResizeObserver;
+    }
+  });
 });
