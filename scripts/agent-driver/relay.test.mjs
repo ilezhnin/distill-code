@@ -13,6 +13,7 @@
 
 import assert from "node:assert/strict";
 import {
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -341,5 +342,70 @@ describe("the relay end to end", () => {
     const beat = JSON.parse(readFileSync(relay.paths.heartbeat, "utf8"));
     assert.equal(beat.driverPort, port);
     assert.deepEqual(beat.allowedCommands, ALLOWED_COMMANDS);
+  });
+});
+
+describe("when the outbox cannot be written", () => {
+  // A directory sitting where `<id>.json` must land reproduces, on any OS,
+  // the same failure a Windows sync client/AV holding the file open would
+  // cause: `writeAtomic`'s rename refuses because the target is not a plain
+  // file. The relay used to treat that as "never answered" and re-claim (and
+  // re-run) the envelope on every 250ms poll for as long as that lasted.
+  let relay;
+  let root;
+
+  before(() => {
+    root = mkdtempSync(path.join(tmpdir(), "agent-driver-blocked-"));
+    relay = createRelay({ root, port: 1, repoRoot: REPO_ROOT });
+    // Block the exact path `answer("e1", …)` writes to.
+    mkdirSync(path.join(relay.paths.outbox, "e1.json"), { recursive: true });
+  });
+
+  after(() => {
+    relay?.stop();
+  });
+
+  it("runs the command exactly once even though the answer cannot be written yet", async () => {
+    const counter = path.join(root, "counter.txt");
+    writeFileSync(counter, "0", "utf8");
+    const target = path.join(relay.paths.inbox, "e1.json");
+    writeFileSync(
+      `${target}.tmp`,
+      JSON.stringify({
+        kind: "exec",
+        cmd: "node",
+        args: [
+          "-e",
+          `require("fs").writeFileSync(${JSON.stringify(counter)}, String(Number(require("fs").readFileSync(${JSON.stringify(counter)}, "utf8")) + 1))`,
+        ],
+      }),
+      "utf8",
+    );
+    renameSync(`${target}.tmp`, target);
+
+    // Several poll intervals: a re-executing relay would have run the
+    // command many times over by now (the regression measured 8+ in 2.2s).
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+
+    assert.equal(readFileSync(counter, "utf8"), "1");
+    // The envelope already produced a body, so it must be gone from inbox/
+    // regardless of whether the answer could be written.
+    assert.deepEqual(
+      readdirSync(relay.paths.inbox).filter((f) => f.endsWith(".json")),
+      [],
+    );
+
+    // Once the obstruction clears, the cached body is still delivered — the
+    // side effect must never repeat just because the write is retried.
+    rmSync(path.join(relay.paths.outbox, "e1.json"), {
+      recursive: true,
+      force: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const answer = JSON.parse(
+      readFileSync(path.join(relay.paths.outbox, "e1.json"), "utf8"),
+    );
+    assert.equal(answer.ok, true);
+    assert.equal(readFileSync(counter, "utf8"), "1");
   });
 });

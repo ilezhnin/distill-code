@@ -182,6 +182,7 @@ export function createRelay({
   const INBOX = path.join(ROOT, "inbox");
   const OUTBOX = path.join(ROOT, "outbox");
   const LOGS = path.join(ROOT, "logs");
+  const FAILED = path.join(ROOT, "failed");
   const HEARTBEAT = path.join(ROOT, "heartbeat.json");
   for (const dir of [ROOT, INBOX, OUTBOX, LOGS]) {
     mkdirSync(dir, { recursive: true });
@@ -190,6 +191,15 @@ export function createRelay({
   const allowed = new Set(ALLOWED_COMMANDS);
   const busy = { driver: false, exec: false, control: false };
   const claimed = new Set();
+  /**
+   * Bodies that were produced but could not be written to `outbox/` yet
+   * (a reader holding the target open, most often on Windows). The envelope
+   * that produced a body is always spent — it is removed from `inbox/`
+   * (or moved to `failed/` if even that fails) the moment `handle()`
+   * resolves, before the write is attempted — so a body only ever needs
+   * retrying here, never recomputing by running the command again.
+   */
+  const pendingAnswers = new Map();
   let driverReachable = null;
   let stopped = false;
 
@@ -482,7 +492,26 @@ export function createRelay({
     return { id, full, envelope, lane };
   }
 
+  /**
+   * Retry every body that could not be written to `outbox/` last time.
+   *
+   * The envelope that produced these is already gone from `inbox/`, so a
+   * retry here can only ever repeat a file write — never `handle()`, never
+   * the side effect it had.
+   */
+  function flushPendingAnswers() {
+    for (const [id, body] of pendingAnswers) {
+      try {
+        answer(id, body);
+        pendingAnswers.delete(id);
+      } catch (error) {
+        onLog(`${id} -> answer still not written: ${error.message}`);
+      }
+    }
+  }
+
   function poll() {
+    flushPendingAnswers();
     let files;
     try {
       files = readdirSync(INBOX)
@@ -513,18 +542,41 @@ export function createRelay({
           error: `Relay failed: ${error.message}`,
         }))
         .then((body) => {
+          // The envelope already produced this body: it must never be
+          // executed again, no matter what happens to the answer write
+          // below. Spend it first, unconditionally.
+          try {
+            rmSync(job.full, { force: true });
+          } catch {
+            try {
+              mkdirSync(FAILED, { recursive: true });
+              renameSync(job.full, path.join(FAILED, path.basename(job.full)));
+            } catch (moveError) {
+              // Even the move failed (someone else holds the envelope open).
+              // Leaving it in inbox/ risks a re-run, but there is nothing
+              // safer left to do; the lane still frees up and the answer
+              // still lands, so at least the agent is not left hanging.
+              onLog(
+                `${job.lane} ${job.id} -> could not remove or move envelope: ${moveError.message}`,
+              );
+            }
+          }
+          claimed.delete(file);
+          busy[job.lane] = false;
+
           try {
             answer(job.id, body);
-            rmSync(job.full, { force: true });
           } catch (error) {
-            // A reader holding the file open (Windows refuses the rename then)
-            // must not take the whole relay down with an unhandled rejection.
+            // A reader holding the file open (Windows refuses the rename
+            // then) must not take the whole relay down with an unhandled
+            // rejection, and must not cause the command to run again — the
+            // envelope is already gone. Cache the body and retry the write
+            // only, on the next poll.
+            pendingAnswers.set(job.id, body);
             onLog(
               `${job.lane} ${job.id} -> answer not written: ${error.message}`,
             );
           }
-          claimed.delete(file);
-          busy[job.lane] = false;
           onLog(
             `${job.lane} ${job.id} -> ${body.ok ? "ok" : `error: ${body.error ?? body.code}`}`,
           );
