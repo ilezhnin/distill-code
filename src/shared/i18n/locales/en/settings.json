@@ -330,11 +330,14 @@
       "status": {
         "checking": "Checking...",
         "inProgress": "Setup in progress",
-        "setupFailed": "Setup failed"
+        "setupFailed": "Setup failed",
+        "unknown": "Couldn't check"
       },
       "title": "Agent harnesses",
       "troubleshootInChat": "Troubleshoot in chat",
-      "updateLabel": "Update {{name}}"
+      "updateLabel": "Update {{name}}",
+      "recheck": "Check again",
+      "recheckLabel": "Check {{name}} again"
     },
     "setupOutput": {
       "copyDeviceCode": "Copy device code",

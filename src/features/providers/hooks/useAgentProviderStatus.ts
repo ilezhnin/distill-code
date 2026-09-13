@@ -13,6 +13,8 @@ interface UseAgentProviderStatusReturn {
   // source / version / update-available without re-probing.
   agentChecks: Map<string, DoctorCheck>;
   loading: boolean;
+  /** True when the doctor report failed: readiness is unknown, not "missing". */
+  statusUnavailable: boolean;
   refresh: () => Promise<Map<string, AgentProviderReadiness>>;
 }
 
@@ -134,6 +136,7 @@ export function useAgentProviderStatus(): UseAgentProviderStatusReturn {
     agentReadiness,
     agentChecks,
     loading: query.isPending,
+    statusUnavailable: query.isError,
     refresh,
   };
 }
