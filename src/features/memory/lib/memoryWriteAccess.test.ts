@@ -74,4 +74,24 @@ describe("decideMemoryWrite", () => {
       denial: "orchestrator-without-grant",
     });
   });
+
+  it("refuses a session the app remembers as a wave child, node or no node", () => {
+    // The graph evicts a finished wave child's node first of all, and after
+    // that "no node" would read as an ordinary chat. LAWS/MEMORY.md, Writing:
+    // a wave-spawned executor never writes, and is never taught the protocol.
+    expect(decideMemoryWrite(undefined, granted, true)).toEqual({
+      allowed: false,
+      denial: "wave-child",
+    });
+    // Even a node that has since been re-registered as something friendlier.
+    expect(
+      decideMemoryWrite(node({ role: "plain-chat" }), granted, true),
+    ).toEqual({ allowed: false, denial: "wave-child" });
+  });
+
+  it("still lets a chat the app remembers nothing about write", () => {
+    expect(decideMemoryWrite(undefined, granted, false)).toEqual({
+      allowed: true,
+    });
+  });
 });

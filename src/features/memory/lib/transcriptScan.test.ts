@@ -90,4 +90,12 @@ describe("messageIdSet", () => {
   it("answers for an empty list", () => {
     expect(messageIdSet([]).has("m-1")).toBe(false);
   });
+
+  it("answers for a list that is not there, rather than throwing", () => {
+    // A store field read through a test double, or a state shape from a build
+    // that did not have the field. The ACL asks this inside the prompt
+    // composer, where a throw costs the send.
+    expect(messageIdSet(undefined).has("m-1")).toBe(false);
+    expect(messageIdSet(null).has("m-1")).toBe(false);
+  });
 });

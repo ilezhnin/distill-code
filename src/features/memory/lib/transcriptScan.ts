@@ -28,6 +28,8 @@ export function messageMentions(message: Message, needle: string): boolean {
 
 const idSets = new WeakMap<readonly string[], ReadonlySet<string>>();
 
+const NO_IDS: ReadonlySet<string> = new Set();
+
 /**
  * A list of ids as a set, built once per list.
  *
@@ -36,8 +38,17 @@ const idSets = new WeakMap<readonly string[], ReadonlySet<string>>();
  * the set is built the first time a list is asked about and shared by every
  * later question about the same list — which is every message of every
  * scan until the next commit.
+ *
+ * A list that is not there at all answers "nothing" rather than throwing: the
+ * caller is a store field, and a store can be stood in for — a test double, a
+ * state shape from an older build — and the honest answer for a record that
+ * does not exist is that it holds no ids. The alternative was the memory ACL
+ * throwing inside the prompt composer, which costs the send.
  */
-export function messageIdSet(ids: readonly string[]): ReadonlySet<string> {
+export function messageIdSet(
+  ids: readonly string[] | null | undefined,
+): ReadonlySet<string> {
+  if (!ids) return NO_IDS;
   let set = idSets.get(ids);
   if (!set) {
     set = new Set(ids);

@@ -34,7 +34,6 @@ import {
   whenConductorGraphHydrated,
 } from "@/features/conductor/conductorGraphStore";
 import { deliverEnvelope } from "@/features/conductor/digestDelivery";
-import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 
 import { getMemoryPreferences } from "./lib/memoryPreferences";
@@ -47,8 +46,12 @@ import {
   type MemoryRecallCandidate,
 } from "./lib/memoryRecall";
 import { searchMemories } from "./lib/memorySearch";
+import { isWaveExecutorSession } from "./lib/memoryWriteAccess";
 import { messageIdSet } from "./lib/transcriptScan";
-import { useMemoryStore } from "./stores/memoryStore";
+import {
+  useMemoryStore,
+  watchGraphForWaveExecutors,
+} from "./stores/memoryStore";
 
 let draining = false;
 
@@ -118,7 +121,10 @@ function drainRecallFences(): void {
         );
         continue;
       }
-      if (isWaveManagedSession(candidate.sessionId)) {
+      // Or managed it before the graph hit its bound and dropped the node: an
+      // executor's transcript does not become the operator's chat by being
+      // forgotten (LAWS/MEMORY.md, Writing).
+      if (isWaveExecutorSession(candidate.sessionId)) {
         // Said out loud, like a refused write fence: a request the app
         // silently swallows looks to the operator like one it honoured.
         console.warn(
@@ -143,6 +149,10 @@ function drainRecallFences(): void {
 
 export function useMemoryRecallSync(): void {
   useEffect(() => {
+    // Armed before the first drain: the record of which sessions the wave
+    // engine owned is what this drain refuses on once the graph has evicted
+    // their nodes, and it is only kept while somebody is watching.
+    watchGraphForWaveExecutors();
     drainRecallFences();
     // On the transcripts only, for the reason the write drain says: a runtime
     // flag cannot make a question out of a message, and the flags change more

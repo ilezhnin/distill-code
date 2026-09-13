@@ -17,6 +17,11 @@ import { create } from "zustand";
 
 import { distillDocument } from "@/shared/lib/distillDocument";
 
+import {
+  useConductorGraphStore,
+  whenConductorGraphHydrated,
+} from "@/features/conductor/conductorGraphStore";
+import type { SessionNode } from "@/features/conductor/types";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 
@@ -43,6 +48,7 @@ import {
   type MemoryEntry,
   type MemoryScope,
 } from "../lib/memoryEntry";
+import { messageIdSet } from "../lib/transcriptScan";
 
 /** Path under the Distill root. */
 export const MEMORY_DOCUMENT_PATH = "memory.json";
@@ -55,6 +61,16 @@ export const MAX_MEMORY_ENTRIES = 300;
 
 /** Bound on the "already read this message" tombstones. */
 export const MAX_APPLIED_MEMORY_MESSAGE_IDS = 2000;
+
+/**
+ * Bound on the record of which sessions were the wave engine's.
+ *
+ * Twice the conductor graph's own node bound, so the memory of a wave child
+ * outlives the node the graph evicts by a comfortable margin. Past it the
+ * oldest ids drop, which is the same order the graph drops nodes in — the
+ * transcripts that would reopen the hole are the ones furthest in the past.
+ */
+export const MAX_WAVE_EXECUTOR_SESSION_IDS = 1000;
 
 interface MemoryState {
   entries: MemoryEntry[];
@@ -69,6 +85,19 @@ interface MemoryState {
    * cost the session one answer, not one per keystroke of the next reply.
    */
   recallAnsweredMessageIds: string[];
+  /**
+   * Sessions the conductor graph has at some point called wave children.
+   *
+   * The graph is bounded, and a finished wave child's node is the first thing
+   * it evicts (`graphBounds`). After that the write ACL's "no node is an
+   * ordinary chat" default would read a former executor's transcript as the
+   * operator's own: its `distill-memory` fence honoured, its recall answered,
+   * the protocol taught back to it — all of which LAWS/MEMORY.md forbids for
+   * a wave-spawned executor. So the fact outlives the node, and it is kept
+   * here rather than on the graph because it exists only to keep a promise
+   * the memory store made, and it has to survive a restart to keep it.
+   */
+  waveExecutorSessionIds: string[];
   /** False until the stored document has been read. Writes wait for it. */
   hydrated: boolean;
 }
@@ -157,6 +186,15 @@ interface MemoryActions {
    * would ask the same question again.
    */
   markRecallAnswered: (messageId: string) => void;
+  /**
+   * Records that these sessions are the wave engine's, not the operator's.
+   *
+   * Called with the wave children the conductor graph holds right now, as
+   * often as the graph changes. The graph forgets them at its bound; the
+   * write ACL must not, so the ids are kept and persisted here. Ids already
+   * known cost nothing — nothing is written when nothing is new.
+   */
+  noteWaveExecutorSessions: (sessionIds: readonly string[]) => void;
   /**
    * Swaps the live list wholesale, leaving the archive as it is.
    *
@@ -268,6 +306,25 @@ export function parseRecallAnsweredMessageIds(value: unknown): string[] {
 }
 
 /**
+ * The remembered wave-executor sessions.
+ *
+ * Absent from every document written before the graph's bound was allowed to
+ * outlive them, which reads back as none — the honest answer: this app has no
+ * record of those sessions, and the ones whose nodes are still on the graph
+ * are recorded again on the first sweep.
+ */
+export function parseWaveExecutorSessionIds(value: unknown): string[] {
+  const list = (value as { waveExecutorSessionIds?: unknown })
+    ?.waveExecutorSessionIds;
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter(
+      (entry): entry is string => typeof entry === "string" && entry !== "",
+    )
+    .slice(-MAX_WAVE_EXECUTOR_SESSION_IDS);
+}
+
+/**
  * Trims to the bound, least recently useful first, and says what it took.
  *
  * By recency rather than age: a standing fact the agents keep restating is
@@ -337,7 +394,7 @@ function commit(
   // the first change before the read landed mark the store as read: the
   // hydration then skipped the document, and the next write replaced every
   // stored memory with that one change.
-  const hydrated = useMemoryStore.getState().hydrated;
+  const { hydrated, waveExecutorSessionIds } = useMemoryStore.getState();
   const next: MemoryState = {
     entries: kept,
     archived: withCapacityEvictions(archived, evicted, nowMs),
@@ -345,6 +402,10 @@ function commit(
     recallAnsweredMessageIds: recallAnsweredMessageIds.slice(
       -MAX_APPLIED_MEMORY_MESSAGE_IDS,
     ),
+    // Carried like the flag: no memory write has an opinion about which
+    // sessions the wave engine owns, and dropping the record here would hand
+    // an evicted executor the operator's list on the next commit.
+    waveExecutorSessionIds,
     hydrated,
   };
   if (hydrated) {
@@ -475,6 +536,7 @@ function adoptProjectMemories(fromFolders: ProjectMemories): void {
     ),
     appliedMessageIds: current.appliedMessageIds,
     recallAnsweredMessageIds: current.recallAnsweredMessageIds,
+    waveExecutorSessionIds: current.waveExecutorSessionIds,
     hydrated: true,
   };
   useMemoryStore.setState(next);
@@ -567,6 +629,60 @@ function watchProjectsForMemories(): void {
   });
 }
 
+let stopWatchingGraph: (() => void) | null = null;
+
+/**
+ * Notes every wave child the conductor graph shows, for as long as it shows
+ * it, so the graph's bound cannot turn an executor back into a plain chat.
+ *
+ * It reads the graph rather than being told when a node goes: recording a
+ * child while its node is still there leaves no moment to miss, and
+ * `managedBy` is set when a node is registered and never changes, so a child
+ * seen once is a child forever. Idempotent, and cheap enough for the path it
+ * is on — one `Set` lookup per node per graph change, with nothing written
+ * unless a child is new (the graph itself is bounded at 500 nodes, and the
+ * lookup set is built once per change to the record).
+ *
+ * What it cannot recover: a wave child evicted by a build that did not keep
+ * this record. Those ids are gone, and the first sweep records only the ones
+ * whose nodes are still on the graph.
+ */
+export function watchGraphForWaveExecutors(): void {
+  if (stopWatchingGraph) return;
+  stopWatchingGraph = useConductorGraphStore.subscribe((state, previous) => {
+    if (state.nodesById === previous.nodesById) return;
+    noteWaveExecutorsOnGraph(state.nodesById);
+  });
+  // The graph as it already stands, and again once the folder's copy has been
+  // folded in — a wave child registered before this window opened is exactly
+  // the one whose node is closest to being evicted.
+  noteWaveExecutorsOnGraph(useConductorGraphStore.getState().nodesById);
+  whenConductorGraphHydrated(() => {
+    noteWaveExecutorsOnGraph(useConductorGraphStore.getState().nodesById);
+  });
+}
+
+function noteWaveExecutorsOnGraph(
+  nodesById: Readonly<Record<string, SessionNode>>,
+): void {
+  const known = messageIdSet(useMemoryStore.getState().waveExecutorSessionIds);
+  const unknown: string[] = [];
+  for (const node of Object.values(nodesById)) {
+    if (node.managedBy !== "wave") continue;
+    if (known.has(node.sessionId)) continue;
+    unknown.push(node.sessionId);
+  }
+  if (unknown.length > 0) {
+    useMemoryStore.getState().noteWaveExecutorSessions(unknown);
+  }
+}
+
+/** Stops watching the graph for wave children. Tests only. */
+export function resetWaveExecutorWatchForTests(): void {
+  stopWatchingGraph?.();
+  stopWatchingGraph = null;
+}
+
 /** Forgets which folders were read and what was deleted. Tests only. */
 export function resetProjectMemoryMirrorForTests(): void {
   if (mirrorTimer !== null) {
@@ -593,6 +709,7 @@ function stateFromDocument(parsed: unknown): MemoryState {
     ),
     appliedMessageIds: parseAppliedMemoryMessageIds(parsed),
     recallAnsweredMessageIds: parseRecallAnsweredMessageIds(parsed),
+    waveExecutorSessionIds: parseWaveExecutorSessionIds(parsed),
     hydrated: true,
   };
 }
@@ -603,13 +720,16 @@ const document = distillDocument<MemoryState>({
   parse: stateFromDocument,
   // v2 adds `archived` and the answered-recall tombstones. A v1 document
   // reads back whole: it simply has neither, which is the same thing as two
-  // empty lists.
+  // empty lists. `waveExecutorSessionIds` is additive in the same way and
+  // does not move the version: a build that does not know the field ignores
+  // it, and one that does reads an absent field as "no record kept yet".
   serialize: (state) => ({
     version: 2,
     entries: state.entries,
     archived: state.archived,
     appliedMessageIds: state.appliedMessageIds,
     recallAnsweredMessageIds: state.recallAnsweredMessageIds,
+    waveExecutorSessionIds: state.waveExecutorSessionIds,
   }),
 });
 
@@ -622,6 +742,7 @@ export async function hydrateMemoryStore(): Promise<void> {
     archived: [],
     appliedMessageIds: [],
     recallAnsweredMessageIds: [],
+    waveExecutorSessionIds: [],
     hydrated: true,
   };
   // Then whatever the project folders themselves know (P31). A project copied
@@ -661,7 +782,8 @@ export async function hydrateMemoryStore(): Promise<void> {
     current.entries.length > 0 ||
     current.archived.length > 0 ||
     current.appliedMessageIds.length > 0 ||
-    current.recallAnsweredMessageIds.length > 0;
+    current.recallAnsweredMessageIds.length > 0 ||
+    current.waveExecutorSessionIds.length > 0;
   const merged = capWithArchive(mergeProjectMemories(entries, current.entries));
   const next: MemoryState = {
     entries: merged.kept,
@@ -678,6 +800,13 @@ export async function hydrateMemoryStore(): Promise<void> {
       base.recallAnsweredMessageIds,
       current.recallAnsweredMessageIds,
     ),
+    // Union, not "stored wins": a wave child noted before the read landed is
+    // a session whose fence must already be refused.
+    waveExecutorSessionIds: unionMessageIds(
+      base.waveExecutorSessionIds,
+      current.waveExecutorSessionIds,
+      MAX_WAVE_EXECUTOR_SESSION_IDS,
+    ),
     hydrated: true,
   };
   useMemoryStore.setState(next);
@@ -690,15 +819,20 @@ export async function hydrateMemoryStore(): Promise<void> {
   // in neither that read nor, without this, any later one.
   watchProjectsForMemories();
   void adoptUnreadProjectFolders();
+  // And the graph, so an executor's node being evicted does not hand its
+  // transcript the operator's memory. Armed here as well as by the two drains
+  // that consult the record, because both are idempotent and the earlier of
+  // them wins: an id noted before a node is evicted is one that cannot be
+  // missed.
+  watchGraphForWaveExecutors();
 }
 
 function unionMessageIds(
   stored: readonly string[],
   pending: readonly string[],
+  limit: number = MAX_APPLIED_MEMORY_MESSAGE_IDS,
 ): string[] {
-  return [...new Set([...stored, ...pending])].slice(
-    -MAX_APPLIED_MEMORY_MESSAGE_IDS,
-  );
+  return [...new Set([...stored, ...pending])].slice(-limit);
 }
 
 /** Waits for a queued write to land. For tests and for shutdown. */
@@ -807,6 +941,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
   archived: [],
   appliedMessageIds: [],
   recallAnsweredMessageIds: [],
+  waveExecutorSessionIds: [],
   hydrated: false,
 
   remember: (draft, nowMs = Date.now()) => {
@@ -1158,6 +1293,29 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
         messageId,
       ]),
     );
+  },
+
+  noteWaveExecutorSessions: (sessionIds) => {
+    const state = get();
+    const known = messageIdSet(state.waveExecutorSessionIds);
+    const added: string[] = [];
+    for (const sessionId of sessionIds) {
+      if (!sessionId || known.has(sessionId)) continue;
+      // Guarded against a caller that repeats an id inside one call: the
+      // record is a set written as a list, and a duplicate spends its bound.
+      if (added.includes(sessionId)) continue;
+      added.push(sessionId);
+    }
+    if (added.length === 0) return;
+    set({
+      waveExecutorSessionIds: [...state.waveExecutorSessionIds, ...added].slice(
+        -MAX_WAVE_EXECUTOR_SESSION_IDS,
+      ),
+    });
+    // Persisted, but not through `commit` and not into the project folders:
+    // no memory changed, and which sessions the wave engine owned is this
+    // machine's bookkeeping, not something a project carries when it moves.
+    if (state.hydrated) document.write(useMemoryStore.getState());
   },
 
   replaceAll: (entries) => {
