@@ -13,6 +13,7 @@ import {
 } from "./createWebSocketStream";
 import { HostClient } from "./hostClient";
 import { perfLog } from "@/shared/lib/perfLog";
+import { logRendererEvent } from "./rendererLog";
 
 let notificationHandler: AcpNotificationHandler | null = null;
 
@@ -25,17 +26,28 @@ export function setNotificationHandler(handler: AcpNotificationHandler): void {
 }
 
 /**
- * Nothing in the app asks the operator about individual tool calls: a
- * harness that still sends a permission request gets a one-time allow. An
- * "always" answer would change the harness's own saved permissions, so it is
- * only chosen when the request offers no one-time allow.
+ * Nothing in the app asks the operator about individual tool calls: a harness
+ * that still sends a permission request gets a one-time allow. An "always"
+ * answer is never chosen — it rewrites the harness's own saved permissions for
+ * every future session, which nobody asked for and nothing in the app can undo
+ * — so a request that offers no one-time allow is refused once instead, and
+ * cancelled when it offers nothing to refuse with either. There is no UI where
+ * the operator could see any of this, so every answer goes to the app log.
  */
-function allowOnce(args: RequestPermissionRequest): RequestPermissionResponse {
+export function answerPermissionRequest(
+  args: RequestPermissionRequest,
+): RequestPermissionResponse {
   const options = args.options ?? [];
   const option =
     options.find((candidate) => candidate.kind === "allow_once") ??
-    options.find((candidate) => candidate.kind === "allow_always") ??
-    options[0];
+    options.find((candidate) => candidate.kind === "reject_once");
+  const offered = options
+    .map((candidate) => candidate.kind ?? "unknown")
+    .join(",");
+  void logRendererEvent(
+    "warn",
+    `[acp] permission request answered without asking: session=${args.sessionId?.slice(0, 8) ?? "?"} tool=${args.toolCall?.title ?? args.toolCall?.toolCallId ?? "?"} offered=[${offered}] answer=${option?.kind ?? "cancelled"}`,
+  );
   if (!option) {
     return { outcome: { outcome: "cancelled" } };
   }
@@ -53,7 +65,7 @@ function createClientCallbacks(): () => Client {
   return () => ({
     requestPermission: async (
       args: RequestPermissionRequest,
-    ): Promise<RequestPermissionResponse> => allowOnce(args),
+    ): Promise<RequestPermissionResponse> => answerPermissionRequest(args),
 
     sessionUpdate: async (notification: SessionNotification): Promise<void> => {
       if (notificationHandler) {
