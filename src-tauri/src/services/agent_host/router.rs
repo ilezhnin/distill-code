@@ -91,6 +91,10 @@ struct QueuedPrompt {
 pub struct SessionRuntime {
     pub harness: String,
     pub bridge_session_id: String,
+    /// The bridge process that accepted `bridge_session_id`. A later process
+    /// for the same harness has never heard of it, and the exit of an earlier
+    /// one says nothing about this session.
+    generation: u64,
     loading: bool,
     run: Option<RunState>,
     steer_queue: VecDeque<QueuedPrompt>,
@@ -100,15 +104,27 @@ pub struct SessionRuntime {
 }
 
 impl SessionRuntime {
-    /// The bridge session calls on this session go to. There is none while
-    /// the session is still being attached: the bridge has not accepted the
-    /// stored id yet (and may never), so a caller waits on the attach lock
-    /// instead of routing at a session the bridge does not know.
-    fn route(&self) -> Option<(String, String)> {
+    /// The bridge session calls on this session go to, and the bridge process
+    /// that accepted it. There is none while the session is still being
+    /// attached: the bridge has not accepted the stored id yet (and may
+    /// never), so a caller waits on the attach lock instead of routing at a
+    /// session the bridge does not know.
+    fn route(&self) -> Option<(String, String, u64)> {
         if self.loading {
             return None;
         }
-        Some((self.harness.clone(), self.bridge_session_id.clone()))
+        Some((
+            self.harness.clone(),
+            self.bridge_session_id.clone(),
+            self.generation,
+        ))
+    }
+
+    /// Whether this session was accepted by *that* bridge process. Used when a
+    /// bridge exits: only the sessions of the process that died are forgotten,
+    /// never those of a replacement that is already serving the same harness.
+    fn served_by(&self, harness: &str, generation: u64) -> bool {
+        self.harness == harness && self.generation == generation
     }
 }
 
@@ -393,12 +409,10 @@ impl Inner {
     async fn handle_client_notification(&self, method: &str, params: Value) {
         if method == "session/cancel" {
             if let Some(session_id) = protocol::session_id(&params) {
-                if let Some((harness, bridge_session_id)) = self.runtime_route(&session_id).await {
-                    if let Some(bridge) = self.bridges.lock().await.get(&harness).cloned() {
-                        let mut params = params.clone();
-                        params["sessionId"] = json!(bridge_session_id);
-                        bridge.notify(method, params);
-                    }
+                if let Some((bridge, bridge_session_id)) = self.attached_route(&session_id).await {
+                    let mut params = params.clone();
+                    params["sessionId"] = json!(bridge_session_id);
+                    bridge.notify(method, params);
                 }
             }
         }
@@ -576,18 +590,26 @@ impl Inner {
                 BridgeEvent::Drained { ack } => {
                     let _ = ack.send(());
                 }
-                BridgeEvent::Exited { harness } => {
+                BridgeEvent::Exited {
+                    harness,
+                    generation,
+                } => {
                     log::warn!("[agent-host] {harness} bridge exited");
+                    // A replacement bridge may already be running and serving
+                    // sessions: only the process that actually died is
+                    // forgotten, and only the sessions it was serving. The
+                    // rest keep working instead of silently losing the agent's
+                    // context on their next prompt.
                     let mut bridges = self.bridges.lock().await;
                     if bridges
                         .get(&harness)
-                        .is_some_and(|bridge| !bridge.is_alive())
+                        .is_some_and(|bridge| bridge.generation() == generation)
                     {
                         bridges.remove(&harness);
                     }
                     drop(bridges);
                     let mut sessions = self.sessions.lock().await;
-                    sessions.retain(|_, runtime| runtime.harness != harness);
+                    sessions.retain(|_, runtime| !runtime.served_by(&harness, generation));
                 }
             }
         }
@@ -626,7 +648,7 @@ impl Inner {
             .map(|(id, _)| id.clone())
     }
 
-    async fn runtime_route(&self, session_id: &str) -> Option<(String, String)> {
+    async fn runtime_route(&self, session_id: &str) -> Option<(String, String, u64)> {
         let sessions = self.sessions.lock().await;
         sessions.get(session_id).and_then(SessionRuntime::route)
     }
@@ -918,7 +940,7 @@ impl Inner {
             .map(str::to_string)
             .ok_or_else(|| invalid_params("session/new requires cwd"))?;
         let mcp_servers = self.mcp_servers(&params["mcpServers"]).await;
-        let (bridge_session_id, snapshot) =
+        let (bridge, bridge_session_id, snapshot) =
             self.open_bridge_session(spec, &cwd, mcp_servers).await?;
         let session_id = bridge_session_id.clone();
         let has_model_option = Self::has_model_option(&snapshot);
@@ -954,6 +976,7 @@ impl Inner {
             SessionRuntime {
                 harness: harness_id.clone(),
                 bridge_session_id,
+                generation: bridge.generation(),
                 loading: false,
                 run: None,
                 steer_queue: VecDeque::new(),
@@ -968,14 +991,14 @@ impl Inner {
     }
 
     /// Start a fresh session on `spec`'s bridge in `cwd` with the configured
-    /// agent mode applied. Returns the bridge's session id and the snapshot
-    /// the bridge answered with.
+    /// agent mode applied. Returns the bridge process that accepted it, the
+    /// bridge's session id and the snapshot the bridge answered with.
     async fn open_bridge_session(
         &self,
         spec: &HarnessSpec,
         cwd: &str,
         mcp_servers: Vec<Value>,
-    ) -> Result<(String, Value), Value> {
+    ) -> Result<(Arc<Bridge>, String, Value), Value> {
         let bridge = self.ensure_bridge(spec.id).await?;
         let result = bridge
             .request(
@@ -986,7 +1009,7 @@ impl Inner {
         let bridge_session_id = protocol::session_id(&result)
             .ok_or_else(|| protocol::internal("bridge returned no sessionId"))?;
         self.apply_mode(&bridge, spec, &bridge_session_id).await;
-        Ok((bridge_session_id, Self::snapshot_from(&result)))
+        Ok((bridge, bridge_session_id, Self::snapshot_from(&result)))
     }
 
     /// The per-session lock that serializes attaching a session to a bridge
@@ -1025,12 +1048,19 @@ impl Inner {
     }
 
     /// The live bridge behind a session, when it is already attached and the
-    /// bridge process is still running. Never attaches.
+    /// bridge process it was attached to is still the one running. Never
+    /// attaches.
     async fn attached_route(&self, session_id: &str) -> Option<(Arc<Bridge>, String)> {
         // Never hold the session map while waiting for the bridge map: the
         // bridge event loop needs the session map for every update it routes.
-        let (harness, bridge_session_id) = self.runtime_route(session_id).await?;
+        let (harness, bridge_session_id, generation) = self.runtime_route(session_id).await?;
         let bridge = self.live_bridge(&harness).await?;
+        // A replacement bridge is running: it never accepted this session id,
+        // so the session has to be attached again instead of being routed at a
+        // process that would answer "unknown session".
+        if bridge.generation() != generation {
+            return None;
+        }
         Some((bridge, bridge_session_id))
     }
 
@@ -1057,6 +1087,7 @@ impl Inner {
             SessionRuntime {
                 harness: record.harness.clone(),
                 bridge_session_id: stored_bridge_id.clone(),
+                generation: bridge.generation(),
                 loading: true,
                 run: None,
                 steer_queue: VecDeque::new(),
@@ -1254,7 +1285,7 @@ impl Inner {
             );
             return;
         }
-        let Some((harness, _)) = self.runtime_route(&record.id).await else {
+        let Some((harness, _, _)) = self.runtime_route(&record.id).await else {
             return;
         };
         let Some((snapshot, has_model_option)) = self.runtime_snapshot(&record.id).await else {
@@ -1547,7 +1578,7 @@ impl Inner {
             return Err(started());
         }
         let mcp_servers = self.mcp_servers(&Value::Null).await;
-        let (bridge_session_id, snapshot) = self
+        let (bridge, bridge_session_id, snapshot) = self
             .open_bridge_session(spec, &record.cwd, mcp_servers)
             .await?;
         let model_id = Self::current_model(&snapshot);
@@ -1573,6 +1604,7 @@ impl Inner {
             SessionRuntime {
                 harness: harness_id.to_string(),
                 bridge_session_id,
+                generation: bridge.generation(),
                 loading: false,
                 run: None,
                 steer_queue: VecDeque::new(),
@@ -2054,10 +2086,11 @@ mod tests {
         assert_eq!(Inner::agent_title(&chunk), None);
     }
 
-    fn runtime(harness: &str, bridge_session_id: &str) -> SessionRuntime {
+    fn runtime(harness: &str, bridge_session_id: &str, generation: u64) -> SessionRuntime {
         SessionRuntime {
             harness: harness.to_string(),
             bridge_session_id: bridge_session_id.to_string(),
+            generation,
             loading: false,
             run: None,
             steer_queue: VecDeque::new(),
@@ -2068,14 +2101,28 @@ mod tests {
 
     #[test]
     fn a_session_still_being_attached_has_no_route() {
-        let mut loading = runtime("claude-acp", "stored-id");
+        let mut loading = runtime("claude-acp", "stored-id", 7);
         loading.loading = true;
         assert_eq!(loading.route(), None);
         loading.loading = false;
         assert_eq!(
             loading.route(),
-            Some(("claude-acp".to_string(), "stored-id".to_string()))
+            Some(("claude-acp".to_string(), "stored-id".to_string(), 7))
         );
+    }
+
+    #[test]
+    fn only_the_sessions_of_the_bridge_that_died_are_forgotten() {
+        let old = runtime("claude-acp", "a", 1);
+        let replacement = runtime("claude-acp", "b", 2);
+        let other_harness = runtime("codex-acp", "c", 1);
+
+        // The crashed process is generation 1: its own session goes, the one
+        // already re-attached to the replacement stays, and a same-generation
+        // session of another harness is none of its business.
+        assert!(old.served_by("claude-acp", 1));
+        assert!(!replacement.served_by("claude-acp", 1));
+        assert!(!other_harness.served_by("claude-acp", 1));
     }
 
     #[test]

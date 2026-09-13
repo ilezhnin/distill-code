@@ -49,6 +49,10 @@ pub enum BridgeEvent {
     },
     Exited {
         harness: String,
+        /// Which bridge process for that harness died — see
+        /// [`Bridge::generation`]. A replacement may already be running and
+        /// serving sessions by the time this is handled.
+        generation: u64,
     },
     /// Not a bridge event at all: a marker the host puts in the same queue to
     /// learn when everything queued before it has been handled. Answering
@@ -60,8 +64,18 @@ pub enum BridgeEvent {
 
 type Pending = Mutex<HashMap<u64, oneshot::Sender<Result<Value, Value>>>>;
 
+/// Hands out [`Bridge::generation`]. Process-wide, so no two bridges of a run
+/// ever share one, whatever harness they belong to.
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
 pub struct Bridge {
     pub harness: String,
+    /// Which bridge process this is. A session's runtime records the
+    /// generation it was accepted by, so the exit of an older process cannot
+    /// be mistaken for the exit of the one now serving the harness (and a
+    /// session attached to the old process is never routed at the new one,
+    /// which has never heard of its session id).
+    generation: u64,
     agent_capabilities: RwLock<Value>,
     writer: mpsc::UnboundedSender<String>,
     pending: Arc<Pending>,
@@ -186,6 +200,7 @@ impl Bridge {
         let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<String>();
         let pending: Arc<Pending> = Arc::new(Mutex::new(HashMap::new()));
         let alive = Arc::new(AtomicBool::new(true));
+        let generation = NEXT_GENERATION.fetch_add(1, Ordering::SeqCst);
 
         // Writer: serialize every outbound line onto stdin.
         tokio::spawn(async move {
@@ -265,12 +280,16 @@ impl Bridge {
                         let _ = sender.send(Err(protocol::internal("bridge exited")));
                     }
                 }
-                let _ = events.send(BridgeEvent::Exited { harness });
+                let _ = events.send(BridgeEvent::Exited {
+                    harness,
+                    generation,
+                });
             });
         }
 
         let bridge = Arc::new(Bridge {
             harness: spec.id.to_string(),
+            generation,
             agent_capabilities: RwLock::new(Value::Null),
             writer: writer_tx,
             pending,
@@ -317,6 +336,11 @@ impl Bridge {
 
     pub fn is_alive(&self) -> bool {
         self.alive.load(Ordering::SeqCst)
+    }
+
+    /// Which bridge process this is; see the field's comment.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn supports_load_session(&self) -> bool {
@@ -474,6 +498,7 @@ mod tests {
         let (writer, written) = mpsc::unbounded_channel();
         let bridge = Bridge {
             harness: "test-acp".to_string(),
+            generation: NEXT_GENERATION.fetch_add(1, Ordering::SeqCst),
             agent_capabilities: RwLock::new(Value::Null),
             writer,
             pending: Arc::new(Mutex::new(HashMap::new())),
