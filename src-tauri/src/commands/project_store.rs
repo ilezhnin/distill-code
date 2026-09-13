@@ -85,6 +85,11 @@ pub async fn read_project_document(
 ///
 /// `async` + `spawn_blocking`: the write ends in an `fsync`, which must not run
 /// on the UI thread. See `distill_store::write_distill_document`.
+///
+/// CONTRACT: **the caller must serialise its writes per path**, for the reason
+/// spelled out on `distill_store::write_distill_document` — an `async` command is
+/// spawned rather than run in IPC message order, so two writes of one document in
+/// flight at once can land older-last.
 #[tauri::command]
 pub async fn write_project_document(
     project_root: String,
