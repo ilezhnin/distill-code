@@ -481,6 +481,40 @@ describe("waveRunner", () => {
     });
   });
 
+  it("spawns a step with the reasoning effort its profile ranked (P36)", async () => {
+    // The crew profiles differ by effort as much as by model — "medium
+    // engineering at medium, heavy at xhigh" — and only codex-style ids carry
+    // the effort with the model. The spawn is the one place that can compose it
+    // onto the child session, so the resolved effort has to reach it.
+    resolveWaveStepTarget.mockReturnValueOnce({
+      target: {
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
+        modelId: "fable-5-1",
+        modelName: "Fable 5.1",
+      },
+      label: "Fable 5.1",
+      fallback: false,
+      nearLimit: false,
+      effort: "medium",
+    });
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([
+      assistant(
+        "plan-1",
+        fence('{"steps":[{"role":"scout","subtask":"Look","access":[]}]}'),
+      ),
+    ]);
+
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    const [args] = spawnConductorChildSession.mock.calls[0];
+    expect(args.reasoningEffort).toBe("medium");
+  });
+
   it("never re-processes a plan message, however often the tick fires", async () => {
     useConductorGraphStore.getState().registerNode(conductorNode());
     setTranscript([

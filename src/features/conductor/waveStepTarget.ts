@@ -33,6 +33,7 @@ import {
   normalizeSessionExecutionTarget,
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
+import type { EmbeddedReasoningEffort } from "@/features/chat/lib/modelReasoningVariants";
 import type { ModelOption } from "@/features/chat/types";
 import {
   isCachedModelInventoryAuthoritativeForRouting,
@@ -56,6 +57,18 @@ export interface WaveStepTarget {
   fallback: boolean;
   /** True when nothing was clear of its limit and this one was taken anyway. */
   nearLimit: boolean;
+  /**
+   * Reasoning effort the ranking asked for, when it named one (P36).
+   *
+   * The ranking's profiles differ by effort as much as by model — "medium
+   * engineering at medium, heavy at xhigh" is the whole difference between two
+   * of them — and only harnesses that serve each tier as its own model id get
+   * that from `modelId` alone. For every other harness the effort has to be
+   * composed onto the child session after it is created, which is what the
+   * spawn does with this; without it `coding-simple` and `coding-complex`
+   * routed identically on claude-acp and grok-acp.
+   */
+  effort?: EmbeddedReasoningEffort;
 }
 
 /** Test seam: everything about the world this resolution reads. */
@@ -189,6 +202,7 @@ export function resolveWaveStepTarget(
       label: choice.label,
       fallback: choice.rankIndex > 0,
       nearLimit: choice.nearLimit === true,
+      ...(choice.effort ? { effort: choice.effort } : {}),
     };
   } catch {
     return undefined;
