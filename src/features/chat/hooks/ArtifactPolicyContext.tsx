@@ -359,38 +359,65 @@ export function collectSessionArtifacts(
   );
 }
 
-function getArtifactSignature(
+/**
+ * A message's contribution to the artifact signature, or `""` when it
+ * contributes nothing.
+ */
+function computeMessageArtifactFragment(message: Message): string {
+  if (message.role !== "assistant") return "";
+  // Mirror collectSessionArtifacts: hidden messages never contribute an
+  // artifact, so they must not contribute to the signature either —
+  // otherwise a hidden tool call would invalidate the cache and publish a
+  // new (identical) list, defeating the stability optimization.
+  if (message.metadata?.userVisible === false) return "";
+
+  const toolRequestParts = [];
+  for (const block of message.content) {
+    if (block.type !== "toolRequest") continue;
+    const locations = block.locations?.filter(isNonEmptyLocation) ?? [];
+    if (locations.length === 0) continue;
+    toolRequestParts.push([
+      block.toolName ?? block.name,
+      block.toolKind ?? null,
+      locations.map((location) => [
+        normalizePath(location.path),
+        location.line ?? null,
+      ]),
+    ]);
+  }
+
+  if (toolRequestParts.length === 0) return "";
+
+  return JSON.stringify([message.created, toolRequestParts]);
+}
+
+/**
+ * A streamed frame hands us a new `messages` array, but every settled message
+ * in it is the same object as last frame — only the one being streamed is
+ * rebuilt. Keying the per-message fragment on the message object therefore
+ * turns a whole-transcript walk (a `JSON.stringify` per tool-bearing message)
+ * into a map lookup per message, so the cost stops growing with session length.
+ */
+const artifactFragmentCache = new WeakMap<Message, string>();
+
+function getMessageArtifactFragment(message: Message): string {
+  const cached = artifactFragmentCache.get(message);
+  if (cached !== undefined) return cached;
+
+  const fragment = computeMessageArtifactFragment(message);
+  artifactFragmentCache.set(message, fragment);
+  return fragment;
+}
+
+export function getArtifactSignature(
   messages: readonly Message[],
   cwd: string | null,
 ): string {
   const parts = ["cwd", cwd ?? ""];
 
   for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    // Mirror collectSessionArtifacts: hidden messages never contribute an
-    // artifact, so they must not contribute to the signature either —
-    // otherwise a hidden tool call would invalidate the cache and publish a
-    // new (identical) list, defeating the stability optimization.
-    if (message.metadata?.userVisible === false) continue;
-
-    const toolRequestParts = [];
-    for (const block of message.content) {
-      if (block.type !== "toolRequest") continue;
-      const locations = block.locations?.filter(isNonEmptyLocation) ?? [];
-      if (locations.length === 0) continue;
-      toolRequestParts.push([
-        block.toolName ?? block.name,
-        block.toolKind ?? null,
-        locations.map((location) => [
-          normalizePath(location.path),
-          location.line ?? null,
-        ]),
-      ]);
-    }
-
-    if (toolRequestParts.length === 0) continue;
-
-    parts.push(JSON.stringify([message.created, toolRequestParts]));
+    const fragment = getMessageArtifactFragment(message);
+    if (fragment) parts.push(fragment);
   }
 
   return parts.join("\n");
