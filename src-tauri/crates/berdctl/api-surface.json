@@ -1,9 +1,9 @@
 {
   "$comment": "GENERATED FILE — do not hand-edit; run `pnpm generate:berdctl-contract`. Client-neutral wire surface of the Distill desktop app's control API: POST /v1/call {\"command\": \"<group>\", \"args\": {\"action\": \"<action>\", ...fields}} against the loopback endpoint in the berdctl discovery file. protocolVersion mirrors PROTOCOL_VERSION in both discovery.rs copies (berdctl and plugin crate tests pin them equal). Per action: description, fields (flat wire model: name, required, kind, values, description, bounds), and schema (JSON Schema 2020-12 of the args object, minus the action discriminator). Derived from the authoritative zod schemas in the colocated command modules (src/features/berdctl/commands/impl/*.ts); the renderer registry's strict zod parse — not this file — is the trust boundary. vitest asserts freshness (src/features/berdctl/__tests__/apiSurface.test.ts).",
-  "protocolVersion": 4,
+  "protocolVersion": 5,
   "groups": {
     "sessions": {
-      "description": "Manage the user's chat sessions: create (fire-and-forget, on any installed agent harness), send, open, list, get, rename, move, move to group, clear project, fork, archive.",
+      "description": "Manage the user's chat sessions: create (fire-and-forget, on any installed agent harness), send, open, list, get, rename, move, clear project, fork, archive.",
       "actions": {
         "create": {
           "description": "Create a new chat session on any installed agent harness and send the prompt in it. Fire-and-forget: returns the session id immediately and the session runs in the background without changing what the user sees; the user can open it themselves. Use --from to give the delegating session or tool a concise visible label on the initial message. Only check on it later (action \"get\") if the user asks.",
@@ -397,43 +397,6 @@
             "additionalProperties": false
           }
         },
-        "move_to_group": {
-          "description": "Move a chat session into an existing group in its current project; the project chat list regroups immediately.",
-          "fields": [
-            {
-              "name": "session_id",
-              "required": true,
-              "kind": "string",
-              "description": "Id of the session to move.",
-              "max": 200
-            },
-            {
-              "name": "group_id",
-              "required": true,
-              "kind": "string",
-              "description": "Id of the destination chat group, from `berdctl project get`.",
-              "max": 200
-            }
-          ],
-          "schema": {
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "type": "object",
-            "properties": {
-              "session_id": {
-                "type": "string",
-                "maxLength": 200,
-                "description": "Id of the session to move."
-              },
-              "group_id": {
-                "type": "string",
-                "maxLength": 200,
-                "description": "Id of the destination chat group, from `berdctl project get`."
-              }
-            },
-            "required": ["session_id", "group_id"],
-            "additionalProperties": false
-          }
-        },
         "clear_project": {
           "description": "Move a chat session out of any project; the session list in the app regroups immediately.",
           "fields": [
@@ -814,7 +777,7 @@
           }
         },
         "get": {
-          "description": "Read one project's details (instructions, working directories, per-workspace startup modes, chat groups, session count); does not change anything on screen.",
+          "description": "Read one project's details (instructions, working directories, per-workspace startup modes, session count); does not change anything on screen.",
           "fields": [
             {
               "name": "project_id",
