@@ -233,6 +233,9 @@ dev-frontend:
     pnpm dev
 
 # Fetch official Node.js release checksums and update node-runtime.lock.json (e.g. `just bump-node-runtime v24.12.0`).
+# WindowsDev.psm1's Node pin is read from that lock, so this recipe is the only
+# place the developer-toolchain Node version is set (the Hermit pin in bin/ is
+# separate and is bumped with `hermit install node-<version>`).
 bump-node-runtime *ARGS:
     node scripts/update-node-runtime-lock.mjs {{ ARGS }}
 
