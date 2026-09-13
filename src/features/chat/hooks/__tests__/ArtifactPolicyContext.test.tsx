@@ -426,6 +426,25 @@ describe("ArtifactPolicyContext", () => {
     expect(screen.getByTestId("link-path")).toHaveTextContent("");
   });
 
+  it.each([
+    "\\\\attacker\\share\\x.md",
+    "%5C%5Cattacker%5Cshare%5Cx.md",
+    "//attacker/share/x.md",
+    "file://attacker/share/x.md",
+  ])("does not resolve the UNC markdown destination %s", (href) => {
+    // A UNC destination must never become a candidate: on Windows the first
+    // filesystem call on it opens an SMB session to `attacker` (NTLM exchange)
+    // and blocks the UI thread until the network timeout.
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <LinkProbe href={href} />
+      </ArtifactPolicyProvider>,
+    );
+
+    expect(screen.getByTestId("link-has-candidate")).toHaveTextContent("false");
+    expect(screen.getByTestId("link-path")).toHaveTextContent("");
+  });
+
   it("resolves file markdown hrefs as local paths", () => {
     render(
       <ArtifactPolicyProvider messages={[]} sessionCwd="/Users/test/app">
@@ -660,6 +679,29 @@ describe("ArtifactPolicyContext open gate", () => {
     expect(openPath).not.toHaveBeenCalled();
     expect(screen.getByTestId("open-error")).toHaveTextContent("");
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it.each([
+    "\\\\attacker\\share\\x.md",
+    "//attacker/share/x.md",
+    "file://attacker/share/x.md",
+  ])("never probes or opens the UNC target %s", async (path) => {
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <OpenProbe path={path} />
+      </ArtifactPolicyProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("open-settled")).toHaveTextContent("true"),
+    );
+
+    // The SMB/NTLM handshake happens on the `path_exists` call, so that call
+    // is what must not be made — being blocked at `openPath` would be too late.
+    expect(mockPathExists).not.toHaveBeenCalled();
+    expect(openPath).not.toHaveBeenCalled();
+    expect(mockRevealInFileManager).not.toHaveBeenCalled();
   });
 
   it("reports a missing file with a translated message", async () => {

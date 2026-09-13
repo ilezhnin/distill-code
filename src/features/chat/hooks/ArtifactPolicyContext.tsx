@@ -177,7 +177,37 @@ export function isExecutableOpenTarget(path: string): boolean {
 // Windows drive paths and must resolve like any other local path.
 const WINDOWS_DRIVE_HREF = /^[a-zA-Z]:(?:[\\/]|%5c|%2f)/i;
 
-function hasBlockedMarkdownScheme(href: string): boolean {
+/**
+ * True for a UNC destination — `\\server\share\x`, its percent-encoded
+ * `%5C%5Cserver%5C…` spelling (the markdown pipeline encodes backslashes), or
+ * the already-slash form `//server/share/x`.
+ *
+ * These are rejected before anything touches the filesystem. On Windows every
+ * filesystem call on a UNC path — `Path::exists` behind `path_exists`
+ * included — goes through the SMB redirector: it connects to `server`,
+ * negotiates NTLM with the user's credentials, and blocks until the network
+ * timeout. `path_exists` is a synchronous Tauri command, so that wait happens
+ * on the UI thread. A destination that came out of agent output is never worth
+ * either cost, and the test is purely lexical so nothing is probed to make it.
+ *
+ * Only the *incoming* spelling is tested. A session working directory that is
+ * itself on a share is the user's own choice, so a relative destination still
+ * resolves against it (and yields a `//server/...` path) as before.
+ */
+function isUncRootedDestination(destination: string): boolean {
+  return normalizePath(decodePathIfEncoded(destination.trim())).startsWith(
+    "//",
+  );
+}
+
+/**
+ * True when a markdown destination must not be treated as a local path at all:
+ * a real non-`file:` URL scheme, or a UNC destination.
+ */
+function isBlockedMarkdownDestination(href: string): boolean {
+  if (isUncRootedDestination(href)) {
+    return true;
+  }
   if (WINDOWS_DRIVE_HREF.test(href)) {
     return false;
   }
@@ -233,7 +263,9 @@ function resolvePath(path: string, sessionCwd: string | null): string {
   const trimmed = path.trim();
   const fromFileUrl = fileUrlToPath(trimmed);
   if (fromFileUrl !== null) {
-    return fromFileUrl;
+    // `file://server/share/x` decodes to a UNC path and carries the same
+    // SMB/NTLM hazard as the raw spelling.
+    return fromFileUrl.startsWith("//") ? "" : fromFileUrl;
   }
   if (/^file:/i.test(trimmed)) {
     return "";
@@ -243,6 +275,10 @@ function resolvePath(path: string, sessionCwd: string | null): string {
   // separator like a raw one does.
   const normalized = normalizePath(decodePathIfEncoded(path));
   if (!normalized) return "";
+
+  // UNC destination — never resolved and never probed; see
+  // isUncRootedDestination for why.
+  if (normalized.startsWith("//")) return "";
 
   if (isAbsolutePath(normalized)) {
     return normalized;
@@ -423,7 +459,7 @@ export function ArtifactPolicyProvider({
     (href: string): ArtifactLinkCandidate | null => {
       const trimmed = href.trim();
       if (!trimmed || trimmed.startsWith("#")) return null;
-      if (hasBlockedMarkdownScheme(trimmed)) return null;
+      if (isBlockedMarkdownDestination(trimmed)) return null;
 
       if (/^file:/i.test(trimmed)) {
         const resolvedPath = resolvePath(trimmed, normalizedSessionCwd);
@@ -453,6 +489,9 @@ export function ArtifactPolicyProvider({
   const resolveOpenTarget = useCallback(
     async (path: string): Promise<string | null> => {
       const resolvedPath = resolvePath(path, normalizedSessionCwd);
+      // A rejected destination (UNC, an unsafe `file:` URL, empty) must not
+      // reach `path_exists` — that call is the hazard, not the open.
+      if (!resolvedPath) return null;
       if (await pathExists(resolvedPath)) {
         return resolvedPath;
       }
