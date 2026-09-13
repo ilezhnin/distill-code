@@ -548,6 +548,48 @@ describe("ArtifactPolicyContext open gate", () => {
     expect(screen.getByTestId("open-error")).toHaveTextContent("");
   });
 
+  // A file the agent wrote into the session cwd is inside the trusted roots,
+  // so nothing else in the gate would stop it: these types must be refused by
+  // the denylist itself or they run on a single click.
+  it.each([
+    "summary.py",
+    "helper.pyw",
+    "tool.jar",
+    "console.msc",
+    "share.scf",
+    "theme.settingcontent-ms",
+    "recent.library-ms",
+    "manual.chm",
+    "runner.sct",
+    "runner.wsc",
+    "patch.mst",
+    "app.appinstaller",
+    "wizard.diagcab",
+    // An alternate-data-stream suffix hides the real extension from the
+    // denylist unless it is cut off first.
+    "payload.exe::$DATA",
+    "summary.py:extra",
+    // A stream suffix on an otherwise ordinary name is not a document either.
+    "notes.txt::$DATA",
+  ])("reveals the run-on-open type %s written inside the cwd", async (name) => {
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <OpenProbe path={name} />
+      </ArtifactPolicyProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("open-settled")).toHaveTextContent("true"),
+    );
+
+    expect(openPath).not.toHaveBeenCalled();
+    expect(mockRevealInFileManager).toHaveBeenCalledWith(
+      `C:/Users/me/repo/${name}`,
+    );
+    expect(screen.getByTestId("open-error")).toHaveTextContent("");
+  });
+
   it("reveals an executable reached through openInApp's external fallback", async () => {
     // `.exe` is not viewable in-app, so openInApp falls through to the
     // external open — the gate must sit on that path too.
