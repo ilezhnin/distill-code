@@ -1,12 +1,17 @@
 import { z } from "zod/v4";
 
+import { BERDCTL_BOUNDS } from "../helpers";
 import { CommandError, defineCommand } from "../types";
 
 const moveSessionToGroupSchema = z
   .object({
-    session_id: z.string().describe("Id of the session to move."),
+    session_id: z
+      .string()
+      .max(BERDCTL_BOUNDS.id)
+      .describe("Id of the session to move."),
     group_id: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .describe(
         "Id of the destination chat group, from `berdctl project get`.",
       ),

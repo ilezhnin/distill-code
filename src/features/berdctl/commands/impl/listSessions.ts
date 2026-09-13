@@ -1,15 +1,18 @@
 import { z } from "zod/v4";
 
+import { BERDCTL_BOUNDS } from "../helpers";
 import { defineCommand } from "../types";
 
 const listSessionsSchema = z
   .object({
     project_id: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .optional()
       .describe("Only list sessions belonging to this project."),
     query: z
       .string()
+      .max(BERDCTL_BOUNDS.query)
       .optional()
       .describe("Case-insensitive substring to match against session titles."),
     limit: z

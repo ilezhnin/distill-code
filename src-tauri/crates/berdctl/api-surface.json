@@ -20,25 +20,29 @@
               "name": "harness_id",
               "required": false,
               "kind": "string",
-              "description": "Agent harness to run the session on (from `berdctl info harnesses`, e.g. \"claude-acp\", \"codex-acp\"). Defaults to the app default."
+              "description": "Agent harness to run the session on (from `berdctl info harnesses`, e.g. \"claude-acp\", \"codex-acp\"). Defaults to the app default.",
+              "max": 200
             },
             {
               "name": "model_id",
               "required": false,
               "kind": "string",
-              "description": "Id of the model to use (from `berdctl info models`)."
+              "description": "Id of the model to use (from `berdctl info models`).",
+              "max": 200
             },
             {
               "name": "agent_id",
               "required": false,
               "kind": "string",
-              "description": "Id of the agent (persona) to use (from `berdctl agent list`)."
+              "description": "Id of the agent (persona) to use (from `berdctl agent list`).",
+              "max": 200
             },
             {
               "name": "project_id",
               "required": false,
               "kind": "string",
-              "description": "Id of the project to create the session in."
+              "description": "Id of the project to create the session in.",
+              "max": 200
             },
             {
               "name": "startup_name",
@@ -69,19 +73,23 @@
               },
               "harness_id": {
                 "description": "Agent harness to run the session on (from `berdctl info harnesses`, e.g. \"claude-acp\", \"codex-acp\"). Defaults to the app default.",
-                "type": "string"
+                "type": "string",
+                "maxLength": 200
               },
               "model_id": {
                 "description": "Id of the model to use (from `berdctl info models`).",
-                "type": "string"
+                "type": "string",
+                "maxLength": 200
               },
               "agent_id": {
                 "description": "Id of the agent (persona) to use (from `berdctl agent list`).",
-                "type": "string"
+                "type": "string",
+                "maxLength": 200
               },
               "project_id": {
                 "description": "Id of the project to create the session in.",
-                "type": "string"
+                "type": "string",
+                "maxLength": 200
               },
               "startup_name": {
                 "description": "Branch/worktree name when the project's startup mode is branch or worktree; required for those modes.",
@@ -108,7 +116,8 @@
               "name": "session_id",
               "required": true,
               "kind": "string",
-              "description": "Id of the existing session to send the prompt into."
+              "description": "Id of the existing session to send the prompt into.",
+              "max": 200
             },
             {
               "name": "prompt",
@@ -156,6 +165,7 @@
             "properties": {
               "session_id": {
                 "type": "string",
+                "maxLength": 200,
                 "description": "Id of the existing session to send the prompt into."
               },
               "prompt": {
@@ -202,7 +212,8 @@
               "name": "session_id",
               "required": true,
               "kind": "string",
-              "description": "Id of the session to open in the app."
+              "description": "Id of the session to open in the app.",
+              "max": 200
             }
           ],
           "schema": {
@@ -211,6 +222,7 @@
             "properties": {
               "session_id": {
                 "type": "string",
+                "maxLength": 200,
                 "description": "Id of the session to open in the app."
               }
             },
@@ -225,13 +237,15 @@
               "name": "project_id",
               "required": false,
               "kind": "string",
-              "description": "Only list sessions belonging to this project."
+              "description": "Only list sessions belonging to this project.",
+              "max": 200
             },
             {
               "name": "query",
               "required": false,
               "kind": "string",
-              "description": "Case-insensitive substring to match against session titles."
+              "description": "Case-insensitive substring to match against session titles.",
+              "max": 500
             },
             {
               "name": "limit",
@@ -248,11 +262,13 @@
             "properties": {
               "project_id": {
                 "description": "Only list sessions belonging to this project.",
-                "type": "string"
+                "type": "string",
+                "maxLength": 200
               },
               "query": {
                 "description": "Case-insensitive substring to match against session titles.",
-                "type": "string"
+                "type": "string",
+                "maxLength": 500
               },
               "limit": {
                 "default": 20,
@@ -272,7 +288,8 @@
               "name": "session_id",
               "required": true,
               "kind": "string",
-              "description": "Id of the session to read."
+              "description": "Id of the session to read.",
+              "max": 200
             },
             {
               "name": "messages",
@@ -289,6 +306,7 @@
             "properties": {
               "session_id": {
                 "type": "string",
+                "maxLength": 200,
                 "description": "Id of the session to read."
               },
               "messages": {
@@ -310,14 +328,16 @@
               "name": "session_id",
               "required": true,
               "kind": "string",
-              "description": "Id of the session to rename."
+              "description": "Id of the session to rename.",
+              "max": 200
             },
             {
               "name": "title",
               "required": true,
               "kind": "string",
               "description": "The new session title.",
-              "min": 1
+              "min": 1,
+              "max": 200
             }
           ],
           "schema": {
@@ -326,11 +346,13 @@
             "properties": {
               "session_id": {
                 "type": "string",
+                "maxLength": 200,
                 "description": "Id of the session to rename."
               },
               "title": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 200,
                 "description": "The new session title."
               }
             },
@@ -345,13 +367,15 @@
               "name": "session_id",
               "required": true,
               "kind": "string",
-              "description": "Id of the session to move."
+              "description": "Id of the session to move.",
+              "max": 200
             },
             {
               "name": "project_id",
               "required": true,
               "kind": "string",
-              "description": "Id of the destination project."
+              "description": "Id of the destination project.",
+              "max": 200
             }
           ],
           "schema": {
@@ -360,10 +384,12 @@
             "properties": {
               "session_id": {
                 "type": "string",
+                "maxLength": 200,
                 "description": "Id of the session to move."
               },
               "project_id": {
                 "type": "string",
+                "maxLength": 200,
                 "description": "Id of the destination project."
               }
             },
@@ -378,13 +404,15 @@
               "name": "session_id",
               "required": true,
               "kind": "string",
-              "description": "Id of the session to move."
+              "description": "Id of the session to move.",
+              "max": 200
             },
             {
               "name": "group_id",
               "required": true,
               "kind": "string",
-              "description": "Id of the destination chat group, from `berdctl project get`."
+              "description": "Id of the destination chat group, from `berdctl project get`.",
+              "max": 200
             }
           ],
           "schema": {
@@ -393,10 +421,12 @@
             "properties": {
               "session_id": {
                 "type": "string",
+                "maxLength": 200,
                 "description": "Id of the session to move."
               },
               "group_id": {
                 "type": "string",
+                "maxLength": 200,
                 "description": "Id of the destination chat group, from `berdctl project get`."
               }
             },
@@ -411,7 +441,8 @@
               "name": "session_id",
               "required": true,
               "kind": "string",
-              "description": "Id of the session to move out of its project."
+              "description": "Id of the session to move out of its project.",
+              "max": 200
             }
           ],
           "schema": {
@@ -420,6 +451,7 @@
             "properties": {
               "session_id": {
                 "type": "string",
+                "maxLength": 200,
                 "description": "Id of the session to move out of its project."
               }
             },
@@ -434,14 +466,16 @@
               "name": "session_id",
               "required": true,
               "kind": "string",
-              "description": "Id of the session to fork (duplicate)."
+              "description": "Id of the session to fork (duplicate).",
+              "max": 200
             },
             {
               "name": "title",
               "required": false,
               "kind": "string",
               "description": "Optional title for the forked session. Defaults to the source title.",
-              "min": 1
+              "min": 1,
+              "max": 200
             }
           ],
           "schema": {
@@ -450,12 +484,14 @@
             "properties": {
               "session_id": {
                 "type": "string",
+                "maxLength": 200,
                 "description": "Id of the session to fork (duplicate)."
               },
               "title": {
                 "description": "Optional title for the forked session. Defaults to the source title.",
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 200
               }
             },
             "required": ["session_id"],
@@ -469,7 +505,8 @@
               "name": "session_id",
               "required": true,
               "kind": "string",
-              "description": "Id of the session to archive."
+              "description": "Id of the session to archive.",
+              "max": 200
             },
             {
               "name": "discard_changes",
@@ -484,6 +521,7 @@
             "properties": {
               "session_id": {
                 "type": "string",
+                "maxLength": 200,
                 "description": "Id of the session to archive."
               },
               "discard_changes": {
@@ -508,14 +546,16 @@
               "required": true,
               "kind": "string",
               "description": "Id of the session to attach to.",
-              "min": 1
+              "min": 1,
+              "max": 200
             },
             {
               "name": "path",
               "required": true,
               "kind": "string",
               "description": "Existing absolute folder, repository, or worktree path; ~ is expanded.",
-              "min": 1
+              "min": 1,
+              "max": 4096
             }
           ],
           "schema": {
@@ -525,11 +565,13 @@
               "session_id": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 200,
                 "description": "Id of the session to attach to."
               },
               "path": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 4096,
                 "description": "Existing absolute folder, repository, or worktree path; ~ is expanded."
               }
             },
@@ -545,14 +587,16 @@
               "required": true,
               "kind": "string",
               "description": "Id of the session to detach from.",
-              "min": 1
+              "min": 1,
+              "max": 200
             },
             {
               "name": "path",
               "required": true,
               "kind": "string",
               "description": "Existing attached folder, repository, or worktree path; ~ is expanded.",
-              "min": 1
+              "min": 1,
+              "max": 4096
             }
           ],
           "schema": {
@@ -562,11 +606,13 @@
               "session_id": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 200,
                 "description": "Id of the session to detach from."
               },
               "path": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 4096,
                 "description": "Existing attached folder, repository, or worktree path; ~ is expanded."
               }
             },
@@ -582,21 +628,24 @@
               "required": true,
               "kind": "string",
               "description": "Id of the session to update.",
-              "min": 1
+              "min": 1,
+              "max": 200
             },
             {
               "name": "old_path",
               "required": true,
               "kind": "string",
               "description": "Existing attached folder path to detach; ~ is expanded.",
-              "min": 1
+              "min": 1,
+              "max": 4096
             },
             {
               "name": "new_path",
               "required": true,
               "kind": "string",
               "description": "Existing replacement folder path to attach; ~ is expanded.",
-              "min": 1
+              "min": 1,
+              "max": 4096
             }
           ],
           "schema": {
@@ -606,16 +655,19 @@
               "session_id": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 200,
                 "description": "Id of the session to update."
               },
               "old_path": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 4096,
                 "description": "Existing attached folder path to detach; ~ is expanded."
               },
               "new_path": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 4096,
                 "description": "Existing replacement folder path to attach; ~ is expanded."
               }
             },
@@ -631,14 +683,16 @@
               "required": true,
               "kind": "string",
               "description": "Id of the session to update.",
-              "min": 1
+              "min": 1,
+              "max": 200
             },
             {
               "name": "path",
               "required": true,
               "kind": "string",
               "description": "Existing authorized folder to use as cwd; implicitly attached if needed.",
-              "min": 1
+              "min": 1,
+              "max": 4096
             }
           ],
           "schema": {
@@ -648,11 +702,13 @@
               "session_id": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 200,
                 "description": "Id of the session to update."
               },
               "path": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 4096,
                 "description": "Existing authorized folder to use as cwd; implicitly attached if needed."
               }
             },
@@ -668,7 +724,8 @@
               "required": true,
               "kind": "string",
               "description": "Id of the session to inspect.",
-              "min": 1
+              "min": 1,
+              "max": 200
             }
           ],
           "schema": {
@@ -678,6 +735,7 @@
               "session_id": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 200,
                 "description": "Id of the session to inspect."
               }
             },
@@ -698,13 +756,15 @@
               "required": true,
               "kind": "string",
               "description": "Name of the new project.",
-              "min": 1
+              "min": 1,
+              "max": 200
             },
             {
               "name": "instructions",
               "required": false,
               "kind": "string",
-              "description": "Instructions given to agents working in the project."
+              "description": "Instructions given to agents working in the project.",
+              "max": 262144
             },
             {
               "name": "working_dir",
@@ -720,18 +780,22 @@
               "name": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 200,
                 "description": "Name of the new project."
               },
               "instructions": {
                 "description": "Instructions given to agents working in the project.",
-                "type": "string"
+                "type": "string",
+                "maxLength": 262144
               },
               "working_dir": {
                 "description": "Working directory to attach to the project; repeat for multiple directories.",
+                "maxItems": 32,
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "maxLength": 4096
                 }
               }
             },
@@ -756,7 +820,8 @@
               "name": "project_id",
               "required": true,
               "kind": "string",
-              "description": "Id of the project to read."
+              "description": "Id of the project to read.",
+              "max": 200
             }
           ],
           "schema": {
@@ -765,6 +830,7 @@
             "properties": {
               "project_id": {
                 "type": "string",
+                "maxLength": 200,
                 "description": "Id of the project to read."
               }
             },
@@ -779,7 +845,8 @@
               "name": "project_id",
               "required": true,
               "kind": "string",
-              "description": "Id of the project to update."
+              "description": "Id of the project to update.",
+              "max": 200
             },
             {
               "name": "mode",
@@ -801,6 +868,7 @@
             "properties": {
               "project_id": {
                 "type": "string",
+                "maxLength": 200,
                 "description": "Id of the project to update."
               },
               "mode": {
@@ -826,7 +894,8 @@
               "name": "project_id",
               "required": true,
               "kind": "string",
-              "description": "Id of the project to archive."
+              "description": "Id of the project to archive.",
+              "max": 200
             }
           ],
           "schema": {
@@ -835,6 +904,7 @@
             "properties": {
               "project_id": {
                 "type": "string",
+                "maxLength": 200,
                 "description": "Id of the project to archive."
               }
             },
@@ -855,26 +925,30 @@
               "required": true,
               "kind": "string",
               "description": "Name of the new agent (persona).",
-              "min": 1
+              "min": 1,
+              "max": 200
             },
             {
               "name": "system_prompt",
               "required": true,
               "kind": "string",
               "description": "System prompt that defines the agent's behavior.",
-              "min": 1
+              "min": 1,
+              "max": 262144
             },
             {
               "name": "model",
               "required": false,
               "kind": "string",
-              "description": "Model the agent should use."
+              "description": "Model the agent should use.",
+              "max": 200
             },
             {
               "name": "provider",
               "required": false,
               "kind": "string",
-              "description": "Provider of the model the agent should use."
+              "description": "Provider of the model the agent should use.",
+              "max": 200
             }
           ],
           "schema": {
@@ -884,20 +958,24 @@
               "name": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 200,
                 "description": "Name of the new agent (persona)."
               },
               "system_prompt": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 262144,
                 "description": "System prompt that defines the agent's behavior."
               },
               "model": {
                 "description": "Model the agent should use.",
-                "type": "string"
+                "type": "string",
+                "maxLength": 200
               },
               "provider": {
                 "description": "Provider of the model the agent should use.",
-                "type": "string"
+                "type": "string",
+                "maxLength": 200
               }
             },
             "required": ["name", "system_prompt"],
@@ -927,21 +1005,24 @@
               "required": true,
               "kind": "string",
               "description": "Name of the new skill.",
-              "min": 1
+              "min": 1,
+              "max": 200
             },
             {
               "name": "description",
               "required": true,
               "kind": "string",
               "description": "One-line description of what the skill does and when to use it.",
-              "min": 1
+              "min": 1,
+              "max": 1024
             },
             {
               "name": "content",
               "required": true,
               "kind": "string",
               "description": "The SKILL.md body content.",
-              "min": 1
+              "min": 1,
+              "max": 262144
             }
           ],
           "schema": {
@@ -951,16 +1032,19 @@
               "name": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 200,
                 "description": "Name of the new skill."
               },
               "description": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 1024,
                 "description": "One-line description of what the skill does and when to use it."
               },
               "content": {
                 "type": "string",
                 "minLength": 1,
+                "maxLength": 262144,
                 "description": "The SKILL.md body content."
               }
             },
@@ -975,7 +1059,8 @@
               "name": "project_id",
               "required": false,
               "kind": "string",
-              "description": "Also include skills from this project's working directories."
+              "description": "Also include skills from this project's working directories.",
+              "max": 200
             }
           ],
           "schema": {
@@ -984,7 +1069,8 @@
             "properties": {
               "project_id": {
                 "description": "Also include skills from this project's working directories.",
-                "type": "string"
+                "type": "string",
+                "maxLength": 200
               }
             },
             "additionalProperties": false
@@ -997,7 +1083,8 @@
               "name": "skill_id",
               "required": true,
               "kind": "string",
-              "description": "Id of the skill to read (from list)."
+              "description": "Id of the skill to read (from list).",
+              "max": 200
             }
           ],
           "schema": {
@@ -1006,6 +1093,7 @@
             "properties": {
               "skill_id": {
                 "type": "string",
+                "maxLength": 200,
                 "description": "Id of the skill to read (from list)."
               }
             },
@@ -1035,7 +1123,8 @@
               "name": "harness_id",
               "required": false,
               "kind": "string",
-              "description": "Agent harness to list models for (from list_harnesses). Omit to list models for every ready harness in one call."
+              "description": "Agent harness to list models for (from list_harnesses). Omit to list models for every ready harness in one call.",
+              "max": 200
             }
           ],
           "schema": {
@@ -1044,7 +1133,8 @@
             "properties": {
               "harness_id": {
                 "description": "Agent harness to list models for (from list_harnesses). Omit to list models for every ready harness in one call.",
-                "type": "string"
+                "type": "string",
+                "maxLength": 200
               }
             },
             "additionalProperties": false

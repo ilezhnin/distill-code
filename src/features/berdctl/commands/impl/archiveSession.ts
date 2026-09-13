@@ -2,6 +2,7 @@ import { z } from "zod/v4";
 
 import type { CommandFailureReason } from "../../navigation";
 import {
+  BERDCTL_BOUNDS,
   backendArchiveFailedMessage,
   sessionNotFoundMessage,
 } from "../helpers";
@@ -9,7 +10,10 @@ import { CommandError, defineCommand } from "../types";
 
 const archiveSessionSchema = z
   .object({
-    session_id: z.string().describe("Id of the session to archive."),
+    session_id: z
+      .string()
+      .max(BERDCTL_BOUNDS.id)
+      .describe("Id of the session to archive."),
     // Kept on the wire for CLI compatibility only. berdctl can no longer
     // discard local work: the broker is unauthenticated, so any same-user
     // process could otherwise force-remove a dirty worktree. The flag is

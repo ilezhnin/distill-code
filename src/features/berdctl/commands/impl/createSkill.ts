@@ -1,17 +1,27 @@
 import { z } from "zod/v4";
 
+import { BERDCTL_BOUNDS } from "../helpers";
 import { defineCommand } from "../types";
 
 const createSkillSchema = z
   .object({
-    name: z.string().min(1).describe("Name of the new skill."),
+    name: z
+      .string()
+      .min(1)
+      .max(BERDCTL_BOUNDS.name)
+      .describe("Name of the new skill."),
     description: z
       .string()
       .min(1)
+      .max(BERDCTL_BOUNDS.shortText)
       .describe(
         "One-line description of what the skill does and when to use it.",
       ),
-    content: z.string().min(1).describe("The SKILL.md body content."),
+    content: z
+      .string()
+      .min(1)
+      .max(BERDCTL_BOUNDS.document)
+      .describe("The SKILL.md body content."),
   })
   .strict();
 

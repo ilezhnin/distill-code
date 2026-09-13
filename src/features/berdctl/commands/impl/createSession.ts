@@ -1,5 +1,6 @@
 import { z } from "zod/v4";
 
+import { BERDCTL_BOUNDS } from "../helpers";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
 import { createDeferredQueuedMessagePayload } from "@/features/chat/lib/admittedSend";
 
@@ -14,6 +15,7 @@ const createSessionSchema = z
       .describe("The message to send in the new session (1-50000 chars)."),
     harness_id: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .optional()
       .describe(
         "Agent harness to run the session on (from `berdctl info harnesses`, " +
@@ -21,16 +23,19 @@ const createSessionSchema = z
       ),
     model_id: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .optional()
       .describe("Id of the model to use (from `berdctl info models`)."),
     agent_id: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .optional()
       .describe(
         "Id of the agent (persona) to use (from `berdctl agent list`).",
       ),
     project_id: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .optional()
       .describe("Id of the project to create the session in."),
     startup_name: z

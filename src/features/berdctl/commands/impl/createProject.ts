@@ -1,16 +1,23 @@
 import { z } from "zod/v4";
 
+import { BERDCTL_BOUNDS } from "../helpers";
 import { defineCommand } from "../types";
 
 const createProjectSchema = z
   .object({
-    name: z.string().min(1).describe("Name of the new project."),
+    name: z
+      .string()
+      .min(1)
+      .max(BERDCTL_BOUNDS.name)
+      .describe("Name of the new project."),
     instructions: z
       .string()
+      .max(BERDCTL_BOUNDS.document)
       .optional()
       .describe("Instructions given to agents working in the project."),
     working_dir: z
-      .array(z.string().min(1))
+      .array(z.string().min(1).max(BERDCTL_BOUNDS.path))
+      .max(BERDCTL_BOUNDS.listLength)
       .optional()
       .describe(
         "Working directory to attach to the project; repeat for multiple directories.",

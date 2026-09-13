@@ -1,12 +1,19 @@
 import { z } from "zod/v4";
+
+import { BERDCTL_BOUNDS } from "../helpers";
 import { defineCommand, CommandError } from "../types";
 
 const attachSessionFolderSchema = z
   .object({
-    session_id: z.string().min(1).describe("Id of the session to attach to."),
+    session_id: z
+      .string()
+      .min(1)
+      .max(BERDCTL_BOUNDS.id)
+      .describe("Id of the session to attach to."),
     path: z
       .string()
       .min(1)
+      .max(BERDCTL_BOUNDS.path)
       .describe(
         "Existing absolute folder, repository, or worktree path; ~ is expanded.",
       ),
