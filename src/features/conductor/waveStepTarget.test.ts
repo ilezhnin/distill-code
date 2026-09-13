@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { useAgentStore } from "@/features/agents/stores/agentStore";
+import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
+
 import {
   resetWaveStepTargetIoForTests,
   resolveExplicitWaveStepModel,
@@ -109,5 +112,81 @@ describe("resolveExplicitWaveStepModel", () => {
     expect(resolved.ok === false && resolved.detail).toContain(
       "no agent provider",
     );
+  });
+});
+
+describe("a plan-named model while every provider's poll has failed", () => {
+  afterEach(() => {
+    resetWaveStepTargetIoForTests();
+    useProviderModelCacheStore.setState({
+      providers: new Map(),
+      refreshingProviderIds: new Set(),
+      runtimeManagedProviderIds: new Set(),
+    });
+    useAgentStore.setState({ providers: [] as never });
+  });
+
+  /**
+   * Recorded behaviour change (review T4a #8), pinned here because nothing else
+   * covers it: the routing seam reports no models for a harness whose last poll
+   * failed, and the explicit-model check reads the same seam. A transient outage
+   * across every provider therefore refuses the whole plan where it used to
+   * admit it and let the step inherit the conductor's model.
+   *
+   * That is the failure WAVES asks for — a step must not run on a model the
+   * plan did not name — and it is loud and retryable rather than silent. It
+   * costs a replan during an outage, which is the trade being recorded.
+   */
+  it("refuses the plan rather than letting the step inherit the conductor", () => {
+    useAgentStore.setState({
+      providers: [{ id: "claude-acp", label: "Claude Code" }] as never,
+    });
+    // The entry still lists the model — a failed poll keeps the previous
+    // payload — but says the poll failed.
+    useProviderModelCacheStore.setState({
+      providers: new Map([
+        [
+          "claude-acp",
+          {
+            providerId: "claude-acp",
+            models: [{ id: "claude-opus-5", displayName: "Opus 5" }],
+            fetchedAt: Date.now(),
+            error: "bridge not installed",
+            outcome: "failed",
+          },
+        ],
+      ]) as never,
+    });
+
+    const resolved = resolveExplicitWaveStepModel("claude-opus-5");
+
+    expect(resolved.ok).toBe(false);
+    expect(resolved.ok === false && resolved.detail).toContain(
+      "cannot be checked",
+    );
+  });
+
+  it("admits it again as soon as one provider's poll succeeds", () => {
+    useAgentStore.setState({
+      providers: [{ id: "claude-acp", label: "Claude Code" }] as never,
+    });
+    useProviderModelCacheStore.setState({
+      providers: new Map([
+        [
+          "claude-acp",
+          {
+            providerId: "claude-acp",
+            models: [{ id: "claude-opus-5", displayName: "Opus 5" }],
+            fetchedAt: Date.now(),
+            outcome: "ok",
+          },
+        ],
+      ]) as never,
+    });
+
+    const resolved = resolveExplicitWaveStepModel("claude-opus-5");
+
+    expect(resolved.ok).toBe(true);
+    expect(resolved.ok && resolved.target.modelId).toBe("claude-opus-5");
   });
 });
