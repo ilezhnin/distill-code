@@ -7,8 +7,8 @@ import {
 } from "@/shared/ui/tooltip";
 import { parseSessionDeepLink } from "@/features/sessions/lib/sessionDeepLink";
 import { isExternalHref } from "@/shared/lib/isExternalHref";
-import { isUrlTrusted } from "@/shared/lib/trustedDomains";
-import { LinkSafetyModal } from "@/shared/ui/ai-elements/link-safety-modal";
+import { useLinkSafetyGate } from "@/shared/ui/ai-elements/link-safety-modal";
+import { useOpenLocalMarkdownLink } from "@/shared/ui/ai-elements/local-link-context";
 import { cn } from "@/shared/lib/cn";
 import { useVirtualLayoutPendingForStreamdown } from "@/features/chat/transcript/measurement";
 import { useStreamdownTableScrollbarSizing } from "@/shared/ui/ai-elements/streamdown-table-scrollbar";
@@ -25,7 +25,6 @@ import {
   useContext,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import {
   type Components as StreamdownComponents,
@@ -129,20 +128,34 @@ async function openDownloadsFolder() {
   await openPath(await downloadDir());
 }
 
-type OpenLinkSafetyModal = (url: string) => void;
+/**
+ * Opens an external URL through the link-safety gate. Streamdown renders
+ * `MarkdownLink` deep inside its own tree, so the gate reaches it by context
+ * rather than by prop.
+ */
+type OpenExternalUrl = (url: string) => void;
 
-const LinkSafetyContext = createContext<OpenLinkSafetyModal | null>(null);
+const LinkSafetyContext = createContext<OpenExternalUrl | null>(null);
 
 /**
  * Custom link component that splits behavior by link type:
  * - External links → <a> with preventDefault that opens a LinkSafetyModal via context
- * - Internal links → plain <a> so useArtifactLinkHandler can intercept via closest("a")
+ * - Berd session deep links → <a> that routes in-app
+ * - Everything else is a local filesystem destination → <a> whose click is
+ *   cancelled and routed through `LocalMarkdownLinkProvider`
  *
- * Both render as <a> elements. useArtifactLinkHandler has an early return for external
- * hrefs, so there is no conflict with its delegated click handler.
+ * All of them render as <a> elements, and every one of them cancels the
+ * click. That last part is load-bearing: `rehype-harden` stamps
+ * `target="_blank"` on every anchor, and the opener plugin installs a global
+ * click listener that turns any `_blank` anchor whose *resolved* href is
+ * http(s) into an OS-browser open. A local path resolves against the app
+ * origin, so an uncancelled click opens `http://tauri.localhost/report.md` in
+ * the user's browser — a dead tab. Cancelling here means every surface that
+ * renders Markdown is covered, not just the ones that install a delegated
+ * container handler.
  *
  * This replaces Streamdown's built-in linkSafety which renders <button> for ALL
- * links, breaking artifact navigation since useArtifactLinkHandler matches on <a>.
+ * links, breaking artifact navigation since the local-link routing matches on <a>.
  */
 const MarkdownLink = memo(
   ({
@@ -151,7 +164,8 @@ const MarkdownLink = memo(
     node: _node,
     ...rest
   }: ComponentProps<"a"> & { node?: unknown }) => {
-    const openModal = useContext(LinkSafetyContext);
+    const openExternalUrl = useContext(LinkSafetyContext);
+    const openLocalLink = useOpenLocalMarkdownLink();
 
     if (isExternalHref(href)) {
       return (
@@ -162,15 +176,7 @@ const MarkdownLink = memo(
           rel="noreferrer"
           onClick={(e) => {
             e.preventDefault();
-            if (isUrlTrusted(href ?? "")) {
-              void import("@tauri-apps/plugin-opener")
-                .then(({ openUrl }) => openUrl(href ?? ""))
-                .catch((error: unknown) => {
-                  console.error("[linkSafety] openUrl failed:", error);
-                });
-            } else {
-              openModal?.(href ?? "");
-            }
+            openExternalUrl?.(href ?? "");
           }}
           {...rest}
         >
@@ -221,6 +227,11 @@ const MarkdownLink = memo(
         href={href}
         rel="noreferrer"
         {...rest}
+        // After `rest` on purpose: harden's own attributes must not win.
+        onClick={(event) => {
+          event.preventDefault();
+          openLocalLink?.(href ?? "");
+        }}
       >
         {children}
       </a>
@@ -310,11 +321,14 @@ function buildStreamdownComponents(imageRenderer?: MarkdownImageRenderer) {
  * `rehype-harden` treats only `/`, `./`, and `../` as relative URLs. Bare
  * filesystem paths such as `wiki/report.md` are therefore replaced with a
  * `[blocked]` indicator before Berd's artifact click handler can resolve them
- * against the session working directory. It also blocks Berd's custom deep-link
- * scheme. Prefix only bare path-like destinations and parseable Berd session
- * links for the sanitizer, then remove the prefixes afterwards so the renderer
- * and click-routing policy receive the original href. Other custom schemes and
- * malformed `berd:` links remain blocked.
+ * against the session working directory, and the dot-relative forms it does
+ * accept are normalised as *web* paths — `./report.md` and `../report.md`
+ * both come out as the root-relative `/report.md`, which the artifact policy
+ * would then read as an absolute filesystem path. It also blocks Berd's
+ * custom deep-link scheme. Prefix every relative path-like destination and
+ * parseable Berd session link for the sanitizer, then remove the prefixes
+ * afterwards so the renderer and click-routing policy receive the original
+ * href. Other custom schemes and malformed `berd:` links remain blocked.
  */
 const BERD_LOCAL_PATH_PREFIX = "/__berd_local_path__/";
 const BERD_SESSION_LINK_PREFIX_ROOT = "/__berd_session_link__/";
@@ -352,14 +366,20 @@ function hasControlCharacter(value: string): boolean {
   });
 }
 
+/**
+ * `report.md`, `docs/report.md`, `./report.md`, `../report.md`: paths that
+ * resolve against the session working directory. In this app a relative
+ * destination is a filesystem path, never a web path, so the dot-relative
+ * spellings are protected from the sanitizer's URL normalisation exactly
+ * like bare ones. Root-relative (`/x`) values are left for the artifact
+ * policy to classify.
+ */
 function isBareLocalMarkdownPath(value: string): boolean {
   const trimmed = value.trim();
   return (
     trimmed.length > 0 &&
     !trimmed.startsWith("#") &&
     !trimmed.startsWith("/") &&
-    !trimmed.startsWith("./") &&
-    !trimmed.startsWith("../") &&
     !hasControlCharacter(trimmed) &&
     !/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed)
   );
@@ -389,13 +409,17 @@ function isValidBerdSessionDeepLink(value: string): boolean {
 
 function visitMarkdownDestinations(
   node: MarkdownHastNode,
-  transform: (value: string, property: string) => string,
+  transform: (
+    value: string,
+    property: string,
+    node: MarkdownHastNode,
+  ) => string,
 ) {
   if (node.properties) {
     for (const property of MARKDOWN_DESTINATION_PROPERTY) {
       const value = node.properties[property];
       if (typeof value === "string") {
-        node.properties[property] = transform(value, property);
+        node.properties[property] = transform(value, property, node);
       }
     }
   }
@@ -418,30 +442,53 @@ function prefixBerdMarkdownDestinations() {
   };
 }
 
+function restoreBerdLocalPath(value: string): string {
+  const encodedPath = value.slice(BERD_LOCAL_PATH_PREFIX.length);
+  try {
+    const decodedPath = decodeURIComponent(encodedPath);
+    return isLocalMarkdownPath(decodedPath) ? decodedPath : value;
+  } catch {
+    return value;
+  }
+}
+
+function restoreBerdSessionLink(value: string): string {
+  const encodedHref = value.slice(BERD_SESSION_LINK_PREFIX.length);
+  try {
+    const decodedHref = decodeURIComponent(encodedHref);
+    return isValidBerdSessionDeepLink(decodedHref) ? decodedHref : value;
+  } catch {
+    return value;
+  }
+}
+
 function restoreBerdMarkdownDestinations() {
   return (tree: MarkdownHastNode) => {
-    visitMarkdownDestinations(tree, (value, property) => {
+    visitMarkdownDestinations(tree, (value, property, node) => {
+      let restored = value;
       if (value.startsWith(BERD_LOCAL_PATH_PREFIX)) {
-        const encodedPath = value.slice(BERD_LOCAL_PATH_PREFIX.length);
-        try {
-          const decodedPath = decodeURIComponent(encodedPath);
-          return isLocalMarkdownPath(decodedPath) ? decodedPath : value;
-        } catch {
-          return value;
-        }
+        restored = restoreBerdLocalPath(value);
+      } else if (
+        property === "href" &&
+        value.startsWith(BERD_SESSION_LINK_PREFIX)
+      ) {
+        restored = restoreBerdSessionLink(value);
       }
 
-      if (property === "href" && value.startsWith(BERD_SESSION_LINK_PREFIX)) {
-        const encodedHref = value.slice(BERD_SESSION_LINK_PREFIX.length);
-        try {
-          const decodedHref = decodeURIComponent(encodedHref);
-          return isValidBerdSessionDeepLink(decodedHref) ? decodedHref : value;
-        } catch {
-          return value;
-        }
+      // `rehype-harden` stamps `target="_blank" rel="noopener noreferrer"` on
+      // every anchor, which is right for a web URL and wrong for anything the
+      // app opens itself. A `_blank` anchor is exactly what the opener
+      // plugin's global click listener hands to the OS browser, and a local
+      // path resolves against the app origin — so a filesystem destination
+      // would open a dead `http://tauri.localhost/<path>` tab. `MarkdownLink`
+      // cancels those clicks, but the attribute is meaningless on them either
+      // way, so it is removed rather than left to be defended against.
+      if (property === "href" && node.properties && !isExternalHref(restored)) {
+        delete node.properties.target;
+        delete node.properties.rel;
       }
 
-      return value;
+      return restored;
     });
   };
 }
@@ -473,7 +520,7 @@ export const MessageResponse = memo(
     ...props
   }: MessageResponseProps) => {
     const { t } = useTranslation("common");
-    const [modalUrl, setModalUrl] = useState<string | null>(null);
+    const { openExternalUrl, linkSafetyModal } = useLinkSafetyGate();
     const streamdownComponents = useMemo(
       () => buildStreamdownComponents(imageRenderer),
       [imageRenderer],
@@ -487,14 +534,6 @@ export const MessageResponse = memo(
       onAnimationStart,
     });
     useStreamdownTableScrollbarSizing(streamdownRootRef, children);
-
-    const openModal = useCallback((url: string) => {
-      setModalUrl(url);
-    }, []);
-
-    const closeModal = useCallback(() => {
-      setModalUrl(null);
-    }, []);
 
     const handleClickCapture = useCallback(
       (event: MouseEvent<HTMLDivElement>) => {
@@ -527,7 +566,7 @@ export const MessageResponse = memo(
     );
 
     return (
-      <LinkSafetyContext.Provider value={openModal}>
+      <LinkSafetyContext.Provider value={openExternalUrl}>
         <div
           className="contents"
           onClickCapture={handleClickCapture}
@@ -556,17 +595,13 @@ export const MessageResponse = memo(
             {children}
           </Streamdown>
         </div>
-        <LinkSafetyModal
-          isOpen={modalUrl !== null}
-          onClose={closeModal}
-          url={modalUrl ?? ""}
-        />
+        {linkSafetyModal}
       </LinkSafetyContext.Provider>
     );
   },
-  // Internal state (modalUrl) is intentionally outside this comparator —
-  // React always re-renders when local state changes regardless of memo.
-  // If modalUrl is ever lifted to a prop, this comparator must be updated.
+  // The link-safety gate's internal state is intentionally outside this
+  // comparator — React always re-renders when local state changes regardless
+  // of memo. If that state is ever lifted to a prop, update this comparator.
   (prevProps, nextProps) =>
     prevProps.children === nextProps.children &&
     nextProps.isAnimating === prevProps.isAnimating &&

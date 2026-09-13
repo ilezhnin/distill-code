@@ -190,11 +190,13 @@ const subscribers = new Map<
   }>
 >();
 
-const getTokensCacheKey = (code: string, language: CodeBlockLanguage) => {
-  const start = code.slice(0, 100);
-  const end = code.length > 100 ? code.slice(-100) : "";
-  return `${language}:${code.length}:${start}:${end}`;
-};
+// The key carries the whole source. Tokens embed the text they were cut
+// from, so a lossy fingerprint (length + first/last 100 chars) would let two
+// sources that differ only in the middle — `retries: 3` edited to
+// `retries: 5` in a config file — render each other's content. The language
+// is separated by a NUL, which cannot occur in a language id.
+const getTokensCacheKey = (code: string, language: CodeBlockLanguage) =>
+  `${language}\u0000${code}`;
 
 const getCachedTokenizedCodeForInput = (
   code: string,
