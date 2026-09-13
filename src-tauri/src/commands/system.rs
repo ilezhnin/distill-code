@@ -1926,8 +1926,7 @@ mod tests {
         build_file_mention_index, get_or_build_file_mention_index_from_cache,
         normalize_attachment_paths, normalize_roots, plain_export_filename,
         read_image_attachment_blocking, read_text_file_blocking, search_file_mentions_blocking,
-        FileMentionIndexCache,
-        MAX_IMAGE_ATTACHMENT_BYTES, MAX_TEXT_FILE_BYTES,
+        FileMentionIndexCache, MAX_IMAGE_ATTACHMENT_BYTES, MAX_TEXT_FILE_BYTES,
     };
     use std::fs;
     use std::panic::{self, AssertUnwindSafe};
