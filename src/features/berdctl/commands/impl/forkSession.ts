@@ -1,14 +1,19 @@
 import { z } from "zod/v4";
 
+import { BERDCTL_BOUNDS } from "../helpers";
 import { defineCommand } from "../types";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
 const forkSessionSchema = z
   .object({
-    session_id: z.string().describe("Id of the session to fork (duplicate)."),
+    session_id: z
+      .string()
+      .max(BERDCTL_BOUNDS.id)
+      .describe("Id of the session to fork (duplicate)."),
     title: z
       .string()
       .min(1)
+      .max(BERDCTL_BOUNDS.name)
       .optional()
       .describe(
         "Optional title for the forked session. Defaults to the source title.",
@@ -71,6 +76,7 @@ Result:
     const targetLayer = forkTargetLayer(args.session_id);
     enforceBerdctlSpawnAcl({
       actor: ctx.actor,
+      verb: "fork",
       targetLayer,
       targetPersona: forkTargetPersona(args.session_id),
     });

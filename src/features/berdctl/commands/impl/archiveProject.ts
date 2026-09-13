@@ -1,11 +1,14 @@
 import { z } from "zod/v4";
 
-import { backendArchiveFailedMessage } from "../helpers";
+import { BERDCTL_BOUNDS, backendArchiveFailedMessage } from "../helpers";
 import { CommandError, defineCommand } from "../types";
 
 const archiveProjectSchema = z
   .object({
-    project_id: z.string().describe("Id of the project to archive."),
+    project_id: z
+      .string()
+      .max(BERDCTL_BOUNDS.id)
+      .describe("Id of the project to archive."),
   })
   .strict();
 

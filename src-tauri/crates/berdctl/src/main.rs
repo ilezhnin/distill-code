@@ -292,7 +292,6 @@ mod tests {
             ("session", "get") => vec!["--session-id", "s"],
             ("session", "rename") => vec!["--session-id", "s", "--title", "t"],
             ("session", "move") => vec!["--session-id", "s", "--project-id", "p"],
-            ("session", "move-to-group") => vec!["--session-id", "s", "--group-id", "g"],
             ("session", "clear-project") => vec!["--session-id", "s"],
             ("folder", "attach") | ("folder", "detach") | ("folder", "set-cwd") => {
                 vec!["--session-id", "s", "--path", "/w"]

@@ -1,12 +1,15 @@
 import { z } from "zod/v4";
 
 import type { CommandFailureReason } from "../../navigation";
-import { sessionNotFoundMessage } from "../helpers";
+import { BERDCTL_BOUNDS, sessionNotFoundMessage } from "../helpers";
 import { CommandError, defineCommand } from "../types";
 
 const openSessionSchema = z
   .object({
-    session_id: z.string().describe("Id of the session to open in the app."),
+    session_id: z
+      .string()
+      .max(BERDCTL_BOUNDS.id)
+      .describe("Id of the session to open in the app."),
   })
   .strict();
 

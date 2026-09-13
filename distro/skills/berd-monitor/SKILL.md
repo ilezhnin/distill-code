@@ -21,15 +21,21 @@ polling, log tailing, or a foreground timeout.
 
 ```bash
 berd-monitor run \
+  --session-id <your session id> \
   --state-key <stable-key> \
   --label '<concise source name>' \
   --instructions '<short event-handling guidance>' \
   -- <producer-command> [args...]
 ```
 
-`AGENT_SESSION_ID` selects the current session. Use `--session-id` only for
-another positively identified session; never infer a session from the working
-directory. The command prints the detached monitor PID. After checking the
+`--session-id` is required and selects the session events are delivered to.
+Pass your own session id, which the Distill app preamble states for this
+session ("Your own session id is …"). There is no environment variable for it:
+do not rely on `AGENT_SESSION_ID`, do not take `active_session_id` from
+`berdctl info context` (that is the chat the operator is viewing, which need
+not be this one), and never infer a session from the working directory. Use
+another session's id only when that session was positively identified and the
+events belong to it. The command prints the detached monitor PID. After checking the
 monitor's `watcher.log` under the printed state directory when diagnosis is
 needed, continue other work or end the turn—never wait on the detached PID.
 
@@ -48,5 +54,5 @@ Delivered messages are visibly labeled as coming from `berd-monitor`. Stop a
 monitor with:
 
 ```bash
-berd-monitor stop --state-key <stable-key>
+berd-monitor stop --session-id <your session id> --state-key <stable-key>
 ```
