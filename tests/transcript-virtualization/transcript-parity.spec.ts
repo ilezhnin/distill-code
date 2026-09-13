@@ -117,7 +117,7 @@ function getAllowedSessionStaleMeasurementDrops(
 function isRealProductionTimingProof(
   diagnostics: TranscriptDiagnostics,
   productionDiagnostics: TranscriptDiagnostics | null,
-) {
+): productionDiagnostics is TranscriptDiagnostics {
   return (
     isRealBridgeProofRun(diagnostics.bridgeKind) &&
     productionDiagnostics?.bridgeKind === "production-virtual-message-timeline"
@@ -629,18 +629,25 @@ function expectDelayedLayoutPreservesDetachedAnchor(
   }
 }
 
+// `TranscriptOperationEvidence` is a single interface, not a union, so
+// `Extract<TranscriptOperationEvidence, { operation: { kind: K } }>` collapsed
+// to `never` and every field read off the result type-checked vacuously. The
+// discriminated union is `operation`, so narrow that field instead.
+type TranscriptOperationEvidenceOfKind<
+  K extends TranscriptHarnessOperation["kind"],
+> = TranscriptOperationEvidence & {
+  operation: Extract<TranscriptHarnessOperation, { kind: K }>;
+};
+
 function evidenceForOperation<K extends TranscriptHarnessOperation["kind"]>(
   operationEvidence: readonly TranscriptOperationEvidence[],
   kind: K,
-): Extract<TranscriptOperationEvidence, { operation: { kind: K } }> {
+): TranscriptOperationEvidenceOfKind<K> {
   const evidence = operationEvidence.find(
     (candidate) => candidate.operation.kind === kind,
   );
   expect(evidence, `fixture should include ${kind} operation`).toBeDefined();
-  return evidence as Extract<
-    TranscriptOperationEvidence,
-    { operation: { kind: K } }
-  >;
+  return evidence as TranscriptOperationEvidenceOfKind<K>;
 }
 
 function expectScrollTopPreserved(evidence: TranscriptOperationEvidence) {

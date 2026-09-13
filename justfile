@@ -127,9 +127,12 @@ i18n-check:
 bundled-agents-check:
     {{ dev_tool }} pnpm validate:bundled-agents
 
-# Type-check frontend TypeScript.
+# Type-check frontend TypeScript, then the Playwright suites and TypeScript
+# repo scripts under tests/ and scripts/ (tsconfig.json only covers src/, and
+# Playwright transpiles specs without checking them).
 typecheck:
     {{ dev_tool }} pnpm typecheck
+    {{ dev_tool }} pnpm typecheck:tests
 
 # Format Tauri/Rust files.
 tauri-fmt:

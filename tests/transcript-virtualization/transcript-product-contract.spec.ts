@@ -187,8 +187,11 @@ async function collectHarnessDiagnostics(page: Page) {
     return diagnostics;
   }
 
+  // The local harness bridge publishes a per-row protection breakdown as
+  // `rows`, which the production diagnostics types do not declare; read it as
+  // the optional extra it is instead of assuming the contract carries it.
   const forcedProtectedRowCount = deriveForcedProtectedRowCount(
-    diagnostics.rows,
+    (diagnostics as { rows?: unknown }).rows,
   );
   return forcedProtectedRowCount == null
     ? diagnostics
