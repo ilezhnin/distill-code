@@ -63,11 +63,23 @@ const TWO_STEP = `Working on it.\n\n\`\`\`distill-wave\n{"steps":[{"role":"scout
 
 const REVISION_PLAN = `\`\`\`distill-wave\n{"steps":[{"role":"qa","subtask":"Re-check the callers against the tests","access":"all"}]}\n\`\`\``;
 
+/**
+ * The engine remembers the newest message it has handled per conductor, so a
+ * later turn has to be stamped later — as it is in life, where turns are
+ * minutes apart. Starts above the fixed times the digest fixtures use.
+ */
+let createdClock = 1_000;
+
+function nextCreated(): number {
+  createdClock += 1_000;
+  return createdClock;
+}
+
 function assistant(id: string, text: string): Message {
   return {
     id,
     role: "assistant",
-    created: 1,
+    created: nextCreated(),
     content: [{ type: "text", text }],
     metadata: { completionStatus: "completed" },
   };
@@ -157,6 +169,7 @@ async function settle(): Promise<void> {
 describe("wave closed loop", () => {
   beforeEach(async () => {
     await i18n.loadNamespaces("chat");
+    createdClock = 1_000;
     window.localStorage.clear();
     resetWaveEngineStateCache();
     resetWaveRunnerForTests();

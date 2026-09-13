@@ -95,11 +95,13 @@ import {
   getWaveEngineState,
   hasWaveEngineStateHydrationFailed,
   hasWaveTombstone,
+  isSupersededPlanMessage,
   isWaveEngineStateHydrated,
   pruneOrphanedWaves,
   setWaveEngineState,
   updateWaveEngineState,
   whenWaveEngineStateHydrated,
+  withProcessedMessageWatermark,
   withWave,
   withWaveTombstone,
   withoutParkedWavesFor,
@@ -406,7 +408,7 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
   const candidates = detectWavePlanCandidates({
     conductorSessionIds: conductors.map((node) => node.sessionId),
     messagesBySession: chat.messagesBySession,
-    isProcessed: (planMessageId) =>
+    isProcessed: (planMessageId, context) =>
       scannedWithoutPlan.has(planMessageId) ||
       inFlightPlans.has(planMessageId) ||
       hasWaveTombstone(state, planMessageId) ||
@@ -414,7 +416,17 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       // the tombstone cannot give once the tombstone list has evicted it
       // (P19a). Without this an old plan message could be re-admitted as a
       // second wave beside the one it already produced.
-      state.waves.some((wave) => wave.planMessageId === planMessageId),
+      state.waves.some((wave) => wave.planMessageId === planMessageId) ||
+      // The guard that outlives the tombstones: a plan older than the newest
+      // message this engine has already handled for this conductor cannot be
+      // new, whatever the tombstone list still remembers. Without it, opening
+      // an old conductor chat after the cap evicted its tombstones replays its
+      // first plan as a fresh root request and spawns real workers from it.
+      isSupersededPlanMessage(
+        state,
+        context.conductorSessionId,
+        context.createdAt,
+      ),
     markScanned: (messageId, context) => {
       scannedWithoutPlan.add(messageId);
       // The wave-rate denominator: a settled conductor turn that answered
@@ -438,12 +450,16 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
     // error because nobody did anything wrong.
     const liveWave = liveWaveFor(next, candidate.conductorSessionId);
     if (liveWave) {
-      next = withWaveTombstone(next, {
-        planMessageId: candidate.planMessageId,
-        conductorSessionId: candidate.conductorSessionId,
-        outcome: "rejected",
-        at: Date.now(),
-      });
+      next = withProcessedMessageWatermark(
+        withWaveTombstone(next, {
+          planMessageId: candidate.planMessageId,
+          conductorSessionId: candidate.conductorSessionId,
+          outcome: "rejected",
+          at: Date.now(),
+        }),
+        candidate.conductorSessionId,
+        candidate.createdAt,
+      );
       setWaveEngineState(next);
       bumpWaveTelemetryCounter("concurrentRefusals");
       noteConcurrentRefusal(
@@ -464,12 +480,16 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
     if (admission.kind === "rejected") {
       // Tombstone first: a rejected plan must never re-error, even if
       // appending the notice throws.
-      next = withWaveTombstone(next, {
-        planMessageId: candidate.planMessageId,
-        conductorSessionId: candidate.conductorSessionId,
-        outcome: "rejected",
-        at: Date.now(),
-      });
+      next = withProcessedMessageWatermark(
+        withWaveTombstone(next, {
+          planMessageId: candidate.planMessageId,
+          conductorSessionId: candidate.conductorSessionId,
+          outcome: "rejected",
+          at: Date.now(),
+        }),
+        candidate.conductorSessionId,
+        candidate.createdAt,
+      );
       setWaveEngineState(next);
       bumpWaveTelemetryCounter("rejectedPlans");
       appendConductorNotice(
@@ -506,12 +526,16 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       // A new plan is a new root request, so this conductor's wave parked on
       // `needsOperator` (and the retry it backed) is stale and goes away.
       withoutParkedWavesFor(
-        withWaveTombstone(next, {
-          planMessageId: candidate.planMessageId,
-          conductorSessionId: candidate.conductorSessionId,
-          outcome: "spawned",
-          at: Date.now(),
-        }),
+        withProcessedMessageWatermark(
+          withWaveTombstone(next, {
+            planMessageId: candidate.planMessageId,
+            conductorSessionId: candidate.conductorSessionId,
+            outcome: "spawned",
+            at: Date.now(),
+          }),
+          candidate.conductorSessionId,
+          candidate.createdAt,
+        ),
         candidate.conductorSessionId,
       ),
       wave,

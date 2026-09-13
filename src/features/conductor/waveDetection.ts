@@ -20,6 +20,8 @@ export interface WavePlanCandidate {
   conductorSessionId: string;
   /** Assistant message that carried the fence. The wave's dedup key. */
   planMessageId: string;
+  /** When that message was created. The engine's watermark is set from it. */
+  createdAt: number;
   parse: WavePlan | WaveInvalid;
 }
 
@@ -43,12 +45,18 @@ function isSettledAssistantMessage(message: Message): boolean {
  *
  * `isProcessed` is the persisted tombstone: a plan message that has ever been
  * admitted *or* rejected is never a candidate again, which is what keeps a
- * broken fence from re-erroring on every store change.
+ * broken fence from re-erroring on every store change. It is asked before the
+ * text is even joined, and it is given the message's conductor and `created`
+ * time so the caller can also answer "this one is behind my watermark" without
+ * a second pass over the transcript.
  */
 export function detectWavePlanCandidates(args: {
   conductorSessionIds: readonly string[];
   messagesBySession: Readonly<Record<string, readonly Message[] | undefined>>;
-  isProcessed: (planMessageId: string) => boolean;
+  isProcessed: (
+    planMessageId: string,
+    context: { conductorSessionId: string; createdAt: number },
+  ) => boolean;
   /**
    * Called once for every settled message that turned out to carry no plan.
    * The runner remembers those ids so the next tick — and the sync subscription
@@ -68,7 +76,14 @@ export function detectWavePlanCandidates(args: {
     if (!messages?.length) continue;
     for (const message of messages) {
       if (!isSettledAssistantMessage(message)) continue;
-      if (args.isProcessed(message.id)) continue;
+      if (
+        args.isProcessed(message.id, {
+          conductorSessionId,
+          createdAt: message.created,
+        })
+      ) {
+        continue;
+      }
       const text = getTextContent(message);
       // Cheap reject before the real parse: most conductor turns are prose.
       if (!text.includes(WAVE_FENCE_TAG)) {
@@ -89,6 +104,7 @@ export function detectWavePlanCandidates(args: {
       candidates.push({
         conductorSessionId,
         planMessageId: message.id,
+        createdAt: message.created,
         parse,
       });
     }
