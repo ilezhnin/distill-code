@@ -165,14 +165,15 @@ _tauri-cargo-windows *ARGS:
     cargo {{ ARGS }}
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# Run Rust clippy with warnings denied.
+# Run Rust clippy with warnings denied. `--all-targets` lints test code too,
+# which is what CI-Windows.ps1 runs.
 [windows]
 clippy:
-    just _tauri-cargo-windows clippy -- -D warnings
-    just _tauri-cargo-windows clippy --features {{ app_features }} -- -D warnings
-    just _tauri-cargo-windows clippy -p berdctl -- -D warnings
-    just _tauri-cargo-windows clippy -p berd-monitor -- -D warnings
-    just _tauri-cargo-windows clippy -p tauri-plugin-berdctl --features server -- -D warnings
+    just _tauri-cargo-windows clippy --all-targets -- -D warnings
+    just _tauri-cargo-windows clippy --all-targets --features {{ app_features }} -- -D warnings
+    just _tauri-cargo-windows clippy --all-targets -p berdctl -- -D warnings
+    just _tauri-cargo-windows clippy --all-targets -p berd-monitor -- -D warnings
+    just _tauri-cargo-windows clippy --all-targets -p tauri-plugin-berdctl --features server -- -D warnings
 
 # Build the frontend.
 build:
@@ -184,10 +185,12 @@ tauri-check:
     just tauri-check-windows
 
 # Run the Rust tests with external sidecars disabled: the app library's own
-# unit tests, then the berdctl plugin, CLI and monitor crates.
+# unit tests, then the berdctl plugin, CLI and monitor crates. The app library
+# runs with the full app feature set, so a test behind `#[cfg(feature = ...)]`
+# (berdctl, app-test-driver) is actually executed instead of compiled away.
 [windows]
 tauri-test:
-    just _tauri-cargo-windows test --lib
+    just _tauri-cargo-windows test --lib --features {{ app_features }}
     just _tauri-cargo-windows test -p tauri-plugin-berdctl --features server
     just _tauri-cargo-windows test -p berdctl
     just _tauri-cargo-windows test -p berd-monitor
