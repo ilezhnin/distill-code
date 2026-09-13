@@ -39,6 +39,16 @@ export const CONDUCTOR_WAVES_STORAGE_KEY = "distill:conductor-waves";
  */
 export const MAX_WAVE_TOMBSTONES = 500;
 
+/**
+ * Cap on remembered per-conductor watermarks.
+ *
+ * One entry per conductor chat that ever produced a plan, and a deleted chat's
+ * entry is never cleaned up, so the record is trimmed like the tombstones are.
+ * The oldest watermarks go first, and a conductor whose watermark is gone falls
+ * back to the tombstones — the same guard it had before watermarks existed.
+ */
+export const MAX_WAVE_WATERMARKS = 200;
+
 /** What happened to a plan message the engine has already looked at. */
 export type WaveTombstoneOutcome =
   /** The plan was admitted and its wave was created. */
@@ -73,10 +83,27 @@ export interface WaveEngineState {
    */
   waves: WaveState[];
   tombstones: WaveTombstone[];
+  /**
+   * Per conductor, the `created` time of the newest message this engine has
+   * already dealt with — a plan it admitted or refused, or a verdict it read.
+   *
+   * The tombstones are the precise guard; this is the one that survives them.
+   * They are capped, and a conductor's own transcript is replayed in full every
+   * time its chat is opened, so once the tombstone of an old plan has fallen
+   * off the list that plan looks brand new and spawns real executors from a
+   * months-old instruction. A plan message older than this mark was, by
+   * construction, already behind the engine when the mark was set.
+   */
+  newestProcessedMessageCreatedAt: Record<string, number>;
 }
 
 export function emptyWaveEngineState(): WaveEngineState {
-  return { version: WAVE_ENGINE_STATE_VERSION, waves: [], tombstones: [] };
+  return {
+    version: WAVE_ENGINE_STATE_VERSION,
+    waves: [],
+    tombstones: [],
+    newestProcessedMessageCreatedAt: {},
+  };
 }
 
 /**
@@ -394,7 +421,104 @@ export function parseWaveEngineState(value: unknown): WaveEngineState {
     const parsed = parseTombstone(tombstone);
     if (parsed) tombstones.push(parsed);
   }
-  return { version: WAVE_ENGINE_STATE_VERSION, waves, tombstones };
+  return {
+    version: WAVE_ENGINE_STATE_VERSION,
+    waves,
+    tombstones,
+    newestProcessedMessageCreatedAt: parseWatermarks(
+      raw.newestProcessedMessageCreatedAt,
+    ),
+  };
+}
+
+/**
+ * The watermarks a stored document carries, keeping only the readable ones.
+ *
+ * A junk entry drops that conductor's mark, not the document: the tombstones
+ * still guard it, and refusing the whole state over one bad key would lose the
+ * marks of every other conductor as well.
+ */
+function parseWatermarks(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const marks: Record<string, number> = {};
+  for (const [conductorSessionId, mark] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
+    if (!conductorSessionId) continue;
+    if (typeof mark !== "number" || !Number.isFinite(mark) || mark <= 0) {
+      continue;
+    }
+    marks[conductorSessionId] = mark;
+  }
+  return trimWatermarks(marks);
+}
+
+/** Keeps the newest {@link MAX_WAVE_WATERMARKS} marks. */
+function trimWatermarks(marks: Record<string, number>): Record<string, number> {
+  const entries = Object.entries(marks);
+  if (entries.length <= MAX_WAVE_WATERMARKS) return marks;
+  return Object.fromEntries(
+    entries
+      .sort((left, right) => left[1] - right[1])
+      .slice(entries.length - MAX_WAVE_WATERMARKS),
+  );
+}
+
+/**
+ * The `created` time of the newest message the engine has already dealt with
+ * for this conductor, or 0 when it has never dealt with one.
+ */
+export function newestProcessedMessageAt(
+  state: WaveEngineState,
+  conductorSessionId: string,
+): number {
+  return state.newestProcessedMessageCreatedAt[conductorSessionId] ?? 0;
+}
+
+/**
+ * Moves a conductor's watermark forward to `createdAt`.
+ *
+ * Called wherever the engine finishes with one of a conductor's messages — a
+ * plan admitted, a plan refused, a verdict read. Never moves backwards: a
+ * transcript is replayed oldest-first, and an older message settling after a
+ * newer one must not reopen the window the mark closed.
+ */
+export function withProcessedMessageWatermark(
+  state: WaveEngineState,
+  conductorSessionId: string,
+  createdAt: number,
+): WaveEngineState {
+  if (!conductorSessionId) return state;
+  if (!Number.isFinite(createdAt) || createdAt <= 0) return state;
+  if (newestProcessedMessageAt(state, conductorSessionId) >= createdAt) {
+    return state;
+  }
+  return {
+    ...state,
+    newestProcessedMessageCreatedAt: trimWatermarks({
+      ...state.newestProcessedMessageCreatedAt,
+      [conductorSessionId]: createdAt,
+    }),
+  };
+}
+
+/**
+ * True when a candidate plan message is no newer than the newest message the
+ * engine has already handled for that conductor — the eviction guard.
+ *
+ * The mark is set from a message the engine finished with, so a candidate
+ * stamped at the mark itself is that very message coming round again and is
+ * superseded too. Messages with no usable time (0, or a replay that could not
+ * stamp one) are left to the tombstones, which is where this guard started.
+ */
+export function isSupersededPlanMessage(
+  state: WaveEngineState,
+  conductorSessionId: string,
+  createdAt: number,
+): boolean {
+  if (!Number.isFinite(createdAt) || createdAt <= 0) return false;
+  const mark = newestProcessedMessageAt(state, conductorSessionId);
+  return mark > 0 && createdAt <= mark;
 }
 
 export function hasWaveTombstone(
@@ -493,7 +617,18 @@ export function withRemappedConductorSessionId(
     changed = true;
     return { ...tombstone, conductorSessionId: toId };
   });
-  return changed ? { ...state, waves, tombstones } : state;
+  // The watermark is keyed by conductor, so a promotion that left it behind
+  // would reopen the window for every plan message in that chat's transcript.
+  let marks = state.newestProcessedMessageCreatedAt;
+  const carried = marks[fromId];
+  if (carried !== undefined) {
+    changed = true;
+    const { [fromId]: _dropped, ...rest } = marks;
+    marks = { ...rest, [toId]: Math.max(carried, rest[toId] ?? 0) };
+  }
+  return changed
+    ? { ...state, waves, tombstones, newestProcessedMessageCreatedAt: marks }
+    : state;
 }
 
 /**
@@ -752,9 +887,30 @@ function mergeStoredWaveEngineState(stored: WaveEngineState): void {
         ),
         ...live.tombstones,
       ],
+      // The higher mark wins per conductor: the file's mark is what stops this
+      // session from re-admitting the plans of previous ones, and memory's is
+      // what this session has already handled.
+      newestProcessedMessageCreatedAt: mergeWatermarks(
+        stored.newestProcessedMessageCreatedAt,
+        live.newestProcessedMessageCreatedAt,
+      ),
     },
     { hydration: true },
   );
+}
+
+function mergeWatermarks(
+  stored: Record<string, number>,
+  live: Record<string, number>,
+): Record<string, number> {
+  const merged: Record<string, number> = { ...stored };
+  for (const [conductorSessionId, mark] of Object.entries(live)) {
+    merged[conductorSessionId] = Math.max(
+      merged[conductorSessionId] ?? 0,
+      mark,
+    );
+  }
+  return trimWatermarks(merged);
 }
 
 /** Pushes a queued wave write to disk. Shutdown, and tests. */

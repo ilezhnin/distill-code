@@ -77,11 +77,23 @@ function conductorNode(): SessionNode {
   };
 }
 
+/**
+ * Conductor turns are minutes apart in life, and the engine now remembers the
+ * newest message it has handled per conductor, so every helper message gets
+ * its own time rather than all of them sharing one.
+ */
+let createdClock = 1_000;
+
+function nextCreated(): number {
+  createdClock += 1_000;
+  return createdClock;
+}
+
 function assistant(id: string, text: string): Message {
   return {
     id,
     role: "assistant",
-    created: 1,
+    created: nextCreated(),
     content: [{ type: "text", text }],
     metadata: { completionStatus: "completed" },
   };
@@ -139,6 +151,7 @@ function registerSpawnedChild(args: {
 describe("waveRunner", () => {
   beforeEach(async () => {
     await i18n.loadNamespaces("chat");
+    createdClock = 1_000;
     window.localStorage.clear();
     resetWaveEngineStateCache();
     resetWaveRunnerForTests();
@@ -192,6 +205,53 @@ describe("waveRunner", () => {
     } finally {
       setWaveEngineStateHydratedForTests(null);
     }
+  });
+
+  it("does not re-admit an old plan once its tombstone has been evicted", async () => {
+    // The tombstone list is capped at 500 and every wave spends at least two
+    // entries, so a heavy user's oldest plans fall off it. Reopening that chat
+    // replays its transcript, and the watermark is what keeps a months-old
+    // plan from being read as a brand-new root request and spawning workers.
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    const oldPlan = { ...assistant("plan-old", TWO_STEP_PLAN), created: 1_000 };
+    const newPlan = { ...assistant("plan-new", TWO_STEP_PLAN), created: 5_000 };
+    setTranscript([oldPlan, newPlan]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]?.sessionId).toBe(
+        "child-0",
+      ),
+    );
+    expect(getWaveEngineState().waves).toHaveLength(1);
+    const spawnsSoFar = spawnConductorChildSession.mock.calls.length;
+
+    // The cap evicts both tombstones and the wave closes: the only record left
+    // of either message is the watermark. The graph is as a much later session
+    // finds it — the old wave's children are long gone from it too.
+    setWaveEngineState({
+      ...getWaveEngineState(),
+      waves: [],
+      tombstones: [],
+    });
+    useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    resetWaveRunnerForTests();
+    runWaveEngineTick();
+    await Promise.resolve();
+    expect(getWaveEngineState().waves).toHaveLength(0);
+    expect(spawnConductorChildSession.mock.calls).toHaveLength(spawnsSoFar);
+
+    // A plan the conductor writes now is newer than the mark and still runs.
+    setTranscript([
+      oldPlan,
+      newPlan,
+      { ...assistant("plan-next", TWO_STEP_PLAN), created: 9_000 },
+    ]);
+    runWaveEngineTick();
+    await Promise.resolve();
+    expect(
+      getWaveEngineState().waves.map((wave) => wave.planMessageId),
+    ).toEqual(["plan-next"]);
   });
 
   it("spawns the access:[] step immediately and holds the access:all step", async () => {
@@ -954,6 +1014,7 @@ describe("waveRunner", () => {
 describe("wave stall detector (P61)", () => {
   beforeEach(async () => {
     await i18n.loadNamespaces("chat");
+    createdClock = 1_000;
     window.localStorage.clear();
     resetWaveEngineStateCache();
     resetWaveRunnerForTests();

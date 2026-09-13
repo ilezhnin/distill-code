@@ -102,6 +102,7 @@ import { readConductorTranscript } from "./waveTranscripts";
 import {
   setWaveEngineState,
   updateWaveEngineState,
+  withProcessedMessageWatermark,
   withWave,
   withWaveTombstone,
   withoutWave,
@@ -281,13 +282,19 @@ export function processWaveVerdicts(
     if (!answer) continue;
 
     // Tombstone before deciding: this message is the wave's verdict and is
-    // never a plan, whatever fences it carries.
-    next = withWaveTombstone(next, {
-      planMessageId: answer.id,
-      conductorSessionId: wave.conductorSessionId,
-      outcome: "spawned",
-      at: Date.now(),
-    });
+    // never a plan, whatever fences it carries. The watermark moves with it,
+    // so a verdict whose tombstone is evicted years later is still not read as
+    // a plan the next time this chat is opened.
+    next = withProcessedMessageWatermark(
+      withWaveTombstone(next, {
+        planMessageId: answer.id,
+        conductorSessionId: wave.conductorSessionId,
+        outcome: "spawned",
+        at: Date.now(),
+      }),
+      wave.conductorSessionId,
+      answer.created,
+    );
     setWaveEngineState(next);
 
     const decision = decideWaveVerdict({
