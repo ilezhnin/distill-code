@@ -58,7 +58,9 @@
     "exported_one": "Se exportó 1 chat",
     "exported_other": "Se exportaron {{displayCount}} chats",
     "failed_one": "{{displayCount}} acción falló",
-    "failed_other": "{{displayCount}} acciones fallaron"
+    "failed_other": "{{displayCount}} acciones fallaron",
+    "archiveConfirmTerminals_one": "Se detendrá 1 terminal en ejecución; restaurar el chat no la recupera.",
+    "archiveConfirmTerminals_other": "Se detendrán {{count}} terminales en ejecución; restaurar los chats no las recupera."
   },
   "components": {
     "codeBlock": {

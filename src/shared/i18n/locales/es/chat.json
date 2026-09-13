@@ -579,7 +579,10 @@
         "minutes": "{{spent}} de {{allowed}} minutos"
       },
       "closeout": "El resumen de esta petición se escribió en {{path}}. Es un archivo normal: haz commit junto con el trabajo para que lo tenga la siguiente persona.",
-      "awaitingVerdict": "La brigada ha terminado; este chat espera el veredicto del conductor."
+      "awaitingVerdict": "La brigada ha terminado; este chat espera el veredicto del conductor.",
+      "spawning": "Este chat está poniendo en marcha su brigada.",
+      "digestPending": "La brigada ha terminado; este chat está reuniendo sus informes.",
+      "dispatchingDigest": "Este chat está entregando los informes de la brigada al conductor."
     },
     "spawnAcl": {
       "deniedTitle": "Una sesión pidió iniciar un agente que no tiene permitido iniciar, así que no se inició nada.",
@@ -615,6 +618,12 @@
       "title": "El paso {{step}} ({{name}}) informó éxito, pero su informe no superó la verificación y quedó en cuarentena.",
       "detail": "Motivo: {{detail}} El resumen y los pasos posteriores reciben un sustituto en lugar de sus afirmaciones.",
       "noDetail": "El resumen y los pasos posteriores reciben un sustituto en lugar de sus afirmaciones."
+    },
+    "unreadable": {
+      "title": "El conductor está desactivado en esta sesión: no se pudo leer su estado guardado.",
+      "body": "No se pudo leer {{documents}} de la carpeta de Distill, ni siquiera tras reintentarlo. Mientras eso siga así no se inicia ninguna ola —un plan en este chat simplemente se ignora—, porque trabajar sobre una copia vacía repetiría planes antiguos y luego sobrescribiría el único registro que queda de ellos.",
+      "retry": "Lo más probable es que algo estuviera bloqueando el archivo al arrancar la app, como un análisis antivirus o un cliente de sincronización. En Ajustes → Estadísticas hay un botón «Reintentar» que vuelve a leerlo sin reiniciar.",
+      "reason": "La lectura falló con: {{reason}}"
     }
   },
   "harnessBrigade": {

@@ -263,6 +263,21 @@ interface PendingSessionWorkspaceCleanupConfirmation {
   resolve: (confirmed: boolean) => void;
 }
 
+interface ArchiveChatOptions {
+  /** The record to archive when the store has already dropped the session —
+   *  the automatic sweep can outlive its own list entry. */
+  fallbackSession?: ChatSession;
+  /** Re-checked immediately before the mutation; the automatic sweep uses it
+   *  to abandon a chat that stopped being idle while it was inspected. */
+  revalidateBeforeMutation?: () => Promise<boolean>;
+  /**
+   * Stop the chat's terminals once it is archived. Operator-initiated
+   * archives only: the stop is unrecoverable (unarchive restores no shell),
+   * so an agent driving berdctl must never trigger it.
+   */
+  stopTerminals?: boolean;
+}
+
 const APP_NAVIGATION_HISTORY_LIMIT = 50;
 const DESIGN_SYSTEM_INSPECTOR_VISIBLE_STORAGE_KEY =
   "distill:design-system-inspector-visible:v2";
@@ -2886,8 +2901,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       sessionId: string,
       cleanupPolicy: ArchiveCleanupPolicy,
       deadlineMs?: number,
-      fallbackSession?: ChatSession,
-      revalidateBeforeMutation?: () => Promise<boolean>,
+      {
+        fallbackSession,
+        revalidateBeforeMutation,
+        stopTerminals = false,
+      }: ArchiveChatOptions = {},
     ) => {
       let releaseArchiveQueue!: () => void;
       const previousArchive = sessionArchiveQueueRef.current;
@@ -3005,7 +3023,17 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         // it would be a process with no UI to stop it (a dev server holding
         // its port until the app exits). Product decision: archiving stops
         // the chat's terminals rather than keeping them for an unarchive.
-        stopTerminalSessionsForChat(sessionId);
+        //
+        // Only an operator-initiated archive may do that. Killing a dev
+        // server, a build or a migration is unrecoverable — unarchiving
+        // restores nothing — so it needs the person who can judge the loss.
+        // berdctl's `session archive` reaches this same function, is declared
+        // `destructive: false`, and its help promises it never discards local
+        // work; it therefore archives without the stop and refuses outright
+        // while the chat still has live shells.
+        if (stopTerminals) {
+          stopTerminalSessionsForChat(sessionId);
+        }
 
         let cleanupFailureReason:
           | "target_session_running"
@@ -3060,13 +3088,23 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
   const handleAutoArchiveChat = useCallback(
     (session: ChatSession, revalidate: () => Promise<boolean>) =>
-      archiveChat(session.id, "reject", undefined, session, revalidate),
+      archiveChat(session.id, "reject", undefined, {
+        fallbackSession: session,
+        revalidateBeforeMutation: revalidate,
+        // The sweep already skips a chat with live shells
+        // (`hasLocalAutoArchiveBlocker`), and it has no operator to confirm
+        // the loss if one appears in between.
+        stopTerminals: false,
+      }),
     [archiveChat],
   );
   useAutoArchiveSessions(handleAutoArchiveChat);
 
   const handleArchiveChat = useCallback(
-    (sessionId: string) => archiveChat(sessionId, "confirm"),
+    // The operator pressed Archive: they are the only actor allowed to take
+    // the chat's shells with it.
+    (sessionId: string) =>
+      archiveChat(sessionId, "confirm", undefined, { stopTerminals: true }),
     [archiveChat],
   );
   closeAgentBuilderSessionRef.current = async (sessionId) => {

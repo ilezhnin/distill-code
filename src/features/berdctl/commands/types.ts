@@ -72,6 +72,7 @@ export const COMMAND_ERROR_CODES = [
   "invalid_args",
   "workspace_name_required",
   "target_session_running",
+  "session_has_terminals",
   "queue_full",
   "session_not_found",
   "project_not_found",

@@ -72,6 +72,17 @@ export const MAX_APPLIED_MEMORY_MESSAGE_IDS = 2000;
  */
 export const MAX_WAVE_EXECUTOR_SESSION_IDS = 1000;
 
+/**
+ * Bound on the record of what the operator deleted.
+ *
+ * Comfortably above the live cap plus a healthy archive, because the whole
+ * point is that a tombstone outlives the folder copy it has to beat. Past it
+ * the oldest deletes drop, which is the right end: a folder still holding a
+ * line deleted hundreds of deletes ago is a folder nobody has opened in a very
+ * long time.
+ */
+export const MAX_FORGOTTEN_MEMORY_IDS = 1000;
+
 interface MemoryState {
   entries: MemoryEntry[];
   /** Displaced memories, kept because the app may not destroy one. */
@@ -98,6 +109,18 @@ interface MemoryState {
    * the memory store made, and it has to survive a restart to keep it.
    */
   waveExecutorSessionIds: string[];
+  /**
+   * Memories the operator deleted, kept after the row itself is gone.
+   *
+   * A project folder the app could not reach when the operator pressed delete
+   * still holds that line, and hands it back the first time the folder is read
+   * again — which, since the mirror now reads before it writes, is a re-adopted
+   * delete rather than the blind overwrite that used to purge it by accident.
+   * The operator's delete is the one action a copy on disk must not outrank
+   * (LAWS/MEMORY.md, Sovereignty), and a folder can be offline for longer than
+   * a session, so the tombstones are persisted rather than held for the run.
+   */
+  forgottenIds: string[];
   /** False until the stored document has been read. Writes wait for it. */
   hydrated: boolean;
 }
@@ -306,6 +329,23 @@ export function parseRecallAnsweredMessageIds(value: unknown): string[] {
 }
 
 /**
+ * The operator's delete tombstones.
+ *
+ * Absent from every document written before they were persisted, which reads
+ * back as none: those deletes are the ones whose folders were purged by the
+ * old blind overwrite, so there is nothing left for a tombstone to beat.
+ */
+export function parseForgottenMemoryIds(value: unknown): string[] {
+  const list = (value as { forgottenIds?: unknown })?.forgottenIds;
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter(
+      (entry): entry is string => typeof entry === "string" && entry !== "",
+    )
+    .slice(-MAX_FORGOTTEN_MEMORY_IDS);
+}
+
+/**
  * The remembered wave-executor sessions.
  *
  * Absent from every document written before the graph's bound was allowed to
@@ -406,6 +446,10 @@ function commit(
     // sessions the wave engine owns, and dropping the record here would hand
     // an evicted executor the operator's list on the next commit.
     waveExecutorSessionIds,
+    // Carried the same way, and written on every commit: a delete whose
+    // tombstone only lived in memory was re-adopted from the folder at the
+    // first mirror after it came back.
+    forgottenIds: forgottenIdList(),
     hydrated,
   };
   if (hydrated) {
@@ -487,18 +531,37 @@ function enqueueFolderWork(task: () => Promise<void>): Promise<void> {
 const readProjectRoots = new Map<string, string>();
 
 /**
- * Ids the operator deleted in this run.
+ * Ids the operator has deleted, this run and in earlier ones.
  *
  * A folder the app could not reach when the operator pressed delete still
  * holds the line, and would hand it back the next time it is read. The
  * operator's delete is the one action a copy on disk must not outrank
  * (LAWS/MEMORY.md, Sovereignty): these are excluded from every fold, and
  * so from every mirror written after the delete.
+ *
+ * Seeded from `memory.json` at hydration and written back on every commit, so
+ * a folder that was offline for longer than a session — a network share, an
+ * unplugged drive — cannot re-adopt the delete when it comes back.
  */
 const forgottenIds = new Set<string>();
 
 function noteForgotten(ids: Iterable<string>): void {
-  for (const id of ids) forgottenIds.add(id);
+  for (const id of ids) {
+    // Re-adding moves an id to the end of the insertion order, which is the
+    // order the cap drops from.
+    forgottenIds.delete(id);
+    forgottenIds.add(id);
+  }
+  while (forgottenIds.size > MAX_FORGOTTEN_MEMORY_IDS) {
+    const oldest = forgottenIds.values().next();
+    if (oldest.done) break;
+    forgottenIds.delete(oldest.value);
+  }
+}
+
+/** The tombstones as the document stores them. */
+function forgottenIdList(): string[] {
+  return [...forgottenIds];
 }
 
 function markProjectsRead(
@@ -537,6 +600,7 @@ function adoptProjectMemories(fromFolders: ProjectMemories): void {
     appliedMessageIds: current.appliedMessageIds,
     recallAnsweredMessageIds: current.recallAnsweredMessageIds,
     waveExecutorSessionIds: current.waveExecutorSessionIds,
+    forgottenIds: forgottenIdList(),
     hydrated: true,
   };
   useMemoryStore.setState(next);
@@ -710,6 +774,7 @@ function stateFromDocument(parsed: unknown): MemoryState {
     appliedMessageIds: parseAppliedMemoryMessageIds(parsed),
     recallAnsweredMessageIds: parseRecallAnsweredMessageIds(parsed),
     waveExecutorSessionIds: parseWaveExecutorSessionIds(parsed),
+    forgottenIds: parseForgottenMemoryIds(parsed),
     hydrated: true,
   };
 }
@@ -730,6 +795,7 @@ const document = distillDocument<MemoryState>({
     appliedMessageIds: state.appliedMessageIds,
     recallAnsweredMessageIds: state.recallAnsweredMessageIds,
     waveExecutorSessionIds: state.waveExecutorSessionIds,
+    forgottenIds: state.forgottenIds,
   }),
 });
 
@@ -743,8 +809,12 @@ export async function hydrateMemoryStore(): Promise<void> {
     appliedMessageIds: [],
     recallAnsweredMessageIds: [],
     waveExecutorSessionIds: [],
+    forgottenIds: [],
     hydrated: true,
   };
+  // Before any fold: a delete the operator made in an earlier run, while that
+  // project's folder was unreachable, must still beat the folder copy now.
+  noteForgotten(base.forgottenIds);
   // Then whatever the project folders themselves know (P31). A project copied
   // from another machine arrives with its memories in it, and this is where
   // they join the list; entries already in memory win, so nothing the
@@ -783,7 +853,8 @@ export async function hydrateMemoryStore(): Promise<void> {
     current.archived.length > 0 ||
     current.appliedMessageIds.length > 0 ||
     current.recallAnsweredMessageIds.length > 0 ||
-    current.waveExecutorSessionIds.length > 0;
+    current.waveExecutorSessionIds.length > 0 ||
+    forgottenIds.size > base.forgottenIds.length;
   const merged = capWithArchive(mergeProjectMemories(entries, current.entries));
   const next: MemoryState = {
     entries: merged.kept,
@@ -807,6 +878,9 @@ export async function hydrateMemoryStore(): Promise<void> {
       current.waveExecutorSessionIds,
       MAX_WAVE_EXECUTOR_SESSION_IDS,
     ),
+    // The set already holds the stored ones plus anything deleted while the
+    // read was in flight.
+    forgottenIds: forgottenIdList(),
     hydrated: true,
   };
   useMemoryStore.setState(next);
@@ -942,6 +1016,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
   appliedMessageIds: [],
   recallAnsweredMessageIds: [],
   waveExecutorSessionIds: [],
+  forgottenIds: [],
   hydrated: false,
 
   remember: (draft, nowMs = Date.now()) => {

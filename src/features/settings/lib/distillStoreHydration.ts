@@ -18,16 +18,24 @@ import {
 } from "@/features/agents/stores/routingPolicyStore";
 import {
   flushConductorGraphWrites,
+  hasConductorGraphHydrationFailed,
   hydrateConductorGraph,
   markConductorGraphHydrationFailed,
 } from "@/features/conductor/conductorGraphStore";
 import {
+  clearPersistReadOutage,
+  notePersistReadOutage,
+  type PersistScope,
+} from "@/features/conductor/persistHealth";
+import {
   flushWaveEngineWrites,
+  hasWaveEngineStateHydrationFailed,
   hydrateWaveEngineState,
   markWaveEngineStateHydrationFailed,
 } from "@/features/conductor/waveStore";
 import {
   flushWaveTelemetryWrites,
+  hasWaveTelemetryHydrationFailed,
   hydrateWaveTelemetry,
   markWaveTelemetryHydrationFailed,
 } from "@/features/conductor/waveTelemetryStore";
@@ -77,20 +85,21 @@ function pause(ms: number): Promise<void> {
  * Resolves either way; the failure is logged where the flush failures are.
  */
 async function hydrateConductorDocument(
-  name: string,
-  hydrate: () => Promise<void>,
-  giveUp: () => void,
-): Promise<void> {
-  for (let attempt = 1; attempt <= CONDUCTOR_HYDRATION_ATTEMPTS; attempt += 1) {
+  document: ConductorDocumentHydration,
+  attempts = CONDUCTOR_HYDRATION_ATTEMPTS,
+): Promise<boolean> {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      await hydrate();
-      return;
+      await document.hydrate();
+      clearPersistReadOutage(document.scope);
+      return true;
     } catch (error) {
+      lastReadError = error;
       console.error(
-        `Failed to load ${name} (attempt ${attempt} of ${CONDUCTOR_HYDRATION_ATTEMPTS}):`,
+        `Failed to load ${document.name} (attempt ${attempt} of ${attempts}):`,
         error,
       );
-      if (attempt === CONDUCTOR_HYDRATION_ATTEMPTS) break;
+      if (attempt === attempts) break;
       const delay =
         CONDUCTOR_HYDRATION_RETRY_DELAYS_MS[
           Math.min(attempt - 1, CONDUCTOR_HYDRATION_RETRY_DELAYS_MS.length - 1)
@@ -98,7 +107,72 @@ async function hydrateConductorDocument(
       await pause(delay);
     }
   }
-  giveUp();
+  document.giveUp();
+  // The operator-visible half. `giveUp()` only releases the waiters, and a
+  // `console.error` is a devtools log they cannot open: without this the app
+  // comes up looking normal and every conductor plan is ignored for the rest
+  // of the run with no notice, no badge and nothing to retry.
+  notePersistReadOutage(document.scope, lastReadError);
+  return false;
+}
+
+interface ConductorDocumentHydration {
+  name: string;
+  scope: PersistScope;
+  hydrate: () => Promise<void>;
+  giveUp: () => void;
+  /** True when this document is still unread this session. */
+  failed: () => boolean;
+}
+
+/** The last read error seen, for the health record's `reason`. */
+let lastReadError: unknown;
+
+const CONDUCTOR_DOCUMENTS: readonly ConductorDocumentHydration[] = [
+  {
+    name: "conductor/graph.json",
+    scope: "graph",
+    hydrate: hydrateConductorGraph,
+    giveUp: markConductorGraphHydrationFailed,
+    failed: hasConductorGraphHydrationFailed,
+  },
+  {
+    name: "conductor/waves.json",
+    scope: "waves",
+    hydrate: hydrateWaveEngineState,
+    giveUp: markWaveEngineStateHydrationFailed,
+    failed: hasWaveEngineStateHydrationFailed,
+  },
+  {
+    name: "conductor/telemetry.json",
+    scope: "telemetry",
+    hydrate: hydrateWaveTelemetry,
+    giveUp: markWaveTelemetryHydrationFailed,
+    failed: hasWaveTelemetryHydrationFailed,
+  },
+];
+
+/**
+ * Re-reads every conductor document whose startup read gave up.
+ *
+ * The operator's way out of a read outage that has nothing to do with the app:
+ * an antivirus pass or a sync client held the file for a few seconds at launch,
+ * the retries ran out, and the conductor is off for a session that would work
+ * perfectly if it simply asked again. One attempt per document — the operator
+ * is the retry loop now — and the stores are built for it: a store that gave up
+ * is still unhydrated with its writes held, so a late read merges exactly as an
+ * on-time one would.
+ *
+ * Resolves to true when nothing is outstanding any more.
+ */
+export async function retryConductorDocumentHydration(): Promise<boolean> {
+  const outstanding = CONDUCTOR_DOCUMENTS.filter((document) =>
+    document.failed(),
+  );
+  const settled = await Promise.all(
+    outstanding.map((document) => hydrateConductorDocument(document, 1)),
+  );
+  return settled.every(Boolean);
 }
 
 export async function hydrateDistillStores(): Promise<void> {
@@ -115,20 +189,8 @@ export async function hydrateDistillStores(): Promise<void> {
     // is retried on a failed read, and told when the retries are spent, so
     // whatever waits on it (the wave engine, above all) is never parked for
     // the rest of the session.
-    hydrateConductorDocument(
-      "conductor/graph.json",
-      hydrateConductorGraph,
-      markConductorGraphHydrationFailed,
-    ),
-    hydrateConductorDocument(
-      "conductor/waves.json",
-      hydrateWaveEngineState,
-      markWaveEngineStateHydrationFailed,
-    ),
-    hydrateConductorDocument(
-      "conductor/telemetry.json",
-      hydrateWaveTelemetry,
-      markWaveTelemetryHydrationFailed,
+    ...CONDUCTOR_DOCUMENTS.map((document) =>
+      hydrateConductorDocument(document),
     ),
     // The routing policy (P36-P38). Read early because it decides which model
     // a session starts on, and a session started before it lands would use the

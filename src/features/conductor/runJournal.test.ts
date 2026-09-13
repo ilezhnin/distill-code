@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
 const files = vi.hoisted(() => new Map<string, string>());
+/** Paths whose read rejects, as a held or unreadable file does. */
+const unreadable = vi.hoisted(() => new Set<string>());
 
 vi.mock("@/shared/api/distillStore", () => ({
   isDesktopRuntime: () => true,
-  readDistillDocument: vi.fn(async (path: string) => files.get(path) ?? null),
+  readDistillDocument: vi.fn(async (path: string) => {
+    if (unreadable.has(path)) throw new Error("EBUSY");
+    return files.get(path) ?? null;
+  }),
   writeDistillDocument: vi.fn(async (path: string, contents: string) => {
     files.set(path, contents);
   }),
@@ -16,7 +21,10 @@ import {
   appendRunEvent,
   diffGraphNodes,
   diffWaveStates,
+  hasUnreadableRunJournal,
   installRunJournal,
+  resetRunJournalsForTests,
+  RUN_JOURNAL_READ_RETRY_DELAYS_MS,
   runEventsFor,
   runJournalPath,
 } from "./runJournal";
@@ -249,6 +257,115 @@ describe("the journal in the folder", () => {
       const raw = files.get(runJournalPath("w-restart")) ?? "{}";
       expect(JSON.parse(raw).events).toHaveLength(2);
     });
+  });
+
+  it("never overwrites a journal whose file could not be read", async () => {
+    // A read that fails is not an empty journal. Settling it as empty let this
+    // session's handful of events replace the whole trace of the previous run —
+    // and LAWS/WAVES.md requires that record to be readable without the app.
+    const path = runJournalPath("w-unreadable");
+    const stored = JSON.stringify({
+      version: 1,
+      waveId: "w-unreadable",
+      events: [
+        {
+          seq: 0,
+          at: 1,
+          kind: "wave-admitted",
+          waveId: "w-unreadable",
+          conductorSessionId: "c1",
+          rootRequestId: "m1",
+        },
+      ],
+    });
+    files.set(path, stored);
+    unreadable.add(path);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    try {
+      appendRunEvent({
+        at: 2,
+        kind: "wave-phase",
+        waveId: "w-unreadable",
+        conductorSessionId: "c1",
+        rootRequestId: "m1",
+      });
+
+      await vi.waitFor(() => expect(hasUnreadableRunJournal()).toBe(true), {
+        timeout: 5_000,
+      });
+      // Every attempt was made before giving up: the first read plus one per
+      // backoff step.
+      expect(consoleError).toHaveBeenCalled();
+      // The file still holds the previous run, byte for byte…
+      expect(files.get(path)).toBe(stored);
+      // …while this session's event is still readable in memory.
+      expect(runEventsFor("w-unreadable").map((event) => event.kind)).toEqual([
+        "wave-phase",
+      ]);
+
+      // A later event does not write either, so nothing can land out of order.
+      appendRunEvent({
+        at: 3,
+        kind: "wave-closed",
+        waveId: "w-unreadable",
+        conductorSessionId: "c1",
+        rootRequestId: "m1",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(files.get(path)).toBe(stored);
+    } finally {
+      consoleError.mockRestore();
+      unreadable.delete(path);
+    }
+  });
+
+  it("replays the held events once a retried read succeeds", async () => {
+    expect(RUN_JOURNAL_READ_RETRY_DELAYS_MS.length).toBeGreaterThan(0);
+    // The previous case deliberately leaves one journal unreadable; this one is
+    // about the recovery, so it starts from a clean map.
+    resetRunJournalsForTests();
+    const path = runJournalPath("w-retry");
+    files.set(
+      path,
+      JSON.stringify({
+        version: 1,
+        waveId: "w-retry",
+        events: [
+          {
+            seq: 0,
+            at: 1,
+            kind: "wave-admitted",
+            waveId: "w-retry",
+            conductorSessionId: "c1",
+            rootRequestId: "m1",
+          },
+        ],
+      }),
+    );
+    unreadable.add(path);
+
+    appendRunEvent({
+      at: 2,
+      kind: "wave-phase",
+      waveId: "w-retry",
+      conductorSessionId: "c1",
+      rootRequestId: "m1",
+    });
+    // The first read has already failed; the file becomes readable before the
+    // retries run out.
+    unreadable.delete(path);
+
+    await vi.waitFor(
+      () => {
+        const raw = files.get(path) ?? "{}";
+        expect(JSON.parse(raw).events).toHaveLength(2);
+      },
+      { timeout: 5_000 },
+    );
+    expect(runEventsFor("w-retry").map((event) => event.seq)).toEqual([0, 1]);
+    expect(hasUnreadableRunJournal()).toBe(false);
   });
 
   it("does not report the folder's executors as spawned just now", async () => {
