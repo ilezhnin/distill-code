@@ -31,6 +31,7 @@ import {
 import {
   memoryRememberRefusal,
   useMemoryStore,
+  watchGraphForWaveExecutors,
   type MemoryRefusal,
 } from "./stores/memoryStore";
 
@@ -157,6 +158,10 @@ function drainMemoryFences(): void {
 
 export function useMemoryAgentSync(): void {
   useEffect(() => {
+    // Armed before the first drain: a wave child's node is the first thing the
+    // graph evicts, and after that only this record can tell the ACL that the
+    // transcript it is about to trust was an executor's.
+    watchGraphForWaveExecutors();
     drainMemoryFences();
     // On the transcripts only. The chat store also carries per-session runtime
     // flags that change far more often than the messages do — a token's worth

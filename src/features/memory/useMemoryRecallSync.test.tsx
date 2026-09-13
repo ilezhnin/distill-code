@@ -24,7 +24,10 @@ import {
   setMemoryWriteEnabled,
 } from "./lib/memoryPreferences";
 import { RECALL_LIMIT_REACHED_TEXT } from "./lib/memoryRecall";
-import { useMemoryStore } from "./stores/memoryStore";
+import {
+  resetWaveExecutorWatchForTests,
+  useMemoryStore,
+} from "./stores/memoryStore";
 import { useMemoryRecallSync } from "./useMemoryRecallSync";
 
 const mocks = vi.hoisted(() => ({
@@ -156,11 +159,13 @@ describe("useMemoryRecallSync", () => {
     window.localStorage.clear();
     vi.clearAllMocks();
     mocks.deliverEnvelope.mockResolvedValue({ status: "dispatched" });
+    resetWaveExecutorWatchForTests();
     useMemoryStore.setState({
       entries: [],
       archived: [],
       appliedMessageIds: [],
       recallAnsweredMessageIds: [],
+      waveExecutorSessionIds: [],
       hydrated: true,
     });
     useChatStore.setState({ messagesBySession: {} });
@@ -307,6 +312,30 @@ describe("useMemoryRecallSync", () => {
       useChatStore.setState({ activeSessionId: "s-w" });
     });
     expect(warn).not.toHaveBeenCalled();
+    expect(useMemoryStore.getState().recallAnsweredMessageIds).toContain("m-1");
+  });
+
+  it("leaves a wave child unanswered after the graph has evicted its node", () => {
+    // The graph is bounded and drops a finished wave child's node first; the
+    // answer would hand the operator's list to an executor that was never
+    // taught to ask for it (LAWS/MEMORY.md, Writing).
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    putSession("s-w", "p-1");
+    putGraphNode("s-w", "wave");
+    useMemoryStore.setState({
+      entries: [entry({ id: "g", text: "Secretish" })],
+    });
+    renderHook(() => useMemoryRecallSync());
+    act(() => {
+      useConductorGraphStore.setState({ nodesById: {} });
+    });
+
+    putMessages("s-w", [assistant("m-1", '{"query":"Secretish"}')]);
+
+    expect(mocks.deliverEnvelope).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("was not answered"),
+    );
     expect(useMemoryStore.getState().recallAnsweredMessageIds).toContain("m-1");
   });
 
