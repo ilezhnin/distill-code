@@ -565,6 +565,12 @@ describe("ArtifactPolicyContext open gate", () => {
     "patch.mst",
     "app.appinstaller",
     "wizard.diagcab",
+    // An alternate-data-stream suffix hides the real extension from the
+    // denylist unless it is cut off first.
+    "payload.exe::$DATA",
+    "summary.py:extra",
+    // A stream suffix on an otherwise ordinary name is not a document either.
+    "notes.txt::$DATA",
   ])("reveals the run-on-open type %s written inside the cwd", async (name) => {
     render(
       <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
