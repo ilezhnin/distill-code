@@ -438,7 +438,10 @@ export function ChatInput({
   }, [scheduleResizeTextarea, surface]);
 
   const shouldReduceMotion = useReducedMotion();
-  const queuedMessageContentRef = useRef<HTMLDivElement>(null);
+  // A callback ref rather than a `useRef`, so the height effect below can key
+  // on the element and re-run only when it actually appears or disappears.
+  const [queuedMessageContent, setQueuedMessageContent] =
+    useState<HTMLDivElement | null>(null);
   const [queuedMessageContentHeight, setQueuedMessageContentHeight] =
     useState<number>();
   const allQueuedMessages =
@@ -464,19 +467,26 @@ export function ChatInput({
   const queuedMessagePills = presentedQueuedMessages
     .map((entry, index) => ({ ...entry, index }))
     .filter(({ recordId }) => recordId !== editingQueuedRecordId);
+  // Keyed on the observed element itself, so the effect re-runs exactly when
+  // the pill group mounts or unmounts. It used to have no dependency array at
+  // all, and `ChatView` re-renders the composer once per streamed frame: that
+  // meant a forced `scrollHeight` read plus a fresh ResizeObserver every frame
+  // for as long as a queued pill was visible — precisely the double-enter
+  // steering flow this pill exists for. One observer now lives as long as the
+  // group does, and every height change inside it (pill text, wrapping, a
+  // steer/send button appearing) is what the observer is there to catch.
   useLayoutEffect(() => {
-    const content = queuedMessageContentRef.current;
-    if (!content) {
+    if (!queuedMessageContent) {
       setQueuedMessageContentHeight(undefined);
       return;
     }
     const updateHeight = () =>
-      setQueuedMessageContentHeight(content.scrollHeight);
+      setQueuedMessageContentHeight(queuedMessageContent.scrollHeight);
     updateHeight();
     const observer = new ResizeObserver(updateHeight);
-    observer.observe(content);
+    observer.observe(queuedMessageContent);
     return () => observer.disconnect();
-  });
+  }, [queuedMessageContent]);
   const hasDraftContext =
     (scopedControls.attachments && attachments.length > 0) ||
     visibleSelectedSkills.length > 0;
@@ -1348,7 +1358,7 @@ export function ChatInput({
                     )}
                   >
                     <div
-                      ref={queuedMessageContentRef}
+                      ref={setQueuedMessageContent}
                       className="flex flex-col gap-1.5 p-1.5"
                     >
                       <AnimatePresence initial={false} mode="popLayout">
