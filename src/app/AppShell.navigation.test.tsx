@@ -37,7 +37,9 @@ const mockAcpArchiveSession = vi.hoisted(() => vi.fn());
 const mockAcpGetSessionInfo = vi.hoisted(() => vi.fn());
 const mockAcpLoadSession = vi.hoisted(() => vi.fn());
 const mockRenameTerminalSessionPrefix = vi.hoisted(() => vi.fn());
-const mockStopTerminalSessionsForChat = vi.hoisted(() => vi.fn(() => 0));
+const mockStopTerminalSessionsForChat = vi.hoisted(() =>
+  vi.fn((..._args: unknown[]) => 0),
+);
 const mockListExtensions = vi.hoisted(() => vi.fn());
 const mockCheckDirectoriesExist = vi.hoisted(() => vi.fn());
 const mockPathExists = vi.hoisted(() => vi.fn());
