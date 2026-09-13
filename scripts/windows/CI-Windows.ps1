@@ -52,13 +52,26 @@ Invoke-CargoCheck -ArgumentList @(
 ) -Label "cargo test managed services"
 
 # Clippy compiles both configurations, so separate `cargo check` calls only
-# repeat the same compile coverage.
+# repeat the same compile coverage. Every workspace crate is named explicitly:
+# cargo lints only the primary package, so berdctl, berd-monitor and the
+# berdctl plugin used to be compiled here but linted nowhere except the
+# skippable pre-push hook. `--all-targets` adds the test and bench targets, so
+# `#[cfg(test)]` code is linted with the same `-D warnings` as the library.
 Invoke-CargoCheck -ArgumentList @(
-    "clippy", "--", "-D", "warnings"
+    "clippy", "--all-targets", "--", "-D", "warnings"
 ) -Label "cargo clippy"
 Invoke-CargoCheck -ArgumentList @(
-    "clippy", "--features", (Get-BerdAppFeatures), "--", "-D", "warnings"
+    "clippy", "--all-targets", "--features", (Get-BerdAppFeatures), "--", "-D", "warnings"
 ) -Label "cargo clippy app features"
+Invoke-CargoCheck -ArgumentList @(
+    "clippy", "--all-targets", "-p", "berdctl", "--", "-D", "warnings"
+) -Label "cargo clippy berdctl"
+Invoke-CargoCheck -ArgumentList @(
+    "clippy", "--all-targets", "-p", "berd-monitor", "--", "-D", "warnings"
+) -Label "cargo clippy berd-monitor"
+Invoke-CargoCheck -ArgumentList @(
+    "clippy", "--all-targets", "-p", "tauri-plugin-berdctl", "--features", "server", "--", "-D", "warnings"
+) -Label "cargo clippy berdctl plugin"
 
 Write-Host ""
 Write-Host "Windows native CI gate passed." -ForegroundColor Green

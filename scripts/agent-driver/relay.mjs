@@ -53,6 +53,16 @@ const HEARTBEAT_INTERVAL_MS = 2_000;
 /** How often the relay checks whether the app's driver port answers at all. */
 const PROBE_INTERVAL_MS = 10_000;
 const DEFAULT_DRIVER_TIMEOUT_MS = 15_000;
+/**
+ * Bound on a `driver` envelope's requested `timeout`. `socket.setTimeout`
+ * throws synchronously on a negative value, and that throw used to happen
+ * before the socket's `'error'` listener was attached — an envelope like
+ * `{ "timeout": -10000 }` with the app closed took the whole relay process
+ * down. Clamping keeps every value `sendToDriver` sees safely non-negative
+ * (and away from an unreasonably long hang) regardless of what the caller
+ * sends.
+ */
+const MAX_DRIVER_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_EXEC_TIMEOUT_MS = 15 * 60_000;
 /** How much of each stream rides back inside the answer file. */
 const TAIL_LIMIT = 8_000;
@@ -82,6 +92,32 @@ const KILL_GRACE_MS = 5_000;
 export function quoteForCmd(arg) {
   const escaped = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1");
   return `"${escaped}"`;
+}
+
+/**
+ * Build the `/c` argument for `cmd.exe /d /s /c` that launches a
+ * `.cmd`/`.bat` entry point.
+ *
+ * `cmd /s` strips only the very first and the very last quote character off
+ * the whole command line — not each token's own quotes. Quoting just the
+ * resolved executable (`"C:\...\pnpm.cmd" "vitest" "run"`) leaves cmd
+ * reading `C:\...\pnpm.cmd" "vitest" "run` once that strip runs, which is
+ * where the classic `'C:\Program' is not recognized` failure comes from.
+ * Node's own `shell: true`, cross-spawn, and this repo's own
+ * `Invoke-CheckedCommand` (WindowsDev.psm1) all wrap the *entire* line in
+ * one more pair of quotes for exactly this reason: the strip then removes
+ * only that outer pair, and every inner quote survives untouched.
+ */
+export function buildCmdLine(resolved, argv) {
+  const shellCommand = [quoteForCmd(resolved), ...argv.map(quoteForCmd)].join(
+    " ",
+  );
+  return `"${shellCommand}"`;
+}
+
+/** Confine a value to `[min, max]`. */
+export function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
 }
 
 /** Keep the end of a stream, which is where the failure is. */
@@ -182,6 +218,7 @@ export function createRelay({
   const INBOX = path.join(ROOT, "inbox");
   const OUTBOX = path.join(ROOT, "outbox");
   const LOGS = path.join(ROOT, "logs");
+  const FAILED = path.join(ROOT, "failed");
   const HEARTBEAT = path.join(ROOT, "heartbeat.json");
   for (const dir of [ROOT, INBOX, OUTBOX, LOGS]) {
     mkdirSync(dir, { recursive: true });
@@ -190,6 +227,15 @@ export function createRelay({
   const allowed = new Set(ALLOWED_COMMANDS);
   const busy = { driver: false, exec: false, control: false };
   const claimed = new Set();
+  /**
+   * Bodies that were produced but could not be written to `outbox/` yet
+   * (a reader holding the target open, most often on Windows). The envelope
+   * that produced a body is always spent — it is removed from `inbox/`
+   * (or moved to `failed/` if even that fails) the moment `handle()`
+   * resolves, before the write is attempted — so a body only ever needs
+   * retrying here, never recomputing by running the command again.
+   */
+  const pendingAnswers = new Map();
   let driverReachable = null;
   let stopped = false;
 
@@ -213,6 +259,18 @@ export function createRelay({
       };
 
       const socket = net.createConnection({ port, host: "127.0.0.1" });
+      // Attached before `setTimeout`: a connection failure (ECONNREFUSED, the
+      // app not running) can arrive before anything else, and an `'error'`
+      // event with no listener at all crashes the whole relay process — not
+      // just this one command.
+      socket.on("error", (error) =>
+        finish({
+          ok: false,
+          error:
+            `Cannot reach the app test driver on 127.0.0.1:${port} (${error.message}). ` +
+            "Is the app running from a build with the app-test-driver feature?",
+        }),
+      );
       socket.setTimeout(timeoutMs);
       socket.on("connect", () => socket.write(`${JSON.stringify(command)}\n`));
       socket.on("data", (chunk) => {
@@ -235,14 +293,6 @@ export function createRelay({
           error: `Driver did not answer within ${timeoutMs}ms on port ${port}.`,
         }),
       );
-      socket.on("error", (error) =>
-        finish({
-          ok: false,
-          error:
-            `Cannot reach the app test driver on 127.0.0.1:${port} (${error.message}). ` +
-            "Is the app running from a build with the app-test-driver feature?",
-        }),
-      );
       socket.on("close", () =>
         finish({
           ok: false,
@@ -257,7 +307,7 @@ export function createRelay({
       return { ok: false, error: 'A driver envelope needs an "action".' };
     }
     const timeoutMs = Number.isInteger(envelope.timeout)
-      ? envelope.timeout + 5_000
+      ? clamp(envelope.timeout, 0, MAX_DRIVER_TIMEOUT_MS) + 5_000
       : DEFAULT_DRIVER_TIMEOUT_MS;
     const command = { action: envelope.action };
     if (token) command.token = token;
@@ -374,12 +424,7 @@ export function createRelay({
     const [file, spawnArgs, extra] = isBatch
       ? [
           process.env.ComSpec ?? "cmd.exe",
-          [
-            "/d",
-            "/s",
-            "/c",
-            [quoteForCmd(resolved), ...argv.map(quoteForCmd)].join(" "),
-          ],
+          ["/d", "/s", "/c", buildCmdLine(resolved, argv)],
           { windowsVerbatimArguments: true },
         ]
       : [resolved, argv, {}];
@@ -482,7 +527,26 @@ export function createRelay({
     return { id, full, envelope, lane };
   }
 
+  /**
+   * Retry every body that could not be written to `outbox/` last time.
+   *
+   * The envelope that produced these is already gone from `inbox/`, so a
+   * retry here can only ever repeat a file write — never `handle()`, never
+   * the side effect it had.
+   */
+  function flushPendingAnswers() {
+    for (const [id, body] of pendingAnswers) {
+      try {
+        answer(id, body);
+        pendingAnswers.delete(id);
+      } catch (error) {
+        onLog(`${id} -> answer still not written: ${error.message}`);
+      }
+    }
+  }
+
   function poll() {
+    flushPendingAnswers();
     let files;
     try {
       files = readdirSync(INBOX)
@@ -513,18 +577,41 @@ export function createRelay({
           error: `Relay failed: ${error.message}`,
         }))
         .then((body) => {
+          // The envelope already produced this body: it must never be
+          // executed again, no matter what happens to the answer write
+          // below. Spend it first, unconditionally.
+          try {
+            rmSync(job.full, { force: true });
+          } catch {
+            try {
+              mkdirSync(FAILED, { recursive: true });
+              renameSync(job.full, path.join(FAILED, path.basename(job.full)));
+            } catch (moveError) {
+              // Even the move failed (someone else holds the envelope open).
+              // Leaving it in inbox/ risks a re-run, but there is nothing
+              // safer left to do; the lane still frees up and the answer
+              // still lands, so at least the agent is not left hanging.
+              onLog(
+                `${job.lane} ${job.id} -> could not remove or move envelope: ${moveError.message}`,
+              );
+            }
+          }
+          claimed.delete(file);
+          busy[job.lane] = false;
+
           try {
             answer(job.id, body);
-            rmSync(job.full, { force: true });
           } catch (error) {
-            // A reader holding the file open (Windows refuses the rename then)
-            // must not take the whole relay down with an unhandled rejection.
+            // A reader holding the file open (Windows refuses the rename
+            // then) must not take the whole relay down with an unhandled
+            // rejection, and must not cause the command to run again — the
+            // envelope is already gone. Cache the body and retry the write
+            // only, on the next poll.
+            pendingAnswers.set(job.id, body);
             onLog(
               `${job.lane} ${job.id} -> answer not written: ${error.message}`,
             );
           }
-          claimed.delete(file);
-          busy[job.lane] = false;
           onLog(
             `${job.lane} ${job.id} -> ${body.ok ? "ok" : `error: ${body.error ?? body.code}`}`,
           );

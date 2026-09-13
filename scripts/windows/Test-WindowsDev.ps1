@@ -70,7 +70,14 @@ try {
     Assert-Equal "process args: trailing backslash doubled inside quotes" (Join-WindowsProcessArguments -Arguments @("C:\Program Files\")) '"C:\Program Files\\"'
     Assert-Equal "process args: embedded quote escaped" (Join-WindowsProcessArguments -Arguments @('say "hi"')) '"say \"hi\""'
 
-    Assert-Equal "public app feature defaults fail closed" (Get-BerdAppFeatures) "berdctl,app-test-driver"
+    # The default deliberately includes the unauthenticated loopback driver:
+    # `just dev-windows` and the agent-driver relay need it. It is NOT a
+    # fail-closed default, so the entry points that must not expose it - the
+    # NSIS bundle and the desktop-shortcut launcher - ask for `berdctl` alone.
+    Assert-Equal "dev app feature default includes the loopback test driver" (Get-BerdAppFeatures) "berdctl,app-test-driver"
+    Assert-Equal "an explicit base feature set drops the loopback test driver" (Get-BerdAppFeatures -BaseFeatures @("berdctl")) "berdctl"
+    $launchDistill = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts/windows/Launch-Distill.ps1")
+    Assert-Equal "desktop launcher builds without the loopback test driver" ($launchDistill -match 'Get-BerdAppFeatures -BaseFeatures @\("berdctl"\)') $true
 
     $justfile = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "justfile")
     Assert-Equal "justfile selects PowerShell for ordinary Windows recipes" ($justfile -match '(?m)^set windows-shell := \["powershell\.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"\]\r?$') $true

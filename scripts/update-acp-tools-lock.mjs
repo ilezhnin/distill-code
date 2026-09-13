@@ -15,6 +15,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -132,18 +133,40 @@ function parseArgs(argv) {
   return { lockFile, registry, requested };
 }
 
-// npm's lockfile shape is npm-major-specific, and the documents this writes
-// are replayed by the npm bundled with the pinned Node runtime. Regenerating
-// on a different toolchain can emit a lock that pinned npm reformats — which
-// the installer's post-install graph comparison would then reject on every
-// user's machine. Both checks are local: no network, no download.
-async function assertPinnedToolchain() {
-  const pinned = JSON.parse(await readFile(nodeRuntimeLockFile, "utf8"));
-  if (process.version !== pinned.version) {
+/** `"v24.11.0"` → `"24"`. */
+function nodeMajor(version) {
+  return version.replace(/^v/, "").split(".")[0];
+}
+
+// npm's lockfile shape is npm-*major*-specific (not patch-specific), and the
+// documents this writes are replayed by whatever npm is bundled with the
+// running Node. A different patch of the pinned major is a legitimate
+// toolchain (this is what actually matters for npm's lockfile format below);
+// only a different major is a hard stop. Requiring an exact patch match used
+// to make this unrunnable on every machine the repo's own setup scripts
+// provision, whenever the fnm/Hermit pin and node-runtime.lock.json's pin
+// drifted apart by a patch release.
+export function checkPinnedNodeVersion(
+  processVersion,
+  pinnedVersion,
+  warn = console.warn,
+) {
+  if (processVersion === pinnedVersion) return;
+  if (nodeMajor(processVersion) !== nodeMajor(pinnedVersion)) {
     throw new Error(
-      `This must run on the pinned Node runtime: node-runtime.lock.json pins ${pinned.version}, this is ${process.version}`,
+      `This must run on Node ${nodeMajor(pinnedVersion)}.x: node-runtime.lock.json pins ${pinnedVersion}, this is ${processVersion}`,
     );
   }
+  warn(
+    `warning: running Node ${processVersion}, but node-runtime.lock.json pins ${pinnedVersion}. ` +
+      `Same major (${nodeMajor(pinnedVersion)}.x), so continuing, but the generated lock should ` +
+      "ideally come from the exact pinned patch.",
+  );
+}
+
+async function assertPinnedToolchain() {
+  const pinned = JSON.parse(await readFile(nodeRuntimeLockFile, "utf8"));
+  checkPinnedNodeVersion(process.version, pinned.version);
   const bundledManifest = path.join(
     path.dirname(process.execPath),
     "..",
@@ -566,7 +589,12 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}

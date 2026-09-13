@@ -1,0 +1,12 @@
+{
+  // The Playwright suites under tests/ and the TypeScript repo scripts are
+  // transpiled without type checking (Playwright uses esbuild, scripts run
+  // through tsx), and tsconfig.json only includes src/, so nothing type-checked
+  // them. `just check`/`just typecheck` run this project so harness drift shows
+  // up as a compile error instead of an assertion against undefined.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["tests", "scripts/*.ts"]
+}

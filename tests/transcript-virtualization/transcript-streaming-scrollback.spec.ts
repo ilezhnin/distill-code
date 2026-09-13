@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import {
   buildTranscriptFixture,
+  type TranscriptFixture,
   type TranscriptHarnessOperation,
 } from "../../src/features/chat/transcript/testing/transcriptFixtures";
 import { LOCAL_TRANSCRIPT_RENDERER_URL } from "./harness/localRendererBridge";
@@ -174,7 +175,7 @@ function buildStreamingCancelRemountFixture() {
   };
 }
 
-function buildPinnedBottomStreamingFixture() {
+function buildPinnedBottomStreamingFixture(): TranscriptFixture {
   const fixture = buildTranscriptFixture("visual-spacing-date-footer");
   const session = fixture.sessions[0];
   const assistantId = "spacing-tail-assistant";
