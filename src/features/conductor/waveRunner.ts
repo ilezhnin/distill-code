@@ -62,6 +62,7 @@ import {
 } from "./waveLifecycle";
 import { verifyWaveStepReport } from "./waveReportVerification";
 import {
+  conductorDocumentsUnreadableNoticeText,
   waveConcurrentPlanNoticeText,
   waveReportVerificationFailedNoticeText,
   waveStalledNoticeText,
@@ -78,9 +79,12 @@ import {
 } from "./waveNotices";
 import { BoundedSet } from "./boundedSet";
 import {
+  getPersistHealth,
+  persistReadOutageScopes,
   resetPersistHealthForTests,
   takeUnreportedPersistFailure,
   totalPersistFailures,
+  type PersistScope,
 } from "./persistHealth";
 import { stopWaveChildSessions } from "./waveStop";
 import { enforceBudgets } from "./budgetGuard";
@@ -436,6 +440,8 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
       // new, whatever the tombstone list still remembers. Without it, opening
       // an old conductor chat after the cap evicted its tombstones replays its
       // first plan as a fresh root request and spawns real workers from it.
+      // It only ever supersedes a message that predates this process, so a
+      // system clock set backwards cannot silently stop plan admission.
       isSupersededPlanMessage(
         state,
         context.conductorSessionId,
@@ -1063,7 +1069,12 @@ export function runWaveEngineTick(): void {
   if (!conductorDocumentsHydrated()) {
     // A document the startup hydration could not read, even after retrying:
     // the engine stays off rather than run on an empty copy of it.
-    if (conductorDocumentsUnreadable()) return;
+    if (conductorDocumentsUnreadable()) {
+      // Said in the chats it concerns. Without it the operator sees a
+      // conductor that answers with a plan and an app that does nothing.
+      reportConductorDocumentOutage();
+      return;
+    }
     // The folder's waves, tombstones and graph are not all in memory yet: a
     // tick now would re-admit plans the tombstones record, or reset a
     // `spawning` step whose child is in the graph file and spawn it twice.
@@ -1172,8 +1183,49 @@ function reportPersistFailureOnce(): void {
   }
 }
 
+/** Conductor chats already told that their saved state could not be read. */
+const documentOutageNoticeSentTo = new Set<string>();
+
+/** The file each scope names, for a notice a person has to act on. */
+const DOCUMENT_NAME_BY_SCOPE: Record<PersistScope, string> = {
+  graph: "conductor/graph.json",
+  waves: "conductor/waves.json",
+  telemetry: "conductor/telemetry.json",
+  "run-journal": "conductor/runs/*.json",
+};
+
+/**
+ * Tells each conductor chat, once, that the engine is off for this session.
+ *
+ * Not gated on a live wave, unlike the write-refusal notice: the engine never
+ * starts one while a document is unread, so waiting for a wave would mean
+ * waiting forever. The dedup is per conductor rather than global, so a chat
+ * opened later is still told rather than being the one that misses it.
+ *
+ * Telemetry is excluded: a telemetry read that gave up does not hold the
+ * engine, so the operator has nothing to act on.
+ */
+function reportConductorDocumentOutage(): void {
+  const documents = persistReadOutageScopes()
+    .filter((scope) => scope === "graph" || scope === "waves")
+    .map((scope) => DOCUMENT_NAME_BY_SCOPE[scope]);
+  if (documents.length === 0) return;
+  const reason = getPersistHealth().reason;
+  const text = conductorDocumentsUnreadableNoticeText({
+    documents,
+    ...(reason ? { reason } : {}),
+  });
+  const nodes = Object.values(useConductorGraphStore.getState().nodesById);
+  for (const node of conductorNodes(nodes)) {
+    if (documentOutageNoticeSentTo.has(node.sessionId)) continue;
+    documentOutageNoticeSentTo.add(node.sessionId);
+    appendConductorNotice(node.sessionId, text, false, "error");
+  }
+}
+
 /** Clears the process-local guards. Tests only. */
 export function resetWaveRunnerForTests(): void {
+  documentOutageNoticeSentTo.clear();
   resetPersistHealthForTests();
   resetWaveLifecycleForTests();
   resetConductorTranscriptsForTests();

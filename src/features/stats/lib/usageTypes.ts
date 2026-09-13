@@ -49,6 +49,13 @@ export interface UsageArchivedRecord {
   totalTokens: number;
   costUsd: number | null;
   costCurrency: string | null;
+  /**
+   * True once a fold dropped a session's cost because it was in another
+   * currency. `costUsd` is then real but incomplete, which is the one thing a
+   * single figure cannot say about itself — without this the stats page shows a
+   * confident total that silently omits the dropped amounts.
+   */
+  hasMissingCost?: boolean;
   workedMs: number;
   activeDays: number;
 }

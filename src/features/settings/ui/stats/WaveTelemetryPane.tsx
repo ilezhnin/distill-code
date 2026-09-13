@@ -18,10 +18,12 @@ import {
   MIN_FACT_OBSERVATIONS,
 } from "@/features/conductor/factsLedger";
 import {
-  isPersistHealthy,
+  persistReadOutageScopes,
   totalPersistFailures,
   usePersistHealth,
+  type PersistScope,
 } from "@/features/conductor/persistHealth";
+import { retryConductorDocumentHydration } from "@/features/settings/lib/distillStoreHydration";
 import {
   MAX_WAVE_TELEMETRY_RECORDS,
   type WaveTelemetryState,
@@ -37,6 +39,14 @@ import { Button } from "@/shared/ui/button";
 import { StatCard } from "./StatCard";
 
 const WINDOWS: readonly WaveTelemetryWindow[] = [1, 7, 30, null];
+
+/** The file behind each scope, named so the operator can go and unlock it. */
+const DOCUMENT_NAME_BY_SCOPE: Record<PersistScope, string> = {
+  graph: "conductor/graph.json",
+  waves: "conductor/waves.json",
+  telemetry: "conductor/telemetry.json",
+  "run-journal": "conductor/runs/*.json",
+};
 
 /**
  * The first reader wave telemetry has ever had.
@@ -64,6 +74,15 @@ export function WaveTelemetryPane({
     [telemetry, window],
   );
   const persist = usePersistHealth();
+  const [retrying, setRetrying] = useState(false);
+  const [retryFailed, setRetryFailed] = useState(false);
+  // Telemetry is not listed: a telemetry read that gave up costs the lifetime
+  // counters a merge, not the engine, so there is nothing for the operator to
+  // act on. The run journal is, because the wave trace LAWS/WAVES.md requires
+  // is not gaining this run either.
+  const readOutageDocuments = persistReadOutageScopes(persist)
+    .filter((scope) => scope !== "telemetry")
+    .map((scope) => DOCUMENT_NAME_BY_SCOPE[scope]);
   // Over every record, not the selected window: these are the facts handed to
   // the conductor, and it is handed all of them.
   const facts = useMemo(
@@ -125,7 +144,7 @@ export function WaveTelemetryPane({
           thresholds are written against, and they do not move with the
           period — which the note says out loud rather than leaving the
           reader to assume the whole pane shares one clock. */}
-      {!isPersistHealthy(persist) && (
+      {totalPersistFailures(persist) > 0 && (
         // The one standing surface for P18. The transcript notice is said
         // once and scrolls away; this stays as long as the condition does.
         <p
@@ -136,6 +155,46 @@ export function WaveTelemetryPane({
             count: totalPersistFailures(persist),
           })}
         </p>
+      )}
+
+      {readOutageDocuments.length > 0 && (
+        // The other half of the same silence, and the louder one: a document
+        // that could not be *read* leaves the engine off for the whole
+        // session. The retry is here because the usual cause — a file held for
+        // a few seconds at launch — is gone by the time anyone reads this, and
+        // the alternative was restarting the app.
+        <div
+          className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-foreground"
+          data-testid="wave-telemetry-read-outage"
+        >
+          <p>
+            {t("stats.waves.readOutage", {
+              documents: readOutageDocuments.join(", "),
+            })}
+          </p>
+          {retryFailed && (
+            <p className="mt-1">{t("stats.waves.readOutageRetryFailed")}</p>
+          )}
+          <Button
+            type="button"
+            size="xs"
+            variant="subtle"
+            className="mt-2"
+            disabled={retrying}
+            onClick={() => {
+              setRetrying(true);
+              setRetryFailed(false);
+              void retryConductorDocumentHydration()
+                .then((ok) => setRetryFailed(!ok))
+                .catch(() => setRetryFailed(true))
+                .finally(() => setRetrying(false));
+            }}
+          >
+            {retrying
+              ? t("stats.waves.readOutageRetrying")
+              : t("stats.waves.readOutageRetry")}
+          </Button>
+        </div>
       )}
 
       <p className="mt-4 text-xs text-muted-foreground">

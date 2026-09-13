@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  clearPersistReadOutage,
   getPersistHealth,
   isPersistHealthy,
   notePersistFailure,
+  notePersistReadOutage,
+  persistReadOutageScopes,
   resetPersistHealthForTests,
   subscribePersistHealth,
   takeUnreportedPersistFailure,
@@ -30,6 +33,7 @@ describe("persistHealth", () => {
       graph: 1,
       waves: 2,
       telemetry: 0,
+      "run-journal": 0,
     });
     expect(totalPersistFailures()).toBe(3);
     expect(health.firstFailureAt).not.toBeNull();
@@ -83,6 +87,40 @@ describe("persistHealth", () => {
     stop();
     notePersistFailure("waves");
     expect(seen).toBe(2);
+  });
+
+  it("records a read outage separately from a refused write", () => {
+    // A read that gave up is the louder failure: the store never hydrates, so
+    // the wave engine sits out the whole session. It must not be counted as a
+    // refused write, whose notice waits for a live wave that will never exist.
+    notePersistReadOutage("waves", new Error("EPERM"));
+
+    expect(persistReadOutageScopes()).toEqual(["waves"]);
+    expect(isPersistHealthy()).toBe(false);
+    expect(totalPersistFailures()).toBe(0);
+    expect(takeUnreportedPersistFailure()).toBeNull();
+    expect(getPersistHealth().firstFailureAt).not.toBeNull();
+
+    // Recorded once, however many times the tick asks.
+    notePersistReadOutage("waves");
+    expect(persistReadOutageScopes()).toEqual(["waves"]);
+  });
+
+  it("clears a read outage once the document is finally read", () => {
+    notePersistReadOutage("graph");
+    let seen = 0;
+    subscribePersistHealth(() => {
+      seen += 1;
+    });
+
+    clearPersistReadOutage("graph");
+
+    expect(persistReadOutageScopes()).toEqual([]);
+    expect(isPersistHealthy()).toBe(true);
+    expect(seen).toBe(1);
+    // Clearing an outage that is not recorded is a no-op, not a notification.
+    clearPersistReadOutage("graph");
+    expect(seen).toBe(1);
   });
 
   it("does not let a throwing subscriber reach the store's write path", () => {

@@ -33,11 +33,13 @@ export const archiveSessionCommand = defineCommand({
   destructive: false,
   summary: "Archive a chat and clean up its Distill-managed Git resources",
   description:
-    "Archive a chat session, then remove eligible Distill-managed worktrees and branches. Refuses when cleanup would discard local files or changes; the user must confirm that in the app.",
+    "Archive a chat session, then remove eligible Distill-managed worktrees and branches. Refuses when cleanup would discard local files or changes, or when the chat still has running terminals; the user must confirm that in the app.",
   helpFooter: `The command refuses to archive when Git cleanup would discard local files or changes,
 and berdctl cannot override that: only the user can confirm the loss, in the app.
---discard-changes is accepted for compatibility and has no effect. The command
-never opens an interactive prompt.
+It also refuses while the chat still has running terminals: archiving in the app
+stops that chat's shells, and berdctl will not end a dev server, a build or a
+migration on its own. --discard-changes is accepted for compatibility and
+has no effect. The command never opens an interactive prompt.
 
 Example:
   berdctl session archive --session-id <session-id>
@@ -47,8 +49,11 @@ Result:
   bridgeTimeoutMs: 150_000,
   schema: archiveSessionSchema,
   precheck: async (args) => {
-    const { refuseRunningTarget } = await import("../runtime/sessions");
+    const { refuseRunningTarget, refuseChatWithLiveTerminals } = await import(
+      "../runtime/sessions"
+    );
     refuseRunningTarget(args.session_id, "archive");
+    await refuseChatWithLiveTerminals(args.session_id, "archive");
   },
   execute: async (args, ctx) => {
     const [{ getAppNavigationController }, { loadSessionForBerdctl }] =

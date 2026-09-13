@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { subscribeWithSelector } from "zustand/middleware";
 
 import type {
   NodeBudget,
@@ -511,8 +512,15 @@ function boundAndPersist(state: ConductorGraphState): ConductorGraphState {
   return bounded;
 }
 
-export const useConductorGraphStore = create<ConductorGraphStore>(
-  (set, get) => ({
+/**
+ * `subscribeWithSelector` so a subscriber can name the slice it cares about.
+ *
+ * The conductor sync pass derives statuses and reports from `nodesById` and
+ * `reportsByRunId` only, and it runs on a path that fires while a reply streams;
+ * an unselected subscription made it run for every unrelated write as well.
+ */
+export const useConductorGraphStore = create<ConductorGraphStore>()(
+  subscribeWithSelector((set, get) => ({
     ...loadPersistedGraph(),
 
     registerNode: (node) => {
@@ -626,7 +634,7 @@ export const useConductorGraphStore = create<ConductorGraphStore>(
       ),
 
     getReport: (runId) => (runId ? get().reportsByRunId[runId] : undefined),
-  }),
+  })),
 );
 
 export function isConductorSession(

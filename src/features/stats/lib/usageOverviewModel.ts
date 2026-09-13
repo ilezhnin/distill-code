@@ -183,6 +183,10 @@ export function buildUsageOverview({
         (provider.estimatedCostUsd ?? 0) + record.costUsd;
       provider.hasKnownCost = true;
       provider.costCurrencies.add(record.costCurrency);
+      // The fold kept one currency and dropped the rest, so this figure is real
+      // but short. Marking it partial is the whole point of the flag: a "$"
+      // total that silently omits the EUR sessions is worse than no total.
+      if (record.hasMissingCost) provider.hasMissingCost = true;
     } else if (record.totalTokens > 0) {
       provider.hasMissingCost = true;
     }

@@ -211,6 +211,7 @@ function parseArchivedRecord(value: unknown): UsageArchivedRecord | null {
     totalTokens: asNonNegativeInt(raw.totalTokens) ?? 0,
     costUsd: isFiniteNumber(raw.costUsd) ? raw.costUsd : null,
     costCurrency: normalizeCostCurrency(raw.costCurrency),
+    ...(raw.hasMissingCost === true ? { hasMissingCost: true } : {}),
     workedMs: asNonNegativeInt(raw.workedMs) ?? 0,
     activeDays: asNonNegativeInt(raw.activeDays) ?? 0,
   };
@@ -303,6 +304,10 @@ function foldSessionIntoArchive(
     session.started || session.messageCount > 0 || session.totalTokens > 0;
   const foldsCost =
     current.costUsd == null || current.costCurrency === session.costCurrency;
+  // A cost this fold is about to drop. The record keeps one currency, so a
+  // provider that reported EUR for a while and USD after loses the EUR
+  // amounts here — and `costUsd` would otherwise read as a complete figure.
+  const dropsCost = session.costUsd != null && !foldsCost;
   archived.set(providerId, {
     sessions: current.sessions + 1,
     chatsStarted: current.chatsStarted + (started ? 1 : 0),
@@ -322,6 +327,7 @@ function foldSessionIntoArchive(
       current.costUsd == null && session.costUsd != null && foldsCost
         ? session.costCurrency
         : current.costCurrency,
+    ...(current.hasMissingCost || dropsCost ? { hasMissingCost: true } : {}),
     workedMs: current.workedMs + session.workedMs,
     activeDays: current.activeDays,
   });
@@ -762,16 +768,149 @@ export function buildUsageSummary(
   };
 }
 
+/**
+ * Folds this window's pending ledger onto the copy another window just wrote.
+ *
+ * The detached session window is a real feature, so two windows really do write
+ * this key, and neither "flush ours over theirs" nor "drop ours for theirs" is
+ * right: one loses their delta, the other loses ours. A merge is possible
+ * because the two windows own different things:
+ *
+ * - **sessions** are keyed by session id and a chat lives in exactly one
+ *   window, so the record that saw more activity is the real one. Exact.
+ * - **archived** records are produced by the same deterministic prune over the
+ *   same sessions, so the one that folded more sessions is the later one.
+ * - **daily** rows are running totals with no per-window ownership, and without
+ *   a common ancestor to diff against there is nothing exact to do: per-field
+ *   max keeps the larger of the two. Two windows adding tokens on the same day
+ *   can therefore undercount by the smaller delta — far better than losing a
+ *   window's whole write, and the session records the page mostly reads from
+ *   are exact.
+ */
+export function mergeUsageLedgers(
+  stored: UsageLedger,
+  pending: UsageLedger,
+): UsageLedger {
+  const sessions: Record<string, UsageSessionRecord> = { ...stored.sessions };
+  for (const [id, mine] of Object.entries(pending.sessions)) {
+    const theirs = sessions[id];
+    sessions[id] = theirs && sessionIsNewer(theirs, mine) ? theirs : mine;
+  }
+
+  const daily: Record<string, UsageDailyRecord> = { ...stored.daily };
+  for (const [day, mine] of Object.entries(pending.daily)) {
+    const theirs = daily[day];
+    daily[day] = theirs ? mergeDailyRecords(theirs, mine) : mine;
+  }
+
+  const archivedEntries = new Map<string, UsageArchivedRecord>(
+    Object.entries(stored.archived ?? {}),
+  );
+  for (const [providerId, mine] of Object.entries(pending.archived ?? {})) {
+    const theirs = archivedEntries.get(providerId);
+    archivedEntries.set(
+      providerId,
+      theirs && theirs.sessions >= mine.sessions ? theirs : mine,
+    );
+  }
+
+  return {
+    version: USAGE_LEDGER_VERSION,
+    firstEventAt: minDefined(stored.firstEventAt, pending.firstEventAt),
+    lastUpdatedAt: maxDefined(stored.lastUpdatedAt, pending.lastUpdatedAt),
+    sessions,
+    daily,
+    ...(archivedEntries.size > 0
+      ? { archived: Object.fromEntries(archivedEntries) }
+      : {}),
+  };
+}
+
+/** Which of two copies of one session saw more of it. */
+function sessionIsNewer(
+  left: UsageSessionRecord,
+  right: UsageSessionRecord,
+): boolean {
+  if (left.lastActivityAt !== right.lastActivityAt) {
+    return left.lastActivityAt > right.lastActivityAt;
+  }
+  if (left.totalTokens !== right.totalTokens) {
+    return left.totalTokens > right.totalTokens;
+  }
+  return left.messageCount > right.messageCount;
+}
+
+function mergeDailyRecords(
+  left: UsageDailyRecord,
+  right: UsageDailyRecord,
+): UsageDailyRecord {
+  const byProvider: Record<string, number> = { ...left.byProvider };
+  for (const [providerId, tokens] of Object.entries(right.byProvider)) {
+    byProvider[providerId] = Math.max(byProvider[providerId] ?? 0, tokens);
+  }
+  return {
+    totalTokens: Math.max(left.totalTokens, right.totalTokens),
+    inputTokens: Math.max(left.inputTokens, right.inputTokens),
+    outputTokens: Math.max(left.outputTokens, right.outputTokens),
+    cacheTokens: Math.max(left.cacheTokens, right.cacheTokens),
+    byProvider,
+  };
+}
+
+function minDefined(left: number | null, right: number | null): number | null {
+  if (left == null) return right;
+  if (right == null) return left;
+  return Math.min(left, right);
+}
+
+function maxDefined(left: number | null, right: number | null): number | null {
+  if (left == null) return right;
+  if (right == null) return left;
+  return Math.max(left, right);
+}
+
+/** Parses the stored ledger without touching the module's cache. */
+function readStoredLedger(): UsageLedger | null {
+  try {
+    const stored = window.localStorage.getItem(USAGE_LEDGER_STORAGE_KEY);
+    if (!stored) return null;
+    return parseLedger(JSON.parse(stored) as unknown);
+  } catch {
+    return null;
+  }
+}
+
 function handleStorageChange(event: StorageEvent): void {
   if (event.key !== USAGE_LEDGER_STORAGE_KEY && event.key !== null) {
     return;
   }
-  // Persist our own pending change before adopting the stored copy, so a
-  // debounced mutation is not dropped by another window's write.
-  flushUsageLedger();
-  cachedLedger = null;
+  // Nothing of ours is waiting: adopt the stored copy, as before.
+  if (!pendingWrite || !cachedLedger) {
+    cachedLedger = null;
+    cachedSerialized = null;
+    notifyListeners();
+    return;
+  }
+  // Both windows have something. Flushing ours first would overwrite the write
+  // that fired this event; dropping ours would lose the debounced mutation. The
+  // merge keeps both, then writes it so the other window converges too.
+  const stored = readStoredLedger();
+  if (stored) {
+    cachedLedger = mergeUsageLedgers(stored, cachedLedger);
+  }
   cachedSerialized = null;
+  flushUsageLedger();
   notifyListeners();
+}
+
+/**
+ * Subscribes to ledger changes, including another window's write.
+ *
+ * Exported as well as used by {@link useUsageLedger} so a test can install the
+ * `storage` listener without mounting a component.
+ */
+export function subscribeUsageLedger(onStoreChange: () => void): () => void {
+  return subscribe(onStoreChange);
 }
 
 function subscribe(onStoreChange: () => void): () => void {

@@ -256,6 +256,54 @@ describe("the project memory mirror and a project that joins late", () => {
     expect(ids(readFile("/work/quarp")?.entries ?? [])).toEqual(["c2"]);
   });
 
+  it("does not bring back a line the operator deleted in an earlier run", async () => {
+    // The tombstones used to live only in memory, so a delete made while the
+    // folder was offline was re-adopted at the first mirror after it came back
+    // — undoing an explicit operator delete, which LAWS/MEMORY.md Sovereignty
+    // puts above every copy on disk.
+    putFile("/work/quarp", [entry({ id: "c1" }), entry({ id: "c2" })]);
+    useProjectStore.setState({ projects: [project()] });
+    await hydrateMemoryStore();
+
+    folders.unreadable.add("/work/quarp");
+    useMemoryStore.getState().forget("c1");
+    await flushMemoryWrites();
+
+    // A restart: nothing survives but the global document. The share is back.
+    folders.unreadable.clear();
+    resetProjectMemoryMirrorForTests();
+    useMemoryStore.setState({
+      entries: [],
+      archived: [],
+      appliedMessageIds: [],
+      recallAnsweredMessageIds: [],
+      waveExecutorSessionIds: [],
+      forgottenIds: [],
+      hydrated: false,
+    });
+    await hydrateMemoryStore();
+
+    expect(ids(useMemoryStore.getState().entries)).toEqual(["c2"]);
+    // …and the next mirror takes it out of the file as well.
+    useMemoryStore
+      .getState()
+      .remember({ text: "Ivan pushes", scope: "global" }, NOW);
+    await flushMemoryWrites();
+    expect(ids(readFile("/work/quarp")?.entries ?? [])).toEqual(["c2"]);
+  });
+
+  it("keeps the delete tombstones in the stored document", async () => {
+    useProjectStore.setState({ projects: [project()] });
+    await hydrateMemoryStore();
+    const id = useMemoryStore
+      .getState()
+      .remember({ text: "Ivan prefers pnpm", scope: "global" }, NOW);
+    useMemoryStore.getState().forget(id);
+    await flushMemoryWrites();
+
+    expect(useMemoryStore.getState().forgottenIds).toEqual([id]);
+  });
+
   it("reads the new folder when a project is pointed somewhere else", async () => {
     putFile("/work/elsewhere", [entry({ id: "moved" })]);
     useProjectStore.setState({ projects: [project()] });

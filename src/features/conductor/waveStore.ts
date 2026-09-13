@@ -18,6 +18,7 @@ import {
 } from "./conductorDocuments";
 import type { WaveStepBudget } from "./distillWave";
 import { notePersistFailure } from "./persistHealth";
+import { conductorProcessStartedAt } from "./processClock";
 import {
   WAVE_PHASES,
   WAVE_STEP_PHASES,
@@ -510,6 +511,16 @@ export function withProcessedMessageWatermark(
  * stamped at the mark itself is that very message coming round again and is
  * superseded too. Messages with no usable time (0, or a replay that could not
  * stamp one) are left to the tombstones, which is where this guard started.
+ *
+ * A candidate this process produced is never superseded, however the marks
+ * read. The mark is only as good as the system clock that stamped it: a machine
+ * whose clock ran a day fast stores a mark a day in the future, and after the
+ * clock resyncs every new plan that conductor makes would be refused — with no
+ * wave, no refusal notice and nothing in the transcript, because the candidate
+ * is dropped before it is even scanned. The hazard the mark exists for (a
+ * replayed transcript whose tombstones were evicted) is entirely in messages
+ * that predate this process, so requiring that loses nothing and removes every
+ * clock-skew false positive at once.
  */
 export function isSupersededPlanMessage(
   state: WaveEngineState,
@@ -517,17 +528,42 @@ export function isSupersededPlanMessage(
   createdAt: number,
 ): boolean {
   if (!Number.isFinite(createdAt) || createdAt <= 0) return false;
+  if (createdAt >= conductorProcessStartedAt()) return false;
   const mark = newestProcessedMessageAt(state, conductorSessionId);
   return mark > 0 && createdAt <= mark;
+}
+
+/**
+ * Tombstoned plan ids, as a set, built once per tombstone list.
+ *
+ * The engine asks this per candidate message, on a tick that runs on every
+ * chat-store change — while a reply streams, once per token — and the list is
+ * capped at {@link MAX_WAVE_TOMBSTONES}, so the linear scan was up to 500
+ * comparisons per message per token. Every mutation helper replaces the array,
+ * so an entry keyed on the array is valid for exactly as long as the answer is,
+ * and a replaced array can be collected.
+ */
+const tombstoneIdsByList = new WeakMap<
+  readonly WaveTombstone[],
+  ReadonlySet<string>
+>();
+
+function tombstonedPlanMessageIds(
+  tombstones: readonly WaveTombstone[],
+): ReadonlySet<string> {
+  let ids = tombstoneIdsByList.get(tombstones);
+  if (!ids) {
+    ids = new Set(tombstones.map((tombstone) => tombstone.planMessageId));
+    tombstoneIdsByList.set(tombstones, ids);
+  }
+  return ids;
 }
 
 export function hasWaveTombstone(
   state: WaveEngineState,
   planMessageId: string,
 ): boolean {
-  return state.tombstones.some(
-    (tombstone) => tombstone.planMessageId === planMessageId,
-  );
+  return tombstonedPlanMessageIds(state.tombstones).has(planMessageId);
 }
 
 /** Adds a tombstone (idempotent per plan message) and trims the oldest. */

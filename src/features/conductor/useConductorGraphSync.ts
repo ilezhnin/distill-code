@@ -18,6 +18,8 @@ import {
   lastCompletedAssistantSummary,
   reportStatusFromRun,
 } from "./runStatus";
+import type { Message } from "@/shared/types/messages";
+
 import type { RunStatus, SessionNode } from "./types";
 import { BoundedSet } from "./boundedSet";
 import { runWaveEngineTick } from "./waveRunner";
@@ -71,18 +73,34 @@ function isWorkingStatus(status: RunStatus): boolean {
   return status === "starting" || status === "running" || status === "waiting";
 }
 
+/**
+ * Memo for the operator-intervention scan, keyed on the transcript array.
+ *
+ * The pass runs on every chat-store change that could matter — while a reply
+ * streams, that is once per token — and this test walked the whole transcript
+ * of every node each time. The store replaces the array whenever a transcript
+ * changes, so an entry keyed on the array is valid exactly as long as the
+ * answer is, and the map lets a replaced array be collected.
+ */
+const operatorInterventionByTranscript = new WeakMap<
+  readonly Message[],
+  boolean
+>();
+
 function childHadOperatorIntervention(
   messages: ReturnType<
     typeof useChatStore.getState
   >["messagesBySession"][string],
 ): boolean {
-  return Boolean(
-    messages?.some(
-      (message) =>
-        message.role === "user" &&
-        message.metadata?.origin === "operator_direct",
-    ),
+  if (!messages) return false;
+  const cached = operatorInterventionByTranscript.get(messages);
+  if (cached !== undefined) return cached;
+  const intervened = messages.some(
+    (message) =>
+      message.role === "user" && message.metadata?.origin === "operator_direct",
   );
+  operatorInterventionByTranscript.set(messages, intervened);
+  return intervened;
 }
 
 function statusFromRuntime(
@@ -118,15 +136,34 @@ function statusFromRuntime(
   return persisted === "starting" ? "starting" : persisted;
 }
 
-function workersFor(parentSessionId: string): SessionNode[] {
-  return useConductorGraphStore
-    .getState()
-    .getChildren(parentSessionId)
-    .filter((node) => node.role === "worker");
+/**
+ * Every orchestrator's workers, in one walk of the graph.
+ *
+ * `getChildren` filters the whole node map, so asking it per orchestrator made
+ * the pass O(nodes x orchestrators) — on a graph at its 500-node bound, on a
+ * path that runs while a reply streams. One index per pass answers the same
+ * question, and the pass only ever asks about the state it started from.
+ */
+function indexWorkersByParent(
+  nodesById: Readonly<Record<string, SessionNode>>,
+): Map<string, SessionNode[]> {
+  const byParent = new Map<string, SessionNode[]>();
+  for (const node of Object.values(nodesById)) {
+    if (node.role !== "worker" || !node.parentSessionId) continue;
+    const siblings = byParent.get(node.parentSessionId);
+    if (siblings) siblings.push(node);
+    else byParent.set(node.parentSessionId, [node]);
+  }
+  return byParent;
 }
 
-function deriveOrchestratorStatus(node: SessionNode): RunStatus {
-  const workers = workersFor(node.sessionId);
+const NO_WORKERS: readonly SessionNode[] = [];
+
+function deriveOrchestratorStatus(
+  node: SessionNode,
+  workersByParent: Map<string, SessionNode[]>,
+): RunStatus {
+  const workers = workersByParent.get(node.sessionId) ?? NO_WORKERS;
   if (workers.length === 0) return node.status;
   if (workers.some((worker) => isWorkingStatus(worker.status))) {
     return "running";
@@ -183,10 +220,12 @@ function syncChildStatuses(): void {
 function runSyncPass(): void {
   const graph = useConductorGraphStore.getState();
   const chat = useChatStore.getState();
+  const workersByParent = indexWorkersByParent(graph.nodesById);
   for (const node of Object.values(graph.nodesById)) {
     if (node.role !== "orchestrator" && node.role !== "worker") continue;
     const hasWorkers =
-      node.role === "orchestrator" && workersFor(node.sessionId).length > 0;
+      node.role === "orchestrator" &&
+      (workersByParent.get(node.sessionId)?.length ?? 0) > 0;
     if (hasWorkers) continue;
     const runtime = chat.sessionStateById[node.sessionId];
     const messages = chat.messagesBySession[node.sessionId];
@@ -242,7 +281,7 @@ function runSyncPass(): void {
   }
   for (const node of Object.values(graph.nodesById)) {
     if (node.role !== "orchestrator") continue;
-    const nextStatus = deriveOrchestratorStatus(node);
+    const nextStatus = deriveOrchestratorStatus(node, workersByParent);
     if (nextStatus !== node.status) {
       graph.patchNode(node.sessionId, { status: nextStatus });
     }
@@ -253,7 +292,9 @@ function runSyncPass(): void {
   // the reports of this same pass. Wave children publish through the engine's
   // closed loop; everything else publishes here.
   runWaveEngineTick();
-  publishTerminalGroupDigests(workersFor);
+  publishTerminalGroupDigests(
+    (parentSessionId) => workersByParent.get(parentSessionId) ?? [],
+  );
 }
 
 function remapPromotedSessions(): void {
@@ -363,14 +404,39 @@ export function useConductorGraphSync(): void {
     syncChildStatuses();
     void hydrateMissingSessions();
 
-    const unsubGraph = useConductorGraphStore.subscribe(() => {
+    const onStateChanged = () => {
       reconcileStaleStatusesOnce();
       syncChildStatuses();
-    });
-    const unsubChat = useChatStore.subscribe(() => {
-      reconcileStaleStatusesOnce();
-      syncChildStatuses();
-    });
+    };
+    // Selected rather than "any change at all". The pass derives statuses and
+    // reports from exactly these five slices, while both stores are written for
+    // many other reasons — a draft keystroke, a scroll target, a read flag —
+    // and the chat store is written per streamed token. Each slice gets its own
+    // subscription because zustand compares the selected value with `Object.is`
+    // and a tuple of slices would be a new object every time, which is the same
+    // as no selector at all.
+    const unsubGraphNodes = useConductorGraphStore.subscribe(
+      (state) => state.nodesById,
+      onStateChanged,
+    );
+    const unsubGraphReports = useConductorGraphStore.subscribe(
+      (state) => state.reportsByRunId,
+      onStateChanged,
+    );
+    const unsubMessages = useChatStore.subscribe(
+      (state) => state.messagesBySession,
+      onStateChanged,
+    );
+    const unsubRuntimes = useChatStore.subscribe(
+      (state) => state.sessionStateById,
+      onStateChanged,
+    );
+    // The queued first send is what tells the stale-status reconcile that a
+    // child with no runtime is about to get one.
+    const unsubQueued = useChatStore.subscribe(
+      (state) => state.queuedMessageBySession,
+      onStateChanged,
+    );
     const unsubSessions = useChatSessionStore.subscribe((state, previous) => {
       if (state.sessions !== previous.sessions) {
         remapPromotedSessions();
@@ -382,8 +448,11 @@ export function useConductorGraphSync(): void {
     });
 
     return () => {
-      unsubGraph();
-      unsubChat();
+      unsubGraphNodes();
+      unsubGraphReports();
+      unsubMessages();
+      unsubRuntimes();
+      unsubQueued();
       unsubSessions();
     };
   }, []);

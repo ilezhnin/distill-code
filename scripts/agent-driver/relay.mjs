@@ -63,6 +63,102 @@ const DEFAULT_DRIVER_TIMEOUT_MS = 15_000;
  * sends.
  */
 const MAX_DRIVER_TIMEOUT_MS = 10 * 60_000;
+/**
+ * How many undeliverable answer bodies are held for retry, and how hard.
+ *
+ * A permanently unwritable `outbox/` — a stale directory sitting at an answer's
+ * path, a read-only mount — used to grow the retry map forever and log one line
+ * per held body per 250 ms poll: about four lines a second, each, filling a disk
+ * while nobody is watching. The cap drops the oldest body (its command has
+ * already run, so nothing is re-executed either way), the attempt limit gives up
+ * on a body that is never going to land, and the log interval says so once a
+ * minute instead of four times a second.
+ */
+export const MAX_PENDING_ANSWERS = 64;
+export const MAX_PENDING_ANSWER_ATTEMPTS = 240;
+export const PENDING_ANSWER_LOG_INTERVAL_MS = 60_000;
+
+/**
+ * The bounded hold-and-retry store for answer bodies that could not be written.
+ *
+ * Its own factory so the bounds can be checked without a relay, a filesystem or
+ * a clock: `flush` takes the writer and the current time.
+ */
+export function createPendingAnswers({
+  max = MAX_PENDING_ANSWERS,
+  maxAttempts = MAX_PENDING_ANSWER_ATTEMPTS,
+  logIntervalMs = PENDING_ANSWER_LOG_INTERVAL_MS,
+  onLog = () => {},
+} = {}) {
+  /** Insertion-ordered: the first key is the least recently produced answer. */
+  const bodies = new Map();
+  const loggedAt = new Map();
+  const attempts = new Map();
+
+  function forget(id) {
+    bodies.delete(id);
+    loggedAt.delete(id);
+    attempts.delete(id);
+  }
+
+  return {
+    get size() {
+      return bodies.size;
+    },
+    has: (id) => bodies.has(id),
+    /**
+     * Holds one body, dropping the oldest once the cap is reached.
+     *
+     * The command behind a dropped body has already run — the envelope was
+     * spent before the write was attempted — so nothing is re-executed either
+     * way. Dropping the oldest costs that one answer; keeping every body costs
+     * the process, which is what an unbounded map on a read-only `outbox/`
+     * eventually does.
+     */
+    hold(id, body) {
+      bodies.set(id, body);
+      while (bodies.size > max) {
+        const oldest = bodies.keys().next();
+        if (oldest.done || oldest.value === id) break;
+        forget(oldest.value);
+        onLog(
+          `${oldest.value} -> answer dropped: too many undelivered answers`,
+        );
+      }
+    },
+    /**
+     * Retries every held body once.
+     *
+     * A retry can only ever repeat a file write — never `handle()`, never the
+     * side effect it had. A body that has spent `maxAttempts` is given up on
+     * with one line, and a body still waiting logs at most once per
+     * `logIntervalMs` rather than once per poll.
+     */
+    flush(write, nowMs = Date.now()) {
+      for (const [id, body] of [...bodies]) {
+        try {
+          write(id, body);
+          forget(id);
+        } catch (error) {
+          const spent = (attempts.get(id) ?? 0) + 1;
+          attempts.set(id, spent);
+          if (spent >= maxAttempts) {
+            forget(id);
+            onLog(
+              `${id} -> answer given up after ${spent} attempts: ${error.message}`,
+            );
+            continue;
+          }
+          const last = loggedAt.get(id);
+          if (last === undefined || nowMs - last >= logIntervalMs) {
+            loggedAt.set(id, nowMs);
+            onLog(`${id} -> answer still not written: ${error.message}`);
+          }
+        }
+      }
+    },
+  };
+}
 const DEFAULT_EXEC_TIMEOUT_MS = 15 * 60_000;
 /** How much of each stream rides back inside the answer file. */
 const TAIL_LIMIT = 8_000;
@@ -235,7 +331,7 @@ export function createRelay({
    * resolves, before the write is attempted — so a body only ever needs
    * retrying here, never recomputing by running the command again.
    */
-  const pendingAnswers = new Map();
+  const pendingAnswers = createPendingAnswers({ onLog });
   let driverReachable = null;
   let stopped = false;
 
@@ -535,14 +631,7 @@ export function createRelay({
    * the side effect it had.
    */
   function flushPendingAnswers() {
-    for (const [id, body] of pendingAnswers) {
-      try {
-        answer(id, body);
-        pendingAnswers.delete(id);
-      } catch (error) {
-        onLog(`${id} -> answer still not written: ${error.message}`);
-      }
-    }
+    pendingAnswers.flush(answer);
   }
 
   function poll() {
@@ -607,7 +696,7 @@ export function createRelay({
             // rejection, and must not cause the command to run again — the
             // envelope is already gone. Cache the body and retry the write
             // only, on the next poll.
-            pendingAnswers.set(job.id, body);
+            pendingAnswers.hold(job.id, body);
             onLog(
               `${job.lane} ${job.id} -> answer not written: ${error.message}`,
             );

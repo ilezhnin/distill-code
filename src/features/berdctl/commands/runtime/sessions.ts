@@ -142,6 +142,33 @@ export function refuseRunningTarget(sessionId: string, verb: string): void {
   }
 }
 
+/**
+ * Refuses a berdctl mutation that would hide a chat still running shells.
+ *
+ * Archiving a chat in the app stops its terminals, because a shell under a
+ * chat that has left the sidebar is a process with no UI to stop it. That is
+ * an unrecoverable loss — a dev server, a build, a migration — and unarchiving
+ * restores nothing, so only the operator may cause it. berdctl is declared
+ * non-destructive and its help promises it never discards local work, so it
+ * archives without the stop and refuses while shells are live instead of
+ * leaving orphans behind.
+ */
+export async function refuseChatWithLiveTerminals(
+  sessionId: string,
+  verb: string,
+): Promise<void> {
+  const { getChatSessionIdsWithTerminals } = await import(
+    "@/features/terminal/lib/terminalSessionManager"
+  );
+  if (!getChatSessionIdsWithTerminals().has(sessionId)) {
+    return;
+  }
+  throw new CommandError(
+    "session_has_terminals",
+    `Refusing to ${verb} session "${sessionId}" because it still has running terminals; archiving hides the chat and berdctl will not stop the shells. Ask the user to close the terminals, or to archive the chat in the app.`,
+  );
+}
+
 export function sessionMetadata(session: ChatSession) {
   const runtime = useChatStore.getState().getSessionRuntime(session.id);
   return {

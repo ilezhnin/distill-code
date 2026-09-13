@@ -19,6 +19,7 @@ import {
 import { stopWaveByOperator } from "../waveStop";
 import { getWaveEngineState } from "../waveStore";
 import { isWaveLive } from "../waveVerdict";
+import type { WavePhase } from "../waveEngine";
 import { AgentTreeView } from "./AgentTreeView";
 import { stopOrchestratorSession } from "../orchestratorControls";
 
@@ -37,6 +38,28 @@ import { stopOrchestratorSession } from "../orchestratorControls";
  * from idle to running, and the line is idle-only), so local state would be a
  * guard that disappears exactly when it matters.
  */
+/**
+ * The line for a live wave with no working children, per phase.
+ *
+ * `running` is not here: a running wave with no working child is a wave whose
+ * steps are spawning, which is the one live phase that is genuinely about to
+ * have children to count.
+ */
+function waveWaitLabelKey(phase: WavePhase): string | null {
+  switch (phase) {
+    case "running":
+      return "conductor.wave.spawning";
+    case "digestPending":
+      return "conductor.wave.digestPending";
+    case "dispatchingDigest":
+      return "conductor.wave.dispatchingDigest";
+    case "awaitingVerdict":
+      return "conductor.wave.awaitingVerdict";
+    default:
+      return null;
+  }
+}
+
 export function BrigadeWaitIndicator({
   chatState,
   nodes,
@@ -74,21 +97,32 @@ export function BrigadeWaitIndicator({
   // for every live phase rather than only `running`. A wave waiting on a
   // digest or a verdict holds this conductor's only wave slot — every later
   // plan it makes is refused while that lasts — so those are exactly the
-  // states an operator needs a lever for. Read at render time: the wave store
-  // has no subscriptions, but everything that changes this answer also patches
-  // the graph or the chat store, which re-renders here.
-  const liveWave =
-    sessionId && !isSessionRunning(chatState)
-      ? getWaveEngineState().waves.find(
-          (wave) => wave.conductorSessionId === sessionId && isWaveLive(wave),
-        )
-      : undefined;
+  // states an operator needs a lever for. It is NOT conditioned on the
+  // conductor being idle: a conductor mid-answer while five workers edit the
+  // folder is exactly when an operator reaches for stop. Read at render time:
+  // the wave store has no subscriptions, but everything that changes this
+  // answer also patches the graph or the chat store, which re-renders here.
+  const liveWave = sessionId
+    ? getWaveEngineState().waves.find(
+        (wave) => wave.conductorSessionId === sessionId && isWaveLive(wave),
+      )
+    : undefined;
   // A wave past `running` has no working children, so the count line above is
   // hidden and this indicator used to render nothing at all — the one state
   // where the loop can wedge was the one state with no controls in it.
-  const awaitingConductor = Boolean(liveWave) && !visible;
+  //
+  // The line says what the wave is actually doing. One "waiting for the
+  // verdict" label for every live phase was wrong in two of them: during
+  // `spawning` the wave is still creating its children and during
+  // `digestPending` it is building the digest, neither of which is waiting on
+  // the conductor. And nothing is waited on while the conductor itself is
+  // streaming — that is the answer arriving.
+  const waveWaitLabel =
+    liveWave && !visible && !isSessionRunning(chatState)
+      ? waveWaitLabelKey(liveWave.phase)
+      : null;
 
-  if (!visible && !awaitingConductor) return null;
+  if (!visible && !waveWaitLabel && !liveWave) return null;
 
   return (
     <div
@@ -112,11 +146,9 @@ export function BrigadeWaitIndicator({
           >
             {t("conductor.waitingOnChildren", { count: workingCount })}
           </button>
-        ) : (
-          <span className="min-w-0 truncate">
-            {t("conductor.wave.awaitingVerdict")}
-          </span>
-        )}
+        ) : waveWaitLabel ? (
+          <span className="min-w-0 truncate">{t(waveWaitLabel)}</span>
+        ) : null}
         {sessionId && visible ? (
           <Button
             type="button"

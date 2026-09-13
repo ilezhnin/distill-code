@@ -118,7 +118,9 @@ describe("useConductorGraphSync re-entrancy", () => {
     useConductorGraphStore.getState().registerNode(workerNode());
     renderHook(() => useConductorGraphSync());
 
-    // Any later store event re-runs the pass; a converged pass writes nothing.
+    // A later store event does not undo the convergence. `isConnected` is not
+    // one of the slices the pass is subscribed to any more, and even a slice
+    // that is would find a pass with nothing new to write.
     act(() => {
       useChatStore.setState({ isConnected: true });
     });

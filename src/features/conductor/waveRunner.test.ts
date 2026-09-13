@@ -59,6 +59,7 @@ const {
 const { createWaveState } = await import("./waveEngine");
 const { stopWaveByOperator } = await import("./waveStop");
 const { getWaveTelemetry } = await import("./waveTelemetryStore");
+const { notePersistReadOutage } = await import("./persistHealth");
 
 const CONDUCTOR_ID = "conductor-1";
 
@@ -207,6 +208,37 @@ describe("waveRunner", () => {
     }
   });
 
+  it("tells every conductor chat that it is off for the session", async () => {
+    // The engine never starts a wave while a document is unread, so the
+    // write-refusal notice (which waits for a live wave) would wait forever.
+    // Without this the operator sees a conductor answering with a plan and an
+    // app doing nothing at all about it.
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    notePersistReadOutage(
+      "waves",
+      Object.assign(new Error("read failed"), { name: "EPERM" }),
+    );
+    setWaveEngineStateHydratedForTests("failed");
+    try {
+      runWaveEngineTick();
+      await Promise.resolve();
+
+      const notices = noticeTexts();
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain("conductor/waves.json");
+      expect(notices[0]).toContain("EPERM");
+
+      // Said once per chat, not once per tick — the tick runs on every
+      // chat-store change.
+      runWaveEngineTick();
+      await Promise.resolve();
+      expect(noticeTexts()).toHaveLength(1);
+    } finally {
+      setWaveEngineStateHydratedForTests(null);
+    }
+  });
+
   it("does not re-admit an old plan once its tombstone has been evicted", async () => {
     // The tombstone list is capped at 500 and every wave spends at least two
     // entries, so a heavy user's oldest plans fall off it. Reopening that chat
@@ -252,6 +284,30 @@ describe("waveRunner", () => {
     expect(
       getWaveEngineState().waves.map((wave) => wave.planMessageId),
     ).toEqual(["plan-next"]);
+  });
+
+  it("still admits a plan this process produced when the watermark is in the future", async () => {
+    // A machine whose clock was a day fast stored a mark a day ahead; Windows
+    // Time then resynced. Without the pre-process requirement every later plan
+    // from that conductor is silently dropped — before `markScanned`, so there
+    // is no wave, no refusal and no telemetry to find it by.
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setWaveEngineState({
+      ...getWaveEngineState(),
+      newestProcessedMessageCreatedAt: {
+        [CONDUCTOR_ID]: Date.now() + 86_400_000,
+      },
+    });
+    setTranscript([
+      { ...assistant("plan-now", TWO_STEP_PLAN), created: Date.now() },
+    ]);
+
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(
+        getWaveEngineState().waves.map((wave) => wave.planMessageId),
+      ).toEqual(["plan-now"]),
+    );
   });
 
   it("spawns the access:[] step immediately and holds the access:all step", async () => {

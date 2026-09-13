@@ -210,6 +210,40 @@ describe("usageOverviewModel", () => {
     expect(overview.hasPartialCost).toBe(true);
   });
 
+  it("reads an archived fold that dropped a cost as partial", () => {
+    // Past the 90-day prune a mixed-currency provider's dropped amounts are
+    // gone from the record. The figure that is left is real but short, and a
+    // confident "$" total that omits the EUR sessions is the failure.
+    const overview = buildUsageOverview({
+      ledger: {
+        ...ledger,
+        sessions: {},
+        archived: {
+          goose: {
+            sessions: 4,
+            chatsStarted: 4,
+            messageCount: 8,
+            turns: 6,
+            inputTokens: 40,
+            outputTokens: 20,
+            cacheTokens: 40,
+            totalTokens: 100,
+            costUsd: 0.5,
+            costCurrency: "USD",
+            hasMissingCost: true,
+            workedMs: 1_000,
+            activeDays: 3,
+          },
+        },
+      },
+      enabledProviderIds: ["goose"],
+    });
+
+    expect(overview.hasPartialCost).toBe(true);
+    // The known part is still reported; it is the completeness that is flagged.
+    expect(overview.estimatedCostUsd).toBe(0.5);
+  });
+
   it("keeps a single non-USD currency on the figure it belongs to", () => {
     const { a } = ledger.sessions;
     const overview = buildUsageOverview({

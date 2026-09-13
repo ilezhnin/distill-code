@@ -32,7 +32,9 @@ import {
   ALLOWED_COMMANDS,
   buildCmdLine,
   clamp,
+  createPendingAnswers,
   createRelay,
+  MAX_PENDING_ANSWERS,
   parseArgs,
   quoteForCmd,
   resolveCwd,
@@ -496,5 +498,78 @@ describe("a driver envelope with an out-of-range timeout", () => {
     );
     assert.equal(answer.ok, false);
     assert.match(answer.error, /Cannot reach the app test driver/);
+  });
+});
+
+describe("the undeliverable-answer store", () => {
+  function refuse() {
+    throw new Error("EPERM");
+  }
+
+  it("keeps at most MAX_PENDING_ANSWERS bodies, dropping the oldest", () => {
+    // A permanently unwritable outbox/ used to grow this map forever: every
+    // answer produced for the rest of the process's life, held in memory.
+    const logs = [];
+    const pending = createPendingAnswers({ onLog: (line) => logs.push(line) });
+
+    for (let index = 0; index < MAX_PENDING_ANSWERS + 5; index += 1) {
+      pending.hold(`e${index}`, { ok: true });
+    }
+
+    assert.equal(pending.size, MAX_PENDING_ANSWERS);
+    assert.equal(pending.has("e0"), false);
+    assert.equal(pending.has(`e${MAX_PENDING_ANSWERS + 4}`), true);
+    assert.equal(
+      logs.filter((line) => line.includes("answer dropped")).length,
+      5,
+    );
+  });
+
+  it("logs a body that will not land once per interval, not once per poll", () => {
+    // The poll runs every 250 ms, so the old code wrote about four lines a
+    // second per stuck body — the kind of failure that fills a disk unwatched.
+    const logs = [];
+    const pending = createPendingAnswers({
+      logIntervalMs: 1_000,
+      onLog: (line) => logs.push(line),
+    });
+    pending.hold("e1", { ok: true });
+
+    for (let now = 0; now < 1_000; now += 250) {
+      pending.flush(refuse, now);
+    }
+    assert.equal(logs.length, 1);
+
+    pending.flush(refuse, 1_000);
+    assert.equal(logs.length, 2);
+  });
+
+  it("gives up on a body after its attempts are spent", () => {
+    const logs = [];
+    const pending = createPendingAnswers({
+      maxAttempts: 3,
+      logIntervalMs: 0,
+      onLog: (line) => logs.push(line),
+    });
+    pending.hold("e1", { ok: true });
+
+    pending.flush(refuse, 0);
+    pending.flush(refuse, 1);
+    assert.equal(pending.size, 1);
+    pending.flush(refuse, 2);
+
+    assert.equal(pending.size, 0);
+    assert.ok(logs.at(-1).includes("given up after 3 attempts"));
+  });
+
+  it("delivers and forgets a body as soon as the write succeeds", () => {
+    const written = [];
+    const pending = createPendingAnswers();
+    pending.hold("e1", { ok: true });
+
+    pending.flush((id, body) => written.push([id, body]), 0);
+
+    assert.equal(pending.size, 0);
+    assert.deepEqual(written, [["e1", { ok: true }]]);
   });
 });
