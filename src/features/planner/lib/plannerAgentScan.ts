@@ -9,6 +9,8 @@
 import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
 import { getTextContent, type Message } from "@/shared/types/messages";
 
+import { messageMentions } from "@/features/memory/lib/transcriptScan";
+
 import {
   parsePlannerFences,
   TODO_FENCE_TAG,
@@ -44,6 +46,7 @@ function isSettledAssistantMessage(message: Message): boolean {
 
 export function detectPlannerFenceCandidates(args: {
   messagesBySession: Readonly<Record<string, readonly Message[] | undefined>>;
+  /** Expected to be cheap — a set lookup, not a search through a list. */
   isApplied: (messageId: string) => boolean;
 }): PlannerFenceCandidate[] {
   const candidates: PlannerFenceCandidate[] = [];
@@ -52,10 +55,10 @@ export function detectPlannerFenceCandidates(args: {
     for (const message of messages.slice(-PLANNER_SCAN_TAIL)) {
       if (!isSettledAssistantMessage(message)) continue;
       if (args.isApplied(message.id)) continue;
-      const text = getTextContent(message);
-      // Cheap reject before the real parse: most turns are prose.
-      if (!text.includes(TODO_FENCE_TAG)) continue;
-      const request = parsePlannerFences(text);
+      // Cheap reject before the real parse: most turns are prose, and the
+      // tag test runs on the parts as they are rather than on a joined copy.
+      if (!messageMentions(message, TODO_FENCE_TAG)) continue;
+      const request = parsePlannerFences(getTextContent(message));
       if (!request) continue;
       candidates.push({ sessionId, messageId: message.id, request });
     }

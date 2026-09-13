@@ -11,6 +11,7 @@
 import { useEffect } from "react";
 
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import { messageIdSet } from "@/features/memory/lib/transcriptScan";
 
 import { detectPlannerFenceCandidates } from "./lib/plannerAgentScan";
 import { usePlannerStore } from "./stores/plannerStore";
@@ -31,9 +32,12 @@ function drainPlannerFences(): void {
   draining = true;
   try {
     const planner = usePlannerStore.getState();
+    // The filed tombstones as a set: this predicate is asked about every
+    // message of every cached transcript on every pass.
+    const applied = messageIdSet(planner.appliedMessageIds);
     const candidates = detectPlannerFenceCandidates({
       messagesBySession: useChatStore.getState().messagesBySession,
-      isApplied: (messageId) => planner.appliedMessageIds.includes(messageId),
+      isApplied: (messageId) => applied.has(messageId),
     });
     for (const candidate of candidates) {
       usePlannerStore
@@ -52,9 +56,15 @@ function drainPlannerFences(): void {
 export function usePlannerAgentSync(): void {
   useEffect(() => {
     drainPlannerFences();
-    const stopWatchingMessages = useChatStore.subscribe(() => {
-      drainPlannerFences();
-    });
+    // On the transcripts only: the chat store's runtime flags change on every
+    // streamed token's bookkeeping as well as the token itself, and no flag can
+    // make a message into a filed task. The scan reads `messagesBySession`.
+    const stopWatchingMessages = useChatStore.subscribe(
+      (state) => state.messagesBySession,
+      () => {
+        drainPlannerFences();
+      },
+    );
     const stopWatchingHydration = usePlannerStore.subscribe(
       (state, previous) => {
         if (state.hydrated && !previous.hydrated) drainPlannerFences();

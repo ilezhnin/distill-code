@@ -47,6 +47,7 @@ import {
   type MemoryRecallCandidate,
 } from "./lib/memoryRecall";
 import { searchMemories } from "./lib/memorySearch";
+import { messageIdSet } from "./lib/transcriptScan";
 import { useMemoryStore } from "./stores/memoryStore";
 
 let draining = false;
@@ -90,10 +91,15 @@ function drainRecallFences(): void {
   if (draining) return;
   draining = true;
   try {
-    const answered = useMemoryStore.getState().recallAnsweredMessageIds;
+    // As a set: the predicate is asked about every message of every cached
+    // transcript on every pass, and the list of answered questions is bounded
+    // by a thousand, not by one.
+    const answered = messageIdSet(
+      useMemoryStore.getState().recallAnsweredMessageIds,
+    );
     const candidates = detectRecallFenceCandidates({
       messagesBySession: useChatStore.getState().messagesBySession,
-      isAnswered: (messageId) => answered.includes(messageId),
+      isAnswered: (messageId) => answered.has(messageId),
     });
     for (const candidate of candidates) {
       // Tombstoned before anything else happens: delivery is asynchronous and
@@ -138,9 +144,15 @@ function drainRecallFences(): void {
 export function useMemoryRecallSync(): void {
   useEffect(() => {
     drainRecallFences();
-    const stopWatchingMessages = useChatStore.subscribe(() => {
-      drainRecallFences();
-    });
+    // On the transcripts only, for the reason the write drain says: a runtime
+    // flag cannot make a question out of a message, and the flags change more
+    // often than the transcripts do.
+    const stopWatchingMessages = useChatStore.subscribe(
+      (state) => state.messagesBySession,
+      () => {
+        drainRecallFences();
+      },
+    );
     const stopWatchingHydration = useMemoryStore.subscribe(
       (state, previous) => {
         if (state.hydrated && !previous.hydrated) drainRecallFences();
