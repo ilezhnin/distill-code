@@ -256,6 +256,37 @@ fn find_project_hermit_bin_within(start: &Path, repo_root: &Path) -> Option<Path
     None
 }
 
+/// The PATH entries a tool lookup is allowed to probe.
+///
+/// `std::env::split_paths` yields an empty `PathBuf` for every empty segment —
+/// `;;` or a trailing `;`, both common once an installer has appended to PATH —
+/// and `Path::new("").join("git.exe")` is the *relative* `git.exe`, which
+/// `is_file()` and `canonicalize()` then resolve against Berd's own current
+/// directory instead of any PATH directory. A relative-but-non-empty entry
+/// (`.`, `bin`) does the same. Rust's `Command` resolver drops both and never
+/// searches the current directory; a trusted-PATH lookup must not either, or a
+/// `git.exe` dropped in the directory Berd was launched from wins.
+///
+/// Lives outside `#[cfg(windows)]` so it can be tested on any host: the rule is
+/// about PATH shape, which `split_paths` and `is_absolute` already localise.
+#[cfg(any(windows, test))]
+fn trusted_path_lookup_dirs(path: &str) -> Vec<PathBuf> {
+    std::env::split_paths(path)
+        .filter(|dir| !dir.as_os_str().is_empty() && dir.is_absolute())
+        .collect()
+}
+
+/// Find `file_name` in the absolute directories of `path`, and nowhere else.
+#[cfg(any(windows, test))]
+fn find_file_on_path_dirs(file_name: &str, path: Option<&str>) -> Option<PathBuf> {
+    trusted_path_lookup_dirs(path?)
+        .into_iter()
+        .map(|dir| dir.join(file_name))
+        .find(|candidate| candidate.is_file())?
+        .canonicalize()
+        .ok()
+}
+
 #[cfg(windows)]
 #[path = "dir_env/windows.rs"]
 mod platform;
@@ -275,6 +306,46 @@ mod tests {
     use super::*;
     #[cfg(windows)]
     use crate::services::env_key;
+
+    /// A trailing or doubled separator must not turn a tool lookup into a search
+    /// of Berd's own working directory. Runs on every host: the empty and
+    /// relative entries are the whole mechanism, and `split_paths` localises the
+    /// separator for us.
+    #[test]
+    fn path_lookup_never_resolves_a_tool_against_the_process_directory() {
+        // Cargo runs tests with the crate directory as the working directory, so
+        // `Cargo.toml` is exactly the "file sitting in the cwd" an empty or
+        // relative PATH entry would hand back.
+        let cwd = std::env::current_dir().expect("current dir");
+        assert!(cwd.join("Cargo.toml").is_file(), "test fixture missing");
+
+        let untrusted = std::env::join_paths([
+            PathBuf::from(""),
+            PathBuf::from("."),
+            PathBuf::from("crates"),
+        ])
+        .expect("join untrusted path");
+        assert_eq!(
+            find_file_on_path_dirs("Cargo.toml", Some(&untrusted.to_string_lossy())),
+            None,
+            "an empty or relative PATH entry must not be searched"
+        );
+
+        // An absolute entry after the empty one is still found.
+        let mixed =
+            std::env::join_paths([PathBuf::from(""), cwd.clone()]).expect("join mixed path");
+        assert_eq!(
+            find_file_on_path_dirs("Cargo.toml", Some(&mixed.to_string_lossy())),
+            Some(cwd.join("Cargo.toml").canonicalize().expect("canonicalize")),
+        );
+
+        assert_eq!(
+            trusted_path_lookup_dirs(&mixed.to_string_lossy()),
+            vec![cwd],
+            "only the absolute entry survives"
+        );
+        assert!(find_file_on_path_dirs("Cargo.toml", None).is_none());
+    }
 
     #[test]
     #[cfg(windows)]
