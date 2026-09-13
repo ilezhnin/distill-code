@@ -698,6 +698,48 @@ describe("chatStore", () => {
     });
   });
 
+  // Archiving or deleting a chat does not cancel its turn, so a trailing
+  // assistant chunk can still land. It used to re-create the session's rows and
+  // persist an unread id that no session owns — nothing can open it to mark it
+  // read, so it came back as unread on every start.
+  it("does not mark a session unread after it was archived away", () => {
+    const store = useChatStore.getState();
+    store.addMessage("gone", makeMessage());
+    store.cleanupSession("gone");
+
+    store.addMessage("gone", makeMessage());
+
+    expect(getRuntime("gone").hasUnread).toBe(false);
+    expect(loadCachedUnreadSessionIds()).toEqual([]);
+  });
+
+  it("marks the session unread again once it is loaded back", () => {
+    const store = useChatStore.getState();
+    store.cleanupSession("returning");
+    store.setSessionLoading("returning", true);
+
+    store.addMessage("returning", makeMessage());
+
+    expect(getRuntime("returning").hasUnread).toBe(true);
+    expect(loadCachedUnreadSessionIds()).toEqual(["returning"]);
+  });
+
+  it("prunes unread flags for sessions the host no longer lists", () => {
+    const store = useChatStore.getState();
+    store.markSessionUnread("still-there");
+    store.markSessionUnread("deleted-elsewhere");
+    expect(loadCachedUnreadSessionIds().sort()).toEqual([
+      "deleted-elsewhere",
+      "still-there",
+    ]);
+
+    store.pruneUnreadSessions(["still-there", "never-unread"]);
+
+    expect(getRuntime("still-there").hasUnread).toBe(true);
+    expect(getRuntime("deleted-elsewhere").hasUnread).toBe(false);
+    expect(loadCachedUnreadSessionIds()).toEqual(["still-there"]);
+  });
+
   it("clears messages and runtime state for a single session", () => {
     useChatStore.getState().addMessage("s1", makeMessage());
     useChatStore.getState().setChatState("s1", "streaming");
