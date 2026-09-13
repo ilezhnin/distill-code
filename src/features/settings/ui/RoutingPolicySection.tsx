@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   IconArrowDown,
@@ -14,7 +15,10 @@ import {
   type ModelPreferenceClassId,
 } from "@/features/agents/lib/modelRanking";
 import { isDefaultRoutingPolicy } from "@/features/agents/lib/routingPolicy";
-import { useRoutingPolicyStore } from "@/features/agents/stores/routingPolicyStore";
+import {
+  retryRoutingPolicyHydration,
+  useRoutingPolicyStore,
+} from "@/features/agents/stores/routingPolicyStore";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
@@ -49,6 +53,17 @@ export function RoutingPolicySection() {
     (state) => state.setClassOverride,
   );
   const resetPolicy = useRoutingPolicyStore((state) => state.resetPolicy);
+  const hydrationFailed = useRoutingPolicyStore(
+    (state) => state.hydrationFailed,
+  );
+  const [retrying, setRetrying] = useState(false);
+
+  const retryHydration = () => {
+    setRetrying(true);
+    void retryRoutingPolicyHydration().finally(() => {
+      setRetrying(false);
+    });
+  };
 
   return (
     <SettingsSection
@@ -56,6 +71,25 @@ export function RoutingPolicySection() {
       titleId="settings-routing"
       data-testid="settings-routing"
     >
+      {hydrationFailed ? (
+        <div
+          className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-foreground"
+          data-testid="routing-not-persisted"
+          role="status"
+        >
+          <span>{t("routing.notPersisted")}</span>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            disabled={retrying}
+            data-testid="routing-retry-hydration"
+            onClick={retryHydration}
+          >
+            {t("routing.retryLoad")}
+          </Button>
+        </div>
+      ) : null}
       <SettingsRow
         label={t("routing.waveThreshold")}
         description={t("routing.waveThresholdDescription")}

@@ -521,6 +521,8 @@
     "moveDown": "Move {{label}} down",
     "remove": "Remove {{label}}",
     "add": "Add a model",
-    "reset": "Reset routing to the built-in settings"
+    "reset": "Reset routing to the built-in settings",
+    "notPersisted": "Routing settings could not be read, so changes here apply to this run only and will be gone after a restart.",
+    "retryLoad": "Try reading again"
   }
 }
