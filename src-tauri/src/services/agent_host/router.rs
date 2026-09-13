@@ -1425,7 +1425,7 @@ impl Inner {
                 "session/cancel",
                 json!({ "sessionId": bridge_session_id.clone() }),
             );
-            bridge.close_session(&bridge_session_id).await;
+            Self::close_in_background(bridge, bridge_session_id);
         }
         self.store
             .delete_session(&session_id)
@@ -1448,7 +1448,18 @@ impl Inner {
             "session/cancel",
             json!({ "sessionId": runtime.bridge_session_id.clone() }),
         );
-        bridge.close_session(&runtime.bridge_session_id).await;
+        Self::close_in_background(bridge, runtime.bridge_session_id.clone());
+    }
+
+    /// Hand a bridge session back without waiting for the answer. The callers
+    /// are on the renderer's request path — deleting a chat, moving one to
+    /// another folder — and the host has already stopped using the session:
+    /// nothing the bridge could say changes what happens next, so a bridge that
+    /// takes the request and goes quiet must not delay the user's action.
+    fn close_in_background(bridge: Arc<Bridge>, bridge_session_id: String) {
+        tokio::spawn(async move {
+            bridge.close_session(&bridge_session_id).await;
+        });
     }
 
     /// Stop using a session's bridge session, so the next prompt attaches a
