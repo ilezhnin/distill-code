@@ -19,7 +19,7 @@ const skill: SkillInfo = {
 };
 
 const mocks = vi.hoisted(() => ({
-  deleteSkill: vi.fn(async (_path: string) => {}),
+  deleteSkill: vi.fn(async (..._args: unknown[]) => {}),
   listSkills: vi.fn(),
   updateSkill: vi.fn(),
 }));
