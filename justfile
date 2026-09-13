@@ -189,6 +189,15 @@ tauri-test:
     just _tauri-cargo-windows test -p berdctl
     just _tauri-cargo-windows test -p berd-monitor
 
+# Check npm and Rust dependencies against published advisories, the same way CI
+# does. Kept out of `just ci` because both halves need network access and
+# `cargo audit` is a separate tool install (`cargo install cargo-audit`); the
+# CI jobs are the enforcing gate.
+[windows]
+audit:
+    {{ dev_tool }} pnpm audit --prod --audit-level=high
+    just _tauri-cargo-windows audit
+
 # Run the local CI gate.
 [windows]
 ci: check tauri-fmt-check tauri-check tauri-test clippy test agent-driver-test build
