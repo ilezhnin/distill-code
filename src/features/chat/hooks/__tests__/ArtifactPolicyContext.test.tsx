@@ -8,6 +8,7 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
   ArtifactPolicyProvider,
   collectSessionArtifacts,
+  getArtifactSignature,
   useArtifactActionsContext,
   useSessionArtifacts,
 } from "../ArtifactPolicyContext";
@@ -770,6 +771,61 @@ describe("ArtifactPolicyContext trusted-root predicate", () => {
 
     expect(screen.getByTestId("within-trusted-roots")).toHaveTextContent(
       "true",
+    );
+  });
+});
+
+describe("getArtifactSignature", () => {
+  // A streamed frame rebuilds the messages array but not the settled messages
+  // in it, so a message's fragment is read once and reused — the signature must
+  // not walk the whole transcript again per frame.
+  function countingMessage(id: string, path: string) {
+    let reads = 0;
+    const message = {
+      id,
+      role: "assistant" as const,
+      created: 1,
+      get content() {
+        reads += 1;
+        return [
+          {
+            type: "toolRequest" as const,
+            id: `${id}-tool`,
+            name: "write_file",
+            arguments: {},
+            status: "completed" as const,
+            locations: [{ path }],
+          },
+        ];
+      },
+    };
+    return { message: message as unknown as Message, reads: () => reads };
+  }
+
+  it("reads a settled message only once across frames", () => {
+    const settled = countingMessage("a1", "out/report.md");
+
+    const first = getArtifactSignature([settled.message], "/work");
+    const second = getArtifactSignature([settled.message], "/work");
+
+    expect(second).toBe(first);
+    expect(settled.reads()).toBe(1);
+  });
+
+  it("still reflects a message whose identity changed", () => {
+    const before = countingMessage("a1", "out/report.md");
+    const after = countingMessage("a1", "out/summary.md");
+
+    expect(getArtifactSignature([after.message], "/work")).not.toBe(
+      getArtifactSignature([before.message], "/work"),
+    );
+  });
+
+  it("keeps the cwd out of the per-message cache", () => {
+    const settled = countingMessage("a1", "out/report.md");
+
+    expect(getArtifactSignature([settled.message], "/new")).not.toBe(
+      getArtifactSignature([settled.message], "/old"),
     );
   });
 });
