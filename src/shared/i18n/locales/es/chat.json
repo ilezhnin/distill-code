@@ -7,6 +7,7 @@
     "groupLabel_one": "1 adjunto",
     "groupLabel_other": "{{count}} adjuntos",
     "imagePreviewTitle": "Vista previa de imagen",
+    "noPathForBrowserFile": "No se adjuntó «{{name}}»: esta acción no incluye la ruta del archivo, así que el agente no podría leerlo. Usa el botón de clip o arrastra el archivo desde una carpeta.",
     "open": "Abrir adjunto {{name}}",
     "previewAlt": "Vista previa de {{name}}",
     "remove": "Eliminar adjunto",
