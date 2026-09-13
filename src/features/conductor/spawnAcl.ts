@@ -182,15 +182,26 @@ export class SpawnAclDeniedError extends Error {
  * handwritten copies changed where the text comes from, not what the agents
  * read). The second sentence names the berdctl spawn commands, because the
  * app preamble injected alongside this line advertises them
- * (`src/features/berdctl/appPreamble.ts`) — and since P42 those commands are
- * refused in code too, against the `actor` identity the CLI now sends
- * (berdctl runtime/spawnGate.ts), so the sentence states enforcement rather
- * than substituting for it.
+ * (`src/features/berdctl/appPreamble.ts`). It says plainly that those two
+ * commands are NOT checked in code: the gate in berdctl runtime/spawnGate.ts
+ * only sees an `actor` when the harness exports AGENT_SESSION_ID, and the
+ * built-in agent host cannot (one bridge process serves every session of a
+ * harness), so every real call arrives anonymous and is read as the
+ * operator. Claiming enforcement here would teach agents and reviewers a
+ * guard that does not exist.
  */
 const SPAWN_FORBIDDEN_PROMPT_LINE =
   "Distill starts other agents from the Agents catalog; do not spawn chats yourself. " +
   "That includes the `berdctl session create` and `berdctl session fork` commands " +
-  "the Distill app preamble lists — Distill refuses those in code as well.";
+  "the Distill app preamble lists: Distill cannot tell which session runs them, so " +
+  "this rule is not enforced in code for them — follow it anyway.";
+
+/** The clause that extends a layer/name permission to the berdctl spawn
+ *  commands, stating honestly that they are not attributed to the caller. */
+const BERDCTL_SPAWN_NOT_CHECKED_CLAUSE =
+  "The same limit applies to `berdctl session create` and `berdctl session fork`, " +
+  "which Distill cannot attribute to your session and therefore does not check in " +
+  "code — respect it anyway.";
 
 /**
  * The prompt insert stating a session's effective spawn permissions.
@@ -198,9 +209,11 @@ const SPAWN_FORBIDDEN_PROMPT_LINE =
  * Generated from the same ACL the enforcement reads, so prompt and mechanism
  * cannot drift apart. Empty permissions open with the exact sentence the
  * catalog files used to hardcode; non-empty permissions state what is
- * allowed and that everything else is refused by the app through those
- * mechanisms, not merely discouraged. Both wordings then extend the rule to
- * the berdctl spawn commands, refused in code the same way since P42.
+ * allowed and that everything else is refused by the app through Distill's
+ * own spawn mechanisms, not merely discouraged. Both wordings then extend
+ * the rule to the berdctl spawn commands — as a rule the agent must follow,
+ * because the app cannot attribute those calls to a session and so does not
+ * refuse them in code.
  */
 export interface SpawnAgentMenuEntry {
   /** The allowlist entry, as authored (normalized). */
@@ -261,16 +274,16 @@ export function formatSpawnPolicyPrompt(
   }
   const layersLine = `Through Distill's own mechanisms you may start agents on these layers: ${layers.join(
     ", ",
-  )}. Distill refuses any other spawn through those mechanisms in code; do not try to start sessions outside those layers. The same limit applies to \`berdctl session create\` and \`berdctl session fork\`, refused in code the same way.`;
+  )}. Distill refuses any other spawn through those mechanisms in code; do not try to start sessions outside those layers. ${BERDCTL_SPAWN_NOT_CHECKED_CLAUSE}`;
   if (agentMenu === undefined) {
     return layersLine;
   }
   if (agentMenu.length === 0) {
-    return `${layersLine}\nBy name you may start no agents at all: your named allowlist is empty, so every programmatic spawn is refused in code.`;
+    return `${layersLine}\nBy name you may start no agents at all: your named allowlist is empty, so every spawn through Distill's own mechanisms is refused in code, and the berdctl spawn commands are off limits by this rule.`;
   }
   return [
     layersLine,
-    "You may start only these agents, by name — any other agent, and any spawn that names no agent, is refused in code:",
+    "You may start only these agents, by name — any other agent, and any spawn that names no agent, is refused in code through Distill's own mechanisms and off limits through berdctl:",
     ...agentMenu.map(formatAgentMenuLine),
   ].join("\n");
 }

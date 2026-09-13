@@ -12,9 +12,13 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import {
   BERDCTL_PREAMBLE,
+  formatBerdctlPreamble,
   getBerdctlPreamble,
   __resetBerdctlPreambleForTests,
 } from "@/features/berdctl/appPreamble";
+
+const SESSION_ID = "20260913_4";
+const SESSION_PREAMBLE = formatBerdctlPreamble(SESSION_ID);
 
 describe("getBerdctlPreamble", () => {
   beforeEach(() => {
@@ -26,14 +30,16 @@ describe("getBerdctlPreamble", () => {
   it("returns the preamble when the plugin reports the broker running", async () => {
     mocks.invoke.mockResolvedValue({ running: true });
 
-    await expect(getBerdctlPreamble()).resolves.toBe(BERDCTL_PREAMBLE);
+    await expect(getBerdctlPreamble(SESSION_ID)).resolves.toBe(
+      SESSION_PREAMBLE,
+    );
     expect(mocks.invoke).toHaveBeenCalledWith("plugin:berdctl|status");
   });
 
   it("returns null when the plugin reports the broker stopped", async () => {
     mocks.invoke.mockResolvedValue({ running: false });
 
-    await expect(getBerdctlPreamble()).resolves.toBeNull();
+    await expect(getBerdctlPreamble(SESSION_ID)).resolves.toBeNull();
   });
 
   it("asks the plugin per call so availability changes are picked up", async () => {
@@ -41,17 +47,19 @@ describe("getBerdctlPreamble", () => {
     // an app-global fact owned by the plugin, so it must be queried, not
     // cached renderer-locally where only one window would ever update it.
     mocks.invoke.mockResolvedValueOnce({ running: false });
-    await expect(getBerdctlPreamble()).resolves.toBeNull();
+    await expect(getBerdctlPreamble(SESSION_ID)).resolves.toBeNull();
 
     mocks.invoke.mockResolvedValueOnce({ running: true });
-    await expect(getBerdctlPreamble()).resolves.toBe(BERDCTL_PREAMBLE);
+    await expect(getBerdctlPreamble(SESSION_ID)).resolves.toBe(
+      SESSION_PREAMBLE,
+    );
     expect(mocks.invoke).toHaveBeenCalledTimes(2);
   });
 
   it("returns null outside the Tauri webview without invoking", async () => {
     window.__TAURI_INTERNALS__ = undefined;
 
-    await expect(getBerdctlPreamble()).resolves.toBeNull();
+    await expect(getBerdctlPreamble(SESSION_ID)).resolves.toBeNull();
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
@@ -62,19 +70,46 @@ describe("getBerdctlPreamble", () => {
       ),
     );
 
-    await expect(getBerdctlPreamble()).resolves.toBeNull();
-    await expect(getBerdctlPreamble()).resolves.toBeNull();
+    await expect(getBerdctlPreamble(SESSION_ID)).resolves.toBeNull();
+    await expect(getBerdctlPreamble(SESSION_ID)).resolves.toBeNull();
     expect(mocks.invoke).toHaveBeenCalledTimes(1);
   });
 
   it("returns null on a transient status failure but retries next call", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     mocks.invoke.mockRejectedValueOnce(new Error("ipc glitch"));
-    await expect(getBerdctlPreamble()).resolves.toBeNull();
+    await expect(getBerdctlPreamble(SESSION_ID)).resolves.toBeNull();
     expect(warnSpy).toHaveBeenCalled();
 
     mocks.invoke.mockResolvedValueOnce({ running: true });
-    await expect(getBerdctlPreamble()).resolves.toBe(BERDCTL_PREAMBLE);
+    await expect(getBerdctlPreamble(SESSION_ID)).resolves.toBe(
+      SESSION_PREAMBLE,
+    );
+  });
+});
+
+describe("formatBerdctlPreamble", () => {
+  it("tells each session its own id and how to pass it", () => {
+    // Nothing else identifies the caller: the host cannot export
+    // AGENT_SESSION_ID per session (one bridge process per harness), and
+    // `info context` reports the chat the user is viewing, not the caller.
+    const text = formatBerdctlPreamble(SESSION_ID);
+    expect(text.startsWith(BERDCTL_PREAMBLE)).toBe(true);
+    expect(text).toContain(`Your own session id is ${SESSION_ID}.`);
+    expect(text).toContain(`\`--session-id ${SESSION_ID}\``);
+    expect(text).toContain("berd-monitor");
+    expect(text).toContain("`berdctl info context`");
+    expect(text).not.toContain("AGENT_SESSION_ID");
+  });
+
+  it("gives two sessions different preambles", () => {
+    expect(formatBerdctlPreamble("session-a")).not.toBe(
+      formatBerdctlPreamble("session-b"),
+    );
+  });
+
+  it("falls back to the shared text when the id is blank", () => {
+    expect(formatBerdctlPreamble("   ")).toBe(BERDCTL_PREAMBLE);
   });
 });
 
