@@ -69,6 +69,11 @@ const mocks = vi.hoisted(() => ({
   listPersonas: vi.fn(),
   createSkill: vi.fn(),
   listSkills: vi.fn(),
+  terminalChatSessionIds: new Set<string>(),
+}));
+
+vi.mock("@/features/terminal/lib/terminalSessionManager", () => ({
+  getChatSessionIdsWithTerminals: () => mocks.terminalChatSessionIds,
 }));
 
 vi.mock("@/shared/api/acp", () => ({
@@ -313,6 +318,7 @@ async function expectCommandError(
 
 beforeEach(() => {
   resetSessionTargetCoordinatorsForTests();
+  mocks.terminalChatSessionIds.clear();
   localStorage.removeItem("distill:chat-workspace-metadata");
   useChatSessionStore.setState({
     sessions: [],
@@ -2465,11 +2471,56 @@ describe("sessions.archive", () => {
     }
   });
 
+  it("refuses a chat with running terminals before touching the controller", async () => {
+    // Archiving in the app stops that chat's shells, and the archive reaches
+    // the same function berdctl does. Ending a dev server, a build or a
+    // migration is an unrecoverable loss nothing restores on unarchive, so
+    // berdctl refuses rather than causing it silently.
+    seedSessions(makeSession({ id: "session-1" }));
+    mocks.terminalChatSessionIds.add("session-1");
+
+    const error = await expectCommandError(
+      dispatchCommand(
+        "sessions",
+        { action: "archive", session_id: "session-1" },
+        ctx,
+      ),
+      "session_has_terminals",
+    );
+
+    expect(error.message).toContain("running terminals");
+    expect(error.message).toContain("in the app");
+    expect(controller.archiveSession).not.toHaveBeenCalled();
+  });
+
+  it("archives a chat whose terminals belong to another session", async () => {
+    mockSessionFound();
+    mocks.terminalChatSessionIds.add("session-2");
+
+    const result = await dispatchCommand(
+      "sessions",
+      { action: "archive", session_id: "session-1" },
+      ctx,
+    );
+
+    expect(result).toEqual({ ok: true });
+    expect(controller.archiveSession).toHaveBeenCalled();
+  });
+
   it("documents --discard-changes as having no effect", () => {
     const command = TOOL_GROUPS.sessions.actions.archive;
     expect(command.destructive).toBe(false);
     expect(command.helpFooter).toContain("has no effect");
     expect(command.description).not.toMatch(/unless --discard-changes/);
+  });
+
+  it("says in its help that it will not stop the chat's terminals", () => {
+    // `destructive: false` is only honest while the command cannot end a
+    // process the operator is running.
+    const command = TOOL_GROUPS.sessions.actions.archive;
+    expect(command.destructive).toBe(false);
+    expect(command.helpFooter).toContain("running terminals");
+    expect(command.description).toContain("running terminals");
   });
 
   it("returns a failure after archival when Git cleanup is incomplete", async () => {

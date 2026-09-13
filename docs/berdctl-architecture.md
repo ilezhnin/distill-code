@@ -98,6 +98,15 @@ Required command properties:
   changes (`session archive` refuses with `cleanup_requires_discard` and the
   user confirms the loss in the app; its `--discard-changes` flag is kept on
   the wire for compatibility and has no effect)
+- no killing the operator's processes: archiving a chat in the app also stops
+  that chat's terminals, because a shell under a chat that has left the sidebar
+  has no UI left to stop it. Ending a dev server, a build or a migration is
+  unrecoverable — unarchive restores no shell — so the stop is gated to an
+  operator-initiated archive (`AppShell.archiveChat`'s `stopTerminals` option,
+  set only by the Archive action), and `session archive` refuses with
+  `session_has_terminals` while the chat still has live shells. Both halves are
+  needed: the gate keeps the stop out of reach, the refusal keeps berdctl from
+  leaving orphaned shells behind an archived chat
 - no invisible non-read mutations
 - mutations are visible immediately or discoverable in normal app UI
 - one-way verbs are limited to visible product actions the caller explicitly

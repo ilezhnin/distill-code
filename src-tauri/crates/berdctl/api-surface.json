@@ -462,7 +462,7 @@
           }
         },
         "archive": {
-          "description": "Archive a chat session, then remove eligible Distill-managed worktrees and branches. Refuses when cleanup would discard local files or changes; the user must confirm that in the app.",
+          "description": "Archive a chat session, then remove eligible Distill-managed worktrees and branches. Refuses when cleanup would discard local files or changes, or when the chat still has running terminals; the user must confirm that in the app.",
           "fields": [
             {
               "name": "session_id",

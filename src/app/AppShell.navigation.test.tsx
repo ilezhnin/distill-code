@@ -736,13 +736,15 @@ describe("AppShell global navigation", () => {
     expect(mockToastError).not.toHaveBeenCalled();
   });
 
-  it("stops the chat's terminals once the backend has archived it", async () => {
+  it("stops the chat's terminals once the operator's archive has succeeded", async () => {
+    const user = userEvent.setup();
     useChatSessionStore.setState({
       sessions: [
         {
           id: "session-1",
           title: "Dev server",
           executionTarget: { harnessId: "claude-acp" },
+          workingDir: "/tmp/dev-server",
           createdAt: "2026-07-10T00:00:00.000Z",
           updatedAt: "2026-07-10T00:00:00.000Z",
           messageCount: 1,
@@ -759,16 +761,45 @@ describe("AppShell global navigation", () => {
     });
     renderAppShell();
 
+    await user.click(screen.getByRole("button", { name: "Open session 1" }));
+    await user.click(screen.getByRole("button", { name: "Archive session 1" }));
+
+    // An archived chat leaves the sidebar, so a shell still running under it
+    // would have no UI left to stop it from.
+    await waitFor(() => {
+      expect(mockStopTerminalSessionsForChat).toHaveBeenCalledWith("session-1");
+    });
+    expect(order).toEqual(["archive", "stop-terminals"]);
+  });
+
+  it("never stops the chat's terminals for a berdctl archive", async () => {
+    // berdctl reaches the same `archiveChat`, is declared `destructive: false`
+    // and promises in its help that it discards nothing local. Killing a dev
+    // server, a build or a migration is unrecoverable (unarchive restores no
+    // shell), so only the operator's own Archive may do it. `session archive`
+    // refuses outright while the chat still has live shells.
+    useChatSessionStore.setState({
+      sessions: [
+        {
+          id: "session-1",
+          title: "Dev server",
+          executionTarget: { harnessId: "claude-acp" },
+          createdAt: "2026-07-10T00:00:00.000Z",
+          updatedAt: "2026-07-10T00:00:00.000Z",
+          messageCount: 1,
+        },
+      ],
+    });
+    renderAppShell();
+
     const outcome = await getAppNavigationController().archiveSession(
       "session-1",
       "reject",
     );
 
     expect(outcome).toEqual({ ok: true });
-    // An archived chat leaves the sidebar, so a shell still running under it
-    // would have no UI left to stop it from.
-    expect(mockStopTerminalSessionsForChat).toHaveBeenCalledWith("session-1");
-    expect(order).toEqual(["archive", "stop-terminals"]);
+    expect(mockAcpArchiveSession).toHaveBeenCalledWith("session-1");
+    expect(mockStopTerminalSessionsForChat).not.toHaveBeenCalled();
   });
 
   it("keeps the terminals of a chat whose archive failed", async () => {
