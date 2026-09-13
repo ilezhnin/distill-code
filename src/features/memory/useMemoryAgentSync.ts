@@ -19,6 +19,7 @@ import {
 } from "@/features/conductor/conductorGraphStore";
 
 import { detectMemoryFenceCandidates } from "./lib/memoryAgentScan";
+import { messageIdSet } from "./lib/transcriptScan";
 import {
   getMemoryPreferences,
   subscribeToMemoryPreferenceChanges,
@@ -30,6 +31,7 @@ import {
 import {
   memoryRememberRefusal,
   useMemoryStore,
+  watchGraphForWaveExecutors,
   type MemoryRefusal,
 } from "./stores/memoryStore";
 
@@ -102,9 +104,13 @@ function drainMemoryFences(): void {
   draining = true;
   try {
     const memory = useMemoryStore.getState();
+    // The tombstones as a set, not a list: this predicate is asked about every
+    // message of every cached transcript on every pass, and the list holds up
+    // to a thousand ids.
+    const applied = messageIdSet(memory.appliedMessageIds);
     const candidates = detectMemoryFenceCandidates({
       messagesBySession: useChatStore.getState().messagesBySession,
-      isApplied: (messageId) => memory.appliedMessageIds.includes(messageId),
+      isApplied: (messageId) => applied.has(messageId),
       isFirstScan: takeFirstScan,
     });
     if (candidates.length === 0) return;
@@ -152,10 +158,22 @@ function drainMemoryFences(): void {
 
 export function useMemoryAgentSync(): void {
   useEffect(() => {
+    // Armed before the first drain: a wave child's node is the first thing the
+    // graph evicts, and after that only this record can tell the ACL that the
+    // transcript it is about to trust was an executor's.
+    watchGraphForWaveExecutors();
     drainMemoryFences();
-    const stopWatchingMessages = useChatStore.subscribe(() => {
-      drainMemoryFences();
-    });
+    // On the transcripts only. The chat store also carries per-session runtime
+    // flags that change far more often than the messages do — a token's worth
+    // of state, a cancellation pending, a view switch — and none of them can
+    // turn a message into a candidate: the scan reads `messagesBySession` and
+    // nothing else. Selecting it means those runs never reach the scan.
+    const stopWatchingMessages = useChatStore.subscribe(
+      (state) => state.messagesBySession,
+      () => {
+        drainMemoryFences();
+      },
+    );
     // The catch-up. Subscribed rather than wired into the switch itself so
     // it runs wherever the switch is flipped from, and re-armed on any
     // preference change while writing is on — an extra deep pass costs one

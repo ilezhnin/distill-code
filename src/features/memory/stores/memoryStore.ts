@@ -17,6 +17,12 @@ import { create } from "zustand";
 
 import { distillDocument } from "@/shared/lib/distillDocument";
 
+import {
+  useConductorGraphStore,
+  whenConductorGraphHydrated,
+} from "@/features/conductor/conductorGraphStore";
+import type { SessionNode } from "@/features/conductor/types";
+import type { ProjectInfo } from "@/features/projects/api/projects";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 
 import type {
@@ -25,8 +31,12 @@ import type {
 } from "../lib/memoryFence";
 import { findSecret, type SecretKind } from "../lib/memoryRedaction";
 import {
+  foldProjectMemories,
   mergeProjectMemories,
+  type ProjectMemories,
+  projectMemoryRoot,
   readProjectMemories,
+  readProjectMemoryFolder,
   writeProjectMemories,
 } from "../lib/projectMemoryDocuments";
 import {
@@ -38,6 +48,7 @@ import {
   type MemoryEntry,
   type MemoryScope,
 } from "../lib/memoryEntry";
+import { messageIdSet } from "../lib/transcriptScan";
 
 /** Path under the Distill root. */
 export const MEMORY_DOCUMENT_PATH = "memory.json";
@@ -50,6 +61,16 @@ export const MAX_MEMORY_ENTRIES = 300;
 
 /** Bound on the "already read this message" tombstones. */
 export const MAX_APPLIED_MEMORY_MESSAGE_IDS = 2000;
+
+/**
+ * Bound on the record of which sessions were the wave engine's.
+ *
+ * Twice the conductor graph's own node bound, so the memory of a wave child
+ * outlives the node the graph evicts by a comfortable margin. Past it the
+ * oldest ids drop, which is the same order the graph drops nodes in — the
+ * transcripts that would reopen the hole are the ones furthest in the past.
+ */
+export const MAX_WAVE_EXECUTOR_SESSION_IDS = 1000;
 
 interface MemoryState {
   entries: MemoryEntry[];
@@ -64,6 +85,19 @@ interface MemoryState {
    * cost the session one answer, not one per keystroke of the next reply.
    */
   recallAnsweredMessageIds: string[];
+  /**
+   * Sessions the conductor graph has at some point called wave children.
+   *
+   * The graph is bounded, and a finished wave child's node is the first thing
+   * it evicts (`graphBounds`). After that the write ACL's "no node is an
+   * ordinary chat" default would read a former executor's transcript as the
+   * operator's own: its `distill-memory` fence honoured, its recall answered,
+   * the protocol taught back to it — all of which LAWS/MEMORY.md forbids for
+   * a wave-spawned executor. So the fact outlives the node, and it is kept
+   * here rather than on the graph because it exists only to keep a promise
+   * the memory store made, and it has to survive a restart to keep it.
+   */
+  waveExecutorSessionIds: string[];
   /** False until the stored document has been read. Writes wait for it. */
   hydrated: boolean;
 }
@@ -152,6 +186,15 @@ interface MemoryActions {
    * would ask the same question again.
    */
   markRecallAnswered: (messageId: string) => void;
+  /**
+   * Records that these sessions are the wave engine's, not the operator's.
+   *
+   * Called with the wave children the conductor graph holds right now, as
+   * often as the graph changes. The graph forgets them at its bound; the
+   * write ACL must not, so the ids are kept and persisted here. Ids already
+   * known cost nothing — nothing is written when nothing is new.
+   */
+  noteWaveExecutorSessions: (sessionIds: readonly string[]) => void;
   /**
    * Swaps the live list wholesale, leaving the archive as it is.
    *
@@ -263,6 +306,25 @@ export function parseRecallAnsweredMessageIds(value: unknown): string[] {
 }
 
 /**
+ * The remembered wave-executor sessions.
+ *
+ * Absent from every document written before the graph's bound was allowed to
+ * outlive them, which reads back as none — the honest answer: this app has no
+ * record of those sessions, and the ones whose nodes are still on the graph
+ * are recorded again on the first sweep.
+ */
+export function parseWaveExecutorSessionIds(value: unknown): string[] {
+  const list = (value as { waveExecutorSessionIds?: unknown })
+    ?.waveExecutorSessionIds;
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter(
+      (entry): entry is string => typeof entry === "string" && entry !== "",
+    )
+    .slice(-MAX_WAVE_EXECUTOR_SESSION_IDS);
+}
+
+/**
  * Trims to the bound, least recently useful first, and says what it took.
  *
  * By recency rather than age: a standing fact the agents keep restating is
@@ -332,7 +394,7 @@ function commit(
   // the first change before the read landed mark the store as read: the
   // hydration then skipped the document, and the next write replaced every
   // stored memory with that one change.
-  const hydrated = useMemoryStore.getState().hydrated;
+  const { hydrated, waveExecutorSessionIds } = useMemoryStore.getState();
   const next: MemoryState = {
     entries: kept,
     archived: withCapacityEvictions(archived, evicted, nowMs),
@@ -340,6 +402,10 @@ function commit(
     recallAnsweredMessageIds: recallAnsweredMessageIds.slice(
       -MAX_APPLIED_MEMORY_MESSAGE_IDS,
     ),
+    // Carried like the flag: no memory write has an opinion about which
+    // sessions the wave engine owns, and dropping the record here would hand
+    // an evicted executor the operator's list on the next commit.
+    waveExecutorSessionIds,
     hydrated,
   };
   if (hydrated) {
@@ -348,7 +414,7 @@ function commit(
     // was learned about it when it moves (P31). Fire-and-forget: the global
     // document is the one that must not fail, and a folder that cannot be
     // written costs that project's mirror and nothing else.
-    queueProjectMemoryMirror(next.entries, next.archived);
+    queueProjectMemoryMirror();
   }
   return next;
 }
@@ -362,39 +428,273 @@ function commit(
  * debounce the global document uses.
  */
 let mirrorTimer: ReturnType<typeof setTimeout> | null = null;
-let mirrorPending: {
-  entries: MemoryEntry[];
-  archived: ArchivedMemoryEntry[];
-} | null = null;
+let mirrorPending = false;
 
-function queueProjectMemoryMirror(
-  entries: MemoryEntry[],
-  archived: ArchivedMemoryEntry[],
-): void {
-  mirrorPending = { entries, archived };
+function queueProjectMemoryMirror(): void {
+  mirrorPending = true;
   if (mirrorTimer !== null) clearTimeout(mirrorTimer);
   mirrorTimer = setTimeout(() => {
     void flushProjectMemoryMirror();
   }, PROJECT_MEMORY_MIRROR_DEBOUNCE_MS);
 }
 
-/** Test seam and shutdown: pushes a queued mirror without waiting for it. */
-export async function flushProjectMemoryMirror(): Promise<void> {
+/**
+ * Test seam and shutdown: pushes a queued mirror without waiting for it.
+ *
+ * Resolves once every piece of folder work queued so far has landed — a
+ * project read that a store change set off included — so a test that awaits
+ * this sees the folders and the store as they will stay.
+ */
+export function flushProjectMemoryMirror(): Promise<void> {
   if (mirrorTimer !== null) {
     clearTimeout(mirrorTimer);
     mirrorTimer = null;
   }
-  const pending = mirrorPending;
-  mirrorPending = null;
-  if (!pending) return;
-  await writeProjectMemories(
-    useProjectStore.getState().projects,
-    pending.entries,
-    pending.archived,
-  );
+  if (!mirrorPending) return folderWork;
+  mirrorPending = false;
+  return enqueueFolderWork(mirrorProjectMemories);
 }
 
 const PROJECT_MEMORY_MIRROR_DEBOUNCE_MS = 250;
+
+/**
+ * Everything that touches a project folder, one thing at a time.
+ *
+ * A mirror reads every folder before it writes any, and a project that joins
+ * sets off a read of its own; two of those interleaving would have one write
+ * a file the other had just read and not yet folded in. Serialised, each
+ * step sees the folders as the previous one left them. A step that fails is
+ * logged and does not take the chain down with it.
+ */
+let folderWork: Promise<void> = Promise.resolve();
+
+function enqueueFolderWork(task: () => Promise<void>): Promise<void> {
+  const run = folderWork.then(task).catch((error: unknown) => {
+    console.error("Failed to mirror project memories:", error);
+  });
+  folderWork = run;
+  return run;
+}
+
+/**
+ * The folder each project was last read from this run, by project id.
+ *
+ * A project's folder is read once per folder: at hydration for the projects
+ * known then, and when the project joins or is pointed elsewhere after that.
+ * Until a project's folder has been read, its file is not written — see
+ * `mirrorProjectMemories`.
+ */
+const readProjectRoots = new Map<string, string>();
+
+/**
+ * Ids the operator deleted in this run.
+ *
+ * A folder the app could not reach when the operator pressed delete still
+ * holds the line, and would hand it back the next time it is read. The
+ * operator's delete is the one action a copy on disk must not outrank
+ * (LAWS/MEMORY.md, Sovereignty): these are excluded from every fold, and
+ * so from every mirror written after the delete.
+ */
+const forgottenIds = new Set<string>();
+
+function noteForgotten(ids: Iterable<string>): void {
+  for (const id of ids) forgottenIds.add(id);
+}
+
+function markProjectsRead(
+  projects: readonly ProjectInfo[],
+  readProjectIds: readonly string[],
+): void {
+  const read = new Set(readProjectIds);
+  for (const project of projects) {
+    const root = projectMemoryRoot(project);
+    if (root && read.has(project.id)) readProjectRoots.set(project.id, root);
+  }
+}
+
+/**
+ * Takes into the store what the folders hold and it does not.
+ *
+ * By id, across both lists, and never a line the operator deleted this run.
+ * The global document is written so the lines survive a restart on their
+ * own; the mirror is not queued, because the caller is either the mirror
+ * itself, about to write, or a read whose only source was the folder that
+ * already has them.
+ */
+function adoptProjectMemories(fromFolders: ProjectMemories): void {
+  const current = useMemoryStore.getState();
+  if (!current.hydrated) return;
+  const folded = foldProjectMemories(current, fromFolders, forgottenIds);
+  if (folded.added === 0) return;
+  const capped = capWithArchive(folded.entries);
+  const next: MemoryState = {
+    entries: capped.kept,
+    archived: withCapacityEvictions(
+      folded.archived,
+      capped.evicted,
+      Date.now(),
+    ),
+    appliedMessageIds: current.appliedMessageIds,
+    recallAnsweredMessageIds: current.recallAnsweredMessageIds,
+    waveExecutorSessionIds: current.waveExecutorSessionIds,
+    hydrated: true,
+  };
+  useMemoryStore.setState(next);
+  document.write(next);
+}
+
+/**
+ * Reads the folders of the projects this run has not read yet.
+ *
+ * Which is every project that was added, fetched, or pointed at a new folder
+ * after hydration — the ones whose file may hold memories the store has
+ * never seen (P31's "project copied from another machine" arrives exactly
+ * this way on a fresh install, since the project can only be created after
+ * startup). Their lines join the store here rather than at the next mirror,
+ * so they reach the panel and the prompts as soon as the project does.
+ */
+function adoptUnreadProjectFolders(): Promise<void> {
+  return enqueueFolderWork(async () => {
+    if (!useMemoryStore.getState().hydrated) return;
+    const unread = useProjectStore.getState().projects.filter((project) => {
+      const root = projectMemoryRoot(project);
+      return root !== null && readProjectRoots.get(project.id) !== root;
+    });
+    if (unread.length === 0) return;
+    const read = await readProjectMemories(
+      unread,
+      parseMemoryEntries,
+      parseArchivedMemoryEntries,
+    );
+    markProjectsRead(unread, read.readProjectIds);
+    adoptProjectMemories(read);
+  });
+}
+
+/**
+ * The mirror: each project's own memories into its folder.
+ *
+ * Read first, then write, and only what was read. The file being replaced
+ * may be the only copy of lines this process has never merged — a project
+ * that joined after hydration, a drive mounted after startup, a colleague's
+ * file that arrived with a pull — so a folder that cannot be read is left
+ * as it is, and one that can has its lines folded into the store before the
+ * store's own are written over it. The fold honours this run's deletes, so
+ * a delete made while the folder was away still reaches it.
+ */
+async function mirrorProjectMemories(): Promise<void> {
+  const readable: ProjectInfo[] = [];
+  const hasFile = new Map<string, boolean>();
+  const fromFolders: ProjectMemories = { entries: [], archived: [] };
+  await Promise.all(
+    useProjectStore.getState().projects.map(async (project) => {
+      const root = projectMemoryRoot(project);
+      if (!root) return;
+      const folder = await readProjectMemoryFolder(
+        project,
+        parseMemoryEntries,
+        parseArchivedMemoryEntries,
+      );
+      if (!folder) return;
+      readProjectRoots.set(project.id, root);
+      hasFile.set(project.id, folder.hasFile);
+      readable.push(project);
+      fromFolders.entries.push(...folder.entries);
+      fromFolders.archived.push(...folder.archived);
+    }),
+  );
+  adoptProjectMemories(fromFolders);
+  const state = useMemoryStore.getState();
+  await writeProjectMemories(readable, state.entries, state.archived, hasFile);
+}
+
+let stopWatchingProjects: (() => void) | null = null;
+
+/**
+ * Reads a project's folder when the project list changes under the store.
+ *
+ * Installed by hydration, since before it nothing may be folded in anyway.
+ * A project that leaves the list is forgotten here too, so one that comes
+ * back under the same id is read again rather than assumed known.
+ */
+function watchProjectsForMemories(): void {
+  if (stopWatchingProjects) return;
+  stopWatchingProjects = useProjectStore.subscribe((state, previous) => {
+    if (state.projects === previous.projects) return;
+    const present = new Set(state.projects.map((project) => project.id));
+    for (const id of [...readProjectRoots.keys()]) {
+      if (!present.has(id)) readProjectRoots.delete(id);
+    }
+    void adoptUnreadProjectFolders();
+  });
+}
+
+let stopWatchingGraph: (() => void) | null = null;
+
+/**
+ * Notes every wave child the conductor graph shows, for as long as it shows
+ * it, so the graph's bound cannot turn an executor back into a plain chat.
+ *
+ * It reads the graph rather than being told when a node goes: recording a
+ * child while its node is still there leaves no moment to miss, and
+ * `managedBy` is set when a node is registered and never changes, so a child
+ * seen once is a child forever. Idempotent, and cheap enough for the path it
+ * is on — one `Set` lookup per node per graph change, with nothing written
+ * unless a child is new (the graph itself is bounded at 500 nodes, and the
+ * lookup set is built once per change to the record).
+ *
+ * What it cannot recover: a wave child evicted by a build that did not keep
+ * this record. Those ids are gone, and the first sweep records only the ones
+ * whose nodes are still on the graph.
+ */
+export function watchGraphForWaveExecutors(): void {
+  if (stopWatchingGraph) return;
+  stopWatchingGraph = useConductorGraphStore.subscribe((state, previous) => {
+    if (state.nodesById === previous.nodesById) return;
+    noteWaveExecutorsOnGraph(state.nodesById);
+  });
+  // The graph as it already stands, and again once the folder's copy has been
+  // folded in — a wave child registered before this window opened is exactly
+  // the one whose node is closest to being evicted.
+  noteWaveExecutorsOnGraph(useConductorGraphStore.getState().nodesById);
+  whenConductorGraphHydrated(() => {
+    noteWaveExecutorsOnGraph(useConductorGraphStore.getState().nodesById);
+  });
+}
+
+function noteWaveExecutorsOnGraph(
+  nodesById: Readonly<Record<string, SessionNode>>,
+): void {
+  const known = messageIdSet(useMemoryStore.getState().waveExecutorSessionIds);
+  const unknown: string[] = [];
+  for (const node of Object.values(nodesById)) {
+    if (node.managedBy !== "wave") continue;
+    if (known.has(node.sessionId)) continue;
+    unknown.push(node.sessionId);
+  }
+  if (unknown.length > 0) {
+    useMemoryStore.getState().noteWaveExecutorSessions(unknown);
+  }
+}
+
+/** Stops watching the graph for wave children. Tests only. */
+export function resetWaveExecutorWatchForTests(): void {
+  stopWatchingGraph?.();
+  stopWatchingGraph = null;
+}
+
+/** Forgets which folders were read and what was deleted. Tests only. */
+export function resetProjectMemoryMirrorForTests(): void {
+  if (mirrorTimer !== null) {
+    clearTimeout(mirrorTimer);
+    mirrorTimer = null;
+  }
+  mirrorPending = false;
+  readProjectRoots.clear();
+  forgottenIds.clear();
+  stopWatchingProjects?.();
+  stopWatchingProjects = null;
+}
 
 function stateFromDocument(parsed: unknown): MemoryState {
   // A document written over a larger bound is capped on the way in, and the
@@ -409,6 +709,7 @@ function stateFromDocument(parsed: unknown): MemoryState {
     ),
     appliedMessageIds: parseAppliedMemoryMessageIds(parsed),
     recallAnsweredMessageIds: parseRecallAnsweredMessageIds(parsed),
+    waveExecutorSessionIds: parseWaveExecutorSessionIds(parsed),
     hydrated: true,
   };
 }
@@ -419,13 +720,16 @@ const document = distillDocument<MemoryState>({
   parse: stateFromDocument,
   // v2 adds `archived` and the answered-recall tombstones. A v1 document
   // reads back whole: it simply has neither, which is the same thing as two
-  // empty lists.
+  // empty lists. `waveExecutorSessionIds` is additive in the same way and
+  // does not move the version: a build that does not know the field ignores
+  // it, and one that does reads an absent field as "no record kept yet".
   serialize: (state) => ({
     version: 2,
     entries: state.entries,
     archived: state.archived,
     appliedMessageIds: state.appliedMessageIds,
     recallAnsweredMessageIds: state.recallAnsweredMessageIds,
+    waveExecutorSessionIds: state.waveExecutorSessionIds,
   }),
 });
 
@@ -438,26 +742,30 @@ export async function hydrateMemoryStore(): Promise<void> {
     archived: [],
     appliedMessageIds: [],
     recallAnsweredMessageIds: [],
+    waveExecutorSessionIds: [],
     hydrated: true,
   };
   // Then whatever the project folders themselves know (P31). A project copied
   // from another machine arrives with its memories in it, and this is where
   // they join the list; entries already in memory win, so nothing the
-  // operator has edited in this session is reverted by a copy on disk.
+  // operator has edited in this session is reverted by a copy on disk. Only
+  // the projects known right now: the ones that join later are read as they
+  // do, by `watchProjectsForMemories`.
   let entries = base.entries;
   let archived = base.archived;
   try {
+    const projects = useProjectStore.getState().projects;
     const fromFolders = await readProjectMemories(
-      useProjectStore.getState().projects,
+      projects,
       parseMemoryEntries,
       parseArchivedMemoryEntries,
     );
-    const capped = capWithArchive(
-      mergeProjectMemories(base.entries, fromFolders.entries),
-    );
+    markProjectsRead(projects, fromFolders.readProjectIds);
+    const folded = foldProjectMemories(base, fromFolders, forgottenIds);
+    const capped = capWithArchive(folded.entries);
     entries = capped.kept;
     archived = withCapacityEvictions(
-      mergeProjectMemories(base.archived, fromFolders.archived),
+      folded.archived,
       capped.evicted,
       Date.now(),
     );
@@ -474,7 +782,8 @@ export async function hydrateMemoryStore(): Promise<void> {
     current.entries.length > 0 ||
     current.archived.length > 0 ||
     current.appliedMessageIds.length > 0 ||
-    current.recallAnsweredMessageIds.length > 0;
+    current.recallAnsweredMessageIds.length > 0 ||
+    current.waveExecutorSessionIds.length > 0;
   const merged = capWithArchive(mergeProjectMemories(entries, current.entries));
   const next: MemoryState = {
     entries: merged.kept,
@@ -491,22 +800,39 @@ export async function hydrateMemoryStore(): Promise<void> {
       base.recallAnsweredMessageIds,
       current.recallAnsweredMessageIds,
     ),
+    // Union, not "stored wins": a wave child noted before the read landed is
+    // a session whose fence must already be refused.
+    waveExecutorSessionIds: unionMessageIds(
+      base.waveExecutorSessionIds,
+      current.waveExecutorSessionIds,
+      MAX_WAVE_EXECUTOR_SESSION_IDS,
+    ),
     hydrated: true,
   };
   useMemoryStore.setState(next);
   if (pending) {
     document.write(next);
-    queueProjectMemoryMirror(next.entries, next.archived);
+    queueProjectMemoryMirror();
   }
+  // From here on a project that joins is read as it does — and one that
+  // joined while the folders above were being read is read now, since it was
+  // in neither that read nor, without this, any later one.
+  watchProjectsForMemories();
+  void adoptUnreadProjectFolders();
+  // And the graph, so an executor's node being evicted does not hand its
+  // transcript the operator's memory. Armed here as well as by the two drains
+  // that consult the record, because both are idempotent and the earlier of
+  // them wins: an id noted before a node is evicted is one that cannot be
+  // missed.
+  watchGraphForWaveExecutors();
 }
 
 function unionMessageIds(
   stored: readonly string[],
   pending: readonly string[],
+  limit: number = MAX_APPLIED_MEMORY_MESSAGE_IDS,
 ): string[] {
-  return [...new Set([...stored, ...pending])].slice(
-    -MAX_APPLIED_MEMORY_MESSAGE_IDS,
-  );
+  return [...new Set([...stored, ...pending])].slice(-limit);
 }
 
 /** Waits for a queued write to land. For tests and for shutdown. */
@@ -615,6 +941,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
   archived: [],
   appliedMessageIds: [],
   recallAnsweredMessageIds: [],
+  waveExecutorSessionIds: [],
   hydrated: false,
 
   remember: (draft, nowMs = Date.now()) => {
@@ -725,6 +1052,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
   forget: (id) => {
     set((state) => {
       const chain = supersededChain(state.archived, id);
+      noteForgotten([id, ...chain]);
       return commit(
         state.entries.filter((entry) => entry.id !== id),
         chain.size === 0
@@ -792,6 +1120,7 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
   },
 
   deleteArchived: (id) => {
+    noteForgotten([id]);
     set((state) =>
       commit(
         state.entries,
@@ -804,14 +1133,18 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
 
   forgetProject: (projectId) => {
     if (!projectId) return;
-    set((state) =>
-      commit(
-        state.entries.filter((entry) => entry.projectId !== projectId),
-        state.archived.filter((entry) => entry.projectId !== projectId),
+    set((state) => {
+      const swept = (entry: MemoryEntry) => entry.projectId === projectId;
+      noteForgotten(
+        [...state.entries, ...state.archived].filter(swept).map((e) => e.id),
+      );
+      return commit(
+        state.entries.filter((entry) => !swept(entry)),
+        state.archived.filter((entry) => !swept(entry)),
         state.appliedMessageIds,
         state.recallAnsweredMessageIds,
-      ),
-    );
+      );
+    });
   },
 
   applyAgentRequest: (
@@ -960,6 +1293,29 @@ export const useMemoryStore = create<MemoryStore>((set, get) => ({
         messageId,
       ]),
     );
+  },
+
+  noteWaveExecutorSessions: (sessionIds) => {
+    const state = get();
+    const known = messageIdSet(state.waveExecutorSessionIds);
+    const added: string[] = [];
+    for (const sessionId of sessionIds) {
+      if (!sessionId || known.has(sessionId)) continue;
+      // Guarded against a caller that repeats an id inside one call: the
+      // record is a set written as a list, and a duplicate spends its bound.
+      if (added.includes(sessionId)) continue;
+      added.push(sessionId);
+    }
+    if (added.length === 0) return;
+    set({
+      waveExecutorSessionIds: [...state.waveExecutorSessionIds, ...added].slice(
+        -MAX_WAVE_EXECUTOR_SESSION_IDS,
+      ),
+    });
+    // Persisted, but not through `commit` and not into the project folders:
+    // no memory changed, and which sessions the wave engine owned is this
+    // machine's bookkeeping, not something a project carries when it moves.
+    if (state.hydrated) document.write(useMemoryStore.getState());
   },
 
   replaceAll: (entries) => {

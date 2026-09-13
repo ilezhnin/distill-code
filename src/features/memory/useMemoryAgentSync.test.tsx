@@ -26,7 +26,10 @@ import {
   setMemoryReadEnabled,
   setMemoryWriteEnabled,
 } from "./lib/memoryPreferences";
-import { useMemoryStore } from "./stores/memoryStore";
+import {
+  resetWaveExecutorWatchForTests,
+  useMemoryStore,
+} from "./stores/memoryStore";
 import { useMemoryAgentSync } from "./useMemoryAgentSync";
 
 function assistant(id: string, body: string): Message {
@@ -61,6 +64,23 @@ function putMessages(sessionId: string, messages: Message[]) {
       messagesBySession: { ...state.messagesBySession, [sessionId]: messages },
     }));
   });
+}
+
+/**
+ * Transcripts that count the scans that read them.
+ *
+ * A scan starts by listing the sessions, so the key enumeration is the
+ * cheapest honest proxy for "the drain looked at the transcripts".
+ */
+function countingTranscripts(inner: Record<string, Message[]>) {
+  let reads = 0;
+  const proxy = new Proxy(inner, {
+    ownKeys(target) {
+      reads += 1;
+      return Reflect.ownKeys(target);
+    },
+  });
+  return { proxy, reads: () => reads };
 }
 
 function putGraphNode(
@@ -123,10 +143,12 @@ function putSession(sessionId: string, projectId: string | null) {
 describe("useMemoryAgentSync", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    resetWaveExecutorWatchForTests();
     useMemoryStore.setState({
       entries: [],
       archived: [],
       appliedMessageIds: [],
+      waveExecutorSessionIds: [],
       hydrated: true,
     });
     useChatStore.setState({ messagesBySession: {} });
@@ -184,6 +206,32 @@ describe("useMemoryAgentSync", () => {
     expect(useMemoryStore.getState().entries).toHaveLength(1);
   });
 
+  it("does not read the transcripts when only a runtime flag changed", () => {
+    // The chat store carries the transcripts and, beside them, per-session
+    // runtime state that moves on every token's bookkeeping. No flag can turn
+    // a message into a fence, so a run that changed no transcript must not
+    // cost a scan — this drain is on the streaming path.
+    putSession("s-1", "p-1");
+    renderHook(() => useMemoryAgentSync());
+    const transcripts = countingTranscripts({
+      "s-1": [assistant("m-1", '{"remember":["Once only"]}')],
+    });
+    act(() => {
+      useChatStore.setState({ messagesBySession: transcripts.proxy });
+    });
+    expect(useMemoryStore.getState().entries).toHaveLength(1);
+
+    const readsAfterTheMessage = transcripts.reads();
+    act(() => {
+      useChatStore.setState({ activeSessionId: "s-1" });
+    });
+    act(() => {
+      useChatStore.setState({ isViewingActiveSession: false });
+    });
+
+    expect(transcripts.reads()).toBe(readsAfterTheMessage);
+  });
+
   it("refuses a wave worker's fence, out loud, and does not retry it", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     putSession("s-w", "p-1");
@@ -205,6 +253,32 @@ describe("useMemoryAgentSync", () => {
       useChatStore.setState({ activeSessionId: "s-w" });
     });
     expect(warn).not.toHaveBeenCalled();
+    expect(useMemoryStore.getState().appliedMessageIds).toContain("m-1");
+  });
+
+  it("refuses a wave child's fence after the graph has evicted its node", () => {
+    // The P16 flow: the graph passes its 500-node bound, an old worker's
+    // terminal node is the first thing evicted, and the ACL's other default —
+    // "no node is an ordinary chat" — would then read that worker's
+    // transcript as the operator's own. LAWS/MEMORY.md, Writing.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    putSession("s-w", "p-1");
+    putGraphNode("s-w", "worker", { managedBy: "wave" });
+    renderHook(() => useMemoryAgentSync());
+    act(() => {
+      useConductorGraphStore.setState({ nodesById: {} });
+    });
+
+    // The operator opens the old chat; the transcript replays and the deep
+    // first scan finds the fence the worker left in it.
+    putMessages("s-w", [
+      assistant("m-1", '{"remember":["Poisoned global fact"]}'),
+    ]);
+
+    expect(useMemoryStore.getState().entries).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("was not applied"),
+    );
     expect(useMemoryStore.getState().appliedMessageIds).toContain("m-1");
   });
 
