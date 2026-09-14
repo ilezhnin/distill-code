@@ -8,6 +8,7 @@ import type {
   ProviderSupportedModelsResponse,
 } from "@/shared/api/hostTypes";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
+import { orderEffortOptions } from "@/shared/lib/effortOrder";
 import { getClient } from "@/shared/api/acpConnection";
 import { notifyProviderModelInventoryInvalidated } from "../lib/providerModelInventoryEvents";
 
@@ -275,12 +276,18 @@ function inventoryCapabilities(
   entry: ProviderInventoryModel,
 ): Partial<ModelOption> {
   const capabilitySource = entry.capabilitySource ?? "unknown";
+  // Weakest stop first, the order a session's own effort menu is read in, so a
+  // model looks the same before and after its session exists.
   const efforts = entry.efforts
-    ?.filter((effort) => (effort?.value ?? "").trim().length > 0)
-    .map((effort) => ({
-      id: effort.value,
-      name: effort.name?.trim() || effort.value,
-    }));
+    ? orderEffortOptions(
+        entry.efforts
+          .filter((effort) => (effort?.value ?? "").trim().length > 0)
+          .map((effort) => ({
+            id: effort.value,
+            name: effort.name?.trim() || effort.value,
+          })),
+      )
+    : undefined;
   const statesEfforts =
     efforts != null && (efforts.length > 0 || capabilitySource !== "unknown");
   return {

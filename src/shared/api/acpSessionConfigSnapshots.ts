@@ -4,6 +4,7 @@ import {
   shortLogId,
 } from "@/shared/lib/reasoningEffortDiagnostics";
 import { normalizeConcreteModelId } from "@/shared/lib/modelIdentity";
+import { orderEffortOptions } from "@/shared/lib/effortOrder";
 import { splitLegacyFoldedModelId } from "@/shared/lib/foldedModelId";
 import { isRecord } from "@/shared/lib/isRecord";
 import {
@@ -376,7 +377,9 @@ function getReasoningEffortConfigSnapshot(
   return {
     configId: option.id,
     currentValue: option.currentValue,
-    options: option.options,
+    // Weakest stop first for every bridge: grok lists its efforts
+    // strongest-first, and a slider drawn in that order reads backwards.
+    options: orderEffortOptions(option.options),
   };
 }
 

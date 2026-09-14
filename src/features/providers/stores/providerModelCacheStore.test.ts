@@ -880,6 +880,38 @@ describe("providerModelCacheStore", () => {
     ).toEqual(["claude-fable-5[1m]", "default", "opus[1m]", "sonnet", "haiku"]);
   });
 
+  it("lists a model's efforts weakest first even when the host lists them strongest first", async () => {
+    mocks.supportedModelsList.mockResolvedValueOnce({
+      providerId: "grok-acp",
+      schemaVersion: CACHE_SCHEMA_VERSION,
+      revision: "3:2026-09-14T02:46:25Z",
+      models: [
+        hostRow("grok-4.6", {
+          name: "Grok 4.6",
+          efforts: efforts(["xhigh", "high", "medium", "low"]),
+          defaultEffort: "high",
+          supportsFast: false,
+          capabilitySource: "probed",
+        }),
+      ],
+    });
+
+    await useProviderModelCacheStore
+      .getState()
+      .refreshProviderModels("grok-acp");
+
+    const [grok] = useProviderModelCacheStore
+      .getState()
+      .getModelsForProvider("grok-acp");
+    expect(grok?.efforts?.map((effort) => effort.id)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
+    expect(grok?.defaultEffort).toBe("high");
+  });
+
   it("maps the menu the host files, row for row", async () => {
     mocks.supportedModelsList.mockResolvedValueOnce({
       providerId: "claude-acp",
