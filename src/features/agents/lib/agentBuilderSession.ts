@@ -7,6 +7,7 @@ import {
   useAgentStore,
 } from "@/features/agents/stores/agentStore";
 import { getStoredModelPreferenceForProvider } from "@/features/chat/lib/modelPreferences";
+import { baseModelId } from "@/shared/lib/foldedModelId";
 import {
   createDraftAgentSource,
   deleteIfFreshPlaceholderDraft,
@@ -349,9 +350,18 @@ export async function preSeedDraftAgent(
   const preference = getStoredModelPreferenceForProvider(provider);
   let modelSelection: DraftAgentDefaults["modelSelection"];
   if (preference?.providerId) {
+    // The draft starts on the operator's model and on the effort and fast
+    // mode they chose for it, not only the model: a model without its effort
+    // would run the new agent at the harness default.
+    const modelId = baseModelId(preference.modelId) ?? preference.modelId;
+    const forModel = preference.byModel?.[modelId];
+    const effort = forModel?.reasoningEffort ?? preference.reasoningEffort;
+    const fastMode = forModel?.fastMode ?? preference.fastMode;
     modelSelection = {
       modelProviderId: preference.providerId,
-      modelId: preference.modelId,
+      modelId,
+      ...(effort ? { effort } : {}),
+      ...(fastMode !== undefined ? { fastMode } : {}),
     };
   }
   return createDraftAgentSource(sessionId, {

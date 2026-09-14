@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   candidateForEntry,
@@ -6,6 +6,7 @@ import {
   legacySingleModelRankingEntry,
   parseAgentRankingSource,
   platformForRankingModel,
+  rankingEffortChoices,
   rankingFromClass,
   rankingInventoryFromProviders,
   scopedWindowForModel,
@@ -159,6 +160,90 @@ describe("parseAgentRankingSource", () => {
     expect(parseAgentRankingSource('{"entries":[]}')).toBeUndefined();
   });
 
+  it("reads a stored folded id as the base model plus its effort", () => {
+    // Entries written before model and effort were separate selections. The
+    // stored value is only read: it changes when the operator next saves.
+    const stored = JSON.stringify({
+      version: 1,
+      entries: [
+        {
+          platform: "codex-acp",
+          modelId: "codex-astra[xhigh]",
+          label: "Codex Astra[xhigh]",
+        },
+      ],
+    });
+    expect(parseAgentRankingSource(stored)).toEqual({
+      kind: "list",
+      ranking: {
+        version: 1,
+        entries: [
+          {
+            platform: "codex-acp",
+            modelId: "codex-astra",
+            label: "Codex Astra",
+            effort: "xhigh",
+          },
+        ],
+      },
+    });
+  });
+
+  it("lets an explicit effort win over a folded id's and reports the conflict once", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const stored = JSON.stringify([
+      {
+        platform: "codex-acp",
+        modelId: "gpt-5.6-terra[xhigh]",
+        label: "Terra",
+        effort: "medium",
+      },
+    ]);
+    const first = parseAgentRankingSource(stored);
+    parseAgentRankingSource(stored);
+
+    expect(first?.kind === "list" && first.ranking.entries[0]).toMatchObject({
+      modelId: "gpt-5.6-terra",
+      effort: "medium",
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it("never splits a context-lane id", () => {
+    const source = parseAgentRankingSource(
+      JSON.stringify([
+        { platform: "claude-acp", modelId: "opus[1m]", label: "Opus 5" },
+      ]),
+    );
+    expect(source?.kind === "list" && source.ranking.entries[0]).toEqual({
+      platform: "claude-acp",
+      modelId: "opus[1m]",
+      label: "Opus 5",
+    });
+  });
+
+  it("keeps an entry's fast mode through a round trip", () => {
+    const withFast: AgentModelRanking = {
+      version: 1,
+      entries: [
+        {
+          platform: "claude-acp",
+          modelId: "claude-opus-5",
+          label: "Opus 5",
+          effort: "xhigh",
+          fastMode: true,
+        },
+      ],
+    };
+    const source = parseAgentRankingSource(
+      serializeAgentModelRanking(withFast),
+    );
+    expect(source?.kind === "list" && source.ranking.entries).toEqual(
+      withFast.entries,
+    );
+  });
+
   it("does not take an Object.prototype member for a class id", () => {
     // `model_ranking: constructor` in an agent-writable frontmatter used to
     // parse as a class and then throw in every consumer that indexed the
@@ -175,6 +260,30 @@ describe("candidateForEntry", () => {
     expect(candidate.needles[0]).toEqual(["claude-opus-5"]);
     expect(candidate.needles[1]).toEqual(["opus"]);
     expect(candidate.effort).toBe("xhigh");
+  });
+
+  it("builds effort-free needles from a folded id and label", () => {
+    // The word "low" inside a folded label used to be part of the match, so
+    // the entry could only find the tier it was written against.
+    const candidate = candidateForEntry({
+      platform: "codex-acp",
+      modelId: "codex-astra[low]",
+      label: "Codex Astra[low]",
+    });
+    expect(candidate.needles).toEqual([["codex-astra"], ["codex", "astra"]]);
+    expect(candidate.label).toBe("Codex Astra");
+    expect(candidate.effort).toBe("low");
+  });
+
+  it("carries an entry's fast mode onto the candidate", () => {
+    expect(
+      candidateForEntry({
+        platform: "claude-acp",
+        modelId: "claude-opus-5",
+        label: "Opus 5",
+        fastMode: true,
+      }).fast,
+    ).toBe(true);
   });
 
   it("gives Fable its own weekly window and nobody else", () => {
@@ -255,27 +364,66 @@ describe("rankingFromClass", () => {
     expect(built.entries[0].effort).toBe("high");
   });
 
-  it("seeds the effort-tier variant the class asks for, not the first match", () => {
-    // Codex serves each tier as its own id, ascending. Seeding used to pin
-    // an xhigh candidate to [low] — the acceptor persona shipped that way.
+  it("seeds a base model id with the class's effort as its own field", () => {
     const built = rankingFromClass("coding-complex", [
       INSTALLED_FABLE,
+      INSTALLED_ASTRA,
+    ]);
+    // coding-complex: Astra → Fable 5.1 → Opus 5 → Grok; two are installed.
+    expect(built.entries).toEqual([
       {
-        platform: "codex-acp" as const,
-        modelId: "codex-astra[low]",
-        label: "Codex Astra[low]",
+        platform: "codex-acp",
+        modelId: "codex-astra",
+        label: "Astra",
+        effort: "xhigh",
       },
       {
-        platform: "codex-acp" as const,
-        modelId: "codex-astra[xhigh]",
-        label: "Codex Astra[xhigh]",
+        platform: "claude-acp",
+        modelId: "claude-fable-5-1",
+        label: "Fable 5.1",
+        effort: "xhigh",
       },
     ]);
-    // coding-complex: Astra → Fable 5.1.
-    expect(built.entries.map((entry) => entry.modelId)).toEqual([
-      "codex-astra[xhigh]",
-      "claude-fable-5-1",
+  });
+});
+
+describe("rankingEffortChoices", () => {
+  it("offers exactly the efforts the selected model advertises, max and ultra included", () => {
+    expect(
+      rankingEffortChoices(
+        {},
+        {
+          efforts: [
+            { id: "low", name: "Low" },
+            { id: "max", name: "Max" },
+            { id: "ultra", name: "Ultra" },
+          ],
+        },
+      ),
+    ).toEqual([
+      { id: "low", name: "Low", unlisted: false },
+      { id: "max", name: "Max", unlisted: false },
+      { id: "ultra", name: "Ultra", unlisted: false },
     ]);
+  });
+
+  it("keeps a stored effort the model does not offer, marked as unlisted", () => {
+    expect(
+      rankingEffortChoices(
+        { effort: "xhigh" },
+        { efforts: [{ id: "high", name: "High" }] },
+      ),
+    ).toEqual([
+      { id: "high", name: "High", unlisted: false },
+      { id: "xhigh", name: "xhigh", unlisted: true },
+    ]);
+  });
+
+  it("offers only the stored effort when nobody knows the model's efforts", () => {
+    expect(rankingEffortChoices({ effort: "xhigh" }, undefined)).toEqual([
+      { id: "xhigh", name: "xhigh", unlisted: false },
+    ]);
+    expect(rankingEffortChoices({}, { efforts: [] })).toEqual([]);
   });
 });
 
@@ -339,6 +487,20 @@ describe("legacySingleModelRankingEntry", () => {
       platform: "grok-acp",
       modelId: "grok-4-6",
       label: "Grok 4.6",
+    });
+  });
+
+  it("seeds a legacy folded model as its base id plus effort", () => {
+    expect(
+      legacySingleModelRankingEntry({
+        provider: "codex-acp",
+        model: "gpt-5.6-sol[ultra]",
+      }),
+    ).toEqual({
+      platform: "codex-acp",
+      modelId: "gpt-5.6-sol",
+      label: "gpt-5.6-sol",
+      effort: "ultra",
     });
   });
 

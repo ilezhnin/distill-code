@@ -2,10 +2,14 @@ import {
   normalizeSessionExecutionTarget,
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
+import {
+  normalizeSessionRunSettings,
+  type SessionRunSettings,
+} from "@/features/chat/lib/sessionRunSettings";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 import { resolveAgentProviderCatalogIdStrictFromEntries } from "@/features/providers/providerCatalog";
 import { normalizeProviderKey } from "@/features/providers/lib/providerKey";
-import { normalizeConcreteModelId } from "@/shared/lib/modelIdentity";
+import { baseModelId } from "@/shared/lib/foldedModelId";
 import type { Persona, UpdatePersonaRequest } from "@/shared/types/agents";
 import type { ProviderCatalogEntry } from "@/shared/types/providers";
 
@@ -107,7 +111,9 @@ export function personaExecutionTarget(
   if (!harnessId) return undefined;
 
   const availableModels = getModelsForHarness?.(harnessId) ?? models;
-  const modelId = normalizeConcreteModelId(persona?.model);
+  // The model half only: an effort once glued onto the id is a run setting,
+  // and inventories list base ids.
+  const modelId = baseModelId(persona?.model);
   const matchingModel = availableModels.find(
     (model) =>
       model.id === modelId &&
@@ -129,6 +135,22 @@ export function personaExecutionTarget(
     modelName: inventoryDisownsModel
       ? undefined
       : (matchingModel?.displayName ?? matchingModel?.name ?? modelId),
+  });
+}
+
+/**
+ * The run-settings intent a persona's single saved model carries, or
+ * `undefined` when it states neither an effort nor fast mode.
+ *
+ * The single-model counterpart of `RankedPersonaTarget.runSettings`: whoever
+ * establishes a session from `personaExecutionTarget` puts this beside it.
+ */
+export function personaRunSettings(
+  persona: Pick<Persona, "effort" | "fastMode"> | null | undefined,
+): SessionRunSettings | undefined {
+  return normalizeSessionRunSettings({
+    effort: persona?.effort,
+    fast: persona?.fastMode,
   });
 }
 
@@ -163,10 +185,12 @@ export function personaTargetMigration(
   const canonicalProvider = target.harnessId;
   const canonicalModelProvider = target.modelProviderId ?? null;
   const canonicalModel = target.modelId ?? null;
+  // Compared by base id, so a legacy folded `model` alone is never a reason to
+  // repair: that would rewrite an operator's file and drop its effort half.
   if (
     persona.provider === canonicalProvider &&
     (persona.modelProviderId ?? null) === canonicalModelProvider &&
-    (normalizeConcreteModelId(persona.model) ?? null) === canonicalModel
+    (baseModelId(persona.model) ?? null) === canonicalModel
   ) {
     return null;
   }

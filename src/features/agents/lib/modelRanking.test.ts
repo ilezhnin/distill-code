@@ -214,41 +214,111 @@ describe("resolveRankedModel", () => {
     ]);
   });
 
-  it("prefers the effort-tier variant the candidate asks for", () => {
-    // Codex serves every tier as its own id, ascending — first-match used to
-    // hand an xhigh candidate the [low] variant (L1, 2026-08-28).
-    const tiers: RankableModel[] = [
-      { id: "codex-astra[low]", displayName: "Codex Astra[low]" },
-      { id: "codex-astra[medium]", displayName: "Codex Astra[medium]" },
-      { id: "codex-astra[xhigh]", displayName: "Codex Astra[xhigh]" },
+  it("matches a model by its base id and carries the ranked effort beside it", () => {
+    // Inventories list one row per model; the effort is its own selection, so
+    // the choice names the base id and the effort separately.
+    const codex: RankableModel[] = [
+      {
+        id: "codex-astra",
+        displayName: "Codex Astra",
+        efforts: [
+          { id: "low", name: "Low" },
+          { id: "xhigh", name: "Extra high" },
+          { id: "ultra", name: "Ultra" },
+        ],
+      },
     ];
     const result = resolveRankedModel(
       "coding-complex",
       input({
         modelsForPlatform: (platform) =>
-          platform === "codex-acp" ? tiers : [],
+          platform === "codex-acp" ? codex : [],
       }),
     );
     // coding-complex: Astra first, and nothing else is installed here.
     expect(result.choice?.label).toBe("Astra");
-    expect(result.choice?.model.id).toBe("codex-astra[xhigh]");
+    expect(result.choice?.model.id).toBe("codex-astra");
+    expect(result.choice?.effort).toBe("xhigh");
+    expect(result.choice?.effortApplied).toBe(true);
   });
 
-  it("keeps the first match when no variant embeds the asked effort", () => {
-    const tiers: RankableModel[] = [
-      { id: "codex-astra[low]", displayName: "Codex Astra[low]" },
-      { id: "codex-astra[ultra]", displayName: "Codex Astra[ultra]" },
+  it("still picks a model that lacks the ranked effort and says the effort is not applied", () => {
+    // Fail-open: skipping the candidate would disable the ranking whenever a
+    // model's efforts differ from the profile's; the caller shows what runs.
+    const claude: RankableModel[] = [
+      {
+        id: "claude-opus-4-6",
+        displayName: "Claude Opus 5",
+        efforts: [
+          { id: "low", name: "Low" },
+          { id: "high", name: "High" },
+          { id: "max", name: "Max" },
+        ],
+        defaultEffort: "high",
+      },
     ];
     const result = resolveRankedModel(
       "coding-complex",
       input({
         modelsForPlatform: (platform) =>
-          platform === "codex-acp" ? tiers : [],
+          platform === "claude-acp" ? claude : [],
       }),
     );
-    // The preference cannot be honoured, so behavior stays what it was —
-    // the first advertised match — rather than resolving to nothing.
-    expect(result.choice?.model.id).toBe("codex-astra[low]");
+    expect(result.choice?.label).toBe("Opus 5");
+    expect(result.choice?.model.id).toBe("claude-opus-4-6");
+    expect(result.choice?.effort).toBe("xhigh");
+    expect(result.choice?.effortApplied).toBe(false);
+  });
+
+  it("spells the effort the way the model advertises it", () => {
+    const grok: RankableModel[] = [
+      {
+        id: "grok-4.6",
+        displayName: "Grok 4.6",
+        efforts: [{ id: "XHigh", name: "Extra High" }],
+      },
+    ];
+    const result = resolveRankedModel(
+      "coding-complex",
+      input({
+        modelsForPlatform: (platform) => (platform === "grok-acp" ? grok : []),
+      }),
+    );
+    expect(result.choice?.effort).toBe("XHigh");
+    expect(result.choice?.effortApplied).toBe(true);
+  });
+
+  it("does not claim an effort is applied or refused when the model's efforts are unknown", () => {
+    const result = resolveRankedModel("frontend-ui", input());
+    expect(result.choice?.effort).toBe("xhigh");
+    expect(result.choice?.effortApplied).toBeUndefined();
+  });
+
+  it("prefers the harness's main-page row over a More models row of the same family", () => {
+    // Fable 5.1 is filed on the main page and Fable 5 under More models; the
+    // name heuristic cannot tell those apart, the harness's filing can.
+    const claudeRows: RankableModel[] = [
+      { id: "claude-fable-5[1m]", displayName: "Fable 5", group: "more" },
+      { id: "claude-fable-5-1[1m]", displayName: "Fable 5.1", group: "main" },
+      { id: "claude-opus-4-8", displayName: "Opus 4.8", group: "more" },
+      // A row the harness did not file is shown on the main page.
+      { id: "opus[1m]", displayName: "Opus 5" },
+    ];
+    const claudeOnly = (rows: RankableModel[]) =>
+      input({
+        modelsForPlatform: (platform) =>
+          platform === "claude-acp" ? rows : [],
+      });
+
+    expect(
+      resolveRankedModel("frontend-ui", claudeOnly(claudeRows)).choice?.model
+        .id,
+    ).toBe("claude-fable-5-1[1m]");
+    const withoutFable = claudeRows.filter((row) => !row.id.includes("fable"));
+    expect(
+      resolveRankedModel("coding-complex", claudeOnly(withoutFable)).choice
+        ?.model.id,
+    ).toBe("opus[1m]");
   });
 
   it("names the model rather than the default alias labeled with it", () => {
