@@ -64,6 +64,41 @@ describe("ACP session config snapshots", () => {
   });
 });
 
+describe("the reasoning effort menu", () => {
+  it("lists grok's strongest-first efforts weakest first and keeps its current value", () => {
+    const grokSession = {
+      configOptions: [
+        {
+          id: "reasoning_effort",
+          category: "thought_level",
+          kind: {
+            type: "select",
+            currentValue: "low",
+            options: [
+              { value: "xhigh", name: "Extra high" },
+              { value: "high", name: "High" },
+              { value: "medium", name: "Medium" },
+              { value: "low", name: "Low effort" },
+            ],
+          },
+        },
+      ],
+    };
+
+    const effort =
+      readSessionConfigOptionsSnapshots(grokSession).reasoningEffort;
+
+    expect(effort?.configId).toBe("reasoning_effort");
+    expect(effort?.currentValue).toBe("low");
+    expect(effort?.options).toEqual([
+      { id: "low", name: "Low effort" },
+      { id: "medium", name: "Medium" },
+      { id: "high", name: "High" },
+      { id: "xhigh", name: "Extra high" },
+    ]);
+  });
+});
+
 describe("a replayed model snapshot with an effort folded into the model id", () => {
   // What an older host recorded in `session_events`, replayed verbatim on
   // session/load: the effort glued onto the model id, in the options as well.
