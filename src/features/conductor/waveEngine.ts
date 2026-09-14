@@ -67,6 +67,10 @@ export interface WaveStepState {
   budget?: WaveStepBudget;
   /** The plan's complexity class for this step (P36), when it named one. */
   modelClass?: ModelPreferenceClassId;
+  /** The plan's reasoning effort for this step, when it named one. */
+  effort?: string;
+  /** The plan's fast-mode choice for this step, when it made one. */
+  fast?: boolean;
   phase: WaveStepPhase;
   /** Child session id, once the spawn produced one. */
   sessionId?: string;
@@ -255,6 +259,13 @@ export type WaveRejectionReason =
    * system never makes.
    */
   | "step-model-unavailable"
+  /**
+   * A step asks for a reasoning effort its model does not offer, or for fast
+   * mode on a model without one. The same discipline as an unserved model:
+   * the plan is refused whole, naming what the model does offer, rather than
+   * the step quietly running at another setting.
+   */
+  | "step-run-settings-unavailable"
   /**
    * The plan builds something inspectable but never inspects it (E1). The
    * protocol prompt has asked for a closing verification step since `81b29ef`;
@@ -565,6 +576,13 @@ export interface WaveAdmissionOptions {
    * caller path — with or without the checker — ever inherits silently.
    */
   checkStepModel?: (model: string) => WaveStepModelCheck;
+  /**
+   * Live check of a step's `effort` and `fast` against the model the step
+   * will run on (`checkWaveStepRunSettings` in production). Called for every
+   * step, after its model passed: the model may be the plan's, the ranking's
+   * or the conductor's, and only the caller can tell which.
+   */
+  checkStepRunSettings?: (step: WaveStep) => WaveStepModelCheck;
 }
 
 /**
@@ -592,14 +610,23 @@ export function admitWavePlan(
     );
   }
 
-  if (options?.checkStepModel) {
-    for (const [stepIndex, step] of parse.steps.entries()) {
-      if (!step.model) continue;
+  for (const [stepIndex, step] of parse.steps.entries()) {
+    if (options?.checkStepModel && step.model) {
       const check = options.checkStepModel(step.model);
       if (!check.ok) {
         // The checker's detail carries what the localized reason cannot know —
         // which model, and why it is unavailable.
         return rejected("step-model-unavailable", check.detail, stepIndex);
+      }
+    }
+    if (options?.checkStepRunSettings) {
+      const check = options.checkStepRunSettings(step);
+      if (!check.ok) {
+        return rejected(
+          "step-run-settings-unavailable",
+          check.detail,
+          stepIndex,
+        );
       }
     }
   }
@@ -662,15 +689,24 @@ export function createWaveState(args: {
  * (P49/P36), so the list lives in one place.
  */
 function optionalPlanFields(
-  step: Pick<WaveStep, "label" | "model" | "budget" | "modelClass">,
-): Pick<WaveStep, "label" | "model" | "budget" | "modelClass"> {
+  step: Pick<OptionalPlanFields, keyof OptionalPlanFields>,
+): OptionalPlanFields {
   return {
     ...(step.label ? { label: step.label } : {}),
     ...(step.model ? { model: step.model } : {}),
     ...(step.budget ? { budget: step.budget } : {}),
     ...(step.modelClass ? { modelClass: step.modelClass } : {}),
+    ...(step.effort ? { effort: step.effort } : {}),
+    // `false` is a choice, not an absence: a step that turned fast mode off
+    // must not come back from a restart asking for the ranking's fast mode.
+    ...(step.fast !== undefined ? { fast: step.fast } : {}),
   };
 }
+
+type OptionalPlanFields = Pick<
+  WaveStep,
+  "label" | "model" | "budget" | "modelClass" | "effort" | "fast"
+>;
 
 /** Returns a wave with a new lifecycle phase, or the same object if unchanged. */
 export function withWavePhase(wave: WaveState, phase: WavePhase): WaveState {

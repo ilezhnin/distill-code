@@ -129,6 +129,67 @@ describe("conductorGraphStore persistence", () => {
     expect(node?.anchorMessageId).toBe("plan-message-1");
   });
 
+  it("round-trips a node's effort and fast mode, and loads a folded model id as written", async () => {
+    window.localStorage.setItem(
+      CONDUCTOR_GRAPH_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        nodes: [
+          {
+            sessionId: "legacy-child",
+            projectId: "project",
+            role: "worker",
+            managedBy: "wave",
+            parentSessionId: "conductor-1",
+            rootConductorId: "conductor-1",
+            runId: "run-1",
+            harnessId: "codex-acp",
+            modelId: "gpt-5.6-sol[xhigh]",
+            displayName: "Noether",
+            status: "completed",
+            effort: 7,
+          },
+        ],
+        reports: [],
+      }),
+    );
+    const store = await loadGraph();
+    const legacy = store.getState().getNode("legacy-child");
+    // Never split on load: the graph is persisted on every write, so a split
+    // here would rewrite the operator's record the first time anything moved.
+    expect(legacy?.modelId).toBe("gpt-5.6-sol[xhigh]");
+    expect(legacy?.effort).toBeUndefined();
+
+    store.getState().registerNode({
+      sessionId: "new-child",
+      projectId: "project",
+      role: "worker",
+      managedBy: "wave",
+      parentSessionId: "conductor-1",
+      rootConductorId: "conductor-1",
+      runId: "run-2",
+      harnessId: "codex-acp",
+      modelId: "gpt-5.6-sol",
+      effort: "xhigh",
+      fast: false,
+      displayName: "Hopper",
+      status: "starting",
+    });
+    expect(readPersistedNodes()).toContainEqual(
+      expect.objectContaining({
+        sessionId: "legacy-child",
+        modelId: "gpt-5.6-sol[xhigh]",
+      }),
+    );
+
+    const reloaded = await loadGraph();
+    expect(reloaded.getState().getNode("new-child")).toMatchObject({
+      modelId: "gpt-5.6-sol",
+      effort: "xhigh",
+      fast: false,
+    });
+  });
+
   it("round-trips a blocked report with its reason through persist and load", async () => {
     // The load guard whitelists statuses; a reload that dropped "blocked"
     // would resurrect the step as reportless — and the wave with it.

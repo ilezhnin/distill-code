@@ -108,6 +108,9 @@ function parseNode(value: unknown): SessionNode | null {
     modelProviderId:
       typeof raw.modelProviderId === "string" ? raw.modelProviderId : undefined,
     modelId: typeof raw.modelId === "string" ? raw.modelId : undefined,
+    effort:
+      typeof raw.effort === "string" && raw.effort ? raw.effort : undefined,
+    fast: typeof raw.fast === "boolean" ? raw.fast : undefined,
     displayName: raw.displayName,
     icon: typeof raw.icon === "string" ? raw.icon : undefined,
     personaId: typeof raw.personaId === "string" ? raw.personaId : undefined,

@@ -151,6 +151,10 @@ function parseStep(value: unknown): WaveStepState | null {
     ...(isModelPreferenceClassId(raw.modelClass)
       ? { modelClass: raw.modelClass }
       : {}),
+    ...(typeof raw.effort === "string" && raw.effort.trim()
+      ? { effort: raw.effort.trim() }
+      : {}),
+    ...(typeof raw.fast === "boolean" ? { fast: raw.fast } : {}),
     phase: raw.phase,
     ...(typeof raw.sessionId === "string" ? { sessionId: raw.sessionId } : {}),
     ...(typeof raw.runId === "string" ? { runId: raw.runId } : {}),

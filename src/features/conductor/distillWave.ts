@@ -93,6 +93,14 @@ export interface WaveStep {
   label?: string;
   /** Explicit per-step model override (D5). Absent means "inherit". */
   model?: string;
+  /**
+   * The reasoning effort this step runs at, in the harness's own spelling
+   * ("high", "xhigh"). A separate choice from `model`, never glued onto it:
+   * absent means the ranking's effort, or the model's default.
+   */
+  effort?: string;
+  /** Whether this step runs in fast mode. Absent means the ranking decides. */
+  fast?: boolean;
 }
 
 /** Machine-readable reasons a `distill-wave` fence was rejected. */
@@ -134,7 +142,11 @@ export type WaveInvalidReason =
   /** A step's `budget` is not an object of positive numbers. */
   | "budget-invalid"
   /** A step's `class` is not one of the complexity classes. */
-  | "class-unknown";
+  | "class-unknown"
+  /** A step carries `effort`, but not as a non-empty string. */
+  | "effort-not-a-string"
+  /** A step carries `fast`, but not as `true` or `false`. */
+  | "fast-not-a-boolean";
 
 export interface WaveInvalid {
   kind: "invalid";
@@ -327,6 +339,28 @@ export function parseWaveStep(
       );
     }
     step.model = raw.model.trim();
+  }
+
+  if ("effort" in raw && raw.effort !== undefined) {
+    if (typeof raw.effort !== "string" || !raw.effort.trim()) {
+      return invalid(
+        "effort-not-a-string",
+        `Step ${stepIndex + 1}: "effort" must be a non-empty string when present, such as "high".`,
+        stepIndex,
+      );
+    }
+    step.effort = raw.effort.trim();
+  }
+
+  if ("fast" in raw && raw.fast !== undefined) {
+    if (typeof raw.fast !== "boolean") {
+      return invalid(
+        "fast-not-a-boolean",
+        `Step ${stepIndex + 1}: "fast" must be true or false when present.`,
+        stepIndex,
+      );
+    }
+    step.fast = raw.fast;
   }
 
   if ("class" in raw && raw.class !== undefined) {
