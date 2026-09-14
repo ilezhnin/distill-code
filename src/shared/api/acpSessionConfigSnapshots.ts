@@ -344,13 +344,12 @@ function isAuthoritativeInventoryModel(modelId: string): boolean {
 
 /**
  * Ids agents use for the reasoning-effort knob when they don't also tag it with
- * the `thought_level` category. Goose's own option is `thinking_effort` and the
- * Claude bridge tags its `effort` properly, but a bridge is free to ship an
+ * the `thought_level` category. The Claude bridge tags its `effort` properly
+ * and codex and grok tag `reasoning_effort`, but a bridge is free to ship an
  * untagged option under its own name — and an effort control that the snapshot
  * layer fails to recognise doesn't degrade, it disappears.
  */
 const REASONING_EFFORT_OPTION_IDS: ReadonlySet<string> = new Set([
-  "thinking_effort",
   "reasoning_effort",
   "reasoning",
   "reasoning_level",

@@ -28,7 +28,7 @@ function createConfigOptionsResponse() {
         },
       },
       {
-        id: "thinking_effort",
+        id: "reasoning_effort",
         category: "thought_level",
         kind: {
           type: "select",
@@ -601,11 +601,11 @@ describe("provider wire translation", () => {
   it("sets a generic session config option", async () => {
     const { setSessionConfigOption } = await import("../acpApi");
 
-    await setSessionConfigOption("session-9", "thinking_effort", "high");
+    await setSessionConfigOption("session-9", "reasoning_effort", "high");
 
     expect(mocks.setSessionConfigOption).toHaveBeenCalledWith({
       sessionId: "session-9",
-      configId: "thinking_effort",
+      configId: "reasoning_effort",
       value: "high",
     });
   });
@@ -630,7 +630,7 @@ describe("provider wire translation", () => {
       },
       fastMode: null,
       reasoningEffort: {
-        configId: "thinking_effort",
+        configId: "reasoning_effort",
         currentValue: "high",
         options: [
           { id: "low", name: "Low" },
@@ -654,7 +654,7 @@ describe("provider wire translation", () => {
     expect(applyReasoningEffortConfigSnapshot).toHaveBeenCalledWith(
       "session-9",
       {
-        configId: "thinking_effort",
+        configId: "reasoning_effort",
         currentValue: "high",
         options: [
           { id: "low", name: "Low" },
@@ -699,7 +699,7 @@ describe("provider wire translation", () => {
     expect(applyReasoningEffortConfigSnapshot).toHaveBeenCalledWith(
       "session-9",
       {
-        configId: "thinking_effort",
+        configId: "reasoning_effort",
         currentValue: "high",
         options: [
           { id: "low", name: "Low" },

@@ -106,7 +106,7 @@ describe("observeSessionTargetModelSnapshot", () => {
     expect(observe("gpt-5.6-sol", "gpt-5.6-sol")).toBe(true);
   });
 
-  it("drops a snapshot that names a different model", () => {
+  it("drops a legacy folded snapshot that names a different model", () => {
     seedSession("gpt-5.6-sol");
 
     expect(observe("gpt-6-astra[ultra]", "gpt-6-astra[ultra]")).toBe(false);
@@ -115,7 +115,7 @@ describe("observeSessionTargetModelSnapshot", () => {
     ).toMatchObject({ executionTarget: { modelId: "gpt-5.6-sol" } });
   });
 
-  it("drops a snapshot whose context names a model the response does not", () => {
+  it("drops a legacy folded snapshot whose context names a model the response does not", () => {
     seedSession("gpt-5.6-sol");
 
     expect(observe("gpt-5.6-sol[ultra]", "gpt-6-astra[ultra]")).toBe(false);

@@ -35,5 +35,8 @@ are separate choices, and each model offers its own set of them.
   next to `--model-id`, and refuses a value the chosen model does not offer
   with `effort_not_available` (the message names what it does offer) or
   `fast_not_supported`.
+- `berdctl agent create` takes `--effort` and `--fast-mode` next to `--model`,
+  checks them the same way, and saves them on the agent, so its chats start on
+  that model, effort and fast mode.
 - `berdctl session get` and `berdctl session list` report the `effort` and
   `fast_mode` each session's model last acknowledged.

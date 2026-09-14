@@ -58,7 +58,7 @@ describe("resolveExplicitWaveStepModel", () => {
     resetWaveStepTargetIoForTests();
   });
 
-  it("takes an exact id, whatever else it looks like", () => {
+  it("takes an exact id, even one shaped like a legacy folded id", () => {
     installModels({ "codex-acp": ["gpt-5.6-sol[low]", "gpt-5.6-sol[ultra]"] });
     const resolved = resolveExplicitWaveStepModel("gpt-5.6-sol[ultra]");
     expect(resolved.ok).toBe(true);
@@ -72,7 +72,7 @@ describe("resolveExplicitWaveStepModel", () => {
     expect(resolved.ok && resolved.target.modelId).toBe("claude-opus-5");
   });
 
-  it("refuses a name that matches several reasoning tiers of one model", () => {
+  it("refuses a name that matches several reasoning tiers of one model in a legacy folded inventory", () => {
     // WAVES: a step naming a model the harness does not serve must refuse the
     // plan rather than run on something else. Inventories list tiers
     // ascending, so "first hit wins" ran the step at the weakest one — the
@@ -94,7 +94,7 @@ describe("resolveExplicitWaveStepModel", () => {
     );
   });
 
-  it("honours a tier the plan named", () => {
+  it("honours a tier the plan named against a legacy folded inventory", () => {
     installModels({
       "codex-acp": ["gpt-5.6-sol[low]", "gpt-5.6-sol[medium]"],
     });
@@ -116,7 +116,7 @@ describe("resolveExplicitWaveStepModel", () => {
   });
 
   it("refuses a degenerate name instead of taking the first id", () => {
-    installModels({ "codex-acp": ["gpt-5.6-sol[low]", "claude-opus-5"] });
+    installModels({ "codex-acp": ["gpt-5.6-sol", "claude-opus-5"] });
     for (const requested of ["5", ".", "x"]) {
       const resolved = resolveExplicitWaveStepModel(requested);
       expect(resolved.ok).toBe(false);

@@ -70,7 +70,7 @@ describe("stored model preferences", () => {
     });
   });
 
-  it("reads fast mode and the per-model overrides when they are there", () => {
+  it("reads fast mode and the per-model overrides, filing a legacy folded key under its base model", () => {
     seedStoredPreferences({
       "codex-acp": {
         modelId: "gpt-6-astra",
@@ -225,7 +225,7 @@ describe("stored model preferences", () => {
   // The regression test for silent loss: the split has to happen before the
   // preference meets the inventory, because both of these drop a model id the
   // harness does not advertise, and they drop it with no error at all.
-  describe("survives the inventory check", () => {
+  describe("a legacy folded preference survives the inventory check", () => {
     it.each([
       ["an inventory of base ids", ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.5"]],
       [
@@ -253,7 +253,7 @@ describe("stored model preferences", () => {
       ).toEqual(preference);
     });
 
-    it("still drops a model the harness no longer serves", () => {
+    it("still drops a legacy folded model the harness no longer serves", () => {
       seedStoredPreferences({
         "codex-acp": {
           modelId: "gpt-5.4-mini[low]",

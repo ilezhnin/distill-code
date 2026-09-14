@@ -1554,10 +1554,17 @@ const createChatStore: StateCreator<
     if (index < 0) return false;
     const record = queue[index];
     const next = [...queue];
+    // A replacement payload is the same message prepared for a different send
+    // (workspace setup drops its execution prompt), not a re-queue: it keeps
+    // the run settings the message was queued under.
+    const replacement =
+      payload && !payload.runSettings && record.payload.runSettings
+        ? { ...payload, runSettings: record.payload.runSettings }
+        : payload;
     next[index] = {
       kind: "deferred",
       recordId,
-      payload: payload ?? record.payload,
+      payload: replacement ?? record.payload,
       state: deferredState,
       ...(record.editing ? { editing: true } : {}),
     };

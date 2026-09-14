@@ -181,10 +181,16 @@ export async function spawnConductorChildSession(args: {
         .projects.find((candidate) => candidate.id === parent.projectId)
     : undefined;
 
+  // P36: the step asked for a model *and* how to run it. They ride in
+  // `session/new` with the model, so the bridge opens the child on them and its
+  // very first turn runs at the effort and fast mode the step named rather
+  // than the harness default.
+  const runSettings = normalizeSessionRunSettings(args.runSettings);
   const child = await sessionStore.createSession({
     title: displayName,
     projectId: parent.projectId ?? undefined,
     executionTarget,
+    ...(runSettings ? { runSettings } : {}),
     workingDir,
     workspaceAttachments: parent.workspaceAttachments,
     deferProviderSetup: false,
@@ -196,10 +202,9 @@ export async function spawnConductorChildSession(args: {
     userSetName: true,
     ...(args.personaId ? { personaId: args.personaId } : {}),
   });
-  // P36: the step asked for a model *and* how to run it. Seeded before the
-  // first prompt is queued below, so the child's very first turn runs at the
-  // effort and fast mode the step named rather than the harness default.
-  const runSettings = normalizeSessionRunSettings(args.runSettings);
+  // The safety net, before the first prompt is queued below: a bridge that
+  // did not take a value at creation gets it from the reconciler, or the
+  // child shows why it runs without it.
   if (runSettings) {
     await seedChildRunSettings(child.id, runSettings);
   }
@@ -283,18 +288,16 @@ export async function spawnConductorChildSession(args: {
 }
 
 /**
- * Hands a freshly created child the effort and fast mode it should run at.
+ * Makes sure a freshly created child runs at the effort and fast mode it was
+ * created with.
  *
- * This is the run-settings path every chat uses, not a second one: the intent
- * is stored as `desiredRunSettings`, the reconciler writes what the current
- * model offers, and the first send's model apply re-plans from the model's own
- * answer inside the same mutation. A value the model cannot honour stays as
- * intent with a notice, never a failed spawn.
- *
- * When session creation can carry run settings in `session/new` `_meta`, pass
- * them to `createSession` as well so the bridge opens at them; this intent
- * record stays, because it is what the reconciler compares every later answer
- * against.
+ * `createSession` already sent them in `session/new` and recorded them as the
+ * child's `desiredRunSettings`. The record is written again here because it is
+ * what the reconciler compares every later answer against, and this must not
+ * depend on how creation stored it. The reconcile then writes whatever the
+ * bridge did not take at creation, and the first send's model apply re-plans
+ * from the model's own answer inside the same mutation. A value the model
+ * cannot honour stays as intent with a notice, never a failed spawn.
  */
 async function seedChildRunSettings(
   sessionId: string,

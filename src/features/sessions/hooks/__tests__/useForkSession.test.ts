@@ -110,6 +110,30 @@ describe("useForkSession", () => {
     expect(forked?.desiredRunSettings).toEqual({ effort: "xhigh", fast: true });
   });
 
+  it("prefers the effort and fast mode the host answered the fork with over the source's intent", async () => {
+    mocks.acpDuplicateSession.mockResolvedValue({
+      ...forkedInfo("gpt-5.6-sol"),
+      reasoningEffort: "high",
+      fastMode: false,
+    });
+
+    const forked = await fork();
+
+    expect(forked?.desiredRunSettings).toEqual({ effort: "high", fast: false });
+  });
+
+  it("fills in from the source what the host's fork answer left out", async () => {
+    mocks.acpDuplicateSession.mockResolvedValue({
+      ...forkedInfo("gpt-5.6-sol"),
+      reasoningEffort: "high",
+      fastMode: null,
+    });
+
+    const forked = await fork();
+
+    expect(forked?.desiredRunSettings).toEqual({ effort: "high", fast: true });
+  });
+
   it("gives the fork no run-settings intent when its source had none", async () => {
     useChatSessionStore.setState({
       sessions: [sourceSession({ desiredRunSettings: undefined })],

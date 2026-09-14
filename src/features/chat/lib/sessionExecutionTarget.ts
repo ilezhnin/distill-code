@@ -78,8 +78,9 @@ interface SessionExecutionModelSnapshot {
  * model's advertised menu or the operator chose it explicitly. They are not on
  * the target at all; they live in `sessionRunSettings.ts`.
  *
- * `sessionExecutionTargetProvenance.test.ts` pins the list of modules allowed
- * to mint a target, so a new one has to state which of (a)/(b)/(c) it is.
+ * `__tests__/sessionExecutionTargetProvenance.test.ts` pins the modules that
+ * mint a target and the modules that name a chat's run-settings intent, so a
+ * new one fails that test until it is added there with the case it is.
  * This function cannot check provenance itself — it sees an id, not where the
  * id came from — which is exactly why the rule is written down here.
  */

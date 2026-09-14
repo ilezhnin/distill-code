@@ -123,7 +123,7 @@ describe("parseDistillWave — plan", () => {
     expect(parsed.steps[0].model).toBe("gpt-5");
   });
 
-  it("keeps a step's effort and fast mode as their own fields", () => {
+  it("keeps a step's effort and fast mode as their own fields, and a legacy folded model string as written", () => {
     const parsed = parseDistillWave(
       fence(
         '{"steps":[{"role":"qa","subtask":"Run the suite","access":[],"model":"gpt-5.6-sol","effort":" xhigh ","fast":false}]}',

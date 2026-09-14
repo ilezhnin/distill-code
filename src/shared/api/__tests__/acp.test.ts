@@ -35,7 +35,7 @@ async function setRuntimeConfig(config: RuntimeConfig) {
 
 const EXTERNAL_AGENT_PROVIDER_IDS = ["claude-acp", "codex-acp"] as const;
 const reasoningEffortSnapshot = {
-  configId: "thinking_effort",
+  configId: "reasoning_effort",
   currentValue: "high",
   options: [
     { id: "low", name: "Low" },
@@ -541,7 +541,7 @@ describe("acpLoadSession", () => {
     mockLoadSession.mockResolvedValueOnce({
       configOptions: [
         {
-          id: "thinking_effort",
+          id: "reasoning_effort",
           category: "thought_level",
           kind: {
             type: "select",
@@ -574,7 +574,7 @@ describe("acpLoadSession", () => {
     expect(applyReasoningEffortConfigSnapshot).toHaveBeenCalledWith(
       "acp-session-1",
       {
-        configId: "thinking_effort",
+        configId: "reasoning_effort",
         currentValue: "medium",
         options: [
           { id: "off", name: "off" },

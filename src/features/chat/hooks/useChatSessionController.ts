@@ -66,7 +66,6 @@ import {
   setStoredModelPreference,
   setStoredModelRunSettings,
 } from "../lib/modelPreferences";
-import { saveDefaultReasoningEffort } from "../lib/reasoningEffortPreferences";
 import {
   replaceSessionTargetAfterDispatch,
   transitionSessionTarget,
@@ -425,12 +424,6 @@ export function useChatSessionController({
     startupName?: string | null;
     error?: string;
   } | null>(null);
-  const pendingDefaultReasoningEffortBySessionRef = useRef<
-    Record<string, string>
-  >({});
-  const reasoningEffortDefaultSaveQueueRef = useRef<Promise<void>>(
-    Promise.resolve(),
-  );
   const reasoningEffortRefreshKeyBySessionRef = useRef<Record<string, string>>(
     {},
   );
@@ -1054,7 +1047,6 @@ export function useChatSessionController({
       if (!modelStillCurrent()) {
         return false;
       }
-      delete pendingDefaultReasoningEffortBySessionRef.current[sessionId];
       return true;
     },
     [project, sessionWorkspacePath, sessionId],
@@ -1139,7 +1131,6 @@ export function useChatSessionController({
           configOptionsSnapshot = refreshResult.configOptionsSnapshot;
         }
       }
-      delete pendingDefaultReasoningEffortBySessionRef.current[sessionId];
       return true;
     },
     [isHomeSession, project, sessionId, sessionWorkspacePath],
@@ -1589,13 +1580,10 @@ export function useChatSessionController({
         return;
       }
 
-      if (sessionId) {
-        delete pendingDefaultReasoningEffortBySessionRef.current[sessionId];
-      }
       useChatStore.getState().resetTokenState(stateSessionId);
       handleProviderChange(providerId);
     },
-    [handleProviderChange, selectedProvider, sessionId, stateSessionId],
+    [handleProviderChange, selectedProvider, stateSessionId],
   );
 
   const handleModelChangeWithContextReset = useCallback(
@@ -1608,9 +1596,6 @@ export function useChatSessionController({
       ) {
         return;
       }
-      if (sessionId) {
-        delete pendingDefaultReasoningEffortBySessionRef.current[sessionId];
-      }
       useChatStore.getState().resetTokenState(stateSessionId);
       handleModelChange(modelId, model);
     },
@@ -1618,16 +1603,9 @@ export function useChatSessionController({
       effectiveModelSelection?.id,
       effectiveModelSelection?.modelProviderId,
       handleModelChange,
-      sessionId,
       stateSessionId,
     ],
   );
-
-  useEffect(() => {
-    if (sessionId && !session?.reasoningEffort) {
-      delete pendingDefaultReasoningEffortBySessionRef.current[sessionId];
-    }
-  }, [session?.reasoningEffort, sessionId]);
 
   const handleUltracodeArmedChange = useCallback(
     (armed: boolean) => {
@@ -1711,9 +1689,6 @@ export function useChatSessionController({
         ...explicitRunSettingsBySessionRef.current[sessionId],
         effort: value,
       };
-      if (!sessionHasStarted) {
-        pendingDefaultReasoningEffortBySessionRef.current[sessionId] = value;
-      }
       rememberRunSettingsChoice({ reasoningEffort: value });
       if (alreadyRunning) {
         return;
@@ -1746,12 +1721,6 @@ export function useChatSessionController({
           ) {
             return;
           }
-          if (
-            pendingDefaultReasoningEffortBySessionRef.current[sessionId] ===
-            value
-          ) {
-            delete pendingDefaultReasoningEffortBySessionRef.current[sessionId];
-          }
           useChatSessionStore.getState().patchSession(sessionId, {
             reasoningEffort: current,
             desiredRunSettings: previousDesired,
@@ -1767,7 +1736,6 @@ export function useChatSessionController({
       session?.executionTarget,
       session?.fastMode,
       session?.reasoningEffort,
-      sessionHasStarted,
       sessionId,
     ],
   );
@@ -2253,36 +2221,8 @@ export function useChatSessionController({
         );
       }
       onMessageAccepted?.(acceptedSessionId);
-      const pendingValue =
-        pendingDefaultReasoningEffortBySessionRef.current[acceptedSessionId];
       const shouldPreserveDraft =
         hasNewerDraftEdit || wasSubmittedWithoutDraftOwnership;
-      if (!pendingValue) {
-        return shouldPreserveDraft ? false : undefined;
-      }
-
-      const queuedSave = reasoningEffortDefaultSaveQueueRef.current
-        .catch(() => undefined)
-        .then(() => saveDefaultReasoningEffort(pendingValue));
-      reasoningEffortDefaultSaveQueueRef.current = queuedSave.catch(
-        () => undefined,
-      );
-
-      void queuedSave
-        .then(() => {
-          if (
-            pendingDefaultReasoningEffortBySessionRef.current[
-              acceptedSessionId
-            ] === pendingValue
-          ) {
-            delete pendingDefaultReasoningEffortBySessionRef.current[
-              acceptedSessionId
-            ];
-          }
-        })
-        .catch((error) => {
-          console.error("Failed to save default reasoning effort:", error);
-        });
       return shouldPreserveDraft ? false : undefined;
     },
     [
