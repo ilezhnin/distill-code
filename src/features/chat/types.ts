@@ -14,6 +14,7 @@ import type {
 } from "./stores/chatSessionStore";
 import type { QueuedMessagePayload } from "./stores/chatStore";
 import type { SessionExecutionTarget } from "./lib/sessionExecutionTarget";
+import type { SessionRunSettingsNotice } from "./lib/sessionRunSettings";
 
 /** Which page of the model picker a row belongs on. Presentation only. */
 export type ModelPickerGroup = "main" | "more";
@@ -194,7 +195,13 @@ export interface ChatInputReasoningEffort {
 }
 
 export interface ChatInputFastMode {
+  /** The fast toggle the current model advertises, once a session reports it. */
   config?: ChatSessionFastModeConfig;
+  /**
+   * The operator's fast intent, shown while no live toggle has arrived yet so
+   * the control does not snap back to off.
+   */
+  desired?: boolean;
   onChange?: (enabled: boolean) => void;
 }
 
@@ -240,6 +247,8 @@ export interface ChatInputProps {
   agentModelPicker?: ChatInputAgentModelPicker;
   reasoningEffort?: ChatInputReasoningEffort;
   fastMode?: ChatInputFastMode;
+  /** Why the current model is not running at the chosen effort or fast mode. */
+  runSettingsNotice?: SessionRunSettingsNotice | null;
   projectPicker?: ChatInputProjectPicker;
   contextUsage?: ChatInputContextUsage;
   controls?: ChatInputControls;

@@ -9,6 +9,7 @@ import { cn } from "@/shared/lib/cn";
 import { ComposerActionButton } from "@/shared/ui/composer-action-button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import type { ChatSessionReasoningEffortConfig } from "../stores/chatSessionStore";
+import type { SessionRunSettingsNotice } from "../lib/sessionRunSettings";
 import {
   hasSelectableReasoningEffort,
   isTopTierEffortId,
@@ -19,6 +20,12 @@ import {
 interface ReasoningEffortPillProps {
   config?: ChatSessionReasoningEffortConfig;
   onSelect?: (value: string) => void;
+  /**
+   * Why the current model is not running at the chosen effort. Only an effort
+   * notice with a stop in force renders here; the rest has no control to sit
+   * under and is explained in the model picker.
+   */
+  notice?: SessionRunSettingsNotice | null;
   disabled?: boolean;
   triggerTabIndex?: number;
   open?: boolean;
@@ -35,6 +42,7 @@ interface ReasoningEffortPillProps {
 export function ReasoningEffortPill({
   config,
   onSelect,
+  notice = null,
   disabled = false,
   triggerTabIndex,
   open: controlledOpen,
@@ -69,6 +77,21 @@ export function ReasoningEffortPill({
     selectedIndex > 0 && config.options.length > 1
       ? selectedIndex / (config.options.length - 1)
       : 0;
+
+  const optionLabel = (id: string) =>
+    toSentenceCaseLabel(
+      config.options.find((option) => option.id === id)?.name ?? id,
+    );
+  // The chosen value is the INTENT the operator keeps across models; the track
+  // shows the stop the model acknowledged, and this row says why they differ.
+  const noticeText =
+    notice?.kind === "effort" && notice.actual != null
+      ? t("toolbar.effortUnavailable", {
+          model: notice.modelName || t("toolbar.model"),
+          wanted: optionLabel(notice.wanted),
+          actual: optionLabel(notice.actual),
+        })
+      : null;
 
   const selectIndex = (index: number) => {
     const option = config.options[index];
@@ -208,6 +231,11 @@ export function ReasoningEffortPill({
             })}
           </div>
         </div>
+        {noticeText ? (
+          <p role="status" className="mt-3 text-xs text-muted-foreground">
+            {noticeText}
+          </p>
+        ) : null}
       </PopoverContent>
     </Popover>
   );

@@ -37,7 +37,9 @@ import {
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
 import { makeRemountSafeDraftAttachments } from "@/features/chat/lib/draftAttachments";
+import type { SessionRunSettingsNotice } from "@/features/chat/lib/sessionRunSettings";
 import type {
+  ChatInputFastMode,
   ChatInputReasoningEffort,
   ChatSendOptions,
   ChatSkillDraft,
@@ -98,6 +100,9 @@ interface GlobalComposerPillProps {
   onHandoffStart?: (rect: GlobalComposerHandoffRect) => void;
   suggestedPersonaId?: string | null;
   reasoningEffort?: ChatInputReasoningEffort;
+  /** The fast toggle of the session this pill applies its selection to. */
+  fastMode?: ChatInputFastMode;
+  runSettingsNotice?: SessionRunSettingsNotice | null;
   currentExecutionTarget?: SessionExecutionTarget | null;
   onExecutionTargetChange?: (target: SessionExecutionTarget | null) => void;
   placement?: "docked" | "centered" | "handoff";
@@ -193,6 +198,8 @@ export function GlobalComposerPill({
   onHandoffStart,
   suggestedPersonaId = null,
   reasoningEffort,
+  fastMode,
+  runSettingsNotice = null,
   currentExecutionTarget,
   onExecutionTargetChange,
   placement = "docked",
@@ -676,12 +683,19 @@ export function GlobalComposerPill({
     currentExecutionTarget?.modelProviderId,
     selectedProviderForPicker,
   ]);
-  const activeReasoningEffort =
-    reasoningEffort?.config &&
+  const selectionMatchesSession =
     reasoningEffortSelectionMatch.providerMatches &&
-    reasoningEffortSelectionMatch.modelMatches
+    reasoningEffortSelectionMatch.modelMatches;
+  const activeReasoningEffort =
+    reasoningEffort?.config && selectionMatchesSession
       ? reasoningEffort
       : undefined;
+  // Fast mode and the notice describe the session's model, so they are offered
+  // only while the pill still points at that model, the same rule as effort.
+  const activeFastMode = selectionMatchesSession ? fastMode : undefined;
+  const activeRunSettingsNotice = selectionMatchesSession
+    ? runSettingsNotice
+    : null;
   const effectiveReasoning = useMemo(
     () =>
       resolveEffectiveReasoningEffort({
@@ -1300,6 +1314,8 @@ export function GlobalComposerPill({
             modelsLoading={modelsLoading}
             modelStatusMessage={modelStatusMessage}
             onModelChange={handleModelChange}
+            fastMode={activeFastMode}
+            runSettingsNotice={activeRunSettingsNotice}
             onOpen={handlePickerOpen}
             onOpenChange={setModelPickerOpen}
             onRequestComposerFocus={() => textareaRef.current?.focus()}
@@ -1313,6 +1329,7 @@ export function GlobalComposerPill({
           <ReasoningEffortPill
             config={effectiveReasoning.config}
             onSelect={effectiveReasoning.onSelect}
+            notice={activeRunSettingsNotice}
             disabled={handoffActive}
             triggerTabIndex={expanded ? 0 : -1}
           />
