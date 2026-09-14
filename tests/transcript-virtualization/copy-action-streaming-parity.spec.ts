@@ -17,8 +17,13 @@ const requiresRealRenderer = rendererUrl !== LOCAL_TRANSCRIPT_RENDERER_URL;
 
 const sessionId = "copy-action-streaming-parity-session";
 const assistantMessageId = "copy-action-streaming-assistant";
+const completedAssistantMessageId = "copy-action-completed-assistant";
 const assistantText =
-  "Streaming answer has enough text for the mounted copy action.";
+  "Completed answer has enough text for the mounted copy action.";
+const streamingAssistantText =
+  "Streaming answer is still arriving and has no action tray yet.";
+// `pb-9` on the assistant content box: the space the action tray will take.
+const RESERVED_ACTION_TRAY_BLOCK_SIZE = "36px";
 const firstStreamingChunk = "alpha visible before completion";
 const secondStreamingChunk = " omega visible after completion";
 const fullIncrementalStreamingText = `${firstStreamingChunk}${secondStreamingChunk}`;
@@ -36,8 +41,8 @@ interface ActionVisualState {
   opacity: number | null;
   pointerEvents: string | null;
   visibility: string | null;
-  virtualRowLeft: number | null;
-  virtualRowRight: number | null;
+  clipLeft: number | null;
+  clipRight: number | null;
   width: number;
 }
 
@@ -67,9 +72,32 @@ declare global {
 function buildStreamingCopyFixture(): TranscriptFixture {
   const messages: Message[] = [
     {
-      id: "copy-action-streaming-user",
+      id: "copy-action-completed-user",
       role: "user",
       created: TRANSCRIPT_FIXTURE_BASE_TIME,
+      content: [
+        {
+          type: "text",
+          text: "Answer something short first.",
+        },
+      ],
+      metadata: { userVisible: true, agentVisible: true },
+    },
+    {
+      id: completedAssistantMessageId,
+      role: "assistant",
+      created: TRANSCRIPT_FIXTURE_BASE_TIME + 30_000,
+      content: [{ type: "text", text: assistantText }],
+      metadata: {
+        userVisible: true,
+        agentVisible: true,
+        completionStatus: "completed",
+      },
+    },
+    {
+      id: "copy-action-streaming-user",
+      role: "user",
+      created: TRANSCRIPT_FIXTURE_BASE_TIME + 45_000,
       content: [
         {
           type: "text",
@@ -82,7 +110,7 @@ function buildStreamingCopyFixture(): TranscriptFixture {
       id: assistantMessageId,
       role: "assistant",
       created: TRANSCRIPT_FIXTURE_BASE_TIME + 60_000,
-      content: [{ type: "text", text: assistantText }],
+      content: [{ type: "text", text: streamingAssistantText }],
       metadata: {
         userVisible: true,
         agentVisible: true,
@@ -212,7 +240,6 @@ async function collectActionVisualState(
       '[data-role="message-actions"]',
     );
     const button = actions?.querySelector("button") ?? null;
-    const virtualRow = actions?.closest<HTMLElement>("[data-virtual-row-id]");
     if (!actions) {
       return {
         mounted: false,
@@ -227,8 +254,8 @@ async function collectActionVisualState(
         opacity: null,
         pointerEvents: null,
         visibility: null,
-        virtualRowLeft: null,
-        virtualRowRight: null,
+        clipLeft: null,
+        clipRight: null,
         width: 0,
       };
     }
@@ -236,7 +263,30 @@ async function collectActionVisualState(
     const style = getComputedStyle(actions);
     const rect = actions.getBoundingClientRect();
     const buttonRect = button?.getBoundingClientRect() ?? null;
-    const virtualRowRect = virtualRow?.getBoundingClientRect() ?? null;
+    // The tray may hang past its row: its `-left-1.5` offset lines the icons
+    // up with the text above. What must not happen is an ancestor clipping
+    // it, so intersect every clipping box from the tray up to the transcript
+    // scroller, which always clips.
+    let clipLeft = Number.NEGATIVE_INFINITY;
+    let clipRight = Number.POSITIVE_INFINITY;
+    const scroller = actions.closest('[data-testid="message-timeline-scroll"]');
+    for (
+      let ancestor = actions.parentElement;
+      ancestor;
+      ancestor = ancestor.parentElement
+    ) {
+      if (
+        ancestor === scroller ||
+        getComputedStyle(ancestor).overflowX !== "visible"
+      ) {
+        const ancestorRect = ancestor.getBoundingClientRect();
+        clipLeft = Math.max(clipLeft, ancestorRect.left);
+        clipRight = Math.min(clipRight, ancestorRect.right);
+      }
+      if (ancestor === scroller) {
+        break;
+      }
+    }
     return {
       mounted: true,
       buttonMounted: Boolean(button),
@@ -250,8 +300,8 @@ async function collectActionVisualState(
       opacity: Number.parseFloat(style.opacity),
       pointerEvents: style.pointerEvents,
       visibility: style.visibility,
-      virtualRowLeft: virtualRowRect?.left ?? null,
-      virtualRowRight: virtualRowRect?.right ?? null,
+      clipLeft: Number.isFinite(clipLeft) ? clipLeft : null,
+      clipRight: Number.isFinite(clipRight) ? clipRight : null,
       width: rect.width,
     };
   }, messageText);
@@ -403,12 +453,17 @@ async function expectActionVisible(
   expect(state.opacity ?? 0).toBeGreaterThanOrEqual(0.99);
   expect(state.buttonLeft).not.toBeNull();
   expect(state.buttonRight).not.toBeNull();
-  if (state.virtualRowLeft != null && state.virtualRowRight != null) {
+  expect(
+    state.clipLeft,
+    "the transcript scroller should bound the action tray",
+  ).not.toBeNull();
+  expect(state.clipRight).not.toBeNull();
+  if (state.clipLeft != null && state.clipRight != null) {
     expect(state.buttonLeft ?? Number.NEGATIVE_INFINITY).toBeGreaterThanOrEqual(
-      state.virtualRowLeft - 0.5,
+      state.clipLeft - 0.5,
     );
     expect(state.buttonRight ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(
-      state.virtualRowRight + 0.5,
+      state.clipRight + 0.5,
     );
   }
 }
@@ -450,6 +505,29 @@ async function validateMode(page: Page, rendererMode: TranscriptRendererMode) {
   await settleFrames(page, 4);
   await moveAwayFromMessage(page);
 
+  // A streaming answer mounts no action tray at all: copy, retry and fork
+  // only make sense for a finished turn. It still reserves the tray's space
+  // so completion does not nudge a bottom-pinned transcript
+  // (`shouldReserveMessageActionSpace` in MessageBubble).
+  const streamingRow = page
+    .locator('[data-role="assistant-message"]')
+    .filter({ hasText: streamingAssistantText })
+    .first();
+  await expect(streamingRow).toBeVisible();
+  await expect(
+    streamingRow.locator('[data-role="message-actions"]'),
+  ).toHaveCount(0);
+  await streamingRow.hover();
+  await settleFrames(page, 2);
+  await expect(
+    streamingRow.locator('[data-role="message-actions"]'),
+  ).toHaveCount(0);
+  await expect(
+    streamingRow.locator('[data-role="assistant-message-content"]').first(),
+  ).toHaveCSS("padding-bottom", RESERVED_ACTION_TRAY_BLOCK_SIZE);
+  await moveAwayFromMessage(page);
+
+  // The completed answer above it keeps a mounted, visually hidden tray.
   const row = page
     .locator('[data-role="assistant-message"]')
     .filter({ hasText: assistantText })
@@ -567,7 +645,7 @@ test.describe("copy action active-streaming visual reveal parity", () => {
     }
   });
 
-  test("legacy and virtual renderers hide mounted copy actions until reveal conditions", async ({
+  test("legacy and virtual renderers keep copy actions off a streaming answer and hide completed copy actions until reveal conditions", async ({
     page,
   }) => {
     test.skip(

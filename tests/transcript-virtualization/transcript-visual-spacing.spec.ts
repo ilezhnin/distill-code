@@ -30,6 +30,7 @@ interface RectSnapshot {
 }
 
 interface DateFooterGeometry {
+  dateLabelText: string;
   dateToBubbleGapPx: number;
   dateRowToBubbleGapPx: number;
   assistantLeftGutterPx: number;
@@ -142,6 +143,11 @@ test.describe("transcript visual spacing parity", () => {
       collectDateFooterGeometry,
     );
 
+    expect(
+      virtual.dateLabelText,
+      "virtual date separator should name the same day as legacy",
+    ).toBe(legacy.dateLabelText);
+    expect(legacy.dateLabelText.length).toBeGreaterThan(0);
     expectNumberCloseTo(
       virtual.dateToBubbleGapPx,
       legacy.dateToBubbleGapPx,
@@ -257,7 +263,10 @@ test.describe("transcript visual spacing parity", () => {
       "rich fixture user bubble width should match legacy",
     );
 
-    for (const blockName of ["reasoning", "tool", "code", "image", "mcp"]) {
+    // The fixture's MCP app block has no geometry to compare: embedded MCP app
+    // resources are not rendered in either renderer (`renderContentBlock` in
+    // MessageBubble returns null for `mcpApp`).
+    for (const blockName of ["reasoning", "tool", "code", "image"]) {
       expectNumberCloseTo(
         virtual.blockOffsetsPx[blockName],
         legacy.blockOffsetsPx[blockName],
@@ -336,31 +345,32 @@ async function collectDateFooterGeometry(
       const bubble = messageBubbleByText(role, text);
       return bubble.parentElement ?? bubble;
     };
+    // Both renderers draw the day label as its own projected date-separator
+    // row directly before the first message of the day. Find it by that
+    // structure: its type size follows the shared sidebar group label token
+    // and is not a stable way to recognise it.
     const findDateSpan = (row: HTMLElement) => {
-      const findIn = (root: ParentNode) =>
-        Array.from(root.querySelectorAll("span")).find(
-          (span): span is HTMLSpanElement =>
-            span instanceof HTMLSpanElement &&
-            getComputedStyle(span).fontSize === "11px",
-        );
-      const localDateSpan = findIn(row);
-      if (localDateSpan) {
-        return localDateSpan;
-      }
       let previous = row.previousElementSibling;
       while (previous) {
         if (
           previous instanceof HTMLElement &&
-          previous.dataset.virtualRowKind === "date-separator"
+          previous.dataset.virtualRowKind != null
         ) {
-          const dateSpan = findIn(previous);
-          if (dateSpan) {
+          if (previous.dataset.virtualRowKind !== "date-separator") {
+            break;
+          }
+          const dateSpan = previous.querySelector("span");
+          if (
+            dateSpan instanceof HTMLSpanElement &&
+            (dateSpan.textContent ?? "").trim().length > 0
+          ) {
             return dateSpan;
           }
+          break;
         }
         previous = previous.previousElementSibling;
       }
-      throw new Error("Missing date separator span before day-two row");
+      throw new Error("Missing date separator label before day-two row");
     };
 
     const scroller = rect(
@@ -388,6 +398,7 @@ async function collectDateFooterGeometry(
       ),
     );
     return {
+      dateLabelText: (dateSpan.textContent ?? "").trim(),
       dateToBubbleGapPx: dayTwoBubble.top - date.bottom,
       dateRowToBubbleGapPx: dayTwoBubble.top - dateContainer.bottom,
       assistantLeftGutterPx: assistantContent.left - scroller.left,
@@ -547,6 +558,29 @@ async function collectRichBlockGeometry(
     messageId: "spacing-rich-user",
   });
 
+  // Reasoning and tool calls of a turn that has a final answer are projected
+  // as steps of its agent-work panel, which starts collapsed once the work has
+  // settled; both renderers draw rows through the same AgentWorkPanel. Open it
+  // as a reader would so those steps have geometry to compare.
+  const agentWorkPanel = page.locator('[data-role="agent-work-panel"]').first();
+  await agentWorkPanel
+    .locator('[data-slot="collapsible-trigger"]')
+    .first()
+    .click();
+  await expect(agentWorkPanel).toHaveAttribute("data-state", "open");
+  await page.waitForFunction(() => {
+    const content = document.querySelector(
+      '[data-role="agent-work-panel"] [data-slot="collapsible-content"]',
+    );
+    return (
+      content instanceof HTMLElement &&
+      content
+        .getAnimations()
+        .every((animation) => animation.playState !== "running")
+    );
+  });
+  await waitForStableLayout(page);
+
   return page.evaluate(() => {
     const rect = (element: Element): RectSnapshot => {
       const bounds = element.getBoundingClientRect();
@@ -622,18 +656,49 @@ async function collectRichBlockGeometry(
       assistantRow,
     );
     const assistantContent = rect(assistantContentElement);
-    const blockSelectors = {
-      reasoning: "button",
-      tool: '[data-role="tool-chain-card"], [data-role="tool-single"]',
-      code: "pre",
-      image: "button[aria-label] img",
-      mcp: '[data-testid="mcp-app-view"]',
+    // Each block of the turn is its own projected row of the same message:
+    // the agent-work row (reasoning, tools), the answer row (text, code) and
+    // one companion row per image. Measure every block against the answer's
+    // content column so the offsets stay comparable across rows.
+    const turnRows = Array.from(
+      document.querySelectorAll(
+        '[data-virtual-row-id^="message:spacing-rich-assistant"]',
+      ),
+    ).filter((row): row is HTMLElement => row instanceof HTMLElement);
+    const requireTurnElement = (selector: string) => {
+      for (const row of turnRows) {
+        const element = row.querySelector(selector);
+        if (element instanceof HTMLElement) {
+          return element;
+        }
+      }
+      throw new Error(`Missing turn element for selector: ${selector}`);
+    };
+    const reasoningStep = Array.from(
+      document.querySelectorAll(
+        '[data-role="agent-work-panel"] [data-role="agent-work-live-steps"] > *',
+      ),
+    ).find((step) =>
+      (step.textContent ?? "").includes("Reasoning block should keep"),
+    )?.firstElementChild;
+    if (!(reasoningStep instanceof HTMLElement)) {
+      throw new Error("Missing reasoning step in the agent-work panel");
+    }
+    const blockElements: Record<string, HTMLElement> = {
+      reasoning: reasoningStep,
+      tool: requireTurnElement(
+        '[data-role="agent-work-panel"] [data-tool-call-id="spacing-rich-tool"]',
+      ),
+      code: requireElement("pre", assistantContentElement),
+      image: requireTurnElement(
+        '[data-role="assistant-message-content"] button[aria-label] img',
+      ),
     };
     const blockOffsetsPx: Record<string, number> = {};
     const blockWidthsPx: Record<string, number> = {};
 
-    for (const [name, selector] of Object.entries(blockSelectors)) {
-      const blockRect = rect(requireElement(selector, assistantContentElement));
+    for (const [name, element] of Object.entries(blockElements)) {
+      const blockRect = rect(element);
       blockOffsetsPx[name] = blockRect.left - assistantContent.left;
       blockWidthsPx[name] = blockRect.width;
     }

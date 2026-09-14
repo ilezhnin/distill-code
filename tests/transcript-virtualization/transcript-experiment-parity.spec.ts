@@ -633,6 +633,27 @@ async function collectElementGeometry(
   });
 }
 
+async function expandAgentWorkPanel(page: Page) {
+  const panel = page.locator('[data-role="agent-work-panel"]').first();
+  const trigger = panel.locator('[data-slot="collapsible-trigger"]').first();
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  await expect(panel).toHaveAttribute("data-state", "open");
+  // Measure the settled layout, not a frame of the disclosure animation.
+  await page.waitForFunction(() => {
+    const content = document.querySelector(
+      '[data-role="agent-work-panel"] [data-slot="collapsible-content"]',
+    );
+    return (
+      content instanceof HTMLElement &&
+      content
+        .getAnimations()
+        .every((animation) => animation.playState !== "running")
+    );
+  });
+  await settleFrames(page);
+}
+
 function expectElementGeometryClose(
   legacy: ElementGeometry,
   virtual: ElementGeometry,
@@ -1296,12 +1317,17 @@ test.describe("transcript experiment-on/off parity", () => {
         );
         await expect(pair.legacyPage.locator("img").first()).toBeVisible();
         await expect(pair.virtualPage.locator("img").first()).toBeVisible();
+        // A turn with a final answer projects its tool calls as steps of the
+        // agent-work panel, which starts collapsed once the work has settled.
+        // Open it in both renderers the way a reader would before comparing.
+        await expandAgentWorkPanel(pair.legacyPage);
+        await expandAgentWorkPanel(pair.virtualPage);
 
         const selectors = [
           {
             label: "tool",
             selector:
-              '[data-role="tool-chain-card"], [data-role="tool-single"]',
+              '[data-role="agent-work-panel"] [data-tool-call-id="spacing-rich-tool"]',
           },
           { label: "code", selector: "pre" },
           { label: "image", selector: "img" },

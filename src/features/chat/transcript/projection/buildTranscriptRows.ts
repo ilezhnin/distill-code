@@ -283,7 +283,7 @@ function getTranscriptRowSpacingBefore({
 function isFragmentContinuation(row: TranscriptRowDescriptor): boolean {
   return (
     row.kind === "assistant-content-fragment" &&
-    row.fragment?.isCodeContinuationChunk === true
+    row.fragment?.isContinuationChunk === true
   );
 }
 

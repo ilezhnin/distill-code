@@ -87,6 +87,71 @@ export function shouldResumeTimelineFollowFromUserScroll({
   );
 }
 
+/**
+ * Every scroll write the virtual timeline makes is published back to its
+ * geometry engine, so a scroll that lands away from the engine's last observed
+ * position was made by something else: find-in-page, focus moving into an
+ * older message, a scroll-into-view. Without wheel, touch, pointer or keyboard
+ * intent those used to be read as layout corrections and snapped back to the
+ * bottom, which left the reader unable to stay where the browser put them.
+ * Upward moves only count outside a geometry sync, where browser clamping
+ * legitimately moves scrollTop, and never when the result is already latest.
+ */
+export function isTimelineExternalScrollAwayFromLatest({
+  scrollTop,
+  observedScrollTop,
+  hasUserScrollIntent,
+  isPinnedToLatest,
+  isGeometrySyncActive,
+}: {
+  scrollTop: number;
+  observedScrollTop: number | null;
+  hasUserScrollIntent: boolean;
+  isPinnedToLatest: boolean;
+  isGeometrySyncActive: boolean;
+}): boolean {
+  if (
+    observedScrollTop == null ||
+    hasUserScrollIntent ||
+    isPinnedToLatest ||
+    isGeometrySyncActive
+  ) {
+    return false;
+  }
+
+  return scrollTop < observedScrollTop - 1;
+}
+
+/**
+ * Following latest while a response streams keeps scrolling down as it grows.
+ * Once reaching the bottom would push the start of a response the reader could
+ * see above the viewport, the follow stops on that start instead, so an
+ * over-tall answer is read from its beginning rather than chased row by row.
+ * Whether the start was in view is decided before the growth, because the
+ * geometry engine may already have followed the new bottom by the time the
+ * timeline looks. Returns the scrollTop that keeps the start in view, or null
+ * while following the bottom still shows it (or it had already scrolled away).
+ */
+export function getStreamingResponseStartPinScrollTop({
+  responseStartWasInView,
+  bottomScrollTop,
+  responseStartScrollTop,
+}: {
+  responseStartWasInView: boolean;
+  bottomScrollTop: number;
+  responseStartScrollTop: number;
+}): number | null {
+  if (!responseStartWasInView) {
+    return null;
+  }
+
+  if (bottomScrollTop <= responseStartScrollTop + 1) {
+    return null;
+  }
+
+  return responseStartScrollTop;
+}
+
 export function getTimelineRealContentDistanceFromBottom({
   metrics,
   bottomPaddingPx,

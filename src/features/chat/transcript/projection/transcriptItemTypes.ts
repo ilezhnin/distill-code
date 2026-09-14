@@ -161,7 +161,7 @@ export interface TranscriptAssistantContentFragmentPayload {
   content: readonly MessageContent[];
   isStreamingTail: boolean;
   messageScrollTarget: boolean;
-  isCodeContinuationChunk: boolean;
+  isContinuationChunk: boolean;
   startsWithHeading: boolean;
 }
 
