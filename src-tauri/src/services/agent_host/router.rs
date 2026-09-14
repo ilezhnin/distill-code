@@ -5400,3 +5400,86 @@ mod tests {
         assert!(Inner::unanswered_client_request("fs/read_text_file").is_err());
     }
 }
+
+#[cfg(test)]
+mod source_rules {
+    //! Model, reasoning effort and fast mode are separate selections. Distill
+    //! used to fold an effort into a model id (`gpt-5.6-sol[xhigh]`), and a
+    //! bridge that serves base ids refuses such an id inside a send — on every
+    //! send. `split_effort_model` still takes one apart for history that
+    //! arrives folded, and nothing may build one again. The renderer has the
+    //! same rules in `src/shared/lib/__tests__/modelSelectionSourceRules.test.ts`.
+
+    use std::path::{Path, PathBuf};
+
+    fn rust_sources(dir: &Path, files: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().and_then(|name| name.to_str()) != Some("target") {
+                    rust_sources(&path, files);
+                }
+            } else if path.extension().and_then(|value| value.to_str()) == Some("rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    /// Every line of the app crate, its workspace crates and its plugins that
+    /// `matches` accepts, as `path:line`.
+    fn offending_lines(matches: impl Fn(&str) -> bool) -> Vec<String> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        for dir in ["src", "crates", "plugins"] {
+            rust_sources(&root.join(dir), &mut files);
+        }
+        let mut offenders = Vec::new();
+        for path in files {
+            let Ok(contents) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for (number, line) in contents.lines().enumerate() {
+                if matches(line) {
+                    offenders.push(format!("{}:{}", path.display(), number + 1));
+                }
+            }
+        }
+        offenders
+    }
+
+    #[test]
+    fn no_rust_source_composes_a_model_id_with_a_bracketed_effort() {
+        // `format!("{}[{}]", ..)`, `format!("{model}[{effort}]")` and
+        // `model + "[" + ..`. Spelled in parts so this module does not match
+        // itself.
+        let format_fold = concat!("}", "[", "{");
+        let concatenated_fold = concat!("+ \"", "[\"");
+        let offenders = offending_lines(|line| {
+            !line.trim_start().starts_with("//")
+                && (line.contains(format_fold) || line.contains(concatenated_fold))
+        });
+        assert!(
+            offenders.is_empty(),
+            "a model id and an effort travel as separate selections; do not fold them: {offenders:?}"
+        );
+    }
+
+    #[test]
+    fn no_rust_source_names_a_retired_folded_effort_identifier() {
+        let retired = [
+            concat!("model_", "reasoning"),
+            concat!("thinking_", "effort"),
+            concat!("thinking", "Effort"),
+            concat!("folded_", "effort_model"),
+            concat!("fold_", "config_option_update"),
+        ];
+        let offenders = offending_lines(|line| retired.iter().any(|name| line.contains(name)));
+        assert!(
+            offenders.is_empty(),
+            "retired folded-effort identifiers are back: {offenders:?}"
+        );
+    }
+}

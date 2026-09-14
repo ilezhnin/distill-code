@@ -67,7 +67,7 @@ describe("claudeModelSortOrder", () => {
 
   it("gives no order to models it cannot place", () => {
     expect(
-      claudeModelSortOrder(model("gpt-5.6-sol[xhigh]", "GPT 5.6 Sol[xhigh]")),
+      claudeModelSortOrder(model("gpt-5.6-sol", "GPT 5.6 Sol")),
     ).toBeUndefined();
     expect(claudeModelSortOrder(model("sonnet", "Sonnet"))).toBeUndefined();
   });

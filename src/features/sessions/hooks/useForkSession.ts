@@ -14,27 +14,35 @@ import { sameModelIdentity } from "@/shared/lib/foldedModelId";
 import {
   acpDuplicateSession,
   type AcpDuplicateSessionOptions,
+  type AcpSessionInfo,
 } from "@/shared/api/acp";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 
 /**
  * The host opens a fork on everything its source was running — model, effort
- * and fast mode (`fork_meta` in the agent host) — but the session info it
- * answers with names only the provider and the model id. Mapped alone, the
- * fork would get a bare target, with the id standing in for the model's name,
- * and no run-settings intent, so the reconciler would treat the effort and fast
- * mode its source was chosen with as never chosen. The source's own record
- * supplies exactly what the host copied.
+ * and fast mode (`fork_meta` in the agent host) — and answers with the model
+ * id plus, from a host that knows them, the effort and fast mode it stored for
+ * the fork. The chat-session mapping carries none of that intent, so mapped
+ * alone the fork would get a bare target, with the id standing in for the
+ * model's name, and the reconciler would treat the effort and fast mode as
+ * never chosen.
+ *
+ * The host's answer wins where it gave one: it is what the fork's own record
+ * holds and what the host re-applies on every attach. The source's intent
+ * fills in what an older host did not say.
  */
 function withSourceSelection(
   forked: ChatSession,
   source: ChatSession,
+  answer: AcpSessionInfo,
 ): ChatSession {
   const target = forked.executionTarget;
   const sourceTarget = source.executionTarget;
-  const desiredRunSettings = normalizeSessionRunSettings(
-    source.desiredRunSettings,
-  );
+  const desiredRunSettings = normalizeSessionRunSettings({
+    ...source.desiredRunSettings,
+    ...(answer.reasoningEffort ? { effort: answer.reasoningEffort } : {}),
+    ...(typeof answer.fastMode === "boolean" ? { fast: answer.fastMode } : {}),
+  });
   const sameModel =
     target &&
     sourceTarget &&
@@ -95,7 +103,11 @@ export function useForkSession(options?: {
         useChatSessionStore
           .getState()
           .addSession(
-            withSourceSelection(acpSessionToChatSession(forked), session),
+            withSourceSelection(
+              acpSessionToChatSession(forked),
+              session,
+              forked,
+            ),
           );
         toast.success(t("history.forked", { title: sourceName }));
         onForked?.(forked.sessionId);

@@ -94,8 +94,8 @@ describe("dispatchPrompt model rejection recovery", () => {
   const PINNED = {
     harnessId: "codex-acp",
     modelProviderId: "codex-acp",
-    modelId: "gpt-5.6-sol[max]",
-    modelName: "GPT 5.6 Sol (max)",
+    modelId: "gpt-5.6-sol",
+    modelName: "GPT 5.6 Sol",
   };
 
   function notices(sessionId: string) {
@@ -162,7 +162,7 @@ describe("dispatchPrompt model rejection recovery", () => {
 
     const notice = notices("session-1").at(-1);
     expect(notice?.notificationType).toBe("warning");
-    expect(notice?.text).toContain("GPT 5.6 Sol (max)");
+    expect(notice?.text).toContain("GPT 5.6 Sol");
     expect(notice?.text).toContain("Codex");
     expect(notice?.text).toContain("model pill");
     // The raw error stays: it is what actually happened.

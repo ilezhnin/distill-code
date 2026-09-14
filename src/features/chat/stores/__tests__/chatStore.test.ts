@@ -865,6 +865,62 @@ describe("chatStore", () => {
     });
   });
 
+  it("keeps a queued message's run settings when deferral replaces its payload", () => {
+    const store = useChatStore.getState();
+    store.enqueueTransportReadyMessage("s1", {
+      persona: { kind: "inherit" },
+      text: "original",
+      runSettings: { effort: "xhigh", fast: true },
+    });
+    const recordId =
+      useChatStore.getState().queuedMessageBySession.s1?.[0]?.recordId ?? "";
+
+    expect(
+      store.deferTransportReadyMessage(
+        "s1",
+        recordId,
+        { type: "workspace-first-send", status: "creating" },
+        { persona: { kind: "inherit" }, text: "original" },
+      ),
+    ).toBe(true);
+    expect(
+      useChatStore.getState().queuedMessageBySession.s1?.[0],
+    ).toMatchObject({
+      kind: "deferred",
+      recordId,
+      payload: {
+        text: "original",
+        runSettings: { effort: "xhigh", fast: true },
+      },
+    });
+  });
+
+  it("lets a replacement payload that names its own run settings keep them", () => {
+    const store = useChatStore.getState();
+    store.enqueueTransportReadyMessage("s1", {
+      persona: { kind: "inherit" },
+      text: "original",
+      runSettings: { effort: "xhigh" },
+    });
+    const recordId =
+      useChatStore.getState().queuedMessageBySession.s1?.[0]?.recordId ?? "";
+
+    store.deferTransportReadyMessage(
+      "s1",
+      recordId,
+      { type: "workspace-first-send", status: "creating" },
+      {
+        persona: { kind: "inherit" },
+        text: "original",
+        runSettings: { effort: "low" },
+      },
+    );
+    expect(
+      useChatStore.getState().queuedMessageBySession.s1?.[0]?.payload
+        .runSettings,
+    ).toEqual({ effort: "low" });
+  });
+
   it("preserves an edit lock when a deferred record is released", () => {
     const store = useChatStore.getState();
     store.enqueueDeferredMessage(

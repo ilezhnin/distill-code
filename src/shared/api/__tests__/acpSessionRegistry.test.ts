@@ -249,7 +249,7 @@ describe("applySessionModel", () => {
 
     const reasoning = registry.applySessionConfigOption(
       "session-1",
-      "thinking_effort",
+      "reasoning_effort",
       "high",
       {
         providerId: "openai",
@@ -351,7 +351,7 @@ describe("applySessionModel", () => {
 
       const reasoning = registry.applySessionConfigOption(
         "session-1",
-        "thinking_effort",
+        "reasoning_effort",
         "high",
       );
       const load = registry.loadSession("session-1", "/project");
@@ -384,7 +384,7 @@ describe("applySessionModel", () => {
 
       const reasoning = registry.applySessionConfigOption(
         "session-1",
-        "thinking_effort",
+        "reasoning_effort",
         "high",
       );
       await vi.advanceTimersByTimeAsync(60_000);
@@ -543,7 +543,7 @@ describe("applySessionModel", () => {
     const registry = await importPreparedRegistry("openai", "gpt-5.5");
     mockSetProvider.mockResolvedValueOnce(
       modelConfigResponse("claude-sonnet", "Claude Sonnet", {
-        configId: "thinking_effort",
+        configId: "reasoning_effort",
         currentValue: "high",
         options: [{ id: "high", name: "High" }],
       }),
