@@ -1,11 +1,13 @@
 import { z } from "zod/v4";
 
+import { BERDCTL_BOUNDS } from "../helpers";
 import { defineCommand } from "../types";
 
 const listModelsSchema = z
   .object({
     harness_id: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .optional()
       .describe(
         "Agent harness to list models for (from list_harnesses). " +

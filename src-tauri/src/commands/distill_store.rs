@@ -61,19 +61,55 @@ pub fn set_distill_root(state: State<'_, DistillRootState>, path: String) -> Res
     ensure_root_layout(&root)
 }
 
-/// Reads one document. A document that was never written is `None`, not an
-/// error — every caller's first read is a miss.
-#[tauri::command]
-pub fn read_distill_document(
-    state: State<'_, DistillRootState>,
-    path: String,
-) -> Result<Option<String>, String> {
-    let target = resolve_document_path(&state.root, &path)?;
-    match fs::read_to_string(&target) {
+/// Largest document either store will read into memory.
+///
+/// The documents are written by the app, so the cap is not a policy about what
+/// belongs in a planner — it is a refusal to turn an out-of-band replacement
+/// (a `.distill/*.md` swapped for something enormous, a planner grown by a
+/// runaway writer) into a multi-gigabyte `String` in the app's address space.
+/// Far above anything the app itself produces, far below "unbounded".
+pub(crate) const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Reads a store document with the size cap applied before the read.
+///
+/// A document that was never written is `None`, not an error — every caller's
+/// first read is a miss. The metadata check happens first so an oversized file
+/// is refused without allocating for it.
+pub(crate) fn read_document_capped(target: &Path) -> Result<Option<String>, String> {
+    match fs::metadata(target) {
+        Ok(metadata) if metadata.len() > MAX_DOCUMENT_BYTES => {
+            return Err(format!(
+                "Cannot read '{}': the document is {} bytes, above the {MAX_DOCUMENT_BYTES} byte limit",
+                target.display(),
+                metadata.len()
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Cannot read '{}': {error}", target.display())),
+    }
+    match fs::read_to_string(target) {
         Ok(contents) => Ok(Some(contents)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("Cannot read '{}': {error}", target.display())),
     }
+}
+
+/// Reads one document. A document that was never written is `None`, not an
+/// error — every caller's first read is a miss.
+///
+/// `async` + `spawn_blocking`: a synchronous `#[tauri::command]` runs inline in
+/// the WebView2 IPC callback, i.e. on the UI thread, so a read from a slow or
+/// network drive would stall the window.
+#[tauri::command]
+pub async fn read_distill_document(
+    state: State<'_, DistillRootState>,
+    path: String,
+) -> Result<Option<String>, String> {
+    let target = resolve_document_path(&state.root, &path)?;
+    tokio::task::spawn_blocking(move || read_document_capped(&target))
+        .await
+        .map_err(|error| format!("Cannot read '{path}': {error}"))?
 }
 
 /// Writes one document, atomically.
@@ -82,13 +118,35 @@ pub fn read_distill_document(
 /// version intact rather than a half-written one. A planner truncated to
 /// nothing by a power cut would be indistinguishable from a planner the
 /// operator emptied.
+///
+/// `async` + `spawn_blocking`: this is the debounced planner/memory/queue
+/// autosave path and it ends in an `fsync`. A synchronous `#[tauri::command]`
+/// runs inline in the WebView2 IPC callback, so the flush would block the
+/// window every time someone ticks a planner item.
+///
+/// CONTRACT: **the caller must serialise its writes per path.** A synchronous
+/// command ran inline in the IPC callback and so completed in message order;
+/// this one is spawned onto the Tokio pool, so two `invoke`s that are in flight
+/// at the same time can land in either order and the older document can be the
+/// one that survives. Every read-modify-write of a document therefore has to
+/// await the previous write of that same document before starting the next —
+/// which is what `distillDocument.ts` (a per-path promise chain),
+/// `taskMemory.ts` (`documentQueues`) and `memoryStore.ts` (`enqueueFolderWork`)
+/// do. A new caller that fires two writes of one path without awaiting is a
+/// last-writer-wins bug, and nothing here can detect it.
 #[tauri::command]
-pub fn write_distill_document(
+pub async fn write_distill_document(
     state: State<'_, DistillRootState>,
     path: String,
     contents: String,
 ) -> Result<(), String> {
     let target = resolve_document_path(&state.root, &path)?;
+    tokio::task::spawn_blocking(move || write_document_at(&target, &contents))
+        .await
+        .map_err(|error| format!("Cannot write '{path}': {error}"))?
+}
+
+fn write_document_at(target: &Path, contents: &str) -> Result<(), String> {
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("Cannot create '{}': {error}", parent.display()))?;
@@ -96,7 +154,7 @@ pub fn write_distill_document(
     let temporary = target.with_extension(format!("json.{}.tmp", uuid::Uuid::new_v4()));
     write_file_synced(&temporary, contents.as_bytes())
         .map_err(|error| format!("Cannot write '{}': {error}", temporary.display()))?;
-    match fs::rename(&temporary, &target) {
+    match fs::rename(&temporary, target) {
         Ok(()) => Ok(()),
         Err(error) => {
             let _ = fs::remove_file(&temporary);
@@ -147,4 +205,51 @@ pub fn initialize(app: &tauri::App) -> Result<DistillRootState, String> {
         root,
         os_config_dir,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn temp() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("distill-store-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_document_never_written_reads_as_nothing() {
+        let root = temp();
+        assert_eq!(
+            read_document_capped(&root.join("planner.json")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn writes_and_reads_back_a_document() {
+        let root = temp();
+        let target = root.join("nested").join("planner.json");
+        write_document_at(&target, "{\"a\":1}").unwrap();
+        assert_eq!(
+            read_document_capped(&target).unwrap().as_deref(),
+            Some("{\"a\":1}")
+        );
+    }
+
+    #[test]
+    fn refuses_a_document_above_the_size_cap_without_reading_it() {
+        let root = temp();
+        let target = root.join("planner.json");
+        // Sparse where the filesystem supports it: the point is the declared
+        // length, not writing 64 MiB of bytes.
+        let file = fs::File::create(&target).unwrap();
+        file.set_len(MAX_DOCUMENT_BYTES + 1).unwrap();
+        drop(file);
+
+        let error = read_document_capped(&target).unwrap_err();
+        assert!(error.contains("above the"), "{error}");
+        assert!(error.contains(&MAX_DOCUMENT_BYTES.to_string()), "{error}");
+    }
 }

@@ -62,6 +62,36 @@ export interface DistillDocument<T> {
   flush: () => Promise<void>;
 }
 
+/**
+ * Every document created in this renderer, so a teardown can flush the ones
+ * still holding a debounced payload.
+ *
+ * The webview is destroyed without warning when the window closes, and the
+ * only signals that reliably precede that are `pagehide` and `beforeunload`;
+ * both are hooked because WebView2 does not always deliver `pagehide` on a
+ * controller close. A flush is fire-and-forget — nothing on the Rust side
+ * defers the window's destruction until pending commands finish, so a write
+ * queued in the last few milliseconds can still be lost. Closing that gap
+ * needs a `WindowEvent::CloseRequested` hold in `src-tauri` (see the audit's
+ * shared #4 follow-up).
+ */
+const openDocuments = new Set<{ flush: () => Promise<void> }>();
+let closeFlushInstalled = false;
+
+function installCloseFlush(): void {
+  if (closeFlushInstalled || typeof window === "undefined") return;
+  closeFlushInstalled = true;
+  const flushAll = () => {
+    for (const entry of openDocuments) {
+      void entry.flush().catch(() => {
+        // Already reported by the write path; a teardown must not throw.
+      });
+    }
+  };
+  window.addEventListener("pagehide", flushAll);
+  window.addEventListener("beforeunload", flushAll);
+}
+
 function readLegacy(key: string): unknown | null {
   try {
     const raw = window.localStorage.getItem(key);
@@ -104,21 +134,24 @@ export function distillDocument<T>(
       writeLegacy(options.legacyStorageKey, payload);
       return inFlight;
     }
-    inFlight = writeDistillDocument(
-      options.path,
-      JSON.stringify(payload),
-    ).catch((error: unknown) => {
-      console.error(`Failed to write ${options.path}:`, error);
-      try {
-        options.onWriteError?.(error);
-      } catch {
-        // A reporter that throws must not reach the caller's write path.
-      }
-    });
+    // Chained, not concurrent: two flushes close together would otherwise run
+    // two `write_distill_document` invokes at once, and the temp-file rename of
+    // the older payload can land after the newer one — leaving the previous
+    // version on disk while memory holds the newer one.
+    inFlight = inFlight
+      .then(() => writeDistillDocument(options.path, JSON.stringify(payload)))
+      .catch((error: unknown) => {
+        console.error(`Failed to write ${options.path}:`, error);
+        try {
+          options.onWriteError?.(error);
+        } catch {
+          // A reporter that throws must not reach the caller's write path.
+        }
+      });
     return inFlight;
   };
 
-  return {
+  const instance: DistillDocument<T> = {
     read: async () => {
       if (!isDesktopRuntime()) {
         const legacy = readLegacy(options.legacyStorageKey);
@@ -173,4 +206,8 @@ export function distillDocument<T>(
 
     flush: () => flushNow(),
   };
+
+  openDocuments.add(instance);
+  installCloseFlush();
+  return instance;
 }

@@ -1,5 +1,6 @@
 import { z } from "zod/v4";
 
+import { BERDCTL_BOUNDS } from "../helpers";
 import type {
   ProjectWorkspace,
   ProjectWorkspaceStartupMode,
@@ -9,7 +10,10 @@ import { CommandError, defineCommand } from "../types";
 
 const setProjectStartupModeSchema = z
   .object({
-    project_id: z.string().describe("Id of the project to update."),
+    project_id: z
+      .string()
+      .max(BERDCTL_BOUNDS.id)
+      .describe("Id of the project to update."),
     mode: z
       .enum(["none", "branch", "worktree", "ask-worktree", "auto-worktree"])
       .describe(

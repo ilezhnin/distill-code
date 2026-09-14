@@ -7,6 +7,7 @@
     "groupLabel_one": "1 adjunto",
     "groupLabel_other": "{{count}} adjuntos",
     "imagePreviewTitle": "Vista previa de imagen",
+    "noPathForBrowserFile": "No se adjuntó «{{name}}»: esta acción no incluye la ruta del archivo, así que el agente no podría leerlo. Usa el botón de clip o arrastra el archivo desde una carpeta.",
     "open": "Abrir adjunto {{name}}",
     "previewAlt": "Vista previa de {{name}}",
     "remove": "Eliminar adjunto",
@@ -539,7 +540,9 @@
           "acceptedWithMissingArtifacts": "El conductor aceptó el resultado, pero los informes nombraron archivos que no están en el disco, así que no se respetó la aceptación.",
           "waveInterrupted": "Esta ola se interrumpió antes de que ningún ejecutor informara, así que no hay nada que juzgar. Su trabajo no se completó.",
           "operatorStopped": "Detuviste esta ola. Se pidió a sus ejecutores que se detuvieran y nada se resumió ni se juzgó.",
-          "stepBlocked": "Un ejecutor informó que no puede hacer su paso, así que la ola se detuvo."
+          "stepBlocked": "Un ejecutor informó que no puede hacer su paso, así que la ola se detuvo.",
+          "digestLost": "El informe de la brigada nunca se entregó al conductor —se quitó de la cola antes de enviarse—, así que no se decidió nada. Volver a preguntar abajo lo reenvía.",
+          "verdictUnanswered": "El conductor nunca respondió al informe de la brigada, así que no se decidió nada. Su turno sobre el informe terminó sin respuesta. Volver a preguntar abajo lo reenvía."
         },
         "prose": {
           "accept": "Aceptó el resultado de la brigada.",
@@ -575,7 +578,11 @@
         "tokens": "{{spent}} de {{allowed}} tokens",
         "minutes": "{{spent}} de {{allowed}} minutos"
       },
-      "closeout": "El resumen de esta petición se escribió en {{path}}. Es un archivo normal: haz commit junto con el trabajo para que lo tenga la siguiente persona."
+      "closeout": "El resumen de esta petición se escribió en {{path}}. Es un archivo normal: haz commit junto con el trabajo para que lo tenga la siguiente persona.",
+      "awaitingVerdict": "La brigada ha terminado; este chat espera el veredicto del conductor.",
+      "spawning": "Este chat está poniendo en marcha su brigada.",
+      "digestPending": "La brigada ha terminado; este chat está reuniendo sus informes.",
+      "dispatchingDigest": "Este chat está entregando los informes de la brigada al conductor."
     },
     "spawnAcl": {
       "deniedTitle": "Una sesión pidió iniciar un agente que no tiene permitido iniciar, así que no se inició nada.",
@@ -611,6 +618,12 @@
       "title": "El paso {{step}} ({{name}}) informó éxito, pero su informe no superó la verificación y quedó en cuarentena.",
       "detail": "Motivo: {{detail}} El resumen y los pasos posteriores reciben un sustituto en lugar de sus afirmaciones.",
       "noDetail": "El resumen y los pasos posteriores reciben un sustituto en lugar de sus afirmaciones."
+    },
+    "unreadable": {
+      "title": "El conductor está desactivado en esta sesión: no se pudo leer su estado guardado.",
+      "body": "No se pudo leer {{documents}} de la carpeta de Distill, ni siquiera tras reintentarlo. Mientras eso siga así no se inicia ninguna ola —un plan en este chat simplemente se ignora—, porque trabajar sobre una copia vacía repetiría planes antiguos y luego sobrescribiría el único registro que queda de ellos.",
+      "retry": "Lo más probable es que algo estuviera bloqueando el archivo al arrancar la app, como un análisis antivirus o un cliente de sincronización. En Ajustes → Estadísticas hay un botón «Reintentar» que vuelve a leerlo sin reiniciar.",
+      "reason": "La lectura falló con: {{reason}}"
     }
   },
   "harnessBrigade": {
@@ -710,6 +723,7 @@
     "input": "Entrada",
     "result": "Resultado",
     "fileNotFound": "Archivo no encontrado: {{path}}",
+    "runningCommand": "Ejecutando comando",
     "inputSummary": {
       "command": "Comando",
       "line": "Línea",
@@ -841,5 +855,14 @@
   "interruptedTurn": {
     "notice": "Este mensaje nunca recibió respuesta: la ejecución se interrumpió antes de que el agente contestara. No se reenvió por su cuenta, porque el agente pudo haber terminado trabajo real antes de detenerse.",
     "resend": "Enviarlo de nuevo"
+  },
+  "permissionRequest": {
+    "cancelledTurn": "El agente pidió permiso para ejecutar {{tool}} y solo ofreció respuestas permanentes, que esta aplicación nunca concede. En su lugar se canceló el turno; vuelve a pedirlo o cambia la configuración de permisos del propio agente."
+  },
+  "openPath": {
+    "revealedInsteadOfRun": "{{name}} es un programa o script, así que se mostró en el Explorador de archivos en lugar de ejecutarse.",
+    "confirmTitle": "¿Abrir un archivo fuera de las carpetas de este chat?",
+    "confirmOpen": "Abrir",
+    "confirmCancel": "Cancelar"
   }
 }

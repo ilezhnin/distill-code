@@ -1,6 +1,7 @@
-import { Fragment, memo, useCallback, useMemo } from "react";
+import { Fragment, memo, useMemo } from "react";
 import { linkifyText } from "@/shared/lib/linkify";
 import { cn } from "@/shared/lib/cn";
+import { useLinkSafetyGate } from "@/shared/ui/ai-elements/link-safety-modal";
 
 export interface LinkifiedTextProps {
   /** Raw text that may contain bare http(s) URLs. */
@@ -17,10 +18,12 @@ export interface LinkifiedTextProps {
 /**
  * Renders plain text while turning bare http(s) URLs into real links.
  *
- * Intended for user-authored text (e.g. chat messages the user typed or
- * pasted). Because the user is the source of these URLs, links open directly
- * without the LinkSafetyModal confirmation — that guard is reserved for
- * agent-generated Markdown links, where the URL may be untrusted.
+ * Used for the text of "user" messages — which are not necessarily written by
+ * the local operator: a `berdctl session send` from another agent and a
+ * conductor-generated wave prompt both render as user bubbles with only a
+ * `from` label. So a click goes through the same link-safety gate as an agent
+ * Markdown link: a trusted domain opens straight away, anything else is
+ * confirmed first.
  */
 export const LinkifiedText = memo(function LinkifiedText({
   text,
@@ -50,36 +53,32 @@ export const LinkifiedText = memo(function LinkifiedText({
     return visibleSegments;
   }, [endOffset, text]);
 
-  const handleLinkClick = useCallback(
-    (event: React.MouseEvent<HTMLAnchorElement>, href: string) => {
-      event.preventDefault();
-      void import("@tauri-apps/plugin-opener")
-        .then(({ openUrl }) => openUrl(href))
-        .catch((error: unknown) => {
-          console.error("[linkifiedText] openUrl failed:", error);
-        });
-    },
-    [],
-  );
+  const { openExternalUrl, linkSafetyModal } = useLinkSafetyGate();
 
   return (
-    <p className={cn("whitespace-pre-wrap wrap-anywhere", className)}>
-      {segments.map((segment, index) => {
-        if (segment.type === "link") {
-          return (
-            <a
-              key={`link-${index}`}
-              className="wrap-anywhere font-medium text-primary underline"
-              href={segment.href}
-              rel="noreferrer"
-              onClick={(event) => handleLinkClick(event, segment.href)}
-            >
-              {segment.value}
-            </a>
-          );
-        }
-        return <Fragment key={`text-${index}`}>{segment.value}</Fragment>;
-      })}
-    </p>
+    <>
+      <p className={cn("whitespace-pre-wrap wrap-anywhere", className)}>
+        {segments.map((segment, index) => {
+          if (segment.type === "link") {
+            return (
+              <a
+                key={`link-${index}`}
+                className="wrap-anywhere font-medium text-primary underline"
+                href={segment.href}
+                rel="noreferrer"
+                onClick={(event) => {
+                  event.preventDefault();
+                  openExternalUrl(segment.href);
+                }}
+              >
+                {segment.value}
+              </a>
+            );
+          }
+          return <Fragment key={`text-${index}`}>{segment.value}</Fragment>;
+        })}
+      </p>
+      {linkSafetyModal}
+    </>
   );
 });

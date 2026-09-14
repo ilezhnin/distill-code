@@ -12,7 +12,9 @@
  */
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -24,11 +26,15 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   ALLOWED_COMMANDS,
+  buildCmdLine,
+  clamp,
+  createPendingAnswers,
   createRelay,
+  MAX_PENDING_ANSWERS,
   parseArgs,
   quoteForCmd,
   resolveCwd,
@@ -56,6 +62,47 @@ describe("quoteForCmd", () => {
     // Without this, cmd.exe reads the final \" as an escaped quote and the
     // argument swallows everything after it.
     assert.equal(quoteForCmd("C:\\dir\\"), '"C:\\dir\\\\"');
+  });
+});
+
+describe("buildCmdLine", () => {
+  // `cmd /s` strips only the first and last quote character of the whole
+  // line it is handed, not each token's own quotes — so the line must carry
+  // one extra pair around everything, matching WindowsDev.psm1's
+  // `` "/d /s /c `"$command`"" `` and Node's own `shell: true` behaviour.
+
+  it("wraps the resolved path and every argument, then wraps the lot again", () => {
+    assert.equal(
+      buildCmdLine("C:\\...\\pnpm.cmd", ["vitest", "run"]),
+      '""C:\\...\\pnpm.cmd" "vitest" "run""',
+    );
+  });
+
+  it("keeps a path with spaces intact after both strips", () => {
+    // After cmd removes the outer pair: `"C:\Program Files\pnpm.cmd" "-v"`,
+    // which is exactly what tokenizes back into two arguments.
+    assert.equal(
+      buildCmdLine("C:\\Program Files\\pnpm.cmd", ["-v"]),
+      '""C:\\Program Files\\pnpm.cmd" "-v""',
+    );
+  });
+
+  it("survives with no arguments at all", () => {
+    assert.equal(buildCmdLine("just.cmd", []), '""just.cmd""');
+  });
+});
+
+describe("clamp", () => {
+  it("passes a value already inside the range through", () => {
+    assert.equal(clamp(5, 0, 10), 5);
+  });
+
+  it("floors a value below the minimum", () => {
+    assert.equal(clamp(-10_000, 0, 10), 0);
+  });
+
+  it("ceils a value above the maximum", () => {
+    assert.equal(clamp(999_999, 0, 10), 10);
   });
 });
 
@@ -341,5 +388,188 @@ describe("the relay end to end", () => {
     const beat = JSON.parse(readFileSync(relay.paths.heartbeat, "utf8"));
     assert.equal(beat.driverPort, port);
     assert.deepEqual(beat.allowedCommands, ALLOWED_COMMANDS);
+  });
+});
+
+describe("when the outbox cannot be written", () => {
+  // A directory sitting where `<id>.json` must land reproduces, on any OS,
+  // the same failure a Windows sync client/AV holding the file open would
+  // cause: `writeAtomic`'s rename refuses because the target is not a plain
+  // file. The relay used to treat that as "never answered" and re-claim (and
+  // re-run) the envelope on every 250ms poll for as long as that lasted.
+  let relay;
+  let root;
+
+  before(() => {
+    root = mkdtempSync(path.join(tmpdir(), "agent-driver-blocked-"));
+    relay = createRelay({ root, port: 1, repoRoot: REPO_ROOT });
+    // Block the exact path `answer("e1", …)` writes to.
+    mkdirSync(path.join(relay.paths.outbox, "e1.json"), { recursive: true });
+  });
+
+  after(() => {
+    relay?.stop();
+  });
+
+  it("runs the command exactly once even though the answer cannot be written yet", async () => {
+    const counter = path.join(root, "counter.txt");
+    writeFileSync(counter, "0", "utf8");
+    const target = path.join(relay.paths.inbox, "e1.json");
+    writeFileSync(
+      `${target}.tmp`,
+      JSON.stringify({
+        kind: "exec",
+        cmd: "node",
+        args: [
+          "-e",
+          `require("fs").writeFileSync(${JSON.stringify(counter)}, String(Number(require("fs").readFileSync(${JSON.stringify(counter)}, "utf8")) + 1))`,
+        ],
+      }),
+      "utf8",
+    );
+    renameSync(`${target}.tmp`, target);
+
+    // Several poll intervals: a re-executing relay would have run the
+    // command many times over by now (the regression measured 8+ in 2.2s).
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+
+    assert.equal(readFileSync(counter, "utf8"), "1");
+    // The envelope already produced a body, so it must be gone from inbox/
+    // regardless of whether the answer could be written.
+    assert.deepEqual(
+      readdirSync(relay.paths.inbox).filter((f) => f.endsWith(".json")),
+      [],
+    );
+
+    // Once the obstruction clears, the cached body is still delivered — the
+    // side effect must never repeat just because the write is retried.
+    rmSync(path.join(relay.paths.outbox, "e1.json"), {
+      recursive: true,
+      force: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    const answer = JSON.parse(
+      readFileSync(path.join(relay.paths.outbox, "e1.json"), "utf8"),
+    );
+    assert.equal(answer.ok, true);
+    assert.equal(readFileSync(counter, "utf8"), "1");
+  });
+});
+
+describe("a driver envelope with an out-of-range timeout", () => {
+  // Regression: `socket.setTimeout(negative)` throws synchronously, and that
+  // throw used to happen before the socket's `'error'` listener was
+  // attached. With the app not running (ECONNREFUSED), the resulting
+  // listener-less `'error'` event crashed the whole relay process, not just
+  // this one command — so this must run out of process to be a meaningful
+  // check: an in-process crash would take the entire test file down with it
+  // rather than fail cleanly.
+  it("answers with a failure instead of crashing the relay", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "agent-driver-timeout-"));
+    const relayUrl = pathToFileURL(path.join(HERE, "relay.mjs")).href;
+    const child = [
+      `import { createRelay } from ${JSON.stringify(relayUrl)};`,
+      `import { readFileSync, renameSync, writeFileSync } from "node:fs";`,
+      `import path from "node:path";`,
+      // Port 1 is privileged and nothing on this machine listens there, so
+      // the connection attempt refuses immediately (ECONNREFUSED) instead of
+      // hanging — exactly the "app not running" case the finding describes.
+      `const relay = createRelay({ root: ${JSON.stringify(root)}, port: 1, repoRoot: ${JSON.stringify(REPO_ROOT)} });`,
+      `const target = path.join(relay.paths.inbox, "d1.json");`,
+      `writeFileSync(\`\${target}.tmp\`, JSON.stringify({ kind: "driver", action: "snapshot", timeout: -10000 }), "utf8");`,
+      `renameSync(\`\${target}.tmp\`, target);`,
+      `const outFile = path.join(relay.paths.outbox, "d1.json");`,
+      `const deadline = Date.now() + 5_000;`,
+      `while (Date.now() < deadline) {`,
+      `  try { readFileSync(outFile, "utf8"); break; } catch {}`,
+      `  await new Promise((r) => setTimeout(r, 50));`,
+      `}`,
+      `relay.stop();`,
+    ].join("\n");
+
+    // Throws (non-zero exit / signal) if the child process crashed instead
+    // of exiting cleanly once the answer was written.
+    execFileSync(process.execPath, ["--input-type=module", "-e", child], {
+      timeout: 10_000,
+    });
+
+    const answer = JSON.parse(
+      readFileSync(path.join(root, "outbox", "d1.json"), "utf8"),
+    );
+    assert.equal(answer.ok, false);
+    assert.match(answer.error, /Cannot reach the app test driver/);
+  });
+});
+
+describe("the undeliverable-answer store", () => {
+  function refuse() {
+    throw new Error("EPERM");
+  }
+
+  it("keeps at most MAX_PENDING_ANSWERS bodies, dropping the oldest", () => {
+    // A permanently unwritable outbox/ used to grow this map forever: every
+    // answer produced for the rest of the process's life, held in memory.
+    const logs = [];
+    const pending = createPendingAnswers({ onLog: (line) => logs.push(line) });
+
+    for (let index = 0; index < MAX_PENDING_ANSWERS + 5; index += 1) {
+      pending.hold(`e${index}`, { ok: true });
+    }
+
+    assert.equal(pending.size, MAX_PENDING_ANSWERS);
+    assert.equal(pending.has("e0"), false);
+    assert.equal(pending.has(`e${MAX_PENDING_ANSWERS + 4}`), true);
+    assert.equal(
+      logs.filter((line) => line.includes("answer dropped")).length,
+      5,
+    );
+  });
+
+  it("logs a body that will not land once per interval, not once per poll", () => {
+    // The poll runs every 250 ms, so the old code wrote about four lines a
+    // second per stuck body — the kind of failure that fills a disk unwatched.
+    const logs = [];
+    const pending = createPendingAnswers({
+      logIntervalMs: 1_000,
+      onLog: (line) => logs.push(line),
+    });
+    pending.hold("e1", { ok: true });
+
+    for (let now = 0; now < 1_000; now += 250) {
+      pending.flush(refuse, now);
+    }
+    assert.equal(logs.length, 1);
+
+    pending.flush(refuse, 1_000);
+    assert.equal(logs.length, 2);
+  });
+
+  it("gives up on a body after its attempts are spent", () => {
+    const logs = [];
+    const pending = createPendingAnswers({
+      maxAttempts: 3,
+      logIntervalMs: 0,
+      onLog: (line) => logs.push(line),
+    });
+    pending.hold("e1", { ok: true });
+
+    pending.flush(refuse, 0);
+    pending.flush(refuse, 1);
+    assert.equal(pending.size, 1);
+    pending.flush(refuse, 2);
+
+    assert.equal(pending.size, 0);
+    assert.ok(logs.at(-1).includes("given up after 3 attempts"));
+  });
+
+  it("delivers and forgets a body as soon as the write succeeds", () => {
+    const written = [];
+    const pending = createPendingAnswers();
+    pending.hold("e1", { ok: true });
+
+    pending.flush((id, body) => written.push([id, body]), 0);
+
+    assert.equal(pending.size, 0);
+    assert.deepEqual(written, [["e1", { ok: true }]]);
   });
 });

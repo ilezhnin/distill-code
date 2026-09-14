@@ -355,39 +355,158 @@ const telemetryDocument = conductorDocument<WaveTelemetryState>({
   serialize: (state) => state,
 });
 
+/** Counters this process has added, on top of whatever it loaded. */
+let countedThisSession: WaveTelemetryCounters = emptyCounters();
+
+function emptyCounters(): WaveTelemetryCounters {
+  return {
+    planlessTurns: 0,
+    admittedWaves: 0,
+    rejectedPlans: 0,
+    concurrentRefusals: 0,
+  };
+}
+
+/** Records one increment so hydration can add it to the folder's total. */
+function noteCounted(counter: keyof WaveTelemetryCounters): void {
+  countedThisSession = {
+    ...countedThisSession,
+    [counter]: countedThisSession[counter] + 1,
+  };
+}
+
 /**
  * Folds the folder's history into the live counters (P24).
  *
  * Records are unioned by wave id — the file holds the previous runs, memory
- * holds this one — and the lifetime counters are summed only when memory has
- * not counted anything yet. Adding them unconditionally would double every
- * number on a hydration that raced a wave, and telemetry that overstates
- * itself is worse than telemetry that is late.
+ * holds this one — and the lifetime counters are the folder's total plus
+ * exactly what THIS process has counted since it started. It used to be one or
+ * the other ("live if it counted anything, else stored"), which meant a tick
+ * that counted a single planless turn before telemetry.json landed replaced
+ * every lifetime total with that one (admittedWaves 300 → 1). Adding the live
+ * *state* would have been wrong too — before hydration it still holds whatever
+ * the legacy localStorage key had, which the folder's copy already contains —
+ * so what is added is the delta this process made, tracked as it is made.
  */
 export async function hydrateWaveTelemetry(): Promise<void> {
   if (!telemetryDocument.active) return;
   const stored = await telemetryDocument.read();
-  if (!stored) return;
+  // From here the file is known, so writing over it is safe; the merge below
+  // is the first write and carries everything the file had.
+  telemetryReadSucceeded = true;
+  if (!stored) {
+    if (telemetryWriteHeld) save(getWaveTelemetry());
+    telemetryWriteHeld = false;
+    markWaveTelemetryHydrated();
+    return;
+  }
   const live = getWaveTelemetry();
   const liveWaveIds = new Set(live.records.map((record) => record.waveId));
-  const liveCounted =
-    live.counters.planlessTurns +
-    live.counters.admittedWaves +
-    live.counters.rejectedPlans +
-    live.counters.concurrentRefusals;
   save({
     ...stored,
     ...live,
-    counters: liveCounted === 0 ? stored.counters : live.counters,
-    planlessHighWater: {
-      ...stored.planlessHighWater,
-      ...live.planlessHighWater,
+    counters: {
+      planlessTurns:
+        stored.counters.planlessTurns + countedThisSession.planlessTurns,
+      admittedWaves:
+        stored.counters.admittedWaves + countedThisSession.admittedWaves,
+      rejectedPlans:
+        stored.counters.rejectedPlans + countedThisSession.rejectedPlans,
+      concurrentRefusals:
+        stored.counters.concurrentRefusals +
+        countedThisSession.concurrentRefusals,
     },
+    // The higher mark per conductor: a mark that went backwards would let a
+    // turn the previous run already counted be counted again.
+    planlessHighWater: mergeHighWater(
+      stored.planlessHighWater,
+      live.planlessHighWater,
+    ),
     records: capRecords([
       ...stored.records.filter((record) => !liveWaveIds.has(record.waveId)),
       ...live.records,
     ]),
   });
+  // Folded in: from here every increment is written on top of the merged total.
+  countedThisSession = emptyCounters();
+  telemetryWriteHeld = false;
+  markWaveTelemetryHydrated();
+}
+
+function mergeHighWater(
+  stored: Record<string, number>,
+  live: Record<string, number>,
+): Record<string, number> {
+  const merged: Record<string, number> = { ...stored };
+  for (const [conductorSessionId, mark] of Object.entries(live)) {
+    merged[conductorSessionId] = Math.max(
+      merged[conductorSessionId] ?? 0,
+      mark,
+    );
+  }
+  return merged;
+}
+
+/** Where the folder read stands. `pending` until it settles either way. */
+let telemetryHydration: "pending" | "hydrated" | "failed" = "pending";
+/** True once one read succeeded — the write gate, distinct from the phase. */
+let telemetryReadSucceeded = false;
+/** True when a write was refused by the gate and is owed after the read. */
+let telemetryWriteHeld = false;
+const telemetryHydrationWaiters = new Set<() => void>();
+
+/**
+ * True once the folder's telemetry has been folded in — or when there is no
+ * folder to wait for. False after a failed read: an unreadable file is not
+ * an empty one, and counting on top of "empty" is how lifetime counters
+ * come back as this session's few.
+ */
+export function isWaveTelemetryHydrated(): boolean {
+  return telemetryHydration === "hydrated" || !telemetryDocument.active;
+}
+
+/** True when the caller stopped trying to read the folder's telemetry. */
+export function hasWaveTelemetryHydrationFailed(): boolean {
+  return telemetryHydration === "failed";
+}
+
+function releaseTelemetryHydrationWaiters(): void {
+  const waiters = [...telemetryHydrationWaiters];
+  telemetryHydrationWaiters.clear();
+  for (const waiter of waiters) {
+    try {
+      waiter();
+    } catch {
+      // One waiter that throws must not keep the others waiting.
+    }
+  }
+}
+
+function markWaveTelemetryHydrated(): void {
+  telemetryHydration = "hydrated";
+  releaseTelemetryHydrationWaiters();
+}
+
+/**
+ * Records that the folder's telemetry will not be read this session. The
+ * waiters run so nothing parks forever; the write gate stays shut.
+ */
+export function markWaveTelemetryHydrationFailed(): void {
+  if (telemetryHydration === "hydrated") return;
+  telemetryHydration = "failed";
+  releaseTelemetryHydrationWaiters();
+}
+
+/**
+ * Calls `callback` once the folder read has settled — hydrated, or given up
+ * on — and immediately when it already has.
+ */
+export function whenWaveTelemetryHydrated(callback: () => void): void {
+  if (isWaveTelemetryHydrated() || hasWaveTelemetryHydrationFailed()) {
+    callback();
+    return;
+  }
+  telemetryHydrationWaiters.add(callback);
 }
 
 /** Pushes a queued telemetry write to disk. Shutdown, and tests. */
@@ -398,7 +517,14 @@ export function flushWaveTelemetryWrites(): Promise<void> {
 function save(next: WaveTelemetryState): void {
   cache = next;
   if (telemetryDocument.active) {
-    telemetryDocument.write(next);
+    // Never before the folder has been read: the file holds the lifetime
+    // counters and every past record, and a write from the in-memory copy
+    // before the read landed — or after it failed — would replace them.
+    if (telemetryReadSucceeded) {
+      telemetryDocument.write(next);
+    } else {
+      telemetryWriteHeld = true;
+    }
   } else if (typeof window !== "undefined") {
     try {
       window.localStorage.setItem(
@@ -555,6 +681,7 @@ export function bumpWaveTelemetryCounter(
 ): void {
   try {
     const current = getWaveTelemetry();
+    noteCounted(counter);
     save({
       ...current,
       counters: {
@@ -585,6 +712,7 @@ export function countPlanlessConductorTurn(
     const current = getWaveTelemetry();
     const mark = current.planlessHighWater[conductorSessionId] ?? 0;
     if (createdAt <= mark) return;
+    noteCounted("planlessTurns");
     save({
       ...current,
       counters: {
@@ -613,6 +741,11 @@ export function useWaveTelemetry(): WaveTelemetryState {
 
 export function resetWaveTelemetryForTests(): void {
   cache = null;
+  countedThisSession = emptyCounters();
+  telemetryHydration = "pending";
+  telemetryReadSucceeded = false;
+  telemetryWriteHeld = false;
+  telemetryHydrationWaiters.clear();
   if (typeof window !== "undefined") {
     try {
       window.localStorage.removeItem(WAVE_TELEMETRY_STORAGE_KEY);

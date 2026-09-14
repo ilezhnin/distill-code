@@ -29,7 +29,11 @@ import { acpExportSession } from "@/shared/api/acp";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { exportSessionAction } from "../lib/exportSessionAction";
 import { saveExportedSessionFiles } from "@/shared/api/system";
-import { defaultExportFilename, downloadJson } from "../lib/exportSession";
+import {
+  collectSettledExports,
+  defaultExportFilename,
+  downloadJson,
+} from "../lib/exportSession";
 import {
   areSetsEqual,
   normalizeSelectedSessionIds,
@@ -222,6 +226,7 @@ export function SessionHistoryView({
     applySelectionAction,
     archiveConfirmOpen,
     archiveSelectionCount,
+    archiveTerminalCount,
     confirmArchiveSelected,
     isApplyingSelectionAction,
     requestArchiveSelected,
@@ -800,12 +805,25 @@ export function SessionHistoryView({
     );
 
     try {
-      const items = await Promise.all(
-        sessionIds.map(async (id) => ({
+      const { items, failures } = await collectSettledExports(
+        sessionIds,
+        async (id) => ({
           filename: defaultExportFilename(titleById.get(id) ?? "session"),
           contents: await acpExportSession(id),
-        })),
+        }),
       );
+      if (failures.length > 0) {
+        console.error("Some chats could not be exported:", failures);
+      }
+      if (items.length === 0) {
+        toast.error(
+          formatAcpErrorMessage(
+            failures[0],
+            t("common:bulkActions.exportFailed"),
+          ),
+        );
+        return;
+      }
 
       if (window.__TAURI_INTERNALS__) {
         const result = await saveExportedSessionFiles(items);
@@ -828,6 +846,9 @@ export function SessionHistoryView({
           }),
         );
       }
+      if (failures.length > 0) {
+        reportBulkFailure(failures.length);
+      }
       clearSelection();
     } catch (error) {
       console.error("Bulk export failed:", error);
@@ -835,7 +856,13 @@ export function SessionHistoryView({
         formatAcpErrorMessage(error, t("common:bulkActions.exportFailed")),
       );
     }
-  }, [activeSessions, clearSelection, selectedSessionIds, t]);
+  }, [
+    activeSessions,
+    clearSelection,
+    reportBulkFailure,
+    selectedSessionIds,
+    t,
+  ]);
 
   const handleSelectResult = useCallback(
     (sessionId: string, messageId?: string) => {
@@ -1233,13 +1260,25 @@ export function SessionHistoryView({
           count: archiveSelectionCount,
           displayCount: archiveSelectionCount,
         })}
-        description={t("common:bulkActions.archiveConfirmDescription", {
-          count: archiveSelectionCount,
-          displayCount: archiveSelectionCount,
-        })}
+        description={[
+          t("common:bulkActions.archiveConfirmDescription", {
+            count: archiveSelectionCount,
+            displayCount: archiveSelectionCount,
+          }),
+          // Archiving stops the chat's shells and unarchiving restores none of
+          // them, so the reversibility the line above promises is not the whole
+          // story whenever one is running.
+          archiveTerminalCount > 0
+            ? t("common:bulkActions.archiveConfirmTerminals", {
+                count: archiveTerminalCount,
+              })
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" ")}
         cancelLabel={t("common:actions.cancel")}
         confirmLabel={t("common:actions.archive")}
-        destructive={false}
+        destructive={archiveTerminalCount > 0}
         loadingLabel={t("common:bulkActions.archiving")}
         isLoading={isApplyingSelectionAction}
         onConfirm={() => confirmArchiveSelected(handleArchive)}

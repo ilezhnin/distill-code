@@ -1,8 +1,15 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 
 import type { ArchivedMemoryEntry, MemoryEntry } from "../lib/memoryEntry";
 import { MAX_ARCHIVED_ENTRIES } from "../lib/memoryEntry";
 import type { MemoryFenceRequest } from "../lib/memoryFence";
+import {
+  isWaveExecutorSession,
+  sessionMemoryWriteAccess,
+  wasWaveExecutorSession,
+} from "../lib/memoryWriteAccess";
 import {
   capWithArchive,
   flushMemoryWrites,
@@ -10,12 +17,16 @@ import {
   MAX_MEMORY_ENTRIES,
   MEMORY_STORAGE_KEY,
   MAX_APPLIED_MEMORY_MESSAGE_IDS,
+  MAX_WAVE_EXECUTOR_SESSION_IDS,
   memoryRememberRefusal,
   parseArchivedMemoryEntries,
   parseMemoryEntries,
   parseRecallAnsweredMessageIds,
+  parseWaveExecutorSessionIds,
+  resetWaveExecutorWatchForTests,
   supersededChain,
   useMemoryStore,
+  watchGraphForWaveExecutors,
 } from "./memoryStore";
 
 const NOW = new Date(2026, 7, 26, 10, 30).getTime();
@@ -1160,5 +1171,167 @@ describe("the archive the operator acts on", () => {
       expect(state.entries).toHaveLength(1);
       expect(state.archived).toHaveLength(1);
     });
+  });
+});
+
+describe("the record of which sessions the wave engine owned", () => {
+  /**
+   * The conductor graph is bounded, and a finished wave child's node is the
+   * first thing it evicts. The memory ACL's other default — "no node on the
+   * graph is an ordinary operator chat" — then reads that child's transcript
+   * as the operator's own, so the store keeps the fact the graph threw away.
+   */
+  beforeEach(() => {
+    window.localStorage.clear();
+    resetWaveExecutorWatchForTests();
+    useMemoryStore.setState({
+      entries: [],
+      archived: [],
+      appliedMessageIds: [],
+      recallAnsweredMessageIds: [],
+      waveExecutorSessionIds: [],
+      hydrated: true,
+    });
+    useConductorGraphStore.setState({ nodesById: {} });
+  });
+
+  afterEach(() => {
+    resetWaveExecutorWatchForTests();
+    useMemoryStore.setState({ waveExecutorSessionIds: [] });
+    useConductorGraphStore.setState({ nodesById: {} });
+  });
+
+  function putWaveChild(sessionId: string) {
+    useConductorGraphStore.setState((state) => ({
+      nodesById: {
+        ...state.nodesById,
+        [sessionId]: {
+          sessionId,
+          projectId: "p-1",
+          role: "worker",
+          managedBy: "wave",
+          parentSessionId: null,
+          rootConductorId: null,
+          runId: null,
+          harnessId: "goose",
+          displayName: "Worker",
+          status: "completed",
+        },
+      },
+    }));
+  }
+
+  it("keeps a wave child's name after the graph evicts its node", () => {
+    putWaveChild("s-w");
+    watchGraphForWaveExecutors();
+    expect(useMemoryStore.getState().waveExecutorSessionIds).toEqual(["s-w"]);
+
+    // What `graphBounds` does past 500 nodes: the terminal wave child goes.
+    useConductorGraphStore.setState({ nodesById: {} });
+
+    expect(wasWaveExecutorSession("s-w")).toBe(true);
+    expect(isWaveExecutorSession("s-w")).toBe(true);
+    expect(sessionMemoryWriteAccess("s-w")).toEqual({
+      allowed: false,
+      denial: "wave-child",
+    });
+  });
+
+  it("notes a child spawned after the watch was armed", () => {
+    watchGraphForWaveExecutors();
+    putWaveChild("s-later");
+    expect(useMemoryStore.getState().waveExecutorSessionIds).toEqual([
+      "s-later",
+    ]);
+  });
+
+  it("says nothing about a session that never had a wave node", () => {
+    // The guardrail this must not break: an ordinary chat has no node either.
+    watchGraphForWaveExecutors();
+    useConductorGraphStore.setState((state) => ({
+      nodesById: {
+        ...state.nodesById,
+        "s-chat": {
+          sessionId: "s-chat",
+          projectId: "p-1",
+          role: "plain-chat",
+          managedBy: "ui",
+          parentSessionId: null,
+          rootConductorId: null,
+          runId: null,
+          harnessId: "goose",
+          displayName: "A chat",
+          status: "completed",
+        },
+      },
+    }));
+    useConductorGraphStore.setState({ nodesById: {} });
+
+    expect(useMemoryStore.getState().waveExecutorSessionIds).toEqual([]);
+    expect(isWaveExecutorSession("s-chat")).toBe(false);
+    expect(sessionMemoryWriteAccess("s-chat")).toEqual({ allowed: true });
+  });
+
+  it("remembers the record across a reload", async () => {
+    putWaveChild("s-w");
+    watchGraphForWaveExecutors();
+    await flushMemoryWrites();
+
+    const stored = JSON.parse(
+      window.localStorage.getItem(MEMORY_STORAGE_KEY) ?? "{}",
+    );
+    expect(parseWaveExecutorSessionIds(stored)).toEqual(["s-w"]);
+  });
+
+  it("records one session once, however often the graph changes", () => {
+    putWaveChild("s-w");
+    watchGraphForWaveExecutors();
+    putWaveChild("s-w");
+    useMemoryStore.getState().noteWaveExecutorSessions(["s-w", "s-w"]);
+    expect(useMemoryStore.getState().waveExecutorSessionIds).toEqual(["s-w"]);
+  });
+
+  it("keeps the newest names when it runs out of room", () => {
+    useMemoryStore.setState({
+      waveExecutorSessionIds: Array.from(
+        { length: MAX_WAVE_EXECUTOR_SESSION_IDS },
+        (_, index) => `old-${index}`,
+      ),
+    });
+    useMemoryStore.getState().noteWaveExecutorSessions(["newest"]);
+
+    const kept = useMemoryStore.getState().waveExecutorSessionIds;
+    expect(kept).toHaveLength(MAX_WAVE_EXECUTOR_SESSION_IDS);
+    expect(kept.at(-1)).toBe("newest");
+    expect(kept).not.toContain("old-0");
+  });
+
+  it("leaves the memories themselves alone", () => {
+    useMemoryStore.setState({ entries: [entry({ id: "g" })] });
+    putWaveChild("s-w");
+    watchGraphForWaveExecutors();
+    expect(useMemoryStore.getState().entries.map((e) => e.id)).toEqual(["g"]);
+  });
+
+  it("carries the record through an ordinary memory write", () => {
+    // `commit` rebuilds the whole state; dropping the record there would hand
+    // the next fence from an evicted child the operator's list.
+    useMemoryStore.setState({ waveExecutorSessionIds: ["s-w"] });
+    useMemoryStore
+      .getState()
+      .remember({ text: "Ivan pushes", scope: "global" });
+    expect(useMemoryStore.getState().waveExecutorSessionIds).toEqual(["s-w"]);
+  });
+
+  it("reads a document written before the record existed as holding none", () => {
+    expect(parseWaveExecutorSessionIds({ version: 2, entries: [] })).toEqual(
+      [],
+    );
+    expect(parseWaveExecutorSessionIds({ waveExecutorSessionIds: 7 })).toEqual(
+      [],
+    );
+    expect(
+      parseWaveExecutorSessionIds({ waveExecutorSessionIds: ["s-w", "", 3] }),
+    ).toEqual(["s-w"]);
   });
 });

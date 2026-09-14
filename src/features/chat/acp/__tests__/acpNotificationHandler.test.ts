@@ -9,13 +9,17 @@ import { useAgentStore } from "@/features/agents/stores/agentStore";
 import {
   clearMessageTracking,
   handleSessionNotification,
+  reportPermissionAnswer,
 } from "../acpNotificationHandler";
 import { flushBufferedStreamingUpdatesForSession } from "../liveStreamingUpdates";
 import { setActiveMessageId } from "@/shared/api/acpActiveMessageTracking";
 import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
 import { registerPreparedSession } from "@/shared/api/acpSessionRegistry";
 import { claimSessionPrompt } from "@/features/chat/lib/sessionPromptOwnership";
-import { resetUsageLedgerForTests } from "@/features/stats/lib/usageLedger";
+import {
+  getUsageLedger,
+  resetUsageLedgerForTests,
+} from "@/features/stats/lib/usageLedger";
 
 const workspaceObservationMocks = vi.hoisted(() => ({
   clearWorkspaceToolCallObservations: vi.fn(),
@@ -59,6 +63,50 @@ describe("acpNotificationHandler", () => {
       activeWorkspaceBySession: {},
     });
     useAgentStore.setState({ personas: [] });
+  });
+
+  // Reopening a chat replays every usage_update the host persisted. Feeding
+  // those to the ledger moves the chat's activity to today and rewrites the
+  // whole ledger once per replayed turn; only the live turn is real usage.
+  it("does not record usage into the ledger while replaying history", async () => {
+    const usageUpdate = {
+      sessionUpdate: "usage_update",
+      used: 1200,
+      size: 200000,
+      cost: { amount: 0.42, currency: "USD" },
+      accumulatedInputTokens: 1000,
+      accumulatedOutputTokens: 200,
+    } as const;
+
+    markSessionReplayLoading();
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: usageUpdate,
+    } as never);
+
+    expect(getUsageLedger().sessions["acp-session"]).toBeUndefined();
+    // The chat's own context/cost readout is still restored on replay.
+    expect(
+      useChatStore.getState().sessionStateById["acp-session"]?.tokenState,
+    ).toMatchObject({
+      accumulatedTotal: 1200,
+      accumulatedInput: 1000,
+      accumulatedOutput: 200,
+      accumulatedCost: 0.42,
+    });
+
+    useChatStore.setState({ loadingSessionIds: new Set<string>() });
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: usageUpdate,
+    } as never);
+
+    expect(getUsageLedger().sessions["acp-session"]).toMatchObject({
+      inputTokens: 1000,
+      outputTokens: 200,
+      costUsd: 0.42,
+      started: true,
+    });
   });
 
   it("observes live tool updates for workspace registration", async () => {
@@ -1257,33 +1305,57 @@ describe("acpNotificationHandler", () => {
     });
   });
 
-  it("replay replaces cumulative thought snapshots instead of appending them", async () => {
+  it("replay appends thought deltas verbatim", async () => {
     const replaySessionId = "replay-thought-session";
     useChatStore.setState({
       loadingSessionIds: new Set<string>([replaySessionId]),
     });
 
-    await handleSessionNotification({
-      sessionId: replaySessionId,
-      update: {
-        sessionUpdate: "agent_thought_chunk",
-        messageId: "assistant-thought-1",
-        content: { type: "text", text: "Plan" },
-      },
-    } as never);
-
-    await handleSessionNotification({
-      sessionId: replaySessionId,
-      update: {
-        sessionUpdate: "agent_thought_chunk",
-        messageId: "assistant-thought-1",
-        content: { type: "text", text: "Plan next step" },
-      },
-    } as never);
+    for (const text of ["Plan", " next", " step"]) {
+      await handleSessionNotification({
+        sessionId: replaySessionId,
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          messageId: "assistant-thought-1",
+          content: { type: "text", text },
+        },
+      } as never);
+    }
 
     const buffer = getReplayBuffer(replaySessionId);
     expect(buffer?.[0]?.content).toEqual([
       { type: "thinking", text: "Plan next step" },
+    ]);
+  });
+
+  // The host stores the raw chunks, so replay sees the same token deltas the
+  // live stream did: one that repeats the accumulated tail is real text.
+  it("replay keeps thought deltas that repeat the accumulated tail", async () => {
+    const replaySessionId = "replay-thought-tail-session";
+    useChatStore.setState({
+      loadingSessionIds: new Set<string>([replaySessionId]),
+    });
+
+    for (const text of [
+      "The year was 201",
+      "1",
+      " and foo(bar(baz)",
+      ")",
+      ")",
+    ]) {
+      await handleSessionNotification({
+        sessionId: replaySessionId,
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          messageId: "assistant-thought-tail",
+          content: { type: "text", text },
+        },
+      } as never);
+    }
+
+    const buffer = getReplayBuffer(replaySessionId);
+    expect(buffer?.[0]?.content).toEqual([
+      { type: "thinking", text: "The year was 2011 and foo(bar(baz)))" },
     ]);
   });
 
@@ -1986,5 +2058,44 @@ describe("acpNotificationHandler", () => {
     expect(messages[1].content).toEqual([
       { type: "text", text: "Roses are red" },
     ]);
+  });
+});
+
+// The app answers permission requests itself. A `cancelled` answer ends the
+// harness's turn, so the transcript has to say what happened — otherwise the
+// operator sees a turn that stopped for no visible reason.
+describe("permission answers the operator never saw", () => {
+  beforeEach(() => {
+    useChatStore.setState({ messagesBySession: {} });
+  });
+
+  it("records a system notice when the app could only cancel the request", () => {
+    reportPermissionAnswer({
+      sessionId: "acp-session",
+      toolLabel: "Bash(rm -rf /)",
+      answer: "cancelled",
+    });
+
+    const messages =
+      useChatStore.getState().messagesBySession["acp-session"] ?? [];
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.role).toBe("system");
+    expect(messages[0]?.content[0]).toMatchObject({
+      type: "systemNotification",
+      notificationType: "warning",
+      text: expect.stringContaining("Bash(rm -rf /)"),
+    });
+  });
+
+  it("records nothing for an answer the app actually gave", () => {
+    reportPermissionAnswer({
+      sessionId: "acp-session",
+      toolLabel: "Bash(ls)",
+      answer: "allow_once",
+    });
+
+    expect(
+      useChatStore.getState().messagesBySession["acp-session"],
+    ).toBeUndefined();
   });
 });

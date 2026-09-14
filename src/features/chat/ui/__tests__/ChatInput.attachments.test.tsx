@@ -94,6 +94,15 @@ vi.mock("@/features/skills/api/skills", () => ({
   listSkills: vi.fn().mockResolvedValue([]),
 }));
 
+const mockToastError = vi.fn();
+vi.mock("sonner", () => ({
+  toast: {
+    error: (...args: unknown[]) => mockToastError(...args),
+    message: vi.fn(),
+    success: vi.fn(),
+  },
+}));
+
 const mockOpenDialog = vi.fn();
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: unknown[]) => mockOpenDialog(...args),
@@ -114,6 +123,7 @@ describe("ChatInput attachments", () => {
     mockInspectAttachmentPaths.mockClear();
     mockInspectAttachmentPaths.mockResolvedValue([]);
     mockReadImageAttachment.mockClear();
+    mockToastError.mockClear();
     mockReadImageAttachment.mockResolvedValue({
       base64: "abc",
       mimeType: "image/png",
@@ -192,6 +202,33 @@ describe("ChatInput attachments", () => {
     await waitFor(() => {
       expect(onDraftAttachmentsChange).toHaveBeenLastCalledWith([]);
     });
+  });
+
+  // A webview drop (or a paste) hands us a `File` with no path. Only images
+  // travel as bytes; every other attachment reaches the agent as a quoted path
+  // in the prompt, so a path-less file would sit in the composer looking
+  // attached while nothing about it was sent.
+  it("does not show a dropped non-image file that carries no path", async () => {
+    render(<ChatInput onSend={vi.fn()} />);
+
+    const textbox = screen.getByRole("textbox");
+    const composer = textbox.closest("div.rounded-composer");
+    if (!composer) {
+      throw new Error("Expected composer container");
+    }
+    const dataTransfer = {
+      files: [new File(["doc"], "notes.pdf", { type: "application/pdf" })],
+      items: [{ kind: "file" }],
+      types: ["Files"],
+    } as unknown as DataTransfer;
+    fireEvent.drop(composer, { dataTransfer });
+
+    await waitFor(() =>
+      expect(mockToastError).toHaveBeenCalledWith(
+        expect.stringContaining("notes.pdf"),
+      ),
+    );
+    expect(screen.queryByText("notes.pdf")).toBeNull();
   });
 
   it("dedupes path attachments that differ only by case on case-insensitive platforms", async () => {

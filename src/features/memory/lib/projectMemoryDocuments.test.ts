@@ -4,10 +4,12 @@ import type { ProjectInfo } from "@/features/projects/api/projects";
 
 import type { ArchivedMemoryEntry, MemoryEntry } from "./memoryEntry";
 import {
+  foldProjectMemories,
   mergeProjectMemories,
   PROJECT_MEMORY_DOCUMENT,
   projectMemoryRoot,
   readProjectMemories,
+  readProjectMemoryFolder,
   writeProjectMemories,
 } from "./projectMemoryDocuments";
 
@@ -148,6 +150,19 @@ describe("writeProjectMemories", () => {
     await writeProjectMemories([project()], [], []);
     expect(writeProjectDocument).not.toHaveBeenCalled();
   });
+
+  it("takes the caller's word for whether the file exists", async () => {
+    // The mirror has just read the folder; asking it again is a round trip
+    // for an answer it already has.
+    await writeProjectMemories([project()], [], [], new Map([["p1", true]]));
+    expect(listProjectDocuments).not.toHaveBeenCalled();
+    expect(writeProjectDocument).toHaveBeenCalledTimes(1);
+
+    writeProjectDocument.mockClear();
+    await writeProjectMemories([project()], [], [], new Map([["p1", false]]));
+    expect(listProjectDocuments).not.toHaveBeenCalled();
+    expect(writeProjectDocument).not.toHaveBeenCalled();
+  });
 });
 
 describe("readProjectMemories", () => {
@@ -236,12 +251,107 @@ describe("readProjectMemories", () => {
   });
 
   it("costs one folder, not the read, when a folder cannot be read", async () => {
-    readProjectDocument.mockRejectedValue(new Error("drive not mounted"));
+    readProjectDocument.mockImplementation(async (root: string) => {
+      if (root === "/work/quarp") throw new Error("drive not mounted");
+      return JSON.stringify({ version: 2, entries: [entry({ id: "ok" })] });
+    });
     vi.spyOn(console, "error").mockImplementation(() => {});
 
+    const read = await readProjectMemories(
+      [project(), project({ id: "p2", workingDirs: ["/work/other"] })],
+      parseEntries,
+      parseArchived,
+    );
+
+    expect(read.entries.map((memory) => memory.id)).toEqual(["ok"]);
+    // The folder that could not be read is named as such: its file may hold
+    // lines nothing else does, and it is not this run's to write.
+    expect(read.readProjectIds).toEqual(["p2"]);
+  });
+});
+
+describe("readProjectMemoryFolder", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("tells a folder with no file apart from one it could not read", async () => {
+    readProjectDocument.mockResolvedValue(null);
     await expect(
-      readProjectMemories([project()], parseEntries, parseArchived),
-    ).resolves.toEqual({ entries: [], archived: [] });
+      readProjectMemoryFolder(project(), parseEntries, parseArchived),
+    ).resolves.toEqual({ entries: [], archived: [], hasFile: false });
+
+    readProjectDocument.mockRejectedValue(new Error("drive not mounted"));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(
+      readProjectMemoryFolder(project(), parseEntries, parseArchived),
+    ).resolves.toBeNull();
+  });
+
+  it("treats a file that will not parse as unread, not as empty", async () => {
+    // Overwriting it would destroy whatever a person could still recover.
+    readProjectDocument.mockResolvedValue("{not json");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(
+      readProjectMemoryFolder(project(), parseEntries, parseArchived),
+    ).resolves.toBeNull();
+  });
+
+  it("has nothing to read for a project with no folder", async () => {
+    await expect(
+      readProjectMemoryFolder(
+        project({ workingDirs: [] }),
+        parseEntries,
+        parseArchived,
+      ),
+    ).resolves.toEqual({ entries: [], archived: [], hasFile: false });
+    expect(readProjectDocument).not.toHaveBeenCalled();
+  });
+});
+
+describe("foldProjectMemories", () => {
+  it("adds what only the folder knows, to whichever list it is in", () => {
+    const folded = foldProjectMemories(
+      { entries: [entry({ id: "a" })], archived: [archived({ id: "x" })] },
+      {
+        entries: [entry({ id: "a" }), entry({ id: "b" })],
+        archived: [archived({ id: "x" }), archived({ id: "y" })],
+      },
+    );
+    expect(folded.entries.map((memory) => memory.id)).toEqual(["a", "b"]);
+    expect(folded.archived.map((memory) => memory.id)).toEqual(["x", "y"]);
+    expect(folded.added).toBe(2);
+  });
+
+  it("does not revive a line the store has archived and the folder still shows live", () => {
+    // The folder lagging behind the store, not a second memory: merging the
+    // lists one at a time put such a line in both.
+    const folded = foldProjectMemories(
+      {
+        entries: [],
+        archived: [archived({ id: "a", archiveReason: "forgotten" })],
+      },
+      { entries: [entry({ id: "a" })], archived: [] },
+    );
+    expect(folded.entries).toEqual([]);
+    expect(folded.archived.map((memory) => memory.id)).toEqual(["a"]);
+    expect(folded.added).toBe(0);
+  });
+
+  it("leaves out what the operator deleted this run", () => {
+    const folded = foldProjectMemories(
+      { entries: [], archived: [] },
+      { entries: [entry({ id: "gone" }), entry({ id: "kept" })], archived: [] },
+      new Set(["gone"]),
+    );
+    expect(folded.entries.map((memory) => memory.id)).toEqual(["kept"]);
+  });
+
+  it("hands the base lists back untouched when there is nothing to add", () => {
+    const base = { entries: [entry({ id: "a" })], archived: [] };
+    const folded = foldProjectMemories(base, { entries: [], archived: [] });
+    expect(folded.entries).toBe(base.entries);
+    expect(folded.archived).toBe(base.archived);
   });
 });
 

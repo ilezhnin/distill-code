@@ -26,6 +26,19 @@ const stopOrchestratorSession = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("./orchestratorControls", () => ({ stopOrchestratorSession }));
 
+/** Calls through to the real resolver; exists so a test can see its inputs. */
+const resolveWaveStepTarget = vi.hoisted(() =>
+  vi.fn<(roleId: string, classId?: string) => unknown>(),
+);
+
+vi.mock("./waveStepTarget", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./waveStepTarget")>();
+  resolveWaveStepTarget.mockImplementation((roleId, classId) =>
+    actual.resolveWaveStepTarget(roleId, classId as never),
+  );
+  return { ...actual, resolveWaveStepTarget };
+});
+
 const {
   WAVE_REPORT_GRACE_MS,
   WAVE_SPAWN_TIMEOUT_MS,
@@ -40,11 +53,13 @@ const {
   hasWaveTombstone,
   resetWaveEngineStateCache,
   setWaveEngineState,
+  setWaveEngineStateHydratedForTests,
   withWave,
 } = await import("./waveStore");
 const { createWaveState } = await import("./waveEngine");
 const { stopWaveByOperator } = await import("./waveStop");
 const { getWaveTelemetry } = await import("./waveTelemetryStore");
+const { notePersistReadOutage } = await import("./persistHealth");
 
 const CONDUCTOR_ID = "conductor-1";
 
@@ -63,11 +78,23 @@ function conductorNode(): SessionNode {
   };
 }
 
+/**
+ * Conductor turns are minutes apart in life, and the engine now remembers the
+ * newest message it has handled per conductor, so every helper message gets
+ * its own time rather than all of them sharing one.
+ */
+let createdClock = 1_000;
+
+function nextCreated(): number {
+  createdClock += 1_000;
+  return createdClock;
+}
+
 function assistant(id: string, text: string): Message {
   return {
     id,
     role: "assistant",
-    created: 1,
+    created: nextCreated(),
     content: [{ type: "text", text }],
     metadata: { completionStatus: "completed" },
   };
@@ -125,6 +152,7 @@ function registerSpawnedChild(args: {
 describe("waveRunner", () => {
   beforeEach(async () => {
     await i18n.loadNamespaces("chat");
+    createdClock = 1_000;
     window.localStorage.clear();
     resetWaveEngineStateCache();
     resetWaveRunnerForTests();
@@ -158,6 +186,128 @@ describe("waveRunner", () => {
     setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
     runWaveEngineTick();
     expect(spawnConductorChildSession).not.toHaveBeenCalled();
+  });
+
+  it("stays off for the session when a folder document could not be read", async () => {
+    // A waves.json that never loaded has no tombstones in it: a tick would
+    // read every plan in the transcript as new and spawn its workers again.
+    // The hydration gave up, the waiter was released, and the engine's answer
+    // is to sit out — not to run on the empty copy.
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    setWaveEngineStateHydratedForTests(false);
+    try {
+      runWaveEngineTick();
+      setWaveEngineStateHydratedForTests("failed");
+      runWaveEngineTick();
+      await Promise.resolve();
+      expect(spawnConductorChildSession).not.toHaveBeenCalled();
+      expect(getWaveEngineState().waves).toHaveLength(0);
+    } finally {
+      setWaveEngineStateHydratedForTests(null);
+    }
+  });
+
+  it("tells every conductor chat that it is off for the session", async () => {
+    // The engine never starts a wave while a document is unread, so the
+    // write-refusal notice (which waits for a live wave) would wait forever.
+    // Without this the operator sees a conductor answering with a plan and an
+    // app doing nothing at all about it.
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
+    notePersistReadOutage(
+      "waves",
+      Object.assign(new Error("read failed"), { name: "EPERM" }),
+    );
+    setWaveEngineStateHydratedForTests("failed");
+    try {
+      runWaveEngineTick();
+      await Promise.resolve();
+
+      const notices = noticeTexts();
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain("conductor/waves.json");
+      expect(notices[0]).toContain("EPERM");
+
+      // Said once per chat, not once per tick — the tick runs on every
+      // chat-store change.
+      runWaveEngineTick();
+      await Promise.resolve();
+      expect(noticeTexts()).toHaveLength(1);
+    } finally {
+      setWaveEngineStateHydratedForTests(null);
+    }
+  });
+
+  it("does not re-admit an old plan once its tombstone has been evicted", async () => {
+    // The tombstone list is capped at 500 and every wave spends at least two
+    // entries, so a heavy user's oldest plans fall off it. Reopening that chat
+    // replays its transcript, and the watermark is what keeps a months-old
+    // plan from being read as a brand-new root request and spawning workers.
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    const oldPlan = { ...assistant("plan-old", TWO_STEP_PLAN), created: 1_000 };
+    const newPlan = { ...assistant("plan-new", TWO_STEP_PLAN), created: 5_000 };
+    setTranscript([oldPlan, newPlan]);
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(getWaveEngineState().waves[0]?.steps[0]?.sessionId).toBe(
+        "child-0",
+      ),
+    );
+    expect(getWaveEngineState().waves).toHaveLength(1);
+    const spawnsSoFar = spawnConductorChildSession.mock.calls.length;
+
+    // The cap evicts both tombstones and the wave closes: the only record left
+    // of either message is the watermark. The graph is as a much later session
+    // finds it — the old wave's children are long gone from it too.
+    setWaveEngineState({
+      ...getWaveEngineState(),
+      waves: [],
+      tombstones: [],
+    });
+    useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    resetWaveRunnerForTests();
+    runWaveEngineTick();
+    await Promise.resolve();
+    expect(getWaveEngineState().waves).toHaveLength(0);
+    expect(spawnConductorChildSession.mock.calls).toHaveLength(spawnsSoFar);
+
+    // A plan the conductor writes now is newer than the mark and still runs.
+    setTranscript([
+      oldPlan,
+      newPlan,
+      { ...assistant("plan-next", TWO_STEP_PLAN), created: 9_000 },
+    ]);
+    runWaveEngineTick();
+    await Promise.resolve();
+    expect(
+      getWaveEngineState().waves.map((wave) => wave.planMessageId),
+    ).toEqual(["plan-next"]);
+  });
+
+  it("still admits a plan this process produced when the watermark is in the future", async () => {
+    // A machine whose clock was a day fast stored a mark a day ahead; Windows
+    // Time then resynced. Without the pre-process requirement every later plan
+    // from that conductor is silently dropped — before `markScanned`, so there
+    // is no wave, no refusal and no telemetry to find it by.
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setWaveEngineState({
+      ...getWaveEngineState(),
+      newestProcessedMessageCreatedAt: {
+        [CONDUCTOR_ID]: Date.now() + 86_400_000,
+      },
+    });
+    setTranscript([
+      { ...assistant("plan-now", TWO_STEP_PLAN), created: Date.now() },
+    ]);
+
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(
+        getWaveEngineState().waves.map((wave) => wave.planMessageId),
+      ).toEqual(["plan-now"]),
+    );
   });
 
   it("spawns the access:[] step immediately and holds the access:all step", async () => {
@@ -431,6 +581,73 @@ describe("waveRunner", () => {
     } finally {
       resetWaveStepTargetIoForTests();
     }
+  });
+
+  it("spawns a step with the budget and class the plan gave it (P49/P36)", async () => {
+    // The plan's ceiling is what the budget guard stops the child on, and the
+    // plan's class is what routes it. Both are parsed at admission and only
+    // used at spawn, which is rebuilt from the persisted wave — so this is the
+    // whole path, not the parser.
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([
+      assistant(
+        "plan-1",
+        fence(
+          '{"steps":[{"role":"scout","subtask":"Look","access":[],"budget":{"minutes":5,"tokens":20000},"class":"coding-simple"}]}',
+        ),
+      ),
+    ]);
+
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    const [args] = spawnConductorChildSession.mock.calls[0];
+    expect(args.budget).toEqual({ minutes: 5, tokens: 20000 });
+    expect(resolveWaveStepTarget).toHaveBeenCalledWith(
+      "scout",
+      "coding-simple",
+    );
+    // The persisted record carries both, so a restart resumes the same step.
+    expect(getWaveEngineState().waves[0]?.steps[0]).toMatchObject({
+      budget: { minutes: 5, tokens: 20000 },
+      modelClass: "coding-simple",
+    });
+  });
+
+  it("spawns a step with the reasoning effort its profile ranked (P36)", async () => {
+    // The crew profiles differ by effort as much as by model — "medium
+    // engineering at medium, heavy at xhigh" — and only codex-style ids carry
+    // the effort with the model. The spawn is the one place that can compose it
+    // onto the child session, so the resolved effort has to reach it.
+    resolveWaveStepTarget.mockReturnValueOnce({
+      target: {
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
+        modelId: "fable-5-1",
+        modelName: "Fable 5.1",
+      },
+      label: "Fable 5.1",
+      fallback: false,
+      nearLimit: false,
+      effort: "medium",
+    });
+    useConductorGraphStore.getState().registerNode(conductorNode());
+    setTranscript([
+      assistant(
+        "plan-1",
+        fence('{"steps":[{"role":"scout","subtask":"Look","access":[]}]}'),
+      ),
+    ]);
+
+    runWaveEngineTick();
+    await vi.waitFor(() =>
+      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+    );
+
+    const [args] = spawnConductorChildSession.mock.calls[0];
+    expect(args.reasoningEffort).toBe("medium");
   });
 
   it("never re-processes a plan message, however often the tick fires", async () => {
@@ -966,6 +1183,7 @@ describe("waveRunner", () => {
 describe("wave stall detector (P61)", () => {
   beforeEach(async () => {
     await i18n.loadNamespaces("chat");
+    createdClock = 1_000;
     window.localStorage.clear();
     resetWaveEngineStateCache();
     resetWaveRunnerForTests();

@@ -6,6 +6,8 @@ import type {
   SessionNotification,
   SessionUpdate,
 } from "@agentclientprotocol/sdk";
+import { i18n } from "@/shared/i18n";
+import { createSystemNotificationMessage } from "@/shared/types/messages";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
@@ -28,7 +30,10 @@ import {
   getActiveMessagePreset,
   recordLiveAgentMessageChunk,
 } from "@/shared/api/acpActiveMessageTracking";
-import type { AcpNotificationHandler } from "@/shared/api/acpConnection";
+import type {
+  AcpNotificationHandler,
+  AcpPermissionAnswerReport,
+} from "@/shared/api/acpConnection";
 import {
   clearSkillReplayChips,
   handleReplayUserMessageChunk,
@@ -286,8 +291,6 @@ export async function handleSessionNotification(
   const { update } = notification;
   const isReplay = useChatStore.getState().loadingSessionIds.has(sessionId);
 
-  recordUsageNotification(sessionId, update);
-
   if (isReplay) {
     const sid = sessionId.slice(0, 8);
     let perf = replayPerf.get(sessionId);
@@ -301,6 +304,13 @@ export async function handleSessionNotification(
     perf.count += 1;
     handleReplay(sessionId, update);
   } else {
+    // Usage is recorded only while the turn is live. Replay re-feeds every
+    // `usage_update` the host persisted, and the ledger would take each one
+    // as activity happening now: `lastActivityAt` jumps to today (Stats moves
+    // the whole chat into today's bucket) and the whole ledger is serialized
+    // to localStorage once per replayed turn. The chat's own token/cost
+    // display is restored by `handleShared` on the replay path instead.
+    recordUsageNotification(sessionId, update);
     observeWorkspaceToolCall(sessionId, update);
     if (update.sessionUpdate === "agent_message_chunk") {
       recordLiveAgentMessageChunk(sessionId);
@@ -419,6 +429,13 @@ function getReplayAssistantMessageMetadata(
   };
 }
 
+/**
+ * Thought chunks are token deltas: the bridges the app hosts stream reasoning
+ * the same way they stream text, and the host persists every chunk verbatim,
+ * so replay re-feeds those deltas. They are appended as they arrive — a delta
+ * that repeats the tail of the reasoning so far (a second `1` after `…201`, a
+ * closing `)` after `…(baz)`) is real text, not a duplicate.
+ */
 function upsertThinkingContent(content: MessageContent[], text: string): void {
   const last = content[content.length - 1];
   if (last?.type !== "thinking") {
@@ -426,13 +443,6 @@ function upsertThinkingContent(content: MessageContent[], text: string): void {
     return;
   }
 
-  if (text.startsWith(last.text)) {
-    last.text = text;
-    return;
-  }
-  if (last.text.endsWith(text)) {
-    return;
-  }
   last.text += text;
 }
 
@@ -886,7 +896,7 @@ function recordUsageNotification(
     const usage = update as SessionUpdate & {
       sessionUpdate: "usage_update";
       used?: number;
-      cost?: { amount?: number | null } | null;
+      cost?: { amount?: number | null; currency?: string | null } | null;
       accumulatedInputTokens?: number;
       accumulatedOutputTokens?: number;
       accumulatedCost?: number | null;
@@ -919,6 +929,9 @@ function recordUsageNotification(
           ? (inputTokens ?? 0) + (outputTokens ?? 0)
           : undefined,
       costUsd,
+      // The ledger needs the unit: a bridge reporting credits or EUR must not
+      // have its amounts summed into the "$" figures on the stats page.
+      costCurrency: usage.cost?.currency ?? null,
     });
     return;
   }
@@ -967,7 +980,7 @@ function handleShared(sessionId: string, update: SessionUpdate): void {
         used?: number;
         size?: number;
         contextLimit?: number;
-        cost?: { amount?: number | null } | null;
+        cost?: { amount?: number | null; currency?: string | null } | null;
         accumulatedInputTokens?: number;
         accumulatedOutputTokens?: number;
         accumulatedCost?: number | null;
@@ -1195,8 +1208,31 @@ export function clearMessageTracking(): void {
   clearWorkspaceToolCallObservations();
 }
 
+/**
+ * The app answers permission requests itself (`answerPermissionRequest`), and
+ * one of those answers is worth a transcript row: when a harness offers only
+ * permanent options there is nothing to refuse once with, and the `cancelled`
+ * outcome ACP leaves us ends the whole turn. Without this the operator sees a
+ * turn that simply stopped, and the only trace is a line in berd.log.
+ */
+export function reportPermissionAnswer(
+  report: AcpPermissionAnswerReport,
+): void {
+  if (report.answer !== "cancelled" || !report.sessionId) return;
+  useChatStore.getState().addMessage(
+    report.sessionId,
+    createSystemNotificationMessage(
+      i18n.t("chat:permissionRequest.cancelledTurn", {
+        tool: report.toolLabel ?? "",
+      }),
+      "warning",
+    ),
+  );
+}
+
 const handler: AcpNotificationHandler = {
   handleSessionNotification,
+  reportPermissionAnswer,
 };
 
 export default handler;

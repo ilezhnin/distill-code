@@ -26,6 +26,11 @@ import {
   getVisibleSessions,
   useChatSessionStore,
 } from "@/features/chat/stores/chatSessionStore";
+import {
+  chatAutoLoadCursorKey,
+  chatAutoLoadPageLanded,
+  chatAutoLoadRetryDelayMs,
+} from "@/features/sessions/lib/sidebarChatAutoLoad";
 import type { SessionAction } from "@/features/sessions/lib/sessionSelection";
 import {
   compareSessionsByActivityDesc,
@@ -453,6 +458,18 @@ export function SessionListCapability({
     Date.now(),
   );
   const attemptedChatLoadMoreCursorRef = useRef<string | null>(null);
+  const chatLoadMoreRetryTimerRef = useRef<number | null>(null);
+  // Failed attempts for the current cursor. Part of the attempt key, so a
+  // scheduled retry re-runs the auto-load effect for the same cursor.
+  const [chatLoadMoreAttempt, setChatLoadMoreAttempt] = useState(0);
+  useEffect(
+    () => () => {
+      if (chatLoadMoreRetryTimerRef.current != null) {
+        window.clearTimeout(chatLoadMoreRetryTimerRef.current);
+      }
+    },
+    [],
+  );
   const projectIds = useMemo(
     () => new Set(projects.map((project) => project.id)),
     [projects],
@@ -548,6 +565,7 @@ export function SessionListCapability({
     applySelectionAction,
     archiveConfirmOpen,
     archiveSelectionCount,
+    archiveTerminalCount,
     confirmArchiveSelected,
     isApplyingSelectionAction,
     requestArchiveSelected,
@@ -653,7 +671,9 @@ export function SessionListCapability({
     ? standaloneChatCount >= MAX_FLAT_SIDEBAR_CHATS ||
       groupedChatCount >= MAX_AUTO_LOADED_GROUPED_CHATS
     : standaloneChatCount >= MAX_FLAT_SIDEBAR_CHATS;
-  const chatLoadMoreCursorKey = sessionPageCursor ?? "__initial__";
+  const chatLoadMoreCursorKey = chatAutoLoadCursorKey(sessionPageCursor);
+
+  const chatLoadMoreAttemptKey = `${chatLoadMoreCursorKey}#${chatLoadMoreAttempt}`;
 
   useEffect(() => {
     if (
@@ -664,13 +684,40 @@ export function SessionListCapability({
     ) {
       return;
     }
-    if (attemptedChatLoadMoreCursorRef.current === chatLoadMoreCursorKey) {
+    if (attemptedChatLoadMoreCursorRef.current === chatLoadMoreAttemptKey) {
       return;
     }
 
-    attemptedChatLoadMoreCursorRef.current = chatLoadMoreCursorKey;
-    void loadMoreSessions();
+    attemptedChatLoadMoreCursorRef.current = chatLoadMoreAttemptKey;
+    void (async () => {
+      await loadMoreSessions();
+      // The store logs and swallows a failed page, so "nothing arrived" is the
+      // only signal: the cursor did not move and there is still more to load.
+      // Without a retry the sidebar would stay short for the rest of the run.
+      const state = useChatSessionStore.getState();
+      const landed = chatAutoLoadPageLanded({
+        cursorKeyBefore: chatLoadMoreCursorKey,
+        cursorKeyAfter: chatAutoLoadCursorKey(state.sessionPageCursor),
+        hasMoreSessions: state.hasMoreSessions,
+      });
+      if (landed) {
+        setChatLoadMoreAttempt((current) => (current === 0 ? current : 0));
+        return;
+      }
+      // Back off, and give up after a few tries: the effect re-runs as soon as
+      // `isLoadingMoreSessions` flips back, so an unbounded retry would spin
+      // against a host that keeps failing.
+      const attempt = chatLoadMoreAttempt + 1;
+      const retryInMs = chatAutoLoadRetryDelayMs(attempt);
+      if (retryInMs === null) return;
+      chatLoadMoreRetryTimerRef.current = window.setTimeout(() => {
+        chatLoadMoreRetryTimerRef.current = null;
+        setChatLoadMoreAttempt(attempt);
+      }, retryInMs);
+    })();
   }, [
+    chatLoadMoreAttempt,
+    chatLoadMoreAttemptKey,
     chatLoadMoreCursorKey,
     hasMoreSessions,
     isLoadingMoreSessions,
@@ -833,13 +880,25 @@ export function SessionListCapability({
             count: archiveSelectionCount,
             displayCount: archiveSelectionCount,
           })}
-          description={t("common:bulkActions.archiveConfirmDescription", {
-            count: archiveSelectionCount,
-            displayCount: archiveSelectionCount,
-          })}
+          description={[
+            t("common:bulkActions.archiveConfirmDescription", {
+              count: archiveSelectionCount,
+              displayCount: archiveSelectionCount,
+            }),
+            // Archiving stops the chat's shells and unarchiving restores none of
+            // them, so the reversibility the line above promises is not the whole
+            // story whenever one is running.
+            archiveTerminalCount > 0
+              ? t("common:bulkActions.archiveConfirmTerminals", {
+                  count: archiveTerminalCount,
+                })
+              : null,
+          ]
+            .filter(Boolean)
+            .join(" ")}
           cancelLabel={t("common:actions.cancel")}
           confirmLabel={t("common:actions.archive")}
-          destructive={false}
+          destructive={archiveTerminalCount > 0}
           loadingLabel={t("common:bulkActions.archiving")}
           isLoading={isApplyingSelectionAction}
           onConfirm={() => confirmArchiveSelected(onArchiveChat)}

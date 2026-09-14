@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import type { IDisposable, ITheme } from "@xterm/xterm";
+import { TerminalOutputBuffer } from "./terminalOutputBuffer";
 import {
   resizeTerminal,
   startTerminal,
@@ -179,7 +180,7 @@ function emitStatusChange(change: TerminalSessionStatusChange): void {
 }
 
 export class TerminalSession {
-  readonly key: string;
+  private keyValue: string;
   readonly cwd: string;
   readonly terminal: Terminal;
   readonly fitAddon: FitAddon;
@@ -196,7 +197,7 @@ export class TerminalSession {
   private pendingBackendRows: number | null = null;
   private fontReadyToken = 0;
   private animationFrame = 0;
-  private queuedOutput = "";
+  private queuedOutput = new TerminalOutputBuffer(MAX_BUFFERED_OUTPUT_CHARS);
   private outputAnimationFrame = 0;
   private outputWriteInFlight = false;
   private outputWriteToken = 0;
@@ -207,7 +208,7 @@ export class TerminalSession {
   private listeners = new Set<TerminalSessionListener>();
 
   constructor({ key, cwd, labels, theme, fontFamily }: TerminalSessionOptions) {
-    this.key = key;
+    this.keyValue = key;
     this.cwd = cwd;
     this.labels = labels;
     this.fitAddon = new FitAddon();
@@ -237,6 +238,19 @@ export class TerminalSession {
 
   get status(): TerminalStatus {
     return this.statusValue;
+  }
+
+  get key(): string {
+    return this.keyValue;
+  }
+
+  /**
+   * Re-keys the session in place. Only the registry may call this (see
+   * `renameTerminalSessionPrefix`): the shell, its scrollback and its queued
+   * output stay exactly where they are; only the name they answer to moves.
+   */
+  rekey(key: string): void {
+    this.keyValue = key;
   }
 
   updateLabels(labels: TerminalSessionLabels): void {
@@ -538,10 +552,7 @@ export class TerminalSession {
       return;
     }
 
-    this.queuedOutput += data;
-    if (this.queuedOutput.length > MAX_BUFFERED_OUTPUT_CHARS) {
-      this.queuedOutput = this.queuedOutput.slice(-MAX_BUFFERED_OUTPUT_CHARS);
-    }
+    this.queuedOutput.push(data);
     this.scheduleOutputDrain();
   }
 
@@ -555,7 +566,7 @@ export class TerminalSession {
       this.outputAnimationFrame ||
       this.outputWriteInFlight ||
       !this.attachedContainer ||
-      !this.queuedOutput
+      this.queuedOutput.length === 0
     ) {
       return;
     }
@@ -572,13 +583,12 @@ export class TerminalSession {
       renderingSuspended ||
       this.outputWriteInFlight ||
       !this.attachedContainer ||
-      !this.queuedOutput
+      this.queuedOutput.length === 0
     ) {
       return;
     }
 
-    const output = this.queuedOutput.slice(0, MAX_OUTPUT_WRITE_CHARS_PER_FRAME);
-    this.queuedOutput = this.queuedOutput.slice(output.length);
+    const output = this.queuedOutput.take(MAX_OUTPUT_WRITE_CHARS_PER_FRAME);
     this.outputWriteInFlight = true;
     const token = this.outputWriteToken;
     this.terminal.write(output, () => {
@@ -592,7 +602,7 @@ export class TerminalSession {
   }
 
   private clearQueuedOutput(): void {
-    this.queuedOutput = "";
+    this.queuedOutput.clear();
     this.outputWriteInFlight = false;
     this.cancelOutputDrain();
     this.outputWriteToken += 1;
@@ -781,6 +791,30 @@ export function stopTerminalSession(
   return true;
 }
 
+/**
+ * Stops every `${chatSessionId}:*` terminal and drops the commands queued for
+ * them. Archiving hides the chat, and a shell nobody can see is a process
+ * nobody can stop (a dev server keeps its port until the app exits), so the
+ * archive takes the shells with it.
+ */
+export function stopTerminalSessionsForChat(chatSessionId: string): number {
+  if (!chatSessionId) {
+    return 0;
+  }
+
+  const prefix = `${chatSessionId}:`;
+  let stopped = 0;
+  for (const [key, session] of [...sessions]) {
+    if (!key.startsWith(prefix)) continue;
+    session.stop();
+    stopped += 1;
+  }
+  for (const key of [...queuedCommands.keys()]) {
+    if (key.startsWith(prefix)) clearQueuedCommands(key);
+  }
+  return stopped;
+}
+
 export function subscribeTerminalSessionStatus(
   sessionKey: string,
   listener: TerminalSessionStatusListener,
@@ -861,6 +895,70 @@ export function getOrCreateTerminalSession(
   sessions.set(options.key, session);
   emitRegistryChange();
   return session;
+}
+
+/**
+ * Moves every `${fromSessionId}:*` terminal — the live sessions, the commands
+ * queued for them and the status subscriptions on them — under
+ * `${toSessionId}:*`.
+ *
+ * A draft chat is keyed by its draft id until the backend answers with the
+ * real one. The chat view keeps rendering (its React key is the client id)
+ * but the terminal panel re-keys to the backend id, and a plain map miss
+ * there would start a second shell while the first kept running under a key
+ * nothing could reach. Called at promotion, before the store swaps the id,
+ * so the re-keyed panel finds its own shell.
+ */
+export function renameTerminalSessionPrefix(
+  fromSessionId: string,
+  toSessionId: string,
+): void {
+  if (!fromSessionId || !toSessionId || fromSessionId === toSessionId) {
+    return;
+  }
+
+  const fromPrefix = `${fromSessionId}:`;
+  const toPrefix = `${toSessionId}:`;
+  const renamed = (key: string) => `${toPrefix}${key.slice(fromPrefix.length)}`;
+
+  for (const [key, session] of [...sessions]) {
+    if (!key.startsWith(fromPrefix)) continue;
+    const nextKey = renamed(key);
+    // A session already living under the target key is the newer one — the
+    // panel re-rendered before the promotion could rename — keep it and stop
+    // the draft's shell rather than leaving both running.
+    if (sessions.has(nextKey)) {
+      session.stop();
+      continue;
+    }
+    sessions.delete(key);
+    session.rekey(nextKey);
+    sessions.set(nextKey, session);
+  }
+
+  for (const [key, commands] of [...queuedCommands]) {
+    if (!key.startsWith(fromPrefix)) continue;
+    const nextKey = renamed(key);
+    queuedCommands.delete(key);
+    queuedCommands.set(nextKey, [
+      ...(queuedCommands.get(nextKey) ?? []),
+      ...commands,
+    ]);
+  }
+
+  for (const [key, listeners] of [...statusListeners]) {
+    if (!key.startsWith(fromPrefix)) continue;
+    const nextKey = renamed(key);
+    statusListeners.delete(key);
+    const existing = statusListeners.get(nextKey);
+    if (existing) {
+      for (const listener of listeners) existing.add(listener);
+    } else {
+      statusListeners.set(nextKey, listeners);
+    }
+  }
+
+  emitRegistryChange();
 }
 
 function chatSessionIdFromTerminalKey(key: string): string | null {

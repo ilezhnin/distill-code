@@ -173,6 +173,35 @@ describe("AgentProviderCard", () => {
     expect(screen.getByText("added 1 package")).toBeInTheDocument();
   });
 
+  it("offers a recheck instead of Install when the doctor report failed", async () => {
+    // An errored report says nothing about the agent: offering Install here
+    // would re-run the install command for an agent that already works.
+    const user = userEvent.setup();
+
+    renderCard(
+      <AgentProviderCard
+        provider={createProvider({
+          status: "not_installed",
+          supportsInstall: true,
+          supportsAuth: false,
+          supportsAuthStatus: false,
+        })}
+        statusLoading={false}
+        statusUnavailable
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: /install claude/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Couldn't check")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: /check claude again/i }),
+    );
+    expect(rerunDoctorReport).toHaveBeenCalledTimes(1);
+  });
+
   it("signs in an installed-but-unauthenticated agent", async () => {
     const user = userEvent.setup();
 

@@ -16,3 +16,4 @@ pub mod path_env;
 pub(crate) mod process;
 pub(crate) mod provider_rate_limits;
 pub mod shell_env;
+pub(crate) mod windows_names;

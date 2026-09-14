@@ -23,8 +23,7 @@ berdctl talks to the running Berd desktop app and acts on what the user
 sees there:
 
   session   chat sessions        create, open, list, get, rename, move,
-                                  move-to-group, send, clear-project,
-                                  fork, archive
+                                  send, clear-project, fork, archive
   project   projects             create, list, get, set-startup-mode, archive
   agent     agents (personas)    create, list
   skill     skills (SKILL.md)    create, list, get

@@ -3,7 +3,12 @@ $ErrorActionPreference = "Stop"
 
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $script:RequiredPnpmVersion = "10.33.0"
-$script:RequiredNodeVersion = "24.10.0"
+# Single source of truth for the Node pin: node-runtime.lock.json, the same
+# file `just bump-node-runtime` and scripts/update-acp-tools-lock.mjs read. A
+# second literal here drifted from the lock and made the acp-tools refresh
+# refuse to run on every machine these scripts provision.
+$script:RequiredNodeVersion = (Get-Content -Raw -LiteralPath (Join-Path $script:RepoRoot "node-runtime.lock.json") |
+    ConvertFrom-Json).version.TrimStart("v")
 $script:PublicNpmRegistry = "https://registry.npmjs.org/"
 $script:WebView2ClientIds = @(
     "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",

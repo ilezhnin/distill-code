@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use fs2::FileExt;
 use std::env;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -15,7 +15,15 @@ const FOREGROUND_ENV: &str = "BERD_MONITOR_FOREGROUND";
 const LAUNCH_TOKEN_ENV: &str = "BERD_MONITOR_LAUNCH_TOKEN";
 const RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const BATCH_WINDOW: Duration = Duration::from_millis(250);
-const MAX_DELIVERY_BYTES: usize = 40_000;
+/// First cut of a pending chunk. The authoritative bound is
+/// `MAX_COMMAND_LINE_CODE_UNITS` — a chunk that still does not fit is split —
+/// but starting under the limit means the common case never needs splitting.
+const MAX_DELIVERY_BYTES: usize = 24_000;
+/// `CreateProcessW` refuses a command line of 32,767 UTF-16 units or more with
+/// ERROR_FILENAME_EXCED_RANGE, and the prompt is one of its arguments. Stay
+/// well below it: the berdctl path and the control-lock path are both resolved
+/// at runtime and can be long.
+const MAX_COMMAND_LINE_CODE_UNITS: usize = 30_000;
 const MAX_PROMPT_CODE_UNITS: usize = 49_000;
 const MAX_INSTRUCTIONS_CODE_UNITS: usize = 4_000;
 const MAX_LABEL_CODE_UNITS: usize = 120;
@@ -1008,15 +1016,63 @@ fn flush_pending(
     session_id: &str,
     if_running: RunningMode,
 ) -> io::Result<()> {
+    if pending.bytes.is_empty() {
+        return Ok(());
+    }
+    // Resolve the candidates once: the chunk size has to fit the command line
+    // of every one of them, so the choice cannot be made per attempt.
+    let locks = lock_candidates();
+    let binaries = berdctl_candidates();
     while !pending.bytes.is_empty() {
         if pending.active_len == 0 {
             pending.active_len = pending_chunk_end(&pending.bytes, MAX_DELIVERY_BYTES);
             persist_pending(&paths.pending, pending)?;
         }
-        let end = pending.active_len;
-        let prompt = build_delivery_prompt(label, &pending.bytes[..end], instructions)?;
         let delivery_id = pending.delivery_id(paths);
-        if !deliver_to_session(paths, session_id, &prompt, if_running, &delivery_id) {
+        // A chunk whose command line exceeds the OS limit can never be spawned,
+        // so retrying it verbatim wedges the buffer — and with it every later
+        // event — forever. Split it instead.
+        let fitted = shrink_chunk_to_fit(&pending.bytes, pending.active_len, |chunk| {
+            build_delivery_prompt(label, chunk, instructions).is_ok_and(|prompt| {
+                delivery_fits_command_line(
+                    &locks,
+                    &binaries,
+                    session_id,
+                    &prompt,
+                    if_running,
+                    &delivery_id,
+                )
+            })
+        });
+        let Some(end) = fitted else {
+            log_line(
+                paths,
+                "cannot deliver: no chunk of the buffered output fits the command-line limit",
+            )?;
+            return Ok(());
+        };
+        if end != pending.active_len {
+            log_line(
+                paths,
+                &format!(
+                    "delivery chunk exceeded the command-line limit; split from {} to {end} bytes",
+                    pending.active_len
+                ),
+            )?;
+            pending.active_len = end;
+            persist_pending(&paths.pending, pending)?;
+        }
+        let prompt = build_delivery_prompt(label, &pending.bytes[..end], instructions)?;
+        if !deliver_with_candidates(
+            paths,
+            session_id,
+            &prompt,
+            if_running,
+            &delivery_id,
+            locks.clone(),
+            binaries.clone(),
+            DELIVERY_TIMEOUT,
+        ) {
             log_line(paths, "delivery failed; buffered output will be retried")?;
             return Ok(());
         }
@@ -1048,23 +1104,74 @@ fn build_delivery_prompt(label: &str, bytes: &[u8], instructions: &str) -> io::R
     Ok(prompt)
 }
 
-fn deliver_to_session(
-    paths: &StatePaths,
+/// The delivery argv, built in one place so the size estimate below and the
+/// spawn in `deliver_with_candidates` can never drift apart.
+fn delivery_args(
+    lock: &Path,
+    session_id: &str,
+    prompt: &str,
+    if_running: RunningMode,
+    delivery_id: &str,
+) -> Vec<OsString> {
+    vec![
+        OsString::from("--lock-path"),
+        lock.as_os_str().to_os_string(),
+        OsString::from("--timeout-ms"),
+        OsString::from("10000"),
+        OsString::from("session"),
+        OsString::from("send"),
+        OsString::from("--session-id"),
+        OsString::from(session_id),
+        OsString::from("--prompt"),
+        OsString::from(prompt),
+        OsString::from("--if-running"),
+        OsString::from(if_running.as_str()),
+        OsString::from("--delivery-id"),
+        OsString::from(delivery_id),
+        OsString::from("--from"),
+        OsString::from("berd-monitor"),
+        OsString::from("--json"),
+    ]
+}
+
+/// Upper bound on the UTF-16 units one argument costs on the command line the
+/// standard library builds for `CreateProcessW`.
+///
+/// std wraps an argument in quotes, escapes every `"` with a backslash and
+/// doubles the backslashes that precede one; charging for the two quotes, the
+/// separating space and every `"`/`\` therefore never under-counts.
+fn quoted_arg_code_units(arg: &OsStr) -> usize {
+    let text = arg.to_string_lossy();
+    text.encode_utf16().count() + text.chars().filter(|ch| *ch == '"' || *ch == '\\').count() + 3
+}
+
+/// The UTF-16 length of the whole command line, as `CreateProcessW` sees it.
+fn command_line_code_units(binary: &OsStr, args: &[OsString]) -> usize {
+    args.iter()
+        .fold(quoted_arg_code_units(binary), |total, arg| {
+            total + quoted_arg_code_units(arg)
+        })
+}
+
+/// Whether this prompt can actually be spawned for *every* candidate.
+///
+/// The same chunk is handed to each lock/binary pair in turn, so it has to fit
+/// the longest of their command lines; a pair whose command line is over the
+/// limit fails inside `CreateProcessW` before berdctl ever runs.
+fn delivery_fits_command_line(
+    locks: &[PathBuf],
+    binaries: &[OsString],
     session_id: &str,
     prompt: &str,
     if_running: RunningMode,
     delivery_id: &str,
 ) -> bool {
-    deliver_with_candidates(
-        paths,
-        session_id,
-        prompt,
-        if_running,
-        delivery_id,
-        lock_candidates(),
-        berdctl_candidates(),
-        DELIVERY_TIMEOUT,
-    )
+    locks.iter().all(|lock| {
+        let args = delivery_args(lock, session_id, prompt, if_running, delivery_id);
+        binaries
+            .iter()
+            .all(|binary| command_line_code_units(binary, &args) <= MAX_COMMAND_LINE_CODE_UNITS)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1086,30 +1193,32 @@ fn deliver_with_candidates(
             let mut command = Command::new(binary);
             configure_delivery(&mut command);
             let mut child = match command
-                .arg("--lock-path")
-                .arg(&lock)
-                .arg("--timeout-ms")
-                .arg("10000")
-                .arg("session")
-                .arg("send")
-                .arg("--session-id")
-                .arg(session_id)
-                .arg("--prompt")
-                .arg(prompt)
-                .arg("--if-running")
-                .arg(if_running.as_str())
-                .arg("--delivery-id")
-                .arg(delivery_id)
-                .arg("--from")
-                .arg("berd-monitor")
-                .arg("--json")
+                .args(delivery_args(
+                    &lock,
+                    session_id,
+                    prompt,
+                    if_running,
+                    delivery_id,
+                ))
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
             {
                 Ok(child) => child,
-                Err(_) => continue,
+                Err(error) => {
+                    // Without this line a spawn that can never succeed (missing
+                    // binary, a command line Windows refuses) looks exactly
+                    // like a busy broker in watcher.log.
+                    let _ = log_line(
+                        paths,
+                        &format!(
+                            "failed to spawn {} for delivery: {error}",
+                            binary.to_string_lossy()
+                        ),
+                    );
+                    continue;
+                }
             };
             let deadline = Instant::now() + timeout;
             loop {
@@ -1195,6 +1304,30 @@ fn berdctl_candidates() -> Vec<OsString> {
         candidates.push(default);
     }
     candidates
+}
+
+/// The longest prefix of `pending[..active_len]` that `fits`, found by halving.
+///
+/// Each candidate length still goes through `pending_chunk_end`, so a split
+/// lands on a record boundary and never inside a UTF-8 sequence. `None` means
+/// nothing at all fits, which the caller must treat as undeliverable rather
+/// than as something to retry.
+fn shrink_chunk_to_fit(
+    pending: &[u8],
+    active_len: usize,
+    mut fits: impl FnMut(&[u8]) -> bool,
+) -> Option<usize> {
+    let mut len = active_len;
+    loop {
+        if fits(&pending[..len]) {
+            return Some(len);
+        }
+        let reduced = len / 2;
+        if reduced == 0 {
+            return None;
+        }
+        len = pending_chunk_end(pending, reduced);
+    }
 }
 
 fn pending_chunk_end(pending: &[u8], limit: usize) -> usize {
@@ -1455,6 +1588,106 @@ mod tests {
             pending_chunk_end(&input, MAX_DELIVERY_BYTES),
             MAX_DELIVERY_BYTES
         );
+    }
+
+    /// The lock and binary a real delivery would use, at a length that is
+    /// realistic for an installed app (long user name, versioned install dir).
+    fn delivery_candidates() -> (Vec<PathBuf>, Vec<OsString>) {
+        (
+            vec![PathBuf::from(
+                "C:\\Users\\a-fairly-long-user-name\\AppData\\Local\\Berd\\control-0123456789abcdef.json",
+            )],
+            vec![OsString::from(
+                "C:\\Program Files\\Distill\\resources\\berdctl.exe",
+            )],
+        )
+    }
+
+    fn fits(chunk: &[u8], instructions: &str) -> bool {
+        let (locks, binaries) = delivery_candidates();
+        build_delivery_prompt("build", chunk, instructions).is_ok_and(|prompt| {
+            delivery_fits_command_line(
+                &locks,
+                &binaries,
+                "11111111-2222-3333-4444-555555555555",
+                &prompt,
+                RunningMode::Queue,
+                "berd-monitor-0123456789abcdef-4242-1757000000000000000-7",
+            )
+        })
+    }
+
+    #[test]
+    fn the_first_chunk_of_a_huge_burst_can_actually_be_spawned() {
+        // A compiler dumping 1 MB of warnings in one batch window: the first
+        // chunk the buffer hands out must be deliverable, or nothing ever is.
+        let mut burst = Vec::new();
+        while burst.len() < 1_000_000 {
+            burst.extend_from_slice(b"warning: unused variable `x` in a moderately long line\n");
+        }
+        let end = pending_chunk_end(&burst, MAX_DELIVERY_BYTES);
+        assert!(
+            fits(&burst[..end], ""),
+            "a {end}-byte chunk must fit the command line"
+        );
+        // Also with the largest instructions the CLI accepts.
+        let instructions = "i".repeat(MAX_INSTRUCTIONS_CODE_UNITS);
+        assert!(
+            fits(&burst[..end], &instructions),
+            "a {end}-byte chunk must fit alongside 4k of instructions"
+        );
+    }
+
+    #[test]
+    fn a_chunk_windows_would_refuse_is_reported_as_not_fitting() {
+        let (locks, binaries) = delivery_candidates();
+        let oversized = "x".repeat(MAX_COMMAND_LINE_CODE_UNITS + 1);
+        assert!(!delivery_fits_command_line(
+            &locks,
+            &binaries,
+            "session",
+            &oversized,
+            RunningMode::Steer,
+            "delivery",
+        ));
+        assert!(delivery_fits_command_line(
+            &locks,
+            &binaries,
+            "session",
+            "a short line of output",
+            RunningMode::Steer,
+            "delivery",
+        ));
+    }
+
+    #[test]
+    fn escaped_characters_are_charged_against_the_command_line_budget() {
+        // Every `"` costs two UTF-16 units once std escapes it, so a chunk of
+        // quotes half the size of the limit still does not fit.
+        let quotes = vec![b'"'; MAX_COMMAND_LINE_CODE_UNITS * 2 / 3];
+        assert!(!fits(&quotes, ""));
+        assert!(
+            quoted_arg_code_units(OsStr::new("\"\\")) > quoted_arg_code_units(OsStr::new("ab"))
+        );
+    }
+
+    #[test]
+    fn an_unspawnable_chunk_is_split_instead_of_retried_verbatim() {
+        let quotes = vec![b'"'; 20_000];
+        let start = pending_chunk_end(&quotes, MAX_DELIVERY_BYTES);
+        assert_eq!(start, 20_000, "the whole buffer is the first chunk");
+        assert!(!fits(&quotes[..start], ""), "and it cannot be spawned");
+
+        let fitted = shrink_chunk_to_fit(&quotes, start, |chunk| fits(chunk, "")).unwrap();
+        assert!(fitted < start, "the chunk must shrink, not repeat");
+        assert!(fitted > 0, "and must still carry output forward");
+        assert!(fits(&quotes[..fitted], ""));
+    }
+
+    #[test]
+    fn a_chunk_that_can_never_fit_is_reported_rather_than_shrunk_forever() {
+        let bytes = vec![b'x'; 64];
+        assert!(shrink_chunk_to_fit(&bytes, bytes.len(), |_| false).is_none());
     }
 
     #[test]

@@ -126,6 +126,25 @@ function normalizePersistedChatWorkspaceMetadata(
   };
 }
 
+/**
+ * The parsed blob, memoized on the exact string it was parsed from.
+ *
+ * The blob holds one entry per session that ever had a workspace, and the
+ * session-list refresh asks for one session's entry at a time — 200 times per
+ * page, every 60 s and on every window focus. Parsing and normalizing the whole
+ * blob for each of those lookups was O(sessions x blob). Reading the string and
+ * comparing it is cheap; a write (here or in another window) changes it and the
+ * next read re-parses.
+ */
+let cachedMetadataRaw: string | null = null;
+let cachedMetadataBySession: PersistedChatWorkspaceMetadataBySession | null =
+  null;
+
+function invalidatePersistedChatWorkspaceMetadataCache(): void {
+  cachedMetadataRaw = null;
+  cachedMetadataBySession = null;
+}
+
 function readAllPersistedChatWorkspaceMetadata(): PersistedChatWorkspaceMetadataBySession {
   if (typeof window === "undefined") return {};
 
@@ -134,6 +153,9 @@ function readAllPersistedChatWorkspaceMetadata(): PersistedChatWorkspaceMetadata
       CHAT_WORKSPACE_METADATA_STORAGE_KEY,
     );
     if (!stored) return {};
+    if (cachedMetadataBySession && stored === cachedMetadataRaw) {
+      return cachedMetadataBySession;
+    }
 
     const parsed = JSON.parse(stored);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -147,6 +169,8 @@ function readAllPersistedChatWorkspaceMetadata(): PersistedChatWorkspaceMetadata
         bySession[sessionId] = normalized;
       }
     }
+    cachedMetadataRaw = stored;
+    cachedMetadataBySession = bySession;
     return bySession;
   } catch {
     return {};
@@ -171,6 +195,10 @@ function writeAllPersistedChatWorkspaceMetadata(
   changedSessionIds: string[],
 ): void {
   if (typeof window === "undefined") return;
+
+  // The next read re-parses: this one's own copy may be the cached object, and
+  // the write can still fail below.
+  invalidatePersistedChatWorkspaceMetadataCache();
 
   try {
     if (Object.keys(bySession).length === 0) {
@@ -200,7 +228,7 @@ export function persistChatWorkspaceMetadata(
   metadata: PersistedChatWorkspaceMetadata,
 ): void {
   const normalized = normalizePersistedChatWorkspaceMetadata(metadata);
-  const bySession = readAllPersistedChatWorkspaceMetadata();
+  const bySession = { ...readAllPersistedChatWorkspaceMetadata() };
   if (!normalized) {
     delete bySession[sessionId];
     writeAllPersistedChatWorkspaceMetadata(bySession, [sessionId]);
@@ -212,7 +240,7 @@ export function persistChatWorkspaceMetadata(
 }
 
 export function removePersistedChatWorkspaceMetadata(sessionId: string): void {
-  const bySession = readAllPersistedChatWorkspaceMetadata();
+  const bySession = { ...readAllPersistedChatWorkspaceMetadata() };
   if (!(sessionId in bySession)) return;
 
   delete bySession[sessionId];
@@ -266,7 +294,7 @@ export function migratePersistedChatWorkspaceMetadata(
   fromSessionId: string,
   toSessionId: string,
 ): void {
-  const bySession = readAllPersistedChatWorkspaceMetadata();
+  const bySession = { ...readAllPersistedChatWorkspaceMetadata() };
   const metadata = bySession[fromSessionId];
   if (!metadata) return;
 

@@ -148,7 +148,7 @@ async function acpSendMessageNow(
   // ACP agents expose no system-prompt channel, so the persona and the app
   // context are handed off in-band on the first prompt under that agent.
   // See acpPersonaHandoff.
-  const berdctlPreamble = await getBerdctlPreamble();
+  const berdctlPreamble = await getBerdctlPreamble(sessionId);
   const appPreamble = [
     INTERACTION_NORMS_PREAMBLE,
     getStyleGuidelinesPrompt(),

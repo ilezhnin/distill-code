@@ -12,15 +12,24 @@
  * A session with no node on the graph is an ordinary operator chat and writes
  * exactly as before this module existed. That default is the guardrail for
  * the manual checklist's C-scenarios: nothing here may cost a plain chat its
- * memory.
+ * memory. It is also the one thing the graph's bound can falsify — a finished
+ * wave child is the first node `graphBounds` evicts, and "no node" then stops
+ * meaning "never had one". So the memory store keeps its own record of which
+ * sessions the wave engine owned, and a session in it is still a wave child
+ * here however empty the graph has become (LAWS/MEMORY.md, Writing: a
+ * wave-spawned executor must not receive the operator's memories or the
+ * protocols that reach them).
  *
  * `decideMemoryWrite` is pure; `sessionMemoryWriteAccess` wires it to the
- * graph and agent stores for the callers that live outside React.
+ * graph, memory and agent stores for the callers that live outside React.
  */
 
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import type { SessionNode } from "@/features/conductor/types";
+
+import { useMemoryStore } from "../stores/memoryStore";
+import { messageIdSet } from "./transcriptScan";
 
 /** Why a session's fence is not applied. Enumerated for notices and tests. */
 export type MemoryWriteDenial =
@@ -39,12 +48,21 @@ const ALLOWED: MemoryWriteDecision = { allowed: true };
 
 /**
  * The layer rule, applied to one graph node — or to no node at all, which is
- * every ordinary chat and always allowed.
+ * every ordinary chat and always allowed, unless the app remembers the
+ * session as one of the wave engine's.
+ *
+ * `wasWaveExecutor` is that memory, passed in rather than read so this stays
+ * pure: it is the answer to "did this session ever have a wave node", which
+ * only the memory store can still give once the graph has evicted it.
  */
 export function decideMemoryWrite(
   node: Pick<SessionNode, "role" | "managedBy" | "personaId"> | undefined,
   personaGrantsWrite: (personaId: string | undefined) => boolean,
+  wasWaveExecutor = false,
 ): MemoryWriteDecision {
+  // Before the node and before its absence: an evicted wave child presents as
+  // an ordinary chat, and this is the only thing left that knows better.
+  if (wasWaveExecutor) return { allowed: false, denial: "wave-child" };
   if (!node) return ALLOWED;
   // The wave engine's children are checked before the role: a wave child is
   // cut off from the memory prompt entirely (queuedSessionSend/backgroundSend
@@ -76,6 +94,41 @@ export function personaGrantsMemoryWrite(
   );
 }
 
+/**
+ * True when the memory store still remembers this session as a wave child.
+ *
+ * Only the record, not the graph: `decideMemoryWrite` reads a present node's
+ * `managedBy` itself, and this is the half that answers after eviction.
+ */
+export function wasWaveExecutorSession(
+  sessionId: string | null | undefined,
+): boolean {
+  if (!sessionId) return false;
+  return messageIdSet(useMemoryStore.getState().waveExecutorSessionIds).has(
+    sessionId,
+  );
+}
+
+/**
+ * True when this session is one of the wave engine's children, now or before
+ * the graph forgot it.
+ *
+ * The read side's question. Writing has `decideMemoryWrite`, which also has a
+ * layer rule to apply; recall has only this one — a wave child is answered by
+ * its conductor's loop, whatever the graph still holds.
+ */
+export function isWaveExecutorSession(
+  sessionId: string | null | undefined,
+): boolean {
+  if (!sessionId) return false;
+  if (
+    useConductorGraphStore.getState().nodesById[sessionId]?.managedBy === "wave"
+  ) {
+    return true;
+  }
+  return wasWaveExecutorSession(sessionId);
+}
+
 /** The decision for a live session, read from the stores as they stand now. */
 export function sessionMemoryWriteAccess(
   sessionId: string | null | undefined,
@@ -84,6 +137,7 @@ export function sessionMemoryWriteAccess(
   return decideMemoryWrite(
     useConductorGraphStore.getState().nodesById[sessionId],
     personaGrantsMemoryWrite,
+    wasWaveExecutorSession(sessionId),
   );
 }
 

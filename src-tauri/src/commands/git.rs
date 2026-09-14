@@ -51,8 +51,9 @@ const GIT_STATE_CHANGED_EVENT: &str = "berd:git-state-changed";
 pub(crate) const GIT_READ_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) const GIT_STATUS_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) const GIT_MUTATING_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
-// Large monorepo worktrees can legitimately spend 5–10 minutes in checkout
-// hooks and generated-file setup; keep other Git mutations on the shorter cap.
+// Large monorepo worktrees can legitimately spend 5–10 minutes checking out
+// (LFS smudge filters, huge trees); keep other Git mutations on the shorter
+// cap. Repository hooks do not run here — see `git_hardening_args`.
 const GIT_WORKTREE_CREATE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const GIT_STATE_OPERATION_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -554,9 +555,128 @@ async fn run_git_output_with_env_source_async(
     }
 }
 
+/// A folder the user opens may carry a `.git/config` and `.git/hooks` written
+/// by someone else (an extracted archive, a shared drive). Git reads that
+/// config with the same authority as the user's own, and several keys name
+/// programs to run: `core.fsmonitor` during the index refresh every `status`
+/// and `diff` performs — which the sidebar triggers on its own — hook scripts
+/// on checkout and ref updates, the `ext::` remote helper on fetch, and
+/// `remote.<name>.uploadpack` (see [`git_transport_args`]).
+///
+/// What these overrides do and do not cover, precisely, because the difference
+/// matters when the next key is added:
+///
+/// * A command-line `-c` outranks every config file, so the four keys spelled
+///   out here cannot run code through the app, whatever the repository says.
+/// * The vectors that need no user action at all — the sidebar's `status` and
+///   `diff` on mount and on window focus — are closed by the `core.fsmonitor`
+///   override, which every git command the app issues carries.
+/// * Keys with no `-c` spelling that would neutralise them are *not* covered:
+///   `credential.helper`, `filter.<driver>.smudge`/`clean` (checkout filters)
+///   and `core.gitProxy` still run what the repository names. Disabling them
+///   would break the user's own global setup (Git Credential Manager, Git LFS),
+///   which is the reason `GIT_CONFIG_NOSYSTEM`/`GIT_CONFIG_GLOBAL` are
+///   deliberately not used either. They all need a fetch, push or checkout the
+///   user asked for, so none of them is a zero-click vector.
+const GIT_FSMONITOR_OVERRIDE: &str = "core.fsmonitor=false";
+const GIT_EXT_PROTOCOL_OVERRIDE: &str = "protocol.ext.allow=never";
+/// The remote-side program `fetch`/`pull` ask for, spelled out so
+/// `remote.<name>.uploadpack` from the repository's own config cannot name
+/// another one. There is no useful `-c` form: the key is per remote, and the
+/// app does not know what the repository called its remotes — the option,
+/// however, outranks the config for every remote at once. (Git's own default is
+/// exactly this program, so nothing changes for an honest repository; HTTP
+/// transports ignore both the key and the option.)
+const GIT_UPLOAD_PACK_OVERRIDE: &str = "--upload-pack=git-upload-pack";
+
+/// The hooks directory git is pointed at for mutating commands. It never
+/// exists: a fresh per-process name under the temp dir, so neither the
+/// repository nor anything that guessed a fixed name can populate it.
+fn disabled_git_hooks_dir() -> &'static Path {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        std::env::temp_dir().join(format!(
+            "berd-git-hooks-disabled-{}",
+            uuid::Uuid::new_v4().simple()
+        ))
+    })
+}
+
+/// Commands that update refs or the worktree, and so would run the
+/// repository's hooks (`post-checkout`, `reference-transaction`, `post-merge`)
+/// or contact its remotes.
+///
+/// BEHAVIOUR: these commands run with `core.hooksPath` pointed at a directory
+/// that does not exist, so a repository's own hooks do **not** run for an
+/// app-initiated `switch`/`checkout`, `worktree add|remove`, `fetch`, `pull`,
+/// `stash`, `branch` or `init` — the same operation in the user's terminal still
+/// runs them. Setups that bootstrap through `post-checkout` (husky, lefthook) or
+/// `git lfs post-checkout`, and `post-merge` hooks, will therefore diverge from
+/// the terminal. That is the accepted trade for closing the vector; it is the
+/// one difference to remember when a git operation "works in the terminal".
+/// The match is deliberately coarse: read-only `git branch --show-current` and
+/// `git stash list` take the override too, where it has nothing to suppress.
+fn git_args_mutate_repository(args: &[&str]) -> bool {
+    matches!(
+        args,
+        ["switch", ..]
+            | ["checkout", ..]
+            | ["stash", ..]
+            | ["init", ..]
+            | ["fetch", ..]
+            | ["pull", ..]
+            | ["branch", ..]
+            | ["worktree", "add" | "remove", ..]
+    )
+}
+
+pub(crate) fn git_hardening_args(args: &[&str]) -> Vec<String> {
+    let mut hardening = vec!["-c".to_string(), GIT_FSMONITOR_OVERRIDE.to_string()];
+    if git_args_mutate_repository(args) {
+        hardening.push("-c".to_string());
+        hardening.push(format!(
+            "core.hooksPath={}",
+            disabled_git_hooks_dir().display()
+        ));
+        hardening.push("-c".to_string());
+        hardening.push(GIT_EXT_PROTOCOL_OVERRIDE.to_string());
+    }
+    hardening
+}
+
+/// The hardening a command needs *after* its subcommand, because it is an
+/// option of that subcommand rather than a config key. Empty for everything
+/// that does not talk to a remote.
+fn git_transport_args(args: &[&str]) -> &'static [&'static str] {
+    match args {
+        ["fetch", ..] | ["pull", ..] => std::slice::from_ref(&GIT_UPLOAD_PACK_OVERRIDE),
+        _ => &[],
+    }
+}
+
+/// Everything the app hands to git: the `-c` overrides first (they have to
+/// precede the subcommand), then the subcommand, then its own transport
+/// hardening, then the caller's remaining arguments.
+fn git_command_args(args: &[&str]) -> Vec<String> {
+    let mut built = git_hardening_args(args);
+    let transport = git_transport_args(args);
+    match args.split_first().filter(|_| !transport.is_empty()) {
+        Some((subcommand, rest)) => {
+            built.push((*subcommand).to_string());
+            built.extend(transport.iter().map(|arg| (*arg).to_string()));
+            built.extend(rest.iter().map(|arg| (*arg).to_string()));
+        }
+        None => built.extend(args.iter().map(|arg| (*arg).to_string())),
+    }
+    built
+}
+
 fn build_git_command(git: &Path, path: &Path, args: &[&str]) -> TokioCommand {
     let mut command = TokioCommand::new(git);
-    command.args(args).current_dir(path).kill_on_drop(true);
+    command
+        .args(git_command_args(args))
+        .current_dir(path)
+        .kill_on_drop(true);
     command
 }
 
@@ -589,6 +709,13 @@ async fn run_git_once_async(
         .map_err(GitRunError::Spawn)
 }
 
+/// Which environment a command runs with. `Captured` — the user's own
+/// directory environment, Hermit shims and all — is for the commands whose work
+/// still reaches programs the user's setup names: checkout *filters*
+/// (`filter.lfs.smudge` on a `switch`/`worktree add`/`stash`, which git runs
+/// itself, not through a hook) and credential helpers plus `GIT_SSH_COMMAND` on
+/// `fetch`/`pull`. Repository *hooks* are no longer a reason: they do not run for
+/// these commands at all (see [`git_args_mutate_repository`]).
 fn env_source_for_git_args(args: &[&str]) -> EnvSource {
     match args {
         ["switch", ..]
@@ -702,12 +829,14 @@ fn apply_lite_git_env(command: &mut TokioCommand) {
                 .filter(|key| is_preserved_git_transport_key(key))
         })
         .collect::<Vec<_>>();
-    let inherited_transport = std::env::vars().filter(|(key, _)| {
-        is_preserved_git_transport_key(key)
-            && !explicitly_configured_transport_keys
-                .iter()
-                .any(|explicit| env_key::matches(explicit, key))
-    });
+    let inherited_transport = env_key::process_vars_lossy()
+        .into_iter()
+        .filter(|(key, _)| {
+            is_preserved_git_transport_key(key)
+                && !explicitly_configured_transport_keys
+                    .iter()
+                    .any(|explicit| env_key::matches(explicit, key))
+        });
 
     for key in std::env::vars_os()
         .map(|(key, _)| key)
@@ -949,6 +1078,9 @@ fn validate_worktree_name(value: &str) -> Result<String, String> {
     if worktree_name.contains(':') {
         return Err("Worktree name cannot contain ':'".to_string());
     }
+    // `CON` is a device, not a folder, and `foo ` is silently trimmed to `foo`:
+    // either way the worktree is not where the caller was told it is.
+    crate::services::windows_names::reject_unusable_windows_name(&worktree_name, "Worktree name")?;
     Ok(worktree_name)
 }
 
@@ -1116,6 +1248,358 @@ mod tests {
         );
     }
 
+    fn command_args(command: &TokioCommand) -> Vec<String> {
+        command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn every_git_command_disables_the_repository_fsmonitor() {
+        let git = Path::new("git");
+        let repo = Path::new("/repo");
+
+        for args in [
+            ["status", "--porcelain"].as_slice(),
+            ["rev-parse", "--is-inside-work-tree"].as_slice(),
+            ["diff", "HEAD", "--numstat", "-z"].as_slice(),
+            ["fetch", "--prune"].as_slice(),
+        ] {
+            let built = command_args(&build_git_command(git, repo, args));
+            assert_eq!(
+                &built[..2],
+                ["-c", "core.fsmonitor=false"],
+                "git {} must start with the fsmonitor override, got {built:?}",
+                args.join(" ")
+            );
+            assert!(
+                built.ends_with(
+                    &args[1..]
+                        .iter()
+                        .map(|arg| arg.to_string())
+                        .collect::<Vec<_>>()
+                ),
+                "git {} must keep its own arguments last, got {built:?}",
+                args.join(" ")
+            );
+            let subcommand_at = built
+                .iter()
+                .position(|arg| arg == args[0])
+                .expect("the subcommand is passed");
+            for own in &args[1..] {
+                let own_at = built
+                    .iter()
+                    .position(|arg| arg == own)
+                    .expect("the caller's argument is passed");
+                assert!(
+                    own_at > subcommand_at,
+                    "git {} must pass its subcommand first, got {built:?}",
+                    args.join(" ")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fetching_names_the_remote_side_program_itself() {
+        let git = Path::new("git");
+        let repo = Path::new("/repo");
+
+        // `remote.<name>.uploadpack` in the repository's own config names a
+        // program git runs on every fetch, and `-c` cannot neutralise a
+        // per-remote key the app does not know the name of. The option can, and
+        // it has to sit after the subcommand it belongs to.
+        for args in [
+            ["fetch", "--prune"].as_slice(),
+            ["pull", "--ff-only"].as_slice(),
+        ] {
+            let built = command_args(&build_git_command(git, repo, args));
+            assert_eq!(
+                &built[built.len() - 3..],
+                [args[0], "--upload-pack=git-upload-pack", args[1]],
+                "git {} must name the upload-pack program, got {built:?}",
+                args.join(" ")
+            );
+        }
+
+        // Nothing else carries it: it is not a valid option for them.
+        for args in [
+            ["status", "--porcelain"].as_slice(),
+            ["switch", "main"].as_slice(),
+            ["worktree", "add", "../wt", "main"].as_slice(),
+        ] {
+            let built = command_args(&build_git_command(git, repo, args));
+            assert!(
+                !built.iter().any(|arg| arg.starts_with("--upload-pack")),
+                "git {} must not take a transport option, got {built:?}",
+                args.join(" ")
+            );
+        }
+    }
+
+    #[test]
+    fn mutating_git_commands_run_without_repository_hooks_or_ext_remotes() {
+        let git = Path::new("git");
+        let repo = Path::new("/repo");
+        let hooks_override = format!("core.hooksPath={}", disabled_git_hooks_dir().display());
+        assert!(
+            disabled_git_hooks_dir().is_absolute(),
+            "a relative hooks path would resolve inside the repository's .git"
+        );
+        assert!(!disabled_git_hooks_dir().exists());
+
+        for args in [
+            ["fetch", "--prune"].as_slice(),
+            ["pull", "--ff-only"].as_slice(),
+            ["switch", "-c", "feature", "main"].as_slice(),
+            ["checkout", "main"].as_slice(),
+            ["worktree", "add", "-b", "feature", "../wt", "main"].as_slice(),
+            ["branch", "-D", "--", "feature"].as_slice(),
+            ["stash"].as_slice(),
+        ] {
+            let built = command_args(&build_git_command(git, repo, args));
+            let overrides: Vec<&str> = built
+                .windows(2)
+                .filter(|pair| pair[0] == "-c")
+                .map(|pair| pair[1].as_str())
+                .collect();
+            assert!(
+                overrides.contains(&hooks_override.as_str()),
+                "git {} must disable repository hooks, got {built:?}",
+                args.join(" ")
+            );
+            assert!(
+                overrides.contains(&"protocol.ext.allow=never"),
+                "git {} must refuse ext:: remotes, got {built:?}",
+                args.join(" ")
+            );
+        }
+
+        for args in [
+            ["status", "--porcelain"].as_slice(),
+            ["for-each-ref", "refs/heads"].as_slice(),
+            ["worktree", "list", "--porcelain"].as_slice(),
+        ] {
+            let built = command_args(&build_git_command(git, repo, args));
+            assert!(
+                !built.iter().any(|arg| arg.starts_with("core.hooksPath=")),
+                "read-only git {} needs no hooks override, got {built:?}",
+                args.join(" ")
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_executable(path: &Path, contents: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, contents).expect("write script");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .expect("mark script executable");
+    }
+
+    #[cfg(unix)]
+    fn marker_script(marker: &Path) -> String {
+        format!("#!/bin/sh\ntouch '{}'\nexit 0\n", marker.display())
+    }
+
+    #[cfg(unix)]
+    async fn untrusted_repo_fixture() -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo = temp.path().join("untrusted");
+        std::fs::create_dir_all(&repo).expect("repo dir");
+        let setup = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("run setup git");
+            assert!(
+                output.status.success(),
+                "setup git {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        setup(&["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("tracked.txt"), "tracked\n").expect("tracked file");
+        setup(&["add", "tracked.txt"]);
+        setup(&[
+            "-c",
+            "user.name=Berd Test",
+            "-c",
+            "user.email=berd@example.test",
+            "commit",
+            "-qm",
+            "fixture",
+        ]);
+        (temp, repo)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn repository_fsmonitor_program_does_not_run_during_status() {
+        let (temp, repo) = untrusted_repo_fixture().await;
+        let marker = temp.path().join("fsmonitor-ran");
+        let script = temp.path().join("fsmonitor.sh");
+        write_executable(&script, &marker_script(&marker));
+        let output = std::process::Command::new("git")
+            .args(["config", "core.fsmonitor", &script.to_string_lossy()])
+            .current_dir(&repo)
+            .output()
+            .expect("configure fsmonitor");
+        assert!(output.status.success());
+        std::fs::write(repo.join("tracked.txt"), "changed\n").expect("dirty the worktree");
+
+        let status = run_git_success_async(
+            &repo,
+            &["status", "--porcelain", "-z", "--untracked-files=all"],
+            GIT_STATUS_COMMAND_TIMEOUT,
+        )
+        .await
+        .expect("git status");
+        run_git_success_async(
+            &repo,
+            &["diff", "HEAD", "--numstat", "-z"],
+            GIT_STATUS_COMMAND_TIMEOUT,
+        )
+        .await
+        .expect("git diff");
+
+        assert!(
+            status.contains("tracked.txt"),
+            "status still reports changes"
+        );
+        assert!(
+            !marker.exists(),
+            "the repository's core.fsmonitor program ran during git status"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn repository_hooks_do_not_run_during_branch_switch() {
+        let (temp, repo) = untrusted_repo_fixture().await;
+        let marker = temp.path().join("post-checkout-ran");
+        let hooks = repo.join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).expect("hooks dir");
+        write_executable(&hooks.join("post-checkout"), &marker_script(&marker));
+
+        run_git_success_async(
+            &repo,
+            &["switch", "-c", "feature", "main"],
+            GIT_MUTATING_COMMAND_TIMEOUT,
+        )
+        .await
+        .expect("git switch");
+
+        let branch = run_git_success_async(
+            &repo,
+            &["branch", "--show-current"],
+            GIT_READ_COMMAND_TIMEOUT,
+        )
+        .await
+        .expect("current branch");
+        assert_eq!(branch.trim(), "feature");
+        assert!(
+            !marker.exists(),
+            "the repository's post-checkout hook ran during git switch"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn repository_ext_remote_is_refused_on_fetch() {
+        let (temp, repo) = untrusted_repo_fixture().await;
+        let marker = temp.path().join("ext-remote-ran");
+        let script = temp.path().join("remote-helper.sh");
+        write_executable(&script, &marker_script(&marker));
+        // Git refuses `ext::` on its own unless config allows it — and the
+        // repository's own `.git/config` is config.
+        for args in [
+            ["config", "protocol.ext.allow", "always"].as_slice(),
+            [
+                "remote",
+                "add",
+                "origin",
+                &format!("ext::{}", script.display()),
+            ]
+            .as_slice(),
+        ] {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("configure ext remote");
+            assert!(output.status.success());
+        }
+
+        let result =
+            run_git_success_async(&repo, &["fetch", "--prune"], GIT_MUTATING_COMMAND_TIMEOUT).await;
+
+        assert!(result.is_err(), "fetch over ext:: must fail");
+        assert!(
+            !marker.exists(),
+            "the repository's ext:: remote command ran during git fetch"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn repository_upload_pack_program_does_not_run_on_fetch() {
+        let (temp, repo) = untrusted_repo_fixture().await;
+        let marker = temp.path().join("upload-pack-ran");
+        let script = temp.path().join("upload-pack.sh");
+        // Still a working upload-pack, so a fetch that honours the key succeeds
+        // and the only observable difference is the marker.
+        write_executable(
+            &script,
+            &format!(
+                "#!/bin/sh\ntouch '{}'\nexec git-upload-pack \"$@\"\n",
+                marker.display()
+            ),
+        );
+        // The remote is the fixture itself: a fetch needs no network, and the
+        // program git runs for it comes from the repository's own config.
+        let origin = temp.path().join("origin");
+        std::fs::create_dir_all(&origin).expect("origin dir");
+        let clone = std::process::Command::new("git")
+            .args(["clone", "-q", "--bare", ".", &origin.to_string_lossy()])
+            .current_dir(&repo)
+            .output()
+            .expect("clone the fixture");
+        assert!(
+            clone.status.success(),
+            "clone failed: {}",
+            String::from_utf8_lossy(&clone.stderr)
+        );
+        for args in [
+            ["remote", "add", "origin", &origin.to_string_lossy()].as_slice(),
+            [
+                "config",
+                "remote.origin.uploadpack",
+                &script.to_string_lossy(),
+            ]
+            .as_slice(),
+        ] {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("configure the remote");
+            assert!(output.status.success());
+        }
+
+        run_git_success_async(&repo, &["fetch", "--prune"], GIT_MUTATING_COMMAND_TIMEOUT)
+            .await
+            .expect("git fetch");
+
+        assert!(
+            !marker.exists(),
+            "the repository's remote.origin.uploadpack program ran during git fetch"
+        );
+    }
+
     #[test]
     fn branch_names_cannot_be_read_as_git_options() {
         assert!(require_branch_name("--orphan=wipe", "Branch name").is_err());
@@ -1141,6 +1625,16 @@ mod tests {
             "C:evil",
             "C:\\evil",
             "name:stream",
+            // DOS devices, which are not folders at all.
+            "CON",
+            "nul",
+            "Aux",
+            "COM1",
+            "lpt9",
+            "PRN.md",
+            // Windows trims these, so the worktree would not be where the
+            // caller was told it is.
+            "feature.",
         ] {
             assert!(validate_worktree_name(name).is_err(), "accepted {name:?}");
         }
@@ -1148,6 +1642,11 @@ mod tests {
             validate_worktree_name(" feature-x ").as_deref(),
             Ok("feature-x")
         );
+        // Only the exact device names: a name that merely starts with one is a
+        // perfectly good folder.
+        for name in ["console", "contrib", "com10", "auxiliary"] {
+            assert_eq!(validate_worktree_name(name).as_deref(), Ok(name));
+        }
     }
 
     #[test]
@@ -1278,9 +1777,20 @@ mod tests {
         assert!(env_is_removed(&command, "GIT_FUTURE_REPOSITORY_CONTROL"));
     }
 
+    /// What a captured environment hands a git child on Windows, observed
+    /// through a hook because a hook is the one place a child of git can report
+    /// the environment it received.
+    ///
+    /// It is NOT a test of app behaviour: it builds the command directly instead
+    /// of through [`build_git_command`], so it does not carry the
+    /// `core.hooksPath` override, and a repository's hooks deliberately do not
+    /// run for any git command the app issues (see `git_args_mutate_repository`;
+    /// `repository_hooks_do_not_run_during_branch_switch` is the pin for that).
+    /// The environment it checks is what checkout filters — `git lfs` through
+    /// `filter.lfs.smudge` — and credential helpers still need.
     #[cfg(windows)]
     #[tokio::test]
-    async fn windows_captured_env_runs_hermit_managed_cmd_git_hook() {
+    async fn windows_captured_env_reaches_a_git_child_with_the_hermit_path() {
         let temp = tempfile::tempdir().expect("temp dir");
         let repo = temp.path().join("Project With Spaces");
         let hook = repo.join(".git").join("hooks").join("post-checkout");
@@ -1400,7 +1910,7 @@ mod tests {
     }
 
     #[test]
-    fn env_source_policy_uses_captured_for_hook_sensitive_mutations() {
+    fn env_source_policy_uses_captured_for_filter_and_credential_sensitive_commands() {
         assert_eq!(
             env_source_for_git_args(&["switch", "main"]),
             EnvSource::Captured

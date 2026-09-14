@@ -41,8 +41,10 @@ import {
 import { archivedCountForProject } from "@/features/memory/lib/memoryPrompt";
 import { sessionProjectWikiPrompt } from "@/features/memory/lib/projectWikiPrompt";
 import { sessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
-import { sessionMemoryWriteAccess } from "@/features/memory/lib/memoryWriteAccess";
-import { isWaveManagedSession } from "@/features/conductor/waveManagedSession";
+import {
+  isWaveExecutorSession,
+  sessionMemoryWriteAccess,
+} from "@/features/memory/lib/memoryWriteAccess";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import {
   type ChatSession,
@@ -362,7 +364,10 @@ export async function sendQueuedPromptToExistingSessionInBackground(
     // contradict that, and would give a one-shot task runner write access to
     // the operator's list and memory — both belong to the conductor's loop.
     const memory = useMemoryStore.getState();
-    const operatorProtocols = isWaveManagedSession(sessionId)
+    // `isWaveExecutorSession`, not the graph alone: the conductor evicts a
+    // finished child's node, and after that only the memory store's record
+    // still knows the chat was one of the engine's.
+    const operatorProtocols = isWaveExecutorSession(sessionId)
       ? undefined
       : composeSystemPrompt(
           composeGatedMemorySection(

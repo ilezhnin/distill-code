@@ -470,9 +470,14 @@ export async function collectProductionTranscriptRendererDiagnostics(
   }
 
   if (isRecord(productionDiagnostics.virtual)) {
-    return createTranscriptDiagnosticsFromVirtualTimelineDiagnostics(
-      productionDiagnostics.virtual,
-    );
+    // Spread into a plain record: every caller treats diagnostics as an
+    // opaque bag of readings, and `TranscriptDiagnostics` is an interface, so
+    // it carries no index signature of its own.
+    return {
+      ...createTranscriptDiagnosticsFromVirtualTimelineDiagnostics(
+        productionDiagnostics.virtual,
+      ),
+    };
   }
 
   return null;

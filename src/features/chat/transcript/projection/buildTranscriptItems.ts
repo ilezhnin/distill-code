@@ -103,6 +103,40 @@ interface CachedProjectedMessageItem {
   item: TranscriptMessageItem;
 }
 
+/**
+ * What the projection derives from one message's content alone, before the
+ * cross-message reasoning filter: the visible, section-expanded blocks and the
+ * canonical signatures of their leading reasoning run.
+ *
+ * `expandReasoningContentSections` builds a fresh array on every call, and the
+ * store keeps message identity for every message a streamed chunk did not
+ * touch, so memoising per message is what makes the `visibleContent` identity
+ * checks of the item caches below hit at all. Signatures cost a full sanitize
+ * pass per reasoning block; computing them once here is what keeps the leading
+ * duplicate filter off the per-frame path for settled messages.
+ */
+interface CachedMessageProjectionSource {
+  generation: number;
+  content: readonly MessageContent[];
+  visibleContent: readonly MessageContent[];
+  leadingReasoningSignatures: readonly string[];
+  /**
+   * The last suffix handed out after dropping leading duplicate reasoning, so
+   * that a repeat projection with the same drop count keeps array identity.
+   */
+  droppedLeadingReasoningCount: number;
+  contentForProjection: readonly MessageContent[];
+}
+
+interface CachedAgentWorkItems {
+  generation: number;
+  visibleContent: readonly MessageContent[];
+  metadata: MessageMetadata | undefined;
+  isStreaming: boolean;
+  subagentLinkage: TranscriptSubagentLinkage | undefined;
+  items: readonly TranscriptItemDescriptor[];
+}
+
 const staticTextMessageItemCache = new WeakMap<
   Message,
   CachedStaticTextMessageItem
@@ -111,11 +145,18 @@ const projectedMessageItemCache = new WeakMap<
   Message,
   CachedProjectedMessageItem
 >();
+const messageProjectionSourceCache = new WeakMap<
+  Message,
+  CachedMessageProjectionSource
+>();
+const agentWorkItemsCache = new WeakMap<Message, CachedAgentWorkItems>();
 let staticTextMessageItemCacheGeneration = 0;
 
 export function invalidateTranscriptItemDescriptorCache(): void {
   staticTextMessageItemCacheGeneration += 1;
   cachedSubagentLinkageBySession.clear();
+  sanitizedReasoningTextCache.clear();
+  canonicalReasoningSignatureCache.clear();
 }
 
 /**
@@ -245,9 +286,8 @@ export function buildTranscriptItems({
       continue;
     }
 
-    const visibleContent = expandReasoningContentSections(
-      getUserVisibleMessageContent(message.content),
-    );
+    const projectionSource = getMessageProjectionSource(message);
+    const visibleContent = projectionSource.visibleContent;
     if (message.role === "user" && visibleContent.length === 0) {
       continue;
     }
@@ -288,19 +328,27 @@ export function buildTranscriptItems({
     }
 
     const isStreaming = message.id === streamingMessageId;
-    const contentForProjection: readonly MessageContent[] =
-      message.role === "assistant"
-        ? filterDuplicateDisplayedReasoning(
-            visibleContent,
-            displayedReasoningSignatures,
-          )
-        : visibleContent;
+    let contentForProjection: readonly MessageContent[] = visibleContent;
 
     if (message.role === "assistant") {
-      for (const signature of getLeadingReasoningSignatures(
-        contentForProjection,
-      )) {
-        displayedReasoningSignatures.add(signature);
+      // Strip leading reasoning blocks that exactly repeat reasoning already
+      // displayed during this work turn. The leading run of the remaining
+      // blocks is what the following messages are compared against.
+      const leadingSignatures = projectionSource.leadingReasoningSignatures;
+      const droppedCount = countDuplicateDisplayedReasoning(
+        leadingSignatures,
+        displayedReasoningSignatures,
+      );
+      contentForProjection = getContentAfterDroppedReasoning(
+        projectionSource,
+        droppedCount,
+      );
+      for (
+        let index = droppedCount;
+        index < leadingSignatures.length;
+        index += 1
+      ) {
+        displayedReasoningSignatures.add(leadingSignatures[index] as string);
       }
     } else if (!isToolResponseOnlyContent(contentForProjection)) {
       displayedReasoningSignatures = new Set<string>();
@@ -312,7 +360,7 @@ export function buildTranscriptItems({
       continue;
     }
 
-    const agentWorkItems = buildAgentWorkItems({
+    const agentWorkItems = getCachedAgentWorkItems({
       message,
       visibleContent: contentForProjection,
       isStreaming,
@@ -376,6 +424,90 @@ export function buildTranscriptItems({
     );
   }
 
+  return items;
+}
+
+function getMessageProjectionSource(
+  message: Message,
+): CachedMessageProjectionSource {
+  const cached = messageProjectionSourceCache.get(message);
+  if (
+    cached?.generation === staticTextMessageItemCacheGeneration &&
+    cached.content === message.content
+  ) {
+    return cached;
+  }
+
+  const visibleContent = expandReasoningContentSections(
+    getUserVisibleMessageContent(message.content),
+  );
+  const source: CachedMessageProjectionSource = {
+    generation: staticTextMessageItemCacheGeneration,
+    content: message.content,
+    visibleContent,
+    leadingReasoningSignatures:
+      message.role === "assistant"
+        ? getLeadingReasoningSignatures(visibleContent)
+        : [],
+    droppedLeadingReasoningCount: 0,
+    contentForProjection: visibleContent,
+  };
+  messageProjectionSourceCache.set(message, source);
+  return source;
+}
+
+function getContentAfterDroppedReasoning(
+  source: CachedMessageProjectionSource,
+  droppedCount: number,
+): readonly MessageContent[] {
+  if (droppedCount === 0) {
+    return source.visibleContent;
+  }
+  if (source.droppedLeadingReasoningCount !== droppedCount) {
+    source.droppedLeadingReasoningCount = droppedCount;
+    source.contentForProjection = source.visibleContent.slice(droppedCount);
+  }
+  return source.contentForProjection;
+}
+
+function getCachedAgentWorkItems({
+  message,
+  visibleContent,
+  isStreaming,
+  subagentLinkage,
+}: {
+  message: Message;
+  visibleContent: readonly MessageContent[];
+  isStreaming: boolean;
+  subagentLinkage?: TranscriptSubagentLinkage;
+}): readonly TranscriptItemDescriptor[] | null {
+  const cached = agentWorkItemsCache.get(message);
+  if (
+    cached?.generation === staticTextMessageItemCacheGeneration &&
+    cached.visibleContent === visibleContent &&
+    cached.metadata === message.metadata &&
+    cached.isStreaming === isStreaming &&
+    cached.subagentLinkage === subagentLinkage
+  ) {
+    return cached.items;
+  }
+
+  const items = buildAgentWorkItems({
+    message,
+    visibleContent,
+    isStreaming,
+    subagentLinkage,
+  });
+  if (items) {
+    agentWorkItemsCache.set(message, {
+      generation: staticTextMessageItemCacheGeneration,
+      visibleContent,
+      metadata: message.metadata,
+      isStreaming,
+      subagentLinkage,
+      items,
+    });
+  }
   return items;
 }
 
@@ -822,19 +954,6 @@ function canonicalizeReasoningCandidate(
   return signature;
 }
 
-function areDuplicateReasoningBodies(
-  left: string,
-  right: string,
-  title: string | null,
-): boolean {
-  const leftSignature = canonicalizeReasoningCandidate(left, title);
-  const rightSignature = canonicalizeReasoningCandidate(right, title);
-  return (
-    leftSignature.length >= REASONING_DUPLICATE_MIN_LENGTH &&
-    leftSignature === rightSignature
-  );
-}
-
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -881,19 +1000,189 @@ function collapseDuplicatedReasoningBody(
     }
   }
 
+  if (splitCandidates.size === 0) {
+    return strippedBody;
+  }
+
+  // A duplicate is an exact repeat once whitespace is folded, so both halves
+  // are read out of one canonical copy of the body: each candidate then costs
+  // a bounded header probe and, only when the halves come out the same length,
+  // one string comparison — instead of re-canonicalising both halves per
+  // candidate, which made a block of k paragraphs cost k times its length.
+  const canonicalIndex = buildCanonicalReasoningIndex(trimmedBody);
+  const titleSignature = title ? normalizeReasoningText(title) : null;
+
   for (const splitIndex of Array.from(splitCandidates).sort((a, b) => a - b)) {
-    const left = trimmedBody.slice(0, splitIndex).trim();
-    const right = trimmedBody.slice(splitIndex).trim();
-    if (!left || !right) continue;
-    if (areDuplicateReasoningBodies(left, right, title)) {
-      return left;
+    const leftSignature = canonicalizeReasoningRange(
+      canonicalIndex,
+      0,
+      splitIndex,
+      titleSignature,
+    );
+    if (leftSignature === null) continue;
+    const rightSignature = canonicalizeReasoningRange(
+      canonicalIndex,
+      splitIndex,
+      trimmedBody.length,
+      titleSignature,
+    );
+    if (rightSignature === null) continue;
+    if (
+      leftSignature.length >= REASONING_DUPLICATE_MIN_LENGTH &&
+      leftSignature === rightSignature
+    ) {
+      return trimmedBody.slice(0, splitIndex).trim();
     }
   }
 
   return strippedBody;
 }
 
+/**
+ * A whitespace-folded copy of `text` (which must already be trimmed) with, for
+ * every raw index, where a range starting or ending there lands in the copy.
+ *
+ * `normalizeReasoningText(text.slice(start, end))` is then
+ * `canonical.slice(canonicalStartFrom[start], canonicalEndBefore[end])` — or
+ * empty when the range holds no non-whitespace — because folding is local to
+ * each whitespace run and every run inside a trimmed range is entirely inside
+ * it. The runs come from the same `\s+` pattern `normalizeReasoningText` uses,
+ * so both sides classify whitespace identically.
+ */
+interface CanonicalReasoningIndex {
+  text: string;
+  canonical: string;
+  canonicalStartFrom: Int32Array;
+  canonicalEndBefore: Int32Array;
+}
+
+function buildCanonicalReasoningIndex(text: string): CanonicalReasoningIndex {
+  const length = text.length;
+  const canonicalStartFrom = new Int32Array(length + 1);
+  const canonicalEndBefore = new Int32Array(length + 1);
+  let removed = 0;
+  let cursor = 0;
+
+  for (const match of text.matchAll(/\s+/g)) {
+    const runStart = match.index;
+    const runEnd = runStart + match[0].length;
+    for (let index = cursor; index < runStart; index += 1) {
+      canonicalStartFrom[index] = index - removed;
+      canonicalEndBefore[index + 1] = index - removed + 1;
+    }
+    const removedAfterRun = removed + (runEnd - runStart - 1);
+    for (let index = runStart; index < runEnd; index += 1) {
+      canonicalStartFrom[index] = runEnd - removedAfterRun;
+      canonicalEndBefore[index + 1] = runStart - removed;
+    }
+    removed = removedAfterRun;
+    cursor = runEnd;
+  }
+  for (let index = cursor; index < length; index += 1) {
+    canonicalStartFrom[index] = index - removed;
+    canonicalEndBefore[index + 1] = index - removed + 1;
+  }
+  canonicalStartFrom[length] = length - removed;
+  canonicalEndBefore[0] = 0;
+
+  return {
+    text,
+    canonical: text.replace(/\s+/g, " "),
+    canonicalStartFrom,
+    canonicalEndBefore,
+  };
+}
+
+/**
+ * `canonicalizeReasoningCandidate(text.slice(start, end).trim(), title)` read
+ * out of the canonical index, or `null` when the trimmed range is empty.
+ */
+function canonicalizeReasoningRange(
+  index: CanonicalReasoningIndex,
+  start: number,
+  end: number,
+  titleSignature: string | null,
+): string | null {
+  const { text, canonical, canonicalStartFrom, canonicalEndBefore } = index;
+  if (canonicalStartFrom[start] >= canonicalEndBefore[end]) {
+    return null;
+  }
+
+  // A leading header is recognised on the raw, trimmed half: it needs its
+  // line break, which folding erases.
+  const rawRange = text.slice(start, end);
+  const rangeStart = start + (rawRange.length - rawRange.trimStart().length);
+  const header = getLeadingReasoningHeader(rawRange.trim());
+  const bodyStart = header ? rangeStart + header.headerText.length : start;
+  const canonicalStart = canonicalStartFrom[bodyStart] as number;
+  const canonicalEnd = canonicalEndBefore[end] as number;
+  let signature =
+    canonicalStart < canonicalEnd
+      ? canonical.slice(canonicalStart, canonicalEnd)
+      : "";
+
+  if (!titleSignature) {
+    return signature;
+  }
+  if (signature.startsWith(titleSignature)) {
+    signature = signature.slice(titleSignature.length).trim();
+  }
+  if (signature.endsWith(titleSignature)) {
+    signature = signature.slice(0, -titleSignature.length).trim();
+  }
+  return signature;
+}
+
+/**
+ * Sanitized display text and canonical signatures, per block text. Both are
+ * pure in the text, so entries never go stale; the maps are bounded as an LRU
+ * because a streaming thought produces a new text every frame.
+ */
+const REASONING_TEXT_CACHE_LIMIT = 512;
+const sanitizedReasoningTextCache = new Map<string, string>();
+const canonicalReasoningSignatureCache = new Map<string, string | null>();
+
+function readReasoningTextCache<T>(
+  cache: Map<string, T>,
+  text: string,
+): { hit: boolean; value: T | undefined } {
+  if (!cache.has(text)) {
+    return { hit: false, value: undefined };
+  }
+  const value = cache.get(text) as T;
+  cache.delete(text);
+  cache.set(text, value);
+  return { hit: true, value };
+}
+
+function writeReasoningTextCache<T>(
+  cache: Map<string, T>,
+  text: string,
+  value: T,
+): T {
+  if (cache.size >= REASONING_TEXT_CACHE_LIMIT) {
+    const oldest = cache.keys().next();
+    if (!oldest.done) {
+      cache.delete(oldest.value);
+    }
+  }
+  cache.set(text, value);
+  return value;
+}
+
 function sanitizeReasoningTextForDisplay(text: string): string {
+  const cached = readReasoningTextCache(sanitizedReasoningTextCache, text);
+  if (cached.hit) {
+    return cached.value as string;
+  }
+  return writeReasoningTextCache(
+    sanitizedReasoningTextCache,
+    text,
+    sanitizeReasoningTextForDisplayUncached(text),
+  );
+}
+
+function sanitizeReasoningTextForDisplayUncached(text: string): string {
   const header = getLeadingReasoningHeader(text);
   if (!header) {
     return collapseDuplicatedReasoningBody(text, null);
@@ -907,6 +1196,22 @@ function sanitizeReasoningTextForDisplay(text: string): string {
 }
 
 function getCanonicalReasoningSignature(text: string): string | null {
+  const cached = readReasoningTextCache(canonicalReasoningSignatureCache, text);
+  if (cached.hit) {
+    return cached.value as string | null;
+  }
+  return writeReasoningTextCache(
+    canonicalReasoningSignatureCache,
+    text,
+    getCanonicalReasoningSignatureUncached(text),
+  );
+}
+
+function getCanonicalReasoningSignatureUncached(text: string): string | null {
+  // The display text is sanitized again here on purpose: collapsing is not
+  // idempotent for a body repeated four or more times, and the signature of
+  // an already-sanitized block has always been taken from its second pass.
+  // With the sanitize cache above, that pass is a lookup.
   const sanitizedText = sanitizeReasoningTextForDisplay(text);
   const header = getLeadingReasoningHeader(sanitizedText);
   const canonicalText = canonicalizeReasoningCandidate(
@@ -937,10 +1242,6 @@ function getLeadingReasoningSignatures(
   return signatures;
 }
 
-// Strip leading reasoning blocks from a message when they exactly repeat the
-// reasoning we already displayed on the previous assistant message. Returns []
-// when the whole message was nothing but that duplicate reasoning (caller drops
-// it). Anything that isn't a leading exact-duplicate is left untouched.
 function isToolResponseOnlyContent(
   content: readonly MessageContent[],
 ): boolean {
@@ -950,28 +1251,26 @@ function isToolResponseOnlyContent(
   );
 }
 
-function filterDuplicateDisplayedReasoning(
-  content: readonly MessageContent[],
+// How many leading reasoning blocks of a message exactly repeat the reasoning
+// we already displayed on the previous assistant message; the caller strips
+// that many blocks and drops the message when nothing else remains. Anything
+// that isn't a leading exact-duplicate is left untouched.
+function countDuplicateDisplayedReasoning(
+  leadingReasoningSignatures: readonly string[],
   displayedReasoningSignatures: ReadonlySet<string>,
-): readonly MessageContent[] {
-  if (displayedReasoningSignatures.size === 0 || content.length === 0) {
-    return content;
+): number {
+  if (displayedReasoningSignatures.size === 0) {
+    return 0;
   }
 
-  let firstNonDuplicateIndex = 0;
-  for (const block of content) {
-    const signature = getReasoningSignature(block);
-    if (!signature || !displayedReasoningSignatures.has(signature)) {
+  let duplicateCount = 0;
+  for (const signature of leadingReasoningSignatures) {
+    if (!displayedReasoningSignatures.has(signature)) {
       break;
     }
-    firstNonDuplicateIndex += 1;
+    duplicateCount += 1;
   }
-
-  if (firstNonDuplicateIndex === 0) {
-    return content;
-  }
-
-  return content.slice(firstNonDuplicateIndex);
+  return duplicateCount;
 }
 
 function isReasoningSectionHeaderLine(line: string): boolean {

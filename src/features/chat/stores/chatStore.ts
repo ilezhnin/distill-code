@@ -193,6 +193,27 @@ function trimMessageSessionCache(
   return { messagesBySession, evictedSessionIds };
 }
 
+/**
+ * Sessions this window has archived or deleted.
+ *
+ * A trailing host update can still arrive for one of them — `session/delete`
+ * does not cancel a running turn, and archiving a running chat is allowed — and
+ * it re-creates the session's rows on its way in. Marking such a session unread
+ * persists an id no session owns: nothing can ever open it to mark it read, so
+ * the entry stays in `distill:unread-sessions` forever and is rehydrated as
+ * unread on every start. The id is forgotten again the moment the session is
+ * genuinely back (a load, or the user marking it read or unread).
+ */
+const cleanedUpSessionIds = new Set<string>();
+
+function rememberCleanedUpSession(sessionId: string): void {
+  cleanedUpSessionIds.add(sessionId);
+}
+
+function forgetCleanedUpSession(sessionId: string): void {
+  cleanedUpSessionIds.delete(sessionId);
+}
+
 function shouldMarkSessionUnread(
   state: ChatStoreState,
   sessionId: string,
@@ -201,6 +222,7 @@ function shouldMarkSessionUnread(
   return (
     message.role === "assistant" &&
     message.metadata?.userVisible !== false &&
+    !cleanedUpSessionIds.has(sessionId) &&
     !isSessionActivelyViewed(state, sessionId)
   );
 }
@@ -300,22 +322,13 @@ function appendThinkingChunksToMessage(
       continue;
     }
 
-    // Goose Core can emit thought updates either as deltas or as repeated /
-    // cumulative snapshots depending on provider and replay path.
-    let nextText: string;
-    if (text === lastContent.text) {
-      continue;
-    }
-    if (text.startsWith(lastContent.text)) {
-      nextText = text;
-    } else {
-      nextText = lastContent.text + text;
-    }
-
+    // Thought chunks are token deltas, appended as they arrive: a chunk that
+    // repeats what the reasoning already ends with (a second `1`, a closing
+    // bracket, a repeated word) is real text, not a duplicate.
     const updatedContent = [...nextContent];
     updatedContent[updatedContent.length - 1] = {
       type: "thinking" as const,
-      text: nextText,
+      text: lastContent.text + text,
     };
     nextContent = updatedContent;
     changed = true;
@@ -481,6 +494,21 @@ interface ChatStoreActions {
   setConnected: (connected: boolean) => void;
   markSessionRead: (sessionId: string) => void;
   markSessionUnread: (sessionId: string) => void;
+  /**
+   * Record whether this window still considers the session gone. Archiving or
+   * deleting sets it (see `cleanedUpSessionIds`); unarchiving clears it, so a
+   * reply that arrives before the chat is ever opened again marks it unread
+   * instead of being swallowed. A failed unarchive sets it back.
+   */
+  setSessionCleanedUp: (sessionId: string, cleanedUp: boolean) => void;
+  /** Whether this window currently treats the session as archived or deleted. */
+  isSessionCleanedUp: (sessionId: string) => boolean;
+  /**
+   * Drop unread flags for sessions that no longer exist. Callers pass the
+   * complete set of live session ids — a partial page would clear flags of
+   * sessions that are merely not loaded yet.
+   */
+  pruneUnreadSessions: (liveSessionIds: Iterable<string>) => void;
   updateTokenState: (sessionId: string, state: Partial<TokenState>) => void;
   replaceTokenState: (
     sessionId: string,
@@ -1322,6 +1350,7 @@ const createChatStore: StateCreator<
   setConnected: (isConnected) => set({ isConnected }),
 
   markSessionRead: (sessionId) => {
+    forgetCleanedUpSession(sessionId);
     const previousSessionStateById = get().sessionStateById;
     set((state) => {
       const current =
@@ -1346,6 +1375,7 @@ const createChatStore: StateCreator<
   },
 
   markSessionUnread: (sessionId) => {
+    forgetCleanedUpSession(sessionId);
     const previousSessionStateById = get().sessionStateById;
     set((state) => {
       const current =
@@ -1362,6 +1392,40 @@ const createChatStore: StateCreator<
           },
         },
       };
+    });
+    persistUnreadStateIfChanged(
+      previousSessionStateById,
+      get().sessionStateById,
+    );
+  },
+
+  setSessionCleanedUp: (sessionId, cleanedUp) => {
+    if (cleanedUp) {
+      rememberCleanedUpSession(sessionId);
+    } else {
+      forgetCleanedUpSession(sessionId);
+    }
+  },
+
+  isSessionCleanedUp: (sessionId) => cleanedUpSessionIds.has(sessionId),
+
+  pruneUnreadSessions: (liveSessionIds) => {
+    const live = new Set(liveSessionIds);
+    const previousSessionStateById = get().sessionStateById;
+    const staleSessionIds = Object.entries(previousSessionStateById)
+      .filter(
+        ([sessionId, runtime]) => runtime.hasUnread && !live.has(sessionId),
+      )
+      .map(([sessionId]) => sessionId);
+    if (staleSessionIds.length === 0) return;
+    set((state) => {
+      const sessionStateById = { ...state.sessionStateById };
+      for (const sessionId of staleSessionIds) {
+        const runtime = sessionStateById[sessionId];
+        if (!runtime?.hasUnread) continue;
+        sessionStateById[sessionId] = { ...runtime, hasUnread: false };
+      }
+      return { sessionStateById };
     });
     persistUnreadStateIfChanged(
       previousSessionStateById,
@@ -1778,6 +1842,9 @@ const createChatStore: StateCreator<
     set((state) => {
       const next = new Set(state.loadingSessionIds);
       if (loading) {
+        // A session being loaded exists again (it was unarchived, or this is a
+        // different session that reused nothing but the id space).
+        forgetCleanedUpSession(sessionId);
         next.add(sessionId);
       } else {
         next.delete(sessionId);
@@ -1894,6 +1961,7 @@ const createChatStore: StateCreator<
   cleanupSession: (sessionId) => {
     // Discard any orphaned replay buffer so module-level Map doesn't leak.
     clearReplayBuffer(sessionId);
+    rememberCleanedUpSession(sessionId);
     const previousSessionStateById = get().sessionStateById;
     set((state) => {
       const { [sessionId]: _, ...rest } = state.messagesBySession;

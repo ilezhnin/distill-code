@@ -7,6 +7,7 @@
     "groupLabel_one": "1 attachment",
     "groupLabel_other": "{{count}} attachments",
     "imagePreviewTitle": "Image preview",
+    "noPathForBrowserFile": "“{{name}}” was not attached: this drop carries no file path, so the agent could not read the file. Use the paperclip button, or drag the file in from a folder.",
     "open": "Open attachment {{name}}",
     "previewAlt": "Preview of {{name}}",
     "remove": "Remove attachment",
@@ -539,7 +540,9 @@
           "acceptedWithMissingArtifacts": "The conductor accepted the result, but the reports named files that are not on disk, so the acceptance was not honoured.",
           "waveInterrupted": "This wave was interrupted before any executor reported back, so there is nothing to judge. Its work was not finished.",
           "operatorStopped": "You stopped this wave. Its executors were told to stop, and nothing was digested or judged.",
-          "stepBlocked": "An executor reported it cannot do its step, so the wave was stopped."
+          "stepBlocked": "An executor reported it cannot do its step, so the wave was stopped.",
+          "digestLost": "The brigade's report was never delivered to the conductor — it was cleared from the queue before it was sent — so nothing was decided. Asking again below re-sends it.",
+          "verdictUnanswered": "The conductor never answered the brigade's report, so nothing was decided. Its turn on the report ended without a reply. Asking again below re-sends it."
         },
         "prose": {
           "accept": "Accepted the brigade's result.",
@@ -575,7 +578,11 @@
         "tokens": "{{spent}} of {{allowed}} tokens",
         "minutes": "{{spent}} of {{allowed}} minutes"
       },
-      "closeout": "The summary of this request was written to {{path}}. It is an ordinary file — commit it with the work so the next person has it."
+      "closeout": "The summary of this request was written to {{path}}. It is an ordinary file — commit it with the work so the next person has it.",
+      "awaitingVerdict": "The brigade has finished; this chat is waiting for the conductor's verdict.",
+      "spawning": "This chat is starting its brigade.",
+      "digestPending": "The brigade has finished; this chat is collecting their reports.",
+      "dispatchingDigest": "This chat is handing the brigade's reports to the conductor."
     },
     "spawnAcl": {
       "deniedTitle": "A session asked to start an agent it is not allowed to start, so nothing was started.",
@@ -611,6 +618,12 @@
       "title": "Step {{step}} ({{name}}) reported success, but its report failed verification and was quarantined.",
       "detail": "Reason: {{detail}} The digest and later steps receive a stub instead of its claims.",
       "noDetail": "The digest and later steps receive a stub instead of its claims."
+    },
+    "unreadable": {
+      "title": "The conductor is off for this session: its saved state could not be read.",
+      "body": "{{documents}} could not be read from the Distill folder, even after retrying. Waves are not started at all while that is true — a plan in this chat will simply be ignored — because running on an empty copy would re-run old plans and then overwrite the only record of them.",
+      "retry": "Something else was probably holding the file when the app started, such as an antivirus scan or a sync client. Settings → Stats has a Try again button that re-reads it without restarting.",
+      "reason": "The read failed with: {{reason}}"
     }
   },
   "harnessBrigade": {
@@ -710,6 +723,7 @@
     "input": "Input",
     "result": "Result",
     "fileNotFound": "File not found: {{path}}",
+    "runningCommand": "Running command",
     "inputSummary": {
       "command": "Command",
       "line": "Line",
@@ -841,5 +855,14 @@
   "interruptedTurn": {
     "notice": "This message was never answered — the run was interrupted before the agent replied. It was not sent again on its own: the agent may have finished real work before it stopped.",
     "resend": "Send it again"
+  },
+  "permissionRequest": {
+    "cancelledTurn": "The agent asked for permission to run {{tool}} and offered only permanent answers, which this app never gives. The turn was cancelled instead; ask again, or change the agent's own permission settings."
+  },
+  "openPath": {
+    "revealedInsteadOfRun": "{{name}} is a program or script, so it was shown in File Explorer instead of being run.",
+    "confirmTitle": "Open a file outside this chat's folders?",
+    "confirmOpen": "Open",
+    "confirmCancel": "Cancel"
   }
 }

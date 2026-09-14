@@ -58,7 +58,9 @@
     "exported_one": "Se exportó 1 chat",
     "exported_other": "Se exportaron {{displayCount}} chats",
     "failed_one": "{{displayCount}} acción falló",
-    "failed_other": "{{displayCount}} acciones fallaron"
+    "failed_other": "{{displayCount}} acciones fallaron",
+    "archiveConfirmTerminals_one": "Se detendrá 1 terminal en ejecución; restaurar el chat no la recupera.",
+    "archiveConfirmTerminals_other": "Se detendrán {{count}} terminales en ejecución; restaurar los chats no las recupera."
   },
   "components": {
     "codeBlock": {
@@ -80,6 +82,26 @@
     },
     "plan": {
       "toggle": "Alternar plan"
+    },
+    "reasoning": {
+      "thinking": "Pensando...",
+      "thoughtForAFewSeconds": "Pensó durante unos segundos",
+      "thoughtForSeconds": "Pensó durante {{seconds}} segundos"
+    },
+    "tool": {
+      "parameters": "Parámetros",
+      "result": "Resultado",
+      "error": "Error",
+      "elapsedSeconds": "{{seconds}} s",
+      "status": {
+        "approvalRequested": "Esperando aprobación",
+        "approvalResponded": "Respondido",
+        "inputAvailable": "En ejecución",
+        "inputStreaming": "Pendiente",
+        "outputAvailable": "Completado",
+        "outputDenied": "Denegado",
+        "outputError": "Error"
+      }
     }
   },
   "completionNotification": {
@@ -172,5 +194,10 @@
     "output": "Salida",
     "reasoning": "Razonamiento",
     "totalCost": "Costo total"
+  },
+  "viewError": {
+    "title": "Esta vista dejó de funcionar.",
+    "description": "El resto de la aplicación sigue funcionando: inténtalo de nuevo o abre otra cosa.",
+    "retry": "Intentar de nuevo"
   }
 }

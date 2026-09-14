@@ -22,7 +22,7 @@ use super::legacy_import;
 use super::protocol::{self, invalid_params, now_iso, Message};
 use super::session_title;
 use super::sources::SourceRoots;
-use super::store::{SessionRecord, SessionStore};
+use super::store::{SessionRecord, SessionStore, SessionTouchUndo};
 use crate::services::managed_acp_tools;
 
 const SESSION_PAGE_SIZE: i64 = 200;
@@ -33,6 +33,14 @@ const BACKGROUND_ATTACH_DELAY: std::time::Duration = std::time::Duration::from_m
 /// How long closing a bridge session may take before reopening it anyway.
 const BRIDGE_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const SNIPPET_CHARS: usize = 200;
+/// How long an attach waits for the bridge event loop to catch up with the
+/// history the bridge replayed before it gives up and goes live anyway.
+const EVENT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// How many streamed updates may wait for their commit before the bridge event
+/// loop stops taking new ones and writes what it has. A burst of chunks then
+/// costs one transaction instead of one per chunk, and nothing waits longer than
+/// the burst.
+const APPEND_BATCH_LIMIT: usize = 64;
 pub const EXT_PREFIX: &str = "_distill/";
 
 /// The kv row that governs the lazy split of folded model ids
@@ -40,6 +48,13 @@ pub const EXT_PREFIX: &str = "_distill/";
 /// `selection_split_enabled`.
 const SELECTION_SPLIT_SCOPE: &str = "migrations";
 const SELECTION_SPLIT_KEY: &str = "selection_split";
+
+/// The renderer socket a request arrived on. Its reply goes back there and
+/// nowhere else: request ids are per socket (the SDK numbers them from 0 on
+/// every connection), so a reply delivered to a later socket would resolve
+/// whatever request happens to carry that id there. Once the socket is gone
+/// the sender fails and the reply is dropped.
+type ReplyTo = mpsc::UnboundedSender<String>;
 
 /// The ids one user turn is recorded under: `message_id` is the user
 /// prompt's message, `assistant_message_id` the agent's reply to it, and
@@ -67,6 +82,10 @@ struct RunState {
     assistant_message_id: String,
     agent_text: String,
     saw_agent_message: bool,
+    /// Whether the bridge sent *any* `session/update` for this turn. A turn
+    /// that produced nothing and then failed never happened, so its prompt is
+    /// taken back out of the log instead of sitting there unanswered.
+    saw_update: bool,
 }
 
 impl RunState {
@@ -77,8 +96,20 @@ impl RunState {
             assistant_message_id: ids.assistant_message_id.clone(),
             agent_text: String::new(),
             saw_agent_message: false,
+            saw_update: false,
         }
     }
+}
+
+/// What it takes to undo [`Inner::record_user_prompt`]: the turn the rows
+/// belong to, the event rows the prompt was stored as, and the session-list
+/// fields its `touch` overwrote. The run id is part of it because the undo is
+/// only allowed for the turn it was recorded for — see
+/// [`Inner::discard_rejected_prompt`].
+struct RecordedPrompt {
+    run_id: String,
+    event_ids: Vec<i64>,
+    undo: SessionTouchUndo,
 }
 
 struct QueuedPrompt {
@@ -149,6 +180,10 @@ struct Selection {
 pub struct SessionRuntime {
     pub harness: String,
     pub bridge_session_id: String,
+    /// The bridge process that accepted `bridge_session_id`. A later process
+    /// for the same harness has never heard of it, and the exit of an earlier
+    /// one says nothing about this session.
+    generation: u64,
     loading: bool,
     run: Option<RunState>,
     steer_queue: VecDeque<QueuedPrompt>,
@@ -158,6 +193,42 @@ pub struct SessionRuntime {
     /// What the bridge would not do when this session was last put on its
     /// selections, as `_meta.substitutions` entries (see `apply_selection`).
     substitutions: Vec<Value>,
+}
+
+impl SessionRuntime {
+    /// The bridge session calls on this session go to, and the bridge process
+    /// that accepted it. There is none while the session is still being
+    /// attached: the bridge has not accepted the stored id yet (and may
+    /// never), so a caller waits on the attach lock instead of routing at a
+    /// session the bridge does not know.
+    fn route(&self) -> Option<(String, String, u64)> {
+        if self.loading {
+            return None;
+        }
+        Some((
+            self.harness.clone(),
+            self.bridge_session_id.clone(),
+            self.generation,
+        ))
+    }
+
+    /// Whether this session was accepted by *that* bridge process. Used when a
+    /// bridge exits: only the sessions of the process that died are forgotten,
+    /// never those of a replacement that is already serving the same harness.
+    fn served_by(&self, harness: &str, generation: u64) -> bool {
+        self.harness == harness && self.generation == generation
+    }
+
+    /// Forget the messages steered into the running turn, and report how many
+    /// there were. A queued steer is only persisted and echoed when it is
+    /// actually sent, so a sequence the user stopped — or one the bridge cut
+    /// short with an error — must drop them instead of starting fresh turns
+    /// nobody asked for and recording them as sent.
+    fn drop_queued_steers(&mut self) -> usize {
+        let dropped = self.steer_queue.len();
+        self.steer_queue.clear();
+        dropped
+    }
 }
 
 pub struct Inner {
@@ -372,9 +443,20 @@ impl Inner {
         while let Some(message) = source.next().await {
             match message {
                 Ok(WsMessage::Text(text)) => {
+                    // One task per frame, deliberately: `session/prompt` runs
+                    // for as long as the agent works on the turn, so handling
+                    // frames in arrival order would block every other call on
+                    // this socket — a `session/cancel`, another chat's prompt —
+                    // for that whole turn. The cost is that two frames sent back
+                    // to back can reach the bridge in either order; the renderer
+                    // serialises the mutations where that matters
+                    // (`serializeSessionMutation`), and a cancel that loses the
+                    // race is a no-op. Sequencing per *session* inside the host
+                    // is the real fix and a design change.
                     let host = Arc::clone(&self);
                     let line = text.to_string();
-                    tokio::spawn(async move { host.handle_frontend_line(line).await });
+                    let reply_to = tx.clone();
+                    tokio::spawn(async move { host.handle_frontend_line(line, reply_to).await });
                 }
                 Ok(WsMessage::Close(_)) | Err(_) => break,
                 Ok(_) => {}
@@ -412,7 +494,18 @@ impl Inner {
         self.send_to_frontend(protocol::notification(method, params));
     }
 
-    async fn handle_frontend_line(self: Arc<Self>, line: String) {
+    /// Answer a request on the socket it arrived on, never on whichever socket
+    /// is current when the answer is ready: request ids are numbered per
+    /// connection, so the same id belongs to a different request on the next
+    /// socket and the answer would resolve that one. A renderer that dropped
+    /// the socket has given up on the answer, so it is dropped with it.
+    fn reply_on(reply_to: &ReplyTo, method: &str, reply: String) {
+        if reply_to.send(reply).is_err() {
+            log::debug!("[agent-host] dropped the answer to {method}: its socket is gone");
+        }
+    }
+
+    async fn handle_frontend_line(self: Arc<Self>, line: String, reply_to: ReplyTo) {
         let Some(message) = protocol::parse(&line) else {
             log::warn!("[agent-host] unparseable frontend message");
             return;
@@ -424,7 +517,7 @@ impl Inner {
                     Ok(result) => protocol::response(id, result),
                     Err(error) => protocol::error_response(id, error),
                 };
-                self.send_to_frontend(reply);
+                Self::reply_on(&reply_to, &method, reply);
             }
             Message::Notification { method, params } => {
                 self.handle_client_notification(&method, params).await;
@@ -438,12 +531,25 @@ impl Inner {
     async fn handle_client_notification(&self, method: &str, params: Value) {
         if method == "session/cancel" {
             if let Some(session_id) = protocol::session_id(&params) {
-                if let Some((harness, bridge_session_id)) = self.runtime_route(&session_id).await {
-                    if let Some(bridge) = self.bridges.lock().await.get(&harness).cloned() {
-                        let mut params = params.clone();
-                        params["sessionId"] = json!(bridge_session_id);
-                        bridge.notify(method, params);
-                    }
+                // Stop means stop: the messages steered into the turn being
+                // cancelled are not started as turns of their own once it
+                // returns.
+                let dropped = self
+                    .sessions
+                    .lock()
+                    .await
+                    .get_mut(&session_id)
+                    .map(SessionRuntime::drop_queued_steers)
+                    .unwrap_or(0);
+                if dropped > 0 {
+                    log::info!(
+                        "[agent-host] session {session_id} cancelled: dropped {dropped} queued steer(s)"
+                    );
+                }
+                if let Some((bridge, bridge_session_id)) = self.attached_route(&session_id).await {
+                    let mut params = params.clone();
+                    params["sessionId"] = json!(bridge_session_id);
+                    bridge.notify(method, params);
                 }
             }
         }
@@ -604,37 +710,139 @@ impl Inner {
             .collect()
     }
 
+    /// The one loop that handles every bridge's events, in the order they
+    /// arrived. Writing each streamed chunk to SQLite from here is what used to
+    /// make every chat's persistence queue behind every other chat's — and made
+    /// [`Self::drain_bridge_events`], which every attach and every withdrawn
+    /// prompt waits on, wait for that whole backlog. The chunks are therefore
+    /// stamped and forwarded to the renderer immediately and committed together
+    /// as soon as the loop runs out of queued work, at the latest at the drain
+    /// marker or after [`APPEND_BATCH_LIMIT`] of them.
     async fn bridge_event_loop(self: Arc<Self>, mut events: mpsc::UnboundedReceiver<BridgeEvent>) {
-        while let Some(event) = events.recv().await {
+        let mut pending: Vec<(String, Value)> = Vec::new();
+        loop {
+            let event = match events.try_recv() {
+                Ok(event) => event,
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    // Nothing else is waiting: store what the burst produced
+                    // before parking on the channel, so a chat is never more
+                    // than one idle moment away from being on disk.
+                    self.flush_pending_events(&mut pending).await;
+                    match events.recv().await {
+                        Some(event) => event,
+                        None => break,
+                    }
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => break,
+            };
             match event {
                 BridgeEvent::Notification {
                     harness,
                     method,
                     params,
-                } => self.on_bridge_notification(&harness, &method, params).await,
+                } => {
+                    if let Some(event) =
+                        self.on_bridge_notification(&harness, &method, params).await
+                    {
+                        pending.push(event);
+                        if pending.len() >= APPEND_BATCH_LIMIT {
+                            self.flush_pending_events(&mut pending).await;
+                        }
+                    }
+                }
                 BridgeEvent::Request {
                     harness,
                     id,
                     method,
                     params,
                 } => self.on_bridge_request(&harness, id, &method, params).await,
-                BridgeEvent::Drained { done } => {
-                    let _ = done.send(());
+                BridgeEvent::Drained { ack } => {
+                    // Whoever waits for this marker reads the transcript, the
+                    // run state, or both: everything queued before it is now
+                    // handled *and* committed.
+                    self.flush_pending_events(&mut pending).await;
+                    let _ = ack.send(());
                 }
-                BridgeEvent::Exited { harness } => {
+                BridgeEvent::Exited {
+                    harness,
+                    generation,
+                } => {
                     log::warn!("[agent-host] {harness} bridge exited");
+                    // A replacement bridge may already be running and serving
+                    // sessions: only the process that actually died is
+                    // forgotten, and only the sessions it was serving. The
+                    // rest keep working instead of silently losing the agent's
+                    // context on their next prompt.
                     let mut bridges = self.bridges.lock().await;
                     if bridges
                         .get(&harness)
-                        .is_some_and(|bridge| !bridge.is_alive())
+                        .is_some_and(|bridge| bridge.generation() == generation)
                     {
                         bridges.remove(&harness);
                     }
                     drop(bridges);
                     let mut sessions = self.sessions.lock().await;
-                    sessions.retain(|_, runtime| runtime.harness != harness);
+                    sessions.retain(|_, runtime| !runtime.served_by(&harness, generation));
                 }
             }
+        }
+        self.flush_pending_events(&mut pending).await;
+    }
+
+    /// Commit the session updates a burst of events produced. Consecutive
+    /// events of one chat go in one transaction; the order they were handled in
+    /// is the order the transcript keeps.
+    async fn flush_pending_events(&self, pending: &mut Vec<(String, Value)>) {
+        for (session_id, payloads) in Self::group_events_by_session(std::mem::take(pending)) {
+            if let Err(error) = self.store.append_events(&session_id, &payloads).await {
+                log::warn!(
+                    "[agent-host] failed to persist {} update(s) of session {session_id}: {error}",
+                    payloads.len()
+                );
+            }
+        }
+    }
+
+    /// Runs of *consecutive* events belonging to the same chat. Two chats
+    /// streaming at once interleave, and merging across the interleaving would
+    /// reorder the log, so only neighbours are merged.
+    fn group_events_by_session(events: Vec<(String, Value)>) -> Vec<(String, Vec<Value>)> {
+        let mut grouped: Vec<(String, Vec<Value>)> = Vec::new();
+        for (session_id, payload) in events {
+            match grouped.last_mut() {
+                Some((current, payloads)) if *current == session_id => payloads.push(payload),
+                _ => grouped.push((session_id, vec![payload])),
+            }
+        }
+        grouped
+    }
+
+    /// Wait until the bridge event loop has handled everything that was
+    /// already queued, and has stored it. A `session/load` replays the whole
+    /// transcript as notifications into that queue and only then answers; the
+    /// replay is swallowed because the session is still `loading`, so the
+    /// session must not become live until the loop has actually reached the
+    /// marker behind it — otherwise the tail of the replay is persisted a
+    /// second time. It is also how a caller that is about to read the
+    /// transcript, or a turn's run state, knows the queue holds nothing about
+    /// it any more.
+    ///
+    /// The queue is shared by every bridge, so this waits for other harnesses'
+    /// events too — bounded by what the loop does per event, which is stamping
+    /// and forwarding, not a database round trip.
+    pub(super) async fn drain_bridge_events(&self) {
+        let (ack, drained) = oneshot::channel();
+        if self.events_tx.send(BridgeEvent::Drained { ack }).is_err() {
+            return;
+        }
+        if tokio::time::timeout(EVENT_DRAIN_TIMEOUT, drained)
+            .await
+            .is_err()
+        {
+            log::warn!(
+                "[agent-host] bridge events still backlogged after {} seconds",
+                EVENT_DRAIN_TIMEOUT.as_secs()
+            );
         }
     }
 
@@ -649,26 +857,32 @@ impl Inner {
             .map(|(id, _)| id.clone())
     }
 
-    async fn runtime_route(&self, session_id: &str) -> Option<(String, String)> {
+    async fn runtime_route(&self, session_id: &str) -> Option<(String, String, u64)> {
         let sessions = self.sessions.lock().await;
-        sessions
-            .get(session_id)
-            .map(|runtime| (runtime.harness.clone(), runtime.bridge_session_id.clone()))
+        sessions.get(session_id).and_then(SessionRuntime::route)
     }
 
-    async fn on_bridge_notification(&self, harness: &str, method: &str, mut params: Value) {
+    /// Handle one notification and report the update the transcript has to
+    /// keep, for the loop to commit with the rest of the burst. `None` when
+    /// there is nothing to store: a notification that is not a session update,
+    /// one of a session nobody is watching, or a replay of history the session
+    /// already has.
+    async fn on_bridge_notification(
+        &self,
+        harness: &str,
+        method: &str,
+        mut params: Value,
+    ) -> Option<(String, Value)> {
         if method != "session/update" {
             self.notify_frontend(method, params);
-            return;
+            return None;
         }
-        let Some(bridge_session_id) = protocol::session_id(&params) else {
-            return;
-        };
+        let bridge_session_id = protocol::session_id(&params)?;
         let Some(session_id) = self.host_session_for(harness, &bridge_session_id).await else {
             // Probe sessions and history replays we asked for are not
             // surfaced to the renderer; a naming session's reply is kept.
             self.capture_naming_reply(harness, &bridge_session_id, &params);
-            return;
+            return None;
         };
         let mut persist = false;
         let mut reconfigured: Option<(Value, Selection)> = None;
@@ -676,7 +890,7 @@ impl Inner {
             let mut sessions = self.sessions.lock().await;
             if let Some(runtime) = sessions.get_mut(&session_id) {
                 if runtime.loading {
-                    return;
+                    return None;
                 }
                 persist = true;
                 if let Some(run) = runtime.run.as_mut() {
@@ -699,13 +913,14 @@ impl Inner {
                 .await;
         }
         params["sessionId"] = json!(session_id);
-        if persist {
+        let stored = if persist {
             // A harness title is at best the chat's first prompt echoed back
             // (Claude Code's `summary` falls back to it). It may name a chat
             // nothing has named yet, but must not replace the host's title in
-            // the event log or on screen.
+            // the event log or on screen. It is a session-list field, not a log
+            // entry, and one arrives per chat rather than per chunk.
             if let Some(title) = Self::agent_title(&params).map(str::to_string) {
-                let stored = self
+                let named = self
                     .store
                     .set_title_if_untitled(&session_id, &title)
                     .await
@@ -713,17 +928,18 @@ impl Inner {
                         log::warn!("[agent-host] failed to store the agent's title: {error}");
                         false
                     });
-                if !stored {
+                if !named {
                     if let Some(update) = params.get_mut("update").and_then(Value::as_object_mut) {
                         update.remove("title");
                     }
                 }
             }
-            if let Err(error) = self.store.append_event(&session_id, &params).await {
-                log::warn!("[agent-host] failed to persist session update: {error}");
-            }
-        }
+            Some((session_id, params.clone()))
+        } else {
+            None
+        };
         self.notify_frontend("session/update", params);
+        stored
     }
 
     /// The option list a `config_option_update` carries, as the bridge sent
@@ -800,6 +1016,7 @@ impl Inner {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
+        run.saw_update = true;
         if kind == "agent_message_chunk" {
             run.saw_agent_message = true;
             if let Some(text) = update
@@ -1430,15 +1647,19 @@ impl Inner {
             last_snippet: None,
             snapshot: Some(snapshot.clone()),
         };
-        self.store
-            .insert_session(&record)
-            .await
-            .map_err(protocol::internal)?;
+        if let Err(error) = self.store.insert_session(&record).await {
+            // There is no chat to reach it through, so the session the bridge
+            // just opened for us is unreachable: hand it back instead of
+            // leaving the agent holding it until the process exits.
+            bridge.close_session(&bridge_session_id).await;
+            return Err(protocol::internal(error));
+        }
         self.sessions.lock().await.insert(
             session_id.clone(),
             SessionRuntime {
                 harness: harness_id.clone(),
                 bridge_session_id,
+                generation: bridge.generation(),
                 loading: false,
                 run: None,
                 steer_queue: VecDeque::new(),
@@ -1460,8 +1681,9 @@ impl Inner {
 
     /// Start a fresh session on `spec`'s bridge in `cwd` with the configured
     /// agent mode applied, opened on a model through `open_meta` where the
-    /// harness runs one only that way. Returns the bridge, its session id and
-    /// the snapshot the bridge answered with.
+    /// harness runs one only that way. Returns the bridge process that
+    /// accepted it, the bridge's session id and the snapshot the bridge
+    /// answered with.
     async fn open_bridge_session(
         &self,
         spec: &HarnessSpec,
@@ -1512,12 +1734,19 @@ impl Inner {
     }
 
     /// The live bridge behind a session, when it is already attached and the
-    /// bridge process is still running. Never attaches.
+    /// bridge process it was attached to is still the one running. Never
+    /// attaches.
     async fn attached_route(&self, session_id: &str) -> Option<(Arc<Bridge>, String)> {
         // Never hold the session map while waiting for the bridge map: the
         // bridge event loop needs the session map for every update it routes.
-        let (harness, bridge_session_id) = self.runtime_route(session_id).await?;
+        let (harness, bridge_session_id, generation) = self.runtime_route(session_id).await?;
         let bridge = self.live_bridge(&harness).await?;
+        // A replacement bridge is running: it never accepted this session id,
+        // so the session has to be attached again instead of being routed at a
+        // process that would answer "unknown session".
+        if bridge.generation() != generation {
+            return None;
+        }
         Some((bridge, bridge_session_id))
     }
 
@@ -1528,17 +1757,11 @@ impl Inner {
         let spec = harness::harness(&record.harness)
             .ok_or_else(|| invalid_params(format!("Unknown harness {}", record.harness)))?;
         let bridge = self.ensure_bridge(&record.harness).await?;
-        let mcp_servers = self.mcp_servers(&Value::Null).await;
-        // A model the bridge runs only when a session is opened on it.
-        let open_meta = record
-            .model_id
-            .as_deref()
-            .and_then(|model_id| harness::session_model_meta(spec, model_id));
         let stored_bridge_id = record
             .bridge_session_id
             .clone()
             .unwrap_or_else(|| record.id.clone());
-        let mut snapshot = record
+        let snapshot = record
             .snapshot
             .clone()
             .unwrap_or_else(|| Self::snapshot_from(&Value::Null));
@@ -1550,6 +1773,7 @@ impl Inner {
             SessionRuntime {
                 harness: record.harness.clone(),
                 bridge_session_id: stored_bridge_id.clone(),
+                generation: bridge.generation(),
                 loading: true,
                 run: None,
                 steer_queue: VecDeque::new(),
@@ -1558,11 +1782,61 @@ impl Inner {
                 substitutions: Vec::new(),
             },
         );
+        let attached = self
+            .attach_registered_session(record, spec, &bridge, stored_bridge_id, snapshot)
+            .await;
+        if attached.is_err() {
+            // The bridge accepted nothing: leave no runtime behind, or every
+            // later call would route at a bridge session it never opened
+            // instead of attaching again once the cause is fixed.
+            self.sessions.lock().await.remove(&record.id);
+        }
+        attached
+    }
 
+    /// The bridge session an attach is allowed to resume: the one the record
+    /// carries, which is either the id the bridge itself gave us or — for a chat
+    /// imported from another tool — the agent's own session id.
+    ///
+    /// `None` means "open a fresh one". That is what
+    /// [`Inner::release_bridge_session`] leaves behind: a bridge session runs in
+    /// the folder it was created in, so a chat that moved folders must not
+    /// resume it, and every bridge that supports `loadSession` but not
+    /// `session/close` would happily resume it forever. Falling back to the
+    /// host's own session id here (the record's `id`) would do exactly that for
+    /// an imported chat, whose two ids are the same.
+    fn resumable_bridge_session(record: &SessionRecord) -> Option<&str> {
+        record
+            .bridge_session_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+    }
+
+    /// The bridge round trips of an attach, for a session already registered
+    /// as loading: resume the stored bridge session (or open a fresh one),
+    /// apply the mode and model, and only then make the runtime routable.
+    async fn attach_registered_session(
+        self: &Arc<Self>,
+        record: &SessionRecord,
+        spec: &HarnessSpec,
+        bridge: &Arc<Bridge>,
+        stored_bridge_id: String,
+        mut snapshot: Value,
+    ) -> Result<(Arc<Bridge>, String), Value> {
+        let mcp_servers = self.mcp_servers(&Value::Null).await;
         let mut bridge_session_id = stored_bridge_id.clone();
         let mut resumed = false;
-        if bridge.supports_load_session() {
-            let mut load = json!({ "sessionId": stored_bridge_id, "cwd": record.cwd, "mcpServers": mcp_servers });
+        // A model the bridge runs only when a session is opened on it.
+        let open_meta = record
+            .model_id
+            .as_deref()
+            .and_then(|model_id| harness::session_model_meta(spec, model_id));
+        if let Some(resume_id) = Self::resumable_bridge_session(record)
+            .filter(|_| bridge.supports_load_session())
+            .map(str::to_string)
+        {
+            let mut load =
+                json!({ "sessionId": resume_id, "cwd": record.cwd, "mcpServers": mcp_servers });
             if let Some(meta) = &open_meta {
                 load["_meta"] = meta.clone();
             }
@@ -1596,13 +1870,13 @@ impl Inner {
             }
             if let Err(error) = self
                 .store
-                .set_bridge_session_id(&record.id, &bridge_session_id)
+                .set_bridge_session_id(&record.id, Some(bridge_session_id.as_str()))
                 .await
             {
                 log::warn!("[agent-host] failed to record bridge session id: {error}");
             }
         }
-        self.apply_mode(&bridge, spec, &bridge_session_id).await;
+        self.apply_mode(bridge, spec, &bridge_session_id).await;
         // Mode, then model, then the two knobs that belong to the model — the
         // whole selection again, every time the chat wakes. No bridge keeps it
         // across a resume: claude re-seeds the effort from the operator's
@@ -1618,7 +1892,7 @@ impl Inner {
         let substitutions = self
             .apply_to_session(
                 &record.harness,
-                &bridge,
+                bridge,
                 &bridge_session_id,
                 &mut snapshot,
                 &wanted,
@@ -1627,6 +1901,10 @@ impl Inner {
             .await;
         let has_model_option = Self::has_model_option(&snapshot);
         let _ = self.store.set_snapshot(&record.id, &snapshot).await;
+        // Everything the bridge replayed for this session is already in the
+        // event queue; let the loop swallow it all before the session is live,
+        // or its tail would be appended to the transcript a second time.
+        self.drain_bridge_events().await;
         {
             let mut sessions = self.sessions.lock().await;
             if let Some(runtime) = sessions.get_mut(&record.id) {
@@ -1637,7 +1915,7 @@ impl Inner {
                 runtime.substitutions = substitutions;
             }
         }
-        Ok((bridge, bridge_session_id))
+        Ok((Arc::clone(bridge), bridge_session_id))
     }
 
     async fn load_session(self: &Arc<Self>, params: Value) -> Result<Value, Value> {
@@ -1648,6 +1926,10 @@ impl Inner {
             if !cwd.is_empty() && cwd != "~" && cwd != record.cwd {
                 let _ = self.store.set_cwd(&session_id, cwd).await;
                 record.cwd = cwd.to_string();
+                // The bridge session it may still be attached to was created
+                // in the old folder and cannot move; stop using it so the
+                // background attach below opens one in the new folder.
+                self.release_bridge_session(&session_id).await;
             }
         }
         // The transcript is ours: replay it from the local log and answer
@@ -1655,6 +1937,11 @@ impl Inner {
         // bridge, resuming its own context) is only needed for the next
         // prompt, so it happens in the background — the user may just read
         // the chat and never send anything.
+        //
+        // The log is read, so the event loop's own buffer has to be committed
+        // first: a chat that is streaming right now has its last chunks there,
+        // and replaying without them would show a transcript missing its tail.
+        self.drain_bridge_events().await;
         let events = self
             .store
             .list_event_payloads(&session_id)
@@ -1728,7 +2015,7 @@ impl Inner {
             );
             return;
         }
-        let Some((harness, _)) = self.runtime_route(&record.id).await else {
+        let Some((harness, _, _)) = self.runtime_route(&record.id).await else {
             return;
         };
         let Some((snapshot, has_model_option, substitutions)) =
@@ -1816,13 +2103,86 @@ impl Inner {
     async fn delete_session(&self, params: Value) -> Result<Value, Value> {
         let session_id =
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
+        // Tell the agent first: forgetting the runtime does not stop the turn,
+        // and a bridge session nobody will ever talk to again keeps its agent
+        // context (and whatever it is doing) alive until the process exits.
+        let attached = self.attached_route(&session_id).await;
         self.sessions.lock().await.remove(&session_id);
         self.attach_locks.lock().await.remove(&session_id);
+        if let Some((bridge, bridge_session_id)) = attached {
+            bridge.notify(
+                "session/cancel",
+                json!({ "sessionId": bridge_session_id.clone() }),
+            );
+            Self::close_in_background(bridge, bridge_session_id);
+        }
         self.store
             .delete_session(&session_id)
             .await
             .map_err(protocol::internal)?;
         Ok(json!({}))
+    }
+
+    /// Cancel and hand back a bridge session nobody will talk to again, so the
+    /// agent stops holding its context and whatever it was doing. Best effort:
+    /// a bridge without `session/close` keeps it until the process exits.
+    async fn let_go_of(&self, runtime: &SessionRuntime) {
+        let Some(bridge) = self.live_bridge(&runtime.harness).await else {
+            return;
+        };
+        if bridge.generation() != runtime.generation {
+            return;
+        }
+        bridge.notify(
+            "session/cancel",
+            json!({ "sessionId": runtime.bridge_session_id.clone() }),
+        );
+        Self::close_in_background(bridge, runtime.bridge_session_id.clone());
+    }
+
+    /// Hand a bridge session back without waiting for the answer. The callers
+    /// are on the renderer's request path — deleting a chat, moving one to
+    /// another folder — and the host has already stopped using the session:
+    /// nothing the bridge could say changes what happens next, so a bridge that
+    /// takes the request and goes quiet must not delay the user's action.
+    fn close_in_background(bridge: Arc<Bridge>, bridge_session_id: String) {
+        tokio::spawn(async move {
+            bridge.close_session(&bridge_session_id).await;
+        });
+    }
+
+    /// Stop using a session's bridge session, so the next prompt attaches a
+    /// fresh one. A bridge session's working directory is fixed when the bridge
+    /// creates it, so this is the only way a chat that moved folders runs in
+    /// the new one. Refuses (returns `false`) while a turn is running or an
+    /// attach is in flight: dropping the runtime then would strand that turn's
+    /// updates, which `host_session_for` routes through it.
+    ///
+    /// The stored id is cleared too, not just the runtime. Without that the next
+    /// attach reads the id straight back out of the row and resumes the same
+    /// bridge session — which, for a bridge that supports `loadSession` but not
+    /// `session/close` (every bridge shipped today), is still alive in the old
+    /// folder, so the chat would keep running there.
+    pub async fn release_bridge_session(&self, session_id: &str) -> bool {
+        let released = {
+            let mut sessions = self.sessions.lock().await;
+            let busy = sessions
+                .get(session_id)
+                .is_some_and(|runtime| runtime.loading || runtime.run.is_some());
+            if busy {
+                None
+            } else {
+                sessions.remove(session_id)
+            }
+        };
+        let Some(runtime) = released else {
+            return false;
+        };
+        self.let_go_of(&runtime).await;
+        if let Err(error) = self.store.set_bridge_session_id(session_id, None).await {
+            log::warn!("[agent-host] failed to forget the bridge session of {session_id}: {error}");
+        }
+        true
     }
 
     /// The `session/new _meta` a fork opens on: everything about the chat it
@@ -2460,7 +2820,7 @@ impl Inner {
             return Err(started());
         }
         let mcp_servers = self.mcp_servers(&Value::Null).await;
-        let (_bridge, bridge_session_id, snapshot) = self
+        let (bridge, bridge_session_id, snapshot) = self
             .open_bridge_session(spec, &record.cwd, mcp_servers, None)
             .await?;
         let model_id = Self::current_model(&snapshot);
@@ -2478,6 +2838,9 @@ impl Inner {
             .await
             .map_err(protocol::internal)?
         {
+            // The move was refused: the session we just opened on the new
+            // harness is never going to be used, so hand it back.
+            bridge.close_session(&bridge_session_id).await;
             return Err(started());
         }
         // The effort and the fast toggle stay behind with the harness that
@@ -2487,12 +2850,19 @@ impl Inner {
         if let Err(error) = self.store.set_run_settings(session_id, None, None).await {
             log::warn!("[agent-host] failed to clear the moved session's run settings: {error}");
         }
+        // The session it used to be is nobody's any more: cancel and close it
+        // so the old agent stops holding its context.
+        let previously = self.sessions.lock().await.remove(session_id);
+        if let Some(previously) = previously {
+            self.let_go_of(&previously).await;
+        }
         let has_model_option = Self::has_model_option(&snapshot);
         self.sessions.lock().await.insert(
             session_id.to_string(),
             SessionRuntime {
                 harness: harness_id.to_string(),
                 bridge_session_id,
+                generation: bridge.generation(),
                 loading: false,
                 run: None,
                 steer_queue: VecDeque::new(),
@@ -2546,6 +2916,9 @@ impl Inner {
     /// picks up after the turn it was steered into) is marked `steer` and
     /// echoed live once: the renderer already shows the message and needs
     /// the echo as the boundary between the previous reply and this one.
+    ///
+    /// Returns what it takes to undo these writes, for the case where the
+    /// bridge rejects the prompt outright.
     async fn record_user_prompt(
         &self,
         session_id: &str,
@@ -2553,13 +2926,24 @@ impl Inner {
         meta: &Value,
         ids: &TurnIds,
         steer: bool,
-    ) {
+    ) -> Option<RecordedPrompt> {
         let events = Self::user_prompt_events(session_id, prompt, meta, ids, &now_iso(), steer);
-        for event in &events {
-            if let Err(error) = self.store.append_event(session_id, event).await {
-                log::warn!("[agent-host] failed to persist prompt: {error}");
+        let undo = match self.store.touch_undo(session_id).await {
+            Ok(undo) => undo,
+            Err(error) => {
+                log::warn!("[agent-host] failed to read session {session_id}: {error}");
+                None
             }
-        }
+        };
+        // One commit for the whole prompt: its blocks are one message and
+        // half of them in the log is never a state anyone wants to read.
+        let event_ids = match self.store.append_events(session_id, &events).await {
+            Ok(ids) => ids,
+            Err(error) => {
+                log::warn!("[agent-host] failed to persist prompt: {error}");
+                Vec::new()
+            }
+        };
         if steer {
             if let Some(mut echo) = events.into_iter().next() {
                 echo["update"]["messageId"] = json!(ids.message_id);
@@ -2571,6 +2955,70 @@ impl Inner {
         if snippet.is_none() {
             let _ = self.store.touch(session_id, 0, None).await;
         }
+        undo.map(|undo| RecordedPrompt {
+            run_id: ids.run_id.clone(),
+            event_ids,
+            undo,
+        })
+    }
+
+    /// Take a prompt the bridge rejected back out of the log and off the
+    /// message count. Only when the turn produced nothing at all: once any
+    /// `session/update` has arrived the turn happened, whatever `session/prompt`
+    /// answered with, and the transcript has to keep it.
+    ///
+    /// The renderer's queue law re-dispatches a message whose send failed, so
+    /// leaving it behind is what turns one rejected send into two, three, …
+    /// copies of the same message with no replies — and a `message_count` that
+    /// refuses to move the still-unanswered chat to another agent.
+    ///
+    /// The decision fails *closed*: without proof that this very turn produced
+    /// nothing, the prompt stays. Leaving an unanswered message behind costs a
+    /// duplicate the user can see and delete; withdrawing a message whose reply
+    /// was persisted leaves a transcript holding an answer to nothing and loses
+    /// what the user typed.
+    async fn discard_rejected_prompt(&self, session_id: &str, recorded: Option<RecordedPrompt>) {
+        let Some(recorded) = recorded else {
+            return;
+        };
+        // The evidence lives in the bridge event queue: an update the bridge
+        // emitted before it answered with an error is only stamped onto the run
+        // when the event loop gets to it. Wait for the loop to catch up, or a
+        // chunk that is about to be persisted reads as "nothing happened".
+        self.drain_bridge_events().await;
+        let produced_nothing = {
+            let sessions = self.sessions.lock().await;
+            Self::turn_produced_nothing(sessions.get(session_id), &recorded.run_id)
+        };
+        if !produced_nothing {
+            return;
+        }
+        if let Err(error) = self
+            .store
+            .discard_prompt(session_id, &recorded.event_ids, &recorded.undo)
+            .await
+        {
+            log::warn!(
+                "[agent-host] failed to withdraw the rejected prompt of session {session_id}: {error}"
+            );
+        }
+    }
+
+    /// Whether `runtime` positively says that turn `run_id` produced nothing:
+    /// the session is still there, the turn it is running is this one, and no
+    /// `session/update` of it has been seen.
+    ///
+    /// Anything else means "it happened, keep the prompt". A runtime that is
+    /// gone is the case that matters: when a bridge dies mid-turn the outstanding
+    /// `session/prompt` is failed and the `Exited` that follows removes the
+    /// runtime, so the state that would prove the reply exists is exactly the
+    /// state that has been thrown away — while the reply's chunks are already in
+    /// the transcript. A `run` belonging to another turn says nothing about this
+    /// one either.
+    fn turn_produced_nothing(runtime: Option<&SessionRuntime>, run_id: &str) -> bool {
+        runtime
+            .and_then(|runtime| runtime.run.as_ref())
+            .is_some_and(|run| run.run_id == run_id && !run.saw_update)
     }
 
     fn user_prompt_events(
@@ -2613,6 +3061,19 @@ impl Inner {
 
     async fn prompt(self: &Arc<Self>, params: Value) -> Result<Value, Value> {
         self.start_turn(params, TurnIds::new(), false).await
+    }
+
+    /// The update that tells the renderer a turn has ended when no request of
+    /// its own will carry the answer. `_meta.activeRunId == null` is what
+    /// `acpSessionInfoUpdate.ts` settles a chat's active run on.
+    fn run_settled_update(session_id: &str) -> Value {
+        json!({
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "session_info_update",
+                "_meta": { "activeRunId": Value::Null },
+            }
+        })
     }
 
     /// Run one user turn and then every message steered into it, in order.
@@ -2663,12 +3124,16 @@ impl Inner {
                 }
             }
         };
-        self.record_user_prompt(&session_id, &prompt, &meta, &ids, steer)
+        let recorded = self
+            .record_user_prompt(&session_id, &prompt, &meta, &ids, steer)
             .await;
         self.name_untitled_session(&record, &prompt);
         let mut result = self
             .run_prompt(&bridge, &session_id, &bridge_session_id, prompt, meta)
             .await;
+        if result.is_err() {
+            self.discard_rejected_prompt(&session_id, recorded).await;
+        }
         // Steering while the turn ran: send the queued messages one after the
         // other so the agent sees them in order.
         loop {
@@ -2677,6 +3142,21 @@ impl Inner {
                 let Some(runtime) = sessions.get_mut(&session_id) else {
                     break;
                 };
+                // The turn failed (the bridge exited, the prompt was
+                // rejected): the queued steers were never sent, so they are
+                // dropped rather than persisted and echoed as sent messages
+                // that will never get a reply — and the caller keeps the real
+                // error instead of the last steer's.
+                if result.is_err() {
+                    let dropped = runtime.drop_queued_steers();
+                    runtime.run = None;
+                    if dropped > 0 {
+                        log::warn!(
+                            "[agent-host] session {session_id} turn failed: dropped {dropped} queued steer(s)"
+                        );
+                    }
+                    break;
+                }
                 let Some(queued) = runtime.steer_queue.pop_front() else {
                     runtime.run = None;
                     break;
@@ -2684,7 +3164,8 @@ impl Inner {
                 runtime.run = Some(RunState::start(&queued.ids));
                 queued
             };
-            self.record_user_prompt(&session_id, &queued.prompt, &queued.meta, &queued.ids, true)
+            let recorded = self
+                .record_user_prompt(&session_id, &queued.prompt, &queued.meta, &queued.ids, true)
                 .await;
             result = self
                 .run_prompt(
@@ -2695,6 +3176,9 @@ impl Inner {
                     queued.meta,
                 )
                 .await;
+            if result.is_err() {
+                self.discard_rejected_prompt(&session_id, recorded).await;
+            }
         }
         result
     }
@@ -2794,10 +3278,20 @@ impl Inner {
             self.attach_session(&record).await?;
             let host = Arc::clone(self);
             let turn = ids.clone();
+            let settle_id = session_id.clone();
             tokio::spawn(async move {
-                let params = json!({ "sessionId": session_id, "prompt": prompt, "_meta": meta });
+                let params =
+                    json!({ "sessionId": settle_id.clone(), "prompt": prompt, "_meta": meta });
                 if let Err(error) = host.start_turn(params, turn, true).await {
                     log::warn!("[agent-host] steer prompt failed: {}", error_text(&error));
+                }
+                // Nobody is awaiting this turn's answer — the renderer got its
+                // ids from the `session/steer` reply and nothing else will ever
+                // tell it the turn is over. Only settle when the session is
+                // genuinely idle: a steer that raced a prompt was queued behind
+                // it and that turn is still running.
+                if host.active_run_id(&settle_id).await.is_none() {
+                    host.notify_frontend("session/update", Self::run_settled_update(&settle_id));
                 }
             });
         }
@@ -3089,17 +3583,6 @@ impl Inner {
                 }),
             )
             .await
-    }
-
-    /// Wait until the bridge event loop has handled every event queued so
-    /// far. A bridge's answer to a request skips that queue, so the updates
-    /// sent before it may still be waiting there when it arrives. Never call
-    /// this from the event loop itself.
-    async fn drain_bridge_events(&self) {
-        let (done, drained) = oneshot::channel();
-        if self.events_tx.send(BridgeEvent::Drained { done }).is_ok() {
-            let _ = drained.await;
-        }
     }
 
     /// Collect a naming session's reply text (see `summarize_title`).
@@ -4648,6 +5131,7 @@ mod tests {
         SessionRuntime {
             harness: "claude-acp".to_string(),
             bridge_session_id: bridge_session_id.to_string(),
+            generation: 0,
             loading: false,
             run: None,
             steer_queue: VecDeque::new(),
@@ -4705,6 +5189,206 @@ mod tests {
             "update": { "sessionUpdate": "agent_message_chunk", "title": "no" }
         });
         assert_eq!(Inner::agent_title(&chunk), None);
+    }
+
+    fn runtime(harness: &str, bridge_session_id: &str, generation: u64) -> SessionRuntime {
+        SessionRuntime {
+            harness: harness.to_string(),
+            bridge_session_id: bridge_session_id.to_string(),
+            generation,
+            loading: false,
+            run: None,
+            steer_queue: VecDeque::new(),
+            snapshot: Value::Null,
+            has_model_option: false,
+            substitutions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_chat_that_let_go_of_its_bridge_session_does_not_resume_it() {
+        let mut record = SessionRecord {
+            id: "session-1".to_string(),
+            harness: "claude-acp".to_string(),
+            bridge_session_id: Some("bridge-1".to_string()),
+            cwd: "C:\\work".to_string(),
+            title: None,
+            user_set_name: false,
+            project_id: None,
+            persona_id: None,
+            model_id: None,
+            reasoning_effort: None,
+            fast_mode: None,
+            legacy_model_id: None,
+            hidden: false,
+            created_at: "2026-09-11T00:00:00.000Z".to_string(),
+            updated_at: "2026-09-11T00:00:00.000Z".to_string(),
+            last_message_at: None,
+            archived_at: None,
+            message_count: 0,
+            last_snippet: None,
+            snapshot: None,
+        };
+        assert_eq!(
+            Inner::resumable_bridge_session(&record),
+            Some("bridge-1"),
+            "an attach resumes the bridge session the row names"
+        );
+
+        // What `release_bridge_session` leaves behind after a folder move: the
+        // bridge session it ran in is gone for good, so the attach has to open a
+        // new one in the new folder instead of loading the old one — never the
+        // chat's own id, which for an imported chat *is* the old bridge session.
+        record.bridge_session_id = None;
+        assert_eq!(Inner::resumable_bridge_session(&record), None);
+        record.bridge_session_id = Some(String::new());
+        assert_eq!(Inner::resumable_bridge_session(&record), None);
+    }
+
+    #[test]
+    fn a_session_still_being_attached_has_no_route() {
+        let mut loading = runtime("claude-acp", "stored-id", 7);
+        loading.loading = true;
+        assert_eq!(loading.route(), None);
+        loading.loading = false;
+        assert_eq!(
+            loading.route(),
+            Some(("claude-acp".to_string(), "stored-id".to_string(), 7))
+        );
+    }
+
+    #[test]
+    fn only_the_sessions_of_the_bridge_that_died_are_forgotten() {
+        let old = runtime("claude-acp", "a", 1);
+        let replacement = runtime("claude-acp", "b", 2);
+        let other_harness = runtime("codex-acp", "c", 1);
+
+        // The crashed process is generation 1: its own session goes, the one
+        // already re-attached to the replacement stays, and a same-generation
+        // session of another harness is none of its business.
+        assert!(old.served_by("claude-acp", 1));
+        assert!(!replacement.served_by("claude-acp", 1));
+        assert!(!other_harness.served_by("claude-acp", 1));
+    }
+
+    #[test]
+    fn an_answer_goes_to_the_socket_that_asked_and_nowhere_else() {
+        let (socket_a, mut heard_a) = mpsc::unbounded_channel::<String>();
+        let (_socket_b, mut heard_b) = mpsc::unbounded_channel::<String>();
+        Inner::reply_on(
+            &socket_a,
+            "session/new",
+            protocol::response(json!(0), json!({ "sessionId": "s1" })),
+        );
+        assert!(heard_a.try_recv().is_ok());
+        assert!(heard_b.try_recv().is_err());
+
+        // The renderer gave up on that socket: its answer is dropped rather
+        // than delivered to the next connection, where id 0 is another call.
+        drop(heard_a);
+        Inner::reply_on(
+            &socket_a,
+            "session/new",
+            protocol::response(json!(0), json!({ "sessionId": "s2" })),
+        );
+        assert!(heard_b.try_recv().is_err());
+    }
+
+    #[test]
+    fn stopping_a_turn_forgets_the_messages_steered_into_it() {
+        let mut live = runtime("claude-acp", "a", 1);
+        live.run = Some(RunState::start(&ids()));
+        for _ in 0..2 {
+            live.steer_queue.push_back(QueuedPrompt {
+                prompt: json!([{ "type": "text", "text": "also this" }]),
+                meta: json!({}),
+                ids: TurnIds::new(),
+            });
+        }
+
+        assert_eq!(live.drop_queued_steers(), 2);
+        assert!(live.steer_queue.is_empty());
+        // Cancelling does not end the turn itself: its `session/prompt` is
+        // still in flight and its run state still stamps the updates arriving.
+        assert!(live.run.is_some());
+        assert_eq!(live.drop_queued_steers(), 0);
+    }
+
+    #[test]
+    fn a_burst_of_updates_is_stored_per_chat_without_reordering_the_log() {
+        let chunk = |text: &str| json!({ "update": { "content": { "text": text } } });
+        let grouped = Inner::group_events_by_session(vec![
+            ("a".to_string(), chunk("a1")),
+            ("a".to_string(), chunk("a2")),
+            // Another chat streaming at the same time: merging across it would
+            // put "a3" in the log before "b1", which is not the order the
+            // updates arrived in.
+            ("b".to_string(), chunk("b1")),
+            ("a".to_string(), chunk("a3")),
+        ]);
+
+        let shape: Vec<(&str, Vec<&str>)> = grouped
+            .iter()
+            .map(|(session_id, payloads)| {
+                (
+                    session_id.as_str(),
+                    payloads
+                        .iter()
+                        .map(|payload| payload["update"]["content"]["text"].as_str().unwrap_or(""))
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("a", vec!["a1", "a2"]),
+                ("b", vec!["b1"]),
+                ("a", vec!["a3"])
+            ]
+        );
+        assert!(Inner::group_events_by_session(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn a_rejected_prompt_is_withdrawn_only_on_proof_that_its_turn_produced_nothing() {
+        let mut live = runtime("claude-acp", "a", 1);
+        live.run = Some(RunState::start(&ids()));
+
+        // The bridge answered the prompt with an error and sent nothing at all:
+        // the turn never happened, so the message comes back out of the log.
+        assert!(Inner::turn_produced_nothing(Some(&live), "run-1"));
+
+        // One update is enough to make it a turn that happened.
+        live.run.as_mut().expect("run").saw_update = true;
+        assert!(!Inner::turn_produced_nothing(Some(&live), "run-1"));
+
+        // The bridge died mid-turn: `fail_pending_on_exit` failed the prompt and
+        // the `Exited` behind it removed the runtime while the turn was still
+        // unwinding. The reply it streamed is in the transcript, so the absence
+        // of evidence must not be read as "nothing happened".
+        assert!(!Inner::turn_produced_nothing(None, "run-1"));
+
+        // Same for a runtime that is no longer running this turn, or is running
+        // the next one.
+        live.run = None;
+        assert!(!Inner::turn_produced_nothing(Some(&live), "run-1"));
+        live.run = Some(RunState::start(&TurnIds::new()));
+        assert!(!Inner::turn_produced_nothing(Some(&live), "run-1"));
+    }
+
+    #[test]
+    fn a_turn_nobody_awaits_reports_its_end_as_a_cleared_active_run() {
+        let update = Inner::run_settled_update("s1");
+        assert_eq!(update["sessionId"], "s1");
+        assert_eq!(update["update"]["sessionUpdate"], "session_info_update");
+        // `acpSessionInfoUpdate.ts` keys off `"activeRunId" in meta` and treats
+        // a non-string as null, so the key has to be present and explicitly
+        // null rather than omitted.
+        let meta = &update["update"]["_meta"];
+        assert!(meta
+            .as_object()
+            .is_some_and(|meta| meta.get("activeRunId").is_some_and(Value::is_null)));
     }
 
     #[test]

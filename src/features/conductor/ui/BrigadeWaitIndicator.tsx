@@ -1,6 +1,7 @@
 import { useMemo, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 
+import { isSessionRunning } from "@/features/chat/lib/sessionActivity";
 import { cn } from "@/shared/lib/cn";
 import type { ChatState } from "@/shared/types/chat";
 import { Button } from "@/shared/ui/button";
@@ -17,6 +18,8 @@ import {
 } from "../wavePoke";
 import { stopWaveByOperator } from "../waveStop";
 import { getWaveEngineState } from "../waveStore";
+import { isWaveLive } from "../waveVerdict";
+import type { WavePhase } from "../waveEngine";
 import { AgentTreeView } from "./AgentTreeView";
 import { stopOrchestratorSession } from "../orchestratorControls";
 
@@ -35,6 +38,28 @@ import { stopOrchestratorSession } from "../orchestratorControls";
  * from idle to running, and the line is idle-only), so local state would be a
  * guard that disappears exactly when it matters.
  */
+/**
+ * The line for a live wave with no working children, per phase.
+ *
+ * `running` is not here: a running wave with no working child is a wave whose
+ * steps are spawning, which is the one live phase that is genuinely about to
+ * have children to count.
+ */
+function waveWaitLabelKey(phase: WavePhase): string | null {
+  switch (phase) {
+    case "running":
+      return "conductor.wave.spawning";
+    case "digestPending":
+      return "conductor.wave.digestPending";
+    case "dispatchingDigest":
+      return "conductor.wave.dispatchingDigest";
+    case "awaitingVerdict":
+      return "conductor.wave.awaitingVerdict";
+    default:
+      return null;
+  }
+}
+
 export function BrigadeWaitIndicator({
   chatState,
   nodes,
@@ -68,19 +93,36 @@ export function BrigadeWaitIndicator({
     () => (sessionId ? isPokeInFlight(sessionId) : false),
     () => false,
   );
-  // The stop control (5b) targets THE WAVE, not one child: offered only while
-  // this session has a wave in `running` — past that, the workers are done
-  // and the loop is between the app and the conductor. Read at render time:
+  // The stop control (5b) targets THE WAVE, not one child, and it is offered
+  // for every live phase rather than only `running`. A wave waiting on a
+  // digest or a verdict holds this conductor's only wave slot — every later
+  // plan it makes is refused while that lasts — so those are exactly the
+  // states an operator needs a lever for. It is NOT conditioned on the
+  // conductor being idle: a conductor mid-answer while five workers edit the
+  // folder is exactly when an operator reaches for stop. Read at render time:
   // the wave store has no subscriptions, but everything that changes this
   // answer also patches the graph or the chat store, which re-renders here.
-  const runningWaveId = sessionId
+  const liveWave = sessionId
     ? getWaveEngineState().waves.find(
-        (wave) =>
-          wave.conductorSessionId === sessionId && wave.phase === "running",
-      )?.waveId
+        (wave) => wave.conductorSessionId === sessionId && isWaveLive(wave),
+      )
     : undefined;
+  // A wave past `running` has no working children, so the count line above is
+  // hidden and this indicator used to render nothing at all — the one state
+  // where the loop can wedge was the one state with no controls in it.
+  //
+  // The line says what the wave is actually doing. One "waiting for the
+  // verdict" label for every live phase was wrong in two of them: during
+  // `spawning` the wave is still creating its children and during
+  // `digestPending` it is building the digest, neither of which is waiting on
+  // the conductor. And nothing is waited on while the conductor itself is
+  // streaming — that is the answer arriving.
+  const waveWaitLabel =
+    liveWave && !visible && !isSessionRunning(chatState)
+      ? waveWaitLabelKey(liveWave.phase)
+      : null;
 
-  if (!visible) return null;
+  if (!visible && !waveWaitLabel && !liveWave) return null;
 
   return (
     <div
@@ -94,16 +136,20 @@ export function BrigadeWaitIndicator({
         {/* The count is the disclosure. Every agent it is counting is one row
           below, at its own depth, and every row opens that agent's chat —
           which is what the line claiming they exist owes the operator. */}
-        <button
-          type="button"
-          data-testid="brigade-wait-toggle"
-          aria-expanded={treeOpen}
-          onClick={() => setTreeOpen((open) => !open)}
-          className="min-w-0 truncate text-left underline-offset-2 hover:text-foreground hover:underline"
-        >
-          {t("conductor.waitingOnChildren", { count: workingCount })}
-        </button>
-        {sessionId ? (
+        {visible ? (
+          <button
+            type="button"
+            data-testid="brigade-wait-toggle"
+            aria-expanded={treeOpen}
+            onClick={() => setTreeOpen((open) => !open)}
+            className="min-w-0 truncate text-left underline-offset-2 hover:text-foreground hover:underline"
+          >
+            {t("conductor.waitingOnChildren", { count: workingCount })}
+          </button>
+        ) : waveWaitLabel ? (
+          <span className="min-w-0 truncate">{t(waveWaitLabel)}</span>
+        ) : null}
+        {sessionId && visible ? (
           <Button
             type="button"
             variant="ghost"
@@ -118,7 +164,7 @@ export function BrigadeWaitIndicator({
               : t("conductor.poke.ask")}
           </Button>
         ) : null}
-        {sessionId && runningWaveId ? (
+        {sessionId && liveWave ? (
           <Button
             type="button"
             variant="ghost"
@@ -126,13 +172,13 @@ export function BrigadeWaitIndicator({
             destructive
             className="shrink-0"
             data-testid="brigade-stop-wave-button"
-            onClick={() => stopWaveByOperator(sessionId, runningWaveId)}
+            onClick={() => stopWaveByOperator(sessionId, liveWave.waveId)}
           >
             {t("conductor.wave.stop")}
           </Button>
         ) : null}
       </div>
-      {treeOpen && onOpenChild ? (
+      {visible && treeOpen && onOpenChild ? (
         <AgentTreeView
           forest={forest}
           className="mt-0.5"

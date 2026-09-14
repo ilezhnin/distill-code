@@ -1,17 +1,27 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { renderHook } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { setAutoArchiveAfter } from "@/features/settings/lib/autoArchivePreference";
-import { runAutoArchiveSweep } from "../useAutoArchiveSessions";
+import {
+  runAutoArchiveSweep,
+  shouldSweepOnVisibility,
+  useAutoArchiveSessions,
+} from "../useAutoArchiveSessions";
 
 const mocks = vi.hoisted(() => ({
   getSessionInfo: vi.fn(),
   loadAllSessions: vi.fn(),
+  sessionIdsWithTerminals: new Set<string>(),
 }));
 
 vi.mock("@/shared/api/acp", () => ({
   acpGetSessionInfo: (...args: unknown[]) => mocks.getSessionInfo(...args),
+}));
+
+vi.mock("@/features/terminal/lib/terminalSessionManager", () => ({
+  getChatSessionIdsWithTerminals: () => mocks.sessionIdsWithTerminals,
 }));
 
 vi.mock("@/features/chat/lib/sessionWorkspaceCleanup", () => ({
@@ -64,6 +74,7 @@ describe("runAutoArchiveSweep", () => {
         userSetName: false,
       }));
     mocks.loadAllSessions.mockReset();
+    mocks.sessionIdsWithTerminals = new Set();
   });
 
   it("does nothing while disabled", async () => {
@@ -223,6 +234,15 @@ describe("runAutoArchiveSweep", () => {
       "draft attachment",
       () => ({ draftAttachmentsBySession: { stale: [{}] } }),
     ],
+    [
+      "a live terminal",
+      () => {
+        // A shell nobody can see is a process nobody can stop: an idle chat
+        // whose terminal still runs a dev server stays out of the sweep.
+        mocks.sessionIdsWithTerminals = new Set(["stale"]);
+        return {};
+      },
+    ],
   ])("preserves %s", async (_label, unsafeState) => {
     const stale = session("stale");
     mocks.loadAllSessions.mockResolvedValue([stale]);
@@ -232,5 +252,56 @@ describe("runAutoArchiveSweep", () => {
     await runAutoArchiveSweep({ archiveSession });
 
     expect(archiveSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("shouldSweepOnVisibility", () => {
+  it("sweeps on the first restore and then once per interval", () => {
+    expect(shouldSweepOnVisibility(null, 1_000, 3_600_000)).toBe(true);
+    expect(shouldSweepOnVisibility(1_000, 1_000 + 60_000, 3_600_000)).toBe(
+      false,
+    );
+    expect(shouldSweepOnVisibility(1_000, 1_000 + 3_600_000, 3_600_000)).toBe(
+      true,
+    );
+  });
+});
+
+describe("useAutoArchiveSessions", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    localStorage.clear();
+    resetStores();
+    setAutoArchiveAfter("7-days");
+    mocks.loadAllSessions.mockReset().mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not re-sweep on every restore of the window", async () => {
+    const archiveSession = vi.fn();
+    const { unmount } = renderHook(() =>
+      useAutoArchiveSessions(archiveSession),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.loadAllSessions).toHaveBeenCalledTimes(1);
+
+    // Minimise and restore a few times within minutes: no new sweep.
+    for (let i = 0; i < 3; i += 1) {
+      await vi.advanceTimersByTimeAsync(60_000);
+      document.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(mocks.loadAllSessions).toHaveBeenCalledTimes(1);
+
+    // An hour later a restore sweeps again.
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.loadAllSessions.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    unmount();
   });
 });

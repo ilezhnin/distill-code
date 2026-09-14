@@ -349,9 +349,14 @@ fn resolve_export_filename(folder: &Path, filename: &str, used: &HashSet<String>
     format!("{}-{}{}", stem, 9999, ext)
 }
 
+/// Off the main thread: `exists()` is a metadata call that can wait on a
+/// removable or network drive, and a synchronous `#[tauri::command]` runs inline
+/// in the WebView2 IPC callback, i.e. on the UI thread.
 #[tauri::command]
-pub fn path_exists(path: String) -> bool {
-    std::path::Path::new(&path).exists()
+pub async fn path_exists(path: String) -> bool {
+    tokio::task::spawn_blocking(move || std::path::Path::new(&path).exists())
+        .await
+        .unwrap_or(false)
 }
 
 fn ensure_directory_path(path: &Path) -> Result<(), String> {
@@ -376,14 +381,19 @@ fn ensure_directory_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Off the main thread; see `path_exists`.
 #[tauri::command]
-pub fn ensure_directory(path: String) -> Result<(), String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Err("Directory path cannot be empty".to_string());
-    }
+pub async fn ensure_directory(path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err("Directory path cannot be empty".to_string());
+        }
 
-    ensure_directory_path(Path::new(trimmed))
+        ensure_directory_path(Path::new(trimmed))
+    })
+    .await
+    .map_err(|error| format!("Failed to create the directory: {error}"))?
 }
 
 fn read_directory_entries(path: &Path) -> Result<Vec<FileTreeEntry>, String> {
@@ -443,9 +453,14 @@ fn build_file_tree_entry(path: PathBuf, name: String) -> Option<FileTreeEntry> {
     })
 }
 
+/// Off the main thread: the folder is unbounded and may live on a network
+/// share, so a synchronous `#[tauri::command]` would freeze the window for the
+/// whole `readdir` plus the per-entry metadata calls.
 #[tauri::command]
-pub fn list_directory_entries(path: String) -> Result<Vec<FileTreeEntry>, String> {
-    read_directory_entries(Path::new(&path))
+pub async fn list_directory_entries(path: String) -> Result<Vec<FileTreeEntry>, String> {
+    tokio::task::spawn_blocking(move || read_directory_entries(Path::new(&path)))
+        .await
+        .map_err(|error| format!("Failed to list the directory: {error}"))?
 }
 
 fn inspect_attachment_path(path: &Path) -> Result<AttachmentPathInfo, String> {
@@ -517,21 +532,38 @@ fn normalize_attachment_paths(paths: Vec<String>) -> Vec<PathBuf> {
     normalized
 }
 
+/// Off the main thread: one metadata call per dropped path, any of which can
+/// wait on a removable or network drive.
 #[tauri::command]
-pub fn inspect_attachment_paths(paths: Vec<String>) -> Result<Vec<AttachmentPathInfo>, String> {
-    let mut attachments = Vec::new();
+pub async fn inspect_attachment_paths(
+    paths: Vec<String>,
+) -> Result<Vec<AttachmentPathInfo>, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut attachments = Vec::new();
 
-    for path in normalize_attachment_paths(paths) {
-        if let Ok(attachment) = inspect_attachment_path(&path) {
-            attachments.push(attachment);
+        for path in normalize_attachment_paths(paths) {
+            if let Ok(attachment) = inspect_attachment_path(&path) {
+                attachments.push(attachment);
+            }
         }
-    }
 
-    Ok(attachments)
+        Ok(attachments)
+    })
+    .await
+    .map_err(|error| format!("Failed to inspect the attachments: {error}"))?
 }
 
+/// Off the main thread: up to `MAX_IMAGE_ATTACHMENT_BYTES` of reading plus the
+/// base64 encode of the same, which a synchronous `#[tauri::command]` would run
+/// inline in the WebView2 IPC callback.
 #[tauri::command]
-pub fn read_image_attachment(path: String) -> Result<ImageAttachmentPayload, String> {
+pub async fn read_image_attachment(path: String) -> Result<ImageAttachmentPayload, String> {
+    tokio::task::spawn_blocking(move || read_image_attachment_blocking(path))
+        .await
+        .map_err(|error| format!("Failed to read the image attachment: {error}"))?
+}
+
+fn read_image_attachment_blocking(path: String) -> Result<ImageAttachmentPayload, String> {
     let attachment = inspect_attachment_path(Path::new(&path))?;
     let mime_type = attachment
         .mime_type
@@ -741,8 +773,14 @@ fn looks_binary(bytes: &[u8]) -> bool {
 /// files, and files that exceed `MAX_TEXT_FILE_BYTES` so the renderer can
 /// fall back to opening them externally.
 #[tauri::command]
-pub fn read_text_file(path: String) -> Result<TextFilePayload, String> {
-    let target = Path::new(&path);
+pub async fn read_text_file(path: String) -> Result<TextFilePayload, String> {
+    tokio::task::spawn_blocking(move || read_text_file_blocking(&path))
+        .await
+        .map_err(|error| format!("Failed to read the file: {error}"))?
+}
+
+fn read_text_file_blocking(path: &str) -> Result<TextFilePayload, String> {
+    let target = Path::new(path);
     if !target.exists() {
         return Err(format!("File does not exist: {}", target.display()));
     }
@@ -945,8 +983,7 @@ fn insert_parent_file_mention_directories(
 }
 
 fn load_git_file_mention_paths(root_path: &Path) -> Option<Vec<String>> {
-    let mut command = Command::new("git");
-    command.arg("-C").arg(root_path).args([
+    const LS_FILES_ARGS: [&str; 7] = [
         "ls-files",
         "-z",
         "--cached",
@@ -954,7 +991,16 @@ fn load_git_file_mention_paths(root_path: &Path) -> Option<Vec<String>> {
         "--exclude-standard",
         "--",
         ".",
-    ]);
+    ];
+    let git = crate::services::dir_env::resolve_control_executable("git")?;
+    let mut command = Command::new(git);
+    // Same overrides as every other git call: the indexed folder may not be
+    // one the user trusts, and reading its index must not run its config.
+    command
+        .args(super::git::git_hardening_args(&LS_FILES_ARGS))
+        .arg("-C")
+        .arg(root_path)
+        .args(LS_FILES_ARGS);
     crate::services::process::apply_no_window(&mut command);
     let output = command.output().ok()?;
 
@@ -1878,9 +1924,9 @@ pub async fn search_file_mentions(
 mod tests {
     use super::{
         build_file_mention_index, get_or_build_file_mention_index_from_cache,
-        normalize_attachment_paths, normalize_roots, plain_export_filename, read_image_attachment,
-        read_text_file, search_file_mentions_blocking, FileMentionIndexCache,
-        MAX_IMAGE_ATTACHMENT_BYTES, MAX_TEXT_FILE_BYTES,
+        normalize_attachment_paths, normalize_roots, plain_export_filename,
+        read_image_attachment_blocking, read_text_file_blocking, search_file_mentions_blocking,
+        FileMentionIndexCache, MAX_IMAGE_ATTACHMENT_BYTES, MAX_TEXT_FILE_BYTES,
     };
     use std::fs;
     use std::panic::{self, AssertUnwindSafe};
@@ -2012,8 +2058,8 @@ mod tests {
         let path = dir.path().join("big.md");
         fs::write(&path, vec![b'a'; (MAX_TEXT_FILE_BYTES as usize) + 1]).expect("write");
 
-        let error = read_text_file(path.to_string_lossy().into_owned())
-            .expect_err("oversized should error");
+        let error =
+            read_text_file_blocking(&path.to_string_lossy()).expect_err("oversized should error");
         assert!(error.contains("limit"), "unexpected error: {error}");
     }
 
@@ -2069,8 +2115,8 @@ mod tests {
         )
         .expect("oversized image file");
 
-        let error =
-            read_image_attachment(image.to_string_lossy().into_owned()).expect_err("size limit");
+        let error = read_image_attachment_blocking(image.to_string_lossy().into_owned())
+            .expect_err("size limit");
 
         assert!(error.contains(&format!(
             "exceeds the {} byte limit",

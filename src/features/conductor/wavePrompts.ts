@@ -236,6 +236,49 @@ What was wrong with the previous block: ${detail.trim()}
 Fix exactly that, and change nothing else about the plan. If the block did not parse at all, the frequent cause is a raw double-quote character inside a "subtask" string — use «guillemets» there instead, and keep JSON snippets and report-format descriptions out of subtasks entirely.`;
 }
 
+/**
+ * Cap on the JSON block of earlier reports a step's prompt may carry.
+ *
+ * Every `access: "all"` step re-embeds every earlier report of its wave (and,
+ * on a revision, of the previous wave), so the handoff grows with the square of
+ * the step count. Per-report caps keep any single one small; this keeps the
+ * *sum* bounded, because five capped reports are still five. Oldest entries are
+ * summarised away rather than newest: the step being handed the reports is
+ * continuing the work, and what happened last is what it is continuing from.
+ *
+ * 24 KB is far above any honest handoff (five full reports at the summary cap)
+ * and far below the context a runaway one used to eat.
+ */
+export const MAX_PREVIOUS_REPORTS_CHARS = 24_000;
+
+/**
+ * Drops the oldest report payloads until the block fits, and says how many.
+ *
+ * Never drops the last entry: a step told "reports were dropped" and given none
+ * is worse off than one given the single most recent report.
+ */
+function boundedReportPayloads(
+  ordered: readonly CompletedWaveStepReport[],
+): Record<string, unknown>[] {
+  const payloads = ordered.map(reportPayload);
+  let dropped = 0;
+  while (
+    payloads.length > 1 &&
+    JSON.stringify(payloads).length > MAX_PREVIOUS_REPORTS_CHARS
+  ) {
+    payloads.shift();
+    dropped += 1;
+  }
+  return dropped > 0
+    ? [
+        {
+          note: `${dropped} earlier report${dropped === 1 ? "" : "s"} omitted here: the handoff was too large to pass on in full. Ask the operator if you need them.`,
+        },
+        ...payloads,
+      ]
+    : payloads;
+}
+
 function reportPayload(
   entry: CompletedWaveStepReport,
 ): Record<string, unknown> {
@@ -312,7 +355,7 @@ export function buildWaveStepPrompt(
         } These are their reports, not their transcripts — those sessions are not readable and must not be asked for.
 
 \`\`\`json
-${JSON.stringify(ordered.map(reportPayload), null, 2)}
+${JSON.stringify(boundedReportPayloads(ordered), null, 2)}
 \`\`\``,
       );
     }

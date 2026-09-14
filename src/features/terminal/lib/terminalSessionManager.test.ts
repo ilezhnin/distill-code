@@ -486,6 +486,127 @@ describe("terminalSessionManager", () => {
     unsubscribe();
   });
 
+  it("carries a draft chat's terminals over to the promoted session id", async () => {
+    // A draft chat gets its backend id after acpCreateSession resolves. The
+    // terminal panel then re-keys to `${backendId}:${tab}`; without a remap
+    // that is a map miss, a second shell, and the first PTY left running
+    // under a key nothing can reach.
+    const {
+      getChatSessionIdsWithTerminals,
+      getOrCreateTerminalSession,
+      getTerminalSessionStatus,
+      queueTerminalCommand,
+      renameTerminalSessionPrefix,
+      subscribeTerminalSessionStatus,
+    } = await import("./terminalSessionManager");
+    let emitTerminalEvent: (event: TerminalEvent) => void = () => undefined;
+    let resolveStart: (terminalId: string) => void = () => undefined;
+    mocks.startTerminal.mockImplementationOnce(
+      ({ onEvent }) =>
+        new Promise<string>((resolve) => {
+          emitTerminalEvent = onEvent;
+          resolveStart = resolve;
+        }),
+    );
+
+    const draftSession = getOrCreateTerminalSession({
+      key: "draft-1:tab-1",
+      cwd: "/repo",
+      labels,
+      theme: {},
+      fontFamily: "monospace",
+    });
+    queueTerminalCommand("draft-1:tab-1", "pnpm dev");
+    const statuses: string[] = [];
+    subscribeTerminalSessionStatus("draft-1:tab-1", (change) => {
+      statuses.push(`${change.key}:${change.status}`);
+    });
+
+    renameTerminalSessionPrefix("draft-1", "backend-1");
+
+    // The same session answers under the new key, and the old one is gone.
+    const promoted = getOrCreateTerminalSession({
+      key: "backend-1:tab-1",
+      cwd: "/repo",
+      labels,
+      theme: {},
+      fontFamily: "monospace",
+    });
+    expect(promoted).toBe(draftSession);
+    expect(promoted.key).toBe("backend-1:tab-1");
+    expect(mocks.startTerminal).toHaveBeenCalledTimes(1);
+    expect(getTerminalSessionStatus("draft-1:tab-1")).toBeNull();
+    expect(getTerminalSessionStatus("backend-1:tab-1")).toBe("starting");
+    expect(getChatSessionIdsWithTerminals()).toEqual(new Set(["backend-1"]));
+
+    // Queued commands and status subscriptions follow the session.
+    resolveStart("terminal-1");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mocks.writeTerminal).toHaveBeenCalledWith(
+      "terminal-1",
+      "pnpm dev\r",
+    );
+    expect(statuses).toEqual(["backend-1:tab-1:running"]);
+
+    emitTerminalEvent({
+      event: "exited",
+      data: { terminalId: "terminal-1", exitCode: 0, signal: null },
+    });
+    expect(statuses).toEqual([
+      "backend-1:tab-1:running",
+      "backend-1:tab-1:exited",
+    ]);
+    expect(mocks.stopTerminal).not.toHaveBeenCalled();
+  });
+
+  it("stops every terminal of one chat and leaves the others alone", async () => {
+    const {
+      getChatSessionIdsWithTerminals,
+      getOrCreateTerminalSession,
+      queueTerminalCommand,
+      stopTerminalSessionsForChat,
+    } = await import("./terminalSessionManager");
+    mocks.startTerminal
+      .mockResolvedValueOnce("terminal-1")
+      .mockResolvedValueOnce("terminal-2")
+      .mockResolvedValueOnce("terminal-3");
+
+    for (const key of ["chat-a:tab-1", "chat-a:tab-2", "chat-b:tab-1"]) {
+      getOrCreateTerminalSession({
+        key,
+        cwd: "/repo",
+        labels,
+        theme: {},
+        fontFamily: "monospace",
+      });
+    }
+    await Promise.resolve();
+    queueTerminalCommand("chat-a:tab-3", "pnpm dev");
+    mocks.startTerminal.mockResolvedValueOnce("terminal-4");
+
+    expect(stopTerminalSessionsForChat("chat-a")).toBe(2);
+
+    expect(mocks.stopTerminal).toHaveBeenCalledWith("terminal-1");
+    expect(mocks.stopTerminal).toHaveBeenCalledWith("terminal-2");
+    expect(mocks.stopTerminal).not.toHaveBeenCalledWith("terminal-3");
+    expect(getChatSessionIdsWithTerminals()).toEqual(new Set(["chat-b"]));
+
+    // The command queued for a tab that had not started yet is gone too.
+    getOrCreateTerminalSession({
+      key: "chat-a:tab-3",
+      cwd: "/repo",
+      labels,
+      theme: {},
+      fontFamily: "monospace",
+    });
+    await Promise.resolve();
+    expect(mocks.writeTerminal).not.toHaveBeenCalledWith(
+      "terminal-4",
+      "pnpm dev\r",
+    );
+  });
+
   it("keeps errored terminals in the chat-session terminal registry", async () => {
     const { getChatSessionIdsWithTerminals, getOrCreateTerminalSession } =
       await import("./terminalSessionManager");
@@ -601,6 +722,63 @@ describe("terminalSessionManager", () => {
       "detached output",
       expect.anything(),
     );
+  });
+
+  it("keeps only the newest output of a parked terminal that never stops talking", async () => {
+    const frames = mockAnimationFrames();
+    let emitTerminalEvent: (event: TerminalEvent) => void = () => undefined;
+    const { getOrCreateTerminalSession } = await import(
+      "./terminalSessionManager"
+    );
+    mocks.startTerminal.mockImplementationOnce(({ onEvent }) => {
+      emitTerminalEvent = onEvent;
+      return Promise.resolve("terminal-1");
+    });
+    const session = getOrCreateTerminalSession({
+      key: "chat-session-id:tab-1",
+      cwd: "/repo",
+      labels,
+      theme: {},
+      fontFamily: "monospace",
+    });
+    const detach = session.attach(document.createElement("div"));
+    await Promise.resolve();
+    detach();
+
+    // 1.5 MB of chatty output while parked: the 1 MB buffer overflows and the
+    // oldest chunks are dropped a chunk at a time.
+    const chunk = "x".repeat(10_000);
+    emitTerminalEvent({
+      event: "output",
+      data: { terminalId: "terminal-1", data: "OLDEST" },
+    });
+    for (let index = 0; index < 150; index++) {
+      emitTerminalEvent({
+        event: "output",
+        data: { terminalId: "terminal-1", data: chunk },
+      });
+    }
+    emitTerminalEvent({
+      event: "output",
+      data: { terminalId: "terminal-1", data: "NEWEST" },
+    });
+
+    session.attach(document.createElement("div"));
+    let drained = "";
+    let consumedWrites = 0;
+    for (let pass = 0; pass < 60; pass++) {
+      frames.runAll();
+      const writes = vi.mocked(session.terminal.write).mock.calls;
+      if (writes.length === consumedWrites) break;
+      for (; consumedWrites < writes.length; consumedWrites++) {
+        drained += writes[consumedWrites]?.[0] ?? "";
+      }
+      mocks.terminalWriteCallbacks.shift()?.();
+    }
+
+    expect(drained.length).toBe(1_000_000);
+    expect(drained.startsWith("OLDEST")).toBe(false);
+    expect(drained.endsWith("NEWEST")).toBe(true);
   });
 
   it("buffers terminal output while rendering is suspended and resumes after", async () => {

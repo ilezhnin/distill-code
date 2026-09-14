@@ -1,16 +1,24 @@
 import { z } from "zod/v4";
+
+import { BERDCTL_BOUNDS } from "../helpers";
 import { defineCommand, CommandError } from "../types";
 
 const replaceSessionFolderSchema = z
   .object({
-    session_id: z.string().min(1).describe("Id of the session to update."),
+    session_id: z
+      .string()
+      .min(1)
+      .max(BERDCTL_BOUNDS.id)
+      .describe("Id of the session to update."),
     old_path: z
       .string()
       .min(1)
+      .max(BERDCTL_BOUNDS.path)
       .describe("Existing attached folder path to detach; ~ is expanded."),
     new_path: z
       .string()
       .min(1)
+      .max(BERDCTL_BOUNDS.path)
       .describe("Existing replacement folder path to attach; ~ is expanded."),
   })
   .strict();

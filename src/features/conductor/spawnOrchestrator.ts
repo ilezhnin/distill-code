@@ -8,6 +8,7 @@ import {
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
 import { berdctlCrossSessionSendOptions } from "@/features/berdctl/commands/runtime/sessionSend";
+import type { EmbeddedReasoningEffort } from "@/features/chat/lib/modelReasoningVariants";
 import { updateSessionTitle } from "@/features/chat/stores/chatSessionOperations";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
@@ -17,6 +18,7 @@ import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { personaAgentRefs } from "@/shared/lib/agentSpawns";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
+import { applyChildReasoningEffort } from "./childReasoningEffort";
 import { useConductorGraphStore } from "./conductorGraphStore";
 import { pickUniqueDisplayName } from "./pickUniqueDisplayName";
 import { wrapOrchestratorTaskPrompt } from "./orchestratorReport";
@@ -50,6 +52,14 @@ export async function spawnConductorChildSession(args: {
   stepIndex?: number;
   /** What the child may spend before the app stops it (P49). */
   budget?: NodeBudget;
+  /**
+   * Reasoning effort the caller's ranking asked for (P36).
+   *
+   * Applied to the child session after it is created, because only some
+   * harnesses carry the effort inside the model id. Best-effort: a session
+   * that does not advertise the option keeps the harness default.
+   */
+  reasoningEffort?: EmbeddedReasoningEffort;
   /** The root request this child's work belongs to (P49). */
   taskId?: string;
 }): Promise<{ sessionId: string; runId: string }> {
@@ -181,6 +191,15 @@ export async function spawnConductorChildSession(args: {
     userSetName: true,
     ...(args.personaId ? { personaId: args.personaId } : {}),
   });
+  // P36: the ranking asked for a model *and* an effort, and the effort is a
+  // session config option on every harness that does not embed it in the model
+  // id. Awaited here, before the first prompt is queued below, so the child's
+  // very first turn runs at the effort the profile named rather than the
+  // harness default. It cannot fail the spawn: the helper swallows its own
+  // errors and answers `false`.
+  if (args.reasoningEffort) {
+    await applyChildReasoningEffort(child.id, args.reasoningEffort);
+  }
   void updateSessionTitle(child.id, displayName).catch(() => {
     useChatSessionStore.getState().patchSession(child.id, {
       title: displayName,
