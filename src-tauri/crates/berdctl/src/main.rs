@@ -374,6 +374,9 @@ mod tests {
             "h",
             "--model-id",
             "m",
+            "--effort",
+            "xhigh",
+            "--fast-mode",
             "--agent-id",
             "a",
             "--project-id",
@@ -387,6 +390,8 @@ mod tests {
                 "prompt": "hi",
                 "harness_id": "h",
                 "model_id": "m",
+                "effort": "xhigh",
+                "fast_mode": true,
                 "agent_id": "a",
                 "project_id": "p",
             })
@@ -548,9 +553,10 @@ mod tests {
     const EXPECTED_SESSION_CREATE_HELP: &str = r#"Create a new chat session on any installed agent harness and send the prompt in
 it. Fire-and-forget: returns the session id immediately and the session runs in
 the background without changing what the user sees; the user can open it
-themselves. Use --from to give the delegating session or tool a concise visible
-label on the initial message. Only check on it later (action "get") if the user
-asks.
+themselves. Model, reasoning effort and fast mode are separate choices, each
+checked against what `berdctl info models` reports for the chosen model. Use
+--from to give the delegating session or tool a concise visible label on the
+initial message. Only check on it later (action "get") if the user asks.
 
 Usage: berdctl session create [OPTIONS] --prompt <PROMPT>
 
@@ -563,7 +569,20 @@ Options:
           e.g. "claude-acp", "codex-acp"). Defaults to the app default.
 
       --model-id <MODEL_ID>
-          Id of the model to use (from `berdctl info models`).
+          Id of the model to use (from `berdctl info models`). An old id with
+          the effort folded in, like "gpt-5.6-sol[xhigh]", is still accepted and
+          split, but is deprecated: pass --effort instead.
+
+      --effort <EFFORT>
+          Reasoning effort to run the model at, in the harness's own words (e.g.
+          "high", "xhigh"). Must be one of the efforts `berdctl info models`
+          lists for the chosen model, so it requires --model-id. Omit it to run
+          at the model's default.
+
+      --fast-mode
+          Run the model in fast mode. Only for a model `berdctl info models`
+          reports with "supports_fast": true, so it requires --model-id. Omit it
+          to keep the model's default.
 
       --agent-id <AGENT_ID>
           Id of the agent (persona) to use (from `berdctl agent list`).
@@ -592,14 +611,22 @@ Options:
 Examples:
   berdctl session create --prompt "Triage the failing nightly build" \
     --harness-id claude-acp --from "the release orchestrator" --json
+  berdctl session create --prompt "Plan the migration" \
+    --harness-id codex-acp --model-id gpt-5.6-sol --effort xhigh --fast-mode
   berdctl session create --prompt "Implement the fix" \
     --project-id <project-id> --startup-name my-feature
 
 Result:
   {"session_id": "...", "title": "...", "harness_id": "...",
-   "send_status": "dispatched"}
-  The session runs in the background; the user's view does not change. Check
-  progress later with `berdctl session get --session-id <session_id>`.
+   "model_id": "..."|null, "effort": "..."|null,
+   "fast_mode": true|false|null, "send_status": "dispatched",
+   "deprecated": "..."?}
+  "model_id", "effort" and "fast_mode" echo the choices the session was
+  created with; null leaves that choice to the harness or model default.
+  "deprecated" appears when --model-id folded an effort in and says what to
+  pass instead. The session runs in the background; the user's view does not
+  change. Check progress later with
+  `berdctl session get --session-id <session_id>`.
 "#;
 
     const EXPECTED_SESSION_MOVE_HELP: &str = r#"Move a chat session into a project; the session list in the app regroups

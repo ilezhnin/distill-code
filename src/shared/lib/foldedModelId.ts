@@ -11,7 +11,7 @@ import { normalizeConcreteModelId } from "./modelIdentity";
  * someone adding one here, which is a reviewable change.
  *
  * Sunset by condition, not by date: this module can go once no
- * `sessions.legacy_model_id` rows remain and no pre-protocolVersion-5 berdctl
+ * `sessions.legacy_model_id` rows remain and no pre-protocolVersion-6 berdctl
  * clients are in use.
  */
 

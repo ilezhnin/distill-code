@@ -8,7 +8,7 @@
         "create": {
           "action": "create",
           "about": "Create a new chat session and send a prompt in it (fire-and-forget)",
-          "afterHelp": "Examples:\n  berdctl session create --prompt \"Triage the failing nightly build\" \\\n    --harness-id claude-acp --from \"the release orchestrator\" --json\n  berdctl session create --prompt \"Implement the fix\" \\\n    --project-id <project-id> --startup-name my-feature\n\nResult:\n  {\"session_id\": \"...\", \"title\": \"...\", \"harness_id\": \"...\",\n   \"send_status\": \"dispatched\"}\n  The session runs in the background; the user's view does not change. Check\n  progress later with `berdctl session get --session-id <session_id>`."
+          "afterHelp": "Examples:\n  berdctl session create --prompt \"Triage the failing nightly build\" \\\n    --harness-id claude-acp --from \"the release orchestrator\" --json\n  berdctl session create --prompt \"Plan the migration\" \\\n    --harness-id codex-acp --model-id gpt-5.6-sol --effort xhigh --fast-mode\n  berdctl session create --prompt \"Implement the fix\" \\\n    --project-id <project-id> --startup-name my-feature\n\nResult:\n  {\"session_id\": \"...\", \"title\": \"...\", \"harness_id\": \"...\",\n   \"model_id\": \"...\"|null, \"effort\": \"...\"|null,\n   \"fast_mode\": true|false|null, \"send_status\": \"dispatched\",\n   \"deprecated\": \"...\"?}\n  \"model_id\", \"effort\" and \"fast_mode\" echo the choices the session was\n  created with; null leaves that choice to the harness or model default.\n  \"deprecated\" appears when --model-id folded an effort in and says what to\n  pass instead. The session runs in the background; the user's view does not\n  change. Check progress later with\n  `berdctl session get --session-id <session_id>`."
         },
         "send": {
           "action": "send",
@@ -23,12 +23,12 @@
         "list": {
           "action": "list",
           "about": "List the user's chat sessions (most recent first)",
-          "afterHelp": "Example:\n  berdctl session list --query \"review\" --limit 10 --json\n\nResult:\n  {\"sessions\": [{\"session_id\": \"...\", \"title\": \"...\",\n                 \"project_id\": \"...\"|null, \"updated_at\": \"...\",\n                 \"is_running\": false, \"chat_state\": \"idle\",\n                 \"message_count\": 12}, ...]}\n  Most recent first; archived sessions are excluded."
+          "afterHelp": "Example:\n  berdctl session list --query \"review\" --limit 10 --json\n\nResult:\n  {\"sessions\": [{\"session_id\": \"...\", \"title\": \"...\",\n                 \"project_id\": \"...\"|null, \"effort\": \"...\"|null,\n                 \"fast_mode\": true|false|null, \"updated_at\": \"...\",\n                 \"is_running\": false, \"chat_state\": \"idle\",\n                 \"message_count\": 12}, ...]}\n  Most recent first; archived sessions are excluded. \"effort\" and\n  \"fast_mode\" are what each session's model last acknowledged; null means\n  none was recorded and the model runs at its own default."
         },
         "get": {
           "action": "get",
           "about": "Read one session's metadata and optionally its latest messages",
-          "afterHelp": "Example:\n  berdctl session get --session-id <session-id> --messages 5 --json\n\nResult:\n  {\"session_id\": \"...\", \"title\": \"...\", \"harness_id\": \"...\",\n   \"model_id\": \"...\"|null, \"agent_id\": \"...\"|null,\n   \"project_id\": \"...\"|null, \"working_dir\": \"...\"|null,\n   \"created_at\": \"...\", \"updated_at\": \"...\", \"archived\": false,\n   \"is_running\": false, \"is_open_in_window\": false,\n   \"chat_state\": \"idle\", \"message_count\": 12,\n   \"messages\": [{\"role\": \"user\"|\"assistant\"|null, \"text\": \"...\"}, ...]}\n  \"messages\" is present only when --messages > 0; each message text is\n  truncated to 2000 chars."
+          "afterHelp": "Example:\n  berdctl session get --session-id <session-id> --messages 5 --json\n\nResult:\n  {\"session_id\": \"...\", \"title\": \"...\", \"harness_id\": \"...\",\n   \"model_id\": \"...\"|null, \"effort\": \"...\"|null,\n   \"fast_mode\": true|false|null, \"agent_id\": \"...\"|null,\n   \"project_id\": \"...\"|null, \"working_dir\": \"...\"|null,\n   \"created_at\": \"...\", \"updated_at\": \"...\", \"archived\": false,\n   \"is_running\": false, \"is_open_in_window\": false,\n   \"chat_state\": \"idle\", \"message_count\": 12,\n   \"messages\": [{\"role\": \"user\"|\"assistant\"|null, \"text\": \"...\"}, ...]}\n  \"effort\" and \"fast_mode\" are the reasoning effort and fast mode the\n  session's model last acknowledged, in the harness's own words; null means\n  none was recorded and the model runs at its own default. \"messages\" is\n  present only when --messages > 0; each message text is truncated to 2000\n  chars."
         },
         "rename": {
           "action": "rename",
@@ -48,7 +48,7 @@
         "fork": {
           "action": "fork",
           "about": "Fork a chat session into an independent copy with its history",
-          "afterHelp": "Example:\n  berdctl session fork --session-id <session-id> --title \"Alternate approach\"\n\nResult:\n  {\"session_id\": \"...\", \"title\": \"...\", \"source_session_id\": \"...\",\n   \"message_count\": 7}\n  The fork appears in the session list with a copy of the original history."
+          "afterHelp": "Example:\n  berdctl session fork --session-id <session-id> --title \"Alternate approach\"\n\nResult:\n  {\"session_id\": \"...\", \"title\": \"...\", \"source_session_id\": \"...\",\n   \"harness_id\": \"...\", \"model_id\": \"...\"|null, \"effort\": \"...\"|null,\n   \"fast_mode\": true|false|null, \"message_count\": 7}\n  The fork appears in the session list with a copy of the original history.\n  \"harness_id\", \"model_id\", \"effort\" and \"fast_mode\" are what the fork's model\n  acknowledged when it opened; null means the model's own default."
         },
         "archive": {
           "action": "archive",
@@ -168,7 +168,7 @@
         "models": {
           "action": "list_models",
           "about": "List the models available per agent harness",
-          "afterHelp": "Example:\n  berdctl info models --harness-id claude-acp --json\n\nResult:\n  {\"harnesses\": [{\"harness_id\": \"...\",\n                  \"models\": [{\"model_id\": \"...\", \"name\": \"...\",\n                              \"provider\": \"...\"?}],\n                  \"warning\": \"...\"?}]}\n  Use a model_id (with its harness) as --model-id when creating a session.\n  \"warning\" appears when a stale cached list was served or when the harness\n  manages its model outside the app."
+          "afterHelp": "Example:\n  berdctl info models --harness-id codex-acp --json\n\nResult:\n  {\"harnesses\": [{\"harness_id\": \"...\",\n                  \"models\": [{\"model_id\": \"...\", \"name\": \"...\",\n                              \"provider\": \"...\"?,\n                              \"group\": \"main\"|\"more\",\n                              \"efforts\": [\"low\", \"high\", ...]|null,\n                              \"default_effort\": \"...\"|null,\n                              \"supports_fast\": true|false|null}],\n                  \"warning\": \"...\"?}]}\n  Model, effort and fast mode are separate choices: a model_id never carries\n  an effort. Pass a model_id (with its harness) as --model-id when creating a\n  session, pick --effort from that model's \"efforts\", and pass --fast-mode\n  only where \"supports_fast\" is true. \"efforts\": [] means the model has no\n  effort control; null in \"efforts\" or \"supports_fast\" means the app has not\n  learned what the model offers. \"group\" is the picker page the model is\n  filed under (\"more\" is the More models page). \"warning\" appears when a\n  stale cached list was served or when the harness manages its model outside\n  the app."
         },
         "context": {
           "action": "get_context",

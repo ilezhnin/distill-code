@@ -1314,10 +1314,10 @@ impl Inner {
     /// the four selections travel separately and the renderer, the store and
     /// every answer carry the bridge's own base id. What still arrives folded
     /// is history — a chat stored before the split whose lazy conversion has
-    /// not run, a renderer or a berdctl client older than protocolVersion 5 —
+    /// not run, a renderer or a berdctl client older than protocolVersion 6 —
     /// and it reaches `apply_model` inside a send, where failing is not an
     /// option. SUNSET: this and `SplitModel` may go once no
-    /// `sessions.legacy_model_id` rows remain and no pre-protocolVersion-5
+    /// `sessions.legacy_model_id` rows remain and no pre-protocolVersion-6
     /// berdctl client is in use. Not a date: removing it earlier loses the
     /// operator's own history.
     fn split_effort_model(snapshot: &Value, model_id: &str) -> Option<SplitModel> {
