@@ -37,7 +37,10 @@ export const WAVE_REJECTION_REASON_KEYS: Record<WaveRejectionReason, string> = {
   "model-not-a-string": "modelNotAString",
   "budget-invalid": "budgetInvalid",
   "class-unknown": "classUnknown",
+  "effort-not-a-string": "effortNotAString",
+  "fast-not-a-boolean": "fastNotABoolean",
   "step-model-unavailable": "stepModelUnavailable",
+  "step-run-settings-unavailable": "stepRunSettingsUnavailable",
   "verification-step-missing": "verificationStepMissing",
   "verification-step-misplaced": "verificationStepMisplaced",
   "verification-step-blind": "verificationStepBlind",
@@ -376,6 +379,72 @@ export function waveStepExplicitModelNoticeText(facts: {
     name: facts.name,
     model: facts.model,
   });
+}
+
+/**
+ * The notice posted when a step runs on a model that does not honour the
+ * effort or fast mode the step was routed with.
+ *
+ * Admission refuses this for what the plan itself named. It still happens
+ * afterwards in two honest ways: a ranking whose chosen model lacks the
+ * ranked effort (a preference, which fails open), and an inventory that
+ * changed between admission and a late spawn. Either way the step runs, and
+ * WAVES forbids that happening without saying so where the step is shown.
+ */
+export function waveStepRunSettingsNoticeText(facts: {
+  stepIndex: number;
+  name: string;
+  model: string;
+  kind: "effort" | "fast";
+  /** The effort that was asked for; unused for fast mode. */
+  effort?: string;
+}): string {
+  return i18n.t(
+    facts.kind === "effort"
+      ? "chat:conductor.wave.stepModel.effortNotApplied"
+      : "chat:conductor.wave.stepModel.fastNotApplied",
+    {
+      step: facts.stepIndex + 1,
+      name: facts.name,
+      model: facts.model,
+      effort: facts.effort ?? "",
+    },
+  );
+}
+
+/**
+ * The notice posted when a step's `model` still carries an effort inside its
+ * name (`gpt-5.6-sol[xhigh]`), the shape plans were written in before effort
+ * became its own field.
+ *
+ * The step runs, split, because refusing every plan an agent wrote from habit
+ * would break working waves on release day. But the split is said out loud so
+ * the conductor's next plan can write the two fields separately.
+ */
+export function waveStepLegacyModelEffortNoticeText(facts: {
+  stepIndex: number;
+  name: string;
+  /** The model string exactly as the plan wrote it. */
+  requested: string;
+  model: string;
+  /** The effort carved out of the model string. */
+  legacyEffort: string;
+  /** The effort the step runs at — the step's own field when it had one. */
+  effort: string;
+}): string {
+  return i18n.t(
+    facts.effort === facts.legacyEffort
+      ? "chat:conductor.wave.stepModel.legacyEffortSplit"
+      : "chat:conductor.wave.stepModel.legacyEffortOverridden",
+    {
+      step: facts.stepIndex + 1,
+      name: facts.name,
+      requested: facts.requested,
+      model: facts.model,
+      legacyEffort: facts.legacyEffort,
+      effort: facts.effort,
+    },
+  );
 }
 
 /**

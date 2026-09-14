@@ -123,6 +123,46 @@ describe("admitWavePlan", () => {
     expect(admission.steps[1].model).toBe("grok");
   });
 
+  it("refuses the whole plan when a step's effort or fast mode fails the live check", async () => {
+    const checked: string[] = [];
+    const admission = admitWavePlan(
+      {
+        kind: "plan",
+        planText: "",
+        prose: "",
+        steps: [
+          step("scout", "Find the callers"),
+          { ...step("qa", "Write the test plan"), effort: "ultra" },
+        ],
+      },
+      {
+        checkStepRunSettings: (candidate) => {
+          checked.push(candidate.role);
+          return candidate.effort
+            ? {
+                ok: false,
+                detail: `The model "Opus 5" does not offer the reasoning effort "${candidate.effort}"; it offers low, high.`,
+              }
+            : { ok: true };
+        },
+      },
+    );
+    expect(checked).toEqual(["scout", "qa"]);
+    expect(admission).toMatchObject({
+      kind: "rejected",
+      reason: "step-run-settings-unavailable",
+      stepIndex: 1,
+    });
+    if (admission.kind !== "rejected") return;
+    await i18n.loadNamespaces("chat");
+    const card = waveRejectionNoticeText({
+      reason: admission.reason,
+      detail: admission.detail,
+      stepIndex: admission.stepIndex,
+    });
+    expect(card).toContain("it offers low, high");
+  });
+
   it("refuses the whole plan when a step's model fails the live check (D5)", async () => {
     const admission = admitWavePlan(
       {
@@ -359,40 +399,33 @@ describe("advanceWave scheduling", () => {
     expect(patched.steps[0].model).toBe("opus");
   });
 
-  it("carries a step's budget and class from plan to state to spawn request (P49/P36)", () => {
-    // Both are parsed and validated at admission and only matter at spawn:
-    // the budget is what the guard stops the child on, the class is what
-    // routes it. A rebuild that drops either makes the plan's ceiling and
-    // routing silently a no-op.
+  it("carries a step's budget, class, effort and fast mode from plan to state to spawn request (P49/P36)", () => {
+    // All four are parsed and validated at admission and only matter at
+    // spawn: the budget is what the guard stops the child on, the class is
+    // what routes it, effort and fast mode are how the child runs. A rebuild
+    // that drops any of them makes that part of the plan silently a no-op.
+    const planned = {
+      budget: { minutes: 5, tokens: 20_000 },
+      modelClass: "coding-simple" as const,
+      effort: "xhigh",
+      // `false` is a choice the plan made, and must survive as one.
+      fast: false,
+    };
     const wave = waveOf([
-      {
-        ...step("brigade", "Rename the field"),
-        budget: { minutes: 5, tokens: 20_000 },
-        modelClass: "coding-simple",
-      },
+      { ...step("brigade", "Rename the field"), ...planned },
     ]);
-    expect(wave.steps[0].budget).toEqual({ minutes: 5, tokens: 20_000 });
-    expect(wave.steps[0].modelClass).toBe("coding-simple");
+    expect(wave.steps[0]).toMatchObject(planned);
     const advanced = advanceWave(wave, { nodes: [], reportOf: noReports });
-    expect(advanced.spawn[0]?.step.budget).toEqual({
-      minutes: 5,
-      tokens: 20_000,
-    });
-    expect(advanced.spawn[0]?.step.modelClass).toBe("coding-simple");
+    expect(advanced.spawn[0]?.step).toMatchObject(planned);
     const patched = withWaveStepPhase(wave, 0, { phase: "spawning" });
-    expect(patched.steps[0].budget).toEqual({ minutes: 5, tokens: 20_000 });
-    expect(patched.steps[0].modelClass).toBe("coding-simple");
+    expect(patched.steps[0]).toMatchObject(planned);
     // The restart path rebuilds an orphaned spawn from scratch too.
     const resumed = advanceWave(patched, {
       nodes: [],
       reportOf: noReports,
       resumeOrphanedSpawns: true,
     });
-    expect(resumed.spawn[0]?.step.budget).toEqual({
-      minutes: 5,
-      tokens: 20_000,
-    });
-    expect(resumed.spawn[0]?.step.modelClass).toBe("coding-simple");
+    expect(resumed.spawn[0]?.step).toMatchObject(planned);
   });
 
   it("spawns every access:[] step at once", () => {

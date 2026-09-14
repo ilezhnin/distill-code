@@ -8,7 +8,11 @@ import {
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
 import { berdctlCrossSessionSendOptions } from "@/features/berdctl/commands/runtime/sessionSend";
-import type { EffortValue } from "@/features/chat/lib/sessionRunSettings";
+import { reconcileSessionRunSettings } from "@/features/chat/lib/runSettingsReconciler";
+import {
+  normalizeSessionRunSettings,
+  type SessionRunSettings,
+} from "@/features/chat/lib/sessionRunSettings";
 import { updateSessionTitle } from "@/features/chat/stores/chatSessionOperations";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
@@ -18,7 +22,6 @@ import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { personaAgentRefs } from "@/shared/lib/agentSpawns";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 
-import { applyChildReasoningEffort } from "./childReasoningEffort";
 import { useConductorGraphStore } from "./conductorGraphStore";
 import { pickUniqueDisplayName } from "./pickUniqueDisplayName";
 import { wrapOrchestratorTaskPrompt } from "./orchestratorReport";
@@ -53,13 +56,15 @@ export async function spawnConductorChildSession(args: {
   /** What the child may spend before the app stops it (P49). */
   budget?: NodeBudget;
   /**
-   * Reasoning effort the caller's ranking asked for (P36).
+   * The effort and fast mode the child runs at (P36): a wave step's own
+   * fields, else its ranking's.
    *
-   * Applied to the child session after it is created, because only some
-   * harnesses carry the effort inside the model id. Best-effort: a session
-   * that does not advertise the option keeps the harness default.
+   * Recorded as the child's run-settings intent, the same record the chat's
+   * own controls write, so the one reconciler applies it on every harness and
+   * shows a notice where the model cannot honour it. Never a refusal: a
+   * session that cannot run at a value keeps the intent and runs anyway.
    */
-  reasoningEffort?: EffortValue;
+  runSettings?: SessionRunSettings;
   /** The root request this child's work belongs to (P49). */
   taskId?: string;
 }): Promise<{ sessionId: string; runId: string }> {
@@ -191,14 +196,12 @@ export async function spawnConductorChildSession(args: {
     userSetName: true,
     ...(args.personaId ? { personaId: args.personaId } : {}),
   });
-  // P36: the ranking asked for a model *and* an effort, and the effort is a
-  // session config option on every harness that does not embed it in the model
-  // id. Awaited here, before the first prompt is queued below, so the child's
-  // very first turn runs at the effort the profile named rather than the
-  // harness default. It cannot fail the spawn: the helper swallows its own
-  // errors and answers `false`.
-  if (args.reasoningEffort) {
-    await applyChildReasoningEffort(child.id, args.reasoningEffort);
+  // P36: the step asked for a model *and* how to run it. Seeded before the
+  // first prompt is queued below, so the child's very first turn runs at the
+  // effort and fast mode the step named rather than the harness default.
+  const runSettings = normalizeSessionRunSettings(args.runSettings);
+  if (runSettings) {
+    await seedChildRunSettings(child.id, runSettings);
   }
   void updateSessionTitle(child.id, displayName).catch(() => {
     useChatSessionStore.getState().patchSession(child.id, {
@@ -226,6 +229,8 @@ export async function spawnConductorChildSession(args: {
     harnessId: executionTarget.harnessId,
     modelProviderId: executionTarget.modelProviderId,
     modelId: executionTarget.modelId,
+    ...(runSettings?.effort ? { effort: runSettings.effort } : {}),
+    ...(runSettings?.fast !== undefined ? { fast: runSettings.fast } : {}),
     displayName,
     personaId: args.personaId,
     roleId: args.roleId,
@@ -275,6 +280,39 @@ export async function spawnConductorChildSession(args: {
   }
 
   return { sessionId: child.id, runId };
+}
+
+/**
+ * Hands a freshly created child the effort and fast mode it should run at.
+ *
+ * This is the run-settings path every chat uses, not a second one: the intent
+ * is stored as `desiredRunSettings`, the reconciler writes what the current
+ * model offers, and the first send's model apply re-plans from the model's own
+ * answer inside the same mutation. A value the model cannot honour stays as
+ * intent with a notice, never a failed spawn.
+ *
+ * When session creation can carry run settings in `session/new` `_meta`, pass
+ * them to `createSession` as well so the bridge opens at them; this intent
+ * record stays, because it is what the reconciler compares every later answer
+ * against.
+ */
+async function seedChildRunSettings(
+  sessionId: string,
+  runSettings: SessionRunSettings,
+): Promise<void> {
+  try {
+    useChatSessionStore
+      .getState()
+      .patchSession(sessionId, { desiredRunSettings: runSettings });
+    await reconcileSessionRunSettings({ sessionId });
+  } catch (error) {
+    // The child is created and its prompt is about to be queued: a run
+    // setting that could not be recorded costs the setting, not the step.
+    console.error(
+      `Failed to seed the run settings of wave child ${sessionId}:`,
+      error,
+    );
+  }
 }
 
 export function registerConductorSession(args: {

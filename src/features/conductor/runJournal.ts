@@ -134,7 +134,13 @@ export function runJournalPath(waveId: string): string {
 const journals = new Map<string, Journal>();
 const listeners = new Set<() => void>();
 
-function parseEvents(raw: unknown): RunEvent[] {
+/**
+ * Reads a journal document's events, keeping every event that has the three
+ * fields a trace cannot do without and leaving the rest of each one exactly as
+ * written — a journal from before effort was its own field reads back with its
+ * `model: "gpt-5.6-sol[low]"` intact.
+ */
+export function parseRunJournalEvents(raw: unknown): RunEvent[] {
   const document = raw as { version?: number; events?: unknown } | null;
   if (!document || !Array.isArray(document.events)) return [];
   const events: RunEvent[] = [];
@@ -161,7 +167,7 @@ function journalFor(waveId: string): Journal {
     // No browser copy ever existed for these, and inventing one would put a
     // per-wave key back into the storage this release is emptying.
     legacyStorageKey: `distill:run-journal:${waveId}`,
-    parse: parseEvents,
+    parse: parseRunJournalEvents,
     serialize: (events) => ({ version: 1, waveId, events }),
   });
   const journal: Journal = {
@@ -434,6 +440,10 @@ export function diffGraphNodes(
           name: node.displayName,
           harness: node.harnessId,
           ...(node.modelId ? { model: node.modelId } : {}),
+          // Separate fields, never folded into `model`: older journals carry
+          // `model: "gpt-5.6-sol[low]"` and stay exactly as written.
+          ...(node.effort ? { effort: node.effort } : {}),
+          ...(node.fast !== undefined ? { fast: node.fast } : {}),
           status: node.status,
         },
       });

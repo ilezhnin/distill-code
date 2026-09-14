@@ -20,6 +20,7 @@ import {
   scopedWindowForModel,
 } from "@/features/agents/lib/agentModelRanking";
 import {
+  advertisedEffortId,
   modelPreferenceClassForPersona,
   preferCurrentMatches,
   rankIndexOfModel,
@@ -34,8 +35,12 @@ import {
   normalizeSessionExecutionTarget,
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
-import { splitEmbeddedReasoning } from "@/features/chat/lib/modelReasoningVariants";
-import type { EffortValue } from "@/features/chat/lib/sessionRunSettings";
+import {
+  normalizeSessionRunSettings,
+  type EffortValue,
+  type SessionRunSettings,
+} from "@/features/chat/lib/sessionRunSettings";
+import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import type { ModelOption } from "@/features/chat/types";
 import {
   isCachedModelInventoryAuthoritativeForRouting,
@@ -47,7 +52,9 @@ import {
   type PlatformLimitState,
 } from "@/features/status/lib/rateLimitWindows";
 import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
+import { splitLegacyFoldedModelId } from "@/shared/lib/foldedModelId";
 
+import type { WaveStep } from "./distillWave";
 import { resolvePersonaForRole } from "./roleCatalog";
 import type { WaveStepModelCheck } from "./waveEngine";
 
@@ -65,9 +72,9 @@ export interface WaveStepTarget {
    *
    * The ranking's profiles differ by effort as much as by model — "medium
    * engineering at medium, heavy at xhigh" is the whole difference between two
-   * of them — and the model id never carries it. The spawn applies it to the
-   * child session; without it `coding-simple` and `coding-complex` would route
-   * identically.
+   * of them — and the model id never carries it. The spawn hands it to the
+   * child as its run-settings intent; without it `coding-simple` and
+   * `coding-complex` would route identically.
    */
   effort?: EffortValue;
   /**
@@ -76,6 +83,10 @@ export interface WaveStepTarget {
    * and fails open.
    */
   effortApplied?: boolean;
+  /** Fast mode the ranking asked for, when it stated one. */
+  fast?: boolean;
+  /** `false` when fast mode was asked for and the picked model has none. */
+  fastApplied?: boolean;
 }
 
 /** Test seam: everything about the world this resolution reads. */
@@ -91,9 +102,13 @@ export interface WaveStepTargetIo {
       ? Providers
       : never
     : never;
+  /** The conductor's own target, which a step with no model inherits. */
+  conductorTarget: (sessionId: string) => SessionExecutionTarget | undefined;
 }
 
 const liveIo: WaveStepTargetIo = {
+  conductorTarget: (sessionId) =>
+    useChatSessionStore.getState().getSession(sessionId)?.executionTarget,
   routingPolicy: () => getRoutingPolicy(),
   personas: () => useAgentStore.getState().personas,
   providers: () => useAgentStore.getState().providers,
@@ -215,6 +230,12 @@ export function resolveWaveStepTarget(
       ...(choice.effortApplied !== undefined
         ? { effortApplied: choice.effortApplied }
         : {}),
+      ...(ranked.runSettings.fast !== undefined
+        ? { fast: ranked.runSettings.fast }
+        : {}),
+      ...(choice.fastApplied !== undefined
+        ? { fastApplied: choice.fastApplied }
+        : {}),
     };
   } catch {
     return undefined;
@@ -287,6 +308,15 @@ export type ExplicitWaveStepModel =
       label: string;
       /** Room left on the platform window that meters this model. */
       limit: PlatformLimitState;
+      /** The installed row the step resolved to, capabilities included. */
+      model: ModelOption;
+      /**
+       * The effort a legacy model string carried inside its name
+       * (`gpt-5.6-sol[xhigh]`), split off because the row it matched is the
+       * base model. Absent when the plan wrote the model alone, and when the
+       * row is itself still a folded id from an old inventory.
+       */
+      legacyEffort?: string;
     }
   | {
       ok: false;
@@ -294,7 +324,8 @@ export type ExplicitWaveStepModel =
       detail: string;
     };
 
-function modelDisplayName(model: ModelOption): string {
+/** How a wave notice names an installed model ("Claude Opus 5"). */
+export function modelDisplayName(model: ModelOption): string {
   return model.displayName || model.name || model.id;
 }
 
@@ -358,7 +389,18 @@ export function resolveExplicitWaveStepModel(
     const exact = installed.find(
       ({ model }) => model.id.trim().toLowerCase() === needle,
     );
-    const matched = exact ?? matchExplicitModel(needle, installed);
+    // A model string written before effort was its own field may still carry
+    // one inside its name. Only a known effort word splits — `opus[1m]` names
+    // a context lane and stays whole — and only after the exact string failed
+    // to match, so an inventory that still lists folded ids keeps working.
+    const folded = exact ? null : splitLegacyFoldedModelId(requested);
+    const modelNeedle = folded ? folded.modelId.trim().toLowerCase() : needle;
+    const matched =
+      exact ??
+      installed.find(
+        ({ model }) => model.id.trim().toLowerCase() === modelNeedle,
+      ) ??
+      matchExplicitModel(modelNeedle, installed, folded?.effort);
     if (!matched) {
       const names = [
         ...new Set(installed.map(({ model }) => modelDisplayName(model))),
@@ -384,6 +426,11 @@ export function resolveExplicitWaveStepModel(
       ),
     });
 
+    // The effort only travels separately when the row is the base model; a
+    // row that is itself `gpt-5.6-sol[medium]` already runs at that tier.
+    const legacyEffort =
+      folded && !splitLegacyFoldedModelId(model.id) ? folded.effort : undefined;
+
     return {
       ok: true,
       // Same provider reasoning as `rankedPersonaExecutionTarget`: the model's
@@ -397,6 +444,8 @@ export function resolveExplicitWaveStepModel(
       }),
       label,
       limit,
+      model,
+      ...(legacyEffort ? { legacyEffort } : {}),
     };
   } catch (error) {
     return {
@@ -434,7 +483,9 @@ const MIN_MODEL_TOKEN_LENGTH = 3;
  *   inventories list tiers ascending — so the plan's word resolved to the
  *   weakest tier of a model it never asked for (the same shape as the L1
  *   incident). Several ids for one model are a refusal unless the plan named
- *   the tier, which `splitEmbeddedReasoning` reads out of the word itself.
+ *   the tier, which the caller reads out of the plan's model string with
+ *   `splitLegacyFoldedModelId` and passes as `wantedEffort`. Only an old
+ *   inventory still lists folded ids; a current one lists each model once.
  * - Two different models matching one word is a refusal outright; nothing here
  *   is entitled to prefer one model over another.
  *
@@ -443,6 +494,7 @@ const MIN_MODEL_TOKEN_LENGTH = 3;
 function matchExplicitModel(
   needle: string,
   installed: readonly InstalledModel[],
+  wantedEffort?: string,
 ): InstalledModel | { ambiguous: (requested: string) => string } | undefined {
   const tokens = needle.split(/[^a-z0-9.]+/).filter((word) => word.length > 0);
   if (tokens.length === 0) return undefined;
@@ -471,7 +523,7 @@ function matchExplicitModel(
   if (distinctIds.size === 1) return matches[0];
 
   const baseOf = (entry: InstalledModel) =>
-    splitEmbeddedReasoning(entry.model.id)?.base.trim().toLowerCase() ??
+    splitLegacyFoldedModelId(entry.model.id)?.modelId.trim().toLowerCase() ??
     idOf(entry);
   const bases = new Set(matches.map(baseOf));
   const candidates = [
@@ -487,10 +539,10 @@ function matchExplicitModel(
   // One model served as several reasoning tiers. The plan may name the tier
   // ("gpt-5.6-sol[medium]"); otherwise picking one for it would be choosing
   // how hard the step thinks on the plan's behalf.
-  const wanted = splitEmbeddedReasoning(needle)?.effort;
+  const wanted = wantedEffort?.toLowerCase();
   if (wanted) {
     const tier = matches.filter(
-      (entry) => splitEmbeddedReasoning(entry.model.id)?.effort === wanted,
+      (entry) => splitLegacyFoldedModelId(entry.model.id)?.effort === wanted,
     );
     if (tier.length > 0) return tier[0];
   }
@@ -520,4 +572,170 @@ export function checkExplicitWaveStepModel(model: string): WaveStepModelCheck {
     };
   }
   return { ok: true };
+}
+
+/**
+ * The installed row a target names, or `undefined` when nobody can say.
+ *
+ * A session still pinned to a folded id from before effort was its own field
+ * is the base model as far as capabilities go, so the base row answers for it.
+ */
+export function advertisedModelForTarget(
+  target: SessionExecutionTarget | undefined,
+): ModelOption | undefined {
+  const modelId = typeof target?.modelId === "string" ? target.modelId : "";
+  if (!target || !modelId) return undefined;
+  const rows = io.modelsForHarness(target.harnessId);
+  const base = splitLegacyFoldedModelId(modelId)?.modelId;
+  return (
+    rows.find((row) => row.id === modelId) ??
+    (base ? rows.find((row) => row.id === base) : undefined)
+  );
+}
+
+/** The conductor's own target: what a step with no model of its own runs on. */
+export function conductorExecutionTarget(
+  conductorSessionId: string,
+): SessionExecutionTarget | undefined {
+  try {
+    return io.conductorTarget(conductorSessionId);
+  } catch {
+    return undefined;
+  }
+}
+
+export interface WaveStepRunSettingsJudgement {
+  /** What the child is asked to run at, the effort in the model's own spelling. */
+  runSettings: SessionRunSettings | undefined;
+  /** `false` when the model lists its efforts and the asked-for one is not there. */
+  effortApplied: boolean;
+  /** `false` when fast mode was asked for and the model says it has none. */
+  fastApplied: boolean;
+  /** The effort ids the model offers, when it says. */
+  offeredEfforts?: readonly string[];
+}
+
+/**
+ * Judges an effort and fast mode against one model's advertised capabilities.
+ *
+ * Unknown is not "no". A model whose efforts nobody has read, or a target whose
+ * row is not in the inventory, passes: the same fail-open rule
+ * {@link isAdvertisedModel} keeps for an empty inventory, so a discovery outage
+ * never refuses a plan over a capability nobody could see. A value the model
+ * does not honour stays in the returned intent — the child keeps it, and the
+ * run-settings reconciler shows what runs instead.
+ */
+export function judgeWaveStepRunSettings(
+  model: Pick<ModelOption, "efforts" | "supportsFast"> | undefined,
+  requested: SessionRunSettings,
+): WaveStepRunSettingsJudgement {
+  const spelled =
+    requested.effort && model
+      ? advertisedEffortId(model, requested.effort)
+      : undefined;
+  return {
+    runSettings: normalizeSessionRunSettings({
+      ...(requested.effort ? { effort: spelled ?? requested.effort } : {}),
+      ...(requested.fast !== undefined ? { fast: requested.fast } : {}),
+    }),
+    effortApplied: spelled !== null,
+    fastApplied: !(requested.fast === true && model?.supportsFast === false),
+    ...(model?.efforts
+      ? { offeredEfforts: model.efforts.map((option) => option.id) }
+      : {}),
+  };
+}
+
+/**
+ * What a wave step asks its child to run at.
+ *
+ * The step's own fields win: an `effort` the plan wrote beats one carried
+ * inside a legacy model string, and both beat the ranking's.
+ */
+export function planWaveStepRunSettings(args: {
+  step: Pick<WaveStep, "effort" | "fast">;
+  legacyEffort?: string;
+  ranked?: Pick<WaveStepTarget, "effort" | "fast">;
+  /** The row of the model the step runs on, when it is known. */
+  model: ModelOption | undefined;
+}): WaveStepRunSettingsJudgement {
+  const effort = args.step.effort ?? args.legacyEffort ?? args.ranked?.effort;
+  const fast = args.step.fast ?? args.ranked?.fast;
+  return judgeWaveStepRunSettings(args.model, {
+    ...(effort ? { effort } : {}),
+    ...(fast !== undefined ? { fast } : {}),
+  });
+}
+
+/**
+ * The admission-time gate for a step's own `effort` and `fast`, in the shape
+ * `admitWavePlan` takes.
+ *
+ * An effort or fast mode the plan named is an instruction, exactly like a
+ * named model, so the discipline is the same: a value the model the step will
+ * run on does not offer refuses the whole plan, naming what IS offered, while
+ * the conductor can still replan. The model is the plan's own when it named
+ * one, else the role's ranking, else the conductor's.
+ *
+ * What the ranking asks for is not judged here — a ranking is a preference and
+ * fails open at the spawn with a notice. Neither is anything this gate cannot
+ * read: an unresolvable model is the model check's refusal, with its own
+ * reason, and a store that throws admits the step, whose spawn re-judges it.
+ */
+export function checkWaveStepRunSettings(
+  step: WaveStep,
+  conductorSessionId: string,
+): WaveStepModelCheck {
+  try {
+    const legacyEffort =
+      step.model && !step.effort
+        ? splitLegacyFoldedModelId(step.model)?.effort
+        : undefined;
+    if (!step.effort && step.fast !== true && !legacyEffort) {
+      return { ok: true };
+    }
+
+    let model: ModelOption | undefined;
+    let label: string | undefined;
+    let effort = step.effort;
+    if (step.model) {
+      const resolved = resolveExplicitWaveStepModel(step.model);
+      if (!resolved.ok) return { ok: true };
+      model = resolved.model;
+      label = resolved.label;
+      effort = step.effort ?? resolved.legacyEffort;
+    } else {
+      const ranked = resolveWaveStepTarget(step.role, step.modelClass);
+      model = advertisedModelForTarget(
+        ranked?.target ?? conductorExecutionTarget(conductorSessionId),
+      );
+      label = ranked?.label;
+    }
+    if (!model) return { ok: true };
+
+    const name = label ?? modelDisplayName(model);
+    const judged = judgeWaveStepRunSettings(model, {
+      ...(effort ? { effort } : {}),
+      ...(step.fast !== undefined ? { fast: step.fast } : {}),
+    });
+    const problems: string[] = [];
+    if (effort && !judged.effortApplied) {
+      const offered = judged.offeredEfforts ?? [];
+      problems.push(
+        offered.length > 0
+          ? `The model "${name}" does not offer the reasoning effort "${effort}"; it offers ${offered.join(", ")}.`
+          : `The model "${name}" offers no reasoning effort choices, so "effort": "${effort}" cannot apply. Re-send the plan without "effort".`,
+      );
+    }
+    if (!judged.fastApplied) {
+      problems.push(
+        `The model "${name}" has no fast mode. Re-send the plan without "fast", or name a model that has one.`,
+      );
+    }
+    return problems.length > 0
+      ? { ok: false, detail: problems.join(" ") }
+      : { ok: true };
+  } catch {
+    return { ok: true };
+  }
 }

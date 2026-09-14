@@ -377,7 +377,9 @@ export function WaveTelemetryPane({
                 data-testid="wave-telemetry-facts"
               >
                 {facts.steps.map((fact) => (
-                  <li key={`${fact.role}:${fact.modelId}`}>
+                  <li
+                    key={`${fact.role}:${fact.modelId}:${fact.harnessId ?? ""}`}
+                  >
                     {t("stats.waves.factStep", {
                       model: fact.modelId,
                       role: fact.role,
@@ -387,7 +389,7 @@ export function WaveTelemetryPane({
                   </li>
                 ))}
                 {facts.conductors.map((fact) => (
-                  <li key={`conductor:${fact.modelId}`}>
+                  <li key={`conductor:${fact.modelId}:${fact.harnessId ?? ""}`}>
                     {t("stats.waves.factConductor", {
                       model: fact.modelId,
                       accepted: fact.accepted,

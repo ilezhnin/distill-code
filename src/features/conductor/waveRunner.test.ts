@@ -583,17 +583,18 @@ describe("waveRunner", () => {
     }
   });
 
-  it("spawns a step with the budget and class the plan gave it (P49/P36)", async () => {
-    // The plan's ceiling is what the budget guard stops the child on, and the
-    // plan's class is what routes it. Both are parsed at admission and only
-    // used at spawn, which is rebuilt from the persisted wave — so this is the
-    // whole path, not the parser.
+  it("spawns a step with the budget, class, effort and fast mode the plan gave it (P49/P36)", async () => {
+    // The plan's ceiling is what the budget guard stops the child on, the
+    // class is what routes it, and effort and fast mode are how the child
+    // runs. All are parsed at admission and only used at spawn, which is
+    // rebuilt from the persisted wave — so this is the whole path, not the
+    // parser.
     useConductorGraphStore.getState().registerNode(conductorNode());
     setTranscript([
       assistant(
         "plan-1",
         fence(
-          '{"steps":[{"role":"scout","subtask":"Look","access":[],"budget":{"minutes":5,"tokens":20000},"class":"coding-simple"}]}',
+          '{"steps":[{"role":"scout","subtask":"Look","access":[],"budget":{"minutes":5,"tokens":20000},"class":"coding-simple","effort":"high","fast":false}]}',
         ),
       ),
     ]);
@@ -605,22 +606,26 @@ describe("waveRunner", () => {
 
     const [args] = spawnConductorChildSession.mock.calls[0];
     expect(args.budget).toEqual({ minutes: 5, tokens: 20000 });
+    expect(args.runSettings).toEqual({ effort: "high", fast: false });
     expect(resolveWaveStepTarget).toHaveBeenCalledWith(
       "scout",
       "coding-simple",
     );
-    // The persisted record carries both, so a restart resumes the same step.
+    // The persisted record carries all of them, so a restart resumes the
+    // same step.
     expect(getWaveEngineState().waves[0]?.steps[0]).toMatchObject({
       budget: { minutes: 5, tokens: 20000 },
       modelClass: "coding-simple",
+      effort: "high",
+      fast: false,
     });
   });
 
-  it("spawns a step with the reasoning effort its profile ranked (P36)", async () => {
+  it("spawns a step with the effort and fast mode its profile ranked (P36)", async () => {
     // The crew profiles differ by effort as much as by model — "medium
-    // engineering at medium, heavy at xhigh" — and only codex-style ids carry
-    // the effort with the model. The spawn is the one place that can compose it
-    // onto the child session, so the resolved effort has to reach it.
+    // engineering at medium, heavy at xhigh" — and the model id never carries
+    // it. The spawn hands both to the child as its run settings, on every
+    // harness alike.
     resolveWaveStepTarget.mockReturnValueOnce({
       target: {
         harnessId: "claude-acp",
@@ -632,6 +637,7 @@ describe("waveRunner", () => {
       fallback: false,
       nearLimit: false,
       effort: "medium",
+      fast: true,
     });
     useConductorGraphStore.getState().registerNode(conductorNode());
     setTranscript([
@@ -647,7 +653,206 @@ describe("waveRunner", () => {
     );
 
     const [args] = spawnConductorChildSession.mock.calls[0];
-    expect(args.reasoningEffort).toBe("medium");
+    expect(args.runSettings).toEqual({ effort: "medium", fast: true });
+    expect(args).not.toHaveProperty("reasoningEffort");
+  });
+
+  it("says so on the wave when the ranked effort is one the picked model does not offer", async () => {
+    setWaveStepTargetIoForTests({
+      personas: () => [],
+      providers: () => [{ id: "claude-acp", label: "Claude Code" }] as never,
+      modelsForHarness: (harnessId) =>
+        (harnessId === "claude-acp"
+          ? [
+              {
+                id: "fable-5-1",
+                displayName: "Fable 5.1",
+                efforts: [{ id: "low" }, { id: "high" }],
+                supportsFast: false,
+              },
+            ]
+          : []) as never,
+      rateLimits: () => [] as never,
+    });
+    resolveWaveStepTarget.mockReturnValueOnce({
+      target: {
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
+        modelId: "fable-5-1",
+        modelName: "Fable 5.1",
+      },
+      label: "Fable 5.1",
+      fallback: false,
+      nearLimit: false,
+      effort: "max",
+      effortApplied: false,
+      fast: true,
+      fastApplied: false,
+    });
+    try {
+      useConductorGraphStore.getState().registerNode(conductorNode());
+      setTranscript([
+        assistant(
+          "plan-1",
+          fence('{"steps":[{"role":"scout","subtask":"Look","access":[]}]}'),
+        ),
+      ]);
+
+      runWaveEngineTick();
+      await vi.waitFor(() =>
+        expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+      );
+
+      // A ranking is a preference: the step runs, keeps the intent, and says
+      // what it is not getting.
+      const [args] = spawnConductorChildSession.mock.calls[0];
+      expect(args.runSettings).toEqual({ effort: "max", fast: true });
+      const texts = noticeTexts();
+      expect(texts).toContainEqual(
+        expect.stringContaining("without the reasoning effort «max»"),
+      );
+      expect(texts).toContainEqual(
+        expect.stringContaining("without fast mode"),
+      );
+    } finally {
+      resetWaveStepTargetIoForTests();
+    }
+  });
+
+  it("hands a step the effort and fast mode it named on an explicit model", async () => {
+    setWaveStepTargetIoForTests({
+      personas: () => [],
+      providers: () => [{ id: "claude-acp", label: "Claude Code" }] as never,
+      modelsForHarness: (harnessId) =>
+        (harnessId === "claude-acp"
+          ? [
+              {
+                id: "claude-opus-5",
+                displayName: "Opus 5",
+                efforts: [{ id: "high" }, { id: "xhigh" }],
+                supportsFast: true,
+              },
+            ]
+          : []) as never,
+      rateLimits: () => [] as never,
+    });
+    try {
+      useConductorGraphStore.getState().registerNode(conductorNode());
+      setTranscript([
+        assistant(
+          "plan-1",
+          fence(
+            '{"steps":[{"role":"scout","subtask":"Look","access":[],"model":"opus","effort":"xhigh","fast":true}]}',
+          ),
+        ),
+      ]);
+
+      runWaveEngineTick();
+      await vi.waitFor(() =>
+        expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+      );
+
+      const [args] = spawnConductorChildSession.mock.calls[0];
+      expect(args.executionTarget).toMatchObject({ modelId: "claude-opus-5" });
+      expect(args.runSettings).toEqual({ effort: "xhigh", fast: true });
+      expect(noticeTexts()).toEqual([]);
+    } finally {
+      resetWaveStepTargetIoForTests();
+    }
+  });
+
+  it("refuses the whole plan when a step names an effort its model does not offer, before any spawn", async () => {
+    setWaveStepTargetIoForTests({
+      personas: () => [],
+      providers: () => [{ id: "grok-acp", label: "Grok" }] as never,
+      modelsForHarness: (harnessId) =>
+        (harnessId === "grok-acp"
+          ? [
+              {
+                id: "grok-4-6",
+                displayName: "Grok 4.6",
+                efforts: [{ id: "low" }, { id: "high" }],
+                supportsFast: false,
+              },
+            ]
+          : []) as never,
+      rateLimits: () => [] as never,
+    });
+    try {
+      useConductorGraphStore.getState().registerNode(conductorNode());
+      setTranscript([
+        assistant(
+          "plan-1",
+          fence(
+            '{"steps":[{"role":"scout","subtask":"Look","access":[]},{"role":"qa","subtask":"Check","access":[],"model":"grok","effort":"xhigh"}]}',
+          ),
+        ),
+      ]);
+
+      runWaveEngineTick();
+      await Promise.resolve();
+
+      expect(spawnConductorChildSession).not.toHaveBeenCalled();
+      expect(getWaveEngineState().waves).toHaveLength(0);
+      expect(noticeTexts()[0]).toContain(
+        i18n.t("chat:conductor.wave.reason.stepRunSettingsUnavailable", {
+          step: 2,
+        }),
+      );
+      expect(noticeTexts()[0]).toContain("it offers low, high");
+    } finally {
+      resetWaveStepTargetIoForTests();
+    }
+  });
+
+  it("runs a legacy folded model string split into model and effort, and says so", async () => {
+    setWaveStepTargetIoForTests({
+      personas: () => [],
+      providers: () => [{ id: "codex-acp", label: "Codex" }] as never,
+      modelsForHarness: (harnessId) =>
+        (harnessId === "codex-acp"
+          ? [
+              {
+                id: "gpt-5.6-sol",
+                displayName: "GPT-5.6 Sol",
+                efforts: [{ id: "low" }, { id: "xhigh" }],
+              },
+            ]
+          : []) as never,
+      rateLimits: () => [] as never,
+    });
+    try {
+      useConductorGraphStore.getState().registerNode(conductorNode());
+      setTranscript([
+        assistant(
+          "plan-1",
+          fence(
+            '{"steps":[{"role":"scout","subtask":"Look","access":[],"model":"gpt-5.6-sol[xhigh]"}]}',
+          ),
+        ),
+      ]);
+
+      runWaveEngineTick();
+      await vi.waitFor(() =>
+        expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+      );
+
+      const [args] = spawnConductorChildSession.mock.calls[0];
+      expect(args.executionTarget).toMatchObject({
+        harnessId: "codex-acp",
+        modelId: "gpt-5.6-sol",
+      });
+      expect(args.runSettings).toEqual({ effort: "xhigh" });
+      expect(noticeTexts()).toContainEqual(
+        expect.stringContaining("«gpt-5.6-sol[xhigh]»"),
+      );
+      // The plan's own record is not rewritten: the split happens at spawn.
+      expect(getWaveEngineState().waves[0]?.steps[0]?.model).toBe(
+        "gpt-5.6-sol[xhigh]",
+      );
+    } finally {
+      resetWaveStepTargetIoForTests();
+    }
   });
 
   it("never re-processes a plan message, however often the tick fires", async () => {

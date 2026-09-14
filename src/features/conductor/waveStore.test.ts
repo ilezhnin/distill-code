@@ -422,6 +422,33 @@ describe("parseWaveEngineState", () => {
     expect(junkBudget.waves[0]?.steps[0]?.budget).toBeUndefined();
   });
 
+  it("round-trips a step's effort and fast mode, and drops junk values", () => {
+    // A resumed step is spawned from this record: one that lost its effort
+    // would run at the ranking's or the model's default instead of the plan's.
+    const base = wave("w1");
+    const state = withWave(emptyWaveEngineState(), {
+      ...base,
+      steps: [{ ...base.steps[0], effort: "xhigh", fast: false }],
+    });
+    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
+      state,
+    );
+
+    const junk = parseWaveEngineState({
+      version: 2,
+      waves: [
+        {
+          ...JSON.parse(JSON.stringify(base)),
+          steps: [{ ...base.steps[0], effort: "   ", fast: "yes" }],
+        },
+      ],
+      tombstones: [],
+    });
+    expect(junk.waves[0]?.steps).toHaveLength(1);
+    expect(junk.waves[0]?.steps[0]?.effort).toBeUndefined();
+    expect(junk.waves[0]?.steps[0]?.fast).toBeUndefined();
+  });
+
   it("survives every phase either union can hold", () => {
     // The C1 regression, as a property over the unions themselves: a phase
     // that exists in `waveEngine.ts` but not in this module's guard used to
