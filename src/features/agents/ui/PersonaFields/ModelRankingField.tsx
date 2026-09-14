@@ -27,7 +27,6 @@ import { useProviderModels } from "@/features/providers/hooks/useProviderModels"
 import { providerModelInventoryMessage } from "@/features/providers/lib/providerModelInventoryStatus";
 import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
 import { platformLimitState } from "@/features/status/lib/rateLimitWindows";
-import type { EmbeddedReasoningEffort } from "@/features/chat/lib/modelReasoningVariants";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { Label } from "@/shared/ui/label";
@@ -38,12 +37,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/shared/ui/select";
+import { Switch } from "@/shared/ui/switch";
 
 import {
   candidatesForRankingSource,
   isAgentRankingPlatform,
   MAX_AGENT_RANKING_ENTRIES,
   parseAgentRankingSource,
+  rankingEffortChoices,
   rankingFromClass,
   rankingInventoryFromProviders,
   serializeAgentModelRanking,
@@ -53,15 +54,8 @@ import {
 import {
   modelPreferenceClassForPersona,
   resolveRankedCandidates,
+  type RankedModelChoice,
 } from "../../lib/modelRanking";
-
-/** Efforts worth offering. The full vocabulary is harness-specific noise. */
-const EFFORT_CHOICES: readonly EmbeddedReasoningEffort[] = [
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-];
 
 const NO_EFFORT = "__default__";
 
@@ -226,13 +220,57 @@ export function ModelRankingField({
     (index: number, effort: string) => {
       const next = [...entries];
       const { effort: _dropped, ...rest } = next[index];
-      next[index] =
-        effort === NO_EFFORT
-          ? rest
-          : { ...rest, effort: effort as EmbeddedReasoningEffort };
+      next[index] = effort === NO_EFFORT ? rest : { ...rest, effort };
       commit(next);
     },
     [commit, entries],
+  );
+
+  // Off is "not stated" rather than a stored `false`, so turning the switch
+  // off leaves the entry exactly as it was before fast mode was ever set.
+  const setFast = useCallback(
+    (index: number, fast: boolean) => {
+      const next = [...entries];
+      const { fastMode: _dropped, ...rest } = next[index];
+      next[index] = fast ? { ...rest, fastMode: true } : rest;
+      commit(next);
+    },
+    [commit, entries],
+  );
+
+  const inventoryItemFor = useCallback(
+    (entry: AgentRankingEntry) =>
+      inventory.find(
+        (model) =>
+          model.platform === entry.platform && model.modelId === entry.modelId,
+      ),
+    [inventory],
+  );
+
+  /**
+   * The preview line for a pick. It names what will actually run: a ranked
+   * effort or fast mode the model does not offer is still the intent, but the
+   * line says the model runs without it rather than repeating the wish.
+   */
+  const previewText = useCallback(
+    (choice: RankedModelChoice) => {
+      const pick =
+        choice.effort && choice.effortApplied === false
+          ? t("ranking.previewEffortUnavailable", {
+              model: choice.label,
+              effort: choice.effort,
+              actual: choice.model.defaultEffort || t("ranking.effortDefault"),
+            })
+          : t("ranking.previewPick", {
+              model: choice.label,
+              effort: choice.effort ?? t("ranking.effortDefault"),
+            });
+      if (choice.fast !== true) return pick;
+      return choice.fastApplied === false
+        ? `${pick} — ${t("ranking.previewFastUnavailable", { model: choice.label })}`
+        : `${pick} · ${t("ranking.fast")}`;
+    },
+    [t],
   );
 
   /**
@@ -267,104 +305,134 @@ export function ModelRankingField({
           requires discovering that a text placeholder hides the entry point. */}
       {entries.length > 0 ? (
         <ol className="flex list-none flex-col gap-1.5">
-          {keyedEntries.map(({ key, entry }, index) => (
-            <li
-              key={key}
-              className="flex items-center gap-1.5"
-              data-testid="model-ranking-row"
-            >
-              <span className="w-4 shrink-0 text-[11px] text-muted-foreground">
-                {index + 1}
-              </span>
-              <Select
-                value={`${entry.platform}:${entry.modelId}`}
-                onValueChange={(next) => setModel(index, next)}
-                disabled={isReadOnly}
+          {keyedEntries.map(({ key, entry }, index) => {
+            const inventoryItem = inventoryItemFor(entry);
+            const effortChoices = rankingEffortChoices(entry, inventoryItem);
+            // The switch follows the model: shown where the model has fast
+            // mode, and kept where the entry already asks for it so a stored
+            // value never becomes invisible.
+            const showFast =
+              inventoryItem?.supportsFast === true || entry.fastMode === true;
+            return (
+              <li
+                key={key}
+                className="flex items-center gap-1.5"
+                data-testid="model-ranking-row"
               >
-                <SelectTrigger
-                  className={cn("min-w-0 flex-1", classes?.selectTrigger)}
-                  aria-label={t("ranking.modelAria", { position: index + 1 })}
+                <span className="w-4 shrink-0 text-[11px] text-muted-foreground">
+                  {index + 1}
+                </span>
+                <Select
+                  value={`${entry.platform}:${entry.modelId}`}
+                  onValueChange={(next) => setModel(index, next)}
+                  disabled={isReadOnly}
                 >
-                  {/* The stored label renders as the value text directly: a
+                  <SelectTrigger
+                    className={cn("min-w-0 flex-1", classes?.selectTrigger)}
+                    aria-label={t("ranking.modelAria", { position: index + 1 })}
+                  >
+                    {/* The stored label renders as the value text directly: a
                       Radix placeholder only shows for an empty value, so a row
                       whose model id no longer matches the installed inventory
                       (a renamed model, or the legacy single-model seed for a
                       model that is not installed) would otherwise show a blank
                       select — exactly the silent drift the stored label exists
                       to survive. */}
-                  <SelectValue placeholder={entry.label}>
-                    {entry.label}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {inventory.map((model) => (
-                    <SelectItem
-                      key={`${model.platform}:${model.modelId}`}
-                      value={`${model.platform}:${model.modelId}`}
-                    >
-                      {model.providerLabel} · {model.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select
-                value={entry.effort ?? NO_EFFORT}
-                onValueChange={(next) => setEffort(index, next)}
-                disabled={isReadOnly}
-              >
-                <SelectTrigger
-                  className={cn("w-24 shrink-0", classes?.selectTrigger)}
-                  aria-label={t("ranking.effortAria", { position: index + 1 })}
+                    <SelectValue placeholder={entry.label}>
+                      {entry.label}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {inventory.map((model) => (
+                      <SelectItem
+                        key={`${model.platform}:${model.modelId}`}
+                        value={`${model.platform}:${model.modelId}`}
+                      >
+                        {model.providerLabel} · {model.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={
+                    effortChoices.find(
+                      (choice) =>
+                        choice.id.toLowerCase() === entry.effort?.toLowerCase(),
+                    )?.id ?? NO_EFFORT
+                  }
+                  onValueChange={(next) => setEffort(index, next)}
+                  disabled={isReadOnly || effortChoices.length === 0}
                 >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NO_EFFORT}>
-                    {t("ranking.effortDefault")}
-                  </SelectItem>
-                  {EFFORT_CHOICES.map((effort) => (
-                    <SelectItem key={effort} value={effort}>
-                      {effort}
+                  <SelectTrigger
+                    className={cn("w-24 shrink-0", classes?.selectTrigger)}
+                    aria-label={t("ranking.effortAria", {
+                      position: index + 1,
+                    })}
+                    data-testid="model-ranking-effort"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_EFFORT}>
+                      {t("ranking.effortDefault")}
                     </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                disabled={isReadOnly || index === 0}
-                onClick={() => move(index, -1)}
-                tooltip={t("ranking.moveUp")}
-                aria-label={t("ranking.moveUp")}
-              >
-                <IconArrowUp />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                disabled={isReadOnly || index === entries.length - 1}
-                onClick={() => move(index, 1)}
-                tooltip={t("ranking.moveDown")}
-                aria-label={t("ranking.moveDown")}
-              >
-                <IconArrowDown />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                destructive
-                disabled={isReadOnly}
-                onClick={() => remove(index)}
-                tooltip={t("ranking.remove")}
-                aria-label={t("ranking.remove")}
-              >
-                <IconX />
-              </Button>
-            </li>
-          ))}
+                    {effortChoices.map((choice) => (
+                      <SelectItem key={choice.id} value={choice.id}>
+                        {choice.unlisted
+                          ? t("ranking.effortNotOffered", {
+                              effort: choice.name,
+                            })
+                          : choice.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {showFast ? (
+                  <Switch
+                    checked={entry.fastMode === true}
+                    onCheckedChange={(checked) => setFast(index, checked)}
+                    disabled={isReadOnly}
+                    aria-label={t("ranking.fastAria", { position: index + 1 })}
+                    data-testid="model-ranking-fast"
+                  />
+                ) : null}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  disabled={isReadOnly || index === 0}
+                  onClick={() => move(index, -1)}
+                  tooltip={t("ranking.moveUp")}
+                  aria-label={t("ranking.moveUp")}
+                >
+                  <IconArrowUp />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  disabled={isReadOnly || index === entries.length - 1}
+                  onClick={() => move(index, 1)}
+                  tooltip={t("ranking.moveDown")}
+                  aria-label={t("ranking.moveDown")}
+                >
+                  <IconArrowDown />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  destructive
+                  disabled={isReadOnly}
+                  onClick={() => remove(index)}
+                  tooltip={t("ranking.remove")}
+                  aria-label={t("ranking.remove")}
+                >
+                  <IconX />
+                </Button>
+              </li>
+            );
+          })}
         </ol>
       ) : null}
 
@@ -434,10 +502,7 @@ export function ModelRankingField({
           data-testid="model-ranking-preview"
         >
           {preview.choice
-            ? t("ranking.previewPick", {
-                model: preview.choice.label,
-                effort: preview.choice.effort ?? t("ranking.effortDefault"),
-              })
+            ? previewText(preview.choice)
             : t("ranking.previewNone")}
           {preview.skipped.length > 0
             ? ` — ${preview.skipped

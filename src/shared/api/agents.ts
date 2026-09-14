@@ -15,6 +15,7 @@ import {
   serializeAgentModelRanking,
 } from "@/features/agents/lib/agentModelRanking";
 import { normalizeAvatarUrl } from "@/shared/lib/avatarUrl";
+import { splitLegacyFoldedModelId } from "@/shared/lib/foldedModelId";
 import { resolveAgentProviderCatalogIdStrict } from "@/features/providers/providerCatalog";
 import {
   isPersonaMarkdownImportFileName,
@@ -40,6 +41,8 @@ const PORTABLE_SPROUT_FRONTMATTER_KEYS = new Set([
   "display_name",
   "description",
   "model",
+  "effort",
+  "fast_mode",
   "model_ranking",
   "avatar",
   "good_for",
@@ -77,6 +80,10 @@ export type AgentSourceProperties = {
   provider?: string | null;
   modelProviderId?: string | null;
   model?: string | null;
+  /** Reasoning effort for `model`, in the harness's own vocabulary. */
+  effort?: string | null;
+  /** Fast mode for `model`. Only a literal boolean counts. */
+  fast_mode?: boolean | null;
   model_ranking?: string | null;
   memory_write?: boolean | null;
   avatar?: string | null;
@@ -157,6 +164,13 @@ function personaProperties(
     properties.modelProviderId = request.modelProviderId;
   }
   if (request.model) properties.model = request.model;
+  if (request.effort?.trim()) properties.effort = request.effort.trim();
+  if (typeof request.fastMode === "boolean") {
+    properties.fast_mode = request.fastMode;
+  }
+  // A caller that still speaks folded ids (an older agent, a pasted id) gets
+  // the model and effort stored apart; its explicit effort wins.
+  splitFoldedModelProperty(properties);
   if (request.modelRanking) properties.model_ranking = request.modelRanking;
   if (request.goodFor) properties.good_for = request.goodFor;
   if (request.vibes) properties.vibes = request.vibes;
@@ -171,7 +185,12 @@ function applyOptionalProperty(
   properties: AgentSourceProperties,
   key: keyof Pick<
     AgentSourceProperties,
-    "provider" | "modelProviderId" | "model" | "model_ranking" | "avatar"
+    | "provider"
+    | "modelProviderId"
+    | "model"
+    | "effort"
+    | "model_ranking"
+    | "avatar"
   >,
   value: string | null | undefined,
 ): void {
@@ -192,10 +211,32 @@ function mergedPersonaProperties(
   request: UpdatePersonaRequest,
 ): AgentSourceProperties {
   const properties: AgentSourceProperties = { ...(existing ?? {}) };
+  const previousModel = splitLegacyFoldedModelId(
+    propertyToString(existing?.model),
+  );
+  const previousEffort = personaEffortProperty(
+    existing as AgentSourceProperties | undefined,
+  );
 
   applyOptionalProperty(properties, "provider", request.provider);
   applyOptionalProperty(properties, "modelProviderId", request.modelProviderId);
   applyOptionalProperty(properties, "model", request.model);
+  // A write that replaces a legacy folded `model` with its own base id — the
+  // target repair does exactly that — must not drop the effort half that only
+  // lived inside the old id.
+  if (
+    request.effort === undefined &&
+    previousModel &&
+    previousEffort &&
+    request.model === previousModel.modelId &&
+    !("effort" in properties)
+  ) {
+    properties.effort = previousEffort;
+  }
+  applyOptionalProperty(properties, "effort", request.effort);
+  if (request.fastMode !== undefined) {
+    properties.fast_mode = request.fastMode;
+  }
   applyOptionalProperty(properties, "model_ranking", request.modelRanking);
   applyOptionalProperty(
     properties,
@@ -367,13 +408,59 @@ function personaExportName(source: AgentSourceEntry): string {
   );
 }
 
+/**
+ * The persona's reasoning effort: its own `effort` key when present (a cleared
+ * `null` included), else the preserved frontmatter copy, else the effort half
+ * of a legacy folded `model`. Read-only — nothing here rewrites the file.
+ */
+function personaEffortProperty(
+  properties: AgentSourceProperties | undefined,
+): string | undefined {
+  if (properties && "effort" in properties) {
+    return trimmedPropertyString(properties.effort);
+  }
+  return (
+    trimmedPropertyString(sproutFrontmatterFromProperties(properties).effort) ??
+    splitLegacyFoldedModelId(propertyToString(properties?.model))?.effort
+  );
+}
+
+/** The persona's fast mode; only a literal boolean counts, like memory_write. */
+function personaFastModeProperty(
+  properties: AgentSourceProperties | undefined,
+): boolean | undefined {
+  const value =
+    properties && "fast_mode" in properties
+      ? properties.fast_mode
+      : sproutFrontmatterFromProperties(properties).fast_mode;
+  return typeof value === "boolean" ? value : undefined;
+}
+
+/**
+ * Stores a folded `model` as its base id plus `effort`, the explicit `effort`
+ * winning. Only for sources being created (imports, new agents): an existing
+ * operator file is read tolerantly instead and changes on its next save.
+ */
+function splitFoldedModelProperty(properties: AgentSourceProperties): void {
+  const folded = splitLegacyFoldedModelId(propertyToString(properties.model));
+  if (!folded) {
+    return;
+  }
+  properties.model = folded.modelId;
+  if (!trimmedPropertyString(properties.effort)) {
+    properties.effort = folded.effort;
+  }
+}
+
 function personaModelProperty(
   properties: AgentSourceProperties | undefined,
 ): string | undefined {
-  const model = propertyToString(properties?.model);
-  if (!model) {
+  const storedModel = propertyToString(properties?.model);
+  if (!storedModel) {
     return undefined;
   }
+  // The effort half is exported as its own key.
+  const model = splitLegacyFoldedModelId(storedModel)?.modelId ?? storedModel;
 
   const harnessId = propertyToString(properties?.provider);
   const modelProviderId = propertyToString(properties?.modelProviderId);
@@ -531,6 +618,17 @@ function serializePersonaMarkdown(source: AgentSourceEntry): ExportResult {
   const model = personaModelProperty(properties);
   if (model) {
     frontmatter.model = model;
+  }
+
+  // Portable keys like model_ranking, so the passthrough below never carries
+  // them either.
+  const effort = personaEffortProperty(properties);
+  if (effort) {
+    frontmatter.effort = effort;
+  }
+  const fastMode = personaFastModeProperty(properties);
+  if (fastMode !== undefined) {
+    frontmatter.fast_mode = fastMode;
   }
 
   // model_ranking is a portable key (see PORTABLE_SPROUT_FRONTMATTER_KEYS),
@@ -729,6 +827,15 @@ function legacyPersonaProperties(
   applyOptionalProperty(properties, "model", propertyToString(parsed.model));
   applyOptionalProperty(
     properties,
+    "effort",
+    trimmedPropertyString(parsed.effort),
+  );
+  if (typeof parsed.fastMode === "boolean") {
+    properties.fast_mode = parsed.fastMode;
+  }
+  splitFoldedModelProperty(properties);
+  applyOptionalProperty(
+    properties,
     "avatar",
     legacyAvatarToProperty(parsed.avatar) ??
       legacyAvatarToProperty(parsed.avatarUrl),
@@ -823,6 +930,14 @@ function personaMarkdownProperties(
   if (model) {
     applyPersonaModelProperty(properties, model);
   }
+  const effort = trimmedPropertyString(parsed.effort);
+  if (effort) properties.effort = effort;
+  if (typeof parsed.fast_mode === "boolean") {
+    properties.fast_mode = parsed.fast_mode;
+  }
+  // An imported `model: codex-acp:gpt-5.6-sol[xhigh]` is a new file, so it is
+  // stored in the current shape from the start.
+  splitFoldedModelProperty(properties);
   const goodFor = normalizedAgentCardMetadata(parsed.good_for, "good_for");
   const vibes = normalizedAgentCardMetadata(parsed.vibes, "vibes");
   if (goodFor) properties.good_for = goodFor;
@@ -974,6 +1089,12 @@ export function agentSourceToPersona(source: AgentSourceEntry): Persona {
     source.properties,
     "expected_output",
   );
+  // A model saved before model and effort were separate selections reads as
+  // its base id plus the effort; the file keeps its folded id until the
+  // operator next saves the agent.
+  const storedModel = propertyToString(source.properties?.model);
+  const effort = personaEffortProperty(source.properties);
+  const fastMode = personaFastModeProperty(source.properties);
   return {
     id: source.path,
     displayName: source.name,
@@ -981,7 +1102,9 @@ export function agentSourceToPersona(source: AgentSourceEntry): Persona {
     systemPrompt: source.content,
     provider: propertyToString(source.properties?.provider),
     modelProviderId: propertyToString(source.properties?.modelProviderId),
-    model: propertyToString(source.properties?.model),
+    model: splitLegacyFoldedModelId(storedModel)?.modelId ?? storedModel,
+    ...(effort ? { effort } : {}),
+    ...(fastMode !== undefined ? { fastMode } : {}),
     modelRanking: propertyToString(source.properties?.model_ranking),
     // `?? undefined` would erase the meaningful empty-array override, so the
     // field is spread in only when it validated to something.
