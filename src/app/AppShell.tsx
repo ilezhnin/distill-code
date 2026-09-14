@@ -166,6 +166,8 @@ import { useNewSessionTarget } from "@/features/providers/hooks/useNewSessionTar
 import { getProviderCatalog } from "@/features/providers/providerCatalog";
 import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
 import { hostSelectionFromExecutionTarget } from "@/features/chat/lib/hostExecutionTarget";
+import { reconcileSessionRunSettings } from "@/features/chat/lib/runSettingsReconciler";
+import { normalizeSessionRunSettings } from "@/features/chat/lib/sessionRunSettings";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 import {
   isModelExecutionTarget,
@@ -2243,6 +2245,78 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     ],
   );
 
+  // Intent first, then apply: the intent is what survives a model switch, so it
+  // is recorded even while the Home session's model has not reported its fast
+  // toggle yet. With no toggle there is nothing to write to, and reconciling
+  // now would treat a model that has not answered yet as one without fast
+  // mode; the reconcile that follows its answer applies the intent instead.
+  const handleGlobalComposerFastModeChange = useCallback(
+    (enabled: boolean) => {
+      if (!homeSessionId) {
+        return;
+      }
+      const current = homeSession?.fastMode;
+      const previousDesired = homeSession?.desiredRunSettings;
+      const desiredRunSettings = normalizeSessionRunSettings({
+        ...previousDesired,
+        fast: enabled,
+      });
+      if (!current || current.enabled === enabled) {
+        patchSession(homeSessionId, { desiredRunSettings });
+        return;
+      }
+
+      patchSession(homeSessionId, {
+        desiredRunSettings,
+        fastMode: { ...current, enabled },
+      });
+      const targetAtRequest = homeSession?.executionTarget;
+      void reconcileSessionRunSettings({
+        sessionId: homeSessionId,
+        desired: desiredRunSettings,
+        // The menus as they were BEFORE the optimistic patch above, so the
+        // chosen value still reads as one that has to be written.
+        menus: {
+          reasoningEffort: homeSession?.reasoningEffort ?? null,
+          fastMode: current,
+        },
+      })
+        .then((result) => {
+          if (!result.error) {
+            return;
+          }
+          const liveSession = useChatSessionStore
+            .getState()
+            .getSession(homeSessionId);
+          if (
+            !sameSessionExecutionTarget(
+              liveSession?.executionTarget,
+              targetAtRequest,
+            ) ||
+            liveSession?.fastMode?.enabled !== enabled
+          ) {
+            return;
+          }
+          console.error("Failed to set Home fast mode:", result.error);
+          patchSession(homeSessionId, {
+            fastMode: current,
+            desiredRunSettings: previousDesired,
+          });
+        })
+        .catch((error) => {
+          console.error("Failed to set Home fast mode:", error);
+        });
+    },
+    [
+      homeSession?.desiredRunSettings,
+      homeSession?.executionTarget,
+      homeSession?.fastMode,
+      homeSession?.reasoningEffort,
+      homeSessionId,
+      patchSession,
+    ],
+  );
+
   const syncGlobalComposerExecutionTargetToHome = useCallback(
     (sessionId: string, requestedTarget: SessionExecutionTarget) => {
       const sessionStore = useChatSessionStore.getState();
@@ -4052,6 +4126,16 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                       }
                     : undefined,
                 }}
+                fastMode={
+                  homeSessionId
+                    ? {
+                        config: homeSession?.fastMode,
+                        desired: homeSession?.desiredRunSettings?.fast,
+                        onChange: handleGlobalComposerFastModeChange,
+                      }
+                    : undefined
+                }
+                runSettingsNotice={homeSession?.runSettingsNotice ?? null}
                 currentExecutionTarget={currentGlobalComposerExecutionTarget}
                 onExecutionTargetChange={
                   handleGlobalComposerExecutionTargetChange

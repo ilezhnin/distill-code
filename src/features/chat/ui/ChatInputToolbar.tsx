@@ -18,7 +18,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Progress } from "@/shared/ui/progress";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/shared/ui/tooltip";
 import { AgentModelPicker } from "./AgentModelPicker";
-import { FastModePill } from "./FastModePill";
 import { ReasoningEffortPill } from "./ReasoningEffortPill";
 import { resolveEffectiveReasoningEffort } from "../lib/effectiveReasoningEffort";
 import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProviderStatus";
@@ -26,6 +25,7 @@ import { getCatalogEntryFromEntries } from "@/features/providers/providerCatalog
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import { listVisibleAgentPickerOptions } from "../lib/listVisibleAgentPickerOptions";
 import { ProjectInputSelector } from "./ProjectInputSelector";
+import type { SessionRunSettingsNotice } from "../lib/sessionRunSettings";
 import type {
   AgentPickerOption,
   ChatInputAgentModelPicker,
@@ -62,6 +62,7 @@ interface ChatInputToolbarProps {
   agentModelPicker: ChatInputAgentModelPicker & { enabled?: boolean };
   reasoningEffort?: ChatInputReasoningEffort;
   fastMode?: ChatInputFastMode;
+  runSettingsNotice?: SessionRunSettingsNotice | null;
   projectPicker: ChatInputProjectPicker;
   contextUsage: ChatInputContextUsage;
   composerActions: ChatInputToolbarComposerActions;
@@ -73,6 +74,7 @@ export function ChatInputToolbar({
   agentModelPicker,
   reasoningEffort,
   fastMode,
+  runSettingsNotice = null,
   projectPicker,
   contextUsage,
   composerActions,
@@ -286,6 +288,9 @@ export function ChatInputToolbar({
               modelsLoading={modelsLoading}
               modelStatusMessage={modelStatusMessage}
               onModelChange={onModelChange}
+              fastMode={fastMode}
+              runActive={isStreaming}
+              runSettingsNotice={runSettingsNotice}
               open={openMenu === "model"}
               onOpen={onPickerOpen}
               onOpenChange={handleMenuOpenChange("model")}
@@ -301,17 +306,10 @@ export function ChatInputToolbar({
           <ReasoningEffortPill
             config={effectiveReasoning.config}
             onSelect={effectiveReasoning.onSelect}
+            notice={runSettingsNotice}
             disabled={disabled}
             open={openMenu === "effort"}
             onOpenChange={handleMenuOpenChange("effort")}
-          />
-        ) : null}
-
-        {agentModelPickerEnabled ? (
-          <FastModePill
-            config={fastMode?.config}
-            onToggle={fastMode?.onChange}
-            disabled={disabled}
           />
         ) : null}
 

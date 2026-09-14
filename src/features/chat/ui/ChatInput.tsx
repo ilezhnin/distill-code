@@ -204,6 +204,7 @@ export function ChatInput({
   agentModelPicker,
   reasoningEffort,
   fastMode,
+  runSettingsNotice,
   projectPicker,
   contextUsage,
   controls,
@@ -1543,6 +1544,7 @@ export function ChatInput({
                 }}
                 reasoningEffort={reasoningEffort}
                 fastMode={fastMode}
+                runSettingsNotice={runSettingsNotice}
                 onRequestComposerFocus={() => textareaRef.current?.focus()}
                 contextUsage={{
                   contextTokens,

@@ -1040,8 +1040,10 @@ export function ChatView({
           }}
           fastMode={{
             config: controller.fastMode,
+            desired: controller.desiredFastMode,
             onChange: controller.handleFastModeChange,
           }}
+          runSettingsNotice={controller.runSettingsNotice}
           projectPicker={{
             selectedProjectId: controller.selectedProjectId,
             availableProjects: controller.availableProjects,
