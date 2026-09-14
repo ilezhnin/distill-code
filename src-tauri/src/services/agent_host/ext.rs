@@ -32,8 +32,12 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
                 .unwrap_or("")
                 .trim()
                 .to_string();
+            // Clearing the name is not choosing the empty one: storing `""` as
+            // a user-set title would block the agent's proposed title forever
+            // and leave the chat nameless. An empty rename hands the naming
+            // back to the agent.
             host.store
-                .set_title(&id, &title, true)
+                .set_title(&id, &title, !title.is_empty())
                 .await
                 .map_err(protocol::internal)?;
             Ok(json!({}))
@@ -72,10 +76,22 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
                 .get("workingDir")
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid_params("workingDir required"))?;
+            let moved = host
+                .session_record(&id)
+                .await
+                .is_ok_and(|record| record.cwd != cwd);
             host.store
                 .set_cwd(&id, cwd)
                 .await
                 .map_err(protocol::internal)?;
+            // A bridge session runs in the folder it was created in and cannot
+            // be moved, so a chat that changed folders has to stop using the
+            // one it has — otherwise the next prompt still runs in the old one.
+            if moved && !host.release_bridge_session(&id).await {
+                log::warn!(
+                    "[agent-host] session {id} moved folders while a turn was running; the running turn stays in the old one"
+                );
+            }
             Ok(json!({}))
         }
         "session/steer" => host.steer(params).await,
@@ -91,6 +107,10 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
         "session/extensions/remove" => Ok(json!({})),
         "session/messages" => {
             let id = session_id(&params)?;
+            // The updates of a chat that is streaming right now may still be
+            // waiting for their commit in the event loop; a transcript read has
+            // to wait for them or it stops short of the live reply.
+            host.drain_bridge_events().await;
             let events = host
                 .store
                 .list_events(&id)

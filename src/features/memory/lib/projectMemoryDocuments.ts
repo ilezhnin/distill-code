@@ -15,8 +15,17 @@
  * move could not promise. The cost is a bounded duplicate (the store is
  * capped at three hundred short lines) and one honest limitation: a project
  * folder that has not been written since an entry was deleted still holds
- * that entry, and hydration will bring it back. Rewriting the file on every
- * commit keeps that window to "the project was offline when you deleted it".
+ * that entry, and the next read of that folder brings it back. Rewriting the
+ * file on every commit keeps that window to "the project was offline when
+ * you deleted it".
+ *
+ * A folder is read before it is written, every time. The file may hold what
+ * this process has never seen — the project was created after startup, its
+ * drive was mounted after startup, a colleague's copy arrived with the
+ * repository — and the only copy of those lines is the one about to be
+ * replaced. So a folder that cannot be read is not written, and one that can
+ * is written with what it held folded in (the store does the folding, since
+ * it knows which lines the operator deleted this run).
  */
 
 import type { ProjectInfo } from "@/features/projects/api/projects";
@@ -58,6 +67,22 @@ export interface ProjectMemories {
   archived: ArchivedMemoryEntry[];
 }
 
+/** One folder's read: what it holds, and whether the file exists at all. */
+export interface ProjectMemoryFolder extends ProjectMemories {
+  hasFile: boolean;
+}
+
+/**
+ * Several folders' reads, and which of them were actually read.
+ *
+ * A project is listed in `readProjectIds` when its folder answered — with a
+ * file or without one. A project missing from it could not be read, and its
+ * file (which may hold lines nothing else does) is not this run's to write.
+ */
+export interface ProjectMemoryRead extends ProjectMemories {
+  readProjectIds: string[];
+}
+
 function serialize(
   projectId: string,
   entries: MemoryEntry[],
@@ -82,11 +107,18 @@ function serialize(
  * Best-effort per project. A folder that cannot be written — gone, read-only,
  * on a drive that is not mounted — costs that project's mirror and nothing
  * else; the global document is unaffected and still holds everything.
+ *
+ * The caller is expected to pass only projects whose folder it has read and
+ * folded into `entries` (see the module comment): this writes what it is
+ * given, and what it is given must already contain what the file held.
+ * `hasFileByProjectId` is that read's answer to "is there a file", so the
+ * empty-project rule below does not have to ask the folder a second time.
  */
 export async function writeProjectMemories(
   projects: readonly ProjectInfo[],
   entries: readonly MemoryEntry[],
   archived: readonly ArchivedMemoryEntry[] = [],
+  hasFileByProjectId: ReadonlyMap<string, boolean> = new Map(),
 ): Promise<void> {
   const byProject = bucketByProject(entries);
   const archivedByProject = bucketByProject(archived);
@@ -102,7 +134,10 @@ export async function writeProjectMemories(
       if (
         own.length === 0 &&
         ownArchived.length === 0 &&
-        !(await hasProjectMemoryFile(root))
+        !(
+          hasFileByProjectId.get(project.id) ??
+          (await hasProjectMemoryFile(root))
+        )
       ) {
         return;
       }
@@ -167,41 +202,60 @@ export async function readProjectMemories(
   projects: readonly ProjectInfo[],
   parse: (raw: unknown) => MemoryEntry[],
   parseArchived: (raw: unknown) => ArchivedMemoryEntry[] = () => [],
-): Promise<ProjectMemories> {
-  const own =
-    (project: ProjectInfo) =>
-    <T extends MemoryEntry>(entry: T): T => ({
-      ...entry,
-      scope: "project" as const,
-      projectId: project.id,
-    });
-  const lists = await Promise.all(
-    projects.map(async (project): Promise<ProjectMemories> => {
-      const root = projectMemoryRoot(project);
-      if (!root) return { entries: [], archived: [] };
-      try {
-        const raw = await readProjectDocument(root, PROJECT_MEMORY_DOCUMENT);
-        if (!raw) return { entries: [], archived: [] };
-        // A v1 file has no `archived` key, which reads as an empty archive.
-        const parsed: unknown = JSON.parse(raw);
-        return {
-          entries: withoutSecrets(parse(parsed).map(own(project))),
-          // The archive too: "Restore" is one click away from the prompts.
-          archived: withoutSecrets(parseArchived(parsed).map(own(project))),
-        };
-      } catch (error) {
-        console.error(
-          `Failed to read memories from ${project.name}'s folder:`,
-          error,
-        );
-        return { entries: [], archived: [] };
-      }
-    }),
+): Promise<ProjectMemoryRead> {
+  const reads = await Promise.all(
+    projects.map(async (project) => ({
+      project,
+      folder: await readProjectMemoryFolder(project, parse, parseArchived),
+    })),
   );
   return {
-    entries: lists.flatMap((list) => list.entries),
-    archived: lists.flatMap((list) => list.archived),
+    entries: reads.flatMap(({ folder }) => folder?.entries ?? []),
+    archived: reads.flatMap(({ folder }) => folder?.archived ?? []),
+    readProjectIds: reads
+      .filter(({ folder }) => folder !== null)
+      .map(({ project }) => project.id),
   };
+}
+
+/**
+ * One project's folder, or `null` when it could not be read.
+ *
+ * `null` is the answer for a folder on a drive that is not mounted, and for
+ * a file that will not parse, and not for a folder that simply has no file:
+ * the first two may be hiding lines this process has never seen, which is
+ * exactly the case a caller about to write the file has to be told about.
+ */
+export async function readProjectMemoryFolder(
+  project: ProjectInfo,
+  parse: (raw: unknown) => MemoryEntry[],
+  parseArchived: (raw: unknown) => ArchivedMemoryEntry[] = () => [],
+): Promise<ProjectMemoryFolder | null> {
+  const root = projectMemoryRoot(project);
+  if (!root) return { entries: [], archived: [], hasFile: false };
+  const own = <T extends MemoryEntry>(entry: T): T => ({
+    ...entry,
+    scope: "project" as const,
+    projectId: project.id,
+  });
+  try {
+    const raw = await readProjectDocument(root, PROJECT_MEMORY_DOCUMENT);
+    if (!raw) return { entries: [], archived: [], hasFile: false };
+    // A v1 file has no `archived` key, which reads as an empty archive.
+    const parsed: unknown = JSON.parse(raw);
+    return {
+      entries: withoutSecrets(parse(parsed).map(own)),
+      // The archive too: "Restore" is one click away from the prompts.
+      archived: withoutSecrets(parseArchived(parsed).map(own)),
+      hasFile: true,
+    };
+  } catch (error) {
+    console.error(
+      `Failed to read memories from ${project.name}'s folder:`,
+      error,
+    );
+    return null;
+  }
 }
 
 /** The lines of a folder's file that may be kept, in the file's own order. */
@@ -234,4 +288,38 @@ export function mergeProjectMemories<T extends MemoryEntry>(
   const known = new Set(base.map((entry) => entry.id));
   const added = fromFolders.filter((entry) => !known.has(entry.id));
   return added.length === 0 ? [...base] : [...base, ...added];
+}
+
+/**
+ * Both lists with the folders' folded in, by id across the two.
+ *
+ * `mergeProjectMemories` for a store that has an archive: an id the store
+ * holds in either list is the store's, whichever list the folder shows it
+ * in. A line the store archived and the folder still shows live is the
+ * folder lagging behind the store, not a second memory — merging the lists
+ * one at a time put such a line in both. `excluded` are the ids the operator
+ * deleted this run, which no copy on disk may bring back.
+ */
+export function foldProjectMemories(
+  base: ProjectMemories,
+  fromFolders: ProjectMemories,
+  excluded: ReadonlySet<string> = new Set(),
+): ProjectMemories & { added: number } {
+  const known = new Set<string>();
+  for (const entry of base.entries) known.add(entry.id);
+  for (const entry of base.archived) known.add(entry.id);
+  const fresh = <T extends MemoryEntry>(entry: T): boolean => {
+    if (known.has(entry.id) || excluded.has(entry.id)) return false;
+    known.add(entry.id);
+    return true;
+  };
+  const entries = fromFolders.entries.filter(fresh);
+  const archived = fromFolders.archived.filter(fresh);
+  return {
+    entries:
+      entries.length === 0 ? base.entries : [...base.entries, ...entries],
+    archived:
+      archived.length === 0 ? base.archived : [...base.archived, ...archived],
+    added: entries.length + archived.length,
+  };
 }

@@ -30,8 +30,8 @@ import type { Message } from "@/shared/types/messages";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { ActiveChatBerdIndicator } from "@/shared/ui/SessionActivityIndicator";
 import { LoadingBerd } from "./LoadingBerd";
-import { MessageTimeline } from "./MessageTimeline";
 import { SidePanelShell } from "./SidePanelShell";
+import { VirtualMessageTimelineGate } from "./VirtualMessageTimelineGate";
 import {
   useActiveChildChatTab,
   useChildChatTabsStore,
@@ -488,7 +488,15 @@ function ChildChatTranscript({
   return (
     <ConductorTranscriptProvider value={conductorTranscriptValue}>
       <div className="flex min-h-0 flex-1 flex-col">
-        <MessageTimeline
+        {/*
+          Children are long-running agents, so the panel gets the same windowed
+          renderer as the conversation rather than the classic timeline, which
+          mounts every row (each with its own observers, tool cards and
+          Streamdown instance). The gate keeps one loaded transcript per
+          session, so the child's rows and its projection cache are its own.
+        */}
+        <VirtualMessageTimelineGate
+          sessionId={childSessionId}
           messages={timelineMessages}
           streamingMessageId={streamingMessageId}
           showPlaceholder={messages.length === 0}

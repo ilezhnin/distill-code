@@ -29,6 +29,15 @@ function message(id: string): Message {
   };
 }
 
+function notice(text: string): Message {
+  return {
+    id: `notice-${text}`,
+    role: "system",
+    created: 1,
+    content: [{ type: "systemNotification", text, notificationType: "error" }],
+  };
+}
+
 /** Lets the hydration promise settle. */
 async function flush(): Promise<void> {
   await Promise.resolve();
@@ -57,14 +66,42 @@ describe("readConductorTranscript", () => {
     expect(loadSessionMessages).not.toHaveBeenCalled();
   });
 
-  it("treats an empty cached transcript as a real answer", () => {
-    // The store deletes the key when it evicts a session, so `[]` is a
-    // transcript that was read and holds nothing — not one that is missing.
+  it("does not take an empty cached transcript as an answer", () => {
+    // A conductor whose wave exists produced a plan message, so an empty
+    // transcript under its key is a cache that holds nothing — never a
+    // transcript that does.
     useChatStore.setState({ messagesBySession: { [SESSION]: [] } });
+    expect(readConductorTranscript(SESSION, () => undefined).kind).toBe(
+      "unknown",
+    );
+    expect(loadSessionMessages).toHaveBeenCalledWith(SESSION);
+  });
+
+  it("does not take the notice a failed load leaves behind as a transcript", async () => {
+    // The real failure path: the loader resolves `false` and appends a system
+    // notice under this very key. Read as "loaded", that notice made the
+    // lifecycle re-deliver a digest it could not find the marker of, and it
+    // stopped this module from ever asking for the transcript again.
+    loadSessionMessages.mockImplementation(async () => {
+      useChatStore.getState().addMessage(SESSION, notice("could not load"));
+      return false;
+    });
+    const onHydrated = vi.fn();
+    expect(readConductorTranscript(SESSION, onHydrated).kind).toBe("unknown");
+    await flush();
+    expect(onHydrated).toHaveBeenCalled();
+    expect(useChatStore.getState().messagesBySession[SESSION]).toHaveLength(1);
+    expect(readConductorTranscript(SESSION, () => undefined).kind).toBe(
+      "unknown",
+    );
+
+    // The real answer, once a replay finally works, is still read.
+    useChatStore.setState({
+      messagesBySession: { [SESSION]: [message("m1")] },
+    });
     expect(readConductorTranscript(SESSION, () => undefined).kind).toBe(
       "loaded",
     );
-    expect(loadSessionMessages).not.toHaveBeenCalled();
   });
 
   it("says it does not know, and asks, when the session was never loaded", async () => {

@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { Check, FileText, FolderClosed, ImageIcon } from "lucide-react";
 import { IconRobot } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -35,7 +36,9 @@ import { ToolChainCards, type ToolChainItem } from "./ToolChainCards";
 import { ClickableImage } from "./ClickableImage";
 import { MarkdownImage } from "./MarkdownImage";
 import { resolveImageContentSrc } from "./resolveImageContentSrc";
+import { useArtifactActionsContext } from "@/features/chat/hooks/ArtifactPolicyContext";
 import { useArtifactLinkHandler } from "@/features/chat/hooks/useArtifactLinkHandler";
+import { LocalMarkdownLinkProvider } from "@/shared/ui/ai-elements/local-link-context";
 import { detectProviderErrorNotice } from "@/features/chat/lib/providerErrorNotice";
 import type { CustomRenderer } from "streamdown";
 import { RUNNABLE_SHELL_LANGUAGES } from "@/shared/lib/runnableShellCommand";
@@ -114,9 +117,12 @@ function getAttachmentExtension(attachment: MessageAttachment): string {
 
 function resolveAttachmentImageSrc(
   attachment: MessageAttachment,
-  imageContent?: ImageContent,
+  imageContent: ImageContent | undefined,
+  isPathAllowed: (path: string) => boolean,
 ): string | null {
-  const contentSrc = imageContent ? resolveImageContentSrc(imageContent) : null;
+  const contentSrc = imageContent
+    ? resolveImageContentSrc(imageContent, isPathAllowed)
+    : null;
   if (contentSrc) {
     return contentSrc;
   }
@@ -135,6 +141,7 @@ function resolveAttachmentImageSrc(
 function buildAttachmentPreviewItems(
   attachments: readonly MessageAttachment[],
   content: readonly MessageContent[],
+  isPathAllowed: (path: string) => boolean,
 ): MessageAttachmentPreviewItem[] {
   const imageContentBlocks = content.flatMap((block, contentIndex) =>
     block.type === "image"
@@ -156,7 +163,11 @@ function buildAttachmentPreviewItems(
       key: `${attachment.type}-${attachment.path ?? attachment.url ?? attachment.name}-${attachmentIndex}`,
       attachment,
       attachmentIndex,
-      imageSrc: resolveAttachmentImageSrc(attachment, imageContent?.block),
+      imageSrc: resolveAttachmentImageSrc(
+        attachment,
+        imageContent?.block,
+        isPathAllowed,
+      ),
       ...(imageContent ? { imageContentIndex: imageContent.contentIndex } : {}),
     };
   });
@@ -181,6 +192,9 @@ function MessageAttachmentTile({
 }) {
   const { t } = useTranslation("chat");
   const { attachment, imageSrc } = item;
+  const reportOpenFailure = () => {
+    toast.error(t("artifactChips.openFailed", { name: attachment.name }));
+  };
   const [failedImageSrc, setFailedImageSrc] = useState<string | null>(null);
   const displayedImageSrc =
     imageSrc && failedImageSrc !== imageSrc ? imageSrc : null;
@@ -204,12 +218,15 @@ function MessageAttachmentTile({
           onViewImage(item);
           return;
         }
+        // A tile outlives its file: the attachment can be moved or deleted, or
+        // the opener scope can refuse the path. Say so instead of leaving the
+        // click to do nothing and log an unhandled rejection.
         if (attachment.path) {
-          void openPath(attachment.path);
+          void openPath(attachment.path).catch(reportOpenFailure);
           return;
         }
         if (attachment.url) {
-          void openUrl(attachment.url);
+          void openUrl(attachment.url).catch(reportOpenFailure);
         }
       }}
       disabled={!canOpen}
@@ -555,6 +572,12 @@ function renderContentBlock(
     voiceSpeechNotSpokenLabel: string;
     voiceSpeechFailedLabel: string;
     contentBlocks: readonly MessageContent[];
+    /**
+     * Whether a local file an image block names may be rendered. Image block
+     * URIs are agent-supplied, so they are scoped to the chat's folders the
+     * same way inline Markdown images are.
+     */
+    isLocalImagePathAllowed: (path: string) => boolean;
     onRunShellCommand?: (command: string, options?: RunCommandOptions) => void;
     runItCodeRenderers?: CustomRenderer[];
     onEditProject?: (projectId: string) => void;
@@ -624,7 +647,7 @@ function renderContentBlock(
       const ic = content as ImageContent;
       // Prefer inline base64 `data` over a `file://` `uri` (which the webview
       // cannot load); convert local file URIs through the asset scheme.
-      const src = resolveImageContentSrc(ic);
+      const src = resolveImageContentSrc(ic, options.isLocalImagePathAllowed);
       if (!src) {
         return null;
       }
@@ -742,7 +765,9 @@ export const MessageBubble = memo(function MessageBubble({
       ? filterUserVisibleContent(rawContent)
       : rawContent;
   const renderingContext = contentContext ?? content;
-  const { handleContentClick, pathNotice } = useArtifactLinkHandler();
+  const { openLocalLink, pathNotice } = useArtifactLinkHandler();
+  const { isPathWithinTrustedRoots: isLocalImagePathAllowed } =
+    useArtifactActionsContext();
   const persona = useAgentStore((state) =>
     message.metadata?.personaId
       ? state.getPersonaById(message.metadata.personaId)
@@ -816,8 +841,14 @@ export const MessageBubble = memo(function MessageBubble({
     message.metadata?.attachments ?? EMPTY_MESSAGE_ATTACHMENTS;
   const attachmentPreviewItems = useMemo(
     () =>
-      isUser ? buildAttachmentPreviewItems(messageAttachments, content) : [],
-    [isUser, messageAttachments, content],
+      isUser
+        ? buildAttachmentPreviewItems(
+            messageAttachments,
+            content,
+            isLocalImagePathAllowed,
+          )
+        : [],
+    [isUser, messageAttachments, content, isLocalImagePathAllowed],
   );
   const attachedImageContentIndexes = useMemo(
     () => collectAttachedImageContentIndexes(attachmentPreviewItems),
@@ -865,6 +896,7 @@ export const MessageBubble = memo(function MessageBubble({
               voiceSpeechNotSpokenLabel: t("message.voiceSpeechNotSpokenLabel"),
               voiceSpeechFailedLabel: t("message.voiceSpeechFailedLabel"),
               contentBlocks: renderingContext,
+              isLocalImagePathAllowed,
               onEditProject,
               onChangeFolder,
               onOpenContextPanel,
@@ -1082,81 +1114,83 @@ export const MessageBubble = memo(function MessageBubble({
             </div>
           ) : null}
 
-          {/* biome-ignore lint/a11y/useKeyWithClickEvents: delegated link handler */}
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: delegated link handler */}
-          <div
-            className={cn(
-              "min-w-0 text-sm leading-relaxed",
-              isUser && !digestEnvelope
-                ? "rounded-sm bg-message-user-bg px-4 py-2 leading-normal"
-                : "w-full",
-            )}
-            onClick={handleContentClick}
-          >
-            {isBerdctlCrossSessionMessage ||
-            isSteeredMessage ||
-            isPendingSteerMessage ? (
-              <div className="mb-1 flex flex-col items-start gap-0.5 text-xs font-normal leading-4 text-muted-foreground">
-                {isBerdctlCrossSessionMessage ? (
-                  <span
-                    data-role="berdctl-cross-session-message-label"
-                    className="leading-4"
-                  >
-                    {berdSenderLabel
-                      ? t("message.berdctlCrossSessionNamedLabel", {
-                          sender: berdSenderLabel,
-                        })
-                      : t("message.berdctlCrossSessionLabel")}
-                  </span>
-                ) : null}
-                {isSteeredMessage ? (
-                  <span data-role="steer-message-label" className="leading-4">
-                    {t("message.steerLabel")}
-                  </span>
-                ) : null}
-                {isPendingSteerMessage ? (
-                  <span
-                    data-role="steer-pending-message-label"
-                    className="leading-4"
-                  >
-                    {t("message.steerPendingLabel")}
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
-            {digestEnvelope ? (
-              /* Each report leads back to the agent that wrote it — a digest
+          {/* Local Markdown links inside this bubble report a failure below
+              rather than as a toast; MarkdownLink routes them here. */}
+          <LocalMarkdownLinkProvider value={openLocalLink}>
+            <div
+              className={cn(
+                "min-w-0 text-sm leading-relaxed",
+                isUser && !digestEnvelope
+                  ? "rounded-sm bg-message-user-bg px-4 py-2 leading-normal"
+                  : "w-full",
+              )}
+            >
+              {isBerdctlCrossSessionMessage ||
+              isSteeredMessage ||
+              isPendingSteerMessage ? (
+                <div className="mb-1 flex flex-col items-start gap-0.5 text-xs font-normal leading-4 text-muted-foreground">
+                  {isBerdctlCrossSessionMessage ? (
+                    <span
+                      data-role="berdctl-cross-session-message-label"
+                      className="leading-4"
+                    >
+                      {berdSenderLabel
+                        ? t("message.berdctlCrossSessionNamedLabel", {
+                            sender: berdSenderLabel,
+                          })
+                        : t("message.berdctlCrossSessionLabel")}
+                    </span>
+                  ) : null}
+                  {isSteeredMessage ? (
+                    <span data-role="steer-message-label" className="leading-4">
+                      {t("message.steerLabel")}
+                    </span>
+                  ) : null}
+                  {isPendingSteerMessage ? (
+                    <span
+                      data-role="steer-pending-message-label"
+                      className="leading-4"
+                    >
+                      {t("message.steerPendingLabel")}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+              {digestEnvelope ? (
+                /* Each report leads back to the agent that wrote it — a digest
                  that names four executors and offers no way to any of them is
                  the same dead end the wait line used to be. */
-              <ConductorDigestCard
-                body={digestEnvelope.body}
-                agents={conductorTranscript.children}
-                onOpen={
-                  conductorTranscript.onOpenChild
-                    ? (sessionId) =>
-                        conductorTranscript.onOpenChild?.(
-                          sessionId,
-                          "openInTab",
-                        )
-                    : undefined
-                }
-              />
-            ) : null}
-            {!digestEnvelope && isUser && messageChips.length > 0 && (
-              <div className="mb-1.5 flex flex-wrap gap-1.5">
-                {messageChips.map((chip) => (
-                  <MessageMetadataChip
-                    key={`${chip.type}-${chip.id ?? chip.label}`}
-                    chip={chip}
-                  />
-                ))}
-              </div>
-            )}
-            {!digestEnvelope && attachmentPreviewItems.length > 0 && (
-              <MessageAttachmentGrid items={attachmentPreviewItems} />
-            )}
-            {(digestEnvelope ? [] : groupContentSections(renderedContent)).map(
-              (section, sectionIdx) => {
+                <ConductorDigestCard
+                  body={digestEnvelope.body}
+                  agents={conductorTranscript.children}
+                  onOpen={
+                    conductorTranscript.onOpenChild
+                      ? (sessionId) =>
+                          conductorTranscript.onOpenChild?.(
+                            sessionId,
+                            "openInTab",
+                          )
+                      : undefined
+                  }
+                />
+              ) : null}
+              {!digestEnvelope && isUser && messageChips.length > 0 && (
+                <div className="mb-1.5 flex flex-wrap gap-1.5">
+                  {messageChips.map((chip) => (
+                    <MessageMetadataChip
+                      key={`${chip.type}-${chip.id ?? chip.label}`}
+                      chip={chip}
+                    />
+                  ))}
+                </div>
+              )}
+              {!digestEnvelope && attachmentPreviewItems.length > 0 && (
+                <MessageAttachmentGrid items={attachmentPreviewItems} />
+              )}
+              {(digestEnvelope
+                ? []
+                : groupContentSections(renderedContent)
+              ).map((section, sectionIdx) => {
                 if (section.type === "toolChain") {
                   const toolItems = section.items as ToolChainItem[];
                   return (
@@ -1207,6 +1241,7 @@ export const MessageBubble = memo(function MessageBubble({
                           "message.voiceSpeechFailedLabel",
                         ),
                         contentBlocks: renderingContext,
+                        isLocalImagePathAllowed,
                         onRunShellCommand,
                         runItCodeRenderers,
                         stateKey: section.key,
@@ -1217,14 +1252,14 @@ export const MessageBubble = memo(function MessageBubble({
                     )}
                   </div>
                 );
-              },
-            )}
-            {pathNotice && (
-              <p className="mt-2 text-xs text-destructive" role="status">
-                {pathNotice}
-              </p>
-            )}
-          </div>
+              })}
+              {pathNotice && (
+                <p className="mt-2 text-xs text-destructive" role="status">
+                  {pathNotice}
+                </p>
+              )}
+            </div>
+          </LocalMarkdownLinkProvider>
 
           {showMessageActions ? (
             <div

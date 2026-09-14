@@ -69,6 +69,11 @@ const mocks = vi.hoisted(() => ({
   listPersonas: vi.fn(),
   createSkill: vi.fn(),
   listSkills: vi.fn(),
+  terminalChatSessionIds: new Set<string>(),
+}));
+
+vi.mock("@/features/terminal/lib/terminalSessionManager", () => ({
+  getChatSessionIdsWithTerminals: () => mocks.terminalChatSessionIds,
 }));
 
 vi.mock("@/shared/api/acp", () => ({
@@ -313,6 +318,7 @@ async function expectCommandError(
 
 beforeEach(() => {
   resetSessionTargetCoordinatorsForTests();
+  mocks.terminalChatSessionIds.clear();
   localStorage.removeItem("distill:chat-workspace-metadata");
   useChatSessionStore.setState({
     sessions: [],
@@ -542,7 +548,6 @@ describe("action schemas", () => {
       "sessions.get": { session_id: "s1" },
       "sessions.rename": { session_id: "s1", title: "Title" },
       "sessions.move": { session_id: "s1", project_id: "p1" },
-      "sessions.move_to_group": { session_id: "s1", group_id: "g1" },
       "sessions.clear_project": { session_id: "s1" },
       "folders.attach": { session_id: "s1", path: "/tmp/wt" },
       "folders.detach": { session_id: "s1", path: "/tmp/wt" },
@@ -588,15 +593,16 @@ describe("action schemas", () => {
 });
 
 describe("command safety metadata", () => {
-  it("keeps mutations visible and limits destructive metadata to session archive", () => {
+  it("keeps mutations visible and marks no command destructive", () => {
+    // v1 has no auth: the broker accepts any same-user process, so no
+    // command may carry a destructive escape hatch (session archive lost
+    // its --discard-changes effect for exactly that reason).
     for (const [groupName, group] of Object.entries(TOOL_GROUPS)) {
       for (const [actionName, command] of Object.entries(group.actions)) {
         const key = `${groupName}.${actionName}`;
         const metadata = command as AppCommand<unknown, unknown>;
 
-        expect(metadata.destructive, `${key} destructive`).toBe(
-          key === "sessions.archive",
-        );
+        expect(metadata.destructive, `${key} destructive`).toBe(false);
         expect(
           ["read", "create", "update", "archive"],
           `${key} effect`,
@@ -757,6 +763,39 @@ describe("sessions.create", () => {
       "harness_not_ready",
     );
     expect(mocks.acpCreateSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects the default harness too when it is not ready", async () => {
+    // Without --harness-id the readiness check used to be skipped entirely, so
+    // a machine with only codex-acp set up spent the whole 900 s budget
+    // installing claude-acp or failed as an opaque internal_error after the
+    // session already existed. The default resolves first and is checked.
+    mocks.readinessFromReport.mockReturnValue(
+      new Map([
+        ["claude-acp", "not_installed"],
+        ["codex-acp", "ready"],
+      ]),
+    );
+
+    const error = await expectCommandError(
+      dispatchCommand("sessions", { action: "create", prompt: "hi" }, ctx),
+      "harness_not_ready",
+    );
+    expect(error.message).toContain("claude-acp");
+    expect(mocks.discoverAcpProviders).toHaveBeenCalledTimes(1);
+    expect(mocks.acpCreateSession).not.toHaveBeenCalled();
+    expect(mocks.acpSendMessage).not.toHaveBeenCalled();
+  });
+
+  it("checks readiness for the default harness on the happy path as well", async () => {
+    await dispatchCommand("sessions", { action: "create", prompt: "hi" }, ctx);
+
+    expect(mocks.discoverAcpProviders).toHaveBeenCalledTimes(1);
+    expect(mocks.acpCreateSession).toHaveBeenCalledWith(
+      "claude-acp",
+      "/resolved/cwd",
+      expect.objectContaining({ modelId: undefined }),
+    );
   });
 
   it("rejects a model the harness does not list with model_not_found", async () => {
@@ -1905,6 +1944,104 @@ describe("sessions.list", () => {
     expect(result.sessions.map((s) => s.session_id)).toEqual(["s-2"]);
   });
 
+  it("stops paging once it has as many unarchived rows as --limit", async () => {
+    // An unfiltered list cannot show more than `limit` rows, and the host
+    // pages by updated_at desc, so walking the rest of the table only buys
+    // IPC round-trips and sidebar re-renders. Agents poll this command.
+    mockSessionPages(
+      {
+        sessions: [
+          makeAcpSession({ sessionId: "s-1" }),
+          makeAcpSession({ sessionId: "s-2" }),
+        ],
+        nextCursor: "page-2",
+      },
+      {
+        sessions: [makeAcpSession({ sessionId: "s-3" })],
+        nextCursor: null,
+      },
+    );
+
+    const result = (await dispatchCommand(
+      "sessions",
+      { action: "list", limit: 2 },
+      ctx,
+    )) as { sessions: Array<{ session_id: string }> };
+
+    expect(mocks.acpListSessionsPage).toHaveBeenCalledTimes(1);
+    expect(result.sessions.map((s) => s.session_id).sort()).toEqual([
+      "s-1",
+      "s-2",
+    ]);
+  });
+
+  it("does not count archived rows towards the limit", async () => {
+    // Archived sessions are filtered out of the result, so a page of them
+    // must not be mistaken for a page that satisfied the limit.
+    mockSessionPages(
+      {
+        sessions: [
+          makeAcpSession({
+            sessionId: "s-archived",
+            archivedAt: "2026-04-01T00:00:00.000Z",
+          }),
+        ],
+        nextCursor: "page-2",
+      },
+      {
+        sessions: [makeAcpSession({ sessionId: "s-live" })],
+        nextCursor: null,
+      },
+    );
+
+    const result = (await dispatchCommand(
+      "sessions",
+      { action: "list", limit: 1 },
+      ctx,
+    )) as { sessions: Array<{ session_id: string }> };
+
+    expect(mocks.acpListSessionsPage).toHaveBeenCalledTimes(2);
+    expect(result.sessions.map((s) => s.session_id)).toEqual(["s-live"]);
+  });
+
+  it("merges every fetched page in a single session-store write", async () => {
+    // The sidebar subscribes to this store; one write per page turned an
+    // agent's polling into one full re-render per 200 sessions.
+    mockSessionPages(
+      {
+        sessions: [makeAcpSession({ sessionId: "s-1", title: "one" })],
+        nextCursor: "page-2",
+      },
+      {
+        sessions: [makeAcpSession({ sessionId: "s-2", title: "two" })],
+        nextCursor: "page-3",
+      },
+      {
+        sessions: [makeAcpSession({ sessionId: "s-3", title: "three" })],
+        nextCursor: null,
+      },
+    );
+
+    let writes = 0;
+    const unsubscribe = useChatSessionStore.subscribe(() => {
+      writes += 1;
+    });
+    try {
+      await dispatchCommand("sessions", { action: "list", query: "e" }, ctx);
+    } finally {
+      unsubscribe();
+    }
+
+    expect(mocks.acpListSessionsPage).toHaveBeenCalledTimes(3);
+    expect(writes).toBe(1);
+    expect(
+      useChatSessionStore
+        .getState()
+        .sessions.map((session) => session.id)
+        .sort(),
+    ).toEqual(["s-1", "s-2", "s-3"]);
+  });
+
   it("excludes archived sessions and filters by project and query", async () => {
     const project = makeProject({ id: "p-1" });
     useProjectStore.setState({
@@ -2278,7 +2415,10 @@ describe("sessions.archive", () => {
     expect(result).toEqual({ ok: true });
   });
 
-  it("passes the explicit discard policy through the facade", async () => {
+  it("never hands the facade the discard policy, even when --discard-changes is set", async () => {
+    // The broker is unauthenticated: any same-user process can reach this
+    // command, so berdctl must not be able to force-remove a dirty worktree.
+    // The flag stays on the wire for CLI compatibility and has no effect.
     mockSessionFound();
     const deadlineMs = Date.now() + 5_000;
 
@@ -2294,17 +2434,50 @@ describe("sessions.archive", () => {
 
     expect(controller.archiveSession).toHaveBeenCalledWith(
       "session-1",
-      "discard",
+      "reject",
       deadlineMs,
+    );
+    expect(controller.archiveSession).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "discard",
+      expect.anything(),
     );
   });
 
-  it("tells callers how to opt into discarding changes", async () => {
+  it("refuses cleanup that would discard changes and points the caller at the app", async () => {
     mockSessionFound();
     controller.archiveSession.mockResolvedValue({
       ok: false,
       reason: "cleanup_requires_discard",
     });
+
+    for (const discardChanges of [undefined, true]) {
+      const error = await expectCommandError(
+        dispatchCommand(
+          "sessions",
+          {
+            action: "archive",
+            session_id: "session-1",
+            ...(discardChanges === undefined
+              ? {}
+              : { discard_changes: discardChanges }),
+          },
+          ctx,
+        ),
+        "cleanup_requires_discard",
+      );
+      expect(error.message).toContain("in the app");
+      expect(error.message).not.toContain("--discard-changes");
+    }
+  });
+
+  it("refuses a chat with running terminals before touching the controller", async () => {
+    // Archiving in the app stops that chat's shells, and the archive reaches
+    // the same function berdctl does. Ending a dev server, a build or a
+    // migration is an unrecoverable loss nothing restores on unarchive, so
+    // berdctl refuses rather than causing it silently.
+    seedSessions(makeSession({ id: "session-1" }));
+    mocks.terminalChatSessionIds.add("session-1");
 
     const error = await expectCommandError(
       dispatchCommand(
@@ -2312,10 +2485,42 @@ describe("sessions.archive", () => {
         { action: "archive", session_id: "session-1" },
         ctx,
       ),
-      "cleanup_requires_discard",
+      "session_has_terminals",
     );
 
-    expect(error.message).toContain("--discard-changes");
+    expect(error.message).toContain("running terminals");
+    expect(error.message).toContain("in the app");
+    expect(controller.archiveSession).not.toHaveBeenCalled();
+  });
+
+  it("archives a chat whose terminals belong to another session", async () => {
+    mockSessionFound();
+    mocks.terminalChatSessionIds.add("session-2");
+
+    const result = await dispatchCommand(
+      "sessions",
+      { action: "archive", session_id: "session-1" },
+      ctx,
+    );
+
+    expect(result).toEqual({ ok: true });
+    expect(controller.archiveSession).toHaveBeenCalled();
+  });
+
+  it("documents --discard-changes as having no effect", () => {
+    const command = TOOL_GROUPS.sessions.actions.archive;
+    expect(command.destructive).toBe(false);
+    expect(command.helpFooter).toContain("has no effect");
+    expect(command.description).not.toMatch(/unless --discard-changes/);
+  });
+
+  it("says in its help that it will not stop the chat's terminals", () => {
+    // `destructive: false` is only honest while the command cannot end a
+    // process the operator is running.
+    const command = TOOL_GROUPS.sessions.actions.archive;
+    expect(command.destructive).toBe(false);
+    expect(command.helpFooter).toContain("running terminals");
+    expect(command.description).toContain("running terminals");
   });
 
   it("returns a failure after archival when Git cleanup is incomplete", async () => {
@@ -2425,264 +2630,6 @@ describe("sessions.move", () => {
       "target_session_running",
     );
     expect(mocks.moveSessionToProject).not.toHaveBeenCalled();
-  });
-});
-
-describe("sessions.move_to_group", () => {
-  const projectWithGroups = () =>
-    makeProject({
-      id: "p-1",
-      chatGroups: {
-        groups: [
-          { id: "group-a", name: "Backlog", chatIds: ["session-1"] },
-          { id: "group-b", name: "Launch", chatIds: ["session-2"] },
-        ],
-      },
-    });
-
-  it("moves a session between existing groups in its current project", async () => {
-    const project = projectWithGroups();
-    mockSessionFound({ projectId: "p-1" });
-    mocks.listProjects.mockResolvedValue([project]);
-
-    const result = await dispatchCommand(
-      "sessions",
-      {
-        action: "move_to_group",
-        session_id: "session-1",
-        group_id: "group-b",
-      },
-      ctx,
-    );
-
-    expect(mocks.updateProject).toHaveBeenCalledWith(project, {
-      chatGroups: {
-        groups: [
-          {
-            id: "group-b",
-            name: "Launch",
-            chatIds: ["session-2", "session-1"],
-          },
-        ],
-      },
-    });
-    expect(result).toEqual({
-      ok: true,
-      project_id: "p-1",
-      group_id: "group-b",
-      group_name: "Launch",
-    });
-  });
-
-  it("preserves unrelated groups that were already empty", async () => {
-    const project = makeProject({
-      id: "p-1",
-      chatGroups: {
-        groups: [
-          { id: "group-a", name: "Backlog", chatIds: ["session-1"] },
-          { id: "group-b", name: "Launch", chatIds: ["session-2"] },
-          { id: "group-c", name: "Future", chatIds: [] },
-        ],
-      },
-    });
-    mockSessionFound({ projectId: "p-1" });
-    mocks.listProjects.mockResolvedValue([project]);
-
-    await dispatchCommand(
-      "sessions",
-      {
-        action: "move_to_group",
-        session_id: "session-1",
-        group_id: "group-b",
-      },
-      ctx,
-    );
-
-    expect(mocks.updateProject).toHaveBeenCalledWith(project, {
-      chatGroups: {
-        groups: [
-          {
-            id: "group-b",
-            name: "Launch",
-            chatIds: ["session-2", "session-1"],
-          },
-          { id: "group-c", name: "Future", chatIds: [] },
-        ],
-      },
-    });
-  });
-
-  it("serializes overlapping moves so the later write keeps the earlier move", async () => {
-    let backendProject = makeProject({
-      id: "p-1",
-      chatGroups: {
-        groups: [
-          {
-            id: "group-a",
-            name: "Backlog",
-            chatIds: ["session-1", "session-2"],
-          },
-          { id: "group-b", name: "Launch", chatIds: [] },
-          { id: "group-c", name: "Follow-up", chatIds: ["session-3"] },
-        ],
-      },
-    });
-    mocks.acpGetSessionInfo.mockImplementation(async (sessionId: string) => {
-      if (sessionId === "session-1" || sessionId === "session-2") {
-        return makeAcpSession({ sessionId, projectId: "p-1" });
-      }
-      throw Object.assign(new Error("Resource not found"), { code: -32002 });
-    });
-    mocks.acpListSessionsPage.mockResolvedValue({
-      sessions: [
-        makeAcpSession({ sessionId: "session-1", projectId: "p-1" }),
-        makeAcpSession({ sessionId: "session-2", projectId: "p-1" }),
-      ],
-      nextCursor: null,
-    });
-    mocks.listProjects.mockImplementation(async () => [backendProject]);
-
-    let releaseFirstUpdate!: () => void;
-    const firstUpdateBlocked = new Promise<void>((resolve) => {
-      releaseFirstUpdate = resolve;
-    });
-    mocks.updateProject
-      .mockImplementationOnce(async (project, updates) => {
-        await firstUpdateBlocked;
-        backendProject = { ...project, ...updates };
-        return backendProject;
-      })
-      .mockImplementationOnce(async (project, updates) => {
-        backendProject = { ...project, ...updates };
-        return backendProject;
-      });
-
-    const first = dispatchCommand(
-      "sessions",
-      {
-        action: "move_to_group",
-        session_id: "session-1",
-        group_id: "group-b",
-      },
-      ctx,
-    );
-    await vi.waitFor(() =>
-      expect(mocks.updateProject).toHaveBeenCalledTimes(1),
-    );
-
-    const second = dispatchCommand(
-      "sessions",
-      {
-        action: "move_to_group",
-        session_id: "session-2",
-        group_id: "group-c",
-      },
-      ctx,
-    );
-    await Promise.resolve();
-    expect(mocks.updateProject).toHaveBeenCalledTimes(1);
-
-    releaseFirstUpdate();
-    await Promise.all([first, second]);
-
-    expect(mocks.updateProject).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        chatGroups: {
-          groups: [
-            { id: "group-a", name: "Backlog", chatIds: ["session-2"] },
-            { id: "group-b", name: "Launch", chatIds: ["session-1"] },
-            { id: "group-c", name: "Follow-up", chatIds: ["session-3"] },
-          ],
-        },
-      }),
-      {
-        chatGroups: {
-          groups: [
-            { id: "group-b", name: "Launch", chatIds: ["session-1"] },
-            {
-              id: "group-c",
-              name: "Follow-up",
-              chatIds: ["session-3", "session-2"],
-            },
-          ],
-        },
-      },
-    );
-  });
-
-  it("removes a client session id before writing the canonical id", async () => {
-    const project = makeProject({
-      id: "p-1",
-      chatGroups: {
-        groups: [
-          { id: "group-a", name: "Backlog", chatIds: ["client-1"] },
-          { id: "group-b", name: "Launch", chatIds: [] },
-        ],
-      },
-    });
-    seedSessions(
-      makeSession({
-        id: "session-1",
-        projectId: "p-1",
-        clientSessionId: "client-1",
-      }),
-    );
-    mockSessionFound({ projectId: "p-1" });
-    mocks.listProjects.mockResolvedValue([project]);
-
-    await dispatchCommand(
-      "sessions",
-      {
-        action: "move_to_group",
-        session_id: "session-1",
-        group_id: "group-b",
-      },
-      ctx,
-    );
-
-    expect(mocks.updateProject).toHaveBeenCalledWith(project, {
-      chatGroups: {
-        groups: [{ id: "group-b", name: "Launch", chatIds: ["session-1"] }],
-      },
-    });
-  });
-
-  it("requires the session to already belong to a project", async () => {
-    mockSessionFound({ projectId: null });
-
-    await expectCommandError(
-      dispatchCommand(
-        "sessions",
-        {
-          action: "move_to_group",
-          session_id: "session-1",
-          group_id: "group-b",
-        },
-        ctx,
-      ),
-      "invalid_args",
-    );
-    expect(mocks.updateProject).not.toHaveBeenCalled();
-  });
-
-  it("rejects a group that is not in the session's project", async () => {
-    const project = projectWithGroups();
-    mockSessionFound({ projectId: "p-1" });
-    mocks.listProjects.mockResolvedValue([project]);
-
-    await expectCommandError(
-      dispatchCommand(
-        "sessions",
-        {
-          action: "move_to_group",
-          session_id: "session-1",
-          group_id: "other-project-group",
-        },
-        ctx,
-      ),
-      "invalid_args",
-    );
-    expect(mocks.updateProject).not.toHaveBeenCalled();
   });
 });
 
@@ -3432,9 +3379,6 @@ describe("projects", () => {
     const project = makeProject({
       id: "p-1",
       prompt: "Use feature branches only",
-      chatGroups: {
-        groups: [{ id: "group-1", name: "Launch", chatIds: ["s-1", "s-4"] }],
-      },
     });
     useProjectStore.setState({
       projects: [project],
@@ -3475,52 +3419,26 @@ describe("projects", () => {
       workspaces: [],
       archived: false,
       session_count: 2,
-      chat_groups: [
-        {
-          group_id: "group-1",
-          name: "Launch",
-          session_ids: ["s-1", "s-4"],
-        },
-      ],
     });
     expect(mocks.acpListSessionsPage).toHaveBeenCalledTimes(2);
   });
 
-  it("get returns canonical group session ids still assigned to the project", async () => {
+  it("get reports no chat groups: nothing in the app renders them", async () => {
+    // `chatGroups` is opaque project metadata no UI creates, shows or edits,
+    // so projecting it taught agents about a grouping this build does not
+    // have (and `session move-to-group`, its only consumer, is gone).
     const project = makeProject({
       id: "p-1",
       chatGroups: {
         groups: [
-          {
-            id: "group-1",
-            name: "Launch",
-            chatIds: [
-              "client-session-1",
-              "archived-session",
-              "moved-session",
-              "missing-session",
-            ],
-          },
+          { id: "group-1", name: "Launch", chatIds: ["canonical-session-1"] },
         ],
       },
     });
     mocks.listProjects.mockResolvedValue([project]);
-    seedSessions(
-      makeSession({
-        id: "canonical-session-1",
-        clientSessionId: "client-session-1",
-        projectId: "p-1",
-      }),
-    );
     mockSessionPages({
       sessions: [
         makeAcpSession({ sessionId: "canonical-session-1", projectId: "p-1" }),
-        makeAcpSession({
-          sessionId: "archived-session",
-          projectId: "p-1",
-          archivedAt: "2026-04-01T00:00:00.000Z",
-        }),
-        makeAcpSession({ sessionId: "moved-session", projectId: "p-2" }),
       ],
       nextCursor: null,
     });
@@ -3529,15 +3447,10 @@ describe("projects", () => {
       "projects",
       { action: "get", project_id: "p-1" },
       ctx,
-    )) as { chat_groups: Array<{ session_ids: string[] }> };
+    )) as Record<string, unknown>;
 
-    expect(result.chat_groups).toEqual([
-      {
-        group_id: "group-1",
-        name: "Launch",
-        session_ids: ["canonical-session-1"],
-      },
-    ]);
+    expect(result).not.toHaveProperty("chat_groups");
+    expect(result.session_count).toBe(1);
   });
 
   it("archive archives through the API and refetches the project list", async () => {

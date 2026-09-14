@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   MODEL_CLASS_BY_AGENT_SLUG,
   MODEL_PREFERENCE_CLASSES,
+  applyClassOverride,
   isModelPreferenceClassId,
   modelPreferenceClassForPersona,
   resolveRankedModel,
@@ -400,5 +401,44 @@ describe("modelPreferenceClassForPersona", () => {
     for (const classId of Object.values(MODEL_CLASS_BY_AGENT_SLUG)) {
       expect(isModelPreferenceClassId(classId)).toBe(true);
     }
+  });
+
+  it("gives an agent named after an Object.prototype member no ranking", () => {
+    // "Constructor" is a natural name for a builder persona. Slugged, it is
+    // `constructor`, which a plain-object lookup finds on the prototype and
+    // hands back as a truthy function; every consumer then indexes
+    // MODEL_PREFERENCE_CLASSES with it and throws while rendering.
+    for (const displayName of [
+      "Constructor",
+      "ToString",
+      "Value Of",
+      "HasOwnProperty",
+      "__proto__",
+    ]) {
+      expect(modelPreferenceClassForPersona({ displayName })).toBeUndefined();
+    }
+  });
+
+  it("refuses an Object.prototype member as a class id", () => {
+    for (const value of ["constructor", "toString", "__proto__", "valueOf"]) {
+      expect(isModelPreferenceClassId(value)).toBe(false);
+      expect(
+        modelPreferenceClassForPersona({ modelRanking: value }),
+      ).toBeUndefined();
+    }
+  });
+});
+
+describe("applyClassOverride", () => {
+  it("does not read a legacy label off Object.prototype", () => {
+    const ranking = MODEL_PREFERENCE_CLASSES["coding-simple"].ranking;
+    expect(applyClassOverride(ranking, ["constructor", "__proto__"])).toBe(
+      ranking,
+    );
+    expect(
+      applyClassOverride(ranking, ["toString", "Opus 5"]).map(
+        (candidate) => candidate.label,
+      ),
+    ).toEqual(["Opus 5"]);
   });
 });

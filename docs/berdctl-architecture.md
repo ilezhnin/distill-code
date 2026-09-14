@@ -93,21 +93,55 @@ user-requested product actions, such as creating a session or sending a prompt.
 
 Required command properties:
 
-- destructive work requires an explicit caller opt-in and must remain visible in the app
+- no destructive work: the broker cannot tell the operator from any other
+  same-user process, so no flag may let a call discard local files or
+  changes (`session archive` refuses with `cleanup_requires_discard` and the
+  user confirms the loss in the app; its `--discard-changes` flag is kept on
+  the wire for compatibility and has no effect)
+- no killing the operator's processes: archiving a chat in the app also stops
+  that chat's terminals, because a shell under a chat that has left the sidebar
+  has no UI left to stop it. Ending a dev server, a build or a migration is
+  unrecoverable — unarchive restores no shell — so the stop is gated to an
+  operator-initiated archive (`AppShell.archiveChat`'s `stopTerminals` option,
+  set only by the Archive action), and `session archive` refuses with
+  `session_has_terminals` while the chat still has live shells. Both halves are
+  needed: the gate keeps the stop out of reach, the refusal keeps berdctl from
+  leaving orphaned shells behind an archived chat
 - no invisible non-read mutations
 - mutations are visible immediately or discoverable in normal app UI
 - one-way verbs are limited to visible product actions the caller explicitly
   asked for, such as creating a session or sending a prompt
 - broker protects app availability with in-flight caps and timeouts
-- session-creating verbs enforce the spawn ACL against the envelope's
-  optional `actor` (the calling session's `AGENT_SESSION_ID`); anonymous
-  calls are the operator and stay allowed (`runtime/spawnGate.ts`)
+- session-creating verbs are **not** ACL-enforced in practice. The gate in
+  `runtime/spawnGate.ts` checks the envelope's optional `actor` (the calling
+  session's `AGENT_SESSION_ID`) and treats anonymous calls as the operator,
+  but the built-in agent host never exports that variable: it runs one bridge
+  process per harness serving every session of that harness, so a
+  process-level env var cannot carry a per-session id. Every production call
+  is therefore anonymous, allowed, and logged to `berd.log`. The spawn rule
+  reaches agents through the prompt insert
+  (`src/features/conductor/spawnAcl.ts`), which states plainly that berdctl's
+  spawn commands are not checked in code. Making the identity real needs a
+  per-session token minted by the host and delivered to the session's shell
+  per session, which v1 does not have
 
-Delete, bulk, silent, invisible, or broadly destructive verbs require
-reopening the auth/confirmation design before implementation. A visible command
-may expose narrowly scoped destructive behavior only through an explicit flag
-that names the loss and defaults to refusal; do not add interactive prompts or
-piecemeal auth in a command PR.
+Delete, bulk, silent, invisible, or destructive verbs require reopening the
+auth/confirmation design before implementation: until the broker can
+authenticate the caller, a flag cannot stand in for the user's consent to lose
+work. Do not add interactive prompts or piecemeal auth in a command PR.
+
+## Session identity
+
+An agent cannot discover which session it is running in from its environment:
+`AGENT_SESSION_ID` is never exported (one bridge process per harness), and
+`berdctl info context` reports the chat the operator is viewing, which need not
+be the caller's. The one channel is the app preamble: `appPreamble.ts`
+(`formatBerdctlPreamble`) states the session's own id, and `acpSendMessage`
+composes it per session. Commands that need a session id — `berd-monitor run`
+and `stop` above all — require it as an explicit `--session-id`, and the
+bundled `berd-monitor` skill tells the agent to take it from that preamble
+line. Do not add a "current session" default anywhere: the broker cannot tell
+which session called it, so any such default would deliver into the wrong chat.
 
 ## Versioning
 
@@ -139,7 +173,9 @@ bump. Adding a command or optional field is not a wire reshape.
 | rendered help reviewed | inline `EXPECTED_*_HELP` pins |
 | broker command-agnostic | `broker_source_stays_free_of_command_literals` |
 | safety metadata complete | berdctl command tests |
-| spawn ACL on create/fork | `spawnGate.test.ts` + `commands.test.ts` |
+| spawn ACL on create/fork (actor branch only — no production call carries an actor; see the safety model) | `spawnGate.test.ts` + `commands.test.ts` |
+| anonymous spawns logged | `spawnGate.test.ts` |
+| each session learns its own id | `appPreamble.test.ts` |
 
 Review-only rules: single renderer dispatch point, detecting breaking wire
 reshapes, and product judgment for no-auth command eligibility.

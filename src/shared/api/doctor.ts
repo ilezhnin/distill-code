@@ -7,7 +7,17 @@ export type FixType =
   | "updateMain"
   | "updateBridge";
 
-export type AuthStatus = "authenticated" | "notAuthenticated" | "notApplicable";
+export type AuthStatus =
+  | "authenticated"
+  | "notAuthenticated"
+  | "notApplicable"
+  /**
+   * The auth probe could not run (the agent's `auth_status_command` failed to
+   * spawn, or exited 127 — a PATH-shadowed agent). Distinct from
+   * `notAuthenticated`: the agent is not signed out, we cannot tell. The crate
+   * asks consumers to treat it as informational, with no auth fix to offer.
+   */
+  | "unknown";
 
 export type InstallSource =
   | "brew"

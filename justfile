@@ -65,8 +65,8 @@ test-windows-dev:
 
 # ── Build & Check ────────────────────────────────────────────
 
-# Run the frontend non-test checks: design-system guardrails, berdctl contract freshness, formatting, lint, i18n, and TypeScript.
-check: design-system-check berdctl-contract-check frontend-fmt-check lint i18n-check typecheck
+# Run the frontend non-test checks: design-system guardrails, berdctl contract freshness, formatting, lint, i18n, bundled agents, and TypeScript.
+check: design-system-check berdctl-contract-check frontend-fmt-check lint i18n-check bundled-agents-check typecheck
 
 # Regenerate the berdctl CLI contract artifacts from the command registry.
 berdctl-contract-generate:
@@ -123,9 +123,16 @@ lint:
 i18n-check:
     {{ dev_tool }} pnpm check:i18n
 
-# Type-check frontend TypeScript.
+# Validate the frontmatter contract of every bundled agent in distro/agents.
+bundled-agents-check:
+    {{ dev_tool }} pnpm validate:bundled-agents
+
+# Type-check frontend TypeScript, then the Playwright suites and TypeScript
+# repo scripts under tests/ and scripts/ (tsconfig.json only covers src/, and
+# Playwright transpiles specs without checking them).
 typecheck:
     {{ dev_tool }} pnpm typecheck
+    {{ dev_tool }} pnpm typecheck:tests
 
 # Format Tauri/Rust files.
 tauri-fmt:
@@ -158,14 +165,15 @@ _tauri-cargo-windows *ARGS:
     cargo {{ ARGS }}
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# Run Rust clippy with warnings denied.
+# Run Rust clippy with warnings denied. `--all-targets` lints test code too,
+# which is what CI-Windows.ps1 runs.
 [windows]
 clippy:
-    just _tauri-cargo-windows clippy -- -D warnings
-    just _tauri-cargo-windows clippy --features {{ app_features }} -- -D warnings
-    just _tauri-cargo-windows clippy -p berdctl -- -D warnings
-    just _tauri-cargo-windows clippy -p berd-monitor -- -D warnings
-    just _tauri-cargo-windows clippy -p tauri-plugin-berdctl --features server -- -D warnings
+    just _tauri-cargo-windows clippy --all-targets -- -D warnings
+    just _tauri-cargo-windows clippy --all-targets --features {{ app_features }} -- -D warnings
+    just _tauri-cargo-windows clippy --all-targets -p berdctl -- -D warnings
+    just _tauri-cargo-windows clippy --all-targets -p berd-monitor -- -D warnings
+    just _tauri-cargo-windows clippy --all-targets -p tauri-plugin-berdctl --features server -- -D warnings
 
 # Build the frontend.
 build:
@@ -177,13 +185,24 @@ tauri-check:
     just tauri-check-windows
 
 # Run the Rust tests with external sidecars disabled: the app library's own
-# unit tests, then the berdctl plugin, CLI and monitor crates.
+# unit tests, then the berdctl plugin, CLI and monitor crates. The app library
+# runs with the full app feature set, so a test behind `#[cfg(feature = ...)]`
+# (berdctl, app-test-driver) is actually executed instead of compiled away.
 [windows]
 tauri-test:
-    just _tauri-cargo-windows test --lib
+    just _tauri-cargo-windows test --lib --features {{ app_features }}
     just _tauri-cargo-windows test -p tauri-plugin-berdctl --features server
     just _tauri-cargo-windows test -p berdctl
     just _tauri-cargo-windows test -p berd-monitor
+
+# Check npm and Rust dependencies against published advisories, the same way CI
+# does. Kept out of `just ci` because both halves need network access and
+# `cargo audit` is a separate tool install (`cargo install cargo-audit`); the
+# CI jobs are the enforcing gate.
+[windows]
+audit:
+    {{ dev_tool }} pnpm audit --prod --audit-level=high
+    just _tauri-cargo-windows audit
 
 # Run the local CI gate.
 [windows]
@@ -216,10 +235,12 @@ bundle-debug:
 
 # ── Test ─────────────────────────────────────────────────────
 
-# Unit tests, plus the hook launcher's plain `node --test` cases.
+# Unit tests, plus the plain `node --test` cases for the hook launcher and the
+# repo scripts (neither can assume the vitest toolchain is available).
 test:
     pnpm test
     pnpm test:hooks
+    pnpm test:scripts
 
 test-watch:
     pnpm test:watch
@@ -233,6 +254,9 @@ dev-frontend:
     pnpm dev
 
 # Fetch official Node.js release checksums and update node-runtime.lock.json (e.g. `just bump-node-runtime v24.12.0`).
+# WindowsDev.psm1's Node pin is read from that lock, so this recipe is the only
+# place the developer-toolchain Node version is set (the Hermit pin in bin/ is
+# separate and is bumped with `hermit install node-<version>`).
 bump-node-runtime *ARGS:
     node scripts/update-node-runtime-lock.mjs {{ ARGS }}
 

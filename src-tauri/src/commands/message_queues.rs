@@ -13,22 +13,70 @@ fn message_queues_path(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("Failed to resolve app data directory: {error}"))
 }
 
+/// Reads the persisted queues.
+///
+/// `spawn_blocking`: the body is `std::fs`, and a blocking read on a Tokio
+/// worker starves every other async command sharing it.
 #[tauri::command]
 pub async fn load_message_queues(app: AppHandle) -> Result<Option<String>, String> {
     let path = message_queues_path(&app)?;
-    match fs::read_to_string(&path) {
+    tokio::task::spawn_blocking(move || match fs::read_to_string(&path) {
         Ok(serialized) => Ok(Some(serialized)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("Failed to read message queues: {error}")),
-    }
+    })
+    .await
+    .map_err(|error| format!("Failed to read message queues: {error}"))?
 }
 
+/// Merges the renderer's updates into the persisted queues.
+///
+/// `spawn_blocking`: the body reads, serializes and `fsync`s. See
+/// `load_message_queues`.
 #[tauri::command]
 pub async fn persist_message_queue_updates(
     app: AppHandle,
     serialized_updates: String,
 ) -> Result<(), String> {
-    persist_message_queue_updates_at_path(&message_queues_path(&app)?, &serialized_updates)
+    let path = message_queues_path(&app)?;
+    tokio::task::spawn_blocking(move || {
+        persist_message_queue_updates_at_path(&path, &serialized_updates)
+    })
+    .await
+    .map_err(|error| format!("Failed to write message queues: {error}"))?
+}
+
+/// Moves a file that cannot be parsed aside, so the caller can carry on from an
+/// empty map.
+///
+/// The alternative — failing the write — is what made a single corrupt file
+/// permanent: every later persist aborted before writing, and nothing ever
+/// replaced the bad bytes. Quarantining keeps them around for a post-mortem
+/// while letting persistence resume. If even the rename fails there is nothing
+/// left to try but delete; if that fails too the caller still proceeds, and the
+/// write that follows overwrites the file wholesale.
+fn quarantine_unparseable_queues(path: &Path) {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_millis())
+        .unwrap_or(0);
+    let name = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "message-queues".to_string());
+    let quarantined = path.with_file_name(format!("{name}.corrupt-{stamp}.json"));
+    match fs::rename(path, &quarantined) {
+        Ok(()) => log::warn!(
+            "Persisted message queues were unparseable; moved them to {}",
+            quarantined.display()
+        ),
+        Err(error) => {
+            log::warn!(
+                "Persisted message queues were unparseable and could not be moved aside ({error}); discarding them"
+            );
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 fn persist_message_queue_updates_at_path(
@@ -44,8 +92,15 @@ fn persist_message_queue_updates_at_path(
             .map_err(|error| format!("Failed to parse message queue updates: {error}"))?;
     let mut queues = match fs::read_to_string(path) {
         Ok(serialized) => {
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&serialized)
-                .map_err(|error| format!("Failed to parse persisted message queues: {error}"))?
+            match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&serialized) {
+                Ok(queues) => queues,
+                // Not an error for this write: a corrupt file that aborted every
+                // future persist is how queued messages were lost for good.
+                Err(_) => {
+                    quarantine_unparseable_queues(path);
+                    serde_json::Map::new()
+                }
+            }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
         Err(error) => return Err(format!("Failed to read message queues: {error}")),
@@ -129,5 +184,37 @@ mod tests {
 
         persist_message_queues_at_path(&path, None).unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn an_unparseable_queue_file_is_quarantined_and_persistence_resumes() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(MESSAGE_QUEUES_FILENAME);
+        fs::write(&path, b"{not json at all").unwrap();
+
+        persist_message_queue_updates_at_path(&path, r#"{"s1":[{"recordId":"after"}]}"#).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            r#"{"s1":[{"recordId":"after"}]}"#
+        );
+        let quarantined: Vec<String> = fs::read_dir(temp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".corrupt-"))
+            .collect();
+        assert_eq!(quarantined.len(), 1, "{quarantined:?}");
+        assert!(quarantined[0].ends_with(".json"), "{quarantined:?}");
+        assert_eq!(
+            fs::read_to_string(temp.path().join(&quarantined[0])).unwrap(),
+            "{not json at all"
+        );
+
+        // And the next write no longer sees a corrupt file, so it merges.
+        persist_message_queue_updates_at_path(&path, r#"{"s2":[{"recordId":"later"}]}"#).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            r#"{"s1":[{"recordId":"after"}],"s2":[{"recordId":"later"}]}"#
+        );
     }
 }

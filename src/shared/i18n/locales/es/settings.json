@@ -330,11 +330,14 @@
       "status": {
         "checking": "Comprobando...",
         "inProgress": "Configuración en curso",
-        "setupFailed": "La configuración falló"
+        "setupFailed": "La configuración falló",
+        "unknown": "No se pudo comprobar"
       },
       "title": "Arneses de agentes",
       "troubleshootInChat": "Solucionar en chat",
-      "updateLabel": "Actualizar {{name}}"
+      "updateLabel": "Actualizar {{name}}",
+      "recheck": "Comprobar de nuevo",
+      "recheckLabel": "Comprobar {{name}} de nuevo"
     },
     "setupOutput": {
       "copyDeviceCode": "Copiar código de dispositivo",
@@ -466,7 +469,11 @@
       "facts": "Lo que esta instalación ha medido",
       "factsDescription": "Recuentos de olas ejecutadas aquí, mostrados cuando un modelo tiene al menos {{count}} observaciones. Estas mismas líneas se le dan al conductor como hechos, nunca como consejo.",
       "factStep": "{{model}} en pasos «{{role}}»: {{completed}} de {{runs}} completados",
-      "factConductor": "Olas planificadas en {{model}}: {{accepted}} de {{waves}} aceptadas"
+      "factConductor": "Olas planificadas en {{model}}: {{accepted}} de {{waves}} aceptadas",
+      "readOutage": "El conductor está desactivado en esta sesión: no se pudo leer {{documents}} de la carpeta de Distill. Mientras eso siga así no se inicia ninguna ola, así que un plan en un chat de conductor se ignora. Lo más probable es que algo estuviera bloqueando el archivo al arrancar, como un análisis antivirus o un cliente de sincronización.",
+      "readOutageRetry": "Reintentar",
+      "readOutageRetrying": "Leyendo…",
+      "readOutageRetryFailed": "Todavía no se pudo leer. Cierra lo que esté bloqueando el archivo o reinicia la app."
     }
   },
   "storage": {
@@ -521,6 +528,8 @@
     "moveDown": "Bajar {{label}}",
     "remove": "Quitar {{label}}",
     "add": "Añadir un modelo",
-    "reset": "Restablecer el enrutado original"
+    "reset": "Restablecer el enrutado original",
+    "notPersisted": "No se pudieron leer los ajustes de enrutamiento, así que los cambios solo se aplican a esta sesión y se perderán al reiniciar.",
+    "retryLoad": "Intentar leer de nuevo"
   }
 }

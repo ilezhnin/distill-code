@@ -2,6 +2,7 @@ import { z } from "zod/v4";
 
 import type { CommandFailureReason } from "../../navigation";
 import {
+  BERDCTL_BOUNDS,
   backendArchiveFailedMessage,
   sessionNotFoundMessage,
 } from "../helpers";
@@ -9,12 +10,19 @@ import { CommandError, defineCommand } from "../types";
 
 const archiveSessionSchema = z
   .object({
-    session_id: z.string().describe("Id of the session to archive."),
+    session_id: z
+      .string()
+      .max(BERDCTL_BOUNDS.id)
+      .describe("Id of the session to archive."),
+    // Kept on the wire for CLI compatibility only. berdctl can no longer
+    // discard local work: the broker is unauthenticated, so any same-user
+    // process could otherwise force-remove a dirty worktree. The flag is
+    // accepted and ignored; the cleanup policy below is always "reject".
     discard_changes: z
       .boolean()
       .optional()
       .describe(
-        "Discard local files and changes when removing managed worktrees or branches.",
+        "No effect; kept for compatibility. berdctl never discards local files or changes: when Git cleanup would, the command refuses and the user must confirm in the app.",
       ),
   })
   .strict();
@@ -22,24 +30,30 @@ const archiveSessionSchema = z
 export const archiveSessionCommand = defineCommand({
   effect: "archive",
   visibility: "immediate",
-  destructive: true,
+  destructive: false,
   summary: "Archive a chat and clean up its Distill-managed Git resources",
   description:
-    "Archive a chat session, then remove eligible Distill-managed worktrees and branches. Refuses cleanup that would discard local files or changes unless --discard-changes is set.",
-  helpFooter: `By default, the command refuses to archive when Git cleanup would discard local files or changes.
-Use --discard-changes to allow that loss. The command never opens an interactive prompt.
+    "Archive a chat session, then remove eligible Distill-managed worktrees and branches. Refuses when cleanup would discard local files or changes, or when the chat still has running terminals; the user must confirm that in the app.",
+  helpFooter: `The command refuses to archive when Git cleanup would discard local files or changes,
+and berdctl cannot override that: only the user can confirm the loss, in the app.
+It also refuses while the chat still has running terminals: archiving in the app
+stops that chat's shells, and berdctl will not end a dev server, a build or a
+migration on its own. --discard-changes is accepted for compatibility and
+has no effect. The command never opens an interactive prompt.
 
-Examples:
+Example:
   berdctl session archive --session-id <session-id>
-  berdctl session archive --session-id <session-id> --discard-changes
 
 Result:
   {"ok": true} — the session was archived and eligible worktrees and branches were removed.`,
   bridgeTimeoutMs: 150_000,
   schema: archiveSessionSchema,
   precheck: async (args) => {
-    const { refuseRunningTarget } = await import("../runtime/sessions");
+    const { refuseRunningTarget, refuseChatWithLiveTerminals } = await import(
+      "../runtime/sessions"
+    );
     refuseRunningTarget(args.session_id, "archive");
+    await refuseChatWithLiveTerminals(args.session_id, "archive");
   },
   execute: async (args, ctx) => {
     const [{ getAppNavigationController }, { loadSessionForBerdctl }] =
@@ -48,9 +62,12 @@ Result:
         import("../runtime/sessions"),
       ]);
     await loadSessionForBerdctl(args.session_id);
+    // Always "reject": berdctl has no way to obtain the user's consent to
+    // lose work, so cleanup that would discard anything is refused with
+    // cleanup_requires_discard regardless of the flag.
     const outcome = await getAppNavigationController().archiveSession(
       args.session_id,
-      args.discard_changes ? "discard" : "reject",
+      "reject",
       ctx.deadlineMs,
     );
     if (!outcome.ok) {
@@ -102,7 +119,7 @@ function archiveFailureMessage(
     case "target_session_running":
       return `Refusing to archive session "${sessionId}" because it started running or opened in another window; wait for the turn to finish or close that window.`;
     case "cleanup_requires_discard":
-      return `Refusing to archive session "${sessionId}" because Git cleanup would discard local files or changes; inspect them in the app or retry with --discard-changes.`;
+      return `Refusing to archive session "${sessionId}" because Git cleanup would discard local files or changes; berdctl cannot discard them. Ask the user to archive the chat in the app, where they can confirm the loss.`;
     case "git_inspection_failed":
       return `Could not inspect the worktrees or branches for session "${sessionId}"; the session was not archived.`;
     case "workspace_cleanup_failed":

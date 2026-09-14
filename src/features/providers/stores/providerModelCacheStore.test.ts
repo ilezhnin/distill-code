@@ -7,6 +7,8 @@ import type {
 } from "@/shared/api/hostTypes";
 import { subscribeProviderModelInventoryInvalidated } from "../lib/providerModelInventoryEvents";
 import {
+  isCachedModelInventoryAuthoritative,
+  isCachedModelInventoryAuthoritativeForRouting,
   PICKER_REFRESH_FLOOR_MS,
   useProviderModelCacheStore,
 } from "./providerModelCacheStore";
@@ -489,6 +491,53 @@ describe("providerModelCacheStore", () => {
         .getModelsForProvider("databricks_v2")
         .map((model) => model.id),
     ).toEqual(["goose-gpt-5-5", "goose-gpt-5-6-sol"]);
+  });
+
+  it("stops calling a provider authoritative for routing once its poll fails", async () => {
+    // The picker may keep showing the last known list — that is why the entry
+    // survives a failed refresh — but nothing may be *started* on it: a bridge
+    // whose poll just failed is the one case where yesterday's list is a lie,
+    // and the crew ranking has no other signal for "is this harness usable".
+    mocks.supportedModelsList.mockResolvedValueOnce({
+      models: [{ id: "goose-gpt-5-6-sol" }],
+    });
+    await useProviderModelCacheStore
+      .getState()
+      .refreshProviderModels("databricks_v2");
+    const fetched = useProviderModelCacheStore
+      .getState()
+      .providers.get("databricks_v2");
+    expect(isCachedModelInventoryAuthoritative(fetched)).toBe(true);
+    expect(isCachedModelInventoryAuthoritativeForRouting(fetched)).toBe(true);
+
+    mocks.supportedModelsList.mockRejectedValueOnce(
+      new Error("bridge not installed"),
+    );
+    await useProviderModelCacheStore
+      .getState()
+      .refreshProviderModels("databricks_v2", { force: true });
+
+    const failed = useProviderModelCacheStore
+      .getState()
+      .providers.get("databricks_v2");
+    expect(failed?.models.map((model) => model.id)).toEqual([
+      "goose-gpt-5-6-sol",
+    ]);
+    // Still authoritative for display, no longer for routing.
+    expect(isCachedModelInventoryAuthoritative(failed)).toBe(true);
+    expect(isCachedModelInventoryAuthoritativeForRouting(failed)).toBe(false);
+  });
+
+  it("keeps routing on a runtime-managed provider, which has no poll to fail", () => {
+    useProviderModelCacheStore
+      .getState()
+      .seedRuntimeModels(new Map([["databricks_v2", [seededModel()]]]), {
+        runtimeManagedProviderIds: new Set(["databricks_v2"]),
+      });
+    const entry = useProviderModelCacheStore
+      .getState()
+      .providers.get("databricks_v2");
+    expect(isCachedModelInventoryAuthoritativeForRouting(entry)).toBe(true);
   });
 
   it("removes stale runtime-managed providers when runtime config changes", () => {

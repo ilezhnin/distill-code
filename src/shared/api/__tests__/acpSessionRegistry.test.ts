@@ -17,7 +17,7 @@ const noRequestModelContext = (providerId: string) => ({
 });
 
 vi.mock("../acpConnection", () => ({
-  invalidateClientConnection: (...args: unknown[]) =>
+  invalidateClientConnectionIfUnresponsive: (...args: unknown[]) =>
     mockInvalidateClientConnection(...args),
 }));
 
@@ -334,7 +334,11 @@ describe("applySessionModel", () => {
     }
   });
 
-  it("times out a stuck mutation, invalidates ACP, and admits queued work", async () => {
+  // The timeout is per request: the stuck mutation is rejected and its
+  // prepared entry dropped, but the socket every other chat shares is only
+  // checked for liveness, never closed outright (a timed-out config call in
+  // one chat used to fail every other chat's in-flight prompt).
+  it("times out a stuck mutation, checks the transport, and admits queued work", async () => {
     vi.useFakeTimers();
     try {
       const registry = await importPreparedRegistry("openai", "gpt-5.5");
@@ -343,6 +347,7 @@ describe("applySessionModel", () => {
       mockLoadSession.mockResolvedValueOnce(
         executionConfigResponse("openai", "gpt-5.5"),
       );
+      mockInvalidateClientConnection.mockResolvedValueOnce(false);
 
       const reasoning = registry.applySessionConfigOption(
         "session-1",
@@ -358,6 +363,120 @@ describe("applySessionModel", () => {
       expect(mockInvalidateClientConnection).toHaveBeenCalledOnce();
       expect(mockLoadSession).toHaveBeenCalledOnce();
       expect(registry.getPreparedProviderId("session-1")).toBe("openai");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops only the timed-out session's prepared entry", async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = await importPreparedRegistry("openai", "gpt-5.5");
+      registry.registerPreparedSession(
+        "session-2",
+        "anthropic",
+        "/other",
+        "claude",
+      );
+      const stuck = deferred<AcpSessionConfigSnapshots>();
+      mockSetSessionConfigOption.mockReturnValueOnce(stuck.promise);
+      mockInvalidateClientConnection.mockResolvedValueOnce(false);
+
+      const reasoning = registry.applySessionConfigOption(
+        "session-1",
+        "thinking_effort",
+        "high",
+      );
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      await expect(reasoning).rejects.toThrow("ACP operation timed out");
+      expect(registry.isSessionPrepared("session-1")).toBe(false);
+      expect(registry.isSessionPrepared("session-2")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The socket now survives a single timeout, so the timed-out request keeps
+  // running and can answer after a newer prepare already configured the
+  // session. Its own provider/model must not land in the registry, and the
+  // pair the newer prepare recorded can no longer be trusted to skip a
+  // `setModel` — the late call may have reached the host after it.
+  it("does not let a timed-out prepareSession overwrite a newer one when it answers late", async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = await importRegistry();
+      const stuckProvider = deferred<AcpSessionConfigSnapshots>();
+      mockLoadSession.mockResolvedValue(undefined);
+      mockSetProvider.mockReturnValueOnce(stuckProvider.promise);
+      mockInvalidateClientConnection.mockResolvedValue(false);
+
+      const stuck = registry
+        .prepareSession("session-1", "openai", "/project")
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await stuck).toMatchObject({
+        message: expect.stringContaining("ACP operation timed out"),
+      });
+
+      mockSetProvider.mockResolvedValueOnce(
+        modelConfigResponse("claude-fable", "Claude Fable"),
+      );
+      await registry.prepareSession("session-1", "anthropic", "/project");
+      expect(registry.getPreparedProviderId("session-1")).toBe("anthropic");
+
+      // The orphan finally answers.
+      stuckProvider.resolve(modelConfigResponse("gpt-5.5", "GPT 5.5"));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(registry.getPreparedProviderId("session-1")).toBe("anthropic");
+      // The cached model was dropped, so the model the host is on is asked
+      // for over the wire instead of assumed.
+      await registry.applySessionModel("session-1", "claude-fable");
+      expect(mockSetModel).toHaveBeenCalledWith(
+        "session-1",
+        "claude-fable",
+        noRequestModelContext("anthropic"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let a timed-out applySessionModel re-record its model when it answers late", async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = await importPreparedRegistry("openai", "gpt-5.5");
+      const stuckModel = deferred<AcpSessionConfigSnapshots>();
+      mockSetModel.mockReturnValueOnce(stuckModel.promise);
+      mockInvalidateClientConnection.mockResolvedValue(false);
+
+      const stuck = registry
+        .applySessionModel("session-1", "gpt-6")
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await stuck).toMatchObject({
+        message: expect.stringContaining("ACP operation timed out"),
+      });
+
+      mockLoadSession.mockResolvedValueOnce(undefined);
+      mockSetProvider.mockResolvedValueOnce(
+        modelConfigResponse("gpt-5.5", "GPT 5.5"),
+      );
+      await registry.prepareSession("session-1", "openai", "/project");
+
+      stuckModel.resolve(modelConfigResponse("gpt-6", "GPT 6"));
+      await vi.advanceTimersByTimeAsync(0);
+
+      mockSetModel.mockResolvedValueOnce(
+        modelConfigResponse("gpt-5.5", "GPT 5.5"),
+      );
+      await registry.applySessionModel("session-1", "gpt-5.5");
+      expect(mockSetModel).toHaveBeenLastCalledWith(
+        "session-1",
+        "gpt-5.5",
+        noRequestModelContext("openai"),
+      );
     } finally {
       vi.useRealTimers();
     }

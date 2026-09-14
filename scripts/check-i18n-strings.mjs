@@ -1,5 +1,6 @@
-import { readFileSync, readdirSync } from "node:fs";
-import { extname, join, relative } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { extname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 const CHECKED_PATHS = [
@@ -14,6 +15,8 @@ const CHECKED_PATHS = [
   "src/features/sessions",
   "src/shared/ui/ai-elements/code-block.tsx",
   "src/shared/ui/ai-elements/message.tsx",
+  "src/shared/ui/ai-elements/reasoning.tsx",
+  "src/shared/ui/ai-elements/tool.tsx",
 ];
 
 const EXCLUDED_PATH_SEGMENTS = ["__tests__"];
@@ -220,27 +223,75 @@ function collectViolations(filePath) {
   return violations;
 }
 
-const files = CHECKED_PATHS.flatMap(walkPath)
-  .filter((filePath) => !isExcluded(filePath))
-  .sort();
+// CHECKED_PATHS is hand-maintained, so a renamed or moved feature folder would
+// otherwise make this check pass vacuously: walkPath swallows the readdir
+// failure, the path contributes zero files, and every hard-coded string in the
+// moved feature goes unchecked while `just check` stays green. A listed path
+// that resolves to nothing is a stale scope, which is a failure.
+export function resolveCheckedFiles(checkedPaths) {
+  const stale = [];
+  const files = [];
 
-const violations = files.flatMap((filePath) => collectViolations(filePath));
+  for (const targetPath of checkedPaths) {
+    if (!existsSync(targetPath)) {
+      stale.push(`${targetPath} (does not exist)`);
+      continue;
+    }
+    const found = walkPath(targetPath).filter(
+      (filePath) => !isExcluded(filePath),
+    );
+    if (found.length === 0) {
+      stale.push(`${targetPath} (no checkable .ts/.tsx files)`);
+      continue;
+    }
+    files.push(...found);
+  }
 
-if (violations.length > 0) {
-  console.error("i18n string check failed:");
-  for (const violation of violations) {
-    console.error(
-      `  - ${violation.location} [${violation.kind}] ${JSON.stringify(violation.text)}`,
+  if (stale.length > 0) {
+    throw new Error(
+      `i18n check scope is stale — update CHECKED_PATHS in scripts/check-i18n-strings.mjs:\n${stale
+        .map((entry) => `  - ${entry}`)
+        .join("\n")}`,
     );
   }
-  console.error("");
-  console.error(
-    `Wrap user-facing strings in translations or annotate a narrow exception with "${IGNORE_COMMENT}".`,
-  );
-  console.error(
-    "The current enforcement scope is intentionally limited to app areas already migrated to i18n.",
-  );
-  process.exit(1);
-} else {
-  console.log("i18n string check passed.");
+
+  return files.sort();
+}
+
+function main() {
+  let files;
+  try {
+    files = resolveCheckedFiles(CHECKED_PATHS);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+
+  const violations = files.flatMap((filePath) => collectViolations(filePath));
+
+  if (violations.length > 0) {
+    console.error("i18n string check failed:");
+    for (const violation of violations) {
+      console.error(
+        `  - ${violation.location} [${violation.kind}] ${JSON.stringify(violation.text)}`,
+      );
+    }
+    console.error("");
+    console.error(
+      `Wrap user-facing strings in translations or annotate a narrow exception with "${IGNORE_COMMENT}".`,
+    );
+    console.error(
+      "The current enforcement scope is intentionally limited to app areas already migrated to i18n.",
+    );
+    process.exit(1);
+  } else {
+    console.log("i18n string check passed.");
+  }
+}
+
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  main();
 }

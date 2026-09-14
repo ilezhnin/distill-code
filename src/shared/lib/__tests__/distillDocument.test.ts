@@ -164,6 +164,58 @@ describe("distillDocument on the desktop", () => {
     expect(mocks.writeDistillDocument).not.toHaveBeenCalled();
   });
 
+  it("writes one payload at a time, in the order they were queued", async () => {
+    // Two concurrent invokes can finish in either order, and the loser's
+    // rename would replace the newer document.
+    const started: string[] = [];
+    const finishers: (() => void)[] = [];
+    mocks.writeDistillDocument.mockImplementation(
+      (_path: string, contents: string) => {
+        started.push(contents);
+        return new Promise<void>((resolve) => {
+          finishers.push(() => resolve());
+        });
+      },
+    );
+
+    const document = doc();
+    document.write({ items: ["v1"] });
+    const first = document.flush();
+    document.write({ items: ["v2"] });
+    const second = document.flush();
+    await Promise.resolve();
+
+    // The second write waits for the first to settle.
+    expect(started).toEqual([JSON.stringify({ version: 1, items: ["v1"] })]);
+
+    finishers.shift()?.();
+    await first;
+
+    expect(started).toEqual([
+      JSON.stringify({ version: 1, items: ["v1"] }),
+      JSON.stringify({ version: 1, items: ["v2"] }),
+    ]);
+    finishers.shift()?.();
+    await second;
+  });
+
+  it.each([
+    "pagehide",
+    "beforeunload",
+  ])("flushes a debounced write when the window goes away (%s)", async (event) => {
+    const document = doc();
+    document.write({ items: ["last change"] });
+    expect(mocks.writeDistillDocument).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new Event(event));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mocks.writeDistillDocument).toHaveBeenCalledWith(
+      "planner.json",
+      JSON.stringify({ version: 1, items: ["last change"] }),
+    );
+  });
+
   it("survives a folder it cannot write to", async () => {
     mocks.writeDistillDocument.mockRejectedValue(new Error("disk full"));
     const document = doc();

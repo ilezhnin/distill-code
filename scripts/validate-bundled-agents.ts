@@ -10,10 +10,12 @@
 //   - `metadata.berdBundled: true` so updates/re-seeds behave like the other
 //     bundled agents
 //
-// Run via pnpm exec: `pnpm exec tsx scripts/validate-bundled-agents.ts <path>...`
+// Run via pnpm exec: `pnpm exec tsx scripts/validate-bundled-agents.ts [path...]`
+// With no paths it validates every `distro/agents/*.md`, which is how `just
+// check` invokes it (cmd.exe does not expand globs).
 // Exits 0 on success, 1 on any validation failure, 2 on usage error.
 
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
@@ -37,7 +39,7 @@ interface BundledAgentFrontmatter {
 }
 
 const USAGE =
-  "usage: pnpm exec tsx scripts/validate-bundled-agents.ts <agent.md>...";
+  "usage: pnpm exec tsx scripts/validate-bundled-agents.ts [agent.md...]  (default: every distro/agents/*.md)";
 
 function error(message: string, file?: string): string {
   return file ? `${file}: ${message}` : message;
@@ -179,10 +181,41 @@ export function validateBundledAgentFile(filePath: string): string[] {
   }
 }
 
-function main(paths: string[]): number {
+// The whole bundled set, in sorted order. Used when no paths are given so the
+// validator is droppable into `just check`/CI as a bare `pnpm
+// validate:bundled-agents`: cmd.exe does not expand globs, so a
+// `distro/agents/*.md` argument would reach the script verbatim on the only
+// platform this app is built for.
+export function defaultBundledAgentPaths(): string[] {
+  const dir = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "distro",
+    "agents",
+  );
+  return readdirSync(dir)
+    .filter((entry) => entry.endsWith(".md"))
+    .sort()
+    .map((entry) => join(dir, entry));
+}
+
+function main(argv: string[]): number {
+  let paths = argv;
   if (paths.length === 0) {
-    console.error(USAGE);
-    return 2;
+    try {
+      paths = defaultBundledAgentPaths();
+    } catch (caught) {
+      console.error(
+        `cannot read the default bundled agent directory: ${caught instanceof Error ? caught.message : String(caught)}`,
+      );
+      console.error(USAGE);
+      return 2;
+    }
+    if (paths.length === 0) {
+      console.error("no bundled agent manifests found in distro/agents");
+      console.error(USAGE);
+      return 2;
+    }
   }
 
   const allErrors: string[] = [];

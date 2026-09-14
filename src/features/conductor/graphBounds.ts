@@ -10,10 +10,13 @@
  * - never a conductor — those are the operator's own chats, and there are
  *   only ever a handful;
  * - never a node that is still working — a live run must stay attributable;
- * - never a child of a live wave, whatever its status — the wave engine
- *   reconciles against these nodes every tick, and evicting one mid-wave
- *   would re-run its step from `pending` (the exact resurrection bug the
- *   engine's `failed` guard exists to prevent);
+ * - never a child of a wave the engine still holds, whatever its status — for
+ *   a live wave because the engine reconciles against these nodes every tick,
+ *   and evicting one mid-wave would re-run its step from `pending` (the exact
+ *   resurrection bug the engine's `failed` guard exists to prevent); and for a
+ *   wave parked on `needsOperator` because the retry the operator is offered
+ *   rebuilds its digest from exactly these nodes and reports — evicting them
+ *   turned the retry into a digest of "result unknown" stubs;
  * - among the evictable, oldest finished first — attribution for recent
  *   waves is an operator affordance, attribution for the distant past is
  *   what telemetry records are for.
@@ -53,7 +56,11 @@ function evictionAge(node: SessionNode): number {
  */
 export function boundConductorGraph(
   state: ConductorGraphSlices,
-  liveWaveIds: ReadonlySet<string>,
+  /**
+   * Waves the engine still holds: live ones and those parked for the operator.
+   * Their children are protected whatever their status.
+   */
+  heldWaveIds: ReadonlySet<string>,
 ): ConductorGraphSlices {
   const nodes = Object.values(state.nodesById);
   let nodesById = state.nodesById;
@@ -66,7 +73,7 @@ export function boundConductorGraph(
         (node) =>
           node.role !== "conductor" &&
           isTerminalRunStatus(node.status) &&
-          (!node.waveId || !liveWaveIds.has(node.waveId)),
+          (!node.waveId || !heldWaveIds.has(node.waveId)),
       )
       .sort((left, right) => evictionAge(left) - evictionAge(right));
     const evicted = evictable.slice(0, overBy);

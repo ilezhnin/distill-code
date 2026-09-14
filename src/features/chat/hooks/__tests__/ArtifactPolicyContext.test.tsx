@@ -1,9 +1,14 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { openPath } from "@tauri-apps/plugin-opener";
+import { useState } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "@/shared/types/messages";
+import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
   ArtifactPolicyProvider,
   collectSessionArtifacts,
+  getArtifactSignature,
   useArtifactActionsContext,
   useSessionArtifacts,
 } from "../ArtifactPolicyContext";
@@ -422,6 +427,25 @@ describe("ArtifactPolicyContext", () => {
     expect(screen.getByTestId("link-path")).toHaveTextContent("");
   });
 
+  it.each([
+    "\\\\attacker\\share\\x.md",
+    "%5C%5Cattacker%5Cshare%5Cx.md",
+    "//attacker/share/x.md",
+    "file://attacker/share/x.md",
+  ])("does not resolve the UNC markdown destination %s", (href) => {
+    // A UNC destination must never become a candidate: on Windows the first
+    // filesystem call on it opens an SMB session to `attacker` (NTLM exchange)
+    // and blocks the UI thread until the network timeout.
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <LinkProbe href={href} />
+      </ArtifactPolicyProvider>,
+    );
+
+    expect(screen.getByTestId("link-has-candidate")).toHaveTextContent("false");
+    expect(screen.getByTestId("link-path")).toHaveTextContent("");
+  });
+
   it("resolves file markdown hrefs as local paths", () => {
     render(
       <ArtifactPolicyProvider messages={[]} sessionCwd="/Users/test/app">
@@ -431,5 +455,419 @@ describe("ArtifactPolicyContext", () => {
 
     expect(screen.getByTestId("link-has-candidate")).toHaveTextContent("true");
     expect(screen.getByTestId("link-path")).toHaveTextContent("/tmp/report.md");
+  });
+});
+
+const mockRevealInFileManager = vi.fn<(path: string) => Promise<void>>();
+const mockToastMessage = vi.fn();
+let mockArtifactRoot: string | null = null;
+
+vi.mock("@/shared/lib/fileManager", () => ({
+  revealInFileManager: (path: string) => mockRevealInFileManager(path),
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    message: (...args: unknown[]) => mockToastMessage(...args),
+    error: vi.fn(),
+    success: vi.fn(),
+  },
+}));
+
+vi.mock("@/shared/artifacts/useResolvedArtifactRoot", () => ({
+  useResolvedArtifactRoot: () => mockArtifactRoot,
+}));
+
+function OpenProbe({
+  path,
+  mode = "external",
+}: {
+  path: string;
+  mode?: "external" | "app";
+}) {
+  const { openResolvedPath, openInApp } = useArtifactActionsContext();
+  const [error, setError] = useState<string | null>(null);
+  const [settled, setSettled] = useState(false);
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => {
+          setSettled(false);
+          void (mode === "app" ? openInApp(path) : openResolvedPath(path))
+            .then(() => setSettled(true))
+            .catch((err: unknown) => {
+              setError(err instanceof Error ? err.message : String(err));
+              setSettled(true);
+            });
+        }}
+      >
+        open
+      </button>
+      <span data-testid="open-error">{error ?? ""}</span>
+      <span data-testid="open-settled">{String(settled)}</span>
+    </div>
+  );
+}
+
+describe("ArtifactPolicyContext open gate", () => {
+  beforeEach(() => {
+    mockArtifactRoot = null;
+    mockPathExists.mockReset();
+    mockPathExists.mockResolvedValue(true);
+    mockRevealInFileManager.mockReset();
+    mockRevealInFileManager.mockResolvedValue(undefined);
+    mockToastMessage.mockReset();
+    vi.mocked(openPath).mockReset();
+    useChatSessionStore.setState({ sessions: [] });
+  });
+
+  it.each([
+    "C:/Users/me/AppData/Local/Temp/report.cmd",
+    "C:/Users/me/repo/setup.bat",
+    "C:/Users/me/Downloads/report.pdf.lnk",
+    "C:/Users/me/repo/notes.PS1",
+    "C:/Users/me/repo/tool.exe.",
+    "scripts/run.js",
+  ])("reveals %s in the file manager instead of running it", async (path) => {
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <OpenProbe path={path} />
+      </ArtifactPolicyProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("open-settled")).toHaveTextContent("true"),
+    );
+
+    expect(openPath).not.toHaveBeenCalled();
+    expect(mockRevealInFileManager).toHaveBeenCalledTimes(1);
+    expect(mockToastMessage).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("open-error")).toHaveTextContent("");
+  });
+
+  // A file the agent wrote into the session cwd is inside the trusted roots,
+  // so nothing else in the gate would stop it: these types must be refused by
+  // the denylist itself or they run on a single click.
+  it.each([
+    "summary.py",
+    "helper.pyw",
+    "tool.jar",
+    "console.msc",
+    "share.scf",
+    "theme.settingcontent-ms",
+    "recent.library-ms",
+    "manual.chm",
+    "runner.sct",
+    "runner.wsc",
+    "patch.mst",
+    "app.appinstaller",
+    "wizard.diagcab",
+    // An alternate-data-stream suffix hides the real extension from the
+    // denylist unless it is cut off first.
+    "payload.exe::$DATA",
+    "summary.py:extra",
+    // A stream suffix on an otherwise ordinary name is not a document either.
+    "notes.txt::$DATA",
+  ])("reveals the run-on-open type %s written inside the cwd", async (name) => {
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <OpenProbe path={name} />
+      </ArtifactPolicyProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("open-settled")).toHaveTextContent("true"),
+    );
+
+    expect(openPath).not.toHaveBeenCalled();
+    expect(mockRevealInFileManager).toHaveBeenCalledWith(
+      `C:/Users/me/repo/${name}`,
+    );
+    expect(screen.getByTestId("open-error")).toHaveTextContent("");
+  });
+
+  it("reveals an executable reached through openInApp's external fallback", async () => {
+    // `.exe` is not viewable in-app, so openInApp falls through to the
+    // external open — the gate must sit on that path too.
+    render(
+      <ArtifactPolicyProvider
+        messages={[]}
+        sessionCwd="C:/Users/me/repo"
+        sessionId="session-1"
+      >
+        <OpenProbe path="C:/Users/me/repo/payload.exe" mode="app" />
+      </ArtifactPolicyProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("open-settled")).toHaveTextContent("true"),
+    );
+
+    expect(openPath).not.toHaveBeenCalled();
+    expect(mockRevealInFileManager).toHaveBeenCalledWith(
+      "C:/Users/me/repo/payload.exe",
+    );
+  });
+
+  it("opens a document inside the session cwd without asking", async () => {
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <OpenProbe path="docs/report.pdf" />
+      </ArtifactPolicyProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() =>
+      expect(openPath).toHaveBeenCalledWith("C:/Users/me/repo/docs/report.pdf"),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(mockRevealInFileManager).not.toHaveBeenCalled();
+  });
+
+  it("opens a document under the artifact root without asking", async () => {
+    mockArtifactRoot = "C:/Users/me/Distill/artifacts";
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <OpenProbe path="C:/Users/me/Distill/artifacts/post.docx" />
+      </ArtifactPolicyProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() =>
+      expect(openPath).toHaveBeenCalledWith(
+        "C:/Users/me/Distill/artifacts/post.docx",
+      ),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("opens a document under an attached workspace without asking", async () => {
+    useChatSessionStore.setState({
+      sessions: [
+        {
+          id: "session-1",
+          title: "t",
+          createdAt: "2024-01-01",
+          updatedAt: "2024-01-01",
+          messageCount: 0,
+          archiveMutationBySessionId: {},
+          workspaceAttachments: [
+            { id: "ws-1", path: "D:\\work\\other-repo", source: "user" },
+          ],
+        } as never,
+      ],
+    });
+    render(
+      <ArtifactPolicyProvider
+        messages={[]}
+        sessionCwd="C:/Users/me/repo"
+        sessionId="session-1"
+      >
+        <OpenProbe path="D:/work/other-repo/README.pdf" />
+      </ArtifactPolicyProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() =>
+      expect(openPath).toHaveBeenCalledWith("D:/work/other-repo/README.pdf"),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("asks before opening a document outside every known root, and opens on confirm", async () => {
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <OpenProbe path="D:/elsewhere/report.pdf" />
+      </ArtifactPolicyProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("D:/elsewhere/report.pdf");
+    expect(openPath).not.toHaveBeenCalled();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Open" }));
+    await waitFor(() =>
+      expect(openPath).toHaveBeenCalledWith("D:/elsewhere/report.pdf"),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("open-settled")).toHaveTextContent("true"),
+    );
+    expect(screen.getByTestId("open-error")).toHaveTextContent("");
+  });
+
+  it("does not open a document outside every known root when the user cancels", async () => {
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <OpenProbe path="../secrets/report.pdf" />
+      </ArtifactPolicyProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Cancel" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("open-settled")).toHaveTextContent("true"),
+    );
+    expect(openPath).not.toHaveBeenCalled();
+    expect(screen.getByTestId("open-error")).toHaveTextContent("");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it.each([
+    "\\\\attacker\\share\\x.md",
+    "//attacker/share/x.md",
+    "file://attacker/share/x.md",
+  ])("never probes or opens the UNC target %s", async (path) => {
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <OpenProbe path={path} />
+      </ArtifactPolicyProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("open-settled")).toHaveTextContent("true"),
+    );
+
+    // The SMB/NTLM handshake happens on the `path_exists` call, so that call
+    // is what must not be made — being blocked at `openPath` would be too late.
+    expect(mockPathExists).not.toHaveBeenCalled();
+    expect(openPath).not.toHaveBeenCalled();
+    expect(mockRevealInFileManager).not.toHaveBeenCalled();
+  });
+
+  it("reports a missing file with a translated message", async () => {
+    mockPathExists.mockResolvedValue(false);
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <OpenProbe path="docs/missing.pdf" />
+      </ArtifactPolicyProvider>,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("open-error")).toHaveTextContent(
+        "File not found: docs/missing.pdf",
+      ),
+    );
+    expect(openPath).not.toHaveBeenCalled();
+  });
+});
+
+function TrustedRootProbe({ path }: { path: string }) {
+  const { isPathWithinTrustedRoots } = useArtifactActionsContext();
+
+  return (
+    <span data-testid="within-trusted-roots">
+      {String(isPathWithinTrustedRoots(path))}
+    </span>
+  );
+}
+
+// The predicate inline images are scoped with: there is no click to confirm a
+// rendered image, so an agent-named file is either inside the chat's folders or
+// it is not shown.
+describe("ArtifactPolicyContext trusted-root predicate", () => {
+  beforeEach(() => {
+    mockArtifactRoot = null;
+    useChatSessionStore.setState({ sessions: [] });
+  });
+
+  it.each([
+    ["diagram.png", "true"],
+    ["out/diagram.png", "true"],
+    ["C:/Users/me/repo/out/diagram.png", "true"],
+    ["C:/Users/me/Pictures/private.png", "false"],
+    ["../../Pictures/private.png", "false"],
+    ["//attacker/share/private.png", "false"],
+  ])("reports %s as within the chat's folders: %s", (path, expected) => {
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <TrustedRootProbe path={path} />
+      </ArtifactPolicyProvider>,
+    );
+
+    expect(screen.getByTestId("within-trusted-roots")).toHaveTextContent(
+      expected,
+    );
+  });
+
+  it("accepts a path under the artifact root", () => {
+    mockArtifactRoot = "C:/Users/me/Distill/artifacts";
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="C:/Users/me/repo">
+        <TrustedRootProbe path="C:/Users/me/Distill/artifacts/session/plot.png" />
+      </ArtifactPolicyProvider>,
+    );
+
+    expect(screen.getByTestId("within-trusted-roots")).toHaveTextContent(
+      "true",
+    );
+  });
+});
+
+describe("getArtifactSignature", () => {
+  // A streamed frame rebuilds the messages array but not the settled messages
+  // in it, so a message's fragment is read once and reused — the signature must
+  // not walk the whole transcript again per frame.
+  function countingMessage(id: string, path: string) {
+    let reads = 0;
+    const message = {
+      id,
+      role: "assistant" as const,
+      created: 1,
+      get content() {
+        reads += 1;
+        return [
+          {
+            type: "toolRequest" as const,
+            id: `${id}-tool`,
+            name: "write_file",
+            arguments: {},
+            status: "completed" as const,
+            locations: [{ path }],
+          },
+        ];
+      },
+    };
+    return { message: message as unknown as Message, reads: () => reads };
+  }
+
+  it("reads a settled message only once across frames", () => {
+    const settled = countingMessage("a1", "out/report.md");
+
+    const first = getArtifactSignature([settled.message], "/work");
+    const second = getArtifactSignature([settled.message], "/work");
+
+    expect(second).toBe(first);
+    expect(settled.reads()).toBe(1);
+  });
+
+  it("still reflects a message whose identity changed", () => {
+    const before = countingMessage("a1", "out/report.md");
+    const after = countingMessage("a1", "out/summary.md");
+
+    expect(getArtifactSignature([after.message], "/work")).not.toBe(
+      getArtifactSignature([before.message], "/work"),
+    );
+  });
+
+  it("keeps the cwd out of the per-message cache", () => {
+    const settled = countingMessage("a1", "out/report.md");
+
+    expect(getArtifactSignature([settled.message], "/new")).not.toBe(
+      getArtifactSignature([settled.message], "/old"),
+    );
   });
 });

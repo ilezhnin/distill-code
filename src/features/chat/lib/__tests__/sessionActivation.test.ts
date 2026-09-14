@@ -572,6 +572,77 @@ describe("loadSessionMessages", () => {
     });
   });
 
+  // Every `session/list` row says whether the session has a run, and the list
+  // is refreshed every 60 s — so an ordinary load (no `session/info` fetch)
+  // can tell a finished last reply from a running one instead of leaving the
+  // last bubble of every finished chat in progress until the next turn.
+  it("completes the final replay assistant when the listed session has no run", async () => {
+    seedSession(
+      { id: "listed-settled-replay", activeRunId: null },
+      { replay: false },
+    );
+    ensureReplayAssistantMessage(
+      "listed-settled-replay",
+      "assistant-1",
+    ).content.push({ type: "text", text: "Finished answer" });
+
+    await expect(loadSessionMessages("listed-settled-replay")).resolves.toBe(
+      true,
+    );
+
+    expect(acpGetSessionInfo).not.toHaveBeenCalled();
+    expect(messagesFor("listed-settled-replay")[0]).toMatchObject({
+      role: "assistant",
+      metadata: { completionStatus: "completed" },
+    });
+    // A session the host is still working on is not reported as an
+    // interrupted turn either.
+    expect(interruptedNoticeFor("listed-settled-replay")).toBeUndefined();
+  });
+
+  it("leaves the reply in progress when the listed session still has a run", async () => {
+    seedSession(
+      { id: "listed-running-replay", activeRunId: "run-1" },
+      { replay: false },
+    );
+    ensureReplayAssistantMessage(
+      "listed-running-replay",
+      "assistant-1",
+    ).content.push({ type: "text", text: "Still working" });
+
+    await expect(loadSessionMessages("listed-running-replay")).resolves.toBe(
+      true,
+    );
+
+    expect(messagesFor("listed-running-replay")[0]).toMatchObject({
+      role: "assistant",
+      metadata: { completionStatus: "inProgress" },
+    });
+  });
+
+  // The listed value can be a refresh interval old; a run this renderer
+  // started since then is the newer fact.
+  it("keeps the reply in progress when the renderer's own run outranks the listed one", async () => {
+    seedSession(
+      { id: "listed-stale-replay", activeRunId: null },
+      { replay: false },
+    );
+    useChatStore.getState().setActiveRunId("listed-stale-replay", "run-2");
+    ensureReplayAssistantMessage(
+      "listed-stale-replay",
+      "assistant-1",
+    ).content.push({ type: "text", text: "Still working" });
+
+    await expect(loadSessionMessages("listed-stale-replay")).resolves.toBe(
+      true,
+    );
+
+    expect(messagesFor("listed-stale-replay")[0]).toMatchObject({
+      role: "assistant",
+      metadata: { completionStatus: "inProgress" },
+    });
+  });
+
   it("says so when the loaded transcript ends on an unanswered message", async () => {
     // The 2.10 gap: a turn killed in flight leaves the chat looking as if
     // the agent ignored the operator, and nothing replays it.
@@ -908,6 +979,29 @@ describe("loadSessionMessages", () => {
     expect(warning.notificationType).toBe("warning");
     expect(warning.text).toContain("/resolved/missing/session");
     expect(warning.action).toEqual({ type: "openContextPanel" });
+  });
+
+  // Resolving the folder on the cached-transcript path touches the disk, and
+  // every caller is a `void` call: a rejection used to escape as an unhandled
+  // rejection with nothing said in the chat and the session left unprepared.
+  it("reports a folder resolution that fails on the cached-transcript path", async () => {
+    seedSession(
+      { id: "s-cached-throws", workingDir: "/missing/session" },
+      { replay: false },
+    );
+    useChatStore
+      .getState()
+      .addMessage("s-cached-throws", replayUserMessage("m-old"));
+    resolvePath.mockRejectedValue(new Error("state not managed"));
+
+    await expect(
+      loadSessionMessagesAndPrepare("s-cached-throws"),
+    ).resolves.toBe(false);
+
+    const failure = notificationFromLastMessage("s-cached-throws");
+    expect(failure.notificationType).toBe("error");
+    expect(failure.text).toContain("state not managed");
+    expect(acpPrepareSession).not.toHaveBeenCalled();
   });
 
   it("does not stack duplicate warnings across repeated activations", async () => {

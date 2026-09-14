@@ -31,6 +31,12 @@ build puts the driver (`justfile`'s `app_features` includes
 `app-test-driver`; the app logs `[app-test-driver] Listening on
 127.0.0.1:9999` at startup).
 
+Start the app with `just dev-windows` for that. The desktop-shortcut launcher
+(`scripts/windows/Launch-Distill.ps1`) and the installer builds leave
+`app-test-driver` out on purpose — the socket is unauthenticated — so `driver`
+envelopes against an app started that way answer with a connection failure.
+`exec` envelopes do not need the app at all.
+
 Options: `--root <dir>`, `--port <n>`, `--token <s>` (only for the isolated
 driver mode, which mints its own port and token).
 
@@ -45,6 +51,17 @@ every two seconds and says whether the app's driver port is answering.
 
 Driver and exec run in separate lanes: a fifteen-minute test run does not
 block a snapshot.
+
+An envelope is always spent before its answer is written: it is deleted from
+`inbox/`, or — when even the delete fails, because something else holds the file
+open — moved to `<root>/failed/`. `poll()` only ever reads `inbox/`, so an
+envelope parked in `failed/` will never run again; the directory is a record of
+envelopes whose command already ran and whose file could not be cleaned up, and
+it is safe to delete. An answer that cannot be written is held in memory and
+retried on each poll — bounded, so a permanently unwritable `outbox/` (a stale
+directory at an answer's path, a read-only mount) drops the oldest held answers
+and gives up on one that will not land, rather than growing forever and logging
+once per poll.
 
 ### `driver` envelopes
 

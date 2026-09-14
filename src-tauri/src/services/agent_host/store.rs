@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, SqlitePool};
 use std::path::Path;
 
@@ -41,6 +41,17 @@ pub struct SessionRecord {
     pub snapshot: Option<Value>,
 }
 
+/// The session-list fields a prompt's [`SessionStore::touch`] overwrites, read
+/// before the prompt is recorded so that a prompt the bridge then rejects can
+/// be taken back out of the list as well as out of the event log.
+#[derive(Debug, Clone)]
+pub struct SessionTouchUndo {
+    pub updated_at: String,
+    pub last_message_at: Option<String>,
+    pub last_snippet: Option<String>,
+    pub message_count: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct McpServerRecord {
     pub config_key: String,
@@ -67,6 +78,13 @@ impl SessionStore {
             .filename(db_path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
+            // Every streamed chunk of every chat is one commit here, and
+            // sqlx leaves `synchronous` at FULL, which fsyncs the WAL on each
+            // of them. In WAL mode NORMAL keeps the database consistent after
+            // a crash and only risks the very last commits after a power cut
+            // — a cheap trade for the transcript of a chat the user is
+            // watching arrive.
+            .synchronous(SqliteSynchronous::Normal)
             .foreign_keys(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
@@ -204,11 +222,13 @@ impl SessionStore {
         Ok(rows.iter().map(Self::row_to_session).collect())
     }
 
+    /// Name a session. An empty `title` clears the name rather than storing a
+    /// blank one, so `Option<String>` still means "named or not".
     pub async fn set_title(&self, id: &str, title: &str, user_set: bool) -> Result<(), String> {
         sqlx::query(
             "UPDATE sessions SET title = ?, user_set_name = ?, updated_at = ? WHERE id = ?",
         )
-        .bind(title)
+        .bind(Some(title).filter(|title| !title.is_empty()))
         .bind(user_set as i64)
         .bind(now_iso())
         .bind(id)
@@ -361,10 +381,13 @@ impl SessionStore {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Record which bridge session a chat is running on, or clear it (`None`)
+    /// once that bridge session must never be resumed again — see
+    /// `Inner::release_bridge_session`.
     pub async fn set_bridge_session_id(
         &self,
         id: &str,
-        bridge_session_id: &str,
+        bridge_session_id: Option<&str>,
     ) -> Result<(), String> {
         sqlx::query("UPDATE sessions SET bridge_session_id = ? WHERE id = ?")
             .bind(bridge_session_id)
@@ -472,31 +495,126 @@ impl SessionStore {
         Ok(())
     }
 
+    /// The session-list fields as they are now, to hand back to
+    /// [`Self::discard_prompt`] if the prompt about to be recorded is rejected.
+    pub async fn touch_undo(&self, id: &str) -> Result<Option<SessionTouchUndo>, String> {
+        let row = sqlx::query(
+            "SELECT updated_at, last_message_at, last_snippet, message_count FROM sessions WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| db_error("failed to read session", error))?;
+        Ok(row.map(|row| SessionTouchUndo {
+            updated_at: row.get("updated_at"),
+            last_message_at: row.get("last_message_at"),
+            last_snippet: row.get("last_snippet"),
+            message_count: row.get("message_count"),
+        }))
+    }
+
+    /// Take a prompt the bridge rejected back out: drop the events it was
+    /// recorded under and put the session-list fields back where they were, so
+    /// a retry of the same message is not a second copy of it and the message
+    /// count still counts only turns that were accepted. One transaction — the
+    /// log and the count must never disagree.
+    pub async fn discard_prompt(
+        &self,
+        session_id: &str,
+        event_ids: &[i64],
+        undo: &SessionTouchUndo,
+    ) -> Result<(), String> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db_error("failed to start discard transaction", error))?;
+        for id in event_ids {
+            sqlx::query("DELETE FROM session_events WHERE id = ? AND session_id = ?")
+                .bind(id)
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| db_error("failed to remove a rejected prompt", error))?;
+        }
+        sqlx::query(
+            "UPDATE sessions SET updated_at = ?, last_message_at = ?, last_snippet = ?, message_count = ? WHERE id = ?",
+        )
+        .bind(&undo.updated_at)
+        .bind(undo.last_message_at.as_deref())
+        .bind(undo.last_snippet.as_deref())
+        .bind(undo.message_count)
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| db_error("failed to restore the session after a rejected prompt", error))?;
+        tx.commit()
+            .await
+            .map_err(|error| db_error("failed to commit the prompt discard", error))?;
+        Ok(())
+    }
+
+    /// Delete a session and its events together. One transaction: the schema
+    /// has no cascade, so a crash or an error between the two statements would
+    /// leave the events behind as rows no session ever reads, lists or
+    /// reclaims.
     pub async fn delete_session(&self, id: &str) -> Result<(), String> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db_error("failed to start delete transaction", error))?;
         sqlx::query("DELETE FROM session_events WHERE session_id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|error| db_error("failed to delete session events", error))?;
         sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|error| db_error("failed to delete session", error))?;
+        tx.commit()
+            .await
+            .map_err(|error| db_error("failed to commit the session delete", error))?;
         Ok(())
     }
 
-    pub async fn append_event(&self, session_id: &str, payload: &Value) -> Result<(), String> {
-        sqlx::query(
-            "INSERT INTO session_events (session_id, created_at, payload_json) VALUES (?, ?, ?)",
-        )
-        .bind(session_id)
-        .bind(now_iso())
-        .bind(payload.to_string())
-        .execute(&self.pool)
-        .await
-        .map_err(|error| db_error("failed to append session event", error))?;
-        Ok(())
+    /// Append several events of one session in one transaction, in the order
+    /// given, and return the row ids they were stored under. One commit for a
+    /// whole prompt instead of one per content block, and the ids are what
+    /// makes a turn the bridge then rejects removable again.
+    pub async fn append_events(
+        &self,
+        session_id: &str,
+        payloads: &[Value],
+    ) -> Result<Vec<i64>, String> {
+        if payloads.is_empty() {
+            return Ok(Vec::new());
+        }
+        let now = now_iso();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db_error("failed to start append transaction", error))?;
+        let mut ids = Vec::with_capacity(payloads.len());
+        for payload in payloads {
+            let inserted = sqlx::query(
+                "INSERT INTO session_events (session_id, created_at, payload_json) VALUES (?, ?, ?)",
+            )
+            .bind(session_id)
+            .bind(&now)
+            .bind(payload.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| db_error("failed to append session event", error))?;
+            ids.push(inserted.last_insert_rowid());
+        }
+        tx.commit()
+            .await
+            .map_err(|error| db_error("failed to commit session events", error))?;
+        Ok(ids)
     }
 
     pub async fn list_events(&self, session_id: &str) -> Result<Vec<Value>, String> {
@@ -812,7 +930,7 @@ mod tests {
     async fn an_unstarted_session_moves_to_another_harness_without_its_old_events() {
         let (_dir, store) = store_with_history().await;
         store
-            .append_event("b", &event("commands"))
+            .append_events("b", &[event("commands")])
             .await
             .expect("event");
         let snapshot = json!({ "models": { "currentModelId": "gpt-5" } });
@@ -920,6 +1038,147 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_batch_of_events_is_stored_in_order_under_the_ids_it_reports() {
+        let (_dir, store) = store_with_history().await;
+        let of_b = |text: &str| {
+            let mut payload = event(text);
+            payload["sessionId"] = json!("b");
+            payload
+        };
+        let ids = store
+            .append_events("b", &[of_b("first"), of_b("second")])
+            .await
+            .expect("append");
+        assert_eq!(ids.len(), 2);
+        assert!(ids[0] < ids[1], "{ids:?}");
+        let stored: Vec<String> = texts_and_times(&store, "b")
+            .await
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        assert_eq!(stored, vec!["first".to_string(), "second".to_string()]);
+        assert!(store
+            .append_events("b", &[])
+            .await
+            .expect("empty append")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_prompt_the_bridge_rejects_leaves_no_trace_in_the_log_or_the_count() {
+        let (_dir, store) = store_with_history().await;
+        let of_b = |text: &str| {
+            let mut payload = event(text);
+            payload["sessionId"] = json!("b");
+            payload
+        };
+        // Session b already carries one accepted message.
+        store
+            .append_events("b", &[of_b("accepted")])
+            .await
+            .expect("append");
+        store.touch("b", 1, Some("accepted")).await.expect("touch");
+
+        let undo = store
+            .touch_undo("b")
+            .await
+            .expect("read")
+            .expect("session b exists");
+        assert_eq!(undo.message_count, 1);
+        assert_eq!(undo.last_snippet.as_deref(), Some("accepted"));
+
+        // A send the bridge then rejects: recorded first, withdrawn after.
+        let rejected = store
+            .append_events("b", &[of_b("rejected"), of_b("second block")])
+            .await
+            .expect("append");
+        store.touch("b", 1, Some("rejected")).await.expect("touch");
+        store
+            .discard_prompt("b", &rejected, &undo)
+            .await
+            .expect("discard");
+
+        let stored: Vec<String> = texts_and_times(&store, "b")
+            .await
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect();
+        assert_eq!(stored, vec!["accepted".to_string()]);
+        let after = store
+            .touch_undo("b")
+            .await
+            .expect("read")
+            .expect("session b exists");
+        assert_eq!(after.message_count, 1);
+        assert_eq!(after.last_snippet.as_deref(), Some("accepted"));
+        assert_eq!(after.updated_at, undo.updated_at);
+        assert_eq!(after.last_message_at, undo.last_message_at);
+        // The other session's history is none of the discard's business.
+        assert_eq!(texts_and_times(&store, "a").await.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_session_takes_its_events_with_it() {
+        let (_dir, store) = store_with_history().await;
+        assert_eq!(texts_and_times(&store, "a").await.len(), 3);
+        store.delete_session("a").await.expect("delete");
+        assert!(store.get_session("a").await.expect("get").is_none());
+        // The schema has no cascade, so the events only go if the delete takes
+        // them: orphan rows here are never read, listed or reclaimed again.
+        assert!(texts_and_times(&store, "a").await.is_empty());
+        assert!(store.get_session("b").await.expect("get").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_bridge_session_can_be_recorded_and_given_up_again() {
+        let (_dir, store) = store_with_history().await;
+        store
+            .set_bridge_session_id("b", Some("bridge-1"))
+            .await
+            .expect("record");
+        assert_eq!(
+            store
+                .get_session("b")
+                .await
+                .expect("read")
+                .expect("row")
+                .bridge_session_id
+                .as_deref(),
+            Some("bridge-1")
+        );
+
+        // A chat that moved folders lets go of its bridge session for good: the
+        // row must stop naming it, or the next attach resumes it and the chat
+        // keeps running in the folder it was created in.
+        store.set_bridge_session_id("b", None).await.expect("clear");
+        assert_eq!(
+            store
+                .get_session("b")
+                .await
+                .expect("read")
+                .expect("row")
+                .bridge_session_id,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn the_database_fsyncs_only_at_checkpoints() {
+        let (_dir, store) = store_with_history().await;
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+            .fetch_one(&store.pool)
+            .await
+            .expect("journal mode");
+        assert_eq!(mode.to_ascii_lowercase(), "wal");
+        let synchronous: i64 = sqlx::query_scalar("PRAGMA synchronous")
+            .fetch_one(&store.pool)
+            .await
+            .expect("synchronous");
+        // 1 == NORMAL; sqlx's default is 2 (FULL), an fsync per commit.
+        assert_eq!(synchronous, 1);
+    }
+
+    #[tokio::test]
     async fn an_agent_title_never_replaces_a_name_the_user_chose() {
         let (_dir, store) = store_with_history().await;
         store
@@ -953,5 +1212,26 @@ mod tests {
             .expect("title"));
         let titled = store.get_session("a").await.expect("read").expect("row");
         assert_eq!(titled.title.as_deref(), Some("Model picker names"));
+    }
+
+    #[tokio::test]
+    async fn clearing_a_name_hands_the_naming_back_to_the_agent() {
+        let (_dir, store) = store_with_history().await;
+        store.set_title("a", "Mine", true).await.expect("rename");
+
+        // An empty rename is "I have no name for this", not "its name is the
+        // empty string": it must not be stored as a name the user chose, or the
+        // agent's proposed title would be blocked forever.
+        store.set_title("a", "", false).await.expect("clear");
+        let cleared = store.get_session("a").await.expect("read").expect("row");
+        assert_eq!(cleared.title, None);
+        assert!(!cleared.user_set_name);
+
+        store
+            .set_agent_title("a", "Fix the build")
+            .await
+            .expect("title");
+        let named = store.get_session("a").await.expect("read").expect("row");
+        assert_eq!(named.title.as_deref(), Some("Fix the build"));
     }
 }

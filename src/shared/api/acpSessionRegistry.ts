@@ -1,5 +1,5 @@
 import * as acpApi from "./acpApi";
-import { invalidateClientConnection } from "./acpConnection";
+import { invalidateClientConnectionIfUnresponsive } from "./acpConnection";
 import {
   readSessionExecutionConfigSnapshot,
   type AcpSessionConfigSnapshotContext,
@@ -83,9 +83,22 @@ function replaceExecutionSelection(
   };
 }
 
+/** What a serialized mutation may ask about its own turn while it runs. */
+interface SessionMutationTurn {
+  /** True while no later mutation for this session has been enqueued. */
+  isLatest: () => boolean;
+  /**
+   * True once this mutation's bound elapsed: its caller has been rejected and
+   * the queue moved on without it, so anything it learns afterwards describes
+   * a session another mutation now owns.
+   */
+  isAbandoned: () => boolean;
+}
+
 async function runBoundedSessionMutation<T>(
   sessionId: string,
   mutation: Promise<T>,
+  onAbandoned: () => void,
 ): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   let didTimeOut = false;
@@ -95,6 +108,7 @@ async function runBoundedSessionMutation<T>(
       new Promise<never>((_, reject) => {
         timeoutId = setTimeout(() => {
           didTimeOut = true;
+          onAbandoned();
           reject(
             new Error(
               `ACP operation timed out for session ${sessionId.slice(0, 8)}. Reconnect and retry.`,
@@ -105,13 +119,18 @@ async function runBoundedSessionMutation<T>(
     ]);
   } catch (error) {
     if (didTimeOut) {
+      // The timeout is this mutation's alone: its prepared state is unknown,
+      // so drop it, but the socket is shared by every chat and is only torn
+      // down when the transport itself stops answering.
       prepared.delete(sessionId);
-      await invalidateClientConnection().catch((invalidationError) => {
-        console.error(
-          "Failed to invalidate timed-out ACP connection:",
-          invalidationError,
-        );
-      });
+      await invalidateClientConnectionIfUnresponsive().catch(
+        (invalidationError) => {
+          console.error(
+            "Failed to check the ACP connection after a timed-out request:",
+            invalidationError,
+          );
+        },
+      );
     }
     throw error;
   } finally {
@@ -123,7 +142,7 @@ async function runBoundedSessionMutation<T>(
 
 function serializeSessionMutation<T>(
   sessionId: string,
-  mutation: (isLatest: () => boolean) => Promise<T>,
+  mutation: (turn: SessionMutationTurn) => Promise<T>,
   bounded = true,
 ): Promise<T> {
   let queue = mutationQueues.get(sessionId);
@@ -134,9 +153,18 @@ function serializeSessionMutation<T>(
 
   const sequence = nextMutationSequence++;
   queue.latestSequence = sequence;
-  const execute = () => mutation(() => queue?.latestSequence === sequence);
+  let abandoned = false;
+  const execute = () =>
+    mutation({
+      isLatest: () => queue?.latestSequence === sequence,
+      isAbandoned: () => abandoned,
+    });
   const result = queue.tail.then(() =>
-    bounded ? runBoundedSessionMutation(sessionId, execute()) : execute(),
+    bounded
+      ? runBoundedSessionMutation(sessionId, execute(), () => {
+          abandoned = true;
+        })
+      : execute(),
   );
   const tail = result.then(
     () => undefined,
@@ -157,9 +185,43 @@ export async function prepareSession(
   workingDir: string,
   options: SessionConfigMutationOptions = {},
 ): Promise<AcpSessionConfigSnapshots | undefined> {
-  return serializeSessionMutation(sessionId, () =>
-    prepareSessionNow(sessionId, providerId, workingDir, options),
+  return serializeSessionMutation(sessionId, (turn) =>
+    prepareSessionNow(sessionId, providerId, workingDir, options, turn),
   );
+}
+
+/**
+ * A mutation whose bound elapsed keeps running on the socket (which now
+ * survives a single timeout) and can resolve long after a newer prepare
+ * established the session's provider and model. Its own result must not be
+ * written: it describes a state nobody asked for any more. The wire call may
+ * still have reached the host, though — and after the newer one, since it
+ * answered later — so the current entry's cached model is no longer proof the
+ * host is on it. Dropping the cached model costs one `setModel` and is what
+ * keeps `applySessionModelNow` from skipping an apply the host never got.
+ */
+function discardSupersededPreparation(
+  sessionId: string,
+  providerId: string,
+  modelId: string | undefined,
+): void {
+  const current = prepared.get(sessionId);
+  const currentSelection = current?.executionSelection;
+  logReasoningEffortInfo("session mutation result discarded after timeout", {
+    sessionId: shortLogId(sessionId),
+    appliedProviderId: providerId,
+    appliedModelId: modelId ?? null,
+    currentProviderId: currentSelection?.providerId ?? null,
+    currentModelId: currentSelection?.modelId ?? null,
+  });
+  if (!current || !currentSelection) return;
+  if (
+    currentSelection.providerId === providerId &&
+    currentSelection.modelId === modelId
+  ) {
+    return;
+  }
+  replaceExecutionSelection(current, currentSelection.providerId);
 }
 
 async function prepareSessionNow(
@@ -167,6 +229,7 @@ async function prepareSessionNow(
   providerId: string,
   workingDir: string,
   options: SessionConfigMutationOptions,
+  turn: SessionMutationTurn,
 ): Promise<AcpSessionConfigSnapshots | undefined> {
   const sid = sessionId.slice(0, 8);
   const existing = prepared.get(sessionId);
@@ -185,7 +248,9 @@ async function prepareSessionNow(
     });
     if (existing.workingDir !== workingDir) {
       await acpApi.updateWorkingDir(sessionId, workingDir);
-      existing.workingDir = workingDir;
+      if (!turn.isAbandoned()) {
+        existing.workingDir = workingDir;
+      }
       changed = true;
     }
     if (existingProviderId !== providerId || options.forceConfigRefresh) {
@@ -204,11 +269,12 @@ async function prepareSessionNow(
       perfLog(
         `[perf:prepare] ${sid} reuse setProvider(${providerId}) in ${(performance.now() - tProv).toFixed(1)}ms`,
       );
-      replaceExecutionSelection(
-        existing,
-        providerId,
-        normalizeConcreteModelId(snapshots?.model?.modelId),
-      );
+      const reusedModelId = normalizeConcreteModelId(snapshots?.model?.modelId);
+      if (turn.isAbandoned()) {
+        discardSupersededPreparation(sessionId, providerId, reusedModelId);
+        return snapshots;
+      }
+      replaceExecutionSelection(existing, providerId, reusedModelId);
       changed = true;
     }
     perfLog(
@@ -238,6 +304,10 @@ async function prepareSessionNow(
   const acknowledgedModelId = normalizeConcreteModelId(
     snapshots?.model?.modelId,
   );
+  if (turn.isAbandoned()) {
+    discardSupersededPreparation(sessionId, providerId, acknowledgedModelId);
+    return snapshots;
+  }
   const entry = {
     workingDir,
     executionSelection: {
@@ -263,8 +333,8 @@ export async function applySessionModel(
   if (!concreteModelId) {
     throw new Error(`Invalid model id: ${modelId}`);
   }
-  return serializeSessionMutation(sessionId, () =>
-    applySessionModelNow(sessionId, concreteModelId, options),
+  return serializeSessionMutation(sessionId, (turn) =>
+    applySessionModelNow(sessionId, concreteModelId, options, turn),
   );
 }
 
@@ -272,6 +342,7 @@ async function applySessionModelNow(
   sessionId: string,
   modelId: string,
   options: SessionConfigMutationOptions,
+  turn: SessionMutationTurn,
 ): Promise<AcpSessionConfigSnapshots | undefined> {
   const sid = sessionId.slice(0, 8);
   const entry = prepared.get(sessionId);
@@ -319,6 +390,14 @@ async function applySessionModelNow(
   const acknowledgedModelId = snapshots?.model
     ? normalizeConcreteModelId(snapshots.model.modelId)
     : modelId;
+  if (turn.isAbandoned()) {
+    discardSupersededPreparation(
+      sessionId,
+      executionSelection.providerId,
+      acknowledgedModelId,
+    );
+    return snapshots;
+  }
   replaceExecutionSelection(
     entry,
     executionSelection.providerId,
@@ -352,17 +431,22 @@ export async function configureSession(
   if (modelId && !concreteModelId) {
     throw new Error(`Invalid model id: ${modelId}`);
   }
-  return serializeSessionMutation(sessionId, async () => {
+  return serializeSessionMutation(sessionId, async (turn) => {
     let snapshots = await prepareSessionNow(
       sessionId,
       providerId,
       workingDir,
       concreteModelId ? {} : options,
+      turn,
     );
     if (concreteModelId) {
       snapshots =
-        (await applySessionModelNow(sessionId, concreteModelId, options)) ??
-        snapshots;
+        (await applySessionModelNow(
+          sessionId,
+          concreteModelId,
+          options,
+          turn,
+        )) ?? snapshots;
     }
     return snapshots;
   });
@@ -500,9 +584,9 @@ export async function loadSession(
 }> {
   return serializeSessionMutation(
     sessionId,
-    async (isLatest) => {
+    async (turn) => {
       const response = await acpApi.loadSession(sessionId, workingDir);
-      const isCurrentResult = isLatest();
+      const isCurrentResult = turn.isLatest();
       const executionSnapshot = readSessionExecutionConfigSnapshot(response);
       prepared.set(sessionId, {
         workingDir,

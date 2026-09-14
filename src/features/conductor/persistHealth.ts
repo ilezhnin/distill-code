@@ -13,6 +13,14 @@
  * behave; it only remembers that a write was refused, so the wave engine can
  * tell the operator once and the stats pane can keep showing it.
  *
+ * It carries the other half of the same silence too: a document whose folder
+ * copy could not be *read* at startup. That store stays unhydrated and holds
+ * its writes — which is what stops an unreadable file from being replaced — but
+ * it also means the wave engine sits out the whole session, so an app that came
+ * up looking perfectly normal ignores every conductor plan until it is
+ * restarted. A read outage is therefore recorded here as well, and the stats
+ * pane offers the retry.
+ *
  * The record lives in memory by design. The one thing that is certainly
  * broken when this fires is persistence, so persisting the fact that
  * persistence is broken would be the least reliable place to put it.
@@ -23,11 +31,17 @@
 
 import { useSyncExternalStore } from "react";
 
-export type PersistScope = "graph" | "waves" | "telemetry";
+export type PersistScope = "graph" | "waves" | "telemetry" | "run-journal";
 
 export interface PersistHealth {
   /** Failed writes since the app started, per store. */
   failuresByScope: Record<PersistScope, number>;
+  /**
+   * Documents whose folder copy could not be read at all this session, after
+   * every retry. Louder than a refused write: the store stays unhydrated and
+   * holds its writes, so the wave engine sits the session out entirely.
+   */
+  readOutageScopes: readonly PersistScope[];
   /** When the first refusal happened, or `null` while all is well. */
   firstFailureAt: number | null;
   lastFailureAt: number | null;
@@ -35,11 +49,17 @@ export interface PersistHealth {
   reason?: string;
 }
 
-const SCOPES: readonly PersistScope[] = ["graph", "waves", "telemetry"];
+const SCOPES: readonly PersistScope[] = [
+  "graph",
+  "waves",
+  "telemetry",
+  "run-journal",
+];
 
 function emptyHealth(): PersistHealth {
   return {
-    failuresByScope: { graph: 0, waves: 0, telemetry: 0 },
+    failuresByScope: { graph: 0, waves: 0, telemetry: 0, "run-journal": 0 },
+    readOutageScopes: [],
     firstFailureAt: null,
     lastFailureAt: null,
   };
@@ -59,6 +79,7 @@ const listeners = new Set<() => void>();
 export function notePersistFailure(scope: PersistScope, error?: unknown): void {
   const now = Date.now();
   health = {
+    ...health,
     failuresByScope: {
       ...health.failuresByScope,
       [scope]: health.failuresByScope[scope] + 1,
@@ -71,6 +92,67 @@ export function notePersistFailure(scope: PersistScope, error?: unknown): void {
         ? { reason: errorName(error) }
         : {}),
   };
+  notifyPersistHealthListeners();
+}
+
+/**
+ * Records that a document's folder copy could not be read this session.
+ *
+ * A read outage is strictly louder than a refused write. A store whose read
+ * failed stays unhydrated and never writes, which is what keeps an unreadable
+ * file from being replaced — but it also means the wave engine refuses to run
+ * for the whole session. Until this existed the only trace of that was a
+ * `console.error` the operator cannot open: the app came up looking normal and
+ * every conductor plan was silently ignored.
+ *
+ * Safe to call repeatedly; the scope is recorded once.
+ */
+export function notePersistReadOutage(
+  scope: PersistScope,
+  error?: unknown,
+): void {
+  if (health.readOutageScopes.includes(scope)) return;
+  const now = Date.now();
+  health = {
+    ...health,
+    readOutageScopes: [...health.readOutageScopes, scope],
+    firstFailureAt: health.firstFailureAt ?? now,
+    lastFailureAt: now,
+    ...(health.reason
+      ? { reason: health.reason }
+      : errorName(error)
+        ? { reason: errorName(error) }
+        : {}),
+  };
+  notifyPersistHealthListeners();
+}
+
+/**
+ * Clears one scope's read outage, after a retry finally read the document.
+ *
+ * A health record that is clean again may report a later outage: the point of
+ * reporting once is not to bury the transcript, not to stay silent forever.
+ */
+export function clearPersistReadOutage(scope: PersistScope): void {
+  if (!health.readOutageScopes.includes(scope)) return;
+  health = {
+    ...health,
+    readOutageScopes: health.readOutageScopes.filter(
+      (candidate) => candidate !== scope,
+    ),
+  };
+  if (isPersistHealthy()) reported = false;
+  notifyPersistHealthListeners();
+}
+
+/** The documents that could not be read this session. */
+export function persistReadOutageScopes(
+  state: PersistHealth = health,
+): readonly PersistScope[] {
+  return state.readOutageScopes;
+}
+
+function notifyPersistHealthListeners(): void {
   for (const listener of [...listeners]) {
     try {
       listener();
@@ -94,7 +176,10 @@ export function getPersistHealth(): PersistHealth {
 }
 
 export function isPersistHealthy(state: PersistHealth = health): boolean {
-  return SCOPES.every((scope) => state.failuresByScope[scope] === 0);
+  return (
+    state.readOutageScopes.length === 0 &&
+    SCOPES.every((scope) => state.failuresByScope[scope] === 0)
+  );
 }
 
 export function totalPersistFailures(state: PersistHealth = health): number {
@@ -117,7 +202,10 @@ export function subscribePersistHealth(listener: () => void): () => void {
  * hundreds of times — the operator needs to be told, and told once.
  */
 export function takeUnreportedPersistFailure(): PersistHealth | null {
-  if (reported || isPersistHealthy()) return null;
+  // Write refusals only. A read outage is reported on its own path, because
+  // the engine is off for the session and there will never be a live wave for
+  // this notice to attach to.
+  if (reported || totalPersistFailures() === 0) return null;
   reported = true;
   return health;
 }

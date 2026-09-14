@@ -5,20 +5,31 @@ import {
   useContext,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
+import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import type {
   Message,
   ToolCallLocation,
   ToolKind,
 } from "@/shared/types/messages";
 import { pathExists } from "@/shared/api/system";
+import { useResolvedArtifactRoot } from "@/shared/artifacts/useResolvedArtifactRoot";
+import { revealInFileManager } from "@/shared/lib/fileManager";
+import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
+import { LocalMarkdownLinkProvider } from "@/shared/ui/ai-elements/local-link-context";
 import { useArtifactViewerStore } from "@/features/chat/stores/artifactViewerStore";
+import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
   artifactBasename,
   isViewableArtifact,
 } from "@/features/chat/lib/artifactViewerTypes";
-import { isWithinBase } from "@/features/chat/lib/artifactAutoOpenPolicy";
+import {
+  isWithinBase,
+  isWithinWorkRoots,
+} from "@/features/chat/lib/artifactAutoOpenPolicy";
 import {
   fileUrlToPath,
   toComparablePath,
@@ -56,6 +67,15 @@ export interface SessionArtifact {
 export interface ArtifactPolicyContextValue {
   resolveMarkdownHref: (href: string) => ArtifactLinkCandidate | null;
   pathExists: (path: string) => Promise<boolean>;
+  /**
+   * True when `path` resolves inside one of the places the user pointed this
+   * chat at: the session working directory, an attached workspace, or the
+   * artifact root. This is the policy for *rendering* a local file the agent
+   * named — an inline image — where there is no click to confirm: an agent can
+   * hand over any `file://` URI or `asset:` URL it likes, and the webview
+   * would happily fetch anything the asset scope allows (`$HOME/**`).
+   */
+  isPathWithinTrustedRoots: (path: string) => boolean;
   openResolvedPath: (path: string) => Promise<void>;
   /**
    * Primary "open this file" action for UI surfaces: viewable files
@@ -68,6 +88,7 @@ export interface ArtifactPolicyContextValue {
 const DEFAULT_ACTIONS_CONTEXT_VALUE: ArtifactPolicyContextValue = {
   resolveMarkdownHref: () => null,
   pathExists: async () => false,
+  isPathWithinTrustedRoots: () => false,
   openResolvedPath: async () => {},
   openInApp: async () => {},
 };
@@ -114,12 +135,149 @@ function inferPathKind(path: string): SessionArtifact["kind"] {
   return "path";
 }
 
+/**
+ * Extensions whose default "open" verb on Windows executes the file instead
+ * of displaying it: programs, scripts (and the script hosts' variants),
+ * shortcuts, installers, registry merges, control-panel applets and the
+ * other ShellExecute-runs-it families, plus the interpreters a developer
+ * machine registers a run verb for (`.py`, `.jar`) and the shell documents
+ * that run a command of their own choosing (`.scf`, `.settingcontent-ms`,
+ * `.library-ms`). A link or chip that lands on one of these is revealed in
+ * the file manager rather than opened, because the click was made to *read*
+ * something the agent named, and an agent-written file carries no
+ * mark-of-the-web to trigger SmartScreen.
+ *
+ * This is a denylist and therefore never complete; a type nobody listed here
+ * still opens with its default verb. Anything reached through `openInApp`
+ * prefers the in-app viewer, which is the allowlist half of the same gate.
+ */
+const EXECUTABLE_OPEN_EXTENSIONS: ReadonlySet<string> = new Set([
+  "exe",
+  "com",
+  "bat",
+  "cmd",
+  "lnk",
+  "hta",
+  "js",
+  "jse",
+  "vbs",
+  "vbe",
+  "wsf",
+  "wsh",
+  "ps1",
+  "psm1",
+  "msi",
+  "msp",
+  "scr",
+  "reg",
+  "url",
+  "cpl",
+  "inf",
+  "pif",
+  "application",
+  "gadget",
+  // Interpreters a developer machine registers a run verb for: the python.org
+  // installer associates `.py`/`.pyw`, and a JRE associates `.jar`.
+  "py",
+  "pyw",
+  "pyz",
+  "pyzw",
+  "jar",
+  // More script-host spellings of the families above.
+  "sct",
+  "wsc",
+  "ps1xml",
+  "psc1",
+  "msh",
+  "msh1",
+  "msh2",
+  "mshxml",
+  // Shell documents whose "open" verb runs a command or hands the shell a
+  // target of the document's choosing.
+  "msc",
+  "scf",
+  "settingcontent-ms",
+  "library-ms",
+  "searchconnector-ms",
+  "appref-ms",
+  "website",
+  // Help and diagnostics containers: compiled help runs script in its own
+  // host, and a `.diagcab`/`.msdt` package runs a troubleshooter.
+  "chm",
+  "hlp",
+  "diagcab",
+  "msdt",
+  // Installer transforms and app packages.
+  "mst",
+  "msix",
+  "msixbundle",
+  "appx",
+  "appxbundle",
+  "appinstaller",
+]);
+
+/**
+ * True when opening `path` with its default handler would run it rather than
+ * show it. Win32 drops trailing dots and spaces from a name before looking
+ * it up, so `tool.exe.` is `tool.exe`; the extension is read the same way.
+ *
+ * A `:` after the last separator names an NTFS alternate data stream
+ * (`payload.exe::$DATA`, `notes.txt:run.exe`). `Path::exists` accepts those
+ * spellings, and a naive extension read sees `exe::$data` — which is in no
+ * denylist. The stream suffix is cut off before the extension is read, and a
+ * name that carried one is never treated as an ordinary document: nothing the
+ * app links to needs stream syntax.
+ */
+export function isExecutableOpenTarget(path: string): boolean {
+  const rawName = basenameOf(normalizePath(path));
+  const streamIndex = rawName.indexOf(":");
+  const name = (
+    streamIndex === -1 ? rawName : rawName.slice(0, streamIndex)
+  ).replace(/[. ]+$/, "");
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return streamIndex !== -1;
+  return (
+    streamIndex !== -1 ||
+    EXECUTABLE_OPEN_EXTENSIONS.has(name.slice(dot + 1).toLowerCase())
+  );
+}
+
 // "C:/x", "C:\x" and — once the markdown renderer has percent-encoded the
 // backslash — "C:%5Cx" all start like a one-letter URL scheme, but they are
 // Windows drive paths and must resolve like any other local path.
 const WINDOWS_DRIVE_HREF = /^[a-zA-Z]:(?:[\\/]|%5c|%2f)/i;
 
-function hasBlockedMarkdownScheme(href: string): boolean {
+/**
+ * True for a UNC destination — `\\server\share\x`, its percent-encoded
+ * `%5C%5Cserver%5C…` spelling (the markdown pipeline encodes backslashes), or
+ * the already-slash form `//server/share/x`.
+ *
+ * These are rejected before anything touches the filesystem. On Windows every
+ * filesystem call on a UNC path — `Path::exists` behind `path_exists`
+ * included — goes through the SMB redirector: it connects to `server`,
+ * negotiates NTLM with the user's credentials, and blocks until the network
+ * timeout. `path_exists` is a synchronous Tauri command, so that wait happens
+ * on the UI thread. A destination that came out of agent output is never worth
+ * either cost, and the test is purely lexical so nothing is probed to make it.
+ *
+ * Only the *incoming* spelling is tested. A session working directory that is
+ * itself on a share is the user's own choice, so a relative destination still
+ * resolves against it (and yields a `//server/...` path) as before.
+ */
+function isUncRootedDestination(destination: string): boolean {
+  return normalizePath(decodePathIfEncoded(destination.trim())).startsWith(
+    "//",
+  );
+}
+
+/**
+ * True when a markdown destination must not be treated as a local path at all:
+ * a real non-`file:` URL scheme, or a UNC destination.
+ */
+function isBlockedMarkdownDestination(href: string): boolean {
+  if (isUncRootedDestination(href)) {
+    return true;
+  }
   if (WINDOWS_DRIVE_HREF.test(href)) {
     return false;
   }
@@ -175,7 +333,9 @@ function resolvePath(path: string, sessionCwd: string | null): string {
   const trimmed = path.trim();
   const fromFileUrl = fileUrlToPath(trimmed);
   if (fromFileUrl !== null) {
-    return fromFileUrl;
+    // `file://server/share/x` decodes to a UNC path and carries the same
+    // SMB/NTLM hazard as the raw spelling.
+    return fromFileUrl.startsWith("//") ? "" : fromFileUrl;
   }
   if (/^file:/i.test(trimmed)) {
     return "";
@@ -185,6 +345,10 @@ function resolvePath(path: string, sessionCwd: string | null): string {
   // separator like a raw one does.
   const normalized = normalizePath(decodePathIfEncoded(path));
   if (!normalized) return "";
+
+  // UNC destination — never resolved and never probed; see
+  // isUncRootedDestination for why.
+  if (normalized.startsWith("//")) return "";
 
   if (isAbsolutePath(normalized)) {
     return normalized;
@@ -254,41 +418,73 @@ export function collectSessionArtifacts(
   );
 }
 
-function getArtifactSignature(
+/**
+ * A message's contribution to the artifact signature, or `""` when it
+ * contributes nothing.
+ */
+function computeMessageArtifactFragment(message: Message): string {
+  if (message.role !== "assistant") return "";
+  // Mirror collectSessionArtifacts: hidden messages never contribute an
+  // artifact, so they must not contribute to the signature either —
+  // otherwise a hidden tool call would invalidate the cache and publish a
+  // new (identical) list, defeating the stability optimization.
+  if (message.metadata?.userVisible === false) return "";
+
+  const toolRequestParts = [];
+  for (const block of message.content) {
+    if (block.type !== "toolRequest") continue;
+    const locations = block.locations?.filter(isNonEmptyLocation) ?? [];
+    if (locations.length === 0) continue;
+    toolRequestParts.push([
+      block.toolName ?? block.name,
+      block.toolKind ?? null,
+      locations.map((location) => [
+        normalizePath(location.path),
+        location.line ?? null,
+      ]),
+    ]);
+  }
+
+  if (toolRequestParts.length === 0) return "";
+
+  return JSON.stringify([message.created, toolRequestParts]);
+}
+
+/**
+ * A streamed frame hands us a new `messages` array, but every settled message
+ * in it is the same object as last frame — only the one being streamed is
+ * rebuilt. Keying the per-message fragment on the message object therefore
+ * turns a whole-transcript walk (a `JSON.stringify` per tool-bearing message)
+ * into a map lookup per message, so the cost stops growing with session length.
+ */
+const artifactFragmentCache = new WeakMap<Message, string>();
+
+function getMessageArtifactFragment(message: Message): string {
+  const cached = artifactFragmentCache.get(message);
+  if (cached !== undefined) return cached;
+
+  const fragment = computeMessageArtifactFragment(message);
+  artifactFragmentCache.set(message, fragment);
+  return fragment;
+}
+
+export function getArtifactSignature(
   messages: readonly Message[],
   cwd: string | null,
 ): string {
   const parts = ["cwd", cwd ?? ""];
 
   for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    // Mirror collectSessionArtifacts: hidden messages never contribute an
-    // artifact, so they must not contribute to the signature either —
-    // otherwise a hidden tool call would invalidate the cache and publish a
-    // new (identical) list, defeating the stability optimization.
-    if (message.metadata?.userVisible === false) continue;
-
-    const toolRequestParts = [];
-    for (const block of message.content) {
-      if (block.type !== "toolRequest") continue;
-      const locations = block.locations?.filter(isNonEmptyLocation) ?? [];
-      if (locations.length === 0) continue;
-      toolRequestParts.push([
-        block.toolName ?? block.name,
-        block.toolKind ?? null,
-        locations.map((location) => [
-          normalizePath(location.path),
-          location.line ?? null,
-        ]),
-      ]);
-    }
-
-    if (toolRequestParts.length === 0) continue;
-
-    parts.push(JSON.stringify([message.created, toolRequestParts]));
+    const fragment = getMessageArtifactFragment(message);
+    if (fragment) parts.push(fragment);
   }
 
   return parts.join("\n");
+}
+
+interface PendingOpenConfirmation {
+  path: string;
+  resolve: (confirmed: boolean) => void;
 }
 
 export function ArtifactPolicyProvider({
@@ -302,11 +498,34 @@ export function ArtifactPolicyProvider({
   sessionId?: string | null;
   children: ReactNode;
 }) {
+  const { t } = useTranslation("chat");
   const openInViewer = useArtifactViewerStore((s) => s.open);
   const normalizedSessionCwd = useMemo(
     () => sessionCwd?.trim() || null,
     [sessionCwd],
   );
+  // Places the user has deliberately pointed this chat at. A local target
+  // inside one of them opens straight away; anything else is confirmed
+  // first, because the path came from agent output (a markdown link, a tool
+  // location) rather than from the user.
+  const artifactRoot = useResolvedArtifactRoot();
+  const workspaceAttachments = useChatSessionStore((state) =>
+    sessionId
+      ? state.sessions.find((session) => session.id === sessionId)
+          ?.workspaceAttachments
+      : undefined,
+  );
+  const trustedOpenRoots = useMemo(
+    () => [
+      normalizedSessionCwd,
+      artifactRoot,
+      ...(workspaceAttachments ?? []).map((attachment) => attachment.path),
+    ],
+    [normalizedSessionCwd, artifactRoot, workspaceAttachments],
+  );
+  const [pendingOpen, setPendingOpen] =
+    useState<PendingOpenConfirmation | null>(null);
+  const pendingOpenRef = useRef<PendingOpenConfirmation | null>(null);
   const artifactCacheRef = useRef<{
     artifacts: SessionArtifact[];
     signature: string;
@@ -337,7 +556,7 @@ export function ArtifactPolicyProvider({
     (href: string): ArtifactLinkCandidate | null => {
       const trimmed = href.trim();
       if (!trimmed || trimmed.startsWith("#")) return null;
-      if (hasBlockedMarkdownScheme(trimmed)) return null;
+      if (isBlockedMarkdownDestination(trimmed)) return null;
 
       if (/^file:/i.test(trimmed)) {
         const resolvedPath = resolvePath(trimmed, normalizedSessionCwd);
@@ -367,6 +586,9 @@ export function ArtifactPolicyProvider({
   const resolveOpenTarget = useCallback(
     async (path: string): Promise<string | null> => {
       const resolvedPath = resolvePath(path, normalizedSessionCwd);
+      // A rejected destination (UNC, an unsafe `file:` URL, empty) must not
+      // reach `path_exists` — that call is the hazard, not the open.
+      if (!resolvedPath) return null;
       if (await pathExists(resolvedPath)) {
         return resolvedPath;
       }
@@ -381,12 +603,50 @@ export function ArtifactPolicyProvider({
     [resolveOpenTarget],
   );
 
+  const isPathWithinTrustedRoots = useCallback(
+    (path: string) => {
+      const resolvedPath = resolvePath(path, normalizedSessionCwd);
+      if (!resolvedPath) return false;
+      return isWithinWorkRoots(trustedOpenRoots, resolvedPath);
+    },
+    [normalizedSessionCwd, trustedOpenRoots],
+  );
+
+  const settlePendingOpen = useCallback((confirmed: boolean) => {
+    const pending = pendingOpenRef.current;
+    pendingOpenRef.current = null;
+    setPendingOpen(null);
+    pending?.resolve(confirmed);
+  }, []);
+
+  const confirmOpenOutsideRoots = useCallback(
+    (path: string) =>
+      new Promise<boolean>((resolve) => {
+        // A second request while one is still waiting supersedes it; the
+        // earlier caller sees a cancel rather than hanging forever.
+        pendingOpenRef.current?.resolve(false);
+        const pending = { path, resolve };
+        pendingOpenRef.current = pending;
+        setPendingOpen(pending);
+      }),
+    [],
+  );
+
+  /**
+   * Every external open funnels through here — markdown links, artifact
+   * chips, the files list, tool-card locations and `openInApp`'s fallback —
+   * so the gate lives here rather than in any one caller:
+   *
+   * 1. Anything Windows would *run* rather than show is revealed in the file
+   *    manager instead, with a notice saying so.
+   * 2. A target outside the session cwd, the attached workspaces and the
+   *    artifact root asks first, the way an external URL does.
+   */
   const openResolvedPath = useCallback(
     async (path: string) => {
       const resolvedTarget = await resolveOpenTarget(path);
       if (!resolvedTarget) {
-        const cwdMessage = normalizedSessionCwd ?? "<none>";
-        throw new Error(`File not found: ${path} (session cwd: ${cwdMessage})`);
+        throw new Error(t("tools.fileNotFound", { path }));
       }
 
       const key = resolvedTarget.trim().toLowerCase();
@@ -396,9 +656,25 @@ export function ArtifactPolicyProvider({
         return;
       }
       lastOpenAtByPathRef.current.set(key, now);
+
+      if (isExecutableOpenTarget(resolvedTarget)) {
+        await revealInFileManager(resolvedTarget);
+        toast.message(
+          t("openPath.revealedInsteadOfRun", {
+            name: basenameOf(resolvedTarget),
+          }),
+        );
+        return;
+      }
+
+      if (!isWithinWorkRoots(trustedOpenRoots, resolvedTarget)) {
+        const confirmed = await confirmOpenOutsideRoots(resolvedTarget);
+        if (!confirmed) return;
+      }
+
       await openPath(resolvedTarget);
     },
-    [resolveOpenTarget, normalizedSessionCwd],
+    [resolveOpenTarget, trustedOpenRoots, confirmOpenOutsideRoots, t],
   );
 
   const openInApp = useCallback(
@@ -422,17 +698,58 @@ export function ArtifactPolicyProvider({
     () => ({
       resolveMarkdownHref,
       pathExists: checkPathExists,
+      isPathWithinTrustedRoots,
       openResolvedPath,
       openInApp,
     }),
-    [checkPathExists, openResolvedPath, openInApp, resolveMarkdownHref],
+    [
+      checkPathExists,
+      isPathWithinTrustedRoots,
+      openResolvedPath,
+      openInApp,
+      resolveMarkdownHref,
+    ],
+  );
+
+  // Every surface in this chat that renders Markdown — the agent-work panel's
+  // progress text, the artifact viewer's preview, reasoning blocks, detail
+  // panes — opens a local destination through the same resolution and the same
+  // gate. Previously only the message bubble installed a click delegate, so a
+  // local link anywhere else fell through to the OS browser as
+  // `http://tauri.localhost/<path>`. The message bubble provides its own
+  // handler over this one so a failure is reported inside the bubble.
+  const openLocalMarkdownLink = useCallback(
+    (href: string) => {
+      const candidate = resolveMarkdownHref(href);
+      if (!candidate) return;
+      void openResolvedPath(candidate.resolvedPath).catch((error: unknown) => {
+        toast.error(error instanceof Error ? error.message : String(error));
+      });
+    },
+    [resolveMarkdownHref, openResolvedPath],
   );
 
   return (
     <ArtifactActionsContext.Provider value={actionsValue}>
       <ArtifactListContext.Provider value={artifacts}>
-        {children}
+        <LocalMarkdownLinkProvider value={openLocalMarkdownLink}>
+          {children}
+        </LocalMarkdownLinkProvider>
       </ArtifactListContext.Provider>
+      <ConfirmDialog
+        open={pendingOpen !== null}
+        onOpenChange={(open) => {
+          if (!open) settlePendingOpen(false);
+        }}
+        title={t("openPath.confirmTitle")}
+        description={
+          <span className="break-all font-mono">{pendingOpen?.path ?? ""}</span>
+        }
+        cancelLabel={t("openPath.confirmCancel")}
+        confirmLabel={t("openPath.confirmOpen")}
+        destructive={false}
+        onConfirm={() => settlePendingOpen(true)}
+      />
     </ArtifactActionsContext.Provider>
   );
 }

@@ -58,7 +58,9 @@
     "exported_one": "Exported 1 chat",
     "exported_other": "Exported {{displayCount}} chats",
     "failed_one": "{{displayCount}} action failed",
-    "failed_other": "{{displayCount}} actions failed"
+    "failed_other": "{{displayCount}} actions failed",
+    "archiveConfirmTerminals_one": "1 running terminal will be stopped; unarchiving does not bring it back.",
+    "archiveConfirmTerminals_other": "{{count}} running terminals will be stopped; unarchiving does not bring them back."
   },
   "components": {
     "codeBlock": {
@@ -80,6 +82,26 @@
     },
     "plan": {
       "toggle": "Toggle plan"
+    },
+    "reasoning": {
+      "thinking": "Thinking...",
+      "thoughtForAFewSeconds": "Thought for a few seconds",
+      "thoughtForSeconds": "Thought for {{seconds}} seconds"
+    },
+    "tool": {
+      "parameters": "Parameters",
+      "result": "Result",
+      "error": "Error",
+      "elapsedSeconds": "{{seconds}}s",
+      "status": {
+        "approvalRequested": "Awaiting Approval",
+        "approvalResponded": "Responded",
+        "inputAvailable": "Running",
+        "inputStreaming": "Pending",
+        "outputAvailable": "Completed",
+        "outputDenied": "Denied",
+        "outputError": "Error"
+      }
     }
   },
   "completionNotification": {
@@ -172,5 +194,10 @@
     "output": "Output",
     "reasoning": "Reasoning",
     "totalCost": "Total cost"
+  },
+  "viewError": {
+    "title": "This view stopped working.",
+    "description": "The rest of the app is still running — try again, or open something else.",
+    "retry": "Try again"
   }
 }

@@ -49,6 +49,7 @@ function createConfigOptionsResponse() {
 
 vi.mock("../acpConnection", () => ({
   getClient: (...args: unknown[]) => mocks.getClient(...args),
+  trackPendingPrompt: <T>(prompt: Promise<T>) => prompt,
 }));
 
 describe("prompt", () => {

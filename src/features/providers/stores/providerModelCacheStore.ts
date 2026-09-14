@@ -333,6 +333,30 @@ export function isCachedModelInventoryAuthoritative(
   );
 }
 
+/**
+ * Stricter authority, for deciding what a session may be *started* on.
+ *
+ * A refresh that threw keeps the previous payload with its `fetchedAt` — that
+ * is deliberate, so the picker can still show yesterday's list rather than
+ * going blank on a transient failure. But routing is not display: the only
+ * signal the crew ranking has for "is this harness usable right now" is this
+ * cache, and a bridge that failed to start is exactly the case where the last
+ * good list is a lie. Answering "we do not know" instead demotes the platform
+ * in the ranking (an empty list reads as not installed) and the step runs
+ * somewhere that works, rather than four steps dying one after another on the
+ * same broken bridge with no retry (Q2).
+ *
+ * Runtime-managed entries are exempt: their models come from the app's own
+ * config rather than from a poll, so there is no failed poll to distrust.
+ */
+export function isCachedModelInventoryAuthoritativeForRouting(
+  entry: CachedProviderModels | undefined,
+): boolean {
+  if (!isCachedModelInventoryAuthoritative(entry)) return false;
+  if (entry?.runtimeManaged) return true;
+  return !entry?.error && entry?.outcome !== "failed";
+}
+
 function isStale(entry: CachedProviderModels | undefined): boolean {
   if (!entry || entry.error || !isCachedModelInventoryAuthoritative(entry)) {
     return true;

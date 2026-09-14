@@ -1,0 +1,39 @@
+# `cargo audit` configuration for the Tauri workspace.
+#
+# Every entry below is an advisory that `cargo audit` reports against
+# `Cargo.lock` but that the shipped Windows build does not actually carry, or
+# that has no fixed release to move to. `Cargo.lock` records the
+# feature-independent dependency closure, so advisories keep being reported for
+# crates that are never compiled into the app. Anything not listed here must be
+# fixed (lock bump or dependency change) instead of ignored — the CI gate fails
+# on it.
+#
+# Re-check this list whenever a dependency moves: an entry that has since
+# gained a fix, or whose crate left the lock, must be removed.
+
+[advisories]
+ignore = [
+  # rsa 0.9.10 — Marvin attack timing sidechannel. No fixed release exists.
+  # Not compiled: the only lock entry naming `rsa` is `sqlx-mysql`, an optional
+  # sqlx dependency we do not enable (`sqlx` is `default-features = false` with
+  # the `sqlite` driver only). `cargo tree -i rsa --workspace` prints nothing.
+  "RUSTSEC-2023-0071",
+
+  # proc-macro-error 1.0.4 — unmaintained. Build-time only, pulled in by a
+  # transitive proc-macro crate; there is nothing to upgrade to until the
+  # dependents migrate.
+  "RUSTSEC-2024-0370",
+
+  # glib 0.18.5 — unsoundness in `VariantStrIter`. Linux-only gtk path of the
+  # Tauri dependency tree; not part of the Windows build we ship.
+  "RUSTSEC-2024-0429",
+
+  # unic-* 0.9.0 — unmaintained (char-range, common, char-property, ucd-version,
+  # ucd-ident). Reached through `urlpattern` <- `tauri-utils`; upstream Tauri
+  # owns the migration.
+  "RUSTSEC-2025-0075",
+  "RUSTSEC-2025-0080",
+  "RUSTSEC-2025-0081",
+  "RUSTSEC-2025-0098",
+  "RUSTSEC-2025-0100",
+]

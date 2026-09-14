@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { toast } from "sonner";
+import { i18n } from "@/shared/i18n";
 import {
   inspectAttachmentPaths,
   readImageAttachment,
@@ -112,8 +114,18 @@ export function useChatInputAttachments(
     });
   }, []);
 
+  /**
+   * Files the browser handed us as `File` objects — a paste, or a drop the
+   * webview (rather than Tauri's drag-drop) delivered. An image travels as
+   * bytes, so it survives having no path; anything else reaches the agent only
+   * as a quoted path in the prompt (`appendAttachmentPaths`), and the browser
+   * never tells us one. Such a file used to sit in the composer looking
+   * attached while nothing about it was sent: it is dropped instead, and the
+   * user is told which file did not make it.
+   */
   const addBrowserFiles = useCallback(
     async (files: File[]) => {
+      const unsupported: string[] = [];
       const nextAttachments = (
         await Promise.allSettled(
           files.map(async (file) => {
@@ -121,17 +133,19 @@ export function useChatInputAttachments(
               return createImageAttachmentFromFile(file);
             }
 
-            return {
-              id: crypto.randomUUID(),
-              kind: "file",
-              name: file.name,
-              ...(file.type ? { mimeType: file.type } : {}),
-            } satisfies ChatFileAttachmentDraft;
+            unsupported.push(file.name);
+            return null;
           }),
         )
       ).flatMap((result) =>
-        result.status === "fulfilled" ? [result.value] : [],
+        result.status === "fulfilled" && result.value !== null
+          ? [result.value]
+          : [],
       );
+
+      for (const name of unsupported) {
+        toast.error(i18n.t("chat:attachments.noPathForBrowserFile", { name }));
+      }
 
       appendAttachments(nextAttachments);
     },

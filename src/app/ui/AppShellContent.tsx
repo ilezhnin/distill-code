@@ -10,6 +10,7 @@ import { SearchView } from "@/features/search/ui/SearchView";
 import { SessionHistoryView } from "@/features/sessions/ui/SessionHistoryView";
 import { SettingsView } from "@/features/settings/ui/SettingsView";
 import { DesignSystemView } from "@/features/design-system/ui/DesignSystemView";
+import { ViewErrorBoundary } from "./ViewErrorBoundary";
 import { isDesignSystemExplorerEnabled } from "@/features/design-system/lib/designSystemEnabled";
 import type { DesignSystemSection } from "@/features/design-system/ui/designSystemSections";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
@@ -188,7 +189,14 @@ export function AppShellContent({
   return (
     <AppStagedContentFrame isPreparing={isPreparingContent}>
       <AppRouteLayer inert={isPreparingContent} hidden={isPreparingContent}>
-        {routeContent}
+        {/* One view's render error must not replace the whole window (and lose
+            every composer draft with it): keep the failure inside the view. */}
+        <ViewErrorBoundary
+          view={renderedLocation.view}
+          resetKey={appNavigationLocationKey(renderedLocation)}
+        >
+          {routeContent}
+        </ViewErrorBoundary>
       </AppRouteLayer>
       {isPreparingContent ? (
         <div className="absolute inset-0 z-10 min-h-0">

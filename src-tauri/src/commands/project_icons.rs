@@ -312,8 +312,18 @@ fn scan_project_icons_inner(
     Ok(icons)
 }
 
+/// Read one icon and base64-encode it. Off the main thread for the same reason
+/// as `scan_project_icons`: the read plus the encode can take a while on a slow
+/// or network drive, and a synchronous `#[tauri::command]` would run it inline
+/// in the WebView2 IPC callback, freezing the window.
 #[tauri::command]
-pub fn read_project_icon(path: String) -> Result<ProjectIconData, String> {
+pub async fn read_project_icon(path: String) -> Result<ProjectIconData, String> {
+    tokio::task::spawn_blocking(move || read_project_icon_blocking(path))
+        .await
+        .map_err(|error| format!("Failed to read the project icon: {error}"))?
+}
+
+fn read_project_icon_blocking(path: String) -> Result<ProjectIconData, String> {
     let path = PathBuf::from(path.trim());
     if !is_project_icon_extension(&path) {
         return Err("Icon file type is not supported".to_string());

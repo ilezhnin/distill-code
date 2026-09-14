@@ -24,10 +24,10 @@ import { sendPromptInBackground } from "./backgroundSend";
 const mocks = vi.hoisted(() => ({
   dispatchPrompt: vi.fn(),
   getSession: vi.fn(),
-  isWaveManagedSession: vi.fn(),
   listProjectDocuments: vi.fn(),
   memoryEntries: [] as unknown[],
   memoryArchived: [] as unknown[],
+  waveExecutorSessionIds: [] as string[],
 }));
 
 vi.mock("@/shared/api/projectStore", () => ({
@@ -47,16 +47,12 @@ vi.mock("@/features/chat/stores/chatSessionStore", () => ({
   },
 }));
 
-vi.mock("@/features/conductor/waveManagedSession", () => ({
-  isWaveManagedSession: (...args: unknown[]) =>
-    mocks.isWaveManagedSession(...args),
-}));
-
 vi.mock("@/features/memory/stores/memoryStore", () => ({
   useMemoryStore: {
     getState: () => ({
       entries: mocks.memoryEntries,
       archived: mocks.memoryArchived,
+      waveExecutorSessionIds: mocks.waveExecutorSessionIds,
     }),
   },
 }));
@@ -94,6 +90,27 @@ function memoryEntry(
   };
 }
 
+/** Registers `sessionId` on the graph as one of the wave engine's children. */
+function seedWaveChildNode(sessionId: string): void {
+  useConductorGraphStore.setState({
+    nodesById: {
+      [sessionId]: {
+        sessionId,
+        projectId: "p-1",
+        role: "worker",
+        managedBy: "wave",
+        parentSessionId: "conductor-1",
+        rootConductorId: "conductor-1",
+        runId: "run-1",
+        harnessId: "goose",
+        displayName: "Scout · step",
+        status: "running",
+      },
+    },
+    reportsByRunId: {},
+  });
+}
+
 function dispatchedSystemPrompt(): string {
   const [, , options] = mocks.dispatchPrompt.mock.calls[0] as [
     string,
@@ -108,9 +125,9 @@ describe("sendPromptInBackground", () => {
     vi.clearAllMocks();
     mocks.dispatchPrompt.mockResolvedValue(undefined);
     mocks.getSession.mockReturnValue(undefined);
-    mocks.isWaveManagedSession.mockReturnValue(false);
     mocks.memoryEntries = [];
     mocks.memoryArchived = [];
+    mocks.waveExecutorSessionIds = [];
     // The operator's read/write switches live here; a case that flips one
     // must not decide the next case's prompt.
     window.localStorage.clear();
@@ -311,24 +328,42 @@ describe("sendPromptInBackground", () => {
   });
 
   it("keeps memory and the protocols away from a wave-managed session", async () => {
-    mocks.isWaveManagedSession.mockReturnValue(true);
+    seedWaveChildNode("session-1");
     mocks.memoryEntries = [memoryEntry({ id: "g", text: "A global fact" })];
 
     await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
       systemPrompt: "workspace prompt",
     });
 
-    expect(mocks.isWaveManagedSession).toHaveBeenCalledWith("session-1");
+    const systemPrompt = dispatchedSystemPrompt();
+    expect(systemPrompt).not.toContain("A global fact");
+    expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
+  });
+
+  // LAWS/MEMORY.md: "A wave-spawned executor MUST NOT receive the operator's
+  // memories or the protocols that reach them." The conductor evicts a
+  // finished child's node, after which the graph alone reports an ordinary
+  // chat — and berdctl can address such a session directly.
+  it("keeps memory away from a wave child whose graph node was evicted", async () => {
+    mocks.waveExecutorSessionIds = ["session-1"];
+    mocks.memoryEntries = [memoryEntry({ id: "g", text: "A global fact" })];
+
+    await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
+      systemPrompt: "workspace prompt",
+    });
+
     const systemPrompt = dispatchedSystemPrompt();
     expect(systemPrompt).toBe("workspace prompt");
+    expect(systemPrompt).not.toContain("A global fact");
     expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
+    expect(systemPrompt).not.toContain(PLANNER_PROTOCOL_PROMPT);
   });
 
   // The line that divides this from memory: an executor may not write the
   // wiki, but reading it is exactly what keeps it from re-exploring a
   // repository the project has already mapped.
   it("gives a wave child the wiki pointer while still withholding memory", async () => {
-    mocks.isWaveManagedSession.mockReturnValue(true);
+    seedWaveChildNode("session-1");
     mocks.getSession.mockReturnValue({ projectId: "p-1" });
     mocks.memoryEntries = [memoryEntry({ id: "g", text: "A global fact" })];
     await seedProjectWiki(["index.md"]);

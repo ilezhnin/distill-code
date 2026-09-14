@@ -1,11 +1,13 @@
 import { z } from "zod/v4";
 
+import { BERDCTL_BOUNDS } from "../helpers";
 import { defineCommand } from "../types";
 
 const listSkillsSchema = z
   .object({
     project_id: z
       .string()
+      .max(BERDCTL_BOUNDS.id)
       .optional()
       .describe("Also include skills from this project's working directories."),
   })

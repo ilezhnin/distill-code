@@ -109,6 +109,7 @@
     "optionsAria": "Options for {{name}}",
     "searchPlaceholder": "Search projects by name or description...",
     "startChat": "Start chat",
-    "title": "Projects"
+    "title": "Projects",
+    "reorderFailed": "Couldn't save the new project order."
   }
 }

@@ -28,6 +28,21 @@ export type TranscriptFixtureName =
   | "visual-spacing-fragmented-assistant"
   | "visual-spacing-rich-blocks";
 
+/**
+ * Names of fixtures a Playwright spec builds inline and hands to the renderer
+ * bridge itself. They have no `buildTranscriptFixture` case — the name only
+ * labels the run (it becomes the bridge's `transcriptFixture` query
+ * parameter), and one label may cover several spec-local variants — so they
+ * are kept out of `TranscriptFixtureName`, which stays the exhaustive list of
+ * builder-backed fixtures.
+ */
+export type TranscriptSpecFixtureName = "copy-action-streaming-parity";
+
+/** Any name a `TranscriptFixture` may carry, builder-backed or spec-local. */
+export type TranscriptFixtureLabel =
+  | TranscriptFixtureName
+  | TranscriptSpecFixtureName;
+
 export type TranscriptRendererMode = "legacy" | "virtual";
 
 export type TranscriptHarnessOperation =
@@ -225,7 +240,7 @@ export interface TranscriptFixtureExpectations {
 
 export interface TranscriptFixture {
   version: typeof TRANSCRIPT_FIXTURE_VERSION;
-  name: TranscriptFixtureName;
+  name: TranscriptFixtureLabel;
   description: string;
   activeSessionId: string;
   sessions: readonly TranscriptFixtureSession[];

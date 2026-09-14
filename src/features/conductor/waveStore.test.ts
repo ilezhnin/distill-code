@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { setConductorProcessStartedAtForTests } from "./processClock";
 import {
   WAVE_PHASES,
   WAVE_STEP_PHASES,
@@ -9,13 +10,18 @@ import {
 import {
   CONDUCTOR_WAVES_STORAGE_KEY,
   MAX_WAVE_TOMBSTONES,
+  MAX_WAVE_WATERMARKS,
   emptyWaveEngineState,
   getWaveEngineState,
   hasWaveTombstone,
+  isSupersededPlanMessage,
+  newestProcessedMessageAt,
   parseWaveEngineState,
   pruneOrphanedWaves,
   resetWaveEngineStateCache,
   setWaveEngineState,
+  withProcessedMessageWatermark,
+  withRemappedConductorSessionId,
   withWave,
   withWaveTombstone,
   withoutWave,
@@ -363,6 +369,59 @@ describe("parseWaveEngineState", () => {
     expect(parsed.waves[0]?.steps[0]?.model).toBeUndefined();
   });
 
+  it("round-trips a step's budget and class, and drops junk values", () => {
+    // A pending step resumed after a restart is spawned from this record, so
+    // a reload that lost the budget would run the step with no ceiling and one
+    // that lost the class would route it by the role's default (P49/P36).
+    const base = wave("w1");
+    const state = withWave(emptyWaveEngineState(), {
+      ...base,
+      steps: [
+        {
+          ...base.steps[0],
+          budget: { minutes: 5, usd: 1.5 },
+          modelClass: "coding-simple",
+        },
+      ],
+    });
+    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
+      state,
+    );
+
+    const parsed = parseWaveEngineState({
+      version: 2,
+      waves: [
+        {
+          ...JSON.parse(JSON.stringify(base)),
+          steps: [
+            {
+              ...base.steps[0],
+              budget: { minutes: -1, tokens: "lots", usd: 2 },
+              modelClass: "not-a-class",
+            },
+          ],
+        },
+      ],
+      tombstones: [],
+    });
+    // A budget with any unreadable member is not the ceiling the plan set:
+    // the readable members are kept and the rest read as "not set".
+    expect(parsed.waves[0]?.steps[0]?.budget).toEqual({ usd: 2 });
+    expect(parsed.waves[0]?.steps[0]?.modelClass).toBeUndefined();
+
+    const junkBudget = parseWaveEngineState({
+      version: 2,
+      waves: [
+        {
+          ...JSON.parse(JSON.stringify(base)),
+          steps: [{ ...base.steps[0], budget: "five minutes" }],
+        },
+      ],
+      tombstones: [],
+    });
+    expect(junkBudget.waves[0]?.steps[0]?.budget).toBeUndefined();
+  });
+
   it("survives every phase either union can hold", () => {
     // The C1 regression, as a property over the unions themselves: a phase
     // that exists in `waveEngine.ts` but not in this module's guard used to
@@ -541,6 +600,114 @@ describe("tombstones", () => {
     expect(hasWaveTombstone(state, `plan-${MAX_WAVE_TOMBSTONES + 9}`)).toBe(
       true,
     );
+  });
+});
+
+describe("the per-conductor watermark", () => {
+  afterEach(() => {
+    setConductorProcessStartedAtForTests(null);
+  });
+
+  it("only moves forward, and calls anything at or before it superseded", () => {
+    // Every stamp here is decades before this process started, so the
+    // pre-process requirement is satisfied and the marks alone decide.
+    setConductorProcessStartedAtForTests(() => 1_000_000);
+    let state = withProcessedMessageWatermark(
+      emptyWaveEngineState(),
+      "conductor-1",
+      5_000,
+    );
+    expect(newestProcessedMessageAt(state, "conductor-1")).toBe(5_000);
+    // An older message settling late must not reopen the window.
+    state = withProcessedMessageWatermark(state, "conductor-1", 2_000);
+    expect(newestProcessedMessageAt(state, "conductor-1")).toBe(5_000);
+    state = withProcessedMessageWatermark(state, "conductor-1", 9_000);
+    expect(newestProcessedMessageAt(state, "conductor-1")).toBe(9_000);
+
+    expect(isSupersededPlanMessage(state, "conductor-1", 8_999)).toBe(true);
+    // The mark's own message, coming round again on a replay.
+    expect(isSupersededPlanMessage(state, "conductor-1", 9_000)).toBe(true);
+    expect(isSupersededPlanMessage(state, "conductor-1", 9_001)).toBe(false);
+    // Another conductor has its own mark, and an unstamped message is left to
+    // the tombstones.
+    expect(isSupersededPlanMessage(state, "conductor-2", 1)).toBe(false);
+    expect(isSupersededPlanMessage(state, "conductor-1", 0)).toBe(false);
+  });
+
+  it("never supersedes a plan this process produced, whatever the mark says", () => {
+    // The machine's clock was a day fast when the mark was stored; Windows Time
+    // then resynced. Every new plan that conductor makes is now "older" than
+    // its own mark, and the candidate is dropped before it is even scanned — no
+    // wave, no refusal notice, nothing in the transcript. A genuinely new plan
+    // can only come from this process, so this process's messages are exempt.
+    const processStartedAt = 1_000_000;
+    setConductorProcessStartedAtForTests(() => processStartedAt);
+    const state = withProcessedMessageWatermark(
+      emptyWaveEngineState(),
+      "conductor-1",
+      processStartedAt + 86_400_000,
+    );
+
+    expect(
+      isSupersededPlanMessage(state, "conductor-1", processStartedAt + 1),
+    ).toBe(false);
+    expect(
+      isSupersededPlanMessage(state, "conductor-1", processStartedAt),
+    ).toBe(false);
+    // A replayed transcript from before this process still is superseded —
+    // that is the eviction hazard the mark exists for.
+    expect(
+      isSupersededPlanMessage(state, "conductor-1", processStartedAt - 1),
+    ).toBe(true);
+  });
+
+  it("round-trips through the document, dropping junk marks", () => {
+    const parsed = parseWaveEngineState({
+      version: 2,
+      waves: [],
+      tombstones: [],
+      newestProcessedMessageCreatedAt: {
+        "conductor-1": 7,
+        "conductor-2": "soon",
+        "conductor-3": -1,
+        "": 9,
+      },
+    });
+    expect(parsed.newestProcessedMessageCreatedAt).toEqual({
+      "conductor-1": 7,
+    });
+    // A document written before watermarks existed simply has none.
+    expect(
+      parseWaveEngineState({ version: 2, waves: [], tombstones: [] })
+        .newestProcessedMessageCreatedAt,
+    ).toEqual({});
+  });
+
+  it("keeps the newest marks past the cap", () => {
+    let state = emptyWaveEngineState();
+    for (let index = 0; index < MAX_WAVE_WATERMARKS + 5; index += 1) {
+      state = withProcessedMessageWatermark(
+        state,
+        `conductor-${index}`,
+        index + 1,
+      );
+    }
+    const marks = state.newestProcessedMessageCreatedAt;
+    expect(Object.keys(marks)).toHaveLength(MAX_WAVE_WATERMARKS);
+    expect(marks["conductor-0"]).toBeUndefined();
+    expect(marks[`conductor-${MAX_WAVE_WATERMARKS + 4}`]).toBe(
+      MAX_WAVE_WATERMARKS + 5,
+    );
+  });
+
+  it("follows a conductor promoted from its draft id", () => {
+    const state = withRemappedConductorSessionId(
+      withProcessedMessageWatermark(emptyWaveEngineState(), "draft-1", 4_000),
+      "draft-1",
+      "backend-1",
+    );
+    expect(newestProcessedMessageAt(state, "draft-1")).toBe(0);
+    expect(newestProcessedMessageAt(state, "backend-1")).toBe(4_000);
   });
 });
 

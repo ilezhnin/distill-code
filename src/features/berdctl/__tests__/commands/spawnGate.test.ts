@@ -1,4 +1,9 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const logRendererEvent = vi.hoisted(() =>
+  vi.fn((_level: string, _message: string) => Promise.resolve()),
+);
+vi.mock("@/shared/api/rendererLog", () => ({ logRendererEvent }));
 
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
@@ -57,18 +62,62 @@ beforeEach(async () => {
   useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
   useChatStore.setState({ messagesBySession: {} });
   useAgentStore.setState({ personas: [] });
+  logRendererEvent.mockClear();
 });
 
 describe("enforceBerdctlSpawnAcl", () => {
   it("lets an anonymous call through — that is the operator", () => {
     expect(() =>
-      enforceBerdctlSpawnAcl({ actor: undefined, targetLayer: "worker" }),
+      enforceBerdctlSpawnAcl({
+        actor: undefined,
+        verb: "create",
+        targetLayer: "worker",
+      }),
     ).not.toThrow();
+  });
+
+  it("logs every anonymous spawn, because with the built-in host that is all of them", () => {
+    // The reading "anonymous means the operator" is a product decision, but an
+    // unattributed spawn must at least be visible in the app log: the host
+    // exports no AGENT_SESSION_ID, so no production call carries an actor.
+    enforceBerdctlSpawnAcl({
+      actor: null,
+      verb: "fork",
+      targetLayer: "orchestrator",
+      targetPersona: {
+        id: "producer",
+        displayName: "Producer",
+        systemPrompt: "",
+        isBuiltin: false,
+        writable: true,
+      },
+    });
+
+    expect(logRendererEvent).toHaveBeenCalledTimes(1);
+    const [level, message] = logRendererEvent.mock.calls[0];
+    expect(level).toBe("info");
+    expect(message).toContain("session fork");
+    expect(message).toContain("orchestrator");
+    expect(message).toContain("Producer");
+    expect(message).toContain("AGENT_SESSION_ID");
+  });
+
+  it("does not log when the call carries an actor", () => {
+    enforceBerdctlSpawnAcl({
+      actor: ACTOR_ID,
+      verb: "create",
+      targetLayer: "worker",
+    });
+    expect(logRendererEvent).not.toHaveBeenCalled();
   });
 
   it("lets an actor with no graph node through — an ordinary chat acts for the operator", () => {
     expect(() =>
-      enforceBerdctlSpawnAcl({ actor: ACTOR_ID, targetLayer: "worker" }),
+      enforceBerdctlSpawnAcl({
+        actor: ACTOR_ID,
+        verb: "create",
+        targetLayer: "worker",
+      }),
     ).not.toThrow();
   });
 
@@ -77,7 +126,11 @@ describe("enforceBerdctlSpawnAcl", () => {
 
     let thrown: unknown;
     try {
-      enforceBerdctlSpawnAcl({ actor: ACTOR_ID, targetLayer: "worker" });
+      enforceBerdctlSpawnAcl({
+        actor: ACTOR_ID,
+        verb: "create",
+        targetLayer: "worker",
+      });
     } catch (error) {
       thrown = error;
     }
@@ -95,10 +148,18 @@ describe("enforceBerdctlSpawnAcl", () => {
     useAgentStore.setState({ personas: [persona("trusted", ["worker"])] });
 
     expect(() =>
-      enforceBerdctlSpawnAcl({ actor: ACTOR_ID, targetLayer: "worker" }),
+      enforceBerdctlSpawnAcl({
+        actor: ACTOR_ID,
+        verb: "create",
+        targetLayer: "worker",
+      }),
     ).not.toThrow();
     expect(() =>
-      enforceBerdctlSpawnAcl({ actor: ACTOR_ID, targetLayer: "orchestrator" }),
+      enforceBerdctlSpawnAcl({
+        actor: ACTOR_ID,
+        verb: "create",
+        targetLayer: "orchestrator",
+      }),
     ).toThrow(CommandError);
   });
 
@@ -117,6 +178,7 @@ describe("enforceBerdctlSpawnAcl", () => {
     expect(() =>
       enforceBerdctlSpawnAcl({
         actor: ACTOR_ID,
+        verb: "create",
         targetLayer: "worker",
         targetPersona: persona("scout"),
       }),
@@ -124,19 +186,28 @@ describe("enforceBerdctlSpawnAcl", () => {
     expect(() =>
       enforceBerdctlSpawnAcl({
         actor: ACTOR_ID,
+        verb: "create",
         targetLayer: "worker",
         targetPersona: persona("writer"),
       }),
     ).toThrow(CommandError);
     expect(() =>
-      enforceBerdctlSpawnAcl({ actor: ACTOR_ID, targetLayer: "worker" }),
+      enforceBerdctlSpawnAcl({
+        actor: ACTOR_ID,
+        verb: "create",
+        targetLayer: "worker",
+      }),
     ).toThrow(CommandError);
   });
 
   it("lets a conductor start workers, per the layer default", () => {
     useConductorGraphStore.getState().registerNode(node({ role: "conductor" }));
     expect(() =>
-      enforceBerdctlSpawnAcl({ actor: ACTOR_ID, targetLayer: "worker" }),
+      enforceBerdctlSpawnAcl({
+        actor: ACTOR_ID,
+        verb: "create",
+        targetLayer: "worker",
+      }),
     ).not.toThrow();
   });
 });
