@@ -94,6 +94,7 @@ import { moveSessionToProject } from "../stores/chatSessionOperations";
 import { reconcileSessionRunSettings } from "../lib/runSettingsReconciler";
 import {
   normalizeSessionRunSettings,
+  sameSessionRunSettings,
   type SessionRunSettings,
 } from "../lib/sessionRunSettings";
 import { updateSessionProject } from "@/shared/api/acpApi";
@@ -101,7 +102,10 @@ import {
   markAgentBuilderSessionPreparationFailed,
   preSeedDraftAgent,
 } from "@/features/agents/lib/agentBuilderSession";
-import { personaExecutionTarget } from "@/features/agents/lib/personaExecutionTarget";
+import {
+  personaExecutionTarget,
+  personaRunSettings,
+} from "@/features/agents/lib/personaExecutionTarget";
 import { rankedPersonaExecutionTarget } from "@/features/agents/lib/rankedPersonaTarget";
 import { getRoutingPolicy } from "@/features/agents/stores/routingPolicyStore";
 import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
@@ -393,6 +397,27 @@ export function useChatSessionController({
   // the moment before its session exists would be dropped on the floor.
   const [pendingRunSettings, setPendingRunSettings] =
     useState<SessionRunSettings>();
+  // The picked persona's effort and fast mode while there is no session, kept
+  // apart from the composer's own choices above so the composer's win and a
+  // second persona pick replaces the first persona's values, not the
+  // operator's.
+  const [pendingPersonaRunSettings, setPendingPersonaRunSettings] =
+    useState<SessionRunSettings>();
+  // What the operator chose in this composer themselves, per session. A
+  // persona pick fills in only what is not in here.
+  const explicitRunSettingsBySessionRef = useRef<
+    Record<string, SessionRunSettings>
+  >({});
+  // What a composer with no session shows and later hands to its session:
+  // the persona's values under the operator's own.
+  const pendingRunSettingsForDisplay = useMemo(
+    () =>
+      normalizeSessionRunSettings({
+        ...pendingPersonaRunSettings,
+        ...pendingRunSettings,
+      }),
+    [pendingPersonaRunSettings, pendingRunSettings],
+  );
   const preSendWorkspaceOperationRef = useRef(0);
   const [preSendWorkspaceSetup, setPreSendWorkspaceSetup] = useState<{
     sessionId: string;
@@ -1433,9 +1458,15 @@ export function useChatSessionController({
             );
           }
         }
-        return ranked.target;
+        // The ranked candidate's effort and fast mode travel with its target:
+        // "Opus 5 at xhigh" is one choice, and a target without its effort
+        // would run the model at whatever the bridge defaults to.
+        return {
+          target: ranked.target,
+          runSettings: normalizeSessionRunSettings(ranked.runSettings),
+        };
       }
-      return personaExecutionTarget(
+      const target = personaExecutionTarget(
         persona,
         {
           providers,
@@ -1447,6 +1478,9 @@ export function useChatSessionController({
         // harness does not report must not be forced onto it.
         { requireInstalledModel: true },
       );
+      return target
+        ? { target, runSettings: personaRunSettings(persona) }
+        : undefined;
     },
     [catalogEntries, getInstalledModelsForAgent, getModelsForAgent, providers],
   );
@@ -1673,6 +1707,10 @@ export function useChatSessionController({
           ? { reasoningEffort: { ...current, currentValue: value } }
           : {}),
       });
+      explicitRunSettingsBySessionRef.current[sessionId] = {
+        ...explicitRunSettingsBySessionRef.current[sessionId],
+        effort: value,
+      };
       if (!sessionHasStarted) {
         pendingDefaultReasoningEffortBySessionRef.current[sessionId] = value;
       }
@@ -1749,6 +1787,10 @@ export function useChatSessionController({
         ...previousDesired,
         fast: enabled,
       });
+      explicitRunSettingsBySessionRef.current[sessionId] = {
+        ...explicitRunSettingsBySessionRef.current[sessionId],
+        fast: enabled,
+      };
       rememberRunSettingsChoice({ fastMode: enabled });
       if (!current) {
         // The model has not reported its fast toggle yet — right after a model
@@ -1843,12 +1885,57 @@ export function useChatSessionController({
         !sessionId ||
         session?.creationState === "pending" ||
         !session?.executionTarget;
-      const personaTarget = persona
+      const personaResolution = persona
         ? resolvePersonaTarget(persona, {
             applyRanking: establishesTarget,
             notify: true,
           })
         : undefined;
+      const personaTarget = personaResolution?.target;
+      // A persona's effort and fast mode describe the model it names, so they
+      // come along only with a concrete model. They are intent, never a
+      // clamp: a value the model does not offer stays desired and the
+      // reconciler says what runs instead. Whatever the operator chose in this
+      // composer themselves still wins over the persona's.
+      const personaRunSettingsForTarget = personaTarget?.modelId
+        ? personaResolution?.runSettings
+        : undefined;
+      if (!sessionId) {
+        setPendingPersonaRunSettings(personaRunSettingsForTarget);
+      } else if (personaRunSettingsForTarget) {
+        // Recorded before the model apply below starts, so the reconcile that
+        // follows its acknowledgement already judges against this intent.
+        const liveSession = useChatSessionStore
+          .getState()
+          .getSession(sessionId);
+        const desiredRunSettings = normalizeSessionRunSettings({
+          ...liveSession?.desiredRunSettings,
+          ...personaRunSettingsForTarget,
+          ...explicitRunSettingsBySessionRef.current[sessionId],
+        });
+        if (
+          !sameSessionRunSettings(
+            liveSession?.desiredRunSettings,
+            desiredRunSettings,
+          )
+        ) {
+          useChatSessionStore
+            .getState()
+            .patchSession(sessionId, { desiredRunSettings });
+          // No model moves when the persona names the one already running, so
+          // no acknowledgement will reconcile; do it now, once the model has
+          // reported its menus (silence would read as "no control").
+          if (
+            sameSessionExecutionTarget(
+              liveSession?.executionTarget,
+              personaTarget,
+            ) &&
+            (liveSession?.reasoningEffort || liveSession?.fastMode)
+          ) {
+            void reconcileSessionRunSettings({ sessionId });
+          }
+        }
+      }
 
       if (personaTarget) {
         const harnessId = personaTarget.harnessId;
@@ -3232,7 +3319,9 @@ export function useChatSessionController({
     const hasPendingPersona = pendingPersonaId !== undefined;
     const hasPendingProject = pendingProjectId !== undefined;
     const hasPendingModel = pendingModelSelection !== undefined;
-    const hasPendingRunSettings = pendingRunSettings !== undefined;
+    const hasPendingComposerRunSettings = pendingRunSettings !== undefined;
+    const hasPendingRunSettings =
+      hasPendingComposerRunSettings || pendingPersonaRunSettings !== undefined;
 
     if (
       hasPendingExecutionTarget ||
@@ -3288,10 +3377,19 @@ export function useChatSessionController({
         patch.personaId = nextPersonaId;
       }
       if (hasPendingRunSettings) {
+        // The persona's values under the composer's: what the operator chose
+        // here themselves wins over the persona they picked.
         patch.desiredRunSettings = normalizeSessionRunSettings({
           ...previousSession?.desiredRunSettings,
+          ...pendingPersonaRunSettings,
           ...pendingRunSettings,
         });
+      }
+      if (hasPendingComposerRunSettings) {
+        explicitRunSettingsBySessionRef.current[sessionId] = {
+          ...explicitRunSettingsBySessionRef.current[sessionId],
+          ...pendingRunSettings,
+        };
       }
       if (hasPendingProject) {
         patch.projectId = nextProjectId ?? null;
@@ -3308,6 +3406,7 @@ export function useChatSessionController({
       setPendingProjectId(undefined);
       setPendingModelSelection(undefined);
       setPendingRunSettings(undefined);
+      setPendingPersonaRunSettings(undefined);
 
       // A model change in flight reconciles run settings when it commits. With
       // none, apply the intent now — but only once the session has reported
@@ -3414,6 +3513,7 @@ export function useChatSessionController({
     pendingPersonaId,
     pendingProjectId,
     pendingRunSettings,
+    pendingPersonaRunSettings,
     onWorkspaceNameRequest,
     onMessageAccepted,
     pendingQueuedMessage,
@@ -3643,8 +3743,11 @@ export function useChatSessionController({
     handleUltracodeArmedChange,
     fastMode: session?.fastMode,
     desiredFastMode: session?.desiredRunSettings?.fast,
-    /** Effort and fast chosen while there is no session yet. */
-    pendingRunSettings,
+    /**
+     * Effort and fast mode for a composer with no session yet: the picked
+     * persona's, under what the operator chose here.
+     */
+    pendingRunSettings: pendingRunSettingsForDisplay,
     handleFastModeChange,
     runSettingsNotice: session?.runSettingsNotice ?? null,
     selectedProjectId: effectiveProjectId,

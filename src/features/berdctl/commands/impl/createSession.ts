@@ -170,7 +170,6 @@ Result:
       { berdctlCrossSessionSendOptions },
       { DEFAULT_HARNESS_ID },
       { normalizeSessionExecutionTarget, targetFromAgentModelSelection },
-      { normalizeSessionRunSettings },
       { findPersonaOrThrow },
       { findProjectOrThrow },
       {
@@ -187,7 +186,6 @@ Result:
       import("../runtime/sessionSend"),
       import("@/features/providers/curatedProviders"),
       import("@/features/chat/lib/sessionExecutionTarget"),
-      import("@/features/chat/lib/sessionRunSettings"),
       import("../runtime/agents"),
       import("../runtime/projects"),
       import("../runtime/providers"),
@@ -268,10 +266,23 @@ Result:
           "Validation took too long; no session was created. Retry once.",
         );
       }
+      // Effort and fast mode go into creation itself: they are sent in
+      // `session/new` with the model, so the first turn already runs on them,
+      // and they become the chat's intent, so a model that turns a value down
+      // keeps it and shows a notice instead of silently running at something
+      // else. The selection was checked above; creation trusts it.
       session = await useChatSessionStore.getState().createSession({
         workingDir,
         projectId: args.project_id,
         executionTarget,
+        runSettings: {
+          ...(selection.effort !== undefined
+            ? { effort: selection.effort }
+            : {}),
+          ...(selection.fastMode !== undefined
+            ? { fast: selection.fastMode }
+            : {}),
+        },
         personaId: persona?.id,
         workspaceAttachments: workspacePlan?.workspaceAttachments,
         deferProviderSetup: false,
@@ -279,20 +290,6 @@ Result:
     } catch (error) {
       await rollbackProjectChatWorkspacePlan(workspacePlan);
       throw error;
-    }
-    // Effort and fast mode are recorded as the chat's intent, the same record
-    // the composer writes, before the first message is queued. The send path
-    // applies intent in the model apply's own mutation, and a model that
-    // turns a value down keeps the intent and shows a notice instead of
-    // silently running at something else.
-    const desiredRunSettings = normalizeSessionRunSettings({
-      effort: selection.effort,
-      fast: selection.fastMode,
-    });
-    if (desiredRunSettings) {
-      useChatSessionStore
-        .getState()
-        .patchSession(session.id, { desiredRunSettings });
     }
     registerBerdctlChildNode({
       actor: ctx.actor,

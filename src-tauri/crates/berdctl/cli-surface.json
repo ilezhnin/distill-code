@@ -126,7 +126,7 @@
         "create": {
           "action": "create",
           "about": "Create a new agent (persona)",
-          "afterHelp": "Example:\n  berdctl agent create --name \"Reviewer\" \\\n    --system-prompt \"You review diffs for correctness; be terse.\"\n\nResult:\n  {\"agent_id\": \"...\"} — the agent is saved and becomes available in\n  future chats; pass it as --agent-id to `berdctl session create`."
+          "afterHelp": "Examples:\n  berdctl agent create --name \"Reviewer\" \\\n    --system-prompt \"You review diffs for correctness; be terse.\"\n  berdctl agent create --name \"Planner\" --system-prompt \"You plan migrations.\" \\\n    --provider codex-acp --model gpt-5.6-sol --effort xhigh --fast-mode\n\nResult:\n  {\"agent_id\": \"...\", \"deprecated\": \"...\"?} — the agent is saved and\n  becomes available in future chats; pass it as --agent-id to\n  `berdctl session create`. Its chats start on the saved model, effort\n  and fast mode. \"deprecated\" appears when --model folded an effort in\n  and says what to pass instead."
         },
         "list": {
           "action": "list",

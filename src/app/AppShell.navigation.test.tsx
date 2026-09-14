@@ -1647,6 +1647,63 @@ describe("AppShell global navigation", () => {
     ).toEqual({ effort: "xhigh", fast: true });
   });
 
+  it("starts a chat with an agent on the agent's saved effort and fast mode in session/new", async () => {
+    useAgentStore.setState({
+      personas: [
+        {
+          id: "persona-resolves",
+          displayName: "Planner",
+          systemPrompt: "Plan the work.",
+          isBuiltin: false,
+          writable: true,
+          provider: "claude-acp",
+          model: "claude-opus-5",
+          effort: "xhigh",
+          fastMode: true,
+        },
+      ],
+    });
+    useProviderModelCacheStore.setState({
+      providers: new Map([
+        [
+          "claude-acp",
+          {
+            providerId: "claude-acp",
+            models: [
+              {
+                id: "claude-opus-5",
+                name: "Opus 5",
+                providerId: "claude-acp",
+              },
+            ],
+            fetchedAt: Date.now(),
+          },
+        ],
+      ]),
+    });
+    const user = userEvent.setup();
+    renderAppShell();
+
+    await user.click(
+      screen.getByRole("button", { name: "Start chat with resolving agent" }),
+    );
+
+    await waitFor(() => {
+      expect(mockAcpCreateSession).toHaveBeenCalledWith(
+        "claude-acp",
+        expect.any(String),
+        expect.objectContaining({
+          modelId: "claude-opus-5",
+          reasoningEffort: "xhigh",
+          fastMode: true,
+        }),
+      );
+    });
+    expect(
+      useChatSessionStore.getState().getActiveSession()?.desiredRunSettings,
+    ).toEqual({ effort: "xhigh", fast: true });
+  });
+
   it("does not reuse a blank draft that was asked for another fast mode", async () => {
     const rememberFast = (fastMode: boolean) =>
       window.localStorage.setItem(

@@ -82,7 +82,10 @@ import {
 } from "@/features/chat/stores/chatSessionSelectors";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useProviderSelection } from "@/features/agents/hooks/useProviderSelection";
-import { personaExecutionTarget } from "@/features/agents/lib/personaExecutionTarget";
+import {
+  personaExecutionTarget,
+  personaRunSettings,
+} from "@/features/agents/lib/personaExecutionTarget";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 import { selectProjects } from "@/features/projects/stores/projectSelectors";
 import { findExistingDraft } from "@/features/chat/lib/newChat";
@@ -2199,8 +2202,17 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           { requireInstalledModel: true },
         );
 
+        // The agent's saved effort and fast mode are the chat's starting
+        // intent, sent in `session/new` with its model. They mean something
+        // only for that model, so an agent that names none starts on the
+        // remembered preference for whatever the chat opens on instead.
+        const runSettings = executionTarget?.modelId
+          ? personaRunSettings(persona)
+          : undefined;
+
         void createNewTab(DEFAULT_CHAT_TITLE, undefined, {
           executionTarget,
+          ...(runSettings ? { runSettings } : {}),
         })
           .then((session) => {
             if (!session) return;
