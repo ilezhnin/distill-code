@@ -7,7 +7,10 @@ import type {
   AcpSessionConfigSnapshots,
 } from "@/shared/api/acpSessionConfigSnapshots";
 import { sameModelIdentity } from "@/shared/lib/foldedModelId";
-import { reconcileSessionRunSettings } from "./runSettingsReconciler";
+import {
+  reconcileSessionRunSettings,
+  runSettingsPlannerForSession,
+} from "./runSettingsReconciler";
 import { useChatSessionStore } from "../stores/chatSessionStore";
 import {
   executionTargetFromHostSession,
@@ -293,11 +296,27 @@ async function execute(
         resolveSuperseded(actor, operation);
         return;
       }
+      // No model moved, but a send is waiting on this transition, and it must
+      // run at the operator's intent rather than at whatever the last snapshot
+      // left behind. Usually a no-op: the observation that filled the menus
+      // already reconciled them.
+      await reconcileSessionRunSettings({
+        sessionId: request.sessionId,
+        requestId: operationId,
+      });
+      if (!currentOperation(actor, operation)) {
+        resolveSuperseded(actor, operation);
+        return;
+      }
       transition(actor, {
         type: "ACKNOWLEDGED",
         operationId,
         target: effective,
-        metadata: metadataFor(effective, sessionBeforePrepare.reasoningEffort),
+        metadata: metadataFor(
+          effective,
+          sessionBeforePrepare.reasoningEffort,
+          sessionBeforePrepare.fastMode,
+        ),
       });
       settleOperation(operation, {
         status: "committed",
@@ -315,10 +334,11 @@ async function execute(
     if (!selection.providerId) {
       throw new Error("Session execution target requires a provider boundary.");
     }
+    const sessionAtPrepare = useChatSessionStore
+      .getState()
+      .getSession(request.sessionId);
     const forceConfigRefresh =
-      request.requireReasoningEffort &&
-      !useChatSessionStore.getState().getSession(request.sessionId)
-        ?.reasoningEffort;
+      request.requireReasoningEffort && !sessionAtPrepare?.reasoningEffort;
     const snapshot = await acpPrepareSession(
       request.sessionId,
       selection.providerId,
@@ -328,6 +348,19 @@ async function execute(
         ...(forceConfigRefresh ? { forceConfigRefresh: true } : {}),
         ...(request.operationId || request.requestId
           ? { requestId: operationId }
+          : {}),
+        // provider → model → effort → fast as ONE mutation: the effort and
+        // fast writes are planned from the model's own answer and sent before
+        // anything else may reach this session. Only a chat with an intent
+        // needs the step; one chosen while this is in flight is picked up by
+        // the reconcile below.
+        ...(sessionAtPrepare?.desiredRunSettings
+          ? {
+              planRunSettings: runSettingsPlannerForSession(
+                request.sessionId,
+                () => currentOperation(actor, operation),
+              ),
+            }
           : {}),
       },
     );
@@ -390,9 +423,14 @@ async function execute(
       resolveSuperseded(actor, operation);
       return;
     }
-    const metadata = snapshot?.reasoningEffort
-      ? metadataFor(acknowledged, snapshot.reasoningEffort)
-      : undefined;
+    const metadata =
+      snapshot?.reasoningEffort || snapshot?.fastMode
+        ? metadataFor(
+            acknowledged,
+            snapshot.reasoningEffort ?? undefined,
+            snapshot.fastMode ?? undefined,
+          )
+        : undefined;
     transition(actor, {
       type: "ACKNOWLEDGED",
       operationId,
@@ -407,6 +445,11 @@ async function execute(
         store.patchSession(request.sessionId, {
           reasoningEffort: snapshot.reasoningEffort,
         });
+      }
+      // The answer to the fast write made inside the model apply. The fan-out
+      // may already have stored it; the identity change above cleared it again.
+      if (snapshot?.fastMode) {
+        store.patchSession(request.sessionId, { fastMode: snapshot.fastMode });
       }
       // provider → model have landed; effort and fast follow, in that order,
       // under this operation's request id so their answers are admitted as

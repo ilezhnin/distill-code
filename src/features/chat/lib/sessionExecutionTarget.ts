@@ -73,6 +73,11 @@ interface SessionExecutionModelSnapshot {
  * harness' current model, which always works. Substituting some OTHER
  * concrete model instead is the silent substitution D5 forbids.
  *
+ * The same rule covers the run settings that ride beside a model — reasoning
+ * effort and fast mode: one may be named only when it is in the current
+ * model's advertised menu or the operator chose it explicitly. They are not on
+ * the target at all; they live in `sessionRunSettings.ts`.
+ *
  * `sessionExecutionTargetProvenance.test.ts` pins the list of modules allowed
  * to mint a target, so a new one has to state which of (a)/(b)/(c) it is.
  * This function cannot check provenance itself — it sees an id, not where the

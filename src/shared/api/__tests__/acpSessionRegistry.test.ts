@@ -660,3 +660,149 @@ describe("applySessionModel", () => {
     expect(mockSetModel).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("applySessionRunSettings", () => {
+  const effortWrite = {
+    effort: { configId: "reasoning_effort", value: "high" },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+    mockSetModel.mockResolvedValue(undefined);
+    mockSetProvider.mockResolvedValue(undefined);
+    mockSetSessionConfigOption.mockResolvedValue(undefined);
+    mockUpdateWorkingDir.mockResolvedValue(undefined);
+    mockLoadSession.mockResolvedValue(undefined);
+    mockInvalidateClientConnection.mockResolvedValue(undefined);
+  });
+
+  it("applies provider, then model, then effort, then fast, with the three model-scoped writes under one request id", async () => {
+    const registry = await importPreparedRegistry("openai", "gpt-4.1");
+    const order: unknown[][] = [];
+    const astraMenu = {
+      configId: "reasoning_effort",
+      currentValue: "medium",
+      options: [
+        { id: "medium", name: "Medium" },
+        { id: "high", name: "High" },
+      ],
+    };
+    mockSetProvider.mockImplementation(async (_sessionId, providerId) => {
+      order.push(["provider", providerId]);
+      return modelConfigResponse("gpt-5.5", "GPT-5.5");
+    });
+    mockSetModel.mockImplementation(async (_sessionId, modelId, context) => {
+      order.push(["model", modelId, context.requestId]);
+      return modelConfigResponse("gpt-6-astra", "GPT-6-Astra", astraMenu);
+    });
+    mockSetSessionConfigOption.mockImplementation(
+      async (_sessionId, configId, value, context) => {
+        order.push([configId, value, context.requestId]);
+        return modelConfigResponse("gpt-6-astra", "GPT-6-Astra", {
+          ...astraMenu,
+          currentValue: "high",
+        });
+      },
+    );
+    const planRunSettings = vi.fn(() => ({
+      ...effortWrite,
+      fast: { configId: "fast-mode", value: true, kind: "select" as const },
+    }));
+
+    const snapshots = await registry.configureSession(
+      "session-1",
+      "codex-acp",
+      "/project",
+      "gpt-6-astra",
+      { requestId: "select-1", planRunSettings },
+    );
+
+    // The planner sees the model's own answer, not the provider default's.
+    expect(planRunSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: expect.objectContaining({ modelId: "gpt-6-astra" }),
+      }),
+    );
+    expect(order).toEqual([
+      ["provider", "codex-acp"],
+      ["model", "gpt-6-astra", "select-1"],
+      ["reasoning_effort", "high", "select-1"],
+      ["fast-mode", "on", "select-1"],
+    ]);
+    expect(snapshots?.reasoningEffort?.currentValue).toBe("high");
+  });
+
+  it("does not let a prompt run between the model and the effort that follows it", async () => {
+    const registry = await importPreparedRegistry("codex-acp", "gpt-5.5");
+    const effortAnswer = deferred<AcpSessionConfigSnapshots>();
+    mockSetModel.mockResolvedValueOnce(
+      modelConfigResponse("gpt-6-astra", "GPT-6-Astra"),
+    );
+    mockSetSessionConfigOption.mockReturnValueOnce(effortAnswer.promise);
+    const prompt = vi.fn().mockResolvedValue("sent");
+
+    const configure = registry.configureSession(
+      "session-1",
+      "codex-acp",
+      "/project",
+      "gpt-6-astra",
+      { planRunSettings: () => effortWrite },
+    );
+    const send = registry.runPreparedSessionPrompt("session-1", prompt);
+
+    await vi.waitFor(() =>
+      expect(mockSetSessionConfigOption).toHaveBeenCalledTimes(1),
+    );
+    expect(prompt).not.toHaveBeenCalled();
+
+    effortAnswer.resolve(modelConfigResponse("gpt-6-astra", "GPT-6-Astra"));
+    await configure;
+    await expect(send).resolves.toBe("sent");
+  });
+
+  it("skips an effort this window already wrote for the current model", async () => {
+    const registry = await importPreparedRegistry("codex-acp", "gpt-5.5");
+
+    await registry.applySessionRunSettings("session-1", effortWrite);
+    await registry.applySessionRunSettings("session-1", effortWrite);
+
+    expect(mockSetSessionConfigOption).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes the same effort again once the session has moved to another model", async () => {
+    const registry = await importPreparedRegistry("codex-acp", "gpt-5.5");
+
+    await registry.applySessionRunSettings("session-1", effortWrite);
+    await registry.applySessionModel("session-1", "gpt-6-astra");
+    await registry.applySessionRunSettings("session-1", effortWrite);
+
+    // A new model answers with its own effort, so nothing written for the
+    // previous one counts as acknowledged for it.
+    expect(mockSetSessionConfigOption).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the model applied when the bridge refuses the effort that follows it", async () => {
+    const registry = await importPreparedRegistry("codex-acp", "gpt-5.5");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mockSetModel.mockResolvedValueOnce(
+      modelConfigResponse("gpt-6-astra", "GPT-6-Astra"),
+    );
+    mockSetSessionConfigOption.mockRejectedValueOnce(
+      new Error("Invalid params"),
+    );
+
+    await expect(
+      registry.configureSession(
+        "session-1",
+        "codex-acp",
+        "/project",
+        "gpt-6-astra",
+        { planRunSettings: () => effortWrite },
+      ),
+    ).resolves.toMatchObject({ model: { modelId: "gpt-6-astra" } });
+    expect(
+      registry.requireSessionInvocationSelection("session-1").modelId,
+    ).toBe("gpt-6-astra");
+  });
+});

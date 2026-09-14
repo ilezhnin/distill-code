@@ -1,18 +1,6 @@
 import type { ChatSessionReasoningEffortConfig } from "../stores/chatSessionStore";
-import type { ModelOption } from "../types";
-import {
-  collapseEmbeddedReasoningModels,
-  composeEmbeddedReasoningModelId,
-  grokReasoningEffortConfig,
-  splitEmbeddedReasoning,
-  type CollapsedReasoningModels,
-} from "./modelReasoningVariants";
 
 export interface EffectiveReasoningEffortInput {
-  availableModels: ModelOption[];
-  currentModelId?: string | null;
-  currentModelProviderId?: string | null;
-  selectedAgentId: string;
   /** Session-advertised reasoning config and its ACP change channel. */
   sessionReasoningEffort?: {
     config?: ChatSessionReasoningEffortConfig;
@@ -23,88 +11,50 @@ export interface EffectiveReasoningEffortInput {
       setArmed: (armed: boolean) => void;
     };
   };
-  /** Model change channel used when effort is embedded in the model id. */
-  onModelChange?: (modelId: string, model?: ModelOption) => void;
 }
 
 export interface EffectiveReasoningEffort {
-  /** Selectable config powering the effort control and wire-id composition. */
+  /** Selectable config powering the effort control. */
   config: ChatSessionReasoningEffortConfig | undefined;
-  /** Applies an effort selection through the correct channel. */
+  /** Applies an effort selection over the session config channel. */
   onSelect: (value: string) => void;
-  /** True when effort is encoded in the model id (`model[effort]` variants). */
-  usesModelEmbeddedReasoning: boolean;
-  /** Embedded-variant collapse result, shared with the model picker. */
-  collapsedModels: CollapsedReasoningModels;
 }
 
 /**
- * Derives the reasoning-effort control for a composer surface from whatever
- * the session and model list advertise:
+ * Derives the reasoning-effort control for a composer surface from the one
+ * place a harness states it: the session's own `thought_level` config — `effort`
+ * on claude, `reasoning_effort` on codex and grok — applied back over the same
+ * config channel under the bridge's own id.
  *
- * - a selectable session config (native goose `thinking_effort`, agent-bridge
- *   `thought_level` options) is used as-is and applied over the session config
- *   channel;
- * - model lists that embed effort in the model id (`grok-4[high]`) collapse
- *   into a synthesized config, and selections re-compose the wire model id via
- *   the model change channel;
- * - Grok sessions that only advertise a dummy non-selectable value fall back
- *   to the static Grok effort set.
+ * Nothing else is a source. The model id no longer carries an effort (the host
+ * stopped folding one in), so there is no model list to collapse and no model
+ * id to re-compose; and grok advertises a real writable `reasoning_effort`, so
+ * the static ladder that used to stand in for it would only address a config id
+ * grok rejects. With no session config there is no control at all.
  */
 export function resolveEffectiveReasoningEffort(
   input: EffectiveReasoningEffortInput,
 ): EffectiveReasoningEffort {
-  const collapsedModels = collapseEmbeddedReasoningModels(
-    input.availableModels,
-    input.currentModelId,
-  );
   const sessionConfig = input.sessionReasoningEffort?.config;
-  const sessionHasSelectableReasoning =
-    (sessionConfig?.options.length ?? 0) > 1;
-  // The static Grok ladder stands in for an agent that advertises a value but
-  // no choices. It requires a session config all the same: the write path
-  // addresses that config's id, so without one the ladder would be a control
-  // whose selections have nowhere to go — stops that move nothing when clicked.
-  const grokConfig =
-    input.selectedAgentId === "grok-acp" &&
-    sessionConfig != null &&
-    !sessionHasSelectableReasoning &&
-    collapsedModels.reasoning == null
-      ? grokReasoningEffortConfig(sessionConfig.currentValue)
-      : null;
-  // Effort embedded in the model id wins over a session-advertised config.
-  // The id is what goes on the wire, so `gpt-5.6-sol[ultra]` *is* the effective
-  // effort; a provider that also advertises a parallel knob of its own (codex's
-  // `reasoning_effort`, on its own scale) cannot override what the id already
-  // encodes. Letting the session config win left the control reading "xhigh"
-  // for a model pinned to [ultra], and flipping between the two scales as
-  // snapshots arrived — the top stop appearing and vanishing between renders.
-  const baseConfig =
-    collapsedModels.reasoning ??
-    (sessionHasSelectableReasoning
-      ? sessionConfig
-      : (grokConfig ?? sessionConfig));
-  const usesModelEmbeddedReasoning = collapsedModels.reasoning != null;
-
   const ultracode = input.sessionReasoningEffort?.ultracode;
+  // The configId gate inside supportsUltracode is what keeps Ultracode
+  // Claude-only: codex also offers xhigh and max, but under its own
+  // `reasoning_effort` id, which the host forwards unrenamed.
   const ultracodeCapable =
-    ultracode != null &&
-    !usesModelEmbeddedReasoning &&
-    baseConfig === sessionConfig &&
-    supportsUltracode(sessionConfig);
+    ultracode != null && supportsUltracode(sessionConfig);
   const config =
-    ultracodeCapable && baseConfig
+    ultracodeCapable && sessionConfig
       ? {
-          ...baseConfig,
+          ...sessionConfig,
           currentValue: ultracode.armed
             ? ULTRACODE_OPTION_ID
-            : baseConfig.currentValue,
+            : sessionConfig.currentValue,
           options: [
-            ...baseConfig.options,
+            ...sessionConfig.options,
             { id: ULTRACODE_OPTION_ID, name: "Ultracode" },
           ],
         }
-      : baseConfig;
+      : sessionConfig;
 
   const onSelect = (value: string) => {
     if (ultracodeCapable && sessionConfig) {
@@ -123,32 +73,10 @@ export function resolveEffectiveReasoningEffort(
         ultracode.setArmed(false);
       }
     }
-    if (usesModelEmbeddedReasoning) {
-      const baseId =
-        splitEmbeddedReasoning(input.currentModelId)?.base ??
-        input.currentModelId ??
-        collapsedModels.models[0]?.id;
-      if (!baseId) {
-        return;
-      }
-      const wireId = composeEmbeddedReasoningModelId(
-        baseId,
-        value,
-        collapsedModels,
-      );
-      const baseModel = collapsedModels.models.find(
-        (model) => model.id === baseId,
-      );
-      input.onModelChange?.(
-        wireId,
-        baseModel ? { ...baseModel, id: wireId } : { id: wireId, name: wireId },
-      );
-      return;
-    }
     input.sessionReasoningEffort?.onChange?.(value);
   };
 
-  return { config, onSelect, usesModelEmbeddedReasoning, collapsedModels };
+  return { config, onSelect };
 }
 
 /**
@@ -164,8 +92,8 @@ export const ULTRACODE_KEYWORD = "ultracode";
 
 /**
  * Stops that sit past the top of an ordinary effort scale and earn the accented
- * treatment on the track. Claude Code's synthetic Ultracode is one; a model list
- * whose top variant is an `[ultra]` id is the same tier by another name, and
+ * treatment on the track. Claude Code's synthetic Ultracode is one; codex's own
+ * `ultra` effort value (Astra, Sol, Terra) is the same tier by another name, and
  * looked oddly plain next to it.
  */
 const TOP_TIER_EFFORT_IDS: ReadonlySet<string> = new Set([

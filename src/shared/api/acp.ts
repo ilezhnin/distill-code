@@ -8,6 +8,7 @@ import type {
 } from "./acpApi";
 import * as sessionRegistry from "./acpSessionRegistry";
 import type {
+  AcpRunSettingsPlanner,
   AcpSessionExecutionSelection,
   AcpSessionRunSettingsWrite,
 } from "./acpSessionRegistry";
@@ -78,6 +79,13 @@ export interface AcpSessionConfigApplyOptions {
   modelId?: string | null;
   /** UI selection intent that owns any response snapshots. */
   requestId?: string;
+  /**
+   * Decides the effort and fast writes that follow the model apply, from the
+   * answer that apply produced. It runs inside the same per-session mutation,
+   * so provider → model → effort → fast reach the bridge as one ordered
+   * sequence under `requestId` with nothing interleaved.
+   */
+  planRunSettings?: AcpRunSettingsPlanner;
 }
 
 export interface AcpCreateSessionResult {

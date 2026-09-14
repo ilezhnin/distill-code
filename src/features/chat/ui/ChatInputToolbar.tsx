@@ -162,26 +162,12 @@ export function ChatInputToolbar({
     readyAgentIds,
     selectedProvider,
   ]);
-  // One derivation feeds both the standalone effort pill and the model
-  // picker's embedded-variant wire-id composition.
   const effectiveReasoning = useMemo(
     () =>
       resolveEffectiveReasoningEffort({
-        availableModels,
-        currentModelId: currentModelId ?? null,
-        currentModelProviderId: currentModelProviderId ?? null,
-        selectedAgentId: selectedProvider,
         sessionReasoningEffort: reasoningEffort,
-        onModelChange,
       }),
-    [
-      availableModels,
-      currentModelId,
-      currentModelProviderId,
-      onModelChange,
-      reasoningEffort,
-      selectedProvider,
-    ],
+    [reasoningEffort],
   );
 
   const contextProgress =
@@ -307,7 +293,6 @@ export function ChatInputToolbar({
               loading={providersLoading}
               isCompact={isCompact}
               triggerIconOnly={isCompact}
-              reasoningEffort={reasoningEffort}
               providerColumnMode={providerColumnMode}
             />
           )}
