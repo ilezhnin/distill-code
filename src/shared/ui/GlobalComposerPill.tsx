@@ -682,27 +682,12 @@ export function GlobalComposerPill({
     reasoningEffortSelectionMatch.modelMatches
       ? reasoningEffort
       : undefined;
-  // Powers the standalone effort pill and keeps embedded-variant model ids
-  // composed with the same effort the model picker uses.
   const effectiveReasoning = useMemo(
     () =>
       resolveEffectiveReasoningEffort({
-        availableModels,
-        currentModelId: effectiveModelSelection?.modelId ?? null,
-        currentModelProviderId:
-          effectiveModelSelection?.modelProviderId ?? null,
-        selectedAgentId,
         sessionReasoningEffort: activeReasoningEffort,
-        onModelChange: handleModelChange,
       }),
-    [
-      activeReasoningEffort,
-      availableModels,
-      effectiveModelSelection?.modelId,
-      effectiveModelSelection?.modelProviderId,
-      handleModelChange,
-      selectedAgentId,
-    ],
+    [activeReasoningEffort],
   );
 
   const {
@@ -1321,7 +1306,6 @@ export function GlobalComposerPill({
             loading={providersLoading}
             isCompact
             triggerTabIndex={expanded ? 0 : -1}
-            reasoningEffort={activeReasoningEffort}
             contentAlign="smart"
             contentCollisionPadding={16}
           />

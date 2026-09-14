@@ -37,6 +37,16 @@ export interface AcpSessionRunSettingsWrite {
   fast?: { configId: string; value: boolean; kind: "boolean" | "select" };
 }
 
+/**
+ * Decides the run-settings writes that follow a provider/model apply, given the
+ * answer that apply produced (undefined when nothing went over the wire because
+ * the session was already there). Returning nothing, or a write with neither
+ * knob, skips the step.
+ */
+export type AcpRunSettingsPlanner = (
+  snapshots: AcpSessionConfigSnapshots | undefined,
+) => AcpSessionRunSettingsWrite | undefined;
+
 interface PreparedSession {
   workingDir: string;
   executionSelection?: AcpSessionExecutionSelection;
@@ -45,6 +55,7 @@ interface PreparedSession {
 interface SessionConfigMutationOptions {
   forceConfigRefresh?: boolean;
   requestId?: string;
+  planRunSettings?: AcpRunSettingsPlanner;
 }
 
 const SESSION_MUTATION_TIMEOUT_MS = 60_000;
@@ -185,8 +196,13 @@ export async function prepareSession(
   workingDir: string,
   options: SessionConfigMutationOptions = {},
 ): Promise<AcpSessionConfigSnapshots | undefined> {
-  return serializeSessionMutation(sessionId, (turn) =>
-    prepareSessionNow(sessionId, providerId, workingDir, options, turn),
+  return serializeSessionMutation(sessionId, async (turn) =>
+    applyPlannedRunSettingsNow(
+      sessionId,
+      await prepareSessionNow(sessionId, providerId, workingDir, options, turn),
+      options,
+      turn,
+    ),
   );
 }
 
@@ -448,8 +464,63 @@ export async function configureSession(
           turn,
         )) ?? snapshots;
     }
-    return snapshots;
+    return applyPlannedRunSettingsNow(sessionId, snapshots, options, turn);
   });
+}
+
+/**
+ * The last two steps of a selection: effort, then fast, decided from the
+ * answer the provider/model steps just produced and written inside the same
+ * mutation. A prompt, a load or another selection therefore cannot land between
+ * the model and the effort it is meant to run at — which is exactly the window
+ * in which a claude session that passed through Haiku would run at "default".
+ */
+async function applyPlannedRunSettingsNow(
+  sessionId: string,
+  snapshots: AcpSessionConfigSnapshots | undefined,
+  options: SessionConfigMutationOptions,
+  turn: SessionMutationTurn,
+): Promise<AcpSessionConfigSnapshots | undefined> {
+  if (!options.planRunSettings || turn.isAbandoned()) {
+    return snapshots;
+  }
+  const write = options.planRunSettings(snapshots);
+  if (!write?.effort && !write?.fast) {
+    return snapshots;
+  }
+  const selection = prepared.get(sessionId)?.executionSelection;
+  try {
+    const answer = await applySessionRunSettingsNow(sessionId, write, {
+      ...(selection?.providerId ? { providerId: selection.providerId } : {}),
+      ...(selection?.modelId ? { modelId: selection.modelId } : {}),
+      ...(options.requestId ? { requestId: options.requestId } : {}),
+    });
+    return mergeRunSettingsAnswer(snapshots, answer);
+  } catch (error) {
+    // A model that will not take an effort or a fast toggle still runs, so the
+    // selection it belongs to must not fail over it. The reconciler that runs
+    // once the selection commits reads the unchanged menus and says what is
+    // running instead.
+    console.error("Failed to apply run settings after the model:", error);
+    return snapshots;
+  }
+}
+
+/**
+ * The run-settings answer is the newest full option list, so it replaces the
+ * model's. A downgrade the model write reported survives an answer that says
+ * nothing about one: the effort write that follows a clamp is usually not
+ * made at all, and a fast write's answer is not a verdict on the effort.
+ */
+function mergeRunSettingsAnswer(
+  before: AcpSessionConfigSnapshots | undefined,
+  answer: AcpSessionConfigSnapshots | undefined,
+): AcpSessionConfigSnapshots | undefined {
+  if (!answer) {
+    return before;
+  }
+  const substitutions = answer.substitutions ?? before?.substitutions;
+  return substitutions ? { ...answer, substitutions } : answer;
 }
 
 export function applySessionConfigOption(

@@ -6,10 +6,18 @@ import type {
   AcpFastModeConfigSnapshot,
   AcpReasoningEffortConfigSnapshot,
   AcpRunSettingsSubstitution,
+  AcpSessionConfigSnapshots,
 } from "@/shared/api/acpSessionConfigSnapshots";
+import type { AcpRunSettingsPlanner } from "@/shared/api/acpSessionRegistry";
+import { sameModelIdentity } from "@/shared/lib/foldedModelId";
 import { useChatSessionStore } from "../stores/chatSessionStore";
 import { hostSelectionFromExecutionTarget } from "./hostExecutionTarget";
 import {
+  sameSessionExecutionTarget,
+  type SessionExecutionTarget,
+} from "./sessionExecutionTarget";
+import {
+  sameSessionRunSettings,
   sameSessionRunSettingsNotice,
   type SessionRunSettings,
   type SessionRunSettingsNotice,
@@ -162,7 +170,59 @@ function hostNotice(
   if (!entry || entry.applied === wanted) {
     return null;
   }
+  // Fast off on a model with no fast mode is exactly what was asked for.
+  if (kind === "fast" && wanted === FAST_WIRE_VALUES.off && !entry.applied) {
+    return null;
+  }
   return { kind, wanted, actual: entry.applied, modelName };
+}
+
+/**
+ * The menus a presented snapshot states, or null when it names no model and so
+ * says nothing about them. A full answer always carries the model option, and
+ * within one an absent effort or fast option means the model has no such
+ * control — never "unknown".
+ */
+export function runSettingsMenusFromSnapshots(
+  snapshots: AcpSessionConfigSnapshots | undefined,
+): RunSettingsMenus | null {
+  if (!snapshots?.model) {
+    return null;
+  }
+  return {
+    reasoningEffort: snapshots.reasoningEffort ?? null,
+    fastMode: snapshots.fastMode ?? null,
+  };
+}
+
+/**
+ * The planner a selection hands to the registry so effort and fast are written
+ * inside the model apply's own mutation. It reads the intent at the moment the
+ * model has landed, and the menus from that model's answer — the store still
+ * describes the model being left, or nothing at all, at that point.
+ */
+export function runSettingsPlannerForSession(
+  sessionId: string,
+  isCurrent: () => boolean = () => true,
+): AcpRunSettingsPlanner {
+  return (snapshots) => {
+    if (!isCurrent()) {
+      return undefined;
+    }
+    const session = useChatSessionStore.getState().getSession(sessionId);
+    if (!session?.desiredRunSettings) {
+      return undefined;
+    }
+    return planSessionRunSettings({
+      desired: session.desiredRunSettings,
+      menus: runSettingsMenusFromSnapshots(snapshots) ?? {
+        reasoningEffort: session.reasoningEffort ?? null,
+        fastMode: session.fastMode ?? null,
+      },
+      modelName: session.executionTarget?.modelName,
+      substitutions: snapshots?.substitutions,
+    }).write;
+  };
 }
 
 export interface ReconcileSessionRunSettingsInput {
@@ -208,8 +268,9 @@ export async function reconcileSessionRunSettings(
     return { write: {}, notice: null };
   }
 
+  const desired = input.desired ?? session.desiredRunSettings;
   const plan = planSessionRunSettings({
-    desired: input.desired ?? session.desiredRunSettings,
+    desired,
     menus: input.menus ?? {
       reasoningEffort: session.reasoningEffort ?? null,
       fastMode: session.fastMode ?? null,
@@ -226,15 +287,20 @@ export async function reconcileSessionRunSettings(
     return plan;
   }
 
-  const { providerId, modelId } = hostSelectionFromExecutionTarget(
-    session.executionTarget,
-  );
+  const targetAtRequest = session.executionTarget;
+  const { providerId, modelId } =
+    hostSelectionFromExecutionTarget(targetAtRequest);
   try {
-    await acpApplySessionRunSettings(input.sessionId, plan.write, {
-      ...(providerId ? { providerId } : {}),
-      ...(modelId ? { modelId } : {}),
-      ...(input.requestId ? { requestId: input.requestId } : {}),
-    });
+    const answer = await acpApplySessionRunSettings(
+      input.sessionId,
+      plan.write,
+      {
+        ...(providerId ? { providerId } : {}),
+        ...(modelId ? { modelId } : {}),
+        ...(input.requestId ? { requestId: input.requestId } : {}),
+      },
+    );
+    commitRunSettingsAnswer(input.sessionId, targetAtRequest, desired, answer);
     return plan;
   } catch (error) {
     // A refused run setting is never fatal: the model still runs and the
@@ -243,4 +309,41 @@ export async function reconcileSessionRunSettings(
     console.error("Failed to apply session run settings:", error);
     return { ...plan, error };
   }
+}
+
+/**
+ * Store what the bridge answered to this reconcile's own write.
+ *
+ * The snapshot fan-out drops an effort answer whose value differs from the
+ * session's current one as a stale leftover — which is exactly what a re-apply
+ * looks like: the session reads "default" after a trip through Haiku, and the
+ * answer reads "xhigh". Without this the bridge would run at xhigh while the
+ * control kept saying "default". The answer is only taken while the session is
+ * still on the model it was written for and the operator has not chosen again.
+ */
+function commitRunSettingsAnswer(
+  sessionId: string,
+  targetAtRequest: SessionExecutionTarget | undefined,
+  desiredAtRequest: SessionRunSettings | undefined,
+  answer: AcpSessionConfigSnapshots | undefined,
+): void {
+  const menus = runSettingsMenusFromSnapshots(answer);
+  if (!menus || !answer?.model) {
+    return;
+  }
+  const store = useChatSessionStore.getState();
+  const live = store.getSession(sessionId);
+  if (
+    !live ||
+    !sameSessionExecutionTarget(live.executionTarget, targetAtRequest) ||
+    (live.executionTarget?.modelId !== undefined &&
+      !sameModelIdentity(live.executionTarget.modelId, answer.model.modelId)) ||
+    !sameSessionRunSettings(live.desiredRunSettings, desiredAtRequest)
+  ) {
+    return;
+  }
+  store.patchSession(sessionId, {
+    reasoningEffort: menus.reasoningEffort ?? undefined,
+    fastMode: menus.fastMode ?? undefined,
+  });
 }

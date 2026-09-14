@@ -860,6 +860,90 @@ describe("chatSessionStore", () => {
     });
   });
 
+  describe("run settings across a model change", () => {
+    const opus = {
+      harnessId: "claude-acp",
+      modelProviderId: "claude-acp",
+      modelId: "opus[1m]",
+      modelName: "Opus 5",
+    };
+    const sonnet = { ...opus, modelId: "sonnet", modelName: "Sonnet 5" };
+    const observedOnOpus: Partial<ChatSession> = {
+      executionTarget: opus,
+      executionTargetSource: "ui",
+      reasoningEffort: {
+        configId: "effort",
+        currentValue: "xhigh",
+        options: [
+          { id: "high", name: "High" },
+          { id: "xhigh", name: "Extra high" },
+        ],
+      },
+      fastMode: { configId: "fast", enabled: true, kind: "select" },
+      ultracodeArmed: true,
+      runSettingsNotice: {
+        kind: "effort",
+        wanted: "max",
+        actual: "xhigh",
+        modelName: "Opus 5",
+      },
+      desiredRunSettings: { effort: "xhigh", fast: true },
+    };
+
+    it("keeps the operator's run settings and clears both observed menus when the model changes", () => {
+      seedSession(observedOnOpus);
+
+      useChatSessionStore
+        .getState()
+        .replaceSessionExecutionTarget("session-1", sonnet);
+
+      const session = useChatSessionStore.getState().getSession("session-1");
+      expect(session?.executionTarget?.modelId).toBe("sonnet");
+      expect(session?.desiredRunSettings).toEqual({
+        effort: "xhigh",
+        fast: true,
+      });
+      expect(session?.reasoningEffort).toBeUndefined();
+      expect(session?.fastMode).toBeUndefined();
+      expect(session?.ultracodeArmed).toBeUndefined();
+      expect(session?.runSettingsNotice).toBeUndefined();
+    });
+
+    it("keeps the observed menus when only the model's display name changes", () => {
+      seedSession(observedOnOpus);
+
+      useChatSessionStore
+        .getState()
+        .hydrateSessionExecutionTarget("session-1", {
+          ...opus,
+          modelName: "Opus 5 (1M)",
+        });
+
+      const session = useChatSessionStore.getState().getSession("session-1");
+      expect(session?.reasoningEffort?.currentValue).toBe("xhigh");
+      expect(session?.fastMode?.enabled).toBe(true);
+    });
+
+    it("promotes a draft onto another model with its intent but without the old model's menus", () => {
+      seedSession({ ...observedOnOpus, creationState: "pending" });
+
+      useChatSessionStore
+        .getState()
+        .promoteDraftSession("session-1", "acp-session", {
+          executionTarget: sonnet,
+        });
+
+      const session = useChatSessionStore.getState().getSession("acp-session");
+      expect(session?.desiredRunSettings).toEqual({
+        effort: "xhigh",
+        fast: true,
+      });
+      expect(session?.reasoningEffort).toBeUndefined();
+      expect(session?.fastMode).toBeUndefined();
+      expect(session?.ultracodeArmed).toBeUndefined();
+    });
+  });
+
   describe("ensurePinnedSessionPlaceholder", () => {
     it("does not mark draft sessions as loading", () => {
       seedSession({

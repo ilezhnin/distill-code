@@ -30,18 +30,9 @@ import {
   resolveDisplayModelLabel,
   resolvePickerTriggerLabel,
 } from "../lib/modelDisplayLabel";
-import {
-  composeEmbeddedReasoningModelId,
-  splitEmbeddedReasoning,
-  stripEmbeddedReasoningLabel,
-} from "../lib/modelReasoningVariants";
-import { resolveEffectiveReasoningEffort } from "../lib/effectiveReasoningEffort";
+import { stripEmbeddedReasoningLabel } from "../lib/modelReasoningVariants";
 import { hideAliasTwins } from "../lib/modelAliases";
-import type {
-  AgentPickerOption,
-  ChatInputReasoningEffort,
-  ModelOption,
-} from "../types";
+import type { AgentPickerOption, ModelOption } from "../types";
 import {
   RecommendedModelList,
   type RecommendedModelListHandle,
@@ -68,7 +59,6 @@ interface AgentModelPickerProps {
   onOpen?: () => void;
   onOpenChange?: (open: boolean) => void;
   onRequestComposerFocus?: () => void;
-  reasoningEffort?: ChatInputReasoningEffort;
   contentAlign?: PopoverContentAlign | "smart";
   contentCollisionPadding?: number;
   providerColumnMode?: ProviderColumnMode;
@@ -105,7 +95,6 @@ export function AgentModelPicker({
   onOpen,
   onOpenChange,
   onRequestComposerFocus,
-  reasoningEffort,
   contentAlign = "start",
   contentCollisionPadding = 16,
   providerColumnMode = "visible",
@@ -138,41 +127,12 @@ export function AgentModelPicker({
   const selectedAgentLabel =
     agents.find((agent) => agent.id === selectedAgentId)?.label ??
     formatProviderLabel(selectedAgentId);
-  // Shared with the composer's standalone effort pill so model clicks compose
-  // wire ids with the same effective effort the pill displays.
-  const effectiveReasoning = useMemo(
-    () =>
-      resolveEffectiveReasoningEffort({
-        availableModels,
-        currentModelId,
-        currentModelProviderId,
-        selectedAgentId,
-        sessionReasoningEffort: reasoningEffort,
-        onModelChange,
-      }),
-    [
-      availableModels,
-      currentModelId,
-      currentModelProviderId,
-      onModelChange,
-      reasoningEffort,
-      selectedAgentId,
-    ],
-  );
-  const collapsedModels = effectiveReasoning.collapsedModels;
-  const currentDisplayModelId =
-    collapsedModels.reasoning != null
-      ? (splitEmbeddedReasoning(currentModelId)?.base ?? currentModelId)
-      : currentModelId;
+  // The model id is the model and nothing else: effort travels on the
+  // session's own config option, so the list is shown as the harness sent it.
+  const currentDisplayModelId = currentModelId;
   const pickerModels = useMemo(
-    () =>
-      hideAliasTwins(
-        collapsedModels.reasoning != null
-          ? collapsedModels.models
-          : availableModels,
-        currentDisplayModelId,
-      ),
-    [availableModels, collapsedModels, currentDisplayModelId],
+    () => hideAliasTwins(availableModels, currentDisplayModelId),
+    [availableModels, currentDisplayModelId],
   );
   const displayModelLabel = stripEmbeddedReasoningLabel(
     resolveDisplayModelLabel({
@@ -240,9 +200,6 @@ export function AgentModelPicker({
   const triggerProviderIcon =
     getProviderIcon(selectedAgentId, "size-4") ??
     (triggerIconOnly ? <IconAiAgents className="size-4" /> : null);
-  const usesModelEmbeddedReasoning =
-    effectiveReasoning.usesModelEmbeddedReasoning;
-
   const handleAgentSelect = (agent: AgentPickerOption) => {
     if (agent.readiness && agent.readiness !== "ready") {
       preserveFocusDestination();
@@ -257,15 +214,6 @@ export function AgentModelPicker({
   };
 
   const handleModelSelect = (model: ModelOption) => {
-    if (usesModelEmbeddedReasoning) {
-      const wireId = composeEmbeddedReasoningModelId(
-        model.id,
-        effectiveReasoning.config?.currentValue,
-        collapsedModels,
-      );
-      onModelChange?.(wireId, { ...model, id: wireId });
-      return;
-    }
     onModelChange?.(model.id, model);
   };
 
