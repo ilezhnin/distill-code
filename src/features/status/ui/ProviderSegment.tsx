@@ -11,7 +11,10 @@ import {
   getUsageSections,
   remainingDurationLabel,
 } from "../lib/rateLimitWindows";
-import { formatUsedPercent } from "../lib/rateLimitFormatters";
+import {
+  formatUsedPercent,
+  getProviderUsageStatusKind,
+} from "../lib/rateLimitFormatters";
 
 function MiniBar({ usedPercent }: { usedPercent: number }) {
   return (
@@ -42,12 +45,16 @@ export function ProviderSegment({
   const icon = getProviderIcon(provider.provider, "size-3.5");
   const sections = getUsageSections(provider);
   const tightest = getTightestUsageSection(provider);
+  // An expired sign-in arrives as an error, but it needs a sign-in, not a
+  // refresh; say so in the bar as the roster does.
   const statusLabel =
-    provider.status === "error"
-      ? t("bar.refreshFailed")
-      : provider.status === "unavailable"
-        ? t("bar.unavailable")
-        : "";
+    getProviderUsageStatusKind(provider) === "sign-in"
+      ? t("bar.signIn")
+      : provider.status === "error"
+        ? t("bar.refreshFailed")
+        : provider.status === "unavailable"
+          ? t("bar.unavailable")
+          : "";
 
   if (
     provider.status === "idle" ||

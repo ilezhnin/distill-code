@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -53,11 +53,22 @@ pub fn is_grok_access_token_fresh(session: &GrokAuthSession) -> bool {
 }
 
 pub fn read_grok_auth_session() -> GrokAuthReadResult {
-    let path = grok_auth_path();
-    let Ok(raw) = fs::read_to_string(&path) else {
+    read_grok_auth_session_at(&grok_auth_path())
+}
+
+pub fn read_grok_auth_session_at(path: &Path) -> GrokAuthReadResult {
+    let Ok(raw) = fs::read_to_string(path) else {
         return GrokAuthReadResult::Missing;
     };
     parse_grok_auth_session(&raw)
+}
+
+/// Whether the auth file holds a session Grok will accept without signing in
+/// again. The Grok agent check decides from this with the same issuer
+/// preference and freshness rule the usage fetch applies, so the provider card
+/// and the usage roster agree about a sign-in.
+pub fn has_fresh_grok_sign_in(auth: &GrokAuthReadResult) -> bool {
+    matches!(auth, GrokAuthReadResult::Ok(session) if is_grok_access_token_fresh(session))
 }
 
 pub fn parse_grok_auth_session(raw: &str) -> GrokAuthReadResult {
@@ -272,6 +283,21 @@ fn grok_error(session: &GrokAuthSession, error: String, configured: bool) -> Pro
     }
 }
 
+/// An expired sign-in is a sign-in, not a failed refresh: `configured: false`
+/// is what the roster reads as "offer Sign in". It stays an `Error` rather than
+/// the `Unavailable` a missing login returns, because the status bar hides an
+/// unavailable, unconfigured provider — and this account needs its Sign in row.
+fn expired_sign_in_result(session: &GrokAuthSession) -> ProviderRateLimits {
+    ProviderRateLimits {
+        account_label: session.email.clone(),
+        ..result(
+            AgentPlatformId::Grok,
+            ProviderRateLimitStatus::Error,
+            Some("Grok sign-in expired — sign in to Grok again".to_string()),
+        )
+    }
+}
+
 fn billing_usage_result(
     session: &GrokAuthSession,
     weekly: Option<super::types::RateLimitWindow>,
@@ -317,18 +343,7 @@ pub async fn fetch_grok_rate_limits(client: &reqwest::Client) -> ProviderRateLim
         ),
         GrokAuthReadResult::Ok(session) => {
             if !is_grok_access_token_fresh(&session) {
-                return ProviderRateLimits {
-                    configured: true,
-                    account_label: session.email.clone(),
-                    ..result(
-                        AgentPlatformId::Grok,
-                        ProviderRateLimitStatus::Error,
-                        Some(
-                            "Grok sign-in expired — run grok on this computer and sign in if prompted."
-                                .to_string(),
-                        ),
-                    )
-                };
+                return expired_sign_in_result(&session);
             }
             let base = billing_base();
             let credits_url = format!("{base}/billing?format=credits");
@@ -369,5 +384,46 @@ pub async fn fetch_grok_rate_limits(client: &reqwest::Client) -> ProviderRateLim
                 )
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(expires_at_ms: Option<i64>) -> GrokAuthSession {
+        GrokAuthSession {
+            access_token: "test-access-token".to_string(),
+            user_id: None,
+            email: Some("dev@example.com".to_string()),
+            expires_at_ms,
+        }
+    }
+
+    #[test]
+    fn expired_sign_in_is_reported_as_a_sign_in_not_a_failed_refresh() {
+        // The roster offers Sign in for an error with no usage windows that is
+        // not configured; a configured error reads as "Refresh failed".
+        let expired = expired_sign_in_result(&session(Some(now_ms() - 60_000)));
+        assert!(matches!(expired.status, ProviderRateLimitStatus::Error));
+        assert!(!expired.configured);
+        assert!(expired.session.is_none() && expired.weekly.is_none() && expired.monthly.is_none());
+        assert_eq!(expired.account_label.as_deref(), Some("dev@example.com"));
+        assert!(!expired
+            .error
+            .unwrap_or_default()
+            .contains("test-access-token"));
+    }
+
+    #[test]
+    fn only_a_fresh_session_counts_as_signed_in() {
+        let fresh = GrokAuthReadResult::Ok(session(Some(now_ms() + 60 * 60 * 1000)));
+        let expired = GrokAuthReadResult::Ok(session(Some(now_ms() - 60_000)));
+        assert!(has_fresh_grok_sign_in(&fresh));
+        assert!(!has_fresh_grok_sign_in(&expired));
+        assert!(!has_fresh_grok_sign_in(&GrokAuthReadResult::Missing));
+        assert!(!has_fresh_grok_sign_in(&GrokAuthReadResult::Error(
+            "Grok auth file is invalid".into()
+        )));
     }
 }

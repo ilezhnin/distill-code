@@ -20,6 +20,7 @@ use crate::services::{
     distro_bundle::DistroBundleState,
     env_key, managed_acp_tools, managed_node,
     path_env::{self, build_extended_path_with_prepended_dirs},
+    provider_rate_limits::grok,
     shell_env,
 };
 
@@ -134,6 +135,17 @@ struct LocalPathCheck {
     binary_name: &'static str,
     pass_message: &'static str,
     fail_message: &'static str,
+    /// A sign-in probe for an agent CLI the doctor crate doesn't know. With
+    /// one, an installed agent reports `auth_status` and offers `Auth` when
+    /// signed out, exactly as the crate's probe-capable agents do.
+    auth: Option<LocalAuthProbe>,
+}
+
+struct LocalAuthProbe {
+    status: fn(&HashMap<String, String>) -> AuthStatus,
+    /// Run by agent setup's sign-in action; never taken from the renderer.
+    login_command: &'static str,
+    signed_out_message: &'static str,
 }
 
 struct LocalCommandCheck {
@@ -173,7 +185,39 @@ const LOCAL_PATH_CHECKS: &[LocalPathCheck] = &[LocalPathCheck {
     binary_name: "grok",
     pass_message: "Grok CLI is available for ACP sessions",
     fail_message: "Grok CLI is not on PATH; install the xAI Grok CLI, then run `grok login` or set XAI_API_KEY",
+    auth: Some(LocalAuthProbe {
+        status: grok_auth_status,
+        // A bare name: agent setup runs it through cmd.exe on the same
+        // extended PATH this check resolves `grok` on.
+        login_command: "grok login --oauth",
+        signed_out_message: "Grok CLI is installed but not signed in; sign in or set XAI_API_KEY",
+    }),
 }];
+
+const XAI_API_KEY: &str = "XAI_API_KEY";
+
+/// Grok has no status subcommand, so its sign-in state is read the way the
+/// CLI keeps it: an `XAI_API_KEY` in the environment sessions start with, or a
+/// fresh session in `~/.grok/auth.json`.
+fn grok_auth_status(env: &HashMap<String, String>) -> AuthStatus {
+    grok_auth_status_at(&grok::grok_auth_path(), env)
+}
+
+fn grok_auth_status_at(auth_path: &Path, env: &HashMap<String, String>) -> AuthStatus {
+    // Same fallback as the spawn env: an empty capture means the process env.
+    let api_key = if env.is_empty() {
+        shell_env::user_env_var(XAI_API_KEY)
+    } else {
+        env_key::get(env, XAI_API_KEY).map(str::to_string)
+    };
+    if api_key.is_some_and(|key| !key.trim().is_empty())
+        || grok::has_fresh_grok_sign_in(&grok::read_grok_auth_session_at(auth_path))
+    {
+        AuthStatus::Authenticated
+    } else {
+        AuthStatus::NotAuthenticated
+    }
+}
 
 const LOCAL_CUSTOM_CHECKS: &[LocalCustomCheck] = &[];
 
@@ -223,6 +267,46 @@ impl From<doctor::DoctorCheck> for DoctorCheck {
     }
 }
 
+impl From<AgentVersionInfo> for doctor::types::AgentVersionInfo {
+    fn from(info: AgentVersionInfo) -> Self {
+        Self {
+            install_source: info.install_source,
+            installed_version: info.installed_version,
+            latest_version: info.latest_version,
+            update_available: info.update_available,
+            self_updating: info.self_updating,
+            update_command: info.update_command,
+            update_fix_type: info.update_fix_type,
+            bundled: info.bundled,
+        }
+    }
+}
+
+impl From<DoctorCheck> for doctor::DoctorCheck {
+    fn from(check: DoctorCheck) -> Self {
+        Self {
+            id: check.id,
+            label: check.label,
+            status: check.status,
+            message: check.message,
+            fix_url: check.fix_url,
+            fix_command: check.fix_command,
+            fix_type: check.fix_type,
+            path: check.path,
+            bridge_path: check.bridge_path,
+            raw_output: check.raw_output,
+            auth_status: check.auth_status,
+            installed_version: check.installed_version,
+            latest_version: check.latest_version,
+            update_available: check.update_available,
+            install_source: check.install_source,
+            self_updating: check.self_updating,
+            main: check.main.map(Into::into),
+            bridge: check.bridge.map(Into::into),
+        }
+    }
+}
+
 fn upstream_category(check_id: &str) -> (&'static str, &'static str) {
     if check_id.starts_with("ai-agent-") {
         (AGENTS_CATEGORY, AGENTS_CATEGORY_LABEL)
@@ -249,7 +333,7 @@ async fn run_local_checks(
     let mut results = Vec::with_capacity(check_count);
 
     for check in registry.path_checks {
-        results.push(run_local_path_check(check, &extended_path).await);
+        results.push(run_local_path_check(check, &extended_path, captured_shell_env).await);
     }
     for check in registry.command_checks {
         results.push(run_local_command_check(check, &extended_path).await);
@@ -261,15 +345,81 @@ async fn run_local_checks(
     results
 }
 
-async fn run_local_path_check(check: &LocalPathCheck, extended_path: &str) -> DoctorCheck {
+async fn run_local_path_check(
+    check: &LocalPathCheck,
+    extended_path: &str,
+    captured_shell_env: &HashMap<String, String>,
+) -> DoctorCheck {
     let path = resolve_binary_path(check.binary_name, extended_path).await;
-    let (status, message) = if path.is_some() {
-        (CheckStatus::Pass, check.pass_message)
-    } else {
-        (CheckStatus::Fail, check.fail_message)
+    let auth_status = match (&path, &check.auth) {
+        (Some(_), Some(probe)) => Some((probe.status)(captured_shell_env)),
+        _ => None,
     };
+    local_path_check_result(check, path, auth_status)
+}
 
-    build_local_result(&check.meta, status, message, path, None)
+/// A missing binary offers its install fix; an installed agent with a sign-in
+/// probe that reports signed out offers `Auth` instead of passing.
+fn local_path_check_result(
+    check: &LocalPathCheck,
+    path: Option<String>,
+    auth_status: Option<AuthStatus>,
+) -> DoctorCheck {
+    if path.is_none() {
+        return build_local_result(
+            &check.meta,
+            CheckStatus::Fail,
+            check.fail_message,
+            None,
+            None,
+        );
+    }
+    let mut result = build_local_result(
+        &check.meta,
+        CheckStatus::Pass,
+        check.pass_message,
+        path,
+        None,
+    );
+    if let (Some(probe), Some(auth_status)) = (&check.auth, auth_status) {
+        if auth_status == AuthStatus::NotAuthenticated {
+            result.status = CheckStatus::Warn;
+            result.message = probe.signed_out_message.to_string();
+            result.fix_type = Some(FixType::Auth);
+            result.fix_command = Some(probe.login_command.to_string());
+        }
+        result.auth_status = Some(auth_status);
+    }
+    result
+}
+
+/// A local agent check (Grok) in the crate's check type, so agent setup finds,
+/// authorizes and verifies it like a crate agent. It is probed with the same
+/// captured env and extended PATH the report's local checks use.
+pub(crate) async fn run_local_agent_check(
+    check_id: &str,
+    prepend_dirs: &[PathBuf],
+) -> Option<doctor::DoctorCheck> {
+    let check = LOCAL_PATH_CHECKS
+        .iter()
+        .find(|check| check.meta.id == check_id && check.meta.category == AGENTS_CATEGORY)?;
+    let captured_shell_env = dir_env::capture_home_interactive_env().await;
+    let extended_path = build_extended_path_with_prepended_dirs(
+        env_key::get(&captured_shell_env, "PATH"),
+        prepend_dirs,
+    );
+    let result = run_local_path_check(check, &extended_path, &captured_shell_env).await;
+    Some(result.into())
+}
+
+/// The backend-owned sign-in command of a local agent check with a sign-in
+/// probe, or `None` when the check has no sign-in flow.
+pub(crate) fn local_agent_login_command(check_id: &str) -> Option<&'static str> {
+    LOCAL_PATH_CHECKS
+        .iter()
+        .find(|check| check.meta.id == check_id)
+        .and_then(|check| check.auth.as_ref())
+        .map(|probe| probe.login_command)
 }
 
 async fn resolve_binary_path(binary_name: &str, extended_path: &str) -> Option<String> {
@@ -1289,6 +1439,124 @@ mod tests {
         assert!(codex.raw_output.as_deref().is_some_and(
             |output| output.contains("exit code: 1") || output.contains("exit status: 1")
         ));
+    }
+
+    fn grok_path_check() -> &'static LocalPathCheck {
+        LOCAL_PATH_CHECKS
+            .iter()
+            .find(|check| check.meta.id == "ai-agent-grok")
+            .unwrap()
+    }
+
+    fn seconds_from_now(offset_seconds: i64) -> i64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        now + offset_seconds
+    }
+
+    fn write_grok_auth(dir: &Path, expires_at_seconds: i64) -> PathBuf {
+        let path = dir.join("auth.json");
+        let auth = serde_json::json!({
+            "https://auth.x.ai": {
+                "key": "test-access-token",
+                "email": "dev@example.com",
+                "expires_at": expires_at_seconds,
+            }
+        });
+        fs::write(&path, auth.to_string()).unwrap();
+        path
+    }
+
+    fn env_with(entries: &[(&str, &str)]) -> HashMap<String, String> {
+        let mut env = HashMap::from([("PATH".to_string(), "C:\\tools".to_string())]);
+        for (key, value) in entries {
+            env.insert((*key).to_string(), (*value).to_string());
+        }
+        env
+    }
+
+    fn installed_grok_check(auth_status: AuthStatus) -> DoctorCheck {
+        local_path_check_result(
+            grok_path_check(),
+            Some("C:\\Users\\dev\\.grok\\bin\\grok.exe".to_string()),
+            Some(auth_status),
+        )
+    }
+
+    #[test]
+    fn grok_check_offers_sign_in_when_there_is_no_auth_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let status = grok_auth_status_at(&dir.path().join("auth.json"), &env_with(&[]));
+        assert_eq!(status, AuthStatus::NotAuthenticated);
+
+        let check = installed_grok_check(status);
+        assert_eq!(check.status, CheckStatus::Warn);
+        assert_eq!(check.auth_status, Some(AuthStatus::NotAuthenticated));
+        assert_eq!(check.fix_type, Some(FixType::Auth));
+        assert_eq!(check.fix_command.as_deref(), Some("grok login --oauth"));
+    }
+
+    #[test]
+    fn grok_check_offers_sign_in_when_the_token_has_expired() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth_path = write_grok_auth(dir.path(), seconds_from_now(-60 * 60));
+        let status = grok_auth_status_at(&auth_path, &env_with(&[]));
+        assert_eq!(status, AuthStatus::NotAuthenticated);
+
+        let check = installed_grok_check(status);
+        assert_eq!(check.fix_type, Some(FixType::Auth));
+        assert!(!format!("{check:?}").contains("test-access-token"));
+    }
+
+    #[test]
+    fn grok_check_passes_with_a_fresh_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth_path = write_grok_auth(dir.path(), seconds_from_now(60 * 60));
+        let status = grok_auth_status_at(&auth_path, &env_with(&[]));
+        assert_eq!(status, AuthStatus::Authenticated);
+
+        let check = installed_grok_check(status);
+        assert_eq!(check.status, CheckStatus::Pass);
+        assert_eq!(check.auth_status, Some(AuthStatus::Authenticated));
+        assert!(check.fix_type.is_none());
+        assert!(check.fix_command.is_none());
+        assert!(!format!("{check:?}").contains("test-access-token"));
+    }
+
+    #[test]
+    fn grok_check_passes_with_an_api_key_and_no_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let status = grok_auth_status_at(
+            &dir.path().join("auth.json"),
+            &env_with(&[("XAI_API_KEY", "xai-test-key")]),
+        );
+        assert_eq!(status, AuthStatus::Authenticated);
+        // A blank key is not a key.
+        let blank = grok_auth_status_at(
+            &dir.path().join("auth.json"),
+            &env_with(&[("XAI_API_KEY", "  ")]),
+        );
+        assert_eq!(blank, AuthStatus::NotAuthenticated);
+    }
+
+    #[test]
+    fn grok_check_offers_install_and_no_sign_in_when_grok_is_not_on_path() {
+        let check = local_path_check_result(grok_path_check(), None, None);
+        assert_eq!(check.status, CheckStatus::Fail);
+        assert_eq!(check.fix_type, Some(FixType::Command));
+        assert!(check.auth_status.is_none());
+    }
+
+    #[test]
+    fn only_grok_has_a_local_sign_in_command() {
+        assert_eq!(
+            local_agent_login_command("ai-agent-grok"),
+            Some("grok login --oauth")
+        );
+        assert_eq!(local_agent_login_command("ai-agent-claude"), None);
+        assert_eq!(local_agent_login_command("node-runtime"), None);
     }
 
     fn runtime_config_with_doctor(doctor: Option<RuntimeDoctorConfig>) -> RuntimeConfig {

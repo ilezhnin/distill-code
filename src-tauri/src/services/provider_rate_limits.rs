@@ -9,7 +9,7 @@
 
 mod claude;
 mod codex;
-mod grok;
+pub(crate) mod grok;
 mod types;
 mod windows;
 

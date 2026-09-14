@@ -10,6 +10,7 @@ import type { DoctorCheck } from "@/shared/api/doctor";
 import type { AgentSetupOperation } from "@/features/providers/api/agentSetup";
 import { useAgentSetupStore } from "@/features/providers/stores/agentSetupStore";
 import type { ProviderDisplayInfo } from "@/shared/types/providers";
+import { CURATED_PROVIDER_CATALOG_BY_ID } from "@/features/providers/curatedProviders";
 import { AGENT_SETUP_FAILURE_SIMULATION_KEY } from "@/features/providers/lib/agentSetupFailureSimulation";
 
 // Setup progress is now backend-owned: the card kicks an operation off through
@@ -102,6 +103,14 @@ function createProvider(
     status: "connected",
     ...overrides,
   };
+}
+
+// Grok as the catalog declares it, so the sign-in flags under test are the
+// shipped ones.
+function grokProvider(): ProviderDisplayInfo {
+  const entry = CURATED_PROVIDER_CATALOG_BY_ID.get("grok-acp");
+  if (!entry) throw new Error("grok-acp is missing from the catalog");
+  return { ...entry, status: "connected" };
 }
 
 function createVersionCheck(overrides: Partial<DoctorCheck> = {}): DoctorCheck {
@@ -234,6 +243,43 @@ describe("AgentProviderCard", () => {
         verifyInstall: true,
       });
     });
+  });
+
+  it("offers Grok sign-in when its check reports it signed out", async () => {
+    const user = userEvent.setup();
+
+    renderCard(
+      <AgentProviderCard
+        provider={grokProvider()}
+        statusLoading={false}
+        readiness={"not_ready" satisfies AgentProviderReadiness}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /sign in to grok/i }));
+
+    await waitFor(() => {
+      expect(startAgentSetup).toHaveBeenCalledWith("grok-acp", "auth", {
+        installFixType: null,
+        updateFixTypes: [],
+        verifyInstall: true,
+      });
+    });
+  });
+
+  it("shows a tick and no sign-in for a signed-in Grok", () => {
+    const { container } = renderCard(
+      <AgentProviderCard
+        provider={grokProvider()}
+        statusLoading={false}
+        readiness={"ready" satisfies AgentProviderReadiness}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: /sign in/i }),
+    ).not.toBeInTheDocument();
+    expect(container.querySelector("svg.text-success")).not.toBeNull();
   });
 
   it("starts an install (CLI recipe, no updates) without sign in when not installed", async () => {
