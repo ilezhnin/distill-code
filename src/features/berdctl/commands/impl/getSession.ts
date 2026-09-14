@@ -30,6 +30,8 @@ interface SessionMetadataResult {
   title: string;
   harness_id: string;
   model_id: string | null;
+  effort: string | null;
+  fast_mode: boolean | null;
   agent_id: string | null;
   project_id: string | null;
   working_dir: string | null;
@@ -66,14 +68,18 @@ export const getSessionCommand = defineCommand({
 
 Result:
   {"session_id": "...", "title": "...", "harness_id": "...",
-   "model_id": "..."|null, "agent_id": "..."|null,
+   "model_id": "..."|null, "effort": "..."|null,
+   "fast_mode": true|false|null, "agent_id": "..."|null,
    "project_id": "..."|null, "working_dir": "..."|null,
    "created_at": "...", "updated_at": "...", "archived": false,
    "is_running": false, "is_open_in_window": false,
    "chat_state": "idle", "message_count": 12,
    "messages": [{"role": "user"|"assistant"|null, "text": "..."}, ...]}
-  "messages" is present only when --messages > 0; each message text is
-  truncated to 2000 chars.`,
+  "effort" and "fast_mode" are the reasoning effort and fast mode the
+  session's model last acknowledged, in the harness's own words; null means
+  none was recorded and the model runs at its own default. "messages" is
+  present only when --messages > 0; each message text is truncated to 2000
+  chars.`,
   schema: getSessionSchema,
   execute: async (args): Promise<GetSessionResult> => {
     const [
@@ -83,9 +89,9 @@ Result:
       import("@/shared/api/sessionSearch"),
       import("../runtime/sessions"),
     ]);
-    await loadSessionForBerdctl(args.session_id);
+    const hostSession = await loadSessionForBerdctl(args.session_id);
     const session = requireSession(args.session_id);
-    const metadata = sessionMetadata(session);
+    const metadata = sessionMetadata(session, hostSession);
     if (args.messages === 0) {
       return metadata;
     }

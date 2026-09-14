@@ -25,6 +25,10 @@ interface ForkSessionResult {
   session_id: string;
   title: string;
   source_session_id: string;
+  harness_id: string;
+  model_id: string | null;
+  effort: string | null;
+  fast_mode: boolean | null;
   message_count: number;
 }
 
@@ -35,15 +39,19 @@ export const forkSessionCommand = defineCommand({
   summary: "Fork a chat session into an independent copy with its history",
   description:
     "Duplicate an existing chat session, copying its full conversation history into a new " +
-    "session the user can continue down an independent path. The fork appears in the app's " +
+    "session the user can continue down an independent path. The fork opens on the " +
+    "source's harness, model, reasoning effort and fast mode. It appears in the app's " +
     "session list; the user's current view does not change.",
   helpFooter: `Example:
   berdctl session fork --session-id <session-id> --title "Alternate approach"
 
 Result:
   {"session_id": "...", "title": "...", "source_session_id": "...",
-   "message_count": 7}
-  The fork appears in the session list with a copy of the original history.`,
+   "harness_id": "...", "model_id": "..."|null, "effort": "..."|null,
+   "fast_mode": true|false|null, "message_count": 7}
+  The fork appears in the session list with a copy of the original history.
+  "harness_id", "model_id", "effort" and "fast_mode" are what the fork's model
+  acknowledged when it opened; null means the model's own default.`,
   schema: forkSessionSchema,
   // Spawn ACL (P42): enforced in execute against the wire `actor`, like
   // `session create` (runtime/spawnGate.ts). A fork reproduces a session of
@@ -89,18 +97,27 @@ Result:
     );
     const chatSession = acpSessionToChatSession(forked);
     useChatSessionStore.getState().addSession(chatSession);
+    const harnessId =
+      chatSession.executionTarget?.harnessId ?? DEFAULT_HARNESS_ID;
     registerBerdctlChildNode({
       actor: ctx.actor,
       sessionId: forked.sessionId,
       role: targetLayer,
-      harnessId: chatSession.executionTarget?.harnessId ?? DEFAULT_HARNESS_ID,
+      harnessId,
       displayName: chatSession.title,
       task: `fork of ${args.session_id}`,
     });
+    // The host opens the fork on the source's stored selection and answers
+    // with what the bridge acknowledged, so these are the fork's own values,
+    // not a copy of what was asked for.
     return {
       session_id: forked.sessionId,
       title: chatSession.title,
       source_session_id: args.session_id,
+      harness_id: harnessId,
+      model_id: forked.modelId ?? null,
+      effort: forked.reasoningEffort ?? null,
+      fast_mode: forked.fastMode ?? null,
       message_count: forked.messageCount,
     };
   },
