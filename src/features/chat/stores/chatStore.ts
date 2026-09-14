@@ -22,6 +22,7 @@ import { loadCachedDrafts, persistDrafts } from "./draftPersistence";
 import {
   loadCachedMessageQueues,
   persistMessageQueues,
+  withQueuedRunSettings,
 } from "./queuePersistence";
 import {
   loadCachedUnreadSessionIds,
@@ -1507,7 +1508,7 @@ const createChatStore: StateCreator<
     const record: QueuedMessageRecord = {
       kind: "deferred",
       recordId: crypto.randomUUID(),
-      payload,
+      payload: withQueuedRunSettings(sessionId, payload),
       state: deferredState,
     };
     set((state) => ({
@@ -1599,7 +1600,7 @@ const createChatStore: StateCreator<
     const record: QueuedMessageRecord = {
       kind: "transport-ready",
       recordId: crypto.randomUUID(),
-      payload,
+      payload: withQueuedRunSettings(sessionId, payload),
     };
     set((state) => ({
       queuedMessageBySession: {
@@ -1614,12 +1615,18 @@ const createChatStore: StateCreator<
     return true;
   },
 
-  updateQueuedMessage: (sessionId, recordId, payload) => {
+  updateQueuedMessage: (sessionId, recordId, editedPayload) => {
     const queue = get().queuedMessageBySession[sessionId] ?? [];
     const index = queue.findIndex((record) => record.recordId === recordId);
     if (index < 0) return false;
     const next = [...queue];
     const { editing: _editing, ...record } = queue[index];
+    // Editing the text is not re-queueing: the message keeps the run settings
+    // it was queued under.
+    const payload =
+      editedPayload.runSettings || !record.payload.runSettings
+        ? editedPayload
+        : { ...editedPayload, runSettings: record.payload.runSettings };
     const deferredState =
       record.kind === "deferred"
         ? (record.state as { status?: unknown })

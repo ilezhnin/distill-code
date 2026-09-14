@@ -1,5 +1,5 @@
 import { formatLocalDay } from "./usageFormatters";
-import { providerDisplayName } from "./usageProvider";
+import { providerDisplayName, usageModelBucket } from "./usageProvider";
 import type {
   UsageIntensity,
   UsageLedger,
@@ -9,6 +9,12 @@ import type {
 } from "./usageTypes";
 
 const RECENT_DAY_COUNT = 42;
+
+interface ModelTally {
+  count: number;
+  label: string;
+  named: boolean;
+}
 
 function getIntensity(totalTokens: number, maxTokens: number): UsageIntensity {
   if (totalTokens <= 0 || maxTokens <= 0) {
@@ -131,7 +137,7 @@ export function buildUsageOverview({
       estimatedCostUsd: number | null;
       hasKnownCost: boolean;
       hasMissingCost: boolean;
-      modelCounts: Map<string, number>;
+      modelCounts: Map<string, ModelTally>;
       activeDays: Set<string>;
       archivedActiveDays: number;
       costCurrencies: Set<string | null>;
@@ -153,7 +159,7 @@ export function buildUsageOverview({
       estimatedCostUsd: null as number | null,
       hasKnownCost: false,
       hasMissingCost: false,
-      modelCounts: new Map<string, number>(),
+      modelCounts: new Map<string, ModelTally>(),
       activeDays: new Set<string>(),
       archivedActiveDays: 0,
       costCurrencies: new Set<string | null>(),
@@ -209,12 +215,17 @@ export function buildUsageOverview({
     } else if (session.totalTokens > 0) {
       provider.hasMissingCost = true;
     }
-    const modelLabel = session.modelName ?? session.modelId;
-    if (modelLabel) {
-      provider.modelCounts.set(
-        modelLabel,
-        (provider.modelCounts.get(modelLabel) ?? 0) + 1,
-      );
+    const bucket = usageModelBucket(session);
+    if (bucket) {
+      const tally = provider.modelCounts.get(bucket.key);
+      // A real model name beats a base id standing in for folded rows, which
+      // is all a bucket of legacy rows can offer.
+      const useBucketLabel = !tally || (!tally.named && bucket.named);
+      provider.modelCounts.set(bucket.key, {
+        count: (tally?.count ?? 0) + 1,
+        label: useBucketLabel ? bucket.label : tally.label,
+        named: useBucketLabel ? bucket.named : tally.named,
+      });
     }
     if (session.lastActivityAt > 0) {
       provider.activeDays.add(formatLocalDay(new Date(session.lastActivityAt)));
@@ -224,9 +235,9 @@ export function buildUsageOverview({
   const providers: UsageProviderOverview[] = [...byProvider.entries()]
     .map(([id, provider]) => {
       const topModel =
-        [...provider.modelCounts.entries()].sort(
-          (left, right) => right[1] - left[1],
-        )[0]?.[0] ?? null;
+        [...provider.modelCounts.values()].sort(
+          (left, right) => right.count - left.count,
+        )[0]?.label ?? null;
       const activityLabel = provider.turns > 0 ? "turns" : "events";
       const activityCount =
         activityLabel === "turns" ? provider.turns : provider.events;

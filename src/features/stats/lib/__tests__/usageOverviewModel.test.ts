@@ -244,6 +244,61 @@ describe("usageOverviewModel", () => {
     expect(overview.estimatedCostUsd).toBe(0.5);
   });
 
+  it("counts rows with an effort folded into the model id toward the base model, under its name", () => {
+    const { a } = ledger.sessions;
+    const row = (modelId: string, modelName: string) => ({
+      ...a,
+      providerId: "codex-acp",
+      modelId,
+      modelName,
+    });
+    const overview = buildUsageOverview({
+      ledger: {
+        ...ledger,
+        sessions: {
+          luna1: row("gpt-5.6-luna", "GPT-5.6 Luna"),
+          luna2: row("gpt-5.6-luna", "GPT-5.6 Luna"),
+          solLow: row("gpt-5.6-sol[low]", "GPT-5.6 Sol (low)"),
+          solXhigh: row("gpt-5.6-sol[xhigh]", "GPT-5.6 Sol (xhigh)"),
+          sol: row("gpt-5.6-sol", "GPT-5.6 Sol"),
+        },
+      },
+      enabledProviderIds: ["codex-acp"],
+    });
+
+    // Split per tier, Luna's two rows would have outranked each of Sol's.
+    expect(
+      overview.providers.find((provider) => provider.id === "codex-acp")
+        ?.topModel,
+    ).toBe("GPT-5.6 Sol");
+  });
+
+  it("labels a model seen only in folded rows by its base id", () => {
+    const { a } = ledger.sessions;
+    const overview = buildUsageOverview({
+      ledger: {
+        ...ledger,
+        sessions: {
+          low: {
+            ...a,
+            modelId: "gpt-5.6-sol[low]",
+            modelName: "GPT-5.6 Sol (low)",
+          },
+          high: {
+            ...a,
+            modelId: "gpt-5.6-sol[high]",
+            modelName: "GPT-5.6 Sol (high)",
+          },
+        },
+      },
+      enabledProviderIds: ["goose"],
+    });
+
+    expect(
+      overview.providers.find((provider) => provider.id === "goose")?.topModel,
+    ).toBe("gpt-5.6-sol");
+  });
+
   it("keeps a single non-USD currency on the figure it belongs to", () => {
     const { a } = ledger.sessions;
     const overview = buildUsageOverview({

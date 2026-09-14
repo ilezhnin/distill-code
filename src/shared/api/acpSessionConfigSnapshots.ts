@@ -4,7 +4,12 @@ import {
   shortLogId,
 } from "@/shared/lib/reasoningEffortDiagnostics";
 import { normalizeConcreteModelId } from "@/shared/lib/modelIdentity";
+import { splitLegacyFoldedModelId } from "@/shared/lib/foldedModelId";
 import { isRecord } from "@/shared/lib/isRecord";
+import {
+  isCachedModelInventoryAuthoritative,
+  useProviderModelCacheStore,
+} from "@/features/providers/stores/providerModelCacheStore";
 
 export interface AcpModelConfigSnapshot {
   modelId: string;
@@ -261,20 +266,18 @@ export function readSessionExecutionConfigSnapshot(
  * Read *which model this session is currently on* out of a session-config
  * payload. Deliberately one identity, never a list.
  *
- * A session snapshot is not, and cannot become, a model inventory:
+ * A session snapshot is not, and cannot become, a model inventory. The agent
+ * host (`presented_snapshot` in `src-tauri/src/services/agent_host/router.rs`)
+ * passes on whatever model option the bridge stated for this one session, and
+ * synthesizes one from the bridge's `models` block only when the bridge has no
+ * model option at all. Either way the values are what one bridge session said
+ * at one moment: possibly a placeholder current value with no values, and — for
+ * a `config_option_update` replayed from `session_events` on `session/load` —
+ * whatever an older host build recorded.
  *
- * - goose strips the child's own `model` option before it builds the snapshot
- *   (`passthrough_config_options` in `crates/goose/src/acp/response_builder.rs`
- *   drops the option whose id is `model` or whose category is Model), and
- *   rebuilds the model option itself from `inventory.models`.
- * - For ACP-backed providers that inventory is empty by construction --
- *   `codex_acp.rs` registers `ProviderMetadata::new(..., ACP_CURRENT_MODEL,
- *   vec![], ...)` -- so the option we receive carries the `current`
- *   placeholder and no values at all.
- *
- * The one live source for a provider's model list is
- * `GooseUnstableProvidersSupportedModelsList`, behind
- * `providerModelCacheStore.refreshProviderModels`. Reading a list out of this
+ * The one source for a provider's model list is the host inventory
+ * (`providersSupportedModelsList`, behind
+ * `providerModelCacheStore.refreshProviderModels`). Reading a list out of this
  * snapshot instead has already caused one incident: an empty (or
  * placeholder-only) option list was taken for the provider's inventory and
  * every real model was rejected as unknown. Hence the return type carries no
@@ -292,7 +295,7 @@ function getModelConfigSnapshot(
     return null;
   }
 
-  const modelId = normalizeConcreteModelId(modelOption.currentValue);
+  const modelId = currentModelIdentity(modelOption.currentValue);
   if (!modelId) {
     return null;
   }
@@ -301,6 +304,42 @@ function getModelConfigSnapshot(
     modelOption.options.find((model) => model.id === modelId)?.name ?? modelId;
 
   return { modelId, modelName };
+}
+
+/**
+ * The model a snapshot's `currentValue` names.
+ *
+ * Host builds from before effort was its own selection folded it into the
+ * model option (`gpt-5.6-sol[low]`), and `session/load` replays those
+ * `config_option_update` events verbatim — they are never rewritten. Such a
+ * value is read as its base id, but only when an authoritative inventory lists
+ * the base and none lists the folded spelling itself: a harness whose real
+ * model id happens to end in a bracketed effort word keeps it.
+ */
+function currentModelIdentity(currentValue: string): string | undefined {
+  const modelId = normalizeConcreteModelId(currentValue);
+  const folded = splitLegacyFoldedModelId(modelId);
+  if (!modelId || !folded) {
+    return modelId;
+  }
+  return isAuthoritativeInventoryModel(folded.modelId) &&
+    !isAuthoritativeInventoryModel(modelId)
+    ? folded.modelId
+    : modelId;
+}
+
+function isAuthoritativeInventoryModel(modelId: string): boolean {
+  for (const entry of useProviderModelCacheStore
+    .getState()
+    .providers.values()) {
+    if (
+      isCachedModelInventoryAuthoritative(entry) &&
+      entry.models.some((model) => model.id === modelId)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

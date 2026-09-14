@@ -3,13 +3,53 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { acpSessionToChatSession } from "@/features/chat/lib/acpSessionMapping";
+import { isModelExecutionTarget } from "@/features/chat/lib/sessionExecutionTarget";
+import { normalizeSessionRunSettings } from "@/features/chat/lib/sessionRunSettings";
 import { getDisplaySessionTitle } from "@/features/chat/lib/sessionTitle";
-import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
+import {
+  type ChatSession,
+  useChatSessionStore,
+} from "@/features/chat/stores/chatSessionStore";
+import { sameModelIdentity } from "@/shared/lib/foldedModelId";
 import {
   acpDuplicateSession,
   type AcpDuplicateSessionOptions,
 } from "@/shared/api/acp";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
+
+/**
+ * The host opens a fork on everything its source was running — model, effort
+ * and fast mode (`fork_meta` in the agent host) — but the session info it
+ * answers with names only the provider and the model id. Mapped alone, the
+ * fork would get a bare target, with the id standing in for the model's name,
+ * and no run-settings intent, so the reconciler would treat the effort and fast
+ * mode its source was chosen with as never chosen. The source's own record
+ * supplies exactly what the host copied.
+ */
+function withSourceSelection(
+  forked: ChatSession,
+  source: ChatSession,
+): ChatSession {
+  const target = forked.executionTarget;
+  const sourceTarget = source.executionTarget;
+  const desiredRunSettings = normalizeSessionRunSettings(
+    source.desiredRunSettings,
+  );
+  const sameModel =
+    target &&
+    sourceTarget &&
+    isModelExecutionTarget(target) &&
+    isModelExecutionTarget(sourceTarget) &&
+    target.harnessId === sourceTarget.harnessId &&
+    sameModelIdentity(target.modelId, sourceTarget.modelId);
+  return {
+    ...forked,
+    ...(sameModel
+      ? { executionTarget: { ...target, modelName: sourceTarget.modelName } }
+      : {}),
+    ...(desiredRunSettings ? { desiredRunSettings } : {}),
+  };
+}
 
 function isSessionNotFoundError(error: unknown): boolean {
   return formatAcpErrorMessage(error, "").includes(
@@ -54,7 +94,9 @@ export function useForkSession(options?: {
         );
         useChatSessionStore
           .getState()
-          .addSession(acpSessionToChatSession(forked));
+          .addSession(
+            withSourceSelection(acpSessionToChatSession(forked), session),
+          );
         toast.success(t("history.forked", { title: sourceName }));
         onForked?.(forked.sessionId);
       } catch (error) {

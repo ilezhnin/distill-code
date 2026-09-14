@@ -7,6 +7,11 @@ import {
   type PersonaIntent,
 } from "../lib/admittedSend";
 import type { DeferredWorkspaceSend } from "../lib/firstWorkspaceSend";
+import {
+  normalizeSessionRunSettings,
+  type SessionRunSettings,
+} from "../lib/sessionRunSettings";
+import { splitLegacyFoldedModelId } from "@/shared/lib/foldedModelId";
 
 const QUEUES_STORAGE_KEY = "distill:chat-message-queues:v1";
 let nativeWriteChain = Promise.resolve();
@@ -95,8 +100,12 @@ function normalizeQueuedPayload(
     persona: rawPersona,
     personaId: legacyPersonaId,
     personaName: legacyPersonaName,
+    runSettings: rawRunSettings,
     ...rest
   } = legacy;
+  const runSettings =
+    parseQueuedRunSettings(rawRunSettings) ??
+    legacyFoldedRunSettings(rawTarget, legacyModelId);
 
   let persona: PersonaIntent;
   if (rawPersona !== undefined) {
@@ -136,7 +145,65 @@ function normalizeQueuedPayload(
   return {
     ...rest,
     persona,
+    ...(runSettings ? { runSettings } : {}),
   };
+}
+
+/**
+ * The run settings a record was queued under. A malformed value is dropped
+ * rather than rejecting the message: dispatch does not act on it yet, so losing
+ * it costs nothing, while losing the prompt would.
+ */
+function parseQueuedRunSettings(
+  value: unknown,
+): SessionRunSettings | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  return normalizeSessionRunSettings({
+    ...(typeof raw.effort === "string" ? { effort: raw.effort } : {}),
+    ...(typeof raw.fast === "boolean" ? { fast: raw.fast } : {}),
+  });
+}
+
+/**
+ * A record written before effort was its own selection named its model with
+ * the effort folded in (`gpt-5.6-sol[low]`). The target itself is not kept —
+ * dispatch leases the session's live one — but the effort is what the message
+ * was queued under, so it survives as the record's run settings.
+ */
+function legacyFoldedRunSettings(
+  rawTarget: unknown,
+  legacyModelId: unknown,
+): SessionRunSettings | undefined {
+  const targetModelId =
+    rawTarget && typeof rawTarget === "object"
+      ? (rawTarget as Record<string, unknown>).modelId
+      : undefined;
+  let modelId: string | undefined;
+  if (typeof targetModelId === "string") modelId = targetModelId;
+  else if (typeof legacyModelId === "string") modelId = legacyModelId;
+  const folded = splitLegacyFoldedModelId(modelId);
+  return folded ? { effort: folded.effort } : undefined;
+}
+
+/**
+ * Records the chat's run settings on a message as it is queued.
+ *
+ * Whether a queued message keeps the effort and fast mode it was queued under,
+ * or runs at whatever the chat is set to when it is dispatched, is not decided
+ * (LAWS/CHAT.md is silent). Dispatch keeps reading them at dispatch; the record
+ * only carries them, so choosing the other way later finds them already on
+ * every queued message.
+ */
+export function withQueuedRunSettings<T extends QueuedMessagePayload>(
+  sessionId: string,
+  payload: T,
+): T {
+  if (payload.runSettings) return payload;
+  const runSettings = normalizeSessionRunSettings(
+    useChatSessionStore.getState().getSession(sessionId)?.desiredRunSettings,
+  );
+  return runSettings ? { ...payload, runSettings } : payload;
 }
 
 export async function loadPersistedMessageQueues(): Promise<PersistedQueues> {
