@@ -34,10 +34,8 @@ import {
   normalizeSessionExecutionTarget,
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
-import {
-  splitEmbeddedReasoning,
-  type EmbeddedReasoningEffort,
-} from "@/features/chat/lib/modelReasoningVariants";
+import { splitEmbeddedReasoning } from "@/features/chat/lib/modelReasoningVariants";
+import type { EffortValue } from "@/features/chat/lib/sessionRunSettings";
 import type { ModelOption } from "@/features/chat/types";
 import {
   isCachedModelInventoryAuthoritativeForRouting,
@@ -62,17 +60,22 @@ export interface WaveStepTarget {
   /** True when nothing was clear of its limit and this one was taken anyway. */
   nearLimit: boolean;
   /**
-   * Reasoning effort the ranking asked for, when it named one (P36).
+   * Reasoning effort the ranking asked for, when it named one (P36) — the
+   * ranked target's `runSettings.effort`.
    *
    * The ranking's profiles differ by effort as much as by model — "medium
    * engineering at medium, heavy at xhigh" is the whole difference between two
-   * of them — and only harnesses that serve each tier as its own model id get
-   * that from `modelId` alone. For every other harness the effort has to be
-   * composed onto the child session after it is created, which is what the
-   * spawn does with this; without it `coding-simple` and `coding-complex`
-   * routed identically on claude-acp and grok-acp.
+   * of them — and the model id never carries it. The spawn applies it to the
+   * child session; without it `coding-simple` and `coding-complex` would route
+   * identically.
    */
-  effort?: EmbeddedReasoningEffort;
+  effort?: EffortValue;
+  /**
+   * `false` when the picked model advertises its efforts and `effort` is not
+   * among them. The step still runs on that model: a ranking is a preference
+   * and fails open.
+   */
+  effortApplied?: boolean;
 }
 
 /** Test seam: everything about the world this resolution reads. */
@@ -206,7 +209,12 @@ export function resolveWaveStepTarget(
       label: choice.label,
       fallback: choice.rankIndex > 0,
       nearLimit: choice.nearLimit === true,
-      ...(choice.effort ? { effort: choice.effort } : {}),
+      ...(ranked.runSettings.effort
+        ? { effort: ranked.runSettings.effort }
+        : {}),
+      ...(choice.effortApplied !== undefined
+        ? { effortApplied: choice.effortApplied }
+        : {}),
     };
   } catch {
     return undefined;

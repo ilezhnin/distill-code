@@ -33,7 +33,12 @@ export interface DraftAgentDefaults {
   provider?: string;
   modelSelection?: {
     modelProviderId: string;
+    /** A base model id. */
     modelId: string;
+    /** The effort remembered for that model, written as `effort`. */
+    effort?: string;
+    /** The fast mode remembered for that model, written as `fast_mode`. */
+    fastMode?: boolean;
   };
 }
 
@@ -51,6 +56,12 @@ export async function createDraftAgentSource(
   if (defaults?.modelSelection) {
     properties.modelProviderId = defaults.modelSelection.modelProviderId;
     properties.model = defaults.modelSelection.modelId;
+    if (defaults.modelSelection.effort) {
+      properties.effort = defaults.modelSelection.effort;
+    }
+    if (defaults.modelSelection.fastMode !== undefined) {
+      properties.fast_mode = defaults.modelSelection.fastMode;
+    }
   }
 
   const request: CreatePersonaSourceRequest = {

@@ -18,6 +18,7 @@ import {
   normalizeSessionExecutionTarget,
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
+import type { SessionRunSettings } from "@/features/chat/lib/sessionRunSettings";
 import { platformLimitState } from "@/features/status/lib/rateLimitWindows";
 import type { ProviderRateLimits } from "@/features/status/lib/rateLimitTypes";
 import type { Persona } from "@/shared/types/agents";
@@ -80,6 +81,16 @@ export interface RankedPersonaTargetContext {
 
 export interface RankedPersonaTarget {
   target: SessionExecutionTarget;
+  /**
+   * The effort and fast mode the winning candidate asks for, as the session's
+   * run-settings intent. A sibling of `target`, never part of it (see
+   * `sessionRunSettings.ts`), and applied the same way on every harness.
+   *
+   * Kept even when the model does not advertise the effort
+   * (`resolution.choice.effortApplied === false`): the intent survives, and
+   * the run-settings reconciler shows what runs instead.
+   */
+  runSettings: SessionRunSettings;
   resolution: RankedModelResolution;
 }
 
@@ -123,9 +134,13 @@ export function rankedPersonaExecutionTarget(
   );
   if (!resolution.choice) return undefined;
 
-  const { harnessId, model } = resolution.choice;
+  const { harnessId, model, effort, fast } = resolution.choice;
   try {
     return {
+      runSettings: {
+        ...(effort ? { effort } : {}),
+        ...(fast !== undefined ? { fast } : {}),
+      },
       // A concrete model needs the provider that serves it; without this the
       // normalizer refused every resolution the ranking made, so the feature
       // could not retarget anything at all. The model's own provider id is

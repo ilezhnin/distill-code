@@ -26,6 +26,7 @@ import { snapshotToCreatePersonaRequest } from "@/features/agents/agent-snapshot
 import { ProviderModelFields } from "@/features/agents/ui/PersonaFields/ProviderModelFields";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useProviderModels } from "@/features/providers/hooks/useProviderModels";
+import { splitLegacyFoldedModelId } from "@/shared/lib/foldedModelId";
 
 function supportsConfiguration(
   provider: string,
@@ -70,7 +71,13 @@ export function AgentImageImportDialog({
     [providers],
   );
   const sourceProvider = snapshot.definition.provider?.trim() || "";
-  const sourceModel = snapshot.definition.model?.trim() || "";
+  // A card written before model and effort were separate selections carries
+  // both in one id; the inventory lists base ids, so match on the base and
+  // keep the effort to write beside it.
+  const sourceFolded = splitLegacyFoldedModelId(snapshot.definition.model);
+  const sourceModel =
+    sourceFolded?.modelId ?? (snapshot.definition.model?.trim() || "");
+  const sourceEffort = sourceFolded?.effort;
   const sourceModelProviderId =
     snapshot.definition.modelProviderId?.trim() || sourceProvider;
   const sourceConfigurationSupported = supportsConfiguration(
@@ -212,6 +219,14 @@ export function AgentImageImportDialog({
             selectedConfigurationSupported && provider && model
               ? model
               : undefined,
+          // The card's effort belongs to the card's model; a model the
+          // operator picked instead starts without one.
+          ...(selectedConfigurationSupported &&
+          provider &&
+          sourceEffort &&
+          model === sourceModel
+            ? { effort: sourceEffort }
+            : {}),
           // The outer PNG is the collectible card. Only the separately embedded
           // snapshot avatar is persisted as the agent avatar.
           avatar:

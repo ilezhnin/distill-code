@@ -8,7 +8,7 @@ import {
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
 import { berdctlCrossSessionSendOptions } from "@/features/berdctl/commands/runtime/sessionSend";
-import type { EmbeddedReasoningEffort } from "@/features/chat/lib/modelReasoningVariants";
+import type { EffortValue } from "@/features/chat/lib/sessionRunSettings";
 import { updateSessionTitle } from "@/features/chat/stores/chatSessionOperations";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
@@ -59,7 +59,7 @@ export async function spawnConductorChildSession(args: {
    * harnesses carry the effort inside the model id. Best-effort: a session
    * that does not advertise the option keeps the harness default.
    */
-  reasoningEffort?: EmbeddedReasoningEffort;
+  reasoningEffort?: EffortValue;
   /** The root request this child's work belongs to (P49). */
   taskId?: string;
 }): Promise<{ sessionId: string; runId: string }> {

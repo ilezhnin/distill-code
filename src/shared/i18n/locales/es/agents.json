@@ -220,7 +220,12 @@
     "effortDefault": "por defecto",
     "modelAria": "Modelo en la posición {{position}}",
     "effortAria": "Esfuerzo de razonamiento en la posición {{position}}",
+    "effortNotOffered": "{{effort}} (no disponible)",
+    "fast": "rápido",
+    "fastAria": "Modo rápido en la posición {{position}}",
     "previewPick": "Ahora mismo: {{model}} · {{effort}}",
+    "previewEffortUnavailable": "Ahora mismo: {{model}} no ofrece {{effort}}; se ejecuta con {{actual}}",
+    "previewFastUnavailable": "{{model}} no tiene modo rápido",
     "previewNone": "Ahora mismo: nada del ranking se puede usar",
     "skip": {
       "at-limit": "{{model}} está en su límite de uso",

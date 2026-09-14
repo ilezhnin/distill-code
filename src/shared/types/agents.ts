@@ -25,7 +25,15 @@ export interface Persona {
   systemPrompt: string;
   provider?: ProviderType;
   modelProviderId?: string;
+  /** A base model id; a legacy folded id is split on read into this + `effort`. */
   model?: string;
+  /**
+   * Reasoning effort to run `model` at, in the harness's own vocabulary
+   * (frontmatter `effort`). A separate selection from the model.
+   */
+  effort?: string;
+  /** Whether to run `model` in fast mode (frontmatter `fast_mode`). */
+  fastMode?: boolean;
   /** Ranked model preference class id; overrides the single `model`. */
   modelRanking?: string;
   /**
@@ -79,6 +87,10 @@ export interface CreatePersonaRequest {
   provider?: ProviderType;
   modelProviderId?: string;
   model?: string;
+  /** Reasoning effort for `model`; written as frontmatter `effort`. */
+  effort?: string;
+  /** Fast mode for `model`; written as frontmatter `fast_mode`. */
+  fastMode?: boolean;
   modelRanking?: string;
 }
 
@@ -90,6 +102,10 @@ export interface UpdatePersonaRequest {
   provider?: ProviderType | null;
   modelProviderId?: string | null;
   model?: string | null;
+  /** `null` clears the stored effort; `undefined` leaves it alone. */
+  effort?: string | null;
+  /** `null` clears the stored fast mode; `undefined` leaves it alone. */
+  fastMode?: boolean | null;
   modelRanking?: string | null;
 }
 
