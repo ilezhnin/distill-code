@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
 import {
   acquireExistingSessionForBackgroundSend,
+  queuedDispatchTargetMatches,
   sendQueuedPromptToExistingSessionInBackground,
 } from "@/features/chat/lib/queuedSessionSend";
 import { SessionDispatchCreationIncompleteError } from "@/features/chat/lib/sessionDispatchAcquisition";
@@ -198,6 +199,42 @@ describe("acquireExistingSessionForBackgroundSend", () => {
     const retry = acquireSessionDispatchTarget(SESSION_ID);
     expect(retry.status).toBe("acquired");
     retry.release?.();
+  });
+});
+
+describe("queuedDispatchTargetMatches", () => {
+  const leased = {
+    harnessId: "codex-acp",
+    modelProviderId: "codex-acp",
+    modelId: "gpt-5.6-sol",
+    modelName: "GPT-5.6 Sol",
+  };
+
+  it("dispatches to a session whose replay reports the leased model with a folded effort", () => {
+    expect(
+      queuedDispatchTargetMatches(
+        { ...leased, modelId: "gpt-5.6-sol[low]", modelName: "GPT-5.6 Sol" },
+        leased,
+      ),
+    ).toBe(true);
+  });
+
+  it("treats a different model as a newer selection", () => {
+    expect(
+      queuedDispatchTargetMatches(
+        { ...leased, modelId: "gpt-5.6-luna", modelName: "GPT-5.6 Luna" },
+        leased,
+      ),
+    ).toBe(false);
+  });
+
+  it("treats the same model on another harness as a newer selection", () => {
+    expect(
+      queuedDispatchTargetMatches(
+        { ...leased, harnessId: "grok-acp", modelProviderId: "grok-acp" },
+        leased,
+      ),
+    ).toBe(false);
   });
 });
 

@@ -52,11 +52,9 @@ import {
 } from "@/features/chat/stores/chatSessionStore";
 import type { QueuedMessageRecord } from "@/features/chat/stores/chatStore";
 
-import {
-  sameSessionExecutionTarget,
-  type SessionExecutionTarget,
-} from "@/features/chat/lib/sessionExecutionTarget";
+import type { SessionExecutionTarget } from "@/features/chat/lib/sessionExecutionTarget";
 import { hostSelectionFromExecutionTarget } from "@/features/chat/lib/hostExecutionTarget";
+import { sameModelIdentity } from "@/shared/lib/foldedModelId";
 
 async function findPersona(personaId: string): Promise<Persona> {
   const cached = useAgentStore.getState().getPersonaById(personaId);
@@ -73,12 +71,33 @@ async function findPersona(personaId: string): Promise<Persona> {
   return persona;
 }
 
-function targetMatchesOrMaterializes(
+/**
+ * Whether two targets name the same place to send a queued message.
+ *
+ * The model is compared by identity, not spelling. A session whose
+ * `session/load` replays events recorded while the effort was folded into the
+ * model id can report `gpt-5.6-sol[low]` for the `gpt-5.6-sol` a message was
+ * leased on. That is the same model — effort is a run setting, not part of the
+ * target — and reading it as a newer selection would park the message as
+ * superseded.
+ */
+function sameDispatchTarget(
+  left: SessionExecutionTarget | null | undefined,
+  right: SessionExecutionTarget | null | undefined,
+): boolean {
+  return (
+    left?.harnessId === right?.harnessId &&
+    left?.modelProviderId === right?.modelProviderId &&
+    sameModelIdentity(left?.modelId, right?.modelId)
+  );
+}
+
+export function queuedDispatchTargetMatches(
   actual: SessionExecutionTarget | undefined,
   expected: SessionExecutionTarget,
 ): boolean {
   return (
-    sameSessionExecutionTarget(actual, expected) ||
+    sameDispatchTarget(actual, expected) ||
     (expected.modelId === undefined &&
       actual?.harnessId === expected.harnessId &&
       actual.modelProviderId === expected.modelProviderId)
@@ -90,7 +109,7 @@ function assertSessionExecutionTarget(
   expectedTarget: SessionExecutionTarget,
 ): void {
   if (
-    targetMatchesOrMaterializes(
+    queuedDispatchTargetMatches(
       useChatSessionStore.getState().getSession(sessionId)?.executionTarget,
       expectedTarget,
     )
@@ -224,10 +243,7 @@ export async function prepareExistingSessionForBackgroundSend(
     options.executionTarget &&
     (hasUiOwnedUnresolvedTarget(liveSessionAtSubmit) ||
       (liveTargetAtSubmit &&
-        !sameSessionExecutionTarget(
-          options.executionTarget,
-          liveTargetAtSubmit,
-        )))
+        !sameDispatchTarget(options.executionTarget, liveTargetAtSubmit)))
   ) {
     throw new Error("Session preparation was superseded by a newer selection.");
   }
@@ -317,6 +333,11 @@ export async function sendQueuedPromptToExistingSessionInBackground(
             } satisfies Persona;
           })
         : undefined;
+    // Effort and fast mode are read at dispatch: preparation reconciles the
+    // chat's `desiredRunSettings` as they are now, not `payload.runSettings`,
+    // which only records what was in force when the message was queued.
+    // LAWS/CHAT.md leaves that choice open; pinning a queued message would
+    // hand `payload.runSettings` to this preparation as the intent to apply.
     const {
       providerId,
       executionTarget: preparedExecutionTarget,

@@ -9,6 +9,16 @@ import {
 import type { UsageSessionSource, UsageTokenSnapshot } from "./usageTypes";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
+/**
+ * The effort a session is running at — what the bridge reports, not what the
+ * operator asked for, since a model that refuses an effort runs at another.
+ */
+function effortFromSession(session: {
+  reasoningEffort?: { currentValue: string };
+}): string | null {
+  return session.reasoningEffort?.currentValue ?? null;
+}
+
 function sourceFromSession(session: {
   id: string;
   createdAt: string;
@@ -16,6 +26,7 @@ function sourceFromSession(session: {
   lastMessageAt?: string;
   messageCount: number;
   executionTarget?: Parameters<typeof providerIdFromExecutionTarget>[0];
+  reasoningEffort?: { currentValue: string };
 }): UsageSessionSource {
   return {
     id: session.id,
@@ -26,6 +37,7 @@ function sourceFromSession(session: {
     providerId: providerIdFromExecutionTarget(session.executionTarget),
     modelId: modelIdFromExecutionTarget(session.executionTarget),
     modelName: modelNameFromExecutionTarget(session.executionTarget),
+    effort: effortFromSession(session),
   };
 }
 
@@ -50,6 +62,7 @@ export function recordAcpSessionUsage(
           providerId: providerIdFromExecutionTarget(session.executionTarget),
           modelId: modelIdFromExecutionTarget(session.executionTarget),
           modelName: modelNameFromExecutionTarget(session.executionTarget),
+          effort: effortFromSession(session),
         }
       : undefined,
   );
