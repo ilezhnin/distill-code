@@ -20,13 +20,10 @@ import type {
   UsageSection,
 } from "@/features/status/lib/rateLimitTypes";
 import type { PlatformLimitState } from "@/features/status/lib/rateLimitWindows";
-import {
-  splitEmbeddedReasoning,
-  type EmbeddedReasoningEffort,
-} from "@/features/chat/lib/modelReasoningVariants";
 import { isModelAlias } from "@/features/chat/lib/modelAliases";
 import { groupModelsByGeneration } from "@/features/chat/lib/modelGenerations";
-import type { ModelOption } from "@/features/chat/types";
+import type { EffortValue } from "@/features/chat/lib/sessionRunSettings";
+import type { ModelOption, ModelPickerGroup } from "@/features/chat/types";
 
 export type ModelPreferenceClassId =
   | "frontend-ui"
@@ -50,12 +47,14 @@ export interface RankedModelCandidate {
    */
   needles: string[][];
   /**
-   * Reasoning effort this candidate is worth running at ("Opus 5 at xhigh").
-   * The ranking states the intent; composing it onto the session — an embedded
-   * `model[effort]` id for some harnesses, the ACP effort channel for others —
-   * belongs to the caller.
+   * Reasoning effort this candidate is worth running at ("Opus 5 at xhigh"),
+   * in the harness's own vocabulary. It is a separate selection from the
+   * model: the ranking states the intent and the caller puts it on the
+   * session's run settings, the same way on every harness.
    */
-  effort?: EmbeddedReasoningEffort;
+  effort?: EffortValue;
+  /** Whether this candidate is worth running in fast mode, when stated. */
+  fast?: boolean;
   /**
    * Usage window that meters THIS model rather than the whole account (Fable's
    * own weekly allowance). Windows scoped to other models never gate this one.
@@ -78,7 +77,7 @@ export interface ModelPreferenceClass {
  */
 function atEffort(
   candidate: RankedModelCandidate,
-  effort: EmbeddedReasoningEffort,
+  effort: EffortValue,
 ): RankedModelCandidate {
   return { ...candidate, effort };
 }
@@ -109,10 +108,10 @@ const GROK: RankedModelCandidate = {
   needles: [["grok"]],
   effort: "xhigh",
 };
-// Luna and Tera carry an effort so a harness that serves each tier as its
-// own id seeds the tier named here, not the `[low]` the inventory lists
-// first (the same trap pickCandidateMatch closes for Sol). On a harness with
-// one id per model the effort is ignored and the first match wins as before.
+// Luna and Tera carry an effort like every other candidate: it rides on the
+// session's run settings next to the model, so the ranking's "Luna at xhigh"
+// is what the session is asked for rather than whatever the harness defaults
+// to.
 const LUNA: RankedModelCandidate = {
   label: "Luna",
   needles: [["luna"]],
@@ -265,6 +264,17 @@ export interface RankableModel {
   name?: string;
   displayName?: string;
   providerId?: string;
+  /** The picker page the harness filed this row under, when it says. */
+  group?: ModelPickerGroup;
+  /**
+   * The effort values the model offers. Absent is "nobody has asked", never
+   * "none": only a list, even an empty one, is an answer.
+   */
+  efforts?: ReadonlyArray<{ id: string; name?: string }>;
+  /** The effort the harness itself calls this model's default, if it says. */
+  defaultEffort?: string | null;
+  /** `null` (or absent) is "unknown", never "no". */
+  supportsFast?: boolean | null;
 }
 
 export interface RankedModelResolutionInput {
@@ -292,10 +302,74 @@ export interface RankedModelChoice {
   /** Zero-based rank of the picked candidate; >0 means a fallback happened. */
   rankIndex: number;
   label: string;
-  /** Effort the ranking asks for, when it names one. */
-  effort?: EmbeddedReasoningEffort;
+  /**
+   * Effort the ranking asks for, when it names one — spelled the way the
+   * model advertises it when the model lists it.
+   */
+  effort?: EffortValue;
+  /**
+   * `false` when the model's advertised efforts are known and do not include
+   * `effort`. Fail-open on purpose: the model is still the choice, the effort
+   * stays the intent, and the caller says what runs instead. Skipping the
+   * candidate would disable rankings whenever capabilities are unknown.
+   * Absent when no effort was asked for or the model's efforts are unknown.
+   */
+  effortApplied?: boolean;
+  /** Fast mode the ranking asks for, when it states one. */
+  fast?: boolean;
+  /** `false` when fast mode was asked for and the model says it has none. */
+  fastApplied?: boolean;
   /** True when only a near-limit candidate was left (see resolveRankedModel). */
   nearLimit?: boolean;
+}
+
+/**
+ * How `model` spells `effort`, `null` when its advertised efforts are known
+ * and do not include it, `undefined` when nobody has asked the model.
+ *
+ * Matched by id, then by name, case-insensitively — the same tolerance the
+ * session path uses — and never to a neighbouring value: an effort the list
+ * does not offer is not offered, however close a stop looks.
+ */
+export function advertisedEffortId(
+  model: Pick<RankableModel, "efforts">,
+  effort: EffortValue,
+): string | null | undefined {
+  if (!model.efforts) return undefined;
+  const wanted = effort.trim().toLowerCase();
+  const byId = model.efforts.find(
+    (option) => option.id.toLowerCase() === wanted,
+  );
+  if (byId) return byId.id;
+  const byName = model.efforts.find(
+    (option) => (option.name ?? "").toLowerCase() === wanted,
+  );
+  return byName ? byName.id : null;
+}
+
+function rankedChoice(
+  candidate: RankedModelCandidate,
+  harnessId: string,
+  model: RankableModel,
+  rankIndex: number,
+): RankedModelChoice {
+  const effortId = candidate.effort
+    ? advertisedEffortId(model, candidate.effort)
+    : undefined;
+  return {
+    harnessId,
+    model,
+    rankIndex,
+    label: candidate.label,
+    ...(candidate.effort ? { effort: effortId ?? candidate.effort } : {}),
+    ...(candidate.effort && model.efforts
+      ? { effortApplied: effortId != null }
+      : {}),
+    ...(candidate.fast !== undefined ? { fast: candidate.fast } : {}),
+    ...(candidate.fast === true && model.supportsFast === false
+      ? { fastApplied: false }
+      : {}),
+  };
 }
 
 export interface RankedModelSkip {
@@ -336,18 +410,12 @@ function matchesCandidate(
 }
 
 /**
- * The candidate's match among `items`, honouring its stated effort.
+ * The candidate's match among `items`: a model, by its base id and names.
  *
- * Some harnesses serve every effort tier as its own model id
- * (`gpt-5.6-sol[low]` … `[ultra]`), and all of them contain the candidate's
- * needles. "First match wins" then silently resolves an xhigh candidate to the
- * `[low]` variant — the inventory lists tiers ascending — which is how a whole
- * wave of executors once ran at low reasoning (L1, 2026-08-28). When the
- * candidate names an effort and several models match, the variant embedding
- * exactly that effort wins; the first match stays the answer everywhere else.
- *
- * Several matches are first narrowed to the family's current model, see
- * {@link preferCurrentMatches}.
+ * The effort is not part of the match. Inventories list one row per model and
+ * the effort is a separate selection carried beside it, so there is no tier
+ * variant to prefer; several matches are narrowed to the family's current
+ * model ({@link preferCurrentMatches}) and the first of those wins.
  */
 export function pickCandidateMatch<T>(
   candidate: RankedModelCandidate,
@@ -357,23 +425,21 @@ export function pickCandidateMatch<T>(
   const matches = items.filter((item) =>
     matchesCandidate(candidate, modelOf(item)),
   );
-  const pool = preferCurrentMatches(matches, modelOf);
-  if (pool.length <= 1 || !candidate.effort) return pool[0];
-  return (
-    pool.find(
-      (item) =>
-        splitEmbeddedReasoning(modelOf(item).id)?.effort === candidate.effort,
-    ) ?? pool[0]
-  );
+  return preferCurrentMatches(matches, modelOf)[0];
 }
 
 /**
  * The models a request that names a family should choose among: concrete ids
  * over an alias row ("default" is labeled with the model it resolves to
- * today, so it matches that model's words too), and the family's newest
- * generation over the older ones a harness still serves ("opus" means Opus 5,
- * not Opus 4.8). A request names a model, not whatever the CLI defaults to
- * later. Input order is kept.
+ * today, so it matches that model's words too), and the family's current
+ * model over the older ones a harness still serves ("opus" means Opus 5, not
+ * Opus 4.8). A request names a model, not whatever the CLI defaults to later.
+ * Input order is kept.
+ *
+ * "Current" comes from the harness's own filing when the inventory carries
+ * it: a row on the main page beats a row under More models, which is also what
+ * tells Fable 5.1 (main) from Fable 5 (More). Only an inventory with no filing
+ * at all falls back to guessing generations from the names.
  */
 export function preferCurrentMatches<T>(
   matches: readonly T[],
@@ -381,6 +447,12 @@ export function preferCurrentMatches<T>(
 ): readonly T[] {
   const concrete = matches.filter((item) => !isModelAlias(modelOf(item).id));
   const pool = concrete.length > 0 ? concrete : matches;
+  if (pool.some((item) => modelOf(item).group !== undefined)) {
+    // A row the harness did not file is shown on the main page, so it counts
+    // as main here too.
+    const main = pool.filter((item) => modelOf(item).group !== "more");
+    return main.length > 0 ? main : pool;
+  }
   const options: ModelOption[] = pool.map((item) => {
     const model = modelOf(item);
     return {
@@ -464,13 +536,7 @@ function attemptRanking(
       );
       if (model) {
         return {
-          choice: {
-            harnessId: candidate.platform,
-            model,
-            rankIndex,
-            label: candidate.label,
-            ...(candidate.effort ? { effort: candidate.effort } : {}),
-          },
+          choice: rankedChoice(candidate, candidate.platform, model, rankIndex),
           skipped,
         };
       }
@@ -485,13 +551,12 @@ function attemptRanking(
     );
     if (entry) {
       return {
-        choice: {
-          harnessId: entry.harnessId,
-          model: entry.model,
+        choice: rankedChoice(
+          candidate,
+          entry.harnessId,
+          entry.model,
           rankIndex,
-          label: candidate.label,
-          ...(candidate.effort ? { effort: candidate.effort } : {}),
-        },
+        ),
         skipped,
       };
     }

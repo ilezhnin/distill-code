@@ -1200,6 +1200,221 @@ Research carefully.
     expect(request.properties.model_ranking).toBe(ranking);
   });
 
+  it("round-trips effort and fast_mode through portable persona markdown", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: {
+            ...agentSource.properties,
+            model: "claude-opus-5",
+            effort: "xhigh",
+            fast_mode: true,
+          },
+        },
+      ],
+    });
+    mockGooseSourcesCreate.mockResolvedValue({ source: agentSource });
+
+    const { exportPersona, importPersonas } = await import("../agents");
+    const exported = await exportPersona(agentSource.path);
+    expect(exported.contents).toContain("effort: xhigh");
+    expect(exported.contents).toContain("fast_mode: true");
+
+    await importPersonas(exported.contents, "scout.persona.md");
+
+    const request = mockGooseSourcesCreate.mock.calls[0][0] as {
+      properties: Record<string, unknown>;
+    };
+    expect(request.properties).toMatchObject({
+      model: "claude-opus-5",
+      effort: "xhigh",
+      fast_mode: true,
+    });
+  });
+
+  it("reads a legacy folded model as its base id plus effort without writing the file", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: {
+            ...agentSource.properties,
+            provider: "codex-acp",
+            model: "gpt-5.6-sol[xhigh]",
+          },
+        },
+      ],
+    });
+
+    const { listPersonas } = await import("../agents");
+    const [persona] = await listPersonas();
+
+    expect(persona?.model).toBe("gpt-5.6-sol");
+    expect(persona?.effort).toBe("xhigh");
+    expect(persona?.sourceProperties?.model).toBe("gpt-5.6-sol[xhigh]");
+    expect(mockGooseSourcesUpdate).not.toHaveBeenCalled();
+    expect(mockGooseSourcesCreate).not.toHaveBeenCalled();
+  });
+
+  it("lets a persona's explicit effort win over the one inside a folded model", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: {
+            ...agentSource.properties,
+            model: "gpt-5.6-sol[xhigh]",
+            effort: "low",
+          },
+        },
+      ],
+    });
+
+    const { listPersonas } = await import("../agents");
+    const [persona] = await listPersonas();
+
+    expect(persona?.model).toBe("gpt-5.6-sol");
+    expect(persona?.effort).toBe("low");
+  });
+
+  it("never splits a persona's context-lane model id", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: { ...agentSource.properties, model: "opus[1m]" },
+        },
+      ],
+    });
+
+    const { listPersonas } = await import("../agents");
+    const [persona] = await listPersonas();
+
+    expect(persona?.model).toBe("opus[1m]");
+    expect(persona?.effort).toBeUndefined();
+  });
+
+  it("ignores a fast_mode that is not a literal boolean", async () => {
+    mockGooseSourcesList.mockResolvedValue({
+      sources: [
+        {
+          ...agentSource,
+          properties: { ...agentSource.properties, fast_mode: "yes" },
+        },
+      ],
+    });
+
+    const { listPersonas } = await import("../agents");
+    const [persona] = await listPersonas();
+
+    expect(persona?.fastMode).toBeUndefined();
+  });
+
+  it("writes effort and fast_mode when an agent is created with them", async () => {
+    mockGooseSourcesCreate.mockResolvedValue({
+      source: {
+        ...agentSource,
+        properties: {
+          provider: "claude-acp",
+          model: "claude-opus-5",
+          effort: "xhigh",
+          fast_mode: true,
+          draft: false,
+        },
+      },
+    });
+
+    const { createPersona } = await import("../agents");
+    const persona = await createPersona({
+      displayName: "Scout",
+      systemPrompt: "Research carefully.",
+      provider: "claude-acp",
+      model: "claude-opus-5",
+      effort: "xhigh",
+      fastMode: true,
+    });
+
+    expect(mockGooseSourcesCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          model: "claude-opus-5",
+          effort: "xhigh",
+          fast_mode: true,
+        }),
+      }),
+    );
+    expect(persona).toMatchObject({ effort: "xhigh", fastMode: true });
+  });
+
+  it("stores a folded model given at creation as its base id plus effort", async () => {
+    mockGooseSourcesCreate.mockResolvedValue({ source: agentSource });
+
+    const { createPersona } = await import("../agents");
+    await createPersona({
+      displayName: "Scout",
+      systemPrompt: "Research carefully.",
+      provider: "codex-acp",
+      model: "gpt-5.6-sol[ultra]",
+    });
+
+    const request = mockGooseSourcesCreate.mock.calls[0][0] as {
+      properties: Record<string, unknown>;
+    };
+    expect(request.properties).toMatchObject({
+      model: "gpt-5.6-sol",
+      effort: "ultra",
+    });
+  });
+
+  it("keeps the effort half when an update replaces a folded model with its base id", async () => {
+    mockGooseSourcesUpdate.mockResolvedValue({ source: agentSource });
+
+    const { updatePersona } = await import("../agents");
+    await updatePersona(
+      {
+        ...loadedPersona,
+        sourceProperties: {
+          provider: "codex-acp",
+          model: "gpt-5.6-sol[xhigh]",
+        },
+      },
+      { model: "gpt-5.6-sol" },
+    );
+
+    const request = mockGooseSourcesUpdate.mock.calls[0][0] as {
+      properties: Record<string, unknown>;
+    };
+    expect(request.properties).toMatchObject({
+      model: "gpt-5.6-sol",
+      effort: "xhigh",
+    });
+  });
+
+  it("clears a stored effort and fast mode when an update asks it to", async () => {
+    mockGooseSourcesUpdate.mockResolvedValue({ source: agentSource });
+
+    const { updatePersona } = await import("../agents");
+    await updatePersona(
+      {
+        ...loadedPersona,
+        sourceProperties: {
+          provider: "claude-acp",
+          model: "claude-opus-5",
+          effort: "xhigh",
+          fast_mode: true,
+        },
+      },
+      { effort: null, fastMode: null },
+    );
+
+    const request = mockGooseSourcesUpdate.mock.calls[0][0] as {
+      properties: Record<string, unknown>;
+    };
+    expect(request.properties.effort).toBeNull();
+    expect(request.properties.fast_mode).toBeNull();
+  });
+
   it("imports a built-in class id as the model_ranking value", async () => {
     mockGooseSourcesCreate.mockResolvedValue({ source: agentSource });
 

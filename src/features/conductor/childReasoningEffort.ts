@@ -17,7 +17,7 @@
  * exactly what happened before this existed.
  */
 
-import type { EmbeddedReasoningEffort } from "@/features/chat/lib/modelReasoningVariants";
+import type { EffortValue } from "@/features/chat/lib/sessionRunSettings";
 import { hostSelectionFromExecutionTarget } from "@/features/chat/lib/hostExecutionTarget";
 import {
   useChatSessionStore,
@@ -38,7 +38,7 @@ import { acpSetSessionConfigOption } from "@/shared/api/acp";
  */
 export function reasoningEffortOptionId(
   config: ChatSessionReasoningEffortConfig | undefined,
-  effort: EmbeddedReasoningEffort,
+  effort: EffortValue,
 ): string | null {
   if (!config || config.options.length === 0) return null;
   const wanted = effort.toLowerCase();
@@ -86,7 +86,7 @@ export function resetChildReasoningEffortIoForTests(): void {
  */
 export async function applyChildReasoningEffort(
   sessionId: string,
-  effort: EmbeddedReasoningEffort,
+  effort: EffortValue,
 ): Promise<boolean> {
   const sessions = useChatSessionStore.getState();
   const session = sessions.getSession(sessionId);

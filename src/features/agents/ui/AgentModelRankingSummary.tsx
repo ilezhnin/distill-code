@@ -24,10 +24,19 @@ import {
 interface RankingRow {
   label: string;
   effort?: string;
+  fast?: boolean;
 }
 
 export interface AgentModelRankingSummaryProps {
-  persona: Pick<Persona, "displayName" | "modelRanking" | "provider" | "model">;
+  persona: Pick<
+    Persona,
+    | "displayName"
+    | "modelRanking"
+    | "provider"
+    | "model"
+    | "effort"
+    | "fastMode"
+  >;
 }
 
 export function AgentModelRankingSummary({
@@ -47,6 +56,7 @@ export function AgentModelRankingSummary({
     rows = source.ranking.entries.map((entry) => ({
       label: entry.label,
       effort: entry.effort,
+      fast: entry.fastMode,
     }));
   } else if (source?.kind === "class" || roleClassId) {
     const classId = source?.kind === "class" ? source.classId : roleClassId;
@@ -61,7 +71,9 @@ export function AgentModelRankingSummary({
     // No ranking anywhere, but a legacy single model exists: it IS the
     // preference, so it renders as the list's only row rather than the page
     // pretending no preference is set.
-    rows = [{ label: legacyModel }];
+    rows = [
+      { label: legacyModel, effort: persona.effort, fast: persona.fastMode },
+    ];
     note = t("ranking.viewSingleModel");
   }
 
@@ -107,6 +119,12 @@ export function AgentModelRankingSummary({
                 <span className="text-surface-agent-profile-fg-muted">
                   {" "}
                   · {row.effort}
+                </span>
+              ) : null}
+              {row.fast ? (
+                <span className="text-surface-agent-profile-fg-muted">
+                  {" "}
+                  · {t("ranking.fast")}
                 </span>
               ) : null}
             </span>
