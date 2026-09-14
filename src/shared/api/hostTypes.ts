@@ -83,13 +83,64 @@ export interface SessionTranscript {
   messages: SessionTranscriptMessage[];
 }
 
+/**
+ * One reasoning-effort value a harness offers for a model, in that harness's
+ * own vocabulary ("xhigh", "ultra", "default"). Never an app-wide enum.
+ */
+export interface ProviderInventoryModelEffort {
+  value: string;
+  name?: string;
+  description?: string | null;
+}
+
 export interface ProviderInventoryModel {
   id: string;
   name: string;
+  description?: string | null;
   family?: string | null;
   contextLimit?: number | null;
   reasoning?: boolean | null;
   recommended?: boolean;
+  /**
+   * Which page of the picker the row belongs on. Presentation only: a model
+   * its harness advertises is listed whichever group it lands in.
+   */
+  group?: "main" | "more";
+  /** Menu position within the harness; lower comes first. */
+  order?: number;
+  /** The model this row is another name for ("default" → "opus[1m]"). */
+  aliasOf?: string | null;
+  /**
+   * Effort values this model offers. Read it together with
+   * `capabilitySource`: an empty list from a "probed" or "declared" row means
+   * the model has NO effort control, while an empty list under "unknown"
+   * means nobody has asked yet. The two must never read the same.
+   */
+  efforts?: ProviderInventoryModelEffort[];
+  /** The effort the harness itself calls this model's default, if it says. */
+  defaultEffort?: string | null;
+  /** `null` is "unknown", never "no". */
+  supportsFast?: boolean | null;
+  /** The harness runs this model only in a session opened on it. */
+  opensOnModel?: boolean;
+  /** Where `efforts`/`supportsFast` came from. Absent on older hosts. */
+  capabilitySource?: "probed" | "declared" | "unknown";
+}
+
+/**
+ * What `providers/supported_models/list` answers.
+ *
+ * `schemaVersion` names the shape of the rows and `revision` the host
+ * inventory generation that produced them -- a build id plus the moment the
+ * harness was last probed. Together they let a renderer-side cache tell a
+ * rebuilt list from an unchanged one instead of waiting out a clock. Both are
+ * absent from hosts that predate the stamp.
+ */
+export interface ProviderSupportedModelsResponse {
+  providerId: string;
+  models: ProviderInventoryModel[];
+  schemaVersion?: number;
+  revision?: string;
 }
 
 export interface ProviderInventoryEntry {

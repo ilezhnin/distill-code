@@ -5,7 +5,10 @@ import type {
   ChatSession,
 } from "@/features/chat/stores/chatSessionStore";
 import { compareSessionsByActivityDesc } from "@/features/chat/lib/sessionActivity";
-import { normalizeAcpTitle } from "@/features/chat/lib/sessionTitle";
+import {
+  DEFAULT_CHAT_TITLE,
+  normalizeAcpTitle,
+} from "@/features/chat/lib/sessionTitle";
 import { withWorkspaceBackfill } from "@/features/chat/lib/workspaceAttachments";
 import { loadPersistedChatWorkspaceMetadata } from "@/features/chat/stores/workspaceAttachmentPersistence";
 import { executionTargetFromHostSession } from "@/features/chat/lib/hostExecutionTarget";
@@ -28,7 +31,9 @@ export function acpSessionToChatSession(session: AcpSessionInfo): ChatSession {
   });
   return withWorkspaceBackfill({
     id: session.sessionId,
-    title: normalizeAcpTitle(session.title) ?? "Untitled",
+    // An untitled chat is a default-titled one, so its first message still
+    // names it (sendCore) instead of leaving a literal "Untitled" behind.
+    title: normalizeAcpTitle(session.title) ?? DEFAULT_CHAT_TITLE,
     projectId: session.projectId ?? undefined,
     executionTarget,
     executionTargetSource: executionTarget ? "acp" : undefined,

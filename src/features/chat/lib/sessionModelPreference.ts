@@ -1,6 +1,7 @@
 import { resolveAgentProviderCatalogIdStrict } from "@/features/providers/providerCatalog";
 import { getStoredModelPreferenceForProvider } from "./modelPreferences";
 import { normalizeConcreteModelId } from "@/shared/lib/modelIdentity";
+import { sameModelIdentity } from "@/shared/lib/foldedModelId";
 
 interface SessionModelPreferenceOptions {
   providerId: string;
@@ -71,7 +72,14 @@ export function sanitizeSessionModelPreference(
     return preference;
   }
 
-  if (providerModels.models.some((model) => model.id === preference.modelId)) {
+  // The advertised id and the preferred one may be written differently — one
+  // folded, one not — while naming the same model. Only a model the harness no
+  // longer serves at all is dropped.
+  if (
+    providerModels.models.some((model) =>
+      sameModelIdentity(model.id, preference.modelId),
+    )
+  ) {
     return preference;
   }
 

@@ -250,6 +250,57 @@ describe("resolveRankedModel", () => {
     expect(result.choice?.model.id).toBe("codex-astra[low]");
   });
 
+  it("names the model rather than the default alias labeled with it", () => {
+    // Claude Code lists "default" first and labels it with the model it
+    // resolves to today, so it matches the Opus needles too.
+    const claudeRows: RankableModel[] = [
+      { id: "default", displayName: "Opus 5" },
+      { id: "opus[1m]", displayName: "Opus 5" },
+    ];
+    const onlyClaude = (models: RankableModel[]) =>
+      input({
+        modelsForPlatform: (platform) =>
+          platform === "claude-acp" ? models : [],
+      });
+
+    // coding-complex: Astra → Fable 5.1 → Opus 5; only Opus is installed.
+    expect(
+      resolveRankedModel("coding-complex", onlyClaude(claudeRows)).choice?.model
+        .id,
+    ).toBe("opus[1m]");
+    // With nothing but the alias, the alias still serves.
+    expect(
+      resolveRankedModel("coding-complex", onlyClaude([claudeRows[0]])).choice
+        ?.model.id,
+    ).toBe("default");
+  });
+
+  it("takes a family's current model when older generations are installed too", () => {
+    const claudeRows: RankableModel[] = [
+      { id: "claude-opus-4-8", displayName: "Opus 4.8" },
+      { id: "claude-fable-5[1m]", displayName: "Fable 5" },
+      { id: "opus[1m]", displayName: "Opus 5" },
+      { id: "claude-fable-5-1[1m]", displayName: "Fable 5.1" },
+    ];
+    const claudeOnly = (rows: RankableModel[]) =>
+      input({
+        modelsForPlatform: (platform) =>
+          platform === "claude-acp" ? rows : [],
+      });
+
+    // frontend-ui: Fable 5.1 → Astra → Opus 5.
+    expect(
+      resolveRankedModel("frontend-ui", claudeOnly(claudeRows)).choice?.model
+        .id,
+    ).toBe("claude-fable-5-1[1m]");
+    // coding-complex: Astra → Fable 5.1 → Opus 5; without Fable, Opus 5.
+    const withoutFable = claudeRows.filter((row) => !row.id.includes("fable"));
+    expect(
+      resolveRankedModel("coding-complex", claudeOnly(withoutFable)).choice
+        ?.model.id,
+    ).toBe("opus[1m]");
+  });
+
   it("searches every harness for a platformless candidate", () => {
     const result = resolveRankedModel(
       "testing-light",

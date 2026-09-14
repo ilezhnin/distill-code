@@ -29,6 +29,7 @@ import { ReasoningEffortPill } from "@/features/chat/ui/ReasoningEffortPill";
 import { resolveEffectiveReasoningEffort } from "@/features/chat/lib/effectiveReasoningEffort";
 import { ProjectInputSelector } from "@/features/chat/ui/ProjectInputSelector";
 import type { SkillMentionItem } from "@/features/chat/ui/mentionDetection";
+import { isModelAlias } from "@/features/chat/lib/modelAliases";
 import { getStoredModelPreference } from "@/features/chat/lib/modelPreferences";
 import {
   normalizeSessionExecutionTarget,
@@ -125,8 +126,6 @@ function executionTargetForSelection(
   });
 }
 
-const MODEL_ALIAS_IDS = new Set(["current", "default"]);
-
 const TEXTAREA_MAX_HEIGHT_PX = 200;
 const COMPOSER_ACTION_STRIP_CLASS = "h-[40px]";
 // Geometry of the trailing action cluster, used to reserve space for it.
@@ -145,10 +144,6 @@ const COMPOSER_TOOLBAR_SLIDE_TRANSITION_CLASS =
 
 function getModelName(model: ModelOption) {
   return model.displayName ?? model.name ?? model.id;
-}
-
-function isModelAlias(modelId?: string | null): boolean {
-  return modelId != null && MODEL_ALIAS_IDS.has(modelId);
 }
 
 function modelOptionToSelection(

@@ -2665,7 +2665,8 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         ),
       );
       guardAppNavigation(() => {
-        // Untitled on purpose: the list icon marks a conductor, the harness names it.
+        // Untitled on purpose: the list icon marks a conductor, and the host
+        // names it from its first message.
         void createNewProjectDraft(DEFAULT_CHAT_TITLE, project, {
           reuseExistingDraft: false,
           personaId: chosen?.id,

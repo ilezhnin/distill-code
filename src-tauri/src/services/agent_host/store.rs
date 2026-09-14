@@ -21,6 +21,16 @@ pub struct SessionRecord {
     pub project_id: Option<String>,
     pub persona_id: Option<String>,
     pub model_id: Option<String>,
+    /// The effort value the harness acknowledged, in its own vocabulary
+    /// (`xhigh`, `default`, `ultra`). `None` means nobody has chosen one.
+    pub reasoning_effort: Option<String>,
+    /// Whether the harness acknowledged fast mode. `None` where the model has
+    /// no fast toggle, or nobody has touched it.
+    pub fast_mode: Option<bool>,
+    /// The model id this session was stored under before the effort was split
+    /// out of it (`gpt-5.6-sol[xhigh]`); `None` for a session that never
+    /// carried one.
+    pub legacy_model_id: Option<String>,
     pub hidden: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -82,6 +92,9 @@ impl SessionStore {
             project_id: row.get("project_id"),
             persona_id: row.get("persona_id"),
             model_id: row.get("model_id"),
+            reasoning_effort: row.get("reasoning_effort"),
+            fast_mode: row.get::<Option<i64>, _>("fast_mode").map(|fast| fast != 0),
+            legacy_model_id: row.get("legacy_model_id"),
             hidden: row.get::<i64, _>("hidden") != 0,
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
@@ -139,8 +152,8 @@ impl SessionStore {
     ) -> sqlx::query::Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let snapshot = record.snapshot.as_ref().map(|value| value.to_string());
         sqlx::query(
-            "INSERT INTO sessions (id, harness, bridge_session_id, cwd, title, user_set_name, project_id, persona_id, model_id, hidden, created_at, updated_at, last_message_at, archived_at, message_count, last_snippet, snapshot_json) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, harness, bridge_session_id, cwd, title, user_set_name, project_id, persona_id, model_id, reasoning_effort, fast_mode, legacy_model_id, hidden, created_at, updated_at, last_message_at, archived_at, message_count, last_snippet, snapshot_json) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&record.id)
         .bind(&record.harness)
@@ -151,6 +164,9 @@ impl SessionStore {
         .bind(&record.project_id)
         .bind(&record.persona_id)
         .bind(&record.model_id)
+        .bind(&record.reasoning_effort)
+        .bind(record.fast_mode.map(|fast| fast as i64))
+        .bind(&record.legacy_model_id)
         .bind(record.hidden as i64)
         .bind(&record.created_at)
         .bind(&record.updated_at)
@@ -202,16 +218,32 @@ impl SessionStore {
         Ok(())
     }
 
-    /// A title the agent proposed (`session_info_update`). A name the user
-    /// chose is never replaced, and the list order is left alone.
-    pub async fn set_agent_title(&self, id: &str, title: &str) -> Result<(), String> {
-        sqlx::query("UPDATE sessions SET title = ? WHERE id = ? AND user_set_name = 0")
-            .bind(title)
-            .bind(id)
-            .execute(&self.pool)
-            .await
-            .map_err(|error| db_error("failed to store the session title", error))?;
-        Ok(())
+    /// A title the host chose for the chat. A name the user chose is never
+    /// replaced, and the list order is left alone. Returns whether it was
+    /// stored.
+    pub async fn set_agent_title(&self, id: &str, title: &str) -> Result<bool, String> {
+        let result =
+            sqlx::query("UPDATE sessions SET title = ? WHERE id = ? AND user_set_name = 0")
+                .bind(title)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(|error| db_error("failed to store the session title", error))?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// A title a harness proposed (`session_info_update`). It only names a
+    /// chat that has no title yet. Returns whether it was stored.
+    pub async fn set_title_if_untitled(&self, id: &str, title: &str) -> Result<bool, String> {
+        let result = sqlx::query(
+            "UPDATE sessions SET title = ? WHERE id = ? AND user_set_name = 0 AND title IS NULL",
+        )
+        .bind(title)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| db_error("failed to store the session title", error))?;
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn set_archived(&self, id: &str, archived: bool) -> Result<(), String> {
@@ -256,6 +288,77 @@ impl SessionStore {
             .await
             .map_err(|error| db_error("failed to update session model", error))?;
         Ok(())
+    }
+
+    /// Both model-scoped knobs at once, as one bridge answer reported them.
+    /// `None` means the harness no longer offers that control for the model
+    /// the session is on, which is a fact worth storing and not a reason to
+    /// keep the old value.
+    pub async fn set_run_settings(
+        &self,
+        id: &str,
+        reasoning_effort: Option<&str>,
+        fast_mode: Option<bool>,
+    ) -> Result<(), String> {
+        sqlx::query("UPDATE sessions SET reasoning_effort = ?, fast_mode = ? WHERE id = ?")
+            .bind(reasoning_effort)
+            .bind(fast_mode.map(|fast| fast as i64))
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| db_error("failed to update session run settings", error))?;
+        Ok(())
+    }
+
+    pub async fn set_reasoning_effort(
+        &self,
+        id: &str,
+        reasoning_effort: Option<&str>,
+    ) -> Result<(), String> {
+        sqlx::query("UPDATE sessions SET reasoning_effort = ? WHERE id = ?")
+            .bind(reasoning_effort)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| db_error("failed to update session reasoning effort", error))?;
+        Ok(())
+    }
+
+    pub async fn set_fast_mode(&self, id: &str, fast_mode: Option<bool>) -> Result<(), String> {
+        sqlx::query("UPDATE sessions SET fast_mode = ? WHERE id = ?")
+            .bind(fast_mode.map(|fast| fast as i64))
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| db_error("failed to update session fast mode", error))?;
+        Ok(())
+    }
+
+    /// Split a stored `model[effort]` id into its two halves, keeping the
+    /// original in `legacy_model_id`. One session at a time and never a batch
+    /// rewrite: a model id is operator history, and the only rows that move are
+    /// the ones whose harness confirms both halves.
+    ///
+    /// The statement re-checks that nothing has been chosen for this session
+    /// yet, so a second attempt (or one racing an operator's own effort click)
+    /// changes nothing and returns `false`.
+    pub async fn split_legacy_model_id(
+        &self,
+        id: &str,
+        model_id: &str,
+        reasoning_effort: &str,
+    ) -> Result<bool, String> {
+        let result = sqlx::query(
+            "UPDATE sessions SET legacy_model_id = model_id, model_id = ?, reasoning_effort = ? \
+             WHERE id = ? AND legacy_model_id IS NULL AND reasoning_effort IS NULL",
+        )
+        .bind(model_id)
+        .bind(reasoning_effort)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| db_error("failed to split the stored model id", error))?;
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn set_bridge_session_id(
@@ -613,6 +716,9 @@ mod tests {
             project_id: None,
             persona_id: None,
             model_id: None,
+            reasoning_effort: None,
+            fast_mode: None,
+            legacy_model_id: None,
             hidden: false,
             created_at: "2026-09-11T00:00:00.000Z".to_string(),
             updated_at: "2026-09-11T00:00:00.000Z".to_string(),
@@ -738,6 +844,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_stored_before_the_run_settings_existed_reads_back_with_none() {
+        let (_dir, store) = store_with_history().await;
+        let existing = store.get_session("a").await.expect("read").expect("row");
+        assert_eq!(existing.reasoning_effort, None);
+        assert_eq!(existing.fast_mode, None);
+        assert_eq!(existing.legacy_model_id, None);
+    }
+
+    #[tokio::test]
+    async fn the_effort_and_the_fast_toggle_are_stored_and_cleared_on_their_own() {
+        let (_dir, store) = store_with_history().await;
+        store
+            .set_run_settings("a", Some("xhigh"), Some(true))
+            .await
+            .expect("run settings");
+        let stored = store.get_session("a").await.expect("read").expect("row");
+        assert_eq!(stored.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(stored.fast_mode, Some(true));
+
+        // A model with no effort control says so; the fast toggle it does have
+        // is not disturbed by that.
+        store.set_reasoning_effort("a", None).await.expect("effort");
+        let narrowed = store.get_session("a").await.expect("read").expect("row");
+        assert_eq!(narrowed.reasoning_effort, None);
+        assert_eq!(narrowed.fast_mode, Some(true));
+
+        store.set_fast_mode("a", Some(false)).await.expect("fast");
+        assert_eq!(
+            store
+                .get_session("a")
+                .await
+                .expect("read")
+                .expect("row")
+                .fast_mode,
+            Some(false)
+        );
+
+        // Another session is left alone by all of it.
+        let untouched = store.get_session("b").await.expect("read").expect("row");
+        assert_eq!(untouched.reasoning_effort, None);
+        assert_eq!(untouched.fast_mode, None);
+    }
+
+    #[tokio::test]
+    async fn splitting_a_folded_model_id_keeps_the_original_and_happens_once() {
+        let (_dir, store) = store_with_history().await;
+        store
+            .set_model("a", Some("gpt-5.6-sol[xhigh]"))
+            .await
+            .expect("model");
+        assert!(store
+            .split_legacy_model_id("a", "gpt-5.6-sol", "xhigh")
+            .await
+            .expect("split"));
+        let split = store.get_session("a").await.expect("read").expect("row");
+        assert_eq!(split.model_id.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(split.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(split.legacy_model_id.as_deref(), Some("gpt-5.6-sol[xhigh]"));
+
+        // Asked again — after a move to another model, say — it changes
+        // nothing and says so.
+        store
+            .set_model("a", Some("gpt-5.6-luna[low]"))
+            .await
+            .expect("model");
+        assert!(!store
+            .split_legacy_model_id("a", "gpt-5.6-luna", "low")
+            .await
+            .expect("split"));
+        let kept = store.get_session("a").await.expect("read").expect("row");
+        assert_eq!(kept.model_id.as_deref(), Some("gpt-5.6-luna[low]"));
+        assert_eq!(kept.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(kept.legacy_model_id.as_deref(), Some("gpt-5.6-sol[xhigh]"));
+    }
+
+    #[tokio::test]
     async fn an_agent_title_never_replaces_a_name_the_user_chose() {
         let (_dir, store) = store_with_history().await;
         store
@@ -749,8 +931,27 @@ mod tests {
         assert!(!titled.user_set_name);
 
         store.set_title("a", "Mine", true).await.expect("rename");
-        store.set_agent_title("a", "Other").await.expect("title");
+        assert!(!store.set_agent_title("a", "Other").await.expect("title"));
         let renamed = store.get_session("a").await.expect("read").expect("row");
         assert_eq!(renamed.title.as_deref(), Some("Mine"));
+    }
+
+    #[tokio::test]
+    async fn a_harness_title_only_names_an_untitled_chat() {
+        let (_dir, store) = store_with_history().await;
+        assert!(store
+            .set_title_if_untitled("a", "first prompt echoed back")
+            .await
+            .expect("title"));
+        assert!(store
+            .set_agent_title("a", "Model picker names")
+            .await
+            .expect("summary"));
+        assert!(!store
+            .set_title_if_untitled("a", "first prompt echoed back")
+            .await
+            .expect("title"));
+        let titled = store.get_session("a").await.expect("read").expect("row");
+        assert_eq!(titled.title.as_deref(), Some("Model picker names"));
     }
 }

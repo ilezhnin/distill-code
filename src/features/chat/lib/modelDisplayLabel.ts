@@ -1,3 +1,4 @@
+import { humanizeRawModelId } from "@/features/providers/lib/humanizeModelId";
 import type { ModelOption } from "../types";
 
 interface ModelDisplayLabelOptions {
@@ -83,7 +84,11 @@ export function resolveDisplayModelLabel({
     return modelName;
   }
 
-  return availableModels.length > 0 ? selectedModelId : null;
+  // Nothing names this id (say, a model chosen inside the CLI that the list
+  // does not carry), so spell it the way the list spells ids, not raw.
+  return availableModels.length > 0 && selectedModelId
+    ? humanizeRawModelId(selectedModelId)
+    : null;
 }
 
 export function resolvePickerTriggerLabel({

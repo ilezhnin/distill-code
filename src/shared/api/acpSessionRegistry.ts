@@ -11,11 +11,30 @@ import {
   shortLogId,
 } from "@/shared/lib/reasoningEffortDiagnostics";
 import { normalizeConcreteModelId } from "@/shared/lib/modelIdentity";
+import { sameModelIdentity } from "@/shared/lib/foldedModelId";
 
 export interface AcpSessionExecutionSelection {
   providerId: string;
   /** Last model this window observed ACP acknowledge successfully. */
   modelId?: string;
+  /**
+   * Run settings this window has already written for the CURRENT model, so a
+   * repeat write is skipped the way a repeat model write is. They are dropped
+   * whenever the model or the provider changes, because a fresh model answers
+   * with its own values and nothing this window wrote is acknowledged for it.
+   *
+   * These are never compared against the execution target: effort and fast are
+   * acknowledged separately from the model, so a snapshot is never dropped as
+   * divergent because the effort changed.
+   */
+  effort?: string;
+  fast?: boolean;
+}
+
+/** One ordered run-settings write pair, in the bridge's own option ids. */
+export interface AcpSessionRunSettingsWrite {
+  effort?: { configId: string; value: string };
+  fast?: { configId: string; value: boolean; kind: "boolean" | "select" };
 }
 
 interface PreparedSession {
@@ -50,6 +69,9 @@ function clonePreparedSession(
     : undefined;
 }
 
+// Rebuilt, never merged: a provider or model write invalidates every run
+// setting this window had acknowledged, so they must not survive into the new
+// selection.
 function replaceExecutionSelection(
   entry: PreparedSession,
   providerId: string,
@@ -259,7 +281,15 @@ async function applySessionModelNow(
       "Session not prepared. Prepare the provider before its model.",
     );
   }
-  if (executionSelection.modelId === modelId && !options.forceConfigRefresh) {
+  // Identity, not string equality. Effort is its own channel now, so two ids
+  // that name the same model — a legacy `base[effort]` and its base — are the
+  // same selection, and re-sending one buys a round trip and nothing else.
+  // Until the host stops folding, the acknowledged id may also be the folded
+  // form of a base request; that is the same model too.
+  if (
+    sameModelIdentity(executionSelection.modelId, modelId) &&
+    !options.forceConfigRefresh
+  ) {
     logReasoningEffortInfo("applySessionModel skipped unchanged", {
       sessionId: shortLogId(sessionId),
       modelId,
@@ -294,7 +324,10 @@ async function applySessionModelNow(
     executionSelection.providerId,
     acknowledgedModelId,
   );
-  if (acknowledgedModelId !== modelId) {
+  // A bridge may answer with the model written either way round — the base id
+  // for a folded request, or a folded id for a base one — while naming the
+  // same model. Only a different model is a refusal.
+  if (!sameModelIdentity(acknowledgedModelId, modelId)) {
     throw new Error(
       `ACP acknowledged model ${acknowledgedModelId ?? "<none>"} instead of requested model ${modelId}`,
     );
@@ -344,6 +377,83 @@ export function applySessionConfigOption(
   return serializeSessionMutation(sessionId, () =>
     acpApi.setSessionConfigOption(sessionId, configId, value, context),
   );
+}
+
+/**
+ * Apply the run settings a model change left to be re-applied, in order:
+ * effort, then fast. It runs in the same per-session mutation queue as the
+ * model apply, so model → effort → fast reach the bridge as one ordered
+ * sequence rather than three racing writes.
+ *
+ * The caller decides WHAT to write — only a value the current model advertises
+ * ever gets this far (see `runSettingsReconciler`). This function decides
+ * whether the write is still needed: a value this window already wrote for the
+ * current model is skipped, which is what keeps a duplicate
+ * `config_option_update` (grok emits one for a client-initiated set; claude and
+ * codex do not) from writing twice, and what stops a bridge that answers with a
+ * clamped value from being written to in a loop.
+ */
+export function applySessionRunSettings(
+  sessionId: string,
+  write: AcpSessionRunSettingsWrite,
+  context: Omit<AcpSessionConfigSnapshotContext, "origin"> = {},
+): Promise<AcpSessionConfigSnapshots | undefined> {
+  return serializeSessionMutation(sessionId, () =>
+    applySessionRunSettingsNow(sessionId, write, context),
+  );
+}
+
+async function applySessionRunSettingsNow(
+  sessionId: string,
+  write: AcpSessionRunSettingsWrite,
+  context: Omit<AcpSessionConfigSnapshotContext, "origin">,
+): Promise<AcpSessionConfigSnapshots | undefined> {
+  let snapshots: AcpSessionConfigSnapshots | undefined;
+  const selection = prepared.get(sessionId)?.executionSelection;
+
+  if (write.effort && selection?.effort !== write.effort.value) {
+    snapshots = await acpApi.setSessionConfigOption(
+      sessionId,
+      write.effort.configId,
+      write.effort.value,
+      { ...context, reasoningEffortValue: write.effort.value },
+    );
+    // What was REQUESTED, not what came back: a bridge that clamps the value
+    // must not be asked for the same thing again on the next snapshot.
+    rememberRunSetting(sessionId, selection, { effort: write.effort.value });
+  }
+
+  if (write.fast && selection?.fast !== write.fast.value) {
+    snapshots =
+      (await acpApi.setSessionConfigOption(
+        sessionId,
+        write.fast.configId,
+        write.fast.kind === "boolean"
+          ? write.fast.value
+          : write.fast.value
+            ? "on"
+            : "off",
+        context,
+      )) ?? snapshots;
+    rememberRunSetting(sessionId, selection, { fast: write.fast.value });
+  }
+
+  return snapshots;
+}
+
+// The acknowledged pair may have been replaced while the write was in flight
+// (a model change landing in between), in which case this value describes a
+// model that is no longer current and is dropped.
+function rememberRunSetting(
+  sessionId: string,
+  selectionAtRequest: AcpSessionExecutionSelection | undefined,
+  applied: { effort?: string; fast?: boolean },
+): void {
+  const selection = prepared.get(sessionId)?.executionSelection;
+  if (!selection || selection !== selectionAtRequest) {
+    return;
+  }
+  Object.assign(selection, applied);
 }
 
 export function isSessionPrepared(sessionId: string): boolean {

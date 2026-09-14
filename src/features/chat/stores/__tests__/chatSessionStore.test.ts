@@ -915,7 +915,7 @@ describe("chatSessionStore", () => {
       );
       expect(sessions[0].userSetName).toBe(true);
       expect(sessions[1].id).toBe("acp-2");
-      expect(sessions[1].title).toBe("Untitled");
+      expect(sessions[1].title).toBe("New chat");
       expect(sessions[1].messageCount).toBe(7);
       expect(useChatSessionStore.getState().sessionPageCursor).toBe("cursor-2");
       expect(useChatSessionStore.getState().hasMoreSessions).toBe(true);

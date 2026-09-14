@@ -1,12 +1,39 @@
 import { create } from "zustand";
-import { humanizeRawModelId } from "../lib/humanizeModelId";
+import { harnessModelLabel } from "../lib/humanizeModelId";
 import { formatProviderLabel } from "@/shared/ui/icons/ProviderIcons";
+import { claudeModelSortOrder } from "@/features/chat/lib/modelGenerations";
 import type { ModelOption } from "@/features/chat/types";
+import type {
+  ProviderInventoryModel,
+  ProviderSupportedModelsResponse,
+} from "@/shared/api/hostTypes";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { getClient } from "@/shared/api/acpConnection";
 import { notifyProviderModelInventoryInvalidated } from "../lib/providerModelInventoryEvents";
 
-const MODEL_CACHE_STORAGE_KEY = "distill:providerModelCache:v1";
+const MODEL_CACHE_STORAGE_KEY = "distill:providerModelCache:v2";
+/** Caches under keys this build no longer reads, cleared on the first write. */
+const LEGACY_MODEL_CACHE_STORAGE_KEYS = [
+  "distill:providerModelCache:v1",
+  "goose:providerModelCache:v1",
+];
+/**
+ * Shape of the rows this build caches; the host stamps the same number on
+ * every inventory answer.
+ *
+ * A persisted entry that does not carry it -- written by a build whose rows
+ * meant something else -- is dropped on load instead of shown. That is the
+ * half of the fix a TTL cannot do: a host-side inventory change (Distill's own
+ * extra models, a new probe shape) used to be invisible to a renderer holding
+ * a persisted list, for as long as that renderer kept refreshing it in time.
+ *
+ * 3: rows say where they belong and what they can do (group/order/aliasOf/
+ * efforts/defaultEffort/supportsFast/opensOnModel/capabilitySource), and a
+ * codex row is a base id rather than one folded with its effort. A v2 entry
+ * has none of that, so it is dropped rather than read as a model with no
+ * effort menu. Moves with `INVENTORY_SCHEMA_VERSION` in the host's `ext.rs`.
+ */
+const MODEL_CACHE_SCHEMA_VERSION = 3;
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
 /**
  * Floor on how soon a provider whose last poll *failed* may be polled again.
@@ -31,7 +58,20 @@ const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
  * polls in flight at once.
  */
 const FAILED_REFRESH_RETRY_FLOOR_MS = 30 * 1000;
+/**
+ * Floor the model picker passes with its forced open-time refresh.
+ *
+ * The picker refresh is forced because a cached list that is merely *recent*
+ * says nothing about whether it still matches the host's; the floor is what
+ * keeps forcing affordable. A burst of picker opens costs one probe, while a
+ * changed inventory still reaches the operator within one interaction instead
+ * of after a five-minute TTL. Deliberately the same 30s as the failed-poll
+ * floor, so a provider whose bridge will not start is probed no more often
+ * than it was before the picker started forcing.
+ */
+export const PICKER_REFRESH_FLOOR_MS = 30 * 1000;
 const lastFailedRefreshAt = new Map<string, number>();
+const lastRefreshAt = new Map<string, number>();
 const inFlightRefreshes = new Map<string, Promise<void>>();
 const queuedForceRefreshes = new Map<string, Promise<void>>();
 const providerRefreshVersions = new Map<string, number>();
@@ -60,12 +100,38 @@ export interface CachedProviderModels {
   error?: string;
   /** Outcome of the last poll; absent on entries seeded from runtime config. */
   outcome?: ProviderModelFetchOutcome;
+  /**
+   * Row shape these models are in -- the host's stamp when it gave one, this
+   * build's otherwise. Anything else is discarded on load.
+   */
+  schemaVersion?: number;
+  /**
+   * Host inventory generation the last poll reported, as the host spells it.
+   * A poll answering with a different one has rebuilt the list, so the entry
+   * is rewritten even where an unchanged answer would be left alone.
+   */
+  revision?: string;
 }
 
 interface ProviderModelCacheState {
   providers: Map<string, CachedProviderModels>;
   refreshingProviderIds: Set<string>;
   runtimeManagedProviderIds: Set<string>;
+}
+
+export interface RefreshOptions {
+  /** Poll even when the cached entry is neither stale nor in error. */
+  force?: boolean;
+  /**
+   * Do not poll this provider again within this many ms of the last poll.
+   *
+   * Applies to a forced refresh too -- it is the only thing that does -- so a
+   * caller that forces on every open (the model picker) can bound the cost
+   * without giving up on noticing a changed inventory. Cleared by
+   * `bumpRefreshVersion`, because a re-login or a runtime-config reseed is
+   * exactly the news the floor was waiting for.
+   */
+  minIntervalMs?: number;
 }
 
 interface ProviderModelCacheActions {
@@ -79,11 +145,11 @@ interface ProviderModelCacheActions {
   getError: (providerId: string) => string | null;
   refreshProviderModels: (
     providerId: string,
-    options?: { force?: boolean },
+    options?: RefreshOptions,
   ) => Promise<void>;
   refreshAllModelProviders: (
     providerIds: string[],
-    options?: { force?: boolean },
+    options?: RefreshOptions,
   ) => Promise<void>;
   invalidateProvider: (
     providerId: string,
@@ -110,13 +176,23 @@ function readPersistedModels(): Map<string, CachedProviderModels> {
     }
     return new Map(
       parsed
-        .filter((entry) => entry?.providerId && Array.isArray(entry.models))
+        .filter(
+          (entry) =>
+            entry?.providerId &&
+            Array.isArray(entry.models) &&
+            // Rows of another shape are not shown and not repaired: the host
+            // refills the list within one round trip, and the startup refresh
+            // is forced precisely so that round trip always happens.
+            entry.schemaVersion === MODEL_CACHE_SCHEMA_VERSION,
+        )
         .map((entry) => [entry.providerId, entry]),
     );
   } catch {
     return new Map();
   }
 }
+
+let legacyCachesDropped = false;
 
 function persistModels(providers: Map<string, CachedProviderModels>): void {
   if (typeof window === "undefined") {
@@ -128,6 +204,14 @@ function persistModels(providers: Map<string, CachedProviderModels>): void {
       MODEL_CACHE_STORAGE_KEY,
       JSON.stringify([...providers.values()]),
     );
+    if (!legacyCachesDropped) {
+      legacyCachesDropped = true;
+      // Regenerable host data under keys nothing reads any more, including the
+      // goose-era one this app no longer has a provider for.
+      for (const key of LEGACY_MODEL_CACHE_STORAGE_KEYS) {
+        window.localStorage.removeItem(key);
+      }
+    }
   } catch {
     // localStorage may be unavailable.
   }
@@ -156,30 +240,87 @@ function readPersistedProviderState(): Pick<
 
 async function fetchProviderSupportedModels(
   providerId: string,
-): Promise<string[]> {
+): Promise<ProviderSupportedModelsResponse> {
   const client = await getClient();
-  const response = await client.host.providersSupportedModelsList({
-    providerId,
-  });
-  return response.models;
+  return await client.host.providersSupportedModelsList({ providerId });
 }
 
-function providerModelOptionsFromIds(
+/**
+ * The shape to cache this answer under: what the host said, or this build's
+ * when the host predates the stamp. An unstamped answer is the subset of rows
+ * this build already reads; an answer stamped with a version this build does
+ * not know is still shown -- it is the only inventory there is -- but it does
+ * not survive a restart, because after one nothing here can say how to read it.
+ */
+function inventorySchemaVersion(
+  response: Pick<ProviderSupportedModelsResponse, "schemaVersion">,
+): number {
+  return response.schemaVersion ?? MODEL_CACHE_SCHEMA_VERSION;
+}
+
+/**
+ * What the host said this model can do, in the renderer's own spelling.
+ *
+ * A `null` the host sends means "unknown", which is what an absent field
+ * already means here, so nulls are dropped instead of stored. The one value
+ * that is never dropped is an EMPTY effort list on a row whose capabilities
+ * were actually read: that is an answer -- the model has no effort control --
+ * and it must not read like the unasked row, which carries no list at all.
+ *
+ * A row from a host that says nothing is filed on the main page with its
+ * capabilities unknown: presentation must never hide a model its harness
+ * advertises, and "nobody asked" is the truth about what it offers.
+ */
+function inventoryCapabilities(
+  entry: ProviderInventoryModel,
+): Partial<ModelOption> {
+  const capabilitySource = entry.capabilitySource ?? "unknown";
+  const efforts = entry.efforts
+    ?.filter((effort) => (effort?.value ?? "").trim().length > 0)
+    .map((effort) => ({
+      id: effort.value,
+      name: effort.name?.trim() || effort.value,
+    }));
+  const statesEfforts =
+    efforts != null && (efforts.length > 0 || capabilitySource !== "unknown");
+  return {
+    group: entry.group ?? "main",
+    capabilitySource,
+    ...(typeof entry.order === "number" ? { order: entry.order } : {}),
+    ...(entry.aliasOf != null ? { aliasOf: entry.aliasOf } : {}),
+    ...(statesEfforts ? { efforts } : {}),
+    ...(entry.defaultEffort != null
+      ? { defaultEffort: entry.defaultEffort }
+      : {}),
+    ...(entry.supportsFast != null ? { supportsFast: entry.supportsFast } : {}),
+    ...(entry.opensOnModel != null ? { opensOnModel: entry.opensOnModel } : {}),
+  };
+}
+
+function providerModelOptionsFromInventory(
   providerId: string,
-  ids: string[],
+  inventory: ProviderInventoryModel[],
 ): ModelOption[] {
   const providerName = formatProviderLabel(providerId);
-  return ids.map((id) => {
-    const displayName = humanizeRawModelId(id);
-    return {
-      id,
+  return inventory.map((entry) => {
+    const displayName = harnessModelLabel(entry);
+    const model: ModelOption = {
+      id: entry.id,
       name: displayName,
       displayName,
       providerId,
       providerName,
+      // Kept deliberately: outside the picker list this flag still chooses a
+      // new chat's default model and tells an explicit selection from a
+      // defaulted one.
       recommended: true,
       featured: false,
+      ...inventoryCapabilities(entry),
     };
+    // The harness's own menu position wins; the Claude-family order is what
+    // places a row from a host that files nothing.
+    const sortOrder = model.order ?? claudeModelSortOrder(model);
+    return sortOrder === undefined ? model : { ...model, sortOrder };
   });
 }
 
@@ -208,8 +349,10 @@ function refreshVersion(providerId: string): number {
 function bumpRefreshVersion(providerId: string): void {
   providerRefreshVersions.set(providerId, refreshVersion(providerId) + 1);
   // The caller knows something changed for this provider (new credentials, new
-  // runtime config), so the previous failure says nothing about the next poll.
+  // runtime config), so the previous poll -- failed or not -- says nothing
+  // about the next one.
   lastFailedRefreshAt.delete(providerId);
+  lastRefreshAt.delete(providerId);
   notifyProviderModelInventoryInvalidated(providerId);
 }
 
@@ -219,6 +362,11 @@ function isWithinFailedRefreshFloor(providerId: string): boolean {
     lastFailure != null &&
     Date.now() - lastFailure < FAILED_REFRESH_RETRY_FLOOR_MS
   );
+}
+
+function isWithinRefreshFloor(providerId: string, floorMs: number): boolean {
+  const lastRefresh = lastRefreshAt.get(providerId);
+  return lastRefresh != null && Date.now() - lastRefresh < floorMs;
 }
 
 export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
@@ -248,6 +396,7 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
             providerId,
             models,
             fetchedAt: runtimeManaged || options.fresh ? Date.now() : 0,
+            schemaVersion: MODEL_CACHE_SCHEMA_VERSION,
             ...(runtimeManaged
               ? { runtimeManaged }
               : { configuredModels: models }),
@@ -292,6 +441,13 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
       ) {
         return;
       }
+      // The only floor a forced refresh observes; see PICKER_REFRESH_FLOOR_MS.
+      if (
+        options.minIntervalMs != null &&
+        isWithinRefreshFloor(providerId, options.minIntervalMs)
+      ) {
+        return;
+      }
       if (!options.force && !isStale(existing)) {
         return;
       }
@@ -333,6 +489,7 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
       }
 
       const versionAtStart = refreshVersion(providerId);
+      lastRefreshAt.set(providerId, Date.now());
       const refresh = (async () => {
         set((state) => {
           const refreshingProviderIds = new Set(state.refreshingProviderIds);
@@ -341,8 +498,19 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
         });
 
         try {
-          const ids = await fetchProviderSupportedModels(providerId);
-          const discoveredModels = providerModelOptionsFromIds(providerId, ids);
+          const response = await fetchProviderSupportedModels(providerId);
+          const schemaVersion = inventorySchemaVersion(response);
+          // A host that rebuilt its inventory answers with a new revision. The
+          // rows we hold then describe a generation that is gone, so they are
+          // rewritten even where an unchanged answer would be left alone.
+          const revisionChanged =
+            existing?.revision != null &&
+            response.revision != null &&
+            existing.revision !== response.revision;
+          const discoveredModels = providerModelOptionsFromInventory(
+            providerId,
+            response.models,
+          );
           if (discoveredModels.length === 0) {
             if (versionAtStart !== refreshVersion(providerId)) {
               return;
@@ -354,7 +522,8 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
             if (
               existing?.outcome === "empty" &&
               existing.fetchedAt === 0 &&
-              !existing.error
+              !existing.error &&
+              !revisionChanged
             ) {
               return;
             }
@@ -367,6 +536,14 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
               providerId,
               models: existing?.models ?? [],
               fetchedAt: 0,
+              // The rows kept here are the previous ones, so they keep the
+              // shape they were written in; the revision advances, because it
+              // records the newest generation this entry has been told about.
+              schemaVersion:
+                existing?.schemaVersion ?? MODEL_CACHE_SCHEMA_VERSION,
+              ...(response.revision != null
+                ? { revision: response.revision }
+                : {}),
               ...(existing?.configuredModels
                 ? { configuredModels: existing.configuredModels }
                 : {}),
@@ -376,8 +553,14 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
             // downstream inventory. Recording the outcome on an entry that was
             // already a non-answer, or on a provider with no entry at all, must
             // not fire that event: it did not fire before, and every listener
-            // treats it as "the list you were holding is gone".
-            if (existing && !(existing.fetchedAt === 0 && !existing.error)) {
+            // treats it as "the list you were holding is gone" -- which is
+            // also exactly what a changed revision means, whatever the entry
+            // was holding before.
+            if (
+              existing &&
+              (revisionChanged ||
+                !(existing.fetchedAt === 0 && !existing.error))
+            ) {
               notifyProviderModelInventoryInvalidated(providerId);
             }
             set((state) => {
@@ -412,6 +595,10 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
             providerId,
             models,
             fetchedAt: Date.now(),
+            schemaVersion,
+            ...(response.revision != null
+              ? { revision: response.revision }
+              : {}),
             ...(configuredModels.length > 0 ? { configuredModels } : {}),
             outcome: "models",
           };
@@ -436,6 +623,13 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
               providerId,
               models: existing?.models ?? [],
               fetchedAt: existing?.fetchedAt ?? 0,
+              // Nothing was learned about the inventory, so the entry keeps
+              // whatever generation and shape its rows already carried.
+              schemaVersion:
+                existing?.schemaVersion ?? MODEL_CACHE_SCHEMA_VERSION,
+              ...(existing?.revision != null
+                ? { revision: existing.revision }
+                : {}),
               ...(existing?.configuredModels
                 ? { configuredModels: existing.configuredModels }
                 : {}),
@@ -526,6 +720,12 @@ export const useProviderModelCacheStore = create<ProviderModelCacheStore>(
             providerId,
             models: existing.models,
             fetchedAt: 0,
+            // Kept with the models they describe: the list is retained, so
+            // what shape and generation it is stays true of it.
+            schemaVersion: existing.schemaVersion ?? MODEL_CACHE_SCHEMA_VERSION,
+            ...(existing.revision != null
+              ? { revision: existing.revision }
+              : {}),
             ...(existing.configuredModels
               ? { configuredModels: existing.configuredModels }
               : {}),

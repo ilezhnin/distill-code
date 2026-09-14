@@ -1,10 +1,13 @@
 import { acpPrepareSession } from "@/shared/api/acp";
 import type {
+  AcpFastModeConfigSnapshot,
   AcpModelConfigSnapshot,
   AcpReasoningEffortConfigSnapshot,
   AcpSessionConfigSnapshotContext,
   AcpSessionConfigSnapshots,
 } from "@/shared/api/acpSessionConfigSnapshots";
+import { sameModelIdentity } from "@/shared/lib/foldedModelId";
+import { reconcileSessionRunSettings } from "./runSettingsReconciler";
 import { useChatSessionStore } from "../stores/chatSessionStore";
 import {
   executionTargetFromHostSession,
@@ -14,6 +17,7 @@ import {
   materializeSessionExecutionModel,
   normalizeSessionExecutionTarget,
   sameSessionExecutionTarget,
+  type ModelExecutionTarget,
   type SessionExecutionTarget,
 } from "./sessionExecutionTarget";
 import {
@@ -83,12 +87,14 @@ interface SessionActor {
     target?: SessionExecutionTarget;
     source: "ui" | "acp";
     reasoningEffort?: AcpReasoningEffortConfigSnapshot;
+    fastMode?: AcpFastModeConfigSnapshot;
   };
   dispatch?: {
     token: symbol;
     target: SessionExecutionTarget;
     source?: "ui" | "acp";
     reasoningEffort?: AcpReasoningEffortConfigSnapshot;
+    fastMode?: AcpFastModeConfigSnapshot;
     release: () => void;
   };
   dispatchReleased?: Promise<void>;
@@ -122,6 +128,7 @@ useChatSessionStore.subscribe?.((state) => {
         ...(session?.reasoningEffort
           ? { reasoningEffort: session.reasoningEffort }
           : {}),
+        ...(session?.fastMode ? { fastMode: session.fastMode } : {}),
       };
       restoringLeasedTarget = true;
       try {
@@ -133,6 +140,7 @@ useChatSessionStore.subscribe?.((state) => {
                   executionTarget: dispatch.target,
                   executionTargetSource: dispatch.source,
                   reasoningEffort: dispatch.reasoningEffort,
+                  fastMode: dispatch.fastMode,
                 }
               : candidate,
           ),
@@ -157,11 +165,12 @@ function initialState(sessionId: string): SessionTargetSyncState {
     ? {
         status: "settled",
         committed: session.executionTarget,
-        ...(session.reasoningEffort
+        ...(session.reasoningEffort || session.fastMode
           ? {
               metadata: metadataFor(
                 session.executionTarget,
                 session.reasoningEffort,
+                session.fastMode,
               ),
             }
           : {}),
@@ -195,8 +204,13 @@ function actorFor(sessionId: string): SessionActor {
 function metadataFor(
   target: SessionExecutionTarget,
   reasoningEffort?: AcpReasoningEffortConfigSnapshot,
+  fastMode?: AcpFastModeConfigSnapshot,
 ): SessionTargetMetadata {
-  return { target, ...(reasoningEffort ? { reasoningEffort } : {}) };
+  return {
+    target,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(fastMode ? { fastMode } : {}),
+  };
 }
 
 function transition(
@@ -394,6 +408,17 @@ async function execute(
           reasoningEffort: snapshot.reasoningEffort,
         });
       }
+      // provider → model have landed; effort and fast follow, in that order,
+      // under this operation's request id so their answers are admitted as
+      // part of the same selection. Awaited, so a send waiting on this
+      // transition runs on all four.
+      await reconcileSessionRunSettings({
+        sessionId: request.sessionId,
+        requestId: operationId,
+        ...(snapshot?.substitutions
+          ? { substitutions: snapshot.substitutions }
+          : {}),
+      });
     }
     settleOperation(operation, {
       status: "committed",
@@ -581,6 +606,7 @@ export function acquireSessionDispatchTarget(
       ...(session.reasoningEffort
         ? { reasoningEffort: session.reasoningEffort }
         : {}),
+      ...(session.fastMode ? { fastMode: session.fastMode } : {}),
     };
   }
   const token = Symbol(`dispatch:${sessionId}`);
@@ -608,7 +634,11 @@ export function acquireSessionDispatchTarget(
         transition(actor, {
           type: "HYDRATE",
           target,
-          metadata: metadataFor(target, deferredMutation.reasoningEffort),
+          metadata: metadataFor(
+            target,
+            deferredMutation.reasoningEffort,
+            deferredMutation.fastMode,
+          ),
         });
       } else {
         transition(actor, { type: "SESSION_REMOVED" });
@@ -627,6 +657,7 @@ export function acquireSessionDispatchTarget(
                   executionTarget: normalizedTarget,
                   executionTargetSource: "acp" as const,
                   reasoningEffort: deferredMutation.reasoningEffort,
+                  fastMode: deferredMutation.fastMode,
                 }
               : session,
           ),
@@ -634,10 +665,11 @@ export function acquireSessionDispatchTarget(
       }
       if (
         deferredMutation.source === "ui" &&
-        deferredMutation.reasoningEffort
+        (deferredMutation.reasoningEffort || deferredMutation.fastMode)
       ) {
         store.patchSession(sessionId, {
           reasoningEffort: deferredMutation.reasoningEffort,
+          fastMode: deferredMutation.fastMode,
         });
       }
     }
@@ -653,6 +685,7 @@ export function acquireSessionDispatchTarget(
     target,
     source: session.executionTargetSource,
     reasoningEffort: session.reasoningEffort,
+    fastMode: session.fastMode,
     release,
   };
   if (
@@ -669,6 +702,7 @@ export function acquireSessionDispatchTarget(
                 executionTarget: targetOverride,
                 executionTargetSource: actor.dispatch?.source,
                 reasoningEffort: actor.dispatch?.reasoningEffort,
+                fastMode: actor.dispatch?.fastMode,
               }
             : candidate,
         ),
@@ -749,11 +783,16 @@ export function hydrateSessionTarget(
       }
       return true;
     }
+    const leasedSession = useChatSessionStore.getState().getSession(sessionId);
     actor.deferredTargetMutation = {
       kind: "target",
       target: normalizedTarget,
       source: "acp",
       ...(reasoningEffort ? { reasoningEffort } : {}),
+      // An observation carries no fast toggle of its own, so the one the
+      // session is running keeps its place rather than being dropped on
+      // release.
+      ...(leasedSession?.fastMode ? { fastMode: leasedSession.fastMode } : {}),
     };
     return false;
   }
@@ -765,6 +804,10 @@ export function hydrateSessionTarget(
   return true;
 }
 
+// Model comparisons here are by identity, not by string: a snapshot may name
+// the model in the folded `base[effort]` form while the target names the base,
+// and that is the same model. Effort staleness is checked on its own, against
+// context.reasoningEffortValue.
 function snapshotContextMatchesTarget(
   target: SessionExecutionTarget | undefined,
   context: AcpSessionConfigSnapshotContext,
@@ -773,7 +816,7 @@ function snapshotContextMatchesTarget(
   const expected = hostSelectionFromExecutionTarget(target);
   return (
     context.providerId === expected.providerId &&
-    context.modelId === expected.modelId
+    sameModelIdentity(context.modelId, expected.modelId)
   );
 }
 
@@ -792,7 +835,8 @@ function snapshotContextMatchesSelection(
     return false;
   }
   return (
-    !selection.target.modelId || context.modelId === selection.target.modelId
+    !selection.target.modelId ||
+    sameModelIdentity(context.modelId, selection.target.modelId)
   );
 }
 
@@ -823,6 +867,31 @@ function rejectModelSnapshot(
   return false;
 }
 
+/**
+ * Materialize an observed model onto a base target without rewriting an id
+ * that already names the same model.
+ *
+ * An effort change is not a model change — but while the host still folds the
+ * effort back into the model option's `currentValue`, a `reasoning_effort`
+ * write answers with `gpt-5.6-sol[high]` for a session whose target is
+ * `gpt-5.6-sol`. Taking that id verbatim would make every effort click a
+ * target identity change, which is exactly what keeping run settings off the
+ * target exists to prevent. So the id the operator picked stays, and only a
+ * genuinely different model replaces it.
+ */
+function materializeObservedModel(
+  base: SessionExecutionTarget | undefined,
+  snapshot: AcpModelConfigSnapshot,
+): ModelExecutionTarget | null {
+  if (base?.modelId && sameModelIdentity(base.modelId, snapshot.modelId)) {
+    return materializeSessionExecutionModel(base, {
+      modelId: base.modelId,
+      modelName: base.modelName ?? snapshot.modelName,
+    });
+  }
+  return materializeSessionExecutionModel(base, snapshot);
+}
+
 function publishObservedTarget(
   sessionId: string,
   target: SessionExecutionTarget,
@@ -846,6 +915,11 @@ function publishObservedTarget(
           : identityChanged
             ? { reasoningEffort: undefined }
             : {}),
+        // The fast toggle describes the model that advertised it. On a real
+        // model change it goes with the effort menu; the fast snapshot that
+        // travels with this one is applied right after and puts back whatever
+        // the new model offers.
+        ...(identityChanged ? { fastMode: undefined } : {}),
       };
     }),
   }));
@@ -876,7 +950,7 @@ export function observeSessionTargetModelSnapshot(input: {
           modelName: input.snapshot.modelName,
         })
       : dispatchTarget;
-    const observedTarget = materializeSessionExecutionModel(
+    const observedTarget = materializeObservedModel(
       observedBase,
       input.snapshot,
     );
@@ -923,7 +997,7 @@ export function observeSessionTargetModelSnapshot(input: {
   let base: SessionExecutionTarget | undefined;
   if (selection) {
     if (
-      input.snapshot.modelId !== input.context.modelId ||
+      !sameModelIdentity(input.snapshot.modelId, input.context.modelId) ||
       !snapshotContextMatchesSelection(selection, input.context)
     ) {
       return rejectModelSnapshot(input, session, selection);
@@ -931,7 +1005,7 @@ export function observeSessionTargetModelSnapshot(input: {
     base = selection.target;
   } else if (session?.executionTargetSource === "ui") {
     if (
-      localTarget?.modelId !== input.snapshot.modelId ||
+      !sameModelIdentity(localTarget?.modelId, input.snapshot.modelId) ||
       (input.context.origin === "response" &&
         !snapshotContextMatchesTarget(localTarget, input.context))
     ) {
@@ -948,7 +1022,7 @@ export function observeSessionTargetModelSnapshot(input: {
       : localTarget;
   }
 
-  const target = materializeSessionExecutionModel(base, input.snapshot);
+  const target = materializeObservedModel(base, input.snapshot);
   if (!target) return rejectModelSnapshot(input, session, selection);
   const pairedReasoningIsCurrent =
     input.reasoningEffort !== undefined &&
@@ -1006,21 +1080,38 @@ export function observeSessionTargetConfigSnapshots(input: {
   context: AcpSessionConfigSnapshotContext;
 }): void {
   const { model, reasoningEffort } = input.snapshots;
+  let observed = true;
   if (model) {
-    observeSessionTargetModelSnapshot({
+    observed = observeSessionTargetModelSnapshot({
       sessionId: input.sessionId,
       snapshot: model,
       ...(reasoningEffort ? { reasoningEffort } : {}),
       context: input.context,
     });
   } else if (reasoningEffort) {
-    observeSessionTargetReasoningSnapshot({
+    observed = observeSessionTargetReasoningSnapshot({
       sessionId: input.sessionId,
       reasoningEffort,
       context: input.context,
     });
   }
   applySessionFastModeSnapshot(input.sessionId, input.snapshots);
+  if (!observed) {
+    // The snapshot was a stale leftover of a superseded transition and none of
+    // it was committed. Reconciling here would judge the operator's intent
+    // against menus that are not the session's.
+    return;
+  }
+  // Every acknowledgement is a chance to notice that the model is not running
+  // at what the operator chose: a model apply's own response, a load, and a
+  // bridge-initiated change nobody asked for all arrive here.
+  void reconcileSessionRunSettings({
+    sessionId: input.sessionId,
+    ...(input.snapshots.substitutions
+      ? { substitutions: input.snapshots.substitutions }
+      : {}),
+    ...(input.context.requestId ? { requestId: input.context.requestId } : {}),
+  });
 }
 
 /**

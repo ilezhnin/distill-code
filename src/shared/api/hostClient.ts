@@ -13,6 +13,7 @@ import type {
   McpExtensionEntry,
   PreferenceValue,
   ProviderInventoryEntry,
+  ProviderSupportedModelsResponse,
   SessionTranscript,
   SourceEntry,
   SourceScope,
@@ -119,7 +120,7 @@ export class HostExt {
     );
   }
   providersSupportedModelsList(params: { providerId: string }) {
-    return this.call<{ providerId: string; models: string[] }>(
+    return this.call<ProviderSupportedModelsResponse>(
       "providers/supported_models/list",
       params,
     );

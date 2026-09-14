@@ -32,6 +32,24 @@ export interface AcpFastModeConfigSnapshot {
   kind: "boolean" | "select";
 }
 
+/**
+ * What a bridge would not do, as the host recorded it on the presented
+ * snapshot (`_meta.substitutions`). It is the only machine-readable record of
+ * a downgrade: codex clamps an effort to the model's default with no error and
+ * no notification, and Claude drops effort to "default" after a session passes
+ * through a model that has none.
+ *
+ * `applied: null` means the model has no such control at all. `requested` and
+ * `applied` are always strings in the harness's own vocabulary — "on"/"off"
+ * for the fast toggle.
+ */
+export interface AcpRunSettingsSubstitution {
+  role: "model" | "effort" | "fast";
+  requested: string | null;
+  applied: string | null;
+  reason?: string;
+}
+
 export interface AcpSessionConfigSnapshots {
   model: AcpModelConfigSnapshot | null;
   reasoningEffort: AcpReasoningEffortConfigSnapshot | null;
@@ -40,6 +58,11 @@ export interface AcpSessionConfigSnapshots {
    * reader always populates it.
    */
   fastMode?: AcpFastModeConfigSnapshot | null;
+  /**
+   * Present only when the host reported one, so a payload that says nothing
+   * about a downgrade is not read as "nothing was refused".
+   */
+  substitutions?: AcpRunSettingsSubstitution[];
 }
 
 interface AcpSessionExecutionConfigSnapshot {
@@ -169,11 +192,55 @@ function warnUnhandledSnapshot(kind: string, sessionId: string): void {
 export function readSessionConfigOptionsSnapshots(
   source: unknown,
 ): AcpSessionConfigSnapshots {
+  const substitutions = getRunSettingsSubstitutions(source);
   return {
     model: getModelConfigSnapshot(source),
     reasoningEffort: getReasoningEffortConfigSnapshot(source),
     fastMode: getFastModeConfigSnapshot(source),
+    ...(substitutions.length > 0 ? { substitutions } : {}),
   };
+}
+
+const SUBSTITUTION_ROLES: ReadonlySet<string> = new Set([
+  "model",
+  "effort",
+  "fast",
+]);
+
+/**
+ * Reads `_meta.substitutions` off a presented snapshot. The host puts it on
+ * every response that applied a selection and on the background attach's
+ * `config_option_update`, so both entry points find it in the same place.
+ */
+function getRunSettingsSubstitutions(
+  source: unknown,
+): AcpRunSettingsSubstitution[] {
+  if (!isRecord(source) || !isRecord(source._meta)) {
+    return [];
+  }
+  const entries = source._meta.substitutions;
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+  return entries.flatMap((entry) => {
+    if (!isRecord(entry)) {
+      return [];
+    }
+    const role = getStringProperty(entry, "role");
+    if (!role || !SUBSTITUTION_ROLES.has(role)) {
+      return [];
+    }
+    return [
+      {
+        role: role as AcpRunSettingsSubstitution["role"],
+        requested: getStringProperty(entry, "requested") ?? null,
+        applied: getStringProperty(entry, "applied") ?? null,
+        ...(getStringProperty(entry, "reason")
+          ? { reason: getStringProperty(entry, "reason") as string }
+          : {}),
+      },
+    ];
+  });
 }
 
 export function readSessionExecutionConfigSnapshot(

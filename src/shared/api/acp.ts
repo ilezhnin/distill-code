@@ -7,7 +7,10 @@ import type {
   AcpSteerResponse,
 } from "./acpApi";
 import * as sessionRegistry from "./acpSessionRegistry";
-import type { AcpSessionExecutionSelection } from "./acpSessionRegistry";
+import type {
+  AcpSessionExecutionSelection,
+  AcpSessionRunSettingsWrite,
+} from "./acpSessionRegistry";
 import {
   getCatalogEntry,
   resolveAgentProviderCatalogId,
@@ -380,7 +383,21 @@ export async function acpSetSessionConfigOption(
   );
 }
 
-export type { AcpSessionInfo, AcpSessionsPage };
+/**
+ * Apply reasoning effort and fast mode as one ordered pair, in the same
+ * per-session mutation queue the model apply uses. Only `runSettingsReconciler`
+ * should call this: it is the one place that knows what the current model
+ * advertises, and a value a model does not offer must never reach the wire.
+ */
+export async function acpApplySessionRunSettings(
+  sessionId: string,
+  write: AcpSessionRunSettingsWrite,
+  context: Omit<AcpSessionConfigSnapshotContext, "origin"> = {},
+): Promise<AcpSessionConfigSnapshots | undefined> {
+  return sessionRegistry.applySessionRunSettings(sessionId, write, context);
+}
+
+export type { AcpSessionInfo, AcpSessionsPage, AcpSessionRunSettingsWrite };
 
 export async function acpGetSessionInfo(
   sessionId: string,

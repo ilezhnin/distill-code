@@ -1,7 +1,8 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import type { DoctorCheck, DoctorReport } from "@/shared/api/doctor";
 import { useDoctorReport } from "@/shared/api/useDoctorReport";
 import { crateCheckIdToProviderId } from "@/features/providers/lib/agentIdMap";
+import { recordReadyProviders } from "@/features/providers/lib/providerConnections";
 import { CURATED_PROVIDER_CATALOG_BY_ID } from "@/features/providers/curatedProviders";
 
 export type AgentProviderReadiness = "ready" | "not_installed" | "not_ready";
@@ -117,6 +118,14 @@ export function useAgentProviderStatus(): UseAgentProviderStatusReturn {
     () => readyIdsFromReadiness(agentReadiness),
     [agentReadiness],
   );
+
+  // Becoming ready is how a connected account shows up here; noting it lets a
+  // new chat start on the account connected last (providerConnections).
+  useEffect(() => {
+    if (query.data) {
+      recordReadyProviders(readyAgentIds);
+    }
+  }, [query.data, readyAgentIds]);
 
   const agentChecks = useMemo(() => {
     if (!query.data) return new Map<string, DoctorCheck>();

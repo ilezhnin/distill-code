@@ -354,6 +354,85 @@ describe("waveRunner", () => {
     }
   });
 
+  it("spawns a named step on the model, not the default alias labeled with it", async () => {
+    setWaveStepTargetIoForTests({
+      personas: () => [],
+      providers: () => [{ id: "claude-acp", label: "Claude Code" }] as never,
+      modelsForHarness: (harnessId) =>
+        (harnessId === "claude-acp"
+          ? [
+              { id: "default", displayName: "Opus 5" },
+              { id: "opus[1m]", displayName: "Opus 5" },
+            ]
+          : []) as never,
+      rateLimits: () => [] as never,
+    });
+    try {
+      useConductorGraphStore.getState().registerNode(conductorNode());
+      setTranscript([
+        assistant(
+          "plan-1",
+          fence(
+            '{"steps":[{"role":"scout","subtask":"Look","access":[],"model":"opus"}]}',
+          ),
+        ),
+      ]);
+
+      runWaveEngineTick();
+      await vi.waitFor(() =>
+        expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+      );
+
+      const [args] = spawnConductorChildSession.mock.calls[0];
+      expect(args.executionTarget).toMatchObject({
+        harnessId: "claude-acp",
+        modelId: "opus[1m]",
+      });
+    } finally {
+      resetWaveStepTargetIoForTests();
+    }
+  });
+
+  it("spawns a step named by family on that family's current model", async () => {
+    setWaveStepTargetIoForTests({
+      personas: () => [],
+      providers: () => [{ id: "claude-acp", label: "Claude Code" }] as never,
+      modelsForHarness: (harnessId) =>
+        (harnessId === "claude-acp"
+          ? [
+              { id: "claude-opus-4-8", displayName: "Opus 4.8" },
+              { id: "default", displayName: "Opus 5" },
+              { id: "opus[1m]", displayName: "Opus 5" },
+            ]
+          : []) as never,
+      rateLimits: () => [] as never,
+    });
+    try {
+      useConductorGraphStore.getState().registerNode(conductorNode());
+      setTranscript([
+        assistant(
+          "plan-1",
+          fence(
+            '{"steps":[{"role":"scout","subtask":"Look","access":[],"model":"opus"}]}',
+          ),
+        ),
+      ]);
+
+      runWaveEngineTick();
+      await vi.waitFor(() =>
+        expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
+      );
+
+      const [args] = spawnConductorChildSession.mock.calls[0];
+      expect(args.executionTarget).toMatchObject({
+        harnessId: "claude-acp",
+        modelId: "opus[1m]",
+      });
+    } finally {
+      resetWaveStepTargetIoForTests();
+    }
+  });
+
   it("never re-processes a plan message, however often the tick fires", async () => {
     useConductorGraphStore.getState().registerNode(conductorNode());
     setTranscript([
