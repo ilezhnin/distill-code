@@ -84,6 +84,7 @@ import {
   getStreamingResponseStartPinScrollTop,
   getTimelineBottomScrollTop,
   hasTimelineRealScrollableOverflow,
+  isStreamingResponseStartInViewAtFirstSight,
   isTimelineExternalScrollAwayFromLatest,
   isTimelineNearLatest,
   isTimelinePinnedToLatest,
@@ -1791,11 +1792,12 @@ function VirtualMessageTimelineSession({
     sessionId,
     streamingMessageId,
   };
-  // Whether the streaming response's first row was in view the last time the
-  // reader, or the timeline's own follow, placed the viewport. The geometry
-  // engine can follow a new bottom inside the same commit that grew the
-  // response, so the pin decision must rely on this and not on the live
-  // scrollTop it finds afterwards.
+  // Whether the streaming response's first row is one the reader has in view.
+  // Only the reader decides that: first sight of the response, a scroll the
+  // timeline did not write, Jump to latest, and the pin itself update it. The
+  // timeline's own follow writes (engine bottom reconcile, capped follow,
+  // scroll-event snaps) never do, whichever of them happens to run first after
+  // growth, so the pin decision does not depend on callback order.
   const responseStartInViewRef = useRef<{
     streamKey: string;
     inView: boolean;
@@ -1852,7 +1854,6 @@ function VirtualMessageTimelineSession({
 
       if (scrollVirtualToBottom(behavior)) {
         lastScrollTopRef.current = container.scrollTop;
-        recordStreamingResponseStartInView();
         return;
       }
 
@@ -1862,14 +1863,8 @@ function VirtualMessageTimelineSession({
         source: "programmatic",
       });
       lastScrollTopRef.current = container.scrollTop;
-      recordStreamingResponseStartInView();
     },
-    [
-      getBottomScrollTop,
-      recordStreamingResponseStartInView,
-      scrollVirtualToBottom,
-      writeVirtualScrollTop,
-    ],
+    [getBottomScrollTop, scrollVirtualToBottom, writeVirtualScrollTop],
   );
 
   useLayoutEffect(() => {
@@ -1933,6 +1928,55 @@ function VirtualMessageTimelineSession({
     },
     [clearProgrammaticFollowResumeSuppression, markPendingScrollOwnership],
   );
+
+  // Every path that follows latest while a response streams asks this first.
+  // It decides from geometry and the reader's record alone: when reaching the
+  // bottom would put a start the reader had in view above the viewport, the
+  // viewport stops on that start, even if some follow already overshot it.
+  const pinOverTallStreamingResponseStart = useCallback(() => {
+    const start = readStreamingResponseStart();
+    if (!start) {
+      return false;
+    }
+
+    const bottomScrollTop = getBottomScrollTop(start.container);
+    const record = responseStartInViewRef.current;
+    if (record?.streamKey !== start.streamKey) {
+      responseStartInViewRef.current = {
+        streamKey: start.streamKey,
+        inView: isStreamingResponseStartInViewAtFirstSight({
+          responseStartTopInViewport: start.topInViewport,
+          viewportHeight: start.container.clientHeight,
+          bottomScrollTop,
+          responseStartScrollTop: start.scrollTop,
+        }),
+      };
+      return false;
+    }
+
+    const pinScrollTop = getStreamingResponseStartPinScrollTop({
+      responseStartWasInView: record.inView,
+      bottomScrollTop,
+      responseStartScrollTop: start.scrollTop,
+    });
+    if (pinScrollTop == null) {
+      return false;
+    }
+
+    stopStreamingBottomFollow();
+    writeVirtualScrollTop(pinScrollTop, { source: "programmatic" });
+    lastScrollTopRef.current = start.container.scrollTop;
+    isNearBottomRef.current = false;
+    stickyScrollUntilRef.current = 0;
+    setDetachedFromLatest(true);
+    return true;
+  }, [
+    getBottomScrollTop,
+    readStreamingResponseStart,
+    setDetachedFromLatest,
+    stopStreamingBottomFollow,
+    writeVirtualScrollTop,
+  ]);
 
   const scrollToTargetWithControlledSmooth = useCallback(
     (
@@ -2034,9 +2078,12 @@ function VirtualMessageTimelineSession({
         return;
       }
 
+      if (pinOverTallStreamingResponseStart()) {
+        return;
+      }
       scrollToBottomRef.current("auto");
     });
-  }, []);
+  }, [pinOverTallStreamingResponseStart]);
 
   useLayoutEffect(
     () => () => {
@@ -2080,11 +2127,6 @@ function VirtualMessageTimelineSession({
 
     // Read before syncing below, which publishes this event's position.
     const observedScrollTop = readObservedScrollTop();
-    // The timeline's own writes land exactly where the engine last observed;
-    // anything else was placed by the reader or the browser.
-    const viewportPlacedOutsideTimeline =
-      observedScrollTop == null ||
-      Math.abs(container.scrollTop - observedScrollTop) > 1;
     const domNearLatest = isTimelineNearLatest(container);
     const domPinnedToLatest = isTimelinePinnedToLatest(container);
     const rawScrollDelta = container.scrollTop - lastScrollTopRef.current;
@@ -2138,6 +2180,15 @@ function VirtualMessageTimelineSession({
       preserveScrollPosition:
         preserveStreamingScrollPosition || externalScrollAwayFromLatest,
     });
+    // The reader put the viewport here (wheel, touch, pointer, keys) or the
+    // browser moved it away from latest (find, focus), so this is where their
+    // view of the streaming response now stands, before any follow below
+    // decides what to do with it. Scroll events that merely report a follow
+    // landing further down never count, even when the engine had not observed
+    // that position yet: they are not the reader's choice.
+    if (hasScrollDetachIntent || externalScrollAwayFromLatest) {
+      recordStreamingResponseStartInView();
+    }
     if (virtualState) {
       const { scrollTop } = virtualState;
       const isNearLatest = domNearLatest || virtualState.nearBottom;
@@ -2160,7 +2211,8 @@ function VirtualMessageTimelineSession({
         setDetachedFromLatest(false);
         if (
           !isPinnedToLatest &&
-          (streamingMessageId || shouldRestoreProgrammaticFollow)
+          (streamingMessageId || shouldRestoreProgrammaticFollow) &&
+          !pinOverTallStreamingResponseStart()
         ) {
           scrollToBottom("auto");
           isNearBottomRef.current = true;
@@ -2182,9 +2234,6 @@ function VirtualMessageTimelineSession({
       }
 
       lastScrollTopRef.current = scrollTop;
-      if (hasScrollDetachIntent || viewportPlacedOutsideTimeline) {
-        recordStreamingResponseStartInView();
-      }
       clearUserScrollIntent();
       captureLiveTailHandoff(container);
       return;
@@ -2218,7 +2267,8 @@ function VirtualMessageTimelineSession({
       setDetachedFromLatest(false);
       if (
         !isPinnedToLatest &&
-        (streamingMessageId || shouldRestoreProgrammaticFollow)
+        (streamingMessageId || shouldRestoreProgrammaticFollow) &&
+        !pinOverTallStreamingResponseStart()
       ) {
         scrollToBottom("auto");
         isNearBottomRef.current = true;
@@ -2236,14 +2286,12 @@ function VirtualMessageTimelineSession({
     }
 
     lastScrollTopRef.current = scrollTop;
-    if (hasScrollDetachIntent || viewportPlacedOutsideTimeline) {
-      recordStreamingResponseStartInView();
-    }
     clearUserScrollIntent();
     captureLiveTailHandoff(container);
   }, [
     captureLiveTailHandoff,
     clearUserScrollIntent,
+    pinOverTallStreamingResponseStart,
     readObservedScrollTop,
     recordStreamingResponseStartInView,
     scrollToBottom,
@@ -2330,6 +2378,11 @@ function VirtualMessageTimelineSession({
         return;
       }
 
+      if (pinOverTallStreamingResponseStart()) {
+        streamingBottomFollowActiveRef.current = false;
+        return;
+      }
+
       const bottomScrollTop = getBottomScrollTop(container);
       const distanceFromBottom = Math.max(
         0,
@@ -2347,7 +2400,6 @@ function VirtualMessageTimelineSession({
       );
       writeVirtualScrollTop(nextScrollTop, { source: "programmatic" });
       lastScrollTopRef.current = container.scrollTop;
-      recordStreamingResponseStartInView();
 
       if (bottomScrollTop - container.scrollTop > 1) {
         streamingBottomFollowFrameRef.current = requestAnimationFrame(step);
@@ -2359,53 +2411,7 @@ function VirtualMessageTimelineSession({
     streamingBottomFollowFrameRef.current = requestAnimationFrame(step);
   }, [
     getBottomScrollTop,
-    recordStreamingResponseStartInView,
-    writeVirtualScrollTop,
-  ]);
-
-  // Runs once the grown response is laid out. When following latest would push
-  // the start of a response the reader could see above the viewport, the
-  // follow stops on that start so an over-tall answer is read from the top.
-  const pinOverTallStreamingResponseStart = useCallback(() => {
-    const start = readStreamingResponseStart();
-    if (!start) {
-      return false;
-    }
-
-    const record = responseStartInViewRef.current;
-    if (record?.streamKey !== start.streamKey) {
-      // First sight of this response: remember whether it is in view and
-      // follow normally; only growth seen after that can pin it.
-      recordStreamingResponseStartInView();
-      return false;
-    }
-
-    const pinScrollTop = getStreamingResponseStartPinScrollTop({
-      responseStartWasInView: record.inView,
-      bottomScrollTop: getBottomScrollTop(start.container),
-      responseStartScrollTop: start.scrollTop,
-    });
-    if (pinScrollTop == null) {
-      return false;
-    }
-
-    stopStreamingBottomFollow();
-    writeVirtualScrollTop(pinScrollTop, { source: "programmatic" });
-    lastScrollTopRef.current = start.container.scrollTop;
-    responseStartInViewRef.current = {
-      streamKey: start.streamKey,
-      inView: true,
-    };
-    isNearBottomRef.current = false;
-    stickyScrollUntilRef.current = 0;
-    setDetachedFromLatest(true);
-    return true;
-  }, [
-    getBottomScrollTop,
-    readStreamingResponseStart,
-    recordStreamingResponseStartInView,
-    setDetachedFromLatest,
-    stopStreamingBottomFollow,
+    pinOverTallStreamingResponseStart,
     writeVirtualScrollTop,
   ]);
 
@@ -2429,24 +2435,42 @@ function VirtualMessageTimelineSession({
       if (pinOverTallStreamingResponseStart()) {
         return;
       }
+      // The grown response is already laid out here, so follow it inside the
+      // commit: waiting for a resize callback or the next frame leaves a frame
+      // in which script reading the transcript sees it behind the bottom.
+      const container = containerRef.current;
+      if (
+        container &&
+        !pointerScrollIntentActiveRef.current &&
+        !userScrollIntentRef.current &&
+        !isTimelinePinnedToLatest(container) &&
+        (isNearBottomRef.current ||
+          getBottomScrollTop(container) - container.scrollTop <
+            TIMELINE_AUTO_SCROLL_THRESHOLD_PX)
+      ) {
+        scrollToBottom("auto");
+        isNearBottomRef.current = true;
+      }
       scheduleCappedStreamingBottomFollow();
       return;
     }
 
     scrollToBottomIfNearBottom();
   }, [
+    getBottomScrollTop,
     messages,
     pinOverTallStreamingResponseStart,
     scheduleCappedStreamingBottomFollow,
+    scrollToBottom,
     scrollToBottomIfNearBottom,
     streamingMessageId,
   ]);
 
   // Streamed text keeps laying out between transcript commits (markdown
-  // settles, lines wrap), so while following latest the live tail's own size
-  // drives the follow instead of the next chunk that happens to arrive.
-  const liveStreamingTailRef = useRef<HTMLDivElement>(null);
-  const followStreamingLiveTailGrowth = useCallback(() => {
+  // settles, lines wrap, the live-tail padding changes), so while following
+  // latest the transcript content's own size drives the follow instead of the
+  // next chunk that happens to arrive.
+  const followStreamingContentGrowth = useCallback(() => {
     const container = containerRef.current;
     if (
       !container ||
@@ -2472,19 +2496,37 @@ function VirtualMessageTimelineSession({
   }, [pinOverTallStreamingResponseStart, scrollToBottom, streamingMessageId]);
 
   useLayoutEffect(() => {
-    const liveTail = liveStreamingTailRef.current;
+    const content = searchListRootRef.current;
     if (
-      !hasLiveStreamingTail ||
-      !liveTail ||
+      !streamingMessageId ||
+      !content ||
       typeof ResizeObserver === "undefined"
     ) {
       return;
     }
 
-    const resizeObserver = new ResizeObserver(followStreamingLiveTailGrowth);
-    resizeObserver.observe(liveTail);
-    return () => resizeObserver.disconnect();
-  }, [followStreamingLiveTailGrowth, hasLiveStreamingTail]);
+    // Streamed markdown reaches the DOM in the markdown renderer's own later
+    // (transition) render, not in the transcript commit. A mutation observer
+    // follows that growth in the microtask right after it lands, before any
+    // later frame callback can read the transcript behind its bottom; the
+    // resize observer covers growth without DOM mutations (fonts, images,
+    // rewrapping). Both are cheap once the reader is detached or pinned.
+    const resizeObserver = new ResizeObserver(followStreamingContentGrowth);
+    resizeObserver.observe(content);
+    const mutationObserver =
+      typeof MutationObserver === "undefined"
+        ? null
+        : new MutationObserver(followStreamingContentGrowth);
+    mutationObserver?.observe(content, {
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
+    return () => {
+      resizeObserver.disconnect();
+      mutationObserver?.disconnect();
+    };
+  }, [followStreamingContentGrowth, streamingMessageId]);
 
   useLayoutEffect(() => {
     if (!hasFooter) {
@@ -2545,7 +2587,10 @@ function VirtualMessageTimelineSession({
       remeasureVisibleRowsSync();
 
       if (wasPinnedToLatest) {
-        scrollToBottom("auto");
+        // A rewrap can make a streaming answer taller than the viewport too.
+        if (!pinOverTallStreamingResponseStart()) {
+          scrollToBottom("auto");
+        }
         syncScrollState();
         requestBlankViewportInspectionRef.current();
         return;
@@ -2615,6 +2660,7 @@ function VirtualMessageTimelineSession({
     };
   }, [
     clearUserScrollIntent,
+    pinOverTallStreamingResponseStart,
     remeasureVisibleRowsSync,
     scrollToBottom,
     setDetachedFromLatest,
@@ -3430,6 +3476,9 @@ function VirtualMessageTimelineSession({
     ) {
       scrollToBottom(streamingMessageId ? "auto" : "smooth");
       if (streamingMessageId) {
+        // The reader chose the bottom, so a start above it is no longer one
+        // they are reading from; growth must keep following, not pin back.
+        recordStreamingResponseStartInView();
         scheduleCappedStreamingBottomFollow();
       }
       return;
@@ -4124,7 +4173,6 @@ function VirtualMessageTimelineSession({
       )}
       {hasLiveStreamingTail ? (
         <div
-          ref={liveStreamingTailRef}
           data-testid="virtual-message-timeline-live-tail"
           data-virtual-live-tail-rows={liveStreamingTailRows.length}
         >

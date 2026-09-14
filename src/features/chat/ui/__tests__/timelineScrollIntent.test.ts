@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   getStreamingResponseStartPinScrollTop,
+  isStreamingResponseStartInViewAtFirstSight,
   isTimelineExternalScrollAwayFromLatest,
 } from "../timelineScrollIntent";
 
@@ -61,6 +62,41 @@ describe("isTimelineExternalScrollAwayFromLatest", () => {
       isTimelineExternalScrollAwayFromLatest({
         ...base,
         observedScrollTop: null,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("isStreamingResponseStartInViewAtFirstSight", () => {
+  it("counts a new response whose start is visible and which still fits", () => {
+    expect(
+      isStreamingResponseStartInViewAtFirstSight({
+        responseStartTopInViewport: 153,
+        viewportHeight: 615,
+        bottomScrollTop: 12,
+        responseStartScrollTop: 153,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not count a response that is already taller than the viewport", () => {
+    expect(
+      isStreamingResponseStartInViewAtFirstSight({
+        responseStartTopInViewport: 153,
+        viewportHeight: 615,
+        bottomScrollTop: 3400,
+        responseStartScrollTop: 153,
+      }),
+    ).toBe(false);
+  });
+
+  it("does not count a start the reader cannot see", () => {
+    expect(
+      isStreamingResponseStartInViewAtFirstSight({
+        responseStartTopInViewport: -400,
+        viewportHeight: 615,
+        bottomScrollTop: 500,
+        responseStartScrollTop: 600,
       }),
     ).toBe(false);
   });
