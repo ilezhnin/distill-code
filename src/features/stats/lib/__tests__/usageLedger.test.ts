@@ -59,6 +59,78 @@ describe("usageLedger", () => {
     expect(stored).toContain('"s1"');
   });
 
+  it("records the effort a session ran at beside its model", () => {
+    syncUsageSessions([
+      {
+        id: "s1",
+        createdAt: "2026-08-01T00:00:00.000Z",
+        updatedAt: "2026-08-02T00:00:00.000Z",
+        messageCount: 1,
+        providerId: "codex-acp",
+        modelId: "gpt-5.6-sol",
+        effort: "xhigh",
+      },
+    ]);
+    recordSessionTokens(
+      "s1",
+      { mode: "add", inputTokens: 10, outputTokens: 5, turnsDelta: 1 },
+      { modelId: "gpt-5.6-sol", effort: "low" },
+    );
+    // A later sync that does not know the effort leaves the recorded one.
+    syncUsageSessions([
+      {
+        id: "s1",
+        createdAt: "2026-08-01T00:00:00.000Z",
+        updatedAt: "2026-08-03T00:00:00.000Z",
+        messageCount: 2,
+        providerId: "codex-acp",
+        modelId: "gpt-5.6-sol",
+      },
+    ]);
+
+    expect(getUsageLedger().sessions.s1).toMatchObject({
+      modelId: "gpt-5.6-sol",
+      effort: "low",
+    });
+    flushUsageLedger();
+    expect(storedLedger().sessions.s1?.effort).toBe("low");
+  });
+
+  it("reads a stored row with a folded model id exactly as it was written", () => {
+    window.localStorage.setItem(
+      USAGE_LEDGER_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        firstEventAt: 1,
+        lastUpdatedAt: 1,
+        sessions: {
+          legacy: {
+            providerId: "codex-acp",
+            modelId: "gpt-5.6-sol[low]",
+            modelName: "GPT-5.6 Sol (low)",
+            createdAt: 1,
+            lastActivityAt: 1,
+            messageCount: 1,
+            started: true,
+            inputTokens: 1,
+            outputTokens: 1,
+            cacheTokens: 0,
+            totalTokens: 2,
+            costUsd: null,
+            costCurrency: null,
+            turns: 1,
+            workedMs: 0,
+          },
+        },
+        daily: {},
+      }),
+    );
+
+    const legacy = getUsageLedger().sessions.legacy;
+    expect(legacy?.modelId).toBe("gpt-5.6-sol[low]");
+    expect(legacy).not.toHaveProperty("effort");
+  });
+
   it("keeps token totals monotonic on replace and adds on add", () => {
     recordSessionTokens("s1", {
       mode: "replace",

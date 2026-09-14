@@ -6,8 +6,18 @@ export type UsageIntensity = 0 | 1 | 2 | 3 | 4;
 
 export interface UsageSessionRecord {
   providerId: string;
+  /**
+   * The model as the session last named it. Rows written while an effort was
+   * folded into the id (`gpt-5.6-sol[low]`) keep that spelling; the stats page
+   * reads it through `baseModelId`, so it is never rewritten here.
+   */
   modelId: string | null;
   modelName: string | null;
+  /**
+   * The reasoning effort the session last ran at, in the harness's own
+   * vocabulary. Absent on rows written before effort was its own selection.
+   */
+  effort?: string;
   createdAt: number;
   lastActivityAt: number;
   messageCount: number;
@@ -79,6 +89,7 @@ export interface UsageSessionSource {
   providerId?: string | null;
   modelId?: string | null;
   modelName?: string | null;
+  effort?: string | null;
 }
 
 export interface UsageTokenSnapshot {

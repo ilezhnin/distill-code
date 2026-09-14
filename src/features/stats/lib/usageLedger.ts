@@ -144,6 +144,12 @@ export function normalizeCostCurrency(value: unknown): string | null {
   return trimmed ? trimmed.toUpperCase() : null;
 }
 
+/** A reported effort, or undefined when there is none to record. */
+function normalizeEffort(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return value.trim() || undefined;
+}
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
@@ -159,10 +165,12 @@ function parseSessionRecord(value: unknown): UsageSessionRecord | null {
   if (typeof raw.providerId !== "string" || !raw.providerId) return null;
   const createdAt = asNonNegativeInt(raw.createdAt) ?? 0;
   const lastActivityAt = asNonNegativeInt(raw.lastActivityAt) ?? createdAt;
+  const effort = normalizeEffort(raw.effort);
   return {
     providerId: raw.providerId,
     modelId: typeof raw.modelId === "string" ? raw.modelId : null,
     modelName: typeof raw.modelName === "string" ? raw.modelName : null,
+    ...(effort ? { effort } : {}),
     createdAt,
     lastActivityAt,
     messageCount: asNonNegativeInt(raw.messageCount) ?? 0,
@@ -514,11 +522,13 @@ function sessionFromSource(
     parseTimestamp(source.updatedAt) ??
     existing?.lastActivityAt ??
     createdAt;
+  const effort = normalizeEffort(source.effort) ?? existing?.effort;
   return {
     ...(existing ?? emptySessionRecord()),
     providerId: source.providerId || existing?.providerId || DEFAULT_HARNESS_ID,
     modelId: source.modelId ?? existing?.modelId ?? null,
     modelName: source.modelName ?? existing?.modelName ?? null,
+    ...(effort ? { effort } : {}),
     createdAt:
       existing?.createdAt && existing.createdAt > 0
         ? existing.createdAt
@@ -555,7 +565,7 @@ export function recordSessionTokens(
   sessionId: string,
   snapshot: UsageTokenSnapshot,
   meta?: Partial<
-    Pick<UsageSessionSource, "providerId" | "modelId" | "modelName">
+    Pick<UsageSessionSource, "providerId" | "modelId" | "modelName" | "effort">
   >,
   now = Date.now(),
 ): void {
@@ -565,6 +575,8 @@ export function recordSessionTokens(
     if (meta?.providerId) next.providerId = meta.providerId;
     if (meta?.modelId !== undefined) next.modelId = meta.modelId;
     if (meta?.modelName !== undefined) next.modelName = meta.modelName;
+    const effort = normalizeEffort(meta?.effort);
+    if (effort) next.effort = effort;
     if (next.createdAt <= 0) next.createdAt = now;
     next.lastActivityAt = Math.max(next.lastActivityAt, now);
     next.started = true;
