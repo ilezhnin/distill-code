@@ -124,6 +124,11 @@ export interface RequestedModelSelectionInput {
   modelId?: string;
   effort?: string;
   fastMode?: boolean;
+  /**
+   * How the calling command spells its model flag, for the deprecation note.
+   * Defaults to `session create`'s `--model-id`.
+   */
+  modelFlag?: string;
 }
 
 /**
@@ -192,7 +197,7 @@ export function resolveRequestedModelSelection(
     deprecated =
       `"${modelId}" folds a reasoning effort into the model id, which is deprecated: ` +
       "model, effort and fast mode are separate choices. " +
-      `Pass --model-id ${baseId} --effort ${foldedEffort} instead.`;
+      `Pass ${input.modelFlag ?? "--model-id"} ${baseId} --effort ${foldedEffort} instead.`;
     if (input.effort !== undefined && input.effort !== foldedEffort) {
       deprecated += ` The --effort "${input.effort}" you passed was used, not "${foldedEffort}".`;
     }

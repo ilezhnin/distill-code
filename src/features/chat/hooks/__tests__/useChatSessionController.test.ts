@@ -1,5 +1,6 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { serializeAgentModelRanking } from "@/features/agents/lib/agentModelRanking";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
@@ -573,6 +574,171 @@ describe("useChatSessionController", () => {
     expect(session?.runSettingsNotice).toBeUndefined();
     expect(mockAcpSetSessionConfigOption).not.toHaveBeenCalled();
     expect(mockAcpPrepareSession).not.toHaveBeenCalled();
+  });
+
+  describe("persona run settings", () => {
+    const OPUS_EFFORTS = [
+      { id: "low", name: "Low" },
+      { id: "high", name: "High" },
+      { id: "xhigh", name: "Extra high" },
+    ];
+
+    function rankedPersona() {
+      return personaFixture({
+        modelRanking: serializeAgentModelRanking({
+          version: 1,
+          entries: [
+            {
+              platform: "claude-acp",
+              modelId: "claude-opus-5",
+              label: "Opus 5",
+              effort: "xhigh",
+              fastMode: true,
+            },
+          ],
+        }),
+      });
+    }
+
+    function offerOpus() {
+      mockPickerState.availableModels = [
+        {
+          id: "claude-opus-5",
+          name: "claude-opus-5",
+          displayName: "Opus 5",
+          providerId: "claude-acp",
+          efforts: OPUS_EFFORTS,
+          supportsFast: true,
+        },
+      ];
+    }
+
+    it("gives a chat still being created a ranked persona's effort and fast mode", () => {
+      useAgentStore.setState({ personas: [rankedPersona()] });
+      offerOpus();
+      useChatSessionStore.setState({
+        sessions: [sessionFixture({ creationState: "pending" })],
+      });
+
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: "session-1" }),
+      );
+      act(() => {
+        result.current.handlePersonaChange("persona-1");
+      });
+
+      // Draft creation reads this intent when it sends session/new.
+      expect(
+        useChatSessionStore.getState().getSession("session-1")
+          ?.desiredRunSettings,
+      ).toEqual({ effort: "xhigh", fast: true });
+    });
+
+    it("holds a ranked persona's effort and fast mode for a Home chat that has no session yet", () => {
+      useAgentStore.setState({ personas: [rankedPersona()] });
+      offerOpus();
+
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: null, isHomeSession: true }),
+      );
+      act(() => {
+        result.current.handlePersonaChange("persona-1");
+      });
+
+      expect(result.current.pendingRunSettings).toEqual({
+        effort: "xhigh",
+        fast: true,
+      });
+    });
+
+    it("keeps an effort chosen in the composer over the persona's", () => {
+      useAgentStore.setState({ personas: [rankedPersona()] });
+      offerOpus();
+
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: null, isHomeSession: true }),
+      );
+      act(() => {
+        result.current.handleReasoningEffortChange("low");
+      });
+      act(() => {
+        result.current.handlePersonaChange("persona-1");
+      });
+
+      expect(result.current.pendingRunSettings).toEqual({
+        effort: "low",
+        fast: true,
+      });
+    });
+
+    it("records a single-model persona's stored effort and fast mode when it is picked in an existing chat", () => {
+      useAgentStore.setState({
+        personas: [
+          personaFixture({
+            provider: "claude-acp",
+            model: "claude-sonnet-4",
+            effort: "high",
+            fastMode: true,
+          }),
+        ],
+      });
+      mockPickerState.availableModels = [
+        {
+          id: "claude-sonnet-4",
+          name: "claude-sonnet-4",
+          displayName: "Claude Sonnet 4",
+          providerId: "claude-acp",
+        },
+      ];
+
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: "session-1" }),
+      );
+      act(() => {
+        result.current.handlePersonaChange("persona-1");
+      });
+
+      expect(
+        useChatSessionStore.getState().getSession("session-1")
+          ?.desiredRunSettings,
+      ).toEqual({ effort: "high", fast: true });
+    });
+
+    it("keeps a fast mode chosen in an existing chat's composer over the persona's", () => {
+      useAgentStore.setState({
+        personas: [
+          personaFixture({
+            provider: "claude-acp",
+            model: "claude-sonnet-4",
+            effort: "high",
+            fastMode: true,
+          }),
+        ],
+      });
+      mockPickerState.availableModels = [
+        {
+          id: "claude-sonnet-4",
+          name: "claude-sonnet-4",
+          displayName: "Claude Sonnet 4",
+          providerId: "claude-acp",
+        },
+      ];
+
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: "session-1" }),
+      );
+      act(() => {
+        result.current.handleFastModeChange(false);
+      });
+      act(() => {
+        result.current.handlePersonaChange("persona-1");
+      });
+
+      expect(
+        useChatSessionStore.getState().getSession("session-1")
+          ?.desiredRunSettings,
+      ).toEqual({ effort: "high", fast: false });
+    });
   });
 
   it("offers worktree setup before the first message is sent", () => {

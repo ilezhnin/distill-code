@@ -246,6 +246,34 @@ describe("berdctl command schema bounds", () => {
     ).toBe(true);
   });
 
+  it("agents.create bounds the effort, takes fast mode as a boolean and needs a model for either", () => {
+    const base = { name: "reviewer", system_prompt: "review code" };
+    const withModel = { ...base, provider: "codex-acp", model: "gpt-5.6-sol" };
+    expect(
+      createAgentSchema.safeParse({ ...withModel, effort: "a".repeat(201) })
+        .success,
+    ).toBe(false);
+    expect(
+      createAgentSchema.safeParse({ ...withModel, effort: "   " }).success,
+    ).toBe(false);
+    expect(
+      createAgentSchema.safeParse({ ...withModel, fast_mode: "on" }).success,
+    ).toBe(false);
+    expect(
+      createAgentSchema.safeParse({ ...base, effort: "high" }).success,
+    ).toBe(false);
+    expect(
+      createAgentSchema.safeParse({ ...base, fast_mode: true }).success,
+    ).toBe(false);
+    expect(
+      createAgentSchema.safeParse({
+        ...withModel,
+        effort: "xhigh",
+        fast_mode: true,
+      }).success,
+    ).toBe(true);
+  });
+
   it("defineCommand stays assignable to AppCommand when fields have defaults", async () => {
     // Compile-time check: input/output divergence from .default() must not
     // break `schema: ZodType<In, unknown>`, and defineCommand must infer

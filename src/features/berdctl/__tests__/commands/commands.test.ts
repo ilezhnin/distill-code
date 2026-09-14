@@ -950,27 +950,54 @@ describe("sessions.create", () => {
     expect(mocks.acpCreateSession).not.toHaveBeenCalled();
   });
 
-  it("records an offered effort and fast mode as the new chat's intent and reports them", async () => {
+  it("hands an offered effort and fast mode to session creation instead of patching them on afterwards", async () => {
     seedModelRows("codex-acp", CODEX_ROWS);
+    const store = useChatSessionStore.getState();
+    const createSession = vi.fn(store.createSession);
+    const patchSession = vi.fn(store.patchSession);
+    useChatSessionStore.setState({ createSession, patchSession });
 
-    const result = await dispatchCommand(
-      "sessions",
-      {
-        action: "create",
-        prompt: "hi",
-        harness_id: "codex-acp",
-        model_id: "gpt-5.6-sol",
-        effort: "xhigh",
-        fast_mode: true,
-      },
-      ctx,
+    let result: unknown;
+    try {
+      result = await dispatchCommand(
+        "sessions",
+        {
+          action: "create",
+          prompt: "hi",
+          harness_id: "codex-acp",
+          model_id: "gpt-5.6-sol",
+          effort: "xhigh",
+          fast_mode: true,
+        },
+        ctx,
+      );
+    } finally {
+      useChatSessionStore.setState({
+        createSession: store.createSession,
+        patchSession: store.patchSession,
+      });
+    }
+
+    expect(createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runSettings: { effort: "xhigh", fast: true },
+      }),
     );
-
+    // The first turn runs on them because they travel in `session/new`.
     expect(mocks.acpCreateSession).toHaveBeenCalledWith(
       "codex-acp",
       "/resolved/cwd",
-      expect.objectContaining({ modelId: "gpt-5.6-sol" }),
+      expect.objectContaining({
+        modelId: "gpt-5.6-sol",
+        reasoningEffort: "xhigh",
+        fastMode: true,
+      }),
     );
+    expect(
+      patchSession.mock.calls.some(
+        ([, patch]) => patch && "desiredRunSettings" in patch,
+      ),
+    ).toBe(false);
     expect(result).toMatchObject({
       model_id: "gpt-5.6-sol",
       effort: "xhigh",
@@ -4043,6 +4070,131 @@ describe("agents", () => {
     });
     expect(useAgentStore.getState().personas).toEqual([persona]);
     expect(result).toEqual({ agent_id: "/agents/reviewer.md" });
+  });
+
+  it("create stores an offered effort and fast mode on the persona", async () => {
+    seedModelRows("codex-acp", CODEX_ROWS);
+    mocks.createPersona.mockResolvedValue({
+      id: "/agents/planner.md",
+      displayName: "Planner",
+      systemPrompt: "Plan migrations",
+      isBuiltin: false,
+      writable: true,
+    });
+
+    const result = await dispatchCommand(
+      "agents",
+      {
+        action: "create",
+        name: "Planner",
+        system_prompt: "Plan migrations",
+        provider: "codex-acp",
+        model: "gpt-5.6-sol",
+        effort: "xhigh",
+        fast_mode: true,
+      },
+      ctx,
+    );
+
+    expect(mocks.createPersona).toHaveBeenCalledWith({
+      displayName: "Planner",
+      systemPrompt: "Plan migrations",
+      provider: "codex-acp",
+      modelProviderId: "codex-acp",
+      model: "gpt-5.6-sol",
+      effort: "xhigh",
+      fastMode: true,
+    });
+    expect(result).toEqual({ agent_id: "/agents/planner.md" });
+  });
+
+  it("create refuses an effort the named model does not offer and saves nothing", async () => {
+    seedModelRows("codex-acp", CODEX_ROWS);
+
+    const error = await expectCommandError(
+      dispatchCommand(
+        "agents",
+        {
+          action: "create",
+          name: "Planner",
+          system_prompt: "Plan migrations",
+          provider: "codex-acp",
+          model: "gpt-5.6-sol",
+          effort: "ultra",
+        },
+        ctx,
+      ),
+      "effort_not_available",
+    );
+    expect(error.message).toContain("low, high, xhigh");
+    expect(mocks.createPersona).not.toHaveBeenCalled();
+  });
+
+  it("create refuses fast mode on a model without it and saves nothing", async () => {
+    seedModelRows("codex-acp", CODEX_ROWS);
+
+    await expectCommandError(
+      dispatchCommand(
+        "agents",
+        {
+          action: "create",
+          name: "Sparky",
+          system_prompt: "Be quick",
+          provider: "codex-acp",
+          model: "gpt-5.3-codex-spark",
+          fast_mode: true,
+        },
+        ctx,
+      ),
+      "fast_not_supported",
+    );
+    expect(mocks.createPersona).not.toHaveBeenCalled();
+  });
+
+  it("create refuses an effort with no model before saving anything", async () => {
+    await expectCommandError(
+      dispatchCommand(
+        "agents",
+        {
+          action: "create",
+          name: "Planner",
+          system_prompt: "Plan migrations",
+          effort: "high",
+        },
+        ctx,
+      ),
+      "invalid_args",
+    );
+    expect(mocks.createPersona).not.toHaveBeenCalled();
+  });
+
+  it("create splits a legacy folded model id into model and effort and says it is deprecated", async () => {
+    seedModelRows("codex-acp", CODEX_ROWS);
+    mocks.createPersona.mockResolvedValue({
+      id: "/agents/planner.md",
+      displayName: "Planner",
+      systemPrompt: "Plan migrations",
+      isBuiltin: false,
+      writable: true,
+    });
+
+    const result = (await dispatchCommand(
+      "agents",
+      {
+        action: "create",
+        name: "Planner",
+        system_prompt: "Plan migrations",
+        provider: "codex-acp",
+        model: "gpt-5.6-sol[xhigh]",
+      },
+      ctx,
+    )) as Record<string, unknown>;
+
+    expect(mocks.createPersona).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "gpt-5.6-sol", effort: "xhigh" }),
+    );
+    // The note names this command's own flag, not session create's.
+    expect(result.deprecated).toContain("--model gpt-5.6-sol --effort xhigh");
   });
 
   it("list returns persona identities with summarized prompts", async () => {

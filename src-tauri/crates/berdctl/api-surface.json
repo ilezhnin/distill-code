@@ -905,7 +905,7 @@
       "description": "Manage the user's agents (personas): create, list.",
       "actions": {
         "create": {
-          "description": "Create a new agent (persona); it is saved and becomes available in future chats.",
+          "description": "Create a new agent (persona); it is saved and becomes available in future chats. Model, reasoning effort and fast mode are separate choices; an effort or fast mode is checked against what `berdctl info models` reports for the chosen model.",
           "fields": [
             {
               "name": "name",
@@ -927,15 +927,29 @@
               "name": "model",
               "required": false,
               "kind": "string",
-              "description": "Model the agent should use.",
+              "description": "Id of the model the agent should use (from `berdctl info models`). An old id with the effort folded in, like \"gpt-5.6-sol[xhigh]\", is still accepted and split, but is deprecated: pass --effort instead.",
               "max": 200
             },
             {
               "name": "provider",
               "required": false,
               "kind": "string",
-              "description": "Provider of the model the agent should use.",
+              "description": "Agent harness that serves the model (from `berdctl info harnesses`, e.g. \"claude-acp\", \"codex-acp\"). Required with --model.",
               "max": 200
+            },
+            {
+              "name": "effort",
+              "required": false,
+              "kind": "string",
+              "description": "Reasoning effort the agent's model runs at, in the harness's own words (e.g. \"high\", \"xhigh\"). Must be one of the efforts `berdctl info models` lists for that model, so it requires --model. Omit it to run at the model's default.",
+              "min": 1,
+              "max": 200
+            },
+            {
+              "name": "fast_mode",
+              "required": false,
+              "kind": "boolean",
+              "description": "Run the agent's model in fast mode. Only for a model `berdctl info models` reports with \"supports_fast\": true, so it requires --model. Omit it to keep the model's default."
             }
           ],
           "schema": {
@@ -955,14 +969,24 @@
                 "description": "System prompt that defines the agent's behavior."
               },
               "model": {
-                "description": "Model the agent should use.",
+                "description": "Id of the model the agent should use (from `berdctl info models`). An old id with the effort folded in, like \"gpt-5.6-sol[xhigh]\", is still accepted and split, but is deprecated: pass --effort instead.",
                 "type": "string",
                 "maxLength": 200
               },
               "provider": {
-                "description": "Provider of the model the agent should use.",
+                "description": "Agent harness that serves the model (from `berdctl info harnesses`, e.g. \"claude-acp\", \"codex-acp\"). Required with --model.",
                 "type": "string",
                 "maxLength": 200
+              },
+              "effort": {
+                "description": "Reasoning effort the agent's model runs at, in the harness's own words (e.g. \"high\", \"xhigh\"). Must be one of the efforts `berdctl info models` lists for that model, so it requires --model. Omit it to run at the model's default.",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "fast_mode": {
+                "description": "Run the agent's model in fast mode. Only for a model `berdctl info models` reports with \"supports_fast\": true, so it requires --model. Omit it to keep the model's default.",
+                "type": "boolean"
               }
             },
             "required": ["name", "system_prompt"],
