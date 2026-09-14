@@ -58,6 +58,6 @@ function isFragmentContinuation(
 ): boolean {
   return (
     row.kind === "assistant-content-fragment" &&
-    row.fragment?.isCodeContinuationChunk === true
+    row.fragment?.isContinuationChunk === true
   );
 }

@@ -769,7 +769,7 @@ function buildAssistantTextFragmentItems({
   });
 
   return textChunks.map((chunk, fragmentIndex) => {
-    const { text, isCodeContinuationChunk, startsWithHeading } = chunk;
+    const { text, isContinuationChunk, startsWithHeading } = chunk;
     const isStreamingTail = isStreaming && fragmentIndex === lastIndex;
     const fragmentId = useStreamingFragmentIds
       ? fragmentIndex === lastIndex
@@ -824,7 +824,7 @@ function buildAssistantTextFragmentItems({
         messageScrollTarget: isStreaming
           ? isStreamingTail
           : fragmentIndex === 0,
-        isCodeContinuationChunk,
+        isContinuationChunk,
         startsWithHeading,
       },
       renderRevision: [
@@ -1763,7 +1763,7 @@ type ParsedBlock =
 
 type AssistantFragmentChunk = {
   text: string;
-  isCodeContinuationChunk: boolean;
+  isContinuationChunk: boolean;
   startsWithHeading: boolean;
 };
 
@@ -2049,7 +2049,7 @@ function expandCodeBlockChunks(
   const { fenceOpener, codeLines, closingFence } = block;
   return {
     text: [fenceOpener, ...codeLines, closingFence].join("\n"),
-    isCodeContinuationChunk: false,
+    isContinuationChunk: false,
     startsWithHeading: false,
   };
 }
@@ -2090,18 +2090,21 @@ function splitTextBlockIntoChunks(
     isPotentialMarkdownTableRow(lines[0] ?? "") &&
     isMarkdownTableDelimiterLine(lines[1] ?? "");
   if (lines.length <= ASSISTANT_FRAGMENT_TARGET_LINE_COUNT || isTable) {
-    return [
-      { text, isCodeContinuationChunk: false, startsWithHeading: isHeading },
-    ];
+    return [{ text, isContinuationChunk: false, startsWithHeading: isHeading }];
   }
   const chunks: AssistantFragmentChunk[] = [];
   let startIndex = 0;
   while (startIndex < lines.length) {
     const remaining = lines.length - startIndex;
+    // Every chunk after the first carries on the same markdown block (one
+    // paragraph, quote or HTML block has no blank lines to split on), so it
+    // must sit flush against the previous chunk instead of opening a new
+    // paragraph gap in the middle of the text.
+    const isContinuationChunk = startIndex > 0;
     if (remaining <= ASSISTANT_FRAGMENT_TARGET_LINE_COUNT) {
       chunks.push({
         text: lines.slice(startIndex).join("\n"),
-        isCodeContinuationChunk: false,
+        isContinuationChunk,
         startsWithHeading: isHeading && startIndex === 0,
       });
       break;
@@ -2113,7 +2116,7 @@ function splitTextBlockIntoChunks(
     );
     chunks.push({
       text: lines.slice(startIndex, splitIndex).join("\n"),
-      isCodeContinuationChunk: false,
+      isContinuationChunk,
       startsWithHeading: isHeading && startIndex === 0,
     });
     startIndex = splitIndex;

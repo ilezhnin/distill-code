@@ -123,6 +123,40 @@ describe("transcript projection cache", () => {
     );
   });
 
+  it("keeps fragments of one long paragraph flush while separate paragraphs keep their gap", () => {
+    const cache = createTranscriptProjectionCache();
+    const prompt = message("user-1", "user", "prompt", utc(2026, 6, 4, 10));
+    const singleParagraph = message(
+      "assistant-single-paragraph",
+      "assistant",
+      longText("one paragraph", 132),
+      utc(2026, 6, 4, 10, 1),
+    );
+    const separateParagraphs = message(
+      "assistant-paragraphs",
+      "assistant",
+      multiParagraphText("separate paragraph", 3, 30),
+      utc(2026, 6, 4, 10, 2),
+    );
+
+    const snapshot = update(cache, [
+      prompt,
+      singleParagraph,
+      separateParagraphs,
+    ]);
+    const spacingFor = (messageId: string) =>
+      snapshot.rows
+        .filter(
+          (row) =>
+            row.kind === "assistant-content-fragment" &&
+            row.messageId === messageId,
+        )
+        .map((row) => row.spacingBefore);
+
+    expect(spacingFor("assistant-single-paragraph")).toEqual([16, 0, 0, 0]);
+    expect(spacingFor("assistant-paragraphs")).toEqual([16, 16, 16]);
+  });
+
   it("keeps long markdown tables on whole-message rows", () => {
     const cache = createTranscriptProjectionCache();
     const assistant = message(

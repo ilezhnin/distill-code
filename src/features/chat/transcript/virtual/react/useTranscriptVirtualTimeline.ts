@@ -1505,6 +1505,14 @@ export function useTranscriptVirtualTimeline({
     [commitSnapshot],
   );
 
+  // The coordinator republishes every accepted scroll write to the engine, so
+  // this is where the timeline itself last left the viewport. A scroll event
+  // reporting a different position was moved by something outside it.
+  const readObservedScrollTop = useCallback(
+    () => runtimeRef.current.controller?.getState().scrollTop ?? null,
+    [],
+  );
+
   const readRealRowCoverage = useCallback(
     (transcriptRoot?: HTMLElement | null) => {
       const controller = runtimeRef.current.controller;
@@ -1634,6 +1642,7 @@ export function useTranscriptVirtualTimeline({
     scrollToRow,
     scrollToBottom,
     writeScrollTop,
+    readObservedScrollTop,
     readRealRowCoverage,
     setRowFocused,
     markRowInteracted,
