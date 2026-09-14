@@ -32,6 +32,8 @@ interface ListSessionsResult {
     session_id: string;
     title: string;
     project_id: string | null;
+    effort: string | null;
+    fast_mode: boolean | null;
     updated_at: string;
     is_running: boolean;
     chat_state:
@@ -57,10 +59,13 @@ export const listSessionsCommand = defineCommand({
 
 Result:
   {"sessions": [{"session_id": "...", "title": "...",
-                 "project_id": "..."|null, "updated_at": "...",
+                 "project_id": "..."|null, "effort": "..."|null,
+                 "fast_mode": true|false|null, "updated_at": "...",
                  "is_running": false, "chat_state": "idle",
                  "message_count": 12}, ...]}
-  Most recent first; archived sessions are excluded.`,
+  Most recent first; archived sessions are excluded. "effort" and
+  "fast_mode" are what each session's model last acknowledged; null means
+  none was recorded and the model runs at its own default.`,
   schema: listSessionsSchema,
   execute: async (args): Promise<ListSessionsResult> => {
     const [
@@ -85,11 +90,10 @@ Result:
     // table; an unfiltered list stops as soon as it has `limit` rows. Agents
     // (and berd-monitor's delivery loop) poll this command, and every page
     // costs an IPC round-trip plus a session-store write the sidebar renders.
-    if (args.project_id || args.query) {
-      await loadAllSessionsForBerdctl();
-    } else {
-      await loadRecentSessionsForBerdctl(args.limit);
-    }
+    const hostSessions =
+      args.project_id || args.query
+        ? await loadAllSessionsForBerdctl()
+        : await loadRecentSessionsForBerdctl(args.limit);
     const query = args.query?.toLowerCase();
     const sessions = useChatSessionStore
       .getState()
@@ -102,11 +106,13 @@ Result:
       )
       .slice(0, args.limit)
       .map((session) => {
-        const metadata = sessionMetadata(session);
+        const metadata = sessionMetadata(session, hostSessions.get(session.id));
         return {
           session_id: session.id,
           title: session.title,
           project_id: session.projectId ?? null,
+          effort: metadata.effort,
+          fast_mode: metadata.fast_mode,
           updated_at: session.updatedAt,
           is_running: metadata.is_running,
           chat_state: metadata.chat_state,

@@ -11,16 +11,20 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
   acpGetSessionInfo,
   acpListSessionsPage,
+  type AcpSessionInfo,
   type AcpSessionsPage,
 } from "@/shared/api/acp";
 import { sessionNotFoundMessage } from "../helpers";
 import { CommandError } from "../types";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 
+/** The host's own rows from the last read, keyed by session id. */
+export type HostSessionInfoById = Map<string, AcpSessionInfo>;
+
 /** Walks the whole session table. Only for reads that genuinely need it —
  *  `project get` counts a project's sessions and resolves group membership. */
-export async function loadAllSessionsForBerdctl(): Promise<void> {
-  await loadSessionsForBerdctl(null);
+export async function loadAllSessionsForBerdctl(): Promise<HostSessionInfoById> {
+  return loadSessionsForBerdctl(null);
 }
 
 /**
@@ -36,11 +40,13 @@ export async function loadAllSessionsForBerdctl(): Promise<void> {
  */
 export async function loadRecentSessionsForBerdctl(
   rowLimit: number,
-): Promise<void> {
-  await loadSessionsForBerdctl(rowLimit);
+): Promise<HostSessionInfoById> {
+  return loadSessionsForBerdctl(rowLimit);
 }
 
-async function loadSessionsForBerdctl(rowLimit: number | null): Promise<void> {
+async function loadSessionsForBerdctl(
+  rowLimit: number | null,
+): Promise<HostSessionInfoById> {
   try {
     const pages: Array<{
       page: AcpSessionsPage;
@@ -84,6 +90,14 @@ async function loadSessionsForBerdctl(rowLimit: number | null): Promise<void> {
       }
       return { ...merged, hasHydratedSessions: true, isLoading: false };
     });
+    // The chat store has no place for the host's acknowledged run settings of
+    // a chat nobody opened, so the rows this read fetched are handed back to
+    // the command that asked for them instead.
+    return new Map(
+      pages.flatMap(({ page }) =>
+        page.sessions.map((session) => [session.sessionId, session] as const),
+      ),
+    );
   } catch (error) {
     throw new CommandError(
       "backend_read_failed",
@@ -92,12 +106,15 @@ async function loadSessionsForBerdctl(rowLimit: number | null): Promise<void> {
   }
 }
 
-export async function loadSessionForBerdctl(sessionId: string): Promise<void> {
+export async function loadSessionForBerdctl(
+  sessionId: string,
+): Promise<AcpSessionInfo> {
   try {
     const session = await acpGetSessionInfo(sessionId);
     useChatSessionStore.setState((state) =>
       mergeAcpSessionInfo(state, session),
     );
+    return session;
   } catch (error) {
     if (isAcpResourceNotFound(error)) {
       throw new CommandError(
@@ -169,13 +186,24 @@ export async function refuseChatWithLiveTerminals(
   );
 }
 
-export function sessionMetadata(session: ChatSession) {
+export function sessionMetadata(
+  session: ChatSession,
+  hostSession?: AcpSessionInfo,
+) {
   const runtime = useChatStore.getState().getSessionRuntime(session.id);
   return {
     session_id: session.id,
     title: session.title,
     harness_id: session.executionTarget?.harnessId ?? DEFAULT_HARNESS_ID,
     model_id: session.executionTarget?.modelId ?? null,
+    // The host's value is what the bridge last acknowledged for this chat, so
+    // it answers even for a chat nobody has opened in this window. The
+    // window's live menu only fills in for a host that does not say.
+    effort:
+      hostSession?.reasoningEffort ??
+      session.reasoningEffort?.currentValue ??
+      null,
+    fast_mode: hostSession?.fastMode ?? session.fastMode?.enabled ?? null,
     agent_id: session.personaId ?? null,
     project_id: session.projectId ?? null,
     working_dir: session.workingDir ?? null,

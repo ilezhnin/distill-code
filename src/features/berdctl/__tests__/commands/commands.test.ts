@@ -25,6 +25,7 @@ import {
   type ChatSession,
 } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import type { ModelOption } from "@/features/chat/types";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { DEFAULT_PROJECT_COLOR } from "@/features/projects/lib/projectDefaults";
 import { DEFAULT_PROJECT_ICON } from "@/features/projects/lib/projectIcons";
@@ -300,6 +301,44 @@ function seedModelCache(cacheKey: string, modelIds: string[]): void {
     return { providers };
   });
 }
+
+/** Seed inventory rows that carry what each model offers, the shape the
+ *  host inventory maps to. */
+function seedModelRows(cacheKey: string, rows: ModelOption[]): void {
+  useProviderModelCacheStore.setState((state) => {
+    const providers = new Map(state.providers);
+    providers.set(cacheKey, {
+      providerId: cacheKey,
+      models: rows,
+      fetchedAt: Date.now(),
+    });
+    return { providers };
+  });
+}
+
+const CODEX_ROWS: ModelOption[] = [
+  {
+    id: "gpt-5.6-sol",
+    name: "GPT-5.6-Sol",
+    group: "main",
+    efforts: [
+      { id: "low", name: "Low" },
+      { id: "high", name: "High" },
+      { id: "xhigh", name: "Extra High" },
+    ],
+    defaultEffort: "high",
+    supportsFast: true,
+    capabilitySource: "probed",
+  },
+  {
+    id: "gpt-5.3-codex-spark",
+    name: "GPT-5.3-Codex-Spark",
+    group: "main",
+    efforts: [],
+    supportsFast: false,
+    capabilitySource: "probed",
+  },
+];
 
 async function expectCommandError(
   promise: Promise<unknown>,
@@ -678,6 +717,9 @@ describe("sessions.create", () => {
       session_id: "session-new",
       title: DEFAULT_CHAT_TITLE,
       harness_id: "claude-acp",
+      model_id: "model-9",
+      effort: null,
+      fast_mode: null,
       send_status: "dispatched",
     });
 
@@ -832,6 +874,165 @@ describe("sessions.create", () => {
       "/resolved/cwd",
       expect.objectContaining({ modelId: "gpt-6" }),
     );
+  });
+
+  it("refuses an effort the chosen model does not offer and names what it does", async () => {
+    seedModelRows("codex-acp", CODEX_ROWS);
+
+    const error = await expectCommandError(
+      dispatchCommand(
+        "sessions",
+        {
+          action: "create",
+          prompt: "hi",
+          harness_id: "codex-acp",
+          model_id: "gpt-5.6-sol",
+          effort: "ultra",
+        },
+        ctx,
+      ),
+      "effort_not_available",
+    );
+    expect(error.message).toContain("low, high, xhigh");
+    expect(mocks.acpCreateSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses an effort on a model with no effort control", async () => {
+    seedModelRows("codex-acp", CODEX_ROWS);
+
+    await expectCommandError(
+      dispatchCommand(
+        "sessions",
+        {
+          action: "create",
+          prompt: "hi",
+          harness_id: "codex-acp",
+          model_id: "gpt-5.3-codex-spark",
+          effort: "high",
+        },
+        ctx,
+      ),
+      "effort_not_available",
+    );
+    expect(mocks.acpCreateSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses fast mode on a model without it with fast_not_supported", async () => {
+    seedModelRows("codex-acp", CODEX_ROWS);
+
+    await expectCommandError(
+      dispatchCommand(
+        "sessions",
+        {
+          action: "create",
+          prompt: "hi",
+          harness_id: "codex-acp",
+          model_id: "gpt-5.3-codex-spark",
+          fast_mode: true,
+        },
+        ctx,
+      ),
+      "fast_not_supported",
+    );
+    expect(mocks.acpCreateSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses effort or fast mode without a model to check them against", async () => {
+    await expectCommandError(
+      dispatchCommand(
+        "sessions",
+        { action: "create", prompt: "hi", effort: "high" },
+        ctx,
+      ),
+      "invalid_args",
+    );
+    expect(mocks.discoverAcpProviders).not.toHaveBeenCalled();
+    expect(mocks.acpCreateSession).not.toHaveBeenCalled();
+  });
+
+  it("records an offered effort and fast mode as the new chat's intent and reports them", async () => {
+    seedModelRows("codex-acp", CODEX_ROWS);
+
+    const result = await dispatchCommand(
+      "sessions",
+      {
+        action: "create",
+        prompt: "hi",
+        harness_id: "codex-acp",
+        model_id: "gpt-5.6-sol",
+        effort: "xhigh",
+        fast_mode: true,
+      },
+      ctx,
+    );
+
+    expect(mocks.acpCreateSession).toHaveBeenCalledWith(
+      "codex-acp",
+      "/resolved/cwd",
+      expect.objectContaining({ modelId: "gpt-5.6-sol" }),
+    );
+    expect(result).toMatchObject({
+      model_id: "gpt-5.6-sol",
+      effort: "xhigh",
+      fast_mode: true,
+    });
+    expect(result).not.toHaveProperty("deprecated");
+    expect(
+      useChatSessionStore.getState().getSession("session-new")
+        ?.desiredRunSettings,
+    ).toEqual({ effort: "xhigh", fast: true });
+  });
+
+  it("splits a legacy folded model id and answers with a deprecated note", async () => {
+    seedModelRows("codex-acp", CODEX_ROWS);
+
+    const result = (await dispatchCommand(
+      "sessions",
+      {
+        action: "create",
+        prompt: "hi",
+        harness_id: "codex-acp",
+        model_id: "gpt-5.6-sol[xhigh]",
+      },
+      ctx,
+    )) as Record<string, unknown>;
+
+    expect(mocks.acpCreateSession).toHaveBeenCalledWith(
+      "codex-acp",
+      "/resolved/cwd",
+      expect.objectContaining({ modelId: "gpt-5.6-sol" }),
+    );
+    expect(result).toMatchObject({
+      model_id: "gpt-5.6-sol",
+      effort: "xhigh",
+      fast_mode: null,
+    });
+    expect(result.deprecated).toContain(
+      "--model-id gpt-5.6-sol --effort xhigh",
+    );
+    expect(
+      useChatSessionStore.getState().getSession("session-new")
+        ?.desiredRunSettings,
+    ).toEqual({ effort: "xhigh" });
+  });
+
+  it("checks the effort a folded model id carries against the model", async () => {
+    seedModelRows("codex-acp", CODEX_ROWS);
+
+    await expectCommandError(
+      dispatchCommand(
+        "sessions",
+        {
+          action: "create",
+          prompt: "hi",
+          harness_id: "codex-acp",
+          model_id: "gpt-5.6-sol[max]",
+        },
+        ctx,
+      ),
+      "effort_not_available",
+    );
+    expect(mocks.acpCreateSession).not.toHaveBeenCalled();
   });
 
   it("resolves the cwd from the project when project_id is given", async () => {
@@ -1890,6 +2091,8 @@ describe("sessions.list", () => {
           projectId: null,
           providerId: null,
           modelId: null,
+          reasoningEffort: "high",
+          fastMode: false,
           personaId: null,
         },
       ],
@@ -1907,6 +2110,8 @@ describe("sessions.list", () => {
           session_id: "session-a",
           title: "Loaded Session",
           project_id: null,
+          effort: "high",
+          fast_mode: false,
           updated_at: "2026-04-02T00:00:00.000Z",
           is_running: true,
           chat_state: "streaming",
@@ -2102,6 +2307,8 @@ describe("sessions.get", () => {
     mockSessionFound({
       providerId: "codex-acp",
       modelId: "gpt-6",
+      reasoningEffort: "xhigh",
+      fastMode: true,
       projectId: "p-1",
       workingDir: "/work",
     });
@@ -2117,6 +2324,8 @@ describe("sessions.get", () => {
       title: "Test Session",
       harness_id: "codex-acp",
       model_id: "gpt-6",
+      effort: "xhigh",
+      fast_mode: true,
       agent_id: null,
       project_id: "p-1",
       working_dir: "/work",
@@ -2129,6 +2338,22 @@ describe("sessions.get", () => {
       message_count: 2,
     });
     expect(mocks.lastSessionMessages).not.toHaveBeenCalled();
+  });
+
+  it("reports null effort and fast mode when the host recorded none", async () => {
+    mockSessionFound({ providerId: "claude-acp", modelId: "opus[1m]" });
+
+    const result = await dispatchCommand(
+      "sessions",
+      { action: "get", session_id: "session-1" },
+      ctx,
+    );
+
+    expect(result).toMatchObject({
+      model_id: "opus[1m]",
+      effort: null,
+      fast_mode: null,
+    });
   });
 
   it("reports whether the session chat is running", async () => {
@@ -2329,6 +2554,10 @@ describe("sessions.fork", () => {
         sessionId: "session-fork",
         title: "Alternate approach",
         messageCount: 2,
+        providerId: "claude-acp",
+        modelId: "claude-opus-4-7",
+        reasoningEffort: "high",
+        fastMode: true,
       }),
     );
 
@@ -2347,6 +2576,10 @@ describe("sessions.fork", () => {
       session_id: "session-fork",
       title: "Alternate approach",
       source_session_id: "session-1",
+      harness_id: "claude-acp",
+      model_id: "claude-opus-4-7",
+      effort: "high",
+      fast_mode: true,
       message_count: 2,
     });
     expect(
@@ -3978,8 +4211,58 @@ describe("info", () => {
         {
           harness_id: "codex-acp",
           models: [
-            { model_id: "gpt-6", name: "gpt-6" },
-            { model_id: "gpt-6-mini", name: "gpt-6-mini" },
+            {
+              model_id: "gpt-6",
+              name: "gpt-6",
+              group: "main",
+              efforts: null,
+              default_effort: null,
+              supports_fast: null,
+            },
+            {
+              model_id: "gpt-6-mini",
+              name: "gpt-6-mini",
+              group: "main",
+              efforts: null,
+              default_effort: null,
+              supports_fast: null,
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("list_models reports base ids with each model's efforts and fast mode", async () => {
+    seedModelRows("codex-acp", CODEX_ROWS);
+
+    const result = await dispatchCommand(
+      "info",
+      { action: "list_models", harness_id: "codex-acp" },
+      ctx,
+    );
+
+    expect(result).toEqual({
+      harnesses: [
+        {
+          harness_id: "codex-acp",
+          models: [
+            {
+              model_id: "gpt-5.6-sol",
+              name: "GPT-5.6-Sol",
+              group: "main",
+              efforts: ["low", "high", "xhigh"],
+              default_effort: "high",
+              supports_fast: true,
+            },
+            {
+              model_id: "gpt-5.3-codex-spark",
+              name: "GPT-5.3-Codex-Spark",
+              group: "main",
+              efforts: [],
+              default_effort: null,
+              supports_fast: false,
+            },
           ],
         },
       ],

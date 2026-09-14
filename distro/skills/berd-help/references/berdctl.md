@@ -21,3 +21,19 @@ organized as `berdctl <noun> <verb>` (for example `berdctl session list`,
   command claims to do something the user can't also see reflected in the
   UI, that's a signal to double check with `--help` rather than trust
   recall.
+
+## Model, effort and speed are separate choices
+
+A model id names a model and nothing else. Reasoning effort and fast mode
+are separate choices, and each model offers its own set of them.
+
+- `berdctl info models` lists every model's `efforts` and `supports_fast`.
+  Choose an effort from that model's list; do not glue it onto the id.
+  Ids like `gpt-5.6-sol[xhigh]` are an old spelling that is still accepted
+  but answered with a `deprecated` note.
+- `berdctl session create` takes the effort and fast mode as their own flags
+  next to `--model-id`, and refuses a value the chosen model does not offer
+  with `effort_not_available` (the message names what it does offer) or
+  `fast_not_supported`.
+- `berdctl session get` and `berdctl session list` report the `effort` and
+  `fast_mode` each session's model last acknowledged.

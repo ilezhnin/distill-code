@@ -25,7 +25,31 @@ const createSessionSchema = z
       .string()
       .max(BERDCTL_BOUNDS.id)
       .optional()
-      .describe("Id of the model to use (from `berdctl info models`)."),
+      .describe(
+        "Id of the model to use (from `berdctl info models`). An old id with " +
+          'the effort folded in, like "gpt-5.6-sol[xhigh]", is still accepted ' +
+          "and split, but is deprecated: pass --effort instead.",
+      ),
+    effort: z
+      .string()
+      .trim()
+      .min(1)
+      .max(BERDCTL_BOUNDS.id)
+      .optional()
+      .describe(
+        "Reasoning effort to run the model at, in the harness's own words " +
+          '(e.g. "high", "xhigh"). Must be one of the efforts `berdctl info ' +
+          "models` lists for the chosen model, so it requires --model-id. " +
+          "Omit it to run at the model's default.",
+      ),
+    fast_mode: z
+      .boolean()
+      .optional()
+      .describe(
+        "Run the model in fast mode. Only for a model `berdctl info models` " +
+          'reports with "supports_fast": true, so it requires --model-id. ' +
+          "Omit it to keep the model's default.",
+      ),
     agent_id: z
       .string()
       .max(BERDCTL_BOUNDS.id)
@@ -74,7 +98,11 @@ interface CreateSessionResult {
   session_id: string;
   title: string;
   harness_id: string;
+  model_id: string | null;
+  effort: string | null;
+  fast_mode: boolean | null;
   send_status: "dispatched";
+  deprecated?: string;
 }
 
 export const createSessionCommand = defineCommand({
@@ -87,25 +115,47 @@ export const createSessionCommand = defineCommand({
     "Create a new chat session on any installed agent harness and send the prompt in it. " +
     "Fire-and-forget: returns the session id immediately and the session runs in the " +
     "background without changing what the user sees; the user can open it themselves. " +
+    "Model, reasoning effort and fast mode are separate choices, each checked against " +
+    "what `berdctl info models` reports for the chosen model. " +
     "Use --from to give the delegating session or tool a concise visible label on " +
     "the initial message. " +
     'Only check on it later (action "get") if the user asks.',
   helpFooter: `Examples:
   berdctl session create --prompt "Triage the failing nightly build" \\
     --harness-id claude-acp --from "the release orchestrator" --json
+  berdctl session create --prompt "Plan the migration" \\
+    --harness-id codex-acp --model-id gpt-5.6-sol --effort xhigh --fast-mode
   berdctl session create --prompt "Implement the fix" \\
     --project-id <project-id> --startup-name my-feature
 
 Result:
   {"session_id": "...", "title": "...", "harness_id": "...",
-   "send_status": "dispatched"}
-  The session runs in the background; the user's view does not change. Check
-  progress later with \`berdctl session get --session-id <session_id>\`.`,
+   "model_id": "..."|null, "effort": "..."|null,
+   "fast_mode": true|false|null, "send_status": "dispatched",
+   "deprecated": "..."?}
+  "model_id", "effort" and "fast_mode" echo the choices the session was
+  created with; null leaves that choice to the harness or model default.
+  "deprecated" appears when --model-id folded an effort in and says what to
+  pass instead. The session runs in the background; the user's view does not
+  change. Check progress later with
+  \`berdctl session get --session-id <session_id>\`.`,
   schema: createSessionSchema,
   // Backend session create is a real round-trip; everything after it is
   // fire-and-forget.
   bridgeTimeoutMs: 900_000,
   execute: async (args, ctx): Promise<CreateSessionResult> => {
+    // Effort and fast mode are only meaningful for a known model: with none
+    // named, the harness opens on a default the operator's own settings pick,
+    // so there is nothing to check them against. Refused before any I/O.
+    if (
+      !args.model_id &&
+      (args.effort !== undefined || args.fast_mode !== undefined)
+    ) {
+      throw new CommandError(
+        "invalid_args",
+        "--effort and --fast-mode are checked against the model they run on; pass --model-id (from `berdctl info models`) with them.",
+      );
+    }
     const [
       { enforceBerdctlSpawnAcl, registerBerdctlChildNode },
       { acceptFirstSend },
@@ -120,9 +170,14 @@ Result:
       { berdctlCrossSessionSendOptions },
       { DEFAULT_HARNESS_ID },
       { normalizeSessionExecutionTarget, targetFromAgentModelSelection },
+      { normalizeSessionRunSettings },
       { findPersonaOrThrow },
       { findProjectOrThrow },
-      { findReadyHarnessOrThrow, harnessModelOptions },
+      {
+        findReadyHarnessOrThrow,
+        harnessModelOptions,
+        resolveRequestedModelSelection,
+      },
     ] = await Promise.all([
       import("../runtime/spawnGate"),
       import("@/features/chat/lib/firstWorkspaceSend"),
@@ -132,6 +187,7 @@ Result:
       import("../runtime/sessionSend"),
       import("@/features/providers/curatedProviders"),
       import("@/features/chat/lib/sessionExecutionTarget"),
+      import("@/features/chat/lib/sessionRunSettings"),
       import("../runtime/agents"),
       import("../runtime/projects"),
       import("../runtime/providers"),
@@ -157,22 +213,20 @@ Result:
       targetLayer: "worker",
       targetPersona: persona,
     });
-    // Soft model validation: only reject when the harness's model list is
-    // known and the id is not in it.
-    if (args.model_id && models) {
-      const match = models.find((model) => model.model_id === args.model_id);
-      if (!match && models.length > 0) {
-        throw new CommandError(
-          "model_not_found",
-          `Model "${args.model_id}" is not available on "${harnessId}"; list models with \`berdctl info models\`.`,
-        );
-      }
-    }
-    const executionTarget = args.model_id
+    // Soft validation: the model, its effort and fast mode are refused only
+    // when the harness's model list is known and says no.
+    const selection = resolveRequestedModelSelection({
+      harnessId,
+      models,
+      modelId: args.model_id,
+      effort: args.effort,
+      fastMode: args.fast_mode,
+    });
+    const executionTarget = selection.modelId
       ? targetFromAgentModelSelection(harnessId, {
           modelProviderId: harnessId,
-          modelId: args.model_id,
-          modelName: args.model_id,
+          modelId: selection.modelId,
+          modelName: selection.modelName ?? selection.modelId,
         })
       : normalizeSessionExecutionTarget({ harnessId });
     const requiresStartupName = Boolean(
@@ -226,6 +280,20 @@ Result:
       await rollbackProjectChatWorkspacePlan(workspacePlan);
       throw error;
     }
+    // Effort and fast mode are recorded as the chat's intent, the same record
+    // the composer writes, before the first message is queued. The send path
+    // applies intent in the model apply's own mutation, and a model that
+    // turns a value down keeps the intent and shows a notice instead of
+    // silently running at something else.
+    const desiredRunSettings = normalizeSessionRunSettings({
+      effort: selection.effort,
+      fast: selection.fastMode,
+    });
+    if (desiredRunSettings) {
+      useChatSessionStore
+        .getState()
+        .patchSession(session.id, { desiredRunSettings });
+    }
     registerBerdctlChildNode({
       actor: ctx.actor,
       sessionId: session.id,
@@ -258,7 +326,11 @@ Result:
       session_id: session.id,
       title: session.title,
       harness_id: harnessId,
+      model_id: selection.modelId ?? null,
+      effort: selection.effort ?? null,
+      fast_mode: selection.fastMode ?? null,
       send_status: "dispatched" as const,
+      ...(selection.deprecated ? { deprecated: selection.deprecated } : {}),
     };
   },
 });
