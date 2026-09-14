@@ -43,8 +43,8 @@ export const CURATED_PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     group: "default",
     aliases: ["grok-acp", "grok_cli", "grok-cli", "grok"],
     supportsInstall: true,
-    supportsAuth: false,
-    supportsAuthStatus: false,
+    supportsAuth: true,
+    supportsAuthStatus: true,
   },
   {
     id: "copilot-acp",

@@ -415,10 +415,16 @@ async fn find_check_with_options(
     check_freshness: bool,
 ) -> Result<doctor::DoctorCheck, String> {
     let target = crate_check_id(provider_id);
-    run_crate_check_report(app, check_freshness)
+    if let Some(check) = run_crate_check_report(app, check_freshness)
         .await
         .into_iter()
         .find(|check| check.id == target)
+    {
+        return Ok(check);
+    }
+    // Agents the crate doesn't know (Grok) are Distill's own local checks.
+    crate::commands::doctor::run_local_agent_check(&target, &setup_prepend_dirs(app))
+        .await
         .ok_or_else(|| format!("Unknown agent provider '{provider_id}'"))
 }
 
@@ -626,22 +632,27 @@ enum AuthCapability {
 /// The sign-in capability the pinned crate declares for a crate check id
 /// (`ai-agent-*`). Resolved from the static `AI_AGENT_CHECKS` table so the auth
 /// gate authorizes against backend-owned recipe metadata, not a renderer claim.
-/// An unknown id has no capability, so auth is never authorized for it.
+/// A local agent check with a sign-in probe (Grok) is probe-capable. An unknown
+/// id has no capability, so auth is never authorized for it.
 fn auth_capability(check_id: &str) -> AuthCapability {
-    doctor::agents::AI_AGENT_CHECKS
+    if let Some(info) = doctor::agents::AI_AGENT_CHECKS
         .iter()
         .find(|info| info.id == check_id)
-        .map(|info| {
-            match (
-                info.auth_command.is_some(),
-                info.auth_status_command.is_some(),
-            ) {
-                (false, _) => AuthCapability::None,
-                (true, true) => AuthCapability::Probeable,
-                (true, false) => AuthCapability::Unprobeable,
-            }
-        })
-        .unwrap_or(AuthCapability::None)
+    {
+        return match (
+            info.auth_command.is_some(),
+            info.auth_status_command.is_some(),
+        ) {
+            (false, _) => AuthCapability::None,
+            (true, true) => AuthCapability::Probeable,
+            (true, false) => AuthCapability::Unprobeable,
+        };
+    }
+    if crate::commands::doctor::local_agent_login_command(check_id).is_some() {
+        AuthCapability::Probeable
+    } else {
+        AuthCapability::None
+    }
 }
 
 /// Authorize a renderer-requested `Auth` action against the provider's current
@@ -895,7 +906,11 @@ async fn run_auth(
     let check = find_check(app, provider_id).await?;
     authorize_auth(provider_id, &check)?;
     set_phase(app, registry, provider_id, SetupPhase::Authenticating);
-    run_fix(app, registry, provider_id, FixType::Auth, None).await?;
+    // Crate agents resolve their login from the crate table; a local agent
+    // (Grok) has none there, so its backend-owned login command is supplied.
+    let login_command =
+        crate::commands::doctor::local_agent_login_command(&check.id).map(str::to_string);
+    run_fix(app, registry, provider_id, FixType::Auth, login_command).await?;
 
     if plan.verify_install {
         set_phase(app, registry, provider_id, SetupPhase::Checking);
@@ -1344,6 +1359,24 @@ mod tests {
         assert!(authorize_auth("codex-acp", &check).is_err());
         check.fix_type = None;
         assert!(authorize_auth("codex-acp", &check).is_err());
+    }
+
+    #[test]
+    fn authorize_auth_allows_grok_sign_in_only_while_its_check_offers_it() {
+        // Grok is a local check with a sign-in probe, so it is probe-capable:
+        // sign-in runs only while the check reports `Auth` (installed, signed
+        // out) — never against a missing install or a signed-in account.
+        let mut check = check_with_fix(Some(FixType::Auth));
+        check.id = "ai-agent-grok".into();
+        check.path = Some("C:\\Users\\dev\\.grok\\bin\\grok.exe".into());
+        assert_eq!(auth_capability("ai-agent-grok"), AuthCapability::Probeable);
+        assert!(authorize_auth("grok-acp", &check).is_ok());
+
+        check.fix_type = None;
+        assert!(authorize_auth("grok-acp", &check).is_err());
+        check.fix_type = Some(FixType::Command);
+        check.path = None;
+        assert!(authorize_auth("grok-acp", &check).is_err());
     }
 
     #[test]
