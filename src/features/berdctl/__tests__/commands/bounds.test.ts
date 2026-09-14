@@ -127,6 +127,27 @@ describe("berdctl command schema bounds", () => {
     ).toBe(true);
   });
 
+  it("sessions.create bounds the effort and takes fast mode as a boolean", () => {
+    const base = { prompt: "hi", model_id: "gpt-5.6-sol" };
+    expect(
+      createSessionSchema.safeParse({ ...base, effort: "a".repeat(201) })
+        .success,
+    ).toBe(false);
+    expect(
+      createSessionSchema.safeParse({ ...base, effort: "   " }).success,
+    ).toBe(false);
+    expect(
+      createSessionSchema.safeParse({ ...base, fast_mode: "on" }).success,
+    ).toBe(false);
+    expect(
+      createSessionSchema.safeParse({
+        ...base,
+        effort: "xhigh",
+        fast_mode: true,
+      }).success,
+    ).toBe(true);
+  });
+
   it("sessions.send bounds prompt and defaults if_running to refuse", () => {
     expect(sendSessionSchema.safeParse({ session_id: "s1" }).success).toBe(
       false,

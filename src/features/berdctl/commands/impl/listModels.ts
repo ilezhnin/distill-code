@@ -21,6 +21,10 @@ interface ModelEntry {
   name: string;
   /** Model provider the model belongs to, when the harness reports one. */
   provider?: string;
+  group: "main" | "more";
+  efforts: string[] | null;
+  default_effort: string | null;
+  supports_fast: boolean | null;
 }
 
 interface ListModelsResult {
@@ -40,19 +44,30 @@ export const listModelsCommand = defineCommand({
   summary: "List the models available per agent harness",
   description:
     "List the models available per agent harness (same source as the app's " +
-    "model picker); omit harness_id to cover every ready harness in one " +
-    "call. Use a model_id (and its harness_id) when creating a session.",
+    "model picker), with the reasoning efforts and fast mode each model " +
+    "offers; omit harness_id to cover every ready harness in one call. Use a " +
+    "model_id (and its harness_id) when creating a session.",
   helpFooter: `Example:
-  berdctl info models --harness-id claude-acp --json
+  berdctl info models --harness-id codex-acp --json
 
 Result:
   {"harnesses": [{"harness_id": "...",
                   "models": [{"model_id": "...", "name": "...",
-                              "provider": "..."?}],
+                              "provider": "..."?,
+                              "group": "main"|"more",
+                              "efforts": ["low", "high", ...]|null,
+                              "default_effort": "..."|null,
+                              "supports_fast": true|false|null}],
                   "warning": "..."?}]}
-  Use a model_id (with its harness) as --model-id when creating a session.
-  "warning" appears when a stale cached list was served or when the harness
-  manages its model outside the app.`,
+  Model, effort and fast mode are separate choices: a model_id never carries
+  an effort. Pass a model_id (with its harness) as --model-id when creating a
+  session, pick --effort from that model's "efforts", and pass --fast-mode
+  only where "supports_fast" is true. "efforts": [] means the model has no
+  effort control; null in "efforts" or "supports_fast" means the app has not
+  learned what the model offers. "group" is the picker page the model is
+  filed under ("more" is the More models page). "warning" appears when a
+  stale cached list was served or when the harness manages its model outside
+  the app.`,
   schema: listModelsSchema,
   execute: async (args): Promise<ListModelsResult> => {
     const [

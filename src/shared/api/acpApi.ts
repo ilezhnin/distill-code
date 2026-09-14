@@ -44,6 +44,15 @@ export interface AcpSessionInfo {
   projectId?: string | null;
   providerId: string | null;
   modelId: string | null;
+  /**
+   * The reasoning effort the host last saw the bridge acknowledge for this
+   * chat's model, in the harness's own vocabulary. Null when nobody chose one
+   * and the model runs at its own default. Optional because a host older than
+   * the run-settings split never sends it.
+   */
+  reasoningEffort?: string | null;
+  /** Acknowledged fast mode, with the same null and absence rules as effort. */
+  fastMode?: boolean | null;
   personaId: string | null;
   activeRunId?: string | null;
 }
@@ -80,6 +89,14 @@ function metaNumber(
   return typeof value === "number" ? value : null;
 }
 
+function metaBoolean(
+  meta: SessionInfo["_meta"] | null | undefined,
+  key: string,
+): boolean | null {
+  const value = meta?.[key];
+  return typeof value === "boolean" ? value : null;
+}
+
 function mapSessionInfo(info: SessionInfo): AcpSessionInfo {
   const meta = info._meta;
   const activeRunValue =
@@ -103,6 +120,12 @@ function mapSessionInfo(info: SessionInfo): AcpSessionInfo {
     projectId: metaString(meta, "projectId"),
     providerId: metaString(meta, "providerId"),
     modelId: metaString(meta, "modelId"),
+    ...(meta && "reasoningEffort" in meta
+      ? { reasoningEffort: metaString(meta, "reasoningEffort") }
+      : {}),
+    ...(meta && "fastMode" in meta
+      ? { fastMode: metaBoolean(meta, "fastMode") }
+      : {}),
     personaId: metaString(meta, "personaId"),
     ...(activeRunId !== undefined ? { activeRunId } : {}),
   };
@@ -184,6 +207,14 @@ export async function forkSession(
     projectId: metaString(response._meta, "projectId"),
     providerId: metaString(response._meta, "providerId"),
     modelId: metaString(response._meta, "modelId"),
+    // The host opens a fork on the source's stored selection and answers with
+    // what the bridge acknowledged for it; an older host says nothing.
+    ...(response._meta && "reasoningEffort" in response._meta
+      ? { reasoningEffort: metaString(response._meta, "reasoningEffort") }
+      : {}),
+    ...(response._meta && "fastMode" in response._meta
+      ? { fastMode: metaBoolean(response._meta, "fastMode") }
+      : {}),
     personaId: null,
   };
 }
