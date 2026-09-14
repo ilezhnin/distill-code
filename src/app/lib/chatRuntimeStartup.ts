@@ -173,7 +173,15 @@ async function startChatRuntime(
 
   const refreshProviderModels = async (): Promise<Set<string>> => {
     const refreshProviderIds = getModelCacheRefreshProviderIds();
-    await modelCacheStore.refreshAllModelProviders(refreshProviderIds);
+    // Forced: a persisted list that is merely recent says nothing about
+    // whether it still matches the host's inventory, and a host-side change
+    // (Distill's own extra models, a re-probe) would otherwise stay invisible
+    // for as long as the renderer kept refreshing the list in time. Cheap by
+    // construction -- the host re-probes a harness only while its cached list
+    // is empty, so forcing costs one round trip, not a bridge spawn.
+    await modelCacheStore.refreshAllModelProviders(refreshProviderIds, {
+      force: true,
+    });
     const modelState = useProviderModelCacheStore.getState();
     return new Set(
       refreshProviderIds.filter((providerId) => {

@@ -10,6 +10,7 @@ mod harness_env;
 mod legacy_import;
 pub mod protocol;
 pub mod router;
+mod session_title;
 pub mod sources;
 pub mod store;
 

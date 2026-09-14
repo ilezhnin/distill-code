@@ -18,8 +18,8 @@ export interface ModelGenerationGroups {
 }
 
 /**
- * Versionless aliases always resolve to the newest generation server-side,
- * so they are never legacy.
+ * Versionless aliases name no generation, so their id alone never places
+ * them; only a label that names one can.
  */
 const VERSIONLESS_ALIASES = new Set([
   "default",
@@ -32,7 +32,16 @@ const VERSIONLESS_ALIASES = new Set([
   "current-model",
 ]);
 
-const CLAUDE_FAMILIES = "opus|sonnet|haiku";
+/** Claude model families as a regex alternation (also used by humanizeModelId). */
+export const CLAUDE_FAMILIES = "fable|opus|sonnet|haiku";
+
+/** Claude Code's own picker order: the most capable family first. */
+const CLAUDE_FAMILY_ORDER = [
+  "claude-fable",
+  "claude-opus",
+  "claude-sonnet",
+  "claude-haiku",
+];
 
 interface GenerationPattern {
   pattern: RegExp;
@@ -42,7 +51,7 @@ interface GenerationPattern {
 }
 
 const GENERATION_PATTERNS: GenerationPattern[] = [
-  // claude-opus-4-6, claude-sonnet-4.5, claude-haiku-4-5
+  // claude-opus-4-6, claude-sonnet-4.5, claude-fable-5-1
   {
     pattern: new RegExp(`^claude-(${CLAUDE_FAMILIES})-(\\d+)(?:[-.](\\d+))?`),
     family: (match) => `claude-${match[1]}`,
@@ -73,6 +82,13 @@ const GENERATION_PATTERNS: GenerationPattern[] = [
     family: (match) => `claude-${match[3]}`,
     major: 1,
     minor: 2,
+  },
+  // Claude Code's labels: "Opus 5", "Fable 5.1", "Haiku 4.5"
+  {
+    pattern: new RegExp(`^(${CLAUDE_FAMILIES})\\s+(\\d+)(?:\\.(\\d+))?$`),
+    family: (match) => `claude-${match[1]}`,
+    major: 2,
+    minor: 3,
   },
   // gpt-5.1, gpt-5-codex, gpt-4.1-mini — codex and o-series share the gpt
   // lineage, so an o3 row reads as older than a gpt-5.x row.
@@ -144,8 +160,10 @@ function parseGenerationFromText(value: string): ModelGeneration | null {
 
 /**
  * Parses a model's family and generation from its id, falling back to its
- * display name. Returns null for versionless aliases and unrecognized ids —
- * both are treated as current.
+ * display name. A versionless alias is placed by its display name when that
+ * names a generation (Claude Code's "default" row is labeled "Opus 5");
+ * otherwise it returns null, like an unrecognized id, and is treated as
+ * current.
  */
 export function parseModelGeneration(
   model: Pick<ModelOption, "id" | "name" | "displayName">,
@@ -202,4 +220,20 @@ export function groupModelsByGeneration(
   });
 
   return { current, legacy };
+}
+
+/**
+ * Display order for a Claude model row — Fable, Opus, Sonnet, Haiku, and the
+ * newest generation first within a family — or undefined for any other model.
+ */
+export function claudeModelSortOrder(
+  model: Pick<ModelOption, "id" | "name" | "displayName">,
+): number | undefined {
+  const generation = parseModelGeneration(model);
+  const rank = generation ? CLAUDE_FAMILY_ORDER.indexOf(generation.family) : -1;
+  if (!generation || rank < 0) {
+    return undefined;
+  }
+  const [major, minor] = generation.generation;
+  return rank * 10_000 - (major * 100 + minor);
 }

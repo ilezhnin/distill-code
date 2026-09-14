@@ -36,6 +36,7 @@ import {
   stripEmbeddedReasoningLabel,
 } from "../lib/modelReasoningVariants";
 import { resolveEffectiveReasoningEffort } from "../lib/effectiveReasoningEffort";
+import { hideAliasTwins } from "../lib/modelAliases";
 import type {
   AgentPickerOption,
   ChatInputReasoningEffort,
@@ -159,14 +160,20 @@ export function AgentModelPicker({
     ],
   );
   const collapsedModels = effectiveReasoning.collapsedModels;
-  const pickerModels =
-    collapsedModels.reasoning != null
-      ? collapsedModels.models
-      : availableModels;
   const currentDisplayModelId =
     collapsedModels.reasoning != null
       ? (splitEmbeddedReasoning(currentModelId)?.base ?? currentModelId)
       : currentModelId;
+  const pickerModels = useMemo(
+    () =>
+      hideAliasTwins(
+        collapsedModels.reasoning != null
+          ? collapsedModels.models
+          : availableModels,
+        currentDisplayModelId,
+      ),
+    [availableModels, collapsedModels, currentDisplayModelId],
+  );
   const displayModelLabel = stripEmbeddedReasoningLabel(
     resolveDisplayModelLabel({
       currentModelId: currentDisplayModelId,

@@ -463,6 +463,66 @@ describe("applySessionModel", () => {
     );
   });
 
+  it("accepts a response that acknowledges the folded form of the request", async () => {
+    const registry = await importPreparedRegistry("openai", "gpt-4.1");
+    mockSetModel.mockResolvedValueOnce(
+      modelConfigResponse("gpt-5.6-sol[ultra]", "GPT-5.6-Sol (ultra)"),
+    );
+
+    await expect(
+      registry.applySessionModel("session-1", "gpt-5.6-sol"),
+    ).resolves.toMatchObject({
+      model: { modelId: "gpt-5.6-sol[ultra]" },
+    });
+
+    // The acknowledged id is what was cached, so re-applying it is skipped.
+    await registry.applySessionModel("session-1", "gpt-5.6-sol[ultra]");
+    expect(mockSetModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a response that acknowledges the base form of a folded request", async () => {
+    const registry = await importPreparedRegistry("openai", "gpt-4.1");
+    mockSetModel.mockResolvedValueOnce(
+      modelConfigResponse("gpt-5.6-sol", "GPT-5.6-Sol"),
+    );
+
+    await expect(
+      registry.applySessionModel("session-1", "gpt-5.6-sol[ultra]"),
+    ).resolves.toMatchObject({ model: { modelId: "gpt-5.6-sol" } });
+    expect(mockSetModel).toHaveBeenCalledWith(
+      "session-1",
+      "gpt-5.6-sol[ultra]",
+      noRequestModelContext("openai"),
+    );
+  });
+
+  it("does not resend a model whose only difference is a legacy folded effort", async () => {
+    const registry = await importPreparedRegistry("openai", "gpt-4.1");
+
+    await registry.applySessionModel("session-1", "gpt-5.6-sol[low]");
+    await registry.applySessionModel("session-1", "gpt-5.6-sol[ultra]");
+
+    // Effort travels on its own channel now, so both ids name one model and
+    // only the first reaches the wire.
+    expect(mockSetModel).toHaveBeenCalledTimes(1);
+    expect(mockSetModel).toHaveBeenLastCalledWith(
+      "session-1",
+      "gpt-5.6-sol[low]",
+      noRequestModelContext("openai"),
+    );
+  });
+
+  it("rejects a context lane acknowledged as the model without it", async () => {
+    const registry = await importPreparedRegistry("anthropic", "sonnet");
+    mockSetModel.mockResolvedValueOnce(modelConfigResponse("opus", "Opus 5"));
+
+    await expect(
+      registry.applySessionModel("session-1", "opus[1m]"),
+    ).rejects.toThrow(
+      "ACP acknowledged model opus instead of requested model opus[1m]",
+    );
+  });
+
   it("rejects a model response that acknowledges a different model", async () => {
     const registry = await importPreparedRegistry("openai", "gpt-4.1");
     mockSetModel.mockResolvedValueOnce(

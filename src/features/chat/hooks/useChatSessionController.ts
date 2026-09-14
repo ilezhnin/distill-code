@@ -88,7 +88,8 @@ import { activateSession } from "../lib/sessionActivation";
 import { useResolvedAgentModelPicker } from "./useResolvedAgentModelPicker";
 import { composeBuilderSendOptions } from "./useBuilderSendInterceptor";
 import { moveSessionToProject } from "../stores/chatSessionOperations";
-import { acpSetSessionConfigOption } from "@/shared/api/acp";
+import { reconcileSessionRunSettings } from "../lib/runSettingsReconciler";
+import { normalizeSessionRunSettings } from "../lib/sessionRunSettings";
 import { updateSessionProject } from "@/shared/api/acpApi";
 import {
   markAgentBuilderSessionPreparationFailed,
@@ -1572,71 +1573,92 @@ export function useChatSessionController({
     [sessionId],
   );
 
+  // Both run-setting handlers write the INTENT first and apply second. The
+  // intent is what survives a model switch, so it is recorded even when the
+  // current model is already running at the chosen value — and, when the write
+  // is refused, it is rolled back together with the optimistic value.
   const handleReasoningEffortChange = useCallback(
     (value: string) => {
       if (!sessionId) {
         return;
       }
-      if (!session?.reasoningEffort) {
-        // The control can be driven by a synthesized ladder (the static Grok
-        // set) while the session advertises no config of its own. The write
-        // addresses the session's config id, so there is nothing to send to —
-        // say so instead of returning into silence, which reads as a dead
-        // slider from the outside.
+      const current = session?.reasoningEffort;
+      if (!current) {
+        // The write addresses the session's own config id, so with no config
+        // there is nothing to send to — say so instead of returning into
+        // silence, which reads as a dead slider from the outside.
         console.warn(
           "[reasoning-effort] session advertises no writable config; selection ignored",
           { sessionId, value },
         );
         return;
       }
-      const current = session.reasoningEffort;
-      if (current.currentValue === value) {
-        return;
-      }
-
+      const previousDesired = session?.desiredRunSettings;
+      const desiredRunSettings = normalizeSessionRunSettings({
+        ...previousDesired,
+        effort: value,
+      });
+      const offered = current.options.some((option) => option.id === value);
+      const alreadyRunning = current.currentValue === value;
       useChatSessionStore.getState().patchSession(sessionId, {
-        reasoningEffort: {
-          ...current,
-          currentValue: value,
-        },
+        desiredRunSettings,
+        ...(offered && !alreadyRunning
+          ? { reasoningEffort: { ...current, currentValue: value } }
+          : {}),
       });
       if (!sessionHasStarted) {
         pendingDefaultReasoningEffortBySessionRef.current[sessionId] = value;
       }
+      if (alreadyRunning) {
+        return;
+      }
 
-      const targetAtRequest = session.executionTarget;
-      const { providerId, modelId } =
-        hostSelectionFromExecutionTarget(targetAtRequest);
-      void acpSetSessionConfigOption(sessionId, current.configId, value, {
-        providerId,
-        modelId,
-        reasoningEffortValue: value,
-      }).catch((error) => {
-        const liveSession = useChatSessionStore
-          .getState()
-          .getSession(sessionId);
-        if (
-          !sameSessionExecutionTarget(
-            liveSession?.executionTarget,
-            targetAtRequest,
-          ) ||
-          liveSession?.reasoningEffort?.currentValue !== value
-        ) {
-          return;
-        }
-        console.error("Failed to set reasoning effort:", error);
-        if (
-          pendingDefaultReasoningEffortBySessionRef.current[sessionId] === value
-        ) {
-          delete pendingDefaultReasoningEffortBySessionRef.current[sessionId];
-        }
-        useChatSessionStore.getState().patchSession(sessionId, {
+      const targetAtRequest = session?.executionTarget;
+      void reconcileSessionRunSettings({
+        sessionId,
+        desired: desiredRunSettings,
+        // The menus as they were BEFORE the optimistic patch above, so the
+        // chosen value still reads as one that has to be written.
+        menus: {
           reasoningEffort: current,
+          fastMode: session?.fastMode ?? null,
+        },
+      })
+        .then((result) => {
+          if (!result.error) {
+            return;
+          }
+          const liveSession = useChatSessionStore
+            .getState()
+            .getSession(sessionId);
+          if (
+            !sameSessionExecutionTarget(
+              liveSession?.executionTarget,
+              targetAtRequest,
+            ) ||
+            liveSession?.reasoningEffort?.currentValue !== value
+          ) {
+            return;
+          }
+          if (
+            pendingDefaultReasoningEffortBySessionRef.current[sessionId] ===
+            value
+          ) {
+            delete pendingDefaultReasoningEffortBySessionRef.current[sessionId];
+          }
+          useChatSessionStore.getState().patchSession(sessionId, {
+            reasoningEffort: current,
+            desiredRunSettings: previousDesired,
+          });
+        })
+        .catch((error) => {
+          console.error("Failed to set reasoning effort:", error);
         });
-      });
     },
     [
+      session?.desiredRunSettings,
       session?.executionTarget,
+      session?.fastMode,
       session?.reasoningEffort,
       sessionHasStarted,
       sessionId,
@@ -1645,46 +1667,67 @@ export function useChatSessionController({
 
   const handleFastModeChange = useCallback(
     (enabled: boolean) => {
-      if (!sessionId || !session?.fastMode) {
+      if (!sessionId) {
         return;
       }
-      const current = session.fastMode;
-      if (current.enabled === enabled) {
-        return;
-      }
-
+      const current = session?.fastMode;
+      const previousDesired = session?.desiredRunSettings;
+      const desiredRunSettings = normalizeSessionRunSettings({
+        ...previousDesired,
+        fast: enabled,
+      });
+      const alreadyRunning = current?.enabled === enabled;
       useChatSessionStore.getState().patchSession(sessionId, {
-        fastMode: { ...current, enabled },
+        desiredRunSettings,
+        ...(current && !alreadyRunning
+          ? { fastMode: { ...current, enabled } }
+          : {}),
       });
+      if (alreadyRunning) {
+        return;
+      }
 
-      const targetAtRequest = session.executionTarget;
-      const { providerId, modelId } =
-        hostSelectionFromExecutionTarget(targetAtRequest);
-      const wireValue: string | boolean =
-        current.kind === "boolean" ? enabled : enabled ? "on" : "off";
-      void acpSetSessionConfigOption(sessionId, current.configId, wireValue, {
-        providerId,
-        modelId,
-      }).catch((error) => {
-        const liveSession = useChatSessionStore
-          .getState()
-          .getSession(sessionId);
-        if (
-          !sameSessionExecutionTarget(
-            liveSession?.executionTarget,
-            targetAtRequest,
-          ) ||
-          liveSession?.fastMode?.enabled !== enabled
-        ) {
-          return;
-        }
-        console.error("Failed to set fast mode:", error);
-        useChatSessionStore.getState().patchSession(sessionId, {
-          fastMode: current,
+      const targetAtRequest = session?.executionTarget;
+      void reconcileSessionRunSettings({
+        sessionId,
+        desired: desiredRunSettings,
+        menus: {
+          reasoningEffort: session?.reasoningEffort ?? null,
+          fastMode: current ?? null,
+        },
+      })
+        .then((result) => {
+          if (!result.error) {
+            return;
+          }
+          const liveSession = useChatSessionStore
+            .getState()
+            .getSession(sessionId);
+          if (
+            !sameSessionExecutionTarget(
+              liveSession?.executionTarget,
+              targetAtRequest,
+            ) ||
+            liveSession?.fastMode?.enabled !== enabled
+          ) {
+            return;
+          }
+          useChatSessionStore.getState().patchSession(sessionId, {
+            ...(current ? { fastMode: current } : {}),
+            desiredRunSettings: previousDesired,
+          });
+        })
+        .catch((error) => {
+          console.error("Failed to set fast mode:", error);
         });
-      });
     },
-    [session?.executionTarget, session?.fastMode, sessionId],
+    [
+      session?.desiredRunSettings,
+      session?.executionTarget,
+      session?.fastMode,
+      session?.reasoningEffort,
+      sessionId,
+    ],
   );
 
   const handleProjectChange = useCallback(

@@ -25,6 +25,15 @@ export function getStoredProvider(providers: AcpProvider[] = []): string {
   }
 }
 
+/** Whether a provider was ever chosen here, as opposed to defaulted. */
+export function hasStoredProviderChoice(): boolean {
+  try {
+    return localStorage.getItem(PROVIDER_STORAGE_KEY) != null;
+  } catch {
+    return false;
+  }
+}
+
 function persistProvider(providerId: string): void {
   try {
     localStorage.setItem(PROVIDER_STORAGE_KEY, providerId);
@@ -48,6 +57,9 @@ interface AgentStoreState {
 
   // Selected provider (shared across all chat screens)
   selectedProvider: string;
+  /** Whether `selectedProvider` was chosen (now or in an earlier run) rather
+   *  than defaulted; see useProviderSelection. */
+  selectedProviderChosen: boolean;
 
   // Active agent for current chat
   activeAgentId: string | null;
@@ -102,6 +114,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   providers: [],
   providersLoading: false,
   selectedProvider: getStoredProvider(),
+  selectedProviderChosen: hasStoredProviderChoice(),
   activeAgentId: null,
   isLoading: false,
 
@@ -166,7 +179,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     if (persist) {
       persistProvider(providerId);
     }
-    set({ selectedProvider: providerId });
+    set({ selectedProvider: providerId, selectedProviderChosen: true });
   },
 
   // Active agent

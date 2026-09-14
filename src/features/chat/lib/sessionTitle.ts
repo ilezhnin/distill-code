@@ -30,10 +30,10 @@ export function normalizeAcpTitle(
 }
 
 /**
- * Immediate list title from the user's first message. Goose (and other
- * harnesses) replace this with an LLM summary unless the operator renamed
- * the chat. Prefer the actual request over a long preamble; never treat the
- * first 100 characters of a pasted brief as the name.
+ * Immediate list title from the user's first message. The agent host then
+ * stores a few-word summary in its place (agent_host/session_title.rs) unless
+ * the operator renamed the chat. Prefer the actual request over a long
+ * preamble; never treat the first 100 characters of a pasted brief as the name.
  */
 export function titleFromUserText(text: string): string {
   const collapsed = text.replace(/\s+/g, " ").trim();

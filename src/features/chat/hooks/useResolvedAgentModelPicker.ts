@@ -21,6 +21,7 @@ import {
   type PreferredModelSelection,
 } from "../model-selection/modelSelectionIntent";
 import { resolveSelectedAgentId } from "../lib/agentProviderResolution";
+import { isModelAlias } from "../lib/modelAliases";
 import {
   isModelExecutionTarget,
   normalizeSessionExecutionTarget,
@@ -31,8 +32,6 @@ import {
 import { hostSelectionFromExecutionTarget } from "../lib/hostExecutionTarget";
 import { replaceSessionTargetAfterDispatch } from "../lib/sessionTargetCoordinator";
 import type { ModelOption } from "../types";
-
-const MODEL_ALIAS_IDS = new Set(["current", "default"]);
 
 interface UseResolvedAgentModelPickerOptions {
   providers: AcpProvider[];
@@ -63,10 +62,6 @@ interface UseResolvedAgentModelPickerOptions {
     modelSelection?: PreferredModelSelection | null,
     isSelectionCurrent?: () => boolean,
   ) => Promise<boolean>;
-}
-
-function isModelAlias(modelId?: string | null): boolean {
-  return modelId != null && MODEL_ALIAS_IDS.has(modelId);
 }
 
 function resolvePreferredModelProviderId(

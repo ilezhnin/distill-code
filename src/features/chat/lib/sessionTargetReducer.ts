@@ -1,4 +1,7 @@
-import type { AcpReasoningEffortConfigSnapshot } from "@/shared/api/acpSessionConfigSnapshots";
+import type {
+  AcpFastModeConfigSnapshot,
+  AcpReasoningEffortConfigSnapshot,
+} from "@/shared/api/acpSessionConfigSnapshots";
 import {
   normalizeSessionExecutionTarget,
   sameSessionExecutionTarget,
@@ -17,9 +20,15 @@ export type TargetTransitionOrigin =
   | "recovery"
   | "send";
 
+/**
+ * What the harness advertised alongside a target. Both knobs belong here: a
+ * dispatch lease restores this metadata when it releases, and restoring only
+ * the effort made the fast toggle vanish for the rest of the dispatch.
+ */
 export interface SessionTargetMetadata {
   target: SessionExecutionTarget;
   reasoningEffort?: AcpReasoningEffortConfigSnapshot;
+  fastMode?: AcpFastModeConfigSnapshot;
 }
 
 export type SessionTargetSyncState =

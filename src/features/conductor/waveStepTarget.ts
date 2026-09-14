@@ -21,6 +21,7 @@ import {
 } from "@/features/agents/lib/agentModelRanking";
 import {
   modelPreferenceClassForPersona,
+  preferCurrentMatches,
   rankIndexOfModel,
   type ModelPreferenceClassId,
   type RankableModel,
@@ -278,7 +279,10 @@ function modelDisplayName(model: ModelOption): string {
  * Matching mirrors the ranking's own two tiers (`candidateForEntry`): the
  * exact model id first, then every word of the request against the model's id
  * and display name — "opus" finds claude-opus-5 the same way a renamed
- * ranking entry does. The first match in inventory order wins.
+ * ranking entry does. Several word matches narrow to the family's current
+ * model ({@link preferCurrentMatches}): "opus" is Opus 5, not the Opus 4.8 or
+ * the "default" alias the harness also lists. Of what is left, the first in
+ * inventory order wins.
  *
  * The rate-limit answer is reported, not judged: admission refuses an
  * `at-limit` model (there is still time to replan), while the spawn — which
@@ -308,15 +312,19 @@ export function resolveExplicitWaveStepModel(
     const tokens = needle
       .split(/[^a-z0-9.]+/)
       .filter((word) => word.length > 0);
+    const matchesWords = ({ model }: (typeof installed)[number]) => {
+      const haystack =
+        `${model.id} ${model.displayName ?? ""} ${model.name ?? ""}`.toLowerCase();
+      return (
+        tokens.length > 0 && tokens.every((word) => haystack.includes(word))
+      );
+    };
     const matched =
       installed.find(({ model }) => model.id.trim().toLowerCase() === needle) ??
-      installed.find(({ model }) => {
-        const haystack =
-          `${model.id} ${model.displayName ?? ""} ${model.name ?? ""}`.toLowerCase();
-        return (
-          tokens.length > 0 && tokens.every((word) => haystack.includes(word))
-        );
-      });
+      preferCurrentMatches(
+        installed.filter(matchesWords),
+        ({ model }) => model,
+      )[0];
     if (!matched) {
       const names = [
         ...new Set(installed.map(({ model }) => modelDisplayName(model))),

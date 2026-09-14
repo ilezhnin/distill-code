@@ -10,9 +10,20 @@ import type {
 import type {
   ChatSessionFastModeConfig,
   ChatSessionReasoningEffortConfig,
+  ChatSessionReasoningEffortOption,
 } from "./stores/chatSessionStore";
 import type { QueuedMessagePayload } from "./stores/chatStore";
 import type { SessionExecutionTarget } from "./lib/sessionExecutionTarget";
+
+/** Which page of the model picker a row belongs on. Presentation only. */
+export type ModelPickerGroup = "main" | "more";
+
+/**
+ * How a model's capabilities were learned: by selecting it on the bridge
+ * ("probed"), from what Distill declares for a model the bridge refuses to
+ * select ("declared"), or not at all ("unknown").
+ */
+export type ModelCapabilitySource = "probed" | "declared" | "unknown";
 
 export interface ModelOption {
   id: string;
@@ -28,6 +39,36 @@ export interface ModelOption {
   featured?: boolean;
   /** Suggested display order for model picker rows. */
   sortOrder?: number;
+  /** The picker page the harness filed this row under. */
+  group?: ModelPickerGroup;
+  /** The harness's own menu position; `sortOrder` falls back to it. */
+  order?: number;
+  /**
+   * The model this row is another name for. An alias is hidden while its twin
+   * is listed and survives when it is the selection.
+   */
+  aliasOf?: string | null;
+  /**
+   * The effort values this model offers, in the harness's own vocabulary and
+   * in the same shape a live session advertises them.
+   *
+   * Read with `capabilitySource`: an empty list on a probed or declared row
+   * means the model has NO effort control, while no list at all means nobody
+   * has asked. Both show no menu before a session exists; only the first is an
+   * answer.
+   */
+  efforts?: ChatSessionReasoningEffortOption[];
+  /** The effort the harness itself calls this model's default, if it says. */
+  defaultEffort?: string | null;
+  /** `null` (or absent) is "unknown", never "no". */
+  supportsFast?: boolean | null;
+  /**
+   * The harness runs this model only in a session opened on it, so switching
+   * to it reopens the bridge session and cannot happen mid-turn.
+   */
+  opensOnModel?: boolean;
+  /** Where `efforts` and `supportsFast` came from. */
+  capabilitySource?: ModelCapabilitySource;
 }
 
 export interface ProjectOption {

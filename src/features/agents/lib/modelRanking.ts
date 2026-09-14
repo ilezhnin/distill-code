@@ -24,6 +24,9 @@ import {
   splitEmbeddedReasoning,
   type EmbeddedReasoningEffort,
 } from "@/features/chat/lib/modelReasoningVariants";
+import { isModelAlias } from "@/features/chat/lib/modelAliases";
+import { groupModelsByGeneration } from "@/features/chat/lib/modelGenerations";
+import type { ModelOption } from "@/features/chat/types";
 
 export type ModelPreferenceClassId =
   | "frontend-ui"
@@ -337,6 +340,9 @@ function matchesCandidate(
  * wave of executors once ran at low reasoning (L1, 2026-08-28). When the
  * candidate names an effort and several models match, the variant embedding
  * exactly that effort wins; the first match stays the answer everywhere else.
+ *
+ * Several matches are first narrowed to the family's current model, see
+ * {@link preferCurrentMatches}.
  */
 export function pickCandidateMatch<T>(
   candidate: RankedModelCandidate,
@@ -346,13 +352,40 @@ export function pickCandidateMatch<T>(
   const matches = items.filter((item) =>
     matchesCandidate(candidate, modelOf(item)),
   );
-  if (matches.length <= 1 || !candidate.effort) return matches[0];
+  const pool = preferCurrentMatches(matches, modelOf);
+  if (pool.length <= 1 || !candidate.effort) return pool[0];
   return (
-    matches.find(
+    pool.find(
       (item) =>
         splitEmbeddedReasoning(modelOf(item).id)?.effort === candidate.effort,
-    ) ?? matches[0]
+    ) ?? pool[0]
   );
+}
+
+/**
+ * The models a request that names a family should choose among: concrete ids
+ * over an alias row ("default" is labeled with the model it resolves to
+ * today, so it matches that model's words too), and the family's newest
+ * generation over the older ones a harness still serves ("opus" means Opus 5,
+ * not Opus 4.8). A request names a model, not whatever the CLI defaults to
+ * later. Input order is kept.
+ */
+export function preferCurrentMatches<T>(
+  matches: readonly T[],
+  modelOf: (item: T) => RankableModel,
+): readonly T[] {
+  const concrete = matches.filter((item) => !isModelAlias(modelOf(item).id));
+  const pool = concrete.length > 0 ? concrete : matches;
+  const options: ModelOption[] = pool.map((item) => {
+    const model = modelOf(item);
+    return {
+      id: model.id,
+      name: model.name ?? model.displayName ?? model.id,
+      displayName: model.displayName,
+    };
+  });
+  const { current } = groupModelsByGeneration(options);
+  return pool.filter((_, index) => current.includes(options[index]));
 }
 
 /**

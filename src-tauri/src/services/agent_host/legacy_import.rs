@@ -189,6 +189,11 @@ async fn import_from(store: &SessionStore, db_path: &Path) -> Result<usize, Stri
                 .filter(|value| !value.is_empty()),
             persona_id: None,
             model_id,
+            // goose recorded neither: an imported chat starts on whatever its
+            // harness offers and keeps what the operator then chooses.
+            reasoning_effort: None,
+            fast_mode: None,
+            legacy_model_id: None,
             hidden: false,
             created_at,
             updated_at,

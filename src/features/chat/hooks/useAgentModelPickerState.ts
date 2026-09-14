@@ -4,6 +4,7 @@ import type { AcpProvider } from "@/shared/api/acp";
 import { useProviderModels } from "@/features/providers/hooks/useProviderModels";
 import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProviderStatus";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
+import { PICKER_REFRESH_FLOOR_MS } from "@/features/providers/stores/providerModelCacheStore";
 import { providerModelInventoryMessage } from "@/features/providers/lib/providerModelInventoryStatus";
 import { resolveSelectedAgentId } from "../lib/agentProviderResolution";
 import { listVisibleAgentPickerOptions } from "../lib/listVisibleAgentPickerOptions";
@@ -171,7 +172,13 @@ export function useAgentModelPickerState({
     refreshingRef.current = true;
     Promise.all([
       refreshAgentProviderStatus(),
-      refreshAllModelProviders(modelCacheRefreshProviderIds),
+      // Forced so a changed harness inventory reaches the list the operator is
+      // about to read, instead of waiting out the cache TTL; floored so a
+      // burst of opens still costs one probe per provider.
+      refreshAllModelProviders(modelCacheRefreshProviderIds, {
+        force: true,
+        minIntervalMs: PICKER_REFRESH_FLOOR_MS,
+      }),
     ])
       .catch((err) => console.error("Failed to refresh picker data:", err))
       .finally(() => {

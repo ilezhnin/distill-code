@@ -13,6 +13,7 @@ import type { ProviderType } from "@/shared/types/agents";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProviderStatus";
 import { useProviderModels } from "@/features/providers/hooks/useProviderModels";
+import { hideAliasTwins } from "@/features/chat/lib/modelAliases";
 import { requestOpenSettings } from "@/features/settings/lib/settingsEvents";
 
 export interface ProviderModelFieldsClasses {
@@ -233,7 +234,7 @@ export function ProviderModelFields({
                 {t("editor.savedModelUnavailable", { model })}
               </SelectItem>
             )}
-            {availableModels.map((modelOption) => (
+            {hideAliasTwins(availableModels, model).map((modelOption) => (
               <SelectItem
                 key={`${modelOption.providerId ?? provider}:${modelOption.id}`}
                 value={modelOptionValue(

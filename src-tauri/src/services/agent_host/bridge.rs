@@ -30,6 +30,11 @@ pub enum BridgeEvent {
     Exited {
         harness: String,
     },
+    /// Sent by the host itself, not a bridge: answered once every event
+    /// queued before it has been handled.
+    Drained {
+        done: oneshot::Sender<()>,
+    },
 }
 
 type Pending = Mutex<HashMap<u64, oneshot::Sender<Result<Value, Value>>>>;
@@ -295,6 +300,19 @@ impl Bridge {
             .ok()
             .and_then(|capabilities| capabilities.get("loadSession")?.as_bool())
             .unwrap_or(false)
+    }
+
+    /// Whether the agent advertised `sessionCapabilities.<name>` (`close`,
+    /// `delete`, ...) in its `initialize` answer.
+    pub fn supports_session_capability(&self, name: &str) -> bool {
+        self.agent_capabilities
+            .read()
+            .ok()
+            .is_some_and(|capabilities| {
+                capabilities
+                    .pointer(&format!("/sessionCapabilities/{name}"))
+                    .is_some()
+            })
     }
 
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, Value> {

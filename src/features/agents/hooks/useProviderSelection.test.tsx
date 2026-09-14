@@ -2,6 +2,7 @@ import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentStore } from "../stores/agentStore";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
+import { recordReadyProviders } from "@/features/providers/lib/providerConnections";
 import { useProviderSelection } from "./useProviderSelection";
 
 const mockReadyAgentIds = vi.hoisted(() => ({
@@ -21,8 +22,28 @@ vi.mock("@/features/providers/hooks/useAgentProviderStatus", () => ({
 describe("useProviderSelection", () => {
   beforeEach(() => {
     mockReadyAgentIds.value = new Set<string>(["claude-acp"]);
+    localStorage.clear();
     useProviderCatalogStore.getState().reset();
-    useAgentStore.setState({ providers: [], selectedProvider: "claude-acp" });
+    // The cases below are about a provider that was chosen at some point.
+    useAgentStore.setState({
+      providers: [],
+      selectedProvider: "claude-acp",
+      selectedProviderChosen: true,
+    });
+  });
+
+  it("starts on the account connected most recently when nothing was ever chosen", () => {
+    recordReadyProviders(new Set(["claude-acp"]), 1_000);
+    recordReadyProviders(new Set(["claude-acp", "codex-acp"]), 2_000);
+    mockReadyAgentIds.value = new Set(["claude-acp", "codex-acp"]);
+    useAgentStore.setState({
+      selectedProvider: "claude-acp",
+      selectedProviderChosen: false,
+    });
+
+    const { result } = renderHook(() => useProviderSelection());
+
+    expect(result.current.selectedProvider).toBe("codex-acp");
   });
 
   it("keeps a ready catalog provider as the stored value", () => {

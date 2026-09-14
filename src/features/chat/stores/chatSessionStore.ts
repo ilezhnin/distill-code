@@ -37,6 +37,10 @@ import {
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
+import type {
+  SessionRunSettings,
+  SessionRunSettingsNotice,
+} from "@/features/chat/lib/sessionRunSettings";
 
 const RIGHT_RAIL_OPEN_STORAGE_KEY = "distill:right-rail-open";
 const LEGACY_CONTEXT_PANEL_OPEN_STORAGE_KEY = "distill:context-panel-open";
@@ -59,8 +63,27 @@ export interface ChatSession {
   executionTarget?: SessionExecutionTarget;
   executionTargetSource?: "ui" | "acp";
   personaId?: string;
+  /**
+   * OBSERVED: the effort menu the CURRENT model advertises and the value it is
+   * running at. Cleared whenever the model identity changes, because the next
+   * model answers with its own menu. The operator's choice lives in
+   * `desiredRunSettings`.
+   */
   reasoningEffort?: ChatSessionReasoningEffortConfig;
+  /**
+   * OBSERVED: the fast toggle the CURRENT model advertises. Absent means the
+   * model has no fast mode — writing one anyway answers
+   * `Unknown config option: fast`.
+   */
   fastMode?: ChatSessionFastModeConfig;
+  /**
+   * INTENT: what the operator chose. It survives model switches; a model that
+   * cannot honour a value keeps the intent and earns a `runSettingsNotice`, so
+   * the value returns on the next model that offers it.
+   */
+  desiredRunSettings?: SessionRunSettings;
+  /** Set when the current model is not running at the chosen value. */
+  runSettingsNotice?: SessionRunSettingsNotice | null;
   /**
    * Client-held Ultracode arm state: while true (and the session still
    * qualifies — see supportsUltracode) every outgoing prompt carries the
@@ -284,6 +307,29 @@ function patchIncludesReasoningEffort(patch: Partial<ChatSession>): boolean {
   return Object.hasOwn(patch, "reasoningEffort");
 }
 
+/**
+ * The session state that describes the model being left, not the chat: the
+ * advertised menus, the Ultracode arming that rides on them, and any notice
+ * about a value the old model refused. `desiredRunSettings` is not in here —
+ * intent outlives the model it was chosen on.
+ */
+function clearedObservedRunState(
+  patch: Partial<ChatSession>,
+): Partial<ChatSession> {
+  return {
+    ...(Object.hasOwn(patch, "reasoningEffort")
+      ? {}
+      : { reasoningEffort: undefined }),
+    ...(Object.hasOwn(patch, "fastMode") ? {} : { fastMode: undefined }),
+    ...(Object.hasOwn(patch, "ultracodeArmed")
+      ? {}
+      : { ultracodeArmed: undefined }),
+    ...(Object.hasOwn(patch, "runSettingsNotice")
+      ? {}
+      : { runSettingsNotice: undefined }),
+  };
+}
+
 function sameReasoningEffortConfig(
   left: ChatSessionReasoningEffortConfig | undefined,
   right: ChatSessionReasoningEffortConfig | undefined,
@@ -323,8 +369,18 @@ function withExecutionTarget(
     ...session,
     executionTarget,
     executionTargetSource: source,
+    // A new model answers with its own menus, so every OBSERVED value goes —
+    // effort, the fast toggle and the Claude-only Ultracode arming — along with
+    // a notice that described the model being left. `desiredRunSettings` is
+    // deliberately kept: it is the operator's intent, and the reconciler puts
+    // it back on the new model as soon as that model says it can honour it.
     ...(identityChanged
-      ? { reasoningEffort: undefined, ultracodeArmed: undefined }
+      ? {
+          reasoningEffort: undefined,
+          fastMode: undefined,
+          ultracodeArmed: undefined,
+          runSettingsNotice: undefined,
+        }
       : {}),
   };
 }
@@ -616,9 +672,13 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
         ...patch,
         executionTarget,
         executionTargetSource,
-        ...(executionTargetChanged && !patchIncludesReasoningEffort(patch)
-          ? { reasoningEffort: undefined }
-          : {}),
+        // Same rule as withExecutionTarget: a model change drops what the
+        // previous model advertised, and keeps what the operator chose. A patch
+        // that names one of these fields wins — it is describing the session
+        // the draft is being promoted into.
+        ...(executionTargetChanged
+          ? clearedObservedRunState(patch)
+          : ({} as Partial<ChatSession>)),
         id: backendSessionId,
         creationState: undefined,
         creationError: undefined,

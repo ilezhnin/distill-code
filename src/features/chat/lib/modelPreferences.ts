@@ -3,17 +3,70 @@ import {
   resolveAgentProviderCatalogIdStrict,
 } from "@/features/providers/providerCatalog";
 import { normalizeConcreteModelId } from "@/shared/lib/modelIdentity";
+import {
+  baseModelId,
+  splitLegacyFoldedModelId,
+} from "@/shared/lib/foldedModelId";
 import { isRecord } from "@/shared/lib/isRecord";
 
 const MODEL_PREFERENCES_STORAGE_KEY = "distill:preferredModelsByAgent";
 
-export interface StoredModelPreference {
+/** The two model-scoped knobs an agent's preferred model is remembered with. */
+export interface StoredModelRunSettings {
+  /** The harness's own effort value id ("xhigh", "ultra"), never an app enum. */
+  reasoningEffort?: string;
+  fastMode?: boolean;
+}
+
+export interface StoredModelPreference extends StoredModelRunSettings {
   modelId: string;
   modelName: string;
   providerId?: string;
+  /**
+   * Per-model overrides, because the agent-level value is not offered by every
+   * model: Opus 4.6 has no xhigh, Haiku has no effort control at all.
+   */
+  byModel?: Record<string, StoredModelRunSettings>;
 }
 
 type StoredModelPreferences = Record<string, StoredModelPreference>;
+
+function parseStoredRunSettings(value: unknown): StoredModelRunSettings {
+  if (!isRecord(value)) {
+    return {};
+  }
+  const reasoningEffort =
+    typeof value.reasoningEffort === "string"
+      ? value.reasoningEffort.trim()
+      : undefined;
+  return {
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(typeof value.fastMode === "boolean"
+      ? { fastMode: value.fastMode }
+      : {}),
+  };
+}
+
+function parseStoredByModel(
+  value: unknown,
+): Record<string, StoredModelRunSettings> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const byModel: Record<string, StoredModelRunSettings> = {};
+  for (const [storedModelId, candidate] of Object.entries(value)) {
+    const modelId = baseModelId(storedModelId);
+    if (!modelId) continue;
+    const settings = parseStoredRunSettings(candidate);
+    if (
+      settings.reasoningEffort === undefined &&
+      settings.fastMode === undefined
+    )
+      continue;
+    byModel[modelId] = settings;
+  }
+  return Object.keys(byModel).length > 0 ? byModel : undefined;
+}
 
 function canonicalAgentId(agentId: string): string {
   return resolveAgentProviderCatalogIdStrict(agentId) ?? agentId;
@@ -32,7 +85,7 @@ function parseStoredModelPreferences(value: unknown): StoredModelPreferences {
   for (const [storedAgentId, candidate] of Object.entries(value)) {
     if (!isRecord(candidate)) continue;
     const agentId = canonicalAgentId(storedAgentId);
-    const modelId =
+    const storedModelId =
       typeof candidate.modelId === "string"
         ? normalizeConcreteModelId(candidate.modelId)
         : undefined;
@@ -41,13 +94,28 @@ function parseStoredModelPreferences(value: unknown): StoredModelPreferences {
         ? canonicalModelProviderId(candidate.providerId)
         : undefined;
     const providerId = storedProviderId ?? agentId;
-    if (!modelId) continue;
+    if (!storedModelId) continue;
+
+    // A preference written before model and effort were separate selections
+    // holds both in one id. Read them apart here, so an inventory of base ids
+    // cannot drop the entry as an unknown model; an explicitly stored effort
+    // wins, and the split form is written back only on the next save.
+    const folded = splitLegacyFoldedModelId(storedModelId);
+    const modelId = folded?.modelId ?? storedModelId;
+    const runSettings = parseStoredRunSettings(candidate);
+    const reasoningEffort = runSettings.reasoningEffort ?? folded?.effort;
+    const byModel = parseStoredByModel(candidate.byModel);
 
     preferences[agentId] = {
       modelId,
       modelName:
         typeof candidate.modelName === "string" ? candidate.modelName : modelId,
       ...(providerId ? { providerId } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(runSettings.fastMode !== undefined
+        ? { fastMode: runSettings.fastMode }
+        : {}),
+      ...(byModel ? { byModel } : {}),
     };
   }
   return preferences;
