@@ -557,6 +557,24 @@ describe("useChatSessionController", () => {
     });
   });
 
+  it("records a fast choice as intent and writes nothing while the model has not reported its fast toggle", () => {
+    const { result } = renderHook(() =>
+      useChatSessionController({ sessionId: "session-1" }),
+    );
+
+    act(() => {
+      result.current.handleFastModeChange(true);
+    });
+
+    const session = useChatSessionStore.getState().getSession("session-1");
+    expect(session?.desiredRunSettings).toEqual({ fast: true });
+    expect(session?.fastMode).toBeUndefined();
+    // Reconciling here would have called this a model without fast mode.
+    expect(session?.runSettingsNotice).toBeUndefined();
+    expect(mockAcpSetSessionConfigOption).not.toHaveBeenCalled();
+    expect(mockAcpPrepareSession).not.toHaveBeenCalled();
+  });
+
   it("offers worktree setup before the first message is sent", () => {
     useProjectStore.setState({
       projects: [

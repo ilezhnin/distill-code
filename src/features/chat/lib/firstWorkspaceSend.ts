@@ -27,10 +27,29 @@ import {
   type QueuedMessageRecord,
 } from "../stores/chatStore";
 import { useChatSessionStore } from "../stores/chatSessionStore";
+import type { AcpSessionConfigSnapshots } from "@/shared/api/acpSessionConfigSnapshots";
 
 export const UNRESOLVED_DEFERRED_SEND_ERROR =
   "Select a model before sending to this unresolved session.";
 const WORKSPACE_SESSION_PROMOTION_TIMEOUT_MS = 30_000;
+
+/**
+ * The effort menu and fast toggle the moved session answered with. Both are
+ * carried, not just effort: the transition applied the chat's intended effort
+ * AND fast mode inside the same mutation as the model, and a session left
+ * without its fast toggle would read as a model with no fast mode until some
+ * later snapshot happened to arrive.
+ */
+function observedRunSettingsPatch(
+  snapshot: AcpSessionConfigSnapshots | undefined,
+) {
+  return {
+    ...(snapshot?.reasoningEffort
+      ? { reasoningEffort: snapshot.reasoningEffort }
+      : {}),
+    ...(snapshot?.fastMode ? { fastMode: snapshot.fastMode } : {}),
+  };
+}
 
 function projectWorkspaceConfigurationRevision(
   workspaces: readonly ProjectWorkspace[],
@@ -401,9 +420,7 @@ export async function provisionPreSendProjectWorkspaces(
       workingDir: plan.workingDir,
       workspaceAttachments: plan.workspaceAttachments,
       activeWorkspaceId: plan.workspaceAttachments[0]?.id,
-      ...(prepared.configOptionsSnapshot?.reasoningEffort
-        ? { reasoningEffort: prepared.configOptionsSnapshot.reasoningEffort }
-        : {}),
+      ...observedRunSettingsPatch(prepared.configOptionsSnapshot),
     });
     return resolvedSessionId;
   } catch (error) {
@@ -723,9 +740,7 @@ export async function createDeferredWorkspaces(
       workingDir,
       workspaceAttachments: plan?.workspaceAttachments,
       activeWorkspaceId: plan?.workspaceAttachments[0]?.id,
-      ...(prepared.configOptionsSnapshot?.reasoningEffort
-        ? { reasoningEffort: prepared.configOptionsSnapshot.reasoningEffort }
-        : {}),
+      ...observedRunSettingsPatch(prepared.configOptionsSnapshot),
     });
     if (name === null) {
       useChatStore

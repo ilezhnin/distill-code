@@ -62,7 +62,10 @@ import {
 } from "@/features/skills/api/skillsQuery";
 import { listenSkillsChanged } from "@/features/skills/lib/skillsEvents";
 import { formatAvailableSkillsCatalogPrompt } from "@/features/skills/lib/skillChatPrompt";
-import { setStoredModelPreference } from "../lib/modelPreferences";
+import {
+  setStoredModelPreference,
+  setStoredModelRunSettings,
+} from "../lib/modelPreferences";
 import { saveDefaultReasoningEffort } from "../lib/reasoningEffortPreferences";
 import {
   replaceSessionTargetAfterDispatch,
@@ -89,7 +92,10 @@ import { useResolvedAgentModelPicker } from "./useResolvedAgentModelPicker";
 import { composeBuilderSendOptions } from "./useBuilderSendInterceptor";
 import { moveSessionToProject } from "../stores/chatSessionOperations";
 import { reconcileSessionRunSettings } from "../lib/runSettingsReconciler";
-import { normalizeSessionRunSettings } from "../lib/sessionRunSettings";
+import {
+  normalizeSessionRunSettings,
+  type SessionRunSettings,
+} from "../lib/sessionRunSettings";
 import { updateSessionProject } from "@/shared/api/acpApi";
 import {
   markAgentBuilderSessionPreparationFailed,
@@ -382,6 +388,11 @@ export function useChatSessionController({
     useState<SessionExecutionTarget | null>();
   const [pendingModelSelection, setPendingModelSelection] =
     useState<PreferredModelSelection | null>();
+  // Effort and fast chosen before this composer has a session. They are the
+  // other half of the pending selection: without them a choice made on Home in
+  // the moment before its session exists would be dropped on the floor.
+  const [pendingRunSettings, setPendingRunSettings] =
+    useState<SessionRunSettings>();
   const preSendWorkspaceOperationRef = useRef(0);
   const [preSendWorkspaceSetup, setPreSendWorkspaceSetup] = useState<{
     sessionId: string;
@@ -1251,6 +1262,7 @@ export function useChatSessionController({
     handleModelChange,
     handlePickerOpen,
     effectiveModelSelection,
+    effectiveModelOption,
   } = useResolvedAgentModelPicker({
     providers,
     selectedProvider,
@@ -1595,6 +1607,33 @@ export function useChatSessionController({
     [sessionId],
   );
 
+  // A run setting chosen before the chat has started is remembered for this
+  // agent and model, the same moment the model choice itself is remembered, so
+  // the next new chat on that model opens on it.
+  const rememberRunSettingsChoice = useCallback(
+    (settings: { reasoningEffort?: string; fastMode?: boolean }) => {
+      if (sessionHasStarted || !effectiveModelSelection?.id) {
+        return;
+      }
+      setStoredModelRunSettings(
+        selectedAgentId,
+        {
+          modelId: effectiveModelSelection.id,
+          modelName: effectiveModelSelection.name,
+          providerId: effectiveModelSelection.modelProviderId,
+        },
+        settings,
+      );
+    },
+    [
+      effectiveModelSelection?.id,
+      effectiveModelSelection?.modelProviderId,
+      effectiveModelSelection?.name,
+      selectedAgentId,
+      sessionHasStarted,
+    ],
+  );
+
   // Both run-setting handlers write the INTENT first and apply second. The
   // intent is what survives a model switch, so it is recorded even when the
   // current model is already running at the chosen value — and, when the write
@@ -1602,6 +1641,12 @@ export function useChatSessionController({
   const handleReasoningEffortChange = useCallback(
     (value: string) => {
       if (!sessionId) {
+        // No session to write to yet: the choice joins the pending selection
+        // and is applied the moment one exists.
+        setPendingRunSettings((previous) =>
+          normalizeSessionRunSettings({ ...previous, effort: value }),
+        );
+        rememberRunSettingsChoice({ reasoningEffort: value });
         return;
       }
       const current = session?.reasoningEffort;
@@ -1631,6 +1676,7 @@ export function useChatSessionController({
       if (!sessionHasStarted) {
         pendingDefaultReasoningEffortBySessionRef.current[sessionId] = value;
       }
+      rememberRunSettingsChoice({ reasoningEffort: value });
       if (alreadyRunning) {
         return;
       }
@@ -1678,6 +1724,7 @@ export function useChatSessionController({
         });
     },
     [
+      rememberRunSettingsChoice,
       session?.desiredRunSettings,
       session?.executionTarget,
       session?.fastMode,
@@ -1690,6 +1737,10 @@ export function useChatSessionController({
   const handleFastModeChange = useCallback(
     (enabled: boolean) => {
       if (!sessionId) {
+        setPendingRunSettings((previous) =>
+          normalizeSessionRunSettings({ ...previous, fast: enabled }),
+        );
+        rememberRunSettingsChoice({ fastMode: enabled });
         return;
       }
       const current = session?.fastMode;
@@ -1698,12 +1749,22 @@ export function useChatSessionController({
         ...previousDesired,
         fast: enabled,
       });
-      const alreadyRunning = current?.enabled === enabled;
+      rememberRunSettingsChoice({ fastMode: enabled });
+      if (!current) {
+        // The model has not reported its fast toggle yet — right after a model
+        // switch, before the bridge answers. Reconciling now would read that
+        // silence as "this model has no fast mode" and put up a notice about a
+        // model that does have one. Record the intent only; the reconcile that
+        // follows the model's answer applies it.
+        useChatSessionStore
+          .getState()
+          .patchSession(sessionId, { desiredRunSettings });
+        return;
+      }
+      const alreadyRunning = current.enabled === enabled;
       useChatSessionStore.getState().patchSession(sessionId, {
         desiredRunSettings,
-        ...(current && !alreadyRunning
-          ? { fastMode: { ...current, enabled } }
-          : {}),
+        ...(!alreadyRunning ? { fastMode: { ...current, enabled } } : {}),
       });
       if (alreadyRunning) {
         return;
@@ -1715,7 +1776,7 @@ export function useChatSessionController({
         desired: desiredRunSettings,
         menus: {
           reasoningEffort: session?.reasoningEffort ?? null,
-          fastMode: current ?? null,
+          fastMode: current,
         },
       })
         .then((result) => {
@@ -1735,7 +1796,7 @@ export function useChatSessionController({
             return;
           }
           useChatSessionStore.getState().patchSession(sessionId, {
-            ...(current ? { fastMode: current } : {}),
+            fastMode: current,
             desiredRunSettings: previousDesired,
           });
         })
@@ -1744,6 +1805,7 @@ export function useChatSessionController({
         });
     },
     [
+      rememberRunSettingsChoice,
       session?.desiredRunSettings,
       session?.executionTarget,
       session?.fastMode,
@@ -3170,12 +3232,14 @@ export function useChatSessionController({
     const hasPendingPersona = pendingPersonaId !== undefined;
     const hasPendingProject = pendingProjectId !== undefined;
     const hasPendingModel = pendingModelSelection !== undefined;
+    const hasPendingRunSettings = pendingRunSettings !== undefined;
 
     if (
       hasPendingExecutionTarget ||
       hasPendingPersona ||
       hasPendingProject ||
-      hasPendingModel
+      hasPendingModel ||
+      hasPendingRunSettings
     ) {
       const nextHarnessId =
         pendingExecutionTarget?.harnessId ?? selectedProvider;
@@ -3216,10 +3280,18 @@ export function useChatSessionController({
                     harnessId: nextHarnessId,
                   })));
 
-      const patch: Partial<Pick<ChatSession, "personaId" | "projectId">> = {};
+      const patch: Partial<
+        Pick<ChatSession, "personaId" | "projectId" | "desiredRunSettings">
+      > = {};
 
       if (hasPendingPersona) {
         patch.personaId = nextPersonaId;
+      }
+      if (hasPendingRunSettings) {
+        patch.desiredRunSettings = normalizeSessionRunSettings({
+          ...previousSession?.desiredRunSettings,
+          ...pendingRunSettings,
+        });
       }
       if (hasPendingProject) {
         patch.projectId = nextProjectId ?? null;
@@ -3235,6 +3307,20 @@ export function useChatSessionController({
       setPendingPersonaId(undefined);
       setPendingProjectId(undefined);
       setPendingModelSelection(undefined);
+      setPendingRunSettings(undefined);
+
+      // A model change in flight reconciles run settings when it commits. With
+      // none, apply the intent now — but only once the session has reported
+      // its menus, or a model that has not answered yet would read as one
+      // with no effort or fast control.
+      if (
+        hasPendingRunSettings &&
+        !hasPendingExecutionTarget &&
+        !hasPendingModel &&
+        (previousSession?.reasoningEffort || previousSession?.fastMode)
+      ) {
+        void reconcileSessionRunSettings({ sessionId });
+      }
 
       if (hasPendingExecutionTarget || hasPendingModel) {
         if (!nextTarget) {
@@ -3327,6 +3413,7 @@ export function useChatSessionController({
     pendingExecutionTarget,
     pendingPersonaId,
     pendingProjectId,
+    pendingRunSettings,
     onWorkspaceNameRequest,
     onMessageAccepted,
     pendingQueuedMessage,
@@ -3543,6 +3630,8 @@ export function useChatSessionController({
     currentModelProviderId: effectiveModelSelection?.modelProviderId ?? null,
     currentModelName: effectiveModelSelection?.name ?? null,
     currentExecutionTarget: session?.executionTarget,
+    /** The inventory row of the selected model, for pre-session menus. */
+    currentModelOption: effectiveModelOption,
     availableModels,
     modelsLoading,
     modelStatusMessage,
@@ -3554,6 +3643,8 @@ export function useChatSessionController({
     handleUltracodeArmedChange,
     fastMode: session?.fastMode,
     desiredFastMode: session?.desiredRunSettings?.fast,
+    /** Effort and fast chosen while there is no session yet. */
+    pendingRunSettings,
     handleFastModeChange,
     runSettingsNotice: session?.runSettingsNotice ?? null,
     selectedProjectId: effectiveProjectId,

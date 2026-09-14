@@ -661,6 +661,7 @@ describe("acpCreateSession", () => {
       providerId: "openai",
       projectId: "project-1",
       personaId: "persona-1",
+      modelId: "gpt-4.1",
     });
     expect(mockLoadSession).not.toHaveBeenCalled();
     expect(mockSetModel).toHaveBeenCalledWith(
@@ -669,6 +670,27 @@ describe("acpCreateSession", () => {
       noRequestModelContext("openai"),
     );
     expect(sessionRegistry.isSessionPrepared("acp-session-1")).toBe(true);
+  });
+
+  it("opens the session on the chosen model, effort and fast mode in session/new itself", async () => {
+    mockNewSession.mockResolvedValue({ sessionId: "acp-session-1" });
+
+    const { acpCreateSession } = await import("../acp");
+
+    await acpCreateSession("claude-acp", "/tmp/project", {
+      modelId: "claude-opus-4-6",
+      reasoningEffort: "max",
+      fastMode: false,
+    });
+
+    expect(mockNewSession).toHaveBeenCalledWith("/tmp/project", {
+      providerId: "claude-acp",
+      projectId: undefined,
+      personaId: undefined,
+      modelId: "claude-opus-4-6",
+      reasoningEffort: "max",
+      fastMode: false,
+    });
   });
 
   it("archives and unregisters a newly created session when eager model setup fails", async () => {

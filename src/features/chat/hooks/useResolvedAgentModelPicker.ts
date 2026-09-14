@@ -31,6 +31,7 @@ import {
 } from "../lib/sessionExecutionTarget";
 import { hostSelectionFromExecutionTarget } from "../lib/hostExecutionTarget";
 import { replaceSessionTargetAfterDispatch } from "../lib/sessionTargetCoordinator";
+import { findModelOption } from "../lib/preSessionRunSettings";
 import type { ModelOption } from "../types";
 
 interface UseResolvedAgentModelPickerOptions {
@@ -704,6 +705,21 @@ export function useResolvedAgentModelPicker({
     pendingModelSelection !== undefined
       ? pendingModelSelection
       : (sessionModelSelection ?? fallbackModelSelection);
+  // The inventory row behind the selection. Before a session exists it is the
+  // only statement of which efforts and fast mode the selected model offers.
+  const effectiveModelOption = useMemo(
+    () =>
+      findModelOption(
+        availableModels,
+        effectiveModelSelection?.id,
+        effectiveModelSelection?.modelProviderId,
+      ),
+    [
+      availableModels,
+      effectiveModelSelection?.id,
+      effectiveModelSelection?.modelProviderId,
+    ],
+  );
 
   return {
     selectedAgentId,
@@ -717,5 +733,6 @@ export function useResolvedAgentModelPicker({
     handleModelChange,
     handlePickerOpen,
     effectiveModelSelection,
+    effectiveModelOption,
   };
 }

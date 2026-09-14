@@ -352,13 +352,29 @@ export interface NewSessionOptions {
   projectId?: string;
   personaId?: string;
   hidden?: boolean;
+  /**
+   * The model, effort and fast mode the chat should open on. The host applies
+   * them inside `session/new` in the order mode → model → effort → fast, so the
+   * first turn already runs on them instead of on the harness default.
+   */
+  modelId?: string;
+  reasoningEffort?: string;
+  fastMode?: boolean;
 }
 
 export async function newSession(
   workingDir: string,
   options: NewSessionOptions = {},
 ): Promise<NewSessionResponse> {
-  const { providerId, projectId, personaId, hidden } = options;
+  const {
+    providerId,
+    projectId,
+    personaId,
+    hidden,
+    modelId,
+    reasoningEffort,
+    fastMode,
+  } = options;
   const tClient = performance.now();
   const client = await getClient();
   const request: Parameters<typeof client.newSession>[0] = {
@@ -371,6 +387,9 @@ export async function newSession(
   if (projectId) meta.projectId = projectId;
   if (personaId) meta.personaId = personaId;
   if (hidden) meta.hidden = true;
+  if (modelId) meta.model = modelId;
+  if (reasoningEffort) meta.reasoningEffort = reasoningEffort;
+  if (fastMode !== undefined) meta.fastMode = fastMode;
   if (Object.keys(meta).length > 0) request._meta = meta;
 
   const tCall = performance.now();

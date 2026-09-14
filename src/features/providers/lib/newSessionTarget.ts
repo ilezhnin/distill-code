@@ -1,6 +1,7 @@
 import type { SessionModelPreference } from "@/features/chat/lib/sessionModelPreference";
 import type { StoredModelPreference } from "@/features/chat/lib/modelPreferences";
 import { normalizeConcreteModelId } from "@/shared/lib/modelIdentity";
+import { splitLegacyFoldedModelId } from "@/shared/lib/foldedModelId";
 
 export type NewSessionTargetProvenance = "explicit" | "persisted" | "fallback";
 
@@ -34,12 +35,18 @@ function readyTarget(
   provenance: NewSessionTargetProvenance,
 ): NewSessionTargetResult {
   const concreteModelId = normalizeConcreteModelId(modelId);
+  // An id is only a usable stand-in for a name when it names a model and
+  // nothing else. A legacy folded id also carries an effort, and showing
+  // "gpt-5.6-sol[xhigh]" as the model's name would present that effort as part
+  // of the model; the picker names the model from the inventory instead.
+  const namesOnlyAModel =
+    concreteModelId !== undefined && !splitLegacyFoldedModelId(concreteModelId);
   return {
     status: "ready",
     provenance,
     providerId,
     modelId: concreteModelId,
-    ...(concreteModelId ? { modelName: concreteModelId } : {}),
+    ...(namesOnlyAModel ? { modelName: concreteModelId } : {}),
   };
 }
 

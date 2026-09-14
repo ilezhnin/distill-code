@@ -68,7 +68,6 @@ import {
 import { SessionWorkspaceCleanupDialog } from "@/features/chat/ui/SessionWorkspaceCleanupDialog";
 import {
   type ChatSession,
-  type ChatSessionReasoningEffortConfig,
   getVisibleSessions,
   SessionNotFoundError,
   useChatSessionStore,
@@ -139,7 +138,10 @@ import {
   isCurrentModelSelectionIntent,
   showModelSwitchErrorToast,
 } from "@/features/chat/model-selection/modelSelectionIntent";
-import { setStoredModelPreference } from "@/features/chat/lib/modelPreferences";
+import {
+  getStoredModelPreference,
+  setStoredModelPreference,
+} from "@/features/chat/lib/modelPreferences";
 import { archiveSession as archiveSessionApi } from "@/shared/api/acpApi";
 import {
   moveSessionToProject,
@@ -167,7 +169,15 @@ import { getProviderCatalog } from "@/features/providers/providerCatalog";
 import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
 import { hostSelectionFromExecutionTarget } from "@/features/chat/lib/hostExecutionTarget";
 import { reconcileSessionRunSettings } from "@/features/chat/lib/runSettingsReconciler";
-import { normalizeSessionRunSettings } from "@/features/chat/lib/sessionRunSettings";
+import {
+  normalizeSessionRunSettings,
+  sameSessionRunSettings,
+  type SessionRunSettings,
+} from "@/features/chat/lib/sessionRunSettings";
+import {
+  findModelOption,
+  resolvePreSessionRunSettings,
+} from "@/features/chat/lib/preSessionRunSettings";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 import {
   isModelExecutionTarget,
@@ -199,7 +209,7 @@ import {
   type GlobalComposerStarterRequest,
   type GlobalComposeOptions,
 } from "@/shared/ui/GlobalComposerPill";
-import { acpCreateSession, acpSetSessionConfigOption } from "@/shared/api/acp";
+import { acpCreateSession } from "@/shared/api/acp";
 import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
 import { findMissingProjectDirs } from "@/features/projects/lib/missingProjectDirs";
 import {
@@ -234,16 +244,10 @@ type ResolvedSessionModelPreference = Awaited<
   ReturnType<typeof resolveSupportedSessionModelPreference>
 >;
 type MaybePromise<T> = T | Promise<T>;
-type DraftSessionCreationReady = {
-  backendSessionId: string;
-  configOptionsSnapshot: Awaited<
-    ReturnType<typeof acpCreateSession>
-  >["configOptionsSnapshot"];
-};
 type ProjectChatDraftOptions = {
   executionTarget?: SessionExecutionTarget;
   reuseExistingDraft?: boolean;
-  reasoningEffort?: GlobalComposeOptions["reasoningEffort"];
+  runSettings?: SessionRunSettings;
   personaId?: string;
 };
 
@@ -382,110 +386,114 @@ function resolveLiveSessionId(sessionId: string): string | null {
   return session && !session.archivedAt ? session.id : null;
 }
 
-function readSessionReasoningEffort(
+/**
+ * Record an effort and/or fast choice as a live chat's intent, then put it on
+ * the bridge through the run-settings reconciler — the one place that knows
+ * which values the current model offers, and so the only thing that names a
+ * config id.
+ *
+ * Intent first: it is what survives a model switch, so it is kept even when
+ * nothing can be written right now. Nothing is written for a knob whose menu
+ * the model has not reported yet (right after a switch, or on a chat still
+ * being created): reconciling then would read that silence as "this model has
+ * no such control". The reconcile that follows the model's answer — or the
+ * creation, which sends the intent in `session/new` — applies it instead.
+ */
+async function applyRunSettingsToSession(
   sessionId: string,
-): ChatSessionReasoningEffortConfig | undefined {
-  return useChatSessionStore.getState().getSession(sessionId)?.reasoningEffort;
-}
+  runSettings: SessionRunSettings,
+): Promise<void> {
+  const store = useChatSessionStore.getState();
+  const session = store.getSession(sessionId);
+  const chosen = normalizeSessionRunSettings(runSettings);
+  if (!session || !chosen) {
+    return;
+  }
+  const previousDesired = session.desiredRunSettings;
+  const desired = normalizeSessionRunSettings({
+    ...previousDesired,
+    ...chosen,
+  });
+  const effortMenu = session.reasoningEffort;
+  const fastToggle = session.fastMode;
+  const effortOffered =
+    chosen.effort !== undefined &&
+    effortMenu?.options.some((option) => option.id === chosen.effort) === true;
+  store.patchSession(sessionId, {
+    desiredRunSettings: desired,
+    // Paint the chosen value at once where the model offers it; the answer to
+    // the write replaces it, and a refusal rolls it back below.
+    ...(effortMenu && effortOffered && chosen.effort !== undefined
+      ? { reasoningEffort: { ...effortMenu, currentValue: chosen.effort } }
+      : {}),
+    ...(fastToggle && chosen.fast !== undefined
+      ? { fastMode: { ...fastToggle, enabled: chosen.fast } }
+      : {}),
+  });
 
-function patchSessionReasoningEffort(
-  sessionId: string,
-  reasoningEffort: ChatSessionReasoningEffortConfig,
-) {
-  useChatSessionStore.getState().patchSession(sessionId, { reasoningEffort });
-}
-
-async function applyReasoningEffortToSession(
-  sessionId: string,
-  reasoningEffort: NonNullable<GlobalComposeOptions["reasoningEffort"]>,
-  options: {
-    currentReasoningEffort?: ChatSessionReasoningEffortConfig;
-    patchSessionId?: string;
-  } = {},
-) {
-  const currentReasoningEffort =
-    options.currentReasoningEffort ?? readSessionReasoningEffort(sessionId);
-  if (!currentReasoningEffort) {
+  const effortAnswered = chosen.effort !== undefined && Boolean(effortMenu);
+  const fastAnswered = chosen.fast !== undefined && Boolean(fastToggle);
+  if (
+    session.creationState === "pending" ||
+    (!effortAnswered && !fastAnswered)
+  ) {
     return;
   }
 
-  const patchSessionId = options.patchSessionId ?? sessionId;
-  const targetAtRequest =
-    useChatSessionStore.getState().getSession(patchSessionId)
-      ?.executionTarget ??
-    useChatSessionStore.getState().getSession(sessionId)?.executionTarget;
-  const optimisticReasoningEffort =
-    currentReasoningEffort.configId === reasoningEffort.configId
-      ? {
-          ...currentReasoningEffort,
-          currentValue: reasoningEffort.value,
-        }
-      : currentReasoningEffort;
-  patchSessionReasoningEffort(patchSessionId, optimisticReasoningEffort);
-  const requestIsCurrent = () => {
-    const liveSession = useChatSessionStore
-      .getState()
-      .getSession(patchSessionId);
-    return (
-      sameSessionExecutionTarget(
-        liveSession?.executionTarget,
-        targetAtRequest,
-      ) &&
-      liveSession?.reasoningEffort?.configId ===
-        optimisticReasoningEffort.configId &&
-      liveSession.reasoningEffort.currentValue ===
-        optimisticReasoningEffort.currentValue
-    );
-  };
-  const { providerId, modelId } =
-    hostSelectionFromExecutionTarget(targetAtRequest);
-
-  try {
-    const configOptionsSnapshot = await acpSetSessionConfigOption(
-      sessionId,
-      reasoningEffort.configId,
-      reasoningEffort.value,
-      { providerId, modelId, reasoningEffortValue: reasoningEffort.value },
-    );
-    if (configOptionsSnapshot.reasoningEffort && requestIsCurrent()) {
-      patchSessionReasoningEffort(
-        patchSessionId,
-        configOptionsSnapshot.reasoningEffort,
-      );
-    }
-  } catch (error) {
-    if (requestIsCurrent()) {
-      patchSessionReasoningEffort(patchSessionId, currentReasoningEffort);
-    }
-    throw error;
+  const targetAtRequest = session.executionTarget;
+  const result = await reconcileSessionRunSettings({
+    sessionId,
+    desired,
+    // The menus as they were BEFORE the optimistic patch above, so the chosen
+    // values still read as ones that have to be written.
+    menus: {
+      reasoningEffort: effortMenu ?? null,
+      fastMode: fastToggle ?? null,
+    },
+  });
+  if (!result.error) {
+    return;
   }
+  const liveSession = useChatSessionStore.getState().getSession(sessionId);
+  if (
+    !liveSession ||
+    !sameSessionExecutionTarget(liveSession.executionTarget, targetAtRequest) ||
+    !sameSessionRunSettings(liveSession.desiredRunSettings, desired)
+  ) {
+    return;
+  }
+  console.error("Failed to apply run settings:", result.error);
+  useChatSessionStore.getState().patchSession(sessionId, {
+    reasoningEffort: effortMenu,
+    fastMode: fastToggle,
+    desiredRunSettings: previousDesired,
+  });
 }
 
-function applyReasoningEffortAfterDraftCreation(
-  draftSessionId: string,
-  reasoningEffort: GlobalComposeOptions["reasoningEffort"] | undefined,
-): ((result: DraftSessionCreationReady) => Promise<void>) | undefined {
-  if (!reasoningEffort) {
+/**
+ * The effort and fast mode a new chat is created on: what the caller asked
+ * for, or otherwise what is remembered for this agent and model — but only a
+ * remembered value that model can honour, and never the model's own default,
+ * which the bridge applies by itself.
+ */
+function resolveSessionCreationRunSettings(
+  target: SessionExecutionTarget,
+  requested: SessionRunSettings | undefined,
+): SessionRunSettings | undefined {
+  if (requested !== undefined) {
+    return normalizeSessionRunSettings(requested);
+  }
+  if (!target.modelId) {
     return undefined;
   }
-
-  return async ({ backendSessionId, configOptionsSnapshot }) => {
-    if (!configOptionsSnapshot?.reasoningEffort) {
-      return;
-    }
-
-    try {
-      await applyReasoningEffortToSession(backendSessionId, reasoningEffort, {
-        currentReasoningEffort: configOptionsSnapshot.reasoningEffort,
-        patchSessionId: draftSessionId,
-      });
-    } catch (error) {
-      console.error(
-        "Failed to apply reasoning effort during draft session creation:",
-        error,
-      );
-    }
-  };
+  const inventory =
+    useProviderModelCacheStore.getState().providers.get(target.modelProviderId)
+      ?.models ?? [];
+  return resolvePreSessionRunSettings({
+    model: findModelOption(inventory, target.modelId, target.modelProviderId),
+    modelId: target.modelId,
+    preference: getStoredModelPreference(target.harnessId),
+  }).intent;
 }
 
 function prefersReducedMotion(): boolean {
@@ -1292,6 +1300,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       const session = await createSession({
         title: DEFAULT_CHAT_TITLE,
         executionTarget: resolvedExecutionTarget,
+        runSettings: resolveSessionCreationRunSettings(
+          resolvedExecutionTarget,
+          undefined,
+        ),
         workingDir,
       });
       setHomeSessionId(session.id);
@@ -1330,14 +1342,12 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       sessionExecutionTarget,
       workingDir,
       projectId,
-      onReady,
       onCreationFailed,
     }: {
       session: ChatSession;
       sessionExecutionTarget: SessionExecutionTarget;
       workingDir: MaybePromise<string>;
       projectId?: string;
-      onReady?: (result: DraftSessionCreationReady) => Promise<void> | void;
       onCreationFailed?: (error: unknown) => Promise<void> | void;
     }) => {
       let hasHandledCreationFailure = false;
@@ -1396,12 +1406,26 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           );
           const creationSelection =
             hostSelectionFromExecutionTarget(requestedTarget);
+          // Read off the live draft, like the target: an effort or fast
+          // choice made while the working directory resolved is the one the
+          // chat must open on.
+          const runSettings = normalizeSessionRunSettings(
+            liveDraft
+              ? liveDraft.desiredRunSettings
+              : session.desiredRunSettings,
+          );
           return acpCreateSession(
             creationSelection.providerId ?? requestedTarget.harnessId,
             resolvedWorkingDir,
             {
               projectId,
               modelId: requestedTarget.modelId,
+              ...(runSettings?.effort
+                ? { reasoningEffort: runSettings.effort }
+                : {}),
+              ...(runSettings?.fast !== undefined
+                ? { fastMode: runSettings.fast }
+                : {}),
               personaId: liveDraft?.personaId ?? session.personaId,
               // The draft is already interactive. Construct its provider now so
               // a selection made while creation is in flight can be applied to
@@ -1487,22 +1511,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               }
             };
 
-            await reconcileLatestDraftSelection();
-            if (onReady) {
-              await onReady({
-                backendSessionId: sessionId,
-                configOptionsSnapshot: resolvedConfigOptionsSnapshot,
-              });
-              const pendingReasoningEffort = useChatSessionStore
-                .getState()
-                .getSession(session.id)?.reasoningEffort;
-              if (pendingReasoningEffort) {
-                resolvedConfigOptionsSnapshot = {
-                  ...resolvedConfigOptionsSnapshot,
-                  reasoningEffort: pendingReasoningEffort,
-                };
-              }
-            }
             const latestTarget = await reconcileLatestDraftSelection();
             const promotedTarget =
               !latestTarget.modelId && resolvedConfigOptionsSnapshot?.model
@@ -1581,7 +1589,21 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                       resolvedConfigOptionsSnapshot.reasoningEffort,
                   }
                 : {}),
+              ...(resolvedConfigOptionsSnapshot?.fastMode
+                ? { fastMode: resolvedConfigOptionsSnapshot.fastMode }
+                : {}),
             });
+            // While the chat was a draft its run settings could not reach the
+            // bridge: a choice made after session/new went out, or a model
+            // switch applied under the backend id before the store knew it.
+            // Reconcile once the chat is addressable; it writes nothing when
+            // the bridge is already running at the intent.
+            if (
+              useChatSessionStore.getState().getSession(sessionId)
+                ?.desiredRunSettings
+            ) {
+              void reconcileSessionRunSettings({ sessionId });
+            }
             replaceNavigationSessionId(session.id, sessionId);
             if (shouldRemainActive) {
               setActiveSession(sessionId);
@@ -1785,7 +1807,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         activate?: boolean;
         reuseExistingDraft?: boolean;
         executionTarget?: SessionExecutionTarget;
-        reasoningEffort?: GlobalComposeOptions["reasoningEffort"];
+        runSettings?: SessionRunSettings;
       } = {},
     ) => {
       const shouldActivate = options.activate !== false;
@@ -1796,6 +1818,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       const sessionExecutionTarget =
         await resolveSessionCreationTarget(options);
       if (!sessionExecutionTarget) return undefined;
+      const runSettings = resolveSessionCreationRunSettings(
+        sessionExecutionTarget,
+        options.runSettings,
+      );
       const sessionState = useChatSessionStore.getState();
       const chatState = useChatStore.getState();
       // New chats always start at the project default folder; worktree
@@ -1810,7 +1836,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           title,
           projectId: project?.id,
           executionTarget: sessionExecutionTarget,
-          reasoningEffortValue: options.reasoningEffort?.value,
+          runSettings,
         },
         allowDraftReuse: options.reuseExistingDraft !== false,
       });
@@ -1837,6 +1863,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           title,
           projectId: project?.id,
           executionTarget: sessionExecutionTarget,
+          runSettings,
           workingDir,
         });
         perfLog(
@@ -1850,6 +1877,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         title,
         projectId: project?.id,
         executionTarget: sessionExecutionTarget,
+        runSettings,
         workingDir: optimisticWorkingDir,
       });
       clearSettingsSectionUrl();
@@ -1864,10 +1892,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         sessionExecutionTarget,
         workingDir: resolveSessionCwd(project),
         projectId: project?.id,
-        onReady: applyReasoningEffortAfterDraftCreation(
-          session.id,
-          options.reasoningEffort,
-        ),
       });
       return session;
     },
@@ -1913,6 +1937,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       const sessionExecutionTarget =
         await resolveSessionCreationTarget(options);
       if (!sessionExecutionTarget) return undefined;
+      const runSettings = resolveSessionCreationRunSettings(
+        sessionExecutionTarget,
+        options.runSettings,
+      );
       const sessionState = useChatSessionStore.getState();
       const chatState = useChatStore.getState();
       const needsStartup =
@@ -1930,7 +1958,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           title,
           projectId: project.id,
           executionTarget: sessionExecutionTarget,
-          reasoningEffortValue: options.reasoningEffort?.value,
+          runSettings,
         },
         allowDraftReuse: options.reuseExistingDraft !== false && !needsStartup,
       });
@@ -1952,6 +1980,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         title,
         projectId: project.id,
         executionTarget: sessionExecutionTarget,
+        runSettings,
         workingDir: getOptimisticSessionCwd(project),
         workspaceAttachments: needsStartup
           ? asIs?.workspaceAttachments.filter(
@@ -1972,10 +2001,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         sessionExecutionTarget,
         workingDir: resolveSessionCwd(project),
         projectId: project.id,
-        onReady: applyReasoningEffortAfterDraftCreation(
-          session.id,
-          options.reasoningEffort,
-        ),
       });
       return session;
     },
@@ -1995,7 +2020,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       project?: ProjectInfo,
       options: {
         executionTarget?: SessionExecutionTarget;
-        reasoningEffort?: GlobalComposeOptions["reasoningEffort"];
+        runSettings?: SessionRunSettings;
       } = {},
     ) => {
       const tStart = performance.now();
@@ -2005,6 +2030,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       const sessionExecutionTarget =
         await resolveSessionCreationTarget(options);
       if (!sessionExecutionTarget) return undefined;
+      const runSettings = resolveSessionCreationRunSettings(
+        sessionExecutionTarget,
+        options.runSettings,
+      );
       const sessionState = useChatSessionStore.getState();
       const chatState = useChatStore.getState();
       const existingDraft = findExistingDraft({
@@ -2017,7 +2046,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           title,
           projectId: project?.id,
           executionTarget: sessionExecutionTarget,
-          reasoningEffortValue: options.reasoningEffort?.value,
+          runSettings,
         },
       });
 
@@ -2036,6 +2065,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         title,
         projectId: project?.id,
         executionTarget: sessionExecutionTarget,
+        runSettings,
         workingDir: optimisticWorkingDir,
       });
       perfLog(
@@ -2046,10 +2076,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         sessionExecutionTarget,
         workingDir: resolveSessionCwd(project),
         projectId: project?.id,
-        onReady: applyReasoningEffortAfterDraftCreation(
-          session.id,
-          options.reasoningEffort,
-        ),
       });
       return session;
     },
@@ -2194,127 +2220,32 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     ],
   );
 
+  // The global composer's effort and fast controls act on the Home session it
+  // is attached to, through the same intent-first path as every other chat.
   const handleGlobalComposerReasoningEffortChange = useCallback(
     (value: string) => {
-      if (!homeSessionId || !homeSession?.reasoningEffort) {
+      if (!homeSessionId) {
         return;
       }
-      const current = homeSession.reasoningEffort;
-      if (current.currentValue === value) {
-        return;
-      }
-
-      patchSession(homeSessionId, {
-        reasoningEffort: {
-          ...current,
-          currentValue: value,
-        },
-      });
-
-      const targetAtRequest = homeSession.executionTarget;
-      const { providerId, modelId } =
-        hostSelectionFromExecutionTarget(targetAtRequest);
-      void acpSetSessionConfigOption(homeSessionId, current.configId, value, {
-        providerId,
-        modelId,
-        reasoningEffortValue: value,
-      }).catch((error) => {
-        const liveSession = useChatSessionStore
-          .getState()
-          .getSession(homeSessionId);
-        if (
-          !sameSessionExecutionTarget(
-            liveSession?.executionTarget,
-            targetAtRequest,
-          ) ||
-          liveSession?.reasoningEffort?.currentValue !== value
-        ) {
-          return;
-        }
-        console.error("Failed to set Home reasoning effort:", error);
-        patchSession(homeSessionId, {
-          reasoningEffort: current,
-        });
-      });
+      void applyRunSettingsToSession(homeSessionId, { effort: value });
     },
-    [
-      homeSession?.executionTarget,
-      homeSession?.reasoningEffort,
-      homeSessionId,
-      patchSession,
-    ],
+    [homeSessionId],
   );
 
-  // Intent first, then apply: the intent is what survives a model switch, so it
-  // is recorded even while the Home session's model has not reported its fast
-  // toggle yet. With no toggle there is nothing to write to, and reconciling
-  // now would treat a model that has not answered yet as one without fast
-  // mode; the reconcile that follows its answer applies the intent instead.
   const handleGlobalComposerFastModeChange = useCallback(
     (enabled: boolean) => {
       if (!homeSessionId) {
         return;
       }
-      const current = homeSession?.fastMode;
-      const previousDesired = homeSession?.desiredRunSettings;
-      const desiredRunSettings = normalizeSessionRunSettings({
-        ...previousDesired,
-        fast: enabled,
-      });
-      if (!current || current.enabled === enabled) {
-        patchSession(homeSessionId, { desiredRunSettings });
-        return;
-      }
-
-      patchSession(homeSessionId, {
-        desiredRunSettings,
-        fastMode: { ...current, enabled },
-      });
-      const targetAtRequest = homeSession?.executionTarget;
-      void reconcileSessionRunSettings({
-        sessionId: homeSessionId,
-        desired: desiredRunSettings,
-        // The menus as they were BEFORE the optimistic patch above, so the
-        // chosen value still reads as one that has to be written.
-        menus: {
-          reasoningEffort: homeSession?.reasoningEffort ?? null,
-          fastMode: current,
-        },
-      })
-        .then((result) => {
-          if (!result.error) {
-            return;
-          }
-          const liveSession = useChatSessionStore
-            .getState()
-            .getSession(homeSessionId);
-          if (
-            !sameSessionExecutionTarget(
-              liveSession?.executionTarget,
-              targetAtRequest,
-            ) ||
-            liveSession?.fastMode?.enabled !== enabled
-          ) {
-            return;
-          }
-          console.error("Failed to set Home fast mode:", result.error);
-          patchSession(homeSessionId, {
-            fastMode: current,
-            desiredRunSettings: previousDesired,
-          });
-        })
-        .catch((error) => {
-          console.error("Failed to set Home fast mode:", error);
-        });
+      void applyRunSettingsToSession(homeSessionId, { fast: enabled });
     },
-    [
-      homeSession?.desiredRunSettings,
-      homeSession?.executionTarget,
-      homeSession?.fastMode,
-      homeSession?.reasoningEffort,
-      homeSessionId,
-      patchSession,
-    ],
+    [homeSessionId],
+  );
+
+  const globalComposerSessionRunSettings = useMemo(
+    () =>
+      homeSessionId ? { desired: homeSession?.desiredRunSettings } : undefined,
+    [homeSession?.desiredRunSettings, homeSessionId],
   );
 
   const syncGlobalComposerExecutionTargetToHome = useCallback(
@@ -2454,7 +2385,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
       const chatOptions = {
         executionTarget: options?.executionTarget,
-        reasoningEffort: options?.reasoningEffort,
+        runSettings: options?.runSettings,
       };
       const acceptGlobalFirstSend = async (session: ChatSession) => {
         const sessionId = resolveLiveSessionId(session.id) ?? session.id;
@@ -2464,19 +2395,9 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
             personaId: options.personaId ?? undefined,
           });
         }
-        if (options?.reasoningEffort) {
-          try {
-            await applyReasoningEffortToSession(
-              sessionId,
-              options.reasoningEffort,
-            );
-          } catch (error) {
-            console.error(
-              "Failed to apply reasoning effort from global composer:",
-              error,
-            );
-          }
-        }
+        // No run-settings write here: the chat was created on the composer's
+        // effort and fast mode (they rode in session/new), or it is a reused
+        // draft, which is only reused when it was asked for the same ones.
         acceptFirstSend(
           sessionId,
           {
@@ -2590,7 +2511,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         : undefined;
       const chatOptions = {
         executionTarget: options?.executionTarget,
-        reasoningEffort: options?.reasoningEffort,
+        runSettings: options?.runSettings,
       };
 
       const shouldDismissCenteredComposer =
@@ -2613,20 +2534,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           patchSession(sessionId, {
             personaId: options.personaId ?? undefined,
           });
-        }
-
-        if (options?.reasoningEffort) {
-          try {
-            await applyReasoningEffortToSession(
-              sessionId,
-              options.reasoningEffort,
-            );
-          } catch (error) {
-            console.error(
-              "Failed to apply reasoning effort from expanded global composer:",
-              error,
-            );
-          }
         }
 
         const chatState = useChatStore.getState();
@@ -4136,6 +4043,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                     : undefined
                 }
                 runSettingsNotice={homeSession?.runSettingsNotice ?? null}
+                sessionRunSettings={globalComposerSessionRunSettings}
                 currentExecutionTarget={currentGlobalComposerExecutionTarget}
                 onExecutionTargetChange={
                   handleGlobalComposerExecutionTargetChange
