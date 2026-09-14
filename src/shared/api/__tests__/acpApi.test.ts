@@ -552,6 +552,28 @@ describe("provider wire translation", () => {
     });
   });
 
+  it("names the model, effort and fast mode in _meta so the host applies them at creation", async () => {
+    const { newSession } = await import("../acpApi");
+
+    await newSession("/tmp/project", {
+      providerId: "claude-acp",
+      modelId: "claude-opus-5",
+      reasoningEffort: "xhigh",
+      fastMode: true,
+    });
+
+    expect(mocks.newSession).toHaveBeenCalledWith({
+      cwd: "/tmp/project",
+      mcpServers: [],
+      _meta: {
+        provider: "claude-acp",
+        model: "claude-opus-5",
+        reasoningEffort: "xhigh",
+        fastMode: true,
+      },
+    });
+  });
+
   it("marks the session hidden with a boolean _meta.hidden when requested", async () => {
     const { newSession } = await import("../acpApi");
 

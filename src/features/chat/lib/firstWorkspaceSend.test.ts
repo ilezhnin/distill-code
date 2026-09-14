@@ -148,6 +148,74 @@ describe("first workspace send", () => {
     );
   });
 
+  it("moves the chat with its model, effort and fast intent and keeps both answered controls", async () => {
+    const opus5 = {
+      harnessId: "claude-acp",
+      modelProviderId: "claude-acp",
+      modelId: "claude-opus-5",
+      modelName: "Opus 5",
+    };
+    const effort = {
+      configId: "effort",
+      currentValue: "xhigh",
+      options: [
+        { id: "high", name: "High" },
+        { id: "xhigh", name: "Extra high" },
+      ],
+    };
+    const fastMode = {
+      configId: "fast",
+      enabled: true,
+      kind: "select" as const,
+    };
+    useChatSessionStore.setState({
+      sessions: [
+        {
+          ...session(),
+          executionTarget: opus5,
+          desiredRunSettings: { effort: "xhigh", fast: true },
+        },
+      ],
+    });
+    vi.mocked(planProjectChatWorkspaces).mockResolvedValueOnce({
+      workingDir: "/repo/worktrees/feature/app",
+      workspaceAttachments: [selected],
+    });
+    let sessionAtTransition: unknown;
+    vi.mocked(transitionSessionTarget).mockImplementationOnce(async () => {
+      sessionAtTransition = useChatSessionStore.getState().getSession("s1");
+      return {
+        status: "committed",
+        applied: true,
+        target: opus5,
+        configOptionsSnapshot: {
+          model: { modelId: "claude-opus-5", modelName: "Opus 5" },
+          reasoningEffort: effort,
+          fastMode,
+        },
+      };
+    });
+
+    await provisionPreSendProjectWorkspaces("s1", project, "feature");
+
+    // The coordinator plans the effort and fast writes from the session's own
+    // intent inside the same mutation as the model, so the intent has to be on
+    // the session the transition reads.
+    expect(transitionSessionTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "s1", target: opus5 }),
+    );
+    expect(sessionAtTransition).toMatchObject({
+      executionTarget: opus5,
+      desiredRunSettings: { effort: "xhigh", fast: true },
+    });
+    expect(useChatSessionStore.getState().getSession("s1")).toMatchObject({
+      executionTarget: opus5,
+      desiredRunSettings: { effort: "xhigh", fast: true },
+      reasoningEffort: effort,
+      fastMode,
+    });
+  });
+
   it("restores the backend target before rolling back a stale completed setup", async () => {
     const created = {
       ...selected,

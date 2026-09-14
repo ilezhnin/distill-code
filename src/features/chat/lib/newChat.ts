@@ -6,12 +6,18 @@ import {
   sameSessionExecutionTarget,
   type SessionExecutionTarget,
 } from "./sessionExecutionTarget";
+import {
+  normalizeSessionRunSettings,
+  sameSessionRunSettings,
+  type SessionRunSettings,
+} from "./sessionRunSettings";
 
 interface NewChatRequest {
   title: string;
   projectId?: string;
   executionTarget?: SessionExecutionTarget;
-  reasoningEffortValue?: string;
+  /** The effort and fast mode the new chat is asked to carry. */
+  runSettings?: SessionRunSettings;
 }
 
 interface FindExistingDraftArgs {
@@ -28,6 +34,10 @@ function isMatchingContext(
   session: ChatSession,
   request: Omit<NewChatRequest, "title">,
 ): boolean {
+  // Run settings are compared as INTENT. The observed effort may not have
+  // arrived yet on a draft still being created, and it says nothing about fast
+  // mode; a draft reused at another effort or fast value would silently run the
+  // request on settings nobody asked for.
   return (
     session.projectId === request.projectId &&
     (!request.executionTarget ||
@@ -35,8 +45,10 @@ function isMatchingContext(
         session.executionTarget,
         request.executionTarget,
       )) &&
-    (!request.reasoningEffortValue ||
-      session.reasoningEffort?.currentValue === request.reasoningEffortValue)
+    sameSessionRunSettings(
+      normalizeSessionRunSettings(session.desiredRunSettings),
+      normalizeSessionRunSettings(request.runSettings),
+    )
   );
 }
 

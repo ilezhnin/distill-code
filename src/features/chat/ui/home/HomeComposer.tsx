@@ -1,8 +1,11 @@
+import { useMemo } from "react";
 import { ChatInput } from "@/features/chat/ui/ChatInput";
 import {
   useChatSessionController,
   type WorkspaceNameRequest,
 } from "@/features/chat/hooks/useChatSessionController";
+import { getStoredModelPreference } from "@/features/chat/lib/modelPreferences";
+import { resolvePreSessionRunSettings } from "@/features/chat/lib/preSessionRunSettings";
 import type { HomeScreenProps } from "./HomeScreen";
 
 interface HomeComposerProps {
@@ -27,6 +30,29 @@ export function HomeComposer({
     onCreatePersonaRequested: onCreatePersona,
     onWorkspaceNameRequest,
   });
+
+  // Before Home has a session there is no bridge to ask, so the effort menu
+  // and fast toggle come from the selected model's inventory row, at the
+  // value chosen here or remembered for that model. Once a session exists,
+  // what its model actually advertises wins.
+  const preSession = useMemo(
+    () =>
+      sessionId
+        ? null
+        : resolvePreSessionRunSettings({
+            model: controller.currentModelOption,
+            modelId: controller.currentModelId,
+            desired: controller.pendingRunSettings,
+            preference: getStoredModelPreference(controller.selectedProvider),
+          }),
+    [
+      controller.currentModelId,
+      controller.currentModelOption,
+      controller.pendingRunSettings,
+      controller.selectedProvider,
+      sessionId,
+    ],
+  );
 
   const deferredWorkspaceInFlight =
     controller.deferredWorkspaceRecord?.state.status === "naming" ||
@@ -109,19 +135,25 @@ export function HomeComposer({
         onPickerOpen: controller.handlePickerOpen,
       }}
       reasoningEffort={{
-        config: controller.reasoningEffort,
+        config: preSession
+          ? preSession.reasoningEffort
+          : controller.reasoningEffort,
         onChange: controller.handleReasoningEffortChange,
-        ultracode: {
-          armed: controller.ultracodeArmed,
-          setArmed: controller.handleUltracodeArmedChange,
-        },
+        ultracode: preSession
+          ? undefined
+          : {
+              armed: controller.ultracodeArmed,
+              setArmed: controller.handleUltracodeArmedChange,
+            },
       }}
       fastMode={{
-        config: controller.fastMode,
-        desired: controller.desiredFastMode,
+        config: preSession ? undefined : controller.fastMode,
+        desired: preSession ? preSession.fast : controller.desiredFastMode,
         onChange: controller.handleFastModeChange,
       }}
-      runSettingsNotice={controller.runSettingsNotice}
+      runSettingsNotice={
+        preSession ? preSession.notice : controller.runSettingsNotice
+      }
       projectPicker={{
         selectedProjectId: controller.selectedProjectId,
         availableProjects: controller.availableProjects,

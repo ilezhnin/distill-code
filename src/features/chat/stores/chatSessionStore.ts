@@ -38,9 +38,10 @@ import {
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
-import type {
-  SessionRunSettings,
-  SessionRunSettingsNotice,
+import {
+  normalizeSessionRunSettings,
+  type SessionRunSettings,
+  type SessionRunSettingsNotice,
 } from "@/features/chat/lib/sessionRunSettings";
 
 const RIGHT_RAIL_OPEN_STORAGE_KEY = "distill:right-rail-open";
@@ -218,10 +219,17 @@ interface ChatSessionStoreState {
   archiveMutationBySessionId: ArchiveMutationBySessionId;
 }
 
-interface CreateSessionOpts {
+export interface CreateSessionOpts {
   title?: string;
   projectId?: string;
   executionTarget?: SessionExecutionTarget;
+  /**
+   * The effort and fast mode the operator chose for this chat. They are sent in
+   * `session/new` with the model, so the first turn runs on them, and they
+   * become the chat's `desiredRunSettings`, so they come back after a trip
+   * through a model that cannot honour them.
+   */
+  runSettings?: SessionRunSettings;
   personaId?: string;
   workingDir?: string;
   workspaceAttachments?: WorkspaceAttachment[];
@@ -607,6 +615,7 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
     );
     const providerId = requestedExecutionTarget.harnessId;
     const requestedModelId = requestedExecutionTarget.modelId;
+    const desiredRunSettings = normalizeSessionRunSettings(opts.runSettings);
     const { sessionId, configOptionsSnapshot } = await acpCreateSession(
       providerId,
       opts.workingDir,
@@ -614,6 +623,12 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
         personaId: opts.personaId,
         modelId: requestedModelId,
         projectId: opts.projectId,
+        ...(desiredRunSettings?.effort
+          ? { reasoningEffort: desiredRunSettings.effort }
+          : {}),
+        ...(desiredRunSettings?.fast !== undefined
+          ? { fastMode: desiredRunSettings.fast }
+          : {}),
       },
     );
     logReasoningEffortInfo("createSession acp resolved", {
@@ -637,6 +652,12 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
       executionTargetSource: "ui",
       personaId: opts.personaId,
       reasoningEffort: configOptionsSnapshot?.reasoningEffort ?? undefined,
+      // The toggle the model answered with. Without it the fast control reads
+      // as "this model has no fast mode" until some later snapshot arrives, and
+      // a reconcile in that window would report a notice about a model that
+      // does have one.
+      fastMode: configOptionsSnapshot?.fastMode ?? undefined,
+      ...(desiredRunSettings ? { desiredRunSettings } : {}),
       workingDir: opts.workingDir,
       workspaceAttachments: opts.workspaceAttachments,
       createdAt: now,
@@ -670,12 +691,17 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
       opts.executionTarget ?? { harnessId: DEFAULT_HARNESS_ID },
     );
     const id = crypto.randomUUID();
+    const desiredRunSettings = normalizeSessionRunSettings(opts.runSettings);
     const chatSession: ChatSession = withWorkspaceBackfill({
       id,
       title: opts.title ?? DEFAULT_CHAT_TITLE,
       projectId: opts.projectId,
       executionTarget,
       executionTargetSource: "ui",
+      // Held on the draft until its backend session is created, which reads
+      // them back from here — so a choice made while creation is in flight is
+      // the one that reaches session/new.
+      ...(desiredRunSettings ? { desiredRunSettings } : {}),
       personaId: opts.personaId,
       workingDir: opts.workingDir,
       workspaceAttachments: opts.workspaceAttachments,

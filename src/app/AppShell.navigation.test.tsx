@@ -1587,6 +1587,117 @@ describe("AppShell global navigation", () => {
     });
   });
 
+  it("opens a chat sent from the global composer on the Home selection's model, effort and fast mode in session/new", async () => {
+    window.localStorage.setItem(
+      "distill:preferredModelsByAgent",
+      JSON.stringify({
+        "claude-acp": {
+          modelId: "claude-opus-5",
+          modelName: "Opus 5",
+          providerId: "claude-acp",
+          byModel: {
+            "claude-opus-5": { reasoningEffort: "xhigh", fastMode: true },
+          },
+        },
+      }),
+    );
+    const creationArgsBySessionId = new Map<string, unknown[]>();
+    let createdCount = 0;
+    mockAcpCreateSession.mockImplementation(async (...args: unknown[]) => {
+      createdCount += 1;
+      const sessionId = `created-session-${createdCount}`;
+      creationArgsBySessionId.set(sessionId, args);
+      return { sessionId };
+    });
+    const user = userEvent.setup();
+    renderAppShell();
+
+    await user.type(
+      await screen.findByPlaceholderText("Start a conversation"),
+      "hello{Enter}",
+    );
+
+    // The chat the message was accepted into, whichever creation path the
+    // composer took to make it.
+    const sentChatId = await waitFor(() => {
+      const chatState = useChatStore.getState();
+      const id = Object.keys(chatState.queuedMessageBySession).find(
+        (sessionId) =>
+          chatState.queuedMessageBySession[sessionId]?.some(
+            (record) => record.payload.text === "hello",
+          ),
+      );
+      expect(id).toBeDefined();
+      return id ?? "";
+    });
+    await waitFor(() => {
+      expect(creationArgsBySessionId.has(sentChatId)).toBe(true);
+    });
+    expect(creationArgsBySessionId.get(sentChatId)).toEqual([
+      "claude-acp",
+      expect.any(String),
+      expect.objectContaining({
+        modelId: "claude-opus-5",
+        reasoningEffort: "xhigh",
+        fastMode: true,
+      }),
+    ]);
+    expect(
+      useChatSessionStore.getState().getSession(sentChatId)?.desiredRunSettings,
+    ).toEqual({ effort: "xhigh", fast: true });
+  });
+
+  it("does not reuse a blank draft that was asked for another fast mode", async () => {
+    const rememberFast = (fastMode: boolean) =>
+      window.localStorage.setItem(
+        "distill:preferredModelsByAgent",
+        JSON.stringify({
+          "claude-acp": {
+            modelId: "claude-opus-5",
+            modelName: "Opus 5",
+            providerId: "claude-acp",
+            byModel: { "claude-opus-5": { fastMode } },
+          },
+        }),
+      );
+    rememberFast(false);
+    // Creation never settles, so both chats stay blank drafts.
+    mockAcpCreateSession.mockImplementation(() => new Promise(() => {}));
+    const user = userEvent.setup();
+    renderAppShell();
+
+    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
+    await waitFor(() => {
+      expect(
+        useChatSessionStore.getState().getActiveSession()?.desiredRunSettings,
+      ).toEqual({ fast: false });
+    });
+    const firstDraftId = useChatSessionStore.getState().activeSessionId;
+
+    rememberFast(true);
+    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
+
+    await waitFor(() => {
+      expect(useChatSessionStore.getState().activeSessionId).not.toBe(
+        firstDraftId,
+      );
+    });
+    expect(
+      useChatSessionStore.getState().getActiveSession()?.desiredRunSettings,
+    ).toEqual({ fast: true });
+    expect(
+      useChatSessionStore.getState().getSession(firstDraftId ?? "")
+        ?.desiredRunSettings,
+    ).toEqual({ fast: false });
+    await waitFor(() => {
+      expect(mockAcpCreateSession).toHaveBeenCalledWith(
+        "claude-acp",
+        expect.any(String),
+        expect.objectContaining({ modelId: "claude-opus-5", fastMode: true }),
+      );
+    });
+  });
+
   it("shows ACP error data when draft session creation fails", async () => {
     const error = new Error("Internal error") as Error & { data: string };
     error.name = "RequestError";

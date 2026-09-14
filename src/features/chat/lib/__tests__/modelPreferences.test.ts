@@ -3,6 +3,7 @@ import {
   clearStoredModelPreference,
   getStoredModelPreference,
   setStoredModelPreference,
+  setStoredModelRunSettings,
 } from "../modelPreferences";
 import {
   resolveSessionModelPreference,
@@ -144,6 +145,81 @@ describe("stored model preferences", () => {
 
     clearStoredModelPreference("codex-acp");
     expect(getStoredModelPreference("codex-acp")).toBeNull();
+  });
+
+  it("keeps the remembered effort and fast mode when only the model is picked again", () => {
+    seedStoredPreferences({
+      "claude-acp": {
+        modelId: "claude-opus-5",
+        modelName: "Opus 5",
+        providerId: "claude-acp",
+        reasoningEffort: "xhigh",
+        fastMode: true,
+        byModel: { "claude-opus-5": { reasoningEffort: "xhigh" } },
+      },
+    });
+
+    setStoredModelPreference("claude-acp", {
+      modelId: "claude-sonnet-5",
+      modelName: "Sonnet 5",
+      providerId: "claude-acp",
+    });
+
+    expect(getStoredModelPreference("claude-acp")).toEqual({
+      modelId: "claude-sonnet-5",
+      modelName: "Sonnet 5",
+      providerId: "claude-acp",
+      reasoningEffort: "xhigh",
+      fastMode: true,
+      byModel: { "claude-opus-5": { reasoningEffort: "xhigh" } },
+    });
+  });
+
+  it("remembers a chosen effort and fast mode for the model and for the agent", () => {
+    seedStoredPreferences({
+      "claude-acp": {
+        modelId: "claude-opus-5",
+        modelName: "Opus 5",
+        providerId: "claude-acp",
+        byModel: { "claude-opus-5": { fastMode: true } },
+      },
+    });
+
+    setStoredModelRunSettings(
+      "claude-acp",
+      { modelId: "claude-opus-5", providerId: "claude-acp" },
+      { reasoningEffort: "max" },
+    );
+
+    expect(getStoredModelPreference("claude-acp")).toEqual({
+      modelId: "claude-opus-5",
+      modelName: "Opus 5",
+      providerId: "claude-acp",
+      reasoningEffort: "max",
+      byModel: {
+        "claude-opus-5": { fastMode: true, reasoningEffort: "max" },
+      },
+    });
+  });
+
+  it("starts a preference for an agent that had none when a run setting is chosen", () => {
+    setStoredModelRunSettings(
+      "codex-acp",
+      {
+        modelId: "gpt-6-astra",
+        modelName: "GPT-6-Astra",
+        providerId: "codex-acp",
+      },
+      { fastMode: false },
+    );
+
+    expect(getStoredModelPreference("codex-acp")).toEqual({
+      modelId: "gpt-6-astra",
+      modelName: "GPT-6-Astra",
+      providerId: "codex-acp",
+      fastMode: false,
+      byModel: { "gpt-6-astra": { fastMode: false } },
+    });
   });
 
   // The regression test for silent loss: the split has to happen before the

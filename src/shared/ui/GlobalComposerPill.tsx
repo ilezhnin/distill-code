@@ -37,7 +37,15 @@ import {
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
 import { makeRemountSafeDraftAttachments } from "@/features/chat/lib/draftAttachments";
-import type { SessionRunSettingsNotice } from "@/features/chat/lib/sessionRunSettings";
+import {
+  normalizeSessionRunSettings,
+  type SessionRunSettings,
+  type SessionRunSettingsNotice,
+} from "@/features/chat/lib/sessionRunSettings";
+import {
+  findModelOption,
+  resolvePreSessionRunSettings,
+} from "@/features/chat/lib/preSessionRunSettings";
 import type {
   ChatInputFastMode,
   ChatInputReasoningEffort,
@@ -63,10 +71,11 @@ export interface GlobalComposeOptions {
   attachments?: ChatAttachmentDraft[];
   personaId?: string | null;
   sendOptions?: ChatSendOptions;
-  reasoningEffort?: {
-    configId: string;
-    value: string;
-  };
+  /**
+   * The effort and fast mode the new chat should carry, as intent. No config
+   * id: the chat is created on them, and the bridge's own ids are its business.
+   */
+  runSettings?: SessionRunSettings;
 }
 
 export interface GlobalComposerExpandPayload {
@@ -103,6 +112,13 @@ interface GlobalComposerPillProps {
   /** The fast toggle of the session this pill applies its selection to. */
   fastMode?: ChatInputFastMode;
   runSettingsNotice?: SessionRunSettingsNotice | null;
+  /**
+   * Present while a session backs this pill, carrying that session's run
+   * settings intent. Absent, the pill has no session to ask: it offers effort
+   * and fast from the selected model's inventory row and holds the choice
+   * itself until the chat is created.
+   */
+  sessionRunSettings?: { desired?: SessionRunSettings };
   currentExecutionTarget?: SessionExecutionTarget | null;
   onExecutionTargetChange?: (target: SessionExecutionTarget | null) => void;
   placement?: "docked" | "centered" | "handoff";
@@ -200,6 +216,7 @@ export function GlobalComposerPill({
   reasoningEffort,
   fastMode,
   runSettingsNotice = null,
+  sessionRunSettings,
   currentExecutionTarget,
   onExecutionTargetChange,
   placement = "docked",
@@ -228,6 +245,9 @@ export function GlobalComposerPill({
     null,
   );
   const [selectedSkills, setSelectedSkills] = useState<ChatSkillDraft[]>([]);
+  // Effort and fast chosen here while no session backs the pill.
+  const [runSettingsOverride, setRunSettingsOverride] =
+    useState<SessionRunSettings>();
   const [attachmentWorkCount, setAttachmentWorkCount] = useState(0);
   const personas = useAgentStore(selectPersonas);
   const catalogEntries = useProviderCatalogStore((state) => state.entries);
@@ -396,6 +416,7 @@ export function GlobalComposerPill({
   const clearComposerSelections = useCallback(() => {
     setProviderOverride(null);
     setModelOverride(null);
+    setRunSettingsOverride(undefined);
     setSelectedProjectId(null);
     setSelectedPersonaId(null);
     personaSelectionSourceRef.current = "none";
@@ -686,16 +707,86 @@ export function GlobalComposerPill({
   const selectionMatchesSession =
     reasoningEffortSelectionMatch.providerMatches &&
     reasoningEffortSelectionMatch.modelMatches;
-  const activeReasoningEffort =
-    reasoningEffort?.config && selectionMatchesSession
-      ? reasoningEffort
-      : undefined;
-  // Fast mode and the notice describe the session's model, so they are offered
-  // only while the pill still points at that model, the same rule as effort.
-  const activeFastMode = selectionMatchesSession ? fastMode : undefined;
-  const activeRunSettingsNotice = selectionMatchesSession
-    ? runSettingsNotice
-    : null;
+  // The session's menus, fast toggle and notice describe the session's model,
+  // so they are used only while a session backs the pill and the pill still
+  // points at that model. Otherwise nothing live describes the selection, and
+  // the selected model's inventory row does.
+  const sessionBacked =
+    sessionRunSettings !== undefined && selectionMatchesSession;
+  const selectedModelOption = useMemo(
+    () =>
+      findModelOption(
+        availableModels,
+        effectiveModelSelection?.modelId,
+        effectiveModelSelection?.modelProviderId,
+      ),
+    [
+      availableModels,
+      effectiveModelSelection?.modelId,
+      effectiveModelSelection?.modelProviderId,
+    ],
+  );
+  const preSession = useMemo(
+    () =>
+      sessionBacked
+        ? null
+        : resolvePreSessionRunSettings({
+            model: selectedModelOption,
+            modelId: effectiveModelSelection?.modelId,
+            desired: runSettingsOverride,
+            preference: getStoredModelPreference(selectedAgentId),
+          }),
+    [
+      effectiveModelSelection?.modelId,
+      runSettingsOverride,
+      selectedAgentId,
+      selectedModelOption,
+      sessionBacked,
+    ],
+  );
+  const handlePreSessionEffortChange = useCallback((value: string) => {
+    setRunSettingsOverride((previous) =>
+      normalizeSessionRunSettings({ ...previous, effort: value }),
+    );
+  }, []);
+  const handlePreSessionFastModeChange = useCallback((enabled: boolean) => {
+    setRunSettingsOverride((previous) =>
+      normalizeSessionRunSettings({ ...previous, fast: enabled }),
+    );
+  }, []);
+  const activeReasoningEffort = useMemo<ChatInputReasoningEffort | undefined>(
+    () =>
+      preSession
+        ? preSession.reasoningEffort
+          ? {
+              config: preSession.reasoningEffort,
+              onChange: handlePreSessionEffortChange,
+            }
+          : undefined
+        : reasoningEffort?.config
+          ? reasoningEffort
+          : undefined,
+    [handlePreSessionEffortChange, preSession, reasoningEffort],
+  );
+  const activeFastMode = useMemo<ChatInputFastMode | undefined>(
+    () =>
+      preSession
+        ? {
+            desired: preSession.fast,
+            onChange: handlePreSessionFastModeChange,
+          }
+        : fastMode,
+    [fastMode, handlePreSessionFastModeChange, preSession],
+  );
+  const activeRunSettingsNotice = preSession
+    ? preSession.notice
+    : runSettingsNotice;
+  // What a chat created from this pill is asked to carry. A session-backed
+  // pill hands on that session's intent; with nothing chosen at all, the chat
+  // falls back to what is remembered for its model when it is created.
+  const composeRunSettings = preSession
+    ? preSession.intent
+    : normalizeSessionRunSettings(sessionRunSettings?.desired);
   const effectiveReasoning = useMemo(
     () =>
       resolveEffectiveReasoningEffort({
@@ -774,11 +865,8 @@ export function GlobalComposerPill({
         options.projectId = selectedProjectId;
       }
       options.personaId = selectedPersonaId;
-      if (activeReasoningEffort?.config) {
-        options.reasoningEffort = {
-          configId: activeReasoningEffort.config.configId,
-          value: activeReasoningEffort.config.currentValue,
-        };
+      if (composeRunSettings) {
+        options.runSettings = composeRunSettings;
       }
       const { messageText, sendOptions } = buildSkillSendPayload(
         trimmed,
@@ -826,7 +914,7 @@ export function GlobalComposerPill({
       onHandoffStart,
       onSend,
       providerOverride,
-      activeReasoningEffort?.config,
+      composeRunSettings,
       placement,
       selectedPersonaId,
       selectedProjectId,
@@ -860,11 +948,8 @@ export function GlobalComposerPill({
       options.projectId = selectedProjectId;
     }
     options.personaId = selectedPersonaId;
-    if (activeReasoningEffort?.config) {
-      options.reasoningEffort = {
-        configId: activeReasoningEffort.config.configId,
-        value: activeReasoningEffort.config.currentValue,
-      };
+    if (composeRunSettings) {
+      options.runSettings = composeRunSettings;
     }
 
     const payload: GlobalComposerExpandPayload = {
@@ -890,7 +975,7 @@ export function GlobalComposerPill({
         setExpandPending(false);
       });
   }, [
-    activeReasoningEffort?.config,
+    composeRunSettings,
     attachmentWorkPending,
     attachments,
     clearComposerSelections,

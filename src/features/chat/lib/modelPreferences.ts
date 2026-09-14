@@ -179,22 +179,92 @@ export function getStoredModelPreferenceForProvider(
   );
 }
 
+function storedRunSettingsOf(
+  preference: StoredModelPreference | undefined,
+): Pick<StoredModelPreference, "reasoningEffort" | "fastMode" | "byModel"> {
+  if (!preference) {
+    return {};
+  }
+  return {
+    ...(preference.reasoningEffort !== undefined
+      ? { reasoningEffort: preference.reasoningEffort }
+      : {}),
+    ...(preference.fastMode !== undefined
+      ? { fastMode: preference.fastMode }
+      : {}),
+    ...(preference.byModel ? { byModel: preference.byModel } : {}),
+  };
+}
+
+/**
+ * Remember an agent's preferred model. The remembered effort and fast mode are
+ * kept unless the caller names them: a model pick says nothing about them, and
+ * dropping them there would forget every per-model choice on each switch.
+ */
 export function setStoredModelPreference(
   agentId: string,
   preference: StoredModelPreference,
 ): void {
   const next = readStoredModelPreferences();
   const canonicalId = canonicalAgentId(agentId);
-  const modelId = normalizeConcreteModelId(preference.modelId);
+  const concreteModelId = normalizeConcreteModelId(preference.modelId);
   const providerId = preference.providerId
     ? canonicalModelProviderId(preference.providerId)
     : undefined;
-  if (!modelId || !providerId) {
+  if (!concreteModelId || !providerId) {
     delete next[canonicalId];
     persistStoredModelPreferences(next);
     return;
   }
-  next[canonicalId] = { ...preference, modelId, providerId };
+  // The lazy half of the tolerant read: a folded id handed back by a caller is
+  // written in the split form, with an explicitly named effort winning.
+  const folded = splitLegacyFoldedModelId(concreteModelId);
+  const modelId = folded?.modelId ?? concreteModelId;
+  const reasoningEffort = preference.reasoningEffort ?? folded?.effort;
+  next[canonicalId] = {
+    ...storedRunSettingsOf(next[canonicalId]),
+    ...preference,
+    modelId,
+    providerId,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+  };
+  persistStoredModelPreferences(next);
+}
+
+/**
+ * Remember an effort or fast choice for one model of an agent, both as that
+ * model's own value and as the agent-level value other models fall back to
+ * when they offer it. Only the knobs named in `settings` are written.
+ */
+export function setStoredModelRunSettings(
+  agentId: string,
+  model: { modelId: string; modelName?: string; providerId: string },
+  settings: StoredModelRunSettings,
+): void {
+  const chosen = parseStoredRunSettings(settings);
+  if (chosen.reasoningEffort === undefined && chosen.fastMode === undefined) {
+    return;
+  }
+  const modelId = baseModelId(normalizeConcreteModelId(model.modelId));
+  const providerId = canonicalModelProviderId(model.providerId);
+  if (!modelId || !providerId) {
+    return;
+  }
+  const next = readStoredModelPreferences();
+  const canonicalId = canonicalAgentId(agentId);
+  const existing = next[canonicalId] ?? {
+    modelId,
+    modelName: model.modelName ?? modelId,
+    providerId,
+  };
+  next[canonicalId] = {
+    ...existing,
+    ...chosen,
+    byModel: {
+      ...existing.byModel,
+      [modelId]: { ...existing.byModel?.[modelId], ...chosen },
+    },
+  };
   persistStoredModelPreferences(next);
 }
 

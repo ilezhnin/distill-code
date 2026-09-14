@@ -71,6 +71,10 @@ export interface AcpCreateSessionOptions {
   personaId?: string;
   projectId?: string;
   modelId?: string | null;
+  /** The operator's chosen effort, in the harness's own vocabulary. */
+  reasoningEffort?: string;
+  /** The operator's chosen fast mode; absent means nobody chose. */
+  fastMode?: boolean;
 }
 
 export interface AcpSessionConfigApplyOptions {
@@ -333,10 +337,18 @@ export async function acpCreateSession(
   options: AcpCreateSessionOptions = {},
 ): Promise<AcpCreateSessionResult> {
   const modelId = normalizeConcreteModelId(options.modelId);
+  const reasoningEffort = options.reasoningEffort?.trim();
+  // The selection rides in `session/new` itself, so the bridge is on the
+  // chosen model, effort and fast mode before any turn can start. The model
+  // apply below stays as the check that the host really acknowledged the model:
+  // it is skipped when it did, and it is the old follow-up write when it did not.
   const response = await directAcp.newSession(workingDir, {
     providerId,
     projectId: options.projectId,
     personaId: options.personaId,
+    ...(modelId ? { modelId } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(options.fastMode !== undefined ? { fastMode: options.fastMode } : {}),
   });
   const sessionId = response.sessionId;
   let configOptionsSnapshot = readSessionConfigOptionsSnapshots(response);

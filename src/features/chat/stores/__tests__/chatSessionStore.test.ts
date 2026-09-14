@@ -552,6 +552,53 @@ describe("chatSessionStore", () => {
       });
     });
 
+    it("keeps the fast toggle from the create answer and records the chosen run settings as intent", async () => {
+      mocks.acpCreateSession.mockResolvedValue({
+        sessionId: "acp-fast",
+        configOptionsSnapshot: {
+          model: { modelId: "claude-opus-5", modelName: "Opus 5" },
+          reasoningEffort: {
+            configId: "effort",
+            currentValue: "xhigh",
+            options: [
+              { id: "high", name: "High" },
+              { id: "xhigh", name: "Extra high" },
+            ],
+          },
+          fastMode: { configId: "fast", enabled: true, kind: "select" },
+        },
+      });
+
+      const session = await useChatSessionStore.getState().createSession({
+        executionTarget: targetFromAgentModelSelection("claude-acp", {
+          modelProviderId: "claude-acp",
+          modelId: "claude-opus-5",
+          modelName: "Opus 5",
+        }),
+        runSettings: { effort: "xhigh", fast: true },
+        workingDir: "/tmp/project",
+      });
+
+      expect(mocks.acpCreateSession).toHaveBeenCalledWith(
+        "claude-acp",
+        "/tmp/project",
+        expect.objectContaining({
+          modelId: "claude-opus-5",
+          reasoningEffort: "xhigh",
+          fastMode: true,
+        }),
+      );
+      expect(session.fastMode).toEqual({
+        configId: "fast",
+        enabled: true,
+        kind: "select",
+      });
+      expect(session.desiredRunSettings).toEqual({
+        effort: "xhigh",
+        fast: true,
+      });
+    });
+
     it("creates a local draft session without touching ACP", () => {
       const session = useChatSessionStore.getState().createDraftSession({
         title: "New Chat",
