@@ -1,5 +1,6 @@
 import type { ChatAttachmentDraft } from "@/shared/types/messages";
 import type { ChatSendOptions } from "../types";
+import type { SessionRunSettings } from "./sessionRunSettings";
 
 export type PersonaIntent =
   | { kind: "inherit" }
@@ -12,6 +13,14 @@ export interface QueuedMessagePayload {
   attachments?: ChatAttachmentDraft[];
   sendOptions?: ChatSendOptions;
   showInComposer?: boolean;
+  /**
+   * The chat's effort and fast mode when this message was queued. A RECORD,
+   * not yet an instruction: dispatch still runs at the chat's settings at
+   * dispatch time, because LAWS/CHAT.md does not decide whether a queued
+   * message keeps what it was queued under. Carrying the value now means that
+   * decision needs no migration of the queues already on disk.
+   */
+  runSettings?: SessionRunSettings;
 }
 
 export type AdmittedQueuedMessagePayload = QueuedMessagePayload;
