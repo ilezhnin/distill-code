@@ -34,6 +34,14 @@ export interface SessionNode {
   harnessId: string;
   modelProviderId?: string;
   modelId?: string;
+  /**
+   * The reasoning effort and fast mode the node was spawned to run at, beside
+   * `modelId` and never inside it. Absent on nodes recorded before the two
+   * were separate choices, whose `modelId` may still carry the effort; readers
+   * split that at read time and the record itself is left as written.
+   */
+  effort?: string;
+  fast?: boolean;
   displayName: string;
   icon?: string;
   personaId?: string;

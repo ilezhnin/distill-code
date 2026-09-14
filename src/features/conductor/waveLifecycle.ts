@@ -92,7 +92,10 @@ import {
   waveInterruptedDecision,
   type WaveVerdictDecision,
 } from "./waveVerdict";
-import { checkExplicitWaveStepModel } from "./waveStepTarget";
+import {
+  checkExplicitWaveStepModel,
+  checkWaveStepRunSettings,
+} from "./waveStepTarget";
 import {
   recordTaskMemoryVerdict,
   recordWaveInTaskMemory,
@@ -487,7 +490,11 @@ function applyVerdictDecision(
       // A revision's explicit step models face the same live check as a fresh
       // plan's — the verdict path must not be the door a silently unrunnable
       // model walks in through.
-      { checkStepModel: checkExplicitWaveStepModel },
+      {
+        checkStepModel: checkExplicitWaveStepModel,
+        checkStepRunSettings: (step) =>
+          checkWaveStepRunSettings(step, wave.conductorSessionId),
+      },
     );
     if (admission.kind === "rejected") {
       // The revision wave itself is unrunnable (a model nothing installed can

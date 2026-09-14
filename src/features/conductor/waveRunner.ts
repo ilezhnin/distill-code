@@ -75,6 +75,8 @@ import {
   waveRevisionBudgetResetNoticeText,
   waveSpawnFailureText,
   waveStepModelDowngradeNoticeText,
+  waveStepLegacyModelEffortNoticeText,
+  waveStepRunSettingsNoticeText,
   waveBudgetStopNotice,
 } from "./waveNotices";
 import { BoundedSet } from "./boundedSet";
@@ -92,8 +94,13 @@ import { MAX_WAVE_REVISIONS, isWaveLive } from "./waveVerdict";
 import { loadFailedAttemptsBlock } from "./taskMemory";
 import { buildWaveStepPrompt } from "./wavePrompts";
 import {
+  advertisedModelForTarget,
   checkExplicitWaveStepModel,
   checkWaveStepModelDowngrade,
+  checkWaveStepRunSettings,
+  conductorExecutionTarget,
+  modelDisplayName,
+  planWaveStepRunSettings,
   resolveExplicitWaveStepModel,
   resolveWaveStepTarget,
 } from "./waveStepTarget";
@@ -496,6 +503,8 @@ function admitCandidates(state: WaveEngineState): WaveEngineState {
     // conductor a replan, not a half-started wave.
     const admission = admitWavePlan(candidate.parse, {
       checkStepModel: checkExplicitWaveStepModel,
+      checkStepRunSettings: (step) =>
+        checkWaveStepRunSettings(step, candidate.conductorSessionId),
     });
     if (admission.kind === "rejected") {
       // Tombstone first: a rejected plan must never re-error, even if
@@ -646,10 +655,38 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
       // warned, because killing the step over a meter that moved is worse
       // than the cut-off the meter predicts.
       let executionTarget = stepTarget?.target;
+      // The row the step's effort and fast mode are judged against, and how a
+      // notice names it: the plan's model, else the ranking's, else the
+      // conductor's own, which a step with no target inherits.
+      let settingsModel = stepTarget
+        ? advertisedModelForTarget(stepTarget.target)
+        : undefined;
+      let settingsModelLabel = stepTarget?.label;
+      let legacyEffort: string | undefined;
       if (explicitModel) {
         const resolved = resolveExplicitWaveStepModel(explicitModel);
         if (!resolved.ok) throw new Error(resolved.detail);
         executionTarget = resolved.target;
+        settingsModel = resolved.model;
+        settingsModelLabel = resolved.label;
+        legacyEffort = resolved.legacyEffort;
+        if (legacyEffort) {
+          // Tolerated, not taught: the step runs split, and the conductor is
+          // told the shape so its next plan writes two fields.
+          appendConductorNotice(
+            wave.conductorSessionId,
+            waveStepLegacyModelEffortNoticeText({
+              stepIndex: request.stepIndex,
+              name: roleDisplayName(request.step.role),
+              requested: explicitModel,
+              model: resolved.label,
+              legacyEffort,
+              effort: request.step.effort ?? legacyEffort,
+            }),
+            false,
+            "warning",
+          );
+        }
         if (resolved.limit !== "clear") {
           appendConductorNotice(
             wave.conductorSessionId,
@@ -706,6 +743,55 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
           );
         }
       }
+      if (!executionTarget) {
+        settingsModel = advertisedModelForTarget(
+          conductorExecutionTarget(wave.conductorSessionId),
+        );
+        settingsModelLabel = undefined;
+      }
+      const stepRunSettings = planWaveStepRunSettings({
+        step: request.step,
+        ...(legacyEffort ? { legacyEffort } : {}),
+        ...(stepTarget ? { ranked: stepTarget } : {}),
+        model: settingsModel,
+      });
+      // WAVES: nothing about how a step runs is substituted without saying so
+      // where the step is shown. Admission refused this for what the plan
+      // named; what reaches here is the ranking's preference, or an inventory
+      // that changed since admission — the step runs, and says so.
+      const noticeModel =
+        settingsModelLabel ??
+        (settingsModel ? modelDisplayName(settingsModel) : undefined);
+      if (noticeModel) {
+        const effort = stepRunSettings.runSettings?.effort;
+        if (effort && !stepRunSettings.effortApplied) {
+          appendConductorNotice(
+            wave.conductorSessionId,
+            waveStepRunSettingsNoticeText({
+              stepIndex: request.stepIndex,
+              name: roleDisplayName(request.step.role),
+              model: noticeModel,
+              kind: "effort",
+              effort,
+            }),
+            false,
+            "warning",
+          );
+        }
+        if (!stepRunSettings.fastApplied) {
+          appendConductorNotice(
+            wave.conductorSessionId,
+            waveStepRunSettingsNoticeText({
+              stepIndex: request.stepIndex,
+              name: roleDisplayName(request.step.role),
+              model: noticeModel,
+              kind: "fast",
+            }),
+            false,
+            "warning",
+          );
+        }
+      }
       const spawnPromise = spawnConductorChildSession({
         parentSessionId: wave.conductorSessionId,
         role: "worker",
@@ -733,11 +819,14 @@ function startSpawn(wave: WaveState, request: WaveSpawnRequest): void {
         // the conductor", which is what every wave child did before rankings
         // reached this path.
         ...(executionTarget ? { executionTarget } : {}),
-        // P36: the profile the step was routed by names a model *and* an
-        // effort, and only codex-style ids carry the effort with the model.
-        // A step whose model came from the plan carries no ranked effort —
-        // the plan pinned the model, not how hard to think about it.
-        ...(stepTarget?.effort ? { reasoningEffort: stepTarget.effort } : {}),
+        // P36: the effort and fast mode the step runs at — its own fields,
+        // else the ranking's. A sibling of the target, never folded into the
+        // model id. A step whose model came from the plan carries no ranked
+        // settings: the plan pinned the model, and only its own fields say
+        // how to run it.
+        ...(stepRunSettings.runSettings
+          ? { runSettings: stepRunSettings.runSettings }
+          : {}),
         task: request.step.subtask,
         prompt: buildWaveStepPrompt(step, request.previousReports, {
           stepIndex: request.stepIndex,
