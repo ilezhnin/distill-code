@@ -161,6 +161,51 @@ function appendRendererQuery(
   return url.toString();
 }
 
+// CI runners are slower than a developer machine, and several transcript
+// behaviours only diverge when frames, chunks and resize callbacks land in a
+// different order. Both knobs are off unless set:
+// - `TRANSCRIPT_VIRTUALIZATION_CPU_THROTTLE_RATE=2` slows Chromium's CPU.
+// - `TRANSCRIPT_VIRTUALIZATION_DEFER_RESIZE_OBSERVER_FRAMES=2` delivers every
+//   ResizeObserver callback that many frames late, so scroll handlers and
+//   animation-frame work run before layout-driven follow code, as on a runner
+//   that paces frames differently.
+async function applyTranscriptRunnerEmulation(page: Page) {
+  const rate = Number(process.env.TRANSCRIPT_VIRTUALIZATION_CPU_THROTTLE_RATE);
+  if (Number.isFinite(rate) && rate > 1) {
+    const session = await page.context().newCDPSession(page);
+    await session.send("Emulation.setCPUThrottlingRate", { rate });
+  }
+
+  const deferFrames = Number(
+    process.env.TRANSCRIPT_VIRTUALIZATION_DEFER_RESIZE_OBSERVER_FRAMES,
+  );
+  if (Number.isFinite(deferFrames) && deferFrames > 0) {
+    await page.addInitScript((frames) => {
+      const NativeResizeObserver = window.ResizeObserver;
+      if (!NativeResizeObserver) {
+        return;
+      }
+
+      window.ResizeObserver = class extends NativeResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          super((entries, observer) => {
+            let remainingFrames = frames;
+            const deliver = () => {
+              if (remainingFrames <= 0) {
+                callback(entries, observer);
+                return;
+              }
+              remainingFrames -= 1;
+              requestAnimationFrame(deliver);
+            };
+            deliver();
+          });
+        }
+      };
+    }, deferFrames);
+  }
+}
+
 export async function loadTranscriptRenderer(
   page: Page,
   options: TranscriptRendererHarnessOptions,
@@ -168,6 +213,7 @@ export async function loadTranscriptRenderer(
   const { fixture, rendererMode, rendererUrl } = options;
   const selectors = options.selectors ?? DEFAULT_TRANSCRIPT_VIEWPORT_SELECTORS;
 
+  await applyTranscriptRunnerEmulation(page);
   await installTranscriptOperationTimingInstrumentation(page, {
     scrollerSelector: selectors.scroller,
   });

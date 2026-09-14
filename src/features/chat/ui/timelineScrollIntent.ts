@@ -152,6 +152,31 @@ export function getStreamingResponseStartPinScrollTop({
   return responseStartScrollTop;
 }
 
+/**
+ * The first time the timeline sees a streaming response, its start counts as
+ * in view only if the reader can see it and following latest will keep
+ * showing it: the whole response fits below that start. A response that is
+ * already over-tall (a chat opened mid-answer) is followed at its bottom and
+ * never pinned back to a start the reader did not scroll to.
+ */
+export function isStreamingResponseStartInViewAtFirstSight({
+  responseStartTopInViewport,
+  viewportHeight,
+  bottomScrollTop,
+  responseStartScrollTop,
+}: {
+  responseStartTopInViewport: number;
+  viewportHeight: number;
+  bottomScrollTop: number;
+  responseStartScrollTop: number;
+}): boolean {
+  return (
+    responseStartTopInViewport >= -1 &&
+    responseStartTopInViewport < viewportHeight &&
+    bottomScrollTop <= responseStartScrollTop + 1
+  );
+}
+
 export function getTimelineRealContentDistanceFromBottom({
   metrics,
   bottomPaddingPx,

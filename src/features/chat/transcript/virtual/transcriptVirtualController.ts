@@ -643,8 +643,19 @@ export class TranscriptVirtualController implements TranscriptVirtualEngine {
     const selected = stable ?? streaming ?? nearestStable ?? nearestStreaming;
 
     if (!selected) {
+      // No row to anchor to (the only visible content can be the live
+      // streaming tail, which this engine does not own). A viewport away from
+      // the bottom must then keep its own position: falling back to a bottom
+      // anchor would let the next reconcile drag a detached or pinned reader
+      // back to the bottom.
+      const fallback =
+        options.fallback ??
+        (this.getDistanceFromBottom(this.observedScrollTop) <=
+        this.pinnedBottomThresholdPx
+          ? "bottom"
+          : "scroll-position");
       this.setScrollAnchor(
-        options.fallback === "scroll-position"
+        fallback === "scroll-position"
           ? { type: "scroll-position", scrollTop: this.observedScrollTop }
           : { type: "bottom" },
       );
