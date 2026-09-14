@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { cn } from "@/shared/lib/cn";
+import { splitLegacyFoldedModelId } from "@/shared/lib/foldedModelId";
 
 import type { ConductorOpenChildIntent } from "../ConductorTranscriptContext";
 import { summarizeBrigadeActivity } from "../brigadeActivity";
@@ -36,6 +37,29 @@ function spendLabelFor(
     return formatTokenCount(tokenState.accumulatedTotal);
   }
   return undefined;
+}
+
+/**
+ * What a step's chip says about how the plan asked it to run: the model, the
+ * effort and fast mode, as separate words.
+ *
+ * A legacy model string with its effort inside the name is shown split, the
+ * way the spawn runs it, so the chip never displays an id no harness lists and
+ * the operator sees the effort the step actually asked for. The step's own
+ * `effort` wins over the one in the name, as it does at the spawn.
+ */
+function waveStepChipModelLabel(
+  step: WaveStep | undefined,
+  fastLabel: string,
+): string | undefined {
+  if (!step) return undefined;
+  const folded = step.model ? splitLegacyFoldedModelId(step.model) : null;
+  const parts = [
+    folded ? folded.modelId : step.model,
+    step.effort ?? folded?.effort,
+    step.fast ? fastLabel : undefined,
+  ].filter((part): part is string => Boolean(part));
+  return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
 function formatTokenCount(value: number): string {
@@ -174,10 +198,11 @@ export function ConductorAgentFooter({
         spendLabel: spendLabelFor(sessionStateById[node.sessionId]?.tokenState),
         stepIndex: node.stepIndex,
         accessLabel: step ? t(waveStepAccessKey(step)) : undefined,
-        // D5: a step the plan pinned to a model wears it on the chip. The raw
-        // plan string, deliberately — the chip states the instruction; what it
-        // resolved to is on the child tab and in the spawn notices.
-        modelLabel: step?.model,
+        // D5: a step the plan pinned to a model wears it on the chip, with the
+        // effort and fast mode it asked for. The plan's words, deliberately —
+        // the chip states the instruction; what it resolved to is on the
+        // child tab and in the spawn notices.
+        modelLabel: waveStepChipModelLabel(step, t("conductor.chipFast")),
         onOpen: openInTab,
         onStop,
       };
@@ -201,7 +226,10 @@ export function ConductorAgentFooter({
                 title: slot.step.subtask,
                 stepIndex: slot.stepIndex,
                 accessLabel: t(waveStepAccessKey(slot.step)),
-                modelLabel: slot.step.model,
+                modelLabel: waveStepChipModelLabel(
+                  slot.step,
+                  t("conductor.chipFast"),
+                ),
                 pending: true,
               },
         ),

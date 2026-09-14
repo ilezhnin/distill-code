@@ -23,6 +23,7 @@ import {
   diffWaveStates,
   hasUnreadableRunJournal,
   installRunJournal,
+  parseRunJournalEvents,
   resetRunJournalsForTests,
   RUN_JOURNAL_READ_RETRY_DELAYS_MS,
   runEventsFor,
@@ -154,13 +155,14 @@ describe("diffWaveStates", () => {
 describe("diffGraphNodes", () => {
   const waveById = (id: string) => (id === "w1" ? wave() : undefined);
 
-  it("records the spawn with the model the step actually landed on", () => {
+  it("records the spawn with the model, effort and fast mode the step actually landed on", () => {
     // The whole reason this exists: four executors died before doing anything
     // because they were spawned onto a model the harness would not serve, and
-    // nothing anywhere kept a record of which model that was.
+    // nothing anywhere kept a record of which model that was. The effort is
+    // its own field now, so the journal states it rather than a folded id.
     const events = diffGraphNodes(
       null,
-      { s1: node({ modelId: "gpt-5.6-sol[low]" }) },
+      { s1: node({ modelId: "gpt-5.6-sol", effort: "low", fast: false }) },
       {},
       null,
       waveById,
@@ -169,8 +171,57 @@ describe("diffGraphNodes", () => {
     expect(events).toHaveLength(1);
     expect(events[0].kind).toBe("step-spawned");
     expect(events[0].detail).toMatchObject({
-      model: "gpt-5.6-sol[low]",
+      model: "gpt-5.6-sol",
+      effort: "low",
+      fast: false,
       harness: "goose",
+    });
+  });
+
+  it("records no effort or fast mode for a node that has none", () => {
+    const [event] = diffGraphNodes(
+      null,
+      { s1: node({ modelId: "grok-4-6" }) },
+      {},
+      null,
+      waveById,
+      NOW,
+    );
+    expect(event.detail).not.toHaveProperty("effort");
+    expect(event.detail).not.toHaveProperty("fast");
+  });
+
+  it("reads back an old journal whose model carries its effort, exactly as written", () => {
+    // WAVES: the transition record must stay readable without the app, and
+    // journals are never rewritten, so the folded shape has to keep parsing.
+    const events = parseRunJournalEvents({
+      version: 1,
+      waveId: "w1",
+      events: [
+        {
+          seq: 0,
+          at: NOW,
+          kind: "step-spawned",
+          waveId: "w1",
+          conductorSessionId: "c1",
+          rootRequestId: "m1",
+          stepIndex: 0,
+          sessionId: "s1",
+          detail: {
+            name: "Bohr",
+            harness: "codex-acp",
+            model: "gpt-5.6-sol[low]",
+            status: "starting",
+          },
+        },
+      ],
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0].detail).toEqual({
+      name: "Bohr",
+      harness: "codex-acp",
+      model: "gpt-5.6-sol[low]",
+      status: "starting",
     });
   });
 

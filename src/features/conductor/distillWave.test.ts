@@ -123,6 +123,32 @@ describe("parseDistillWave — plan", () => {
     expect(parsed.steps[0].model).toBe("gpt-5");
   });
 
+  it("keeps a step's effort and fast mode as their own fields", () => {
+    const parsed = parseDistillWave(
+      fence(
+        '{"steps":[{"role":"qa","subtask":"Run the suite","access":[],"model":"gpt-5.6-sol","effort":" xhigh ","fast":false}]}',
+      ),
+    );
+    expect(parsed.kind).toBe("plan");
+    if (parsed.kind !== "plan") return;
+    expect(parsed.steps[0]).toMatchObject({
+      model: "gpt-5.6-sol",
+      effort: "xhigh",
+      fast: false,
+    });
+    // A plan written before effort was a field keeps its model string as
+    // written; the split happens where the model is resolved.
+    const legacy = parseDistillWave(
+      fence(
+        '{"steps":[{"role":"qa","subtask":"Run","access":[],"model":"gpt-5.6-sol[xhigh]"}]}',
+      ),
+    );
+    expect(legacy.kind === "plan" && legacy.steps[0]).toMatchObject({
+      model: "gpt-5.6-sol[xhigh]",
+    });
+    expect(legacy.kind === "plan" && legacy.steps[0].effort).toBeUndefined();
+  });
+
   it("omits model when the field is absent", () => {
     const parsed = parseDistillWave(
       fence('{"steps":[{"role":"qa","subtask":"Run the suite","access":[]}]}'),
@@ -331,6 +357,28 @@ describe("parseDistillWave — invalid", () => {
       ),
       "model-not-a-string",
     );
+  });
+
+  it("rejects an effort that is not a non-empty string", () => {
+    for (const effort of ["true", '"  "', "3", "null"]) {
+      expectInvalid(
+        fence(
+          `{"steps":[{"role":"qa","subtask":"Run","access":[],"effort":${effort}}]}`,
+        ),
+        "effort-not-a-string",
+      );
+    }
+  });
+
+  it("rejects a fast mode that is not true or false", () => {
+    for (const fast of ['"true"', "1", "null"]) {
+      expectInvalid(
+        fence(
+          `{"steps":[{"role":"qa","subtask":"Run","access":[],"fast":${fast}}]}`,
+        ),
+        "fast-not-a-boolean",
+      );
+    }
   });
 
   it("rejects two wave fences in one message", () => {

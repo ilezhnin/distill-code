@@ -1,3 +1,5 @@
+import { baseModelId } from "@/shared/lib/foldedModelId";
+
 import type {
   WaveStepTelemetry,
   WaveTelemetryRecord,
@@ -52,9 +54,24 @@ export interface FactsLedger {
   conductors: ConductorFact[];
 }
 
+/**
+ * The model a recorded id counts toward.
+ *
+ * Records written before effort was its own field carry it inside the id
+ * (`gpt-5.6-sol[xhigh]`). Keyed as written, those facts would age out under a
+ * model id nothing runs any more while the same model's new facts started
+ * again from zero; keyed on the base, they merge. The records themselves are
+ * never rewritten — the merge happens here, at read time. The visible cost is
+ * that counts once split per effort tier now combine.
+ */
+function factModelId(id: string | undefined): string | undefined {
+  return baseModelId(id);
+}
+
 function stepKey(step: WaveStepTelemetry): string | null {
-  if (!step.modelId) return null;
-  return `${step.role} ${step.modelId} ${step.harnessId ?? ""}`;
+  const modelId = factModelId(step.modelId);
+  if (!modelId) return null;
+  return `${step.role} ${modelId} ${step.harnessId ?? ""}`;
 }
 
 /**
@@ -73,10 +90,11 @@ export function buildFactsLedger(
   for (const record of records) {
     for (const step of record.steps) {
       const key = stepKey(step);
-      if (!key || !step.modelId) continue;
+      const stepModelId = factModelId(step.modelId);
+      if (!key || !stepModelId) continue;
       const fact = steps.get(key) ?? {
         role: step.role,
-        modelId: step.modelId,
+        modelId: stepModelId,
         ...(step.harnessId ? { harnessId: step.harnessId } : {}),
         runs: 0,
         completed: 0,
@@ -88,7 +106,7 @@ export function buildFactsLedger(
       steps.set(key, fact);
     }
 
-    const modelId = record.conductorModelId;
+    const modelId = factModelId(record.conductorModelId);
     if (!modelId) continue;
     const key = `${modelId} ${record.conductorHarnessId ?? ""}`;
     const fact = conductors.get(key) ?? {

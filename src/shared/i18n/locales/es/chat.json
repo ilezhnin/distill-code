@@ -444,6 +444,7 @@
     "openChildStep": "Paso {{step}}: {{name}}, {{status}}",
     "openChildStepAccess": "Paso {{step}} ({{access}}): {{name}}, {{status}}",
     "resultTitle": "{{name}} — {{status}}",
+    "chipFast": "rápido",
     "statsWorking": "{{count}} en curso",
     "statsDone": "{{count}} listos",
     "statsTokens": "{{tokens}} tokens",
@@ -510,7 +511,10 @@
         "modelNotAString": "El paso {{step}} tiene un campo \"model\" que no es un nombre de modelo.",
         "budgetInvalid": "El \"budget\" de un paso no es un límite que la aplicación pueda aplicar.",
         "classUnknown": "Un paso indicó una \"class\" de complejidad que esta aplicación no tiene.",
+        "effortNotAString": "El paso {{step}} tiene un campo \"effort\" que no es un nombre de esfuerzo.",
+        "fastNotABoolean": "El paso {{step}} tiene un campo \"fast\" que no es true ni false.",
         "stepModelUnavailable": "El paso {{step}} indica un modelo que esta instalación no puede ejecutar ahora mismo, y se rechazó el plan entero en lugar de ejecutar el paso en otro modelo sin avisar.",
+        "stepRunSettingsUnavailable": "El paso {{step}} pide un esfuerzo de razonamiento o un modo rápido que su modelo no ofrece, y se rechazó el plan entero en lugar de ejecutar el paso con otro ajuste sin avisar.",
         "verificationStepMissing": "Este plan construye algo que se puede comprobar, pero nada en él comprueba el resultado. Una ola así debe terminar con un paso de verificación que inspeccione el resultado.",
         "verificationStepMisplaced": "Este plan sí comprueba su trabajo, pero la comprobación no es lo último que hace: después del verificador se ejecuta un paso que no es de commit ni de publicación.",
         "verificationStepBlind": "Este plan termina con un paso de verificación que nunca recibe los informes de los demás pasos, así que no puede saber qué está verificando."
@@ -565,7 +569,11 @@
         "downgrade": "El paso {{step}} ({{name}}) quedó fijado a {{model}}, que clasificaste por debajo de {{inherited}}, el modelo que habría heredado. Se ejecuta en {{model}} como pidió el plan; un modelo más pequeño mantiene peor el formato del informe, así que revisa su informe antes de aceptar.",
         "explicitNearLimit": "El paso {{step}} ({{name}}) se ejecuta en {{model}} —el modelo que indicó el plan—, que está cerca de su límite de uso o ya lo alcanzó, por lo que el paso puede cortarse antes de terminar.",
         "fallback": "El paso {{step}} ({{name}}) se ejecuta en {{model}}: su modelo preferido no estaba disponible.",
-        "nearLimit": "El paso {{step}} ({{name}}) se ejecuta en {{model}}, que está cerca de su límite de uso. Todos los modelos de este rol están así de llenos, por lo que el paso puede cortarse antes de terminar."
+        "nearLimit": "El paso {{step}} ({{name}}) se ejecuta en {{model}}, que está cerca de su límite de uso. Todos los modelos de este rol están así de llenos, por lo que el paso puede cortarse antes de terminar.",
+        "effortNotApplied": "El paso {{step}} ({{name}}) se ejecuta en {{model}} sin el esfuerzo de razonamiento «{{effort}}»: {{model}} no lo ofrece, así que el paso usa el valor predeterminado del modelo.",
+        "fastNotApplied": "El paso {{step}} ({{name}}) se ejecuta en {{model}} sin modo rápido: {{model}} no tiene modo rápido.",
+        "legacyEffortSplit": "El paso {{step}} ({{name}}) indicó su modelo como «{{requested}}», con el esfuerzo de razonamiento dentro del nombre del modelo. Se ejecuta en {{model}} con esfuerzo «{{effort}}»; los planes deben escribir \"model\" y \"effort\" como campos separados.",
+        "legacyEffortOverridden": "El paso {{step}} ({{name}}) indicó su modelo como «{{requested}}», con el esfuerzo «{{legacyEffort}}» dentro del nombre del modelo, pero el \"effort\" propio del paso es «{{effort}}», y ese prevalece. Se ejecuta en {{model}} con esfuerzo «{{effort}}»."
       },
       "group": {
         "first": "Brigada",

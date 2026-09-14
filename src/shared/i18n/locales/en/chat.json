@@ -444,6 +444,7 @@
     "openChildStep": "Step {{step}}: {{name}}, {{status}}",
     "openChildStepAccess": "Step {{step}} ({{access}}): {{name}}, {{status}}",
     "resultTitle": "{{name}} — {{status}}",
+    "chipFast": "fast",
     "statsWorking": "{{count}} working",
     "statsDone": "{{count}} done",
     "statsTokens": "{{tokens}} tokens",
@@ -510,7 +511,10 @@
         "modelNotAString": "Step {{step}} has a \"model\" field that is not a model name.",
         "budgetInvalid": "A step’s \"budget\" is not a limit the app can enforce.",
         "classUnknown": "A step named a complexity \"class\" this app does not have.",
+        "effortNotAString": "Step {{step}} has an \"effort\" field that is not an effort name.",
+        "fastNotABoolean": "Step {{step}} has a \"fast\" field that is not true or false.",
         "stepModelUnavailable": "Step {{step}} names a model this build cannot run right now, and the whole plan was refused rather than quietly running the step on another model.",
+        "stepRunSettingsUnavailable": "Step {{step}} asks for a reasoning effort or fast mode its model does not offer, and the whole plan was refused rather than quietly running the step at a different setting.",
         "verificationStepMissing": "This plan builds something that can be checked, but nothing in it checks the result. A wave like this has to end with a verification step that inspects the result itself.",
         "verificationStepMisplaced": "This plan does check its work, but the check is not its last word: a step that is not a commit or release step runs after the verifier.",
         "verificationStepBlind": "This plan ends with a verification step that never receives the other steps' reports, so it cannot know what it is verifying."
@@ -565,7 +569,11 @@
         "downgrade": "Step {{step}} ({{name}}) was pinned to {{model}}, which you ranked below {{inherited}} — the model it would otherwise have inherited. It is running on {{model}} as the plan asked; a smaller model has more trouble holding the fenced report format, so check its report before accepting.",
         "explicitNearLimit": "Step {{step}} ({{name}}) is running on {{model}} — the model the plan named — which is close to or at its usage limit, so the step may be cut off before it finishes.",
         "fallback": "Step {{step}} ({{name}}) is running on {{model}} — its first-choice model was not available.",
-        "nearLimit": "Step {{step}} ({{name}}) is running on {{model}}, which is close to its usage limit. Every model this role ranks is that full, so the step may be cut off before it finishes."
+        "nearLimit": "Step {{step}} ({{name}}) is running on {{model}}, which is close to its usage limit. Every model this role ranks is that full, so the step may be cut off before it finishes.",
+        "effortNotApplied": "Step {{step}} ({{name}}) is running on {{model}} without the reasoning effort «{{effort}}» — {{model}} does not offer it, so the step runs at the model's own default.",
+        "fastNotApplied": "Step {{step}} ({{name}}) is running on {{model}} without fast mode — {{model}} has no fast mode.",
+        "legacyEffortSplit": "Step {{step}} ({{name}}) named its model as «{{requested}}», with the reasoning effort inside the model name. It runs on {{model}} at effort «{{effort}}»; plans should write \"model\" and \"effort\" as separate fields.",
+        "legacyEffortOverridden": "Step {{step}} ({{name}}) named its model as «{{requested}}», with the effort «{{legacyEffort}}» inside the model name, but the step's own \"effort\" is «{{effort}}», and that wins. It runs on {{model}} at effort «{{effort}}»."
       },
       "group": {
         "first": "Brigade",

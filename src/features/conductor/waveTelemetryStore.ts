@@ -28,6 +28,7 @@
 
 import { useSyncExternalStore } from "react";
 
+import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { getUsageLedger } from "@/features/stats/lib/usageLedger";
 
 import {
@@ -80,6 +81,13 @@ export interface WaveStepTelemetry {
    */
   harnessId?: string;
   modelId?: string;
+  /**
+   * The effort and fast mode the step was spawned to run at, beside a base
+   * `modelId`. Older records have neither and may carry the effort inside
+   * `modelId`; readers split it there, and the record stays as written.
+   */
+  effort?: string;
+  fast?: boolean;
   /** Child registration time — the spawn's completion. */
   startedAt?: number;
   /** First transition into a terminal run status. */
@@ -101,6 +109,9 @@ export interface WaveTelemetryRecord {
   /** The harness and model the conductor itself was on when it planned. */
   conductorHarnessId?: string;
   conductorModelId?: string;
+  /** The effort and fast mode the conductor's session was running at on close. */
+  conductorEffort?: string;
+  conductorFast?: boolean;
   rootRequestId: string;
   /** 0 on a first wave, n on the n-th revision of its root request. */
   revisionIndex: number;
@@ -200,6 +211,10 @@ function parseStep(value: unknown): WaveStepTelemetry | null {
     ...(typeof raw.modelId === "string" && raw.modelId
       ? { modelId: raw.modelId }
       : {}),
+    ...(typeof raw.effort === "string" && raw.effort
+      ? { effort: raw.effort }
+      : {}),
+    ...(typeof raw.fast === "boolean" ? { fast: raw.fast } : {}),
     ...(isFiniteTime(raw.startedAt) ? { startedAt: raw.startedAt } : {}),
     ...(isFiniteTime(raw.finishedAt) ? { finishedAt: raw.finishedAt } : {}),
     ...(isCount(raw.durationMs) ? { durationMs: raw.durationMs } : {}),
@@ -235,6 +250,12 @@ function parseRecord(value: unknown): WaveTelemetryRecord | null {
       : {}),
     ...(typeof raw.conductorModelId === "string" && raw.conductorModelId
       ? { conductorModelId: raw.conductorModelId }
+      : {}),
+    ...(typeof raw.conductorEffort === "string" && raw.conductorEffort
+      ? { conductorEffort: raw.conductorEffort }
+      : {}),
+    ...(typeof raw.conductorFast === "boolean"
+      ? { conductorFast: raw.conductorFast }
       : {}),
     rootRequestId:
       typeof raw.rootRequestId === "string" && raw.rootRequestId
@@ -586,6 +607,8 @@ function buildRecord(
       reportDegraded: step.reportDegraded === true,
       ...(node?.harnessId ? { harnessId: node.harnessId } : {}),
       ...(node?.modelId ? { modelId: node.modelId } : {}),
+      ...(node?.effort ? { effort: node.effort } : {}),
+      ...(node?.fast !== undefined ? { fast: node.fast } : {}),
       ...(startedAt !== undefined ? { startedAt } : {}),
       ...(finishedAt !== undefined ? { finishedAt } : {}),
       ...(durationMs !== undefined ? { durationMs } : {}),
@@ -603,6 +626,13 @@ function buildRecord(
   );
   const conductor =
     useConductorGraphStore.getState().nodesById[wave.conductorSessionId];
+  // What the conductor's session was observed running at, not what was asked
+  // of it: a model that could not honour an effort planned at its own default.
+  const conductorSession = useChatSessionStore
+    .getState()
+    .getSession(wave.conductorSessionId);
+  const conductorEffort = conductorSession?.reasoningEffort?.currentValue;
+  const conductorFast = conductorSession?.fastMode?.enabled;
   return {
     waveId: wave.waveId,
     conductorSessionId: wave.conductorSessionId,
@@ -612,6 +642,8 @@ function buildRecord(
       ? { conductorHarnessId: conductor.harnessId }
       : {}),
     ...(conductor?.modelId ? { conductorModelId: conductor.modelId } : {}),
+    ...(conductorEffort ? { conductorEffort } : {}),
+    ...(conductorFast !== undefined ? { conductorFast } : {}),
     rootRequestId: wave.rootRequestId,
     revisionIndex: wave.revisionCount,
     createdAt: wave.createdAt,
