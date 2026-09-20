@@ -92,8 +92,11 @@ The harness bridges are not bundled; the app installs them at runtime.
 - `just new-command <noun> <verb>` — scaffold a berdctl command
 - `just bump-node-runtime <version>` — re-pin the managed Node runtime
 
-The app log is `%LOCALAPPDATA%\xyz.block.berd\logs\berd.log`; each harness's
-stderr lands there prefixed with its id, such as `[claude-acp]`.
+The app log is `%LOCALAPPDATA%\com.levocat.distill\logs\berd.log`; each harness's
+stderr lands there prefixed with its id, such as `[claude-acp]`. A dev build
+uses `com.levocat.distill.dev`. Chats, projects and installed bridges are under
+the same name in `%APPDATA%`. Folders left by a build that still ran as
+`xyz.block.berd` are renamed on the first start.
 
 [AGENTS.md](AGENTS.md) describes the layout and conventions,
 [LAWS/](LAWS/README.md) the product rules the code is held to, and

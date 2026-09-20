@@ -52,6 +52,16 @@ pub fn run() {
             .unwrap_or_else(|error| panic!("failed to initialize isolated E2E mode: {error}"));
     }
 
+    // Before the first plugin: every one of them — the log, the window state,
+    // the WebView itself — opens its files under the identifier's folders, and
+    // single-instance cannot see a build still running under the old one.
+    let adopted_app_dirs = if e2e_mode.is_some() {
+        Vec::new()
+    } else {
+        services::identifier_migration::adopt_replaced_app_dirs(&context.config().identifier)
+            .unwrap_or_else(|refusal| services::identifier_migration::refuse_to_start(&refusal))
+    };
+
     let builder = tauri::Builder::default();
 
     // Single-instance enforcement: on Windows, a second launch exits early
@@ -128,7 +138,7 @@ pub fn run() {
     };
 
     builder
-        .setup(|app| {
+        .setup(move |app| {
             // Register every command-backed state in the Tauri state map
             // before any blocking, async, or filesystem work below. The main
             // window is created hidden, but its webview still loads and races
@@ -140,6 +150,12 @@ pub fn run() {
             // first guarantees the state is present even while a later step
             // blocks the setup thread.
             let app_data_dir = app.path().app_data_dir()?;
+            for dir in &adopted_app_dirs {
+                log::info!(
+                    "Adopted the previous identifier's folder as {}",
+                    dir.display()
+                );
+            }
 
             // Resolved before anything writes to disk so every part of the app
             // agrees on the chosen folder.

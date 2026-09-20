@@ -68,7 +68,7 @@ Isolated mode is an explicit opt-in for a run that must not touch your real
 profile. It needs a binary built with `app-test-driver` and `BERD_E2E_MODE=1`
 with a validated run root, run ID and driver token. The app then:
 
-- runs under its own identifier, `xyz.block.berd.e2e.<run-id>`, so it gets
+- runs under its own identifier, `com.levocat.distill.e2e.<run-id>`, so it gets
   its own app data;
 - keeps agents and skills under `<run-root>/home/.agents`;
 - listens on a random loopback port, requires the token on every command, and

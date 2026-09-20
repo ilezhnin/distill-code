@@ -971,7 +971,7 @@ function New-E2eRunContract {
     return [pscustomobject]@{
         RunRoot = $normalizedRoot
         RunId = $RunId
-        Identifier = "xyz.block.berd.e2e.$RunId"
+        Identifier = "com.levocat.distill.e2e.$RunId"
         DriverToken = $DriverToken
         ConfigPath = Join-Path $normalizedRoot "tauri-dev-windows.config.json"
         DriverReadyPath = Join-Path $normalizedRoot "app-test-driver.json"

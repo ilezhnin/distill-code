@@ -9,6 +9,7 @@ pub mod distill_root;
 pub mod distro_bundle;
 pub(crate) mod e2e_mode;
 pub(crate) mod env_key;
+pub(crate) mod identifier_migration;
 pub(crate) mod log_redaction;
 pub(crate) mod managed_acp_tools;
 pub(crate) mod managed_node;

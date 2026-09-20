@@ -186,7 +186,7 @@ try {
     $e2eRoot = Join-Path $temp "run-123"
     $e2e = New-E2eRunContract -RunRoot $e2eRoot
     Assert-Equal "E2E run ID derives from root" $e2e.RunId "run-123"
-    Assert-Equal "E2E identifier derives from run ID" $e2e.Identifier "xyz.block.berd.e2e.run-123"
+    Assert-Equal "E2E identifier derives from run ID" $e2e.Identifier "com.levocat.distill.e2e.run-123"
     Assert-Equal "E2E config stays under run root" $e2e.ConfigPath (Join-Path $e2eRoot "tauri-dev-windows.config.json")
     Assert-Equal "E2E driver readiness stays under run root" $e2e.DriverReadyPath (Join-Path $e2eRoot "app-test-driver.json")
     Assert-Equal "E2E generated driver token is strong ASCII" ($e2e.DriverToken -cmatch '^[a-z0-9]{64}$') $true

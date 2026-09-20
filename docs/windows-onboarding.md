@@ -303,7 +303,7 @@ just setup-windows
 ```
 
 If an agent session will not start, check the app log at
-`%LOCALAPPDATA%\xyz.block.berd\logs\berd.log`; each harness's stderr is
+`%LOCALAPPDATA%\com.levocat.distill\logs\berd.log`; each harness's stderr is
 logged there prefixed with its id, such as `[claude-acp]`.
 
 If you want a full fresh-machine reset after testing, review the cleanup dry run
