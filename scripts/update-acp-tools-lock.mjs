@@ -20,6 +20,11 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+// Node 20+ refuses to spawn `.cmd` without a shell (EINVAL). Drive npm through
+// the bundled `npm-cli.js` on Windows so the lock generator matches a real
+// `npm` without going through cmd.exe.
+let cachedNpmCliJs = null;
+
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const defaultLockFile = path.join(repoRoot, "acp-tools.lock.json");
 const nodeRuntimeLockFile = path.join(repoRoot, "node-runtime.lock.json");
@@ -164,19 +169,35 @@ export function checkPinnedNodeVersion(
   );
 }
 
+async function bundledNpmManifestPath(execPath) {
+  const dir = path.dirname(execPath);
+  // Windows Node zips keep npm next to node.exe; Unix prefixes keep it under
+  // ../lib/node_modules/npm. Distill is Windows-only, but this script still
+  // has to locate whichever layout the running Node actually ships.
+  const candidates = [
+    path.join(dir, "node_modules", "npm", "package.json"),
+    path.join(dir, "..", "lib", "node_modules", "npm", "package.json"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      await readFile(candidate);
+      return candidate;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  throw new Error(
+    `Could not find bundled npm next to ${execPath}; looked at:\n  ${candidates.join("\n  ")}`,
+  );
+}
+
 async function assertPinnedToolchain() {
   const pinned = JSON.parse(await readFile(nodeRuntimeLockFile, "utf8"));
   checkPinnedNodeVersion(process.version, pinned.version);
-  const bundledManifest = path.join(
-    path.dirname(process.execPath),
-    "..",
-    "lib",
-    "node_modules",
-    "npm",
-    "package.json",
-  );
-  const bundled = JSON.parse(await readFile(bundledManifest, "utf8")).version;
-  const { stdout } = await execFileAsync("npm", ["--version"]);
+  const bundled = JSON.parse(
+    await readFile(await bundledNpmManifestPath(process.execPath), "utf8"),
+  ).version;
+  const { stdout } = await runNpm(["--version"]);
   const ambient = stdout.trim();
   const major = (version) => version.split(".")[0];
   if (major(ambient) !== major(bundled)) {
@@ -231,12 +252,29 @@ function npmCiArgs(target, registry) {
   return args.concat(registryArgs(registry));
 }
 
+async function runNpm(args, options = {}) {
+  let file = "npm";
+  let argv = args;
+  if (process.platform === "win32") {
+    if (!cachedNpmCliJs) {
+      cachedNpmCliJs = path.join(
+        path.dirname(await bundledNpmManifestPath(process.execPath)),
+        "bin",
+        "npm-cli.js",
+      );
+    }
+    file = process.execPath;
+    argv = [cachedNpmCliJs, ...args];
+  }
+  return execFileAsync(file, argv, {
+    maxBuffer: 64 * 1024 * 1024,
+    ...options,
+  });
+}
+
 async function npm(args, cwd) {
   try {
-    return await execFileAsync("npm", args, {
-      cwd,
-      maxBuffer: 64 * 1024 * 1024,
-    });
+    return await runNpm(args, { cwd });
   } catch (error) {
     const detail = [error.stdout, error.stderr]
       .filter(Boolean)
