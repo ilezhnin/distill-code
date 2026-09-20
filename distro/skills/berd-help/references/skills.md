@@ -7,8 +7,11 @@ precedence:
 
 - **App-bundled** (`berdBundled` marker) — ships with Berd, read-only in the
   UI, lives in the app-data skills directory.
-- **Personal** (`global`) — the user's own skills, portable across projects.
-- **Project** — scoped to a specific project/workspace.
+- **Personal** (`global`) — the user's own skills, portable across projects,
+  from `~/.agents/skills`.
+- **Project** — scoped to a specific project/workspace, from
+  `<workspace>/.agents/skills`. Vendor folders (`.claude/skills`,
+  `.codex/skills`, `.gemini/skills`) are not scanned.
 
 When a personal skill and an app-bundled skill share a name, the personal
 one wins activation — this is deliberate (see `skill_source_priority` in

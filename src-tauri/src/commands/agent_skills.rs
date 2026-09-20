@@ -5,6 +5,7 @@ use serde::Deserialize;
 use tauri::{AppHandle, Manager, State};
 
 const SKILL_FILE_NAME: &str = "SKILL.md";
+const AGENTS_SKILLS_DIR: &str = ".agents/skills";
 const MAX_SKILL_FILE_BYTES: u64 = 262_144;
 
 #[derive(serde::Deserialize)]
@@ -51,25 +52,11 @@ struct SkillRoot {
     scope: SkillRootScope,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SkillProviderFamily {
-    Claude,
-    Codex,
-    Gemini,
-    Standard,
-}
-
-fn provider_family(provider_id: Option<&str>) -> SkillProviderFamily {
-    let normalized = provider_id.unwrap_or_default().to_ascii_lowercase();
-    if normalized.contains("claude") {
-        SkillProviderFamily::Claude
-    } else if normalized.contains("codex") {
-        SkillProviderFamily::Codex
-    } else if normalized.contains("gemini") {
-        SkillProviderFamily::Gemini
-    } else {
-        SkillProviderFamily::Standard
-    }
+fn is_gemini_provider(provider_id: Option<&str>) -> bool {
+    provider_id
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .contains("gemini")
 }
 
 fn expand_home_prefix(path: &str) -> PathBuf {
@@ -80,15 +67,6 @@ fn expand_home_prefix(path: &str) -> PathBuf {
             .or_else(|| path.strip_prefix("~\\"))
             .map_or_else(|| PathBuf::from(path), |relative| home.join(relative)),
         None => PathBuf::from(path),
-    }
-}
-
-fn provider_skill_dirs(provider_id: Option<&str>) -> Vec<&'static str> {
-    match provider_family(provider_id) {
-        SkillProviderFamily::Claude => vec![".agents/skills", ".claude/skills"],
-        SkillProviderFamily::Codex => vec![".agents/skills", ".codex/skills"],
-        SkillProviderFamily::Gemini => vec![".gemini/skills", ".agents/skills"],
-        SkillProviderFamily::Standard => vec![".agents/skills"],
     }
 }
 
@@ -219,12 +197,10 @@ fn add_skill_root(
 }
 
 fn collect_skill_roots(
-    provider_id: Option<&str>,
     workspace_paths: Vec<String>,
     app_skills_root: Option<&Path>,
     personal_skills_root: Option<&Path>,
 ) -> Vec<SkillRoot> {
-    let provider_dirs = provider_skill_dirs(provider_id);
     let mut roots = Vec::new();
     let mut seen_roots = HashSet::new();
 
@@ -238,16 +214,14 @@ fn collect_skill_roots(
             None,
         );
     } else if let Some(home) = dirs::home_dir() {
-        for relative_dir in &provider_dirs {
-            add_skill_root(
-                &mut roots,
-                &mut seen_roots,
-                home.join(relative_dir),
-                SkillRootScope::User,
-                "Personal".to_string(),
-                None,
-            );
-        }
+        add_skill_root(
+            &mut roots,
+            &mut seen_roots,
+            home.join(AGENTS_SKILLS_DIR),
+            SkillRootScope::User,
+            "Personal".to_string(),
+            None,
+        );
     }
     // Keep Personal roots ahead of Berd-owned app skills so any bare-name
     // activation chooses the user's skill while exact selection remains
@@ -259,16 +233,6 @@ fn collect_skill_roots(
             app_skills_root.to_path_buf(),
             SkillRootScope::App,
             "Berd app".to_string(),
-            None,
-        );
-    }
-    if provider_family(provider_id) == SkillProviderFamily::Codex {
-        add_skill_root(
-            &mut roots,
-            &mut seen_roots,
-            PathBuf::from("/etc/codex/skills"),
-            SkillRootScope::User,
-            "Admin".to_string(),
             None,
         );
     }
@@ -287,17 +251,14 @@ fn collect_skill_roots(
         }
 
         for search_dir in workspace_search_dirs(&workspace_path) {
-            let label = display_name_for_path(&search_dir);
-            for relative_dir in &provider_dirs {
-                add_skill_root(
-                    &mut roots,
-                    &mut seen_roots,
-                    search_dir.join(relative_dir),
-                    SkillRootScope::Workspace,
-                    label.clone(),
-                    Some(&search_dir),
-                );
-            }
+            add_skill_root(
+                &mut roots,
+                &mut seen_roots,
+                search_dir.join(AGENTS_SKILLS_DIR),
+                SkillRootScope::Workspace,
+                display_name_for_path(&search_dir),
+                Some(&search_dir),
+            );
         }
     }
 
@@ -357,7 +318,7 @@ fn collect_skills_from_roots(
         }
     }
 
-    if provider_family(provider_id) == SkillProviderFamily::Gemini {
+    if is_gemini_provider(provider_id) {
         // Discovery order carries workspace specificity: roots are visited from
         // repository root toward the active nested workspace, so a later skill
         // of the same source tier is the nearer one. A higher-priority source
@@ -404,12 +365,7 @@ fn collect_agent_skills(
     app_skills_root: Option<&Path>,
     personal_skills_root: Option<&Path>,
 ) -> Vec<AgentSkillEntry> {
-    let roots = collect_skill_roots(
-        provider_id.as_deref(),
-        workspace_paths,
-        app_skills_root,
-        personal_skills_root,
-    );
+    let roots = collect_skill_roots(workspace_paths, app_skills_root, personal_skills_root);
     collect_skills_from_roots(roots, provider_id.as_deref())
 }
 
@@ -472,7 +428,7 @@ pub async fn list_agent_skills(
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_skills_from_roots, SkillRoot, SkillRootScope};
+    use super::{collect_skill_roots, collect_skills_from_roots, SkillRoot, SkillRootScope};
     use std::fs;
     use tempfile::TempDir;
 
@@ -500,5 +456,34 @@ mod tests {
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "crlf");
         assert_eq!(skills[0].description, "Checked out on Windows");
+    }
+
+    #[test]
+    fn workspace_scan_reads_only_agents_skills() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().join("repo");
+        for (rel, name) in [
+            (".agents/skills/keep", "keep"),
+            (".claude/skills/skip-claude", "skip-claude"),
+            (".codex/skills/skip-codex", "skip-codex"),
+            (".gemini/skills/skip-gemini", "skip-gemini"),
+        ] {
+            let dir = workspace.join(rel);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: x\n---\n\nbody\n"),
+            )
+            .unwrap();
+        }
+
+        let roots = collect_skill_roots(
+            vec![workspace.to_string_lossy().into_owned()],
+            None,
+            Some(&tmp.path().join("missing-personal")),
+        );
+        let skills = collect_skills_from_roots(roots, None);
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "keep");
     }
 }

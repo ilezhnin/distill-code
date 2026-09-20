@@ -36,7 +36,7 @@ describe("formatSkillInstructionPrompt", () => {
         {
           name: "bug-finder",
           description: "Finds bugs",
-          fileLocation: "/repo/.codex/skills/bug-finder/SKILL.md",
+          fileLocation: "/repo/.agents/skills/bug-finder/SKILL.md",
           instructions: "Inspect changed files.",
         },
       ],
@@ -44,7 +44,9 @@ describe("formatSkillInstructionPrompt", () => {
     );
 
     expect(prompt).toContain("Codex-compatible Agent Skills");
-    expect(prompt).toContain("Source: /repo/.codex/skills/bug-finder/SKILL.md");
+    expect(prompt).toContain(
+      "Source: /repo/.agents/skills/bug-finder/SKILL.md",
+    );
     expect(prompt).toContain("read nearby files as needed");
   });
 });

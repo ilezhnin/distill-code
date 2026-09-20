@@ -92,22 +92,12 @@ fn skill_roots(project_dir: Option<&Path>) -> Vec<Root> {
             global: false,
             writable: true,
         });
-        roots.push(Root {
-            path: dir.join(".claude").join("skills"),
-            global: false,
-            writable: false,
-        });
     }
     if let Some(home) = home() {
         roots.push(Root {
             path: home.join(".agents").join("skills"),
             global: true,
             writable: true,
-        });
-        roots.push(Root {
-            path: home.join(".claude").join("skills"),
-            global: true,
-            writable: false,
         });
     }
     roots
@@ -1177,6 +1167,24 @@ mod tests {
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert_eq!(leftovers, vec!["SKILL.md".to_string()]);
+    }
+
+    #[test]
+    fn skill_roots_do_not_include_vendor_skill_folders() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let project = dir.path().join("repo");
+        std::fs::create_dir_all(project.join(".agents").join("skills")).unwrap();
+        std::fs::create_dir_all(project.join(".claude").join("skills")).unwrap();
+        let roots = skill_roots(Some(&project));
+        assert!(roots.iter().any(|root| root
+            .path
+            .ends_with(std::path::Path::new(".agents").join("skills"))));
+        assert!(roots.iter().all(|root| {
+            !root
+                .path
+                .components()
+                .any(|component| component.as_os_str() == "claude")
+        }));
     }
 
     #[test]

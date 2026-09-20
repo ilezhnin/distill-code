@@ -1,10 +1,4 @@
-const PROJECT_SKILLS_MARKERS = [
-  "/.agents/skills/",
-  "/.goose/skills/",
-  "/.claude/skills/",
-  "/.codex/skills/",
-  "/.gemini/skills/",
-];
+const PROJECT_SKILLS_MARKERS = ["/.agents/skills/"];
 
 export function normalizePath(path: string): string {
   return path.replace(/\\/g, "/");
