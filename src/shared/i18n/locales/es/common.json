@@ -99,7 +99,7 @@
         "inputAvailable": "En ejecución",
         "inputStreaming": "Pendiente",
         "outputAvailable": "Completado",
-        "outputDenied": "Denegado",
+        "outputDenied": "Detenido",
         "outputError": "Error"
       }
     }

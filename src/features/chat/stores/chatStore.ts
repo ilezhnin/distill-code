@@ -5,7 +5,10 @@ import type {
   Message,
   MessageContent,
 } from "@/shared/types/messages";
-import { completeAssistantMessage } from "@/features/chat/lib/messageCompletion";
+import {
+  completeAssistantMessage,
+  settleAbandonedToolCalls,
+} from "@/features/chat/lib/messageCompletion";
 import { clearReplayBuffer } from "../hooks/replayBuffer";
 import { isSessionRunning } from "../lib/sessionActivity";
 import type {
@@ -464,6 +467,8 @@ interface ChatStoreActions {
   setStreamingMessageId: (sessionId: string, id: string | null) => void;
   clearSettledStreamingMessage: (sessionId: string) => boolean;
   settleActiveRun: (sessionId: string) => void;
+  /** Close the tool calls a run that is over left waiting or running. */
+  settleAbandonedToolCalls: (sessionId: string) => void;
   setActiveRunId: (sessionId: string, runId: string | null) => void;
   setRunCancellationPending: (sessionId: string, pending: boolean) => void;
   setPendingInterventionBoundary: (
@@ -582,6 +587,31 @@ export type ChatStore = ChatStoreState & ChatStoreActions;
 
 const cachedDrafts = loadCachedDrafts();
 const cachedMessageQueues = loadCachedMessageQueues();
+
+/**
+ * The session's messages with every call its finished run left open closed,
+ * as a store patch; `null` when there is nothing to close.
+ */
+function settledToolCallsPatch(
+  state: Pick<ChatStore, "messagesBySession">,
+  sessionId: string,
+): Pick<ChatStore, "messagesBySession"> | null {
+  const messages = state.messagesBySession[sessionId];
+  if (!messages) return null;
+  let settled = false;
+  const settledMessages = messages.map((message) => {
+    const next = settleAbandonedToolCalls(message);
+    settled ||= next !== message;
+    return next;
+  });
+  if (!settled) return null;
+  return {
+    messagesBySession: {
+      ...state.messagesBySession,
+      [sessionId]: settledMessages,
+    },
+  };
+}
 
 const createChatStore: StateCreator<
   ChatStore,
@@ -900,11 +930,19 @@ const createChatStore: StateCreator<
     return cleared;
   },
 
+  settleAbandonedToolCalls: (sessionId) =>
+    set((state) => settledToolCallsPatch(state, sessionId) ?? state),
+
   settleActiveRun: (sessionId) =>
     set((state) => {
       const current = state.sessionStateById[sessionId];
       if (!current) return state;
       const shouldClearStreamTracking = !isSessionRunning(current.chatState);
+      // A chat already streaming its next turn has live calls in it; only one
+      // that has gone quiet can have left any behind.
+      const toolCallsPatch = shouldClearStreamTracking
+        ? settledToolCallsPatch(state, sessionId)
+        : null;
       if (
         current.activeRunId === null &&
         !current.isRunCancellationPending &&
@@ -912,10 +950,11 @@ const createChatStore: StateCreator<
           (current.streamingMessageId === null &&
             current.pendingInterventionBoundary === null))
       ) {
-        return state;
+        return toolCallsPatch ?? state;
       }
 
       return {
+        ...toolCallsPatch,
         sessionStateById: {
           ...state.sessionStateById,
           [sessionId]: {

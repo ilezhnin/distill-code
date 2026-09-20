@@ -22,6 +22,7 @@ import {
   resolveAssistantCancellation,
 } from "../lib/sendCore";
 import { perfLog } from "@/shared/lib/perfLog";
+import { settleAbandonedToolCalls } from "../lib/messageCompletion";
 import { replaceMessagesFromSessionReplay } from "../lib/sessionReplayReplacement";
 import { i18n } from "@/shared/i18n";
 import type { ChatSendOptions } from "../types";
@@ -83,16 +84,11 @@ function markMessageStopped(sessionId: string, messageId: string) {
     }
 
     return {
-      ...message,
+      ...settleAbandonedToolCalls(message),
       metadata: {
         ...message.metadata,
         completionStatus: "stopped",
       },
-      content: message.content.map((block) =>
-        block.type === "toolRequest" && block.status === "in_progress"
-          ? { ...block, status: "stopped" }
-          : block,
-      ),
     };
   });
 }
