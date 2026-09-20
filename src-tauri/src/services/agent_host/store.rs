@@ -961,6 +961,34 @@ mod tests {
         assert_eq!(store.list_events("a").await.expect("events").len(), 3);
     }
 
+    /// sqlx stores the checksum of every migration it applies and refuses to
+    /// open a database whose applied migration no longer matches its file —
+    /// comments included. A rename sweep once reworded a comment in
+    /// `session_selection` and every existing install stopped starting. A
+    /// migration that has shipped is frozen; this is what says so at test time
+    /// instead of at the operator's next launch. New migrations are appended
+    /// here once they ship.
+    #[test]
+    fn a_shipped_migration_is_never_edited() {
+        const SHIPPED: &[(i64, &str)] = &[
+            (20260904000000, "06b3b3d5988b76720d7b755b70a222241d9c81a63aa796d4eeff9cbdd7784a6347036d1a024ed549834d1fc1e4b1174e"),
+            (20260914000000, "c0ce78fac3f4997f7756256844dc51018683db031fa6eef2dd19cf4c364d6a9a5ef1bef9fdb491ff226c6c51d2a5ed81"),
+            (20260920000000, "2187befa6dc6279fcf5081f84f59a39442234f43c5908ced65552a3863fe7c714329f3ac5ef009419a72fb639f3b5e6c"),
+        ];
+        let migrator = sqlx::migrate!("./migrations_agent_host");
+        for (version, checksum) in SHIPPED {
+            let migration = migrator
+                .iter()
+                .find(|migration| migration.version == *version)
+                .unwrap_or_else(|| panic!("shipped migration {version} is gone"));
+            assert_eq!(
+                hex::encode(&migration.checksum),
+                *checksum,
+                "migration {version} changed after it shipped; restore the file and add a new migration instead"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn the_cleanup_migration_drops_command_lists_and_nothing_else() {
         let (_dir, store) = store_with_history().await;

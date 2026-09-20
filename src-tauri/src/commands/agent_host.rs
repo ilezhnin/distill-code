@@ -7,6 +7,12 @@ use crate::services::agent_host::AgentHost;
 #[tauri::command]
 pub async fn get_agent_host_url(app_handle: tauri::AppHandle) -> Result<String, String> {
     let host = app_handle.state::<AgentHost>();
-    let inner = host.get_or_start(&app_handle).await?;
+    // The renderer shows this as "couldn't start"; without the log line the
+    // reason — a database that will not migrate, a port that will not bind —
+    // exists nowhere but in that window.
+    let inner = host
+        .get_or_start(&app_handle)
+        .await
+        .inspect_err(|error| log::error!("[agent-host] failed to start: {error}"))?;
     Ok(inner.ws_url().to_string())
 }
