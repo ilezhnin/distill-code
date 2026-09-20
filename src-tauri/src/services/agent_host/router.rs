@@ -892,6 +892,14 @@ impl Inner {
                 if runtime.loading {
                     return None;
                 }
+                if Self::is_command_list_update(&params) {
+                    // Passed on, but neither a part of the turn nor of the
+                    // transcript — see `is_command_list_update`.
+                    drop(sessions);
+                    params["sessionId"] = json!(session_id);
+                    self.notify_frontend("session/update", params);
+                    return None;
+                }
                 persist = true;
                 if let Some(run) = runtime.run.as_mut() {
                     Self::stamp_run_update(&mut params, run, &now_iso());
@@ -940,6 +948,21 @@ impl Inner {
         };
         self.notify_frontend("session/update", params);
         stored
+    }
+
+    /// Whether this is an `available_commands_update`: the harness restating
+    /// its whole slash-command list. It describes the harness, not the
+    /// conversation, and a bridge sends it whenever it likes — grok to every
+    /// session each time its skill watcher fires, which a sync job touching
+    /// `~/.claude/skills` makes every ten minutes. Kept as events those were 7%
+    /// of a transcript store nobody reads them from, replayed on every load;
+    /// and one landing in a turn that then failed made the turn look answered.
+    fn is_command_list_update(params: &Value) -> bool {
+        params
+            .get("update")
+            .and_then(|update| update.get("sessionUpdate"))
+            .and_then(Value::as_str)
+            == Some("available_commands_update")
     }
 
     /// The option list a `config_option_update` carries, as the bridge sent
@@ -3999,6 +4022,21 @@ mod tests {
         assert_eq!(distill["messageId"], "user-1");
         assert!(distill.get("assistantMessageId").is_none());
         assert!(!run.saw_agent_message);
+    }
+
+    #[test]
+    fn a_restated_command_list_is_not_a_transcript_event() {
+        assert!(Inner::is_command_list_update(&json!({
+            "sessionId": "bridge-1",
+            "update": { "sessionUpdate": "available_commands_update", "availableCommands": [] },
+        })));
+        assert!(!Inner::is_command_list_update(&json!({
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": "available_commands_update" },
+            }
+        })));
+        assert!(!Inner::is_command_list_update(&json!({})));
     }
 
     #[test]

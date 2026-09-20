@@ -962,6 +962,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_cleanup_migration_drops_command_lists_and_nothing_else() {
+        let (_dir, store) = store_with_history().await;
+        let command_list = json!({
+            "sessionId": "b",
+            "update": { "sessionUpdate": "available_commands_update", "availableCommands": [] },
+        });
+        let quoting_it = json!({
+            "sessionId": "b",
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": "\"available_commands_update\"" },
+            },
+        });
+        for payload in [
+            command_list.to_string(),
+            quoting_it.to_string(),
+            // Not JSON at all: must neither match nor fail the statement.
+            "\"available_commands_update\" {".to_string(),
+        ] {
+            sqlx::query(
+                "INSERT INTO session_events (session_id, created_at, payload_json) VALUES ('b', '2026-09-20T00:00:00.000Z', ?)",
+            )
+            .bind(payload)
+            .execute(&store.pool)
+            .await
+            .expect("insert");
+        }
+
+        sqlx::query(include_str!(
+            "../../../migrations_agent_host/20260920000000_drop_command_list_events.sql"
+        ))
+        .execute(&store.pool)
+        .await
+        .expect("the migration runs over rows that are not JSON");
+
+        let left: Vec<String> = sqlx::query(
+            "SELECT payload_json FROM session_events WHERE session_id = 'b' ORDER BY id",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .expect("read")
+        .iter()
+        .map(|row| row.get("payload_json"))
+        .collect();
+        assert_eq!(
+            left,
+            [
+                quoting_it.to_string(),
+                "\"available_commands_update\" {".to_string()
+            ]
+        );
+        assert_eq!(store.list_events("a").await.expect("events").len(), 3);
+    }
+
+    #[tokio::test]
     async fn a_session_stored_before_the_run_settings_existed_reads_back_with_none() {
         let (_dir, store) = store_with_history().await;
         let existing = store.get_session("a").await.expect("read").expect("row");

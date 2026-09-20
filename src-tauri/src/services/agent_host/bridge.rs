@@ -367,6 +367,17 @@ impl Bridge {
                                 Some(sender) => {
                                     let _ = sender.send(result);
                                 }
+                                // Every id the host issues is a number, so a
+                                // response under any other id answers a request
+                                // the bridge made of itself and let out on its
+                                // stdout (grok's `"skills-reload"`, every time
+                                // its skill watcher fires). Nothing of ours is
+                                // waiting on it.
+                                None if !id.is_u64() => {
+                                    log::debug!(
+                                        "[{harness}] response for a foreign request id {id}"
+                                    )
+                                }
                                 None => {
                                     log::warn!("[{harness}] response for unknown request id {id}")
                                 }
