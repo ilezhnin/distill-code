@@ -22,7 +22,10 @@ import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..");
-const TSX = path.join(REPO_ROOT, "node_modules", ".bin", "tsx");
+// tsx's own entry point, run by this node: `node_modules/.bin/tsx` is a shell
+// script (and `tsx.cmd` a batch file) on Windows, which `execFileSync` cannot
+// start without a shell — every case here failed to spawn, status `null`.
+const TSX_CLI = path.join(REPO_ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 const VALIDATOR = path.join(HERE, "validate-bundled-agents.ts");
 
 /** Everything a bundled agent must carry, as the shipped ones do. */
@@ -46,7 +49,7 @@ function manifest(overrides = {}, omit = []) {
 /** Runs the validator over one file; returns its exit status and stderr. */
 function validate(filePath) {
   try {
-    execFileSync(TSX, [VALIDATOR, filePath], {
+    execFileSync(process.execPath, [TSX_CLI, VALIDATOR, filePath], {
       cwd: REPO_ROOT,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -118,7 +121,7 @@ describe("the bundled agent validator catches a bad manifest", () => {
     // The form `just check` uses: no paths, so it resolves `distro/agents/*.md`
     // relative to the script rather than to the working directory.
     try {
-      execFileSync(TSX, [VALIDATOR], {
+      execFileSync(process.execPath, [TSX_CLI, VALIDATOR], {
         cwd: tmpdir(),
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
