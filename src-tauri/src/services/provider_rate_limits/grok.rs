@@ -249,11 +249,14 @@ async fn fetch_billing_json(
         })?;
     let status = response.status();
     if status.as_u16() == 401 || status.as_u16() == 403 {
-        return Err(grok_error(
-            session,
-            format!("Grok usage request unauthorized (HTTP {status})"),
-            true,
-        ));
+        return Err(super::unauthorized_from_response(
+            AgentPlatformId::Grok,
+            "Grok",
+            status,
+            response,
+            session.email.clone(),
+        )
+        .await);
     }
     if !status.is_success() {
         return Err(grok_error(

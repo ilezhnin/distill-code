@@ -23,7 +23,7 @@ import {
   type AgentPlatformId,
   type ProviderRateLimits,
 } from "../lib/rateLimitTypes";
-import { isProviderVisible } from "../lib/rateLimitWindows";
+import { isListedUsageProvider } from "../lib/rateLimitWindows";
 import {
   startProviderRateLimitPolling,
   useProviderRateLimitsStore,
@@ -82,7 +82,11 @@ export function StatusBar() {
     );
   }, [snapshot]);
 
-  const visibleProviders = providers.filter(isProviderVisible);
+  const visibleProviders = providers.filter((provider) => {
+    const readiness = agentReadiness.get(provider.provider);
+    const installed = readiness === "ready" || readiness === "not_ready";
+    return isListedUsageProvider(provider, installed);
+  });
   const connectable = TRACKED_AGENT_PLATFORM_IDS.filter((providerId) =>
     canConnectPlatform(providerId, agentReadiness.get(providerId)),
   );

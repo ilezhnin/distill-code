@@ -30,6 +30,7 @@
     "hoursAgo": "{{count}}h ago",
     "refreshFailedCached": "Refresh failed — showing cached data",
     "signInToSee": "Sign in to see usage",
+    "signInExpired": "Sign-in expired",
     "resetsNow": "Resets now",
     "resetsIn": "Resets in {{duration}}",
     "session": "Session",

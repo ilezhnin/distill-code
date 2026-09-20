@@ -106,7 +106,9 @@ function UsageRow({
             <span className="min-w-0 truncate text-[11px] text-muted-foreground">
               {statusKind === "refresh-failed"
                 ? t("bar.refreshFailed")
-                : t("roster.signInToSee")}
+                : statusKind === "sign-in"
+                  ? t("roster.signInExpired")
+                  : t("roster.signInToSee")}
             </span>
             {showSignIn ? (
               <span className="ml-auto shrink-0 rounded-md border border-border bg-secondary px-2.5 py-0.5 text-xs text-foreground">
@@ -236,17 +238,6 @@ export function UsageRosterPanel({
             showSignIn={showSignIn}
           />
         );
-        if (showSignIn) {
-          return (
-            <DropdownMenuItem
-              key={provider.provider}
-              onSelect={() => onSignIn(provider.provider)}
-              className="w-full cursor-pointer rounded-none px-3.5 py-2.5"
-            >
-              {row}
-            </DropdownMenuItem>
-          );
-        }
         return (
           <DropdownMenuSub key={provider.provider}>
             <DropdownMenuSubTrigger className="w-full cursor-pointer rounded-none px-3.5 py-2.5">
@@ -270,6 +261,14 @@ export function UsageRosterPanel({
                 </>
               ) : null}
               <DropdownMenuSeparator />
+              {showSignIn ? (
+                <DropdownMenuItem
+                  onSelect={() => onSignIn(provider.provider)}
+                  className="px-3.5 py-2.5 text-[13px]"
+                >
+                  {t("bar.signIn")}
+                </DropdownMenuItem>
+              ) : null}
               <DropdownMenuItem
                 onSelect={onManageAccounts}
                 className="justify-between px-3.5 py-2.5 text-[13px]"

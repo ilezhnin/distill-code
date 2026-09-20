@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { getProviderUsageStatusKind } from "./rateLimitFormatters";
 import type { ProviderRateLimits } from "./rateLimitTypes";
-import { isProviderVisible } from "./rateLimitWindows";
+import { isListedUsageProvider, isProviderVisible } from "./rateLimitWindows";
 
 function grokUsage(
   overrides: Partial<ProviderRateLimits> = {},
@@ -43,5 +43,41 @@ describe("getProviderUsageStatusKind", () => {
     });
 
     expect(getProviderUsageStatusKind(failed)).toBe("refresh-failed");
+  });
+
+  it("offers sign-in for a revoked Codex token instead of Limited or Refresh failed", () => {
+    const revoked = grokUsage({
+      provider: "codex-acp",
+      status: "error",
+      configured: false,
+      error:
+        'Codex usage request unauthorized (HTTP 401): { "error": { "message": "Encountered invalidated oauth token for user, failing request", "code": "token_revoked" } }',
+    });
+
+    expect(getProviderUsageStatusKind(revoked)).toBe("sign-in");
+    expect(isProviderVisible(revoked)).toBe(true);
+  });
+});
+
+describe("isListedUsageProvider", () => {
+  it("keeps an installed harness in the bar while usage is still idle", () => {
+    const idle = grokUsage({
+      status: "idle",
+      configured: false,
+      updatedAt: 0,
+    });
+    expect(isProviderVisible(idle)).toBe(false);
+    expect(isListedUsageProvider(idle, true)).toBe(true);
+    expect(isListedUsageProvider(idle, false)).toBe(false);
+  });
+
+  it("keeps an installed harness in the bar when usage cannot see its login", () => {
+    const hidden = grokUsage({
+      status: "unavailable",
+      configured: false,
+      error: "Not signed in to Grok — run grok login",
+    });
+    expect(isProviderVisible(hidden)).toBe(false);
+    expect(isListedUsageProvider(hidden, true)).toBe(true);
   });
 });

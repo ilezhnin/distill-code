@@ -49,12 +49,23 @@ export function ProviderDetailsPanel({
         ) : null}
       </div>
 
+      {statusKind === "sign-in" && sections.length === 0 ? (
+        <div className="space-y-0.5">
+          <div className="text-[11px] font-medium text-foreground/85">
+            {t("roster.signInExpired")}
+          </div>
+          <div className="break-words text-muted-foreground">
+            {provider.error ?? t("roster.signInToSee")}
+          </div>
+        </div>
+      ) : null}
+
       {statusKind === "refresh-failed" && sections.length === 0 ? (
         <div className="space-y-0.5">
           <div className="text-[11px] font-medium text-foreground/85">
             {t("bar.refreshFailed")}
           </div>
-          <div className="text-muted-foreground">
+          <div className="break-words text-muted-foreground">
             {provider.error ?? t("roster.signInToSee")}
           </div>
         </div>

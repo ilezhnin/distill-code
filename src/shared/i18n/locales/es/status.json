@@ -30,6 +30,7 @@
     "hoursAgo": "hace {{count}} h",
     "refreshFailedCached": "Error al actualizar — mostrando datos en caché",
     "signInToSee": "Inicia sesión para ver el uso",
+    "signInExpired": "Inicio de sesión caducado",
     "resetsNow": "Se restablece ahora",
     "resetsIn": "Se restablece en {{duration}}",
     "session": "Sesión",

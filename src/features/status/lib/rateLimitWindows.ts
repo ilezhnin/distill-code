@@ -34,6 +34,20 @@ export function isProviderVisible(provider: ProviderRateLimits): boolean {
   );
 }
 
+/**
+ * Status-bar listing. Usage-only visibility hides an installed harness whose
+ * quota fetch has not landed yet (idle) or whose auth files usage cannot
+ * read (unavailable). Doctor already knows the CLI is there — keep the row
+ * instead of the empty "Connect your accounts" CTA.
+ */
+export function isListedUsageProvider(
+  provider: ProviderRateLimits,
+  installed: boolean,
+): boolean {
+  if (installed) return true;
+  return isProviderVisible(provider);
+}
+
 export function getUsageSections(provider: ProviderRateLimits): UsageSection[] {
   const sections: UsageSection[] = [];
   if (provider.session) {
