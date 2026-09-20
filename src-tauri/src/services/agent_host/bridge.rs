@@ -16,6 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::harness::HarnessSpec;
 use super::protocol::{self, Message};
 use crate::services::managed_acp_tools;
+use crate::services::process::ProcessTree;
 
 /// How long a freshly started bridge gets to answer `initialize`. A process
 /// that is alive but silent — a CLI waiting on a login prompt or a TTY,
@@ -107,6 +108,9 @@ pub struct Bridge {
     next_id: AtomicU64,
     alive: Arc<AtomicBool>,
     child: Mutex<Option<Child>>,
+    /// The bridge and everything it started — the agent CLI a node bridge
+    /// spawns is a grandchild no kill of `child` reaches.
+    tree: Option<ProcessTree>,
 }
 
 /// Everything a bridge process inherits: the user's login-shell environment,
@@ -169,12 +173,8 @@ pub fn resolve_executable(
 /// users see as orphaned `node.exe` in Task Manager after quitting. Spawning
 /// node directly makes the child the process we actually want to kill.
 ///
-/// This does **not** cover the whole tree: node is the direct child, but the
-/// agent CLI node spawns (`claude.exe`, `codex`) is a grandchild and Windows
-/// kills no process tree for us, so quitting mid-turn can still leave it behind.
-/// A kill-on-close Job Object the bridge is assigned to is what would cover it;
-/// until then this removes one level, the one that used to leave *node itself*
-/// running.
+/// The agent CLI node spawns (`claude.exe`, `codex`) is a grandchild either
+/// way; the bridge's [`ProcessTree`] is what ends that one.
 ///
 /// Returns `None` for anything that is not a launcher we wrote (see
 /// `managed_acp_tools::shim_contents`), so an unrecognised or hand-edited
@@ -312,6 +312,16 @@ impl Bridge {
             )
         })?;
 
+        // Before the bridge has had time to start the agent CLI, so that lands
+        // in the tree as well.
+        let tree = ProcessTree::contain(&child);
+        if tree.is_none() && cfg!(windows) {
+            log::warn!(
+                "[agent-host] the {} bridge runs outside a job; what it starts can outlive it",
+                spec.id
+            );
+        }
+
         let stdin = child.stdin.take().ok_or("bridge stdin unavailable")?;
         let stdout = child.stdout.take().ok_or("bridge stdout unavailable")?;
         let stderr = child.stderr.take();
@@ -421,6 +431,7 @@ impl Bridge {
             next_id: AtomicU64::new(1),
             alive,
             child: Mutex::new(Some(child)),
+            tree,
         });
 
         let init = bridge
@@ -625,6 +636,9 @@ impl Bridge {
                 let _ = child.start_kill();
             }
         }
+        if let Some(tree) = &self.tree {
+            tree.kill();
+        }
     }
 }
 
@@ -695,6 +709,7 @@ mod tests {
             next_id: AtomicU64::new(1),
             alive: Arc::new(AtomicBool::new(true)),
             child: Mutex::new(None),
+            tree: None,
         };
         (bridge, written)
     }
@@ -879,6 +894,7 @@ mod tests {
             next_id: AtomicU64::new(1),
             alive: Arc::clone(&alive),
             child: Mutex::new(None),
+            tree: None,
         };
 
         // A request that got in before the drain is failed by it.
