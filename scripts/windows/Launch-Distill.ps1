@@ -32,6 +32,11 @@
     Do not wait for a key press when the launch fails (the shortcut relies on
     the pause so the error stays readable).
 
+.PARAMETER Watch
+    Keep Tauri's Rust watcher on, so a change under src-tauri rebuilds and
+    relaunches the app. Off by default: a relaunch kills every running turn,
+    including the one of an agent that made the change from inside this app.
+
 .EXAMPLE
     pwsh -File scripts\windows\Launch-Distill.ps1 -InstallShortcut
     pwsh -File scripts\windows\Launch-Distill.ps1
@@ -40,7 +45,8 @@
 param(
     [switch]$InstallShortcut,
     [switch]$SkipSetup,
-    [switch]$NoPause
+    [switch]$NoPause,
+    [switch]$Watch
 )
 
 $ErrorActionPreference = "Stop"
@@ -410,8 +416,19 @@ try {
     Write-Host "Close the app window or press Ctrl+C here to stop everything." -ForegroundColor DarkGray
     Write-Host ""
 
+    # The daily driver is where agents work on Distill itself. With Tauri's
+    # Rust watcher on, an agent saving a file under src-tauri makes `tauri dev`
+    # rebuild and relaunch the app it is running in: the bridges die with it and
+    # the turn is lost mid-edit. So the watcher is off unless asked for; Rust
+    # changes are picked up by the next launch, and Vite still hot-reloads the
+    # renderer, which no turn depends on.
+    $tauriArguments = @("exec", "tauri", "dev", "--features", $features, "--config", "src-tauri/tauri.dev.conf.json", "--config", $devConfigPath)
+    if (-not $Watch) {
+        $tauriArguments += "--no-watch"
+    }
+
     $launched = $true
-    & $pnpm exec tauri dev --features $features --config "src-tauri/tauri.dev.conf.json" --config $devConfigPath
+    & $pnpm @tauriArguments
     $exitCode = $LASTEXITCODE
     if ($null -eq $exitCode) { $exitCode = 0 }
 } catch {

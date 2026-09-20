@@ -178,6 +178,13 @@ builds with `berdctl` only: unlike `just dev-windows` it does not enable
 `app-test-driver`, so a shortcut-launched app exposes no unauthenticated
 UI-driving socket (see [docs/app-e2e.md](app-e2e.md)).
 
+The launcher also starts `tauri dev` with `--no-watch`. It is the app agents
+work on Distill from, and with the Rust watcher on, an agent saving a file
+under `src-tauri` rebuilds and relaunches the app it runs in, which ends its
+turn. Rust changes reach the app on the next launch; pass `-Watch` to get the
+rebuild-on-save back. `just dev-windows` keeps the watcher, and
+`DISTILL_DEV_NO_WATCH=1` turns it off there too.
+
 ## Build An Installer
 
 ```powershell

@@ -78,6 +78,10 @@ try {
     Assert-Equal "an explicit base feature set drops the loopback test driver" (Get-BerdAppFeatures -BaseFeatures @("berdctl")) "berdctl"
     $launchDistill = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts/windows/Launch-Distill.ps1")
     Assert-Equal "desktop launcher builds without the loopback test driver" ($launchDistill -match 'Get-BerdAppFeatures -BaseFeatures @\("berdctl"\)') $true
+    # Agents work on Distill from inside the shortcut-launched app; a Rust
+    # watcher there relaunches the app under them and kills their turn.
+    Assert-Equal "desktop launcher keeps the Rust watcher off unless asked" `
+        ($launchDistill -match '(?ms)if \(-not \$Watch\) \{\r?\n\s+\$tauriArguments \+= "--no-watch"\r?\n\s+\}') $true
 
     $justfile = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "justfile")
     Assert-Equal "justfile selects PowerShell for ordinary Windows recipes" ($justfile -match '(?m)^set windows-shell := \["powershell\.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"\]\r?$') $true
@@ -196,10 +200,15 @@ try {
     Assert-Throws "E2E weak driver token rejected" { New-E2eRunContract -RunRoot $e2eRoot -DriverToken "weak" }
 
     # E2E disables Tauri's Rust watcher so generated permission/schema writes
-    # cannot restart an in-flight native compile. Interactive dev retains hot
-    # reload: --no-watch must remain inside the E2eMode-only branch.
+    # cannot restart an in-flight native compile, and DISTILL_DEV_NO_WATCH=1
+    # does the same for an agent editing src-tauri from inside the dev app.
+    # Interactive dev otherwise retains hot reload: --no-watch must remain
+    # inside the branch those two — and nothing else — open.
     $devWindowsSource = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts/windows/Dev-Windows.ps1")
-    $e2eNoWatchPattern = '(?ms)if \(\$E2eMode\) \{(?:(?!\r?\n\}).)*?\$tauriArguments \+= "--no-watch"\r?\n\}'
+    $noWatchOptIn = '$NoWatch = $E2eMode -or ($env:DISTILL_DEV_NO_WATCH -eq "1")'
+    Assert-Equal "only E2E and the explicit opt-in disable the watcher" `
+        $devWindowsSource.Contains($noWatchOptIn) $true
+    $e2eNoWatchPattern = '(?ms)if \(\$NoWatch\) \{(?:(?!\r?\n\}).)*?\$tauriArguments \+= "--no-watch"\r?\n\}'
     Assert-Equal "E2E Tauri launch disables the watcher" `
         ($devWindowsSource -match $e2eNoWatchPattern) $true
     Assert-Equal "ordinary Tauri dev launch retains the watcher" `
