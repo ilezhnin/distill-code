@@ -21,7 +21,7 @@ pub(crate) const RUN_ID_ENV: &str = "BERD_E2E_RUN_ID";
 pub(crate) const RUN_ROOT_ENV: &str = "BERD_E2E_RUN_ROOT";
 pub(crate) const DRIVER_TOKEN_ENV: &str = "APP_TEST_DRIVER_TOKEN";
 pub(crate) const RUNTIME_CONFIG_ENV: &str = "BERD_E2E_RUNTIME_CONFIG";
-pub(crate) const APP_IDENTIFIER_PREFIX: &str = "xyz.block.berd.e2e.";
+pub(crate) const APP_IDENTIFIER_PREFIX: &str = "com.levocat.distill.e2e.";
 
 pub(crate) const BB_HOME_ENV: &str = "BB_HOME";
 pub(crate) const BB_AUTH_STORAGE_ENV: &str = "BB_AUTH_STORAGE";
@@ -259,12 +259,21 @@ mod tests {
     use std::ffi::OsString;
 
     const RUN_ID: &str = "run-123";
-    const IDENTIFIER: &str = "xyz.block.berd.e2e.run-123";
+    const IDENTIFIER: &str = "com.levocat.distill.e2e.run-123";
 
     #[test]
     fn feature_only_and_runtime_only_do_not_enable_e2e_mode() {
         assert_eq!(
-            E2eMode::from_values(true, None, None, None, None, None, "xyz.block.berd.dev").unwrap(),
+            E2eMode::from_values(
+                true,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "com.levocat.distill.dev"
+            )
+            .unwrap(),
             None
         );
         assert!(E2eMode::from_values(
@@ -283,12 +292,12 @@ mod tests {
     #[test]
     fn rejects_production_dev_and_malformed_identifiers() {
         for identifier in [
-            "xyz.block.berd",
-            "xyz.block.berd.dev",
-            "xyz.block.berd.e2e.",
-            "xyz.block.berd.e2e.run.with.dot",
-            "xyz.block.berd.e2e.run_with_underscore",
-            "xyz.block.berd.e2e.run/escape",
+            "com.levocat.distill",
+            "com.levocat.distill.dev",
+            "com.levocat.distill.e2e.",
+            "com.levocat.distill.e2e.run.with.dot",
+            "com.levocat.distill.e2e.run_with_underscore",
+            "com.levocat.distill.e2e.run/escape",
         ] {
             assert!(E2eMode::from_values(
                 true,
@@ -332,7 +341,7 @@ mod tests {
         let _guard = crate::test_support::env_lock().lock().expect("env lock");
         let temp = tempfile::tempdir().unwrap();
         let run_root = temp.path().join(RUN_ID);
-        let normal_berd_root = temp.path().join("xyz.block.berd.dev");
+        let normal_berd_root = temp.path().join("com.levocat.distill.dev");
         let normal_builderbot_root = temp.path().join("normal-builderbot");
         std::fs::create_dir_all(&normal_berd_root).unwrap();
         std::fs::create_dir_all(&normal_builderbot_root).unwrap();
