@@ -2,7 +2,7 @@
 name: unity-implement
 description: Implement or refactor Unity C# code safely. Use when modifying .cs files in Unity projects, including MonoBehaviours, ScriptableObjects, editor scripts, asmdef-scoped code, gameplay systems, UI controllers, tests, serialization-sensitive fields, coroutines, async flows, or performance-sensitive Update loops.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

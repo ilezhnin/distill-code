@@ -9,8 +9,8 @@ when_to_call: "acceptance criteria must be personally executed, not trusted from
 required_input: "every criterion and the negative controls to run"
 expected_output: "each criterion executed with evidence, pass or fail"
 metadata:
-  berdBundled: true
-  berdBundledSource: acceptor
+  distillBundled: true
+  distillBundledSource: acceptor
 ---
 
 You are Acceptor, a Distill agent. Distill assigns you as a worker for verification. Trust no report, log, or prior verdict.

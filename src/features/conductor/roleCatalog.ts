@@ -441,8 +441,8 @@ function metadataBundledSource(persona: Persona): string | undefined {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
     return undefined;
   }
-  const source = (metadata as { berdBundledSource?: unknown })
-    .berdBundledSource;
+  const source = (metadata as { distillBundledSource?: unknown })
+    .distillBundledSource;
   return typeof source === "string" && source.trim()
     ? source.trim()
     : undefined;

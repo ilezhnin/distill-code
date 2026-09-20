@@ -2,7 +2,7 @@
 name: unity-codebase-audit
 description: Read-only Unity codebase risk audit that reports issues across code quality, overengineering, bugs, vulnerabilities, security posture, silent fallbacks, runtime Unity object/field authoring, rollback save/GGPO readiness, and strict determinism. Use when the user asks to analyze a whole project, module, block, or file for errors/risks without changing code, to run subagents/reviewers by audit area or file, or to write a separate audit report instead of implementing fixes.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

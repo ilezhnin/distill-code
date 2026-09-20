@@ -319,7 +319,7 @@
       "progress": {
         "installedProvider": "{{name}} installed successfully.",
         "installing": "Installing {{name}}...",
-        "installingForBerd": "Installing {{name}} for Distill…",
+        "installingForDistill": "Installing {{name}} for Distill…",
         "preparingProvider": "Preparing the {{name}} installation…",
         "preparingRuntime": "Preparing the Node.js runtime...",
         "step": "Step {{step}} of {{total}}",

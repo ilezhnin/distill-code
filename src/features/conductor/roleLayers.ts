@@ -2,7 +2,7 @@
  * Single source of truth for "is this role id legal on this layer?".
  *
  * Contract #5 of the stage 0 plan: one role/layer validation module, shared by
- * the wave engine (`distillWave.ts`), `berdctl --role`, and the few-shot
+ * the wave engine (`distillWave.ts`), `distillctl --role`, and the few-shot
  * example validator. `roleCatalog.ts` stays the data; this module is the only
  * place that answers questions about it.
  */

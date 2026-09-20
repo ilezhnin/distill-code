@@ -1,23 +1,23 @@
 [package]
-name = "Berd"
+name = "Distill"
 version = "0.6.2"
 description = "Distill desktop app"
 authors = ["Distill"]
 edition = "2021"
-default-run = "Berd"
+default-run = "Distill"
 
 [lib]
-name = "berd_lib"
+name = "distill_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-# Explicit workspace so the berdctl plugin is a member: `cargo test -p
+# Explicit workspace so the distillctl plugin is a member: `cargo test -p
 # <plugin> --features ...` only works for workspace members. app-test-driver
 # stays excluded (a plain path dependency, as before this workspace existed).
 [workspace]
 members = [
-  "crates/berd-monitor",
-  "crates/berdctl",
-  "plugins/berdctl",
+  "crates/distill-monitor",
+  "crates/distillctl",
+  "plugins/distillctl",
 ]
 exclude = ["plugins/app-test-driver"]
 
@@ -51,7 +51,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-r
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 tauri = { version = "2", features = ["protocol-asset"] }
 toml = "1.1.4"
-tauri-plugin-berdctl = { path = "plugins/berdctl" }
+tauri-plugin-distillctl = { path = "plugins/distillctl" }
 tauri-plugin-app-test-driver = { path = "plugins/app-test-driver" }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-deep-link = "2"
@@ -59,7 +59,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2"
-# `deep-link`: a `berd://` link clicked while the app is running launches a
+# `deep-link`: a `distill://` link clicked while the app is running launches a
 # second process whose argv this plugin forwards to the primary; the feature
 # makes it hand that argv to the deep-link plugin before our callback runs.
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
@@ -85,7 +85,7 @@ windows-sys = { version = "0.59", features = [
 
 [features]
 default = []
-berdctl = ["tauri-plugin-berdctl/server"]
+distillctl = ["tauri-plugin-distillctl/server"]
 app-test-driver = []
 devtools = ["tauri/devtools"]
 

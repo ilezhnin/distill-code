@@ -3,8 +3,13 @@
 Guidelines for agents working on Distill.
 
 Distill is a standalone Tauri 2 + React 19 desktop app, built for Windows only.
-Much of the code still carries its upstream name, Berd (`berdctl`,
-`berd-monitor`, `BERD_*` variables). ACP is the main interface
+It is a fork of [block/berd](https://github.com/block/berd) and carries none of
+that name any more: the CLIs are `distillctl` and `distill-monitor`, the
+variables `DISTILL_*`, the identifier `com.levocat.distill`. The old name
+survives only where it names something outside the code — the upstream
+repository, and what older builds left on disk, which
+`src-tauri/src/services/identifier_migration.rs` and
+`src-tauri/src/services/upstream_names.rs` bring along once. ACP is the main interface
 we use for the actual agent loop - creating and running sessions, finding available
 models, and setting configuration. When available, we work over ACP methods, but the
 UI can handle operations that are not yet in ACP or are client specific.
@@ -18,11 +23,11 @@ UI can handle operations that are not yet in ACP or are client specific.
 - `acp-tools.lock.json` — pinned `package.json` + `package-lock.json`
   the managed ACP bridges are installed from with `npm ci`
 - `scripts/update-acp-tools-lock.mjs` — resolves and records a new managed ACP bridge pin
-- `src/features/berdctl/` — berdctl command registry
-- `src-tauri/plugins/berdctl/` — berdctl broker
-- `src-tauri/crates/berdctl/` — bundled berdctl CLI
-- `distro/skills/berd-help/references/berdctl.md` — berdctl guidance agents
-  read from the bundled `berd-help` skill
+- `src/features/distillctl/` — distillctl command registry
+- `src-tauri/plugins/distillctl/` — distillctl broker
+- `src-tauri/crates/distillctl/` — bundled distillctl CLI
+- `distro/skills/distill-help/references/distillctl.md` — distillctl guidance agents
+  read from the bundled `distill-help` skill
 
 ## Architectural laws
 
@@ -59,7 +64,7 @@ Each `*-windows` recipe and `bundle` wraps a script in `scripts/windows/`; when
 - `just tauri-check` — Rust check with external sidecars disabled
 - `just clippy` — Rust clippy with warnings denied
 - `just ci` — local validation gate: frontend checks, Tauri/Rust checks, clippy, tests, build
-- `just bundle` — stage the berdctl and berd-monitor sidecars and build the
+- `just bundle` — stage the distillctl and distill-monitor sidecars and build the
   NSIS installer (`Bundle-Windows.ps1`)
 
 ## When to validate
@@ -67,17 +72,17 @@ Each `*-windows` recipe and `bundle` wraps a script in `scripts/windows/`; when
 - Frontend changes: `just check`
 - Vitest-covered behavior: `just test`
 - `src-tauri/`, Tauri config, sidecars, or Rust: `just tauri-check`
-- berdctl commands: `pnpm generate:berdctl-contract`, `pnpm vitest run
-  src/features/berdctl`, and `cargo test -p berdctl` (from `src-tauri/`)
+- distillctl commands: `pnpm generate:distillctl-contract`, `pnpm vitest run
+  src/features/distillctl`, and `cargo test -p distillctl` (from `src-tauri/`)
 - Windows scripts: `just test-windows-dev`
 - Broad or packaging changes: `just ci`, and `just ci-windows` for the managed
   Node runtime and bridges
 
-## berdctl
+## distillctl
 
-berdctl lets agents control the app: CLI → broker → renderer registry.
-Design and reasoning: `docs/berdctl-architecture.md`. To add or change a
-command, use `.agents/skills/berdctl-new-command/SKILL.md`
+distillctl lets agents control the app: CLI → broker → renderer registry.
+Design and reasoning: `docs/distillctl-architecture.md`. To add or change a
+command, use `.agents/skills/distillctl-new-command/SKILL.md`
 (`just new-command <noun> <verb>`).
 
 Invariants (1, 3, 4 are gated by test failures; 2, 5, 6 are review rules —
@@ -89,7 +94,7 @@ the doc has the whys and the enforcement map):
 2. Single dispatch point in the renderer.
 3. Bounds live in zod; clap only mirrors them.
 4. Help is hand-authored in the command module (summary, description,
-   helpFooter, `.describe()` per field); `cargo test -p berdctl` fails on
+   helpFooter, `.describe()` per field); `cargo test -p distillctl` fails on
    empty/TODO prose.
 5. UI-visible verbs only; prefer reversible mutations, but one-way visible
    product actions like creating a session or sending a prompt are allowed.
@@ -100,15 +105,15 @@ the doc has the whys and the enforcement map):
    the constants are equal.
 
 The CLI is built from the contract at startup: command modules (zod schemas
-+ help prose) → `pnpm generate:berdctl-contract` → `api-surface.json` (the
++ help prose) → `pnpm generate:distillctl-contract` → `api-surface.json` (the
 client-neutral wire surface, with JSON Schema per action) +
-`cli-surface.json` (the CLI projection) → embedded by the berdctl crate,
+`cli-surface.json` (the CLI projection) → embedded by the distillctl crate,
 whose `tree.rs` builds the clap tree at runtime (`validate.rs` gates
 consistency via the crate's tests). Never hand-edit the contract JSONs.
 
 ## Sidecar rule
 
-Bundles stage the workspace CLIs (`berdctl`, `berd-monitor`) as Tauri
+Bundles stage the workspace CLIs (`distillctl`, `distill-monitor`) as Tauri
 `externalBin` sidecars:
 
 ```powershell

@@ -1,16 +1,16 @@
 use percent_encoding::percent_decode_str;
-#[cfg(feature = "berdctl")]
+#[cfg(feature = "distillctl")]
 use serde::Serialize;
-#[cfg(feature = "berdctl")]
+#[cfg(feature = "distillctl")]
 use tauri::Emitter;
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_deep_link::DeepLinkExt;
 use url::Url;
 
-#[cfg(feature = "berdctl")]
-const SESSION_DEEP_LINK_ERROR_EVENT: &str = "berd:session-deep-link-error";
+#[cfg(feature = "distillctl")]
+const SESSION_DEEP_LINK_ERROR_EVENT: &str = "distill:session-deep-link-error";
 
-#[cfg(feature = "berdctl")]
+#[cfg(feature = "distillctl")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionDeepLinkErrorPayload {
@@ -20,7 +20,7 @@ struct SessionDeepLinkErrorPayload {
 
 pub(crate) fn install<R: Runtime>(app: &tauri::App<R>) {
     // Handles links delivered while the app is already running. Startup
-    // session links are drained by BerdctlBridge after the renderer command
+    // session links are drained by DistillctlBridge after the renderer command
     // registry has mounted.
     let deep_link_app = app.handle().clone();
     app.deep_link().on_open_url(move |event| {
@@ -55,11 +55,11 @@ enum SessionDeepLinkRoute {
     Path,
 }
 
-const SESSION_HOST_ROUTE_PREFIX: &str = "berd://session/";
-const SESSION_PATH_ROUTE_PREFIX: &str = "berd:///session/";
+const SESSION_HOST_ROUTE_PREFIX: &str = "distill://session/";
+const SESSION_PATH_ROUTE_PREFIX: &str = "distill:///session/";
 
 fn raw_session_deep_link_route(url: &Url) -> Option<SessionDeepLinkRoute> {
-    if url.scheme() != "berd" {
+    if url.scheme() != "distill" {
         return None;
     }
 
@@ -94,11 +94,11 @@ fn parse_session_deep_link(url: &Url) -> Option<String> {
         .filter(|session_id| !session_id.is_empty())
 }
 
-#[cfg(feature = "berdctl")]
+#[cfg(feature = "distillctl")]
 fn open_session<R: Runtime>(app: AppHandle<R>, session_id: String) -> bool {
     tauri::async_runtime::spawn(async move {
         let requested_session_id = session_id.clone();
-        let result = tauri_plugin_berdctl::dispatch_app_command(
+        let result = tauri_plugin_distillctl::dispatch_app_command(
             app.clone(),
             "sessions".to_string(),
             serde_json::json!({
@@ -120,13 +120,13 @@ fn open_session<R: Runtime>(app: AppHandle<R>, session_id: String) -> bool {
     true
 }
 
-#[cfg(feature = "berdctl")]
+#[cfg(feature = "distillctl")]
 fn session_deep_link_error_payload(
     session_id: &str,
-    error: &tauri_plugin_berdctl::AppCommandDispatchError,
+    error: &tauri_plugin_distillctl::AppCommandDispatchError,
 ) -> SessionDeepLinkErrorPayload {
     let message = match error {
-        tauri_plugin_berdctl::AppCommandDispatchError::Command { message, .. }
+        tauri_plugin_distillctl::AppCommandDispatchError::Command { message, .. }
             if !message.trim().is_empty() =>
         {
             message.clone()
@@ -139,7 +139,7 @@ fn session_deep_link_error_payload(
     }
 }
 
-#[cfg(feature = "berdctl")]
+#[cfg(feature = "distillctl")]
 fn emit_session_deep_link_error<R: Runtime>(
     app: &AppHandle<R>,
     payload: SessionDeepLinkErrorPayload,
@@ -149,8 +149,8 @@ fn emit_session_deep_link_error<R: Runtime>(
     }
 }
 
-#[cfg(not(feature = "berdctl"))]
+#[cfg(not(feature = "distillctl"))]
 fn open_session<R: Runtime>(_app: AppHandle<R>, _session_id: String) -> bool {
-    log::warn!("Ignoring session deep link because the berdctl feature is disabled");
+    log::warn!("Ignoring session deep link because the distillctl feature is disabled");
     false
 }

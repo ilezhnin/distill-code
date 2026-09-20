@@ -521,7 +521,7 @@ describe("attachSessionFolder", () => {
       expect.objectContaining({ path: "/repo-wt", branch: "feature" }),
     ]);
   });
-  it("promotes the first real attachment over Berd's implicit default cwd", async () => {
+  it("promotes the first real attachment over Distill's implicit default cwd", async () => {
     useChatSessionStore.setState({
       sessions: [{ ...session, workingDir: "~/.distill/artifacts" }],
     });

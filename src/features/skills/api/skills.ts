@@ -75,7 +75,7 @@ interface ListAgentSkillsResponse {
 
 export interface ListSkillsOptions {
   providerId?: string | null;
-  /** Set false when the caller already owns the Berd app-skill list (e.g. the
+  /** Set false when the caller already owns the Distill app-skill list (e.g. the
    *  chat controller's dedicated catalog effect) so it isn't fetched again
    *  only to be filtered out. Defaults to true. */
   includeAppSkills?: boolean;
@@ -156,7 +156,7 @@ function toSkillInfo(source: SkillSourceEntry): SkillInfo {
     sourceLabel:
       sourceKind === "global" ? "Personal" : projectName || "Project",
     projectLinks,
-    readonly: props.berdBundled === true,
+    readonly: props.distillBundled === true,
     color: readStoredColor(source.properties),
   };
 }
@@ -352,16 +352,16 @@ export async function createSkill(
 // Several surfaces list app skills at once when a chat mounts; those callers
 // pass `{ coalesce: true }` so a same-tick burst issues one IPC call. Callers
 // that must observe post-event data call plainly (the skills-layer `fresh`
-// flag, threaded through by `fetchBerdAppSkills`, translates to that), so the
+// flag, threaded through by `fetchDistillAppSkills`, translates to that), so the
 // shared slot is replaced instead of handing back an invoke that started
 // before the change.
-export const listBerdAppSkills = shareInFlight(
+export const listDistillAppSkills = shareInFlight(
   async (): Promise<SkillInfo[]> => {
     if (!isDesktopRuntime()) {
       return [];
     }
     const response = await invoke<ListAgentSkillsResponse>(
-      "list_berd_app_skills",
+      "list_distill_app_skills",
     );
     return response.skills.map((skill) => toAgentSkillInfo(skill, null));
   },
@@ -475,7 +475,7 @@ export async function updateSkill(
 ): Promise<SkillInfo> {
   const client = await getClient();
   // properties replaces the full bag, so only send fields skills own
-  // client-side. projectDir/projectName/berdBundled and legacy
+  // client-side. projectDir/projectName/distillBundled and legacy
   // gooseInternalBundled are derived by the backend at list time, not
   // persisted through this path.
   const response = await client.host.sourcesUpdate({

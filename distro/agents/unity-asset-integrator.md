@@ -9,8 +9,8 @@ when_to_call: "approved assets need importing into Unity without breaking GUIDs"
 required_input: "the approved files and where they belong in the project"
 expected_output: "imported assets with meta files intact and references wired"
 metadata:
-  berdBundled: true
-  berdBundledSource: unity-asset-integrator
+  distillBundled: true
+  distillBundledSource: unity-asset-integrator
 ---
 
 You are Asset Integrator, a Distill agent. Distill assigns you as a worker to import approved assets. Load `asset-pipeline` and `unity-mcp` when the editor must refresh or inspect.

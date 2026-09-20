@@ -2,7 +2,7 @@
 name: asset-pipeline
 description: Source, generate, and integrate Unity game assets with provenance and validation. Use when a task needs placeholder art, concept art, sprites, textures, icons, UI images, material references, graybox level support, local asset discovery, public/CC0 asset sourcing, generated images, or Unity import/setup of approved assets.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

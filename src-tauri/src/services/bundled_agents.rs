@@ -11,7 +11,7 @@ use crate::services::distro_bundle::DistroBundle;
 const DISTRO_AGENTS_DIR_NAME: &str = "agents";
 const GLOBAL_AGENTS_DIR_NAME: &str = ".agents";
 const AGENTS_DIR_NAME: &str = "agents";
-const MARKER_FILE_NAME: &str = ".berd-bundled-agents.json";
+const MARKER_FILE_NAME: &str = ".distill-bundled-agents.json";
 static INSTALL_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -32,8 +32,8 @@ struct AgentFrontmatter {
 
 #[derive(Deserialize)]
 struct AgentMetadata {
-    #[serde(rename = "berdBundled")]
-    berd_bundled: Option<bool>,
+    #[serde(rename = "distillBundled")]
+    distill_bundled: Option<bool>,
 }
 
 pub fn seed_bundled_agents(
@@ -190,7 +190,7 @@ fn is_installed_bundled_agent(agent_file: &Path) -> Result<bool, String> {
     Ok(agent_frontmatter(&contents)
         .and_then(|frontmatter| yaml_serde::from_str::<AgentFrontmatter>(frontmatter).ok())
         .and_then(|frontmatter| frontmatter.metadata)
-        .map(|metadata| metadata.berd_bundled.unwrap_or(false))
+        .map(|metadata| metadata.distill_bundled.unwrap_or(false))
         .unwrap_or(false))
 }
 
@@ -233,7 +233,7 @@ fn install_agent_file(source: &Path, target: &Path) -> Result<(), String> {
         fs::read(source).map_err(|err| format!("Failed to read '{}': {err}", source.display()))?;
     let sequence = INSTALL_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temp_path = parent.join(format!(
-        ".berd-agent-install-{}-{sequence}.tmp",
+        ".distill-agent-install-{}-{sequence}.tmp",
         std::process::id()
     ));
     let install_result = (|| -> Result<(), String> {
@@ -348,7 +348,7 @@ mod tests {
         write_agent(
             source.path(),
             "builderbot.md",
-            "---\nname: Builderbot\ndescription: Agent\nmetadata:\n  berdBundled: true\n---\nBuild carefully.",
+            "---\nname: Builderbot\ndescription: Agent\nmetadata:\n  distillBundled: true\n---\nBuild carefully.",
         );
 
         seed_bundled_agents_from_dir(source.path(), target.path()).unwrap();
@@ -367,7 +367,7 @@ mod tests {
         write_agent(
             source.path(),
             "builderbot.md",
-            "---\nname: Builderbot\ndescription: Agent\nmetadata:\n  berdBundled: true\n---\nBundled.",
+            "---\nname: Builderbot\ndescription: Agent\nmetadata:\n  distillBundled: true\n---\nBundled.",
         );
         write_agent(
             target.path(),
@@ -397,7 +397,7 @@ mod tests {
         write_agent(
             source.path(),
             "builderbot.md",
-            "---\nname: Builderbot\ndescription: Agent\navatar: app-avatar:gloopies-20\nmetadata:\n  berdBundled: true\n---\nBundled.",
+            "---\nname: Builderbot\ndescription: Agent\navatar: app-avatar:gloopies-20\nmetadata:\n  distillBundled: true\n---\nBundled.",
         );
         fs::create_dir_all(target.path()).unwrap();
         fs::write(target.path().join("builderbot.md"), [0xff]).unwrap();

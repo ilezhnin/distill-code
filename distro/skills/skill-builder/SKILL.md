@@ -1,17 +1,17 @@
 ---
 name: skill-builder
 description: >-
-  Create, edit, or inspect Berd skills stored as skill folders with SKILL.md
+  Create, edit, or inspect Distill skills stored as skill folders with SKILL.md
   files. Use when the user wants to build a new skill, update an existing skill,
   convert a workflow into a reusable skill, or decide whether instructions,
   scripts, references, or assets belong in a skill.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 # Skill Builder
 
-Use this skill when creating, editing, or inspecting Berd skills.
+Use this skill when creating, editing, or inspecting Distill skills.
 
 ## What a Skill Is
 

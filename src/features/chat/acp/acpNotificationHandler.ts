@@ -1213,7 +1213,7 @@ export function clearMessageTracking(): void {
  * one of those answers is worth a transcript row: when a harness offers only
  * permanent options there is nothing to refuse once with, and the `cancelled`
  * outcome ACP leaves us ends the whole turn. Without this the operator sees a
- * turn that simply stopped, and the only trace is a line in berd.log.
+ * turn that simply stopped, and the only trace is a line in distill.log.
  */
 export function reportPermissionAnswer(
   report: AcpPermissionAnswerReport,

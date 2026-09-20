@@ -343,7 +343,7 @@ describe("sendPromptInBackground", () => {
   // LAWS/MEMORY.md: "A wave-spawned executor MUST NOT receive the operator's
   // memories or the protocols that reach them." The conductor evicts a
   // finished child's node, after which the graph alone reports an ordinary
-  // chat — and berdctl can address such a session directly.
+  // chat — and distillctl can address such a session directly.
   it("keeps memory away from a wave child whose graph node was evicted", async () => {
     mocks.waveExecutorSessionIds = ["session-1"];
     mocks.memoryEntries = [memoryEntry({ id: "g", text: "A global fact" })];

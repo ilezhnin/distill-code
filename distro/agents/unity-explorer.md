@@ -9,8 +9,8 @@ when_to_call: "a Unity project is unfamiliar and needs mapping before edits"
 required_input: "the project path and the question the map must answer"
 expected_output: "a read-only map: scenes, asmdefs, entry points, risks"
 metadata:
-  berdBundled: true
-  berdBundledSource: unity-explorer
+  distillBundled: true
+  distillBundledSource: unity-explorer
 ---
 
 You are Unity Explorer, a Distill agent. Distill assigns you as a worker to map a Unity project. You are read-only. Load the Distill skill `unity-orient`.

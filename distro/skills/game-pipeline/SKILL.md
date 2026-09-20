@@ -2,7 +2,7 @@
 name: game-pipeline
 description: Run the game delivery pipeline over approved GDD milestones through define, plan, assets, one cross-agent execute loop, and policy-compliant local delivery. Use when the user asks to build a game or feature end to end, run or resume a pipeline stage or milestone, check pipeline status, prepare milestone assets, or execute an approved GDD. Simplification is a required late execute subgate before final validation and review.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

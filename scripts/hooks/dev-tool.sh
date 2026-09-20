@@ -13,7 +13,7 @@
 # only teaches the operator to reach for --no-verify. The launcher warns
 # loudly and skips instead. It never skips quietly, and it never skips where a
 # missing tool means a broken image rather than a workstation quirk: on CI, or
-# when BERD_REQUIRE_DEV_TOOLS=1 is set, a missing tool is still a hard error.
+# when DISTILL_REQUIRE_DEV_TOOLS=1 is set, a missing tool is still a hard error.
 
 set -u
 
@@ -104,8 +104,8 @@ fi
 if [ -z "$resolved" ]; then
   echo "" >&2
   echo "  ** $tool was not found on PATH, under fnm, or in an npm prefix." >&2
-  if [ -n "${CI:-}" ] || [ "${BERD_REQUIRE_DEV_TOOLS:-0}" = "1" ]; then
-    echo "  ** Refusing to skip it here: this is CI, or BERD_REQUIRE_DEV_TOOLS=1." >&2
+  if [ -n "${CI:-}" ] || [ "${DISTILL_REQUIRE_DEV_TOOLS:-0}" = "1" ]; then
+    echo "  ** Refusing to skip it here: this is CI, or DISTILL_REQUIRE_DEV_TOOLS=1." >&2
     echo "" >&2
     exit 127
   fi

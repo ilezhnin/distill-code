@@ -2,7 +2,7 @@
 name: unity-validate
 description: Choose and run focused validation for Unity projects safely. Use when verifying Unity or C# changes, compiling scripts, running targeted EditMode or PlayMode tests, checking logs, validating asmdef changes, confirming package changes, or reporting what remains untested when Unity cannot run.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

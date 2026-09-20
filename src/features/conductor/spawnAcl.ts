@@ -2,7 +2,7 @@
  * Who may spawn whom, as code.
  *
  * Until this module existed the only thing standing between an agent and
- * `berdctl session create` was a sentence handwritten into most — not all —
+ * `distillctl session create` was a sentence handwritten into most — not all —
  * of the bundled agent files ("do not spawn chats yourself"). Q6 originally
  * kept the rule prompt-only; the operator has since decided to make it
  * mechanical. This module is the single owner of that mechanism:
@@ -15,17 +15,17 @@
  * - the prompt insert that replaces the handwritten sentence, generated from
  *   the same effective ACL so the text can never disagree with the code.
  *
- * `berdctl session create` / `session fork` are enforced too (P42): the CLI
+ * `distillctl session create` / `session fork` are enforced too (P42): the CLI
  * reads AGENT_SESSION_ID from the shell env when the harness exports it and
  * sends it as `actor` on the call envelope; the commands resolve it to a
- * graph node and run this same check (berdctl runtime/spawnGate.ts). The
+ * graph node and run this same check (distillctl runtime/spawnGate.ts). The
  * residue is stated there: the id is guessable, so a deliberately forged
  * env var can still impersonate a session until the host mints a nonce — the
  * gate covers every honest call, not a determined adversary.
  *
  * Operator-initiated actions (UI buttons, the composer) are exempt on
  * purpose: the ACL constrains agents, not the person running the app — and
- * an anonymous or graph-unknown berdctl call reads as the operator for the
+ * an anonymous or graph-unknown distillctl call reads as the operator for the
  * same reason.
  */
 
@@ -180,10 +180,10 @@ export class SpawnAclDeniedError extends Error {
  *
  * The legacy wording is kept verbatim as the opening sentence (removing the
  * handwritten copies changed where the text comes from, not what the agents
- * read). The second sentence names the berdctl spawn commands, because the
+ * read). The second sentence names the distillctl spawn commands, because the
  * app preamble injected alongside this line advertises them
- * (`src/features/berdctl/appPreamble.ts`). It says plainly that those two
- * commands are NOT checked in code: the gate in berdctl runtime/spawnGate.ts
+ * (`src/features/distillctl/appPreamble.ts`). It says plainly that those two
+ * commands are NOT checked in code: the gate in distillctl runtime/spawnGate.ts
  * only sees an `actor` when the harness exports AGENT_SESSION_ID, and the
  * built-in agent host cannot (one bridge process serves every session of a
  * harness), so every real call arrives anonymous and is read as the
@@ -192,14 +192,14 @@ export class SpawnAclDeniedError extends Error {
  */
 const SPAWN_FORBIDDEN_PROMPT_LINE =
   "Distill starts other agents from the Agents catalog; do not spawn chats yourself. " +
-  "That includes the `berdctl session create` and `berdctl session fork` commands " +
+  "That includes the `distillctl session create` and `distillctl session fork` commands " +
   "the Distill app preamble lists: Distill cannot tell which session runs them, so " +
   "this rule is not enforced in code for them — follow it anyway.";
 
-/** The clause that extends a layer/name permission to the berdctl spawn
+/** The clause that extends a layer/name permission to the distillctl spawn
  *  commands, stating honestly that they are not attributed to the caller. */
-const BERDCTL_SPAWN_NOT_CHECKED_CLAUSE =
-  "The same limit applies to `berdctl session create` and `berdctl session fork`, " +
+const DISTILLCTL_SPAWN_NOT_CHECKED_CLAUSE =
+  "The same limit applies to `distillctl session create` and `distillctl session fork`, " +
   "which Distill cannot attribute to your session and therefore does not check in " +
   "code — respect it anyway.";
 
@@ -211,7 +211,7 @@ const BERDCTL_SPAWN_NOT_CHECKED_CLAUSE =
  * catalog files used to hardcode; non-empty permissions state what is
  * allowed and that everything else is refused by the app through Distill's
  * own spawn mechanisms, not merely discouraged. Both wordings then extend
- * the rule to the berdctl spawn commands — as a rule the agent must follow,
+ * the rule to the distillctl spawn commands — as a rule the agent must follow,
  * because the app cannot attribute those calls to a session and so does not
  * refuse them in code.
  */
@@ -274,16 +274,16 @@ export function formatSpawnPolicyPrompt(
   }
   const layersLine = `Through Distill's own mechanisms you may start agents on these layers: ${layers.join(
     ", ",
-  )}. Distill refuses any other spawn through those mechanisms in code; do not try to start sessions outside those layers. ${BERDCTL_SPAWN_NOT_CHECKED_CLAUSE}`;
+  )}. Distill refuses any other spawn through those mechanisms in code; do not try to start sessions outside those layers. ${DISTILLCTL_SPAWN_NOT_CHECKED_CLAUSE}`;
   if (agentMenu === undefined) {
     return layersLine;
   }
   if (agentMenu.length === 0) {
-    return `${layersLine}\nBy name you may start no agents at all: your named allowlist is empty, so every spawn through Distill's own mechanisms is refused in code, and the berdctl spawn commands are off limits by this rule.`;
+    return `${layersLine}\nBy name you may start no agents at all: your named allowlist is empty, so every spawn through Distill's own mechanisms is refused in code, and the distillctl spawn commands are off limits by this rule.`;
   }
   return [
     layersLine,
-    "You may start only these agents, by name — any other agent, and any spawn that names no agent, is refused in code through Distill's own mechanisms and off limits through berdctl:",
+    "You may start only these agents, by name — any other agent, and any spawn that names no agent, is refused in code through Distill's own mechanisms and off limits through distillctl:",
     ...agentMenu.map(formatAgentMenuLine),
   ].join("\n");
 }
@@ -296,7 +296,7 @@ export function formatSpawnPolicyPrompt(
  * node (wave workers carried no persona and previously got no sentence at
  * all — one of the text holes this closes). A plain personaless chat gets
  * nothing: its model spawns only when the operator asks it to, through
- * berdctl on the operator's behalf, and a standing prohibition there would
+ * distillctl on the operator's behalf, and a standing prohibition there would
  * break that operator-initiated flow.
  */
 export function sessionSpawnPolicyPrompt(

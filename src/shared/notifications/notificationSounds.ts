@@ -1,48 +1,55 @@
 export const SILENT_NOTIFICATION_SOUND = "silent";
-export const DEFAULT_NOTIFICATION_SOUND = "berd-sounds-4.mp3";
+export const DEFAULT_NOTIFICATION_SOUND = "distill-sounds-4.mp3";
 
 export const NOTIFICATION_SOUNDS = [
   {
     id: DEFAULT_NOTIFICATION_SOUND,
     labelKey: "notifications.sounds.politeHonk",
-    resource: "berd-sounds-4.mp3",
-    url: new URL("../../../resources/berd-sounds-4.mp3", import.meta.url).href,
+    resource: "distill-sounds-4.mp3",
+    url: new URL("../../../resources/distill-sounds-4.mp3", import.meta.url)
+      .href,
   },
   {
-    id: "berd-sounds-0.mp3",
+    id: "distill-sounds-0.mp3",
     labelKey: "notifications.sounds.quickPeep",
-    resource: "berd-sounds-0.mp3",
-    url: new URL("../../../resources/berd-sounds-0.mp3", import.meta.url).href,
+    resource: "distill-sounds-0.mp3",
+    url: new URL("../../../resources/distill-sounds-0.mp3", import.meta.url)
+      .href,
   },
   {
-    id: "berd-sounds-1.mp3",
+    id: "distill-sounds-1.mp3",
     labelKey: "notifications.sounds.twinkle",
-    resource: "berd-sounds-1.mp3",
-    url: new URL("../../../resources/berd-sounds-1.mp3", import.meta.url).href,
+    resource: "distill-sounds-1.mp3",
+    url: new URL("../../../resources/distill-sounds-1.mp3", import.meta.url)
+      .href,
   },
   {
-    id: "berd-sounds-2.mp3",
+    id: "distill-sounds-2.mp3",
     labelKey: "notifications.sounds.dingDong",
-    resource: "berd-sounds-2.mp3",
-    url: new URL("../../../resources/berd-sounds-2.mp3", import.meta.url).href,
+    resource: "distill-sounds-2.mp3",
+    url: new URL("../../../resources/distill-sounds-2.mp3", import.meta.url)
+      .href,
   },
   {
-    id: "berd-sounds-3.mp3",
+    id: "distill-sounds-3.mp3",
     labelKey: "notifications.sounds.paidInBread",
-    resource: "berd-sounds-3.mp3",
-    url: new URL("../../../resources/berd-sounds-3.mp3", import.meta.url).href,
+    resource: "distill-sounds-3.mp3",
+    url: new URL("../../../resources/distill-sounds-3.mp3", import.meta.url)
+      .href,
   },
   {
-    id: "berd-sounds-5.mp3",
+    id: "distill-sounds-5.mp3",
     labelKey: "notifications.sounds.beakYeah",
-    resource: "berd-sounds-5.mp3",
-    url: new URL("../../../resources/berd-sounds-5.mp3", import.meta.url).href,
+    resource: "distill-sounds-5.mp3",
+    url: new URL("../../../resources/distill-sounds-5.mp3", import.meta.url)
+      .href,
   },
   {
-    id: "berd-sounds-6.mp3",
+    id: "distill-sounds-6.mp3",
     labelKey: "notifications.sounds.badNewsBird",
-    resource: "berd-sounds-6.mp3",
-    url: new URL("../../../resources/berd-sounds-6.mp3", import.meta.url).href,
+    resource: "distill-sounds-6.mp3",
+    url: new URL("../../../resources/distill-sounds-6.mp3", import.meta.url)
+      .href,
   },
 ] as const;
 

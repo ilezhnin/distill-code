@@ -40,7 +40,7 @@ function userMessage(id: string, text: string, origin = true): Message {
     created: 1,
     content: [{ type: "text", text }],
     ...(origin
-      ? { metadata: { origin: "berdctl_cross_session" as const } }
+      ? { metadata: { origin: "distillctl_cross_session" as const } }
       : {}),
   };
 }

@@ -2,7 +2,7 @@
 name: orchestrate
 description: Distill conductor loop — classify the operator request, answer it directly or plan one distill-wave, let Distill spawn the workers, then read the digest and close the loop with a distill-verdict. Use when coordinating a stage, handing out work, or closing a turn.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 # Orchestrate

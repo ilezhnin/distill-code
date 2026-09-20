@@ -277,9 +277,12 @@ export interface MessageMetadata {
   agentVisible?: boolean;
   delivery?: "steering" | "steer";
   steeringRequestId?: string;
-  origin?: "berdctl_cross_session" | "voice_conversation" | "operator_direct";
-  berdSenderLabel?: string;
-  berdDeliveryId?: string;
+  origin?:
+    | "distillctl_cross_session"
+    | "voice_conversation"
+    | "operator_direct";
+  distillSenderLabel?: string;
+  distillDeliveryId?: string;
   voiceUtteranceId?: string;
   attachments?: MessageAttachment[];
   chips?: MessageChip[];

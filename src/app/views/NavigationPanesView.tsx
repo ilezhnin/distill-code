@@ -14,7 +14,7 @@ import { cn } from "@/shared/lib/cn";
 import type { AppView } from "@/app/AppShell";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { PrimaryNavigationSurface } from "@/features/navigation/ui/PrimaryNavigationSurface";
-import type { CommandOutcome } from "@/features/berdctl/navigation";
+import type { CommandOutcome } from "@/features/distillctl/navigation";
 import { SessionListCapability } from "@/features/sessions/capabilities/SessionListCapability";
 import {
   DEFAULT_SETTINGS_SECTION,

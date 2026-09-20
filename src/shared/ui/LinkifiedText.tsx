@@ -19,7 +19,7 @@ export interface LinkifiedTextProps {
  * Renders plain text while turning bare http(s) URLs into real links.
  *
  * Used for the text of "user" messages — which are not necessarily written by
- * the local operator: a `berdctl session send` from another agent and a
+ * the local operator: a `distillctl session send` from another agent and a
  * conductor-generated wave prompt both render as user bubbles with only a
  * `from` label. So a click goes through the same link-safety gate as an agent
  * Markdown link: a trusted domain opens straight away, anything else is

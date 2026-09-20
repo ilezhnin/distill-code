@@ -2,7 +2,7 @@
 name: unity-mcp
 description: Drive the Unity Editor through MCP safely. Use when Unity MCP tools are available and the task involves scenes, GameObjects, components, prefabs, assets, cameras, UI, packages, console logs, PlayMode, EditMode tests, screenshots, or editor automation beyond plain file edits.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

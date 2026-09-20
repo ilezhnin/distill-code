@@ -2,7 +2,7 @@
 name: grill
 description: Interrogate the operator before an expensive or irreversible decision — one question at a time, each with a marked recommendation, until a decision protocol. Use on "grill", "stress-test this decision", and before ratifications or other permanent choices.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 # Grill

@@ -6,7 +6,7 @@ import type {
   GitState,
 } from "@/shared/types/git";
 
-export const GIT_STATE_CHANGED_EVENT = "berd:git-state-changed";
+export const GIT_STATE_CHANGED_EVENT = "distill:git-state-changed";
 
 export interface GitStateChangedPayload {
   operation: string;

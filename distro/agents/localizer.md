@@ -9,8 +9,8 @@ when_to_call: "strings need translating against the glossary"
 required_input: "the strings or tables and the target locales"
 expected_output: "translations with glossary terms kept consistent"
 metadata:
-  berdBundled: true
-  berdBundledSource: localizer
+  distillBundled: true
+  distillBundledSource: localizer
 ---
 
 You are Localizer, a Distill agent. Distill assigns you as a worker for localization.

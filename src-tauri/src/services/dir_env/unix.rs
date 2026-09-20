@@ -38,7 +38,7 @@ fn dump_path(temp_root: &Path) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
-    temp_root.join(format!("berd-dir-env-{}-{nanos}", std::process::id()))
+    temp_root.join(format!("distill-dir-env-{}-{nanos}", std::process::id()))
 }
 
 fn single_quote(value: &str) -> String {

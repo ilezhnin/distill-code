@@ -350,7 +350,7 @@ describe("useBackgroundQueuedMessageDrain", () => {
     ).toBe(released);
   });
 
-  it("drains a released deferred payload independently of the Berdctl bridge", async () => {
+  it("drains a released deferred payload independently of the Distillctl bridge", async () => {
     const released = releasedRecord();
     useChatStore.setState({
       queuedMessageBySession: { "session-1": [released] },
@@ -789,18 +789,18 @@ describe("useBackgroundQueuedMessageDrain", () => {
     expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
-  it("ignores Berdctl-origin transport-ready records", () => {
+  it("ignores Distillctl-origin transport-ready records", () => {
     useChatStore.setState({
       queuedMessageBySession: {
         "session-1": [
           {
             kind: "transport-ready",
-            recordId: "berdctl-record",
+            recordId: "distillctl-record",
             payload: {
               persona: { kind: "inherit" },
-              text: "berdctl",
+              text: "distillctl",
               sendOptions: {
-                userMessageMetadata: { origin: "berdctl_cross_session" },
+                userMessageMetadata: { origin: "distillctl_cross_session" },
               },
             },
           },

@@ -8,8 +8,8 @@ use tauri::{include_image, Manager, RunEvent, WebviewWindow};
 use tauri_plugin_window_state::StateFlags;
 
 const APP_LOG_MAX_FILE_SIZE_BYTES: u128 = 10 * 1024 * 1024;
-/// Archived log files kept once `berd.log` hits the size cap. `KeepSome`
-/// counts archives only — the active `berd.log` is always kept on top, so
+/// Archived log files kept once `distill.log` hits the size cap. `KeepSome`
+/// counts archives only — the active `distill.log` is always kept on top, so
 /// this retains three files total. The plugin's default strategy is
 /// `KeepOne`, which *deletes* the full file rather than archiving it — that
 /// would wipe the captured agent-bridge stderr and panic backtraces
@@ -72,7 +72,7 @@ pub fn run() {
     // that the deep-link state exists by the time this callback runs. Because
     // the dependency enables the plugin's `deep-link` feature, the plugin
     // itself hands `args` to `DeepLink::handle_cli_arguments` before invoking
-    // the closure below — that is what turns a `berd://…` link clicked while
+    // the closure below — that is what turns a `distill://…` link clicked while
     // the app is running into a `deep-link://new-url` event for
     // `deep_links::install`. The closure therefore only has to reveal the
     // window for a plain second launch; a session link additionally reveals it
@@ -97,7 +97,7 @@ pub fn run() {
                 .targets([
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
                     tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
-                        file_name: Some("berd".into()),
+                        file_name: Some("distill".into()),
                     }),
                 ])
                 .build(),
@@ -124,8 +124,8 @@ pub fn run() {
         builder.plugin(tauri_plugin_app_test_driver::init())
     };
 
-    #[cfg(feature = "berdctl")]
-    let builder = builder.plugin(tauri_plugin_berdctl::init());
+    #[cfg(feature = "distillctl")]
+    let builder = builder.plugin(tauri_plugin_distillctl::init());
 
     if let Some(mode) = &e2e_mode {
         mode.log_enabled();
@@ -215,7 +215,7 @@ pub fn run() {
 
             deep_links::install(app);
 
-            services::berdctl_discovery::sweep_stale_discovery_files(&app_data_dir);
+            services::distillctl_discovery::sweep_stale_discovery_files(&app_data_dir);
 
             // Seed bundled skills and agents from the distro bundle registered
             // above. This touches the filesystem, so it runs after the state
@@ -223,6 +223,13 @@ pub fn run() {
             let e2e_agents_dir = app
                 .try_state::<services::e2e_mode::E2eMode>()
                 .map(|mode| mode.agents_dir());
+            // An isolated E2E run starts from nothing; everywhere else the
+            // seeders below must find their earlier installs under the names
+            // they now look for.
+            if e2e_agents_dir.is_none() {
+                let agents_dir = dirs::home_dir().map(|home| home.join(".agents").join("agents"));
+                services::upstream_names::adopt(&app_data_dir, agents_dir.as_deref());
+            }
             {
                 let distro_state = app.state::<DistroBundleState>();
                 let bundled_skills_state = app
@@ -259,7 +266,7 @@ pub fn run() {
                 }
             }
 
-            // Install or upgrade the Berd-managed ACP bridges (claude, codex)
+            // Install or upgrade the Distill-managed ACP bridges (claude, codex)
             // in the background to the versions pinned in
             // `acp-tools.lock.json`, onto the managed Node runtime in app
             // data; failures are logged and retried next launch while any
@@ -340,7 +347,7 @@ pub fn run() {
             commands::terminal::resize_terminal,
             commands::terminal::stop_terminal,
             commands::agent_skills::list_agent_skills,
-            commands::agent_skills::list_berd_app_skills,
+            commands::agent_skills::list_distill_app_skills,
             commands::workspace_context::load_workspace_context,
         ])
         .build(context)

@@ -24,7 +24,7 @@ fn write_source_file(path: &Path, contents: &str) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let sequence = WRITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temp = parent.join(format!(
-        ".berd-source-write-{}-{sequence}.tmp",
+        ".distill-source-write-{}-{sequence}.tmp",
         std::process::id()
     ));
     let result = crate::commands::distill_store::write_file_synced(&temp, contents.as_bytes())

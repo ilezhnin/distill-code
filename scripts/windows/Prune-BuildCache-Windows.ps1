@@ -10,7 +10,7 @@
 
       - legacy %LOCALAPPDATA%\berd-tauri (pre-2026-09 cargo target; nothing
         writes there any more)
-      - the dead %LOCALAPPDATA%\berd-dev\goose build directory (the Goose
+      - the dead %LOCALAPPDATA%\distill-dev\goose build directory (the Goose
         backend is gone, replaced by the in-app Rust ACP host). Other
         goose* directories are only reported, never removed.
       - interrupted-build leftovers in <target>\debug\deps\.tmp*
@@ -44,7 +44,7 @@ trap {
 Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChecking
 
 Assert-WindowsHost
-Set-Location (Get-BerdRepoRoot)
+Set-Location (Get-DistillRepoRoot)
 
 $script:Reclaimed = 0L
 
@@ -83,7 +83,7 @@ function Invoke-Prune {
         return
     }
     try {
-        # The target dir comes from BERD_TAURI_CARGO_TARGET_DIR when set, so a
+        # The target dir comes from DISTILL_TAURI_CARGO_TARGET_DIR when set, so a
         # mistyped override (a drive root, the user profile, the repo itself,
         # a relative path) must not become a recursive delete under -Deep.
         Assert-SafeCleanupPath -Path $Path -AllowedRoot $Path
@@ -96,12 +96,12 @@ function Invoke-Prune {
 }
 
 $targetDir = Get-TauriCargoTargetDir
-$devRoot = Get-BerdDevRoot
+$devRoot = Get-DistillDevRoot
 
 Write-WindowsDevSection ("Build cache prune (" + $(if ($Remove) { "remove" } else { "dry run" }) + ")")
 Write-WindowsDevInfo "cargo target dir: $targetDir"
 if (Test-PathOnSystemDrive $targetDir) {
-    Write-Host ("This target dir is on the system drive. Set BERD_TAURI_CARGO_TARGET_DIR to a path on " +
+    Write-Host ("This target dir is on the system drive. Set DISTILL_TAURI_CARGO_TARGET_DIR to a path on " +
         "another drive (user-level env var) so future builds land there.") -ForegroundColor Yellow
 }
 if (-not $Remove) {
@@ -124,7 +124,7 @@ Write-WindowsDevSection "Reclaimable build output"
 # A live build owns the temp archives and incremental dirs this section
 # deletes, so pulling them out from under it corrupts the build rather
 # than just slowing it down.
-$busy = @(Get-Process -Name cargo, rustc, Berd -ErrorAction SilentlyContinue)
+$busy = @(Get-Process -Name cargo, rustc, Distill -ErrorAction SilentlyContinue)
 if ($Remove -and $busy.Count -gt 0) {
     throw ("A build or the app is still running (" + (($busy | ForEach-Object { $_.ProcessName }) -join ", ") +
         "). Close it, then rerun.")
@@ -136,7 +136,7 @@ if ($Deep) {
     Invoke-Prune -Name "incremental cache" -Path (Join-Path $debugDir "incremental")
     # `.tmp*.temp-archive` dirs under deps are half-written static archives an
     # interrupted link left behind; cargo never reuses them and never cleans
-    # them up (multiple GB each for berd_lib / sherpa-onnx).
+    # them up (multiple GB each for distill_lib / sherpa-onnx).
     foreach ($tmp in @(Get-ChildItem -LiteralPath (Join-Path $debugDir "deps") -Directory -Force -Filter ".tmp*" -ErrorAction SilentlyContinue)) {
         Invoke-Prune -Name "interrupted-build leftovers" -Path $tmp.FullName
     }

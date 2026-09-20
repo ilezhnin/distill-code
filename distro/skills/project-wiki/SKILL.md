@@ -2,7 +2,7 @@
 name: project-wiki
 description: Compile what a project knows into its own `.distill/wiki/` — pages, index, append-only log. Use after an accepted wave taught something durable, when the operator asks to record or lint project knowledge, or before re-exploring a repository.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 # Project Wiki

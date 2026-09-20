@@ -2,7 +2,7 @@
 name: unity-tests
 description: Bootstrap Unity test infrastructure and author meaningful EditMode/PlayMode tests limited to determinism/rollback, fail-loud contracts, content integrity, and real-bug regressions. Use when asked to add tests, set up Tests folders or test asmdefs, cover an untested MonoBehaviour or legacy system, or write a regression test for a bug fix.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

@@ -1,9 +1,9 @@
 //! Process environment for bridge children: the user's login-shell env, the
-//! managed bridge shims in front of PATH, and the berdctl shim/discovery
+//! managed bridge shims in front of PATH, and the distillctl shim/discovery
 //! variables that let an agent running inside a session drive the app.
 
 use std::collections::HashMap;
-#[cfg(feature = "berdctl")]
+#[cfg(feature = "distillctl")]
 use std::path::Path;
 use std::path::PathBuf;
 use tauri::Manager;
@@ -25,7 +25,7 @@ pub async fn build_spawn_env(app: &tauri::AppHandle) -> SpawnEnv {
     }
     prepend_dirs.extend(managed_acp_tools::managed_prepend_dirs(app));
     let mut extra_env = Vec::new();
-    install_berdctl_shims(app, &mut prepend_dirs, &mut extra_env);
+    install_distillctl_shims(app, &mut prepend_dirs, &mut extra_env);
     SpawnEnv {
         shell_env,
         prepend_dirs,
@@ -33,55 +33,56 @@ pub async fn build_spawn_env(app: &tauri::AppHandle) -> SpawnEnv {
     }
 }
 
-#[cfg(feature = "berdctl")]
-fn install_berdctl_shims(
+#[cfg(feature = "distillctl")]
+fn install_distillctl_shims(
     app: &tauri::AppHandle,
     prepend_dirs: &mut Vec<PathBuf>,
     extra_env: &mut Vec<(String, String)>,
 ) {
-    let berdctl_bin = resolve_cli_bin("BERDCTL_BIN", &binary_name("berdctl"));
-    let berd_monitor_bin = resolve_cli_bin("BERD_MONITOR_BIN", &binary_name("berd-monitor"));
+    let distillctl_bin = resolve_cli_bin("DISTILLCTL_BIN", &binary_name("distillctl"));
+    let distill_monitor_bin =
+        resolve_cli_bin("DISTILL_MONITOR_BIN", &binary_name("distill-monitor"));
     let app_data_dir = match app.path().app_data_dir() {
         Ok(dir) => dir,
         Err(error) => {
-            log::warn!("Skipping berdctl PATH shim: failed to resolve app data dir: {error}");
+            log::warn!("Skipping distillctl PATH shim: failed to resolve app data dir: {error}");
             return;
         }
     };
     let shim_dir = app_data_dir.join("bin");
     let mut installed_any = false;
-    if let Some(cli_path) = berdctl_bin.as_deref() {
-        match create_cli_shim(&shim_dir, cli_path, shim_name("berdctl")) {
+    if let Some(cli_path) = distillctl_bin.as_deref() {
+        match create_cli_shim(&shim_dir, cli_path, shim_name("distillctl")) {
             Ok(()) => installed_any = true,
-            Err(error) => log::warn!("Skipping berdctl PATH shim: {error}"),
+            Err(error) => log::warn!("Skipping distillctl PATH shim: {error}"),
         }
     }
-    if let Some(cli_path) = berd_monitor_bin.as_deref() {
-        match create_cli_shim(&shim_dir, cli_path, shim_name("berd-monitor")) {
+    if let Some(cli_path) = distill_monitor_bin.as_deref() {
+        match create_cli_shim(&shim_dir, cli_path, shim_name("distill-monitor")) {
             Ok(()) => installed_any = true,
-            Err(error) => log::warn!("Skipping berd-monitor PATH shim: {error}"),
+            Err(error) => log::warn!("Skipping distill-monitor PATH shim: {error}"),
         }
     }
     if installed_any {
         prepend_dirs.push(shim_dir);
     }
     extra_env.push((
-        "BERDCTL_LOCK".to_string(),
-        tauri_plugin_berdctl::discovery_file_path(&app_data_dir, std::process::id())
+        "DISTILLCTL_LOCK".to_string(),
+        tauri_plugin_distillctl::discovery_file_path(&app_data_dir, std::process::id())
             .to_string_lossy()
             .into_owned(),
     ));
-    match berdctl_bin {
+    match distillctl_bin {
         Some(bin) => extra_env.push((
-            "BERDCTL_BIN".to_string(),
+            "DISTILLCTL_BIN".to_string(),
             bin.to_string_lossy().into_owned(),
         )),
-        None => log::warn!("Skipping BERDCTL_BIN: could not resolve the berdctl binary path"),
+        None => log::warn!("Skipping DISTILLCTL_BIN: could not resolve the distillctl binary path"),
     }
 }
 
-#[cfg(not(feature = "berdctl"))]
-fn install_berdctl_shims(
+#[cfg(not(feature = "distillctl"))]
+fn install_distillctl_shims(
     _app: &tauri::AppHandle,
     _prepend_dirs: &mut Vec<PathBuf>,
     _extra_env: &mut Vec<(String, String)>,
@@ -91,7 +92,7 @@ fn install_berdctl_shims(
 /// Explicit env override (exported by `just dev`, where externalBin is
 /// empty) wins; otherwise the externalBin sidecar sits next to the app
 /// executable.
-#[cfg(feature = "berdctl")]
+#[cfg(feature = "distillctl")]
 fn resolve_cli_bin(override_env: &str, binary_name: &str) -> Option<PathBuf> {
     if let Ok(override_path) = std::env::var(override_env) {
         if !override_path.is_empty() {
@@ -102,7 +103,7 @@ fn resolve_cli_bin(override_env: &str, binary_name: &str) -> Option<PathBuf> {
     Some(exe.parent()?.join(binary_name))
 }
 
-#[cfg(feature = "berdctl")]
+#[cfg(feature = "distillctl")]
 fn binary_name(stem: &str) -> String {
     if cfg!(windows) {
         format!("{stem}.exe")
@@ -111,7 +112,7 @@ fn binary_name(stem: &str) -> String {
     }
 }
 
-#[cfg(feature = "berdctl")]
+#[cfg(feature = "distillctl")]
 fn shim_name(stem: &str) -> String {
     if cfg!(windows) {
         format!("{stem}.cmd")
@@ -121,9 +122,9 @@ fn shim_name(stem: &str) -> String {
 }
 
 /// Create or refresh the PATH shim that lets harness children run a bare
-/// `berdctl`. Unix uses a symlink so the bundled binary stays authoritative;
+/// `distillctl`. Unix uses a symlink so the bundled binary stays authoritative;
 /// Windows uses a `.cmd` wrapper because symlinks need elevated shells.
-#[cfg(feature = "berdctl")]
+#[cfg(feature = "distillctl")]
 fn create_cli_shim(shim_dir: &Path, cli_path: &Path, shim_name: String) -> Result<(), String> {
     if !cli_path.exists() {
         return Err(format!(
@@ -147,7 +148,7 @@ fn create_cli_shim(shim_dir: &Path, cli_path: &Path, shim_name: String) -> Resul
     create_cli_shim_file(cli_path, &link)
 }
 
-#[cfg(all(feature = "berdctl", unix))]
+#[cfg(all(feature = "distillctl", unix))]
 fn create_cli_shim_file(cli_path: &Path, link: &Path) -> Result<(), String> {
     std::os::unix::fs::symlink(cli_path, link).map_err(|error| {
         format!(
@@ -158,7 +159,7 @@ fn create_cli_shim_file(cli_path: &Path, link: &Path) -> Result<(), String> {
     })
 }
 
-#[cfg(all(feature = "berdctl", windows))]
+#[cfg(all(feature = "distillctl", windows))]
 fn create_cli_shim_file(cli_path: &Path, link: &Path) -> Result<(), String> {
     let content = format!("@echo off\r\n\"{}\" %*\r\n", cli_path.to_string_lossy());
     std::fs::write(link, content).map_err(|error| {

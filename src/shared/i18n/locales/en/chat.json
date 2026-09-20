@@ -364,8 +364,8 @@
     "providerError": {
       "anthropicThinkingHistory": "This chat can't continue with a Claude model because its earlier reasoning history is no longer in a form Claude will accept. Start a new chat, or switch this chat to a non-Claude model to keep going."
     },
-    "berdctlCrossSessionLabel": "Sent by Distill from another session",
-    "berdctlCrossSessionNamedLabel": "Sent by Distill from another session · source: {{sender}}",
+    "distillctlCrossSessionLabel": "Sent by Distill from another session",
+    "distillctlCrossSessionNamedLabel": "Sent by Distill from another session · source: {{sender}}",
     "steerLabel": "Steered",
     "steerPendingLabel": "Steering — waiting for the agent's next step",
     "viewMore": "View more",

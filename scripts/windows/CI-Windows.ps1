@@ -16,13 +16,13 @@ Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChe
 Assert-WindowsHost
 Update-SessionPathFromRegistry
 Assert-MsvcEnvironment
-Set-Location (Join-Path (Get-BerdRepoRoot) "src-tauri")
+Set-Location (Join-Path (Get-DistillRepoRoot) "src-tauri")
 
 $env:CARGO_TARGET_DIR = Get-TauriCargoTargetDir
 $env:TAURI_CONFIG = '{"bundle":{"externalBin":[],"resources":[]}}'
 # Opt the managed-Node native gate in: it downloads and executes the real pinned
 # Node ZIP, which only a native Windows host can do. Off this variable it skips.
-$env:BERD_WS2_NATIVE_GATE = "1"
+$env:DISTILL_WS2_NATIVE_GATE = "1"
 Write-WindowsDevInfo "Using Tauri Cargo target dir: $env:CARGO_TARGET_DIR"
 
 # Invoke cargo directly. `Start-Process -Wait` waits for the full descendant
@@ -53,25 +53,25 @@ Invoke-CargoCheck -ArgumentList @(
 
 # Clippy compiles both configurations, so separate `cargo check` calls only
 # repeat the same compile coverage. Every workspace crate is named explicitly:
-# cargo lints only the primary package, so berdctl, berd-monitor and the
-# berdctl plugin used to be compiled here but linted nowhere except the
+# cargo lints only the primary package, so distillctl, distill-monitor and the
+# distillctl plugin used to be compiled here but linted nowhere except the
 # skippable pre-push hook. `--all-targets` adds the test and bench targets, so
 # `#[cfg(test)]` code is linted with the same `-D warnings` as the library.
 Invoke-CargoCheck -ArgumentList @(
     "clippy", "--all-targets", "--", "-D", "warnings"
 ) -Label "cargo clippy"
 Invoke-CargoCheck -ArgumentList @(
-    "clippy", "--all-targets", "--features", (Get-BerdAppFeatures), "--", "-D", "warnings"
+    "clippy", "--all-targets", "--features", (Get-DistillAppFeatures), "--", "-D", "warnings"
 ) -Label "cargo clippy app features"
 Invoke-CargoCheck -ArgumentList @(
-    "clippy", "--all-targets", "-p", "berdctl", "--", "-D", "warnings"
-) -Label "cargo clippy berdctl"
+    "clippy", "--all-targets", "-p", "distillctl", "--", "-D", "warnings"
+) -Label "cargo clippy distillctl"
 Invoke-CargoCheck -ArgumentList @(
-    "clippy", "--all-targets", "-p", "berd-monitor", "--", "-D", "warnings"
-) -Label "cargo clippy berd-monitor"
+    "clippy", "--all-targets", "-p", "distill-monitor", "--", "-D", "warnings"
+) -Label "cargo clippy distill-monitor"
 Invoke-CargoCheck -ArgumentList @(
-    "clippy", "--all-targets", "-p", "tauri-plugin-berdctl", "--features", "server", "--", "-D", "warnings"
-) -Label "cargo clippy berdctl plugin"
+    "clippy", "--all-targets", "-p", "tauri-plugin-distillctl", "--features", "server", "--", "-D", "warnings"
+) -Label "cargo clippy distillctl plugin"
 
 Write-Host ""
 Write-Host "Windows native CI gate passed." -ForegroundColor Green

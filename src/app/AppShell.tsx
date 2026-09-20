@@ -124,7 +124,7 @@ import {
   type ArchiveCleanupPolicy,
   MUTATION_DEADLINE_MARGIN_MS,
   useRegisterAppNavigationController,
-} from "@/features/berdctl/navigation";
+} from "@/features/distillctl/navigation";
 import { AgentBuilderLeaveDraftDialog } from "@/features/agents/ui/AgentBuilderLeaveDraftDialog";
 import { AppShellLayout } from "./ui/AppShellLayout";
 import { AppShellContent } from "./ui/AppShellContent";
@@ -282,7 +282,7 @@ interface ArchiveChatOptions {
   /**
    * Stop the chat's terminals once it is archived. Operator-initiated
    * archives only: the stop is unrecoverable (unarchive restores no shell),
-   * so an agent driving berdctl must never trigger it.
+   * so an agent driving distillctl must never trigger it.
    */
   stopTerminals?: boolean;
 }
@@ -3021,7 +3021,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         // Only an operator-initiated archive may do that. Killing a dev
         // server, a build or a migration is unrecoverable — unarchiving
         // restores nothing — so it needs the person who can judge the loss.
-        // berdctl's `session archive` reaches this same function, is declared
+        // distillctl's `session archive` reaches this same function, is declared
         // `destructive: false`, and its help promises it never discards local
         // work; it therefore archives without the stop and refuses outright
         // while the chat still has live shells.

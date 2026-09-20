@@ -125,12 +125,12 @@ whatever drive you cloned to:
 <repo>\src-tauri\target
 ```
 
-Set `BERD_TAURI_CARGO_TARGET_DIR` (a user-level environment variable) to move
+Set `DISTILL_TAURI_CARGO_TARGET_DIR` (a user-level environment variable) to move
 it somewhere else. Do not point it at the system drive: earlier versions
 defaulted to `%LOCALAPPDATA%\berd-tauri\cargo-target` and routinely filled C:.
 The launcher warns when the resolved target dir is on the system drive.
 
-Only small dev state stays under `%LOCALAPPDATA%\berd-dev` (the generated
+Only small dev state stays under `%LOCALAPPDATA%\distill-dev` (the generated
 Tauri dev config and launch locks).
 
 To reclaim space without uninstalling the toolchain:
@@ -148,7 +148,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Prune-Bu
 ```
 
 It only removes output it can regenerate, and refuses to run while `cargo`,
-`rustc` or `Berd` is alive. Anything it does not recognize is printed as a
+`rustc` or `Distill` is alive. Anything it does not recognize is printed as a
 `keep` line and left alone.
 
 `just cleanup-windows` is the uninstall lane instead: it removes
@@ -160,21 +160,21 @@ It only removes output it can regenerate, and refuses to run while `cargo`,
 just dev-windows
 ```
 
-`just dev-windows` builds `berdctl.exe` and `berd-monitor.exe`, points the app
+`just dev-windows` builds `distillctl.exe` and `distill-monitor.exe`, points the app
 at this repository's `distro\` for bundled agents and skills, and starts Tauri
 dev mode.
 
 Expected result:
 
 - Vite starts on a port derived from the checkout path
-- `Berd.exe` launches from the Tauri cargo target as the Distill window
+- `Distill.exe` launches from the Tauri cargo target as the Distill window
 - on launch the app installs the pinned Claude Code and Codex bridges onto the
   managed Node runtime (the first launch downloads both); later launches reuse
   them until a pin changes
 
 `scripts\windows\Launch-Distill.ps1 -InstallShortcut` puts a "Distill Code"
 shortcut on the desktop that runs the same launch from Explorer. That launcher
-builds with `berdctl` only: unlike `just dev-windows` it does not enable
+builds with `distillctl` only: unlike `just dev-windows` it does not enable
 `app-test-driver`, so a shortcut-launched app exposes no unauthenticated
 UI-driving socket (see [docs/app-e2e.md](app-e2e.md)).
 
@@ -193,8 +193,8 @@ just bundle-windows msi     # MSI
 just bundle-debug           # NSIS with WebView devtools
 ```
 
-The bundle script installs locked dependencies, stages `berdctl` and
-`berd-monitor` as `*-x86_64-pc-windows-msvc.exe` sidecars, runs `tauri build`
+The bundle script installs locked dependencies, stages `distillctl` and
+`distill-monitor` as `*-x86_64-pc-windows-msvc.exe` sidecars, runs `tauri build`
 for that target and prints the installer path under
 `<target>\x86_64-pc-windows-msvc\release\bundle\`. Installers are unsigned.
 
@@ -222,7 +222,7 @@ Cleanup is dry-run by default:
 just cleanup-windows
 ```
 
-Default removal deletes the local dev caches (`%LOCALAPPDATA%\berd-dev` and
+Default removal deletes the local dev caches (`%LOCALAPPDATA%\distill-dev` and
 the Tauri cargo target) and generated repo setup/dev artifacts: root
 `node_modules`, root `.pnpm-store`, root `dist`, and the Lefthook-managed
 `pre-commit` and `pre-push` hooks:
@@ -303,7 +303,7 @@ just setup-windows
 ```
 
 If an agent session will not start, check the app log at
-`%LOCALAPPDATA%\com.levocat.distill\logs\berd.log`; each harness's stderr is
+`%LOCALAPPDATA%\com.levocat.distill\logs\distill.log`; each harness's stderr is
 logged there prefixed with its id, such as `[claude-acp]`.
 
 If you want a full fresh-machine reset after testing, review the cleanup dry run

@@ -1,5 +1,5 @@
 //! Frontend-facing renderer log command: lets the web UI forward lifecycle
-//! signals it can observe (e.g. an unexpected page reload) into `berd.log`.
+//! signals it can observe (e.g. an unexpected page reload) into `distill.log`.
 
 /// Append a renderer lifecycle event from the frontend to the app log.
 #[tauri::command]

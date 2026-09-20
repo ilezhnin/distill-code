@@ -79,7 +79,7 @@ export function groupPublishableTurns(
 
   // P19d. The header above has always claimed this covers "anything
   // registered from outside the UI", and it did not: a session created by
-  // berdctl registers as a worker under its parent, not as an orchestrator
+  // distillctl registers as a worker under its parent, not as an orchestrator
   // shell, so the `role !== "orchestrator"` filter dropped it and its report
   // never reached the parent at all. Latent only because nothing writes an
   // `agent-cli` node yet — which is precisely the moment to fix it, before a

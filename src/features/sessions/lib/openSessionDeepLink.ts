@@ -10,7 +10,7 @@ export type OpenSessionDeepLinkDispatch = (
 
 const dispatchSessionOpen: OpenSessionDeepLinkDispatch = async (...args) => {
   const { dispatchCommand } = await import(
-    "@/features/berdctl/commands/registry"
+    "@/features/distillctl/commands/registry"
   );
   return dispatchCommand(...args);
 };

@@ -138,7 +138,7 @@ export function LinkSafetyModal({
  * It lives here as a hook so every surface that shows a clickable URL shares
  * one implementation and one modal. Agent Markdown links reach it through
  * `MessageResponse`; user bubbles reach it through `LinkifiedText`, because a
- * "user" message can be written by another agent (`berdctl session send`, a
+ * "user" message can be written by another agent (`distillctl session send`, a
  * conductor wave prompt) and renders with only a `from` label to say so.
  */
 export function useLinkSafetyGate(): {

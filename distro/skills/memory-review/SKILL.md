@@ -2,7 +2,7 @@
 name: memory-review
 description: Consolidate the operator's memories in one careful pass — propose merges, contradictions, stale and overlong lines as a list, then apply only what they confirm through `distill-memory`. Use when the operator starts a review from the Memory panel or asks you to tidy what is remembered.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 # Memory Review

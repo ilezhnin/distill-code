@@ -242,7 +242,7 @@ export function taskMemoryGoal(
     const message = messages[index];
     if (message.role !== "user") continue;
     // A digest is a user message the app itself sent; it is never the goal.
-    if (message.metadata?.origin === "berdctl_cross_session") continue;
+    if (message.metadata?.origin === "distillctl_cross_session") continue;
     const line = getTextContent(message)
       .split("\n")
       .map((part) => part.trim())

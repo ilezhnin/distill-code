@@ -127,7 +127,7 @@ describe("persona source helpers", () => {
 
   it("a saved edit to a seeded bundled agent survives the next launch", async () => {
     // Full circle of the operator's lost-ranking bug: the installed bundled
-    // file carries `metadata.berdBundled: true`; the startup reseeder
+    // file carries `metadata.distillBundled: true`; the startup reseeder
     // overwrites any marked file whose bytes differ from the shipped copy
     // (src-tauri bundled_agents.rs, should_install_agent). Saving an edit
     // must therefore (1) keep the edit and (2) drop the ownership marker so
@@ -140,7 +140,7 @@ describe("persona source helpers", () => {
       properties: {
         avatar: "app-avatar:gloopies-1",
         good_for: "proving the claim yourself",
-        metadata: { berdBundled: true, berdBundledSource: "acceptor" },
+        metadata: { distillBundled: true, distillBundledSource: "acceptor" },
       },
     };
     const ranking = JSON.stringify({
@@ -166,7 +166,7 @@ describe("persona source helpers", () => {
           good_for: "proving the claim yourself",
           // The ownership flag is gone; the role attribution survives — the
           // conductor still resolves this file as the acceptor role.
-          metadata: { berdBundledSource: "acceptor" },
+          metadata: { distillBundledSource: "acceptor" },
           model_ranking: ranking,
         },
       }),
@@ -182,7 +182,7 @@ describe("persona source helpers", () => {
       ...draftEntry,
       path: "/Users/x/.agents/agents/qa.md",
       name: "QA",
-      properties: { metadata: { berdBundled: true } },
+      properties: { metadata: { distillBundled: true } },
     };
     mockGooseSourcesList.mockResolvedValueOnce({ sources: [bundledEntry] });
     mockGooseSourcesUpdate.mockImplementationOnce(

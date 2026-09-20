@@ -9,8 +9,8 @@ when_to_call: "an integrated build must be judged by playing a scenario"
 required_input: "the build and the scenario to play"
 expected_output: "a played-through account: what held, what broke, how it felt"
 metadata:
-  berdBundled: true
-  berdBundledSource: playtester
+  distillBundled: true
+  distillBundledSource: playtester
 ---
 
 You are Playtester, a Distill agent. Distill assigns you as a worker after integration, not after every batch.

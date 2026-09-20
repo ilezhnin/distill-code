@@ -2,7 +2,7 @@
 name: unity-debug
 description: Systematically debug Unity and C# failures by reproducing, localizing, fixing root cause, and verifying regression coverage. Use when Unity tests fail, compilation breaks, the Console shows errors, gameplay/editor behavior is wrong, scene or prefab state is broken, CI reports Unity failures, or a C# change produces unexpected runtime behavior.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

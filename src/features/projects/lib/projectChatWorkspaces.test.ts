@@ -801,7 +801,7 @@ describe("project chat workspaces", () => {
         "chat-123",
       ),
     ).rejects.toThrow(
-      "Berd couldn’t prepare the project workspace. Try again.",
+      "Distill couldn’t prepare the project workspace. Try again.",
     );
 
     expect(gitMocks.deleteBranch).toHaveBeenCalledWith(
@@ -854,7 +854,7 @@ describe("project chat workspaces", () => {
         "chat-123",
       ),
     ).rejects.toThrow(
-      "Berd couldn’t prepare the project workspace. Try again.",
+      "Distill couldn’t prepare the project workspace. Try again.",
     );
 
     expect(gitMocks.removeWorktree).toHaveBeenCalledWith(

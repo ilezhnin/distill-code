@@ -2,7 +2,7 @@
 name: unity-review
 description: Review Unity and C# changes for correctness. Use when asked to review a Unity diff, PR, branch, or local changes touching .cs files, asmdefs, scenes, prefabs, ScriptableObjects, packages, ProjectSettings, tests, gameplay behavior, editor tooling, serialization, assets, generated art, performance, or Unity lifecycle code. Use unity-codebase-audit instead for read-only whole-project/module audits for code quality, overengineering, bugs, security, silent fallbacks, Unity runtime authoring, rollback/GGPO readiness, or strict determinism when no diff is being reviewed.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

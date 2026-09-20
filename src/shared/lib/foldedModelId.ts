@@ -5,13 +5,13 @@ import { normalizeConcreteModelId } from "./modelIdentity";
  * model and a reasoning effort glued into one string. They are separate
  * selections, so nothing writes such an id any more. This module is the app's
  * only reader of the ones already written down: stored preferences, persisted
- * sessions, run journals, telemetry, and berdctl clients that memorised them.
+ * sessions, run journals, telemetry, and distillctl clients that memorised them.
  *
  * There is deliberately no compose function. Folding can only come back by
  * someone adding one here, which is a reviewable change.
  *
  * Sunset by condition, not by date: this module can go once no
- * `sessions.legacy_model_id` rows remain and no pre-protocolVersion-6 berdctl
+ * `sessions.legacy_model_id` rows remain and no pre-protocolVersion-6 distillctl
  * clients are in use.
  */
 

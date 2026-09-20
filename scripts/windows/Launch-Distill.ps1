@@ -8,14 +8,14 @@
 
       1. toolchain environment: MSVC, fnm-managed Node, pnpm on PATH
       2. dependencies: pnpm install
-      3. berdctl.exe and berd-monitor.exe
+      3. distillctl.exe and distill-monitor.exe
       4. stale leftovers from a previous run (orphaned Vite on this checkout's
-         port, Berd.exe whose dev session is gone)
+         port, Distill.exe whose dev session is gone)
       5. Vite + the Tauri dev app; the app itself starts the per-session ACP
          bridges (Claude / Codex / Grok)
 
     The Tauri build reuses this checkout's `src-tauri\target` so a warm cache
-    is never thrown away (override with BERD_TAURI_CARGO_TARGET_DIR).
+    is never thrown away (override with DISTILL_TAURI_CARGO_TARGET_DIR).
 
     Starting from the desktop instead of a terminal inside Orca / Claude Code /
     Codex also keeps the whole process tree free of that pane's identity.
@@ -25,7 +25,7 @@
     script, then exit without launching.
 
 .PARAMETER SkipSetup
-    Skip the dependency checks (pnpm install / berdctl / berd-monitor)
+    Skip the dependency checks (pnpm install / distillctl / distill-monitor)
     for a faster relaunch. Artifacts must already exist.
 
 .PARAMETER NoPause
@@ -174,7 +174,7 @@ function Enter-LaunchMutex {
 }
 
 # `tauri dev` sessions (node running @tauri-apps/cli) for this checkout —
-# including ones still compiling, before Berd.exe exists.
+# including ones still compiling, before Distill.exe exists.
 function Get-LiveTauriDevProcesses {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
     $needle = Join-Path $RepoRoot "node_modules"
@@ -196,12 +196,12 @@ function Show-ExistingApp {
     } catch {}
 }
 
-# Berd.exe instances built from this checkout, with whether their `cargo run`
+# Distill.exe instances built from this checkout, with whether their `cargo run`
 # parent (the live `tauri dev` session) is still around.
 function Get-CheckoutAppProcesses {
     param([Parameter(Mandatory = $true)][string]$TargetDir)
     $result = @()
-    foreach ($process in (Get-CimInstance Win32_Process -Filter "Name = 'Berd.exe'" -ErrorAction SilentlyContinue)) {
+    foreach ($process in (Get-CimInstance Win32_Process -Filter "Name = 'Distill.exe'" -ErrorAction SilentlyContinue)) {
         if (-not (Test-PathUnder -Path ([string]$process.ExecutablePath) -Root $TargetDir)) { continue }
         $parentAlive = Test-ProcessAlive -ProcessId ([int]$process.ParentProcessId)
         $parentName = ""
@@ -223,7 +223,7 @@ function Stop-StaleDevProcesses {
     )
     foreach ($app in (Get-CheckoutAppProcesses -TargetDir $TargetDir)) {
         if (-not $app.Live) {
-            Stop-ProcessQuietly -ProcessId $app.ProcessId -Reason "orphaned Berd.exe from a previous run"
+            Stop-ProcessQuietly -ProcessId $app.ProcessId -Reason "orphaned Distill.exe from a previous run"
         }
     }
     if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
@@ -269,7 +269,7 @@ $vitePort = 0
 try {
     Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChecking
     Assert-WindowsHost
-    $repoRoot = Get-BerdRepoRoot
+    $repoRoot = Get-DistillRepoRoot
     Set-Location $repoRoot
 
     if ($InstallShortcut) {
@@ -313,9 +313,9 @@ try {
     $tauriTargetDir = Get-TauriCargoTargetDir
     if (Test-PathOnSystemDrive $tauriTargetDir) {
         Write-Host ("Cargo target dir is on the system drive ($tauriTargetDir); a debug build there grows to tens of GB. " +
-            "Set BERD_TAURI_CARGO_TARGET_DIR to a path on another drive to move it.") -ForegroundColor Yellow
+            "Set DISTILL_TAURI_CARGO_TARGET_DIR to a path on another drive to move it.") -ForegroundColor Yellow
     }
-    $devRoot = Get-BerdDevRoot
+    $devRoot = Get-DistillDevRoot
     $vitePort = Get-StableVitePort
 
     Write-Step "Previous run leftovers"
@@ -329,7 +329,7 @@ try {
     $liveApps = @(Get-CheckoutAppProcesses -TargetDir $tauriTargetDir | Where-Object { $_.Live })
     if ($liveDev.Count -gt 0 -or $liveApps.Count -gt 0) {
         if ($liveApps.Count -gt 0) {
-            Write-Host "Distill is already running from this checkout (Berd.exe PID $($liveApps[0].ProcessId))." -ForegroundColor Yellow
+            Write-Host "Distill is already running from this checkout (Distill.exe PID $($liveApps[0].ProcessId))." -ForegroundColor Yellow
             Show-ExistingApp -ProcessId $liveApps[0].ProcessId
         } else {
             Write-Host "A 'tauri dev' session for this checkout is already starting (node PID $($liveDev[0])); its window will appear when the build finishes." -ForegroundColor Yellow
@@ -356,20 +356,20 @@ try {
 
     $srcTauri = Join-Path $repoRoot "src-tauri"
     # `tauri dev` builds only the app crate; the agent-facing CLIs are
-    # workspace members it never touches. Without berd-monitor here the app's
-    # PATH shim pointed at a missing (or stale) target\debug\berd-monitor.exe.
-    $env:BERDCTL_BIN = Join-Path $tauriTargetDir "debug\berdctl.exe"
-    $env:BERD_MONITOR_BIN = Join-Path $tauriTargetDir "debug\berd-monitor.exe"
+    # workspace members it never touches. Without distill-monitor here the app's
+    # PATH shim pointed at a missing (or stale) target\debug\distill-monitor.exe.
+    $env:DISTILLCTL_BIN = Join-Path $tauriTargetDir "debug\distillctl.exe"
+    $env:DISTILL_MONITOR_BIN = Join-Path $tauriTargetDir "debug\distill-monitor.exe"
     if (-not $SkipSetup) {
-        Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("build", "-p", "berdctl", "-p", "berd-monitor") -WorkingDirectory $srcTauri -Label "cargo build berdctl berd-monitor"
+        Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("build", "-p", "distillctl", "-p", "distill-monitor") -WorkingDirectory $srcTauri -Label "cargo build distillctl distill-monitor"
     }
-    foreach ($cliBin in @($env:BERDCTL_BIN, $env:BERD_MONITOR_BIN)) {
+    foreach ($cliBin in @($env:DISTILLCTL_BIN, $env:DISTILL_MONITOR_BIN)) {
         if (-not (Test-Path -LiteralPath $cliBin -PathType Leaf)) {
             throw "$(Split-Path -Leaf $cliBin) missing at $cliBin. Relaunch without -SkipSetup."
         }
     }
-    Write-WindowsDevInfo "berdctl: $env:BERDCTL_BIN"
-    Write-WindowsDevInfo "berd-monitor: $env:BERD_MONITOR_BIN"
+    Write-WindowsDevInfo "distillctl: $env:DISTILLCTL_BIN"
+    Write-WindowsDevInfo "distill-monitor: $env:DISTILL_MONITOR_BIN"
 
     Write-Step "App"
     $distroDir = Join-Path $repoRoot "distro"
@@ -406,7 +406,7 @@ try {
     # command an agent runs - can use to read the rendered transcript and input
     # values and to click any control. Use `just dev-windows` when you want the
     # driver (see docs/app-e2e.md).
-    $features = Get-BerdAppFeatures -BaseFeatures @("berdctl")
+    $features = Get-DistillAppFeatures -BaseFeatures @("distillctl")
     Write-WindowsDevInfo "version: $($version.RichVersion)"
     Write-WindowsDevInfo "vite: http://localhost:$vitePort"
     Write-WindowsDevInfo "cargo target: $tauriTargetDir"

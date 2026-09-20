@@ -19,8 +19,8 @@ vi.mock("@/features/chat/lib/admittedSend", () => ({
 vi.mock("@/features/chat/lib/firstWorkspaceSend", () => ({
   acceptFirstSend: vi.fn(() => ({ accepted: true })),
 }));
-vi.mock("@/features/berdctl/commands/runtime/sessionSend", () => ({
-  berdctlCrossSessionSendOptions: vi.fn(() => ({})),
+vi.mock("@/features/distillctl/commands/runtime/sessionSend", () => ({
+  distillctlCrossSessionSendOptions: vi.fn(() => ({})),
 }));
 vi.mock("@/features/chat/stores/chatSessionOperations", () => ({
   updateSessionTitle: vi.fn(async () => undefined),

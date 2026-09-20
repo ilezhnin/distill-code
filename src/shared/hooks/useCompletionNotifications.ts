@@ -82,7 +82,7 @@ let warnedDesktopNotificationUnavailable = false;
  * The invoke can reject — Windows toasts need a registered AppUserModelID,
  * which dev builds and some portable installs do not have — and a
  * fire-and-forget invoke turned every completed turn into an unhandled
- * rejection (one diagnostic event and one `berd.log` line each) while never
+ * rejection (one diagnostic event and one `distill.log` line each) while never
  * telling anyone why notifications were silent. Said once per window.
  */
 export async function showDesktopCompletionNotification(args: {
@@ -136,7 +136,7 @@ const MAX_NOTIFICATION_NAME_CHARS = 80;
 /**
  * A chat title, fit for an OS notification body.
  *
- * Titles are agent-settable (`berdctl session rename`), so this text is not
+ * Titles are agent-settable (`distillctl session rename`), so this text is not
  * ours: collapse the control characters a title could use to fake extra lines,
  * and cap the length so the fixed "… finished" suffix is not pushed out of
  * view by a long one.

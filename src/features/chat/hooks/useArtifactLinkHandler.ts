@@ -7,7 +7,7 @@ import type { OpenLocalMarkdownLink } from "@/shared/ui/ai-elements/local-link-c
  * failure ("File not found: …") inside that bubble rather than as a toast.
  *
  * The routing itself lives in `MarkdownLink`, which cancels the click and calls
- * the nearest `LocalMarkdownLinkProvider` — so external links, Berd deep links
+ * the nearest `LocalMarkdownLinkProvider` — so external links, Distill deep links
  * and raw-HTML anchors are all classified in one place, and every Markdown
  * surface is covered rather than only the ones that wrap their content in a
  * delegated container handler. The bubble supplies this handler through that

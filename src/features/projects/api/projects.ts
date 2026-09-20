@@ -509,7 +509,7 @@ async function writeProject(
 /**
  * Applies `updates` to the project as it is on disk right now. Callers hold
  * snapshots that can be minutes old (an open edit dialog, the localStorage
- * seed of the project store), and other writers — berdctl chat-group moves,
+ * seed of the project store), and other writers — distillctl chat-group moves,
  * startup-mode changes — touch fields those callers do not own; merging onto
  * the stored copy keeps those changes instead of writing the snapshot back.
  */

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import { cn } from "@/shared/lib/cn";
-import { ActiveChatBerdIndicator } from "@/shared/ui/SessionActivityIndicator";
+import { ActiveChatDistillIndicator } from "@/shared/ui/SessionActivityIndicator";
 
 import { SidebarUnreadDot } from "./SidebarUnreadDot";
 
@@ -42,7 +42,7 @@ export function SidebarLeadingIcon({
           aria-label={activeLabel}
           className="flex size-full items-center justify-center text-sidebar-foreground"
         >
-          <ActiveChatBerdIndicator respectAnimationPreference size={16} />
+          <ActiveChatDistillIndicator respectAnimationPreference size={16} />
         </span>
       ) : hasUnread ? (
         <span

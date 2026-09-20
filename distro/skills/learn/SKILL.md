@@ -2,7 +2,7 @@
 name: learn
 description: Turn one concrete failure, operator correction, or successful technique into a durable Distill rule — deciding whether it belongs in a skill, an agent, memory, or nowhere. Use after a mistake, a review finding, or when the operator says "remember this".
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 # Learn

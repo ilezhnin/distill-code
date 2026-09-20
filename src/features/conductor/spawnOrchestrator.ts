@@ -7,7 +7,7 @@ import {
   normalizeSessionExecutionTarget,
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
-import { berdctlCrossSessionSendOptions } from "@/features/berdctl/commands/runtime/sessionSend";
+import { distillctlCrossSessionSendOptions } from "@/features/distillctl/commands/runtime/sessionSend";
 import { reconcileSessionRunSettings } from "@/features/chat/lib/runSettingsReconciler";
 import {
   normalizeSessionRunSettings,
@@ -270,7 +270,7 @@ export async function spawnConductorChildSession(args: {
     createDeferredQueuedMessagePayload({
       text: childPrompt,
       persona,
-      sendOptions: berdctlCrossSessionSendOptions(),
+      sendOptions: distillctlCrossSessionSendOptions(),
     }),
     { project, queueReady: true },
   );
@@ -279,7 +279,7 @@ export async function spawnConductorChildSession(args: {
       child.id,
       admitSystemInheritedQueuedMessage({
         text: childPrompt,
-        sendOptions: berdctlCrossSessionSendOptions(),
+        sendOptions: distillctlCrossSessionSendOptions(),
       }),
     );
   }

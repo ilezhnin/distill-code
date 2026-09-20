@@ -100,12 +100,12 @@ vi.mock("../acpApi", () => ({
   cancelSession: vi.fn(),
 }));
 
-const mockGetBerdctlPreamble = vi.fn<
+const mockGetDistillctlPreamble = vi.fn<
   () => string | null | Promise<string | null>
 >(() => null);
 
-vi.mock("@/features/berdctl/appPreamble", () => ({
-  getBerdctlPreamble: () => mockGetBerdctlPreamble(),
+vi.mock("@/features/distillctl/appPreamble", () => ({
+  getDistillctlPreamble: () => mockGetDistillctlPreamble(),
 }));
 
 vi.mock("../acpActiveMessageTracking", () => ({
@@ -146,7 +146,7 @@ describe("acpSendMessage", () => {
     vi.resetModules();
     // clearAllMocks clears call history but not return values; reset the
     // preamble to unavailable so tests opt in explicitly.
-    mockGetBerdctlPreamble.mockReturnValue(null);
+    mockGetDistillctlPreamble.mockReturnValue(null);
   });
 
   it("blocks transport when the prepared session has no acknowledged model", async () => {
@@ -176,7 +176,9 @@ describe("acpSendMessage", () => {
       "/tmp/project",
       "test-model",
     );
-    mockGetBerdctlPreamble.mockRejectedValueOnce(new Error("ACP setup failed"));
+    mockGetDistillctlPreamble.mockRejectedValueOnce(
+      new Error("ACP setup failed"),
+    );
 
     await expect(
       acpSendMessage("acp-session-dispatch-boundary", "hello", {
@@ -240,8 +242,10 @@ describe("acpSendMessage", () => {
     );
   });
 
-  it("hands the berdctl preamble off in-band for external agents, before the persona", async () => {
-    mockGetBerdctlPreamble.mockReturnValue("[Berd]\nberdctl is on your PATH.");
+  it("hands the distillctl preamble off in-band for external agents, before the persona", async () => {
+    mockGetDistillctlPreamble.mockReturnValue(
+      "[Distill]\ndistillctl is on your PATH.",
+    );
 
     const sessionRegistry = await import("../acpSessionRegistry");
     const { __resetAllPersonaHandoffs } = await import("../acpPersonaHandoff");
@@ -261,15 +265,17 @@ describe("acpSendMessage", () => {
 
     const [, blocks] = mockPrompt.mock.calls[0];
     expect(blocks[0].annotations).toEqual({ audience: ["assistant"] });
-    expect(blocks[0].text).toContain("berdctl is on your PATH.");
+    expect(blocks[0].text).toContain("distillctl is on your PATH.");
     expect(blocks[0].text).toContain("You are Starfriend.");
-    expect(blocks[0].text.indexOf("berdctl is on your PATH.")).toBeLessThan(
+    expect(blocks[0].text.indexOf("distillctl is on your PATH.")).toBeLessThan(
       blocks[0].text.indexOf("You are Starfriend."),
     );
   });
 
-  it("hands the berdctl preamble off for external agents even without a persona", async () => {
-    mockGetBerdctlPreamble.mockReturnValue("[Berd]\nberdctl is on your PATH.");
+  it("hands the distillctl preamble off for external agents even without a persona", async () => {
+    mockGetDistillctlPreamble.mockReturnValue(
+      "[Distill]\ndistillctl is on your PATH.",
+    );
 
     const sessionRegistry = await import("../acpSessionRegistry");
     const { __resetAllPersonaHandoffs } = await import("../acpPersonaHandoff");
@@ -287,7 +293,7 @@ describe("acpSendMessage", () => {
 
     const [, blocks] = mockPrompt.mock.calls[0];
     expect(blocks[0].annotations).toEqual({ audience: ["assistant"] });
-    expect(blocks[0].text).toContain("berdctl is on your PATH.");
+    expect(blocks[0].text).toContain("distillctl is on your PATH.");
   });
 
   it.each(
@@ -437,7 +443,7 @@ describe("acpSendMessage", () => {
   it("does not apply model config after prompt admission until the prompt finishes", async () => {
     const promptSetup = deferred<string | null>();
     const promptResponse = deferred<void>();
-    mockGetBerdctlPreamble.mockReturnValueOnce(promptSetup.promise);
+    mockGetDistillctlPreamble.mockReturnValueOnce(promptSetup.promise);
     mockPrompt.mockReturnValueOnce(promptResponse.promise);
     const sessionRegistry = await import("../acpSessionRegistry");
     const { acpSendMessage } = await import("../acp");
@@ -450,7 +456,9 @@ describe("acpSendMessage", () => {
     );
 
     const send = acpSendMessage(sessionId, "hello");
-    await vi.waitFor(() => expect(mockGetBerdctlPreamble).toHaveBeenCalled());
+    await vi.waitFor(() =>
+      expect(mockGetDistillctlPreamble).toHaveBeenCalled(),
+    );
     const setModel = sessionRegistry.applySessionModel(sessionId, "gpt-5.6");
     await Promise.resolve();
 

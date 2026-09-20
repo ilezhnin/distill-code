@@ -43,7 +43,7 @@ function manifest(overrides = {}, omit = []) {
   const lines = Object.entries(fields).map(
     ([key, value]) => `${key}: ${value}`,
   );
-  return `---\n${lines.join("\n")}\nmetadata:\n  berdBundled: true\n---\n\nBody.\n`;
+  return `---\n${lines.join("\n")}\nmetadata:\n  distillBundled: true\n---\n\nBody.\n`;
 }
 
 /** Runs the validator over one file; returns its exit status and stderr. */
@@ -106,7 +106,7 @@ describe("the bundled agent validator catches a bad manifest", () => {
       ),
     );
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /berdBundled/);
+    assert.match(result.stderr, /distillBundled/);
   });
 
   it("fails on an avatar ref that names no image", () => {

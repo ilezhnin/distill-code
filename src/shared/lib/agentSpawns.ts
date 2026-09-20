@@ -88,7 +88,7 @@ export function parseSpawnAgents(value: unknown): string[] | undefined {
 /**
  * Every normalized name a persona answers to: the file stem of its id, its
  * display name, and — for bundled agents whose display name drifted from
- * the file stem — the `berdBundledSource` metadata key. An allowlist entry
+ * the file stem — the `distillBundledSource` metadata key. An allowlist entry
  * matches a persona when it matches any of these, so authors can write the
  * name they see in the UI or the name on disk and mean the same agent.
  */
@@ -109,7 +109,7 @@ export function personaAgentRefs(persona: {
   const metadata = persona.sourceProperties?.metadata;
   const bundledSource =
     metadata && typeof metadata === "object"
-      ? (metadata as Record<string, unknown>).berdBundledSource
+      ? (metadata as Record<string, unknown>).distillBundledSource
       : undefined;
   if (typeof bundledSource === "string" && bundledSource.trim()) {
     refs.add(normalizeAgentRef(bundledSource));

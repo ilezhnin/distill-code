@@ -57,19 +57,19 @@ import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 const DOCKED_TEXTAREA_MIN_HEIGHT_PX = 140;
 const DOCKED_TEXTAREA_MAX_HEIGHT_PX = 300;
 const DOCKED_TEXTAREA_VIEWPORT_RATIO = 0.24;
-const BERDCTL_CROSS_SESSION_ORIGIN = "berdctl_cross_session";
+const DISTILLCTL_CROSS_SESSION_ORIGIN = "distillctl_cross_session";
 
 function stripCrossSessionOrigin<T extends Record<string, unknown>>(
   metadata: T | undefined,
 ): T | undefined {
-  if (metadata?.origin !== BERDCTL_CROSS_SESSION_ORIGIN) {
+  if (metadata?.origin !== DISTILLCTL_CROSS_SESSION_ORIGIN) {
     return metadata;
   }
 
   const {
     origin: _origin,
-    berdSenderLabel: _berdSenderLabel,
-    berdDeliveryId: _berdDeliveryId,
+    distillSenderLabel: _distillSenderLabel,
+    distillDeliveryId: _distillDeliveryId,
     ...rest
   } = metadata;
   return Object.keys(rest).length > 0 ? (rest as T) : undefined;

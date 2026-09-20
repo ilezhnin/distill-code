@@ -2,7 +2,7 @@
 name: crossworking
 description: Coordinate a planned Unity task across agents through workspace baselining, implementation, focused baseline validation, behavior-preserving simplification, final validation, independent review, and a verified local handoff on the agent's own local task branch with no remote actions. Use when the user asks for crossworking, teamwork, multi-agent execution, parallel workers/reviewers/testers, running an existing `.agents/plans/active_plan.md`, or executing one game-pipeline milestone. Use unity-codebase-audit instead for a read-only Unity project or module audit.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

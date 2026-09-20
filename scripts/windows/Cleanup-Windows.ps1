@@ -18,7 +18,7 @@ trap {
 Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChecking
 
 Assert-WindowsHost
-Set-Location (Get-BerdRepoRoot)
+Set-Location (Get-DistillRepoRoot)
 Update-SessionPathFromRegistry
 
 if ($Mode -eq "remove" -and -not $Yes) {
@@ -40,9 +40,9 @@ if ($All) {
 # executing their removal requires the second -YesShared acknowledgment.
 $sharedSelected = $IncludeNodeState -or $IncludeSharedTools -or $IncludeVisualStudioBuildTools -or $IncludeWebView2
 if ($Mode -eq "remove" -and $sharedSelected -and -not $YesShared) {
-    throw ("The selected categories uninstall software shared beyond Berd (Node state, rustup, CMake, just, Lefthook, Build Tools" +
+    throw ("The selected categories uninstall software shared beyond Distill (Node state, rustup, CMake, just, Lefthook, Build Tools" +
         $(if ($IncludeWebView2) { ", WebView2 Runtime" } else { "" }) +
-        "). Review the dry run, then re-run with both -Yes and -YesShared, or drop -All/-Include* to remove only Berd-owned state.")
+        "). Review the dry run, then re-run with both -Yes and -YesShared, or drop -All/-Include* to remove only Distill-owned state.")
 }
 
 $script:Warnings = 0
@@ -291,25 +291,25 @@ function Invoke-WingetUninstall {
     }
 }
 
-Write-WindowsDevSection "Berd Windows cleanup ($Mode)"
+Write-WindowsDevSection "Distill Windows cleanup ($Mode)"
 if ($Mode -eq "check") {
     Write-WindowsDevInfo "Dry run only. Use 'just cleanup-windows remove -Yes' for default removal."
 }
 
 $paths = Resolve-WindowsCleanupPaths
-Write-WindowsDevSection "Berd-local caches"
-Remove-CleanupPath "Berd dev cache" $paths.BerdDevRoot $paths.BerdDevRoot
-Remove-CleanupPath "Tauri cargo cache" $paths.BerdTauriRoot $paths.BerdTauriRoot
-if (-not [string]::IsNullOrWhiteSpace($paths.LegacyBerdTauriRoot)) {
+Write-WindowsDevSection "Distill-local caches"
+Remove-CleanupPath "Distill dev cache" $paths.DistillDevRoot $paths.DistillDevRoot
+Remove-CleanupPath "Tauri cargo cache" $paths.DistillTauriRoot $paths.DistillTauriRoot
+if (-not [string]::IsNullOrWhiteSpace($paths.LegacyDistillTauriRoot)) {
     # Pre-2026-09 checkouts built into %LOCALAPPDATA%\berd-tauri. Nothing
     # writes there now, but the tens of GB it holds still need reclaiming.
-    Remove-CleanupPath "legacy Tauri cargo cache" $paths.LegacyBerdTauriRoot $paths.LegacyBerdTauriRoot
+    Remove-CleanupPath "legacy Tauri cargo cache" $paths.LegacyDistillTauriRoot $paths.LegacyDistillTauriRoot
 }
 
 Write-WindowsDevSection "Repo-local generated state"
-Remove-CleanupPath "root node_modules" $paths.RepoNodeModules (Get-BerdRepoRoot)
-Remove-CleanupPath "root pnpm store" $paths.RepoPnpmStore (Get-BerdRepoRoot)
-Remove-CleanupPath "root dist" $paths.RepoDist (Get-BerdRepoRoot)
+Remove-CleanupPath "root node_modules" $paths.RepoNodeModules (Get-DistillRepoRoot)
+Remove-CleanupPath "root pnpm store" $paths.RepoPnpmStore (Get-DistillRepoRoot)
+Remove-CleanupPath "root dist" $paths.RepoDist (Get-DistillRepoRoot)
 Remove-LefthookGitHook "pre-commit"
 Remove-LefthookGitHook "pre-push"
 

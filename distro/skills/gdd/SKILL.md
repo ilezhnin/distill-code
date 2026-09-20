@@ -2,7 +2,7 @@
 name: gdd
 description: Turn a game or feature idea into a game design contract - core loop, mechanics, balance data, asset needs, scope-boxed MVP, and playable milestones - grilled with the user before anything executes. Use when the user asks to make a game, design a game or a feature, write or update a GDD, or define mechanics, balance, or placeholder assets, including from a one-line idea.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

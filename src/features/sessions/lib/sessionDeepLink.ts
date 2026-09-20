@@ -1,15 +1,21 @@
 export function createSessionDeepLink(sessionId: string): string {
-  return `berd://session/${encodeURIComponent(sessionId)}`;
+  return `distill://session/${encodeURIComponent(sessionId)}`;
 }
+
+const SESSION_LINK_PROTOCOL = "distill:";
 
 type SessionDeepLinkRoute = "host" | "path";
 
 function rawSessionDeepLinkRoute(raw: string): SessionDeepLinkRoute | null {
-  if (raw.trim() !== raw || raw.slice(0, 5).toLowerCase() !== "berd:") {
+  if (
+    raw.trim() !== raw ||
+    raw.slice(0, SESSION_LINK_PROTOCOL.length).toLowerCase() !==
+      SESSION_LINK_PROTOCOL
+  ) {
     return null;
   }
 
-  const route = raw.slice(5);
+  const route = raw.slice(SESSION_LINK_PROTOCOL.length);
   if (route.startsWith("//session/")) {
     return "host";
   }
@@ -42,7 +48,7 @@ export function parseSessionDeepLink(raw: string): string | null {
     return null;
   }
 
-  if (url.protocol !== "berd:") {
+  if (url.protocol !== SESSION_LINK_PROTOCOL) {
     return null;
   }
 

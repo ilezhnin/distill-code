@@ -2,7 +2,7 @@
 name: arch-audit
 description: Audit a module or system architecture and produce a dependency-ordered, developer-ready refactor backlog. Use when the user asks for an architecture audit or review, a module cleanup or decomposition plan, dependency untangling, boundary analysis, overengineering analysis, silent fallback cleanup, Unity runtime authoring cleanup, says the code became spaghetti or a god class, or wants a refactor planned before anyone edits code. Use unity-codebase-audit instead for read-only error/risk reports focused on code quality, bugs, security, rollback/GGPO readiness, or strict determinism without an architecture refactor backlog.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

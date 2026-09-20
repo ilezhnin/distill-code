@@ -7,7 +7,7 @@ trap {
 Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChecking
 
 Assert-WindowsHost
-Set-Location (Get-BerdRepoRoot)
+Set-Location (Get-DistillRepoRoot)
 Update-SessionPathFromRegistry
 Assert-MsvcEnvironment
 Initialize-FnmEnvironment | Out-Null
@@ -33,32 +33,32 @@ $env:CARGO_TARGET_DIR = $tauriCargoTargetDir
 Write-WindowsDevInfo "Using Vite port: $env:VITE_PORT"
 Write-WindowsDevInfo "Using Tauri Cargo target dir: $env:CARGO_TARGET_DIR"
 
-$E2eMode = $env:BERD_E2E_MODE -eq "1"
+$E2eMode = $env:DISTILL_E2E_MODE -eq "1"
 if ($E2eMode) {
-    if ([string]::IsNullOrWhiteSpace($env:BERD_E2E_RUN_ROOT)) {
-        throw "BERD_E2E_RUN_ROOT is required when BERD_E2E_MODE=1."
+    if ([string]::IsNullOrWhiteSpace($env:DISTILL_E2E_RUN_ROOT)) {
+        throw "DISTILL_E2E_RUN_ROOT is required when DISTILL_E2E_MODE=1."
     }
     $e2e = New-E2eRunContract `
-        -RunRoot $env:BERD_E2E_RUN_ROOT `
-        -RunId $env:BERD_E2E_RUN_ID `
+        -RunRoot $env:DISTILL_E2E_RUN_ROOT `
+        -RunId $env:DISTILL_E2E_RUN_ID `
         -DriverToken $env:APP_TEST_DRIVER_TOKEN
-    $env:BERD_E2E_RUN_ROOT = $e2e.RunRoot
-    $env:BERD_E2E_RUN_ID = $e2e.RunId
+    $env:DISTILL_E2E_RUN_ROOT = $e2e.RunRoot
+    $env:DISTILL_E2E_RUN_ID = $e2e.RunId
     $env:APP_TEST_DRIVER_TOKEN = $e2e.DriverToken
     [Environment]::SetEnvironmentVariable("APP_TEST_DRIVER_PORT", $null, "Process")
     New-Item -ItemType Directory -Force -Path $e2e.RunRoot | Out-Null
 
     $runtimeConfigPath = $null
-    if (-not [string]::IsNullOrWhiteSpace($env:BERD_E2E_RUNTIME_CONFIG)) {
-        if (-not (Test-Path $env:BERD_E2E_RUNTIME_CONFIG -PathType Leaf)) {
-            throw "BERD_E2E_RUNTIME_CONFIG must reference an existing JSON file."
+    if (-not [string]::IsNullOrWhiteSpace($env:DISTILL_E2E_RUNTIME_CONFIG)) {
+        if (-not (Test-Path $env:DISTILL_E2E_RUNTIME_CONFIG -PathType Leaf)) {
+            throw "DISTILL_E2E_RUNTIME_CONFIG must reference an existing JSON file."
         }
         $runtimeConfigPath = Join-Path $e2e.RunRoot "runtime-config.json"
-        if ((Normalize-FullPath $env:BERD_E2E_RUNTIME_CONFIG) -ne (Normalize-FullPath $runtimeConfigPath)) {
-            Copy-Item -LiteralPath $env:BERD_E2E_RUNTIME_CONFIG -Destination $runtimeConfigPath
+        if ((Normalize-FullPath $env:DISTILL_E2E_RUNTIME_CONFIG) -ne (Normalize-FullPath $runtimeConfigPath)) {
+            Copy-Item -LiteralPath $env:DISTILL_E2E_RUNTIME_CONFIG -Destination $runtimeConfigPath
         }
         Get-Content -LiteralPath $runtimeConfigPath -Raw | ConvertFrom-Json | Out-Null
-        $env:BERD_E2E_RUNTIME_CONFIG = $runtimeConfigPath
+        $env:DISTILL_E2E_RUNTIME_CONFIG = $runtimeConfigPath
     }
 
     Remove-Item -LiteralPath $e2e.DriverReadyPath -Force -ErrorAction SilentlyContinue
@@ -71,24 +71,24 @@ $version = Resolve-AppVersion
 $env:VITE_APP_VERSION = $version.RichVersion
 Write-WindowsDevInfo "Using app version: $($version.Version) ($($version.RichVersion))"
 
-$berdctlArgs = @("build", "-p", "berdctl")
-Invoke-CheckedCommand -FilePath "cargo" -ArgumentList $berdctlArgs -WorkingDirectory (Join-Path (Get-BerdRepoRoot) "src-tauri") -Label "cargo build berdctl"
-$env:BERDCTL_BIN = Join-Path (Join-Path $env:CARGO_TARGET_DIR "debug") "berdctl.exe"
-if (-not (Test-Path $env:BERDCTL_BIN -PathType Leaf)) {
-    throw "Expected berdctl.exe at $env:BERDCTL_BIN after cargo build."
+$distillctlArgs = @("build", "-p", "distillctl")
+Invoke-CheckedCommand -FilePath "cargo" -ArgumentList $distillctlArgs -WorkingDirectory (Join-Path (Get-DistillRepoRoot) "src-tauri") -Label "cargo build distillctl"
+$env:DISTILLCTL_BIN = Join-Path (Join-Path $env:CARGO_TARGET_DIR "debug") "distillctl.exe"
+if (-not (Test-Path $env:DISTILLCTL_BIN -PathType Leaf)) {
+    throw "Expected distillctl.exe at $env:DISTILLCTL_BIN after cargo build."
 }
-Write-WindowsDevInfo "Using berdctl CLI: $env:BERDCTL_BIN"
+Write-WindowsDevInfo "Using distillctl CLI: $env:DISTILLCTL_BIN"
 
-Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("build", "-p", "berd-monitor") -WorkingDirectory (Join-Path (Get-BerdRepoRoot) "src-tauri") -Label "cargo build berd-monitor"
-$env:BERD_MONITOR_BIN = Join-Path (Join-Path $env:CARGO_TARGET_DIR "debug") "berd-monitor.exe"
-if (-not (Test-Path $env:BERD_MONITOR_BIN -PathType Leaf)) {
-    throw "Expected berd-monitor.exe at $env:BERD_MONITOR_BIN after cargo build."
+Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("build", "-p", "distill-monitor") -WorkingDirectory (Join-Path (Get-DistillRepoRoot) "src-tauri") -Label "cargo build distill-monitor"
+$env:DISTILL_MONITOR_BIN = Join-Path (Join-Path $env:CARGO_TARGET_DIR "debug") "distill-monitor.exe"
+if (-not (Test-Path $env:DISTILL_MONITOR_BIN -PathType Leaf)) {
+    throw "Expected distill-monitor.exe at $env:DISTILL_MONITOR_BIN after cargo build."
 }
-Write-WindowsDevInfo "Using berd-monitor CLI: $env:BERD_MONITOR_BIN"
+Write-WindowsDevInfo "Using distill-monitor CLI: $env:DISTILL_MONITOR_BIN"
 
 $env:CARGO_TARGET_DIR = $tauriCargoTargetDir
 
-$distroDir = Join-Path (Get-BerdRepoRoot) "distro"
+$distroDir = Join-Path (Get-DistillRepoRoot) "distro"
 if ([string]::IsNullOrWhiteSpace($env:DISTILL_DISTRO_DIR) -and (Test-Path $distroDir -PathType Container)) {
     $env:DISTILL_DISTRO_DIR = $distroDir
     Write-WindowsDevInfo "Using distro dir: $env:DISTILL_DISTRO_DIR"
@@ -123,12 +123,12 @@ $devConfig = @{
 }
 if ($E2eMode) {
     $devConfig.identifier = $e2e.Identifier
-    $devConfig.productName = "Berd E2E ($($e2e.RunId))"
+    $devConfig.productName = "Distill E2E ($($e2e.RunId))"
 }
 $devConfigPath = if ($E2eMode) {
     $e2e.ConfigPath
 } else {
-    Join-Path (Get-BerdDevRoot) "tauri-dev-windows.config.json"
+    Join-Path (Get-DistillDevRoot) "tauri-dev-windows.config.json"
 }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $devConfigPath) | Out-Null
 # Write without a BOM: Windows PowerShell's `Set-Content -Encoding UTF8` adds
@@ -139,7 +139,7 @@ Write-WindowsDevInfo "Using Tauri dev config: $devConfigPath"
 
 $tauriArguments = @(
     "exec", "tauri", "dev",
-    "--features", (Get-BerdAppFeatures),
+    "--features", (Get-DistillAppFeatures),
     "--config", "src-tauri/tauri.dev.conf.json",
     "--config", $devConfigPath
 )

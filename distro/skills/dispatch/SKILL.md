@@ -2,7 +2,7 @@
 name: dispatch
 description: Spec template for handing a bounded task to a Distill agent — zone, sized cards, closed decisions, bounds as prohibitions, and the direct question the report must answer first. Use whenever Distill starts a worker or orchestrator.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 # Dispatch

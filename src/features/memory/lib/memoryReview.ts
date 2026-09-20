@@ -20,7 +20,7 @@
  * the page.
  *
  * `composeReviewMessage` is pure; `startMemoryReviewChat` is the one impure
- * line, and it reuses the berdctl surface rather than a private path.
+ * line, and it reuses the distillctl surface rather than a private path.
  */
 
 import type { MemoryEntry } from "./memoryEntry";
@@ -28,7 +28,7 @@ import type { MemoryEntry } from "./memoryEntry";
 /**
  * How much of the record one review message carries.
  *
- * `berdctl session create` refuses a prompt over 50 000 characters, and a full
+ * `distillctl session create` refuses a prompt over 50 000 characters, and a full
  * store (300 lines of up to 280 characters) can pass that. Cutting the dump and
  * saying how many lines were cut is the honest end of it: the alternative is a
  * button that works until the operator's memory gets interesting and then
@@ -176,7 +176,7 @@ export function composeReviewMessage(
   return sections.join("\n\n");
 }
 
-/** The berdctl registry call, injectable so tests do not need the registry. */
+/** The distillctl registry call, injectable so tests do not need the registry. */
 export type MemoryReviewDispatch = (
   name: string,
   rawArgs: unknown,
@@ -185,7 +185,7 @@ export type MemoryReviewDispatch = (
 
 const dispatchThroughRegistry: MemoryReviewDispatch = async (...args) => {
   const { dispatchCommand } = await import(
-    "@/features/berdctl/commands/registry"
+    "@/features/distillctl/commands/registry"
   );
   return dispatchCommand(...args);
 };

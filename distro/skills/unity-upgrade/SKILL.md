@@ -2,7 +2,7 @@
 name: unity-upgrade
 description: Upgrade the Unity editor version and packages in controlled stages with churn triage and validation gates. Use when moving a project to a new Unity release or LTS, bumping packages in manifest.json, upgrading URP or HDRP, triaging API Updater output, or deciding whether post-upgrade .meta and asset churn is safe to commit.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

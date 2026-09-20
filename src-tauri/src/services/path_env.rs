@@ -180,7 +180,7 @@ mod tests {
             .expect("join inherited path")
             .to_string_lossy()
             .into_owned();
-        let prepended = PathBuf::from("C:\\Program Files\\Berd Tools");
+        let prepended = PathBuf::from("C:\\Program Files\\Distill Tools");
         let env = HashMap::from([("Path".to_string(), inherited)]);
 
         let vars =

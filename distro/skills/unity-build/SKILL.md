@@ -2,7 +2,7 @@
 name: unity-build
 description: Produce and automate Unity player builds via batchmode CLI, editor build scripts, and CI. Use when asked to build the game or a player for Win64/Android/iOS, add or fix a -executeMethod build entry point, set up CI builds, diagnose an IL2CPP or build failure, or locate and report the built artifact.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

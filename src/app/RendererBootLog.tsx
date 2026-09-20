@@ -50,7 +50,7 @@ function reportBoot(): void {
   }
 }
 
-/** Headless component that records each renderer (re)boot in `berd.log`. */
+/** Headless component that records each renderer (re)boot in `distill.log`. */
 export function RendererBootLog() {
   useEffect(() => {
     reportBoot();

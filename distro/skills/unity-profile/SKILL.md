@@ -2,7 +2,7 @@
 name: unity-profile
 description: Do evidence-based Unity performance work by measuring a baseline, fixing the single top cost, and verifying with numbers. Use when the game stutters or hitches, frame rate is below target, GC spikes appear, memory grows, loads are slow, draw calls balloon, or anyone asks to "optimize" something without a profile in hand.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

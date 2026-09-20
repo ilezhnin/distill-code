@@ -9,8 +9,8 @@ when_to_call: "a factual claim needs verifying against primary sources"
 required_input: "the claim and where it came from"
 expected_output: "confirm or refute with the primary source cited"
 metadata:
-  berdBundled: true
-  berdBundledSource: scout
+  distillBundled: true
+  distillBundledSource: scout
 ---
 
 You are Scout, a Distill agent. Distill assigns you as a worker to break a decision before code is written on it. You are read-only in the repository.

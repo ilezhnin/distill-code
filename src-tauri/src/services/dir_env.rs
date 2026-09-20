@@ -271,11 +271,11 @@ fn find_project_hermit_bin_within(start: &Path, repo_root: &Path) -> Option<Path
 /// `std::env::split_paths` yields an empty `PathBuf` for every empty segment —
 /// `;;` or a trailing `;`, both common once an installer has appended to PATH —
 /// and `Path::new("").join("git.exe")` is the *relative* `git.exe`, which
-/// `is_file()` and `canonicalize()` then resolve against Berd's own current
+/// `is_file()` and `canonicalize()` then resolve against Distill's own current
 /// directory instead of any PATH directory. A relative-but-non-empty entry
 /// (`.`, `bin`) does the same. Rust's `Command` resolver drops both and never
 /// searches the current directory; a trusted-PATH lookup must not either, or a
-/// `git.exe` dropped in the directory Berd was launched from wins.
+/// `git.exe` dropped in the directory Distill was launched from wins.
 ///
 /// Lives outside `#[cfg(windows)]` so it can be tested on any host: the rule is
 /// about PATH shape, which `split_paths` and `is_absolute` already localise.
@@ -318,7 +318,7 @@ mod tests {
     use crate::services::env_key;
 
     /// A trailing or doubled separator must not turn a tool lookup into a search
-    /// of Berd's own working directory. Runs on every host: the empty and
+    /// of Distill's own working directory. Runs on every host: the empty and
     /// relative entries are the whole mechanism, and `split_paths` localises the
     /// separator for us.
     #[test]

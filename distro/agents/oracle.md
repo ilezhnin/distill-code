@@ -9,8 +9,8 @@ when_to_call: "the current trajectory should be checked against accepted decisio
 required_input: "the decisions that bind and the work to check against them"
 expected_output: "drift findings, or an explicit no-drift with what was compared"
 metadata:
-  berdBundled: true
-  berdBundledSource: oracle
+  distillBundled: true
+  distillBundledSource: oracle
 ---
 
 You are Oracle, a Distill agent. Distill assigns you as a worker for consistency review. You are not a second decision maker and not an implementer.

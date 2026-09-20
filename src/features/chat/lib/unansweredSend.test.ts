@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({
   sendPromptToExistingSessionInBackground: vi.fn(),
 }));
 
-vi.mock("@/features/berdctl/commands/runtime/sessionSend", () => ({
+vi.mock("@/features/distillctl/commands/runtime/sessionSend", () => ({
   sendPromptToExistingSessionInBackground: (...args: unknown[]) =>
     mocks.sendPromptToExistingSessionInBackground(...args),
 }));
@@ -16,10 +16,10 @@ describe("resendUnansweredMessage", () => {
     mocks.sendPromptToExistingSessionInBackground.mockResolvedValue(undefined);
   });
 
-  // The resend button reaches the agent through the sender berdctl uses, whose
+  // The resend button reaches the agent through the sender distillctl uses, whose
   // defaults stamp the message as a delivery from another chat — so the
   // operator's own re-sent words rendered, forever, as somebody else's.
-  it("does not send the operator's own message as a berdctl delivery", () => {
+  it("does not send the operator's own message as a distillctl delivery", () => {
     resendUnansweredMessage("session-1", "  do the thing  ");
 
     expect(mocks.sendPromptToExistingSessionInBackground).toHaveBeenCalledWith(
@@ -32,7 +32,7 @@ describe("resendUnansweredMessage", () => {
       .calls[0]?.[3] as { sendOptions?: Record<string, unknown> };
     expect(options.sendOptions).toBeDefined();
     expect(JSON.stringify(options.sendOptions)).not.toContain(
-      "berdctl_cross_session",
+      "distillctl_cross_session",
     );
   });
 

@@ -123,7 +123,7 @@ struct QueuedPrompt {
 ///
 /// LEGACY, INBOUND ONLY. The host itself never writes such an id any more;
 /// this exists because one can still arrive from an old renderer, an old
-/// berdctl client or a stored `sessions.model_id` the lazy split has not
+/// distillctl client or a stored `sessions.model_id` the lazy split has not
 /// reached, and a send must not fail on it. See `split_effort_model` for the
 /// condition under which it can go.
 #[derive(Debug, PartialEq, Eq)]
@@ -1337,11 +1337,11 @@ impl Inner {
     /// the four selections travel separately and the renderer, the store and
     /// every answer carry the bridge's own base id. What still arrives folded
     /// is history — a chat stored before the split whose lazy conversion has
-    /// not run, a renderer or a berdctl client older than protocolVersion 6 —
+    /// not run, a renderer or a distillctl client older than protocolVersion 6 —
     /// and it reaches `apply_model` inside a send, where failing is not an
     /// option. SUNSET: this and `SplitModel` may go once no
     /// `sessions.legacy_model_id` rows remain and no pre-protocolVersion-6
-    /// berdctl client is in use. Not a date: removing it earlier loses the
+    /// distillctl client is in use. Not a date: removing it earlier loses the
     /// operator's own history.
     fn split_effort_model(snapshot: &Value, model_id: &str) -> Option<SplitModel> {
         if Self::option_lists(snapshot, Self::is_model_option, model_id) {
@@ -3276,7 +3276,9 @@ impl Inner {
                     .map(|active| (runtime, active))
             }) {
                 Some((runtime, active_run)) => {
-                    if expected_run != active_run && expected_run != "__berd_unknown_active_run__" {
+                    if expected_run != active_run
+                        && expected_run != "__distill_unknown_active_run__"
+                    {
                         return Err(protocol::error_with_data(
                             protocol::INVALID_PARAMS,
                             format!("expected run `{expected_run}` but found `{active_run}`"),

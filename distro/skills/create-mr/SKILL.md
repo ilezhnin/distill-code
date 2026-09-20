@@ -2,7 +2,7 @@
 name: create-mr
 description: Verify the complete task diff and finalize delivery on the agent's own local task branch, or perform explicitly user-authorized push and Pull Request or Merge Request actions when policy permits. Use when the user directly asks to commit/push/open a PR/MR, or when game-pipeline reaches its Prepare delivery stage. Never infer remote-delivery permission from finishing, crossworking, or pipeline completion.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

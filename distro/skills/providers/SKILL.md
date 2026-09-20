@@ -2,7 +2,7 @@
 name: providers
 description: Model routing for Distill — how a wave step gets its model, effort and fast mode, when the conductor may name them explicitly, and why an unavailable one refuses the plan instead of quietly downgrading it. Use before every worker launch, when writing a wave plan, and on any capacity error.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 # Providers

@@ -12,7 +12,7 @@ trap {
 Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChecking
 
 Assert-WindowsHost
-Set-Location (Get-BerdRepoRoot)
+Set-Location (Get-DistillRepoRoot)
 Update-SessionPathFromRegistry
 
 $script:Failures = 0

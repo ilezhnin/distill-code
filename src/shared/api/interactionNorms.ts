@@ -1,8 +1,8 @@
 /**
  * App-level interaction norms injected unconditionally on every send, for
  * every harness. Unlike the style guidelines (user-editable) or
- * the berdctl preamble (absent when the broker is down), this block has no
- * off switch: it encodes Berd-the-app's defaults, not the user's
+ * the distillctl preamble (absent when the broker is down), this block has no
+ * off switch: it encodes Distill-the-app's defaults, not the user's
  * preferences.
  *
  * Precedence is deliberate: these are defaults, so anything the user states

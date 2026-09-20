@@ -5,7 +5,7 @@ Updated: 2026-06-27
 
 ## Summary
 
-Berd should support both beginners and pro engineers without forcing every
+Distill should support both beginners and pro engineers without forcing every
 workflow into a separate hard-coded screen. The codebase should make product
 surfaces composable: a team-authored view can combine reusable product
 capabilities today, and a future user-authored view builder can reuse the same
@@ -148,7 +148,7 @@ capability name.
 
 ## Why This Matters
 
-Berd's product vision is progressive disclosure. A beginner may need a simple
+Distill's product vision is progressive disclosure. A beginner may need a simple
 surface with one clear action. A pro engineer may need a dense workspace with
 multiple tools, status, context, and agent help visible at once.
 
@@ -180,7 +180,7 @@ The capability still owns the shared product behavior.
 
 ## Global Registry Direction
 
-Berd should start moving toward a global capability registry, but the registry
+Distill should start moving toward a global capability registry, but the registry
 should be intentionally thin.
 
 The registry is a catalog:
@@ -570,13 +570,13 @@ feature-owned visual language.
 Rules:
 
 1. Use existing shared UI primitives before creating new ones.
-2. Use semantic tokens and Berd extension tokens from the design system.
+2. Use semantic tokens and Distill extension tokens from the design system.
 3. Do not add one-off colors, spacing systems, shadows, or interaction patterns
    inside a feature.
 4. If a capability needs a new reusable visual treatment, propose it as a design
    system primitive or token.
 5. Keep density choices surface-specific. A pro workspace can be denser than a
-   beginner card, but both should still feel like Berd.
+   beginner card, but both should still feel like Distill.
 
 ## How To Decide If Something Should Become A Capability
 
@@ -651,7 +651,7 @@ Before building or refactoring a composed workflow, answer:
 
 ## Future Direction
 
-The near-term goal is team-authored composition: make Berd easier for the team
+The near-term goal is team-authored composition: make Distill easier for the team
 to build flexible surfaces without duplicating behavior.
 
 The medium-term goal is a stable global capability registry that can power

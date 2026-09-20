@@ -234,7 +234,7 @@ export function applyPendingSessionWorkspaceActivation(
       const attempted: PendingSessionWorkspaceActivation = next;
       try {
         // Failures intentionally leave the request persisted: the chat must not
-        // silently continue from its old folder after Berd accepted the switch.
+        // silently continue from its old folder after Distill accepted the switch.
         const missing = await checkDirectoriesExist([attempted.path]);
         if (missing.length > 0) {
           // Keep the request persisted so prompt barriers remain closed until the

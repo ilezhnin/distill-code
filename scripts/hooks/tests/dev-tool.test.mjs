@@ -13,7 +13,7 @@ const BASE_PATH = "/usr/bin:/bin";
 const tempDirs = [];
 
 async function tempDir() {
-  const path = await mkdtemp(join(tmpdir(), "berd-dev-tool-test-"));
+  const path = await mkdtemp(join(tmpdir(), "distill-dev-tool-test-"));
   tempDirs.push(path);
   return path;
 }
@@ -98,7 +98,7 @@ describe("dev-tool.sh", { skip: process.platform === "win32" }, () => {
   });
 
   it("still fails hard on a missing tool where the environment is built, not chosen", () => {
-    for (const env of [{ CI: "true" }, { BERD_REQUIRE_DEV_TOOLS: "1" }]) {
+    for (const env of [{ CI: "true" }, { DISTILL_REQUIRE_DEV_TOOLS: "1" }]) {
       const result = runLauncher(["cargo", "fmt"], env);
 
       assert.equal(result.status, 127);

@@ -2,7 +2,7 @@
 name: planning
 description: Build a concrete implementation plan and execution checklist before coding or cross-agent execution. Use when the user asks to plan a Unity task, prepare work for crossworking, create `.agents/plans/active_plan.md` or `.agents/plans/task_list.md`, clarify requirements before implementation, plan asset work, or coordinate a change for workers, simplification, validation, review, and delivery handoff.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

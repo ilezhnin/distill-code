@@ -30,12 +30,12 @@ import {
 import { AspectRatio } from "@/shared/ui/aspect-ratio";
 import { Avatar, AvatarFallback } from "@/shared/ui/avatar";
 import { Badge } from "@/shared/ui/badge";
-import { BerdLoader } from "@/shared/ui/berd-loader";
-import { BerdLoaderInline } from "@/shared/ui/berd-loader-inline";
+import { DistillLoader } from "@/shared/ui/distill-loader";
+import { DistillLoaderInline } from "@/shared/ui/distill-loader-inline";
 import {
-  BERD_LOADER_INLINE_LOOP_MS,
-  BERD_LOADER_LOOP_MS,
-} from "@/shared/ui/berd-loader-timing";
+  DISTILL_LOADER_INLINE_LOOP_MS,
+  DISTILL_LOADER_LOOP_MS,
+} from "@/shared/ui/distill-loader-timing";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -107,7 +107,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
-import { BerdLogo } from "@/shared/ui/BerdLogo";
+import { DistillLogo } from "@/shared/ui/DistillLogo";
 import { FormItem } from "@/shared/ui/form";
 import {
   HoverCard,
@@ -250,8 +250,8 @@ const componentPageDescriptions: Partial<Record<string, string>> = {
     "A layout primitive for fixed-ratio media and previews that should resize predictably across containers.",
   Avatar:
     "Compact identity marks for people, agents, and entities, including fallback behavior.",
-  "Berd Loader":
-    "Branded Berd activity mark for startup, active sessions, and agent work states.",
+  "Distill Loader":
+    "Branded Distill activity mark for startup, active sessions, and agent work states.",
   Breadcrumb:
     "Hierarchy trails for wayfinding through nested pages and object detail surfaces.",
   Calendar:
@@ -276,8 +276,8 @@ const componentPageDescriptions: Partial<Record<string, string>> = {
   "File Context Menu":
     "File-specific action menu composition for copying paths and related file operations.",
   Form: "Form composition primitives that connect fields, labels, descriptions, and validation messages.",
-  "Berd Logo":
-    "Animated Berd brand mark wrapper around the shared icon asset. The sidebar uses the icon directly, so this wrapper currently has no product imports.",
+  "Distill Logo":
+    "Animated Distill brand mark wrapper around the shared icon asset. The sidebar uses the icon directly, so this wrapper currently has no product imports.",
   "Hover Card":
     "Hover-triggered supporting information with popover surface and motion tokens.",
   "Image Lightbox":
@@ -2108,9 +2108,9 @@ function ThemeControls() {
           <SelectValue placeholder="Theme" />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="system">System · Berd Default</SelectItem>
-          <SelectItem value="light">Light · Berd Light</SelectItem>
-          <SelectItem value="dark">Dark · Berd Dark</SelectItem>
+          <SelectItem value="system">System · Distill Default</SelectItem>
+          <SelectItem value="light">Light · Distill Light</SelectItem>
+          <SelectItem value="dark">Dark · Distill Dark</SelectItem>
         </SelectContent>
       </Select>
 
@@ -2313,8 +2313,8 @@ const componentPreviewRenderers: Record<string, () => React.ReactNode> = {
       <AvatarFallback>MG</AvatarFallback>
     </Avatar>
   ),
-  "Berd Loader": () => <BerdLoader size={70} />,
-  "Berd Loader Inline": () => <BerdLoaderInline size={70} />,
+  "Distill Loader": () => <DistillLoader size={70} />,
+  "Distill Loader Inline": () => <DistillLoaderInline size={70} />,
   Breadcrumb: () => (
     <Breadcrumb>
       <BreadcrumbList>
@@ -2323,7 +2323,7 @@ const componentPreviewRenderers: Record<string, () => React.ReactNode> = {
         </BreadcrumbItem>
         <BreadcrumbSeparator />
         <BreadcrumbItem>
-          <BreadcrumbCurrentPage>Berd</BreadcrumbCurrentPage>
+          <BreadcrumbCurrentPage>Distill</BreadcrumbCurrentPage>
         </BreadcrumbItem>
       </BreadcrumbList>
     </Breadcrumb>
@@ -2460,13 +2460,13 @@ const componentPreviewRenderers: Record<string, () => React.ReactNode> = {
   Form: () => (
     <FormItem className="w-72">
       <Label htmlFor="design-system-form-preview">Workspace name</Label>
-      <Input id="design-system-form-preview" defaultValue="Berd" />
+      <Input id="design-system-form-preview" defaultValue="Distill" />
       <p className="text-sm text-muted-foreground">
         Helper text and validation share form slots.
       </p>
     </FormItem>
   ),
-  "Berd Logo": () => <BerdLogo />,
+  "Distill Logo": () => <DistillLogo />,
   "Hover Card": () => (
     <HoverCard>
       <HoverCardTrigger asChild>
@@ -2490,7 +2490,7 @@ const componentPreviewRenderers: Record<string, () => React.ReactNode> = {
   "Input Group": () => (
     <InputGroup className="w-80">
       <InputGroupAddon>@</InputGroupAddon>
-      <InputGroupInput defaultValue="Berd" />
+      <InputGroupInput defaultValue="Distill" />
     </InputGroup>
   ),
   "Input OTP": () => (
@@ -2958,7 +2958,7 @@ function OverviewPage() {
   return (
     <>
       <PageIntro
-        title="Berd design system inventory"
+        title="Distill design system inventory"
         description="A small internal map of components, theme behavior, token values, and style drift. Component facts now come from a generated manifest."
       />
       <div className="grid gap-4 md:grid-cols-4">
@@ -3210,7 +3210,7 @@ function ButtonPage() {
     <>
       <PageIntro
         title="Button"
-        description="Button variants and sizes running inside the real Berd app shell, with the active theme and primary color applied."
+        description="Button variants and sizes running inside the real Distill app shell, with the active theme and primary color applied."
       />
       <ComponentSpec name="Button" />
 
@@ -3387,7 +3387,7 @@ function ButtonGroupPage() {
       <ComponentSpec name="Button Group" />
 
       <ComponentPlayground
-        description="This is the shadcn-studio Button Group component using Berd Button children."
+        description="This is the shadcn-studio Button Group component using Distill Button children."
         preview={
           <ButtonGroup
             orientation={playgroundOrientation}
@@ -3464,7 +3464,7 @@ function ButtonGroupPage() {
   );
 }
 
-function BerdLoaderPage() {
+function DistillLoaderPage() {
   const [playgroundAnimated, setPlaygroundAnimated] = useState(true);
   const [playgroundDecorative, setPlaygroundDecorative] = useState(true);
   const [playgroundSize, setPlaygroundSize] = useState("70");
@@ -3498,7 +3498,7 @@ function BerdLoaderPage() {
       {
         anatomy: "Loader",
         size: `${loaderSize}px`,
-        weight: `loop ${BERD_LOADER_LOOP_MS}ms`,
+        weight: `loop ${DISTILL_LOADER_LOOP_MS}ms`,
       },
     ],
   };
@@ -3506,10 +3506,10 @@ function BerdLoaderPage() {
   return (
     <>
       <PageIntro
-        title="Berd Loader"
+        title="Distill Loader"
         description="Branded Distill activity mark for startup, active sessions, and agent work states. Five-frame distillation sprite."
       />
-      <ComponentSpec name="Berd Loader" />
+      <ComponentSpec name="Distill Loader" />
 
       <ComponentPlayground
         description="Inspect the Distill loader in its animated, reduced-motion, decorative, and labeled states. The mark is a pixel sprite, not a currentColor SVG."
@@ -3523,7 +3523,7 @@ function BerdLoaderPage() {
                 "bg-surface-chat-responding-pill-bg text-surface-chat-responding-pill-fg",
             )}
           >
-            <BerdLoader
+            <DistillLoader
               animated={playgroundAnimated}
               decorative={playgroundDecorative}
               size={loaderSize}
@@ -3532,21 +3532,21 @@ function BerdLoaderPage() {
         }
         controls={[
           {
-            id: "berd-loader-animated",
+            id: "distill-loader-animated",
             label: "Animated",
             type: "switch",
             checked: playgroundAnimated,
             onChange: setPlaygroundAnimated,
           },
           {
-            id: "berd-loader-decorative",
+            id: "distill-loader-decorative",
             label: "Decorative",
             type: "switch",
             checked: playgroundDecorative,
             onChange: setPlaygroundDecorative,
           },
           {
-            id: "berd-loader-size",
+            id: "distill-loader-size",
             label: "Size",
             type: "select",
             value: playgroundSize,
@@ -3558,7 +3558,7 @@ function BerdLoaderPage() {
             onChange: setPlaygroundSize,
           },
           {
-            id: "berd-loader-tone",
+            id: "distill-loader-tone",
             label: "Color context",
             type: "select",
             value: playgroundTone,
@@ -3582,7 +3582,7 @@ function BerdLoaderPage() {
   );
 }
 
-function BerdLoaderInlinePage() {
+function DistillLoaderInlinePage() {
   const [playgroundAnimated, setPlaygroundAnimated] = useState(true);
   const [playgroundDecorative, setPlaygroundDecorative] = useState(true);
   const [playgroundSize, setPlaygroundSize] = useState("14");
@@ -3616,7 +3616,7 @@ function BerdLoaderInlinePage() {
       {
         anatomy: "Loader",
         size: `${loaderSize}px`,
-        weight: `loop ${BERD_LOADER_INLINE_LOOP_MS}ms`,
+        weight: `loop ${DISTILL_LOADER_INLINE_LOOP_MS}ms`,
       },
     ],
   };
@@ -3624,10 +3624,10 @@ function BerdLoaderInlinePage() {
   return (
     <>
       <PageIntro
-        title="Berd Loader Inline"
+        title="Distill Loader Inline"
         description="In-app activity mark for running sessions — left nav rows, the quick switcher, and the responding pill. Same Distill distillation sprite as the startup loader, with a separate loop duration for small placements."
       />
-      <ComponentSpec name="Berd Loader Inline" />
+      <ComponentSpec name="Distill Loader Inline" />
 
       <ComponentPlayground
         description="Inspect the in-app inline loader at the small sizes it actually renders in product. The mark is a pixel sprite, not a currentColor SVG."
@@ -3641,7 +3641,7 @@ function BerdLoaderInlinePage() {
                 "bg-surface-chat-responding-pill-bg text-surface-chat-responding-pill-fg",
             )}
           >
-            <BerdLoaderInline
+            <DistillLoaderInline
               animated={playgroundAnimated}
               decorative={playgroundDecorative}
               size={loaderSize}
@@ -3650,21 +3650,21 @@ function BerdLoaderInlinePage() {
         }
         controls={[
           {
-            id: "berd-loader-inline-animated",
+            id: "distill-loader-inline-animated",
             label: "Animated",
             type: "switch",
             checked: playgroundAnimated,
             onChange: setPlaygroundAnimated,
           },
           {
-            id: "berd-loader-inline-decorative",
+            id: "distill-loader-inline-decorative",
             label: "Decorative",
             type: "switch",
             checked: playgroundDecorative,
             onChange: setPlaygroundDecorative,
           },
           {
-            id: "berd-loader-inline-size",
+            id: "distill-loader-inline-size",
             label: "Size",
             type: "select",
             value: playgroundSize,
@@ -3676,7 +3676,7 @@ function BerdLoaderInlinePage() {
             onChange: setPlaygroundSize,
           },
           {
-            id: "berd-loader-inline-tone",
+            id: "distill-loader-inline-tone",
             label: "Color context",
             type: "select",
             value: playgroundTone,
@@ -3922,7 +3922,7 @@ function ToggleGroupPage() {
     <>
       <PageIntro
         title="Toggle Group"
-        description="Adjacent choice controls for short options with Radix keyboard behavior and Berd tokens."
+        description="Adjacent choice controls for short options with Radix keyboard behavior and Distill tokens."
       />
       <ComponentSpec name="Toggle Group" />
 
@@ -4063,7 +4063,7 @@ function SelectPage() {
     <>
       <PageIntro
         title="Select"
-        description="Single-value choice controls backed by Radix state and Berd overlay tokens."
+        description="Single-value choice controls backed by Radix state and Distill overlay tokens."
       />
       <ComponentSpec name="Select" />
 
@@ -4622,8 +4622,8 @@ function FormPage() {
   return <GenericComponentPage name="Form" />;
 }
 
-function BerdLogoPage() {
-  return <GenericComponentPage name="Berd Logo" />;
+function DistillLogoPage() {
+  return <GenericComponentPage name="Distill Logo" />;
 }
 
 function HoverCardPage() {
@@ -5519,10 +5519,10 @@ function renderSection(section: DesignSystemSection) {
       return <ButtonGroupPage />;
     case "component-badge":
       return <BadgePage />;
-    case "component-berd-loader":
-      return <BerdLoaderPage />;
-    case "component-berd-loader-inline":
-      return <BerdLoaderInlinePage />;
+    case "component-distill-loader":
+      return <DistillLoaderPage />;
+    case "component-distill-loader-inline":
+      return <DistillLoaderInlinePage />;
     case "component-breadcrumb":
       return <BreadcrumbPage />;
     case "component-alert":
@@ -5559,8 +5559,8 @@ function renderSection(section: DesignSystemSection) {
       return <FileContextMenuPage />;
     case "component-form":
       return <FormPage />;
-    case "component-berd-logo":
-      return <BerdLogoPage />;
+    case "component-distill-logo":
+      return <DistillLogoPage />;
     case "component-hover-card":
       return <HoverCardPage />;
     case "component-image-lightbox":

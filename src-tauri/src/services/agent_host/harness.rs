@@ -60,7 +60,7 @@ pub struct HarnessSpec {
     pub args: &'static [&'static str],
     /// Environment variables stripped before spawning.
     pub env_remove: &'static [&'static str],
-    /// Berd agent mode → the bridge's ACP session mode id.
+    /// Distill agent mode → the bridge's ACP session mode id.
     pub modes: &'static [(&'static str, &'static str)],
     /// What Distill knows about this harness's models beyond the probe.
     pub models: &'static [ModelDecl],
@@ -296,7 +296,7 @@ pub fn harness(id: &str) -> Option<&'static HarnessSpec> {
 pub fn bridge_mode(spec: &HarnessSpec, agent_mode: &str) -> Option<&'static str> {
     spec.modes
         .iter()
-        .find(|(berd_mode, _)| *berd_mode == agent_mode)
+        .find(|(distill_mode, _)| *distill_mode == agent_mode)
         .map(|(_, bridge_mode)| *bridge_mode)
 }
 

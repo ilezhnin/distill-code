@@ -28,8 +28,8 @@ import { RawEventRail } from "@/features/conductor/ui/RawEventRail";
 import { cn } from "@/shared/lib/cn";
 import type { Message } from "@/shared/types/messages";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
-import { ActiveChatBerdIndicator } from "@/shared/ui/SessionActivityIndicator";
-import { LoadingBerd } from "./LoadingBerd";
+import { ActiveChatDistillIndicator } from "@/shared/ui/SessionActivityIndicator";
+import { LoadingDistill } from "./LoadingDistill";
 import { SidePanelShell } from "./SidePanelShell";
 import { VirtualMessageTimelineGate } from "./VirtualMessageTimelineGate";
 import {
@@ -508,8 +508,8 @@ function ChildChatTranscript({
             data-testid="child-chat-activity"
             className="flex h-8 shrink-0 items-center gap-2 px-3"
           >
-            <ActiveChatBerdIndicator size={14} />
-            <LoadingBerd
+            <ActiveChatDistillIndicator size={14} />
+            <LoadingDistill
               chatState={chatState}
               className="mb-0 px-0"
               motionPreset="responding"

@@ -29,7 +29,7 @@ import {
   preparePersonaHandoff,
   type PersonaHandoffClaim,
 } from "./acpPersonaHandoff";
-import { getBerdctlPreamble } from "@/features/berdctl/appPreamble";
+import { getDistillctlPreamble } from "@/features/distillctl/appPreamble";
 import { getStyleGuidelinesPrompt } from "@/shared/preferences/styleGuidelinesPreference";
 import { INTERACTION_NORMS_PREAMBLE } from "@/shared/api/interactionNorms";
 import { perfLog } from "@/shared/lib/perfLog";
@@ -160,11 +160,11 @@ async function acpSendMessageNow(
   // ACP agents expose no system-prompt channel, so the persona and the app
   // context are handed off in-band on the first prompt under that agent.
   // See acpPersonaHandoff.
-  const berdctlPreamble = await getBerdctlPreamble(sessionId);
+  const distillctlPreamble = await getDistillctlPreamble(sessionId);
   const appPreamble = [
     INTERACTION_NORMS_PREAMBLE,
     getStyleGuidelinesPrompt(),
-    berdctlPreamble,
+    distillctlPreamble,
   ]
     .filter((part): part is string => Boolean(part?.trim()))
     .join("\n\n");

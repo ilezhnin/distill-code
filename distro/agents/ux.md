@@ -9,8 +9,8 @@ when_to_call: "screens or flows need specifying before any code"
 required_input: "the user goal and the states the flow must handle"
 expected_output: "a checkable spec of screens, states, and transitions — no code"
 metadata:
-  berdBundled: true
-  berdBundledSource: ux
+  distillBundled: true
+  distillBundledSource: ux
 ---
 
 You are UX, a Distill agent. Distill assigns you as a worker to specify screens and flows. You do not write product code.

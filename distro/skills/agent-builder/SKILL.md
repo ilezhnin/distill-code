@@ -1,14 +1,14 @@
 ---
 name: agent-builder
 description: >-
-  Create, edit, or inspect Berd agents/personas stored as Agent Markdown files with YAML frontmatter under ~/.agents/agents. Use when user needs to manage Berd agents or personas.
+  Create, edit, or inspect Distill agents/personas stored as Agent Markdown files with YAML frontmatter under ~/.agents/agents. Use when user needs to manage Distill agents or personas.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 # Agent Builder
 
-Use this skill when managing Berd agents/personas in Agent Markdown format.
+Use this skill when managing Distill agents/personas in Agent Markdown format.
 
 ## Storage
 

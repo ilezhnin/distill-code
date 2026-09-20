@@ -284,7 +284,7 @@ function findPaletteUtilityMatches(sourceText, relativePath) {
       line: getLineNumber(sourceText, match.index ?? 0),
       label: "raw Tailwind palette utility",
       value: match[0],
-      hint: "Use a shadcn token utility like bg-accent, text-foreground, border-border, or an approved Berd extension.",
+      hint: "Use a shadcn token utility like bg-accent, text-foreground, border-border, or an approved Distill extension.",
     }),
   );
 }
@@ -341,7 +341,7 @@ function findBridgeFindings(sourceText) {
         line: getLineNumber(bridge.block, bridge.index),
         label: "unapproved Tailwind color bridge",
         value: `--color-${bridge.name}`,
-        hint: "Use a shadcn token name or add a narrow Berd extension to scripts/design-system-tokens.mjs and docs/color-token-mapping.md.",
+        hint: "Use a shadcn token name or add a narrow Distill extension to scripts/design-system-tokens.mjs and docs/color-token-mapping.md.",
       });
       continue;
     }

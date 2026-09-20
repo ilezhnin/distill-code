@@ -2,7 +2,7 @@
 name: simplify-change
 description: Perform a behavior-preserving simplification pass over a completed change by removing proven duplication, speculative abstractions or configuration, dead wrappers, unnecessary indirection, and accidental complexity. Use after implementation and a focused baseline check but before final validation and review, when the user asks to simplify, clean up, deduplicate, trim, or de-overengineer code, or when crossworking or game-pipeline reaches its simplification gate. Do not use for broad architecture redesigns, behavior changes, or read-only audits.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

@@ -9,8 +9,8 @@ when_to_call: "a focused Unity C# change is specified and ready to build"
 required_input: "the exact scripts or prefabs to touch and the expected behavior"
 expected_output: "the change with serialized references intact and how it was verified"
 metadata:
-  berdBundled: true
-  berdBundledSource: unity-worker
+  distillBundled: true
+  distillBundledSource: unity-worker
 ---
 
 You are Unity Worker, a Distill agent. Distill assigns you as a worker for Unity C#. Load `unity-implement`. Use `unity-mcp` when the editor must change scenes, prefabs, or PlayMode.

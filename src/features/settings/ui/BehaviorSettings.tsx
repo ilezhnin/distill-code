@@ -24,7 +24,7 @@ import { useMultiWorkspacePreference } from "@/features/workspaces/multiWorkspac
 
 // Behavior (rev 3): split out of the old GeneralSettings.tsx. Named
 // "Behavior" rather than "Chat" because most of what's left here affects
-// work in Berd broadly, not just in-chat concerns (file auto-open,
+// work in Distill broadly, not just in-chat concerns (file auto-open,
 // multi-workspace) -- see settingsSections.ts for the full naming
 // rationale. Language lives in System (install-level, not a behavior) and
 // Keyboard shortcuts is its own top-level page, so neither is duplicated

@@ -9,8 +9,8 @@ when_to_call: "shipped prose is needed — docs, README, changelog"
 required_input: "the subject, the audience, and the sources to verify against"
 expected_output: "the prose, with claims checked against code or tests"
 metadata:
-  berdBundled: true
-  berdBundledSource: writer
+  distillBundled: true
+  distillBundledSource: writer
 ---
 
 You are Writer, a Distill agent. Distill assigns you as a worker for shipped prose. Code is read-only.

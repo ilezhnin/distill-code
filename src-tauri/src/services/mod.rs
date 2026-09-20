@@ -1,11 +1,11 @@
 pub(crate) mod acp_tools_reconciler;
 pub mod agent_host;
-pub(crate) mod berdctl_discovery;
 pub mod bundled_agents;
 pub mod bundled_skills;
 pub(crate) mod diagnostic_log;
 pub(crate) mod dir_env;
 pub mod distill_root;
+pub(crate) mod distillctl_discovery;
 pub mod distro_bundle;
 pub(crate) mod e2e_mode;
 pub(crate) mod env_key;
@@ -17,4 +17,5 @@ pub mod path_env;
 pub(crate) mod process;
 pub(crate) mod provider_rate_limits;
 pub mod shell_env;
+pub(crate) mod upstream_names;
 pub(crate) mod windows_names;

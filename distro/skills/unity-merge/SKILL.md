@@ -2,7 +2,7 @@
 name: unity-merge
 description: Resolve git merge conflicts in Unity scenes, prefabs, and serialized assets using UnityYAMLMerge and disciplined manual YAML repair. Use when a merge or rebase conflicts on .unity, .prefab, .asset, or .meta files, when setting up smart merge for a Unity repo, or when a resolved merge left missing references or broken prefab instances.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

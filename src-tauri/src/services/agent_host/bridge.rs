@@ -114,8 +114,8 @@ pub struct Bridge {
 }
 
 /// Everything a bridge process inherits: the user's login-shell environment,
-/// the directories to put in front of PATH (managed bridge shims, the berdctl
-/// shim), and host-provided variables such as `BERDCTL_LOCK`.
+/// the directories to put in front of PATH (managed bridge shims, the distillctl
+/// shim), and host-provided variables such as `DISTILLCTL_LOCK`.
 pub struct SpawnEnv {
     pub shell_env: HashMap<String, String>,
     pub prepend_dirs: Vec<PathBuf>,
@@ -344,7 +344,7 @@ impl Bridge {
             }
         });
 
-        // stderr: keep the bridge's own logging visible in Berd's log.
+        // stderr: keep the bridge's own logging visible in Distill's log.
         if let Some(stderr) = stderr {
             let harness = spec.id.to_string();
             tokio::spawn(async move {
@@ -787,7 +787,7 @@ mod tests {
     /// The exact body `managed_acp_tools::shim_contents` writes on Windows.
     fn windows_shim_body(node: &str, entrypoint: &str) -> String {
         format!(
-            "@echo off\r\nREM Written by Berd's managed ACP tools installer; do not edit.\r\n\"{node}\" \"{entrypoint}\" %*\r\n"
+            "@echo off\r\nREM Written by Distill's managed ACP tools installer; do not edit.\r\n\"{node}\" \"{entrypoint}\" %*\r\n"
         )
     }
 

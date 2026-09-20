@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
-import { getAppNavigationController } from "@/features/berdctl/navigation";
+import { getAppNavigationController } from "@/features/distillctl/navigation";
 import { resetAgentBuilderSourceLifecycleForTests } from "@/features/agents/lib/agentBuilderSourceLifecycle";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
@@ -772,8 +772,8 @@ describe("AppShell global navigation", () => {
     expect(order).toEqual(["archive", "stop-terminals"]);
   });
 
-  it("never stops the chat's terminals for a berdctl archive", async () => {
-    // berdctl reaches the same `archiveChat`, is declared `destructive: false`
+  it("never stops the chat's terminals for a distillctl archive", async () => {
+    // distillctl reaches the same `archiveChat`, is declared `destructive: false`
     // and promises in its help that it discards nothing local. Killing a dev
     // server, a build or a migration is unrecoverable (unarchive restores no
     // shell), so only the operator's own Archive may do it. `session archive`

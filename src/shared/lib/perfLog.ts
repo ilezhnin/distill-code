@@ -11,7 +11,7 @@
  * Messages are prefixed with `[perf:<channel>]` by callers; this helper
  * is intentionally dumb and forwards the already-formatted string.
  *
- * When enabled, each line also goes to the host log (`berd.log`) next to the
+ * When enabled, each line also goes to the host log (`distill.log`) next to the
  * agent host's own lines, so a slow chat open can be read as one timeline
  * without devtools attached. Volume is a handful of lines per navigation.
  */

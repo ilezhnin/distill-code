@@ -169,7 +169,7 @@ describe("recallReachable", () => {
 });
 
 describe("formatRecallAnswer", () => {
-  const projectNameOf = (id: string | null) => (id === "p-1" ? "Berd" : "?");
+  const projectNameOf = (id: string | null) => (id === "p-1" ? "Distill" : "?");
 
   it("names the scope, the dates and the archive", () => {
     const answer = formatRecallAnswer(
@@ -198,7 +198,7 @@ describe("formatRecallAnswer", () => {
     expect(answer.split("\n")).toEqual([
       '<memory-recall query="release branch">',
       "- Ivan reviews Rust himself (global; created 2026-01-02; confirmed 2026-03-04)",
-      "- The release branch is release/2026.9 (project Berd; created 2026-01-02; archived)",
+      "- The release branch is release/2026.9 (project Distill; created 2026-01-02; archived)",
       "No more matches.",
       "</memory-recall>",
       "Do not repeat this recall for the same question.",

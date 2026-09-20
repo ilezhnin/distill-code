@@ -17,7 +17,7 @@ import {
   hasForegroundQueueOwner,
   subscribeForegroundQueueOwnership,
 } from "@/features/chat/lib/foregroundQueueOwnership";
-import { isBerdctlCrossSessionQueuedMessage } from "@/features/chat/lib/queuedMessageOrigin";
+import { isDistillctlCrossSessionQueuedMessage } from "@/features/chat/lib/queuedMessageOrigin";
 import { isAgentBuilderQueuePreparationReady } from "@/features/chat/lib/agentBuilderQueueReadiness";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
@@ -42,7 +42,7 @@ const contentionWaiters = new Map<string, ContentionWaiter>();
 
 // Record ids observed with `restored: true` this app run, per session. The
 // flag itself is cleared by `markQueuedMessagesReady` during any session
-// load — including loads the user did not initiate (e.g. a berdctl
+// load — including loads the user did not initiate (e.g. a distillctl
 // cross-session send touching the session) — so the flag alone cannot
 // guarantee "the user reopened this chat". A session's exclusions lift only
 // when a foreground owner registers for it, which is the user actually
@@ -124,7 +124,7 @@ export function resetBackgroundQueueDrainStateForTesting(): void {
  * - no mounted foreground chat currently owns the session's queue, so nothing
  *   else will send it (the user queued a message and left the chat).
  *
- * berdctl cross-session sends are excluded; they have a dedicated drain.
+ * distillctl cross-session sends are excluded; they have a dedicated drain.
  * Ordinary heads restored from persistence are excluded so an app relaunch
  * does not fire stale prompts without the user reopening the chat; the
  * exclusion is tracked per record id so an incidental session load clearing
@@ -135,7 +135,7 @@ function isBackgroundDrainableHead(
   sessionId: string,
 ): boolean {
   if (
-    isBerdctlCrossSessionQueuedMessage(record) ||
+    isDistillctlCrossSessionQueuedMessage(record) ||
     !isAgentBuilderQueuePreparationReady(
       record,
       useChatSessionStore.getState().getSession(sessionId),

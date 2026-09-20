@@ -2,7 +2,7 @@
 name: unity-orient
 description: Map an unfamiliar Unity project or feature area before coding. Use when module ownership, relevant files, assembly boundaries, scene/prefab/asset references, nearby tests, Unity version, or validation paths must be discovered for a nontrivial feature or bug fix. Do not trigger solely because a request mentions Assets, Packages, or ProjectSettings when the needed paths and boundaries are already known.
 metadata:
-  berdBundled: true
+  distillBundled: true
 ---
 
 In Distill, Distill starts child agents from the Agents catalog. Do not spawn chats yourself. Load Distill skills by name (unity-implement, planning, grill) instead of kit `$skill` syntax.

@@ -170,7 +170,7 @@ export async function acquireExistingSessionForBackgroundSend(
   if (acquisition.status === "unresolved") {
     // The store holds no execution target yet, so there is nothing to lease:
     // the `session/load` replay is what hydrates the target for a session
-    // this renderer has never activated (berdctl can address one directly).
+    // this renderer has never activated (distillctl can address one directly).
     // Hydrate first and lease the replayed target. The unleased load this
     // reopens covers only targetless sessions, which no queued drain attempts
     // — `isQueuedMessageTargetAttemptable` requires an execution target.

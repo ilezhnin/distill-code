@@ -172,7 +172,7 @@ describe("useMemoryRecallSync", () => {
     useChatSessionStore.setState({ sessions: [] } as never);
     useConductorGraphStore.setState({ nodesById: {} });
     useProjectStore.setState({
-      projects: [{ id: "p-1", name: "Berd" }],
+      projects: [{ id: "p-1", name: "Distill" }],
     } as never);
   });
 
@@ -200,7 +200,7 @@ describe("useMemoryRecallSync", () => {
     expect(delivered()).toHaveLength(1);
     expect(delivered()[0].sessionId).toBe("s-1");
     expect(delivered()[0].text).toContain(
-      "- The release branch is release/2026.9 (project Berd; created 2026-01-02)",
+      "- The release branch is release/2026.9 (project Distill; created 2026-01-02)",
     );
     expect(delivered()[0].text).toContain(
       "Do not repeat this recall for the same question.",

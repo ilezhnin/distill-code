@@ -7,7 +7,7 @@
 //   - `name` and `description` fields
 //   - an `avatar` ref in `app-avatar:<id>` or `agent-avatar:<id>` form so the
 //     renderer can warm it
-//   - `metadata.berdBundled: true` so updates/re-seeds behave like the other
+//   - `metadata.distillBundled: true` so updates/re-seeds behave like the other
 //     bundled agents
 //
 // Run via pnpm exec: `pnpm exec tsx scripts/validate-bundled-agents.ts [path...]`
@@ -35,7 +35,7 @@ interface BundledAgentFrontmatter {
   good_for?: unknown;
   vibes?: unknown;
   avatar?: unknown;
-  metadata?: { berdBundled?: unknown; [key: string]: unknown };
+  metadata?: { distillBundled?: unknown; [key: string]: unknown };
 }
 
 const USAGE =
@@ -158,10 +158,10 @@ export function validateBundledAgent(
     );
   }
 
-  if (frontmatter.metadata?.berdBundled !== true) {
+  if (frontmatter.metadata?.distillBundled !== true) {
     errors.push(
       error(
-        "frontmatter must set `metadata.berdBundled: true` so the agent is treated as bundled",
+        "frontmatter must set `metadata.distillBundled: true` so the agent is treated as bundled",
         filePath,
       ),
     );

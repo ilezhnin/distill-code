@@ -49,7 +49,7 @@ const mockUseChatRuntime = {
   isRunCancellationPending: false,
 };
 const mockListSkills = vi.fn();
-const mockListBerdAppSkills = vi.fn();
+const mockListDistillAppSkills = vi.fn();
 const mockListGooseSourceSkills = vi.fn();
 const mockLoadWorkspaceInstructionFiles = vi.fn();
 const mockListProjectDocuments = vi.fn();
@@ -201,7 +201,8 @@ vi.mock("@/shared/api/agents", () => ({
 }));
 
 vi.mock("@/features/skills/api/skills", () => ({
-  listBerdAppSkills: (...args: unknown[]) => mockListBerdAppSkills(...args),
+  listDistillAppSkills: (...args: unknown[]) =>
+    mockListDistillAppSkills(...args),
   listHostSourceSkills: (...args: unknown[]) =>
     mockListGooseSourceSkills(...args),
   listSkills: (...args: unknown[]) => mockListSkills(...args),
@@ -445,7 +446,7 @@ describe("useChatSessionController", () => {
     mockListSkills
       .mockReset()
       .mockImplementation(() => immediatelyResolved([]));
-    mockListBerdAppSkills
+    mockListDistillAppSkills
       .mockReset()
       .mockImplementation(() => immediatelyResolved([]));
     mockListGooseSourceSkills.mockReset().mockResolvedValue([]);
@@ -3192,7 +3193,7 @@ describe("useChatSessionController", () => {
     ).toBeNull();
   });
 
-  // Regression coverage for the `berd_chat` send-telemetry anchor: both events
+  // Regression coverage for the `distill_chat` send-telemetry anchor: both events
   // fire from the user-message-commit callback, so an attempt that fails
   // before committing emits nothing and the queue's automatic retry of the
   // same payload emits exactly once, when it finally commits.

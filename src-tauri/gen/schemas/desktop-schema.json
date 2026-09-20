@@ -363,72 +363,6 @@
           "markdownDescription": "Denies the driver_result command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the app control plugin (the loopback HTTP broker for\nthe berdctl CLI). Grants the main window access to the broker lifecycle,\ntimeout, and bridge-result commands.\n\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-status`\n- `allow-set-timeouts`\n- `allow-submit-result`",
-          "type": "string",
-          "const": "berdctl:default",
-          "markdownDescription": "Default permissions for the app control plugin (the loopback HTTP broker for\nthe berdctl CLI). Grants the main window access to the broker lifecycle,\ntimeout, and bridge-result commands.\n\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-status`\n- `allow-set-timeouts`\n- `allow-submit-result`"
-        },
-        {
-          "description": "Enables the set_timeouts command without any pre-configured scope.",
-          "type": "string",
-          "const": "berdctl:allow-set-timeouts",
-          "markdownDescription": "Enables the set_timeouts command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the start command without any pre-configured scope.",
-          "type": "string",
-          "const": "berdctl:allow-start",
-          "markdownDescription": "Enables the start command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the status command without any pre-configured scope.",
-          "type": "string",
-          "const": "berdctl:allow-status",
-          "markdownDescription": "Enables the status command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the stop command without any pre-configured scope.",
-          "type": "string",
-          "const": "berdctl:allow-stop",
-          "markdownDescription": "Enables the stop command without any pre-configured scope."
-        },
-        {
-          "description": "Enables the submit_result command without any pre-configured scope.",
-          "type": "string",
-          "const": "berdctl:allow-submit-result",
-          "markdownDescription": "Enables the submit_result command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the set_timeouts command without any pre-configured scope.",
-          "type": "string",
-          "const": "berdctl:deny-set-timeouts",
-          "markdownDescription": "Denies the set_timeouts command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the start command without any pre-configured scope.",
-          "type": "string",
-          "const": "berdctl:deny-start",
-          "markdownDescription": "Denies the start command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the status command without any pre-configured scope.",
-          "type": "string",
-          "const": "berdctl:deny-status",
-          "markdownDescription": "Denies the status command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the stop command without any pre-configured scope.",
-          "type": "string",
-          "const": "berdctl:deny-stop",
-          "markdownDescription": "Denies the stop command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the submit_result command without any pre-configured scope.",
-          "type": "string",
-          "const": "berdctl:deny-submit-result",
-          "markdownDescription": "Denies the submit_result command without any pre-configured scope."
-        },
-        {
           "description": "No features are enabled by default, as we believe\nthe clipboard can be inherently dangerous and it is \napplication specific if read and/or write access is needed.\n\nClipboard interaction needs to be explicitly enabled.\n",
           "type": "string",
           "const": "clipboard-manager:default",
@@ -2641,6 +2575,72 @@
           "type": "string",
           "const": "dialog:deny-save",
           "markdownDescription": "Denies the save command without any pre-configured scope."
+        },
+        {
+          "description": "Default permissions for the app control plugin (the loopback HTTP broker for\nthe distillctl CLI). Grants the main window access to the broker lifecycle,\ntimeout, and bridge-result commands.\n\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-status`\n- `allow-set-timeouts`\n- `allow-submit-result`",
+          "type": "string",
+          "const": "distillctl:default",
+          "markdownDescription": "Default permissions for the app control plugin (the loopback HTTP broker for\nthe distillctl CLI). Grants the main window access to the broker lifecycle,\ntimeout, and bridge-result commands.\n\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`\n- `allow-status`\n- `allow-set-timeouts`\n- `allow-submit-result`"
+        },
+        {
+          "description": "Enables the set_timeouts command without any pre-configured scope.",
+          "type": "string",
+          "const": "distillctl:allow-set-timeouts",
+          "markdownDescription": "Enables the set_timeouts command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the start command without any pre-configured scope.",
+          "type": "string",
+          "const": "distillctl:allow-start",
+          "markdownDescription": "Enables the start command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the status command without any pre-configured scope.",
+          "type": "string",
+          "const": "distillctl:allow-status",
+          "markdownDescription": "Enables the status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "distillctl:allow-stop",
+          "markdownDescription": "Enables the stop command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the submit_result command without any pre-configured scope.",
+          "type": "string",
+          "const": "distillctl:allow-submit-result",
+          "markdownDescription": "Enables the submit_result command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_timeouts command without any pre-configured scope.",
+          "type": "string",
+          "const": "distillctl:deny-set-timeouts",
+          "markdownDescription": "Denies the set_timeouts command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start command without any pre-configured scope.",
+          "type": "string",
+          "const": "distillctl:deny-start",
+          "markdownDescription": "Denies the start command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the status command without any pre-configured scope.",
+          "type": "string",
+          "const": "distillctl:deny-status",
+          "markdownDescription": "Denies the status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "distillctl:deny-stop",
+          "markdownDescription": "Denies the stop command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the submit_result command without any pre-configured scope.",
+          "type": "string",
+          "const": "distillctl:deny-submit-result",
+          "markdownDescription": "Denies the submit_result command without any pre-configured scope."
         },
         {
           "description": "Allows the log command\n#### This default permission set includes:\n\n- `allow-log`",

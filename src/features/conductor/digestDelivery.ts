@@ -3,13 +3,13 @@
  *
  * Contract 3 of the combined plan, and the architectural point of this whole
  * item: a report going up is a **real user message** in the parent's
- * transcript, delivered through the same berdctl cross-session seam an external
- * `berdctl session send` uses. That is what makes the parent's model actually
+ * transcript, delivered through the same distillctl cross-session seam an external
+ * `distillctl session send` uses. That is what makes the parent's model actually
  * run again. The synthetic assistant message the sync used to append
  * (`publishCompletedTurns`) never did — the parent read it and stayed asleep.
  *
- * The message carries `origin: "berdctl_cross_session"`, from
- * `berdctlCrossSessionSendOptions()`. That origin cannot seed a wave: the plan
+ * The message carries `origin: "distillctl_cross_session"`, from
+ * `distillctlCrossSessionSendOptions()`. That origin cannot seed a wave: the plan
  * detector only ever scans *assistant* messages, so a digest is structurally
  * invisible to it whatever its text contains.
  *
@@ -44,9 +44,9 @@ import {
 } from "@/features/chat/lib/sessionDispatchAcquisition";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
-  berdctlCrossSessionSendOptions,
+  distillctlCrossSessionSendOptions,
   sendPromptToExistingSessionInBackground,
-} from "@/features/berdctl/commands/runtime/sessionSend";
+} from "@/features/distillctl/commands/runtime/sessionSend";
 
 /** What became of one envelope delivery. */
 export type DigestDeliveryStatus =
@@ -96,7 +96,7 @@ export function classifyDigestDispatchError(
 function digestQueuePayload(text: string): AdmittedQueuedMessagePayload {
   return admitSystemInheritedQueuedMessage({
     text,
-    sendOptions: berdctlCrossSessionSendOptions(),
+    sendOptions: distillctlCrossSessionSendOptions(),
   });
 }
 

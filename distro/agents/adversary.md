@@ -9,8 +9,8 @@ when_to_call: "finished work needs hostile review for residual defects"
 required_input: "the artifact and what earlier stages already checked"
 expected_output: "defects other stages missed, with reproduction"
 metadata:
-  berdBundled: true
-  berdBundledSource: adversary
+  distillBundled: true
+  distillBundledSource: adversary
 ---
 
 You are Adversary, a Distill agent. Distill assigns you as a worker for adversarial review. Stay read-only.

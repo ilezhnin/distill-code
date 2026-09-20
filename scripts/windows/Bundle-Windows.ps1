@@ -32,7 +32,7 @@ if ([string]::IsNullOrWhiteSpace($pnpm)) {
 }
 Assert-PnpmReady
 
-$repoRoot = Get-BerdRepoRoot
+$repoRoot = Get-DistillRepoRoot
 Set-Location $repoRoot
 $targetTriple = "x86_64-pc-windows-msvc"
 $targetDir = Get-TauriCargoTargetDir
@@ -43,28 +43,28 @@ if (-not $SkipDependencyInstall) {
     Invoke-CheckedCommand -FilePath $pnpm -ArgumentList @("install", "--frozen-lockfile") -Label "pnpm install --frozen-lockfile"
 }
 
-# Stage berdctl/berd-monitor as validated *-<triple>.exe.
+# Stage distillctl/distill-monitor as validated *-<triple>.exe.
 Invoke-WindowsChildScript -ScriptPath (Join-Path $PSScriptRoot "Stage-Sidecar-Windows.ps1") `
     -ArgumentList @("-Triple", $targetTriple) -Label "Stage Windows sidecars"
 
 Write-WindowsDevInfo "Resolving application version from Git metadata."
 $resolvedVersion = Resolve-AppVersion $Version
-Write-WindowsDevInfo "Building Berd $($resolvedVersion.Version) ($($resolvedVersion.RichVersion))."
+Write-WindowsDevInfo "Building Distill $($resolvedVersion.Version) ($($resolvedVersion.RichVersion))."
 
 $env:CARGO_TARGET_DIR = $targetDir
-$env:BERD_APP_VERSION = $resolvedVersion.RichVersion
+$env:DISTILL_APP_VERSION = $resolvedVersion.RichVersion
 $env:VITE_APP_VERSION = $resolvedVersion.RichVersion
 
-$baseFeatures = @("berdctl")
+$baseFeatures = @("distillctl")
 if ($Debug) {
     $baseFeatures += "devtools"
 }
-$features = Get-BerdAppFeatures -BaseFeatures $baseFeatures
+$features = Get-DistillAppFeatures -BaseFeatures $baseFeatures
 
 # Build the config overlay: the version and bundle target; debug bundles also
 # fold in the base config with devtools enabled. Write without a BOM: Tauri's
 # serde --config parsing rejects BOM-prefixed JSON.
-$configPath = Join-Path ([System.IO.Path]::GetTempPath()) ("berd-tauri-{0}.{1}.json" -f ($(if ($Debug) { "debug" } else { "version" }), [System.IO.Path]::GetRandomFileName()))
+$configPath = Join-Path ([System.IO.Path]::GetTempPath()) ("distill-tauri-{0}.{1}.json" -f ($(if ($Debug) { "debug" } else { "version" }), [System.IO.Path]::GetRandomFileName()))
 if ($Debug) {
     if ($Bundle -ne "nsis") {
         throw "Debug Windows bundles currently support only NSIS."
@@ -75,10 +75,10 @@ if ($Debug) {
     # dropped. Carrying the full base config also carries its
     # bundle.externalBin, so pin that to the Windows contract in the same
     # overlay.
-    $baseConfig = Read-JsonFile (Join-Path (Join-Path (Get-BerdRepoRoot) "src-tauri") "tauri.conf.json")
+    $baseConfig = Read-JsonFile (Join-Path (Join-Path (Get-DistillRepoRoot) "src-tauri") "tauri.conf.json")
     $baseConfig.version = $resolvedVersion.RichVersion
     $baseConfig.app.windows[0] | Add-Member -NotePropertyName devtools -NotePropertyValue $true -Force
-    $windowsConf = Read-JsonFile (Join-Path (Join-Path (Get-BerdRepoRoot) "src-tauri") "tauri.windows.conf.json")
+    $windowsConf = Read-JsonFile (Join-Path (Join-Path (Get-DistillRepoRoot) "src-tauri") "tauri.windows.conf.json")
     $baseConfig.bundle.externalBin = (Get-ObjectValue (Get-ObjectValue $windowsConf "bundle") "externalBin")
     $configJson = $baseConfig | ConvertTo-Json -Depth 32
 } else {
@@ -90,7 +90,7 @@ if ($Debug) {
 [System.IO.File]::WriteAllText($configPath, $configJson, [System.Text.UTF8Encoding]::new($false))
 
 $schemaPath = Join-Path $repoRoot "src-tauri\gen\schemas\windows-schema.json"
-$schemaBackup = Join-Path ([System.IO.Path]::GetTempPath()) ("berd-windows-schema-" + [Guid]::NewGuid().ToString("N") + ".json")
+$schemaBackup = Join-Path ([System.IO.Path]::GetTempPath()) ("distill-windows-schema-" + [Guid]::NewGuid().ToString("N") + ".json")
 $schemaExisted = Test-Path -LiteralPath $schemaPath
 if ($schemaExisted) {
     Copy-Item -LiteralPath $schemaPath -Destination $schemaBackup
@@ -123,7 +123,7 @@ function Assert-WindowsBundleVersion {
         [Parameter(Mandatory = $true)][string]$ProductName
     )
 
-    $appPath = Join-Path $TargetDir "$TargetTriple\release\Berd.exe"
+    $appPath = Join-Path $TargetDir "$TargetTriple\release\Distill.exe"
     if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) {
         throw "Built application executable not found: $appPath"
     }
@@ -133,7 +133,7 @@ function Assert-WindowsBundleVersion {
     }
 
     # The bundler names installers after productName, not the Cargo binary
-    # (which stays Berd.exe above): Distill_<version>_x64-setup.exe.
+    # (which stays Distill.exe above): Distill_<version>_x64-setup.exe.
     $bundlePattern = if ($BundleType -eq "nsis") {
         "${ProductName}_${ExpectedVersion}_x64-setup.exe"
     } else {

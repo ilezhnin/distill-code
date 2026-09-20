@@ -2,7 +2,7 @@
 //!
 //! This mode is intentionally gated twice: the binary must include the
 //! `app-test-driver` feature and the launcher must explicitly set
-//! `BERD_E2E_MODE=1`. Only then is persistent state redirected into the run
+//! `DISTILL_E2E_MODE=1`. Only then is persistent state redirected into the run
 //! root and the driver socket bound on a random port behind a required token.
 //!
 //! A feature-only developer build still exposes the driver: `lib.rs` falls back
@@ -16,11 +16,11 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 
-pub(crate) const MODE_ENV: &str = "BERD_E2E_MODE";
-pub(crate) const RUN_ID_ENV: &str = "BERD_E2E_RUN_ID";
-pub(crate) const RUN_ROOT_ENV: &str = "BERD_E2E_RUN_ROOT";
+pub(crate) const MODE_ENV: &str = "DISTILL_E2E_MODE";
+pub(crate) const RUN_ID_ENV: &str = "DISTILL_E2E_RUN_ID";
+pub(crate) const RUN_ROOT_ENV: &str = "DISTILL_E2E_RUN_ROOT";
 pub(crate) const DRIVER_TOKEN_ENV: &str = "APP_TEST_DRIVER_TOKEN";
-pub(crate) const RUNTIME_CONFIG_ENV: &str = "BERD_E2E_RUNTIME_CONFIG";
+pub(crate) const RUNTIME_CONFIG_ENV: &str = "DISTILL_E2E_RUNTIME_CONFIG";
 pub(crate) const APP_IDENTIFIER_PREFIX: &str = "com.levocat.distill.e2e.";
 
 pub(crate) const BB_HOME_ENV: &str = "BB_HOME";
@@ -341,11 +341,11 @@ mod tests {
         let _guard = crate::test_support::env_lock().lock().expect("env lock");
         let temp = tempfile::tempdir().unwrap();
         let run_root = temp.path().join(RUN_ID);
-        let normal_berd_root = temp.path().join("com.levocat.distill.dev");
+        let normal_distill_root = temp.path().join("com.levocat.distill.dev");
         let normal_builderbot_root = temp.path().join("normal-builderbot");
-        std::fs::create_dir_all(&normal_berd_root).unwrap();
+        std::fs::create_dir_all(&normal_distill_root).unwrap();
         std::fs::create_dir_all(&normal_builderbot_root).unwrap();
-        std::fs::write(normal_berd_root.join("sentinel"), b"berd").unwrap();
+        std::fs::write(normal_distill_root.join("sentinel"), b"distill").unwrap();
         std::fs::write(normal_builderbot_root.join("sentinel"), b"builderbot").unwrap();
 
         let saved = save_env([BB_HOME_ENV, BB_AUTH_STORAGE_ENV, BB_AUTH_STORAGE_FILE_ENV]);
@@ -373,14 +373,14 @@ mod tests {
         );
         assert_eq!(std::env::var_os(BB_AUTH_STORAGE_FILE_ENV), None);
         assert_eq!(
-            std::fs::read(normal_berd_root.join("sentinel")).unwrap(),
-            b"berd"
+            std::fs::read(normal_distill_root.join("sentinel")).unwrap(),
+            b"distill"
         );
         assert_eq!(
             std::fs::read(normal_builderbot_root.join("sentinel")).unwrap(),
             b"builderbot"
         );
-        assert_eq!(std::fs::read_dir(&normal_berd_root).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(&normal_distill_root).unwrap().count(), 1);
         assert_eq!(
             std::fs::read_dir(&normal_builderbot_root).unwrap().count(),
             1
@@ -410,11 +410,11 @@ mod tests {
     fn absolute_test_base() -> PathBuf {
         #[cfg(windows)]
         {
-            PathBuf::from(r"C:\berd-e2e-mode-tests")
+            PathBuf::from(r"C:\distill-e2e-mode-tests")
         }
         #[cfg(not(windows))]
         {
-            PathBuf::from("/tmp/berd-e2e-mode-tests")
+            PathBuf::from("/tmp/distill-e2e-mode-tests")
         }
     }
 

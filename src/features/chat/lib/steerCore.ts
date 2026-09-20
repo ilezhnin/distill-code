@@ -50,7 +50,7 @@ export async function steerPromptInSession(
 
   // Defense-in-depth mirror of the dispatchPrompt guard: the composer
   // already budget-checks steers synchronously, but non-composer callers
-  // (berdctl, queued steers) reach here directly. An oversized ACP message
+  // (distillctl, queued steers) reach here directly. An oversized ACP message
   // silently kills the shared WebSocket and every open chat (BOT-1463), so
   // reject before committing anything.
   const attachmentBytes = promptAttachmentBytes(attachments);
@@ -197,7 +197,7 @@ export async function steerPromptInSession(
   // committed: after acknowledgement, or after delivery was established
   // despite an acknowledgement error. It runs outside the try so a throwing
   // callback cannot trip the rollback of an acknowledged steer. Callers that
-  // do not wire it (berdctl, voice conversation) get no commit notification.
+  // do not wire it (distillctl, voice conversation) get no commit notification.
   sendOptions?.onUserMessageCommitted?.();
   return true;
 }
