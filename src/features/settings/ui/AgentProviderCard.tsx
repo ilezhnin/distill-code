@@ -42,6 +42,8 @@ import {
 } from "../lib/agentVersionDisplay";
 import { rerunDoctorReport } from "@/shared/api/useDoctorReport";
 import type { AgentProviderReadiness } from "@/features/providers/hooks/useAgentProviderStatus";
+import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
+import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
 
 /**
  * What the card paints. `"unknown"` is not a readiness the doctor report can
@@ -141,6 +143,7 @@ export function AgentProviderCard({
   const isBuiltIn = provider.status === "built_in";
   const supportsInstall = provider.supportsInstall === true;
   const supportsAuth = provider.supportsAuth === true;
+  const supportsLogout = provider.supportsLogout === true && supportsAuth;
   const hasBinary = !!provider.binaryName;
   const bundledBridge = provider.bundledBridge === true;
   // The backend can't see the catalog, so it relies on the plan to decide
@@ -358,7 +361,7 @@ export function AgentProviderCard({
   // snapshot) would otherwise leave the card silently idle with an unhandled
   // rejection; surface it as a failed operation like the install path does.
   async function startSetupOrReportFailure(
-    action: "update" | "auth",
+    action: "update" | "auth" | "logout",
     updateFixTypes: AgentSetupUpdateFixType[],
     fallbackMessage: string,
   ) {
@@ -406,6 +409,15 @@ export function AgentProviderCard({
     );
   }
 
+  function handleLogout() {
+    if (!supportsLogout) return;
+    void startSetupOrReportFailure(
+      "logout",
+      [],
+      t("providers.agents.errors.logoutStart"),
+    );
+  }
+
   // When the backend reports success, run the React-Query refresh the backend
   // can't (it owns no query cache), exactly once, then clear the terminal entry
   // so it doesn't re-trigger on a later remount.
@@ -426,6 +438,8 @@ export function AgentProviderCard({
         // pass so version/install-source/update badges repopulate instead of
         // blanking out.
         await rerunDoctorReport(queryClient);
+        useProviderModelCacheStore.getState().invalidateProvider(provider.id);
+        void useProviderRateLimitsStore.getState().refresh();
         if (action === "install") {
           onInstallComplete?.(provider.id);
         }
@@ -506,6 +520,9 @@ export function AgentProviderCard({
       case "auth":
         handleAuth();
         return;
+      case "logout":
+        handleLogout();
+        return;
       case "update":
         handleUpdate();
         return;
@@ -580,6 +597,23 @@ export function AgentProviderCard({
         })}
       >
         {t("providers.agents.signIn")}
+      </Button>
+    );
+  }
+
+  function renderSignOutButton() {
+    return (
+      <Button
+        type="button"
+        variant="ghost"
+        size="xs"
+        onClick={() => handleLogout()}
+        className="flex-shrink-0"
+        aria-label={t("providers.agents.signOutLabel", {
+          name: provider.displayName,
+        })}
+      >
+        {t("providers.agents.signOut")}
       </Button>
     );
   }
@@ -684,12 +718,19 @@ export function AgentProviderCard({
 
     // Installed and usable: a green tick when nothing is pending, otherwise the
     // amber Update button takes the tick's slot (one click runs every
-    // actionable per-readout update command).
+    // actionable per-readout update command). Sign out sits beside the tick
+    // so a working account can still be swapped.
     if (isReady) {
-      if (setupActionButton) return setupActionButton;
-      return (
+      const readyStatus = setupActionButton ?? (
         <div className="flex h-6 flex-shrink-0 items-center">
           <IconCheck className="size-4 text-success duration-200 motion-safe:animate-in motion-safe:fade-in" />
+        </div>
+      );
+      if (!supportsLogout) return readyStatus;
+      return (
+        <div className="flex flex-shrink-0 items-center gap-1.5">
+          {renderSignOutButton()}
+          {readyStatus}
         </div>
       );
     }
@@ -731,7 +772,11 @@ export function AgentProviderCard({
           ? t("providers.agents.progress.preparingRuntime")
           : phase === "authenticating"
             ? t("providers.waitingForSignIn")
-            : t("providers.agents.progress.verifyingInstallation");
+            : phase === "signingOut"
+              ? t("providers.agents.progress.signingOut", {
+                  name: provider.displayName,
+                })
+              : t("providers.agents.progress.verifyingInstallation");
 
     return (
       <div className="space-y-2">

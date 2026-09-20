@@ -279,7 +279,49 @@ describe("AgentProviderCard", () => {
     expect(
       screen.queryByRole("button", { name: /sign in/i }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /sign out of grok/i }),
+    ).toBeInTheDocument();
     expect(container.querySelector("svg.text-success")).not.toBeNull();
+  });
+
+  it("signs out a signed-in agent so a different account can sign in", async () => {
+    const user = userEvent.setup();
+
+    renderCard(
+      <AgentProviderCard
+        provider={grokProvider()}
+        statusLoading={false}
+        readiness={"ready" satisfies AgentProviderReadiness}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /sign out of grok/i }));
+
+    await waitFor(() => {
+      expect(startAgentSetup).toHaveBeenCalledWith("grok-acp", "logout", {
+        installFixType: null,
+        updateFixTypes: [],
+        verifyInstall: true,
+      });
+    });
+  });
+
+  it("offers only sign-in when an installed agent is not authenticated", () => {
+    renderCard(
+      <AgentProviderCard
+        provider={grokProvider()}
+        statusLoading={false}
+        readiness={"not_ready" satisfies AgentProviderReadiness}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: /sign in to grok/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /sign out of grok/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("starts an install (CLI recipe, no updates) without sign in when not installed", async () => {

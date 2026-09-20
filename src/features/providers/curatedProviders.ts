@@ -17,6 +17,7 @@ export const CURATED_PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     supportsInstall: true,
     supportsAuth: true,
     supportsAuthStatus: true,
+    supportsLogout: true,
     bundledBridge: true,
   },
   {
@@ -31,6 +32,7 @@ export const CURATED_PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     supportsInstall: true,
     supportsAuth: true,
     supportsAuthStatus: true,
+    supportsLogout: true,
     bundledBridge: true,
   },
   {
@@ -45,6 +47,7 @@ export const CURATED_PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     supportsInstall: true,
     supportsAuth: true,
     supportsAuthStatus: true,
+    supportsLogout: true,
   },
   {
     id: "copilot-acp",

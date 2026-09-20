@@ -422,6 +422,19 @@ pub(crate) fn local_agent_login_command(check_id: &str) -> Option<&'static str> 
         .map(|probe| probe.login_command)
 }
 
+/// Non-interactive sign-out command for a catalog provider id. Windows-only
+/// Distill talks to the managed shims (`claude-agent-acp`, `codex-acp`) and
+/// Grok's own CLI; providers without a known logout stay `None` so the card
+/// never offers Sign out it cannot run.
+pub(crate) fn provider_logout_command(provider_id: &str) -> Option<&'static str> {
+    match provider_id {
+        "claude-acp" => Some("claude-agent-acp --cli auth logout"),
+        "codex-acp" => Some("codex-acp cli logout"),
+        "grok-acp" => Some("grok logout"),
+        _ => None,
+    }
+}
+
 async fn resolve_binary_path(binary_name: &str, extended_path: &str) -> Option<String> {
     resolve_binary_path_with_timeout(binary_name, extended_path, LOCAL_DOCTOR_COMMAND_TIMEOUT).await
 }
@@ -1547,6 +1560,21 @@ mod tests {
         assert_eq!(check.status, CheckStatus::Fail);
         assert_eq!(check.fix_type, Some(FixType::Command));
         assert!(check.auth_status.is_none());
+    }
+
+    #[test]
+    fn known_harnesses_have_non_interactive_sign_out_commands() {
+        assert_eq!(
+            provider_logout_command("claude-acp"),
+            Some("claude-agent-acp --cli auth logout")
+        );
+        assert_eq!(
+            provider_logout_command("codex-acp"),
+            Some("codex-acp cli logout")
+        );
+        assert_eq!(provider_logout_command("grok-acp"), Some("grok logout"));
+        assert_eq!(provider_logout_command("copilot-acp"), None);
+        assert_eq!(provider_logout_command("amp-acp"), None);
     }
 
     #[test]

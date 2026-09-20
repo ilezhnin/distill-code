@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { DoctorCheck, DoctorReport } from "@/shared/api/doctor";
-import { readinessFromReport } from "../useAgentProviderStatus";
+import type { ProviderRateLimits } from "@/features/status/lib/rateLimitTypes";
+import {
+  applyUsageAuthReadiness,
+  readinessFromReport,
+} from "../useAgentProviderStatus";
 
 function check(overrides: Partial<DoctorCheck> = {}): DoctorCheck {
   return {
@@ -78,5 +82,66 @@ describe("readinessFromReport auth handling", () => {
       ]),
     );
     expect(readiness.get("grok-acp")).toBe("ready");
+  });
+});
+
+function usage(
+  overrides: Partial<ProviderRateLimits> = {},
+): ProviderRateLimits {
+  return {
+    provider: "codex-acp",
+    session: null,
+    weekly: null,
+    monthly: null,
+    accountLabel: null,
+    updatedAt: 1,
+    error: null,
+    status: "ok",
+    configured: true,
+    ...overrides,
+  };
+}
+
+describe("applyUsageAuthReadiness", () => {
+  it("drops the green tick for a doctor-ready agent whose usage says sign in", () => {
+    const readiness = new Map<string, "ready" | "not_installed" | "not_ready">([
+      ["codex-acp", "ready"],
+      ["claude-acp", "ready"],
+      ["grok-acp", "ready"],
+    ]);
+    const next = applyUsageAuthReadiness(readiness, [
+      usage({
+        status: "error",
+        configured: false,
+        error: "Codex usage request unauthorized (HTTP 401): token_revoked",
+      }),
+      usage({
+        provider: "claude-acp",
+        status: "ok",
+        configured: true,
+      }),
+      usage({
+        provider: "grok-acp",
+        status: "ok",
+        configured: true,
+      }),
+    ]);
+    expect(next.get("codex-acp")).toBe("not_ready");
+    expect(next.get("claude-acp")).toBe("ready");
+    expect(next.get("grok-acp")).toBe("ready");
+  });
+
+  it("does not treat a configured refresh failure as signed out", () => {
+    const readiness = new Map<string, "ready" | "not_installed" | "not_ready">([
+      ["codex-acp", "ready"],
+    ]);
+    const next = applyUsageAuthReadiness(readiness, [
+      usage({
+        status: "error",
+        configured: true,
+        error: "Codex usage request failed (HTTP 500)",
+      }),
+    ]);
+    expect(next.get("codex-acp")).toBe("ready");
   });
 });

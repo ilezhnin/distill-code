@@ -66,5 +66,7 @@ export function canConnectPlatform(
 ): boolean {
   const entry = CURATED_PROVIDER_CATALOG_BY_ID.get(providerId);
   if (!entry) return false;
-  return readiness !== "ready";
+  // Unknown/loading is not "needs connect": Settings may already show a
+  // green tick while the doctor report is still hydrating.
+  return readiness === "not_installed" || readiness === "not_ready";
 }

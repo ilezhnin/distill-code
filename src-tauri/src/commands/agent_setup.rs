@@ -59,13 +59,16 @@ const MAX_OUTPUT_LINES: usize = 50;
 const GC_TTL_MS: u64 = 10 * 60 * 1000;
 
 /// Which user action kicked off the operation. `install` and `update` share the
-/// same plan-driven chain; only `auth` takes the small sign-in branch.
+/// same plan-driven chain; `auth` is sign-in (and re-login after a stale
+/// session); `logout` clears stored credentials so a different account can
+/// sign in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SetupAction {
     Install,
     Update,
     Auth,
+    Logout,
 }
 
 /// The current step of the chain. Drives the card's progress label.
@@ -76,6 +79,7 @@ enum SetupPhase {
     Checking,
     Installing,
     Authenticating,
+    SigningOut,
     /// Downloading/installing the Berd-managed Node.js runtime an npm-backed
     /// fix is about to run on.
     PreparingRuntime,
@@ -279,6 +283,7 @@ impl AgentSetupRegistry {
 fn initial_phase(action: SetupAction) -> SetupPhase {
     match action {
         SetupAction::Auth => SetupPhase::Authenticating,
+        SetupAction::Logout => SetupPhase::SigningOut,
         SetupAction::Install | SetupAction::Update => SetupPhase::Installing,
     }
 }
@@ -655,6 +660,37 @@ fn auth_capability(check_id: &str) -> AuthCapability {
     }
 }
 
+/// True when an installed probeable agent is currently "authenticated" (no
+/// Auth fix) but the operator asked to sign in anyway — typically because
+/// usage 401 showed the stored tokens are dead. Logout then login is the
+/// re-login path; a missing logout command cannot take it.
+fn can_reauth(provider_id: &str, check: &doctor::DoctorCheck) -> bool {
+    crate::commands::doctor::provider_logout_command(provider_id).is_some()
+        && matches!(auth_capability(&check.id), AuthCapability::Probeable)
+        && (check.path.is_some() || check.bridge_path.is_some())
+        && check.fix_type.is_none()
+}
+
+/// Sign-out is authorized for an installed agent that has a known logout
+/// command. Idempotent: signing out when already signed out is a successful
+/// no-op of the CLI, not a forged action.
+fn authorize_logout(provider_id: &str, check: &doctor::DoctorCheck) -> Result<(), String> {
+    if crate::commands::doctor::provider_logout_command(provider_id).is_none() {
+        return Err(format!("'{provider_id}' has no sign-out flow"));
+    }
+    match auth_capability(&check.id) {
+        AuthCapability::None => Err(format!("'{provider_id}' has no sign-in flow")),
+        AuthCapability::Probeable | AuthCapability::Unprobeable => {
+            if check.path.is_none() && check.bridge_path.is_none() {
+                return Err(format!(
+                    "'{provider_id}' is not installed, so sign-out is unavailable"
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Authorize a renderer-requested `Auth` action against the provider's current
 /// doctor `check` and its backend-owned [`AuthCapability`]. Sign-in fails closed
 /// unless the pinned crate declares a login flow for the check:
@@ -662,7 +698,8 @@ fn auth_capability(check_id: &str) -> AuthCapability {
 /// - `None` (no `auth_command`): never authorized.
 /// - `Probeable` (has an auth-status probe): authorized only when the check
 ///   currently offers `Auth` (installed but not authenticated); a check that
-///   offers an install fix or is already authenticated (no fix) rejects.
+///   offers an install fix or is already authenticated (no fix) rejects,
+///   except [`run_auth`]'s re-login path via [`can_reauth`].
 /// - `Unprobeable` (a login command but no status probe, e.g. Copilot): Doctor
 ///   can't report `Auth`, so authorize the registered login when the agent is
 ///   installed (`path`/`bridge_path` resolved) and offers no install fix. A
@@ -788,8 +825,8 @@ pub fn clear_agent_setup_status(registry: State<'_, AgentSetupRegistry>, provide
 }
 
 /// Run the whole chain to completion, then write the terminal status. `auth`
-/// takes the small sign-in branch; `install`/`update` share the plan-driven
-/// install-loop + updates + verify chain.
+/// takes the small sign-in branch; `logout` clears credentials; `install`/
+/// `update` share the plan-driven install-loop + updates + verify chain.
 async fn run_setup(
     app: AppHandle,
     registry: AgentSetupRegistry,
@@ -799,6 +836,7 @@ async fn run_setup(
 ) {
     let result = match action {
         SetupAction::Auth => run_auth(&app, &registry, &provider_id, &plan).await,
+        SetupAction::Logout => run_logout(&app, &registry, &provider_id).await,
         SetupAction::Install | SetupAction::Update => {
             run_install(&app, &registry, &provider_id, &plan).await
         }
@@ -885,6 +923,28 @@ async fn run_install(
     verify_installed(Some(app), provider_id, plan).await
 }
 
+async fn run_logout(
+    app: &AppHandle,
+    registry: &AgentSetupRegistry,
+    provider_id: &str,
+) -> Result<(), String> {
+    let check = find_check(app, provider_id).await?;
+    authorize_logout(provider_id, &check)?;
+    run_logout_command(app, registry, provider_id).await
+}
+
+async fn run_logout_command(
+    app: &AppHandle,
+    registry: &AgentSetupRegistry,
+    provider_id: &str,
+) -> Result<(), String> {
+    let command = crate::commands::doctor::provider_logout_command(provider_id)
+        .ok_or_else(|| format!("'{provider_id}' has no sign-out flow"))?
+        .to_string();
+    set_phase(app, registry, provider_id, SetupPhase::SigningOut);
+    run_fix(app, registry, provider_id, FixType::Auth, Some(command)).await
+}
+
 /// Mirror of the former in-card `runAuth`: run the auth fix, then verify the CLI
 /// is on PATH so a clean-but-unfinished sign-in surfaces a clear error. A
 /// binary-less provider (`!verify_install`) has nothing to probe, so the clean
@@ -904,7 +964,16 @@ async fn run_auth(
     // static `<agent> login` command on demand. `find_check` also fails closed
     // on an unknown provider.
     let check = find_check(app, provider_id).await?;
-    authorize_auth(provider_id, &check)?;
+    if let Err(error) = authorize_auth(provider_id, &check) {
+        if !can_reauth(provider_id, &check) {
+            return Err(error);
+        }
+        // Doctor still reports signed in (CLI login status looks at files on
+        // disk) while usage 401 says the tokens are dead. Clear them, then
+        // run login so a different account can sign in. Do not re-authorize
+        // against Auth after logout: the probe can lag the file delete.
+        run_logout_command(app, registry, provider_id).await?;
+    }
     set_phase(app, registry, provider_id, SetupPhase::Authenticating);
     // Crate agents resolve their login from the crate table; a local agent
     // (Grok) has none there, so its backend-owned login command is supplied.
@@ -1345,6 +1414,39 @@ mod tests {
         // instead of re-running the install shell command.
         assert!(authorize_install_seed("codex-acp", &InstallFixType::Command, None).is_err());
         assert!(authorize_install_seed("codex-acp", &InstallFixType::Bridge, None).is_err());
+    }
+
+    #[test]
+    fn authorize_logout_allows_an_installed_probeable_agent() {
+        let mut check = check_with_fix(None);
+        check.path = Some(r"C:\tools\codex-acp.cmd".into());
+        assert!(authorize_logout("codex-acp", &check).is_ok());
+        check.fix_type = Some(FixType::Auth);
+        assert!(authorize_logout("codex-acp", &check).is_ok());
+    }
+
+    #[test]
+    fn authorize_logout_rejects_a_missing_install_or_unknown_logout() {
+        let mut check = check_with_fix(None);
+        assert!(authorize_logout("codex-acp", &check).is_err());
+        check.path = Some(r"C:\tools\copilot.exe".into());
+        check.id = "ai-agent-copilot".into();
+        assert!(authorize_logout("copilot-acp", &check).is_err());
+    }
+
+    #[test]
+    fn can_reauth_only_an_installed_authenticated_probeable_agent() {
+        let mut check = check_with_fix(None);
+        check.path = Some(r"C:\tools\codex-acp.cmd".into());
+        assert!(can_reauth("codex-acp", &check));
+        check.fix_type = Some(FixType::Auth);
+        assert!(!can_reauth("codex-acp", &check));
+        check.fix_type = None;
+        check.path = None;
+        assert!(!can_reauth("codex-acp", &check));
+        check.path = Some(r"C:\tools\copilot.exe".into());
+        check.id = "ai-agent-copilot".into();
+        assert!(!can_reauth("copilot-acp", &check));
     }
 
     #[test]

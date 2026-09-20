@@ -4,6 +4,9 @@ import { useDoctorReport } from "@/shared/api/useDoctorReport";
 import { crateCheckIdToProviderId } from "@/features/providers/lib/agentIdMap";
 import { recordReadyProviders } from "@/features/providers/lib/providerConnections";
 import { CURATED_PROVIDER_CATALOG_BY_ID } from "@/features/providers/curatedProviders";
+import { getProviderUsageStatusKind } from "@/features/status/lib/rateLimitFormatters";
+import type { ProviderRateLimits } from "@/features/status/lib/rateLimitTypes";
+import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
 
 export type AgentProviderReadiness = "ready" | "not_installed" | "not_ready";
 
@@ -88,6 +91,36 @@ export function readinessFromReport(
   return readiness;
 }
 
+/**
+ * Doctor `login status` can stay "signed in" after the account's tokens are
+ * revoked. Usage 401/403 is the live signal: that harness is not ready, so
+ * Settings drops the green tick and offers Sign in. Other harnesses are
+ * left alone. A missing install still wins.
+ */
+export function applyUsageAuthReadiness(
+  readiness: Map<string, AgentProviderReadiness>,
+  usage: readonly ProviderRateLimits[] | undefined,
+): Map<string, AgentProviderReadiness> {
+  if (!usage || usage.length === 0) {
+    return readiness;
+  }
+  let next: Map<string, AgentProviderReadiness> | null = null;
+  for (const provider of usage) {
+    if (getProviderUsageStatusKind(provider) !== "sign-in") {
+      continue;
+    }
+    const current = readiness.get(provider.provider);
+    if (current === "not_installed" || current === "not_ready") {
+      continue;
+    }
+    if (!next) {
+      next = new Map(readiness);
+    }
+    next.set(provider.provider, "not_ready");
+  }
+  return next ?? readiness;
+}
+
 // Index the agent checks by frontend provider id, so cards can read their
 // version/install-source readout from the same shared report.
 function checksByProviderId(report: DoctorReport): Map<string, DoctorCheck> {
@@ -113,10 +146,17 @@ const EMPTY_READINESS = new Map<string, AgentProviderReadiness>();
 
 export function useAgentProviderStatus(): UseAgentProviderStatusReturn {
   const query = useDoctorReport();
+  const usageProviders = useProviderRateLimitsStore(
+    (state) => state.snapshot?.providers,
+  );
 
   const agentReadiness = useMemo(
-    () => (query.data ? readinessFromReport(query.data) : EMPTY_READINESS),
-    [query.data],
+    () =>
+      applyUsageAuthReadiness(
+        query.data ? readinessFromReport(query.data) : EMPTY_READINESS,
+        usageProviders,
+      ),
+    [query.data, usageProviders],
   );
 
   const readyAgentIds = useMemo(
@@ -140,7 +180,10 @@ export function useAgentProviderStatus(): UseAgentProviderStatusReturn {
   const refetch = query.refetch;
   const refresh = useCallback(async () => {
     const result = await refetch();
-    return result.data ? readinessFromReport(result.data) : EMPTY_READINESS;
+    return applyUsageAuthReadiness(
+      result.data ? readinessFromReport(result.data) : EMPTY_READINESS,
+      useProviderRateLimitsStore.getState().snapshot?.providers,
+    );
   }, [refetch]);
 
   return {

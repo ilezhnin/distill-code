@@ -304,6 +304,7 @@
         "installStart": "Couldn’t start installation",
         "updateStart": "Couldn’t start the update",
         "authStart": "Couldn’t start sign-in",
+        "logoutStart": "Couldn’t start sign-out",
         "refreshStatus": "Couldn’t refresh provider status",
         "installVerificationFailed": "Install finished, but the CLI isn't on your PATH. Try restarting your terminal.",
         "unknownPath": "that path",
@@ -322,11 +323,14 @@
         "preparingProvider": "Preparing the {{name}} installation…",
         "preparingRuntime": "Preparing the Node.js runtime...",
         "step": "Step {{step}} of {{total}}",
+        "signingOut": "Signing out of {{name}}...",
         "verifyingInstallation": "Verifying installation..."
       },
       "refresh": "Refresh",
       "signIn": "Sign in",
       "signInLabel": "Sign in to {{name}}",
+      "signOut": "Sign out",
+      "signOutLabel": "Sign out of {{name}}",
       "status": {
         "checking": "Checking...",
         "inProgress": "Setup in progress",

@@ -16,6 +16,8 @@ export interface ProviderCatalogEntry {
   supportsInstall?: boolean;
   supportsAuth?: boolean;
   supportsAuthStatus?: boolean;
+  /** Known non-interactive logout command; the card offers Sign out. */
+  supportsLogout?: boolean;
   /** The bridge vendors the full harness CLI, so it is the only binary. */
   bundledBridge?: boolean;
   /** False when the harness manages its model list outside the app. */
