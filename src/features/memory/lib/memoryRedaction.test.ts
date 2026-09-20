@@ -99,7 +99,7 @@ describe("findSecret", () => {
       ["a short sk- word", "The ticket is sk-14 in the tracker"],
       [
         "an https URL with no credentials",
-        "Docs live at https://berd.dev/docs",
+        "Docs live at https://distill.dev/docs",
       ],
     ])("keeps %s", (_label, text) => {
       expect(findSecret(text)).toBeNull();

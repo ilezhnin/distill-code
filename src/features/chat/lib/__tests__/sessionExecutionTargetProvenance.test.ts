@@ -22,8 +22,8 @@ const TARGET_MINTERS: Record<string, string> = {
     "(b) the persona author's model, checked against the inventory (a)",
   "src/features/agents/lib/rankedPersonaTarget.ts":
     "(a) a ranking's pick among the models the inventory lists",
-  "src/features/berdctl/commands/impl/createSession.ts":
-    "(b) berdctl's explicit model_id",
+  "src/features/distillctl/commands/impl/createSession.ts":
+    "(b) distillctl's explicit model_id",
   "src/features/chat/hooks/useChatSessionController.ts":
     "(b) the composer's model and persona picks",
   "src/features/chat/hooks/useResolvedAgentModelPicker.ts":

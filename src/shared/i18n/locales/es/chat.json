@@ -364,8 +364,8 @@
     "providerError": {
       "anthropicThinkingHistory": "Este chat no puede continuar con un modelo Claude porque su historial de razonamiento previo ya no tiene una forma que Claude acepte. Inicia un chat nuevo o cambia este chat a un modelo que no sea Claude para continuar."
     },
-    "berdctlCrossSessionLabel": "Enviado por Distill desde otra sesión",
-    "berdctlCrossSessionNamedLabel": "Enviado por Distill desde otra sesión · fuente: {{sender}}",
+    "distillctlCrossSessionLabel": "Enviado por Distill desde otra sesión",
+    "distillctlCrossSessionNamedLabel": "Enviado por Distill desde otra sesión · fuente: {{sender}}",
     "steerLabel": "Guiado",
     "steerPendingLabel": "Guiando: esperando el siguiente paso del agente",
     "viewMore": "Ver más",

@@ -4,7 +4,7 @@
  * Legacy orchestrator trees (`managedBy: "ui"`, still in operators'
  * localStorage) and children registered from outside the UI
  * (`managedBy: "agent-cli"`) reach their parent through the same envelope a
- * wave uses: one real user message, delivered through the berdctl cross-session
+ * wave uses: one real user message, delivered through the distillctl cross-session
  * seam, grouped exactly as `publishGroups.ts` has always grouped them
  * (`parentSessionId` + `anchorMessageId`).
  *

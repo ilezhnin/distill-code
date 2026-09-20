@@ -6,11 +6,11 @@
  * button this module backs — there is no automatic retry anywhere in the
  * engine, and adding one would put the conductor in a loop it cannot see.
  *
- * The request rides the same cross-session send seam berdctl uses, so it is a
+ * The request rides the same cross-session send seam distillctl uses, so it is a
  * real user turn in the conductor's transcript rather than a hidden nudge.
  */
 
-import { sendPromptToExistingSessionInBackground } from "@/features/berdctl/commands/runtime/sessionSend";
+import { sendPromptToExistingSessionInBackground } from "@/features/distillctl/commands/runtime/sessionSend";
 
 import { withWavePhase } from "./waveEngine";
 import { buildWaveReplanRequest } from "./wavePrompts";

@@ -60,20 +60,20 @@ const root = document.getElementById("root");
 if (!root) throw new Error("Root element not found");
 const reactRoot = ReactDOM.createRoot(root);
 
-function OptionalBerdctlBridge() {
+function OptionalDistillctlBridge() {
   const [Bridge, setBridge] = React.useState<React.ComponentType | null>(null);
 
   React.useEffect(() => {
     let mounted = true;
-    import("@/features/berdctl/bridge/BerdctlBridge")
-      .then(({ BerdctlBridge }) => {
+    import("@/features/distillctl/bridge/DistillctlBridge")
+      .then(({ DistillctlBridge }) => {
         if (mounted) {
-          setBridge(() => BerdctlBridge);
+          setBridge(() => DistillctlBridge);
         }
       })
       .catch((error) => {
-        console.error("Failed to load berdctl bridge:", error);
-        reportRendererError("berdctl_bridge_load_failed", error);
+        console.error("Failed to load distillctl bridge:", error);
+        reportRendererError("distillctl_bridge_load_failed", error);
       });
     return () => {
       mounted = false;
@@ -96,7 +96,7 @@ reactRoot.render(
           <ConductorGraphSync />
           <PlannerAgentSync />
           <MemoryAgentSync />
-          <OptionalBerdctlBridge />
+          <OptionalDistillctlBridge />
           <RendererBootLog />
           <I18nProvider>
             <ThemeProvider>

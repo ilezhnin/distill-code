@@ -1,6 +1,6 @@
 # Architectural laws
 
-Architectural laws define Berd's required product and user experience behavior.
+Architectural laws define Distill's required product and user experience behavior.
 They are the source of truth for what the product does, independent of how the
 current implementation is structured.
 

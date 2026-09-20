@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "Berd"
+name = "Distill"
 version = "0.6.2"
 dependencies = [
  "base64 0.22.1",
@@ -32,10 +32,10 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-app-test-driver",
- "tauri-plugin-berdctl",
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-deep-link",
  "tauri-plugin-dialog",
+ "tauri-plugin-distillctl",
  "tauri-plugin-log",
  "tauri-plugin-notification",
  "tauri-plugin-opener",
@@ -469,27 +469,6 @@ name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
-
-[[package]]
-name = "berd-monitor"
-version = "0.6.2"
-dependencies = [
- "clap",
- "fs2",
- "libc",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "berdctl"
-version = "0.6.2"
-dependencies = [
- "clap",
- "indexmap 2.13.1",
- "serde",
- "serde_json",
- "ureq",
-]
 
 [[package]]
 name = "bit-set"
@@ -1291,6 +1270,27 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.3",
+]
+
+[[package]]
+name = "distill-monitor"
+version = "0.6.2"
+dependencies = [
+ "clap",
+ "fs2",
+ "libc",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "distillctl"
+version = "0.6.2"
+dependencies = [
+ "clap",
+ "indexmap 2.13.1",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
@@ -5470,21 +5470,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tauri-plugin-berdctl"
-version = "0.6.2"
-dependencies = [
- "axum",
- "log",
- "reqwest",
- "serde",
- "serde_json",
- "tauri",
- "tauri-plugin",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "tauri-plugin-clipboard-manager"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5536,6 +5521,21 @@ dependencies = [
  "tauri-plugin-fs",
  "thiserror 2.0.20",
  "url",
+]
+
+[[package]]
+name = "tauri-plugin-distillctl"
+version = "0.6.2"
+dependencies = [
+ "axum",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

@@ -903,7 +903,7 @@ describe("acpNotificationHandler", () => {
         _meta: {
           distill: {
             messageId: "user-replay-1",
-            origin: "berdctl_cross_session",
+            origin: "distillctl_cross_session",
           },
         },
       },
@@ -913,7 +913,7 @@ describe("acpNotificationHandler", () => {
       id: "user-replay-1",
       role: "user",
       metadata: {
-        origin: "berdctl_cross_session",
+        origin: "distillctl_cross_session",
       },
     });
   });

@@ -1,7 +1,7 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import {
   listAgentFileSkills,
-  listBerdAppSkills,
+  listDistillAppSkills,
   listSkills,
   type ListSkillsOptions,
   type SkillInfo,
@@ -13,15 +13,15 @@ import {
  * controller, mention handlers, and skill search all read through the same
  * per-argument keys so simultaneous mounts share one in-flight request and a
  * short cache instead of each issuing their own `list_agent_skills` /
- * `list_berd_app_skills` call. Each discovery leg is cached under its own key
+ * `list_distill_app_skills` call. Each discovery leg is cached under its own key
  * so consumers that want different slices (with or without app skills) still
  * share the underlying fetches.
  */
 export const SKILLS_QUERY_KEY_PREFIX = ["skills"] as const;
 
-export const BERD_APP_SKILLS_QUERY_KEY = [
+export const DISTILL_APP_SKILLS_QUERY_KEY = [
   ...SKILLS_QUERY_KEY_PREFIX,
-  "berd-app",
+  "distill-app",
 ] as const;
 
 // Long enough to absorb the mount/navigation bursts that previously fanned
@@ -96,12 +96,12 @@ function fetchSkillLeg(
   })();
 }
 
-export function fetchBerdAppSkills(
+export function fetchDistillAppSkills(
   queryClient: QueryClient | undefined,
   options: { fresh?: boolean } = {},
 ): Promise<SkillInfo[]> {
   if (!queryClient) {
-    return listBerdAppSkills({ coalesce: !options.fresh });
+    return listDistillAppSkills({ coalesce: !options.fresh });
   }
   // `fresh` must reach the shareInFlight wrapper too: `cancelQueries` discards
   // the query-layer promise but does not abort the underlying invoke, so a
@@ -110,8 +110,8 @@ export function fetchBerdAppSkills(
   // (non-fresh) path opts into sharing.
   return fetchSkillLeg(
     queryClient,
-    BERD_APP_SKILLS_QUERY_KEY,
-    () => listBerdAppSkills({ coalesce: !options.fresh }),
+    DISTILL_APP_SKILLS_QUERY_KEY,
+    () => listDistillAppSkills({ coalesce: !options.fresh }),
     options.fresh,
   );
 }
@@ -125,7 +125,7 @@ export async function fetchSkillsList(
   if (!queryClient) {
     // The provider-less fallback has no query layer to cancel, but `fresh`
     // must still reach the shared app-skills invoke: `listSkills` threads it
-    // to `listBerdAppSkills` so a skills-changed reload doesn't join an
+    // to `listDistillAppSkills` so a skills-changed reload doesn't join an
     // app-skill request that started before the change.
     return listSkills(projectDirs, options);
   }

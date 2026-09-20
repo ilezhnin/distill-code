@@ -109,7 +109,7 @@ function getProductImportUsage(manifest) {
 }
 
 // A shared UI component rendered by another shared UI component that has
-// product usage is itself used in product (for example, BerdLoaderInline is
+// product usage is itself used in product (for example, DistillLoaderInline is
 // rendered everywhere SessionActivityIndicator is). Direct product-import
 // scanning ignores src/shared/ui, so propagate usage through shared UI
 // imports until a fixed point. Only value imports of component names count:

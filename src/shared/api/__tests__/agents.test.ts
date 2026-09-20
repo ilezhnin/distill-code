@@ -428,7 +428,7 @@ describe("agents API", () => {
   });
 
   it("updating a persona releases the bundled-agent ownership marker", async () => {
-    // A seeded bundled agent still marked `metadata.berdBundled: true` is
+    // A seeded bundled agent still marked `metadata.distillBundled: true` is
     // overwritten with the shipped copy on the next launch whenever its bytes
     // differ (startup reseeder, src-tauri bundled_agents.rs) — which is what
     // an operator's saved edit looks like. An operator update therefore takes
@@ -441,7 +441,7 @@ describe("agents API", () => {
         ...loadedPersona,
         sourceProperties: {
           ...loadedPersona.sourceProperties,
-          metadata: { berdBundled: true, berdBundledSource: "scout" },
+          metadata: { distillBundled: true, distillBundledSource: "scout" },
         },
       },
       { avatar: "https://example.test/scout-2.png" },
@@ -451,7 +451,7 @@ describe("agents API", () => {
       expect.objectContaining({
         properties: expect.objectContaining({
           avatar: "https://example.test/scout-2.png",
-          metadata: { berdBundledSource: "scout" },
+          metadata: { distillBundledSource: "scout" },
         }),
       }),
     );

@@ -512,15 +512,15 @@ describe("ChatInput", () => {
         text: "queued from another session",
         sendOptions: {
           acpPromptMetadata: {
-            origin: "berdctl_cross_session",
-            berdSenderLabel: "berd-monitor",
-            berdDeliveryId: "event-1",
+            origin: "distillctl_cross_session",
+            distillSenderLabel: "distill-monitor",
+            distillDeliveryId: "event-1",
             threadId: "thread-1",
           },
           userMessageMetadata: {
-            origin: "berdctl_cross_session",
-            berdSenderLabel: "berd-monitor",
-            berdDeliveryId: "event-1",
+            origin: "distillctl_cross_session",
+            distillSenderLabel: "distill-monitor",
+            distillDeliveryId: "event-1",
           },
         },
       });

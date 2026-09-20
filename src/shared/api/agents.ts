@@ -301,11 +301,11 @@ function sproutNameFromProperties(
 
 /**
  * Frontmatter `metadata` flags that mark an installed agent file as owned by
- * the app's bundle. `berdBundledSource` is NOT one of them: it only names the
+ * the app's bundle. `distillBundledSource` is NOT one of them: it only names the
  * bundled role a file came from (the conductor resolves roles through it) and
  * carries no ownership claim.
  */
-const BUNDLED_AGENT_MARKER_KEYS = ["berdBundled"];
+const BUNDLED_AGENT_MARKER_KEYS = ["distillBundled"];
 
 function withoutBundledMarkerRecord(
   record: Record<string, unknown> | undefined,
@@ -328,7 +328,7 @@ function withoutBundledMarkerRecord(
  *
  * Why: the desktop app reseeds bundled agents on every launch
  * (src-tauri/src/services/bundled_agents.rs). A previously seeded file that
- * still carries `metadata.berdBundled: true` and whose bytes differ from the
+ * still carries `metadata.distillBundled: true` and whose bytes differ from the
  * shipped copy is OVERWRITTEN with that copy — which is exactly what a saved
  * operator edit looks like, because the backend rewrites the file's
  * frontmatter (model_ranking included) while preserving the marker. The edit

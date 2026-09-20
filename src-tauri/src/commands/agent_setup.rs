@@ -80,7 +80,7 @@ enum SetupPhase {
     Installing,
     Authenticating,
     SigningOut,
-    /// Downloading/installing the Berd-managed Node.js runtime an npm-backed
+    /// Downloading/installing the Distill-managed Node.js runtime an npm-backed
     /// fix is about to run on.
     PreparingRuntime,
 }
@@ -203,7 +203,7 @@ pub struct SetupPlan {
     /// failure against the absent doctor check.
     #[serde(default)]
     verify_install: bool,
-    /// Whether Berd bundles this provider's ACP bridge. The bridge vendors the
+    /// Whether Distill bundles this provider's ACP bridge. The bridge vendors the
     /// full harness CLI, so it is the provider's only binary and the doctor
     /// crate reports it under `path`. The frontend readiness gate
     /// (`readinessFromReport`) treats a bundled-bridge provider with no
@@ -380,8 +380,8 @@ pub(crate) fn crate_check_id(provider_id: &str) -> String {
 }
 
 /// Binary search dirs for checks and fixes: the managed bridge shims in
-/// `packages/bin` (or the `BERD_ACP_TOOLS_DIR` dev override), then the
-/// Berd-private npm prefix and the managed Node runtime its shims run on.
+/// `packages/bin` (or the `DISTILL_ACP_TOOLS_DIR` dev override), then the
+/// Distill-private npm prefix and the managed Node runtime its shims run on.
 /// Bridges resolve only from managed installs — nothing ships inside the
 /// bundle anymore.
 fn setup_prepend_dirs(app: &AppHandle) -> Vec<std::path::PathBuf> {
@@ -390,7 +390,7 @@ fn setup_prepend_dirs(app: &AppHandle) -> Vec<std::path::PathBuf> {
 
 /// The env snapshot every check/fix subprocess runs with: the captured home
 /// shell env with the extended PATH, plus the managed npm env steering global
-/// installs into the Berd-private prefix.
+/// installs into the Distill-private prefix.
 async fn setup_env_vars(app: &AppHandle) -> Vec<(String, String)> {
     let prepend_dirs = setup_prepend_dirs(app);
     let mut vars =
@@ -451,7 +451,7 @@ async fn run_crate_check_report(
             offline: false,
             env: None,
             // The crate labels binaries resolving from this dir as bundled and
-            // offers no registry install/update fix for them — Berd installs
+            // offers no registry install/update fix for them — Distill installs
             // and upgrades these bridges itself (the startup reconciler floats
             // them to the latest version), so the crate must not nag the user
             // to update them manually.
@@ -1011,7 +1011,7 @@ async fn run_fix(
         return run_managed_install(app, registry, provider_id, &log_tag).await;
     }
 
-    // npm-backed fixes run the managed npm into the Berd-private prefix, so
+    // npm-backed fixes run the managed npm into the Distill-private prefix, so
     // the managed Node runtime must exist before the command does.
     let resolved_command = command_override
         .clone()
@@ -1242,7 +1242,7 @@ async fn run_managed_install(
     result
 }
 
-/// Make sure the Berd-managed Node.js runtime is installed before an
+/// Make sure the Distill-managed Node.js runtime is installed before an
 /// npm-backed fix runs. Quiet no-op when the pinned runtime is already
 /// healthy; otherwise the operation enters the visible `preparingRuntime`
 /// phase, streams download/extract progress into the output buffer, and
@@ -1265,7 +1265,7 @@ async fn ensure_managed_runtime(
         app,
         registry,
         provider_id,
-        &format!("Installing Berd-managed Node.js {version}"),
+        &format!("Installing Distill-managed Node.js {version}"),
     );
 
     let app_for_lines = app.clone();

@@ -21,7 +21,7 @@ trap {
 Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChecking
 
 Assert-WindowsHost
-Set-Location (Get-BerdRepoRoot)
+Set-Location (Get-DistillRepoRoot)
 Update-SessionPathFromRegistry
 Assert-MsvcEnvironment
 
@@ -39,9 +39,9 @@ if ($null -eq (Get-WindowsTripleMachine -Triple $Triple)) {
 }
 Write-WindowsDevInfo "Staging Windows sidecars for target: $Triple"
 
-$binDir = Join-Path (Join-Path (Get-BerdRepoRoot) "src-tauri") "binaries"
+$binDir = Join-Path (Join-Path (Get-DistillRepoRoot) "src-tauri") "binaries"
 
-# ── berdctl ──────────────────────────────────────────────────
+# ── distillctl ──────────────────────────────────────────────────
 # Build the workspace crate for the target triple, then stage its .exe. Cargo
 # writes to the Tauri target dir the rest of the build shares. Passing --target
 # nests the output under the triple, matching the Unix script's behaviour when
@@ -49,20 +49,20 @@ $binDir = Join-Path (Join-Path (Get-BerdRepoRoot) "src-tauri") "binaries"
 $tauriTargetDir = Get-TauriCargoTargetDir
 $env:CARGO_TARGET_DIR = $tauriTargetDir
 $hostTriple = Get-RustHostTriple
-$cargoArgs = @("build", "-p", "berdctl", "-p", "berd-monitor", "--release")
+$cargoArgs = @("build", "-p", "distillctl", "-p", "distill-monitor", "--release")
 if (-not [string]::IsNullOrWhiteSpace($hostTriple) -and $Triple -ne $hostTriple) {
     $cargoArgs += @("--target", $Triple)
-    $berdctlReleaseDir = Join-Path (Join-Path $tauriTargetDir $Triple) "release"
+    $distillctlReleaseDir = Join-Path (Join-Path $tauriTargetDir $Triple) "release"
 } else {
-    $berdctlReleaseDir = Join-Path $tauriTargetDir "release"
+    $distillctlReleaseDir = Join-Path $tauriTargetDir "release"
 }
 Invoke-CheckedCommand -FilePath "cargo" -ArgumentList $cargoArgs `
-    -WorkingDirectory (Join-Path (Get-BerdRepoRoot) "src-tauri") -Label "cargo build -p berdctl -p berd-monitor --release"
-$berdctlSource = Join-Path $berdctlReleaseDir (Get-WindowsExeName "berdctl")
-$staged = Stage-WindowsSidecar -SourcePath $berdctlSource -Triple $Triple -Stem "berdctl" -BinDir $binDir
-Write-WindowsDevInfo "Staged berdctl sidecar: $staged"
+    -WorkingDirectory (Join-Path (Get-DistillRepoRoot) "src-tauri") -Label "cargo build -p distillctl -p distill-monitor --release"
+$distillctlSource = Join-Path $distillctlReleaseDir (Get-WindowsExeName "distillctl")
+$staged = Stage-WindowsSidecar -SourcePath $distillctlSource -Triple $Triple -Stem "distillctl" -BinDir $binDir
+Write-WindowsDevInfo "Staged distillctl sidecar: $staged"
 
-# ── berd-monitor ─────────────────────────────────────────────
-$monitorSource = Join-Path $berdctlReleaseDir (Get-WindowsExeName "berd-monitor")
-$staged = Stage-WindowsSidecar -SourcePath $monitorSource -Triple $Triple -Stem "berd-monitor" -BinDir $binDir
-Write-WindowsDevInfo "Staged berd-monitor sidecar: $staged"
+# ── distill-monitor ─────────────────────────────────────────────
+$monitorSource = Join-Path $distillctlReleaseDir (Get-WindowsExeName "distill-monitor")
+$staged = Stage-WindowsSidecar -SourcePath $monitorSource -Triple $Triple -Stem "distill-monitor" -BinDir $binDir
+Write-WindowsDevInfo "Staged distill-monitor sidecar: $staged"

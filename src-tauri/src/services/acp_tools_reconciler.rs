@@ -1,11 +1,11 @@
-//! Startup reconciler for the Berd-managed ACP bridges.
+//! Startup reconciler for the Distill-managed ACP bridges.
 //!
 //! Spawned from app setup (same pattern as `app_data_migration`): installs or
 //! upgrades every managed bridge ([`managed_acp_tools::MANAGED_TOOLS`]) to its
 //! checked-in pinned version on launch, so a new bridge release ships to users
-//! — after a pin bump — the next time Berd starts. Each install replays the
+//! — after a pin bump — the next time Distill starts. Each install replays the
 //! bridge's release-controlled `package.json` + `package-lock.json` from
-//! `acp-tools.lock.json` with `npm ci` onto the Berd-managed Node runtime in
+//! `acp-tools.lock.json` with `npm ci` onto the Distill-managed Node runtime in
 //! app data — npm resolves to the checked-in graph and refuses any tarball
 //! whose integrity differs — then re-reads the replayed lockfile and requires
 //! the target's native executable to exist before committing. Failures
@@ -17,7 +17,7 @@
 //! run — every bridge shim execs its Node by versioned path, so the
 //! old runtime must outlive the last shim that references it.
 //!
-//! Silent when there is nothing to manage: the `BERD_ACP_TOOLS_DIR` dev
+//! Silent when there is nothing to manage: the `DISTILL_ACP_TOOLS_DIR` dev
 //! override is active or the target is unsupported.
 //!
 //! Completion is broadcast to the renderer as [`ACP_TOOLS_RECONCILED_EVENT`]:
@@ -34,7 +34,7 @@ use crate::services::managed_acp_tools;
 /// Emitted once per launch after the reconciler finishes, successful or not —
 /// a partial failure still installs the other bridge, so the renderer should
 /// re-probe either way. Mirrored in `src/shared/api/acpTools.ts`.
-pub const ACP_TOOLS_RECONCILED_EVENT: &str = "berd:acp-tools-reconciled";
+pub const ACP_TOOLS_RECONCILED_EVENT: &str = "distill:acp-tools-reconciled";
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]

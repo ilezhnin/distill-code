@@ -31,7 +31,7 @@ function Assert-WindowsHost {
     }
 }
 
-function Get-BerdRepoRoot {
+function Get-DistillRepoRoot {
     return $script:RepoRoot
 }
 
@@ -72,7 +72,7 @@ function Write-WindowsDevSection {
 
 function Write-WindowsDevInfo {
     param([Parameter(Mandatory = $true)][string]$Message)
-    Write-Host "[berd-windows] $Message"
+    Write-Host "[distill-windows] $Message"
 }
 
 function Get-CommandSource {
@@ -188,7 +188,7 @@ function Test-CodexRuntimePath {
     return $Path -match "\\\.cache\\codex-runtimes\\"
 }
 
-function New-BerdTemporaryFile {
+function New-DistillTemporaryFile {
     # Avoid PowerShell module autoloading here. GitHub-hosted Windows runners can
     # launch nested Windows PowerShell with Microsoft.PowerShell.Utility absent
     # from PSModulePath, which makes the New-TemporaryFile cmdlet unavailable.
@@ -201,7 +201,7 @@ function New-BerdTemporaryFile {
 # object and waits for every process it spawned as well. An MSVC-backed cargo
 # build leaves `vctip.exe` (the Visual C++ telemetry helper) running long after
 # cl.exe and cargo are gone, so `-Wait` hangs there indefinitely -- the launcher
-# would print "cargo build berdctl", finish the build, and then sit forever with
+# would print "cargo build distillctl", finish the build, and then sit forever with
 # no output. Starting with -PassThru but no -Wait and joining on the process
 # handle waits for that process only.
 # Every `Start-Process -PassThru` call site reads `$process.Handle` right
@@ -224,8 +224,8 @@ function Invoke-CaptureCommand {
         [string]$WorkingDirectory = (Get-Location).Path
     )
 
-    $stdout = New-BerdTemporaryFile
-    $stderr = New-BerdTemporaryFile
+    $stdout = New-DistillTemporaryFile
+    $stderr = New-DistillTemporaryFile
     try {
         $arguments = Join-WindowsProcessArguments $ArgumentList
         $process = Start-Process -FilePath $FilePath -ArgumentList $arguments -WorkingDirectory $WorkingDirectory -PassThru -NoNewWindow -RedirectStandardOutput $stdout.FullName -RedirectStandardError $stderr.FullName
@@ -341,8 +341,8 @@ function Join-WindowsProcessArguments {
 }
 
 # Maps the renderer build gates onto the matching Tauri Cargo feature set.
-function Get-BerdAppFeatures {
-    param([string[]]$BaseFeatures = @("berdctl", "app-test-driver"))
+function Get-DistillAppFeatures {
+    param([string[]]$BaseFeatures = @("distillctl", "app-test-driver"))
 
     $features = New-Object System.Collections.Generic.List[string]
     foreach ($feature in $BaseFeatures) {
@@ -375,7 +375,7 @@ function Assert-SafeCleanupPath {
     # Never allow removal of broad user/system roots, whatever the caller
     # passed as AllowedRoot; a bad env override must not become `rm -rf $HOME`.
     $protected = New-Object System.Collections.Generic.List[string]
-    foreach ($candidate in @($env:USERPROFILE, $env:LOCALAPPDATA, $env:APPDATA, $env:TEMP, $env:SystemRoot, $env:ProgramFiles, $HOME, (Get-BerdRepoRoot))) {
+    foreach ($candidate in @($env:USERPROFILE, $env:LOCALAPPDATA, $env:APPDATA, $env:TEMP, $env:SystemRoot, $env:ProgramFiles, $HOME, (Get-DistillRepoRoot))) {
         if (-not [string]::IsNullOrWhiteSpace($candidate)) {
             $protected.Add((Normalize-FullPath $candidate))
         }
@@ -436,22 +436,22 @@ function Resolve-WindowsCleanupPaths {
     $fnmRoot = Get-FnmRoot
     $blockCertDir = Join-Path $userProfile ".block-certs"
     $nodeVersion = "v$(Get-RequiredNodeVersion)"
-    $repoRoot = Get-BerdRepoRoot
+    $repoRoot = Get-DistillRepoRoot
 
     # Honor the same overrides the rest of the lane uses so cleanup targets
     # the state that setup/dev actually created: the active cargo target dir
-    # (repo-local unless BERD_TAURI_CARGO_TARGET_DIR overrides it), plus the
+    # (repo-local unless DISTILL_TAURI_CARGO_TARGET_DIR overrides it), plus the
     # %LOCALAPPDATA%\berd-tauri tree older checkouts left behind.
-    $berdTauriRoot = Get-TauriCargoTargetDir
-    $legacyBerdTauriRoot = Get-LegacyTauriCargoTargetRoot
-    if ($legacyBerdTauriRoot -eq $berdTauriRoot) {
-        $legacyBerdTauriRoot = $null
+    $distillTauriRoot = Get-TauriCargoTargetDir
+    $legacyDistillTauriRoot = Get-LegacyTauriCargoTargetRoot
+    if ($legacyDistillTauriRoot -eq $distillTauriRoot) {
+        $legacyDistillTauriRoot = $null
     }
 
     return [pscustomobject]@{
-        BerdDevRoot = (Get-BerdDevRoot)
-        BerdTauriRoot = $berdTauriRoot
-        LegacyBerdTauriRoot = $legacyBerdTauriRoot
+        DistillDevRoot = (Get-DistillDevRoot)
+        DistillTauriRoot = $distillTauriRoot
+        LegacyDistillTauriRoot = $legacyDistillTauriRoot
         BlockCertDir = $blockCertDir
         BlockCertFile = Join-Path $blockCertDir "root-certs.pem"
         CorepackPnpmVersionDir = Join-Path $localAppData "node\corepack\v1\pnpm\$(Get-RequiredPnpmVersion)"
@@ -465,24 +465,24 @@ function Resolve-WindowsCleanupPaths {
     }
 }
 
-function Get-BerdDevRoot {
-    $devRoot = $env:BERD_DEV_ROOT
+function Get-DistillDevRoot {
+    $devRoot = $env:DISTILL_DEV_ROOT
     if ([string]::IsNullOrWhiteSpace($devRoot)) {
-        $devRoot = Join-Path (Get-LocalAppDataRoot) "berd-dev"
+        $devRoot = Join-Path (Get-LocalAppDataRoot) "distill-dev"
     }
     return $devRoot
 }
 
 function Get-TauriCargoTargetDir {
-    if (-not [string]::IsNullOrWhiteSpace($env:BERD_TAURI_CARGO_TARGET_DIR)) {
-        return $env:BERD_TAURI_CARGO_TARGET_DIR
+    if (-not [string]::IsNullOrWhiteSpace($env:DISTILL_TAURI_CARGO_TARGET_DIR)) {
+        return $env:DISTILL_TAURI_CARGO_TARGET_DIR
     }
     # Repo-local by default. A debug Tauri build of this workspace is 30-60 GB
     # (deps + incremental + PDBs); parking that under %LOCALAPPDATA% fills the
     # system drive and, when the checkout lives on another drive, keeps a
     # second full copy alive next to the one `Launch-Distill.ps1` builds.
-    # Point BERD_TAURI_CARGO_TARGET_DIR somewhere else to override.
-    return (Join-Path (Get-BerdRepoRoot) "src-tauri\target")
+    # Point DISTILL_TAURI_CARGO_TARGET_DIR somewhere else to override.
+    return (Join-Path (Get-DistillRepoRoot) "src-tauri\target")
 }
 
 # Where pre-2026-09 checkouts wrote the Tauri cargo target. Kept only so
@@ -661,8 +661,8 @@ $script:PeMachineI386 = 0x014C
 $script:PeCharacteristicsExecutableImage = 0x0002
 
 # Return the exact Tauri-resolved sidecar file name for a stem/triple, e.g.
-# Get-WindowsSidecarName "berdctl" "x86_64-pc-windows-msvc"
-#   -> berdctl-x86_64-pc-windows-msvc.exe
+# Get-WindowsSidecarName "distillctl" "x86_64-pc-windows-msvc"
+#   -> distillctl-x86_64-pc-windows-msvc.exe
 function Get-WindowsSidecarName {
     param(
         [Parameter(Mandatory = $true)][string]$Stem,
@@ -918,7 +918,7 @@ function Resolve-AppVersion {
     param([AllowNull()][string]$Override)
 
     if ([string]::IsNullOrWhiteSpace($Override)) {
-        $Override = $env:BERD_APP_VERSION_OVERRIDE
+        $Override = $env:DISTILL_APP_VERSION_OVERRIDE
     }
     if (-not [string]::IsNullOrWhiteSpace($Override)) {
         $numeric = ($Override -split "[-+]")[0]
@@ -948,10 +948,10 @@ function New-E2eRunContract {
         $RunId = $rootRunId
     }
     if ($RunId -notmatch '^[A-Za-z0-9-]{1,64}$') {
-        throw "BERD_E2E_RUN_ID must be 1-64 ASCII letters, digits, or '-'."
+        throw "DISTILL_E2E_RUN_ID must be 1-64 ASCII letters, digits, or '-'."
     }
     if ($rootRunId -cne $RunId) {
-        throw "BERD_E2E_RUN_ROOT must end with BERD_E2E_RUN_ID '$RunId'."
+        throw "DISTILL_E2E_RUN_ROOT must end with DISTILL_E2E_RUN_ID '$RunId'."
     }
 
     if ([string]::IsNullOrWhiteSpace($DriverToken)) {
@@ -1149,7 +1149,7 @@ function Initialize-MsvcEnvironment {
     }
 
     $arch = Get-MsvcArch
-    $environmentFile = New-BerdTemporaryFile
+    $environmentFile = New-DistillTemporaryFile
     try {
         # Capturing `cmd.exe` output directly through Windows PowerShell can
         # return no pipeline records for batch files on some hosts. Have cmd
@@ -1441,7 +1441,7 @@ req.on("error", (error) => {
 req.end();
 '@
 
-    $scriptFile = New-BerdTemporaryFile
+    $scriptFile = New-DistillTemporaryFile
     try {
         Set-Content -Path $scriptFile -Value $script -Encoding UTF8
         $result = Invoke-CaptureCommand -FilePath "node" -ArgumentList @($scriptFile.FullName, $Registry)
@@ -1486,8 +1486,8 @@ function Initialize-FnmEnvironment {
         return $false
     }
 
-    $stdout = New-BerdTemporaryFile
-    $stderr = New-BerdTemporaryFile
+    $stdout = New-DistillTemporaryFile
+    $stderr = New-DistillTemporaryFile
     try {
         $process = Start-Process $fnm -ArgumentList "env --shell powershell" -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdout.FullName -RedirectStandardError $stderr.FullName
         if ($process.ExitCode -ne 0) {

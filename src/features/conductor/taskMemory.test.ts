@@ -496,7 +496,7 @@ describe("the request's goal", () => {
       role: "user",
       created: 1,
       content: [{ type: "text", text: "WAVE REPORT DIGEST" }],
-      metadata: { origin: "berdctl_cross_session" },
+      metadata: { origin: "distillctl_cross_session" },
     };
     const messages = [user("ask-1", "The real request"), digest];
     expect(taskMemoryGoal(messages, "digest-1")).toBe("The real request");

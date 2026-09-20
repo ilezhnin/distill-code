@@ -1,7 +1,7 @@
 # Driving the running app
 
 Dev builds started through `just dev-windows` include the `app-test-driver`
-Tauri plugin (`app_features` in the `justfile` is `berdctl,app-test-driver`), so
+Tauri plugin (`app_features` in the `justfile` is `distillctl,app-test-driver`), so
 a running Distill can be clicked, typed into and read from outside. There is no
 checked-in end-to-end suite built on it: you use the driver by hand, or an agent
 uses it through the [agent-driver relay](../scripts/agent-driver/README.md).
@@ -65,7 +65,7 @@ failure behaviour are in [its README](../scripts/agent-driver/README.md).
 ## Isolated mode
 
 Isolated mode is an explicit opt-in for a run that must not touch your real
-profile. It needs a binary built with `app-test-driver` and `BERD_E2E_MODE=1`
+profile. It needs a binary built with `app-test-driver` and `DISTILL_E2E_MODE=1`
 with a validated run root, run ID and driver token. The app then:
 
 - runs under its own identifier, `com.levocat.distill.e2e.<run-id>`, so it gets
@@ -74,7 +74,7 @@ with a validated run root, run ID and driver token. The app then:
 - listens on a random loopback port, requires the token on every command, and
   writes `{ "host", "port", "pid" }` to `<run-root>/app-test-driver.json` once
   it is ready;
-- reads an optional `BERD_E2E_RUNTIME_CONFIG` — a `runtime-config.json` in the
+- reads an optional `DISTILL_E2E_RUNTIME_CONFIG` — a `runtime-config.json` in the
   shape of `src-tauri/resources/runtime-config.json` — copied into the run
   root.
 
@@ -83,8 +83,8 @@ must be absolute and end in the run ID (which defaults to its last segment).
 Set the token yourself (32–128 letters or digits) so the relay can send it:
 
 ```powershell
-$env:BERD_E2E_MODE = "1"
-$env:BERD_E2E_RUN_ROOT = "$env:TEMP\distill-e2e\run-1"
+$env:DISTILL_E2E_MODE = "1"
+$env:DISTILL_E2E_RUN_ROOT = "$env:TEMP\distill-e2e\run-1"
 $env:APP_TEST_DRIVER_TOKEN = -join ((1..48) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Dev-Windows.ps1
 ```

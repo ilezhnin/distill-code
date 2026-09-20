@@ -18,7 +18,7 @@ import {
   type SessionDispatchTargetLease,
 } from "../lib/sessionTargetCoordinator";
 import { registerForegroundQueueOwner } from "../lib/foregroundQueueOwnership";
-import { isBerdctlCrossSessionQueuedMessage } from "../lib/queuedMessageOrigin";
+import { isDistillctlCrossSessionQueuedMessage } from "../lib/queuedMessageOrigin";
 import type { QueuedMessageRecord } from "../stores/chatStore";
 import type { ChatSendOptions } from "../types";
 import type { SessionExecutionTarget } from "../lib/sessionExecutionTarget";
@@ -157,7 +157,7 @@ export function useMessageQueue(
         ) ||
         queuedMsg.restored ||
         queuedMsg.releasedFromDeferred ||
-        isBerdctlCrossSessionQueuedMessage(queuedMsg)
+        isDistillctlCrossSessionQueuedMessage(queuedMsg)
       ) {
         return false;
       }

@@ -135,7 +135,7 @@ fn list_local_mcp_inventory_blocking(workspace_paths: &[String]) -> Result<McpIn
     })
 }
 
-/// Claude Code config files Berd passively inspects. Local-project MCPs do not
+/// Claude Code config files Distill passively inspects. Local-project MCPs do not
 /// live in a separate workspace file; they are selected from the active
 /// workspace records in `~/.claude.json` during collection.
 fn claude_code_config_files(workspace_paths: &[String]) -> Vec<ConfigFile> {
@@ -159,7 +159,7 @@ fn claude_code_config_files(workspace_paths: &[String]) -> Vec<ConfigFile> {
     files
 }
 
-/// The complete allowlist of Codex config locations Berd will read or modify.
+/// The complete allowlist of Codex config locations Distill will read or modify.
 pub fn codex_config_files(workspace_paths: &[String]) -> Vec<ConfigFile> {
     let mut files = Vec::new();
     if let Some(home) = home_dir() {

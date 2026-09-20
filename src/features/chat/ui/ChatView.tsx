@@ -16,7 +16,7 @@ import { ChatSearchBar } from "./ChatSearchBar";
 import { WorkspaceSetupChoice } from "./WorkspaceSetupChoice";
 import { summarizeProjectWorkspaceStartup } from "@/features/projects/lib/projectChatWorkspaces";
 import { ChatInput } from "./ChatInput";
-import { LoadingBerd } from "./LoadingBerd";
+import { LoadingDistill } from "./LoadingDistill";
 import { ChatLoadingSkeleton } from "./ChatLoadingSkeleton";
 import { ConversationEmptyAvatar } from "./ConversationEmptyAvatar";
 import { ArtifactPolicyProvider } from "../hooks/ArtifactPolicyContext";
@@ -66,7 +66,7 @@ import {
   type TerminalDockedPlacement,
 } from "@/features/terminal/model/terminalState";
 import { useTerminalFallbackCwdPreference } from "@/features/terminal/lib/terminalCwdPreference";
-import { ActiveChatBerdIndicator } from "@/shared/ui/SessionActivityIndicator";
+import { ActiveChatDistillIndicator } from "@/shared/ui/SessionActivityIndicator";
 import { getTextContent } from "@/shared/types/messages";
 import { getConversationBeforeForMessageFork } from "@/features/sessions/lib/sessionFork";
 import type { ForkSessionHandler } from "@/features/sessions/hooks/useForkSession";
@@ -862,8 +862,8 @@ export function ChatView({
             CHAT_RESPONDING_PILL_CLASS,
           )}
         >
-          <ActiveChatBerdIndicator size={14} />
-          <LoadingBerd
+          <ActiveChatDistillIndicator size={14} />
+          <LoadingDistill
             key="loading-indicator"
             chatState={loadingChatState}
             className="mb-0 px-0"

@@ -20,7 +20,7 @@ pub fn matches(left: &str, right: &str) -> bool {
 /// This process's environment as UTF-8 pairs, in the order the OS reports
 /// them. `std::env::vars()` panics on the first key or value that is not valid
 /// Unicode — reachable on Windows, whose environment is UTF-16 and may hold
-/// unpaired surrogates — so every snapshot Berd builds converts lossily
+/// unpaired surrogates — so every snapshot Distill builds converts lossily
 /// instead.
 pub fn process_vars_lossy() -> Vec<(String, String)> {
     std::env::vars_os()

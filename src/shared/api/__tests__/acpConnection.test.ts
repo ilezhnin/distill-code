@@ -359,7 +359,7 @@ describe("permission requests the renderer answers on its own", () => {
 
   // Per ACP a `cancelled` outcome ends the *turn* rather than refusing one
   // tool call, so the harness stops mid-task. The operator has to be able to
-  // see why; a berd.log line is not a trace they will ever look for.
+  // see why; a distill.log line is not a trace they will ever look for.
   it("reports the cancelled answer to the chat so the stopped turn is explained", async () => {
     const connection = await importConnection();
     const reportPermissionAnswer = vi.fn();

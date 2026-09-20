@@ -18,7 +18,7 @@ export type AgentSetupPhase =
   | "installing"
   | "authenticating"
   | "signingOut"
-  // Downloading/installing the Berd-managed Node.js runtime an npm-backed
+  // Downloading/installing the Distill-managed Node.js runtime an npm-backed
   // fix is about to run on.
   | "preparingRuntime";
 
@@ -57,7 +57,7 @@ export interface AgentSetupPlan {
   // resolve on disk, so the backend skips verification and takes a clean run as
   // success (the readiness derivation that drives this stays here in the card).
   verifyInstall: boolean;
-  // Whether Berd bundles this provider's ACP bridge. The bridge vendors the
+  // Whether Distill bundles this provider's ACP bridge. The bridge vendors the
   // full harness CLI, so it is the provider's only binary and reports under
   // `path`; post-fix verification then requires `path` to have resolved,
   // matching the readiness gate in `readinessFromReport` — a broken bundle

@@ -169,6 +169,8 @@ describe("buzz-agent-snapshot PNG codec", () => {
     );
   });
 
+  // The fixture is a file the upstream app, Berd, exported — its name and the
+  // agent in it are upstream's, and are what makes it a conformance case.
   it("keeps Berd's conformance export semantically decodable", () => {
     const fixture = new Uint8Array(
       readFileSync(

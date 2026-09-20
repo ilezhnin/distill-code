@@ -97,7 +97,7 @@ async function currentLockedVersion(lockFile) {
 async function fetchShasums(baseUrl, version) {
   const url = `${baseUrl}/${version}/SHASUMS256.txt`;
   const response = await fetch(url, {
-    headers: { "User-Agent": "berd-node-runtime-lock" },
+    headers: { "User-Agent": "distill-node-runtime-lock" },
   });
   if (!response.ok) {
     throw new Error(

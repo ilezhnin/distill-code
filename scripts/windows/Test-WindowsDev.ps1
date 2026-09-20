@@ -36,19 +36,19 @@ function Assert-NoThrow {
     }
 }
 
-$oldBerdDevRoot = $env:BERD_DEV_ROOT
+$oldDistillDevRoot = $env:DISTILL_DEV_ROOT
 $oldLocalAppData = $env:LOCALAPPDATA
 $oldUserProfile = $env:USERPROFILE
 $oldAppData = $env:APPDATA
 $oldFnmDir = $env:FNM_DIR
 
 try {
-    $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("berd-windowsdev-test-" + [System.Guid]::NewGuid().ToString("N"))
+    $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("distill-windowsdev-test-" + [System.Guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force -Path $temp | Out-Null
-    $env:BERD_DEV_ROOT = Join-Path $temp "root"
+    $env:DISTILL_DEV_ROOT = Join-Path $temp "root"
 
     Assert-Equal "temporary file helper uses the framework temp-file primitive" `
-        ((Get-Command New-BerdTemporaryFile -CommandType Function).Definition -match 'GetTempFileName') $true
+        ((Get-Command New-DistillTemporaryFile -CommandType Function).Definition -match 'GetTempFileName') $true
     Assert-Equal "checksum helper uses framework cryptography instead of PowerShell.Utility" `
         (((Get-Command Get-FileSha256 -CommandType Function).Definition -match 'System.Security.Cryptography.SHA256') -and `
          ((Get-Command Get-FileSha256 -CommandType Function).Definition -notmatch 'Get-FileHash')) $true
@@ -57,7 +57,7 @@ try {
     Assert-Equal "checksum helper returns canonical lowercase SHA-256" `
         (Get-FileSha256 -Path $checksumFixture) `
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-    $temporaryFile = New-BerdTemporaryFile
+    $temporaryFile = New-DistillTemporaryFile
     try {
         Assert-Equal "temporary file helper creates a filesystem file" `
             (Test-Path -LiteralPath $temporaryFile.FullName -PathType Leaf) $true
@@ -73,17 +73,17 @@ try {
     # The default deliberately includes the unauthenticated loopback driver:
     # `just dev-windows` and the agent-driver relay need it. It is NOT a
     # fail-closed default, so the entry points that must not expose it - the
-    # NSIS bundle and the desktop-shortcut launcher - ask for `berdctl` alone.
-    Assert-Equal "dev app feature default includes the loopback test driver" (Get-BerdAppFeatures) "berdctl,app-test-driver"
-    Assert-Equal "an explicit base feature set drops the loopback test driver" (Get-BerdAppFeatures -BaseFeatures @("berdctl")) "berdctl"
-    $launchDistill = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts/windows/Launch-Distill.ps1")
-    Assert-Equal "desktop launcher builds without the loopback test driver" ($launchDistill -match 'Get-BerdAppFeatures -BaseFeatures @\("berdctl"\)') $true
+    # NSIS bundle and the desktop-shortcut launcher - ask for `distillctl` alone.
+    Assert-Equal "dev app feature default includes the loopback test driver" (Get-DistillAppFeatures) "distillctl,app-test-driver"
+    Assert-Equal "an explicit base feature set drops the loopback test driver" (Get-DistillAppFeatures -BaseFeatures @("distillctl")) "distillctl"
+    $launchDistill = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) "scripts/windows/Launch-Distill.ps1")
+    Assert-Equal "desktop launcher builds without the loopback test driver" ($launchDistill -match 'Get-DistillAppFeatures -BaseFeatures @\("distillctl"\)') $true
     # Agents work on Distill from inside the shortcut-launched app; a Rust
     # watcher there relaunches the app under them and kills their turn.
     Assert-Equal "desktop launcher keeps the Rust watcher off unless asked" `
         ($launchDistill -match '(?ms)if \(-not \$Watch\) \{\r?\n\s+\$tauriArguments \+= "--no-watch"\r?\n\s+\}') $true
 
-    $justfile = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "justfile")
+    $justfile = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) "justfile")
     Assert-Equal "justfile selects PowerShell for ordinary Windows recipes" ($justfile -match '(?m)^set windows-shell := \["powershell\.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"\]\r?$') $true
     foreach ($recipe in @("_tauri-cargo-windows", "clean")) {
         $escapedRecipe = [regex]::Escape($recipe)
@@ -98,7 +98,7 @@ try {
         "stage-sidecar" = 'Invoke-Stage-Sidecar-Windows\.ps1'
     }
     foreach ($recipe in $dryRunTargets.Keys) {
-        $dryRun = Invoke-CaptureCommand -FilePath $just -ArgumentList @("--dry-run", $recipe) -WorkingDirectory (Get-BerdRepoRoot)
+        $dryRun = Invoke-CaptureCommand -FilePath $just -ArgumentList @("--dry-run", $recipe) -WorkingDirectory (Get-DistillRepoRoot)
         Assert-Equal "$recipe is visible and dry-runs on Windows" $dryRun.ExitCode 0
         Assert-Equal "$recipe dry-run reaches its Windows implementation" ($dryRun.Output -match $dryRunTargets[$recipe]) $true
     }
@@ -126,10 +126,10 @@ try {
     Assert-Equal "bundle-windows uses positional argv transport" ($justfile -match '(?m)^\[positional-arguments\]\r?\n\[script\("powershell\.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"\)\]\r?\nbundle-windows[^:]*:\r?\n\s+& .*Bundle-Windows\.ps1.*\$args\[0\]') $true
     Assert-Equal "bundle-windows does not interpolate bundle into source" ($justfile -notmatch '(?m)^\s+.*Bundle-Windows\.ps1.*\{\{\s*bundle\s*\}\}') $true
 
-    $setupScript = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Setup-Windows.ps1")
-    $devScript = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Dev-Windows.ps1")
-    $doctorScript = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Doctor-Windows.ps1")
-    $bootstrapScript = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Bootstrap-Windows.ps1")
+    $setupScript = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) "scripts\windows\Setup-Windows.ps1")
+    $devScript = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) "scripts\windows\Dev-Windows.ps1")
+    $doctorScript = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) "scripts\windows\Doctor-Windows.ps1")
+    $bootstrapScript = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) "scripts\windows\Bootstrap-Windows.ps1")
     Assert-Equal "setup does not require Block VPN" ($setupScript -notmatch 'Block VPN|Block npm registry is not reachable') $true
     Assert-Equal "setup initializes public npm" ($setupScript -match 'Initialize-PublicNpmEnvironment') $true
     Assert-Equal "dev initializes public npm" ($devScript -match 'Initialize-PublicNpmEnvironment') $true
@@ -137,9 +137,9 @@ try {
     Assert-Equal "doctor pings public npm" ($doctorScript -match 'Get-PublicNpmRegistry') $true
     Assert-Equal "bootstrap does not warn for Block npm" ($bootstrapScript -notmatch 'Block npm HTTPS') $true
 
-    $bundleScript = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts\windows\Bundle-Windows.ps1")
+    $bundleScript = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) "scripts\windows\Bundle-Windows.ps1")
     Assert-Equal "bundle exports full SemVer to Rust" `
-        ($bundleScript -match '\$env:BERD_APP_VERSION\s*=\s*\$resolvedVersion\.RichVersion') $true
+        ($bundleScript -match '\$env:DISTILL_APP_VERSION\s*=\s*\$resolvedVersion\.RichVersion') $true
     Assert-Equal "bundle exports full release SemVer to the renderer" `
         ($bundleScript -match '\$env:VITE_APP_VERSION\s*=\s*\$resolvedVersion\.RichVersion') $true
     Assert-Equal "bundle verifies the application PE version" ($bundleScript -match '\.VersionInfo\.ProductVersion') $true
@@ -153,10 +153,10 @@ try {
     Assert-Equal "prerelease override uses numeric core for Windows ProductVersion" $prereleaseVersion.Version "1.2.3"
     Assert-Equal "prerelease override preserves full SemVer" $prereleaseVersion.RichVersion "1.2.3-rc.1"
 
-    $buildScript = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "src-tauri\build.rs")
-    Assert-Equal "Rust rebuilds when the resolved app version changes" ($buildScript -match 'cargo:rerun-if-env-changed=BERD_APP_VERSION') $true
+    $buildScript = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) "src-tauri\build.rs")
+    Assert-Equal "Rust rebuilds when the resolved app version changes" ($buildScript -match 'cargo:rerun-if-env-changed=DISTILL_APP_VERSION') $true
     Assert-Equal "Rust rebuilds when the Tauri config overlay changes" ($buildScript -match 'cargo:rerun-if-env-changed=TAURI_CONFIG') $true
-    Assert-Equal "Rust embeds the resolved diagnostic version" ($buildScript -match 'cargo:rustc-env=BERD_BUILD_VERSION') $true
+    Assert-Equal "Rust embeds the resolved diagnostic version" ($buildScript -match 'cargo:rustc-env=DISTILL_BUILD_VERSION') $true
 
     $injectionMarker = Join-Path $temp "just-injection-proof"
     $maliciousBundle = 'bogus"; New-Item -ItemType File -Force -Path "' + $injectionMarker + '" | Out-Null; #'
@@ -166,7 +166,7 @@ try {
     }
     Assert-Equal "just is available for injection regression" (Test-Path -LiteralPath $justCommand) $true
     $injectionResult = Invoke-CaptureCommand -FilePath $justCommand `
-        -ArgumentList @("--justfile", (Join-Path (Get-BerdRepoRoot) "justfile"), "bundle-windows", $maliciousBundle)
+        -ArgumentList @("--justfile", (Join-Path (Get-DistillRepoRoot) "justfile"), "bundle-windows", $maliciousBundle)
     Assert-Equal "bundle-windows rejects the malicious bundle argv" ($injectionResult.ExitCode -ne 0) $true
     Assert-Equal "bundle-windows malicious argv is not executed" (Test-Path $injectionMarker) $false
 
@@ -204,7 +204,7 @@ try {
     # does the same for an agent editing src-tauri from inside the dev app.
     # Interactive dev otherwise retains hot reload: --no-watch must remain
     # inside the branch those two — and nothing else — open.
-    $devWindowsSource = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts/windows/Dev-Windows.ps1")
+    $devWindowsSource = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) "scripts/windows/Dev-Windows.ps1")
     $noWatchOptIn = '$NoWatch = $E2eMode -or ($env:DISTILL_DEV_NO_WATCH -eq "1")'
     Assert-Equal "only E2E and the explicit opt-in disable the watcher" `
         $devWindowsSource.Contains($noWatchOptIn) $true
@@ -214,12 +214,12 @@ try {
     Assert-Equal "ordinary Tauri dev launch retains the watcher" `
         ([regex]::Matches($devWindowsSource, '"--no-watch"').Count) 1
 
-    $gitAttributes = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) ".gitattributes")
+    $gitAttributes = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) ".gitattributes")
     Assert-Equal "Windows Tauri config is pinned to LF" `
         (($gitAttributes -split '\r?\n') -contains "src-tauri/tauri.windows.conf.json text eol=lf") $true
     Assert-Equal "SQL migrations are pinned to LF for stable sqlx checksums" `
         (($gitAttributes -split '\r?\n') -contains "src-tauri/migrations_agent_host/*.sql text eol=lf") $true
-    $migrationFiles = @(Get-ChildItem -Path (Join-Path (Get-BerdRepoRoot) "src-tauri/migrations_agent_host") -Filter "*.sql" -File -ErrorAction SilentlyContinue)
+    $migrationFiles = @(Get-ChildItem -Path (Join-Path (Get-DistillRepoRoot) "src-tauri/migrations_agent_host") -Filter "*.sql" -File -ErrorAction SilentlyContinue)
     Assert-Equal "SQL migration contract covers at least one migration" ($migrationFiles.Count -gt 0) $true
     foreach ($migrationFile in $migrationFiles) {
         $migrationBytes = [System.IO.File]::ReadAllBytes($migrationFile.FullName)
@@ -234,8 +234,8 @@ try {
     # validation runs deterministically on any host without a real toolchain.
 
     Assert-Equal "sidecar name appends triple and exe" `
-        (Get-WindowsSidecarName -Stem "berd-monitor" -Triple "x86_64-pc-windows-msvc") `
-        "berd-monitor-x86_64-pc-windows-msvc.exe"
+        (Get-WindowsSidecarName -Stem "distill-monitor" -Triple "x86_64-pc-windows-msvc") `
+        "distill-monitor-x86_64-pc-windows-msvc.exe"
     Assert-Equal "x86_64 triple maps to amd64 machine" `
         (Get-WindowsTripleMachine -Triple "x86_64-pc-windows-msvc") 0x8664
     Assert-Equal "aarch64 triple maps to arm64 machine" `
@@ -307,7 +307,7 @@ try {
     $srcDir = Join-Path $stageRoot "src"
     $binDir = Join-Path $stageRoot "binaries"
 
-    $goodPe = Join-Path $srcDir "berd-monitor.exe"
+    $goodPe = Join-Path $srcDir "distill-monitor.exe"
     New-FakePeFile -Path $goodPe -Machine $amd64
     $peInfo = Get-PeFileInfo -Path $goodPe
     Assert-Equal "PE info detects amd64 image" $peInfo.IsPe $true
@@ -315,29 +315,29 @@ try {
     Assert-Equal "PE info reads executable bit" $peInfo.IsExecutableImage $true
 
     # A POSIX shell script is not a PE.
-    $shellStub = Join-Path $srcDir "berd-monitor-shell-stub"
+    $shellStub = Join-Path $srcDir "distill-monitor-shell-stub"
     Set-Content -Path $shellStub -Value "#!/usr/bin/env sh`necho no`n" -Encoding ASCII
     Assert-Equal "shell script is not a PE" (Get-PeFileInfo -Path $shellStub).IsPe $false
     Assert-Throws "staging rejects a shell-script fake binary" {
-        Stage-WindowsSidecar -SourcePath $shellStub -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath $shellStub -Triple "x86_64-pc-windows-msvc" -Stem "distill-monitor" -BinDir $binDir
     }
 
     # Truncated image: MZ + PE signature + COFF header but nothing after it (no
     # optional header/section table). Windows cannot load it, so validation must
     # reject it instead of blessing a corrupt/partial artifact.
-    $truncated = Join-Path $srcDir "berd-monitor-truncated.exe"
+    $truncated = Join-Path $srcDir "distill-monitor-truncated.exe"
     New-FakePeFile -Path $truncated -Machine $amd64 -TruncateAfterCoff
     Assert-Equal "truncated PE (no optional header) is not a valid PE" (Get-PeFileInfo -Path $truncated).IsPe $false
     Assert-Throws "staging rejects a truncated PE" {
-        Stage-WindowsSidecar -SourcePath $truncated -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath $truncated -Triple "x86_64-pc-windows-msvc" -Stem "distill-monitor" -BinDir $binDir
     }
 
     # Malformed optional-header magic (neither PE32 0x10B nor PE32+ 0x20B).
-    $badMagic = Join-Path $srcDir "berd-monitor-badmagic.exe"
+    $badMagic = Join-Path $srcDir "distill-monitor-badmagic.exe"
     New-FakePeFile -Path $badMagic -Machine $amd64 -BadOptionalMagic
     Assert-Equal "PE with bad optional-header magic is not valid" (Get-PeFileInfo -Path $badMagic).IsPe $false
     Assert-Throws "staging rejects a bad optional-header magic" {
-        Stage-WindowsSidecar -SourcePath $badMagic -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath $badMagic -Triple "x86_64-pc-windows-msvc" -Stem "distill-monitor" -BinDir $binDir
     }
 
     # Minimal non-image: MZ + PE + COFF + a 2-byte optional header that carries a
@@ -345,83 +345,83 @@ try {
     # ~90-byte defect where the truncation simply moved past the magic. A 2-byte
     # optional header is far below the PE32+ minimum (112 bytes) and the file has
     # no section table, so validation must reject it.
-    $magicOnly = Join-Path $srcDir "berd-monitor-magiconly.exe"
+    $magicOnly = Join-Path $srcDir "distill-monitor-magiconly.exe"
     New-FakePeFile -Path $magicOnly -Machine $amd64 -OptionalHeaderSize 2 -SectionCount 0
     Assert-Equal "PE with magic but sub-minimum optional header is not valid" (Get-PeFileInfo -Path $magicOnly).IsPe $false
     Assert-Throws "staging rejects a magic-only sub-minimum PE" {
-        Stage-WindowsSidecar -SourcePath $magicOnly -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath $magicOnly -Triple "x86_64-pc-windows-msvc" -Stem "distill-monitor" -BinDir $binDir
     }
 
     # A full-size optional header but zero sections is still not a loadable image.
-    $noSections = Join-Path $srcDir "berd-monitor-nosections.exe"
+    $noSections = Join-Path $srcDir "distill-monitor-nosections.exe"
     New-FakePeFile -Path $noSections -Machine $amd64 -SectionCount 0
     Assert-Equal "PE with zero sections is not valid" (Get-PeFileInfo -Path $noSections).IsPe $false
     Assert-Throws "staging rejects a zero-section PE" {
-        Stage-WindowsSidecar -SourcePath $noSections -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath $noSections -Triple "x86_64-pc-windows-msvc" -Stem "distill-monitor" -BinDir $binDir
     }
 
     # A PE32+ optional header just under the 112-byte minimum must also be rejected.
-    $shortOptional = Join-Path $srcDir "berd-monitor-shortoptional.exe"
+    $shortOptional = Join-Path $srcDir "distill-monitor-shortoptional.exe"
     New-FakePeFile -Path $shortOptional -Machine $amd64 -OptionalHeaderSize 111
     Assert-Equal "PE32+ with sub-minimum optional header is not valid" (Get-PeFileInfo -Path $shortOptional).IsPe $false
 
     Assert-Throws "staging rejects a missing source" {
-        Stage-WindowsSidecar -SourcePath (Join-Path $srcDir "does-not-exist.exe") -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath (Join-Path $srcDir "does-not-exist.exe") -Triple "x86_64-pc-windows-msvc" -Stem "distill-monitor" -BinDir $binDir
     }
 
     # Wrong architecture: an arm64 PE staged for an x86_64 target must fail.
-    $wrongArch = Join-Path $srcDir "berd-monitor-arm64.exe"
+    $wrongArch = Join-Path $srcDir "distill-monitor-arm64.exe"
     New-FakePeFile -Path $wrongArch -Machine $arm64
     Assert-Throws "staging rejects a wrong-architecture PE" {
-        Stage-WindowsSidecar -SourcePath $wrongArch -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath $wrongArch -Triple "x86_64-pc-windows-msvc" -Stem "distill-monitor" -BinDir $binDir
     }
 
     # A PE without the executable-image characteristic is rejected.
-    $notExec = Join-Path $srcDir "berd-monitor-noexec.exe"
+    $notExec = Join-Path $srcDir "distill-monitor-noexec.exe"
     New-FakePeFile -Path $notExec -Machine $amd64 -ExecutableImage $false
     Assert-Throws "staging rejects a non-executable PE image" {
-        Stage-WindowsSidecar -SourcePath $notExec -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
+        Stage-WindowsSidecar -SourcePath $notExec -Triple "x86_64-pc-windows-msvc" -Stem "distill-monitor" -BinDir $binDir
     }
 
     # Happy path: valid amd64 PE stages to the exact Tauri name under a spaced dir.
-    $stagedPath = Stage-WindowsSidecar -SourcePath $goodPe -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir
-    $expectedStaged = Join-Path $binDir "berd-monitor-x86_64-pc-windows-msvc.exe"
+    $stagedPath = Stage-WindowsSidecar -SourcePath $goodPe -Triple "x86_64-pc-windows-msvc" -Stem "distill-monitor" -BinDir $binDir
+    $expectedStaged = Join-Path $binDir "distill-monitor-x86_64-pc-windows-msvc.exe"
     Assert-Equal "staging writes the exact Tauri sidecar name" $stagedPath $expectedStaged
     Assert-Equal "staged sidecar exists" (Test-Path $expectedStaged -PathType Leaf) $true
     Assert-Equal "staged sidecar matches source checksum" (Get-FileSha256 -Path $expectedStaged) (Get-FileSha256 -Path $goodPe)
 
     # Stale cleanup: a leftover extensionless Unix-staged file and an old-triple
     # file must be removed when the current triple is staged.
-    Set-Content -Path (Join-Path $binDir "berd-monitor") -Value "old-unix" -Encoding ASCII
-    New-FakePeFile -Path (Join-Path $binDir "berd-monitor-aarch64-pc-windows-msvc.exe") -Machine $arm64
-    Stage-WindowsSidecar -SourcePath $goodPe -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir | Out-Null
-    Assert-Equal "stale extensionless sidecar removed" (Test-Path (Join-Path $binDir "berd-monitor") -PathType Leaf) $false
-    Assert-Equal "stale old-triple sidecar removed" (Test-Path (Join-Path $binDir "berd-monitor-aarch64-pc-windows-msvc.exe") -PathType Leaf) $false
+    Set-Content -Path (Join-Path $binDir "distill-monitor") -Value "old-unix" -Encoding ASCII
+    New-FakePeFile -Path (Join-Path $binDir "distill-monitor-aarch64-pc-windows-msvc.exe") -Machine $arm64
+    Stage-WindowsSidecar -SourcePath $goodPe -Triple "x86_64-pc-windows-msvc" -Stem "distill-monitor" -BinDir $binDir | Out-Null
+    Assert-Equal "stale extensionless sidecar removed" (Test-Path (Join-Path $binDir "distill-monitor") -PathType Leaf) $false
+    Assert-Equal "stale old-triple sidecar removed" (Test-Path (Join-Path $binDir "distill-monitor-aarch64-pc-windows-msvc.exe") -PathType Leaf) $false
     Assert-Equal "current sidecar retained after cleanup" (Test-Path $expectedStaged -PathType Leaf) $true
 
     # Cleanup must only touch the requested stem, never a sibling sidecar.
-    $berdctlSrc = Join-Path $srcDir "berdctl.exe"
-    New-FakePeFile -Path $berdctlSrc -Machine $amd64
-    Stage-WindowsSidecar -SourcePath $berdctlSrc -Triple "x86_64-pc-windows-msvc" -Stem "berdctl" -BinDir $binDir | Out-Null
-    Stage-WindowsSidecar -SourcePath $goodPe -Triple "x86_64-pc-windows-msvc" -Stem "berd-monitor" -BinDir $binDir | Out-Null
-    Assert-Equal "sibling stem sidecar untouched by cleanup" (Test-Path (Join-Path $binDir "berdctl-x86_64-pc-windows-msvc.exe") -PathType Leaf) $true
+    $distillctlSrc = Join-Path $srcDir "distillctl.exe"
+    New-FakePeFile -Path $distillctlSrc -Machine $amd64
+    Stage-WindowsSidecar -SourcePath $distillctlSrc -Triple "x86_64-pc-windows-msvc" -Stem "distillctl" -BinDir $binDir | Out-Null
+    Stage-WindowsSidecar -SourcePath $goodPe -Triple "x86_64-pc-windows-msvc" -Stem "distill-monitor" -BinDir $binDir | Out-Null
+    Assert-Equal "sibling stem sidecar untouched by cleanup" (Test-Path (Join-Path $binDir "distillctl-x86_64-pc-windows-msvc.exe") -PathType Leaf) $true
 
     # ── Windows externalBin contract (tauri.windows.conf.json) ──
-    $windowsConf = Read-JsonFile (Join-Path (Get-BerdRepoRoot) "src-tauri/tauri.windows.conf.json")
+    $windowsConf = Read-JsonFile (Join-Path (Get-DistillRepoRoot) "src-tauri/tauri.windows.conf.json")
     $windowsExternalBin = @(Get-ObjectValue (Get-ObjectValue $windowsConf "bundle") "externalBin")
-    Assert-Equal "Windows externalBin stages berdctl" ($windowsExternalBin -contains "binaries/berdctl") $true
-    Assert-Equal "Windows externalBin stages berd-monitor" ($windowsExternalBin -contains "binaries/berd-monitor") $true
+    Assert-Equal "Windows externalBin stages distillctl" ($windowsExternalBin -contains "binaries/distillctl") $true
+    Assert-Equal "Windows externalBin stages distill-monitor" ($windowsExternalBin -contains "binaries/distill-monitor") $true
 
     # Tauri merges platform overlays into the base config with json_patch (RFC
     # 7386), which REPLACES arrays wholesale rather than concatenating. Model
     # that merge so the effective Windows externalBin contract is checked, not
     # just the overlay: exactly the two native sidecars, nothing else.
-    $baseConf = Read-JsonFile (Join-Path (Get-BerdRepoRoot) "src-tauri/tauri.conf.json")
+    $baseConf = Read-JsonFile (Join-Path (Get-DistillRepoRoot) "src-tauri/tauri.conf.json")
     $baseExternalBin = @(Get-ObjectValue (Get-ObjectValue $baseConf "bundle") "externalBin")
     # RFC 7386 merge: a present member on the overlay replaces the base member.
     $mergedExternalBin = if ($null -ne $windowsExternalBin) { $windowsExternalBin } else { $baseExternalBin }
-    Assert-Equal "merged Windows externalBin stages berdctl" ($mergedExternalBin -contains "binaries/berdctl") $true
-    Assert-Equal "merged Windows externalBin stages berd-monitor" ($mergedExternalBin -contains "binaries/berd-monitor") $true
+    Assert-Equal "merged Windows externalBin stages distillctl" ($mergedExternalBin -contains "binaries/distillctl") $true
+    Assert-Equal "merged Windows externalBin stages distill-monitor" ($mergedExternalBin -contains "binaries/distill-monitor") $true
     Assert-Equal "merged Windows externalBin stages only the native sidecars" (@($mergedExternalBin).Count) 2
 
     # ── Bundle recipes are Windows-only and route through native staging ──
@@ -434,13 +434,13 @@ try {
     # A successful in-process `& script.ps1` leaves $LASTEXITCODE unset, so the
     # old stale guard false-failed before the next step. Pin both public call
     # paths to Invoke-WindowsChildScript and reject stale LASTEXITCODE guards.
-    $bundleScript = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts/windows/Bundle-Windows.ps1")
+    $bundleScript = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) "scripts/windows/Bundle-Windows.ps1")
     Assert-Equal "bundle runs staging via native child process" `
         ($bundleScript -match "Invoke-WindowsChildScript[^\r\n]*Stage-Sidecar-Windows\.ps1") $true
     Assert-Equal "bundle has no stale LASTEXITCODE guard" `
         ($bundleScript -match '\$LASTEXITCODE -ne 0') $false
 
-    $stageWrapperPath = Join-Path (Get-BerdRepoRoot) "scripts/windows/Invoke-Stage-Sidecar-Windows.ps1"
+    $stageWrapperPath = Join-Path (Get-DistillRepoRoot) "scripts/windows/Invoke-Stage-Sidecar-Windows.ps1"
     $stageWrapper = Get-Content -Raw $stageWrapperPath
     Assert-Equal "stage-sidecar wrapper runs staging via native child process" `
         ($stageWrapper -match "Invoke-WindowsChildScript[^\r\n]*StageScriptPath") $true
@@ -477,7 +477,7 @@ try {
     # Restricted/AllSigned machine policy would otherwise block the child even
     # though the parent lane started under Bypass. pwsh ignores per-invocation
     # policy, so the flag is conditioned on the powershell.exe host name.
-    $moduleSource = Get-Content -Raw (Join-Path (Get-BerdRepoRoot) "scripts/windows/WindowsDev.psm1")
+    $moduleSource = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) "scripts/windows/WindowsDev.psm1")
     Assert-Equal "child driver conditions ExecutionPolicy Bypass on powershell.exe host" `
         ($moduleSource -match "(?s)GetFileNameWithoutExtension\(\`$shell\)\s*-ieq\s*`"powershell`".*?-ExecutionPolicy`",\s*`"Bypass`"") $true
 
@@ -495,7 +495,7 @@ try {
         Assert-SafeCleanupPath -Path (Get-UserProfileRoot) -AllowedRoot (Get-UserProfileRoot)
     }
     Assert-Throws "unsafe path: repo root protected even as its own root" {
-        Assert-SafeCleanupPath -Path (Get-BerdRepoRoot) -AllowedRoot (Get-BerdRepoRoot)
+        Assert-SafeCleanupPath -Path (Get-DistillRepoRoot) -AllowedRoot (Get-DistillRepoRoot)
     }
     Assert-Throws "unsafe path: drive root rejected" {
         Assert-SafeCleanupPath -Path ([System.IO.Path]::GetPathRoot($temp)) -AllowedRoot ([System.IO.Path]::GetPathRoot($temp))
@@ -508,31 +508,31 @@ try {
     $env:FNM_DIR = ""
 
     # Cleanup honors the same env overrides setup/dev use.
-    $env:BERD_TAURI_CARGO_TARGET_DIR = Join-Path $temp "override-target"
+    $env:DISTILL_TAURI_CARGO_TARGET_DIR = Join-Path $temp "override-target"
     $overriddenPaths = Resolve-WindowsCleanupPaths
-    Assert-Equal "cleanup honors BERD_DEV_ROOT override" $overriddenPaths.BerdDevRoot $env:BERD_DEV_ROOT
-    Assert-Equal "cleanup honors BERD_TAURI_CARGO_TARGET_DIR override" $overriddenPaths.BerdTauriRoot $env:BERD_TAURI_CARGO_TARGET_DIR
-    Assert-Equal "Get-TauriCargoTargetDir honors BERD_TAURI_CARGO_TARGET_DIR" (Get-TauriCargoTargetDir) $env:BERD_TAURI_CARGO_TARGET_DIR
-    $env:BERD_TAURI_CARGO_TARGET_DIR = ""
-    $env:BERD_DEV_ROOT = ""
+    Assert-Equal "cleanup honors DISTILL_DEV_ROOT override" $overriddenPaths.DistillDevRoot $env:DISTILL_DEV_ROOT
+    Assert-Equal "cleanup honors DISTILL_TAURI_CARGO_TARGET_DIR override" $overriddenPaths.DistillTauriRoot $env:DISTILL_TAURI_CARGO_TARGET_DIR
+    Assert-Equal "Get-TauriCargoTargetDir honors DISTILL_TAURI_CARGO_TARGET_DIR" (Get-TauriCargoTargetDir) $env:DISTILL_TAURI_CARGO_TARGET_DIR
+    $env:DISTILL_TAURI_CARGO_TARGET_DIR = ""
+    $env:DISTILL_DEV_ROOT = ""
 
     $cleanupPaths = Resolve-WindowsCleanupPaths
-    Assert-Equal "cleanup Berd dev root" $cleanupPaths.BerdDevRoot (Join-Path $env:LOCALAPPDATA "berd-dev")
+    Assert-Equal "cleanup Distill dev root" $cleanupPaths.DistillDevRoot (Join-Path $env:LOCALAPPDATA "distill-dev")
     # The active target dir is repo-local so a 30-60 GB debug build stays on
     # the checkout's drive; %LOCALAPPDATA%\berd-tauri survives only as the
     # legacy tree cleanup still reclaims.
-    Assert-Equal "cleanup Tauri root" $cleanupPaths.BerdTauriRoot (Join-Path (Get-BerdRepoRoot) "src-tauri\target")
-    Assert-Equal "cleanup legacy Tauri root" $cleanupPaths.LegacyBerdTauriRoot (Join-Path $env:LOCALAPPDATA "berd-tauri")
+    Assert-Equal "cleanup Tauri root" $cleanupPaths.DistillTauriRoot (Join-Path (Get-DistillRepoRoot) "src-tauri\target")
+    Assert-Equal "cleanup legacy Tauri root" $cleanupPaths.LegacyDistillTauriRoot (Join-Path $env:LOCALAPPDATA "berd-tauri")
     Assert-Equal "Block npm cert file" $cleanupPaths.BlockCertFile (Join-Path $env:USERPROFILE ".block-certs\root-certs.pem")
     Assert-Equal "cleanup Corepack pnpm dir" $cleanupPaths.CorepackPnpmVersionDir (Join-Path $env:LOCALAPPDATA "node\corepack\v1\pnpm\$(Get-RequiredPnpmVersion)")
     Assert-Equal "cleanup fnm Node dir" $cleanupPaths.FnmNodeVersionDir (Join-Path $env:APPDATA "fnm\node-versions\v$(Get-RequiredNodeVersion)")
     Assert-Equal "cleanup fnm multishells dir" $cleanupPaths.FnmMultishellsDir (Join-Path $env:LOCALAPPDATA "fnm_multishells")
-    Assert-Equal "cleanup repo node_modules" $cleanupPaths.RepoNodeModules (Join-Path (Get-BerdRepoRoot) "node_modules")
-    Assert-Equal "cleanup repo pnpm store" $cleanupPaths.RepoPnpmStore (Join-Path (Get-BerdRepoRoot) ".pnpm-store")
-    Assert-Equal "cleanup repo dist" $cleanupPaths.RepoDist (Join-Path (Get-BerdRepoRoot) "dist")
-    Assert-Equal "cleanup git hooks dir" $cleanupPaths.GitHooksDir (Join-Path (Get-BerdRepoRoot) ".git\hooks")
+    Assert-Equal "cleanup repo node_modules" $cleanupPaths.RepoNodeModules (Join-Path (Get-DistillRepoRoot) "node_modules")
+    Assert-Equal "cleanup repo pnpm store" $cleanupPaths.RepoPnpmStore (Join-Path (Get-DistillRepoRoot) ".pnpm-store")
+    Assert-Equal "cleanup repo dist" $cleanupPaths.RepoDist (Join-Path (Get-DistillRepoRoot) "dist")
+    Assert-Equal "cleanup git hooks dir" $cleanupPaths.GitHooksDir (Join-Path (Get-DistillRepoRoot) ".git\hooks")
 
-    # A leftover Block Artifactory registry, as older Berd setups wrote it.
+    # A leftover Block Artifactory registry, as older Distill setups wrote it.
     $blockNpmRegistry = "https://global.block-artifacts.com/artifactory/api/npm/square-npm/"
     Assert-Equal "public npm registry" (Get-PublicNpmRegistry) "https://registry.npmjs.org/"
     Assert-Equal "detects Block Artifactory host" (Test-IsBlockNpmValue $blockNpmRegistry) $true
@@ -573,7 +573,7 @@ try {
         $env:COREPACK_INTEGRITY_KEYS = $oldIntegrity
     }
 } finally {
-    $env:BERD_DEV_ROOT = $oldBerdDevRoot
+    $env:DISTILL_DEV_ROOT = $oldDistillDevRoot
     $env:LOCALAPPDATA = $oldLocalAppData
     $env:USERPROFILE = $oldUserProfile
     $env:APPDATA = $oldAppData

@@ -42,7 +42,7 @@ type SettingsSectionDefinition = {
 //   - "behavior": follow-up mode, @ mention default, chat tips, cost
 //     estimate, response gutter, artifact auto-open, multi-workspace, style
 //     guidelines, compaction -- named "Behavior" (not "Chat") because most
-//     of these rows affect work in Berd broadly, not just in-chat concerns
+//     of these rows affect work in Distill broadly, not just in-chat concerns
 //     (file auto-open, multi-workspace). "Chat" underclaimed the section;
 //     "General"/"Workspace"/"Preferences" were considered and rejected as
 //     too broad/vague; "Workflow" was rejected because it implies ordered,
@@ -51,7 +51,7 @@ type SettingsSectionDefinition = {
 //   - "system": install-level (language, artifact/terminal folders, cached
 //     media, bb CLI, dev runtime config) + a row that opens Doctor as its
 //     own page. Language lives here, not "behavior": it's an install-level,
-//     "which language does Berd speak" setting, not a per-chat behavior.
+//     "which language does Distill speak" setting, not a per-chat behavior.
 //
 // Rev 5 (Aug 19): "about" is no longer its own section -- app identity +
 // "is it current" (Updates card) + Account are still one concept, but they

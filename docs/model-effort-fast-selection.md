@@ -42,7 +42,7 @@ shape survives only as legacy input that is read, never written (see
   (`sessionExecutionTarget.ts`).
 - **Intent: `ChatSession.desiredRunSettings`** — `{ effort?, fast? }`
   (`sessionRunSettings.ts`). What the operator (or an agent, a ranking, a wave
-  step, berdctl) asked for. It survives model switches.
+  step, distillctl) asked for. It survives model switches.
 - **Observed menus: `ChatSession.reasoningEffort` / `ChatSession.fastMode`** —
   the live options for the **current** model, as the bridge last reported
   them. Cleared on a model change; intent is not.
@@ -56,7 +56,7 @@ shape survives only as legacy input that is read, never written (see
   the record is not an instruction (open question in
   `LAWS/PROPOSAL-2026-09-model-effort.md`).
 
-### Agents, rankings, waves, berdctl
+### Agents, rankings, waves, distillctl
 
 - **Personas** — frontmatter `effort` and `fast_mode` beside `model`.
 - **Model rankings** — each entry stores a base `modelId` plus `effort` and
@@ -66,7 +66,7 @@ shape survives only as legacy input that is read, never written (see
   step naming an effort or fast mode its model does not offer refuses the
   whole plan. Run journals, telemetry and the conductor graph record `effort`
   and `fast` beside the model; old records stay as written.
-- **berdctl** (protocolVersion 6) — `session create --effort/--fast-mode`,
+- **distillctl** (protocolVersion 6) — `session create --effort/--fast-mode`,
   `agent create --effort/--fast-mode`; `info models` lists `efforts`,
   `default_effort`, `supports_fast` and `group`; `session get`, `session list`
   and `session fork` report `effort` and `fast_mode`. Refusals are
@@ -148,7 +148,7 @@ the split was built.
 - **Fast mode on codex** exists on every model except GPT-5.3-Codex-Spark.
   codex offers `ultra` on some models (not all), and Luna tops out at `max`.
 - **grok** has a real `reasoning_effort` option (four stops) and no fast mode
-  at all; berdctl answers `fast_not_supported`. grok accepts an effort a model
+  at all; distillctl answers `fast_not_supported`. grok accepts an effort a model
   does not advertise, so Distill validates against the advertised menu.
 - **Claude's extra models** (Fable 5.1, Opus 4.8, 4.7, 4.6, Sonnet 4.6) open a
   bridge session on the model and are then asserted with
@@ -166,13 +166,13 @@ Folded ids are still read, never written:
   (`splitLegacyFoldedModelId`, `baseModelId`, `sameModelIdentity`). It has no
   compose function on purpose.
 - `split_effort_model` in `router.rs` — the host's inbound path inside
-  `apply_model`, for a folded id from an old renderer, an old berdctl client or
+  `apply_model`, for a folded id from an old renderer, an old distillctl client or
   a stored value the lazy split skipped.
 - The host's lazy per-session split (kv flag `migrations/selection_split`):
   on first load, a stored `model_id` whose suffix the harness advertises as an
   effort becomes base id plus `reasoning_effort`, with the original kept in
   `legacy_model_id`.
-- `resolveRequestedModelSelection` in `src/features/berdctl/commands/runtime/providers.ts`
+- `resolveRequestedModelSelection` in `src/features/distillctl/commands/runtime/providers.ts`
   — serves both `session create` and `agent create`: an exact listed id wins,
   otherwise a folded id is split and answered with a `deprecated` note.
 - Preferences, persona files, ranking entries, wave plans, journals,
@@ -181,7 +181,7 @@ Folded ids are still read, never written:
 
 **Sunset condition, not a date.** All of these readers — including both
 callers of `resolveRequestedModelSelection` — may be removed once **no
-`sessions.legacy_model_id` rows remain and no pre-protocolVersion-6 berdctl
+`sessions.legacy_model_id` rows remain and no pre-protocolVersion-6 distillctl
 clients are in use**. Removing them earlier breaks operator history, imported
 personas and external agents.
 

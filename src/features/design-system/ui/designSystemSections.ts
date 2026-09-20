@@ -13,8 +13,8 @@ export type DesignSystemSection =
   | "component-aspect-ratio"
   | "component-avatar"
   | "component-badge"
-  | "component-berd-loader"
-  | "component-berd-loader-inline"
+  | "component-distill-loader"
+  | "component-distill-loader-inline"
   | "component-breadcrumb"
   | "component-alert"
   | "component-calendar"
@@ -35,7 +35,7 @@ export type DesignSystemSection =
   | "component-dropdown-menu"
   | "component-file-context-menu"
   | "component-form"
-  | "component-berd-logo"
+  | "component-distill-logo"
   | "component-hover-card"
   | "component-image-lightbox"
   | "component-input-group"
@@ -94,8 +94,8 @@ export const DESIGN_SYSTEM_COMPONENT_SECTIONS: Array<{
   { id: "component-button", label: "Button" },
   { id: "component-card", label: "Card" },
   { id: "component-badge", label: "Badge" },
-  { id: "component-berd-loader", label: "Berd Loader" },
-  { id: "component-berd-loader-inline", label: "Berd Loader Inline" },
+  { id: "component-distill-loader", label: "Distill Loader" },
+  { id: "component-distill-loader-inline", label: "Distill Loader Inline" },
   { id: "component-checkbox", label: "Checkbox" },
   { id: "component-collapsible", label: "Collapsible" },
   { id: "component-command", label: "Command" },
@@ -151,7 +151,7 @@ export const DESIGN_SYSTEM_UNUSED_COMPONENT_SECTIONS: Array<{
   { id: "component-carousel", label: "Carousel" },
   { id: "component-drawer", label: "Drawer" },
   { id: "component-form", label: "Form" },
-  { id: "component-berd-logo", label: "Berd Logo" },
+  { id: "component-distill-logo", label: "Distill Logo" },
   { id: "component-input-group", label: "Input Group" },
   { id: "component-input-otp", label: "Input OTP" },
   { id: "component-menubar", label: "Menubar" },

@@ -3,7 +3,7 @@
  * app recognises that text again later.
  *
  * Everything here is pure. The digest is delivered as a *real user message*
- * through the berdctl cross-session seam (`digestDelivery.ts`), so once it has
+ * through the distillctl cross-session seam (`digestDelivery.ts`), so once it has
  * been sent it is an ordinary transcript message like any other — there is no
  * store that remembers "this message was a digest". A marker in the text is
  * what makes it recognisable again, and it has to earn its keep three times:

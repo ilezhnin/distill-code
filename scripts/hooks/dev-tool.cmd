@@ -14,7 +14,7 @@ rem A batch file is a native command, so its arguments arrive verbatim.
 rem
 rem A tool that is genuinely not installed must not block a push: CI runs the
 rem same checks. The launcher warns loudly and skips instead, never quietly,
-rem and never on CI or under BERD_REQUIRE_DEV_TOOLS=1.
+rem and never on CI or under DISTILL_REQUIRE_DEV_TOOLS=1.
 setlocal enabledelayedexpansion
 
 if "%~1"=="" (
@@ -63,8 +63,8 @@ if not defined RESOLVED (
     echo. 1>&2
     exit /b 127
   )
-  if "%BERD_REQUIRE_DEV_TOOLS%"=="1" (
-    echo   ** Refusing to skip it here: BERD_REQUIRE_DEV_TOOLS=1. 1>&2
+  if "%DISTILL_REQUIRE_DEV_TOOLS%"=="1" (
+    echo   ** Refusing to skip it here: DISTILL_REQUIRE_DEV_TOOLS=1. 1>&2
     echo. 1>&2
     exit /b 127
   )

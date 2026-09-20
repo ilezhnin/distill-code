@@ -297,7 +297,7 @@ export function decodeAgentImage(bytes: Uint8Array): SnapshotV1 {
     );
   }
   const snapshot = validateSnapshotV1(value);
-  // Early Berd animated-card builds stored video as a multi-megabyte base64
+  // Early Distill animated-card builds stored video as a multi-megabyte base64
   // string inside profile JSON. Do not retain that legacy payload in React
   // state; current exports use the binary bdAV chunk instead.
   if (snapshot.profile) {

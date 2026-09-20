@@ -223,7 +223,7 @@ fn collect_skill_roots(
             None,
         );
     }
-    // Keep Personal roots ahead of Berd-owned app skills so any bare-name
+    // Keep Personal roots ahead of Distill-owned app skills so any bare-name
     // activation chooses the user's skill while exact selection remains
     // path-based and can still target either entry.
     if let Some(app_skills_root) = app_skills_root {
@@ -232,7 +232,7 @@ fn collect_skill_roots(
             &mut seen_roots,
             app_skills_root.to_path_buf(),
             SkillRootScope::App,
-            "Berd app".to_string(),
+            "Distill app".to_string(),
             None,
         );
     }
@@ -370,7 +370,7 @@ fn collect_agent_skills(
 }
 
 #[tauri::command]
-pub async fn list_berd_app_skills(
+pub async fn list_distill_app_skills(
     app: AppHandle,
     bundled_skills_state: State<'_, crate::services::bundled_skills::BundledSkillsState>,
 ) -> Result<ListAgentSkillsResponse, String> {
@@ -378,7 +378,7 @@ pub async fn list_berd_app_skills(
     let app_data_dir = app
         .path()
         .app_data_dir()
-        .map_err(|err| format!("Failed to resolve Berd app data directory: {err}"))?;
+        .map_err(|err| format!("Failed to resolve Distill app data directory: {err}"))?;
     let app_skills_root = app_data_dir.join("skills");
     let skills = tokio::task::spawn_blocking(move || {
         let mut roots = Vec::new();
@@ -388,13 +388,13 @@ pub async fn list_berd_app_skills(
             &mut seen_roots,
             app_skills_root,
             SkillRootScope::App,
-            "Berd app".to_string(),
+            "Distill app".to_string(),
             None,
         );
         collect_skills_from_roots(roots, None)
     })
     .await
-    .map_err(|err| format!("Failed to list Berd app skills: {err}"))?;
+    .map_err(|err| format!("Failed to list Distill app skills: {err}"))?;
     Ok(ListAgentSkillsResponse { skills })
 }
 
@@ -408,7 +408,7 @@ pub async fn list_agent_skills(
     let app_data_dir = app
         .path()
         .app_data_dir()
-        .map_err(|err| format!("Failed to resolve Berd app data directory: {err}"))?;
+        .map_err(|err| format!("Failed to resolve Distill app data directory: {err}"))?;
     let app_skills_root = app_data_dir.join("skills");
     let e2e_skills_root = app
         .try_state::<crate::services::e2e_mode::E2eMode>()

@@ -593,7 +593,7 @@ fn build_local_result(
     }
 }
 
-/// Disk states of the Berd-managed Node.js runtime the check reports on.
+/// Disk states of the Distill-managed Node.js runtime the check reports on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ManagedNodeRuntimeState {
     /// The pinned version is installed and answers the readiness probe.
@@ -606,10 +606,10 @@ enum ManagedNodeRuntimeState {
     Missing,
 }
 
-/// Report the state of the Berd-managed Node.js runtime that npm-installed
+/// Report the state of the Distill-managed Node.js runtime that npm-installed
 /// agent tools run on, with a native fix that (re)installs the pinned
 /// version. Silent when there is nothing to report: an unsupported target,
-/// or a runtime that was never installed and no Berd-installed npm tools
+/// or a runtime that was never installed and no Distill-installed npm tools
 /// that would need it.
 async fn run_node_runtime_check(
     managed_node_root: Option<PathBuf>,
@@ -638,7 +638,7 @@ async fn run_node_runtime_check(
     build_managed_node_runtime_check(state, &install_dir, &npm_tools)
 }
 
-/// Names of the bin shims npm wrote into the Berd-private prefix — the tools
+/// Names of the bin shims npm wrote into the Distill-private prefix — the tools
 /// that need the managed runtime to run at all.
 fn installed_npm_tool_names(bin_dir: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(bin_dir) else {
@@ -662,17 +662,17 @@ fn build_managed_node_runtime_check(
     let (status, message) = match state {
         ManagedNodeRuntimeState::Ready => (
             CheckStatus::Pass,
-            format!("Berd-managed Node.js {version} is installed"),
+            format!("Distill-managed Node.js {version} is installed"),
         ),
         ManagedNodeRuntimeState::Broken => (
             CheckStatus::Warn,
-            format!("Berd-managed Node.js {version} is damaged; run the fix to reinstall it"),
+            format!("Distill-managed Node.js {version} is damaged; run the fix to reinstall it"),
         ),
         ManagedNodeRuntimeState::Missing if npm_tools.is_empty() => return None,
         ManagedNodeRuntimeState::Missing => (
             CheckStatus::Warn,
             format!(
-                "Berd-managed Node.js {version} is not installed; Berd-installed agent tools require it"
+                "Distill-managed Node.js {version} is not installed; Distill-installed agent tools require it"
             ),
         ),
     };
@@ -683,15 +683,15 @@ fn build_managed_node_runtime_check(
         ManagedNodeRuntimeState::Missing => "missing",
     };
     let mut detail = vec![
-        "checked: Berd-managed Node.js runtime".to_string(),
+        "checked: Distill-managed Node.js runtime".to_string(),
         format!("pinned version: {version}"),
         format!("install dir: {}", install_dir.display()),
         format!("state: {state_label}"),
     ];
     if npm_tools.is_empty() {
-        detail.push("Berd-installed npm tools: none".to_string());
+        detail.push("Distill-installed npm tools: none".to_string());
     } else {
-        detail.push("Berd-installed npm tools:".to_string());
+        detail.push("Distill-installed npm tools:".to_string());
         detail.extend(npm_tools.iter().map(|name| format!("- {name}")));
     }
 
@@ -716,7 +716,7 @@ fn build_managed_node_runtime_check(
         // confirmation dialog displays, not a shell command.
         check.fix_type = Some(FixType::Command);
         check.fix_command = Some(format!(
-            "download and install Node.js {version} into Berd's app data"
+            "download and install Node.js {version} into Distill's app data"
         ));
     }
     Some(check)
@@ -805,7 +805,7 @@ fn managed_bridge_probe(
 }
 
 /// The upstream doctor resolver joins bare executable names onto PATH entries.
-/// Windows does not apply PATHEXT to that manual join, so Berd's intentional
+/// Windows does not apply PATHEXT to that manual join, so Distill's intentional
 /// `<binary>.cmd` managed shims are invisible there. Re-probe only managed
 /// Windows bridges from the exact managed directory and repair those results;
 /// other checks and platforms remain upstream-owned.
@@ -887,7 +887,7 @@ pub(crate) async fn repair_windows_managed_bridge_checks(
         });
         check.bridge = None;
         check.raw_output = Some(format!(
-            "# Berd Windows managed bridge repair\npath: {}\nprobe: {}\n{}",
+            "# Distill Windows managed bridge repair\npath: {}\nprobe: {}\n{}",
             shim_path.display(),
             probe_label,
             probe_output
@@ -931,7 +931,7 @@ async fn run_doctor_impl(
             env: None,
             // The crate labels binaries resolving from this dir as bundled
             // (install source + readout flag) and suppresses registry
-            // install/update fixes for them — Berd installs and upgrades these
+            // install/update fixes for them — Distill installs and upgrades these
             // bridges itself, so no manual update nag is shown.
             bundled_tools_dir: bundled_tools_dir.clone(),
         }
@@ -1015,7 +1015,7 @@ fn doctor_timeout_report(timeout_duration: Duration) -> DoctorReport {
             path: None,
             bridge_path: None,
             raw_output: Some(format!(
-                "checked: app-side doctor timeout\ntimeout_seconds: {}\nmessage: Berd stopped waiting for Doctor checks so the page could render. The upstream doctor crate may still have an unbounded subprocess running.",
+                "checked: app-side doctor timeout\ntimeout_seconds: {}\nmessage: Distill stopped waiting for Doctor checks so the page could render. The upstream doctor crate may still have an unbounded subprocess running.",
                 timeout_duration.as_secs()
             )),
             auth_status: None,
@@ -1367,8 +1367,8 @@ async fn ensure_managed_node_runtime_logged(app_handle: &AppHandle) -> Result<()
 }
 
 /// Binary search dirs for doctor checks and fixes: the lock-pinned bridge
-/// shims in `packages/bin` (or the `BERD_ACP_TOOLS_DIR` dev override), then the
-/// Berd-private npm prefix and the managed Node runtime its shims run on.
+/// shims in `packages/bin` (or the `DISTILL_ACP_TOOLS_DIR` dev override), then the
+/// Distill-private npm prefix and the managed Node runtime its shims run on.
 /// Same order as the agent host's bridge spawn env and agent setup, so the
 /// doctor reports the binary the agent host would spawn.
 fn doctor_prepend_dirs(app_handle: &AppHandle) -> Vec<PathBuf> {

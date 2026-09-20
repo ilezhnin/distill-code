@@ -96,16 +96,16 @@ describe("spawn policy prompt", () => {
     );
   });
 
-  it("names the berdctl spawn commands, enforced since P42", () => {
-    // The berdctl path now carries the caller's identity and is refused in
+  it("names the distillctl spawn commands, enforced since P42", () => {
+    // The distillctl path now carries the caller's identity and is refused in
     // code too (runtime/spawnGate.ts); the prompt states the enforcement
     // because the app preamble advertises both commands.
     for (const text of [
       formatSpawnPolicyPrompt([]),
       formatSpawnPolicyPrompt(["worker"]),
     ]) {
-      expect(text).toContain("`berdctl session create`");
-      expect(text).toContain("`berdctl session fork`");
+      expect(text).toContain("`distillctl session create`");
+      expect(text).toContain("`distillctl session fork`");
     }
   });
 

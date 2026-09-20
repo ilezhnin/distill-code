@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type RendererLogLevel = "info" | "warn" | "error";
 
-/** Forward a renderer lifecycle event to the backend app log (`berd.log`). */
+/** Forward a renderer lifecycle event to the backend app log (`distill.log`). */
 export async function logRendererEvent(
   level: RendererLogLevel,
   message: string,

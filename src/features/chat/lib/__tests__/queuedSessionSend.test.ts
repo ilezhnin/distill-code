@@ -146,7 +146,7 @@ describe("acquireExistingSessionForBackgroundSend", () => {
         executionTarget: undefined,
       })),
     }));
-    // berdctl can address a session this renderer has never activated; its
+    // distillctl can address a session this renderer has never activated; its
     // execution target arrives with the `session/load` replay itself.
     mocks.loadSessionMessages.mockImplementation(async () => {
       useChatSessionStore.setState((state) => ({

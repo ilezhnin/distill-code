@@ -4,13 +4,13 @@ Date: 2026-05-21
 
 ## The New Rule
 
-Use Tailwind utilities backed by the shadcn token contract first. Use Berd tokens only when the color is product-specific and does not exist in shadcn's shared vocabulary.
+Use Tailwind utilities backed by the shadcn token contract first. Use Distill tokens only when the color is product-specific and does not exist in shadcn's shared vocabulary.
 
 In practice:
 
 1. Shared UI should use shadcn names: `background`, `foreground`, `card`, `popover`, `muted`, `accent`, `primary`, `destructive`, `border`, `input`, and `ring`.
 2. Sidebar UI should use shadcn sidebar names: `sidebar-foreground`, `sidebar-accent`, `sidebar-border`, and `sidebar-ring`. The pane shell itself paints `card-glass` like every other floating container.
-3. Berd-specific surfaces keep product-specific names only when shadcn has no matching role: `canvas-*`, `surface-composer`, composer chips, status colors, project tint, and dot-grid variables.
+3. Distill-specific surfaces keep product-specific names only when shadcn has no matching role: `canvas-*`, `surface-composer`, composer chips, status colors, project tint, and dot-grid variables.
 
 This follows the shadcn theming model: core tokens describe component anatomy and state, while Tailwind classes are the authoring API.
 
@@ -41,11 +41,11 @@ This follows the shadcn theming model: core tokens describe component anatomy an
 | Sidebar divider | `sidebar-border` | `border-sidebar-border` |
 | Sidebar focus ring | `sidebar-ring` | `ring-sidebar-ring` |
 
-## Berd Extensions We Keep
+## Distill Extensions We Keep
 
 | Token family | Why it exists | Tailwind examples |
 | --- | --- | --- |
-| `canvas-base` | Berd's dot-grid app canvas is product-specific. | `bg-canvas-base` |
+| `canvas-base` | Distill's dot-grid app canvas is product-specific. | `bg-canvas-base` |
 | `surface-composer`, `surface-composer-glass`, `surface-composer-hover` | Composer-specific translucent surfaces and their hover counterpart. | `bg-surface-composer` |
 | `surface-chat-composer`, `surface-chat-composer-hover` | Floating chat composer shell over the transcript; muted translucent gray. | `bg-surface-chat-composer` |
 | `surface-composer-action`, `surface-composer-action-hover`, `surface-composer-action-active` | Chat composer toolbar control fills (agent/model pickers, branch selector). | `bg-surface-composer-action`, `hover:bg-surface-composer-action-hover` |
@@ -78,11 +78,11 @@ This follows the shadcn theming model: core tokens describe component anatomy an
 | `background-primary`, `text-on-primary` | `primary`, `primary-foreground` | Same job as shadcn primary. |
 | `background-danger-strong`, `text-on-danger-strong` | `destructive`, `destructive-foreground` | Same job as shadcn destructive. |
 | `background-danger`, `text-danger` | `destructive/10`, `destructive` | Destructive tint plus destructive text. |
-| `background-success`, `text-success` old pair | `success/10`, `success` | Keep status as a small Berd extension, not broad background tokens. |
+| `background-success`, `text-success` old pair | `success/10`, `success` | Keep status as a small Distill extension, not broad background tokens. |
 | `background-warning`, `text-warning` old pair | `warning/10`, `warning` | Same status-extension pattern. |
 | `background-info`, `text-info` old pair | `info/10`, `info` | Same status-extension pattern. |
 | `surface-card` | `card` | Card is a shadcn core token. |
-| `surface-user-bubble` | `message-user-bg` | User bubble fill is message-specific, so it gets a narrow Berd token instead of reviving `surface-*`. |
+| `surface-user-bubble` | `message-user-bg` | User bubble fill is message-specific, so it gets a narrow Distill token instead of reviving `surface-*`. |
 | `surface-overlay`, `background-popover`, `text-on-popover` | `popover`, `popover-foreground` | Floating surfaces should use shadcn popover. |
 | `border-default`, `border-soft`, `border-strong` | `border`, usually with opacity like `border-border/80` | One structural border token is enough for now. |
 | `border-input` old alias | `input` | shadcn input token. |
@@ -218,5 +218,5 @@ exact machine-checked contract.
 | Is this a sidebar row state? | `sidebar-accent` / `sidebar-accent-foreground` |
 | Is this a focus outline? | `ring` |
 | Is this a form/control border? | `input` |
-| Is this a Berd-only product surface or identity chip? | Use the smallest Berd extension token that names that product job. |
+| Is this a Distill-only product surface or identity chip? | Use the smallest Distill extension token that names that product job. |
 | Is this a pseudo-element, highlight, filter, or opacity that no utility class can target? | Define a `:root`/dark token and consume it with `var(...)`. See [Tokens Consumed In Raw CSS](#tokens-consumed-in-raw-css). |

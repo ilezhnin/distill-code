@@ -15,7 +15,7 @@ export type TargetTransitionOrigin =
   | "draft"
   | "queued-send"
   | "activation"
-  | "berdctl"
+  | "distillctl"
   | "hydration"
   | "recovery"
   | "send";

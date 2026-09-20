@@ -1017,6 +1017,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_rename_migration_moves_stored_names_and_leaves_prose_about_them() {
+        let (_dir, store) = store_with_history().await;
+        let stored = json!({
+            "sessionId": "b",
+            "update": {
+                "sessionUpdate": "user_message_chunk",
+                "content": {
+                    "type": "text",
+                    "text": "see berd://session/abc and the \"berdctl_cross_session\" origin",
+                },
+                "_meta": {
+                    "origin": "berdctl_cross_session",
+                    "berdSenderLabel": "Planner",
+                    "berdDeliveryId": "d-1",
+                },
+            },
+        });
+        sqlx::query(
+            "INSERT INTO session_events (session_id, created_at, payload_json) VALUES ('b', '2026-09-20T00:00:00.000Z', ?)",
+        )
+        .bind(stored.to_string())
+        .execute(&store.pool)
+        .await
+        .expect("insert");
+
+        sqlx::query(include_str!(
+            "../../../migrations_agent_host/20260921000000_rename_upstream_names.sql"
+        ))
+        .execute(&store.pool)
+        .await
+        .expect("migrate");
+
+        let payload: String =
+            sqlx::query("SELECT payload_json FROM session_events WHERE session_id = 'b'")
+                .fetch_one(&store.pool)
+                .await
+                .expect("read")
+                .get("payload_json");
+        let migrated: Value = serde_json::from_str(&payload).expect("still json");
+        let update = &migrated["update"];
+        assert_eq!(update["_meta"]["origin"], "distillctl_cross_session");
+        assert_eq!(update["_meta"]["distillSenderLabel"], "Planner");
+        assert_eq!(update["_meta"]["distillDeliveryId"], "d-1");
+        assert!(update["_meta"].get("berdSenderLabel").is_none());
+        assert_eq!(
+            update["content"]["text"],
+            "see distill://session/abc and the \"berdctl_cross_session\" origin"
+        );
+    }
+
+    #[tokio::test]
     async fn a_session_stored_before_the_run_settings_existed_reads_back_with_none() {
         let (_dir, store) = store_with_history().await;
         let existing = store.get_session("a").await.expect("read").expect("row");

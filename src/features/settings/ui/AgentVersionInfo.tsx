@@ -73,7 +73,7 @@ export function AgentVersionInfo({ check, className }: AgentVersionInfoProps) {
           ? formatVersion(readout.latestVersion)
           : null;
         // Bundled readouts never carry an update nag: the crate stamps them
-        // and suppresses `updateAvailable` — they update with Berd itself.
+        // and suppresses `updateAvailable` — they update with Distill itself.
         const showUpdate = readout.updateAvailable;
         return (
           <div key={readout.role} className="flex flex-col text-xs break-words">

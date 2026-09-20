@@ -190,12 +190,12 @@ describe("getReplayUserMetadata", () => {
     ).toEqual({ delivery: "steer" });
   });
 
-  it("restores known berdctl cross-session origin metadata", () => {
+  it("restores known distillctl cross-session origin metadata", () => {
     expect(
       getReplayUserMetadata({
-        _meta: { distill: { origin: "berdctl_cross_session" } },
+        _meta: { distill: { origin: "distillctl_cross_session" } },
       }),
-    ).toEqual({ origin: "berdctl_cross_session" });
+    ).toEqual({ origin: "distillctl_cross_session" });
   });
 
   it("restores sender attribution on cross-session messages", () => {
@@ -203,16 +203,16 @@ describe("getReplayUserMetadata", () => {
       getReplayUserMetadata({
         _meta: {
           distill: {
-            origin: "berdctl_cross_session",
-            berdSenderLabel: "berd-monitor",
-            berdDeliveryId: "monitor-event-1",
+            origin: "distillctl_cross_session",
+            distillSenderLabel: "distill-monitor",
+            distillDeliveryId: "monitor-event-1",
           },
         },
       }),
     ).toEqual({
-      origin: "berdctl_cross_session",
-      berdSenderLabel: "berd-monitor",
-      berdDeliveryId: "monitor-event-1",
+      origin: "distillctl_cross_session",
+      distillSenderLabel: "distill-monitor",
+      distillDeliveryId: "monitor-event-1",
     });
   });
 

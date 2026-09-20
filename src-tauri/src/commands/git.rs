@@ -47,7 +47,7 @@ struct GitStateChangedPayload {
     branch: Option<String>,
 }
 
-const GIT_STATE_CHANGED_EVENT: &str = "berd:git-state-changed";
+const GIT_STATE_CHANGED_EVENT: &str = "distill:git-state-changed";
 pub(crate) const GIT_READ_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) const GIT_STATUS_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) const GIT_MUTATING_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
@@ -596,7 +596,7 @@ fn disabled_git_hooks_dir() -> &'static Path {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
         std::env::temp_dir().join(format!(
-            "berd-git-hooks-disabled-{}",
+            "distill-git-hooks-disabled-{}",
             uuid::Uuid::new_v4().simple()
         ))
     })
@@ -791,7 +791,7 @@ fn apply_captured_git_env(command: &mut TokioCommand, env: &HashMap<String, Stri
     command.envs(env);
 }
 
-/// Git transport variables Berd deliberately carries across repository
+/// Git transport variables Distill deliberately carries across repository
 /// boundaries. Every other inherited `GIT_*` variable is removed so newly
 /// introduced Git controls fail closed instead of bypassing a stale denylist.
 const PRESERVED_GIT_TRANSPORT_ENV_KEYS: &[&str] =
@@ -1426,9 +1426,9 @@ mod tests {
         setup(&["add", "tracked.txt"]);
         setup(&[
             "-c",
-            "user.name=Berd Test",
+            "user.name=Distill Test",
             "-c",
-            "user.email=berd@example.test",
+            "user.email=distill@example.test",
             "commit",
             "-qm",
             "fixture",
@@ -1814,9 +1814,9 @@ mod tests {
         run_setup_git(&["add", "tracked.txt"]);
         run_setup_git(&[
             "-c",
-            "user.name=Berd Test",
+            "user.name=Distill Test",
             "-c",
-            "user.email=berd@example.test",
+            "user.email=distill@example.test",
             "commit",
             "-qm",
             "fixture",

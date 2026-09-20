@@ -1,7 +1,7 @@
 -- A chat runs on four selections: provider, model, reasoning effort and fast
 -- mode. The first two have had columns since the table was created; these are
 -- the other two, so a session re-attached with no renderer present (a
--- background attach, berdctl, the title summariser, an app restart) can be put
+-- background attach, distillctl, the title summariser, an app restart) can be put
 -- back on what the operator chose instead of on the bridge's default.
 --
 -- Additive by design: `row_to_session` reads every column by name, so an older

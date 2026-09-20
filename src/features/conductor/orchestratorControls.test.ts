@@ -34,7 +34,7 @@ function queueFirstPrompt(): void {
     admitSystemInheritedQueuedMessage({
       text: "Find every caller",
       sendOptions: {
-        userMessageMetadata: { origin: "berdctl_cross_session" },
+        userMessageMetadata: { origin: "distillctl_cross_session" },
       },
     }),
   );

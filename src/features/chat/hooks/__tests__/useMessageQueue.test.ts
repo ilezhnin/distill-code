@@ -204,32 +204,32 @@ describe("useMessageQueue", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
-  it("drains exactly once when a direct Berdctl lease releases without another state change", async () => {
+  it("drains exactly once when a direct Distillctl lease releases without another state change", async () => {
     const sendMessage = vi.fn().mockReturnValue(true);
-    const berdctlLease = acquireSessionDispatchTarget("s1");
-    expect(berdctlLease).not.toBeNull();
+    const distillctlLease = acquireSessionDispatchTarget("s1");
+    expect(distillctlLease).not.toBeNull();
     expect(acquireSessionDispatchTarget("s1")).toMatchObject({
       status: "contended",
     });
 
     useChatStore.getState().enqueueTransportReadyMessage("s1", {
       persona: { kind: "inherit" },
-      text: "dispatch after Berdctl settles",
+      text: "dispatch after Distillctl settles",
     });
     const { result } = renderHook(() =>
       useMessageQueue("s1", "idle", sendMessage),
     );
 
     expect(result.current.queuedMessage?.text).toBe(
-      "dispatch after Berdctl settles",
+      "dispatch after Distillctl settles",
     );
     expect(sendMessage).not.toHaveBeenCalled();
 
-    act(() => berdctlLease.release?.());
+    act(() => distillctlLease.release?.());
 
     await waitFor(() => expect(sendMessage).toHaveBeenCalledOnce());
     expect(sendMessage).toHaveBeenCalledWith(
-      "dispatch after Berdctl settles",
+      "dispatch after Distillctl settles",
       undefined,
       undefined,
       expect.objectContaining({
@@ -241,7 +241,7 @@ describe("useMessageQueue", () => {
 
   it("dispatches the current replacement after a blocked head changes", async () => {
     const sendMessage = vi.fn().mockReturnValue(true);
-    const berdctlLease = acquireSessionDispatchTarget("s1");
+    const distillctlLease = acquireSessionDispatchTarget("s1");
     useChatStore.getState().enqueueTransportReadyMessage("s1", {
       persona: { kind: "inherit" },
       text: "original",
@@ -263,7 +263,7 @@ describe("useMessageQueue", () => {
     );
     expect(sendMessage).not.toHaveBeenCalled();
 
-    act(() => berdctlLease.release?.());
+    act(() => distillctlLease.release?.());
 
     await waitFor(() => expect(sendMessage).toHaveBeenCalledOnce());
     expect(sendMessage).toHaveBeenCalledWith(
@@ -276,7 +276,7 @@ describe("useMessageQueue", () => {
 
   it("removes a blocked release retry when its owner unmounts", () => {
     const sendMessage = vi.fn().mockReturnValue(true);
-    const berdctlLease = acquireSessionDispatchTarget("s1");
+    const distillctlLease = acquireSessionDispatchTarget("s1");
     useChatStore.getState().enqueueTransportReadyMessage("s1", {
       persona: { kind: "inherit" },
       text: "leave queued",
@@ -285,7 +285,7 @@ describe("useMessageQueue", () => {
     expect(sendMessage).not.toHaveBeenCalled();
 
     owner.unmount();
-    act(() => berdctlLease.release?.());
+    act(() => distillctlLease.release?.());
 
     expect(sendMessage).not.toHaveBeenCalled();
     expect(
@@ -923,14 +923,14 @@ describe("useMessageQueue", () => {
     expect(useChatStore.getState().queuedMessageBySession.s1).toBeUndefined();
   });
 
-  it("leaves berdctl-origin queued messages for the berdctl drain", () => {
+  it("leaves distillctl-origin queued messages for the distillctl drain", () => {
     const sendMessage = vi.fn();
     useChatStore.getState().enqueueTransportReadyMessage("s1", {
       persona: { kind: "inherit" },
-      text: "queued from berdctl",
+      text: "queued from distillctl",
       sendOptions: {
-        userMessageMetadata: { origin: "berdctl_cross_session" },
-        acpPromptMetadata: { origin: "berdctl_cross_session" },
+        userMessageMetadata: { origin: "distillctl_cross_session" },
+        acpPromptMetadata: { origin: "distillctl_cross_session" },
       },
     });
 
@@ -946,10 +946,10 @@ describe("useMessageQueue", () => {
     expect(
       useChatStore.getState().queuedMessageBySession.s1?.[0]?.payload,
     ).toMatchObject({
-      text: "queued from berdctl",
+      text: "queued from distillctl",
       sendOptions: {
-        userMessageMetadata: { origin: "berdctl_cross_session" },
-        acpPromptMetadata: { origin: "berdctl_cross_session" },
+        userMessageMetadata: { origin: "distillctl_cross_session" },
+        acpPromptMetadata: { origin: "distillctl_cross_session" },
       },
     });
   });

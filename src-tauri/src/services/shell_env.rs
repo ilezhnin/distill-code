@@ -1,16 +1,16 @@
-//! Environment hygiene for the subprocesses Berd spawns.
+//! Environment hygiene for the subprocesses Distill spawns.
 //!
 //! Two policies live here and [`sanitize_shell_env`] applies both:
 //!
 //! 1. Repository tool-manager state captured from the user's shell (Hermit
-//!    activation, npm prefix overrides). Berd resolves project tooling itself.
-//! 2. The identity of whatever launched Berd. Terminal emulators, multiplexers,
+//!    activation, npm prefix overrides). Distill resolves project tooling itself.
+//! 2. The identity of whatever launched Distill. Terminal emulators, multiplexers,
 //!    and coding-agent hosts (Orca, Claude Code, Codex, Grok) stamp their
 //!    children with per-pane / per-session variables, and the agent CLIs carry
 //!    host-installed hooks that report any session running with those
-//!    variables back to the host. The ACP bridges Berd's agent host spawns
-//!    are not children of that pane: inheriting its identity makes every Berd
-//!    chat show up inside the terminal that happened to run Berd, and Orca's
+//!    variables back to the host. The ACP bridges Distill's agent host spawns
+//!    are not children of that pane: inheriting its identity makes every Distill
+//!    chat show up inside the terminal that happened to run Distill, and Orca's
 //!    redirected `CODEX_HOME` would route Codex sessions through Orca's
 //!    account instead of the user's own.
 //!
@@ -97,9 +97,9 @@ pub fn inherited_env_keys_to_remove() -> Vec<String> {
 }
 
 /// Read a variable from this process's environment unless it is launcher
-/// identity. Berd's own reads of agent config locations (`CODEX_HOME`,
+/// identity. Distill's own reads of agent config locations (`CODEX_HOME`,
 /// `GROK_HOME`, ...) go through here so an Orca-injected redirect steers
-/// neither the sessions Berd spawns nor the credentials and config it shows.
+/// neither the sessions Distill spawns nor the credentials and config it shows.
 pub fn user_env_var(key: &str) -> Option<String> {
     let env = process_env();
     let removable = removable_keys(&env);
@@ -379,7 +379,7 @@ mod tests {
     fn remove_inherited_launcher_env_unsets_process_variables_on_command() {
         // Unique names so parallel tests never observe each other.
         const PANE: &str = "ORCA_PANE_KEY_SHELL_ENV_TEST_7F1C";
-        const SAFE: &str = "BERD_SHELL_ENV_TEST_KEEP_7F1C";
+        const SAFE: &str = "DISTILL_SHELL_ENV_TEST_KEEP_7F1C";
         std::env::set_var(PANE, "tab:pane");
         std::env::set_var(SAFE, "keep");
 

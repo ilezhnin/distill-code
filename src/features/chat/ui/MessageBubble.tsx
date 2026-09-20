@@ -996,8 +996,8 @@ export const MessageBubble = memo(function MessageBubble({
   // difference between a steer that looks ignored and one that is waiting.
   const isPendingSteerMessage =
     isUser && message.metadata?.delivery === "steering";
-  const isBerdctlCrossSessionMessage =
-    isUser && message.metadata?.origin === "berdctl_cross_session";
+  const isDistillctlCrossSessionMessage =
+    isUser && message.metadata?.origin === "distillctl_cross_session";
   // A brigade digest is a real cross-session user message; contract 3 says it
   // renders as a compact card rather than a chat bubble. The marker lives in
   // the text rather than in metadata on purpose — metadata does not survive
@@ -1011,8 +1011,8 @@ export const MessageBubble = memo(function MessageBubble({
     isUser && isDigestMessage(message)
       ? parseDigestEnvelope(getTextContent(message))
       : null;
-  const berdSenderLabel = isBerdctlCrossSessionMessage
-    ? message.metadata?.berdSenderLabel
+  const distillSenderLabel = isDistillctlCrossSessionMessage
+    ? message.metadata?.distillSenderLabel
     : undefined;
   const timestamp = (
     <span
@@ -1125,20 +1125,20 @@ export const MessageBubble = memo(function MessageBubble({
                   : "w-full",
               )}
             >
-              {isBerdctlCrossSessionMessage ||
+              {isDistillctlCrossSessionMessage ||
               isSteeredMessage ||
               isPendingSteerMessage ? (
                 <div className="mb-1 flex flex-col items-start gap-0.5 text-xs font-normal leading-4 text-muted-foreground">
-                  {isBerdctlCrossSessionMessage ? (
+                  {isDistillctlCrossSessionMessage ? (
                     <span
-                      data-role="berdctl-cross-session-message-label"
+                      data-role="distillctl-cross-session-message-label"
                       className="leading-4"
                     >
-                      {berdSenderLabel
-                        ? t("message.berdctlCrossSessionNamedLabel", {
-                            sender: berdSenderLabel,
+                      {distillSenderLabel
+                        ? t("message.distillctlCrossSessionNamedLabel", {
+                            sender: distillSenderLabel,
                           })
-                        : t("message.berdctlCrossSessionLabel")}
+                        : t("message.distillctlCrossSessionLabel")}
                     </span>
                   ) : null}
                   {isSteeredMessage ? (

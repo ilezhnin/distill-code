@@ -180,13 +180,13 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let bases = bases(root.path());
         seed(&bases[0], REPLACED, "agent-host.db");
-        seed(&bases[1], REPLACED, "berd.log");
+        seed(&bases[1], REPLACED, "distill.log");
 
         let moved = adopt_in(&bases, REPLACED, CURRENT, Duration::ZERO).unwrap();
 
         assert_eq!(moved, [bases[0].join(CURRENT), bases[1].join(CURRENT)]);
         assert!(bases[0].join(CURRENT).join("agent-host.db").is_file());
-        assert!(bases[1].join(CURRENT).join("berd.log").is_file());
+        assert!(bases[1].join(CURRENT).join("distill.log").is_file());
         assert!(!bases[0].join(REPLACED).exists());
         assert!(!bases[1].join(REPLACED).exists());
         // And it is done once: a second start finds nothing to do.
@@ -220,11 +220,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let bases = bases(root.path());
         seed(&bases[0], REPLACED, "agent-host.db");
-        seed(&bases[1], REPLACED, "berd.log");
+        seed(&bases[1], REPLACED, "distill.log");
         let held = std::fs::OpenOptions::new()
             .read(true)
             .share_mode(0)
-            .open(bases[1].join(REPLACED).join("berd.log"))
+            .open(bases[1].join(REPLACED).join("distill.log"))
             .unwrap();
 
         let error = adopt_in(&bases, REPLACED, CURRENT, Duration::ZERO).unwrap_err();

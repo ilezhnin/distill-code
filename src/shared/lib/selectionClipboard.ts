@@ -13,7 +13,7 @@ import { isExternalHref } from "./isExternalHref";
  * - `text` appends ` (url)` after a link label, so the URL survives as text.
  *
  * Only external destinations (http, https, mailto, tel) are preserved. Local
- * artifact paths and Berd session deep links are meaningless outside the app —
+ * artifact paths and Distill session deep links are meaningless outside the app —
  * and the session scheme is nonce-prefixed while rendering — so those anchors
  * degrade to their label rather than pasting a URL nothing can resolve.
  */
@@ -218,7 +218,7 @@ function isRenderableImageSrc(src: string | null): src is string {
 /**
  * Serializes a node to sanitized HTML, keeping only allowlisted tags and the
  * `href`/`src`/`alt` attributes. Classes, inline styles, and `data-*` hooks are
- * stripped so a paste carries content and not Berd's rendering internals.
+ * stripped so a paste carries content and not Distill's rendering internals.
  */
 function htmlFromNode(node: Node): string {
   if (node.nodeType === Node.TEXT_NODE) {

@@ -21,7 +21,7 @@ import type { WorkspaceNameRequest } from "@/features/chat/hooks/useChatSessionC
 import type { ExtensionEntry } from "@/features/extensions/types";
 import type { AgentSetupTroubleshootingRequest } from "@/features/providers/lib/agentSetupTroubleshooting";
 import type { ForkSessionHandler } from "@/features/sessions/hooks/useForkSession";
-import type { CommandOutcome } from "@/features/berdctl/navigation";
+import type { CommandOutcome } from "@/features/distillctl/navigation";
 import type {
   AppNavigationLocation,
   AppNavigationUpdateOptions,

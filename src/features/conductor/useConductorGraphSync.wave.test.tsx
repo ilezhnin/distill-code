@@ -22,9 +22,9 @@ vi.mock("./spawnOrchestrator", () => ({ spawnConductorChildSession }));
 
 /**
  * The envelope is the whole point of 3a, so it is the seam the tests hold: a
- * digest is a *real user message* through the berdctl cross-session path, not
+ * digest is a *real user message* through the distillctl cross-session path, not
  * a synthetic assistant bubble. The mock commits exactly what that path
- * commits — a user message carrying `origin: "berdctl_cross_session"`.
+ * commits — a user message carrying `origin: "distillctl_cross_session"`.
  */
 const deliverEnvelope = vi.hoisted(() => vi.fn());
 vi.mock("./digestDelivery", () => ({
@@ -146,7 +146,7 @@ describe("useConductorGraphSync wave bridge", () => {
           role: "user",
           created: Date.now(),
           content: [{ type: "text", text }],
-          metadata: { origin: "berdctl_cross_session" },
+          metadata: { origin: "distillctl_cross_session" },
         });
         return { status: "dispatched" as const };
       },

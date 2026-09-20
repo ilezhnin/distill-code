@@ -14,7 +14,7 @@ plans larger requests as waves of executor sessions and reviews their reports
 (`src/features/conductor/`, `LAWS/WAVES.md`), a planner that collects tasks
 agents file (`src/features/planner/`), and memory that carries short facts into
 later prompts, globally or per project (`src/features/memory/`,
-`LAWS/MEMORY.md`). Agents drive the visible app through the bundled `berdctl`
+`LAWS/MEMORY.md`). Agents drive the visible app through the bundled `distillctl`
 CLI.
 
 Distill runs on Windows only. It is a personal fork of
@@ -48,13 +48,13 @@ Runtime, the Rust toolchain from `rust-toolchain.toml`, fnm with Node and pnpm,
 CMake, just and Lefthook; `winget install --id Casey.Just -e` gets `just`
 itself. Open a new PowerShell when freshly installed tools are not on `PATH`.
 
-`dev-windows` builds `berdctl.exe` and `berd-monitor.exe`, starts Vite and the
+`dev-windows` builds `distillctl.exe` and `distill-monitor.exe`, starts Vite and the
 Tauri dev app, and points the app at this repository's `distro\` for bundled
 agents and skills. `scripts\windows\Launch-Distill.ps1 -InstallShortcut`
 creates a desktop shortcut that launches the dev app from Explorer.
 
 The Rust build cache lives in `src-tauri\target` and grows to tens of GB; set
-`BERD_TAURI_CARGO_TARGET_DIR` to move it. More detail, cleanup and
+`DISTILL_TAURI_CARGO_TARGET_DIR` to move it. More detail, cleanup and
 troubleshooting: [docs/windows-onboarding.md](docs/windows-onboarding.md).
 
 ## Bundling
@@ -65,7 +65,7 @@ troubleshooting: [docs/windows-onboarding.md](docs/windows-onboarding.md).
 | MSI installer | `just bundle-windows msi` | `scripts\windows\Bundle-Windows.ps1 -Bundle msi` |
 | NSIS installer with WebView devtools | `just bundle-debug` | `scripts\windows\Bundle-Windows.ps1 -Debug` |
 
-The script installs locked dependencies, stages `berdctl` and `berd-monitor`
+The script installs locked dependencies, stages `distillctl` and `distill-monitor`
 as `externalBin` sidecars, runs `tauri build` for `x86_64-pc-windows-msvc`, and
 prints the installer path under
 `<target>\x86_64-pc-windows-msvc\release\bundle\`. Installers are unsigned.
@@ -73,7 +73,7 @@ The harness bridges are not bundled; the app installs them at runtime.
 
 ## Useful commands
 
-- `just check` — design-system, berdctl contract, formatting, lint, i18n and
+- `just check` — design-system, distillctl contract, formatting, lint, i18n and
   TypeScript checks
 - `just test` — the Vitest suite (`pnpm test`) plus the hook launcher tests
 - `just fmt` — format frontend and Rust files
@@ -89,10 +89,10 @@ The harness bridges are not bundled; the app installs them at runtime.
   `-Remove` (`scripts\windows\Prune-BuildCache-Windows.ps1`)
 - `just cleanup-windows` — dry-run or remove local setup state
   (`scripts\windows\Cleanup-Windows.ps1`)
-- `just new-command <noun> <verb>` — scaffold a berdctl command
+- `just new-command <noun> <verb>` — scaffold a distillctl command
 - `just bump-node-runtime <version>` — re-pin the managed Node runtime
 
-The app log is `%LOCALAPPDATA%\com.levocat.distill\logs\berd.log`; each harness's
+The app log is `%LOCALAPPDATA%\com.levocat.distill\logs\distill.log`; each harness's
 stderr lands there prefixed with its id, such as `[claude-acp]`. A dev build
 uses `com.levocat.distill.dev`. Chats, projects and installed bridges are under
 the same name in `%APPDATA%`. Folders left by a build that still ran as

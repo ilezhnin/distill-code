@@ -1,0 +1,131 @@
+// Regenerates the distillctl contract artifacts from the authoritative
+// command modules in src/features/distillctl/commands/impl/*.ts:
+//
+//   src-tauri/crates/distillctl/api-surface.json   (client-neutral wire surface:
+//       groups → actions → description + fields + JSON Schema)
+//   src-tauri/crates/distillctl/cli-surface.json   (CLI projection: noun/verb
+//       tree + CLI-only prose)
+//
+// The distillctl crate embeds these files and builds its clap tree from them
+// at startup, so after changing a command schema (or adding a command) run:
+//
+//   pnpm generate:distillctl-contract
+//
+// CI regenerates and fails on any diff (`just distillctl-contract-check`); the
+// vitest freshness tests (apiSurface.test.ts / cliSurface.test.ts) hold the
+// same property locally. All introspection logic lives in
+// src/features/distillctl/commands/contract.ts — shared with those tests so the
+// generator and the assertions cannot disagree.
+
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { createServer } from "vite";
+
+const require = createRequire(import.meta.url);
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
+const crateDir = path.join(repoRoot, "src-tauri/crates/distillctl");
+
+const packageJson = JSON.parse(
+  fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"),
+);
+
+async function loadContracts() {
+  // Mirror the app's vite resolution (the `@` alias and build-feature defines)
+  // so each generated projection comes from the exact renderer registry that
+  // its build will dispatch.
+  const server = await createServer({
+    configFile: false,
+    root: repoRoot,
+    logLevel: "error",
+    resolve: {
+      alias: [{ find: "@", replacement: path.join(repoRoot, "src") }],
+    },
+    define: {
+      "import.meta.env.VITE_APP_VERSION": JSON.stringify(packageJson.version),
+    },
+    server: { middlewareMode: true, hmr: false },
+    optimizeDeps: { noDiscovery: true },
+  });
+
+  try {
+    const contract = await server.ssrLoadModule(
+      "/src/features/distillctl/commands/contract.ts",
+    );
+    return {
+      api: contract.buildApiSurfaceContract(),
+      surface: contract.buildCliSurfaceContract(),
+    };
+  } finally {
+    await server.close();
+  }
+}
+
+const publicContracts = await loadContracts();
+
+// Resolve the repo's biome binary (same pattern as
+// scripts/design-system-manifest.mjs) so the emitted JSON matches the
+// formatting the pre-commit hook would apply — CI's regenerate-and-diff
+// check must be byte-stable.
+const biomePackagePath = require.resolve("@biomejs/biome/package.json");
+const biomePackage = JSON.parse(fs.readFileSync(biomePackagePath, "utf8"));
+const biomeBinPath = path.join(
+  path.dirname(biomePackagePath),
+  biomePackage.bin.biome,
+);
+
+const checkMode = process.argv.includes("--check");
+
+function render(fileName, contract) {
+  // Format through the repo's biome so the bytes on disk are stable under
+  // the pre-commit format hook. cwd pins biome's config discovery to the
+  // repo's biome.json regardless of where the generator is invoked from.
+  // Through node, not the bin directly: `bin/biome` is a JavaScript file with
+  // a shebang, which Windows does not honour, so executing it there fails
+  // with ENOENT and takes the whole check down on the platform this project
+  // is developed on.
+  return execFileSync(
+    process.execPath,
+    [biomeBinPath, "format", `--stdin-file-path=${fileName}`],
+    {
+      input: `${JSON.stringify(contract, null, 2)}\n`,
+      encoding: "utf8",
+      cwd: repoRoot,
+    },
+  );
+}
+
+let stale = false;
+for (const [fileName, contract] of [
+  ["api-surface.json", publicContracts.api],
+  ["cli-surface.json", publicContracts.surface],
+]) {
+  const target = path.join(crateDir, fileName);
+  const rendered = render(fileName, contract);
+  const existing = fs.existsSync(target)
+    ? fs.readFileSync(target, "utf8")
+    : null;
+  if (rendered === existing) {
+    continue;
+  }
+  if (checkMode) {
+    stale = true;
+    console.error(`stale: ${path.relative(repoRoot, target)}`);
+  } else {
+    fs.writeFileSync(target, rendered);
+    console.log(`wrote ${path.relative(repoRoot, target)}`);
+  }
+}
+
+if (stale) {
+  console.error(
+    "distillctl contract artifacts are out of date; run " +
+      "`pnpm generate:distillctl-contract` and commit the result.",
+  );
+  process.exit(1);
+}

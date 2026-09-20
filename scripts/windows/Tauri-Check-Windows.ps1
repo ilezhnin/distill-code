@@ -9,16 +9,16 @@ Import-Module (Join-Path $PSScriptRoot "WindowsDev.psm1") -Force -DisableNameChe
 Assert-WindowsHost
 Update-SessionPathFromRegistry
 Assert-MsvcEnvironment
-Set-Location (Join-Path (Get-BerdRepoRoot) "src-tauri")
+Set-Location (Join-Path (Get-DistillRepoRoot) "src-tauri")
 
 $env:CARGO_TARGET_DIR = Get-TauriCargoTargetDir
 $env:TAURI_CONFIG = '{"bundle":{"externalBin":[],"resources":[]}}'
 Write-WindowsDevInfo "Using Tauri Cargo target dir: $env:CARGO_TARGET_DIR"
 
 Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("check") -Label "cargo check"
-Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("check", "--features", (Get-BerdAppFeatures)) -Label "cargo check app features"
-Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("check", "-p", "berdctl") -Label "cargo check -p berdctl"
-Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("check", "-p", "berd-monitor") -Label "cargo check -p berd-monitor"
+Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("check", "--features", (Get-DistillAppFeatures)) -Label "cargo check app features"
+Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("check", "-p", "distillctl") -Label "cargo check -p distillctl"
+Invoke-CheckedCommand -FilePath "cargo" -ArgumentList @("check", "-p", "distill-monitor") -Label "cargo check -p distill-monitor"
 
 Write-Host ""
 Write-Host "Windows Tauri check passed." -ForegroundColor Green

@@ -12,7 +12,7 @@ export type ReplayAssistantMetadata = Pick<
 >;
 export type ReplayUserMetadata = Pick<
   MessageMetadata,
-  "delivery" | "origin" | "berdSenderLabel" | "berdDeliveryId"
+  "delivery" | "origin" | "distillSenderLabel" | "distillDeliveryId"
 >;
 
 export function getReplayMessageId(
@@ -133,14 +133,14 @@ export function getReplayUserMetadata(
 
   const delivery = meta.steer === true ? "steer" : undefined;
   const origin =
-    meta.origin === "berdctl_cross_session"
-      ? "berdctl_cross_session"
+    meta.origin === "distillctl_cross_session"
+      ? "distillctl_cross_session"
       : undefined;
-  const berdSenderLabel = origin
-    ? boundedSingleLineString(meta.berdSenderLabel, 120)
+  const distillSenderLabel = origin
+    ? boundedSingleLineString(meta.distillSenderLabel, 120)
     : undefined;
-  const berdDeliveryId = origin
-    ? boundedSingleLineString(meta.berdDeliveryId, 200)
+  const distillDeliveryId = origin
+    ? boundedSingleLineString(meta.distillDeliveryId, 200)
     : undefined;
   if (!delivery && !origin) {
     return undefined;
@@ -149,8 +149,8 @@ export function getReplayUserMetadata(
   return {
     ...(delivery ? { delivery } : {}),
     ...(origin ? { origin } : {}),
-    ...(berdSenderLabel ? { berdSenderLabel } : {}),
-    ...(berdDeliveryId ? { berdDeliveryId } : {}),
+    ...(distillSenderLabel ? { distillSenderLabel } : {}),
+    ...(distillDeliveryId ? { distillDeliveryId } : {}),
   };
 }
 

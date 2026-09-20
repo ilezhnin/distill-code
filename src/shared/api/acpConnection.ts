@@ -48,7 +48,7 @@ function permissionToolLabel(args: RequestPermissionRequest): string {
   const raw = args.toolCall?.title ?? args.toolCall?.toolCallId ?? "?";
   // The title comes from the bridge and is neither bounded nor single-line,
   // and `log_renderer_event` writes what it is given: clamp it here so a
-  // harness cannot author arbitrary multi-line content in berd.log.
+  // harness cannot author arbitrary multi-line content in distill.log.
   const oneLine = raw.replace(/[\r\n\t]+/g, " ").trim();
   return oneLine.length > 120 ? `${oneLine.slice(0, 117)}…` : oneLine;
 }

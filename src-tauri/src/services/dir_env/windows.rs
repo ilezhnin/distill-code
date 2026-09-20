@@ -41,7 +41,7 @@ pub(crate) fn windows_process_env_for_dir(dir: &Path) -> HashMap<String, String>
 }
 
 /// Remove repository-scoped tool state inherited from the directory that
-/// launched Berd. The shared sanitizer owns the variable policy; this function
+/// launched Distill. The shared sanitizer owns the variable policy; this function
 /// additionally removes Hermit PATH entries using Windows path semantics.
 pub(crate) fn strip_untrusted_windows_tool_state(env: &mut HashMap<String, String>) {
     shell_env::sanitize_shell_env(env);
@@ -63,7 +63,7 @@ pub(crate) fn strip_untrusted_windows_tool_state(env: &mut HashMap<String, Strin
 
 /// Ask Git for the repository boundary instead of duplicating its `.git`,
 /// worktree, and common-directory rules. Inherited Git controls are removed so
-/// discovery describes `dir`, not the process that launched Berd.
+/// discovery describes `dir`, not the process that launched Distill.
 pub(crate) fn find_project_hermit_bin(dir: &Path) -> Option<PathBuf> {
     let target = dir.canonicalize().ok()?;
     let start = if target.is_dir() {

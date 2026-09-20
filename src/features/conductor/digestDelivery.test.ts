@@ -11,15 +11,15 @@ import {
 import { useChatStore } from "@/features/chat/stores/chatStore";
 
 const sendPromptToExistingSessionInBackground = vi.hoisted(() => vi.fn());
-const berdctlCrossSessionSendOptions = vi.hoisted(() =>
+const distillctlCrossSessionSendOptions = vi.hoisted(() =>
   vi.fn(() => ({
-    userMessageMetadata: { origin: "berdctl_cross_session" as const },
+    userMessageMetadata: { origin: "distillctl_cross_session" as const },
   })),
 );
 
-vi.mock("@/features/berdctl/commands/runtime/sessionSend", () => ({
+vi.mock("@/features/distillctl/commands/runtime/sessionSend", () => ({
   sendPromptToExistingSessionInBackground,
-  berdctlCrossSessionSendOptions,
+  distillctlCrossSessionSendOptions,
 }));
 
 const { classifyDigestDispatchError, deliverEnvelope } = await import(
@@ -143,7 +143,7 @@ describe("deliverEnvelope", () => {
     // The queued send carries the cross-session origin, exactly like a direct
     // dispatch would; the parent must not see a digest as its own composer.
     expect(record.payload.sendOptions?.userMessageMetadata?.origin).toBe(
-      "berdctl_cross_session",
+      "distillctl_cross_session",
     );
   });
 

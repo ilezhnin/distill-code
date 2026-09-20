@@ -24,7 +24,7 @@ vi.mock("./spawnOrchestrator", () => ({ spawnConductorChildSession }));
 /**
  * The envelope is mocked at `deliverEnvelope`, the single seam every outgoing
  * message in this feature goes through, and the mock commits what the real
- * berdctl path commits: a user message with `origin: "berdctl_cross_session"`.
+ * distillctl path commits: a user message with `origin: "distillctl_cross_session"`.
  * Everything downstream of that — the verdict anchor, the re-entrancy checks,
  * the card — reads the transcript, so the tests exercise the real machinery.
  */
@@ -209,7 +209,7 @@ describe("wave closed loop", () => {
           role: "user",
           created: Date.now(),
           content: [{ type: "text", text }],
-          metadata: { origin: "berdctl_cross_session" },
+          metadata: { origin: "distillctl_cross_session" },
         });
         return { status: "dispatched" as const };
       },
@@ -470,7 +470,7 @@ describe("wave closed loop", () => {
           text: `${waveDigestMarker("wave-x", 0)}\n${REVISION_PLAN}`,
         },
       ],
-      metadata: { origin: "berdctl_cross_session" },
+      metadata: { origin: "distillctl_cross_session" },
     });
     await settle();
     await settle();
