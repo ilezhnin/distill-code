@@ -143,10 +143,16 @@ $tauriArguments = @(
     "--config", "src-tauri/tauri.dev.conf.json",
     "--config", $devConfigPath
 )
-if ($E2eMode) {
-    # E2E needs one stable native launch. Plugin build scripts generate files
-    # under src-tauri, so the ordinary dev watcher can otherwise invalidate its
-    # own in-flight compile before the test driver publishes readiness.
+# E2E needs one stable native launch. Plugin build scripts generate files
+# under src-tauri, so the ordinary dev watcher can otherwise invalidate its
+# own in-flight compile before the test driver publishes readiness.
+#
+# DISTILL_DEV_NO_WATCH=1 is the same switch for working on Distill *in* this
+# dev app: an agent saving a file under src-tauri otherwise makes the watcher
+# rebuild and relaunch the app, which kills the bridge running that agent's
+# turn. Vite still hot-reloads the renderer; Rust changes wait for a relaunch.
+$NoWatch = $E2eMode -or ($env:DISTILL_DEV_NO_WATCH -eq "1")
+if ($NoWatch) {
     $tauriArguments += "--no-watch"
 }
 Invoke-CheckedCommand -FilePath $pnpm -ArgumentList $tauriArguments -Label "pnpm exec tauri dev"
