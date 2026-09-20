@@ -27,7 +27,7 @@ function readEmptyCtaDismissed(): boolean {
   );
 }
 
-function mergeStale(
+export function mergeStale(
   previous: ProviderRateLimits[] | undefined,
   next: ProviderRateLimits[],
 ): ProviderRateLimits[] {
@@ -39,6 +39,9 @@ function mergeStale(
     const prior = previousById.get(provider.provider);
     if (!prior || !hasUsageData(prior)) return provider;
     if (hasUsageData(provider) || provider.status === "ok") return provider;
+    // A dead or expired sign-in is not a blip: keep the error, drop the
+    // previous windows so the roster offers Sign in instead of stale usage.
+    if (!provider.configured) return provider;
     return {
       ...provider,
       session: provider.session ?? prior.session,

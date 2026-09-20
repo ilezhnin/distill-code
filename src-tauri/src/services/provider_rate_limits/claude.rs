@@ -192,15 +192,14 @@ pub async fn fetch_claude_rate_limits(client: &reqwest::Client) -> ProviderRateL
         Ok(response) => {
             let status = response.status();
             if status.as_u16() == 401 || status.as_u16() == 403 {
-                return ProviderRateLimits {
-                    configured: true,
-                    account_label: credentials.account_label,
-                    ..result(
-                        AgentPlatformId::Claude,
-                        ProviderRateLimitStatus::Error,
-                        Some(format!("Claude usage request unauthorized (HTTP {status})")),
-                    )
-                };
+                return super::unauthorized_from_response(
+                    AgentPlatformId::Claude,
+                    "Claude",
+                    status,
+                    response,
+                    credentials.account_label.clone(),
+                )
+                .await;
             }
             if !status.is_success() {
                 return ProviderRateLimits {

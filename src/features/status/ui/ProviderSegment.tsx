@@ -68,7 +68,10 @@ export function ProviderSegment({
     );
   }
 
-  if (provider.status === "error" && !tightest) {
+  if (
+    (provider.status === "error" || provider.status === "unavailable") &&
+    !tightest
+  ) {
     return (
       <span className="inline-flex items-center gap-1.5 text-muted-foreground">
         {icon}

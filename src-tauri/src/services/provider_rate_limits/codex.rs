@@ -179,14 +179,14 @@ pub async fn fetch_codex_rate_limits(client: &reqwest::Client) -> ProviderRateLi
         Ok(response) => {
             let status = response.status();
             if status.as_u16() == 401 || status.as_u16() == 403 {
-                return ProviderRateLimits {
-                    configured: true,
-                    ..result(
-                        AgentPlatformId::Codex,
-                        ProviderRateLimitStatus::Error,
-                        Some(format!("Codex usage request unauthorized (HTTP {status})")),
-                    )
-                };
+                return super::unauthorized_from_response(
+                    AgentPlatformId::Codex,
+                    "Codex",
+                    status,
+                    response,
+                    auth.account_id.clone(),
+                )
+                .await;
             }
             if !status.is_success() {
                 return ProviderRateLimits {
