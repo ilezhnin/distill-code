@@ -111,22 +111,12 @@ fn agent_roots(project_dir: Option<&Path>) -> Vec<Root> {
             global: false,
             writable: true,
         });
-        roots.push(Root {
-            path: dir.join(".claude").join("agents"),
-            global: false,
-            writable: false,
-        });
     }
     if let Some(home) = home() {
         roots.push(Root {
             path: home.join(".agents").join("agents"),
             global: true,
             writable: true,
-        });
-        roots.push(Root {
-            path: home.join(".claude").join("agents"),
-            global: true,
-            writable: false,
         });
     }
     roots
@@ -1169,22 +1159,30 @@ mod tests {
         assert_eq!(leftovers, vec!["SKILL.md".to_string()]);
     }
 
+    /// Skills and agents are read from `.agents` alone — the project's and the
+    /// home directory's — however many vendor folders sit next to it.
     #[test]
-    fn skill_roots_do_not_include_vendor_skill_folders() {
+    fn a_vendor_folder_is_never_a_root() {
         let dir = tempfile::tempdir().expect("temp dir");
         let project = dir.path().join("repo");
-        std::fs::create_dir_all(project.join(".agents").join("skills")).unwrap();
-        std::fs::create_dir_all(project.join(".claude").join("skills")).unwrap();
-        let roots = skill_roots(Some(&project));
-        assert!(roots.iter().any(|root| root
-            .path
-            .ends_with(std::path::Path::new(".agents").join("skills"))));
-        assert!(roots.iter().all(|root| {
-            !root
-                .path
-                .components()
-                .any(|component| component.as_os_str() == "claude")
-        }));
+        for vendor in [".agents", ".claude", ".codex", ".gemini", ".goose"] {
+            std::fs::create_dir_all(project.join(vendor).join("skills")).unwrap();
+            std::fs::create_dir_all(project.join(vendor).join("agents")).unwrap();
+        }
+        for (kind, roots) in [
+            ("skills", skill_roots(Some(&project))),
+            ("agents", agent_roots(Some(&project))),
+        ] {
+            assert_eq!(roots[0].path, project.join(".agents").join(kind));
+            for root in &roots {
+                assert!(
+                    root.path.ends_with(Path::new(".agents").join(kind)),
+                    "{} is not an .agents root",
+                    root.path.display()
+                );
+                assert!(root.writable);
+            }
+        }
     }
 
     #[test]
