@@ -600,6 +600,33 @@ describe("loadSessionMessages", () => {
     expect(interruptedNoticeFor("listed-settled-replay")).toBeUndefined();
   });
 
+  // The app went away under a turn: the transcript has the call and never its
+  // result. Reloaded, it must not read as a call that has been running since.
+  it.each([
+    ["stops", null, "stopped"],
+    ["keeps", "run-1", "in_progress"],
+  ] as const)("%s a tool call the transcript leaves open when the listed run is %s", async (_verb, activeRunId, status) => {
+    seedSession({ id: "open-call-replay", activeRunId }, { replay: false });
+    ensureReplayAssistantMessage(
+      "open-call-replay",
+      "assistant-1",
+    ).content.push({
+      type: "toolRequest",
+      id: "tool-1",
+      name: "Edit agent_skills.rs",
+      arguments: {},
+      status: "in_progress",
+      startedAt: 1,
+    });
+
+    await expect(loadSessionMessages("open-call-replay")).resolves.toBe(true);
+
+    expect(messagesFor("open-call-replay")[0]?.content[0]).toMatchObject({
+      type: "toolRequest",
+      status,
+    });
+  });
+
   it("leaves the reply in progress when the listed session still has a run", async () => {
     seedSession(
       { id: "listed-running-replay", activeRunId: "run-1" },

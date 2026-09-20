@@ -536,6 +536,9 @@ async function performSessionMessagesLoad(
           : latestSessionBeforeReplay?.activeRunId;
     if (knownActiveRunId === null) {
       completeReplayAssistantMessage(sessionId);
+      // Nothing is running, so a call the transcript leaves open belongs to a
+      // turn that was cut short — most often by the app going away under it.
+      chatStore.settleAbandonedToolCalls(sessionId);
     }
     const latestSession = useChatSessionStore.getState().getSession(sessionId);
     const sessionPatch: Partial<ChatSession> = {};

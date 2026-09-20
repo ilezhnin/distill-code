@@ -557,6 +557,68 @@ describe("chatStore", () => {
     });
   });
 
+  function replyWithAnOpenToolCall(): Message {
+    return {
+      id: "reply-1",
+      role: "assistant",
+      created: 1,
+      content: [
+        {
+          type: "toolRequest",
+          id: "tool-1",
+          name: "Edit agent_skills.rs",
+          arguments: {},
+          status: "in_progress",
+          startedAt: 1,
+        },
+      ],
+      metadata: { userVisible: true, agentVisible: true },
+    };
+  }
+
+  function toolCallStatus(sessionId: string): string | undefined {
+    const block =
+      useChatStore.getState().messagesBySession[sessionId]?.[0]?.content[0];
+    return block?.type === "toolRequest" ? block.status : undefined;
+  }
+
+  it("stops the tool calls a settled run left running, in the same write", () => {
+    const store = useChatStore.getState();
+    store.setMessages("s1", [replyWithAnOpenToolCall()]);
+    store.setActiveRunId("s1", "run-1");
+
+    let writes = 0;
+    const unsubscribe = useChatStore.subscribe(() => {
+      writes += 1;
+    });
+    store.settleActiveRun("s1");
+    unsubscribe();
+
+    expect(writes).toBe(1);
+    expect(toolCallStatus("s1")).toBe("stopped");
+  });
+
+  it("stops a call left open by a run the runtime already counts as settled", () => {
+    const store = useChatStore.getState();
+    store.setMessages("s1", [replyWithAnOpenToolCall()]);
+    store.setActiveRunId("s1", null);
+
+    store.settleActiveRun("s1");
+
+    expect(toolCallStatus("s1")).toBe("stopped");
+  });
+
+  it("leaves the calls of a chat that is already streaming its next turn", () => {
+    const store = useChatStore.getState();
+    store.setMessages("s1", [replyWithAnOpenToolCall()]);
+    store.setChatState("s1", "streaming");
+    store.setActiveRunId("s1", "run-1");
+
+    store.settleActiveRun("s1");
+
+    expect(toolCallStatus("s1")).toBe("in_progress");
+  });
+
   it("preserves live stream state when settling a still-streaming backend run", () => {
     const store = useChatStore.getState();
     store.setChatState("s1", "streaming");
