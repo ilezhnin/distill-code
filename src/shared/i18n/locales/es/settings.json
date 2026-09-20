@@ -304,6 +304,7 @@
         "installStart": "No se pudo iniciar la instalación",
         "updateStart": "No se pudo iniciar la actualización",
         "authStart": "No se pudo iniciar el inicio de sesión",
+        "logoutStart": "No se pudo iniciar el cierre de sesión",
         "refreshStatus": "No se pudo actualizar el estado del proveedor",
         "installVerificationFailed": "La instalación terminó, pero no se encontró la CLI en PATH. Puede que tengas que reiniciar tu terminal.",
         "unknownPath": "esa ruta",
@@ -322,11 +323,14 @@
         "preparingProvider": "Preparando la instalación de {{name}}…",
         "preparingRuntime": "Preparando el entorno de Node.js...",
         "step": "Paso {{step}} de {{total}}",
+        "signingOut": "Cerrando sesión de {{name}}...",
         "verifyingInstallation": "Verificando instalación..."
       },
       "refresh": "Actualizar",
       "signIn": "Iniciar sesión",
       "signInLabel": "Iniciar sesión en {{name}}",
+      "signOut": "Cerrar sesión",
+      "signOutLabel": "Cerrar sesión de {{name}}",
       "status": {
         "checking": "Comprobando...",
         "inProgress": "Configuración en curso",

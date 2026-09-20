@@ -10,13 +10,14 @@ import type { FixType } from "@/shared/api/doctor";
 // consumes (`clearAgentSetupStatus`). This is what lets progress survive
 // navigation *and* a full window reload.
 
-export type AgentSetupAction = "install" | "update" | "auth";
+export type AgentSetupAction = "install" | "update" | "auth" | "logout";
 
 export type AgentSetupPhase =
   | "idle"
   | "checking"
   | "installing"
   | "authenticating"
+  | "signingOut"
   // Downloading/installing the Berd-managed Node.js runtime an npm-backed
   // fix is about to run on.
   | "preparingRuntime";
