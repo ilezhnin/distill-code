@@ -170,6 +170,7 @@ export function HomeComposer({
         contextTokens: controller.tokenState.accumulatedTotal,
         contextLimit: controller.tokenState.contextLimit,
         accumulatedCost: controller.tokenState.accumulatedCost,
+        costBilling: controller.tokenState.costBilling,
         isContextUsageReady: controller.isContextUsageReady,
       }}
     />

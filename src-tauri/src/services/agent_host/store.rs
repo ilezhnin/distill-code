@@ -408,13 +408,19 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Move a session nobody has written in yet onto another harness: the new
-    /// bridge session, its model and snapshot replace the old ones, and the
-    /// events the previous agent reported before the first message (its
-    /// command list, config updates) are dropped so they never replay into
-    /// the new one. Returns `false`, changing nothing, once the session has a
-    /// message — from then on its history belongs to the harness it ran on.
-    pub async fn rebind_unstarted_session(
+    /// Move a session onto another harness: the new bridge session, its model
+    /// and snapshot replace the old ones. The effort and the fast toggle stay
+    /// behind with the harness that named them — another one has its own
+    /// vocabulary for the first and may have no such control at all for the
+    /// second, and the chat is now on a model neither belonged to.
+    ///
+    /// What the previous agent said about *itself* (its config and mode
+    /// updates) is dropped so it never replays into a chat on another agent.
+    /// A session nobody has written in yet holds nothing else, so all of its
+    /// events go. One with messages keeps its transcript and is marked as
+    /// owing the new agent that transcript (`carryover_pending`), which is what
+    /// the answer says: `true` when there is a conversation to hand over.
+    pub async fn rebind_session(
         &self,
         id: &str,
         harness: &str,
@@ -427,9 +433,16 @@ impl SessionStore {
             .begin()
             .await
             .map_err(|error| db_error("failed to start rebind transaction", error))?;
-        let rebound = sqlx::query(
-            "UPDATE sessions SET harness = ?, bridge_session_id = ?, model_id = ?, snapshot_json = ?, updated_at = ? \
-             WHERE id = ? AND message_count = 0",
+        // One statement that writes and reads, and the first of the
+        // transaction. A read followed by a write is a snapshot being upgraded,
+        // which SQLite refuses outright (BUSY_SNAPSHOT, which no busy timeout
+        // retries) the moment another connection has committed in between —
+        // and every chunk of every other chat that is streaming is a commit.
+        let started = sqlx::query(
+            "UPDATE sessions SET harness = ?, bridge_session_id = ?, model_id = ?, snapshot_json = ?, \
+             reasoning_effort = NULL, fast_mode = NULL, carryover_pending = (message_count > 0), \
+             updated_at = ? \
+             WHERE id = ? RETURNING message_count",
         )
         .bind(harness)
         .bind(bridge_session_id)
@@ -437,23 +450,56 @@ impl SessionStore {
         .bind(snapshot.to_string())
         .bind(now_iso())
         .bind(id)
-        .execute(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|error| db_error("failed to rebind session", error))?
-        .rows_affected()
-            == 1;
-        if !rebound {
-            return Ok(false);
-        }
-        sqlx::query("DELETE FROM session_events WHERE session_id = ?")
+        .ok_or_else(|| format!("session {id} is gone"))?
+        .get::<i64, _>("message_count")
+            > 0;
+        let cleared = if started {
+            // The CASE is what keeps `json_extract` off rows that are not
+            // JSON — see the `drop_command_list_events` migration.
+            sqlx::query(
+                "DELETE FROM session_events WHERE session_id = ? AND CASE \
+                     WHEN json_valid(payload_json) \
+                     THEN json_extract(payload_json, '$.update.sessionUpdate') \
+                 END IN ('config_option_update', 'current_mode_update')",
+            )
             .bind(id)
             .execute(&mut *tx)
             .await
-            .map_err(|error| db_error("failed to clear rebound session events", error))?;
+        } else {
+            sqlx::query("DELETE FROM session_events WHERE session_id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+        };
+        cleared.map_err(|error| db_error("failed to clear rebound session events", error))?;
         tx.commit()
             .await
             .map_err(|error| db_error("failed to commit rebind", error))?;
-        Ok(true)
+        Ok(started)
+    }
+
+    /// Whether the agent behind a session has yet to be given the conversation
+    /// it took over — see [`Self::rebind_session`].
+    pub async fn carryover_pending(&self, id: &str) -> Result<bool, String> {
+        let row = sqlx::query("SELECT carryover_pending FROM sessions WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|error| db_error("failed to read session", error))?;
+        Ok(row.is_some_and(|row| row.get::<i64, _>("carryover_pending") != 0))
+    }
+
+    /// The transcript reached the new agent: nothing is owed any more.
+    pub async fn clear_carryover(&self, id: &str) -> Result<(), String> {
+        sqlx::query("UPDATE sessions SET carryover_pending = 0 WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| db_error("failed to clear the session carry-over", error))?;
+        Ok(())
     }
 
     /// Record activity on a session: bumps `updated_at`/`last_message_at`,
@@ -934,30 +980,75 @@ mod tests {
             .await
             .expect("event");
         let snapshot = json!({ "models": { "currentModelId": "gpt-5" } });
-        let rebound = store
-            .rebind_unstarted_session("b", "codex-acp", "codex-1", Some("gpt-5"), &snapshot)
+        let started = store
+            .rebind_session("b", "codex-acp", "codex-1", Some("gpt-5"), &snapshot)
             .await
             .expect("rebind");
-        assert!(rebound);
+        assert!(!started);
         let moved = store.get_session("b").await.expect("read").expect("row");
         assert_eq!(moved.harness, "codex-acp");
         assert_eq!(moved.bridge_session_id.as_deref(), Some("codex-1"));
         assert_eq!(moved.model_id.as_deref(), Some("gpt-5"));
         assert_eq!(moved.snapshot, Some(snapshot));
         assert!(store.list_events("b").await.expect("events").is_empty());
+        // Nothing was said, so there is nothing to hand the new agent.
+        assert!(!store.carryover_pending("b").await.expect("pending"));
     }
 
     #[tokio::test]
-    async fn a_session_with_a_message_keeps_its_harness_and_history() {
+    async fn a_session_with_messages_moves_with_its_transcript_and_owes_it_to_the_new_agent() {
         let (_dir, store) = store_with_history().await;
         store.touch("a", 1, Some("one")).await.expect("touch");
-        let rebound = store
-            .rebind_unstarted_session("a", "codex-acp", "codex-1", None, &json!({}))
+        store
+            .set_run_settings("a", Some("xhigh"), Some(true))
+            .await
+            .expect("settings");
+        let about_the_old_agent =
+            |kind: &str| json!({ "sessionId": "a", "update": { "sessionUpdate": kind } });
+        store
+            .append_events(
+                "a",
+                &[
+                    about_the_old_agent("config_option_update"),
+                    about_the_old_agent("current_mode_update"),
+                ],
+            )
+            .await
+            .expect("events");
+        // A row that is not JSON must not fail the move.
+        sqlx::query("INSERT INTO session_events (session_id, created_at, payload_json) VALUES ('a', 'x', 'not json')")
+            .execute(&store.pool)
+            .await
+            .expect("raw row");
+
+        let started = store
+            .rebind_session("a", "codex-acp", "codex-1", Some("gpt-5"), &json!({}))
             .await
             .expect("rebind");
-        assert!(!rebound);
-        let kept = store.get_session("a").await.expect("read").expect("row");
-        assert_eq!(kept.harness, "claude-acp");
+        assert!(started);
+        let moved = store.get_session("a").await.expect("read").expect("row");
+        assert_eq!(moved.harness, "codex-acp");
+        assert_eq!(moved.bridge_session_id.as_deref(), Some("codex-1"));
+        // The effort and fast toggle were the old harness's words.
+        assert_eq!(moved.reasoning_effort, None);
+        assert_eq!(moved.fast_mode, None);
+        assert_eq!(moved.message_count, 1);
+        // The conversation stays; what the old agent said about itself goes.
+        assert_eq!(store.list_events("a").await.expect("events").len(), 3);
+
+        assert!(store.carryover_pending("a").await.expect("pending"));
+        store.clear_carryover("a").await.expect("clear");
+        assert!(!store.carryover_pending("a").await.expect("pending"));
+    }
+
+    #[tokio::test]
+    async fn a_session_that_is_gone_is_not_moved_anywhere() {
+        let (_dir, store) = store_with_history().await;
+        let moved = store
+            .rebind_session("nobody", "codex-acp", "codex-1", None, &json!({}))
+            .await;
+        assert!(moved.is_err());
+        // Nothing of anyone else's was touched on the way to finding that out.
         assert_eq!(store.list_events("a").await.expect("events").len(), 3);
     }
 
@@ -974,6 +1065,8 @@ mod tests {
             (20260904000000, "06b3b3d5988b76720d7b755b70a222241d9c81a63aa796d4eeff9cbdd7784a6347036d1a024ed549834d1fc1e4b1174e"),
             (20260914000000, "c0ce78fac3f4997f7756256844dc51018683db031fa6eef2dd19cf4c364d6a9a5ef1bef9fdb491ff226c6c51d2a5ed81"),
             (20260920000000, "2187befa6dc6279fcf5081f84f59a39442234f43c5908ced65552a3863fe7c714329f3ac5ef009419a72fb639f3b5e6c"),
+            (20260921000000, "fde7069ba22b957f9764e612a98a8ce196ebe85d6fdb4a3cb84e23606bf780f2ca032ca06b102b08214fd6027d5a82da"),
+            (20260922000000, "fc575418b13a5a55fb346f73e2e5e5ea61f1db988a3a16009ffce24ce80ecbffbca7d472ad2c8c8aaca91ce0d8fc8059"),
         ];
         let migrator = sqlx::migrate!("./migrations_agent_host");
         for (version, checksum) in SHIPPED {

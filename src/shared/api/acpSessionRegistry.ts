@@ -448,6 +448,8 @@ export async function configureSession(
     throw new Error(`Invalid model id: ${modelId}`);
   }
   return serializeSessionMutation(sessionId, async (turn) => {
+    const providerBefore =
+      prepared.get(sessionId)?.executionSelection?.providerId;
     let snapshots = await prepareSessionNow(
       sessionId,
       providerId,
@@ -456,16 +458,75 @@ export async function configureSession(
       turn,
     );
     if (concreteModelId) {
-      snapshots =
-        (await applySessionModelNow(
-          sessionId,
-          concreteModelId,
-          options,
-          turn,
-        )) ?? snapshots;
+      try {
+        snapshots =
+          (await applySessionModelNow(
+            sessionId,
+            concreteModelId,
+            options,
+            turn,
+          )) ?? snapshots;
+      } catch (error) {
+        const entry = prepared.get(sessionId);
+        // An abandoned turn answers long after its caller was rejected: the
+        // entry it would clear is whatever a later mutation established.
+        if (
+          !turn.isAbandoned() &&
+          providerBefore !== undefined &&
+          providerBefore !== providerId &&
+          entry?.executionSelection?.providerId === providerId
+        ) {
+          // The session did move: only the model it was meant to arrive on
+          // failed. What the move itself answered was stamped with no request
+          // id and most likely dropped as divergent from the selection in
+          // flight, so nobody holds the model the provider put the chat on.
+          // Forget the pair, so that whoever settles the chat on this provider
+          // asks the host again instead of being told "already there".
+          entry.executionSelection = undefined;
+          throw new ModelFailedAfterProviderMoveError(providerId, error);
+        }
+        throw error;
+      }
     }
     return applyPlannedRunSettingsNow(sessionId, snapshots, options, turn);
   });
+}
+
+/**
+ * One mutation moved a session to another provider and then failed to put it
+ * on the model it was asked for. The two halves are different news: the first
+ * happened, and a caller that treats the whole thing as "the switch failed"
+ * takes the session back off a provider that accepted it — which, with a model
+ * preference the provider has since retired, is every time.
+ *
+ * Reads like the error it wraps (`message`, `data`), so whatever classifies
+ * errors by their text or payload sees the original.
+ */
+export class ModelFailedAfterProviderMoveError extends Error {
+  readonly data: unknown;
+
+  constructor(
+    readonly providerId: string,
+    readonly cause: unknown,
+  ) {
+    super(
+      cause instanceof Error
+        ? cause.message
+        : typeof cause === "string"
+          ? cause
+          : typeof cause === "object" &&
+              cause !== null &&
+              "message" in cause &&
+              typeof cause.message === "string"
+            ? cause.message
+            : "The model could not be applied after the provider changed",
+    );
+    this.name = "ModelFailedAfterProviderMoveError";
+    this.data =
+      typeof cause === "object" && cause !== null && "data" in cause
+        ? cause.data
+        : undefined;
+  }
 }
 
 /**

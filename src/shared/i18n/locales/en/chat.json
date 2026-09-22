@@ -328,6 +328,7 @@
   "notifications": {
     "compactionComplete": "Conversation compacted. Older context was summarized.",
     "compactionReplayIncomplete": "Couldn't verify the compacted conversation because refreshed history wasn't received. Your previous messages are still shown. Try reloading the session.",
+    "modelLeftBehindOnAgentSwitch": "This chat is now on {{agent}}, but {{agent}} would not run {{model}}, so it is on {{agent}}'s own model. Pick another in the model menu.",
     "modelSwitchError": "Could not switch to {{model}}. This chat is still using {{fallbackModel}}.",
     "modelSwitchErrorWithoutFallback": "Could not switch to {{model}}.",
     "archiveError": "Failed to archive chat",
@@ -663,6 +664,7 @@
   },
   "toolbar": {
     "agent": "Agent",
+    "agentNeedsIdleSession": "Finish or stop the current turn to switch to {{agent}}",
     "attach": "Attach",
     "attachFile": "File",
     "attachFolder": "Folder",
@@ -673,7 +675,7 @@
     "chooseProvider": "Choose a provider",
     "contextTokensBreakdown": "{{tokens}} / {{limit}} tokens used",
     "contextUsage": "Context usage",
-    "contextUsageWithCost": "Context usage, session cost {{cost}}",
+    "contextUsageWithCost": "Context usage, session cost {{cost}}, {{hint}}",
     "contextUsageBreakdown": "{{used}} used ({{left}} left)",
     "contextUsageTitle": "{{tokens}} / {{limit}} tokens",
     "contextWindow": "Context window",
@@ -688,6 +690,8 @@
     "searchModels": "Search models...",
     "settings": "Settings",
     "sessionCost": "Session cost",
+    "sessionCostBilledHint": "API bill",
+    "sessionCostEstimateHint": "est. · not billed",
     "recommended": "Recommended",
     "reasoningEffort": "Reasoning effort",
     "reasoningEffortCurrent": "Reasoning effort: {{value}}",

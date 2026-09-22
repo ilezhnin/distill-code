@@ -359,8 +359,8 @@ describe("rankingFromClass", () => {
 
   it("drops a candidate nothing installed can serve", () => {
     const built = rankingFromClass("testing-light", [INSTALLED_GROK]);
-    // testing-light: Opus 5 → Grok 4.6 → Luna; only Grok exists here.
-    expect(built.entries.map((entry) => entry.label)).toEqual(["Grok 4.6"]);
+    // testing-light: Opus 5 → Grok 4.7 → Luna; only Grok exists here.
+    expect(built.entries.map((entry) => entry.label)).toEqual(["Grok 4.7"]);
     expect(built.entries[0].effort).toBe("high");
   });
 

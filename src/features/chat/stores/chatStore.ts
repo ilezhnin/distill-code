@@ -1492,6 +1492,12 @@ const createChatStore: StateCreator<
         partial.accumulatedCost !== undefined
           ? partial.accumulatedCost
           : current.accumulatedCost;
+      const costBilling =
+        accumulatedCost == null
+          ? null
+          : partial.costBilling !== undefined
+            ? partial.costBilling
+            : (current.costBilling ?? "estimate");
       return {
         sessionStateById: {
           ...state.sessionStateById,
@@ -1507,6 +1513,7 @@ const createChatStore: StateCreator<
               accumulatedTotal,
               contextLimit: partial.contextLimit ?? current.contextLimit,
               accumulatedCost,
+              costBilling,
             },
             hasUsageSnapshot: true,
           },

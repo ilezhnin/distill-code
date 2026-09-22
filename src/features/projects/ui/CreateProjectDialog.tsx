@@ -484,7 +484,11 @@ export function CreateProjectDialog({
   const handleAddDirectory = async () => {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
+      // An existing project's chooser opens on its own folder; only a project
+      // that has none yet starts wherever the system starts it.
+      const currentDir = workingDir.trim();
       const selected = await open({
+        ...(currentDir ? { defaultPath: currentDir } : {}),
         directory: true,
         multiple: false,
         title: t("dialog.addDirectoryDialogTitle"),

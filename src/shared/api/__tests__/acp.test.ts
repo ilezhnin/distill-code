@@ -701,8 +701,11 @@ describe("acpCreateSession", () => {
     });
   });
 
-  it("archives and unregisters a newly created session when eager model setup fails", async () => {
-    mockNewSession.mockResolvedValue({ sessionId: "orphaned-session" });
+  it("keeps a created session on the harness's own model when the model write fails", async () => {
+    mockNewSession.mockResolvedValue({
+      sessionId: "kept-session",
+      ...executionConfigResponse("openai", "gpt-5"),
+    });
     mockSetModel.mockRejectedValueOnce(new Error("model setup failed"));
 
     const sessionRegistry = await import("../acpSessionRegistry");
@@ -710,9 +713,54 @@ describe("acpCreateSession", () => {
 
     await expect(
       acpCreateSession("openai", "/tmp/project", { modelId: "gpt-4.1" }),
-    ).rejects.toThrow("model setup failed");
-    expect(mockArchiveSession).toHaveBeenCalledWith("orphaned-session");
-    expect(sessionRegistry.isSessionPrepared("orphaned-session")).toBe(false);
+    ).resolves.toMatchObject({
+      sessionId: "kept-session",
+      configOptionsSnapshot: {
+        model: { modelId: "gpt-5", modelName: "gpt-5" },
+      },
+      rejectedModel: { modelId: "gpt-4.1", reason: "model setup failed" },
+    });
+    expect(mockArchiveSession).not.toHaveBeenCalled();
+    expect(sessionRegistry.isSessionPrepared("kept-session")).toBe(true);
+  });
+
+  it("does not ask again for a model the host already recorded as refused in session/new", async () => {
+    mockNewSession.mockResolvedValue({
+      sessionId: "acp-session-1",
+      ...executionConfigResponse("claude-acp", "claude-fable-5-1"),
+      _meta: {
+        substitutions: [
+          {
+            role: "model",
+            requested: "claude-fable-5",
+            applied: "claude-fable-5-1",
+            reason: "Couldn't confirm model with the API",
+          },
+        ],
+      },
+    });
+
+    const { acpCreateSession } = await import("../acp");
+
+    await expect(
+      acpCreateSession("claude-acp", "/tmp/project", {
+        modelId: "claude-fable-5",
+      }),
+    ).resolves.toMatchObject({
+      sessionId: "acp-session-1",
+      configOptionsSnapshot: {
+        model: {
+          modelId: "claude-fable-5-1",
+          modelName: "claude-fable-5-1",
+        },
+      },
+      rejectedModel: {
+        modelId: "claude-fable-5",
+        reason: "Couldn't confirm model with the API",
+      },
+    });
+    expect(mockSetModel).not.toHaveBeenCalled();
+    expect(mockArchiveSession).not.toHaveBeenCalled();
   });
 
   it("returns the latest config snapshot from session creation setup", async () => {

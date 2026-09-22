@@ -1,0 +1,11 @@
+-- A chat that already has messages can move to another harness. The agent it
+-- arrives at knows nothing of the conversation — that lived in the previous
+-- agent's own context — so the host hands it the transcript with the next
+-- prompt. This is the note that the hand-over is still owed: set by the move,
+-- cleared once a prompt carrying the transcript was accepted, and a column
+-- rather than runtime state so an app restart between the two does not leave
+-- the new agent answering a conversation it never saw.
+--
+-- Additive, like the selection columns: `row_to_session` reads by name, an
+-- older build ignores it, and every existing row reads 0.
+ALTER TABLE sessions ADD COLUMN carryover_pending INTEGER NOT NULL DEFAULT 0;

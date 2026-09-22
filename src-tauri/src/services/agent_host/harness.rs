@@ -97,12 +97,17 @@ pub const HARNESSES: &[HarnessSpec] = &[
             ("smartApprove", "acceptEdits"),
             ("chat", "plan"),
         ],
-        // Claude Code's own model menu. The bridge lists five aliases
-        // (default, opus[1m], claude-fable-5[1m], sonnet, haiku); the other
-        // five it refuses in `session/set_config_option` but runs in a
-        // session opened on them through `options.model`, which is what
-        // `opens_on_model` means — and why their effort levels and fast
-        // support are declared here rather than probed.
+        // Claude Code's own model menu. The bridge lists four aliases
+        // (default, opus[1m], sonnet, haiku) and one Fable — whichever the
+        // operator's Claude Code is set to run, so on one machine that is
+        // claude-fable-5[1m] and on the next claude-fable-5-1[1m]. Everything
+        // it does not list it refuses in `session/set_config_option` but runs
+        // in a session opened on it through `options.model`, which is what
+        // `opens_on_model` means — and why those models' effort levels and
+        // fast support are declared here rather than probed. Both Fables
+        // carry it: which of them is the unlisted one is the machine's to
+        // say, and a listed model is written directly whatever this says
+        // (`Inner::opens_on_model` asks the bridge's own list first).
         models: &[
             ModelDecl {
                 id: "claude-fable-5-1[1m]",
@@ -166,9 +171,9 @@ pub const HARNESSES: &[HarnessSpec] = &[
                 group: ModelGroup::More,
                 order: 50,
                 alias_of: None,
-                opens_on_model: false,
-                efforts: None,
-                supports_fast: None,
+                opens_on_model: true,
+                efforts: Some(CLAUDE_EFFORTS),
+                supports_fast: Some(false),
             },
             ModelDecl {
                 id: "claude-opus-4-8",
@@ -521,7 +526,7 @@ mod tests {
                 ("default", "main", 20, Some("opus[1m]"), false),
                 ("sonnet", "main", 30, None, false),
                 ("haiku", "main", 40, None, false),
-                ("claude-fable-5[1m]", "more", 50, None, false),
+                ("claude-fable-5[1m]", "more", 50, None, true),
                 ("claude-opus-4-8", "more", 60, None, true),
                 ("claude-opus-4-7", "more", 70, None, true),
                 ("claude-opus-4-6", "more", 80, None, true),
@@ -644,7 +649,7 @@ mod tests {
     fn a_declaration_places_a_bridge_row_rather_than_inventing_one() {
         // Only opus[1m] came back: a bridge that stops listing a model has
         // stopped serving it, and Distill does not list it on its behalf.
-        // The five it opens a session on are its own to offer.
+        // The six it opens a session on are its own to offer.
         let models = merge_inventory(
             "claude-acp",
             vec![probed(
@@ -663,6 +668,7 @@ mod tests {
             [
                 "claude-fable-5-1[1m]",
                 "opus[1m]",
+                "claude-fable-5[1m]",
                 "claude-opus-4-8",
                 "claude-opus-4-7",
                 "claude-opus-4-6",
@@ -689,8 +695,11 @@ mod tests {
             session_model_meta(claude, "claude-opus-4-7"),
             Some(json!({ "claudeCode": { "options": { "model": "claude-opus-4-7" } } }))
         );
+        // Both Fables: the bridge lists the one its operator's Claude Code
+        // runs and refuses the other, and which is which differs by machine.
         for id in [
             "claude-fable-5-1[1m]",
+            "claude-fable-5[1m]",
             "claude-opus-4-8",
             "claude-opus-4-7",
             "claude-opus-4-6",
@@ -698,15 +707,9 @@ mod tests {
         ] {
             assert!(session_model_meta(claude, id).is_some(), "{id} opens on it");
         }
-        // The rows the bridge lists itself are selected, not opened on —
-        // including the two that carry a context suffix in their id.
-        for id in [
-            "default",
-            "opus[1m]",
-            "claude-fable-5[1m]",
-            "sonnet",
-            "haiku",
-        ] {
+        // The aliases every bridge lists are selected, not opened on —
+        // including the one that carries a context suffix in its id.
+        for id in ["default", "opus[1m]", "sonnet", "haiku"] {
             assert_eq!(
                 session_model_meta(claude, id),
                 None,

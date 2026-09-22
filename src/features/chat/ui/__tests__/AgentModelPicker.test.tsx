@@ -336,6 +336,52 @@ describe("AgentModelPicker", () => {
     expect(modelRow("model", "Fable 5.1")).toBeEnabled();
   });
 
+  it("offers another agent between turns only, and keeps a setup row reachable mid-turn", async () => {
+    const user = userEvent.setup();
+    const agents: AgentPickerOption[] = [
+      { id: CLAUDE_PROVIDER_ID, label: "Claude Code" },
+      { id: CODEX_PROVIDER_ID, label: "Codex" },
+      {
+        id: "grok-acp",
+        label: "Grok",
+        readiness: "not_ready",
+        setupAction: "connect",
+      },
+    ];
+    const agentRow = (label: string) =>
+      Array.from(
+        document.querySelectorAll<HTMLButtonElement>(
+          '[data-col="agent"] button[data-picker-nav-item]',
+        ),
+      ).find((row) => row.textContent?.includes(label));
+
+    const { unmount } = render(
+      <PickerHarness
+        models={claudeModels}
+        initialModelId="opus[1m]"
+        providerColumnMode="visible"
+        agents={agents}
+        runActive
+      />,
+    );
+    await openPicker(user);
+    expect(agentRow("Codex")).toBeDisabled();
+    expect(agentRow("Claude Code")).toBeEnabled();
+    expect(agentRow("Grok")).toBeEnabled();
+    unmount();
+
+    render(
+      <PickerHarness
+        models={claudeModels}
+        initialModelId="opus[1m]"
+        providerColumnMode="visible"
+        agents={agents}
+      />,
+    );
+    await openPicker(user);
+    expect(agentRow("Codex")).toBeEnabled();
+  });
+
   it("moves with Down and Up inside a column and with Right and Left across columns", async () => {
     const user = userEvent.setup();
     render(

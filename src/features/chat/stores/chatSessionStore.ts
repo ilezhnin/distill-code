@@ -37,6 +37,7 @@ import {
   sameSessionExecutionTarget,
   type SessionExecutionTarget,
 } from "@/features/chat/lib/sessionExecutionTarget";
+import { settleCreatedSessionOnHarnessModel } from "@/features/chat/lib/rejectedCreationModel";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 import {
   normalizeSessionRunSettings,
@@ -616,10 +617,8 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
     const providerId = requestedExecutionTarget.harnessId;
     const requestedModelId = requestedExecutionTarget.modelId;
     const desiredRunSettings = normalizeSessionRunSettings(opts.runSettings);
-    const { sessionId, configOptionsSnapshot } = await acpCreateSession(
-      providerId,
-      opts.workingDir,
-      {
+    const { sessionId, configOptionsSnapshot, rejectedModel } =
+      await acpCreateSession(providerId, opts.workingDir, {
         personaId: opts.personaId,
         modelId: requestedModelId,
         projectId: opts.projectId,
@@ -629,16 +628,21 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
         ...(desiredRunSettings?.fast !== undefined
           ? { fastMode: desiredRunSettings.fast }
           : {}),
-      },
-    );
+      });
     logReasoningEffortInfo("createSession acp resolved", {
       sessionId: shortLogId(sessionId),
       providerId,
       modelId: requestedModelId ?? null,
       hasReasoningEffort: Boolean(configOptionsSnapshot?.reasoningEffort),
     });
-    const executionTarget =
-      !requestedModelId && configOptionsSnapshot?.model
+    const executionTarget = rejectedModel
+      ? settleCreatedSessionOnHarnessModel({
+          harnessId: providerId,
+          requestedTarget: requestedExecutionTarget,
+          model: configOptionsSnapshot?.model,
+          rejected: rejectedModel,
+        })
+      : !requestedModelId && configOptionsSnapshot?.model
         ? (materializeSessionExecutionModel(
             requestedExecutionTarget,
             configOptionsSnapshot.model,

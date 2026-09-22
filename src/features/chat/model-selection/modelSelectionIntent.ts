@@ -107,6 +107,26 @@ export function showModelSwitchErrorToast({
   );
 }
 
+/**
+ * The chat moved to `agentName` but not onto the model that was remembered
+ * for it. Says all three things the operator needs: which model was left
+ * behind, that the switch itself went through, and where to choose another.
+ */
+export function showModelLeftBehindToast({
+  agentName,
+  modelName,
+}: {
+  agentName: string;
+  modelName: string;
+}): void {
+  toast.error(
+    i18n.t("chat:notifications.modelLeftBehindOnAgentSwitch", {
+      agent: agentName,
+      model: modelName,
+    }),
+  );
+}
+
 export function rollbackToPreviousModel({
   sessionId,
   failedModelName,

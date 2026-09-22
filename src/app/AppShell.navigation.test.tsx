@@ -10,6 +10,8 @@ import { getAppNavigationController } from "@/features/distillctl/navigation";
 import { resetAgentBuilderSourceLifecycleForTests } from "@/features/agents/lib/agentBuilderSourceLifecycle";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
+import { replaceSessionTargetAfterDispatch } from "@/features/chat/lib/sessionTargetCoordinator";
+import { retryDraftSessionCreation } from "@/features/chat/lib/draftSessionRetry";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
 import type { Message } from "@/shared/types/messages";
 import type { GitState } from "@/shared/types/git";
@@ -1753,6 +1755,107 @@ describe("AppShell global navigation", () => {
         expect.objectContaining({ modelId: "claude-opus-5", fastMode: true }),
       );
     });
+  });
+
+  it("keeps a new chat whose remembered model the agent refused, on the agent's own model", async () => {
+    window.localStorage.setItem(
+      "distill:preferredModelsByAgent",
+      JSON.stringify({
+        "claude-acp": {
+          modelId: "claude-opus-5",
+          modelName: "Opus 5",
+          providerId: "claude-acp",
+        },
+      }),
+    );
+    mockAcpCreateSession.mockResolvedValueOnce({
+      sessionId: "settled-session",
+      configOptionsSnapshot: {
+        model: { modelId: "claude-sonnet-5", modelName: "Sonnet 5" },
+        reasoningEffort: null,
+      },
+      rejectedModel: {
+        modelId: "claude-opus-5",
+        reason: "Couldn't confirm model with the API",
+      },
+    });
+    const user = userEvent.setup();
+    renderAppShell();
+
+    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
+
+    await waitFor(() => {
+      expect(
+        useChatSessionStore.getState().getSession("settled-session"),
+      ).toMatchObject({
+        executionTarget: {
+          harnessId: "claude-acp",
+          modelId: "claude-sonnet-5",
+          modelName: "Sonnet 5",
+        },
+      });
+    });
+    expect(mockAcpCreateSession).toHaveBeenCalledWith(
+      "claude-acp",
+      expect.any(String),
+      expect.objectContaining({ modelId: "claude-opus-5" }),
+    );
+    expect(
+      useChatSessionStore.getState().getSession("settled-session")
+        ?.creationState,
+    ).toBeUndefined();
+    expect(
+      JSON.parse(
+        window.localStorage.getItem("distill:preferredModelsByAgent") ?? "{}",
+      ),
+    ).not.toHaveProperty("claude-acp");
+    expect(mockToastError).toHaveBeenCalledWith(
+      expect.stringContaining("claude-opus-5"),
+    );
+  });
+
+  it("creates a failed draft again on the agent it was moved to", async () => {
+    mockAcpCreateSession.mockRejectedValueOnce(
+      new Error("Failed to create session: harness is down"),
+    );
+    const user = userEvent.setup();
+    renderAppShell();
+
+    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
+    const draftSessionId = await waitFor(() => {
+      const id = useChatSessionStore.getState().activeSessionId ?? "";
+      expect(useChatSessionStore.getState().getSession(id)).toMatchObject({
+        creationState: "failed",
+      });
+      return id;
+    });
+    expect(
+      useChatStore.getState().messagesBySession[draftSessionId],
+    ).toHaveLength(1);
+
+    // What the picker does for a failed draft: record the choice, then retry.
+    replaceSessionTargetAfterDispatch(draftSessionId, {
+      harnessId: "codex-acp",
+      modelProviderId: "codex-acp",
+    });
+    expect(retryDraftSessionCreation(draftSessionId)).toBe(true);
+
+    await waitFor(() => {
+      expect(mockAcpCreateSession).toHaveBeenLastCalledWith(
+        "codex-acp",
+        expect.any(String),
+        expect.anything(),
+      );
+    });
+    await waitFor(() => {
+      expect(useChatSessionStore.getState().activeSessionId).toBe(
+        "created-session",
+      );
+    });
+    // The failure's notice went with the failure.
+    expect(
+      useChatStore.getState().messagesBySession["created-session"] ?? [],
+    ).toHaveLength(0);
   });
 
   it("shows ACP error data when draft session creation fails", async () => {

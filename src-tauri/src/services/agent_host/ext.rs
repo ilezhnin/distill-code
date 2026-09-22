@@ -260,8 +260,8 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
             let mut entries = Vec::new();
             for spec in harness::HARNESSES {
                 let is_installed = installed.iter().any(|candidate| candidate.id == spec.id);
-                let (probed, _) = cached_inventory(host, spec.id).await;
-                let models = harness::merge_inventory(spec.id, probed);
+                let cached = cached_inventory(host, spec.id).await;
+                let models = harness::merge_inventory(spec.id, cached.models);
                 entries.push(json!({
                     "providerId": spec.id,
                     "providerName": spec.label,
@@ -295,12 +295,21 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid_params("providerId required"))?
                 .to_string();
-            let (mut models, mut updated_at) = cached_inventory(host, &provider_id).await;
-            if models.is_empty() {
-                let refreshed = refresh_models(host, &provider_id).await?;
-                models = refreshed.0;
-                updated_at = Some(refreshed.1);
-            }
+            let cached = cached_inventory(host, &provider_id).await;
+            let serving = host.serving_executable(&provider_id).await;
+            let (models, updated_at) = if cached.models.is_empty()
+                || !inventory_is_current(cached.probed_on.as_ref(), &serving)
+            {
+                if !cached.models.is_empty() {
+                    log::info!(
+                        "[agent-host] {provider_id} is not the build its model list was read from; probing it again"
+                    );
+                }
+                let (models, updated_at) = refresh_models(host, &provider_id).await?;
+                (models, Some(updated_at))
+            } else {
+                (cached.models, cached.updated_at)
+            };
             Ok(inventory_response(
                 &provider_id,
                 models,
@@ -335,8 +344,15 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
 /// KV scope of each harness's probed model list. Renamed from
 /// `harness_models` when a row grew the model's effort values and fast
 /// support, as that one was renamed from `models` when rows gained a
-/// `description`: a list is only re-probed while it is empty, so rows cached
-/// without the new fields would never have picked them up.
+/// `description`: a list is only re-probed while it is empty or while the
+/// harness executable it was read from has changed, so rows cached without
+/// the new fields would never have picked them up.
+///
+/// Each record carries `probedOn`, the [`super::bridge::executable_fingerprint`]
+/// of the CLI build that listed the models. A CLI updated in place — Grok's
+/// own updater, `npm install -g`, the doctor — serves new models the moment it
+/// restarts, and without that stamp the list it replaced would have stayed
+/// the inventory for as long as the install lived.
 const MODELS_KV_SCOPE: &str = "harness_models_v2";
 
 /// Shape of an inventory row. The renderer caches rows under this number and
@@ -396,41 +412,81 @@ pub(super) async fn known_models(store: &SessionStore, harness_id: &str) -> Vec<
     harness::merge_inventory(harness_id, probed)
 }
 
-/// A harness's probed rows and when they were probed.
-async fn cached_inventory(host: &Arc<Inner>, harness_id: &str) -> (Vec<Value>, Option<String>) {
-    let Some(record) = host
-        .store
+/// A harness's probed rows, when they were probed, and the executable of the
+/// bridge that listed them (`None` on a record older than the stamp).
+struct CachedInventory {
+    models: Vec<Value>,
+    updated_at: Option<String>,
+    probed_on: Option<Value>,
+}
+
+impl CachedInventory {
+    fn empty() -> Self {
+        Self {
+            models: Vec::new(),
+            updated_at: None,
+            probed_on: None,
+        }
+    }
+
+    fn from_record(record: &Value) -> Self {
+        Self {
+            models: record
+                .get("models")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            updated_at: record
+                .get("updatedAt")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            probed_on: record.get("probedOn").filter(|on| !on.is_null()).cloned(),
+        }
+    }
+}
+
+async fn cached_inventory(host: &Arc<Inner>, harness_id: &str) -> CachedInventory {
+    host.store
         .kv_get(MODELS_KV_SCOPE, harness_id)
         .await
         .ok()
         .flatten()
-    else {
-        return (Vec::new(), None);
-    };
-    let models = record
-        .get("models")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let updated_at = record
-        .get("updatedAt")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    (models, updated_at)
+        .as_ref()
+        .map(CachedInventory::from_record)
+        .unwrap_or_else(CachedInventory::empty)
+}
+
+/// Whether a cached list still describes what the harness serves: it was read
+/// from the executable that answers for the harness now.
+///
+/// `serving` is `Null` where nothing answers — the harness is not installed
+/// — and then the cache is all there is, so it stands. A record that predates
+/// the stamp cannot say what it was read from, and is read again once.
+fn inventory_is_current(probed_on: Option<&Value>, serving: &Value) -> bool {
+    if serving.is_null() {
+        return true;
+    }
+    probed_on.is_some_and(|on| on == serving)
 }
 
 async fn refresh_models(
     host: &Arc<Inner>,
     harness_id: &str,
 ) -> Result<(Vec<Value>, String), Value> {
-    let models = host.probe_models(harness_id).await?;
+    let (models, probed_on) = host.probe_models(harness_id).await?;
     let updated_at = protocol::now_iso();
-    let value = json!({ "models": models, "updatedAt": updated_at });
+    let value = inventory_record(&models, &updated_at, &probed_on);
     host.store
         .kv_set(MODELS_KV_SCOPE, harness_id, &value)
         .await
         .map_err(protocol::internal)?;
     Ok((models, updated_at))
+}
+
+/// The KV record a probe leaves behind; `CachedInventory::from_record` reads
+/// it back.
+fn inventory_record(models: &[Value], updated_at: &str, probed_on: &Value) -> Value {
+    json!({ "models": models, "updatedAt": updated_at, "probedOn": probed_on })
 }
 
 pub fn extension_config_key(extension: &Value) -> Option<String> {
@@ -587,6 +643,55 @@ fn transcript_messages(events: &[Value]) -> Vec<Value> {
 mod tests {
     use super::*;
 
+    fn executable(modified: u64) -> Value {
+        json!({ "path": "C:\\Users\\dev\\.grok\\bin\\grok.exe", "len": 153720832, "modified": modified })
+    }
+
+    #[test]
+    fn a_list_read_from_another_build_of_the_cli_is_probed_again() {
+        let probed_on = executable(1_757_800_000);
+        // The same file answers: the list stands.
+        assert!(inventory_is_current(Some(&probed_on), &probed_on));
+        // The CLI was updated in place: same path, another file.
+        assert!(!inventory_is_current(
+            Some(&probed_on),
+            &executable(1_758_400_000)
+        ));
+        // A record from before the stamp does not know what it was read
+        // from, so it is read again once.
+        assert!(!inventory_is_current(None, &probed_on));
+    }
+
+    #[test]
+    fn a_harness_nothing_answers_for_keeps_the_list_it_has() {
+        // Not installed any more: no probe could replace the list, and an
+        // uninstall is not news about the models the CLI served.
+        assert!(inventory_is_current(Some(&executable(1)), &Value::Null));
+        assert!(inventory_is_current(None, &Value::Null));
+    }
+
+    #[test]
+    fn a_probe_records_the_executable_it_read_the_list_from() {
+        let record = inventory_record(
+            &[json!({ "id": "grok-4.7", "name": "Grok 4.7" })],
+            "2026-09-21T17:03:39Z",
+            &executable(1_758_400_000),
+        );
+        let cached = CachedInventory::from_record(&record);
+        assert_eq!(cached.models.len(), 1);
+        assert_eq!(cached.updated_at.as_deref(), Some("2026-09-21T17:03:39Z"));
+        assert_eq!(cached.probed_on, Some(executable(1_758_400_000)));
+        assert!(inventory_is_current(
+            cached.probed_on.as_ref(),
+            &executable(1_758_400_000)
+        ));
+        // The record every install already holds, written before the stamp.
+        let legacy = CachedInventory::from_record(
+            &json!({ "models": [{ "id": "grok-4.6" }], "updatedAt": "2026-09-14T02:46:25Z" }),
+        );
+        assert_eq!(legacy.probed_on, None);
+    }
+
     #[test]
     fn an_inventory_answer_says_which_shape_and_which_generation_it_is() {
         let answer = inventory_response(
@@ -634,6 +739,7 @@ mod tests {
             [
                 "claude-fable-5-1[1m]",
                 "opus[1m]",
+                "claude-fable-5[1m]",
                 "claude-opus-4-8",
                 "claude-opus-4-7",
                 "claude-opus-4-6",

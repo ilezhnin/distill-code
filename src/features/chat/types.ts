@@ -2,6 +2,7 @@ import type { ReactNode, RefObject } from "react";
 import type { AcpProvider } from "@/shared/api/acp";
 import type { AgentProviderReadiness } from "@/features/providers/hooks/useAgentProviderStatus";
 import type { Persona } from "@/shared/types/agents";
+import type { SessionCostBilling } from "@/shared/types/chat";
 import type {
   ChatAttachmentDraft,
   MessageChip,
@@ -209,8 +210,10 @@ export interface ChatInputContextUsage {
   contextTokens?: number;
   contextLimit?: number;
   isContextUsageReady?: boolean;
-  // Estimated session cost in USD from the engine; null when unavailable.
+  // Session cost in USD from the engine; null when unavailable.
   accumulatedCost?: number | null;
+  /** Absent or "estimate" unless the bridge marked the amount billed. */
+  costBilling?: SessionCostBilling | null;
   onCompactContext?: () => Promise<unknown> | undefined;
   canCompactContext?: boolean;
   isCompactingContext?: boolean;

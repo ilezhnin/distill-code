@@ -1060,6 +1060,7 @@ export function ChatView({
             contextTokens: controller.tokenState.accumulatedTotal,
             contextLimit: controller.tokenState.contextLimit,
             accumulatedCost: controller.tokenState.accumulatedCost,
+            costBilling: controller.tokenState.costBilling,
             isContextUsageReady: controller.isContextUsageReady,
             onCompactContext: controller.compactConversation,
             canCompactContext: controller.canCompactContext,

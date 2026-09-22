@@ -145,6 +145,9 @@ import {
   getStoredModelPreference,
   setStoredModelPreference,
 } from "@/features/chat/lib/modelPreferences";
+import { settleCreatedSessionOnHarnessModel } from "@/features/chat/lib/rejectedCreationModel";
+import { setDraftSessionRetryHandler } from "@/features/chat/lib/draftSessionRetry";
+import { sameModelIdentity } from "@/shared/lib/foldedModelId";
 import { archiveSession as archiveSessionApi } from "@/shared/api/acpApi";
 import {
   moveSessionToProject,
@@ -436,8 +439,11 @@ async function applyRunSettingsToSession(
 
   const effortAnswered = chosen.effort !== undefined && Boolean(effortMenu);
   const fastAnswered = chosen.fast !== undefined && Boolean(fastToggle);
+  // A draft — pending, or failed and so still without a host session — keeps
+  // the intent for the creation that sends it in `session/new`.
   if (
     session.creationState === "pending" ||
+    session.creationState === "failed" ||
     (!effortAnswered && !fastAnswered)
   ) {
     return;
@@ -1434,12 +1440,46 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               // a selection made while creation is in flight can be applied to
               // the backend session as soon as it exists.
             },
-          ).then(({ sessionId, configOptionsSnapshot }) => {
+          ).then(({ sessionId, configOptionsSnapshot, rejectedModel }) => {
             createdBackendSessionId = sessionId;
+            let openedOn = requestedTarget;
+            if (rejectedModel) {
+              // The chat exists, on the agent's own model; only the model it
+              // was to open on was refused. The draft — and a selection made
+              // while creation ran — may still name that model, and neither
+              // is what the chat is on.
+              openedOn = settleCreatedSessionOnHarnessModel({
+                harnessId:
+                  creationSelection.providerId ?? requestedTarget.harnessId,
+                requestedTarget,
+                model: configOptionsSnapshot.model,
+                rejected: rejectedModel,
+              });
+              const intent = getModelSelectionIntent(session.id);
+              if (
+                intent &&
+                isModelExecutionTarget(intent.target) &&
+                sameModelIdentity(intent.target.modelId, rejectedModel.modelId)
+              ) {
+                clearCurrentModelSelectionIntent(session.id, intent.requestId);
+              }
+              const draftNow = useChatSessionStore
+                .getState()
+                .getSession(session.id);
+              if (
+                draftNow &&
+                sameSessionExecutionTarget(
+                  draftNow.executionTarget,
+                  requestedTarget,
+                )
+              ) {
+                replaceSessionTargetAfterDispatch(session.id, openedOn);
+              }
+            }
             return {
               sessionId,
               configOptionsSnapshot,
-              sessionExecutionTarget: requestedTarget,
+              sessionExecutionTarget: openedOn,
               workingDir: resolvedWorkingDir,
             };
           });
@@ -1801,6 +1841,64 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     [fetchProjects, resetSessionCreation, startDraftSessionCreation],
   );
   retryFailedSessionsForProjectRef.current = retryFailedSessionsForProject;
+
+  // A draft whose creation failed has no host session, so nothing about it can
+  // be written over the wire. Choosing another agent or model for it is the
+  // operator's way of trying again: the picker records the choice on the
+  // draft and hands it back here to be created on its new target.
+  const retryFailedDraftSession = useCallback(
+    (sessionId: string): boolean => {
+      const session = useChatSessionStore.getState().getSession(sessionId);
+      if (
+        !session ||
+        session.archivedAt ||
+        session.creationState !== "failed" ||
+        !session.executionTarget
+      ) {
+        return false;
+      }
+      const project = session.projectId
+        ? useProjectStore
+            .getState()
+            .projects.find((candidate) => candidate.id === session.projectId)
+        : undefined;
+      const workingDir = project
+        ? resolveSessionCwd(project)
+        : session.workingDir;
+      if (!workingDir) {
+        return false;
+      }
+      const chatStore = useChatStore.getState();
+      // The failure's own notice goes, so the retry does not stack a second
+      // one under it; the rest of the transcript stays.
+      for (const message of chatStore.messagesBySession[sessionId] ?? []) {
+        const isCreationFailureNotice = message.content.some(
+          (content) =>
+            isSystemNotification(content) &&
+            content.notificationType === "error" &&
+            (content.text === session.creationError ||
+              content.action?.type === "editProject"),
+        );
+        if (isCreationFailureNotice) {
+          chatStore.removeMessage(sessionId, message.id);
+        }
+      }
+      chatStore.setError(sessionId, null);
+      resetSessionCreation(sessionId);
+      startDraftSessionCreation({
+        session,
+        sessionExecutionTarget: session.executionTarget,
+        workingDir,
+        projectId: session.projectId ?? undefined,
+      });
+      return true;
+    },
+    [resetSessionCreation, startDraftSessionCreation],
+  );
+  useEffect(
+    () => setDraftSessionRetryHandler(retryFailedDraftSession),
+    [retryFailedDraftSession],
+  );
 
   const createNewTab = useCallback(
     async (

@@ -7,7 +7,12 @@ import type {
   SessionUpdate,
 } from "@agentclientprotocol/sdk";
 import { i18n } from "@/shared/i18n";
+import type { SessionCostBilling } from "@/shared/types/chat";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
+import {
+  readUsageCostBilledFlag,
+  sessionCostBillingForAmount,
+} from "@/features/chat/lib/sessionCostBilling";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
@@ -980,7 +985,11 @@ function handleShared(sessionId: string, update: SessionUpdate): void {
         used?: number;
         size?: number;
         contextLimit?: number;
-        cost?: { amount?: number | null; currency?: string | null } | null;
+        cost?: {
+          amount?: number | null;
+          currency?: string | null;
+          _meta?: Record<string, unknown> | null;
+        } | null;
         accumulatedInputTokens?: number;
         accumulatedOutputTokens?: number;
         accumulatedCost?: number | null;
@@ -996,15 +1005,25 @@ function handleShared(sessionId: string, update: SessionUpdate): void {
       // Only including `accumulatedCost` in the partial when cost is present
       // lets the store's preserve-on-`undefined` behavior kick in.
       let accumulatedCost: number | null | undefined;
+      let costBilling: SessionCostBilling | null | undefined;
       if (usage.cost === undefined) {
         accumulatedCost =
           typeof usage.accumulatedCost === "number"
             ? usage.accumulatedCost
             : undefined;
+        costBilling =
+          accumulatedCost === undefined
+            ? undefined
+            : sessionCostBillingForAmount(accumulatedCost);
       } else if (typeof usage.cost?.amount === "number") {
         accumulatedCost = usage.cost.amount;
+        costBilling = sessionCostBillingForAmount(
+          accumulatedCost,
+          readUsageCostBilledFlag(usage.cost),
+        );
       } else {
         accumulatedCost = null;
+        costBilling = null;
       }
 
       const contextLimit = usage.size ?? usage.contextLimit;
@@ -1020,6 +1039,7 @@ function handleShared(sessionId: string, update: SessionUpdate): void {
           ? { accumulatedOutput: usage.accumulatedOutputTokens }
           : {}),
         ...(accumulatedCost !== undefined ? { accumulatedCost } : {}),
+        ...(costBilling !== undefined ? { costBilling } : {}),
       });
       break;
     }

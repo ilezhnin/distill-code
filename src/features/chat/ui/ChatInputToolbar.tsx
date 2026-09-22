@@ -118,6 +118,7 @@ export function ChatInputToolbar({
     contextTokens = 0,
     contextLimit = 0,
     accumulatedCost = null,
+    costBilling = null,
     isContextUsageReady,
     supportsCompactionControls,
     canCompactContext = false,
@@ -210,6 +211,14 @@ export function ChatInputToolbar({
     : (accumulatedCost as number) > 0 && (accumulatedCost as number) < 0.005
       ? `<${formatCurrency(0.01)}`
       : formatCurrency(accumulatedCost as number);
+  const resolvedCostBilling = costBilling === "billed" ? "billed" : "estimate";
+  const costHint = costLabel
+    ? t(
+        resolvedCostBilling === "billed"
+          ? "toolbar.sessionCostBilledHint"
+          : "toolbar.sessionCostEstimateHint",
+      )
+    : null;
 
   const handleCompactContext = () => {
     if (!canCompactContext || isCompactingContext || !onCompactContext) {
@@ -353,9 +362,10 @@ export function ChatInputToolbar({
                         isCompact ? "px-0" : "px-2.5",
                       )}
                       aria-label={
-                        costLabel
+                        costLabel && costHint
                           ? t("toolbar.contextUsageWithCost", {
                               cost: costLabel,
+                              hint: costHint,
                             })
                           : t("toolbar.contextUsage")
                       }
@@ -366,18 +376,32 @@ export function ChatInputToolbar({
                         size={16}
                       />
                       {!isCompact && costLabel ? (
-                        <span className="ml-1.5 text-xs tabular-nums">
+                        <span
+                          data-cost-billing={resolvedCostBilling}
+                          className={cn(
+                            "ml-1.5 text-xs tabular-nums",
+                            resolvedCostBilling === "billed" &&
+                              "text-destructive",
+                          )}
+                        >
                           {costLabel}
                         </span>
                       ) : null}
                     </Button>
                   </PopoverTrigger>
                 </TooltipTrigger>
-                <TooltipContent>
-                  {t("toolbar.contextUsageTitle", {
-                    tokens: formatNumber(contextTokens),
-                    limit: formatNumber(contextLimit),
-                  })}
+                <TooltipContent className="text-left">
+                  <div>
+                    {t("toolbar.contextUsageTitle", {
+                      tokens: formatNumber(contextTokens),
+                      limit: formatNumber(contextLimit),
+                    })}
+                  </div>
+                  {costLabel && costHint ? (
+                    <div>
+                      {costLabel} · {costHint}
+                    </div>
+                  ) : null}
                 </TooltipContent>
               </Tooltip>
               <PopoverContent
@@ -408,7 +432,16 @@ export function ChatInputToolbar({
                       <div className="truncate text-muted-foreground">
                         {t("toolbar.sessionCost")}
                       </div>
-                      <div className="shrink-0 tabular-nums">{costLabel}</div>
+                      <div
+                        data-cost-billing={resolvedCostBilling}
+                        className={cn(
+                          "shrink-0 tabular-nums",
+                          resolvedCostBilling === "billed" &&
+                            "text-destructive",
+                        )}
+                      >
+                        {costLabel}
+                      </div>
                     </div>
                   ) : null}
                   {compactionControlsSupported ? (
