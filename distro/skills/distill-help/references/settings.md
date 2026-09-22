@@ -27,3 +27,12 @@ wrong answer for, and are less likely to change than any section name:
 - A settings-adjacent surface can be a dialog opened from a row inside a
   section, rather than its own page. Don't assume every settings destination
   is a navigable page — verify against the file above or the live UI.
+
+The Distill folder (`~/.distill` unless the operator moved it) is where the
+operator's standing files live: `prompt.md` and `security-posture.md` apply
+to every chat, `user.md` describes the operator (plain chats only; never
+written by agents), and `lore.md` plus `research/index.md` are pointers to
+maps kept on disk. Project conventions go in that project's `.distill/AGENTS.md`.
+The layout and prompt order are in the repo at `docs/distill-root-layout.md`.
+Settings > Behavior already has a row for the folder path; editors for the
+five files are a later stage.

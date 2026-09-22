@@ -33,6 +33,12 @@ import {
   getWorkspaceAttachments,
 } from "@/features/chat/lib/workspaceAttachments";
 import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspaceContextPrompt";
+import {
+  formatLorePointerPrompt,
+  formatOperatorProfilePrompt,
+  formatResearchPointerPrompt,
+  refreshRootInstructions,
+} from "@/features/chat/lib/rootInstructionsPrompt";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import {
   composeGatedMemorySection,
@@ -40,6 +46,7 @@ import {
 } from "@/features/memory/lib/memoryPreferences";
 import { archivedCountForProject } from "@/features/memory/lib/memoryPrompt";
 import { sessionProjectWikiPrompt } from "@/features/memory/lib/projectWikiPrompt";
+import { sessionProjectResearchPrompt } from "@/features/memory/lib/projectResearchPrompt";
 import { sessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
 import {
   isWaveExecutorSession,
@@ -378,6 +385,7 @@ export async function sendQueuedPromptToExistingSessionInBackground(
         console.warn("Failed to list skills for queued send:", error);
         return [];
       }),
+      refreshRootInstructions(),
     ]);
     // A wave child is scheduled and reported by its conductor, and its own
     // prompt already ends "with this report block and no extra commentary
@@ -391,6 +399,9 @@ export async function sendQueuedPromptToExistingSessionInBackground(
     const operatorProtocols = isWaveExecutorSession(sessionId)
       ? undefined
       : composeSystemPrompt(
+          formatOperatorProfilePrompt(),
+          formatLorePointerPrompt(),
+          formatResearchPointerPrompt(),
           composeGatedMemorySection(
             getMemoryPreferences(),
             memory.entries,
@@ -415,6 +426,7 @@ export async function sendQueuedPromptToExistingSessionInBackground(
           // deliberately — a wave child is cut off from the operator's memory
           // but not from the project's own knowledge.
           sessionProjectWikiPrompt(sessionId),
+          sessionProjectResearchPrompt(sessionId),
           formatAvailableSkillsCatalogPrompt(skills),
           operatorProtocols,
         )

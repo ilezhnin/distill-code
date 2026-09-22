@@ -11,6 +11,7 @@
 //! person, and gone on a reinstall — the exact split the single root exists to
 //! remove.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -18,7 +19,8 @@ use std::path::Path;
 use tauri::{Manager, State};
 
 use crate::services::distill_root::{
-    ensure_root_layout, resolve_document_path, write_root_pointer, DISTILL_ROOT_ENV,
+    ensure_root_layout, resolve_document_path, resolve_instruction_path, write_root_pointer,
+    DISTILL_ROOT_ENV,
 };
 
 /// The resolved root, held for the process's lifetime.
@@ -110,6 +112,32 @@ pub async fn read_distill_document(
     tokio::task::spawn_blocking(move || read_document_capped(&target))
         .await
         .map_err(|error| format!("Cannot read '{path}': {error}"))?
+}
+
+/// Reads one or more Markdown instruction files under the Distill root.
+///
+/// Every path is resolved first so one traversal attempt fails the whole
+/// call before any file is opened. A file that was never written is `None`.
+#[tauri::command]
+pub async fn read_distill_instructions(
+    state: State<'_, DistillRootState>,
+    paths: Vec<String>,
+) -> Result<HashMap<String, Option<String>>, String> {
+    let root = state.root.clone();
+    let mut resolved = Vec::with_capacity(paths.len());
+    for path in paths {
+        let target = resolve_instruction_path(&root, &path)?;
+        resolved.push((path, target));
+    }
+    tokio::task::spawn_blocking(move || {
+        let mut out = HashMap::with_capacity(resolved.len());
+        for (path, target) in resolved {
+            out.insert(path, read_document_capped(&target)?);
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|error| format!("Cannot read instruction files: {error}"))?
 }
 
 /// Writes one document, atomically.
