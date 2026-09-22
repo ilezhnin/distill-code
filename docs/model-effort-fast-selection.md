@@ -164,16 +164,62 @@ the split was built.
   Opus 4.7 — not on Fable 5 / 5.1, Sonnet 5, Haiku, Opus 4.6 or Sonnet 4.6.
 - **Fast mode on codex** exists on every model except GPT-5.3-Codex-Spark.
   codex offers `ultra` on some models (not all), and Luna tops out at `max`.
-- **grok** has a real `reasoning_effort` option (four stops) and no fast mode
-  at all; distillctl answers `fast_not_supported`. grok accepts an effort a model
+- **grok** has a real `reasoning_effort` option and no fast toggle;
+  Grok 4.7 Fast is a separate model (`grok-4.7-build-fast`). distillctl answers
+  `fast_not_supported` for a toggle. grok accepts an effort a model
   does not advertise, so Distill validates against the advertised menu.
-- **Claude's extra models** (Fable 5.1, Opus 4.8, 4.7, 4.6, Sonnet 4.6) open a
+- **Claude's unlisted extra models** (Opus 4.8, 4.7, 4.6, Sonnet 4.6, or a
+  Fable version absent from the bridge's menu) open a
   bridge session on the model and are then asserted with
   `set_config_option model=<id>`; without the assert the session describes
   the alias's options. Switching to one mid-turn is refused, so those rows are
   disabled while a turn runs.
+  A model advertised by the bridge is selectable directly, including Fable
+  5.1 in Claude ACP 0.81.0; the declared fallback must not disable that row.
 - `[1m]` is a context lane, not an effort: `opus[1m]`, `claude-fable-5[1m]`
   and `claude-fable-5-1[1m]` are whole ids and are never split.
+
+## September 22 harness update
+
+The managed pins and their complete install graphs move together:
+Claude ACP **0.81.0** (Claude Agent SDK **0.3.280**) and Codex ACP **1.13.0**
+(Codex CLI **0.155.1**), with ACP SDK **1.5.0** in the renderer. Grok CLI
+**1.0.40** is managed by its own installer.
+
+An authenticated ACP probe, without sending prompts, verified this account's
+current menu and accepted every advertised effort/Fast selection:
+
+| Model | Efforts | Fast |
+| --- | --- | --- |
+| GPT-6 Astra / Sol | low, medium, high, xhigh, max, ultra | toggle |
+| GPT-6 Luna | low, medium, high, xhigh, max | toggle |
+| Claude Opus 5.5 (`opus[1m]`) | default, low, medium, high, xhigh, max | toggle |
+| Claude Fable 5.1 / Sonnet 5 | default, low, medium, high, xhigh, max | none |
+| Grok 4.7 / 4.7 Fast / 4.6 | low, medium, high, xhigh | separate 4.7 Fast model |
+| Grok 4.5 | low, medium, high | none |
+
+This is a verification snapshot, not an allowlist. Moving aliases keep the
+bridge's name. The host inventory expires after five minutes even when the
+executable has not changed, because account/server rollouts can change the
+menu independently. Explicit inventory refresh bypasses the cache. A missing
+harness retains its last known inventory. Codex's recommended effort metadata
+is retained only when that value is actually offered.
+
+Distill advertises and handles ACP notices, compaction updates/summary chunks,
+and terminal output deltas. Notices are live toasts and never enter history.
+Compaction entities patch in place and replay from SQLite; their completion
+does not complete a prompt or drain its queue. Terminal bytes remain visible
+while a command runs and survive replay. Current protocol tool names take
+precedence over legacy metadata names. Usage and session history continue
+through the existing ACP paths, including the updated bridge's pagination.
+
+Native CLI voice/TUI/daemon controls are not ACP session options. These bridge
+releases expose no new memory transfer contract: Distill's operator-controlled
+memory scopes and `distill-memory` write protocol remain authoritative.
+
+Upstream changes: [Claude ACP 0.81.0](https://github.com/agentclientprotocol/claude-agent-acp/releases/tag/v0.81.0),
+[Codex ACP 1.13.0](https://github.com/agentclientprotocol/codex-acp/releases/tag/v1.13.0),
+[Grok CLI reference](https://docs.x.ai/build/cli/reference).
 
 ## Legacy folded ids
 

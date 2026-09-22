@@ -478,7 +478,9 @@ impl Bridge {
                     "protocolVersion": 1,
                     "clientCapabilities": {
                         "fs": { "readTextFile": false, "writeTextFile": false },
-                        "terminal": false
+                        "terminal": false,
+                        "session": { "notices": {}, "compaction": {} },
+                        "_meta": { "terminal_output_delta": true }
                     },
                     "clientInfo": {
                         "name": "distill",

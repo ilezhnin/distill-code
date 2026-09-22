@@ -122,7 +122,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
             },
             ModelDecl {
                 id: "opus[1m]",
-                name: Some("Opus 5"),
+                name: None,
                 description: None,
                 group: ModelGroup::Main,
                 order: 20,
@@ -144,7 +144,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
             },
             ModelDecl {
                 id: "sonnet",
-                name: Some("Sonnet 5"),
+                name: None,
                 description: None,
                 group: ModelGroup::Main,
                 order: 30,
@@ -155,7 +155,7 @@ pub const HARNESSES: &[HarnessSpec] = &[
             },
             ModelDecl {
                 id: "haiku",
-                name: Some("Haiku 4.5"),
+                name: None,
                 description: None,
                 group: ModelGroup::Main,
                 order: 40,
@@ -399,7 +399,7 @@ fn declared_row(decl: &ModelDecl, probed: Option<&Value>) -> Value {
         "efforts": efforts,
         "defaultEffort": default_effort,
         "supportsFast": supports_fast,
-        "opensOnModel": decl.opens_on_model,
+        "opensOnModel": decl.opens_on_model && probed.is_none(),
         "capabilitySource": source,
     })
 }
@@ -526,17 +526,34 @@ mod tests {
                 ("default", "main", 20, Some("opus[1m]"), false),
                 ("sonnet", "main", 30, None, false),
                 ("haiku", "main", 40, None, false),
-                ("claude-fable-5[1m]", "more", 50, None, true),
+                ("claude-fable-5[1m]", "more", 50, None, false),
                 ("claude-opus-4-8", "more", 60, None, true),
                 ("claude-opus-4-7", "more", 70, None, true),
                 ("claude-opus-4-6", "more", 80, None, true),
                 ("claude-sonnet-4-6", "more", 90, None, true),
             ]
         );
-        // Declared names replace the bridge's aliases; a row Distill does not
-        // name keeps the bridge's own.
-        assert_eq!(models[1]["name"], "Opus 5");
+        // Moving aliases keep the bridge's current name, not a pinned release.
+        assert_eq!(models[1]["name"], "Opus (1M context)");
         assert_eq!(models[2]["name"], "Default");
+    }
+
+    #[test]
+    fn moving_claude_aliases_keep_the_current_bridge_release_name() {
+        let models = merge_inventory(
+            "claude-acp",
+            vec![
+                probed("opus[1m]", "Opus 5.5", CLAUDE_EFFORTS, true),
+                probed("claude-fable-5-1[1m]", "Fable 5.1", CLAUDE_EFFORTS, false),
+            ],
+        );
+        let opus = models.iter().find(|row| row["id"] == "opus[1m]").unwrap();
+        assert_eq!(opus["name"], "Opus 5.5");
+        let fable = models
+            .iter()
+            .find(|row| row["id"] == "claude-fable-5-1[1m]")
+            .unwrap();
+        assert_eq!(fable["opensOnModel"], false);
     }
 
     #[test]
@@ -595,7 +612,7 @@ mod tests {
         // Its place in the menu is still Distill's to decide.
         assert_eq!(opus_4_6["group"], "more");
         assert_eq!(opus_4_6["order"], 80);
-        assert_eq!(opus_4_6["opensOnModel"], true);
+        assert_eq!(opus_4_6["opensOnModel"], false);
     }
 
     #[test]

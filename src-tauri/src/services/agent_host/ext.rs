@@ -396,11 +396,11 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
             let cached = cached_inventory(host, &provider_id).await;
             let serving = host.serving_executable(&provider_id).await;
             let (models, updated_at) = if cached.models.is_empty()
-                || !inventory_is_current(cached.probed_on.as_ref(), &serving)
+                || !inventory_is_fresh(&cached, &serving, chrono::Utc::now().timestamp())
             {
                 if !cached.models.is_empty() {
                     log::info!(
-                        "[agent-host] {provider_id} is not the build its model list was read from; probing it again"
+                        "[agent-host] {provider_id} model inventory expired or its executable changed; probing it again"
                     );
                 }
                 let (models, updated_at) = refresh_models(host, &provider_id).await?;
@@ -469,7 +469,7 @@ const INVENTORY_SCHEMA_VERSION: u32 = 3;
 /// whenever the models Distill itself contributes change -- those are merged
 /// in at request time and never touch the probe's `updatedAt`, so without this
 /// a renderer holding a cached list has no way to notice them.
-const SHAPE_REVISION: u32 = 3;
+const SHAPE_REVISION: u32 = 4;
 
 /// The answer every model-list endpoint returns.
 ///
@@ -565,6 +565,23 @@ fn inventory_is_current(probed_on: Option<&Value>, serving: &Value) -> bool {
         return true;
     }
     probed_on.is_some_and(|on| on == serving)
+}
+
+/// Model availability is also account/server state: a new model can roll out
+/// without changing the CLI binary. Keep offline inventories, but never let an
+/// installed harness's disk cache turn a renderer refresh into an eternal hit.
+fn inventory_is_fresh(cached: &CachedInventory, serving: &Value, now: i64) -> bool {
+    if serving.is_null() {
+        return true;
+    }
+    if !inventory_is_current(cached.probed_on.as_ref(), serving) {
+        return false;
+    }
+    cached
+        .updated_at
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .is_some_and(|updated| (0..300).contains(&(now - updated.timestamp())))
 }
 
 async fn refresh_models(
@@ -743,6 +760,29 @@ mod tests {
 
     fn executable(modified: u64) -> Value {
         json!({ "path": "C:\\Users\\dev\\.grok\\bin\\grok.exe", "len": 153720832, "modified": modified })
+    }
+
+    #[test]
+    fn account_model_rollouts_expire_even_with_the_same_executable() {
+        let serving = executable(1);
+        let record = inventory_record(
+            &[json!({"id": "grok-4.7"})],
+            "2026-09-22T12:00:00Z",
+            &serving,
+        );
+        let cached = CachedInventory::from_record(&record);
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-22T12:00:00Z")
+            .unwrap()
+            .timestamp();
+        assert!(inventory_is_fresh(&cached, &serving, now + 299));
+        assert!(!inventory_is_fresh(&cached, &serving, now + 300));
+        assert!(!inventory_is_fresh(&cached, &serving, now - 1));
+        assert!(!inventory_is_fresh(
+            &CachedInventory::empty(),
+            &serving,
+            now
+        ));
+        assert!(inventory_is_fresh(&cached, &Value::Null, now + 86400));
     }
 
     #[test]

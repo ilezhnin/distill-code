@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { listenAcpToolsReconciled } from "@/shared/api/acpTools";
 import { rerunDoctorReport } from "@/shared/api/useDoctorReport";
+import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
 
 // On a fresh profile the startup reconciler installs the managed ACP bridges
 // long after the first `runDoctor` cached them as missing, and the doctor
@@ -17,8 +18,13 @@ export function AcpToolsEvents() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    const unlisten = listenAcpToolsReconciled(() => {
+    const unlisten = listenAcpToolsReconciled(({ providerIds }) => {
       void rerunDoctorReport(queryClient);
+      const models = useProviderModelCacheStore.getState();
+      for (const providerId of providerIds) {
+        models.invalidateProvider(providerId);
+        void models.refreshProviderModels(providerId, { force: true });
+      }
     });
 
     return () => {

@@ -7,6 +7,13 @@ export interface ToolCallIdentity {
 }
 
 export function getToolCallIdentity(update: SessionUpdate): ToolCallIdentity {
+  if (
+    "name" in update &&
+    typeof update.name === "string" &&
+    update.name.trim()
+  ) {
+    return { toolName: update.name };
+  }
   if (!isRecord(update._meta)) {
     return {};
   }

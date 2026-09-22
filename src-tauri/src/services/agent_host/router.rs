@@ -721,6 +721,20 @@ impl Inner {
             return Ok(bridge);
         }
         let env = self.spawn_env().await;
+        // Startup reconciliation and the first model picker race. Waiting
+        // only for an install already in flight could start yesterday's
+        // bridge before reconciliation got the lock, keeping it for the
+        // entire app lifetime. Verify this build's pin before first spawn.
+        if managed_acp_tools::is_managed(harness_id) {
+            let on_line = |line: &str| log::info!("[agent-host {harness_id}] {line}");
+            if let Err(error) =
+                managed_acp_tools::install_managed_tool(&self.app, harness_id, &on_line).await
+            {
+                log::warn!(
+                    "[agent-host] {harness_id} update failed; trying the installed bridge: {error}"
+                );
+            }
+        }
         // A managed bridge is installed transactionally into app data; wait
         // out any install in flight so the process is never started from a
         // tree that is being swapped underneath it.
@@ -934,9 +948,14 @@ impl Inner {
                 if runtime.loading {
                     return None;
                 }
-                if Self::is_command_list_update(&params) {
+                if Self::is_command_list_update(&params)
+                    || params
+                        .pointer("/update/sessionUpdate")
+                        .and_then(Value::as_str)
+                        == Some("notice")
+                {
                     // Passed on, but neither a part of the turn nor of the
-                    // transcript — see `is_command_list_update`.
+                    // transcript. Notices are explicitly live-only in ACP.
                     drop(sessions);
                     params["sessionId"] = json!(session_id);
                     self.notify_frontend("session/update", params);
@@ -1137,6 +1156,15 @@ impl Inner {
         }
         let mut distill =
             json!({ "messageId": run.message_id, "runId": run.run_id, "created": created });
+        if kind == "compaction_update" {
+            // Our replay stamp must not turn an omitted metadata patch into
+            // a replacement, or erase the distinction between omission/null.
+            let mut patch = json!({});
+            if let Some(meta) = update.get("_meta") {
+                patch["value"] = meta.clone();
+            }
+            distill["compactionMetaPatch"] = patch;
+        }
         if kind != "user_message_chunk" {
             distill["assistantMessageId"] = json!(run.assistant_message_id);
         }
@@ -4201,6 +4229,18 @@ impl Inner {
             })
             .unwrap_or_default();
         if !efforts.is_empty() {
+            let recommended = options
+                .iter()
+                .find(|option| Self::is_effort_option(option))
+                .and_then(|option| option.pointer("/_meta/jetbrains/air/recommendedValue"))
+                .and_then(Value::as_str);
+            if let Some(value) = recommended.filter(|value| {
+                efforts
+                    .iter()
+                    .any(|effort| effort["value"].as_str() == Some(value))
+            }) {
+                row["defaultEffort"] = json!(value);
+            }
             row["efforts"] = json!(efforts);
         }
         row["supportsFast"] = json!(options.iter().any(Self::is_fast_option));
@@ -4926,6 +4966,23 @@ mod tests {
         assert_eq!(rows[1]["capabilitySource"], "unknown");
         assert_eq!(rows[1]["supportsFast"], Value::Null);
         assert!(effort_values(&rows[1]).is_empty());
+    }
+
+    #[test]
+    fn codex_recommended_effort_is_kept_only_when_offered() {
+        let mut row = Inner::probe_row("gpt-6-sol", Some("6 Sol"), None);
+        for (recommended, expected) in [("ultra", json!("ultra")), ("unsupported", Value::Null)] {
+            row["defaultEffort"] = Value::Null;
+            Inner::record_capabilities(
+                &mut row,
+                &json!({ "configOptions": [{
+                "id": "reasoning_effort", "category": "thought_level", "type": "select",
+                "options": [{"value": "high", "name": "High"}, {"value": "ultra", "name": "Ultra"}],
+                "_meta": {"jetbrains": {"air": {"recommendedValue": recommended}}}
+            }] }),
+            );
+            assert_eq!(row["defaultEffort"], expected);
+        }
     }
 
     #[tokio::test]

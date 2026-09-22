@@ -327,6 +327,9 @@
   },
   "notifications": {
     "compactionComplete": "Conversacion compactada. El contexto anterior se resumio.",
+    "compactionFailed": "No se pudo compactar la conversación",
+    "compactionCancelled": "Compactación de conversación cancelada",
+    "compactionStatus": "Compactación de conversación: {{status}}",
     "compactionReplayIncomplete": "No se pudo verificar la conversación compactada porque no se recibió el historial actualizado. Tus mensajes anteriores siguen visibles. Intenta volver a cargar la sesión.",
     "modelLeftBehindOnAgentSwitch": "Este chat ahora usa {{agent}}, pero {{agent}} no quiso ejecutar {{model}}, así que usa el modelo propio de {{agent}}. Elige otro en el menú de modelos.",
     "modelSwitchError": "No se pudo cambiar a {{model}}. Este chat sigue usando {{fallbackModel}}.",

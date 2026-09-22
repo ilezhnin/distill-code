@@ -277,13 +277,13 @@ pub const MANAGED_TOOLS: &[ManagedTool] = &[
         id: "claude-acp",
         binary: "claude-agent-acp",
         package: "@agentclientprotocol/claude-agent-acp",
-        version: "0.79.0",
+        version: "0.81.0",
     },
     ManagedTool {
         id: "codex-acp",
         binary: "codex-acp",
         package: "@agentclientprotocol/codex-acp",
-        version: "1.10.0",
+        version: "1.13.0",
     },
 ];
 
