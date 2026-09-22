@@ -200,13 +200,13 @@ describe("AgentModelPicker", () => {
     expect(onModelChange).toHaveBeenLastCalledWith("default");
   });
 
-  it("lists the six codex models flat in harness order with no More models row", async () => {
+  it("keeps Codex's current generation main and selects an older model from More", async () => {
     const user = userEvent.setup();
     render(
       <PickerHarness
         models={codexModels}
         providerId={CODEX_PROVIDER_ID}
-        initialModelId="gpt-5.6-sol"
+        initialModelId="gpt-6-sol"
       />,
     );
 
@@ -214,14 +214,20 @@ describe("AgentModelPicker", () => {
 
     expect(modelRowLabels("model")).toEqual([
       "GPT-6-Astra",
+      "GPT-6-Sol",
+      "GPT-6-Luna",
+    ]);
+    await user.click(moreModelsRow() as HTMLButtonElement);
+    expect(modelRowLabels("more")).toEqual([
       "GPT-5.6-Sol",
       "GPT-5.6-Terra",
       "GPT-5.6-Luna",
       "GPT-5.5",
       "GPT-5.3-Codex-Spark",
     ]);
-    expect(moreModelsRow()).toBeNull();
-    expect(document.querySelector('[data-col="more"]')).toBeNull();
+    await user.click(modelRow("more", "GPT-5.6-Sol"));
+    expect(modelRow("more", "GPT-5.6-Sol")).toHaveAttribute("data-selected");
+    expect(moreModelsRow()).toHaveTextContent("GPT-5.6-Sol");
   });
 
   it("hands onModelChange the row's base id from the main page, More models and search", async () => {

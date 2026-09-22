@@ -19,6 +19,8 @@ import { Progress } from "@/shared/ui/progress";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/shared/ui/tooltip";
 import { AgentModelPicker } from "./AgentModelPicker";
 import { ReasoningEffortPill } from "./ReasoningEffortPill";
+import { FastModePill } from "./FastModePill";
+import { modelMatchesSelection } from "./AgentModelPickerLists";
 import { resolveEffectiveReasoningEffort } from "../lib/effectiveReasoningEffort";
 import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProviderStatus";
 import { getCatalogEntryFromEntries } from "@/features/providers/providerCatalog";
@@ -172,6 +174,13 @@ export function ChatInputToolbar({
       }),
     [reasoningEffort],
   );
+  const selectedModel = availableModels.find((model) =>
+    modelMatchesSelection(
+      model,
+      currentModelId ?? null,
+      currentModelProviderId ?? null,
+    ),
+  );
 
   const contextProgress =
     contextLimit > 0 ? Math.min(contextTokens / contextLimit, 1) : 0;
@@ -319,6 +328,14 @@ export function ChatInputToolbar({
             disabled={disabled}
             open={openMenu === "effort"}
             onOpenChange={handleMenuOpenChange("effort")}
+          />
+        ) : null}
+
+        {agentModelPickerEnabled ? (
+          <FastModePill
+            fastMode={fastMode}
+            supportsFast={selectedModel?.supportsFast === true}
+            disabled={disabled}
           />
         ) : null}
 

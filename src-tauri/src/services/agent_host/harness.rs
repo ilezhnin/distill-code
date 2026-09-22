@@ -350,7 +350,36 @@ pub fn merge_inventory(harness_id: &str, probed: Vec<Value>) -> Vec<Value> {
         rows.push((order, bridge_row(row, order)));
     }
     rows.sort_by_key(|(order, _)| *order);
+    let newest = rows
+        .iter()
+        .filter_map(|(_, row)| model_generation(harness_id, row))
+        .max();
+    if let Some(newest) = newest {
+        for (_, row) in &mut rows {
+            if model_generation(harness_id, row).is_some_and(|generation| generation < newest) {
+                row["group"] = json!(ModelGroup::More.as_str());
+            }
+        }
+    }
     rows.into_iter().map(|(_, row)| row).collect()
+}
+
+/// Codex and Grok publish versioned model IDs but no current/older grouping.
+/// Compare only known lineages within this inventory. Unknown IDs stay main,
+/// and speed variants of one generation stay together in the bridge's order.
+fn model_generation(harness_id: &str, row: &Value) -> Option<(u32, u32)> {
+    let prefix = match harness_id {
+        "codex-acp" => "gpt-",
+        "grok-acp" => "grok-",
+        _ => return None,
+    };
+    let version = row["id"]
+        .as_str()?
+        .strip_prefix(prefix)?
+        .split('-')
+        .next()?;
+    let (major, minor) = version.split_once('.').unwrap_or((version, "0"));
+    Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
 /// A declared model, wearing whatever the probe learned about it. What the
@@ -643,11 +672,57 @@ mod tests {
             placed,
             [
                 ("gpt-6-astra", "main", 1000),
-                ("gpt-5.3-codex-spark", "main", 1001),
+                ("gpt-5.3-codex-spark", "more", 1001),
             ]
         );
         assert_eq!(models[1]["supportsFast"], false);
         assert!(merge_inventory("codex-acp", Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn codex_and_grok_group_previous_generations_without_hiding_models() {
+        for (harness_id, ids, groups) in [
+            (
+                "codex-acp",
+                vec![
+                    "gpt-6-astra",
+                    "gpt-6-sol",
+                    "gpt-6-luna",
+                    "gpt-5.6-sol",
+                    "gpt-5.5",
+                    "custom-model",
+                ],
+                vec!["main", "main", "main", "more", "more", "main"],
+            ),
+            (
+                "grok-acp",
+                vec!["grok-4.7", "grok-4.7-build-fast", "grok-4.6", "grok-4.5"],
+                vec!["main", "main", "more", "more"],
+            ),
+            (
+                "grok-acp",
+                vec!["grok-4.9", "grok-4.10", "grok-next"],
+                vec!["more", "main", "main"],
+            ),
+            (
+                "codex-acp",
+                vec!["gpt-5.6-sol", "gpt-5.6-luna"],
+                vec!["main", "main"],
+            ),
+        ] {
+            let models = merge_inventory(
+                harness_id,
+                ids.iter()
+                    .map(|id| probed(id, id, &["low", "high"], false))
+                    .collect(),
+            );
+            assert_eq!(models.len(), ids.len());
+            for ((row, id), group) in models.iter().zip(ids).zip(groups) {
+                assert_eq!(row["id"], id);
+                assert_eq!(row["group"], group, "{id}");
+                assert_eq!(row["efforts"].as_array().unwrap().len(), 2);
+            }
+        }
     }
 
     #[test]

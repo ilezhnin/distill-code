@@ -89,11 +89,13 @@ export const claudeModels: ModelOption[] = [
 ];
 
 /**
- * The six codex rows: all filed main, ordered only by the bridge's own order
+ * Codex rows: the newest generation is main, ordered by the bridge's own order
  * (the host gives them a `sortOrder` and no `order`).
  */
 export const codexModels: ModelOption[] = [
   ["gpt-6-astra", "GPT-6-Astra", true],
+  ["gpt-6-sol", "GPT-6-Sol", true],
+  ["gpt-6-luna", "GPT-6-Luna", true],
   ["gpt-5.6-sol", "GPT-5.6-Sol", true],
   ["gpt-5.6-terra", "GPT-5.6-Terra", true],
   ["gpt-5.6-luna", "GPT-5.6-Luna", true],
@@ -104,7 +106,7 @@ export const codexModels: ModelOption[] = [
   name: name as string,
   providerId: CODEX_PROVIDER_ID,
   recommended: true,
-  group: "main" as const,
+  group: (id as string).startsWith("gpt-6-") ? "main" : "more",
   sortOrder: 1000 + index,
   supportsFast: supportsFast as boolean,
   capabilitySource: "probed" as const,
