@@ -29,9 +29,13 @@ shape survives only as legacy input that is read, never written (see
   (`main`/`more`), `order`, `aliasOf`, `efforts`, `defaultEffort`,
   `supportsFast`, `opensOnModel` and `capabilitySource`
   (`probed`/`declared`/`unknown`), with a `schemaVersion` and a `revision` on
-  the answer. Bridge rows are probed (kv scope `harness_models_v2`); Claude's
-  extra models are declared in `harness.rs` because each needs its own bridge
-  session to read.
+  the answer. Bridge rows are probed (kv scope `harness_models_v2`) and the
+  record remembers which harness executable listed them (`probedOn`: path,
+  size, mtime); a list is probed again when the executable that answers for
+  the harness — the running bridge's, or the one on disk — is another file,
+  so a CLI updated in place serves its new models without a reinstall.
+  Claude's extra models are declared in `harness.rs` because each needs its
+  own bridge session to read.
 - **Session answers.** `session/new`, `session/load`, `session/fork` and
   session info carry `_meta.modelId`, `_meta.reasoningEffort` and
   `_meta.fastMode`.
@@ -134,6 +138,19 @@ what a bridge would not take:
 An entry is written when a read-back value differs from the request or an
 option the host meant to apply was absent. It is the only machine-readable
 record of a downgrade, and it feeds `runSettingsNotice`.
+
+A `model` entry on the `session/new` answer means the bridge would not run the
+model the chat was asked to open on — typically a remembered preference the
+harness has since retired, or one its API would not confirm. The session
+exists all the same, on the harness's own model, and `acpCreateSession`
+reports it as `rejectedModel` instead of asking the bridge a second time or
+archiving the session. The caller (`rejectedCreationModel.ts`) then puts the
+chat's target on the model the host named, drops the stored preference that
+failed, and says so in a toast — the same words a switch that left its model
+behind uses. A draft whose creation fails for any other reason stays a draft
+with no host session, so the picker never writes to it over the wire: choosing
+another agent or model records the choice on the draft and hands it back to
+the app shell to be created again (`draftSessionRetry.ts`).
 
 ## Per-model asymmetries
 

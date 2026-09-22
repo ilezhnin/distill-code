@@ -20,8 +20,8 @@ const CODEX_MODELS: RankableModel[] = [
   { id: "gpt-5-codex-sol", displayName: "Codex Sol" },
 ];
 const GROK_MODELS: RankableModel[] = [
-  { id: "grok-4-6-heavy", displayName: "Grok 4.6 Heavy" },
-  { id: "grok-4-6", displayName: "Grok 4.6" },
+  { id: "grok-4.7", displayName: "Grok 4.7" },
+  { id: "grok-4.6", displayName: "Grok 4.6" },
 ];
 
 function input(
@@ -54,7 +54,7 @@ describe("the operator's profiles", () => {
       ["Astra", "xhigh"],
       ["Fable 5.1", "xhigh"],
       ["Opus 5", "xhigh"],
-      ["Grok 4.6", "xhigh"],
+      ["Grok 4.7", "xhigh"],
     ]);
   });
 
@@ -70,7 +70,7 @@ describe("the operator's profiles", () => {
       ["Astra", "medium"],
       ["Fable 5.1", "medium"],
       ["Opus 5", "medium"],
-      ["Grok 4.6", "xhigh"],
+      ["Grok 4.7", "xhigh"],
     ]);
   });
 
@@ -93,7 +93,7 @@ describe("the operator's profiles", () => {
         ]),
       ).toEqual([
         ["Opus 5", "medium"],
-        ["Grok 4.6", "high"],
+        ["Grok 4.7", "high"],
         ["Luna", "xhigh"],
       ]);
     }
@@ -119,9 +119,9 @@ describe("resolveRankedModel", () => {
           platform === "grok-acp" ? "clear" : "at-limit",
       }),
     );
-    // one-shot: Astra → Fable 5.1 → Opus 5 → Grok 4.6; everything but Grok
+    // one-shot: Astra → Fable 5.1 → Opus 5 → Grok 4.7; everything but Grok
     // is gated here.
-    expect(result.choice?.label).toBe("Grok 4.6");
+    expect(result.choice?.label).toBe("Grok 4.7");
     expect(result.choice?.rankIndex).toBe(3);
     expect(result.skipped).toEqual([
       { label: "Astra", reason: "at-limit" },
@@ -206,7 +206,7 @@ describe("resolveRankedModel", () => {
           platform === "claude-acp" ? CLAUDE_MODELS : [],
       }),
     );
-    // coding-simple (medium profile): Astra → Fable 5.1 → Opus 5 → Grok 4.6.
+    // coding-simple (medium profile): Astra → Fable 5.1 → Opus 5 → Grok 4.7.
     expect(result.choice?.label).toBe("Fable 5.1");
     expect(result.choice?.effort).toBe("medium");
     expect(result.skipped).toEqual([
@@ -273,8 +273,8 @@ describe("resolveRankedModel", () => {
   it("spells the effort the way the model advertises it", () => {
     const grok: RankableModel[] = [
       {
-        id: "grok-4.6",
-        displayName: "Grok 4.6",
+        id: "grok-4.7",
+        displayName: "Grok 4.7",
         efforts: [{ id: "XHigh", name: "Extra High" }],
       },
     ];

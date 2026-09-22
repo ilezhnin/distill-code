@@ -33,6 +33,19 @@ const BACKGROUND_ATTACH_DELAY: std::time::Duration = std::time::Duration::from_m
 /// How long closing a bridge session may take before reopening it anyway.
 const BRIDGE_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const SNIPPET_CHARS: usize = 200;
+/// How much of a conversation goes with a chat that moved to another agent
+/// (`carryover_block`), in characters: roughly 30k tokens, which every model
+/// the harnesses run has room for next to the work it is then asked to do. The
+/// newest messages are the ones kept.
+const CARRYOVER_BUDGET_CHARS: usize = 120_000;
+/// The most one message of it may take, so a single pasted log cannot push the
+/// rest of the conversation out of the budget.
+const CARRYOVER_MESSAGE_CHARS: usize = 12_000;
+/// How a carried-over transcript opens. A bridge that echoes a prompt back
+/// without its annotations would otherwise put the last hand-over inside the
+/// next one.
+const CARRYOVER_OPENING: &str =
+    "This conversation was started with a different agent and has been handed over to you.";
 /// How long an attach waits for the bridge event loop to catch up with the
 /// history the bridge replayed before it gives up and goes live anyway.
 const EVENT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -873,6 +886,11 @@ impl Inner {
         method: &str,
         mut params: Value,
     ) -> Option<(String, Value)> {
+        let method = if Self::normalize_xai_turn_usage(method, &mut params) {
+            "session/update"
+        } else {
+            method
+        };
         if method != "session/update" {
             self.notify_frontend(method, params);
             return None;
@@ -948,6 +966,47 @@ impl Inner {
         };
         self.notify_frontend("session/update", params);
         stored
+    }
+
+    /// Rewrites grok's `_x.ai/session/update` `turn_completed` into the
+    /// standard `message_usage` update, so grok turns reach the usage ledger
+    /// the way claude's and codex's do; every other `_x.ai` extension keeps
+    /// its raw passthrough. Grok's `inputTokens` includes the cached share,
+    /// which `message_usage` counts separately, so the cache is subtracted.
+    /// `costUsdTicks` is dropped: its scale is unpublished, and a wrong
+    /// dollar amount in the ledger is worse than none.
+    fn normalize_xai_turn_usage(method: &str, params: &mut Value) -> bool {
+        if method != "_x.ai/session/update" {
+            return false;
+        }
+        let Some(update) = params.get("update") else {
+            return false;
+        };
+        if update.get("sessionUpdate").and_then(Value::as_str) != Some("turn_completed") {
+            return false;
+        }
+        let Some(usage) = update.get("usage") else {
+            return false;
+        };
+        let read = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+        let input = read("inputTokens");
+        let output = read("outputTokens");
+        let cache_read = read("cachedReadTokens");
+        let cache_write = read("cacheCreationTokens");
+        if input == 0 && output == 0 && cache_read == 0 && cache_write == 0 {
+            return false;
+        }
+        params["update"] = json!({
+            "sessionUpdate": "message_usage",
+            "usage": {
+                "inputTokens": input.saturating_sub(cache_read + cache_write),
+                "outputTokens": output,
+                "cacheReadTokens": cache_read,
+                "cacheWriteTokens": cache_write,
+                "elapsedMs": read("apiDurationMs"),
+            },
+        });
+        true
     }
 
     /// Whether this is an `available_commands_update`: the harness restating
@@ -2816,13 +2875,15 @@ impl Inner {
         ))
     }
 
-    /// Put a session on another harness — the "provider" option. That is
-    /// only possible before its first message: from then on the
-    /// conversation lives in the agent's own context, which cannot follow
-    /// the chat to a different agent, so a started chat keeps its harness
-    /// and a new chat is the way to another one. The new bridge session is
-    /// opened before anything is changed, so a failure leaves the session
-    /// on the harness it had.
+    /// Put a session on another harness — the "provider" option. Between
+    /// turns only: a running turn belongs to the agent that is answering it.
+    ///
+    /// The conversation so far lives in the previous agent's own context,
+    /// which cannot follow the chat to a different agent. What can is the
+    /// transcript, which is the host's: a chat that has messages is marked as
+    /// owing it to the new agent, and the next prompt carries it (see
+    /// `carryover_block`). The new bridge session is opened before anything is
+    /// changed, so a failure leaves the session on the harness it had.
     async fn move_to_harness(
         self: &Arc<Self>,
         session_id: &str,
@@ -2833,25 +2894,46 @@ impl Inner {
         let lock = self.attach_lock(session_id).await;
         let _moving = lock.lock().await;
         let record = self.session_record(session_id).await?;
-        let started = || {
+        let running = || {
             invalid_params(format!(
-                "Session {session_id} already has messages on {}; start a new chat to use {harness_id}",
+                "Session {session_id} is running a turn on {}; it can move to {harness_id} once the turn ends",
                 record.harness
             ))
         };
-        if record.message_count > 0 || self.active_run_id(session_id).await.is_some() {
-            return Err(started());
+        if self.active_run_id(session_id).await.is_some() {
+            return Err(running());
         }
         let mcp_servers = self.mcp_servers(&Value::Null).await;
         let (bridge, bridge_session_id, snapshot) = self
             .open_bridge_session(spec, &record.cwd, mcp_servers, None)
             .await?;
         let model_id = Self::current_model(&snapshot);
-        // The store re-checks "no message yet" in the same statement, so a
-        // first prompt that slipped in meanwhile keeps the session where it is.
-        if !self
+        // Opening the bridge session took a while, and a prompt that was past
+        // its attach before this move took the lock may have claimed a turn
+        // on the old one meanwhile. The route is taken away under the very
+        // lock a turn is claimed under, so either that turn is seen here and
+        // the move is refused, or the prompt finds no runtime and fails
+        // cleanly instead of being cut off by the close below.
+        let previously = {
+            let mut sessions = self.sessions.lock().await;
+            if sessions
+                .get(session_id)
+                .is_some_and(|runtime| runtime.run.is_some())
+            {
+                None
+            } else {
+                Some(sessions.remove(session_id))
+            }
+        };
+        let Some(previously) = previously else {
+            // The session we just opened on the new harness is never going to
+            // be used, so hand it back.
+            bridge.close_session(&bridge_session_id).await;
+            return Err(running());
+        };
+        let carried_over = match self
             .store
-            .rebind_unstarted_session(
+            .rebind_session(
                 session_id,
                 harness_id,
                 &bridge_session_id,
@@ -2859,23 +2941,26 @@ impl Inner {
                 &snapshot,
             )
             .await
-            .map_err(protocol::internal)?
         {
-            // The move was refused: the session we just opened on the new
-            // harness is never going to be used, so hand it back.
-            bridge.close_session(&bridge_session_id).await;
-            return Err(started());
-        }
-        // The effort and the fast toggle stay behind with the harness that
-        // named them: another one has its own vocabulary for the first and may
-        // have no such control at all for the second, and the chat is now on a
-        // model neither belonged to.
-        if let Err(error) = self.store.set_run_settings(session_id, None, None).await {
-            log::warn!("[agent-host] failed to clear the moved session's run settings: {error}");
-        }
+            Ok(carried_over) => carried_over,
+            Err(error) => {
+                // Nothing moved: the record still names the old harness and
+                // its bridge session. Put its route back, or that session
+                // stays open in its bridge with nobody to hear it until the
+                // next attach loads an id the bridge never let go of.
+                if let Some(previously) = previously {
+                    self.sessions
+                        .lock()
+                        .await
+                        .entry(session_id.to_string())
+                        .or_insert(previously);
+                }
+                bridge.close_session(&bridge_session_id).await;
+                return Err(protocol::internal(error));
+            }
+        };
         // The session it used to be is nobody's any more: cancel and close it
         // so the old agent stops holding its context.
-        let previously = self.sessions.lock().await.remove(session_id);
         if let Some(previously) = previously {
             self.let_go_of(&previously).await;
         }
@@ -2895,8 +2980,13 @@ impl Inner {
             },
         );
         log::info!(
-            "[agent-host] session {session_id} moved from {} to {harness_id} before its first message",
-            record.harness
+            "[agent-host] session {session_id} moved from {} to {harness_id}{}",
+            record.harness,
+            if carried_over {
+                "; its transcript goes with the next prompt"
+            } else {
+                " before its first message"
+            }
         );
         Ok(Self::presented_snapshot(
             harness_id,
@@ -2914,25 +3004,197 @@ impl Inner {
         Some(collapsed.chars().take(SNIPPET_CHARS).collect())
     }
 
+    /// The text of a prompt block the user can see: a text block addressed to
+    /// nobody in particular, or to the user among others. What the renderer
+    /// sends the agent alone — a persona, a skill — is not what was said.
+    fn user_visible_text(block: &Value) -> Option<&str> {
+        if block.get("type").and_then(Value::as_str) != Some("text") {
+            return None;
+        }
+        let for_the_user = block
+            .pointer("/annotations/audience")
+            .and_then(Value::as_array)
+            .map(|audience| audience.iter().any(|entry| entry == "user"))
+            .unwrap_or(true);
+        if !for_the_user {
+            return None;
+        }
+        block.get("text").and_then(Value::as_str)
+    }
+
     fn prompt_text(prompt: &Value) -> String {
         prompt
             .as_array()
             .map(|blocks| {
                 blocks
                     .iter()
-                    .filter(|block| {
-                        block.get("type").and_then(Value::as_str) == Some("text")
-                            && block
-                                .pointer("/annotations/audience")
-                                .and_then(Value::as_array)
-                                .map(|audience| audience.iter().any(|entry| entry == "user"))
-                                .unwrap_or(true)
-                    })
-                    .filter_map(|block| block.get("text").and_then(Value::as_str))
+                    .filter_map(Self::user_visible_text)
                     .collect::<Vec<_>>()
                     .join("\n")
             })
             .unwrap_or_default()
+    }
+
+    /// A stored transcript as the messages two sides exchanged: `true` for
+    /// the user's, `false` for the agent's. Chunks of one message are joined;
+    /// a tool the agent ran is a line of its reply — by name only, since what
+    /// a tool printed is the bulk of any log and what it *did* is in the
+    /// working directory for the next agent to look at. Thoughts, plans and
+    /// what the renderer told the agent behind the user's back are left out.
+    fn carryover_messages(events: &[Value]) -> Vec<(bool, String)> {
+        let mut messages: Vec<(bool, String)> = Vec::new();
+        let mut open_message_id: Option<&str> = None;
+        for event in events {
+            let update = &event["update"];
+            let (from_user, piece) = match update["sessionUpdate"].as_str() {
+                Some("user_message_chunk") => match Self::user_visible_text(&update["content"]) {
+                    Some(text) if !text.starts_with(CARRYOVER_OPENING) => (true, text.to_string()),
+                    _ => continue,
+                },
+                Some("agent_message_chunk") => match update["content"]["text"].as_str() {
+                    Some(text) => (false, text.to_string()),
+                    None => continue,
+                },
+                Some("tool_call") => match update["title"].as_str().map(str::trim) {
+                    Some(title) if !title.is_empty() => {
+                        (false, format!("\n[ran a tool: {title}]\n"))
+                    }
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            // Every event of a turn is stamped with the id of the prompt that
+            // started it, so two prompts in a row stay two messages.
+            let message_id = update
+                .pointer("/_meta/distill/messageId")
+                .and_then(Value::as_str);
+            match messages.last_mut() {
+                Some((last_from_user, text))
+                    if *last_from_user == from_user && open_message_id == message_id =>
+                {
+                    // Blocks of one prompt are separate paragraphs; chunks of
+                    // a streamed reply are one text cut at arbitrary places.
+                    if from_user {
+                        text.push('\n');
+                    }
+                    text.push_str(&piece);
+                }
+                _ => messages.push((from_user, piece)),
+            }
+            open_message_id = message_id;
+        }
+        messages.retain(|(_, text)| !text.trim().is_empty());
+        messages
+    }
+
+    /// `text` cut down to `limit` characters by taking out its middle: how a
+    /// message opens says what it is about and how it ends says where it got
+    /// to.
+    fn shortened(text: &str, limit: usize) -> String {
+        let length = text.chars().count();
+        if length <= limit {
+            return text.to_string();
+        }
+        let head = limit * 2 / 3;
+        let tail = limit - head;
+        let byte_at = |position: usize| {
+            text.char_indices()
+                .nth(position)
+                .map_or(text.len(), |(index, _)| index)
+        };
+        format!(
+            "{}\n[… {} characters left out …]\n{}",
+            &text[..byte_at(head)],
+            length - limit,
+            &text[byte_at(length - tail)..]
+        )
+    }
+
+    /// The conversation so far as one prompt block for an agent that was not
+    /// there for it, or `None` when nothing was said. Addressed to the agent
+    /// alone, like a persona hand-off, so the renderer does not show it as
+    /// something the user typed. Newest messages first in line for the budget:
+    /// what was said last is what the next message most likely refers to.
+    fn carryover_block(events: &[Value]) -> Option<Value> {
+        let messages = Self::carryover_messages(events);
+        let mut kept: Vec<String> = Vec::new();
+        let mut spent = 0;
+        for (from_user, text) in messages.iter().rev() {
+            let text = Self::shortened(text.trim(), CARRYOVER_MESSAGE_CHARS);
+            let cost = text.chars().count();
+            if !kept.is_empty() && spent + cost > CARRYOVER_BUDGET_CHARS {
+                break;
+            }
+            spent += cost;
+            let side = if *from_user { "User" } else { "Previous agent" };
+            kept.push(format!("## {side}\n\n{text}"));
+        }
+        if kept.is_empty() {
+            return None;
+        }
+        let left_out = messages.len() - kept.len();
+        kept.reverse();
+        let mut text = format!(
+            "{CARRYOVER_OPENING} Below is its transcript so far: the user's messages, the previous \
+             agent's replies and the names of the tools it ran. Tool output is not included; \
+             whatever those tools changed is in the working directory. Treat this as the history \
+             of the conversation you are now part of and continue it. Do not answer the \
+             transcript itself and do not mention the hand-over unless it matters to the user's \
+             request — their new message follows it.\n\n<conversation_transcript>\n"
+        );
+        if left_out > 0 {
+            text.push_str(&format!("[{left_out} earlier message(s) left out]\n\n"));
+        }
+        text.push_str(&kept.join("\n\n"));
+        text.push_str("\n</conversation_transcript>");
+        Some(json!({
+            "type": "text",
+            "text": text,
+            "annotations": { "audience": ["assistant"] },
+        }))
+    }
+
+    /// `prompt` with `block` ahead of everything else in it.
+    fn prompt_after(block: &Value, prompt: &Value) -> Value {
+        let mut blocks = vec![block.clone()];
+        blocks.extend(prompt.as_array().cloned().unwrap_or_default());
+        Value::Array(blocks)
+    }
+
+    /// The transcript a session owes the agent it moved to, when it owes one.
+    /// A transcript that cannot be read is not a reason to refuse the prompt:
+    /// the debt stands and the agent answers without it this once.
+    async fn pending_carryover(&self, session_id: &str) -> Option<Value> {
+        match self.store.carryover_pending(session_id).await {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(error) => {
+                log::warn!("[agent-host] failed to read the carry-over of {session_id}: {error}");
+                return None;
+            }
+        }
+        // The tail of the last reply may still be in the event loop's buffer.
+        self.drain_bridge_events().await;
+        match self.store.list_events(session_id).await {
+            Ok(events) => {
+                let block = Self::carryover_block(&events);
+                if block.is_none() {
+                    // Pictures and attachments only: nothing a transcript can
+                    // carry. Left standing, the debt would be paid later with
+                    // the new agent's own turns.
+                    if let Err(error) = self.store.clear_carryover(session_id).await {
+                        log::warn!(
+                            "[agent-host] failed to settle the carry-over of {session_id}: {error}"
+                        );
+                    }
+                }
+                block
+            }
+            Err(error) => {
+                log::warn!("[agent-host] failed to read the transcript of {session_id}: {error}");
+                None
+            }
+        }
     }
 
     /// Persist a user turn's prompt blocks. A steered turn (one the agent
@@ -2993,7 +3255,7 @@ impl Inner {
     /// The renderer's queue law re-dispatches a message whose send failed, so
     /// leaving it behind is what turns one rejected send into two, three, …
     /// copies of the same message with no replies — and a `message_count` that
-    /// refuses to move the still-unanswered chat to another agent.
+    /// says a conversation took place in a chat nobody has answered yet.
     ///
     /// The decision fails *closed*: without proof that this very turn produced
     /// nothing, the prompt stays. Leaving an unanswered message behind costs a
@@ -3118,6 +3380,13 @@ impl Inner {
             .cloned()
             .unwrap_or_else(|| Value::Array(vec![]));
         let meta = params.get("_meta").cloned().unwrap_or_else(|| json!({}));
+        // A chat that came here from another agent owes this one the
+        // conversation so far. Built before the turn is claimed: reading the
+        // log means waiting for the event loop to catch up, and whatever a
+        // freshly opened bridge session says about itself meanwhile would be
+        // stamped onto the run as something the turn produced — which is what
+        // stops a prompt the bridge then rejects from being withdrawn.
+        let mut carryover = self.pending_carryover(&session_id).await;
         // The bridge session the prompt goes to is the one the runtime names
         // in the very lock the run is registered in. `attach_session` released
         // its own lock before returning, and a `reopen_on_model` that took it
@@ -3147,15 +3416,40 @@ impl Inner {
                 }
             }
         };
+        // A move is refused from here on, so this second look is the one that
+        // cannot go stale: it catches a chat that changed agents between the
+        // first look and the claim. Both come before the prompt is recorded,
+        // so the transcript handed over ends where this message begins.
+        if carryover.is_none() {
+            carryover = self.pending_carryover(&session_id).await;
+        }
         let recorded = self
             .record_user_prompt(&session_id, &prompt, &meta, &ids, steer)
             .await;
         self.name_untitled_session(&record, &prompt);
+        // What is recorded is what the user sent; what the agent is sent
+        // opens with what it missed.
+        let sent = match &carryover {
+            Some(block) => Self::prompt_after(block, &prompt),
+            None => prompt,
+        };
         let mut result = self
-            .run_prompt(&bridge, &session_id, &bridge_session_id, prompt, meta)
+            .run_prompt(&bridge, &session_id, &bridge_session_id, sent, meta)
             .await;
-        if result.is_err() {
-            self.discard_rejected_prompt(&session_id, recorded).await;
+        match &result {
+            // Only a turn the bridge saw through proves the agent has the
+            // transcript. A failed one proves nothing either way — a bridge
+            // that died took the prompt with it — and an agent told the same
+            // history twice is a far smaller harm than one never told it.
+            Ok(_) if carryover.is_some() => {
+                if let Err(error) = self.store.clear_carryover(&session_id).await {
+                    log::warn!(
+                        "[agent-host] failed to settle the carry-over of {session_id}: {error}"
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(_) => self.discard_rejected_prompt(&session_id, recorded).await,
         }
         // Steering while the turn ran: send the queued messages one after the
         // other so the agent sees them in order.
@@ -3635,8 +3929,28 @@ impl Inner {
             .unwrap_or_else(|| ".".to_string())
     }
 
+    /// The file that answers for `harness_id` right now: the one its running
+    /// bridge was started from while that bridge lives, the one on disk
+    /// otherwise. `Null` where the harness is not installed.
+    ///
+    /// The distinction matters for a CLI updated while its bridge is up: the
+    /// old process keeps serving the old models until it exits, and probing
+    /// it again would only confirm what the inventory already says.
+    pub async fn serving_executable(&self, harness_id: &str) -> Value {
+        if let Some(bridge) = self.live_bridge(harness_id).await {
+            return bridge.executable();
+        }
+        let Some(spec) = harness::harness(harness_id) else {
+            return Value::Null;
+        };
+        let env = self.spawn_env().await;
+        super::bridge::executable_fingerprint(spec, &env).unwrap_or(Value::Null)
+    }
+
     /// Open a throwaway session to learn which models a harness offers and
-    /// what each of them can do, then close it.
+    /// what each of them can do, then close it. Answers the rows and the
+    /// executable of the bridge that listed them, so the inventory can tell
+    /// when a later build of the CLI has something else to say.
     ///
     /// The row list is the session's own `model` option: base ids under the
     /// bridge's own names. `models.availableModels` is not the list — codex
@@ -3646,8 +3960,12 @@ impl Inner {
     /// part of a model id. Each model is then selected in turn so the effort
     /// values and fast toggle recorded against it are its own. No prompt is
     /// ever sent, so nothing runs and nothing is billed.
-    pub async fn probe_models(self: &Arc<Self>, harness_id: &str) -> Result<Vec<Value>, Value> {
+    pub async fn probe_models(
+        self: &Arc<Self>,
+        harness_id: &str,
+    ) -> Result<(Vec<Value>, Value), Value> {
         let bridge = self.ensure_bridge(harness_id).await?;
+        let probed_on = bridge.executable();
         let mut params = json!({ "cwd": self.probe_cwd(), "mcpServers": [] });
         if let Some(meta) = harness::probe_session_meta(harness_id) {
             params["_meta"] = meta;
@@ -3655,7 +3973,7 @@ impl Inner {
         let opened = bridge.request("session/new", params).await?;
         let Some(probe_session) = protocol::session_id(&opened) else {
             log::info!("[agent-host] {harness_id} named no session to probe its models in");
-            return Ok(Self::probe_rows(&opened));
+            return Ok((Self::probe_rows(&opened), probed_on));
         };
         let select = |config_id: String, model_id: String| {
             let bridge = Arc::clone(&bridge);
@@ -3687,7 +4005,10 @@ impl Inner {
                 }
             }
         };
-        Ok(Self::probe_model_rows(&opened, select, close).await)
+        Ok((
+            Self::probe_model_rows(&opened, select, close).await,
+            probed_on,
+        ))
     }
 
     /// Walk a throwaway session's model list. `select` puts the session on
@@ -3935,6 +4256,64 @@ mod tests {
     }
 
     #[test]
+    fn xai_turn_completed_becomes_message_usage() {
+        let mut params = json!({
+            "sessionId": "s1",
+            "update": {
+                "sessionUpdate": "turn_completed",
+                "stop_reason": "end_turn",
+                "usage": {
+                    "inputTokens": 17042,
+                    "outputTokens": 168,
+                    "totalTokens": 17210,
+                    "cachedReadTokens": 2944,
+                    "cacheCreationTokens": 0,
+                    "reasoningTokens": 159,
+                    "modelCalls": 1,
+                    "apiDurationMs": 3899,
+                    "costUsdTicks": 104_298_400u64
+                }
+            }
+        });
+        assert!(Inner::normalize_xai_turn_usage(
+            "_x.ai/session/update",
+            &mut params
+        ));
+        let usage = &params["update"]["usage"];
+        assert_eq!(params["update"]["sessionUpdate"], "message_usage");
+        assert_eq!(params["sessionId"], "s1");
+        assert_eq!(usage["inputTokens"], 14098);
+        assert_eq!(usage["outputTokens"], 168);
+        assert_eq!(usage["cacheReadTokens"], 2944);
+        assert_eq!(usage["cacheWriteTokens"], 0);
+        assert_eq!(usage["elapsedMs"], 3899);
+        assert!(usage.get("cost").is_none());
+    }
+
+    #[test]
+    fn other_xai_updates_and_standard_methods_pass_through_unclaimed() {
+        let mut hook = json!({
+            "sessionId": "s1",
+            "update": { "sessionUpdate": "hook_execution", "event_name": "session_start" }
+        });
+        assert!(!Inner::normalize_xai_turn_usage(
+            "_x.ai/session/update",
+            &mut hook
+        ));
+        assert_eq!(hook["update"]["sessionUpdate"], "hook_execution");
+
+        let mut standard = json!({
+            "sessionId": "s1",
+            "update": { "sessionUpdate": "turn_completed", "usage": { "inputTokens": 5 } }
+        });
+        assert!(!Inner::normalize_xai_turn_usage(
+            "session/update",
+            &mut standard
+        ));
+        assert_eq!(standard["update"]["sessionUpdate"], "turn_completed");
+    }
+
+    #[test]
     fn a_steered_prompt_is_recorded_as_a_steer_under_its_acknowledged_ids() {
         let prompt = json!([
             { "type": "text", "text": "skill", "annotations": { "audience": ["assistant"] } },
@@ -3961,6 +4340,170 @@ mod tests {
         assert_eq!(
             events[1]["update"]["content"]["text"],
             "also check the tests"
+        );
+    }
+
+    fn said(kind: &str, message_id: &str, content: Value) -> Value {
+        json!({
+            "sessionId": "s1",
+            "update": {
+                "sessionUpdate": kind,
+                "content": content,
+                "_meta": { "distill": { "messageId": message_id } },
+            }
+        })
+    }
+
+    fn carried_text(events: &[Value]) -> String {
+        let block = Inner::carryover_block(events).expect("a transcript");
+        assert_eq!(block["annotations"]["audience"], json!(["assistant"]));
+        block["text"].as_str().expect("text").to_string()
+    }
+
+    #[test]
+    fn a_chat_that_changes_agents_takes_what_was_said_and_nothing_else() {
+        let events = vec![
+            said(
+                "user_message_chunk",
+                "m1",
+                json!({ "type": "text", "text": "persona", "annotations": { "audience": ["assistant"] } }),
+            ),
+            said(
+                "user_message_chunk",
+                "m1",
+                json!({ "type": "text", "text": "rename the crate" }),
+            ),
+            said(
+                "agent_thought_chunk",
+                "m1",
+                json!({ "type": "text", "text": "hmm" }),
+            ),
+            said(
+                "agent_message_chunk",
+                "m1",
+                json!({ "type": "text", "text": "Renam" }),
+            ),
+            said(
+                "agent_message_chunk",
+                "m1",
+                json!({ "type": "text", "text": "ing." }),
+            ),
+            json!({ "sessionId": "s1", "update": {
+                "sessionUpdate": "tool_call", "title": "Edit Cargo.toml", "toolCallId": "t1",
+                "_meta": { "distill": { "messageId": "m1" } },
+            }}),
+            said(
+                "agent_message_chunk",
+                "m1",
+                json!({ "type": "text", "text": "Done." }),
+            ),
+            said(
+                "user_message_chunk",
+                "m2",
+                json!({ "type": "text", "text": "and the tests?" }),
+            ),
+            said(
+                "user_message_chunk",
+                "m3",
+                json!({ "type": "text", "text": "hello?" }),
+            ),
+        ];
+        let messages = Inner::carryover_messages(&events);
+        assert_eq!(
+            messages,
+            vec![
+                (true, "rename the crate".to_string()),
+                (
+                    false,
+                    "Renaming.\n[ran a tool: Edit Cargo.toml]\nDone.".to_string()
+                ),
+                // Two prompts in a row are two messages, not one.
+                (true, "and the tests?".to_string()),
+                (true, "hello?".to_string()),
+            ]
+        );
+        let text = carried_text(&events);
+        assert!(text.starts_with(CARRYOVER_OPENING));
+        assert!(!text.contains("persona"));
+        assert!(!text.contains("hmm"));
+        assert!(text.contains("## User\n\nrename the crate\n\n## Previous agent\n\nRenaming."));
+        assert!(!text.contains("left out"));
+    }
+
+    #[test]
+    fn a_chat_in_which_nothing_was_said_has_nothing_to_hand_over() {
+        let events = vec![said(
+            "user_message_chunk",
+            "m1",
+            json!({ "type": "text", "text": "skill", "annotations": { "audience": ["assistant"] } }),
+        )];
+        assert_eq!(Inner::carryover_block(&events), None);
+    }
+
+    #[test]
+    fn a_long_conversation_hands_over_its_newest_messages_and_says_what_it_left_out() {
+        let long = "й".repeat(CARRYOVER_MESSAGE_CHARS * 2);
+        let shortened = Inner::shortened(&long, CARRYOVER_MESSAGE_CHARS);
+        assert!(shortened.contains(&format!("{CARRYOVER_MESSAGE_CHARS} characters left out")));
+        assert_eq!(
+            shortened.chars().filter(|letter| *letter == 'й').count(),
+            CARRYOVER_MESSAGE_CHARS
+        );
+
+        let turns = CARRYOVER_BUDGET_CHARS / CARRYOVER_MESSAGE_CHARS + 5;
+        let events: Vec<Value> = (0..turns)
+            .map(|turn| {
+                said(
+                    "user_message_chunk",
+                    &format!("m{turn}"),
+                    json!({ "type": "text", "text": format!("turn {turn} {long}") }),
+                )
+            })
+            .collect();
+        let text = carried_text(&events);
+        assert!(text.contains(&format!("turn {} ", turns - 1)));
+        assert!(!text.contains("turn 0 "));
+        assert!(text.contains("earlier message(s) left out"));
+        assert!(text.chars().count() < CARRYOVER_BUDGET_CHARS + CARRYOVER_MESSAGE_CHARS);
+    }
+
+    #[test]
+    fn an_earlier_hand_over_a_bridge_echoed_back_is_not_handed_over_again() {
+        let echoed = carried_text(&[said(
+            "user_message_chunk",
+            "m1",
+            json!({ "type": "text", "text": "first" }),
+        )]);
+        let events = vec![
+            said(
+                "user_message_chunk",
+                "m1",
+                json!({ "type": "text", "text": "first" }),
+            ),
+            said(
+                "user_message_chunk",
+                "m2",
+                json!({ "type": "text", "text": echoed }),
+            ),
+            said(
+                "user_message_chunk",
+                "m2",
+                json!({ "type": "text", "text": "second" }),
+            ),
+        ];
+        assert_eq!(
+            Inner::carryover_messages(&events),
+            vec![(true, "first".to_string()), (true, "second".to_string())]
+        );
+    }
+
+    #[test]
+    fn the_transcript_goes_ahead_of_what_the_user_just_sent() {
+        let block = json!({ "type": "text", "text": "history" });
+        let prompt = json!([{ "type": "text", "text": "go on" }]);
+        assert_eq!(
+            Inner::prompt_after(&block, &prompt),
+            json!([{ "type": "text", "text": "history" }, { "type": "text", "text": "go on" }])
         );
     }
 
@@ -4480,6 +5023,41 @@ mod tests {
                 { "id": "agent", "category": "agent", "type": "select", "currentValue": "default", "options": [{ "value": "default" }] },
             ]
         })
+    }
+
+    #[test]
+    fn whichever_fable_the_bridge_does_not_list_is_the_one_a_session_is_opened_on() {
+        // This bridge's Claude Code runs Fable 5, so that is the one it lists
+        // and takes as a plain write; Fable 5.1 it would refuse.
+        let lists_5 = claude_session();
+        assert!(!Inner::opens_on_model(
+            "claude-acp",
+            &lists_5,
+            "claude-fable-5[1m]"
+        ));
+        assert!(Inner::opens_on_model(
+            "claude-acp",
+            &lists_5,
+            "claude-fable-5-1[1m]"
+        ));
+
+        // The next machine runs Fable 5.1 and the two swap. Writing Fable 5
+        // there answered "Invalid value for config option model", which took
+        // a chat that had just moved to Claude straight back off it.
+        let mut lists_5_1 = claude_session();
+        lists_5_1["configOptions"][1]["options"][2]["value"] = json!("claude-fable-5-1[1m]");
+        assert!(Inner::opens_on_model(
+            "claude-acp",
+            &lists_5_1,
+            "claude-fable-5[1m]"
+        ));
+        assert!(!Inner::opens_on_model(
+            "claude-acp",
+            &lists_5_1,
+            "claude-fable-5-1[1m]"
+        ));
+        // An alias every bridge lists is never opened on.
+        assert!(!Inner::opens_on_model("claude-acp", &lists_5_1, "sonnet"));
     }
 
     /// grok-acp: a real `thought_level` option under the same id codex uses,

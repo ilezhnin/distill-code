@@ -102,6 +102,9 @@ pub struct Bridge {
     /// session attached to the old process is never routed at the new one,
     /// which has never heard of its session id).
     generation: u64,
+    /// The file this process runs, as [`executable_fingerprint`] describes
+    /// it: what the model inventory probed through this bridge was read from.
+    executable: Value,
     agent_capabilities: RwLock<Value>,
     writer: mpsc::UnboundedSender<String>,
     pending: Arc<Pending>,
@@ -160,6 +163,38 @@ pub fn resolve_executable(
         }
     }
     None
+}
+
+/// The file `spec.command` runs as it stands on disk right now, or `None`
+/// where the harness is not installed.
+///
+/// A harness CLI is updated underneath Distill — by its own updater, by npm,
+/// by the doctor — and the models it serves change with it. This is the cheap
+/// question the model inventory asks before trusting its cache: the path the
+/// command resolves to, plus the size and modification time of what runs
+/// there (the node entrypoint behind a managed launcher, the binary or shim
+/// otherwise). Comparing the answer costs a `stat`, never a bridge process.
+pub fn executable_fingerprint(spec: &HarnessSpec, env: &SpawnEnv) -> Option<Value> {
+    let executable =
+        resolve_executable(spec.command, &env.prepend_dirs, path_value(&env.shell_env))?;
+    Some(fingerprint_of(spec.id, &executable))
+}
+
+fn fingerprint_of(harness_id: &str, executable: &Path) -> Value {
+    let target = managed_launcher(harness_id, executable)
+        .map(|(_, entrypoint)| entrypoint)
+        .unwrap_or_else(|| executable.to_path_buf());
+    let metadata = std::fs::metadata(&target).ok();
+    let modified = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|since| since.as_secs());
+    json!({
+        "path": target.to_string_lossy(),
+        "len": metadata.as_ref().map(std::fs::Metadata::len),
+        "modified": modified,
+    })
 }
 
 /// The `node <entrypoint>` pair a managed bridge's Windows `.cmd` launcher
@@ -261,6 +296,7 @@ impl Bridge {
         // installed: a third-party `.cmd` on the user's PATH whose last line
         // happens to hold two quoted paths must keep being launched the way
         // `cmd.exe` reads it, arguments and all.
+        let executable_fingerprint = fingerprint_of(spec.id, &executable);
         let launcher = managed_launcher(spec.id, &executable);
         let program = launcher
             .as_ref()
@@ -425,6 +461,7 @@ impl Bridge {
         let bridge = Arc::new(Bridge {
             harness: spec.id.to_string(),
             generation,
+            executable: executable_fingerprint,
             agent_capabilities: RwLock::new(Value::Null),
             writer: writer_tx,
             pending,
@@ -476,6 +513,11 @@ impl Bridge {
     /// Which bridge process this is; see the field's comment.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// The file this process runs; see the field's comment.
+    pub fn executable(&self) -> Value {
+        self.executable.clone()
     }
 
     pub fn supports_load_session(&self) -> bool {
@@ -703,6 +745,7 @@ mod tests {
         let bridge = Bridge {
             harness: "test-acp".to_string(),
             generation: NEXT_GENERATION.fetch_add(1, Ordering::SeqCst),
+            executable: Value::Null,
             agent_capabilities: RwLock::new(Value::Null),
             writer,
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -888,6 +931,7 @@ mod tests {
         let bridge = Bridge {
             harness: "test-acp".to_string(),
             generation: NEXT_GENERATION.fetch_add(1, Ordering::SeqCst),
+            executable: Value::Null,
             agent_capabilities: RwLock::new(Value::Null),
             writer: mpsc::unbounded_channel().0,
             pending: Arc::clone(&pending),

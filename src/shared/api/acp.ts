@@ -45,6 +45,8 @@ import {
   shortLogId,
 } from "@/shared/lib/reasoningEffortDiagnostics";
 import { normalizeConcreteModelId } from "@/shared/lib/modelIdentity";
+import { sameModelIdentity } from "@/shared/lib/foldedModelId";
+import { formatAcpErrorMessage } from "./acpErrors";
 import { recordSessionTokens } from "@/features/stats/lib/usageLedger";
 
 export interface AcpProvider {
@@ -95,6 +97,13 @@ export interface AcpSessionConfigApplyOptions {
 export interface AcpCreateSessionResult {
   sessionId: string;
   configOptionsSnapshot: AcpSessionConfigSnapshots;
+  /**
+   * The model the session was asked to open on, when the harness would not
+   * run it. The session exists all the same, on the harness's own model
+   * (`configOptionsSnapshot.model`): a remembered model the harness has since
+   * retired must not cost the operator the chat they asked for.
+   */
+  rejectedModel?: { modelId: string; reason?: string };
 }
 
 export type AcpDuplicateSessionOptions = AcpForkSessionOptions;
@@ -362,31 +371,72 @@ export async function acpCreateSession(
       configOptionsSnapshot.reasoningEffort,
     ),
   });
-  const rollbackSessionRegistration = sessionRegistry.registerPreparedSession(
+  sessionRegistry.registerPreparedSession(
     sessionId,
     providerId,
     workingDir,
     configOptionsSnapshot.model?.modelId,
   );
+  if (!modelId) {
+    return { sessionId, configOptionsSnapshot };
+  }
+  // The host already asked the bridge for the model in `session/new` and
+  // recorded its refusal; asking again would only fail the same way, slowly.
+  const refusedByHost = configOptionsSnapshot.substitutions?.find(
+    (substitution) =>
+      substitution.role === "model" &&
+      substitution.requested !== null &&
+      sameModelIdentity(substitution.requested, modelId) &&
+      !sameModelIdentity(substitution.applied, modelId),
+  );
+  if (refusedByHost) {
+    logRejectedCreationModel(
+      sessionId,
+      providerId,
+      modelId,
+      refusedByHost.reason,
+    );
+    return {
+      sessionId,
+      configOptionsSnapshot,
+      rejectedModel: {
+        modelId,
+        ...(refusedByHost.reason ? { reason: refusedByHost.reason } : {}),
+      },
+    };
+  }
   try {
-    if (modelId) {
-      configOptionsSnapshot =
-        (await sessionRegistry.applySessionModel(sessionId, modelId)) ??
-        configOptionsSnapshot;
-    }
+    configOptionsSnapshot =
+      (await sessionRegistry.applySessionModel(sessionId, modelId)) ??
+      configOptionsSnapshot;
     return { sessionId, configOptionsSnapshot };
   } catch (error) {
-    rollbackSessionRegistration();
-    try {
-      await directAcp.archiveSession(sessionId);
-    } catch (archiveError) {
-      console.error(
-        "Failed to archive ACP session after creation setup failed:",
-        archiveError,
-      );
-    }
-    throw error;
+    // The session is open on the harness's own model, which by definition
+    // runs; only the model that was to ride along was refused. Keeping the
+    // chat and saying so beats archiving it and failing the creation, which
+    // left the operator with a draft nothing could be done with.
+    const reason = formatAcpErrorMessage(error, "");
+    logRejectedCreationModel(sessionId, providerId, modelId, reason);
+    return {
+      sessionId,
+      configOptionsSnapshot,
+      rejectedModel: { modelId, ...(reason ? { reason } : {}) },
+    };
   }
+}
+
+function logRejectedCreationModel(
+  sessionId: string,
+  providerId: string,
+  modelId: string,
+  reason: string | undefined,
+): void {
+  logReasoningEffortInfo("acpCreateSession model rejected", {
+    sessionId: shortLogId(sessionId),
+    providerId,
+    modelId,
+    reason: reason ?? null,
+  });
 }
 
 export async function acpSetSessionConfigOption(

@@ -1,5 +1,7 @@
 import { useMemo, useRef } from "react";
 import type { AcpProvider } from "@/shared/api/acp";
+import { ModelFailedAfterProviderMoveError } from "@/shared/api/acpSessionRegistry";
+import { retryDraftSessionCreation } from "@/features/chat/lib/draftSessionRetry";
 import { resolveAgentProviderCatalogIdStrictFromEntries } from "@/features/providers/providerCatalog";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import type { ProviderCatalogEntry } from "@/shared/types/providers";
@@ -16,6 +18,7 @@ import {
   clearCurrentModelSelectionIntent,
   createModelSelectionRequestId,
   rollbackToPreviousModel,
+  showModelLeftBehindToast,
   type ApplySessionModelSelection,
   type ModelSelectionApplyOptions,
   type PreferredModelSelection,
@@ -280,11 +283,26 @@ export function useResolvedAgentModelPicker({
           catalogLoaded,
           selectedProvider: providerId,
         });
-      const preferredModelSelection = getPreferredSelectionForAgent(
+      const requestedAgentModels = getModelsForAgent(resolvedRequestedAgentId);
+      const storedModelSelection = getPreferredSelectionForAgent(
         resolvedRequestedAgentId,
-        getModelsForAgent(resolvedRequestedAgentId),
+        requestedAgentModels,
         catalogEntries,
       );
+      // A stored preference is a wish from another day. A harness retires
+      // models, and one it no longer serves fails the model write — which
+      // takes the whole switch back with it, so the agent could never be
+      // chosen again. Where the harness has said what it serves, only a model
+      // on that list travels with the agent; otherwise the chat lands on the
+      // agent's own default.
+      const preferredModelSelection = storedModelSelection
+        ? resolveAvailableSelection(
+            storedModelSelection,
+            requestedAgentModels,
+            null,
+            isModelInventoryAuthoritative,
+          )
+        : null;
       const { target: nextTarget, modelSelection: nextModelSelection } =
         resolveProviderSelectionTarget(
           providerId,
@@ -313,7 +331,12 @@ export function useResolvedAgentModelPicker({
       // A pending draft only has a client-generated id. Keep the selection on
       // the draft so startup can apply it after ACP returns the backend id;
       // sending a config request now would target a session ACP cannot know.
-      if (session?.creationState === "pending") {
+      // A draft whose creation failed has no backend id either: the choice is
+      // recorded the same way, and creation is tried again on it.
+      if (
+        session?.creationState === "pending" ||
+        session?.creationState === "failed"
+      ) {
         if (nextTarget.modelId) {
           beginModelSelectionIntent(sessionId, {
             requestId: createModelSelectionRequestId(),
@@ -323,6 +346,9 @@ export function useResolvedAgentModelPicker({
           });
         } else {
           replaceSessionTargetAfterDispatch(sessionId, nextTarget);
+        }
+        if (session.creationState === "failed") {
+          retryDraftSessionCreation(sessionId);
         }
         return;
       }
@@ -335,6 +361,53 @@ export function useResolvedAgentModelPicker({
           target: nextTarget,
           previousTarget,
         });
+        // Keep the chat on the agent it has just moved to, on whatever model
+        // that agent opened it with: the same agent-only selection a switch
+        // with no remembered model makes. Resolves false when that could not
+        // be done either, and the caller goes back to the previous agent.
+        const settleOnAgentOwnModel = async (): Promise<boolean> => {
+          const { target: agentOnlyTarget } = resolveProviderSelectionTarget(
+            providerId,
+            requestedAgentId,
+            resolvedRequestedAgentId,
+            null,
+          );
+          const settleRequestId = createModelSelectionRequestId();
+          beginModelSelectionIntent(sessionId, {
+            requestId: settleRequestId,
+            target: agentOnlyTarget,
+            previousTarget,
+          });
+          let settled = false;
+          try {
+            settled = await prepareSelectedProvider(nextWireProviderId, {
+              requestId: settleRequestId,
+            });
+          } catch (settleError) {
+            console.error(
+              "Failed to keep the session on the agent without its model:",
+              settleError,
+            );
+          }
+          const stillCurrent =
+            clearCurrentModelSelectionIntent(sessionId, settleRequestId) &&
+            selectionVersionRef.current === versionAtSelection;
+          if (!settled || !stillCurrent) {
+            // A newer pick owns the session now; it is not ours to roll back.
+            return !stillCurrent;
+          }
+          // The preference is what failed, and leaving it would fail the same
+          // way on the next switch to this agent.
+          clearStoredModelPreference(resolvedRequestedAgentId);
+          showModelLeftBehindToast({
+            agentName:
+              pickerAgents.find(
+                (agent) => agent.id === resolvedRequestedAgentId,
+              )?.label ?? resolvedRequestedAgentId,
+            modelName: nextModelSelection.name,
+          });
+          return true;
+        };
         void applySessionModelSelection(
           nextWireProviderId,
           nextModelSelection,
@@ -368,6 +441,20 @@ export function useResolvedAgentModelPicker({
               return;
             }
             console.error("Failed to update ACP session provider:", error);
+            // The agent took the chat and only the model it was meant to
+            // arrive on failed. The operator asked for the agent; the model
+            // was a remembered preference riding along. Taking the chat back
+            // off the agent over it would make the agent impossible to choose
+            // for as long as the preference stands.
+            if (
+              error instanceof ModelFailedAfterProviderMoveError &&
+              (await settleOnAgentOwnModel())
+            ) {
+              return;
+            }
+            if (selectionVersionRef.current !== versionAtSelection) {
+              return;
+            }
             rollbackToPreviousModel({
               sessionId,
               failedModelName: nextModelSelection.name,
@@ -488,7 +575,11 @@ export function useResolvedAgentModelPicker({
 
       // Pending drafts are not ACP sessions yet. Record the latest choice on
       // the draft and let draft promotion configure the real backend session.
-      if (session.creationState === "pending") {
+      // A draft whose creation failed is created again on the choice.
+      if (
+        session.creationState === "pending" ||
+        session.creationState === "failed"
+      ) {
         if (providerChanged && !sessionHasStarted) {
           setGlobalSelectedProvider(selectedAgentId);
         }
@@ -498,6 +589,9 @@ export function useResolvedAgentModelPicker({
           previousTarget,
           preferenceAgentId: selectedAgentId,
         });
+        if (session.creationState === "failed") {
+          retryDraftSessionCreation(sessionId);
+        }
         return;
       }
 

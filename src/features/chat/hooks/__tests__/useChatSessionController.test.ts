@@ -22,6 +22,7 @@ import {
 } from "../../lib/sessionTargetCoordinator";
 import { workspaceAttachmentIdForPath } from "../../lib/workspaceAttachments";
 import type { ChatSendOptions, ModelOption } from "../../types";
+import { ModelFailedAfterProviderMoveError } from "@/shared/api/acpSessionRegistry";
 
 const mockAcpPrepareSession = vi.fn();
 const mockAcpSetSessionConfigOption = vi.fn();
@@ -61,6 +62,9 @@ const mockPickerState = {
   availableModels: [] as ModelOption[],
   modelsByAgent: new Map<string, ModelOption[]>(),
   installedModelsByAgent: new Map<string, ModelOption[]>(),
+  // Whether the harness itself reported the list, as opposed to a cache
+  // nobody vouches for.
+  inventoryAuthoritative: false,
   modelsLoading: false,
   modelStatusMessage: null as string | null,
 };
@@ -268,7 +272,7 @@ vi.mock("../useAgentModelPickerState", () => ({
       mockPickerState.installedModelsByAgent.get(agentId) ??
       mockPickerState.modelsByAgent.get(agentId) ??
       mockPickerState.availableModels,
-    isModelInventoryAuthoritative: () => false,
+    isModelInventoryAuthoritative: () => mockPickerState.inventoryAuthoritative,
     modelsLoading: mockPickerState.modelsLoading,
     modelStatusMessage: mockPickerState.modelStatusMessage,
     handleProviderChange: (providerId: string) =>
@@ -289,6 +293,7 @@ vi.mock("../useAgentModelPickerState", () => ({
 }));
 
 import { useChatSessionController } from "../useChatSessionController";
+import { setDraftSessionRetryHandler } from "@/features/chat/lib/draftSessionRetry";
 
 function latestMessageQueueArgs() {
   const call = mockUseMessageQueue.mock.calls.at(-1);
@@ -502,6 +507,7 @@ describe("useChatSessionController", () => {
     mockPickerState.availableModels = [];
     mockPickerState.modelsByAgent.clear();
     mockPickerState.installedModelsByAgent.clear();
+    mockPickerState.inventoryAuthoritative = false;
     mockPickerState.modelsLoading = false;
     mockPickerState.modelStatusMessage = null;
     mockUseChatRuntime.chatState = "idle";
@@ -1392,6 +1398,45 @@ describe("useChatSessionController", () => {
     expect(
       useChatStore.getState().queuedMessageBySession["session-1"],
     ).toHaveLength(1);
+  });
+
+  it("records an agent choice on a draft whose creation failed and asks for it to be created again", () => {
+    const retry = vi.fn().mockReturnValue(true);
+    const unregister = setDraftSessionRetryHandler(retry);
+    try {
+      useChatSessionStore.setState({
+        sessions: [
+          sessionFixture({
+            id: "draft-session",
+            clientSessionId: "draft-session",
+            executionTarget: {
+              harnessId: "claude-acp",
+              modelProviderId: "claude-acp",
+            },
+            creationState: "failed",
+            creationError: "Failed to create session.",
+          }),
+        ],
+      });
+
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: "draft-session" }),
+      );
+      act(() => {
+        result.current.handleProviderChange("codex-acp");
+      });
+
+      // The draft has no host session: nothing goes over the wire for its
+      // client-generated id, which the host would refuse every time.
+      expect(mockAcpPrepareSession).not.toHaveBeenCalled();
+      expect(
+        useChatSessionStore.getState().getSession("draft-session")
+          ?.executionTarget,
+      ).toMatchObject({ harnessId: "codex-acp" });
+      expect(retry).toHaveBeenCalledWith("draft-session");
+    } finally {
+      unregister();
+    }
   });
 
   it("defers an eagerly selected Agent Builder draft until promotion", async () => {
@@ -2665,6 +2710,136 @@ describe("useChatSessionController", () => {
     expect(useChatSessionStore.getState().activeSessionId).not.toBe(
       "session-recovered",
     );
+  });
+
+  describe("a stored model preference on an agent switch", () => {
+    const RETIRED = {
+      modelId: "gpt-5.3-codex-spark",
+      modelName: "GPT-5.3-Codex-Spark",
+      providerId: "codex-acp",
+    };
+    const SERVED: ModelOption = {
+      id: "gpt-6-astra",
+      name: "gpt-6-astra",
+      displayName: "GPT-6-Astra",
+      providerId: "codex-acp",
+    };
+
+    function switchToCodex(stored: typeof RETIRED) {
+      window.localStorage.setItem(
+        "distill:preferredModelsByAgent",
+        JSON.stringify({ "codex-acp": stored }),
+      );
+      mockPickerState.modelsByAgent.set("codex-acp", [SERVED]);
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: "session-1" }),
+      );
+      act(() => {
+        result.current.handleProviderChange("codex-acp");
+      });
+    }
+
+    function preparedModelIds() {
+      return mockAcpPrepareSession.mock.calls
+        .filter(([, providerId]) => providerId === "codex-acp")
+        .map(([, , , options]) => (options as { modelId?: string }).modelId);
+    }
+
+    it("leaves a model the harness no longer serves behind instead of failing the switch on it", async () => {
+      mockPickerState.inventoryAuthoritative = true;
+      switchToCodex(RETIRED);
+
+      await waitFor(() => {
+        expect(preparedModelIds()).toEqual([undefined]);
+      });
+      expect(mockToastError).not.toHaveBeenCalled();
+    });
+
+    it("takes a model the harness still serves along", async () => {
+      mockPickerState.inventoryAuthoritative = true;
+      switchToCodex({
+        modelId: SERVED.id,
+        modelName: "GPT-6-Astra",
+        providerId: "codex-acp",
+      });
+
+      await waitFor(() => {
+        expect(preparedModelIds()).toEqual([SERVED.id]);
+      });
+    });
+
+    it("still asks for it while nobody can say what the harness serves", async () => {
+      switchToCodex(RETIRED);
+
+      await waitFor(() => {
+        expect(preparedModelIds()).toEqual([RETIRED.modelId]);
+      });
+    });
+
+    it("stays on the agent that took the chat when only the remembered model failed", async () => {
+      mockAcpPrepareSession.mockRejectedValueOnce(
+        new ModelFailedAfterProviderMoveError(
+          "codex-acp",
+          new Error("Invalid value for config option model"),
+        ),
+      );
+      switchToCodex(RETIRED);
+
+      // The model first, then the agent alone — and never back to Claude.
+      await waitFor(() => {
+        expect(preparedModelIds()).toEqual([RETIRED.modelId, undefined]);
+      });
+      await waitFor(() => {
+        expect(mockToastError).toHaveBeenCalledTimes(1);
+      });
+      expect(
+        mockAcpPrepareSession.mock.calls.some(
+          ([, providerId]) => providerId === "claude-acp",
+        ),
+      ).toBe(false);
+      // What failed is forgotten, or the next switch fails the same way.
+      expect(
+        window.localStorage.getItem("distill:preferredModelsByAgent"),
+      ).toBeNull();
+    });
+
+    it("goes back to the previous agent when the agent cannot be kept either", async () => {
+      mockAcpPrepareSession
+        .mockRejectedValueOnce(
+          new ModelFailedAfterProviderMoveError(
+            "codex-acp",
+            new Error("Invalid value for config option model"),
+          ),
+        )
+        .mockRejectedValueOnce(new Error("bridge exited"));
+      switchToCodex(RETIRED);
+
+      await waitFor(() => {
+        expect(
+          mockAcpPrepareSession.mock.calls.some(
+            ([, providerId]) => providerId === "claude-acp",
+          ),
+        ).toBe(true);
+      });
+      // The preference was never proven wrong on its own, so it stays.
+      expect(
+        window.localStorage.getItem("distill:preferredModelsByAgent"),
+      ).not.toBeNull();
+    });
+
+    it("still goes back when the agent itself refused the chat", async () => {
+      mockAcpPrepareSession.mockRejectedValueOnce(new Error("bridge exited"));
+      switchToCodex(RETIRED);
+
+      await waitFor(() => {
+        expect(
+          mockAcpPrepareSession.mock.calls.some(
+            ([, providerId]) => providerId === "claude-acp",
+          ),
+        ).toBe(true);
+      });
+      expect(preparedModelIds()).toEqual([RETIRED.modelId]);
+    });
   });
 
   it("does not prepare or dispatch an unresolved existing session", async () => {

@@ -552,6 +552,53 @@ describe("chatSessionStore", () => {
       });
     });
 
+    it("settles a chat whose remembered model the agent refused on the agent's own model", async () => {
+      window.localStorage.setItem(
+        "distill:preferredModelsByAgent",
+        JSON.stringify({
+          "claude-acp": {
+            modelId: "claude-fable-5",
+            modelName: "Fable 5",
+            providerId: "claude-acp",
+          },
+        }),
+      );
+      mocks.acpCreateSession.mockResolvedValue({
+        sessionId: "acp-settled",
+        configOptionsSnapshot: {
+          model: { modelId: "claude-fable-5-1", modelName: "Fable 5.1" },
+          reasoningEffort: null,
+        },
+        rejectedModel: {
+          modelId: "claude-fable-5",
+          reason: "Couldn't confirm model with the API",
+        },
+      });
+
+      const session = await useChatSessionStore.getState().createSession({
+        executionTarget: targetFromAgentModelSelection("claude-acp", {
+          modelProviderId: "claude-acp",
+          modelId: "claude-fable-5",
+          modelName: "Fable 5",
+        }),
+        workingDir: "/tmp/project",
+      });
+
+      // The chat is on the model the host put it on, not the refused wish.
+      expect(session.executionTarget).toMatchObject({
+        harnessId: "claude-acp",
+        modelProviderId: "claude-acp",
+        modelId: "claude-fable-5-1",
+        modelName: "Fable 5.1",
+      });
+      // The preference would fail the same way on the next new chat.
+      expect(
+        JSON.parse(
+          window.localStorage.getItem("distill:preferredModelsByAgent") ?? "{}",
+        ),
+      ).toEqual({});
+    });
+
     it("keeps the fast toggle from the create answer and records the chosen run settings as intent", async () => {
       mocks.acpCreateSession.mockResolvedValue({
         sessionId: "acp-fast",

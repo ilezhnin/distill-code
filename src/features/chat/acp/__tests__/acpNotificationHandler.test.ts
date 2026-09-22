@@ -93,6 +93,7 @@ describe("acpNotificationHandler", () => {
       accumulatedInput: 1000,
       accumulatedOutput: 200,
       accumulatedCost: 0.42,
+      costBilling: "estimate",
     });
 
     useChatStore.setState({ loadingSessionIds: new Set<string>() });
@@ -106,6 +107,29 @@ describe("acpNotificationHandler", () => {
       outputTokens: 200,
       costUsd: 0.42,
       started: true,
+    });
+  });
+
+  it("marks session cost billed only when usage cost meta says so", async () => {
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "usage_update",
+        used: 100,
+        size: 1000,
+        cost: {
+          amount: 1.5,
+          currency: "USD",
+          _meta: { billed: true },
+        },
+      },
+    } as never);
+
+    expect(
+      useChatStore.getState().sessionStateById["acp-session"]?.tokenState,
+    ).toMatchObject({
+      accumulatedCost: 1.5,
+      costBilling: "billed",
     });
   });
 

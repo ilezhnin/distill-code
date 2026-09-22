@@ -30,6 +30,8 @@ const TARGET_MINTERS: Record<string, string> = {
     "(b) the picker's selection, resolved against the inventory (a)",
   "src/features/chat/lib/hostExecutionTarget.ts":
     "(c) the provider and model the host reports for a session",
+  "src/features/chat/lib/rejectedCreationModel.ts":
+    "(c) the model the host opened a session on when it refused the one asked for",
   "src/features/chat/lib/rejectedModelRecovery.ts":
     "names no model: drops the one the harness refused",
   "src/features/chat/lib/sessionTargetCoordinator.ts":

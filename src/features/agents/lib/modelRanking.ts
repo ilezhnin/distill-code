@@ -103,7 +103,7 @@ const OPUS: RankedModelCandidate = {
   effort: "xhigh",
 };
 const GROK: RankedModelCandidate = {
-  label: "Grok 4.6",
+  label: "Grok 4.7",
   platform: "grok-acp",
   needles: [["grok"]],
   effort: "xhigh",
@@ -136,11 +136,15 @@ const CODEX_SOL: RankedModelCandidate = {
  * coding, and Grok plus the small models of either provider take the simple
  * plugs where there is nothing much to think about:
  *
- * - heavy engineering: Astra → Fable 5.1 → Opus 5 → Grok 4.6, all at xhigh;
+ * - heavy engineering: Astra → Fable 5.1 → Opus 5 → Grok 4.7, all at xhigh;
  * - medium engineering: the same order at medium, except Grok, which is worth
  *   running at xhigh or not at all;
  * - design and planning: Fable 5.1 → Astra → Opus 5, all at xhigh;
- * - simpler work: Opus 5 at medium → Grok 4.6 at high → Luna at xhigh.
+ * - simpler work: Opus 5 at medium → Grok 4.7 at high → Luna at xhigh.
+ *
+ * The Grok candidate's label tracks xAI's current generation (4.6 → 4.7,
+ * 2026-09-21); the slot and its efforts are the ranking's own, and the
+ * generic needle already resolves to the newest Grok the bridge lists.
  *
  * The class ids keep working — persona frontmatter references them — and each
  * carries the profile its kind of work falls under; `planning` splits the
@@ -617,6 +621,7 @@ export const KNOWN_MODEL_CANDIDATES: readonly RankedModelCandidate[] = [
  */
 const LEGACY_CANDIDATE_LABELS: ReadonlyMap<string, string> = new Map([
   ["Fable 5", "Fable 5.1"],
+  ["Grok 4.6", "Grok 4.7"],
 ]);
 
 /**

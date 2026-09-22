@@ -82,10 +82,10 @@ describe("applyClassOverride", () => {
   it("takes the operator's order, including models from other classes", () => {
     // The whole point of the map: put the heavy model on light testing, or
     // the cheap one on complex coding, without editing an agent.
-    const ordered = applyClassOverride(shipped, ["Opus 5", "Grok 4.6"]);
+    const ordered = applyClassOverride(shipped, ["Opus 5", "Grok 4.7"]);
     expect(ordered.map((candidate) => candidate.label)).toEqual([
       "Opus 5",
-      "Grok 4.6",
+      "Grok 4.7",
     ]);
   });
 
@@ -125,8 +125,8 @@ describe("applyClassOverride", () => {
     // A rename would otherwise drop the model out of the saved order and snap
     // the class back to the shipped one — a reset nobody asked for.
     expect(
-      applyClassOverride(shipped, ["Fable 5"]).map((c) => c.label),
-    ).toEqual(["Fable 5.1"]);
+      applyClassOverride(shipped, ["Fable 5", "Grok 4.6"]).map((c) => c.label),
+    ).toEqual(["Fable 5.1", "Grok 4.7"]);
   });
 
   it("keeps the class's own effort when the operator reorders it", () => {

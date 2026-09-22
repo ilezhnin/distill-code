@@ -43,7 +43,7 @@ interface AgentModelSelectionInput {
   modelName?: string | null;
 }
 
-interface SessionExecutionModelSnapshot {
+export interface SessionExecutionModelSnapshot {
   modelId: string;
   modelName: string;
 }

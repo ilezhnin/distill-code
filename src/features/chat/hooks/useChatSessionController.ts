@@ -88,6 +88,7 @@ import {
 export type { WorkspaceNameRequest } from "../lib/firstWorkspaceSend";
 import { activateSession } from "../lib/sessionActivation";
 import { useResolvedAgentModelPicker } from "./useResolvedAgentModelPicker";
+import { retryDraftSessionCreation } from "@/features/chat/lib/draftSessionRetry";
 import { composeBuilderSendOptions } from "./useBuilderSendInterceptor";
 import { moveSessionToProject } from "../stores/chatSessionOperations";
 import { reconcileSessionRunSettings } from "../lib/runSettingsReconciler";
@@ -1852,6 +1853,7 @@ export function useChatSessionController({
       const establishesTarget =
         !sessionId ||
         session?.creationState === "pending" ||
+        session?.creationState === "failed" ||
         !session?.executionTarget;
       const personaResolution = persona
         ? resolvePersonaTarget(persona, {
@@ -1912,10 +1914,18 @@ export function useChatSessionController({
             setPendingExecutionTarget(personaTarget);
             setPendingModelSelection(undefined);
             setGlobalSelectedProvider(harnessId);
-          } else if (session?.creationState === "pending") {
+          } else if (
+            session?.creationState === "pending" ||
+            session?.creationState === "failed"
+          ) {
+            // A draft has no host session to write to; a failed one is
+            // created again on the persona's agent.
             clearCurrentModelSelectionIntent(sessionId);
             replaceSessionTargetAfterDispatch(sessionId, personaTarget);
             setGlobalSelectedProvider(harnessId);
+            if (session.creationState === "failed") {
+              retryDraftSessionCreation(sessionId);
+            }
           } else {
             const previousTarget = session?.executionTarget;
             const requestId = createModelSelectionRequestId();

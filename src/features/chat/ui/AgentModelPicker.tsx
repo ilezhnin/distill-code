@@ -616,12 +616,18 @@ export function AgentModelPicker({
                             ? t("toolbar.install")
                             : t("toolbar.connect");
                         const agentIcon = getProviderIcon(agent.id, "size-4");
+                        // The host moves a chat to another agent between
+                        // turns only, so mid-turn the click could only fail.
+                        // An agent that still needs setup stays enabled: its
+                        // row opens Settings and switches nothing.
+                        const blocked = runActive && isReady && !isSelected;
 
-                        return (
+                        const row = (
                           <PickerItem
                             key={agent.id}
                             onClick={() => handleAgentSelect(agent)}
                             selected={isSelected}
+                            disabled={blocked}
                             tabIndex={showAgentColumn ? undefined : -1}
                             className={cn(
                               "group justify-between",
@@ -648,6 +654,25 @@ export function AgentModelPicker({
                               <IconCheck className="size-4 shrink-0 text-muted-foreground" />
                             ) : null}
                           </PickerItem>
+                        );
+
+                        if (!blocked) {
+                          return row;
+                        }
+
+                        // A disabled button fires no pointer events, so the
+                        // tooltip hangs off a wrapper that still does.
+                        return (
+                          <Tooltip key={agent.id}>
+                            <TooltipTrigger asChild>
+                              <span className="block">{row}</span>
+                            </TooltipTrigger>
+                            <TooltipContent side="right">
+                              {t("toolbar.agentNeedsIdleSession", {
+                                agent: agent.label,
+                              })}
+                            </TooltipContent>
+                          </Tooltip>
                         );
                       })}
                     </div>

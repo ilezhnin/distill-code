@@ -582,6 +582,56 @@ describe("applySessionModel", () => {
     );
   });
 
+  it("says the provider moved when only the model it was meant to arrive on failed", async () => {
+    const registry = await importPreparedRegistry("grok-acp", "grok-4.6");
+    const refused = Object.assign(new Error("Internal error"), {
+      data: { details: "Invalid value for config option model: spark" },
+    });
+    mockSetModel.mockRejectedValueOnce(refused);
+
+    const failure = await registry
+      .configureSession("session-1", "codex-acp", "/project", "spark")
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(registry.ModelFailedAfterProviderMoveError);
+    // It reads like the error it wraps, so callers that classify by text or
+    // payload see the bridge's own answer.
+    expect(failure).toMatchObject({
+      providerId: "codex-acp",
+      message: "Internal error",
+      data: refused.data,
+      cause: refused,
+    });
+
+    // Nobody holds the model the provider opened the chat on, so settling on
+    // that provider asks the host again rather than answering "already there".
+    mockSetProvider.mockClear();
+    await registry.prepareSession("session-1", "codex-acp", "/project");
+    expect(mockSetProvider).toHaveBeenCalledWith(
+      "session-1",
+      "codex-acp",
+      noRequestProviderContext,
+    );
+  });
+
+  it("leaves a model failure on the same provider as the error it is", async () => {
+    const registry = await importPreparedRegistry("codex-acp", "gpt-6-astra");
+    mockSetModel.mockRejectedValueOnce(new Error("refused"));
+
+    const failure = await registry
+      .configureSession("session-1", "codex-acp", "/project", "spark")
+      .catch((error: unknown) => error);
+
+    expect(failure).not.toBeInstanceOf(
+      registry.ModelFailedAfterProviderMoveError,
+    );
+    expect(failure).toMatchObject({ message: "refused" });
+    // The provider is still known, so nothing is asked of it again.
+    mockSetProvider.mockClear();
+    await registry.prepareSession("session-1", "codex-acp", "/project");
+    expect(mockSetProvider).not.toHaveBeenCalled();
+  });
+
   it("accepts a response that acknowledges the folded form of the request", async () => {
     const registry = await importPreparedRegistry("openai", "gpt-4.1");
     mockSetModel.mockResolvedValueOnce(
