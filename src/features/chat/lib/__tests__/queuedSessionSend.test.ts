@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
 import {
   acquireExistingSessionForBackgroundSend,
@@ -14,9 +15,26 @@ import {
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import type { QueuedMessageRecord } from "@/features/chat/stores/chatStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import {
+  PROJECT_RESEARCH_POINTER_PROMPT,
+  refreshProjectResearchPresence,
+  resetProjectResearchPresenceForTests,
+} from "@/features/memory/lib/projectResearchPrompt";
+import { useMemoryStore } from "@/features/memory/stores/memoryStore";
+import { useProjectStore } from "@/features/projects/stores/projectStore";
+import { resetRootInstructionsForTests } from "@/features/chat/lib/rootInstructionsPrompt";
 
 const mocks = vi.hoisted(() => ({
   loadSessionMessages: vi.fn(),
+  sendPromptInBackground: vi.fn(),
+  loadWorkspaceInstructionFiles: vi.fn(),
+  listSkills: vi.fn(),
+  resolveSessionCwd: vi.fn(),
+  acpPrepareSession: vi.fn(),
+  listProjects: vi.fn(),
+  listProjectDocuments: vi.fn(),
+  getDistillRoot: vi.fn(),
+  readDistillInstructions: vi.fn(),
 }));
 
 vi.mock("@/features/chat/lib/sessionActivation", async (importOriginal) => ({
@@ -25,6 +43,60 @@ vi.mock("@/features/chat/lib/sessionActivation", async (importOriginal) => ({
   >()),
   loadSessionMessages: (...args: unknown[]) =>
     mocks.loadSessionMessages(...args),
+}));
+
+vi.mock("@/features/chat/lib/backgroundSend", () => ({
+  sendPromptInBackground: (...args: unknown[]) =>
+    mocks.sendPromptInBackground(...args),
+}));
+
+vi.mock("@/features/chat/api/workspaceContext", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/features/chat/api/workspaceContext")
+  >()),
+  loadWorkspaceInstructionFiles: (...args: unknown[]) =>
+    mocks.loadWorkspaceInstructionFiles(...args),
+}));
+
+vi.mock("@/features/skills/api/skills", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/features/skills/api/skills")>()),
+  listSkills: (...args: unknown[]) => mocks.listSkills(...args),
+}));
+
+vi.mock(
+  "@/features/projects/lib/sessionCwdSelection",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("@/features/projects/lib/sessionCwdSelection")
+    >()),
+    resolveSessionCwd: (...args: unknown[]) => mocks.resolveSessionCwd(...args),
+  }),
+);
+
+vi.mock("@/shared/api/acp", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/shared/api/acp")>()),
+  acpPrepareSession: (...args: unknown[]) => mocks.acpPrepareSession(...args),
+}));
+
+vi.mock("@/features/projects/api/projects", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/features/projects/api/projects")
+  >()),
+  listProjects: (...args: unknown[]) => mocks.listProjects(...args),
+}));
+
+vi.mock("@/shared/api/projectStore", () => ({
+  listProjectDocuments: (...args: unknown[]) =>
+    mocks.listProjectDocuments(...args),
+  readProjectDocument: vi.fn(),
+  writeProjectDocument: vi.fn(),
+}));
+
+vi.mock("@/shared/api/distillStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/shared/api/distillStore")>()),
+  getDistillRoot: (...args: unknown[]) => mocks.getDistillRoot(...args),
+  readDistillInstructions: (...args: unknown[]) =>
+    mocks.readDistillInstructions(...args),
 }));
 
 const SESSION_ID = "draft-session";
@@ -242,7 +314,32 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetSessionTargetCoordinatorsForTests();
+    resetRootInstructionsForTests();
+    resetProjectResearchPresenceForTests();
     mocks.loadSessionMessages.mockResolvedValue(true);
+    mocks.sendPromptInBackground.mockResolvedValue(undefined);
+    mocks.loadWorkspaceInstructionFiles.mockResolvedValue([]);
+    mocks.listSkills.mockResolvedValue([]);
+    mocks.resolveSessionCwd.mockResolvedValue("/tmp/project");
+    mocks.acpPrepareSession.mockResolvedValue(undefined);
+    mocks.listProjects.mockResolvedValue([]);
+    mocks.listProjectDocuments.mockResolvedValue([]);
+    mocks.getDistillRoot.mockResolvedValue(null);
+    mocks.readDistillInstructions.mockResolvedValue({
+      "prompt.md": null,
+      "security-posture.md": null,
+      "user.md": null,
+      "lore.md": null,
+      "research/index.md": null,
+    });
+    useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
+    useMemoryStore.setState({
+      entries: [],
+      archived: [],
+      waveExecutorSessionIds: [],
+    });
+    useProjectStore.setState({ projects: [] });
+    window.localStorage.clear();
   });
 
   it("rejects an Agent Builder send until the session owns a prepared draft target", async () => {
@@ -283,5 +380,119 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
     expect(error).toBeInstanceOf(PreCommitSendRejectedError);
     expect(mocks.loadSessionMessages).not.toHaveBeenCalled();
     expect(beforeUserMessageCommitted).not.toHaveBeenCalled();
+  });
+
+  const ROOT = "/tmp/distill-root";
+  const RESEARCH_PROJECT = {
+    id: "p-1",
+    path: "/projects/quarp",
+    name: "Quarp",
+    description: "",
+    prompt: "",
+    icon: "",
+    color: "",
+    projectWorkspaces: [],
+    workingDirs: ["/work/quarp"],
+    useWorktrees: false,
+    order: 0,
+    archivedAt: null,
+  };
+
+  function dispatchedExecutionPrompt(): string {
+    const options = mocks.sendPromptInBackground.mock.calls[0]?.[4] as
+      | { executionSystemPrompt?: string }
+      | undefined;
+    return options?.executionSystemPrompt ?? "";
+  }
+
+  async function seedOperatorAndResearch(): Promise<void> {
+    seedSession();
+    useChatSessionStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({
+        ...session,
+        projectId: "p-1",
+      })),
+    }));
+    useProjectStore.setState({ projects: [RESEARCH_PROJECT] });
+    mocks.listProjects.mockResolvedValue([RESEARCH_PROJECT]);
+    mocks.getDistillRoot.mockResolvedValue({
+      root: ROOT,
+      forcedByEnvironment: false,
+    });
+    mocks.readDistillInstructions.mockResolvedValue({
+      "prompt.md": "Be brief.",
+      "security-posture.md": "Never disclose secrets.",
+      "user.md": "The operator prefers short answers.",
+      "lore.md": "We built Distill together.",
+      "research/index.md": "| 01 | topic | decided | never |",
+    });
+    mocks.listProjectDocuments.mockResolvedValue(["index.md"]);
+    await refreshProjectResearchPresence("/work/quarp");
+  }
+
+  function seedWaveChild(): void {
+    useConductorGraphStore.setState({
+      nodesById: {
+        [SESSION_ID]: {
+          sessionId: SESSION_ID,
+          projectId: "p-1",
+          role: "worker",
+          managedBy: "wave",
+          parentSessionId: "conductor-1",
+          rootConductorId: "conductor-1",
+          runId: "run-1",
+          harnessId: "goose",
+          displayName: "Scout · step",
+          status: "running",
+        },
+      },
+      reportsByRunId: {},
+    });
+  }
+
+  it("carries operator-profile on a plain queued chat", async () => {
+    await seedOperatorAndResearch();
+
+    await sendQueuedPromptToExistingSessionInBackground(
+      SESSION_ID,
+      queuedRecord(),
+    );
+
+    const prompt = dispatchedExecutionPrompt();
+    expect(prompt).toContain("<operator-profile>");
+    expect(prompt).toContain("The operator prefers short answers.");
+    expect(prompt).toContain(PROJECT_RESEARCH_POINTER_PROMPT);
+  });
+
+  it("keeps operator blocks away from a wave-managed queued child and still carries the project research pointer", async () => {
+    await seedOperatorAndResearch();
+    seedWaveChild();
+
+    await sendQueuedPromptToExistingSessionInBackground(
+      SESSION_ID,
+      queuedRecord(),
+    );
+
+    const prompt = dispatchedExecutionPrompt();
+    expect(prompt).toContain(PROJECT_RESEARCH_POINTER_PROMPT);
+    expect(prompt).not.toContain("<operator-profile>");
+    expect(prompt).not.toContain("The operator prefers short answers.");
+    expect(prompt).not.toContain(
+      `The operator keeps a map of past joint work at ${ROOT}/lore.md`,
+    );
+  });
+
+  it("keeps operator blocks away from an evicted wave executor queued send and still carries the project research pointer", async () => {
+    await seedOperatorAndResearch();
+    useMemoryStore.setState({ waveExecutorSessionIds: [SESSION_ID] });
+
+    await sendQueuedPromptToExistingSessionInBackground(
+      SESSION_ID,
+      queuedRecord(),
+    );
+
+    const prompt = dispatchedExecutionPrompt();
+    expect(prompt).toContain(PROJECT_RESEARCH_POINTER_PROMPT);
+    expect(prompt).not.toContain("<operator-profile>");
   });
 });

@@ -1,14 +1,15 @@
 /**
  * The app's own documents, in the operator's Distill folder.
  *
- * Four commands, one idea: the renderer names a relative path and gets JSON
- * text. Where that lands — and the fact that it cannot land anywhere else —
- * is decided in Rust (`commands/distill_store.rs`).
+ * The renderer names a relative path and gets text back. Where that lands —
+ * and the fact that it cannot land anywhere else — is decided in Rust
+ * (`commands/distill_store.rs`). JSON documents are the writable store;
+ * Markdown instruction files are read-only through `readDistillInstructions`.
  *
  * Outside the desktop app there is no folder at all: unit tests and any
- * browser preview fall back to `localStorage`, which is what these documents
- * used to be. That fallback is why the store layer can be written once and
- * used the same way everywhere.
+ * browser preview fall back to `localStorage` for JSON documents, and
+ * instruction reads answer with null for every path. That fallback is why
+ * the store layer can be written once and used the same way everywhere.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -27,7 +28,10 @@ export function isDesktopRuntime(): boolean {
 export async function getDistillRoot(): Promise<DistillRootInfo | null> {
   if (!isDesktopRuntime()) return null;
   try {
-    return await invoke<DistillRootInfo>("get_distill_root");
+    // Same startup window as the document reads: the first chat can mount
+    // before `app.manage` has registered DistillRootState, and a bare
+    // invoke that loses that race would look like "there is no root".
+    return await invokeWithStartupRetry<DistillRootInfo>("get_distill_root");
   } catch (error) {
     console.error("Failed to read the Distill root:", error);
     return null;
@@ -48,6 +52,18 @@ export async function readDistillDocument(
   return invokeWithStartupRetry<string | null>("read_distill_document", {
     path,
   });
+}
+
+export async function readDistillInstructions(
+  paths: string[],
+): Promise<Record<string, string | null>> {
+  if (!isDesktopRuntime()) {
+    return Object.fromEntries(paths.map((path) => [path, null]));
+  }
+  return invokeWithStartupRetry<Record<string, string | null>>(
+    "read_distill_instructions",
+    { paths },
+  );
 }
 
 export async function writeDistillDocument(

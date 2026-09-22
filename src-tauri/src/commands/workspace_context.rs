@@ -103,26 +103,31 @@ fn collect_workspace_instruction_files(
         }
 
         for dir in instruction_search_dirs(&canonical_workspace_path) {
-            let instruction_path = dir.join(AGENTS_FILENAME);
-            let Some(content) = read_instruction_file(&instruction_path) else {
-                continue;
-            };
-            let Ok(canonical_instruction_path) = dunce::canonicalize(instruction_path) else {
-                continue;
-            };
+            let candidates = [
+                dir.join(AGENTS_FILENAME),
+                dir.join(".distill").join(AGENTS_FILENAME),
+            ];
+            for instruction_path in candidates {
+                let Some(content) = read_instruction_file(&instruction_path) else {
+                    continue;
+                };
+                let Ok(canonical_instruction_path) = dunce::canonicalize(&instruction_path) else {
+                    continue;
+                };
 
-            match files_by_path.get_mut(&canonical_instruction_path) {
-                Some(existing) => existing.workspace_paths.push(workspace_label.clone()),
-                None => {
-                    ordered_paths.push(canonical_instruction_path.clone());
-                    files_by_path.insert(
-                        canonical_instruction_path.clone(),
-                        InstructionFileAccumulator {
-                            path: canonical_instruction_path,
-                            workspace_paths: vec![workspace_label.clone()],
-                            content,
-                        },
-                    );
+                match files_by_path.get_mut(&canonical_instruction_path) {
+                    Some(existing) => existing.workspace_paths.push(workspace_label.clone()),
+                    None => {
+                        ordered_paths.push(canonical_instruction_path.clone());
+                        files_by_path.insert(
+                            canonical_instruction_path.clone(),
+                            InstructionFileAccumulator {
+                                path: canonical_instruction_path,
+                                workspace_paths: vec![workspace_label.clone()],
+                                content,
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -149,4 +154,71 @@ pub async fn load_workspace_context(
     .await
     .map_err(|err| format!("Failed to load workspace context: {err}"))?;
     Ok(LoadWorkspaceContextResponse { instruction_files })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    fn temp_repo() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ws-ctx-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        dir
+    }
+
+    fn write_agents(dir: &Path, relative: &str, contents: &str) {
+        let path = dir.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, contents).unwrap();
+    }
+
+    fn is_repo_agents(path: &str) -> bool {
+        let normalized = path.replace('\\', "/");
+        normalized.ends_with("/AGENTS.md") && !normalized.contains("/.distill/")
+    }
+
+    fn is_distill_agents(path: &str) -> bool {
+        path.replace('\\', "/").ends_with("/.distill/AGENTS.md")
+    }
+
+    #[test]
+    fn collects_only_repo_agents_md() {
+        let root = temp_repo();
+        write_agents(&root, "AGENTS.md", "from repo");
+
+        let files = collect_workspace_instruction_files(vec![root.to_string_lossy().into_owned()]);
+        assert_eq!(files.len(), 1);
+        assert!(is_repo_agents(&files[0].path), "{}", files[0].path);
+        assert_eq!(files[0].content, "from repo");
+    }
+
+    #[test]
+    fn collects_repo_agents_md_before_distill_agents_md() {
+        let root = temp_repo();
+        write_agents(&root, "AGENTS.md", "from repo");
+        write_agents(&root, ".distill/AGENTS.md", "from distill");
+
+        let files = collect_workspace_instruction_files(vec![root.to_string_lossy().into_owned()]);
+        assert_eq!(files.len(), 2);
+        assert!(is_repo_agents(&files[0].path), "{}", files[0].path);
+        assert_eq!(files[0].content, "from repo");
+        assert!(is_distill_agents(&files[1].path), "{}", files[1].path);
+        assert_eq!(files[1].content, "from distill");
+    }
+
+    #[test]
+    fn collects_distill_agents_md_in_a_subfolder_workspace() {
+        let root = temp_repo();
+        let sub = root.join("pkg");
+        write_agents(&sub, ".distill/AGENTS.md", "from sub distill");
+
+        let files = collect_workspace_instruction_files(vec![sub.to_string_lossy().into_owned()]);
+        assert_eq!(files.len(), 1);
+        assert!(is_distill_agents(&files[0].path), "{}", files[0].path);
+        assert_eq!(files[0].content, "from sub distill");
+    }
 }

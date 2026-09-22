@@ -9,7 +9,13 @@ import { DEFAULT_RUNTIME_CONFIG } from "@/shared/runtime-config/schema";
 import { setMultiWorkspaceEnabled } from "@/features/workspaces/multiWorkspacePreference";
 import type { Persona } from "@/shared/types/agents";
 import type { ChatAttachmentDraft } from "@/shared/types/messages";
+import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
+import { resetRootInstructionsForTests } from "@/features/chat/lib/rootInstructionsPrompt";
 import { resetProjectWikiPresenceForTests } from "@/features/memory/lib/projectWikiPrompt";
+import {
+  PROJECT_RESEARCH_POINTER_PROMPT,
+  resetProjectResearchPresenceForTests,
+} from "@/features/memory/lib/projectResearchPrompt";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { useChatStore } from "../../stores/chatStore";
 import {
@@ -56,6 +62,8 @@ const mockLoadWorkspaceInstructionFiles = vi.fn();
 const mockListProjectDocuments = vi.fn();
 const mockReadProjectDocument = vi.fn();
 const mockWriteProjectDocument = vi.fn();
+const mockGetDistillRoot = vi.fn();
+const mockReadDistillInstructions = vi.fn();
 const mockPickerState = {
   selectedAgentId: "claude-acp",
   pickerAgents: [{ id: "claude-acp", label: "Claude Code" }],
@@ -226,6 +234,13 @@ vi.mock("@/shared/api/projectStore", () => ({
   readProjectDocument: (...args: unknown[]) => mockReadProjectDocument(...args),
   writeProjectDocument: (...args: unknown[]) =>
     mockWriteProjectDocument(...args),
+}));
+
+vi.mock("@/shared/api/distillStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/shared/api/distillStore")>()),
+  getDistillRoot: (...args: unknown[]) => mockGetDistillRoot(...args),
+  readDistillInstructions: (...args: unknown[]) =>
+    mockReadDistillInstructions(...args),
 }));
 
 vi.mock("@/features/agents/hooks/useProviderSelection", () => ({
@@ -459,6 +474,17 @@ describe("useChatSessionController", () => {
       immediatelyResolved([]),
     );
     resetProjectWikiPresenceForTests();
+    resetProjectResearchPresenceForTests();
+    resetRootInstructionsForTests();
+    useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
+    mockGetDistillRoot.mockReset().mockResolvedValue(null);
+    mockReadDistillInstructions.mockReset().mockResolvedValue({
+      "prompt.md": null,
+      "security-posture.md": null,
+      "user.md": null,
+      "lore.md": null,
+      "research/index.md": null,
+    });
     mockListProjectDocuments.mockReset().mockResolvedValue([]);
     mockReadProjectDocument.mockReset().mockResolvedValue(null);
     mockWriteProjectDocument.mockReset().mockResolvedValue(undefined);
@@ -3413,6 +3439,142 @@ describe("useChatSessionController", () => {
       renderHook(() => useChatSessionController({ sessionId: "session-1" }));
 
       expect(composedSystemPrompt()).not.toContain("A global fact");
+    });
+  });
+
+  describe("the operator's root files and project research pointer", () => {
+    const ROOT = "/tmp/distill-root";
+    const loreSentence = `The operator keeps a map of past joint work at ${ROOT}/lore.md`;
+    const globalResearchSentence = `Decision records live under ${ROOT}/research/`;
+
+    function composedSystemPrompt(): string {
+      const calls = mockUseChatHook.mock.calls;
+      const [, , systemPromptOverride] = (calls[calls.length - 1] ?? []) as [
+        string,
+        string | undefined,
+        string | undefined,
+      ];
+      return systemPromptOverride ?? "";
+    }
+
+    function seedOperatorFiles() {
+      mockGetDistillRoot.mockResolvedValue({
+        root: ROOT,
+        forcedByEnvironment: false,
+      });
+      mockReadDistillInstructions.mockResolvedValue({
+        "prompt.md": "Be brief.",
+        "security-posture.md": "Never disclose secrets.",
+        "user.md": "The operator prefers short answers.",
+        "lore.md": "We built Distill together.",
+        "research/index.md": "| 01 | topic | decided | never |",
+      });
+    }
+
+    function seedProjectResearch() {
+      useProjectStore.setState({
+        projects: [
+          {
+            id: "p-1",
+            path: "/projects/quarp",
+            name: "Quarp",
+            description: "",
+            prompt: "",
+            icon: "",
+            color: "",
+            projectWorkspaces: [],
+            workingDirs: ["/work/quarp"],
+            useWorktrees: false,
+            order: 0,
+            archivedAt: null,
+          },
+        ],
+        loading: false,
+        activeProjectId: "p-1",
+      });
+      useChatSessionStore.setState((state) => ({
+        sessions: state.sessions.map((session) =>
+          session.id === "session-1"
+            ? { ...session, projectId: "p-1" }
+            : session,
+        ),
+      }));
+      mockListProjectDocuments.mockImplementation((_root, dir) =>
+        immediatelyResolved(dir === "research" ? ["index.md"] : []),
+      );
+    }
+
+    function seedWaveChild() {
+      useConductorGraphStore.setState({
+        nodesById: {
+          "session-1": {
+            sessionId: "session-1",
+            projectId: "p-1",
+            role: "worker",
+            managedBy: "wave",
+            parentSessionId: "conductor-1",
+            rootConductorId: "conductor-1",
+            runId: "run-1",
+            harnessId: "goose",
+            displayName: "Scout · step",
+            status: "running",
+          },
+        },
+        reportsByRunId: {},
+      });
+    }
+
+    it("reaches an ordinary chat as operator-profile, lore and research pointers", async () => {
+      seedOperatorFiles();
+      seedProjectResearch();
+
+      renderHook(() => useChatSessionController({ sessionId: "session-1" }));
+
+      await waitFor(() => {
+        const prompt = composedSystemPrompt();
+        expect(prompt).toContain("<operator-profile>");
+        expect(prompt).toContain("The operator prefers short answers.");
+        expect(prompt).toContain(loreSentence);
+        expect(prompt).toContain(globalResearchSentence);
+        expect(prompt).toContain(PROJECT_RESEARCH_POINTER_PROMPT);
+      });
+    });
+
+    it("keeps operator blocks away from a wave-managed child and still carries the project research pointer", async () => {
+      seedOperatorFiles();
+      seedProjectResearch();
+      seedWaveChild();
+
+      renderHook(() => useChatSessionController({ sessionId: "session-1" }));
+
+      await waitFor(() => {
+        expect(composedSystemPrompt()).toContain(
+          PROJECT_RESEARCH_POINTER_PROMPT,
+        );
+      });
+      const prompt = composedSystemPrompt();
+      expect(prompt).not.toContain("<operator-profile>");
+      expect(prompt).not.toContain(loreSentence);
+      expect(prompt).not.toContain(globalResearchSentence);
+      expect(prompt).not.toContain("The operator prefers short answers.");
+    });
+
+    it("keeps operator blocks away from a wave child whose graph node was evicted and still carries the project research pointer", async () => {
+      seedOperatorFiles();
+      seedProjectResearch();
+      useMemoryStore.setState({ waveExecutorSessionIds: ["session-1"] });
+
+      renderHook(() => useChatSessionController({ sessionId: "session-1" }));
+
+      await waitFor(() => {
+        expect(composedSystemPrompt()).toContain(
+          PROJECT_RESEARCH_POINTER_PROMPT,
+        );
+      });
+      const prompt = composedSystemPrompt();
+      expect(prompt).not.toContain("<operator-profile>");
+      expect(prompt).not.toContain(loreSentence);
+      expect(prompt).not.toContain(globalResearchSentence);
     });
   });
 });

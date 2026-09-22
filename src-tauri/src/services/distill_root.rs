@@ -119,6 +119,30 @@ pub fn resolve_document_path(root: &Path, relative: &str) -> Result<PathBuf, Str
     Ok(resolved)
 }
 
+/// Resolves a caller-supplied relative Markdown path against the root.
+///
+/// Same lexical rules as `resolve_document_path`: relative only, no parent
+/// traversal, no absolute paths. The extension must be `md` — these are the
+/// operator's instruction files, not the JSON store.
+pub fn resolve_instruction_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    let candidate = Path::new(relative);
+    if candidate.is_absolute() {
+        return Err("Instruction path must be relative to the Distill root".into());
+    }
+    let mut resolved = root.to_path_buf();
+    for component in candidate.components() {
+        match component {
+            std::path::Component::Normal(part) => resolved.push(part),
+            std::path::Component::CurDir => {}
+            _ => return Err("Instruction path must not leave the Distill root".into()),
+        }
+    }
+    if resolved.extension().and_then(|ext| ext.to_str()) != Some("md") {
+        return Err("Only .md instruction files are read here".into());
+    }
+    Ok(resolved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +203,25 @@ mod tests {
         }
         assert!(resolve_document_path(&root, "/etc/passwd.json").is_err());
         assert!(resolve_document_path(&root, "notes.txt").is_err());
+    }
+
+    #[test]
+    fn instruction_paths_stay_inside_the_root_and_must_be_markdown() {
+        let root = temp();
+        assert_eq!(
+            resolve_instruction_path(&root, "prompt.md").unwrap(),
+            root.join("prompt.md")
+        );
+        assert_eq!(
+            resolve_instruction_path(&root, "research/index.md").unwrap(),
+            root.join("research").join("index.md")
+        );
+
+        for escape in ["../x.md", "research/../../x.md"] {
+            assert!(resolve_instruction_path(&root, escape).is_err(), "{escape}");
+        }
+        assert!(resolve_instruction_path(&root, "C:/x.md").is_err());
+        assert!(resolve_instruction_path(&root, "prompt.json").is_err());
+        assert!(resolve_instruction_path(&root, "prompt.txt").is_err());
     }
 }

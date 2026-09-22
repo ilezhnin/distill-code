@@ -108,6 +108,17 @@ vi.mock("@/features/distillctl/appPreamble", () => ({
   getDistillctlPreamble: () => mockGetDistillctlPreamble(),
 }));
 
+const mockRefreshRootInstructions = vi.fn(() => Promise.resolve());
+const mockFormatOperatorInstructionsPrompt = vi.fn<() => string | undefined>(
+  () => undefined,
+);
+
+vi.mock("@/features/chat/lib/rootInstructionsPrompt", () => ({
+  refreshRootInstructions: () => mockRefreshRootInstructions(),
+  formatOperatorInstructionsPrompt: () =>
+    mockFormatOperatorInstructionsPrompt(),
+}));
+
 vi.mock("../acpActiveMessageTracking", () => ({
   setActiveMessageId: vi.fn(),
   clearActiveMessageId: vi.fn(),
@@ -147,6 +158,8 @@ describe("acpSendMessage", () => {
     // clearAllMocks clears call history but not return values; reset the
     // preamble to unavailable so tests opt in explicitly.
     mockGetDistillctlPreamble.mockReturnValue(null);
+    mockRefreshRootInstructions.mockResolvedValue(undefined);
+    mockFormatOperatorInstructionsPrompt.mockReturnValue(undefined);
   });
 
   it("blocks transport when the prepared session has no acknowledged model", async () => {
@@ -270,6 +283,69 @@ describe("acpSendMessage", () => {
     expect(blocks[0].text.indexOf("distillctl is on your PATH.")).toBeLessThan(
       blocks[0].text.indexOf("You are Starfriend."),
     );
+  });
+
+  it("hands operator-instructions off after the distillctl preamble and before the persona", async () => {
+    mockGetDistillctlPreamble.mockReturnValue(
+      "[Distill]\ndistillctl is on your PATH.",
+    );
+    mockFormatOperatorInstructionsPrompt.mockReturnValue(
+      "<operator-instructions>\nBe brief.\n</operator-instructions>",
+    );
+
+    const sessionRegistry = await import("../acpSessionRegistry");
+    const { __resetAllPersonaHandoffs } = await import("../acpPersonaHandoff");
+    const { acpSendMessage } = await import("../acp");
+    __resetAllPersonaHandoffs();
+
+    sessionRegistry.registerPreparedSession(
+      "acp-session-operator-instructions",
+      "claude-acp",
+      "/tmp/project",
+      "test-model",
+    );
+
+    await acpSendMessage("acp-session-operator-instructions", "hello", {
+      systemPrompt: "You are Starfriend.",
+    });
+
+    const [, blocks] = mockPrompt.mock.calls[0];
+    const text = blocks[0].text as string;
+    expect(text).toContain("<operator-instructions>");
+    expect(text).toContain("Be brief.");
+    expect(text.indexOf("distillctl is on your PATH.")).toBeLessThan(
+      text.indexOf("<operator-instructions>"),
+    );
+    expect(text.indexOf("</operator-instructions>")).toBeLessThan(
+      text.indexOf("You are Starfriend."),
+    );
+    expect(mockRefreshRootInstructions).toHaveBeenCalled();
+  });
+
+  it("omits operator-instructions from the handoff when both files are absent", async () => {
+    mockGetDistillctlPreamble.mockReturnValue(
+      "[Distill]\ndistillctl is on your PATH.",
+    );
+    mockFormatOperatorInstructionsPrompt.mockReturnValue(undefined);
+
+    const sessionRegistry = await import("../acpSessionRegistry");
+    const { __resetAllPersonaHandoffs } = await import("../acpPersonaHandoff");
+    const { acpSendMessage } = await import("../acp");
+    __resetAllPersonaHandoffs();
+
+    sessionRegistry.registerPreparedSession(
+      "acp-session-operator-instructions-absent",
+      "claude-acp",
+      "/tmp/project",
+      "test-model",
+    );
+
+    await acpSendMessage("acp-session-operator-instructions-absent", "hello", {
+      systemPrompt: "You are Starfriend.",
+    });
+
+    const [, blocks] = mockPrompt.mock.calls[0];
+    expect(blocks[0].text).not.toContain("<operator-instructions>");
   });
 
   it("hands the distillctl preamble off for external agents even without a persona", async () => {

@@ -45,7 +45,7 @@ export function formatWorkspaceInstructionsPrompt(
 
   return [
     "<workspace-instructions>",
-    "The following AGENTS.md files apply to the included workspaces. Treat them as project-level instructions for the listed workspace paths.",
+    "The following AGENTS.md and .distill/AGENTS.md files apply to the included workspaces. Treat them as project-level instructions for the listed workspace paths.",
     "",
     ...formattedFiles,
     "</workspace-instructions>",
