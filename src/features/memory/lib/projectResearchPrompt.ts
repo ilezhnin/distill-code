@@ -48,21 +48,24 @@ export async function readProjectResearchPresence(
 }
 
 const presenceByRoot = new Map<string, boolean>();
-const inFlightRoots = new Set<string>();
+const inFlightRoots = new Map<string, Promise<boolean>>();
 
 export async function refreshProjectResearchPresence(
   root: string,
 ): Promise<boolean> {
   const key = root.trim();
   if (!key) return false;
-  if (inFlightRoots.has(key)) return presenceByRoot.get(key) ?? false;
-  inFlightRoots.add(key);
-  try {
-    const present = await readProjectResearchPresence(key);
+  const pending = inFlightRoots.get(key);
+  if (pending) return pending;
+  const refresh = readProjectResearchPresence(key).then((present) => {
     presenceByRoot.set(key, present);
     return present;
+  });
+  inFlightRoots.set(key, refresh);
+  try {
+    return await refresh;
   } finally {
-    inFlightRoots.delete(key);
+    if (inFlightRoots.get(key) === refresh) inFlightRoots.delete(key);
   }
 }
 
@@ -95,6 +98,24 @@ export function sessionProjectResearchPrompt(
     .projects.find((candidate) => candidate.id === projectId);
   return project
     ? projectResearchPromptForRoot(projectMemoryRoot(project))
+    : undefined;
+}
+
+/** The send boundary waits for presence, including an already-running listing. */
+export async function loadSessionProjectResearchPrompt(
+  sessionId: string,
+): Promise<string | undefined> {
+  const projectId = useChatSessionStore
+    .getState()
+    .getSession(sessionId)?.projectId;
+  const project = projectId
+    ? useProjectStore
+        .getState()
+        .projects.find((candidate) => candidate.id === projectId)
+    : undefined;
+  const root = project ? projectMemoryRoot(project) : null;
+  return root
+    ? formatProjectResearchPrompt(await refreshProjectResearchPresence(root))
     : undefined;
 }
 

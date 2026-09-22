@@ -38,6 +38,7 @@ import { formatIncludedWorkspacesPrompt } from "@/features/chat/lib/workspaceAtt
 import { useWorkspaceRepository } from "@/features/workspaces/workspaceRepository";
 import { loadWorkspaceInstructionFiles } from "@/features/chat/api/workspaceContext";
 import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspaceContextPrompt";
+import { formatProjectInstructionsPrompt } from "@/features/chat/lib/projectInstructionsPrompt";
 import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import {
   composeGatedMemorySection,
@@ -557,6 +558,7 @@ export function useChatSessionController({
     workspaceRepository.mode === "multi"
       ? formatIncludedWorkspacesPrompt(session)
       : undefined;
+  const projectInstructionsPrompt = formatProjectInstructionsPrompt(project);
   const includedWorkspacePaths = useMemo(
     () =>
       workspaceRepository.mode === "multi"
@@ -599,7 +601,7 @@ export function useChatSessionController({
   const availableSkillsCatalogReady =
     !hasIncludedWorkspacePaths ||
     availableSkillsCatalogState.key === skillsCatalogKey;
-  const workspaceContextReady =
+  const workspaceFilesReady =
     workspaceInstructionsReady &&
     appSkillsCatalogReady &&
     availableSkillsCatalogReady;
@@ -788,22 +790,29 @@ export function useChatSessionController({
   const [projectResearchPromptState, setProjectResearchPromptState] =
     useState(EMPTY_PROMPT_STATE);
   const [rootOperatorPrompts, setRootOperatorPrompts] = useState<{
+    key: string | null;
     profile: string | undefined;
     lore: string | undefined;
     research: string | undefined;
-  }>({ profile: undefined, lore: undefined, research: undefined });
+  }>({ key: null, profile: undefined, lore: undefined, research: undefined });
   // Every committed turn moves the session's `updatedAt`, so the look-up below
   // runs once per turn: a wiki written mid-session starts being advertised on
   // the next one, and a deleted one stops. The listing is coalesced per root
   // with the two send paths that share this cache. Root instruction files
   // refresh on the same stamp so an edited user.md reaches the next turn.
   const sessionTurnStamp = session?.updatedAt;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: sessionTurnStamp is the per-turn re-look trigger, not a value read inside.
+  const rootInstructionsKey = JSON.stringify([sessionId, sessionTurnStamp]);
+  const projectResearchKey = JSON.stringify([
+    sessionId,
+    projectWikiRoot,
+    sessionTurnStamp,
+  ]);
   useEffect(() => {
     let cancelled = false;
     void refreshRootInstructions().then(() => {
       if (cancelled) return;
       setRootOperatorPrompts({
+        key: rootInstructionsKey,
         profile: formatOperatorProfilePrompt(),
         lore: formatLorePointerPrompt(),
         research: formatResearchPointerPrompt(),
@@ -834,7 +843,7 @@ export function useChatSessionController({
       if (cancelled) return;
       setProjectResearchPromptState((current) =>
         nextPromptState(current, {
-          key: projectWikiRoot,
+          key: projectResearchKey,
           prompt: formatProjectResearchPrompt(present),
         }),
       );
@@ -842,22 +851,24 @@ export function useChatSessionController({
     return () => {
       cancelled = true;
     };
-  }, [projectWikiRoot, sessionTurnStamp]);
-  // Composing a prompt never waits on that listing: until the answer for this
-  // root lands, the line comes from what the shared cache already knows — a
-  // project the operator has been in before is pointed at its wiki from the
-  // first render, and a root nobody has asked about yet simply gets no line
-  // this turn.
+  }, [projectWikiRoot, rootInstructionsKey, projectResearchKey]);
+  // The wiki keeps its optional cached pointer. Research and root instructions
+  // must finish loading before a complete execution prompt can be captured.
+  // Acceptance still queues immediately while this context is being read.
   const projectWikiPrompt =
     projectWikiPromptState.key === (projectWikiRoot ?? "")
       ? projectWikiPromptState.prompt
       : formatProjectWikiPrompt(knownProjectWikiPresence(projectWikiRoot));
   const projectResearchPrompt =
-    projectResearchPromptState.key === (projectWikiRoot ?? "")
+    projectResearchPromptState.key === projectResearchKey
       ? projectResearchPromptState.prompt
       : formatProjectResearchPrompt(
           knownProjectResearchPresence(projectWikiRoot),
         );
+  const workspaceContextReady =
+    workspaceFilesReady &&
+    rootOperatorPrompts.key === rootInstructionsKey &&
+    (!projectWikiRoot || projectResearchPromptState.key === projectResearchKey);
   // What this session already knows, and how it keeps more. Scoped by the
   // session's own project: a fact learned in one codebase must not follow the
   // operator into an unrelated chat.
@@ -958,6 +969,7 @@ export function useChatSessionController({
         // persona, where the agent files used to hardcode the sentence.
         formatSessionSpawnPolicyPrompt(sessionNodeRole, selectedPersona),
         includedWorkspacesPrompt,
+        projectInstructionsPrompt,
         workspaceInstructionsPrompt,
         // Beside the instruction files and outside `operatorProtocols`: the
         // project's knowledge is not the operator's memory, so a wave child
@@ -973,6 +985,7 @@ export function useChatSessionController({
       selectedPersona,
       sessionNodeRole,
       includedWorkspacesPrompt,
+      projectInstructionsPrompt,
       workspaceInstructionsPrompt,
       projectWikiPrompt,
       projectResearchPrompt,
@@ -2512,6 +2525,7 @@ export function useChatSessionController({
           formatPersonaSystemPrompt(queuedPersona),
         formatSessionSpawnPolicyPrompt(sessionNodeRole, queuedPersona),
         includedWorkspacesPrompt,
+        projectInstructionsPrompt,
         workspaceInstructionsPrompt,
         projectWikiPrompt,
         projectResearchPrompt,
@@ -2519,14 +2533,15 @@ export function useChatSessionController({
         availableSkillsCatalogPrompt,
         operatorProtocols,
       );
-      const executionOptions = sendOptions?.executionSystemPrompt
-        ? sendOptions
-        : derivedExecutionSystemPrompt !== undefined
-          ? {
-              ...sendOptions,
-              executionSystemPrompt: derivedExecutionSystemPrompt,
-            }
-          : sendOptions;
+      const executionOptions =
+        sendOptions?.executionSystemPrompt != null
+          ? sendOptions
+          : derivedExecutionSystemPrompt !== undefined
+            ? {
+                ...sendOptions,
+                executionSystemPrompt: derivedExecutionSystemPrompt,
+              }
+            : sendOptions;
       return sendWithAutoCompact(
         text,
         overridePersona,
@@ -2541,6 +2556,7 @@ export function useChatSessionController({
       availableSkillsCatalogPrompt,
       includedWorkspacesPrompt,
       operatorProtocols,
+      projectInstructionsPrompt,
       projectResearchPrompt,
       projectWikiPrompt,
       selectedPersona,
@@ -2735,22 +2751,25 @@ export function useChatSessionController({
         payload.persona.kind === "inherit" ? selectedPersona : requestedPersona;
       const capturedPersonaSystemPrompt =
         formatPersonaSystemPrompt(queuedPersona);
-      const executionSystemPrompt = workspaceContextReady
-        ? composeSystemPrompt(
-            capturedPersonaSystemPrompt,
-            formatSessionSpawnPolicyPrompt(sessionNodeRole, queuedPersona),
-            includedWorkspacesPrompt,
-            workspaceInstructionsPrompt,
-            // A captured payload replaces the queued send path's own compose
-            // wholesale, so the pointer has to ride along here or the project
-            // loses it exactly on the sends that were captured.
-            projectWikiPrompt,
-            projectResearchPrompt,
-            appSkillsCatalogPrompt,
-            availableSkillsCatalogPrompt,
-            operatorProtocols,
-          )
-        : undefined;
+      const executionSystemPrompt =
+        payload.sendOptions?.executionSystemPrompt ??
+        (workspaceContextReady
+          ? composeSystemPrompt(
+              capturedPersonaSystemPrompt,
+              formatSessionSpawnPolicyPrompt(sessionNodeRole, queuedPersona),
+              includedWorkspacesPrompt,
+              projectInstructionsPrompt,
+              workspaceInstructionsPrompt,
+              // A captured payload replaces the queued send path's own compose
+              // wholesale, so the pointer has to ride along here or the project
+              // loses it exactly on the sends that were captured.
+              projectWikiPrompt,
+              projectResearchPrompt,
+              appSkillsCatalogPrompt,
+              availableSkillsCatalogPrompt,
+              operatorProtocols,
+            )
+          : undefined);
       const sendOptions = {
         ...payload.sendOptions,
         ...(capturedPersonaSystemPrompt !== undefined
@@ -2777,6 +2796,7 @@ export function useChatSessionController({
       availableSkillsCatalogPrompt,
       includedWorkspacesPrompt,
       operatorProtocols,
+      projectInstructionsPrompt,
       projectResearchPrompt,
       projectWikiPrompt,
       selectedPersona,

@@ -17,7 +17,6 @@ import type { QueuedMessageRecord } from "@/features/chat/stores/chatStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
   PROJECT_RESEARCH_POINTER_PROMPT,
-  refreshProjectResearchPresence,
   resetProjectResearchPresenceForTests,
 } from "@/features/memory/lib/projectResearchPrompt";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
@@ -388,7 +387,7 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
     path: "/projects/quarp",
     name: "Quarp",
     description: "",
-    prompt: "",
+    prompt: "Follow Quarp's project instructions.",
     icon: "",
     color: "",
     projectWorkspaces: [],
@@ -427,7 +426,7 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
       "research/index.md": "| 01 | topic | decided | never |",
     });
     mocks.listProjectDocuments.mockResolvedValue(["index.md"]);
-    await refreshProjectResearchPresence("/work/quarp");
+    // The first queued send must discover the index without a prior view.
   }
 
   function seedWaveChild(): void {
@@ -459,6 +458,7 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
     );
 
     const prompt = dispatchedExecutionPrompt();
+    expect(prompt).toContain("Follow Quarp's project instructions.");
     expect(prompt).toContain("<operator-profile>");
     expect(prompt).toContain("The operator prefers short answers.");
     expect(prompt).toContain(PROJECT_RESEARCH_POINTER_PROMPT);
@@ -474,6 +474,7 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
     );
 
     const prompt = dispatchedExecutionPrompt();
+    expect(prompt).toContain("Follow Quarp's project instructions.");
     expect(prompt).toContain(PROJECT_RESEARCH_POINTER_PROMPT);
     expect(prompt).not.toContain("<operator-profile>");
     expect(prompt).not.toContain("The operator prefers short answers.");
@@ -492,6 +493,7 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
     );
 
     const prompt = dispatchedExecutionPrompt();
+    expect(prompt).toContain("Follow Quarp's project instructions.");
     expect(prompt).toContain(PROJECT_RESEARCH_POINTER_PROMPT);
     expect(prompt).not.toContain("<operator-profile>");
   });

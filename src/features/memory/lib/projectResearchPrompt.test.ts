@@ -18,6 +18,7 @@ import {
   PROJECT_RESEARCH_POINTER_PROMPT,
   refreshProjectResearchPresence,
   resetProjectResearchPresenceForTests,
+  knownProjectResearchPresence,
 } from "./projectResearchPrompt";
 
 describe("projectResearchPrompt", () => {
@@ -51,5 +52,48 @@ describe("projectResearchPrompt", () => {
 
     expect(present).toBe(false);
     expect(formatProjectResearchPrompt(present)).toBeUndefined();
+  });
+
+  it.each([
+    true,
+    false,
+  ])("shares the pending listing instead of returning stale presence (%s)", async (present) => {
+    let resolveListing!: (names: string[]) => void;
+    mocks.listProjectDocuments.mockReturnValue(
+      new Promise<string[]>((resolve) => {
+        resolveListing = resolve;
+      }),
+    );
+    const first = refreshProjectResearchPresence("/work/quarp");
+    const second = refreshProjectResearchPresence(" /work/quarp ");
+    let secondSettled = false;
+    void second.then(() => {
+      secondSettled = true;
+    });
+    await Promise.resolve();
+    expect(secondSettled).toBe(false);
+    expect(mocks.listProjectDocuments).toHaveBeenCalledTimes(1);
+
+    resolveListing(present ? ["index.md"] : []);
+    expect(await Promise.all([first, second])).toEqual([present, present]);
+    expect(knownProjectResearchPresence("/work/quarp")).toBe(present);
+  });
+
+  it.each([
+    "deleted",
+    "unavailable",
+  ])("drops a %s index on refresh and recovers on a later listing", async (state) => {
+    mocks.listProjectDocuments.mockResolvedValueOnce(["index.md"]);
+    expect(await refreshProjectResearchPresence("/work/quarp")).toBe(true);
+    if (state === "deleted")
+      mocks.listProjectDocuments.mockResolvedValueOnce([]);
+    else
+      mocks.listProjectDocuments.mockRejectedValueOnce(
+        new Error("Unavailable"),
+      );
+    expect(await refreshProjectResearchPresence("/work/quarp")).toBe(false);
+    expect(knownProjectResearchPresence("/work/quarp")).toBe(false);
+    mocks.listProjectDocuments.mockResolvedValueOnce(["index.md"]);
+    expect(await refreshProjectResearchPresence("/work/quarp")).toBe(true);
   });
 });

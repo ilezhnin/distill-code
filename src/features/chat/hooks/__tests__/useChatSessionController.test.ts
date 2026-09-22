@@ -1557,7 +1557,7 @@ describe("useChatSessionController", () => {
     expect(mockPreSeedDraftAgent).not.toHaveBeenCalled();
   });
 
-  it("keeps a promoted builder send parked until its draft target is ready", () => {
+  it("keeps a promoted builder send parked until its draft target is ready", async () => {
     useChatSessionStore.setState({
       sessions: [
         sessionFixture({
@@ -1592,7 +1592,7 @@ describe("useChatSessionController", () => {
     });
     rerender();
 
-    expect(latestMessageQueueArgs()[1]).toBe("idle");
+    await waitFor(() => expect(latestMessageQueueArgs()[1]).toBe("idle"));
     const drainSend = latestMessageQueueArgs()[2] as (
       text: string,
       persona?: { id: string },
@@ -1721,7 +1721,7 @@ describe("useChatSessionController", () => {
     });
   });
 
-  it("allows a queued draft message to drain after promotion to the backend session id", () => {
+  it("allows a queued draft message to drain after promotion to the backend session id", async () => {
     useChatSessionStore.setState({
       sessions: [
         sessionFixture({
@@ -1763,6 +1763,7 @@ describe("useChatSessionController", () => {
     });
     rerender({ sessionId: "backend-1" });
 
+    await waitFor(() => expect(latestMessageQueueArgs()[1]).toBe("idle"));
     const [queueSessionId, queueChatState] = latestMessageQueueArgs();
     expect(queueSessionId).toBe("backend-1");
     expect(queueChatState).toBe("idle");
@@ -1813,9 +1814,10 @@ describe("useChatSessionController", () => {
     });
   });
 
-  it("keeps existing non-draft sessions idle so no-project queued sends still drain", () => {
+  it("keeps existing non-draft sessions idle so no-project queued sends still drain", async () => {
     renderHook(() => useChatSessionController({ sessionId: "session-1" }));
 
+    await waitFor(() => expect(latestMessageQueueArgs()[1]).toBe("idle"));
     const [queueSessionId, queueChatState] = latestMessageQueueArgs();
     expect(queueSessionId).toBe("session-1");
     expect(queueChatState).toBe("idle");
@@ -1842,7 +1844,7 @@ describe("useChatSessionController", () => {
     expect(isSendBlocked).toBe(true);
   });
 
-  it("queues sends while stop cancellation is pending without run metadata", () => {
+  it("queues sends while stop cancellation is pending without run metadata", async () => {
     mockUseChatRuntime.chatState = "idle";
     mockUseChatRuntime.activeRunId = null;
     mockUseChatRuntime.isRunCancellationPending = true;
@@ -1857,6 +1859,9 @@ describe("useChatSessionController", () => {
       useChatSessionController({ sessionId: "session-1" }),
     );
 
+    await waitFor(() =>
+      expect(result.current.workspaceContextReady).toBe(true),
+    );
     act(() => {
       result.current.handleSend("next poem");
     });
@@ -3090,6 +3095,9 @@ describe("useChatSessionController", () => {
       },
     );
 
+    await waitFor(() =>
+      expect(result.current.workspaceContextReady).toBe(true),
+    );
     act(() => {
       result.current.handleSend("", undefined, [imageDraft]);
     });
@@ -3495,7 +3503,7 @@ describe("useChatSessionController", () => {
             path: "/projects/quarp",
             name: "Quarp",
             description: "",
-            prompt: "",
+            prompt: "Follow Quarp's project instructions.",
             icon: "",
             color: "",
             projectWorkspaces: [],
@@ -3576,6 +3584,8 @@ describe("useChatSessionController", () => {
     }
 
     function expectOperatorScope(prompt: string, isPlain: boolean) {
+      expect(prompt).toContain("<project-instructions>");
+      expect(prompt).toContain("Follow Quarp's project instructions.");
       expect(prompt).toContain(PROJECT_RESEARCH_POINTER_PROMPT);
       const operatorParts = [
         "<operator-profile>",
@@ -3603,6 +3613,68 @@ describe("useChatSessionController", () => {
         }
       }
     }
+
+    it.each([
+      "plain",
+      "managedBy wave",
+      "waveExecutorSessionIds",
+    ] as const)("accepts a %s message during the first root read without freezing an incomplete prompt", async (identity) => {
+      seedRunningChat(identity);
+      const files = deferred<Record<string, string | null>>();
+      mockReadDistillInstructions.mockReturnValue(files.promise);
+      const enqueue = vi.fn().mockReturnValue(true);
+      mockUseMessageQueue.mockImplementation(() => ({
+        queuedMessage: null,
+        enqueue,
+        dismiss: vi.fn(),
+      }));
+      const { result, rerender } = renderHook(() =>
+        useChatSessionController({ sessionId: "session-1" }),
+      );
+      await waitFor(() =>
+        expect(mockReadDistillInstructions).toHaveBeenCalledTimes(1),
+      );
+      expect(result.current.workspaceContextReady).toBe(false);
+      act(() => {
+        expect(result.current.handleSend("first queued turn")).toBe(true);
+      });
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      const acceptedOptions = enqueue.mock.calls[0][3] as ChatSendOptions;
+      expect(acceptedOptions.executionSystemPrompt).toBeUndefined();
+      expect(mockUseChatSendMessage).not.toHaveBeenCalled();
+
+      await act(async () => {
+        files.resolve({
+          "user.md": "The operator prefers short answers.",
+          "lore.md": "Earlier work.",
+          "research/index.md": "Decision index.",
+        });
+        await files.promise;
+      });
+      await waitFor(() =>
+        expect(result.current.workspaceContextReady).toBe(true),
+      );
+      mockUseChatRuntime.chatState = "idle";
+      rerender();
+      const drainSend = latestMessageQueueArgs()[2] as (
+        text: string,
+        persona: undefined,
+        attachments: undefined,
+        options: ChatSendOptions,
+      ) => Promise<boolean>;
+      await act(async () => {
+        await drainSend(
+          "first queued turn",
+          undefined,
+          undefined,
+          acceptedOptions,
+        );
+      });
+      expectOperatorScope(
+        mockUseChatSendMessage.mock.calls[0][4].executionSystemPrompt,
+        identity === "plain",
+      );
+    });
 
     it.each([
       "plain",
@@ -3685,6 +3757,141 @@ describe("useChatSessionController", () => {
       );
       expect(dispatchedPrompt).not.toContain(
         "The operator now prefers detailed answers.",
+      );
+    });
+
+    it("waits for changed root files before capturing the next turn", async () => {
+      seedRunningChat("plain");
+      const enqueue = vi.fn().mockReturnValue(true);
+      mockUseMessageQueue.mockImplementation(() => ({
+        queuedMessage: null,
+        enqueue,
+        dismiss: vi.fn(),
+      }));
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: "session-1" }),
+      );
+      await waitFor(() =>
+        expect(result.current.workspaceContextReady).toBe(true),
+      );
+
+      const files = deferred<Record<string, string | null>>();
+      mockReadDistillInstructions.mockReturnValue(files.promise);
+      act(() => {
+        useChatSessionStore
+          .getState()
+          .patchSession("session-1", { updatedAt: "2026-09-22T14:00:00.000Z" });
+      });
+      expect(result.current.workspaceContextReady).toBe(false);
+      act(() => {
+        expect(result.current.handleSend("use the new instructions")).toBe(
+          true,
+        );
+      });
+      const sendOptions = enqueue.mock.calls[0][3] as ChatSendOptions;
+      expect(sendOptions.executionSystemPrompt).toBeUndefined();
+      await act(async () => {
+        files.resolve({
+          "user.md": "The operator now prefers detailed answers.",
+        });
+        await files.promise;
+      });
+      await waitFor(() =>
+        expect(result.current.workspaceContextReady).toBe(true),
+      );
+      const drainSend = latestMessageQueueArgs()[2] as (
+        text: string,
+        persona: undefined,
+        attachments: undefined,
+        options: ChatSendOptions,
+      ) => Promise<boolean>;
+      await act(async () => {
+        await drainSend(
+          "use the new instructions",
+          undefined,
+          undefined,
+          sendOptions,
+        );
+      });
+      const prompt =
+        mockUseChatSendMessage.mock.calls[0][4].executionSystemPrompt;
+      expect(prompt).toContain("The operator now prefers detailed answers.");
+      expect(prompt).not.toContain("The operator prefers short answers.");
+      expect(prompt).not.toContain(loreSentence);
+      expect(prompt).not.toContain(globalResearchSentence);
+    });
+
+    it.each([
+      "",
+      "  Explicit captured prompt.\n",
+    ])("keeps an explicit queue execution prompt byte-for-byte (%j)", async (executionSystemPrompt) => {
+      seedRunningChat("plain");
+      const enqueue = vi.fn().mockReturnValue(true);
+      mockUseMessageQueue.mockImplementation(() => ({
+        queuedMessage: null,
+        enqueue,
+        dismiss: vi.fn(),
+      }));
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: "session-1" }),
+      );
+      await waitFor(() =>
+        expect(result.current.workspaceContextReady).toBe(true),
+      );
+      act(() => {
+        expect(
+          result.current.handleSend("captured", undefined, undefined, {
+            executionSystemPrompt,
+          }),
+        ).toBe(true);
+      });
+      expect(enqueue.mock.calls[0][3].executionSystemPrompt).toBe(
+        executionSystemPrompt,
+      );
+      const drainSend = latestMessageQueueArgs()[2] as (
+        text: string,
+        persona: undefined,
+        attachments: undefined,
+        options: ChatSendOptions,
+      ) => Promise<boolean>;
+      await act(async () => {
+        await drainSend(
+          "captured",
+          undefined,
+          undefined,
+          enqueue.mock.calls[0][3],
+        );
+      });
+      expect(
+        mockUseChatSendMessage.mock.calls[0][4].executionSystemPrompt,
+      ).toBe(executionSystemPrompt);
+    });
+
+    it("releases the queue when optional instruction reads fail", async () => {
+      seedRunningChat("plain");
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      mockReadDistillInstructions.mockRejectedValue(
+        new Error("Root unavailable"),
+      );
+      mockListProjectDocuments.mockRejectedValue(
+        new Error("Project unavailable"),
+      );
+      const { result } = renderHook(() =>
+        useChatSessionController({ sessionId: "session-1" }),
+      );
+      await waitFor(() =>
+        expect(result.current.workspaceContextReady).toBe(true),
+      );
+      expect(composedSystemPrompt()).not.toContain("<operator-profile>");
+      expect(composedSystemPrompt()).not.toContain(
+        PROJECT_RESEARCH_POINTER_PROMPT,
+      );
+      expect(composedSystemPrompt()).toContain(globalFact.text);
+      expect(consoleError).toHaveBeenCalledWith(
+        "Failed to read Distill root instructions:",
+        expect.any(Error),
       );
     });
 

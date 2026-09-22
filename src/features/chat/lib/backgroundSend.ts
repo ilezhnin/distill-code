@@ -1,5 +1,9 @@
 import { dispatchPrompt } from "@/features/chat/lib/sendCore";
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
+import { sessionProjectInstructionsPrompt } from "@/features/chat/lib/projectInstructionsPrompt";
+import { loadWorkspaceInstructionFiles } from "@/features/chat/api/workspaceContext";
+import { getWorkspaceAttachments } from "@/features/chat/lib/workspaceAttachments";
+import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspaceContextPrompt";
 import {
   formatLorePointerPrompt,
   formatOperatorProfilePrompt,
@@ -14,7 +18,7 @@ import {
 } from "@/features/memory/lib/memoryPreferences";
 import { archivedCountForProject } from "@/features/memory/lib/memoryPrompt";
 import { sessionProjectWikiPrompt } from "@/features/memory/lib/projectWikiPrompt";
-import { sessionProjectResearchPrompt } from "@/features/memory/lib/projectResearchPrompt";
+import { loadSessionProjectResearchPrompt } from "@/features/memory/lib/projectResearchPrompt";
 import {
   isWaveExecutorSession,
   sessionMemoryWriteAccess,
@@ -100,28 +104,47 @@ export async function sendPromptInBackground(
   validateExecutionTarget?: () => void,
   onPromptDispatched?: () => void,
 ): Promise<void> {
-  if (sendOptions.executionSystemPrompt == null) {
-    await refreshRootInstructions();
-  }
-  const systemPrompt =
-    sendOptions.executionSystemPrompt ??
-    composeSystemPrompt(
+  let systemPrompt = sendOptions.executionSystemPrompt;
+  if (systemPrompt == null) {
+    const session = useChatSessionStore.getState().getSession(sessionId);
+    const workspacePaths = session
+      ? getWorkspaceAttachments(session)
+          .filter((attachment) => attachment.source !== "excluded")
+          .map((attachment) => attachment.path)
+      : [];
+    const [, projectResearchPrompt, instructionFiles] = await Promise.all([
+      refreshRootInstructions(),
+      loadSessionProjectResearchPrompt(sessionId),
+      workspacePaths.length > 0
+        ? loadWorkspaceInstructionFiles(workspacePaths).catch((error) => {
+            console.warn(
+              "Failed to load workspace instructions for background send:",
+              error,
+            );
+            return [];
+          })
+        : [],
+    ]);
+    systemPrompt = composeSystemPrompt(
       formatPersonaSystemPrompt(persona),
       // Right after the persona, where the handwritten sentence used to
       // live in the agent files: the session's spawn permissions, generated
       // from the same ACL the spawn chokepoint enforces.
       sessionSpawnPolicyPrompt(sessionId, persona),
       sendOptions.systemPrompt,
+      sessionProjectInstructionsPrompt(sessionId),
+      formatWorkspaceInstructionsPrompt(instructionFiles),
       // With the workspace context, not with the protocols below: the wiki
       // pointer is what the project knows, and a wave child — cut off from
       // the operator's memory — still profits from reading it before it
       // re-explores the repository.
       sessionProjectWikiPrompt(sessionId),
-      sessionProjectResearchPrompt(sessionId),
+      projectResearchPrompt,
       // Last, matching the foreground order: persona, workspace context,
       // then the operator protocols.
       composeOperatorProtocols(sessionId),
     );
+  }
   return dispatchPrompt(sessionId, prompt, {
     persona: persona
       ? { id: persona.id, name: persona.displayName }
