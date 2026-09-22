@@ -14,6 +14,7 @@ import { useDistroStore } from "@/features/settings/stores/distroStore";
 import { getClient, setNotificationHandler } from "@/shared/api/acpConnection";
 import notificationHandler from "@/features/chat/acp/acpNotificationHandler";
 import { registerChatSessionConfigSnapshotHandlers } from "@/features/chat/acp/sessionConfigSnapshotAdapter";
+import { registerChatSessionHistoryReplayHandler } from "@/features/chat/acp/sessionHistoryReplayAdapter";
 import { perfLog } from "@/shared/lib/perfLog";
 import { prefetchSessionLoadModules } from "@/features/chat/lib/sessionActivation";
 import { useRuntimeConfigStore } from "@/shared/runtime-config/runtimeConfigStore";
@@ -47,6 +48,7 @@ async function startChatRuntime(
 ): Promise<void> {
   const tConn = performance.now();
   registerChatSessionConfigSnapshotHandlers();
+  registerChatSessionHistoryReplayHandler();
   setNotificationHandler(notificationHandler);
   // Not awaited: the planner, the memory and the conductor's own state are
   // read from disk, and nothing in the rest of startup depends on them. Each
