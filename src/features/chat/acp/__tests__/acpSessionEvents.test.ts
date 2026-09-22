@@ -12,6 +12,10 @@ import {
 } from "@/features/chat/hooks/replayBuffer";
 import { getToolItemStatus } from "@/features/chat/lib/toolChainGrouping";
 import { extractToolResultText } from "../acpToolCallContent";
+import {
+  clearBufferedStreamingUpdatesForSession,
+  flushAllBufferedStreamingUpdates,
+} from "../liveStreamingUpdates";
 
 vi.mock("sonner", () => ({
   toast: { info: vi.fn(), warning: vi.fn(), error: vi.fn() },
@@ -35,6 +39,7 @@ function compaction(replay: boolean) {
 beforeEach(() => {
   vi.clearAllMocks();
   clearMessageTracking();
+  clearBufferedStreamingUpdatesForSession(sessionId);
   clearReplayBuffer(sessionId);
   useChatStore.setState({
     messagesBySession: {},
@@ -161,6 +166,7 @@ describe.each([false, true])("ACP events, replay=%s", (replay) => {
         _meta: { terminal_output_delta: { terminal_id: "cmd", data } },
       });
     }
+    flushAllBufferedStreamingUpdates();
     const request = messages(replay)[0].content.find(
       (block) => block.type === "toolRequest",
     );
@@ -182,6 +188,50 @@ describe.each([false, true])("ACP events, replay=%s", (replay) => {
       structuredContent: { terminal_id: "cmd", exit_code: 0 },
     });
   });
+});
+
+it("batches a burst of terminal deltas and flushes the last lines before completion", async () => {
+  await send({
+    sessionUpdate: "tool_call",
+    toolCallId: "cmd",
+    title: "Run check",
+    kind: "execute",
+  });
+  let writes = 0;
+  const unsubscribe = useChatStore.subscribe(() => {
+    writes += 1;
+  });
+  try {
+    for (let i = 0; i < 1000; i++) {
+      await send({
+        sessionUpdate: "tool_call_update",
+        toolCallId: "cmd",
+        _meta: {
+          terminal_output_delta: { terminal_id: "cmd", data: "line\n" },
+        },
+      });
+    }
+    expect(writes).toBe(0);
+    flushAllBufferedStreamingUpdates();
+    expect(writes).toBe(1);
+    await send({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "cmd",
+      _meta: { terminal_output_delta: { terminal_id: "cmd", data: "last\n" } },
+    });
+    expect(writes).toBe(1);
+    await send({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "cmd",
+      status: "completed",
+    });
+    expect(
+      messages(false)[0].content.find((block) => block.type === "toolResponse")
+        ?.result,
+    ).toBe(`${"line\n".repeat(1000)}last\n`);
+  } finally {
+    unsubscribe();
+  }
 });
 
 it("keeps every text block of a tool result", () => {

@@ -5,6 +5,7 @@ import {
   clearStreamingMessageOwners,
   enqueueStreamingTextUpdate,
   enqueueStreamingThinkingUpdate,
+  enqueueStreamingTerminalUpdate,
   flushAllBufferedStreamingUpdates,
   flushBufferedStreamingUpdatesForSession,
   releaseStreamingMessageOwner,
@@ -83,6 +84,40 @@ describe("liveStreamingUpdates", () => {
       { type: "thinking", text: "thinking through it" },
       { type: "text", text: "hello world" },
     ]);
+  });
+
+  it("keeps late terminal output on its owning message without moving the active stream", () => {
+    claimSessionPrompt(sessionId);
+    const older = makeAssistantMessage("older");
+    older.content = [
+      {
+        type: "toolRequest",
+        id: "cmd",
+        name: "Run",
+        arguments: {},
+        status: "in_progress",
+      },
+    ];
+    useChatStore
+      .getState()
+      .setMessages(sessionId, [older, makeAssistantMessage("current")]);
+    useChatStore.getState().setStreamingMessageId(sessionId, "current");
+    enqueueStreamingTerminalUpdate(sessionId, "older", "cmd", "one\n");
+    enqueueStreamingTextUpdate(sessionId, "current", "answer");
+    enqueueStreamingTerminalUpdate(sessionId, "older", "cmd", "two\n");
+    flushAllBufferedStreamingUpdates();
+    expect(
+      useChatStore.getState().messagesBySession[sessionId][0].content[0],
+    ).toMatchObject({ terminalOutput: "one\ntwo\n", status: "in_progress" });
+    expect(
+      useChatStore.getState().getSessionRuntime(sessionId).streamingMessageId,
+    ).toBe("current");
+    enqueueStreamingTerminalUpdate(sessionId, "older", "cmd", "discarded");
+    clearBufferedStreamingUpdatesForSession(sessionId);
+    flushAllBufferedStreamingUpdates();
+    expect(
+      useChatStore.getState().messagesBySession[sessionId][0].content[0],
+    ).toMatchObject({ terminalOutput: "one\ntwo\n" });
   });
 
   // A prompt that settles while the host keeps streaming (a rejected

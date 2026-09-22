@@ -75,6 +75,7 @@ import { perfLog } from "@/shared/lib/perfLog";
 import {
   enqueueStreamingTextUpdate,
   enqueueStreamingThinkingUpdate,
+  enqueueStreamingTerminalUpdate,
   flushBufferedStreamingUpdatesForSession,
   clearStreamingMessageOwners,
   isStreamingMessageOwnedByCurrentPrompt,
@@ -85,7 +86,11 @@ import { recordAcpSessionUsage } from "@/features/stats/lib/usageRecorder";
 import { isRecord } from "@/shared/lib/isRecord";
 import { completeAssistantMessage } from "@/features/chat/lib/messageCompletion";
 import { handleSessionEvent } from "./acpSessionEvents";
-import { appendTerminalOutput, hasTerminalOutput } from "./acpTerminalOutput";
+import {
+  appendTerminalOutput,
+  getTerminalOutputData,
+  hasTerminalOutput,
+} from "./acpTerminalOutput";
 
 // Per-session perf counters for replay streaming.
 interface ReplayPerf {
@@ -764,7 +769,6 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
     }
 
     case "tool_call_update": {
-      flushBufferedStreamingUpdatesForSession(sessionId);
       const identity = getToolCallIdentity(update);
       const chainSummary = undefined;
       // Late-arriving updates (chain summaries, async titles) can target a
@@ -782,12 +786,32 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
           getLiveAssistantMessageId(update),
         );
 
-      if (hasTerminalOutput(update))
+      const patch = toolCallUpdatePatch(update);
+      const terminalData = getTerminalOutputData(update);
+      if (
+        terminalData &&
+        !update.title &&
+        !update.status &&
+        Object.keys(identity).length === 0 &&
+        Object.keys(patch).length === 0 &&
+        !update.content?.length &&
+        update.rawOutput == null
+      ) {
+        enqueueStreamingTerminalUpdate(
+          sessionId,
+          messageId,
+          update.toolCallId,
+          terminalData,
+        );
+        break;
+      }
+      // Completion and structural changes must observe all preceding output.
+      flushBufferedStreamingUpdatesForSession(sessionId);
+      if (terminalData)
         store.updateMessage(sessionId, messageId, (msg) =>
           appendTerminalOutput(msg, update),
         );
 
-      const patch = toolCallUpdatePatch(update);
       if (
         update.title ||
         Object.keys(identity).length > 0 ||
