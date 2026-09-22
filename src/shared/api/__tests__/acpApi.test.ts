@@ -52,6 +52,20 @@ vi.mock("../acpConnection", () => ({
   trackPendingPrompt: <T>(prompt: Promise<T>) => prompt,
 }));
 
+it("opts into bounded history batches while retaining the normal ACP load response", async () => {
+  const response = createConfigOptionsResponse();
+  const load = vi.fn().mockResolvedValue(response);
+  mocks.getClient.mockResolvedValue({ loadSession: load });
+  const { loadSession } = await import("../acpApi");
+  await expect(loadSession("s", "/project")).resolves.toBe(response);
+  expect(load).toHaveBeenCalledWith({
+    sessionId: "s",
+    cwd: "/project",
+    mcpServers: [],
+    _meta: { distill: { replayBatch: true } },
+  });
+});
+
 describe("prompt", () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -162,4 +162,47 @@ describe("createWebSocketStream request ids", () => {
     await writer.write({ jsonrpc: "2.0", id: 12, result: { outcome: {} } });
     expect(JSON.parse(socket.sent[0])).toMatchObject({ id: 12 });
   });
+
+  it("expands replay batches in order before the load response, dropping stale replies individually", async () => {
+    const stream = createWebSocketStream("ws://host/acp");
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    const writer = stream.writable.getWriter();
+    await writer.write({ jsonrpc: "2.0", id: 1, method: "session/load" });
+    const { id } = JSON.parse(socket.sent[0]) as { id: string };
+    const notifications: AnyMessage[] = Array.from(
+      { length: 300 },
+      (_, index) => ({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: String(index) },
+          },
+        },
+      }),
+    );
+    socket.receive(notifications.slice(0, 128));
+    socket.receive([
+      null,
+      ...notifications.slice(128, 256),
+      { jsonrpc: "2.0", id: "old:1", result: {} },
+    ]);
+    socket.receive(notifications.slice(256));
+    socket.receive({ jsonrpc: "2.0", id, result: { done: true } });
+    socket.close();
+    const reader = stream.readable.getReader();
+    const received: AnyMessage[] = [];
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      received.push(next.value);
+    }
+    expect(received).toEqual([
+      ...notifications,
+      { jsonrpc: "2.0", id: 1, result: { done: true } },
+    ]);
+  });
 });
