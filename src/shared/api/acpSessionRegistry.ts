@@ -13,6 +13,36 @@ import {
 import { normalizeConcreteModelId } from "@/shared/lib/modelIdentity";
 import { sameModelIdentity } from "@/shared/lib/foldedModelId";
 
+/**
+ * A `session/load` the host answers by replaying the whole transcript as
+ * `session/update` notifications — that is how a chat's history reaches the
+ * renderer. When the load was issued to *prepare* a session (put it on a
+ * provider) rather than to show it, nobody is expecting that history: handled
+ * as live traffic, the replay rebuilds the agent's side of the conversation
+ * in the store and drops the user's, since a live user chunk is only ever the
+ * echo of a message the composer already added. The chat feature installs a
+ * handler here that treats such a replay as the history it is.
+ */
+export type SessionHistoryReplayHandler = <T>(
+  sessionId: string,
+  load: () => Promise<T>,
+) => Promise<T>;
+
+let historyReplayHandler: SessionHistoryReplayHandler | null = null;
+
+export function setSessionHistoryReplayHandler(
+  handler: SessionHistoryReplayHandler | null,
+): void {
+  historyReplayHandler = handler;
+}
+
+function loadSessionForPreparation<T>(
+  sessionId: string,
+  load: () => Promise<T>,
+): Promise<T> {
+  return historyReplayHandler ? historyReplayHandler(sessionId, load) : load();
+}
+
 export interface AcpSessionExecutionSelection {
   providerId: string;
   /** Last model this window observed ACP acknowledge successfully. */
@@ -304,7 +334,9 @@ async function prepareSessionNow(
     sessionId: shortLogId(sessionId),
     providerId,
   });
-  await acpApi.loadSession(sessionId, workingDir);
+  await loadSessionForPreparation(sessionId, () =>
+    acpApi.loadSession(sessionId, workingDir),
+  );
   perfLog(
     `[perf:prepare] ${sid} registry loadSession ok in ${(performance.now() - tLoad).toFixed(1)}ms`,
   );

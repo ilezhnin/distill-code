@@ -182,6 +182,33 @@ describe("applySessionModel", () => {
     expect(mockSetProvider).not.toHaveBeenCalled();
   });
 
+  it("runs the load a preparation needs through the history replay handler", async () => {
+    const registry = await importRegistry();
+    const seen: string[] = [];
+    registry.setSessionHistoryReplayHandler(async (sessionId, load) => {
+      seen.push(`begin ${sessionId}`);
+      try {
+        return await load();
+      } finally {
+        seen.push(`end ${sessionId}`);
+      }
+    });
+    mockLoadSession.mockImplementation(async () => {
+      seen.push("load");
+      return {};
+    });
+    try {
+      await registry.prepareSession("session-1", "claude-acp", "/project");
+      expect(seen).toEqual(["begin session-1", "load", "end session-1"]);
+
+      // A prepared session is reused, not loaded: the handler has no part.
+      await registry.prepareSession("session-1", "claude-acp", "/project");
+      expect(seen).toHaveLength(3);
+    } finally {
+      registry.setSessionHistoryReplayHandler(null);
+    }
+  });
+
   it("rejects model changes when the provider was never prepared", async () => {
     const registry = await importRegistry();
 
