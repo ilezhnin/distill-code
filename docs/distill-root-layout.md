@@ -81,6 +81,19 @@ Handed off once per session/provider/fingerprint, in this order:
 
 App-authored blocks come first so operator-authored text reads as the override.
 
+The five send paths preserve this operator protocol order: foreground send,
+queued drain, captured queue, background/distillctl send, and wave spawn.
+The foreground controller composes the visible chat's prompt; queued drains
+compose missing context at dispatch. A captured send freezes
+`operatorProtocols` at capture time along with the accepted persona and
+workspace context, and dispatch uses that captured prompt unchanged.
+Background/distillctl sends refresh the root files before composing their
+own prompt; an explicit `executionSystemPrompt` passes through unchanged.
+Wave spawns dispatch through the queue with the executor gate: project
+research stays beside the wiki pointer, while profile, lore, global research,
+memory and planner protocols are withheld. The same gate applies when any
+other path addresses a wave executor, including after its graph node is gone.
+
 ## Stages
 
 Stage 1 (this delivery): root instruction files reach every chat.

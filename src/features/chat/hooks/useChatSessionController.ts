@@ -2517,6 +2517,7 @@ export function useChatSessionController({
         projectResearchPrompt,
         appSkillsCatalogPrompt,
         availableSkillsCatalogPrompt,
+        operatorProtocols,
       );
       const executionOptions = sendOptions?.executionSystemPrompt
         ? sendOptions
@@ -2539,6 +2540,7 @@ export function useChatSessionController({
       appSkillsCatalogPrompt,
       availableSkillsCatalogPrompt,
       includedWorkspacesPrompt,
+      operatorProtocols,
       projectResearchPrompt,
       projectWikiPrompt,
       selectedPersona,
@@ -2746,6 +2748,7 @@ export function useChatSessionController({
             projectResearchPrompt,
             appSkillsCatalogPrompt,
             availableSkillsCatalogPrompt,
+            operatorProtocols,
           )
         : undefined;
       const sendOptions = {
@@ -2773,6 +2776,7 @@ export function useChatSessionController({
       appSkillsCatalogPrompt,
       availableSkillsCatalogPrompt,
       includedWorkspacesPrompt,
+      operatorProtocols,
       projectResearchPrompt,
       projectWikiPrompt,
       selectedPersona,

@@ -17,6 +17,8 @@ import {
   resetProjectResearchPresenceForTests,
 } from "@/features/memory/lib/projectResearchPrompt";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
+import { MEMORY_PROTOCOL_PROMPT } from "@/features/memory/lib/memoryFence";
+import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import { useChatStore } from "../../stores/chatStore";
 import {
   type ChatSession,
@@ -1863,7 +1865,12 @@ describe("useChatSessionController", () => {
       "next poem",
       undefined,
       undefined,
-      {},
+      {
+        executionSystemPrompt: [
+          MEMORY_PROTOCOL_PROMPT,
+          PLANNER_PROTOCOL_PROMPT,
+        ].join("\n\n"),
+      },
       undefined,
     );
     expect(mockUseChatSendMessage).not.toHaveBeenCalled();
@@ -3094,7 +3101,12 @@ describe("useChatSessionController", () => {
       persona: { kind: "inherit" },
       text: "",
       attachments: [imageDraft],
-      sendOptions: {},
+      sendOptions: {
+        executionSystemPrompt: [
+          MEMORY_PROTOCOL_PROMPT,
+          PLANNER_PROTOCOL_PROMPT,
+        ].join("\n\n"),
+      },
     });
 
     useChatSessionStore.setState((state) => ({
@@ -3123,9 +3135,13 @@ describe("useChatSessionController", () => {
         persona: { kind: "inherit" },
         text: "",
         attachments: [imageDraft],
-        // The migrated record keeps its Home-composer surface stamp so a
-        // deferred-workspace release still reports where it was accepted.
-        sendOptions: {},
+        // Migration preserves the operator protocols accepted in Home.
+        sendOptions: {
+          executionSystemPrompt: [
+            MEMORY_PROTOCOL_PROMPT,
+            PLANNER_PROTOCOL_PROMPT,
+          ].join("\n\n"),
+        },
       });
     });
     expect(
@@ -3523,6 +3539,183 @@ describe("useChatSessionController", () => {
         reportsByRunId: {},
       });
     }
+
+    const globalFact = {
+      id: "memory-1",
+      text: "A standing fact captured with the message.",
+      scope: "global" as const,
+      projectId: null,
+      createdAt: 0,
+    };
+
+    function seedRunningChat(
+      identity: "plain" | "managedBy wave" | "waveExecutorSessionIds",
+    ) {
+      seedOperatorFiles();
+      seedProjectResearch();
+      useMemoryStore.setState({ entries: [globalFact] });
+      if (identity === "managedBy wave") seedWaveChild();
+      if (identity === "waveExecutorSessionIds") {
+        useMemoryStore.setState({ waveExecutorSessionIds: ["session-1"] });
+      }
+      mockUseChatRuntime.chatState = "thinking";
+      useChatSessionStore.getState().patchSession("session-1", {
+        messageCount: 1,
+        workingDir: "/work/quarp",
+        workspaceAttachments: [
+          {
+            id: workspaceAttachmentIdForPath("/work/quarp"),
+            path: "/work/quarp",
+            kind: "git-main-worktree",
+            source: "inferred",
+            branch: "main",
+            usedByAgent: true,
+          },
+        ],
+      });
+    }
+
+    function expectOperatorScope(prompt: string, isPlain: boolean) {
+      expect(prompt).toContain(PROJECT_RESEARCH_POINTER_PROMPT);
+      const operatorParts = [
+        "<operator-profile>",
+        "The operator prefers short answers.",
+        loreSentence,
+        globalResearchSentence,
+        "<memory>",
+        globalFact.text,
+        MEMORY_PROTOCOL_PROMPT,
+        PLANNER_PROTOCOL_PROMPT,
+      ];
+      for (const part of operatorParts) {
+        if (isPlain) expect(prompt).toContain(part);
+        else expect(prompt).not.toContain(part);
+      }
+      if (isPlain) {
+        const orderedParts = [
+          PROJECT_RESEARCH_POINTER_PROMPT,
+          ...operatorParts,
+        ];
+        for (let index = 1; index < orderedParts.length; index += 1) {
+          expect(prompt.indexOf(orderedParts[index])).toBeGreaterThan(
+            prompt.indexOf(orderedParts[index - 1]),
+          );
+        }
+      }
+    }
+
+    it.each([
+      "plain",
+      "managedBy wave",
+      "waveExecutorSessionIds",
+    ] as const)("freezes profile, lore, global research, project research and memory at queue acceptance for %s", async (identity) => {
+      seedRunningChat(identity);
+      const enqueue = vi.fn().mockReturnValue(true);
+      mockUseMessageQueue.mockImplementation(() => ({
+        queuedMessage: null,
+        enqueue,
+        dismiss: vi.fn(),
+      }));
+      const { result, rerender } = renderHook(() =>
+        useChatSessionController({ sessionId: "session-1" }),
+      );
+      await waitFor(() => {
+        expect(result.current.workspaceContextReady).toBe(true);
+        expectOperatorScope(composedSystemPrompt(), identity === "plain");
+      });
+      expect(latestMessageQueueArgs()[1]).toBe("thinking");
+
+      act(() => {
+        expect(result.current.handleSend("next turn")).toBe(true);
+      });
+
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      expect(mockUseChatSendMessage).not.toHaveBeenCalled();
+      const capturedOptions = enqueue.mock.calls[0][3] as ChatSendOptions;
+      const capturedPrompt = capturedOptions.executionSystemPrompt;
+      expect(capturedPrompt).toBeTypeOf("string");
+      expectOperatorScope(capturedPrompt ?? "", identity === "plain");
+
+      // A later turn refreshes the visible context; the accepted send must
+      // still carry exactly the profile and memory it captured earlier.
+      mockReadDistillInstructions.mockResolvedValue({
+        "user.md": "The operator now prefers detailed answers.",
+        "lore.md": null,
+        "research/index.md": null,
+      });
+      await act(async () => {
+        useMemoryStore.setState({
+          entries: [
+            { ...globalFact, text: "A newer memory after acceptance." },
+          ],
+        });
+        useChatSessionStore.getState().patchSession("session-1", {
+          updatedAt: "2026-09-22T12:00:00.000Z",
+        });
+      });
+      if (identity === "plain") {
+        await waitFor(() => {
+          expect(composedSystemPrompt()).toContain(
+            "The operator now prefers detailed answers.",
+          );
+          expect(composedSystemPrompt()).toContain(
+            "A newer memory after acceptance.",
+          );
+        });
+      }
+      mockUseChatRuntime.chatState = "idle";
+      rerender();
+      const drainSend = latestMessageQueueArgs()[2] as (
+        text: string,
+        persona: undefined,
+        attachments: undefined,
+        sendOptions: ChatSendOptions,
+      ) => Promise<boolean>;
+      await act(async () => {
+        await drainSend("next turn", undefined, undefined, capturedOptions);
+      });
+
+      expect(mockUseChatSendMessage).toHaveBeenCalledTimes(1);
+      const dispatchedPrompt =
+        mockUseChatSendMessage.mock.calls[0][4].executionSystemPrompt;
+      expect(dispatchedPrompt).toBe(capturedPrompt);
+      expectOperatorScope(dispatchedPrompt, identity === "plain");
+      expect(dispatchedPrompt).not.toContain(
+        "A newer memory after acceptance.",
+      );
+      expect(dispatchedPrompt).not.toContain(
+        "The operator now prefers detailed answers.",
+      );
+    });
+
+    it.each([
+      "plain",
+      "managedBy wave",
+      "waveExecutorSessionIds",
+    ] as const)("derives profile, lore, global research, project research and memory for an uncaptured %s queue send", async (identity) => {
+      seedRunningChat(identity);
+      const { result, rerender } = renderHook(() =>
+        useChatSessionController({ sessionId: "session-1" }),
+      );
+      await waitFor(() => {
+        expect(result.current.workspaceContextReady).toBe(true);
+        expectOperatorScope(composedSystemPrompt(), identity === "plain");
+      });
+      mockUseChatRuntime.chatState = "idle";
+      rerender();
+      const drainSend = latestMessageQueueArgs()[2] as (
+        text: string,
+      ) => Promise<boolean>;
+      await act(async () => {
+        await drainSend("uncaptured next turn");
+      });
+
+      expect(mockUseChatSendMessage).toHaveBeenCalledTimes(1);
+      expectOperatorScope(
+        mockUseChatSendMessage.mock.calls[0][4].executionSystemPrompt,
+        identity === "plain",
+      );
+    });
 
     it("reaches an ordinary chat as operator-profile, lore and research pointers", async () => {
       seedOperatorFiles();

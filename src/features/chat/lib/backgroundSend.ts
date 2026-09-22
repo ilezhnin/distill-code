@@ -1,5 +1,11 @@
 import { dispatchPrompt } from "@/features/chat/lib/sendCore";
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
+import {
+  formatLorePointerPrompt,
+  formatOperatorProfilePrompt,
+  formatResearchPointerPrompt,
+  refreshRootInstructions,
+} from "@/features/chat/lib/rootInstructionsPrompt";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { sessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
 import {
@@ -8,6 +14,7 @@ import {
 } from "@/features/memory/lib/memoryPreferences";
 import { archivedCountForProject } from "@/features/memory/lib/memoryPrompt";
 import { sessionProjectWikiPrompt } from "@/features/memory/lib/projectWikiPrompt";
+import { sessionProjectResearchPrompt } from "@/features/memory/lib/projectResearchPrompt";
 import {
   isWaveExecutorSession,
   sessionMemoryWriteAccess,
@@ -23,7 +30,8 @@ import type { Persona } from "@/shared/types/agents";
 import type { ChatSendOptions } from "../types";
 
 /**
- * The memory and planner half of a background session's system prompt.
+ * The operator's profile, pointers, memory and planner protocols for a
+ * background session's system prompt.
  *
  * The two callers that compose an `executionSystemPrompt` themselves (the
  * foreground controller and the queued drain) already carry this; the
@@ -50,6 +58,9 @@ function composeOperatorProtocols(sessionId: string): string | undefined {
     useChatSessionStore.getState().getSession(sessionId)?.projectId ?? null;
   const memory = useMemoryStore.getState();
   return composeSystemPrompt(
+    formatOperatorProfilePrompt(),
+    formatLorePointerPrompt(),
+    formatResearchPointerPrompt(),
     composeGatedMemorySection(
       getMemoryPreferences(),
       memory.entries,
@@ -75,7 +86,7 @@ function composeOperatorProtocols(sessionId: string): string | undefined {
  * `providerId` is the target session's provider (callers have it from
  * session creation); it stamps the pending-assistant hint for the response.
  */
-export function sendPromptInBackground(
+export async function sendPromptInBackground(
   sessionId: string,
   prompt: string,
   providerId: string,
@@ -89,6 +100,9 @@ export function sendPromptInBackground(
   validateExecutionTarget?: () => void,
   onPromptDispatched?: () => void,
 ): Promise<void> {
+  if (sendOptions.executionSystemPrompt == null) {
+    await refreshRootInstructions();
+  }
   const systemPrompt =
     sendOptions.executionSystemPrompt ??
     composeSystemPrompt(
@@ -103,6 +117,7 @@ export function sendPromptInBackground(
       // the operator's memory — still profits from reading it before it
       // re-explores the repository.
       sessionProjectWikiPrompt(sessionId),
+      sessionProjectResearchPrompt(sessionId),
       // Last, matching the foreground order: persona, workspace context,
       // then the operator protocols.
       composeOperatorProtocols(sessionId),
@@ -118,8 +133,8 @@ export function sendPromptInBackground(
     userMessageMetadata: sendOptions.userMessageMetadata,
     acpPromptMetadata: sendOptions.acpPromptMetadata,
     // Compose only caller-provided target-session context, the requested
-    // persona and the operator's memory/planner protocols (scoped to the
-    // target session) — never foreground UI state.
+    // persona and the operator protocols (scoped to the target session) —
+    // never foreground UI state.
     systemPrompt,
     // Same isolation rule: the target session's provider, never the
     // foreground active agent's (dispatchPrompt's default).
