@@ -327,6 +327,9 @@
   },
   "notifications": {
     "compactionComplete": "Conversation compacted. Older context was summarized.",
+    "compactionFailed": "Conversation compaction failed",
+    "compactionCancelled": "Conversation compaction cancelled",
+    "compactionStatus": "Conversation compaction: {{status}}",
     "compactionReplayIncomplete": "Couldn't verify the compacted conversation because refreshed history wasn't received. Your previous messages are still shown. Try reloading the session.",
     "modelLeftBehindOnAgentSwitch": "This chat is now on {{agent}}, but {{agent}} would not run {{model}}, so it is on {{agent}}'s own model. Pick another in the model menu.",
     "modelSwitchError": "Could not switch to {{model}}. This chat is still using {{fallbackModel}}.",

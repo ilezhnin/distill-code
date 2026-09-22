@@ -34,6 +34,7 @@ import {
 } from "@/shared/ui/ai-elements/reasoning";
 import { ToolChainCards, type ToolChainItem } from "./ToolChainCards";
 import { ClickableImage } from "./ClickableImage";
+import { CompactionNotice } from "./CompactionNotice";
 import { MarkdownImage } from "./MarkdownImage";
 import { resolveImageContentSrc } from "./resolveImageContentSrc";
 import { useArtifactActionsContext } from "@/features/chat/hooks/ArtifactPolicyContext";
@@ -692,6 +693,13 @@ function renderContentBlock(
       );
     case "systemNotification": {
       const sn = content as SystemNotificationContent;
+      if (sn.compaction)
+        return (
+          <CompactionNotice
+            key={`notification-${index}`}
+            compaction={sn.compaction}
+          />
+        );
       const isError = sn.notificationType === "error";
       const isWarning = sn.notificationType === "warning";
       const isCompaction = sn.notificationType === "compaction";

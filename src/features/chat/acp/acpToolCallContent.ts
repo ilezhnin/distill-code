@@ -3,6 +3,7 @@ import {
   type getBufferedMessage,
 } from "@/features/chat/hooks/replayBuffer";
 import type { ImageContent } from "@/shared/types/messages";
+import { isRecord } from "@/shared/lib/isRecord";
 
 export function findReplayMessageWithToolCall(
   sessionId: string,
@@ -32,11 +33,13 @@ export function extractToolResultText(update: {
   rawOutput?: unknown;
 }): string {
   if (update.content && update.content.length > 0) {
+    const texts: string[] = [];
     for (const item of update.content) {
       if (item.type === "content" && item.content?.type === "text") {
-        return item.content.text;
+        texts.push(item.content.text);
       }
     }
+    if (texts.length) return texts.join("\n");
   }
   if (update.rawOutput !== undefined && update.rawOutput !== null) {
     return typeof update.rawOutput === "string"
@@ -74,10 +77,14 @@ export function extractToolResultImages(update: {
 
 export function extractToolStructuredContent(update: {
   rawOutput?: unknown;
+  _meta?: Record<string, unknown> | null;
 }): unknown | undefined {
   if (Object.hasOwn(update, "rawOutput")) {
     return update.rawOutput;
   }
+
+  const exit = update._meta?.terminal_exit;
+  if (isRecord(exit)) return { ...exit };
 
   return undefined;
 }

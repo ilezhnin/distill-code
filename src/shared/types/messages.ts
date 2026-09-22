@@ -1,5 +1,6 @@
 import type {
   Annotations,
+  CompactionUpdate,
   ImageContent as AcpImageContent,
   Role,
   TextContent as AcpTextContent,
@@ -117,6 +118,8 @@ export interface ToolRequestContent {
   startedAt?: number;
   annotations?: Annotations;
   chainSummary?: ToolChainSummary;
+  /** Output streamed by the harness; receiving bytes does not complete a tool. */
+  terminalOutput?: string;
   /**
    * For subagent await/peek/cancel calls (e.g. goose `load <task-id>`): the
    * named source (custom agent/recipe) of the delegate that spawned the task,
@@ -239,6 +242,7 @@ export interface SystemNotificationContent {
   type: "systemNotification";
   notificationType: "compaction" | "info" | "warning" | "error";
   text: string;
+  compaction?: CompactionUpdate;
   action?: SystemNotificationAction;
   annotations?: Annotations;
 }

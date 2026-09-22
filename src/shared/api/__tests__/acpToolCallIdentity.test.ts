@@ -12,6 +12,14 @@ function toolCallUpdate(meta: Record<string, unknown>): SessionUpdate {
 }
 
 describe("getToolCallIdentity", () => {
+  it("prefers the protocol tool name reported by current bridges", () => {
+    expect(
+      getToolCallIdentity({
+        ...toolCallUpdate({ codex: { collaboration: { tool: "old" } } }),
+        name: "spawn_agent",
+      } as SessionUpdate),
+    ).toEqual({ toolName: "spawn_agent" });
+  });
   it("returns empty without _meta", () => {
     expect(
       getToolCallIdentity({

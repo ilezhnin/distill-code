@@ -84,6 +84,8 @@ import { addSessionWorkedMs } from "@/features/stats/lib/usageLedger";
 import { recordAcpSessionUsage } from "@/features/stats/lib/usageRecorder";
 import { isRecord } from "@/shared/lib/isRecord";
 import { completeAssistantMessage } from "@/features/chat/lib/messageCompletion";
+import { handleSessionEvent } from "./acpSessionEvents";
+import { appendTerminalOutput, hasTerminalOutput } from "./acpTerminalOutput";
 
 // Per-session perf counters for replay streaming.
 interface ReplayPerf {
@@ -453,6 +455,7 @@ function upsertThinkingContent(content: MessageContent[], text: string): void {
 }
 
 function handleReplay(sessionId: string, update: SessionUpdate): void {
+  if (handleSessionEvent(sessionId, update, true)) return;
   switch (update.sessionUpdate) {
     case "agent_message_chunk": {
       handleReplayAssistantBoundary(sessionId, update);
@@ -550,6 +553,7 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
         ...(chainSummary ? { chainSummary } : {}),
         ...(replaySubagentContext ?? {}),
       });
+      msg.content = appendTerminalOutput(msg, update).content;
       break;
     }
 
@@ -573,6 +577,7 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
       );
       const msg = existingMsg ?? replayMsg ?? trackedMsg;
       if (msg) {
+        msg.content = appendTerminalOutput(msg, update).content;
         if (created !== undefined && !existingMsg && msg === replayMsg) {
           msg.created = created;
         }
@@ -627,7 +632,9 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
               } as ToolRequestContent;
             }
           }
-          const resultText = extractToolResultText(update);
+          const resultText =
+            extractToolResultText(update) ||
+            (tc?.type === "toolRequest" ? (tc.terminalOutput ?? "") : "");
           msg.content.push({
             type: "toolResponse",
             id: update.toolCallId,
@@ -658,6 +665,7 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
 }
 
 function handleLive(sessionId: string, update: SessionUpdate): void {
+  if (handleSessionEvent(sessionId, update, false)) return;
   const store = useChatStore.getState();
 
   switch (update.sessionUpdate) {
@@ -748,6 +756,10 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
       };
       store.setStreamingMessageId(sessionId, messageId);
       store.appendToStreamingMessage(sessionId, toolRequest);
+      if (hasTerminalOutput(update))
+        store.updateMessage(sessionId, messageId, (msg) =>
+          appendTerminalOutput(msg, update),
+        );
       break;
     }
 
@@ -768,6 +780,11 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
         ensureLiveAssistantMessage(
           sessionId,
           getLiveAssistantMessageId(update),
+        );
+
+      if (hasTerminalOutput(update))
+        store.updateMessage(sessionId, messageId, (msg) =>
+          appendTerminalOutput(msg, update),
         );
 
       const patch = toolCallUpdatePatch(update);
@@ -811,9 +828,9 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
 
       if (update.status === "completed" || update.status === "failed") {
         const { status: resolvedStatus } = update;
-        const ownerMessage = store.messagesBySession[sessionId]?.find(
-          (m) => m.id === messageId,
-        );
+        const ownerMessage = useChatStore
+          .getState()
+          .messagesBySession[sessionId]?.find((m) => m.id === messageId);
         // Look up the request that this update belongs to by exact id —
         // sibling tools can complete out of order, so the latest unpaired
         // request isn't necessarily the one we're updating. Mirrors the
@@ -838,7 +855,8 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
           ),
         }));
 
-        const resultText = extractToolResultText(update);
+        const resultText =
+          extractToolResultText(update) || toolRequest?.terminalOutput || "";
         const toolResponse: ToolResponseContent = {
           type: "toolResponse",
           id: update.toolCallId,
