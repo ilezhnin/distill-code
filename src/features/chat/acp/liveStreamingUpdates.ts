@@ -29,7 +29,19 @@ interface BufferedThinkingUpdate {
   chunks: string[];
 }
 
-type BufferedStreamingUpdate = BufferedTextUpdate | BufferedThinkingUpdate;
+interface BufferedTerminalUpdate {
+  kind: "terminal";
+  sessionId: string;
+  messageId: string;
+  owner: symbol | null;
+  toolCallId: string;
+  data: string;
+}
+
+type BufferedStreamingUpdate =
+  | BufferedTextUpdate
+  | BufferedThinkingUpdate
+  | BufferedTerminalUpdate;
 
 interface PendingSubtitleUpdate {
   text: string;
@@ -315,9 +327,49 @@ export function enqueueStreamingThinkingUpdate(
   scheduleBufferedFlush();
 }
 
+/** Coalesce command output with the text stream instead of rendering each line. */
+export function enqueueStreamingTerminalUpdate(
+  sessionId: string,
+  messageId: string,
+  toolCallId: string,
+  data: string,
+): void {
+  if (!data) return;
+  const owner = resolveStreamOwner(sessionId, messageId);
+  const latest = bufferedStreamingUpdates.at(-1);
+  if (
+    latest?.kind === "terminal" &&
+    latest.sessionId === sessionId &&
+    latest.messageId === messageId &&
+    latest.toolCallId === toolCallId &&
+    latest.owner === owner
+  ) {
+    latest.data += data;
+  } else {
+    bufferedStreamingUpdates.push({
+      kind: "terminal",
+      sessionId,
+      messageId,
+      toolCallId,
+      data,
+      owner,
+    });
+  }
+  scheduleBufferedFlush();
+}
+
 function toStoreUpdate(
   update: BufferedStreamingUpdate,
 ): StreamingMessageUpdate {
+  if (update.kind === "terminal") {
+    return {
+      kind: "terminal",
+      sessionId: update.sessionId,
+      messageId: update.messageId,
+      toolCallId: update.toolCallId,
+      data: update.data,
+    };
+  }
   return update.kind === "text"
     ? {
         kind: "text",

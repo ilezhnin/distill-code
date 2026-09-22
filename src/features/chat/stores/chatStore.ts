@@ -38,6 +38,7 @@ import {
   type QueuedMessagePayload,
 } from "../lib/admittedSend";
 import { noteSessionWorkState } from "@/features/stats/lib/usageLedger";
+import { appendTerminalOutputToMessage } from "../lib/terminalOutput";
 
 const MESSAGE_SESSION_CACHE_LIMIT = 10;
 
@@ -425,6 +426,13 @@ export type StreamingMessageUpdate =
       sessionId: string;
       messageId: string;
       chunks: string[];
+    }
+  | {
+      kind: "terminal";
+      sessionId: string;
+      messageId: string;
+      toolCallId: string;
+      data: string;
     };
 
 export type StreamingMessageUpdateMode = "active-stream" | "settled-stream";
@@ -1151,20 +1159,28 @@ const createChatStore: StateCreator<
         if (!message) continue;
 
         const updatedMessage =
-          update.kind === "text"
-            ? appendTextToMessage(message, update.text)
-            : appendThinkingChunksToMessage(message, update.chunks);
+          update.kind === "terminal"
+            ? appendTerminalOutputToMessage(
+                message,
+                update.toolCallId,
+                update.data,
+              )
+            : update.kind === "text"
+              ? appendTextToMessage(message, update.text)
+              : appendThinkingChunksToMessage(message, update.chunks);
         const shouldUpdateMessage = updatedMessage !== message;
         const current =
           sessionStateById[update.sessionId] ?? createInitialSessionRuntime();
         const shouldMarkUnread =
           shouldUpdateMessage &&
-          (update.kind === "text" || mode === "settled-stream") &&
+          (update.kind !== "thinking" || mode === "settled-stream") &&
           shouldMarkSessionUnread(state, update.sessionId, updatedMessage);
         const nextHasUnread = current.hasUnread || shouldMarkUnread;
         didUnreadStateChange ||= current.hasUnread !== nextHasUnread;
+        const ownsActiveStream = isActiveStream && update.kind !== "terminal";
         const shouldUpdateRuntime =
-          (isActiveStream && current.streamingMessageId !== update.messageId) ||
+          (ownsActiveStream &&
+            current.streamingMessageId !== update.messageId) ||
           current.hasUnread !== nextHasUnread;
 
         if (!shouldUpdateMessage && !shouldUpdateRuntime) continue;
@@ -1183,7 +1199,7 @@ const createChatStore: StateCreator<
             ...sessionStateById,
             [update.sessionId]: {
               ...current,
-              streamingMessageId: isActiveStream
+              streamingMessageId: ownsActiveStream
                 ? update.messageId
                 : current.streamingMessageId,
               hasUnread: nextHasUnread,
