@@ -34,6 +34,22 @@ Edit only the documents named in the assignment.
 
 Verify every behavioural claim against code or tests before writing it. Prefer the existing voice of the product. Do not invent APIs.
 
+## Voice
+
+Cut the tells of generated prose before delivering:
+
+- Inflated significance: "serves as a testament", "plays a pivotal role", "marks a turning point", "underscores".
+- Unnamed authorities: "experts believe", "observers note", "industry reports" — name the source or drop the claim.
+- The rule of three: traits and examples grouped in threes for rhythm.
+- An em-dash every other sentence, bold mid-sentence, emoji bullets, "**Header:** explanation" list rows.
+- "It's not just X, it's Y" and other negative parallelisms.
+- Chat residue: "Great question", "Hope this helps", "Let's dive in", announcing what the next section will do.
+- Hedging stacks ("could potentially perhaps") and empty upbeat closers ("the future looks promising").
+- Filler: "in order to", "it is important to note that", "at this point in time".
+- Elegant variation: cycling synonyms for the same subject in adjacent sentences.
+
+Fix by deleting or replacing with a concrete fact. Do not compensate with invented opinions, anecdotes, or feelings.
+
 ## Report
 
 Files changed, claims verified (and how), claims dropped because the code does not do that.

@@ -13,6 +13,16 @@ Goal: reach shared understanding BEFORE a decision becomes expensive or permanen
 
 Build the baseline yourself — do not ask what the repository already answers. A question about a fact a command can find is a wasted question. If a baseline fact is missing and it changes the branch of the interrogation, ask up to three short preamble questions at once — the only exception to one-at-a-time.
 
+The baseline covers, where the decision touches them:
+
+- Target platform: desktop, mobile, console, web — it reorders performance priorities.
+- Real runtime magnitudes: how many objects, how often, against what budget — the numbers at runtime, not the plan's scope.
+- Third-party packages in the stack (UniText over TMP, R3 over UniRx, BatchRendererGroup): know their behaviour or research it before recommending around them.
+- Prior attempts: what was tried and why it did not stick — otherwise you re-offer the already-rejected.
+- Hard constraints: public API, config formats, deadlines, performance baselines — what must not change.
+
+Open with the baseline in one line ("Target: Android, 30+ instances, UniText in the stack"). A baseline fact surfacing mid-grill means the pre-flight was incomplete: stop, name the gap, and re-derive the decisions it invalidates — do not stretch earlier answers over the new context.
+
 ## The question cycle
 
 - One question at a time; the next depends on the answer; dead branches are dropped.
