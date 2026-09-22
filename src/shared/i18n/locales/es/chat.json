@@ -353,6 +353,14 @@
   "message": {
     "copied": "Copiado",
     "defaultImageAlt": "Adjunto",
+    "edit": "Editar mensaje",
+    "editingUser": "Editando tu mensaje — Enter lo guarda en su lugar",
+    "editingAssistant": "Editando la respuesta del agente — Enter la guarda en su lugar",
+    "editingStep": "Editando un paso de la respuesta del agente — Enter lo guarda en su lugar",
+    "editingReasoning": "Editando el razonamiento del agente — Enter lo guarda en su lugar",
+    "editCancel": "Cancelar edición",
+    "editFailed": "No se pudo actualizar el mensaje.",
+    "removeStepFailed": "No se pudo eliminar el paso.",
     "forkFromHere": "Bifurcar sesión desde aquí",
     "jumpToResponseStart": "Ir al inicio de la respuesta",
     "jumpToFloatingResponseStart": "Ir al inicio de la respuesta actual",
@@ -798,6 +806,10 @@
     }
   },
   "agent_work": {
+    "editStep": "Editar paso",
+    "removeStep": "Eliminar paso",
+    "removeStepTitle": "¿Eliminar este paso?",
+    "removeStepDescription": "El paso se quita de la transcripción guardada del chat. No se puede deshacer.",
     "redactedThinking": "Pensamiento redactado",
     "summary": {
       "previousSteps_one": "{{count}} paso anterior",

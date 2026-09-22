@@ -83,6 +83,24 @@ export interface SessionTranscript {
   messages: SessionTranscriptMessage[];
 }
 
+/** What rewriting a stored message's text did on the host. */
+export interface SessionMessageUpdateResponse {
+  /** Stored chunks that carried the text being edited before the rewrite. */
+  chunks: number;
+  /** Whether the message is the last one with text, so the list snippet now quotes the edit. */
+  lastMessage: boolean;
+}
+
+/** What taking a step out of a stored message did on the host. */
+export interface SessionMessageRemoveResponse {
+  /** Stored updates removed. */
+  removed: number;
+  /** Whether the step held the chat's last text, so the list snippet moved. */
+  lastMessage: boolean;
+  /** The snippet the chat list quotes now, when it moved; null when no text is left. */
+  snippet: string | null;
+}
+
 /**
  * One reasoning-effort value a harness offers for a model, in that harness's
  * own vocabulary ("xhigh", "ultra", "default"). Never an app-wide enum.

@@ -5,6 +5,7 @@ import {
   type Stream,
 } from "@agentclientprotocol/sdk";
 
+import type { MessagePart } from "@/shared/types/messageParts";
 import type {
   CreateSourceRequest,
   HostSessionInfo,
@@ -14,6 +15,8 @@ import type {
   PreferenceValue,
   ProviderInventoryEntry,
   ProviderSupportedModelsResponse,
+  SessionMessageRemoveResponse,
+  SessionMessageUpdateResponse,
   SessionTranscript,
   SourceEntry,
   SourceScope,
@@ -76,6 +79,29 @@ export class HostExt {
   }
   sessionMessages(params: { sessionId: string }) {
     return this.call<SessionTranscript>("session/messages", params);
+  }
+  sessionMessageUpdate(params: {
+    sessionId: string;
+    messageId: string;
+    role: "user" | "assistant";
+    text: string;
+    part?: MessagePart;
+  }) {
+    return this.call<SessionMessageUpdateResponse>(
+      "session/message/update",
+      params,
+    );
+  }
+  sessionMessageRemove(params: {
+    sessionId: string;
+    messageId: string;
+    role: "user" | "assistant";
+    part: MessagePart;
+  }) {
+    return this.call<SessionMessageRemoveResponse>(
+      "session/message/remove",
+      params,
+    );
   }
 
   // Preferences, settings

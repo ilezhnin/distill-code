@@ -41,6 +41,23 @@ export function MessageBubbleActions({
   const { t } = useTranslation(["chat", "common"]);
   const jumpToResponseStartLabel = t("message.jumpToResponseStart");
   const forkFromHereLabel = t("message.forkFromHere");
+  const editLabel = t("message.edit");
+  // Any settled message with text can be edited in place, the agent's as
+  // well as the user's; a message with nothing but images or tool calls has
+  // no text to put in the composer.
+  const editAction =
+    onEditMessage && textContent ? (
+      <MessageAction
+        size="icon-xs"
+        variant="ghost"
+        className="text-muted-foreground/80"
+        label={editLabel}
+        tooltip={editLabel}
+        onClick={() => onEditMessage(messageId)}
+      >
+        <Pencil className="size-3.5" />
+      </MessageAction>
+    ) : null;
   const copyLabel = copied ? t("message.copied") : t("common:actions.copy");
   const copyTooltip = showJumpToResponseStartHint ? undefined : copyLabel;
   const jumpToResponseStartAction = onJumpToResponseStart ? (
@@ -152,17 +169,7 @@ export function MessageBubbleActions({
           <RotateCcw className="size-3.5" />
         </MessageAction>
       )}
-      {isUser && onEditMessage && (
-        <MessageAction
-          size="icon-xs"
-          variant="ghost"
-          className="text-muted-foreground/80"
-          tooltip={t("common:actions.edit")}
-          onClick={() => onEditMessage(messageId)}
-        >
-          <Pencil className="size-3.5" />
-        </MessageAction>
-      )}
+      {editAction}
       {!isUser && timestamp}
     </MessageActions>
   );

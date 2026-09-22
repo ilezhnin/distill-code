@@ -1,3 +1,4 @@
+import type { MessagePart } from "@/shared/types/messageParts";
 import type { ReactNode, RefObject } from "react";
 import type { AcpProvider } from "@/shared/api/acp";
 import type { AgentProviderReadiness } from "@/features/providers/hooks/useAgentProviderStatus";
@@ -118,6 +119,19 @@ export type ChatInputSendHandler = (
   options?: ChatSendOptions,
 ) => boolean | Promise<boolean>;
 
+/**
+ * A transcript message the composer is editing in place: the pencil on a
+ * message moved its text into the composer, and sending now rewrites that
+ * message where it sits instead of sending anything.
+ */
+export interface ComposerMessageEdit {
+  messageId: string;
+  role: "user" | "assistant";
+  text: string;
+  /** The step being edited; the message's answer when absent. */
+  part?: MessagePart;
+}
+
 export interface ChatInputComposerActions {
   onSend: ChatInputSendHandler;
   onSteerMessage?: ChatInputSendHandler;
@@ -139,6 +153,15 @@ export interface ChatInputComposerActions {
   onUpdateQueue?: (recordId: string, payload: QueuedMessagePayload) => boolean;
   onEditQueue?: (recordId: string) => boolean;
   onCancelQueueEdit?: (recordId: string) => boolean;
+  /** The transcript message whose text the composer holds for editing. */
+  editingMessage?: ComposerMessageEdit | null;
+  /** Rewrite the edited message; `true` once the change is stored. */
+  onUpdateMessage?: (
+    messageId: string,
+    text: string,
+  ) => boolean | Promise<boolean>;
+  /** Leave the edit without changing the message. */
+  onCancelMessageEdit?: () => void;
 }
 
 export interface ChatInputPersonaPicker {

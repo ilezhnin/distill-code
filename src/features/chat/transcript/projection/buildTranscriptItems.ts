@@ -1,3 +1,7 @@
+import {
+  messagePartSpans,
+  type MessagePart,
+} from "@/shared/types/messageParts";
 import type {
   Message,
   MessageContent,
@@ -119,6 +123,13 @@ interface CachedMessageProjectionSource {
   generation: number;
   content: readonly MessageContent[];
   visibleContent: readonly MessageContent[];
+  /**
+   * The step each block of `visibleContent` is (`messageParts.ts`), aligned
+   * with it, so a work row can name a step to an edit or a removal. Runs are
+   * counted the way the host counts stored chunks: a reasoning block split
+   * into sections stays one run, since its sections sit side by side.
+   */
+  partByIndex: readonly (MessagePart | undefined)[];
   leadingReasoningSignatures: readonly string[];
   /**
    * The last suffix handed out after dropping leading duplicate reasoning, so
@@ -126,6 +137,7 @@ interface CachedMessageProjectionSource {
    */
   droppedLeadingReasoningCount: number;
   contentForProjection: readonly MessageContent[];
+  partsForProjection: readonly (MessagePart | undefined)[];
 }
 
 interface CachedAgentWorkItems {
@@ -329,6 +341,7 @@ export function buildTranscriptItems({
 
     const isStreaming = message.id === streamingMessageId;
     let contentForProjection: readonly MessageContent[] = visibleContent;
+    let partsForProjection = projectionSource.partByIndex;
 
     if (message.role === "assistant") {
       // Strip leading reasoning blocks that exactly repeat reasoning already
@@ -340,6 +353,10 @@ export function buildTranscriptItems({
         displayedReasoningSignatures,
       );
       contentForProjection = getContentAfterDroppedReasoning(
+        projectionSource,
+        droppedCount,
+      );
+      partsForProjection = getPartsAfterDroppedReasoning(
         projectionSource,
         droppedCount,
       );
@@ -363,6 +380,7 @@ export function buildTranscriptItems({
     const agentWorkItems = getCachedAgentWorkItems({
       message,
       visibleContent: contentForProjection,
+      parts: partsForProjection,
       isStreaming,
       subagentLinkage,
     });
@@ -441,19 +459,34 @@ function getMessageProjectionSource(
   const visibleContent = expandReasoningContentSections(
     getUserVisibleMessageContent(message.content),
   );
+  const partByIndex = partsByBlockIndex(visibleContent);
   const source: CachedMessageProjectionSource = {
     generation: staticTextMessageItemCacheGeneration,
     content: message.content,
     visibleContent,
+    partByIndex,
     leadingReasoningSignatures:
       message.role === "assistant"
         ? getLeadingReasoningSignatures(visibleContent)
         : [],
     droppedLeadingReasoningCount: 0,
     contentForProjection: visibleContent,
+    partsForProjection: partByIndex,
   };
   messageProjectionSourceCache.set(message, source);
   return source;
+}
+
+function partsByBlockIndex(
+  content: readonly MessageContent[],
+): readonly (MessagePart | undefined)[] {
+  const parts: (MessagePart | undefined)[] = new Array(content.length);
+  for (const span of messagePartSpans(content)) {
+    for (const index of span.indexes) {
+      parts[index] = span.part;
+    }
+  }
+  return parts;
 }
 
 function getContentAfterDroppedReasoning(
@@ -466,18 +499,33 @@ function getContentAfterDroppedReasoning(
   if (source.droppedLeadingReasoningCount !== droppedCount) {
     source.droppedLeadingReasoningCount = droppedCount;
     source.contentForProjection = source.visibleContent.slice(droppedCount);
+    source.partsForProjection = source.partByIndex.slice(droppedCount);
   }
   return source.contentForProjection;
+}
+
+/** The parts aligned with `getContentAfterDroppedReasoning`'s content. */
+function getPartsAfterDroppedReasoning(
+  source: CachedMessageProjectionSource,
+  droppedCount: number,
+): readonly (MessagePart | undefined)[] {
+  if (droppedCount === 0) {
+    return source.partByIndex;
+  }
+  getContentAfterDroppedReasoning(source, droppedCount);
+  return source.partsForProjection;
 }
 
 function getCachedAgentWorkItems({
   message,
   visibleContent,
+  parts,
   isStreaming,
   subagentLinkage,
 }: {
   message: Message;
   visibleContent: readonly MessageContent[];
+  parts: readonly (MessagePart | undefined)[];
   isStreaming: boolean;
   subagentLinkage?: TranscriptSubagentLinkage;
 }): readonly TranscriptItemDescriptor[] | null {
@@ -495,6 +543,7 @@ function getCachedAgentWorkItems({
   const items = buildAgentWorkItems({
     message,
     visibleContent,
+    parts,
     isStreaming,
     subagentLinkage,
   });
@@ -1330,12 +1379,15 @@ function expandReasoningContentSections(
 }
 
 function compactWorkContent(
-  content: readonly MessageContent[],
-): MessageContent[] {
+  entries: ReadonlyArray<{ block: MessageContent; index: number }>,
+  partAt: readonly (MessagePart | undefined)[],
+): { content: MessageContent[]; parts: (MessagePart | undefined)[] } {
   const compacted: MessageContent[] = [];
+  const parts: (MessagePart | undefined)[] = [];
   const displayedReasoningSignatures = new Set<string>();
 
-  for (const block of content) {
+  for (const { block, index } of entries) {
+    const part = partAt[index];
     const blocksToCompact =
       block.type === "thinking" || block.type === "reasoning"
         ? splitReasoningContentSections(block)
@@ -1377,10 +1429,11 @@ function compactWorkContent(
       }
 
       compacted.push(sanitizedBlock);
+      parts.push(part);
     }
   }
 
-  return compacted;
+  return { content: compacted, parts };
 }
 
 function buildMessageItemForContent({
@@ -1475,6 +1528,7 @@ function estimateAgentWorkHeight(content: readonly MessageContent[]): number {
 function buildAgentWorkItem({
   message,
   content,
+  parts,
   isStreaming,
   hasFinalAnswer = false,
   hostsTurnFooters = false,
@@ -1483,6 +1537,7 @@ function buildAgentWorkItem({
 }: {
   message: Message;
   content: readonly MessageContent[];
+  parts: readonly (MessagePart | undefined)[];
   isStreaming: boolean;
   hasFinalAnswer?: boolean;
   hostsTurnFooters?: boolean;
@@ -1531,6 +1586,7 @@ function buildAgentWorkItem({
     message: workMessage,
     workId: rowId,
     content,
+    parts,
     isActiveWork,
     hasFinalAnswer,
     hostsTurnFooters,
@@ -1565,11 +1621,13 @@ function buildAgentWorkItem({
 function buildAgentWorkItems({
   message,
   visibleContent,
+  parts,
   isStreaming,
   subagentLinkage,
 }: {
   message: Message;
   visibleContent: readonly MessageContent[];
+  parts: readonly (MessagePart | undefined)[];
   isStreaming: boolean;
   subagentLinkage?: TranscriptSubagentLinkage;
 }): readonly TranscriptItemDescriptor[] | null {
@@ -1651,7 +1709,7 @@ function buildAgentWorkItems({
   const hasFinalAnswer = finalTextContent.length > 0;
 
   workEntryGroups.forEach((entries, groupIndex) => {
-    const content = compactWorkContent(entries.map(({ block }) => block));
+    const { content, parts: groupParts } = compactWorkContent(entries, parts);
     const sourceIndex = entries[0]?.index ?? 0;
     const isLastGroup = groupIndex === workEntryGroups.length - 1;
     // Some providers persist reasoning summaries after their final text. Move
@@ -1666,6 +1724,7 @@ function buildAgentWorkItems({
       item: buildAgentWorkItem({
         message,
         content,
+        parts: groupParts,
         isStreaming,
         hasFinalAnswer: isLastGroup && hasFinalAnswer,
         // A turn that ends in tool calls with no final text has no answer

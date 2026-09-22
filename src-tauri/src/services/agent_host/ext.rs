@@ -9,10 +9,38 @@ use super::harness;
 use super::protocol::{self, invalid_params};
 use super::router::Inner;
 use super::sources;
-use super::store::SessionStore;
+use super::store::{MessagePart, MessageSide, SessionStore};
 
 fn session_id(params: &Value) -> Result<String, Value> {
     protocol::session_id(params).ok_or_else(|| invalid_params("sessionId required"))
+}
+
+/// The message an edit or a removal names: its id and whose it is.
+fn message_target(params: &Value) -> Result<(String, MessageSide), Value> {
+    let message_id = params
+        .get("messageId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| invalid_params("messageId required"))?;
+    let side = match params.get("role").and_then(Value::as_str) {
+        Some("user") => MessageSide::User,
+        Some("assistant") => MessageSide::Assistant,
+        _ => return Err(invalid_params("role must be user or assistant")),
+    };
+    Ok((message_id.to_string(), side))
+}
+
+/// The step an edit or a removal names, when it names one.
+fn message_part(params: &Value) -> Result<Option<MessagePart>, Value> {
+    match params.get("part") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => MessagePart::from_json(value).map(Some).ok_or_else(|| {
+            invalid_params(
+                "part must name a text or reasoning run by ordinal, or a tool call by id",
+            )
+        }),
+    }
 }
 
 pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Value, Value> {
@@ -117,6 +145,76 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
                 .await
                 .map_err(protocol::internal)?;
             Ok(json!({ "messages": transcript_messages(&events) }))
+        }
+        "session/message/update" => {
+            let id = session_id(&params)?;
+            let (message_id, side) = message_target(&params)?;
+            let part = message_part(&params)?;
+            let text = params
+                .get("text")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| invalid_params("text required"))?;
+            // The chunks of a chat streaming right now may still be waiting
+            // for their commit in the event loop; the rewrite reads the log,
+            // so it has to wait for them or it edits a transcript missing its
+            // tail. The message itself is settled: the renderer offers no
+            // edit on a reply still being written.
+            host.drain_bridge_events().await;
+            let rewrite = host
+                .store
+                .rewrite_message_text(&id, side, &message_id, text, part.as_ref())
+                .await
+                .map_err(protocol::internal)?;
+            if rewrite.chunks == 0 {
+                return Err(invalid_params(format!(
+                    "No text to edit in message {message_id} of session {id}"
+                )));
+            }
+            // The list snippet quotes the last message with text; when that
+            // is the one just edited, it quotes the edit — and only then, so
+            // an edit further up never rewrites what the chat currently ends
+            // on. The times stay: nothing new was said.
+            if rewrite.was_last {
+                let snippet = Inner::snippet(text);
+                host.store
+                    .set_last_snippet(&id, snippet.as_deref())
+                    .await
+                    .map_err(protocol::internal)?;
+            }
+            Ok(json!({ "chunks": rewrite.chunks, "lastMessage": rewrite.was_last }))
+        }
+        "session/message/remove" => {
+            let id = session_id(&params)?;
+            let (message_id, side) = message_target(&params)?;
+            let part = message_part(&params)?.ok_or_else(|| invalid_params("part required"))?;
+            // As for an edit: the log has to hold the whole turn first.
+            host.drain_bridge_events().await;
+            let removal = host
+                .store
+                .remove_message_part(&id, side, &message_id, &part)
+                .await
+                .map_err(protocol::internal)?;
+            if removal.removed == 0 {
+                return Err(invalid_params(format!(
+                    "No such step in message {message_id} of session {id}"
+                )));
+            }
+            // The step held the chat's last word: the list now quotes
+            // whatever text the chat ends on, or nothing.
+            let mut snippet = None;
+            if removal.was_last {
+                snippet = removal.last_text.as_deref().and_then(Inner::snippet);
+                host.store
+                    .set_last_snippet(&id, snippet.as_deref())
+                    .await
+                    .map_err(protocol::internal)?;
+            }
+            Ok(json!({
+                "removed": removal.removed,
+                "lastMessage": removal.was_last,
+                "snippet": snippet,
+            }))
         }
 
         // --- preferences ----------------------------------------------------

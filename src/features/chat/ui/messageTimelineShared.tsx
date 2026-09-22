@@ -1,3 +1,4 @@
+import type { MessagePart } from "@/shared/types/messageParts";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconChevronsDown, IconChevronsUp } from "@tabler/icons-react";
@@ -41,6 +42,10 @@ export function getTimelineMessageIdentity(message: Message): string {
 export interface MessageBubbleCallbacks {
   onRetryMessage?: (messageId: string) => void;
   onEditMessage?: (messageId: string) => void;
+  /** Edit one step of an agent's reply in the composer. */
+  onEditMessagePart?: (messageId: string, part: MessagePart) => void;
+  /** Take one step out of an agent's reply. */
+  onRemoveMessagePart?: (messageId: string, part: MessagePart) => void;
   onJumpToResponseStart?: (messageId: string) => void;
   onForkFromMessage?: (messageId: string) => void;
   onJumpToResponseStartHintClose?: (messageId: string) => void;

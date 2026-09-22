@@ -245,6 +245,174 @@ describe("ChatInput", () => {
     expect(onCancelQueueEdit).not.toHaveBeenCalled();
   });
 
+  it("edits a transcript message in the composer and saves it in place", async () => {
+    const onSend = vi.fn();
+    const onUpdateMessage = vi.fn(() => true);
+    const onCancelMessageEdit = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <ChatInput
+        onSend={onSend}
+        editingMessage={{
+          messageId: "m1",
+          role: "user",
+          text: "what I said",
+        }}
+        onUpdateMessage={onUpdateMessage}
+        onCancelMessageEdit={onCancelMessageEdit}
+      />,
+    );
+
+    const textbox = screen.getByRole("textbox");
+    expect(textbox).toHaveValue("what I said");
+    expect(
+      screen.getByText("Editing your message — Enter saves it in place"),
+    ).toBeInTheDocument();
+
+    await user.clear(textbox);
+    await user.type(textbox, "what I meant");
+    await user.keyboard("{Enter}");
+
+    expect(onUpdateMessage).toHaveBeenCalledWith("m1", "what I meant");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onCancelMessageEdit).not.toHaveBeenCalled();
+  });
+
+  it("brings the displaced draft back when a transcript edit is cancelled", async () => {
+    const user = userEvent.setup();
+    function Harness() {
+      const [editing, setEditing] =
+        useState<ChatInputComposerActions["editingMessage"]>(null);
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() =>
+              setEditing({
+                messageId: "r1",
+                role: "assistant",
+                text: "the reply",
+              })
+            }
+          >
+            start edit
+          </button>
+          <ChatInput
+            onSend={vi.fn()}
+            initialValue="my draft"
+            editingMessage={editing}
+            onUpdateMessage={vi.fn(() => true)}
+            onCancelMessageEdit={() => setEditing(null)}
+          />
+        </>
+      );
+    }
+    render(<Harness />);
+
+    const textbox = screen.getByRole("textbox");
+    expect(textbox).toHaveValue("my draft");
+
+    await user.click(screen.getByText("start edit"));
+    expect(textbox).toHaveValue("the reply");
+    expect(
+      screen.getByText("Editing the agent's reply — Enter saves it in place"),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cancel edit" }));
+    expect(textbox).toHaveValue("my draft");
+    expect(screen.queryByText(/Editing the agent's reply/)).toBeNull();
+  });
+
+  it("leaves the composer alone when the edit ends from outside", async () => {
+    const user = userEvent.setup();
+    function Harness() {
+      const [editing, setEditing] = useState<
+        ChatInputComposerActions["editingMessage"]
+      >({ messageId: "r1", role: "assistant", text: "the reply" });
+      return (
+        <>
+          <button type="button" onClick={() => setEditing(null)}>
+            end edit elsewhere
+          </button>
+          <ChatInput
+            onSend={vi.fn()}
+            initialValue="my draft"
+            editingMessage={editing}
+            onUpdateMessage={vi.fn(() => true)}
+            onCancelMessageEdit={() => setEditing(null)}
+          />
+        </>
+      );
+    }
+    render(<Harness />);
+
+    const textbox = screen.getByRole("textbox");
+    expect(textbox).toHaveValue("the reply");
+    await user.type(textbox, " and more");
+
+    // The owner ended the edit without the composer's say — a chat switch
+    // under it, say — so nothing is put back over what it holds.
+    await user.click(screen.getByText("end edit elsewhere"));
+    expect(textbox).toHaveValue("the reply and more");
+    expect(screen.queryByText(/Editing the agent's reply/)).toBeNull();
+  });
+
+  it("ends a queue edit when a transcript edit starts", async () => {
+    const onCancelQueueEdit = vi.fn(() => true);
+    const onUpdateQueue = vi.fn(() => true);
+    const onUpdateMessage = vi.fn(() => true);
+    const user = userEvent.setup();
+    function Harness() {
+      const [editing, setEditing] =
+        useState<ChatInputComposerActions["editingMessage"]>(null);
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() =>
+              setEditing({ messageId: "m1", role: "user", text: "sent" })
+            }
+          >
+            start edit
+          </button>
+          <ChatInput
+            onSend={vi.fn()}
+            queuedMessages={[
+              {
+                recordId: "queued",
+                payload: { persona: { kind: "none" }, text: "queued" },
+              },
+            ]}
+            onEditQueue={vi.fn(() => true)}
+            onCancelQueueEdit={onCancelQueueEdit}
+            onDismissQueue={vi.fn()}
+            onUpdateQueue={onUpdateQueue}
+            editingMessage={editing}
+            onUpdateMessage={onUpdateMessage}
+            onCancelMessageEdit={() => setEditing(null)}
+          />
+        </>
+      );
+    }
+    render(<Harness />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Edit queued message" }),
+    );
+    expect(screen.getByRole("textbox")).toHaveValue("queued");
+
+    await user.click(screen.getByText("start edit"));
+    // The queued message is back in its queue, unchanged, and the composer
+    // holds the transcript message.
+    expect(onCancelQueueEdit).toHaveBeenCalledWith("queued");
+    expect(screen.getByText("queued")).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveValue("sent");
+
+    await user.keyboard("{Enter}");
+    expect(onUpdateMessage).toHaveBeenCalledWith("m1", "sent");
+    expect(onUpdateQueue).not.toHaveBeenCalled();
+  });
+
   it("does not stamp the live session target onto an edited queued message", async () => {
     const onUpdateQueue = vi.fn(() => true);
     const user = userEvent.setup();

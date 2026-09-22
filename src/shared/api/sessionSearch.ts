@@ -188,6 +188,22 @@ function evictSupersededCorpora(
 }
 
 /**
+ * Forget every cached corpus of one session. A message edited in place
+ * changes the session's text without changing its stamp (nothing new was
+ * said, so its times and count stay), which is the one case the stamp cannot
+ * catch; the next sweep re-exports the session and reads the edit.
+ */
+export function evictSessionSearchCorpus(
+  queryClient: QueryClient,
+  sessionId: string,
+): void {
+  queryClient.removeQueries({
+    queryKey: [CORPUS_QUERY_KEY_PREFIX, sessionId],
+    predicate: (query) => query.state.fetchStatus === "idle",
+  });
+}
+
+/**
  * The flattened corpus is cached instead of the raw export JSON deliberately:
  * `flattenMessages` drops tool results, thinking, and images — the bulk of a
  * long session — so the cached value is far smaller than the export and

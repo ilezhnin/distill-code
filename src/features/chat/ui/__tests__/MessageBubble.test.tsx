@@ -265,6 +265,43 @@ describe("MessageBubble", () => {
     expect(onForkFromMessage).toHaveBeenCalledWith("a1");
   });
 
+  it("offers to edit the agent's reply as well as the user's message", async () => {
+    const user = userEvent.setup();
+    const onEditMessage = vi.fn();
+    const { unmount } = render(
+      <MessageBubble
+        message={assistantMessage([{ type: "text", text: "response" }])}
+        onEditMessage={onEditMessage}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Edit message" }));
+    expect(onEditMessage).toHaveBeenCalledWith("a1");
+    unmount();
+
+    render(
+      <MessageBubble
+        message={userMessage("asked")}
+        onEditMessage={onEditMessage}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Edit message" }));
+    expect(onEditMessage).toHaveBeenLastCalledWith("u1");
+  });
+
+  it("offers no edit on a message with nothing but images", () => {
+    render(
+      <MessageBubble
+        message={userMessage("", {
+          content: [{ type: "image", data: "aGk=", mimeType: "image/png" }],
+        })}
+        onEditMessage={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
+  });
+
   it("renders standalone tool responses without dropping surrounding text", () => {
     const msg = assistantMessage([
       { type: "text", text: "Working on it." },

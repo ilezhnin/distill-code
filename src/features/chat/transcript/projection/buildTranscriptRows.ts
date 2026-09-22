@@ -118,8 +118,10 @@ export function buildTranscriptRows(
           messageId: item.messageId,
           agentWork: {
             workId: item.workId,
+            messageId: item.messageId,
             message: item.message,
             content: item.content,
+            parts: item.parts,
             isActiveWork: item.isActiveWork,
             hasFinalAnswer: item.hasFinalAnswer,
             hostsTurnFooters: item.hostsTurnFooters,

@@ -7,6 +7,7 @@ import {
   IconMessageCircle,
   IconTool,
 } from "@tabler/icons-react";
+import { Pencil, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { viewableArtifacts } from "@/features/chat/lib/artifactViewerTypes";
 import { selectHarnessBrigade } from "@/features/chat/lib/harnessBrigade";
@@ -17,7 +18,11 @@ import {
 import { ArtifactChips } from "./ArtifactChips";
 import { HarnessBrigadeRow } from "./HarnessBrigadeRow";
 import { cn } from "@/shared/lib/cn";
-import { MessageResponse } from "@/shared/ui/ai-elements/message";
+import {
+  MessageAction,
+  MessageResponse,
+} from "@/shared/ui/ai-elements/message";
+import type { MessagePart } from "@/shared/types/messageParts";
 import {
   Collapsible,
   CollapsibleContent,
@@ -43,23 +48,28 @@ interface ToolTimelineItem {
   key: string;
   request?: ToolRequestContent;
   response?: ToolResponseContent;
+  /** The step this item is, as an edit or a removal names it to the host. */
+  part?: MessagePart;
 }
 
 interface ThoughtTimelineItem {
   kind: "thought";
   key: string;
   content: ThinkingContent | ReasoningContent;
+  part?: MessagePart;
 }
 
 interface RedactedThoughtTimelineItem {
   kind: "redactedThought";
   key: string;
+  part?: MessagePart;
 }
 
 interface ProgressTimelineItem {
   kind: "progress";
   key: string;
   content: TextContent;
+  part?: MessagePart;
 }
 
 interface ActivePreviewState {
@@ -118,6 +128,7 @@ function pairToolResponse(
 
 function buildAgentWorkTimeline(
   content: readonly MessageContent[],
+  parts: readonly (MessagePart | undefined)[] = [],
 ): AgentWorkTimelineItem[] {
   const items: AgentWorkTimelineItem[] = [];
   let previousThoughtText: string | null = null;
@@ -133,6 +144,7 @@ function buildAgentWorkTimeline(
         kind: "thought",
         key: `${block.type}-${index}-${normalized.slice(0, 32)}`,
         content: block,
+        part: parts[index],
       });
       continue;
     }
@@ -143,6 +155,7 @@ function buildAgentWorkTimeline(
       items.push({
         kind: "redactedThought",
         key: `redacted-thinking-${index}`,
+        part: parts[index],
       });
       continue;
     }
@@ -162,6 +175,7 @@ function buildAgentWorkTimeline(
           kind: "progress",
           key: `progress-${index}`,
           content: block,
+          part: parts[index],
         });
       }
       continue;
@@ -172,6 +186,7 @@ function buildAgentWorkTimeline(
         kind: "tool",
         key: `tool-${block.id}-${index}`,
         request: block,
+        part: parts[index],
       });
       continue;
     }
@@ -182,6 +197,7 @@ function buildAgentWorkTimeline(
           kind: "tool",
           key: `tool-response-${block.id}-${index}`,
           response: block,
+          part: parts[index],
         });
       }
     }
@@ -260,12 +276,62 @@ function WorkRail({
   );
 }
 
+/**
+ * The pencil and the bin of one step, shown while the step is hovered or one
+ * of them has focus. Absent on a step that cannot be edited or removed.
+ */
+function StepActions({
+  onEdit,
+  onRemove,
+}: {
+  onEdit?: () => void;
+  onRemove?: () => void;
+}) {
+  const { t } = useTranslation("chat");
+  if (!onEdit && !onRemove) {
+    return null;
+  }
+  return (
+    <div
+      data-slot="step-actions"
+      className="ml-auto flex shrink-0 items-start gap-0.5 opacity-0 transition-opacity group-hover/step:opacity-100 focus-within:opacity-100"
+    >
+      {onEdit ? (
+        <MessageAction
+          size="icon-xs"
+          variant="ghost"
+          className="text-muted-foreground/80"
+          label={t("agent_work.editStep")}
+          tooltip={t("agent_work.editStep")}
+          onClick={onEdit}
+        >
+          <Pencil className="size-3.5" />
+        </MessageAction>
+      ) : null}
+      {onRemove ? (
+        <MessageAction
+          size="icon-xs"
+          variant="ghost"
+          className="text-muted-foreground/80"
+          label={t("agent_work.removeStep")}
+          tooltip={t("agent_work.removeStep")}
+          onClick={onRemove}
+        >
+          <Trash2 className="size-3.5" />
+        </MessageAction>
+      ) : null}
+    </div>
+  );
+}
+
 function AgentWorkItemRow({
   item,
   isLast,
   usePrimaryText = false,
   toolOpen,
   onToolOpenChange,
+  onEdit,
+  onRemove,
 }: {
   item: AgentWorkTimelineItem;
   isLast: boolean;
@@ -273,11 +339,15 @@ function AgentWorkItemRow({
   /** Durable expansion of this row's tool card, when it has one. */
   toolOpen?: boolean;
   onToolOpenChange?: (key: string, open: boolean) => void;
+  /** Move this step's text into the composer. */
+  onEdit?: () => void;
+  /** Take this step out of the reply. */
+  onRemove?: () => void;
 }) {
   const { t } = useTranslation("chat");
   if (item.kind === "thought") {
     return (
-      <div className="flex gap-2.5">
+      <div className="group/step flex gap-2.5">
         <WorkRail isLast={isLast} status="thought" primary={usePrimaryText} />
         <div
           className={cn(
@@ -296,13 +366,14 @@ function AgentWorkItemRow({
             {item.content.text}
           </MessageResponse>
         </div>
+        <StepActions onEdit={onEdit} onRemove={onRemove} />
       </div>
     );
   }
 
   if (item.kind === "redactedThought") {
     return (
-      <div className="flex gap-2.5">
+      <div className="group/step flex gap-2.5">
         <WorkRail isLast={isLast} status="thought" primary={usePrimaryText} />
         <div
           className={cn(
@@ -312,6 +383,7 @@ function AgentWorkItemRow({
         >
           {t("agent_work.redactedThinking")}
         </div>
+        <StepActions onRemove={onRemove} />
       </div>
     );
   }
@@ -328,7 +400,7 @@ function AgentWorkItemRow({
         }[speechStatus]
       : null;
     return (
-      <div className="flex gap-2.5">
+      <div className="group/step flex gap-2.5">
         <WorkRail isLast={isLast} status="progress" primary={usePrimaryText} />
         <div
           data-voice-speech-status={speechStatus}
@@ -346,6 +418,7 @@ function AgentWorkItemRow({
           ) : null}
           <MessageResponse mode="static">{item.content.text}</MessageResponse>
         </div>
+        <StepActions onEdit={onEdit} onRemove={onRemove} />
       </div>
     );
   }
@@ -355,7 +428,10 @@ function AgentWorkItemRow({
   return (
     // The tool-call id is the reveal seam: a harness brigade chip finds its
     // card by this attribute (see `harnessBrigadeFocus`).
-    <div className="flex gap-2.5" {...{ [TOOL_CALL_ID_ATTRIBUTE]: toolCallId }}>
+    <div
+      className="group/step flex gap-2.5"
+      {...{ [TOOL_CALL_ID_ATTRIBUTE]: toolCallId }}
+    >
       <WorkRail isLast={isLast} status={status} />
       <div className="min-w-0 flex-1 pb-2">
         <ToolCallAdapter
@@ -384,6 +460,7 @@ function AgentWorkItemRow({
           agentWorkLayout
         />
       </div>
+      <StepActions onRemove={onRemove} />
     </div>
   );
 }
@@ -391,9 +468,15 @@ function AgentWorkItemRow({
 export function AgentWorkPanel({
   payload,
   settleOnMount = false,
+  onEditPart,
+  onRemovePart,
 }: {
   payload: TranscriptAgentWorkPayload;
   settleOnMount?: boolean;
+  /** Edit one step of the reply in the composer. */
+  onEditPart?: (messageId: string, part: MessagePart) => void;
+  /** Take one step out of the reply. */
+  onRemovePart?: (messageId: string, part: MessagePart) => void;
 }) {
   const { t } = useTranslation("chat");
   const prefersReducedMotion = useReducedMotion();
@@ -406,9 +489,24 @@ export function AgentWorkPanel({
   const durableWorkState = rowState?.agentWorkPanels?.[payload.workId];
   const userInteractedRef = useRef(durableWorkState?.userInteracted ?? false);
   const items = useMemo(
-    () => buildAgentWorkTimeline(payload.content),
-    [payload.content],
+    () => buildAgentWorkTimeline(payload.content, payload.parts),
+    [payload.content, payload.parts],
   );
+  // Steps can be edited and removed once the work is over: a step still
+  // being written has no settled shape to name to the host.
+  const stepsSettled = !payload.isActiveWork;
+  const stepMessageId = payload.messageId;
+  const stepEditAction = (item: AgentWorkTimelineItem) => {
+    const part = item.part;
+    if (!stepsSettled || !part || !onEditPart) return undefined;
+    if (item.kind !== "thought" && item.kind !== "progress") return undefined;
+    return () => onEditPart(stepMessageId, part);
+  };
+  const stepRemoveAction = (item: AgentWorkTimelineItem) => {
+    const part = item.part;
+    if (!stepsSettled || !part || !onRemovePart) return undefined;
+    return () => onRemovePart(stepMessageId, part);
+  };
   // Every viewable file this work touched. Chips are the single way back into
   // the viewer: they render for any count and survive collapse. The old header
   // "View" action only appeared for exactly one file, so the same document
@@ -692,6 +790,8 @@ export function AgentWorkPanel({
                         usePrimaryText={open}
                         toolOpen={expandedToolKeys.has(item.key)}
                         onToolOpenChange={setToolOpen}
+                        onEdit={stepEditAction(item)}
+                        onRemove={stepRemoveAction(item)}
                       />
                     ))}
                   </CollapsibleContent>
@@ -751,6 +851,8 @@ export function AgentWorkPanel({
                       usePrimaryText={open}
                       toolOpen={expandedToolKeys.has(item.key)}
                       onToolOpenChange={setToolOpen}
+                      onEdit={stepEditAction(item)}
+                      onRemove={stepRemoveAction(item)}
                     />
                   </motion.div>
                 ))}

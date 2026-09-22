@@ -1247,7 +1247,12 @@ describe("sessions.send", () => {
           personaId: "agent-7",
           personaName: "Reviewer",
           systemPrompt: expect.stringContaining("Review the work carefully."),
-          promptMeta: { origin: "distillctl_cross_session" },
+          // The origin rides next to the message id every send names for
+          // the host (see dispatchPrompt).
+          promptMeta: expect.objectContaining({
+            origin: "distillctl_cross_session",
+            messageId: expect.any(String),
+          }),
         }),
       );
     });

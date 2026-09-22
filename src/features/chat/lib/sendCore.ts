@@ -266,6 +266,11 @@ export async function dispatchPrompt(
     await prepare?.();
     throwIfAborted(signal);
 
+    // The message's id is chosen here and sent with the prompt, so the host
+    // records the prompt's chunks under the id the transcript already shows:
+    // an edit of this message can then name it to the host without waiting
+    // for a reload to replay the host's ids over the renderer's.
+    const userMessageId = crypto.randomUUID();
     const commitUserMessage = () => {
       throwIfAborted(signal);
       beforeUserMessageCommitted?.();
@@ -274,6 +279,7 @@ export async function dispatchPrompt(
         buildMessageAttachments(attachments),
         chips,
       );
+      userMessage.id = userMessageId;
       if (persona) {
         userMessage.metadata = {
           ...userMessage.metadata,
@@ -379,7 +385,7 @@ export async function dispatchPrompt(
       ...(assistantPrompt ? { assistantPrompt } : {}),
       personaId: persona?.id,
       personaName: persona?.name,
-      promptMeta: acpPromptMetadata,
+      promptMeta: { ...acpPromptMetadata, messageId: userMessageId },
       images: images?.map(
         (img) => [img.base64, img.mimeType] as [string, string],
       ),

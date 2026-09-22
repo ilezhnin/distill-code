@@ -1,3 +1,4 @@
+import type { MessagePart } from "@/shared/types/messageParts";
 import type {
   Message,
   MessageContent,
@@ -68,8 +69,12 @@ export type TranscriptSubagentLinkage = ReadonlyArray<{
 
 export interface TranscriptAgentWorkPayload {
   workId: string;
+  /** The transcript message this work belongs to — what an edit or a removal of a step names. */
+  messageId: string;
   message: Message;
   content: readonly MessageContent[];
+  /** The step each block of `content` is, aligned with it; see `messageParts.ts`. */
+  parts: readonly (MessagePart | undefined)[];
   isActiveWork: boolean;
   /** Whether a final answer row follows this work panel in the transcript. */
   hasFinalAnswer: boolean;
@@ -194,6 +199,8 @@ export interface TranscriptAgentWorkItem {
   message: Message;
   workId: string;
   content: readonly MessageContent[];
+  /** The step each block of `content` is, aligned with it; see `messageParts.ts`. */
+  parts: readonly (MessagePart | undefined)[];
   isActiveWork: boolean;
   hasFinalAnswer: boolean;
   hostsTurnFooters: boolean;
