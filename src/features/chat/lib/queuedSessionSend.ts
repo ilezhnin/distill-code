@@ -33,6 +33,7 @@ import {
   getWorkspaceAttachments,
 } from "@/features/chat/lib/workspaceAttachments";
 import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspaceContextPrompt";
+import { sessionProjectInstructionsPrompt } from "@/features/chat/lib/projectInstructionsPrompt";
 import {
   formatLorePointerPrompt,
   formatOperatorProfilePrompt,
@@ -46,7 +47,7 @@ import {
 } from "@/features/memory/lib/memoryPreferences";
 import { archivedCountForProject } from "@/features/memory/lib/memoryPrompt";
 import { sessionProjectWikiPrompt } from "@/features/memory/lib/projectWikiPrompt";
-import { sessionProjectResearchPrompt } from "@/features/memory/lib/projectResearchPrompt";
+import { loadSessionProjectResearchPrompt } from "@/features/memory/lib/projectResearchPrompt";
 import { sessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
 import {
   isWaveExecutorSession,
@@ -373,20 +374,25 @@ export async function sendQueuedPromptToExistingSessionInBackground(
           .filter((attachment) => attachment.source !== "excluded")
           .map((attachment) => attachment.path)
       : [];
-    const [instructionFiles, skills] = await Promise.all([
-      loadWorkspaceInstructionFiles(workspacePaths).catch((error) => {
-        console.warn(
-          "Failed to load workspace instructions for queued send:",
-          error,
-        );
-        return [];
-      }),
-      listSkills(workspacePaths, { providerId }).catch((error) => {
-        console.warn("Failed to list skills for queued send:", error);
-        return [];
-      }),
-      refreshRootInstructions(),
-    ]);
+    const [instructionFiles, skills, projectResearchPrompt] = await Promise.all(
+      [
+        loadWorkspaceInstructionFiles(workspacePaths).catch((error) => {
+          console.warn(
+            "Failed to load workspace instructions for queued send:",
+            error,
+          );
+          return [];
+        }),
+        listSkills(workspacePaths, { providerId }).catch((error) => {
+          console.warn("Failed to list skills for queued send:", error);
+          return [];
+        }),
+        payload.sendOptions?.executionSystemPrompt != null
+          ? undefined
+          : loadSessionProjectResearchPrompt(sessionId),
+        refreshRootInstructions(),
+      ],
+    );
     // A wave child is scheduled and reported by its conductor, and its own
     // prompt already ends "with this report block and no extra commentary
     // after it". Handing it the planner and memory protocols would ask it to
@@ -420,13 +426,14 @@ export async function sendQueuedPromptToExistingSessionInBackground(
     const workspaceContextPrompt = session
       ? composeSystemPrompt(
           formatIncludedWorkspacesPrompt(session),
+          sessionProjectInstructionsPrompt(sessionId),
           formatWorkspaceInstructionsPrompt(instructionFiles),
           // Beside the AGENTS.md files and for the same reason: what this
           // repository already knows about itself. Outside `operatorProtocols`
           // deliberately — a wave child is cut off from the operator's memory
           // but not from the project's own knowledge.
           sessionProjectWikiPrompt(sessionId),
-          sessionProjectResearchPrompt(sessionId),
+          projectResearchPrompt,
           formatAvailableSkillsCatalogPrompt(skills),
           operatorProtocols,
         )

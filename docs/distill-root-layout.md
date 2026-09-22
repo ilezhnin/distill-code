@@ -49,12 +49,19 @@ and Claude Code read natively; Distill's global file is `prompt.md`.
 | `security-posture.md` | operator | always, every agent, full content | a project may add restrictions only |
 | `user.md` | operator only; agents propose through `distill-memory` | plain chats and conductors, full content; never wave executors | none, it is about the person |
 | `lore.md` | conductor loop after an accepted wave | pointer sentence only; never wave executors | none, projects have the wiki |
-| `research/index.md`, `research/NN-*.md` | operator or conductor loop | pointer sentence only, everyone who gets the wiki pointer | project has its own `research/` with its own pointer |
+| `research/index.md`, `research/NN-*.md` | operator or conductor loop | pointer sentence only, plain chats and conductors; never wave executors | project has its own `research/` with its own pointer |
+| `<project>/.distill/research/index.md` | operator or conductor loop | pointer sentence only, including wave executors | scoped to that project's chats |
 | `security-audit` skill | operator | on demand like any skill | none |
 
-`user.md` and `lore.md` are the operator's record. Wave-spawned executors do
-not receive them. They ride inside `operatorProtocols`, which is already
-withheld from executors (`LAWS/MEMORY.md`).
+`user.md`, `lore.md` and the global research pointer ride inside
+`operatorProtocols`, which is withheld from wave executors. The operator's
+record stays with plain chats and conductors (`LAWS/MEMORY.md`); executors
+receive their own project's research pointer.
+
+Existing project instructions (`project.prompt`) also reach that project's
+chats, including wave executors. They are delivered before the workspace's
+`AGENTS.md` files, which can extend or override them. A general chat receives
+no project's instructions, regardless of which project is selected in the UI.
 
 Agents never write `user.md`. The only agent write channel to the operator's
 record is the `distill-memory` fence. The `<operator-profile>` block says so.
@@ -73,11 +80,12 @@ Handed off once per session/provider/fingerprint, in this order:
 5. Persona (`<active-persona>`)
 6. Spawn policy sentence
 7. Included workspaces
-8. `<workspace-instructions>`: `AGENTS.md` and `.distill/AGENTS.md` per folder, git root first
-9. Project wiki pointer
-10. Project research pointer
-11. App skills catalog, available skills catalog
-12. `operatorProtocols` (not for wave executors): `<operator-profile>` (`user.md`), lore pointer, global research pointer, memory block, planner protocol
+8. `<project-instructions>`: the target project's existing instructions (`project.prompt`)
+9. `<workspace-instructions>`: `AGENTS.md` and `.distill/AGENTS.md` per folder, git root first
+10. Project wiki pointer
+11. Project research pointer
+12. App skills catalog, available skills catalog
+13. `operatorProtocols` (not for wave executors): `<operator-profile>` (`user.md`), lore pointer, global research pointer, memory block, planner protocol
 
 App-authored blocks come first so operator-authored text reads as the override.
 
@@ -86,9 +94,15 @@ queued drain, captured queue, background/distillctl send, and wave spawn.
 The foreground controller composes the visible chat's prompt; queued drains
 compose missing context at dispatch. A captured send freezes
 `operatorProtocols` at capture time along with the accepted persona and
-workspace context, and dispatch uses that captured prompt unchanged.
-Background/distillctl sends refresh the root files before composing their
-own prompt; an explicit `executionSystemPrompt` passes through unchanged.
+workspace context, and dispatch uses that captured prompt unchanged. While
+root instructions or project research are still loading, acceptance queues
+the message and its persona intent immediately without freezing an incomplete
+execution prompt. The queue resumes after those reads finish.
+Background/distillctl sends and uncaptured queued sends await the root files
+and project research presence before composing their own prompt. Concurrent
+research reads share the pending listing, so a cold cache cannot omit an
+existing index from the first send. An explicit `executionSystemPrompt`
+passes through unchanged and does not start another research lookup.
 Wave spawns dispatch through the queue with the executor gate: project
 research stays beside the wiki pointer, while profile, lore, global research,
 memory and planner protocols are withheld. The same gate applies when any
@@ -108,6 +122,11 @@ Stage 1 (this delivery): root instruction files reach every chat.
 
 Stage 2: preferences out of localStorage into `~/.distill/settings.json`, with
 key-level overrides in `<project>/.distill/settings.json`.
+
+Conductor graph and wave documents already use the root on desktop. A
+successful first migration removes their legacy localStorage copy; browser
+previews retain localStorage, and a failed migration preserves the old data.
+Their synchronous bootstrap is not a second live desktop persistence store.
 
 Stage 3: AppData state under the root (sessions db, message queues, bundled
 skills, packages/cache). After one start, `%APPDATA%\com.levocat.distill.dev`
