@@ -7,7 +7,7 @@ import type {
   SessionUpdate,
 } from "@agentclientprotocol/sdk";
 import { i18n } from "@/shared/i18n";
-import type { SessionCostBilling } from "@/shared/types/chat";
+import type { SessionCostBilling, TokenState } from "@/shared/types/chat";
 import { createSystemNotificationMessage } from "@/shared/types/messages";
 import {
   readUsageCostBilledFlag,
@@ -16,6 +16,7 @@ import {
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
+  bufferReplayTokenState,
   ensureReplayBuffer,
   getBufferedMessage,
   getReplayBuffer,
@@ -1027,7 +1028,7 @@ function handleShared(sessionId: string, update: SessionUpdate): void {
       }
 
       const contextLimit = usage.size ?? usage.contextLimit;
-      useChatStore.getState().updateTokenState(sessionId, {
+      const partial: Partial<TokenState> = {
         ...(typeof usage.used === "number"
           ? { accumulatedTotal: usage.used }
           : {}),
@@ -1040,7 +1041,17 @@ function handleShared(sessionId: string, update: SessionUpdate): void {
           : {}),
         ...(accumulatedCost !== undefined ? { accumulatedCost } : {}),
         ...(costBilling !== undefined ? { costBilling } : {}),
-      });
+      };
+      const store = useChatStore.getState();
+      if (store.loadingSessionIds.has(sessionId)) {
+        bufferReplayTokenState(
+          sessionId,
+          partial,
+          store.sessionStateById[sessionId]?.tokenState,
+        );
+      } else {
+        store.updateTokenState(sessionId, partial);
+      }
       break;
     }
 

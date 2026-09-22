@@ -4,6 +4,7 @@ import {
   getReplayBuffer,
 } from "@/features/chat/hooks/replayBuffer";
 import { useChatStore } from "@/features/chat/stores/chatStore";
+import { replaceMessagesFromSessionReplay } from "@/features/chat/lib/sessionReplayReplacement";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import {
@@ -85,6 +86,9 @@ describe("acpNotificationHandler", () => {
     } as never);
 
     expect(getUsageLedger().sessions["acp-session"]).toBeUndefined();
+    replaceMessagesFromSessionReplay("acp-session", {
+      historyExpectation: "empty",
+    });
     // The chat's own context/cost readout is still restored on replay.
     expect(
       useChatStore.getState().sessionStateById["acp-session"]?.tokenState,
@@ -107,6 +111,122 @@ describe("acpNotificationHandler", () => {
       outputTokens: 200,
       costUsd: 0.42,
       started: true,
+    });
+  });
+
+  it("publishes historical usage once after replay instead of waking the chat for every update", async () => {
+    markSessionReplayLoading();
+    const changed = vi.fn();
+    const unsubscribe = useChatStore.subscribe(
+      (state) => state.sessionStateById["acp-session"]?.tokenState,
+      changed,
+    );
+    try {
+      for (let index = 1; index <= 150; index += 1) {
+        await handleSessionNotification({
+          sessionId: "acp-session",
+          update: {
+            sessionUpdate: "usage_update",
+            used: index * 10,
+            size: 200000,
+            cost: { amount: index / 100, currency: "USD" },
+          },
+        } as never);
+      }
+      expect(changed).not.toHaveBeenCalled();
+      replaceMessagesFromSessionReplay("acp-session", {
+        historyExpectation: "empty",
+      });
+      expect(changed).toHaveBeenCalledTimes(1);
+      expect(
+        useChatStore.getState().sessionStateById["acp-session"]?.tokenState,
+      ).toMatchObject({
+        accumulatedTotal: 1500,
+        contextLimit: 200000,
+        accumulatedCost: 1.5,
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("folds partial replay usage in order, including an explicit cost reset", async () => {
+    const store = useChatStore.getState();
+    store.updateTokenState("acp-session", {
+      accumulatedInput: 100,
+      accumulatedOutput: 20,
+      contextLimit: 200000,
+      accumulatedCost: 9,
+    });
+    markSessionReplayLoading();
+    for (const update of [
+      {
+        accumulatedInputTokens: 150,
+        cost: { amount: 1, currency: "USD", _meta: { billed: true } },
+      },
+      { accumulatedOutputTokens: 30 },
+      { cost: null },
+      { used: 500 },
+    ]) {
+      await handleSessionNotification({
+        sessionId: "acp-session",
+        update: { sessionUpdate: "usage_update", ...update },
+      } as never);
+    }
+    replaceMessagesFromSessionReplay("acp-session", {
+      historyExpectation: "empty",
+    });
+    expect(
+      useChatStore.getState().sessionStateById["acp-session"]?.tokenState,
+    ).toMatchObject({
+      accumulatedInput: 150,
+      accumulatedOutput: 30,
+      accumulatedTotal: 500,
+      contextLimit: 200000,
+      accumulatedCost: null,
+      costBilling: null,
+    });
+  });
+
+  it.each([
+    "failed",
+    "invalid",
+  ])("discards usage from a %s replay before retrying", async (outcome) => {
+    markSessionReplayLoading();
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "usage_update",
+        used: 900,
+        size: 200000,
+        cost: { amount: 9, currency: "USD" },
+      },
+    } as never);
+    if (outcome === "failed") {
+      clearReplayBuffer("acp-session");
+    } else {
+      expect(
+        replaceMessagesFromSessionReplay("acp-session", {
+          historyExpectation: "nonempty",
+        }),
+      ).toEqual({ status: "invalid", reason: "empty" });
+    }
+    expect(
+      useChatStore.getState().sessionStateById["acp-session"]?.hasUsageSnapshot,
+    ).not.toBe(true);
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: { sessionUpdate: "usage_update", used: 10 },
+    } as never);
+    replaceMessagesFromSessionReplay("acp-session", {
+      historyExpectation: "empty",
+    });
+    expect(
+      useChatStore.getState().sessionStateById["acp-session"]?.tokenState,
+    ).toMatchObject({
+      accumulatedTotal: 10,
+      contextLimit: 0,
+      accumulatedCost: null,
     });
   });
 

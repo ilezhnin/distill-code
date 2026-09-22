@@ -72,6 +72,44 @@ pub fn raw_notification(method: &str, params_json: &str) -> String {
     format!(r#"{{"jsonrpc":"2.0","method":{method},"params":{params_json}}}"#)
 }
 
+/// Replay the stored JSON unchanged, with bounded frames so the WebView does
+/// not schedule one socket callback per historical token. Older clients keep
+/// receiving individual notifications unless they explicitly opt into batches.
+pub fn send_replay_notifications(
+    payloads: impl IntoIterator<Item = String>,
+    batched: bool,
+    mut send: impl FnMut(String),
+) -> usize {
+    const MAX_EVENTS: usize = 128;
+    const MAX_BYTES: usize = 256 * 1024;
+    let mut batch = String::new();
+    let mut count = 0;
+    let mut frames = 0;
+    for payload in payloads {
+        let notification = raw_notification("session/update", &payload);
+        if !batched {
+            send(notification);
+            frames += 1;
+            continue;
+        }
+        if count > 0 && (count == MAX_EVENTS || batch.len() + notification.len() + 2 > MAX_BYTES) {
+            batch.push(']');
+            send(std::mem::take(&mut batch));
+            frames += 1;
+            count = 0;
+        }
+        batch.push(if count == 0 { '[' } else { ',' });
+        batch.push_str(&notification);
+        count += 1;
+    }
+    if count > 0 {
+        batch.push(']');
+        send(batch);
+        frames += 1;
+    }
+    frames
+}
+
 pub fn response(id: Value, result: Value) -> String {
     json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string()
 }
@@ -120,5 +158,75 @@ mod raw_notification_tests {
         let expected: Value =
             serde_json::from_str(&notification("session/update", params)).unwrap();
         assert_eq!(parsed, expected);
+    }
+
+    #[test]
+    fn replay_batches_preserve_every_update_and_bound_event_count() {
+        let payloads: Vec<_> = (0..300)
+            .map(|i| {
+                json!({ "sessionId": "s1", "update": { "text": format!("токен {i}\n") } })
+                    .to_string()
+            })
+            .collect();
+        let mut frames = Vec::new();
+        assert_eq!(
+            send_replay_notifications(payloads.clone(), true, |frame| frames.push(frame)),
+            3
+        );
+        let batches: Vec<Vec<Value>> = frames
+            .iter()
+            .map(|frame| serde_json::from_str(frame).unwrap())
+            .collect();
+        assert_eq!(
+            batches.iter().map(Vec::len).collect::<Vec<_>>(),
+            [128, 128, 44]
+        );
+        let actual: Vec<Value> = batches
+            .into_iter()
+            .flatten()
+            .map(|message| message["params"].clone())
+            .collect();
+        let expected: Vec<Value> = payloads
+            .iter()
+            .map(|payload| serde_json::from_str(payload).unwrap())
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn replay_batches_bound_bytes_without_dropping_large_updates() {
+        let payloads = [
+            "я".repeat(70_000),
+            "я".repeat(70_000),
+            "x".repeat(300_000),
+            "tail".to_string(),
+        ]
+        .map(|text| json!({ "sessionId": "s", "update": { "text": text } }).to_string());
+        let mut frames = Vec::new();
+        send_replay_notifications(payloads.clone(), true, |frame| frames.push(frame));
+        assert_eq!(frames.len(), 4);
+        for (frame, payload) in frames.iter().zip(payloads) {
+            let parsed: Vec<Value> = serde_json::from_str(frame).unwrap();
+            assert_eq!(parsed.len(), 1);
+            assert_eq!(
+                parsed[0]["params"],
+                serde_json::from_str::<Value>(&payload).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn replay_keeps_legacy_frames_until_the_client_opts_in() {
+        let mut frames = Vec::new();
+        let payload = r#"{"sessionId":"s","update":{"text":"hello"}}"#.to_string();
+        assert_eq!(
+            send_replay_notifications([payload.clone()], false, |frame| frames.push(frame)),
+            1
+        );
+        assert_eq!(frames, [raw_notification("session/update", &payload)]);
+        assert_eq!(
+            send_replay_notifications([], true, |_| panic!("empty history has no frames")),
+            0
+        );
     }
 }

@@ -1,4 +1,7 @@
-import { getAndDeleteReplayBuffer } from "@/features/chat/hooks/replayBuffer";
+import {
+  getAndDeleteReplayBuffer,
+  getReplayTokenState,
+} from "@/features/chat/hooks/replayBuffer";
 import { sanitizeReplayMessages } from "@/features/chat/lib/replaySanitizer";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import type { Message } from "@/shared/types/messages";
@@ -33,6 +36,7 @@ export function replaceMessagesFromSessionReplay(
   const historyExpectation = options.historyExpectation ?? "unknown";
   const replacementRequired =
     historyExpectation !== "empty" || existingConversation;
+  const tokenState = getReplayTokenState(sessionId);
   const buffer = getAndDeleteReplayBuffer(sessionId);
   if (!buffer) {
     if (replacementRequired) {
@@ -48,11 +52,17 @@ export function replaceMessagesFromSessionReplay(
       return { status: "invalid", reason: "empty" };
     }
     useChatStore.getState().setMessages(sessionId, []);
+    if (tokenState) {
+      useChatStore.getState().replaceTokenState(sessionId, tokenState);
+    }
     return { status: "not-required", messages: [] };
   }
 
   useChatStore
     .getState()
     .setMessages(sessionId, [...messages, ...(options.trailingMessages ?? [])]);
+  if (tokenState) {
+    useChatStore.getState().replaceTokenState(sessionId, tokenState);
+  }
   return { status: "replaced", messages };
 }

@@ -132,17 +132,25 @@ export function createWebSocketStream(wsUrl: string): WebSocketStream {
   ws.addEventListener("message", (event) => {
     if (typeof event.data !== "string") return;
     try {
-      const msg = JSON.parse(event.data) as AnyMessage;
-      acpDebug("WS → client", msg);
-      const mapped = ids.fromWire(msg);
-      if (!mapped) {
-        console.warn(
-          "[acp] Dropped a reply addressed to a request of another connection",
-          "id" in msg ? msg.id : undefined,
-        );
-        return;
+      const frame: unknown = JSON.parse(event.data);
+      // The host batches history into bounded JSON-RPC arrays. The SDK still
+      // receives ordinary messages, in wire order, before the load response.
+      for (const entry of Array.isArray(frame) ? frame : [frame]) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          continue;
+        }
+        const msg = entry as AnyMessage;
+        acpDebug("WS → client", msg);
+        const mapped = ids.fromWire(msg);
+        if (!mapped) {
+          console.warn(
+            "[acp] Dropped a reply addressed to a request of another connection",
+            "id" in msg ? msg.id : undefined,
+          );
+          continue;
+        }
+        pushMessage(mapped);
       }
-      pushMessage(mapped);
     } catch {
       // ignore malformed JSON
     }
@@ -163,10 +171,10 @@ export function createWebSocketStream(wsUrl: string): WebSocketStream {
   const readable = new ReadableStream<AnyMessage>({
     async pull(controller) {
       await waitForMessage();
-      while (incoming.length > 0) {
-        // biome-ignore lint/style/noNonNullAssertion: length checked in while condition
-        controller.enqueue(incoming.shift()!);
+      for (const message of incoming) {
+        controller.enqueue(message);
       }
+      incoming.length = 0;
       if (closed && incoming.length === 0) {
         controller.close();
       }

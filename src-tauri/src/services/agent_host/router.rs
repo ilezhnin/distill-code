@@ -2025,6 +2025,7 @@ impl Inner {
     }
 
     async fn load_session(self: &Arc<Self>, params: Value) -> Result<Value, Value> {
+        let started = std::time::Instant::now();
         let session_id =
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
         let mut record = self.session_record(&session_id).await?;
@@ -2047,15 +2048,34 @@ impl Inner {
         // The log is read, so the event loop's own buffer has to be committed
         // first: a chat that is streaming right now has its last chunks there,
         // and replaying without them would show a transcript missing its tail.
+        let before_drain = std::time::Instant::now();
         self.drain_bridge_events().await;
+        let before_read = std::time::Instant::now();
         let events = self
             .store
             .list_event_payloads(&session_id)
             .await
             .map_err(protocol::internal)?;
-        for payload in events {
-            self.send_to_frontend(protocol::raw_notification("session/update", &payload));
-        }
+        let before_send = std::time::Instant::now();
+        let event_count = events.len();
+        let batched = params
+            .pointer("/_meta/distill/replayBatch")
+            .and_then(Value::as_bool)
+            == Some(true);
+        let frames = protocol::send_replay_notifications(events, batched, |frame| {
+            self.send_to_frontend(frame);
+        });
+        log::debug!(
+            target: "perf",
+            "[perf:host-load] {} record={}ms drain={}ms read={}ms enqueue={}ms events={} frames={}",
+            session_id,
+            before_drain.duration_since(started).as_millis(),
+            before_read.duration_since(before_drain).as_millis(),
+            before_send.duration_since(before_read).as_millis(),
+            before_send.elapsed().as_millis(),
+            event_count,
+            frames,
+        );
         let attached = self.attached_route(&session_id).await.is_some();
         let (snapshot, has_model_option, substitutions) =
             match self.runtime_snapshot(&session_id).await {

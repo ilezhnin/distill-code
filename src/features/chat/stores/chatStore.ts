@@ -11,6 +11,7 @@ import {
 } from "@/features/chat/lib/messageCompletion";
 import { clearReplayBuffer } from "../hooks/replayBuffer";
 import { isSessionRunning } from "../lib/sessionActivity";
+import { mergeTokenState } from "@/features/chat/lib/tokenState";
 import type {
   ChatState,
   SessionChatRuntime,
@@ -1478,43 +1479,13 @@ const createChatStore: StateCreator<
     set((state) => {
       const current =
         state.sessionStateById[sessionId]?.tokenState ?? INITIAL_TOKEN_STATE;
-      const inputTokens = partial.inputTokens ?? current.inputTokens;
-      const outputTokens = partial.outputTokens ?? current.outputTokens;
-      const accumulatedInput =
-        partial.accumulatedInput ??
-        current.accumulatedInput + (partial.inputTokens ?? 0);
-      const accumulatedOutput =
-        partial.accumulatedOutput ??
-        current.accumulatedOutput + (partial.outputTokens ?? 0);
-      const accumulatedTotal =
-        partial.accumulatedTotal ?? accumulatedInput + accumulatedOutput;
-      const accumulatedCost =
-        partial.accumulatedCost !== undefined
-          ? partial.accumulatedCost
-          : current.accumulatedCost;
-      const costBilling =
-        accumulatedCost == null
-          ? null
-          : partial.costBilling !== undefined
-            ? partial.costBilling
-            : (current.costBilling ?? "estimate");
       return {
         sessionStateById: {
           ...state.sessionStateById,
           [sessionId]: {
             ...(state.sessionStateById[sessionId] ??
               createInitialSessionRuntime()),
-            tokenState: {
-              inputTokens,
-              outputTokens,
-              totalTokens: inputTokens + outputTokens,
-              accumulatedInput,
-              accumulatedOutput,
-              accumulatedTotal,
-              contextLimit: partial.contextLimit ?? current.contextLimit,
-              accumulatedCost,
-              costBilling,
-            },
+            tokenState: mergeTokenState(current, partial),
             hasUsageSnapshot: true,
           },
         },

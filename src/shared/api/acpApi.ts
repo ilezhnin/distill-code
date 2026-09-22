@@ -487,6 +487,7 @@ export async function loadSession(
     sessionId,
     cwd: workingDir,
     mcpServers: [],
+    _meta: { distill: { replayBatch: true } },
   });
   const snapshots = readSessionConfigOptionsSnapshots(response);
   logReasoningEffortInfo("loadSession response", {
