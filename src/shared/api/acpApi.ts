@@ -16,7 +16,12 @@ import {
   type AcpSessionConfigSnapshotContext,
   type AcpSessionConfigSnapshots,
 } from "./acpSessionConfigSnapshots";
-import type { SessionTranscript } from "./hostTypes";
+import type {
+  SessionMessageRemoveResponse,
+  SessionMessageUpdateResponse,
+  SessionTranscript,
+} from "./hostTypes";
+import type { MessagePart } from "@/shared/types/messageParts";
 import { perfLog } from "@/shared/lib/perfLog";
 import {
   logReasoningEffortInfo,
@@ -167,6 +172,44 @@ export async function readSessionTranscript(
 ): Promise<SessionTranscript> {
   const client = await getClient();
   return client.host.sessionMessages({ sessionId });
+}
+
+/**
+ * Put new text on a message the host already stores, in place: the message
+ * keeps its id, its time and everything but the text being edited — its
+ * answer, or the step `part` names. Rejects when the host knows no such
+ * message or the message has no such text.
+ */
+export async function updateSessionMessageText(
+  sessionId: string,
+  messageId: string,
+  role: "user" | "assistant",
+  text: string,
+  part?: MessagePart,
+): Promise<SessionMessageUpdateResponse> {
+  const client = await getClient();
+  return client.host.sessionMessageUpdate({
+    sessionId,
+    messageId,
+    role,
+    text,
+    ...(part ? { part } : {}),
+  });
+}
+
+/**
+ * Take a step out of a message the host already stores: a run of text, a run
+ * of reasoning, or a tool call with its result. Rejects when the host knows
+ * no such step.
+ */
+export async function removeSessionMessagePart(
+  sessionId: string,
+  messageId: string,
+  role: "user" | "assistant",
+  part: MessagePart,
+): Promise<SessionMessageRemoveResponse> {
+  const client = await getClient();
+  return client.host.sessionMessageRemove({ sessionId, messageId, role, part });
 }
 
 export interface AcpForkSessionOptions {

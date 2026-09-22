@@ -59,6 +59,336 @@ pub struct McpServerRecord {
     pub enabled: bool,
 }
 
+/// Whose message an edit names: the ids of a prompt and of its reply live in
+/// different stamps, so the side has to be said along with the id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageSide {
+    User,
+    Assistant,
+}
+
+/// What rewriting a message's text did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageRewrite {
+    /// How many stored chunks carried the text being edited. The first now
+    /// holds the whole new text and the rest are gone; zero when no chunk
+    /// answered to the id or the message had no text to edit, in which case
+    /// nothing was written.
+    pub chunks: usize,
+    /// Whether the message is the last one with text in the log — the one
+    /// the session's list snippet was taken from.
+    pub was_last: bool,
+}
+
+/// One piece of a message an edit or a removal names, the same on the host
+/// and in the renderer (`messageParts.ts`): the n-th run of text chunks, the
+/// n-th run of thought chunks, or a tool call by its id. Runs are counted
+/// over what the transcript shows, so a tool call's progress record — which
+/// changes the step in place — and a prompt block the user never saw are
+/// transparent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessagePart {
+    Text(usize),
+    Reasoning(usize),
+    Tool(String),
+}
+
+impl MessagePart {
+    /// The part named on the wire: `{ kind: "text" | "reasoning", ordinal }`
+    /// or `{ kind: "tool", toolCallId }`.
+    pub fn from_json(value: &Value) -> Option<Self> {
+        let ordinal = || value.get("ordinal")?.as_u64().map(|n| n as usize);
+        match value.get("kind")?.as_str()? {
+            "text" => ordinal().map(Self::Text),
+            "reasoning" => ordinal().map(Self::Reasoning),
+            "tool" => value
+                .get("toolCallId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(|id| Self::Tool(id.to_string())),
+            _ => None,
+        }
+    }
+}
+
+/// What taking a part out of a message did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageRemoval {
+    /// How many stored updates the part was made of, all gone now; zero when
+    /// the message holds no such part, in which case nothing was written.
+    pub removed: usize,
+    /// Whether the part held the last text in the log — the text the
+    /// session's list snippet was taken from.
+    pub was_last: bool,
+    /// When it did: the text the log ends on now, as the transcript shows it
+    /// (the last run of text chunks of one message), for the new snippet.
+    pub last_text: Option<String>,
+}
+
+/// A stored update of the message being edited, with what it is in the
+/// transcript and, for a tool call and its progress, the call's id.
+struct OwnUpdate {
+    row: i64,
+    event: Value,
+    piece: Piece,
+    tool_call_id: Option<String>,
+}
+
+/// What a stored update of a message is in the transcript, by the renderer's
+/// rules: text the user sees, a step (a tool call or reasoning), a companion
+/// block (an image, an app), or nothing at all — a tool call's progress, which
+/// changes the step in place, or a prompt block the user never saw (a skill's
+/// or persona's instructions, addressed to the agent alone).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Piece {
+    Text,
+    Tool,
+    Reasoning,
+    Companion,
+    Silent,
+}
+
+/// The message a stored update belongs to on the renderer's side, by the
+/// rules the renderer names messages with on replay (`acpReplayMetadata.ts`):
+/// the update's own `messageId` first — an agent that numbers its messages
+/// puts each in its own, whatever the host stamped around it; else, for a
+/// prompt, the `messageId` the host stamped, and for a reply its
+/// `assistantMessageId` — or, for history recorded before replies had ids of
+/// their own, the prompt's id under the `:reply` suffix the renderer derives.
+/// A prompt is its user chunks, a reply its agent chunks, thoughts and tool
+/// calls; any other update belongs to no message.
+fn renderer_identity(update: &Value) -> Option<(MessageSide, String)> {
+    let side = match update.get("sessionUpdate").and_then(Value::as_str)? {
+        "user_message_chunk" => MessageSide::User,
+        "agent_message_chunk" | "agent_thought_chunk" | "tool_call" | "tool_call_update" => {
+            MessageSide::Assistant
+        }
+        _ => return None,
+    };
+    if let Some(own) = update.get("messageId").and_then(Value::as_str) {
+        return Some((side, own.to_string()));
+    }
+    let stamped = |key: &str| {
+        update
+            .pointer("/_meta/distill")
+            .and_then(|meta| meta.get(key))
+            .and_then(Value::as_str)
+    };
+    let id = match side {
+        MessageSide::User => stamped("messageId")?.to_string(),
+        MessageSide::Assistant => match stamped("assistantMessageId") {
+            Some(own) => own.to_string(),
+            None => format!("{}:reply", stamped("messageId")?),
+        },
+    };
+    Some((side, id))
+}
+
+/// Whether a stored update belongs to the message the renderer calls
+/// `message_id` on `side` (see `renderer_identity`).
+fn belongs_to(update: &Value, side: MessageSide, message_id: &str) -> bool {
+    renderer_identity(update).is_some_and(|(own_side, id)| own_side == side && id == message_id)
+}
+
+/// The message's own updates in log order, and the row of every update in
+/// the log that shows text, whichever message it belongs to.
+fn collect_own(
+    events: &[(i64, Value)],
+    side: MessageSide,
+    message_id: &str,
+) -> (Vec<OwnUpdate>, Vec<i64>) {
+    let mut own = Vec::new();
+    let mut text_rows = Vec::new();
+    for (row, event) in events {
+        let Some(update) = event.get("update") else {
+            continue;
+        };
+        if carries_text(update) {
+            text_rows.push(*row);
+        }
+        if belongs_to(update, side, message_id) {
+            let tool_call_id = match update.get("sessionUpdate").and_then(Value::as_str) {
+                Some("tool_call" | "tool_call_update") => update
+                    .get("toolCallId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                _ => None,
+            };
+            own.push(OwnUpdate {
+                row: *row,
+                event: event.clone(),
+                piece: piece_of(update),
+                tool_call_id,
+            });
+        }
+    }
+    (own, text_rows)
+}
+
+/// The runs of `kind` (text or reasoning) among the message's own updates,
+/// as indexes into `own`, counted the way `messageParts.ts` counts blocks: a
+/// run ends at a step or a companion block of the message, and a tool call's
+/// progress record is transparent.
+fn runs_of(own: &[OwnUpdate], kind: Piece) -> Vec<Vec<usize>> {
+    let mut runs: Vec<Vec<usize>> = Vec::new();
+    let mut last: Option<Piece> = None;
+    for (index, update) in own.iter().enumerate() {
+        if update.piece == Piece::Silent {
+            continue;
+        }
+        if update.piece == kind {
+            if last != Some(kind) {
+                runs.push(Vec::new());
+            }
+            if let Some(run) = runs.last_mut() {
+                run.push(index);
+            }
+        }
+        last = Some(update.piece);
+    }
+    runs
+}
+
+/// The message's own updates a part is made of, as indexes into `own`: the
+/// n-th run of text or thought chunks, or a tool call with every progress
+/// record of it. Empty when the message holds no such part.
+fn part_updates(own: &[OwnUpdate], part: &MessagePart) -> Vec<usize> {
+    match part {
+        MessagePart::Tool(id) => own
+            .iter()
+            .enumerate()
+            .filter(|(_, update)| update.tool_call_id.as_deref() == Some(id.as_str()))
+            .map(|(index, _)| index)
+            .collect(),
+        MessagePart::Text(n) => runs_of(own, Piece::Text)
+            .get(*n)
+            .cloned()
+            .unwrap_or_default(),
+        MessagePart::Reasoning(n) => runs_of(own, Piece::Reasoning)
+            .get(*n)
+            .cloned()
+            .unwrap_or_default(),
+    }
+}
+
+/// The text the log ends on, as the transcript shows it: the last run of
+/// text chunks of one message, joined. What the session's list snippet is
+/// taken from once a removal took the old last word away.
+fn last_text_run<'a>(events: impl Iterator<Item = &'a Value>) -> Option<String> {
+    let mut current: Option<((MessageSide, String), String)> = None;
+    let mut settled: Option<String> = None;
+    for event in events {
+        let Some(update) = event.get("update") else {
+            continue;
+        };
+        let Some(identity) = renderer_identity(update) else {
+            continue;
+        };
+        match piece_of(update) {
+            Piece::Silent => {}
+            Piece::Text => {
+                let text = update["content"]["text"].as_str().unwrap_or_default();
+                match current.as_mut() {
+                    Some((owner, run)) if *owner == identity => run.push_str(text),
+                    _ => {
+                        if let Some((_, run)) = current.take() {
+                            settled = Some(run);
+                        }
+                        current = Some((identity, text.to_string()));
+                    }
+                }
+            }
+            _ => {
+                if let Some((_, run)) = current.take() {
+                    settled = Some(run);
+                }
+            }
+        }
+    }
+    current
+        .map(|(_, run)| run)
+        .or(settled)
+        .filter(|text| !text.trim().is_empty())
+}
+
+fn piece_of(update: &Value) -> Piece {
+    let content = &update["content"];
+    let is_text = content.get("type").and_then(Value::as_str) == Some("text");
+    match update.get("sessionUpdate").and_then(Value::as_str) {
+        Some("user_message_chunk") if is_text && shown_to_user(content) => Piece::Text,
+        Some("agent_message_chunk") if is_text => Piece::Text,
+        Some("agent_message_chunk") => Piece::Companion,
+        Some("agent_thought_chunk") => Piece::Reasoning,
+        Some("tool_call") => Piece::Tool,
+        _ => Piece::Silent,
+    }
+}
+
+/// Which of a message's pieces an edit replaces: the text the transcript
+/// shows as one, which the composer takes over whole (`editMessage.ts` keeps
+/// the same rule for the transcript on screen).
+///
+/// - A prompt: every text block the user saw.
+/// - A reply that did work (tool calls, reasoning): its answer — the run of
+///   text after the last step, which the transcript shows as the answer
+///   bubble below the steps. The text between steps stays with the steps.
+///   Reasoning and companion blocks trailing the answer do not hide it; a
+///   reply that ended on a step has no answer and nothing to edit.
+/// - A reply without work: every text block.
+fn editable_text(pieces: &[Piece], side: MessageSide) -> Vec<usize> {
+    let texts = |range: std::ops::Range<usize>| {
+        range
+            .filter(|index| pieces[*index] == Piece::Text)
+            .collect::<Vec<_>>()
+    };
+    let did_work = pieces
+        .iter()
+        .any(|piece| matches!(piece, Piece::Tool | Piece::Reasoning));
+    if side == MessageSide::User || !did_work {
+        return texts(0..pieces.len());
+    }
+    let mut end = pieces.len();
+    while end > 0
+        && matches!(
+            pieces[end - 1],
+            Piece::Reasoning | Piece::Companion | Piece::Silent
+        )
+    {
+        end -= 1;
+    }
+    if end == 0 || pieces[end - 1] != Piece::Text {
+        return Vec::new();
+    }
+    let mut start = end - 1;
+    while start > 0 && matches!(pieces[start - 1], Piece::Text | Piece::Silent) {
+        start -= 1;
+    }
+    texts(start..end)
+}
+
+/// Whether the renderer shows a prompt block as the user's words: one with no
+/// audience, or one addressed to the user among others.
+fn shown_to_user(content: &Value) -> bool {
+    content
+        .pointer("/annotations/audience")
+        .and_then(Value::as_array)
+        .map(|audience| audience.is_empty() || audience.iter().any(|entry| entry == "user"))
+        .unwrap_or(true)
+}
+
+/// Whether a stored update contributes text to the transcript — what decides
+/// which message the session's snippet was taken from.
+fn carries_text(update: &Value) -> bool {
+    let content = &update["content"];
+    let is_text = content.get("type").and_then(Value::as_str) == Some("text");
+    match update.get("sessionUpdate").and_then(Value::as_str) {
+        Some("user_message_chunk") => is_text && shown_to_user(content),
+        Some("agent_message_chunk") => is_text,
+        _ => false,
+    }
+}
+
 #[derive(Clone)]
 pub struct SessionStore {
     pool: SqlitePool,
@@ -745,6 +1075,168 @@ impl SessionStore {
         tx.commit()
             .await
             .map_err(|error| db_error("failed to commit fork", error))?;
+        Ok(())
+    }
+
+    /// Every event of the session in log order, with its row.
+    async fn session_events_in(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        session_id: &str,
+    ) -> Result<Vec<(i64, Value)>, String> {
+        let rows = sqlx::query(
+            "SELECT id, payload_json FROM session_events WHERE session_id = ? ORDER BY id ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|error| db_error("failed to read session events", error))?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let event =
+                    serde_json::from_str::<Value>(&row.get::<String, _>("payload_json")).ok()?;
+                Some((row.get::<i64, _>("id"), event))
+            })
+            .collect())
+    }
+
+    /// Put new text on a message already in the log, in place and under its
+    /// own time: the first chunk that carried the text being edited now
+    /// carries all of it, the other chunks of that text are removed, and
+    /// everything else the message holds — the other steps, images, tool
+    /// calls, what the agent was told behind the user's back — stays where it
+    /// was. The text being edited is the message's answer (`editable_text`),
+    /// or the step `part` names. One transaction, so a chat is never read with
+    /// half a message replaced. Nothing is written when no chunk answers to
+    /// the id or the message has no such text.
+    pub async fn rewrite_message_text(
+        &self,
+        session_id: &str,
+        side: MessageSide,
+        message_id: &str,
+        text: &str,
+        part: Option<&MessagePart>,
+    ) -> Result<MessageRewrite, String> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db_error("failed to start rewrite transaction", error))?;
+        let events = Self::session_events_in(&mut tx, session_id).await?;
+        let (own, text_rows) = collect_own(&events, side, message_id);
+        let targets = match part {
+            None => {
+                let pieces: Vec<Piece> = own.iter().map(|update| update.piece).collect();
+                editable_text(&pieces, side)
+            }
+            // A tool call has no text to put words on.
+            Some(MessagePart::Tool(_)) => Vec::new(),
+            Some(part) => part_updates(&own, part),
+        };
+        let (Some(&first), Some(&last)) = (targets.first(), targets.last()) else {
+            return Ok(MessageRewrite {
+                chunks: 0,
+                was_last: false,
+            });
+        };
+        let last_row = own[last].row;
+        let was_last = !text_rows.iter().any(|row| *row > last_row);
+        let first_id = own[first].row;
+        let mut event = own[first].event.clone();
+        let rest: Vec<i64> = targets[1..].iter().map(|index| own[*index].row).collect();
+        event["update"]["content"]["text"] = Value::String(text.to_string());
+        sqlx::query("UPDATE session_events SET payload_json = ? WHERE id = ? AND session_id = ?")
+            .bind(event.to_string())
+            .bind(first_id)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| db_error("failed to rewrite a message", error))?;
+        for id in &rest {
+            sqlx::query("DELETE FROM session_events WHERE id = ? AND session_id = ?")
+                .bind(id)
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| db_error("failed to drop a rewritten chunk", error))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|error| db_error("failed to commit the rewrite", error))?;
+        Ok(MessageRewrite {
+            chunks: targets.len(),
+            was_last,
+        })
+    }
+
+    /// Take a part out of a message already in the log: a run of text, a run
+    /// of thoughts, or a tool call with its progress. Everything else stays
+    /// where it was, under its own time. One transaction. Nothing is written
+    /// when the message holds no such part.
+    pub async fn remove_message_part(
+        &self,
+        session_id: &str,
+        side: MessageSide,
+        message_id: &str,
+        part: &MessagePart,
+    ) -> Result<MessageRemoval, String> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db_error("failed to start removal transaction", error))?;
+        let events = Self::session_events_in(&mut tx, session_id).await?;
+        let (own, text_rows) = collect_own(&events, side, message_id);
+        let targets = part_updates(&own, part);
+        if targets.is_empty() {
+            return Ok(MessageRemoval {
+                removed: 0,
+                was_last: false,
+                last_text: None,
+            });
+        }
+        let removed_rows: std::collections::HashSet<i64> =
+            targets.iter().map(|index| own[*index].row).collect();
+        let was_last = text_rows
+            .last()
+            .is_some_and(|row| removed_rows.contains(row));
+        for row in &removed_rows {
+            sqlx::query("DELETE FROM session_events WHERE id = ? AND session_id = ?")
+                .bind(row)
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| db_error("failed to remove a step", error))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|error| db_error("failed to commit the removal", error))?;
+        let last_text = if was_last {
+            last_text_run(
+                events
+                    .iter()
+                    .filter(|(row, _)| !removed_rows.contains(row))
+                    .map(|(_, event)| event),
+            )
+        } else {
+            None
+        };
+        Ok(MessageRemoval {
+            removed: removed_rows.len(),
+            was_last,
+            last_text,
+        })
+    }
+
+    /// Replace the session's list snippet without touching its times: a
+    /// message edited in place is news about what was said, not about when.
+    pub async fn set_last_snippet(&self, id: &str, snippet: Option<&str>) -> Result<(), String> {
+        sqlx::query("UPDATE sessions SET last_snippet = ? WHERE id = ?")
+            .bind(snippet)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| db_error("failed to update the session snippet", error))?;
         Ok(())
     }
 
@@ -1460,5 +1952,594 @@ mod tests {
             .expect("title");
         let named = store.get_session("a").await.expect("read").expect("row");
         assert_eq!(named.title.as_deref(), Some("Fix the build"));
+    }
+
+    /// A stored update as the host records it: `kind` under the ids the turn
+    /// was stamped with.
+    fn chunk(kind: &str, stamp: Value, content: Value) -> Value {
+        json!({
+            "sessionId": "c",
+            "update": {
+                "sessionUpdate": kind,
+                "content": content,
+                "_meta": { "distill": stamp },
+            }
+        })
+    }
+
+    fn text(value: &str) -> Value {
+        json!({ "type": "text", "text": value })
+    }
+
+    async fn store_with_conversation(events: &[Value]) -> (tempfile::TempDir, SessionStore) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SessionStore::open(&dir.path().join("host.db"))
+            .await
+            .expect("open store");
+        store.insert_session(&record("c")).await.expect("insert");
+        store.append_events("c", events).await.expect("append");
+        (dir, store)
+    }
+
+    /// The log as `(kind, text)` pairs, in order; a chunk without text reads
+    /// as its kind alone.
+    async fn kinds_and_texts(store: &SessionStore, id: &str) -> Vec<(String, String)> {
+        store
+            .list_events(id)
+            .await
+            .expect("read")
+            .iter()
+            .map(|event| {
+                (
+                    event["update"]["sessionUpdate"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    event["update"]["content"]["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn editing_a_prompt_rewrites_what_the_user_saw_and_nothing_else() {
+        let prompt =
+            json!({ "messageId": "m1", "runId": "run-1", "created": "2026-09-21T10:00:00Z" });
+        let reply = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
+        let (_dir, store) = store_with_conversation(&[
+            chunk(
+                "user_message_chunk",
+                prompt.clone(),
+                json!({ "type": "text", "text": "skill instructions", "annotations": { "audience": ["assistant"] } }),
+            ),
+            chunk("user_message_chunk", prompt.clone(), text("hello")),
+            chunk("user_message_chunk", prompt.clone(), text("world")),
+            chunk(
+                "user_message_chunk",
+                prompt.clone(),
+                json!({ "type": "image", "data": "aGk=", "mimeType": "image/png" }),
+            ),
+            chunk("agent_message_chunk", reply, text("hi")),
+        ])
+        .await;
+
+        let rewrite = store
+            .rewrite_message_text("c", MessageSide::User, "m1", "hello there", None)
+            .await
+            .expect("rewrite");
+        assert_eq!(
+            rewrite,
+            MessageRewrite {
+                chunks: 2,
+                was_last: false
+            }
+        );
+        // The block the agent alone was shown, the image and the reply are
+        // untouched; the second visible block is gone, the first says it all.
+        assert_eq!(
+            kinds_and_texts(&store, "c").await,
+            vec![
+                (
+                    "user_message_chunk".to_string(),
+                    "skill instructions".to_string()
+                ),
+                ("user_message_chunk".to_string(), "hello there".to_string()),
+                ("user_message_chunk".to_string(), String::new()),
+                ("agent_message_chunk".to_string(), "hi".to_string()),
+            ]
+        );
+        // The stamp the renderer finds the message by survives the rewrite.
+        let events = store.list_events("c").await.expect("read");
+        assert_eq!(events[1]["update"]["_meta"]["distill"]["messageId"], "m1");
+        assert_eq!(events[1]["sessionId"], "c");
+    }
+
+    #[tokio::test]
+    async fn editing_a_reply_rewrites_its_answer_and_leaves_its_steps_alone() {
+        let prompt = json!({ "messageId": "m1", "runId": "run-1" });
+        let reply = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
+        let tool = |kind: &str, status: &str| {
+            json!({
+                "sessionId": "c",
+                "update": {
+                    "sessionUpdate": kind,
+                    "toolCallId": "t1",
+                    "title": "Read a file",
+                    "status": status,
+                    "_meta": { "distill": reply.clone() },
+                }
+            })
+        };
+        let (_dir, store) = store_with_conversation(&[
+            chunk("user_message_chunk", prompt, text("question")),
+            chunk(
+                "agent_message_chunk",
+                reply.clone(),
+                text("Mapping the codebase now."),
+            ),
+            tool("tool_call", "pending"),
+            tool("tool_call_update", "completed"),
+            chunk("agent_message_chunk", reply.clone(), text("part one, ")),
+            chunk("agent_message_chunk", reply.clone(), text("part two")),
+            chunk(
+                "agent_thought_chunk",
+                reply.clone(),
+                text("a summary after the answer"),
+            ),
+        ])
+        .await;
+
+        let rewrite = store
+            .rewrite_message_text("c", MessageSide::Assistant, "r1", "the whole reply", None)
+            .await
+            .expect("rewrite");
+        // The answer is the text after the last step; the thought after it
+        // is not text the chat ends on.
+        assert_eq!(
+            rewrite,
+            MessageRewrite {
+                chunks: 2,
+                was_last: true
+            }
+        );
+        assert_eq!(
+            kinds_and_texts(&store, "c").await,
+            vec![
+                ("user_message_chunk".to_string(), "question".to_string()),
+                (
+                    "agent_message_chunk".to_string(),
+                    "Mapping the codebase now.".to_string()
+                ),
+                ("tool_call".to_string(), String::new()),
+                ("tool_call_update".to_string(), String::new()),
+                (
+                    "agent_message_chunk".to_string(),
+                    "the whole reply".to_string()
+                ),
+                (
+                    "agent_thought_chunk".to_string(),
+                    "a summary after the answer".to_string()
+                ),
+            ]
+        );
+
+        // The prompt is not the last word: its reply is.
+        let rewrite = store
+            .rewrite_message_text("c", MessageSide::User, "m1", "another question", None)
+            .await
+            .expect("rewrite");
+        assert_eq!(
+            rewrite,
+            MessageRewrite {
+                chunks: 1,
+                was_last: false
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_ended_on_a_step_has_nothing_to_edit() {
+        let reply = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
+        let (_dir, store) = store_with_conversation(&[
+            chunk("agent_message_chunk", reply.clone(), text("Looking.")),
+            json!({
+                "sessionId": "c",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "t1",
+                    "title": "Read a file",
+                    "_meta": { "distill": reply },
+                }
+            }),
+        ])
+        .await;
+
+        let rewrite = store
+            .rewrite_message_text("c", MessageSide::Assistant, "r1", "nope", None)
+            .await
+            .expect("rewrite");
+        assert_eq!(rewrite.chunks, 0);
+        assert_eq!(
+            kinds_and_texts(&store, "c").await,
+            vec![
+                ("agent_message_chunk".to_string(), "Looking.".to_string()),
+                ("tool_call".to_string(), String::new()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chunk_that_names_its_own_message_is_not_reached_through_the_turns_stamp() {
+        // An agent that numbers its messages: the renderer shows each under
+        // its own id, and the turn's stamp names only what carries no id.
+        let stamp = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
+        let mut named = chunk("agent_message_chunk", stamp.clone(), text("reply"));
+        named["update"]["messageId"] = json!("msg_1");
+        let (_dir, store) = store_with_conversation(&[named]).await;
+
+        let rewrite = store
+            .rewrite_message_text("c", MessageSide::Assistant, "r1", "hijack", None)
+            .await
+            .expect("rewrite");
+        assert_eq!(rewrite.chunks, 0);
+        let rewrite = store
+            .rewrite_message_text("c", MessageSide::Assistant, "msg_1", "edited", None)
+            .await
+            .expect("rewrite");
+        assert_eq!(rewrite.chunks, 1);
+        assert_eq!(
+            kinds_and_texts(&store, "c").await,
+            vec![("agent_message_chunk".to_string(), "edited".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_from_before_replies_had_ids_answers_to_the_derived_one() {
+        let stamp = json!({ "messageId": "m1", "runId": "run-1" });
+        let (_dir, store) = store_with_conversation(&[
+            chunk("user_message_chunk", stamp.clone(), text("question")),
+            chunk("agent_message_chunk", stamp.clone(), text("old ")),
+            chunk("agent_message_chunk", stamp, text("answer")),
+        ])
+        .await;
+
+        let rewrite = store
+            .rewrite_message_text("c", MessageSide::Assistant, "m1:reply", "new answer", None)
+            .await
+            .expect("rewrite");
+        assert_eq!(rewrite.chunks, 2);
+        assert_eq!(
+            kinds_and_texts(&store, "c").await,
+            vec![
+                ("user_message_chunk".to_string(), "question".to_string()),
+                ("agent_message_chunk".to_string(), "new answer".to_string()),
+            ]
+        );
+        // The prompt's own id names the prompt, never its reply.
+        let rewrite = store
+            .rewrite_message_text("c", MessageSide::Assistant, "m1", "nope", None)
+            .await
+            .expect("rewrite");
+        assert_eq!(rewrite.chunks, 0);
+    }
+
+    #[tokio::test]
+    async fn a_chunk_named_by_the_agent_itself_is_found_under_that_name() {
+        let stamp = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
+        let mut named = chunk("agent_message_chunk", stamp, text("reply"));
+        named["update"]["messageId"] = json!("agent-msg-7");
+        let (_dir, store) = store_with_conversation(&[named]).await;
+
+        let rewrite = store
+            .rewrite_message_text("c", MessageSide::Assistant, "agent-msg-7", "edited", None)
+            .await
+            .expect("rewrite");
+        assert_eq!(rewrite.chunks, 1);
+        assert_eq!(
+            kinds_and_texts(&store, "c").await,
+            vec![("agent_message_chunk".to_string(), "edited".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_message_leaves_the_log_as_it_was() {
+        let stamp = json!({ "messageId": "m1", "runId": "run-1" });
+        let (_dir, store) =
+            store_with_conversation(&[chunk("user_message_chunk", stamp, text("hello"))]).await;
+
+        let rewrite = store
+            .rewrite_message_text("c", MessageSide::User, "someone-else", "hijack", None)
+            .await
+            .expect("rewrite");
+        assert_eq!(
+            rewrite,
+            MessageRewrite {
+                chunks: 0,
+                was_last: false
+            }
+        );
+        assert_eq!(
+            kinds_and_texts(&store, "c").await,
+            vec![("user_message_chunk".to_string(), "hello".to_string())]
+        );
+        // A user id does not reach the reply side either.
+        let rewrite = store
+            .rewrite_message_text("c", MessageSide::Assistant, "m1", "hijack", None)
+            .await
+            .expect("rewrite");
+        assert_eq!(rewrite.chunks, 0);
+    }
+
+    /// A reply that did work in steps: text, a tool call with its progress,
+    /// a thought, more text, another tool call, then the answer.
+    async fn store_with_a_stepped_reply() -> (tempfile::TempDir, SessionStore) {
+        let prompt = json!({ "messageId": "m1", "runId": "run-1" });
+        let reply = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
+        let tool = |kind: &str, id: &str| {
+            json!({
+                "sessionId": "c",
+                "update": {
+                    "sessionUpdate": kind,
+                    "toolCallId": id,
+                    "title": "Read a file",
+                    "_meta": { "distill": reply.clone() },
+                }
+            })
+        };
+        store_with_conversation(&[
+            chunk("user_message_chunk", prompt, text("question")),
+            chunk("agent_message_chunk", reply.clone(), text("Mapping ")),
+            chunk("agent_message_chunk", reply.clone(), text("the codebase.")),
+            tool("tool_call", "t1"),
+            tool("tool_call_update", "t1"),
+            chunk("agent_thought_chunk", reply.clone(), text("hmm")),
+            chunk("agent_message_chunk", reply.clone(), text("Reading more.")),
+            tool("tool_call", "t2"),
+            tool("tool_call_update", "t2"),
+            chunk("agent_message_chunk", reply, text("the answer")),
+        ])
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_step_is_edited_by_its_place_among_the_reply_s_runs() {
+        let (_dir, store) = store_with_a_stepped_reply().await;
+
+        // The second text run is the text between the two tool calls; the
+        // first is the two chunks before the first one, folded into one.
+        let rewrite = store
+            .rewrite_message_text(
+                "c",
+                MessageSide::Assistant,
+                "r1",
+                "Reading everything.",
+                Some(&MessagePart::Text(1)),
+            )
+            .await
+            .expect("rewrite");
+        assert_eq!(
+            rewrite,
+            MessageRewrite {
+                chunks: 1,
+                was_last: false
+            }
+        );
+        let rewrite = store
+            .rewrite_message_text(
+                "c",
+                MessageSide::Assistant,
+                "r1",
+                "Mapping everything.",
+                Some(&MessagePart::Text(0)),
+            )
+            .await
+            .expect("rewrite");
+        assert_eq!(rewrite.chunks, 2);
+        let rewrite = store
+            .rewrite_message_text(
+                "c",
+                MessageSide::Assistant,
+                "r1",
+                "a second thought",
+                Some(&MessagePart::Reasoning(0)),
+            )
+            .await
+            .expect("rewrite");
+        assert_eq!(rewrite.chunks, 1);
+        assert_eq!(
+            kinds_and_texts(&store, "c").await,
+            vec![
+                ("user_message_chunk".to_string(), "question".to_string()),
+                (
+                    "agent_message_chunk".to_string(),
+                    "Mapping everything.".to_string()
+                ),
+                ("tool_call".to_string(), String::new()),
+                ("tool_call_update".to_string(), String::new()),
+                (
+                    "agent_thought_chunk".to_string(),
+                    "a second thought".to_string()
+                ),
+                (
+                    "agent_message_chunk".to_string(),
+                    "Reading everything.".to_string()
+                ),
+                ("tool_call".to_string(), String::new()),
+                ("tool_call_update".to_string(), String::new()),
+                ("agent_message_chunk".to_string(), "the answer".to_string()),
+            ]
+        );
+
+        // A run the reply does not have, and a tool call, take no text.
+        let rewrite = store
+            .rewrite_message_text(
+                "c",
+                MessageSide::Assistant,
+                "r1",
+                "nope",
+                Some(&MessagePart::Text(3)),
+            )
+            .await
+            .expect("rewrite");
+        assert_eq!(rewrite.chunks, 0);
+        let rewrite = store
+            .rewrite_message_text(
+                "c",
+                MessageSide::Assistant,
+                "r1",
+                "nope",
+                Some(&MessagePart::Tool("t1".to_string())),
+            )
+            .await
+            .expect("rewrite");
+        assert_eq!(rewrite.chunks, 0);
+    }
+
+    #[tokio::test]
+    async fn a_step_is_removed_with_everything_it_was_made_of() {
+        let (_dir, store) = store_with_a_stepped_reply().await;
+
+        // A tool call goes with its progress; the text around it stays.
+        let removal = store
+            .remove_message_part(
+                "c",
+                MessageSide::Assistant,
+                "r1",
+                &MessagePart::Tool("t1".to_string()),
+            )
+            .await
+            .expect("remove");
+        assert_eq!(
+            removal,
+            MessageRemoval {
+                removed: 2,
+                was_last: false,
+                last_text: None
+            }
+        );
+        // A thought run goes whole, a text run with all its chunks.
+        let removal = store
+            .remove_message_part(
+                "c",
+                MessageSide::Assistant,
+                "r1",
+                &MessagePart::Reasoning(0),
+            )
+            .await
+            .expect("remove");
+        assert_eq!(removal.removed, 1);
+        // With the tool call and the thought gone, the text before them and
+        // the text after them sit side by side: one run now, three chunks —
+        // the same run the transcript shows as one step.
+        let removal = store
+            .remove_message_part("c", MessageSide::Assistant, "r1", &MessagePart::Text(0))
+            .await
+            .expect("remove");
+        assert_eq!(removal.removed, 3);
+        assert_eq!(
+            kinds_and_texts(&store, "c").await,
+            vec![
+                ("user_message_chunk".to_string(), "question".to_string()),
+                ("tool_call".to_string(), String::new()),
+                ("tool_call_update".to_string(), String::new()),
+                ("agent_message_chunk".to_string(), "the answer".to_string()),
+            ]
+        );
+
+        // A step the reply does not have leaves the log as it is.
+        let removal = store
+            .remove_message_part(
+                "c",
+                MessageSide::Assistant,
+                "r1",
+                &MessagePart::Tool("t9".to_string()),
+            )
+            .await
+            .expect("remove");
+        assert_eq!(removal.removed, 0);
+        assert_eq!(kinds_and_texts(&store, "c").await.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn removing_the_last_text_says_what_the_chat_ends_on_now() {
+        let prompt = json!({ "messageId": "m1", "runId": "run-1" });
+        let reply = json!({ "messageId": "m1", "assistantMessageId": "r1", "runId": "run-1" });
+        let (_dir, store) = store_with_conversation(&[
+            chunk("user_message_chunk", prompt, text("question")),
+            chunk("agent_message_chunk", reply.clone(), text("step ")),
+            chunk("agent_message_chunk", reply.clone(), text("one")),
+            json!({
+                "sessionId": "c",
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "t1",
+                    "title": "Read a file",
+                    "_meta": { "distill": reply.clone() },
+                }
+            }),
+            chunk("agent_message_chunk", reply.clone(), text("fin")),
+            chunk("agent_message_chunk", reply, text("al")),
+        ])
+        .await;
+
+        let removal = store
+            .remove_message_part("c", MessageSide::Assistant, "r1", &MessagePart::Text(1))
+            .await
+            .expect("remove");
+        assert_eq!(
+            removal,
+            MessageRemoval {
+                removed: 2,
+                was_last: true,
+                last_text: Some("step one".to_string())
+            }
+        );
+
+        // With the step gone too, the prompt is the last word.
+        let removal = store
+            .remove_message_part("c", MessageSide::Assistant, "r1", &MessagePart::Text(0))
+            .await
+            .expect("remove");
+        assert_eq!(removal.last_text.as_deref(), Some("question"));
+    }
+
+    #[test]
+    fn a_part_is_read_from_the_wire() {
+        assert_eq!(
+            MessagePart::from_json(&json!({ "kind": "text", "ordinal": 2 })),
+            Some(MessagePart::Text(2))
+        );
+        assert_eq!(
+            MessagePart::from_json(&json!({ "kind": "reasoning", "ordinal": 0 })),
+            Some(MessagePart::Reasoning(0))
+        );
+        assert_eq!(
+            MessagePart::from_json(&json!({ "kind": "tool", "toolCallId": " t1 " })),
+            Some(MessagePart::Tool("t1".to_string()))
+        );
+        assert_eq!(MessagePart::from_json(&json!({ "kind": "tool" })), None);
+        assert_eq!(
+            MessagePart::from_json(&json!({ "kind": "image", "ordinal": 0 })),
+            None
+        );
+        assert_eq!(MessagePart::from_json(&json!({ "kind": "text" })), None);
+    }
+
+    #[tokio::test]
+    async fn the_snippet_changes_without_the_times() {
+        let (_dir, store) = store_with_history().await;
+        let before = store.get_session("a").await.expect("read").expect("row");
+        store
+            .set_last_snippet("a", Some("what was said"))
+            .await
+            .expect("snippet");
+        let after = store.get_session("a").await.expect("read").expect("row");
+        assert_eq!(after.last_snippet.as_deref(), Some("what was said"));
+        assert_eq!(after.updated_at, before.updated_at);
+        assert_eq!(after.last_message_at, before.last_message_at);
+        assert_eq!(after.message_count, before.message_count);
     }
 }

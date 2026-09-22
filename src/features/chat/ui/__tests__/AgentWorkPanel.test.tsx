@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import type { Message, MessageContent } from "@/shared/types/messages";
 import type { TranscriptAgentWorkPayload } from "@/features/chat/transcript/projection/transcriptItemTypes";
@@ -47,8 +47,10 @@ const MESSAGE: Message = {
 function payload(): TranscriptAgentWorkPayload {
   return {
     workId: WORK_ID,
+    messageId: MESSAGE.id,
     message: MESSAGE,
     content: WORK_CONTENT,
+    parts: [],
     isActiveWork: false,
     hasFinalAnswer: true,
     hostsTurnFooters: false,
@@ -166,5 +168,90 @@ describe("AgentWorkPanel durable disclosure", () => {
     })?.agentWorkPanels?.[WORK_ID];
     expect(stored?.open).toBe(false);
     expect(stored?.userInteracted).toBe(true);
+  });
+});
+
+describe("AgentWorkPanel step actions", () => {
+  let registry: TranscriptRowStateRegistry;
+
+  beforeEach(() => {
+    registry = createTranscriptRowStateRegistry();
+  });
+
+  const steppedPayload = (): TranscriptAgentWorkPayload => ({
+    ...payload(),
+    content: [{ type: "text", text: "Mapping the codebase." }, ...WORK_CONTENT],
+    parts: [
+      { kind: "text", ordinal: 0 },
+      { kind: "reasoning", ordinal: 0 },
+      { kind: "tool", toolCallId: "call-1" },
+      { kind: "tool", toolCallId: "call-1" },
+    ],
+    textCount: 1,
+  });
+
+  it("offers to edit a text or thought step and to remove any step, naming it to the owner", async () => {
+    const user = userEvent.setup();
+    const onEditPart = vi.fn();
+    const onRemovePart = vi.fn();
+    render(
+      <Host registry={registry}>
+        <AgentWorkPanel
+          payload={steppedPayload()}
+          onEditPart={onEditPart}
+          onRemovePart={onRemovePart}
+        />
+      </Host>,
+    );
+    await user.click(panelTrigger());
+
+    const editButtons = screen.getAllByRole("button", { name: "Edit step" });
+    const removeButtons = screen.getAllByRole("button", {
+      name: "Remove step",
+    });
+    // The text step and the thought can be edited; the tool call only removed.
+    expect(editButtons).toHaveLength(2);
+    expect(removeButtons).toHaveLength(3);
+
+    await user.click(editButtons[0] as HTMLElement);
+    expect(onEditPart).toHaveBeenCalledWith("assistant-1", {
+      kind: "text",
+      ordinal: 0,
+    });
+    await user.click(editButtons[1] as HTMLElement);
+    expect(onEditPart).toHaveBeenLastCalledWith("assistant-1", {
+      kind: "reasoning",
+      ordinal: 0,
+    });
+    await user.click(removeButtons[2] as HTMLElement);
+    expect(onRemovePart).toHaveBeenCalledWith("assistant-1", {
+      kind: "tool",
+      toolCallId: "call-1",
+    });
+  });
+
+  it("offers nothing while the work is still running, or without an owner to tell", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(
+      <Host registry={registry}>
+        <AgentWorkPanel
+          payload={{ ...steppedPayload(), isActiveWork: true }}
+          onEditPart={vi.fn()}
+          onRemovePart={vi.fn()}
+        />
+      </Host>,
+    );
+    expect(screen.queryByRole("button", { name: "Edit step" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove step" })).toBeNull();
+    unmount();
+
+    render(
+      <Host registry={registry}>
+        <AgentWorkPanel payload={steppedPayload()} />
+      </Host>,
+    );
+    await user.click(panelTrigger());
+    expect(screen.queryByRole("button", { name: "Edit step" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove step" })).toBeNull();
   });
 });

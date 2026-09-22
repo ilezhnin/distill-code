@@ -87,6 +87,30 @@ impl TurnIds {
             assistant_message_id: uuid::Uuid::new_v4().to_string(),
         }
     }
+
+    /// The ids of a turn the renderer starts. The prompt's message id is the
+    /// renderer's own when it names one in `_meta.messageId`, so the message
+    /// it already shows and the chunks the host records agree on one id from
+    /// the first render — what lets a message be edited in place before any
+    /// reload has replayed the host's ids over the renderer's. The name is
+    /// taken out of the meta: it is the host's bookkeeping, not the bridge's.
+    /// The reply's id and the run's stay the host's, as they always were.
+    fn for_prompt(params: &mut Value) -> Self {
+        let mut ids = Self::new();
+        let named = params
+            .get_mut("_meta")
+            .and_then(Value::as_object_mut)
+            .and_then(|meta| meta.remove("messageId"));
+        if let Some(id) = named
+            .as_ref()
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty() && id.chars().count() <= 128)
+        {
+            ids.message_id = id.to_string();
+        }
+        ids
+    }
 }
 
 struct RunState {
@@ -2995,7 +3019,7 @@ impl Inner {
         ))
     }
 
-    fn snippet(text: &str) -> Option<String> {
+    pub(super) fn snippet(text: &str) -> Option<String> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return None;
@@ -3344,8 +3368,9 @@ impl Inner {
             .unwrap_or_default()
     }
 
-    async fn prompt(self: &Arc<Self>, params: Value) -> Result<Value, Value> {
-        self.start_turn(params, TurnIds::new(), false).await
+    async fn prompt(self: &Arc<Self>, mut params: Value) -> Result<Value, Value> {
+        let ids = TurnIds::for_prompt(&mut params);
+        self.start_turn(params, ids, false).await
     }
 
     /// The update that tells the renderer a turn has ended when no request of
@@ -4253,6 +4278,29 @@ mod tests {
             message_id: "user-1".to_string(),
             assistant_message_id: "reply-1".to_string(),
         }
+    }
+
+    #[test]
+    fn a_prompt_runs_under_the_message_id_the_renderer_named() {
+        let mut params = json!({
+            "sessionId": "s1",
+            "prompt": [],
+            "_meta": { "messageId": "renderer-m1", "personaId": "p1" }
+        });
+        let ids = TurnIds::for_prompt(&mut params);
+        assert_eq!(ids.message_id, "renderer-m1");
+        // The name was for the host; the bridge sees the rest of the meta.
+        assert!(params["_meta"].get("messageId").is_none());
+        assert_eq!(params["_meta"]["personaId"], "p1");
+        assert_ne!(ids.assistant_message_id, ids.message_id);
+
+        // No name, a blank one, or one too long to be an id: the host's own.
+        let mut unnamed = json!({ "sessionId": "s1", "prompt": [] });
+        assert!(!TurnIds::for_prompt(&mut unnamed).message_id.is_empty());
+        let mut blank = json!({ "_meta": { "messageId": "   " } });
+        assert!(!TurnIds::for_prompt(&mut blank).message_id.trim().is_empty());
+        let mut long = json!({ "_meta": { "messageId": "x".repeat(129) } });
+        assert_ne!(TurnIds::for_prompt(&mut long).message_id, "x".repeat(129));
     }
 
     #[test]

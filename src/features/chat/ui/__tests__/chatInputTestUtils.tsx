@@ -42,6 +42,9 @@ export function ChatInput({
   onUpdateQueue,
   onEditQueue,
   onCancelQueueEdit,
+  editingMessage,
+  onUpdateMessage,
+  onCancelMessageEdit,
   personas,
   selectedPersonaId,
   onPersonaChange,
@@ -94,6 +97,9 @@ export function ChatInput({
         onUpdateQueue,
         onEditQueue,
         onCancelQueueEdit,
+        editingMessage,
+        onUpdateMessage,
+        onCancelMessageEdit,
       }}
       personaPicker={{
         personas,

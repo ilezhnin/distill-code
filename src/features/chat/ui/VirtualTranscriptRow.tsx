@@ -178,6 +178,8 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
   const {
     onRetryMessage,
     onEditMessage,
+    onEditMessagePart,
+    onRemoveMessagePart,
     onJumpToResponseStart,
     onForkFromMessage,
     onJumpToResponseStartHintClose,
@@ -307,6 +309,12 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
               ? onRetryMessage
               : undefined
           }
+          onEditMessage={
+            (row.fragment.role === "end" || row.fragment.role === "single") &&
+            !isStreaming
+              ? onEditMessage
+              : undefined
+          }
           onJumpToResponseStart={
             message.role === "assistant" && !isStreaming
               ? handleJumpToResponseStartForRow
@@ -343,6 +351,8 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
         <AgentWorkPanel
           payload={row.agentWork}
           settleOnMount={settleAgentWorkOnMount}
+          onEditPart={onEditMessagePart}
+          onRemovePart={onRemoveMessagePart}
         />
       </div>
     );
@@ -384,7 +394,12 @@ export const VirtualTranscriptRow = memo(function VirtualTranscriptRow({
           onRetryMessage={
             message.role === "assistant" ? onRetryMessage : undefined
           }
-          onEditMessage={message.role === "user" ? onEditMessage : undefined}
+          onEditMessage={
+            (message.role === "user" || message.role === "assistant") &&
+            !isStreaming
+              ? onEditMessage
+              : undefined
+          }
           onJumpToResponseStart={
             message.role === "assistant" && !isStreaming
               ? handleJumpToResponseStartForRow

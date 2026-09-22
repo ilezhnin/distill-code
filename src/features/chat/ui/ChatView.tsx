@@ -56,7 +56,18 @@ import {
   useChatSessionStore,
   type ChatSession,
 } from "../stores/chatSessionStore";
-import type { ChatInputControls } from "../types";
+import type { ChatInputControls, ComposerMessageEdit } from "../types";
+import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
+import { formatAcpErrorMessage } from "@/shared/api/acpErrors";
+import {
+  getEditableText,
+  isEditableMessage,
+  removeTranscriptMessagePart,
+  updateTranscriptMessageText,
+} from "../lib/editMessage";
+import type { MessagePart } from "@/shared/types/messageParts";
+import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
 import { TerminalCapability } from "@/features/terminal/capabilities/TerminalCapability";
 import { useTerminalController } from "@/features/terminal/hooks/useTerminalController";
 import { TerminalDockPreview } from "@/features/terminal/ui/TerminalDockPreview";
@@ -189,7 +200,7 @@ export function ChatView({
   onOpenAgentLibrary,
   onSelectSession,
 }: ChatViewProps) {
-  const { t } = useTranslation("chat");
+  const { t } = useTranslation(["chat", "common"]);
   // The conversation has room for exactly one side panel. `sidePanelSurface`
   // decides which one owns it; neither store is cleared when the other wins,
   // so closing the last child tab brings the artifact viewer straight back.
@@ -796,6 +807,144 @@ export function ChatView({
   );
   const suppressEmptyConversationPlaceholder =
     composerHandoffInProgress || controller.queue.queuedMessage !== null;
+
+  // Editing a transcript message in place: the pencil on a message moves its
+  // text into the composer, and sending rewrites the message on the host —
+  // same id, same time, new text — then in the transcript. Held with the chat
+  // it belongs to, so a chat switch mid-edit does not carry the edit over.
+  const queryClient = useQueryClient();
+  const [messageEdit, setMessageEdit] = useState<
+    (ComposerMessageEdit & { sessionId: string }) | null
+  >(null);
+  const editingMessage =
+    messageEdit?.sessionId === sessionId ? messageEdit : null;
+  const handleEditMessage = useCallback(
+    (messageId: string) => {
+      const message = controller.messages.find(
+        (candidate) => candidate.id === messageId,
+      );
+      if (!message || !isEditableMessage(message)) {
+        return;
+      }
+      setMessageEdit({
+        sessionId,
+        messageId,
+        role: message.role,
+        text: getEditableText(message),
+      });
+    },
+    [controller.messages, sessionId],
+  );
+  // One step of a reply, edited in the composer like the answer: the step's
+  // own text goes in, and saving rewrites that step alone.
+  const handleEditMessagePart = useCallback(
+    (messageId: string, part: MessagePart) => {
+      const message = controller.messages.find(
+        (candidate) => candidate.id === messageId,
+      );
+      if (!message || !isEditableMessage(message, part)) {
+        return;
+      }
+      setMessageEdit({
+        sessionId,
+        messageId,
+        role: message.role,
+        text: getEditableText(message, part),
+        part,
+      });
+    },
+    [controller.messages, sessionId],
+  );
+  const handleCancelMessageEdit = useCallback(() => {
+    setMessageEdit(null);
+  }, []);
+  const editingPart = editingMessage?.part;
+  const handleUpdateMessage = useCallback(
+    async (messageId: string, text: string) => {
+      const message = controller.messages.find(
+        (candidate) => candidate.id === messageId,
+      );
+      if (!message) {
+        setMessageEdit(null);
+        return false;
+      }
+      try {
+        const updated = await updateTranscriptMessageText(
+          effectiveSession?.id ?? sessionId,
+          message,
+          text,
+          { queryClient, part: editingPart },
+        );
+        if (updated) {
+          setMessageEdit(null);
+        }
+        return updated;
+      } catch (error) {
+        toast.error(t("message.editFailed"), {
+          description: formatAcpErrorMessage(error),
+        });
+        return false;
+      }
+    },
+    [
+      controller.messages,
+      editingPart,
+      effectiveSession?.id,
+      queryClient,
+      sessionId,
+      t,
+    ],
+  );
+  // Removing a step takes it out of the host's transcript for good, so the
+  // bin asks first. Held with the chat it belongs to, like the edit.
+  const [pendingStepRemoval, setPendingStepRemoval] = useState<{
+    sessionId: string;
+    messageId: string;
+    part: MessagePart;
+  } | null>(null);
+  const handleRemoveMessagePart = useCallback(
+    (messageId: string, part: MessagePart) => {
+      setPendingStepRemoval({ sessionId, messageId, part });
+    },
+    [sessionId],
+  );
+  const confirmStepRemoval = useCallback(async () => {
+    const removal = pendingStepRemoval;
+    setPendingStepRemoval(null);
+    if (!removal) {
+      return;
+    }
+    const message = controller.messages.find(
+      (candidate) => candidate.id === removal.messageId,
+    );
+    if (!message) {
+      return;
+    }
+    // The steps after the removed one move up a place, so an edit of the
+    // same reply in the composer would now name the wrong step.
+    setMessageEdit((current) =>
+      current?.messageId === removal.messageId ? null : current,
+    );
+    try {
+      await removeTranscriptMessagePart(
+        effectiveSession?.id ?? removal.sessionId,
+        message,
+        removal.part,
+        { queryClient },
+      );
+    } catch (error) {
+      toast.error(t("message.removeStepFailed"), {
+        description: formatAcpErrorMessage(error),
+      });
+    }
+  }, [
+    controller.messages,
+    effectiveSession?.id,
+    pendingStepRemoval,
+    queryClient,
+    t,
+  ]);
+
   const handleForkFromMessage = useCallback(
     (messageId: string) => {
       if (!effectiveSession?.id || !onForkChat) {
@@ -980,6 +1129,9 @@ export function ChatView({
             onUpdateQueue: controller.queue.update,
             onEditQueue: controller.queue.beginEditing,
             onCancelQueueEdit: controller.queue.cancelEditing,
+            editingMessage,
+            onUpdateMessage: handleUpdateMessage,
+            onCancelMessageEdit: handleCancelMessageEdit,
             onSendQueue:
               !controller.unresolvedDeferredSend &&
               (controller.deferredWorkspaceRecord?.state.status === "failed" ||
@@ -1117,6 +1269,9 @@ export function ChatView({
       onChangeFolder={onTimelineChangeFolder}
       onOpenContextPanel={handleOpenContextPanel}
       onForkFromMessage={onForkChat ? handleForkFromMessage : undefined}
+      onEditMessage={handleEditMessage}
+      onEditMessagePart={handleEditMessagePart}
+      onRemoveMessagePart={handleRemoveMessagePart}
       showPlaceholder={showTimelineLoading}
       placeholder={conversationPlaceholder}
       footer={composerFooter}
@@ -1384,6 +1539,18 @@ export function ChatView({
             onOpenTerminalAtPath={handleOpenTerminalAtPath}
           />
         </div>
+        <ConfirmDialog
+          open={pendingStepRemoval !== null}
+          onOpenChange={(open) => {
+            if (!open) setPendingStepRemoval(null);
+          }}
+          title={t("agent_work.removeStepTitle")}
+          description={t("agent_work.removeStepDescription")}
+          cancelLabel={t("common:actions.cancel")}
+          confirmLabel={t("common:actions.remove")}
+          destructive
+          onConfirm={confirmStepRemoval}
+        />
       </ArtifactPolicyProvider>
     </ConductorTranscriptProvider>
   );

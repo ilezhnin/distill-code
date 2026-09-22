@@ -353,6 +353,14 @@
   "message": {
     "copied": "Copied",
     "defaultImageAlt": "Attached",
+    "edit": "Edit message",
+    "editingUser": "Editing your message — Enter saves it in place",
+    "editingAssistant": "Editing the agent's reply — Enter saves it in place",
+    "editingStep": "Editing a step of the agent's reply — Enter saves it in place",
+    "editingReasoning": "Editing the agent's reasoning — Enter saves it in place",
+    "editCancel": "Cancel edit",
+    "editFailed": "The message could not be updated.",
+    "removeStepFailed": "The step could not be removed.",
     "forkFromHere": "Fork session from here",
     "jumpToResponseStart": "Jump to response start",
     "jumpToFloatingResponseStart": "Jump to current response start",
@@ -798,6 +806,10 @@
     }
   },
   "agent_work": {
+    "editStep": "Edit step",
+    "removeStep": "Remove step",
+    "removeStepTitle": "Remove this step?",
+    "removeStepDescription": "The step is taken out of the chat's stored transcript. This cannot be undone.",
     "redactedThinking": "Thinking redacted",
     "summary": {
       "previousSteps_one": "{{count}} previous step",

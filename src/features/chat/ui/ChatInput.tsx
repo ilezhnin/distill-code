@@ -232,6 +232,9 @@ export function ChatInput({
     onUpdateQueue,
     onEditQueue,
     onCancelQueueEdit,
+    editingMessage = null,
+    onUpdateMessage,
+    onCancelMessageEdit,
   } = composerActions;
   const {
     personas = [],
@@ -504,6 +507,9 @@ export function ChatInput({
     isStreaming &&
     canSteerMessage &&
     visibleQueuedMessages.length === 0 &&
+    // The composer holds a transcript message being edited, not something
+    // to say to the agent.
+    editingMessage === null &&
     Boolean(onSteerMessage);
   // Steering acts on the true queue head, so it is only offered when that
   // head is also the message the user can see. In practice hidden records
@@ -753,6 +759,21 @@ export function ChatInput({
         restoredQueuedSendOptions && submittedSkills.length === 0
           ? restoredQueuedSendOptions
           : null;
+      // A transcript message being edited is rewritten where it sits; nothing
+      // is sent. The composer keeps the text until the owner ends the edit,
+      // which brings the draft it displaced back (see the edit effect).
+      if (editingMessage && onUpdateMessage) {
+        // Claimed before the call: the owner may end the edit while the
+        // update is awaited, and the effect must already know it was ours.
+        editEndedHereRef.current = true;
+        const updated = await Promise.resolve(
+          onUpdateMessage(editingMessage.messageId, submittedText.trim()),
+        );
+        if (updated === false) {
+          editEndedHereRef.current = false;
+        }
+        return updated !== false;
+      }
       const accepted =
         editingQueuedRecordId && onUpdateQueue
           ? onUpdateQueue(editingQueuedRecordId, {
@@ -817,7 +838,9 @@ export function ChatInput({
     },
     [
       clearAttachments,
+      editingMessage,
       editingQueuedRecordId,
+      onUpdateMessage,
       onUpdateQueue,
       scopedControls.attachments,
       setEditingQueuedRecord,
@@ -985,6 +1008,65 @@ export function ChatInput({
     [restoreQueuedMessage],
   );
 
+  // A transcript message being edited takes the composer over: its text
+  // replaces the draft, and the draft — text, attachments, skills — is kept
+  // aside to come back once the edit is saved or abandoned. A queue edit in
+  // progress is cancelled first, unchanged in its queue: two edits cannot
+  // share one composer. Keyed on the message's id and text alone so a keystroke
+  // while editing never re-runs it and puts the original text back.
+  const displacedDraftRef = useRef<{
+    text: string;
+    attachments: ChatAttachmentDraft[];
+    skills: ChatSkillDraft[];
+  } | null>(null);
+  // Whether the edit ended through this composer — saved or cancelled here.
+  // Only then does the displaced draft come back: an edit the owner ended
+  // from outside (the chat changed under the composer) leaves the composer
+  // to whatever that change put in it.
+  const editEndedHereRef = useRef(false);
+  const handleCancelMessageEdit = useCallback(() => {
+    editEndedHereRef.current = true;
+    onCancelMessageEdit?.();
+  }, [onCancelMessageEdit]);
+  const editingMessageId = editingMessage?.messageId ?? null;
+  const editingMessageText = editingMessage?.text ?? null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the setters are read at the moment the edit starts or ends; re-running on their identity would overwrite what the user is typing.
+  useEffect(() => {
+    if (editingMessageId !== null && editingMessageText !== null) {
+      if (displacedDraftRef.current === null) {
+        displacedDraftRef.current = {
+          text: textRef.current,
+          attachments: attachmentsRef.current,
+          skills: selectedSkillsRef.current,
+        };
+      }
+      const queuedEdit = editingQueuedRecordIdRef.current;
+      if (queuedEdit) {
+        if (queuedEdit !== "legacy") {
+          onCancelQueueEditRef.current?.(queuedEdit);
+        }
+        setEditingQueuedRecord(null);
+        setEditingQueuedPersona(null);
+        setRestoredQueuedSendOptions(null);
+      }
+      setTextWithCursorAtEnd(editingMessageText);
+      clearAttachments();
+      setSelectedSkills([]);
+      textareaRef.current?.focus();
+      return;
+    }
+    const displaced = displacedDraftRef.current;
+    const endedHere = editEndedHereRef.current;
+    displacedDraftRef.current = null;
+    editEndedHereRef.current = false;
+    if (!displaced || !endedHere) {
+      return;
+    }
+    setTextWithCursorAtEnd(displaced.text);
+    replaceAttachments(scopedControls.attachments ? displaced.attachments : []);
+    setSelectedSkills(displaced.skills);
+  }, [editingMessageId, editingMessageText]);
+
   const handleKeyDown = (event: React.KeyboardEvent) => {
     const isComposing =
       event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229;
@@ -1068,6 +1150,12 @@ export function ChatInput({
       }
     }
     if (isComposing) {
+      return;
+    }
+    if (event.key === "Escape" && editingMessage && onCancelMessageEdit) {
+      event.preventDefault();
+      event.stopPropagation();
+      handleCancelMessageEdit();
       return;
     }
     if (event.key === "Escape" && isStreaming && onStop) {
@@ -1331,6 +1419,38 @@ export function ChatInput({
                 onRemovePersona={handleRemovePersona}
                 onRemoveSkill={handleRemoveSkill}
               />
+
+              {editingMessage ? (
+                <div
+                  data-slot="editing-message"
+                  className="-mx-1 mb-2 flex items-center gap-2 rounded-full bg-surface-chat-responding-pill-bg px-3 py-1 text-surface-chat-responding-pill-fg shadow-[var(--shadow-chat)]"
+                >
+                  <Pencil
+                    className="size-3.5 shrink-0 opacity-75"
+                    aria-hidden="true"
+                  />
+                  <span className="flex-1 truncate text-sm opacity-75">
+                    {editingMessage.role === "user"
+                      ? t("message.editingUser")
+                      : editingMessage.part?.kind === "reasoning"
+                        ? t("message.editingReasoning")
+                        : editingMessage.part
+                          ? t("message.editingStep")
+                          : t("message.editingAssistant")}
+                  </span>
+                  {onCancelMessageEdit ? (
+                    <button
+                      type="button"
+                      onClick={handleCancelMessageEdit}
+                      className="shrink-0 rounded-full p-0.5 text-current opacity-75 hover:opacity-100"
+                      aria-label={t("message.editCancel")}
+                      title={t("message.editCancel")}
+                    >
+                      <X className="size-3.5" aria-hidden="true" />
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
 
               {queuedMessagePills.length > 0 && (
                 <div className="-mx-1 mb-2 max-h-36 overflow-y-auto">

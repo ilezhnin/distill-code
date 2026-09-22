@@ -122,6 +122,8 @@ export function MessageTimeline({
   searchContentRef,
   onRetryMessage,
   onEditMessage,
+  onEditMessagePart,
+  onRemoveMessagePart,
   onForkFromMessage,
   onRunShellCommand,
   onEditProject,
@@ -1304,6 +1306,8 @@ export function MessageTimeline({
     () => ({
       onRetryMessage,
       onEditMessage,
+      onEditMessagePart,
+      onRemoveMessagePart,
       onForkFromMessage,
       onRunShellCommand,
       onEditProject,
@@ -1316,6 +1320,8 @@ export function MessageTimeline({
     [
       onRetryMessage,
       onEditMessage,
+      onEditMessagePart,
+      onRemoveMessagePart,
       onForkFromMessage,
       onRunShellCommand,
       onEditProject,
