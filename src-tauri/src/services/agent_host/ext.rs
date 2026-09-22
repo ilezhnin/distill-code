@@ -469,7 +469,7 @@ const INVENTORY_SCHEMA_VERSION: u32 = 3;
 /// whenever the models Distill itself contributes change -- those are merged
 /// in at request time and never touch the probe's `updatedAt`, so without this
 /// a renderer holding a cached list has no way to notice them.
-const SHAPE_REVISION: u32 = 4;
+const SHAPE_REVISION: u32 = 5;
 
 /// The answer every model-list endpoint returns.
 ///

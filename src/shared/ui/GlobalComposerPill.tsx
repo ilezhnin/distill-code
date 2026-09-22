@@ -26,6 +26,7 @@ import { ChatInputSelectionChips } from "@/features/chat/ui/ChatInputSelectionCh
 import { MentionAutocomplete } from "@/features/chat/ui/MentionAutocomplete";
 import { AgentModelPicker } from "@/features/chat/ui/AgentModelPicker";
 import { ReasoningEffortPill } from "@/features/chat/ui/ReasoningEffortPill";
+import { FastModePill } from "@/features/chat/ui/FastModePill";
 import { resolveEffectiveReasoningEffort } from "@/features/chat/lib/effectiveReasoningEffort";
 import { ProjectInputSelector } from "@/features/chat/ui/ProjectInputSelector";
 import type { SkillMentionItem } from "@/features/chat/ui/mentionDetection";
@@ -1415,6 +1416,13 @@ export function GlobalComposerPill({
             config={effectiveReasoning.config}
             onSelect={effectiveReasoning.onSelect}
             notice={activeRunSettingsNotice}
+            disabled={handoffActive}
+            triggerTabIndex={expanded ? 0 : -1}
+          />
+
+          <FastModePill
+            fastMode={activeFastMode}
+            supportsFast={selectedModelOption?.supportsFast === true}
             disabled={handoffActive}
             triggerTabIndex={expanded ? 0 : -1}
           />

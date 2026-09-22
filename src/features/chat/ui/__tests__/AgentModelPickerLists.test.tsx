@@ -78,9 +78,9 @@ describe("ModelList", () => {
     expect(modelRowLabels("model")).toContain("Claude Next");
   });
 
-  it("shows no More models row when the harness files every row main", () => {
+  it("shows no More models row when only the current generation is available", () => {
     renderModelList({
-      models: codexModels,
+      models: codexModels.filter((model) => model.group === "main"),
       currentModelProviderId: CODEX_PROVIDER_ID,
     });
 

@@ -9,6 +9,14 @@ A chat runs on four selections:
    (`xhigh`, `default`, `ultra`). There is no app-wide effort ladder.
 4. **Fast mode** — on or off, for a model that has it.
 
+Fast has an immediate toggle after the reasoning control in both composers,
+available from the inventory before a session opens and from the acknowledged
+option afterward. Codex and Grok keep the newest numeric generation present in
+their inventory on the main page and file earlier generations under More
+models; same-generation variants (including Grok Fast) stay together. Unknown
+model IDs stay on the main page. This grouping never removes a model or changes
+the current selection.
+
 Each is chosen on its own, stored on its own, and applied in a fixed order.
 Distill used to fold the effort into the model id (`gpt-5.6-sol[low]`); that
 shape survives only as legacy input that is read, never written (see
