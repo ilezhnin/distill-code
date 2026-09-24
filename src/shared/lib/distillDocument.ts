@@ -2,8 +2,8 @@
  * One JSON document in the Distill folder, with the reading and writing that
  * every store needs done the same way.
  *
- * Three stores were keeping operator state in `localStorage`: the planner, the
- * memory and the review queue. That was browser state — invisible to a backup,
+ * Memory and the review queue used to keep operator state in `localStorage`.
+ * That was browser state, invisible to a backup,
  * unreadable by a person, gone on a reinstall — while the same operator's
  * projects, sessions and skills were real files. This is what moves them.
  *
@@ -30,7 +30,7 @@ import {
 export const DISTILL_WRITE_DEBOUNCE_MS = 250;
 
 export interface DistillDocumentOptions<T> {
-  /** Path under the root, e.g. `planner.json`. Must end in `.json`. */
+  /** Path under the root, e.g. `memory.json`. Must end in `.json`. */
   path: string;
   /** Key this document used to live under in `localStorage`. */
   legacyStorageKey: string;
@@ -109,7 +109,7 @@ function writeLegacy(key: string, payload: unknown): void {
   }
 }
 
-/** `planner.json` → `planner.corrupt-<ms>.json`, beside the original. */
+/** `memory.json` → `memory.corrupt-<ms>.json`, beside the original. */
 export function corruptCopyPath(path: string, nowMs = Date.now()): string {
   const stem = path.replace(/\.json$/i, "");
   return `${stem}.corrupt-${nowMs}.json`;

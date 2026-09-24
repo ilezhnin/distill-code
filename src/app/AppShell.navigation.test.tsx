@@ -510,7 +510,6 @@ describe("AppShell global navigation", () => {
     mockAfterNextPaint.callbacks = [];
     resetAgentBuilderSourceLifecycleForTests();
     useShortcutsDialogStore.setState({ open: false });
-    document.documentElement.removeAttribute("data-global-composer-visible");
     mockListExtensions.mockReset();
     mockListExtensions.mockResolvedValue([]);
     mockAcpCreateSession.mockReset();
@@ -1589,7 +1588,23 @@ describe("AppShell global navigation", () => {
     });
   });
 
+  it("keeps the quick composer hidden until requested and closes it on Escape", async () => {
+    mockGetPlatform.mockReturnValue("windows");
+    const user = userEvent.setup();
+    renderAppShell();
+
+    expect(screen.queryByPlaceholderText("Start a conversation")).toBeNull();
+    await user.keyboard("{Control>}n{/Control}");
+    const composer = await screen.findByPlaceholderText("Start a conversation");
+    expect(composer).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByPlaceholderText("Start a conversation")).toBeNull();
+    expect(useChatStore.getState().queuedMessageBySession).toEqual({});
+  });
+
   it("opens a chat sent from the global composer on the Home selection's model, effort and fast mode in session/new", async () => {
+    mockGetPlatform.mockReturnValue("windows");
     window.localStorage.setItem(
       "distill:preferredModelsByAgent",
       JSON.stringify({
@@ -1614,6 +1629,8 @@ describe("AppShell global navigation", () => {
     const user = userEvent.setup();
     renderAppShell();
 
+    expect(screen.queryByPlaceholderText("Start a conversation")).toBeNull();
+    await user.keyboard("{Control>}n{/Control}");
     await user.type(
       await screen.findByPlaceholderText("Start a conversation"),
       "hello{Enter}",

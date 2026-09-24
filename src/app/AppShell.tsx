@@ -317,7 +317,7 @@ function getSessionArchiveInterruptionReason(
     : null;
 }
 
-type GlobalComposerPlacement = "docked" | "centered" | "handoff";
+type GlobalComposerPlacement = "hidden" | "centered" | "handoff";
 
 const current = (id: string, label: string): TopBarBreadcrumb => ({
   id,
@@ -643,7 +643,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const [globalComposerFocusRequest, setGlobalComposerFocusRequest] =
     useState(0);
   const [globalComposerPlacement, setGlobalComposerPlacement] =
-    useState<GlobalComposerPlacement>("docked");
+    useState<GlobalComposerPlacement>("hidden");
   const [globalComposerStarterRequest, setGlobalComposerStarterRequest] =
     useState<GlobalComposerStarterRequest | null>(null);
   const [chatComposerHandoffRequest, setChatComposerHandoffRequest] =
@@ -892,7 +892,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
   const resetGlobalComposerTransition = useCallback(() => {
     clearGlobalComposerHandoffTimer();
-    setGlobalComposerPlacement("docked");
+    setGlobalComposerPlacement("hidden");
     setChatComposerHandoffSessionId(null);
     setGlobalComposerHandoffSourceRect(null);
     setGlobalComposerHandoffTargetRect(null);
@@ -2272,6 +2272,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       guardAppNavigation(() => {
         onNavigationAccepted?.();
         if (activeView === "agents" && agentsPersonaId === agentId) {
+          setGlobalComposerPlacement("centered");
           setGlobalComposerFocusRequest((request) => request + 1);
           return;
         }
@@ -3603,10 +3604,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const canUseGlobalComposerShortcut =
     startup.ready && !forceStartupLoading && !startupIssue && children == null;
   const showGlobalComposer =
-    canShowGlobalComposer &&
-    (globalComposerPlacement !== "docked" || renderedLocation.view !== "chat");
-  const showGlobalComposerShim =
-    canShowGlobalComposer && globalComposerPlacement !== "docked";
+    canShowGlobalComposer && globalComposerPlacement !== "hidden";
 
   const handleGlobalComposerHandoffStart = useCallback(
     (rect: GlobalComposerHandoffRect) => {
@@ -3717,8 +3715,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         return [current("search", "Search")];
       case "session-history":
         return [current("session-history", "Session History")];
-      case "planner":
-        return [current("planner", t("sidebar:navigation.planner"))];
       case "home":
         return [current("root", "Home")];
     }
@@ -3930,21 +3926,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     toggleSidebar,
   ]);
 
-  useEffect(() => {
-    if (showGlobalComposer) {
-      document.documentElement.setAttribute(
-        "data-global-composer-visible",
-        "true",
-      );
-    } else {
-      document.documentElement.removeAttribute("data-global-composer-visible");
-    }
-
-    return () => {
-      document.documentElement.removeAttribute("data-global-composer-visible");
-    };
-  }, [showGlobalComposer]);
-
   // The dev-only `?startupLoading` override still preempts everything, so the
   // loader stays inspectable on a fresh install.
   if (forceStartupLoading) {
@@ -4099,7 +4080,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                 handleStartProviderTroubleshootingChat
               }
             />
-            {showGlobalComposerShim ? (
+            {showGlobalComposer ? (
               <div
                 aria-hidden="true"
                 className={cn(
@@ -4114,7 +4095,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
             ) : null}
             {showGlobalComposer ? (
               <GlobalComposerPill
-                elevated={renderedLocation.view === "settings"}
                 focusRequest={globalComposerFocusRequest}
                 onSend={handleGlobalCompose}
                 onExpand={handleGlobalComposerExpand}

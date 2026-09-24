@@ -76,9 +76,9 @@ export function legacyReplayReplyId(anchor: string): string {
  * Such a reply was streamed, and every fence in it handled, under an id the
  * renderer made up at the time, which no reload can reproduce. Every scanner
  * that acts on a settled reply exactly once (wave plans, memory and recall
- * fences, planner fences) must treat it as already handled: its tombstone
+ * fences) must treat it as already handled: its tombstone
  * is filed under the old id, so a reply that now reads as new would plan the
- * wave again, keep the memory again, file the task again. Before replies
+ * wave again or keep the memory again. Before replies
  * were folded under this id they replayed as one unfinished bubble per chunk
  * and no scanner ever read them, so skipping them keeps exactly that.
  */

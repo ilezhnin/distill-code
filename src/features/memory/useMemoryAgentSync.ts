@@ -1,7 +1,7 @@
 /**
  * Draining what agents ask to remember into the operator's memory.
  *
- * Mounted once, app-wide, for the same reason the planner's drain is: an
+ * Mounted once, app-wide: an
  * agent can learn something in any session. The scope a memory lands in comes
  * from the session's own project, never from the agent — a model cannot be
  * allowed to decide which project a fact belongs to by naming one.

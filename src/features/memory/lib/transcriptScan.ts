@@ -1,7 +1,7 @@
 /**
  * The cheap halves of a transcript scan.
  *
- * Three drains — memory writes, memory recall, planner tasks — re-read the
+ * Memory writes and memory recall re-read the
  * tail of every cached transcript whenever the chat store changes, which
  * while a reply streams is once per token. Each message they look at used to
  * cost a linear search through up to two thousand tombstone ids and a join

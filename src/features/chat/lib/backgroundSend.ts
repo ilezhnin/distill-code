@@ -24,7 +24,6 @@ import {
   sessionMemoryWriteAccess,
 } from "@/features/memory/lib/memoryWriteAccess";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
-import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import {
   composeSystemPrompt,
   formatPersonaSystemPrompt,
@@ -34,7 +33,7 @@ import type { Persona } from "@/shared/types/agents";
 import type { ChatSendOptions } from "../types";
 
 /**
- * The operator's profile, pointers, memory and planner protocols for a
+ * The operator's profile, pointers, memory protocols for a
  * background session's system prompt.
  *
  * The two callers that compose an `executionSystemPrompt` themselves (the
@@ -50,7 +49,7 @@ import type { ChatSendOptions } from "../types";
  * Same exclusion as the other two paths: a wave child answers to its
  * conductor, not to the operator's list — its prompt ends "with this report
  * block and no extra commentary after it", and a one-shot task runner has no
- * business writing to memory or the planner. distillctl can address a
+ * business writing to memory. distillctl can address a
  * wave-managed session directly, so the guard is checked here too — through
  * `isWaveExecutorSession`, which also answers for a child whose graph node the
  * conductor has already evicted (the graph alone forgets it and the chat then
@@ -74,7 +73,6 @@ function composeOperatorProtocols(sessionId: string): string | undefined {
       // is not taught the fence the scanner would refuse.
       sessionMemoryWriteAccess(sessionId).allowed,
     ),
-    PLANNER_PROTOCOL_PROMPT,
   );
 }
 

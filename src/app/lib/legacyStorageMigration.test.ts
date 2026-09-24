@@ -13,12 +13,12 @@ describe("migrateLegacyStorage", () => {
   });
 
   it("renames goose-era keys", () => {
-    localStorage.setItem("goose:planner", "[]");
+    localStorage.setItem("goose:memory", "[]");
     localStorage.setItem("goose.perf", "1");
     migrateLegacyStorage(localStorage);
-    expect(localStorage.getItem("distill:planner")).toBe("[]");
+    expect(localStorage.getItem("distill:memory")).toBe("[]");
     expect(localStorage.getItem("distill.perf")).toBe("1");
-    expect(localStorage.getItem("goose:planner")).toBeNull();
+    expect(localStorage.getItem("goose:memory")).toBeNull();
     expect(localStorage.getItem("goose.perf")).toBeNull();
   });
 

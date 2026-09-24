@@ -1,11 +1,10 @@
 /**
  * Filling the app's own documents from the Distill folder, once, at startup.
  *
- * Seven stores read one file each. They are hydrated together because they
+ * The stores read one file each. They are hydrated together because they
  * share one failure mode: until the read lands, each store is empty and must
- * not write — an empty planner persisted over a full one is a deleted list,
- * and an empty memory is a forgotten one. Doing it in one place makes that
- * window short and obvious rather than three separate races.
+ * not write: an empty store persisted over a full one loses operator data.
+ * Doing it in one place makes that window short and explicit.
  *
  * Failures are logged and swallowed. A folder that cannot be read is a
  * degraded session, not a broken app: the operator keeps working, this run's
@@ -43,10 +42,6 @@ import {
   flushMemoryWrites,
   hydrateMemoryStore,
 } from "@/features/memory/stores/memoryStore";
-import {
-  flushPlannerWrites,
-  hydratePlannerStore,
-} from "@/features/planner/stores/plannerStore";
 import {
   flushReviewSeenWrites,
   hydrateReviewSeenStore,
@@ -180,7 +175,6 @@ export async function hydrateDistillStores(): Promise<void> {
   started = true;
   installDistillStoreCloseFlush();
   const results = await Promise.allSettled([
-    hydratePlannerStore(),
     hydrateMemoryStore(),
     hydrateReviewSeenStore(),
     // The conductor's three (P24). They merge rather than replace, so a node
@@ -235,7 +229,6 @@ export function setDistillHydrationDelayForTests(
  */
 export function flushDistillStores(): void {
   const flushes = [
-    flushPlannerWrites,
     flushMemoryWrites,
     flushReviewSeenWrites,
     flushConductorGraphWrites,

@@ -17,7 +17,6 @@ import { GitStateEvents } from "@/app/GitStateEvents";
 import { RendererBootLog } from "@/app/RendererBootLog";
 import { BackgroundQueuedMessageDrain } from "@/features/chat/ui/BackgroundQueuedMessageDrain";
 import { ConductorGraphSync } from "@/features/conductor/ConductorGraphSync";
-import { PlannerAgentSync } from "@/features/planner/PlannerAgentSync";
 import { MemoryAgentSync } from "@/features/memory/MemoryAgentSync";
 import { I18nProvider } from "@/shared/i18n";
 import { ThemeProvider } from "@/shared/theme/ThemeProvider";
@@ -94,7 +93,6 @@ reactRoot.render(
           <GitStateEvents />
           <BackgroundQueuedMessageDrain />
           <ConductorGraphSync />
-          <PlannerAgentSync />
           <MemoryAgentSync />
           <OptionalDistillctlBridge />
           <RendererBootLog />

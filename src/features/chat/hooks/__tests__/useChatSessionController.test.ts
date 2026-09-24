@@ -18,7 +18,6 @@ import {
 } from "@/features/memory/lib/projectResearchPrompt";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { MEMORY_PROTOCOL_PROMPT } from "@/features/memory/lib/memoryFence";
-import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import { useChatStore } from "../../stores/chatStore";
 import {
   type ChatSession,
@@ -1871,10 +1870,7 @@ describe("useChatSessionController", () => {
       undefined,
       undefined,
       {
-        executionSystemPrompt: [
-          MEMORY_PROTOCOL_PROMPT,
-          PLANNER_PROTOCOL_PROMPT,
-        ].join("\n\n"),
+        executionSystemPrompt: MEMORY_PROTOCOL_PROMPT,
       },
       undefined,
     );
@@ -3110,10 +3106,7 @@ describe("useChatSessionController", () => {
       text: "",
       attachments: [imageDraft],
       sendOptions: {
-        executionSystemPrompt: [
-          MEMORY_PROTOCOL_PROMPT,
-          PLANNER_PROTOCOL_PROMPT,
-        ].join("\n\n"),
+        executionSystemPrompt: MEMORY_PROTOCOL_PROMPT,
       },
     });
 
@@ -3145,10 +3138,7 @@ describe("useChatSessionController", () => {
         attachments: [imageDraft],
         // Migration preserves the operator protocols accepted in Home.
         sendOptions: {
-          executionSystemPrompt: [
-            MEMORY_PROTOCOL_PROMPT,
-            PLANNER_PROTOCOL_PROMPT,
-          ].join("\n\n"),
+          executionSystemPrompt: MEMORY_PROTOCOL_PROMPT,
         },
       });
     });
@@ -3595,7 +3585,6 @@ describe("useChatSessionController", () => {
         "<memory>",
         globalFact.text,
         MEMORY_PROTOCOL_PROMPT,
-        PLANNER_PROTOCOL_PROMPT,
       ];
       for (const part of operatorParts) {
         if (isPlain) expect(prompt).toContain(part);

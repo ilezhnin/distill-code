@@ -1,7 +1,7 @@
 /**
  * Finding the agent messages that ask to remember something.
  *
- * Pure, and shaped like the planner's scan: transcripts plus a "have I read
+ * Pure: transcripts plus a "have I read
  * this one" predicate in, candidates out.
  */
 

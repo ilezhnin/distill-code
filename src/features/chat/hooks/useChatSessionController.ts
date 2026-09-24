@@ -39,7 +39,6 @@ import { useWorkspaceRepository } from "@/features/workspaces/workspaceRepositor
 import { loadWorkspaceInstructionFiles } from "@/features/chat/api/workspaceContext";
 import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspaceContextPrompt";
 import { formatProjectInstructionsPrompt } from "@/features/chat/lib/projectInstructionsPrompt";
-import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import {
   composeGatedMemorySection,
   useMemoryPreferences,
@@ -948,7 +947,6 @@ export function useChatSessionController({
               effectiveProjectId,
               memoryWriteAllowed,
             ),
-            PLANNER_PROTOCOL_PROMPT,
           ),
     [
       effectiveProjectId,

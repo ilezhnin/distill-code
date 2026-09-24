@@ -85,7 +85,7 @@ Handed off once per session/provider/fingerprint, in this order:
 10. Project wiki pointer
 11. Project research pointer
 12. App skills catalog, available skills catalog
-13. `operatorProtocols` (not for wave executors): `<operator-profile>` (`user.md`), lore pointer, global research pointer, memory block, planner protocol
+13. `operatorProtocols` (not for wave executors): `<operator-profile>` (`user.md`), lore pointer, global research pointer, memory block
 
 App-authored blocks come first so operator-authored text reads as the override.
 
@@ -105,7 +105,7 @@ existing index from the first send. An explicit `executionSystemPrompt`
 passes through unchanged and does not start another research lookup.
 Wave spawns dispatch through the queue with the executor gate: project
 research stays beside the wiki pointer, while profile, lore, global research,
-memory and planner protocols are withheld. The same gate applies when any
+memory protocols are withheld. The same gate applies when any
 other path addresses a wave executor, including after its graph node is gone.
 
 ## Stages

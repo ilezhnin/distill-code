@@ -101,7 +101,6 @@ export interface GlobalComposerStarterRequest {
 
 interface GlobalComposerPillProps {
   focusRequest?: number;
-  elevated?: boolean;
   onSend: (text: string, options?: GlobalComposeOptions) => void;
   onExpand?: (
     payload: GlobalComposerExpandPayload,
@@ -122,7 +121,7 @@ interface GlobalComposerPillProps {
   sessionRunSettings?: { desired?: SessionRunSettings };
   currentExecutionTarget?: SessionExecutionTarget | null;
   onExecutionTargetChange?: (target: SessionExecutionTarget | null) => void;
-  placement?: "docked" | "centered" | "handoff";
+  placement?: "centered" | "handoff";
   mainLeftOffsetPx?: number;
   handoffSourceRect?: GlobalComposerHandoffRect | null;
   handoffTargetRect?: GlobalComposerHandoffRect | null;
@@ -208,7 +207,6 @@ function getPreferredModel(
 
 export function GlobalComposerPill({
   focusRequest = 0,
-  elevated = false,
   onSend,
   onExpand,
   onDismiss,
@@ -220,7 +218,7 @@ export function GlobalComposerPill({
   sessionRunSettings,
   currentExecutionTarget,
   onExecutionTargetChange,
-  placement = "docked",
+  placement = "centered",
   mainLeftOffsetPx = 0,
   handoffSourceRect,
   handoffTargetRect,
@@ -1102,16 +1100,11 @@ export function GlobalComposerPill({
     "--global-composer-to-top": `${handoffTargetRect?.top ?? handoffSourceRect?.top ?? 0}px`,
     "--global-composer-to-width": `${handoffTargetRect?.width ?? handoffSourceRect?.width ?? 0}px`,
     "--global-composer-to-height": `${handoffTargetRect?.height ?? handoffSourceRect?.height ?? 0}px`,
-    ...(placement === "docked"
-      ? { bottom: "var(--app-global-composer-bottom, calc(1.75rem + 1rem))" }
-      : {}),
   } as CSSProperties;
   const placementClassName =
     placement === "handoff" && handoffSourceRect
       ? "global-composer-pill-flip fixed overflow-hidden"
-      : placement === "docked"
-        ? "bottom-[var(--app-global-composer-bottom,calc(1.75rem+1rem))] right-3 w-[482px] max-w-[calc(100vw-24px)]"
-        : "left-[calc(var(--global-composer-main-left)+(100vw-var(--global-composer-main-left))/2)] top-1/2 w-[min(680px,calc(100vw-var(--global-composer-main-left)-48px))] max-w-[calc(100vw-24px)] -translate-x-1/2 -translate-y-1/2 shadow-global-composer-pill-hover";
+      : "left-[calc(var(--global-composer-main-left)+(100vw-var(--global-composer-main-left))/2)] top-1/2 w-[min(680px,calc(100vw-var(--global-composer-main-left)-48px))] max-w-[calc(100vw-24px)] -translate-x-1/2 -translate-y-1/2 shadow-global-composer-pill-hover";
 
   return (
     <div
@@ -1134,7 +1127,6 @@ export function GlobalComposerPill({
       className={cn(
         "global-composer-pill group relative fixed z-40 isolate flex flex-col rounded-composer bg-card-glass py-2 pl-4 pr-2.5 [backdrop-filter:var(--backdrop-panel)] [-webkit-backdrop-filter:var(--backdrop-panel)] transition-[box-shadow,opacity,transform] duration-300 ease-out hover:shadow-global-composer-pill-hover",
         placementClassName,
-        elevated && placement === "docked" && "shadow-elevated",
         placement === "centered" && "global-composer-pill-centered",
         placement === "handoff" &&
           "pointer-events-none global-composer-pill-handoff",
@@ -1307,11 +1299,7 @@ export function GlobalComposerPill({
                     handleSend();
                     return;
                   }
-                  if (
-                    event.key === "Escape" &&
-                    !mentionOpen &&
-                    placement !== "docked"
-                  ) {
+                  if (event.key === "Escape" && !mentionOpen) {
                     event.preventDefault();
                     onDismiss?.();
                   }
