@@ -15,13 +15,8 @@ import {
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import type { QueuedMessageRecord } from "@/features/chat/stores/chatStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
-import {
-  PROJECT_RESEARCH_POINTER_PROMPT,
-  resetProjectResearchPresenceForTests,
-} from "@/features/memory/lib/projectResearchPrompt";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
-import { resetRootInstructionsForTests } from "@/features/chat/lib/rootInstructionsPrompt";
 
 const mocks = vi.hoisted(() => ({
   loadSessionMessages: vi.fn(),
@@ -32,8 +27,6 @@ const mocks = vi.hoisted(() => ({
   acpPrepareSession: vi.fn(),
   listProjects: vi.fn(),
   listProjectDocuments: vi.fn(),
-  getDistillRoot: vi.fn(),
-  readDistillInstructions: vi.fn(),
 }));
 
 vi.mock("@/features/chat/lib/sessionActivation", async (importOriginal) => ({
@@ -89,13 +82,6 @@ vi.mock("@/shared/api/projectStore", () => ({
     mocks.listProjectDocuments(...args),
   readProjectDocument: vi.fn(),
   writeProjectDocument: vi.fn(),
-}));
-
-vi.mock("@/shared/api/distillStore", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/shared/api/distillStore")>()),
-  getDistillRoot: (...args: unknown[]) => mocks.getDistillRoot(...args),
-  readDistillInstructions: (...args: unknown[]) =>
-    mocks.readDistillInstructions(...args),
 }));
 
 const SESSION_ID = "draft-session";
@@ -313,8 +299,6 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetSessionTargetCoordinatorsForTests();
-    resetRootInstructionsForTests();
-    resetProjectResearchPresenceForTests();
     mocks.loadSessionMessages.mockResolvedValue(true);
     mocks.sendPromptInBackground.mockResolvedValue(undefined);
     mocks.loadWorkspaceInstructionFiles.mockResolvedValue([]);
@@ -323,14 +307,6 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
     mocks.acpPrepareSession.mockResolvedValue(undefined);
     mocks.listProjects.mockResolvedValue([]);
     mocks.listProjectDocuments.mockResolvedValue([]);
-    mocks.getDistillRoot.mockResolvedValue(null);
-    mocks.readDistillInstructions.mockResolvedValue({
-      "prompt.md": null,
-      "security-posture.md": null,
-      "user.md": null,
-      "lore.md": null,
-      "research/index.md": null,
-    });
     useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
     useMemoryStore.setState({
       entries: [],
@@ -381,8 +357,7 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
     expect(beforeUserMessageCommitted).not.toHaveBeenCalled();
   });
 
-  const ROOT = "/tmp/distill-root";
-  const RESEARCH_PROJECT = {
+  const PROJECT = {
     id: "p-1",
     path: "/projects/quarp",
     name: "Quarp",
@@ -404,7 +379,7 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
     return options?.executionSystemPrompt ?? "";
   }
 
-  async function seedOperatorAndResearch(): Promise<void> {
+  async function seedProjectMemory(): Promise<void> {
     seedSession();
     useChatSessionStore.setState((state) => ({
       sessions: state.sessions.map((session) => ({
@@ -412,21 +387,19 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
         projectId: "p-1",
       })),
     }));
-    useProjectStore.setState({ projects: [RESEARCH_PROJECT] });
-    mocks.listProjects.mockResolvedValue([RESEARCH_PROJECT]);
-    mocks.getDistillRoot.mockResolvedValue({
-      root: ROOT,
-      forcedByEnvironment: false,
+    useProjectStore.setState({ projects: [PROJECT] });
+    mocks.listProjects.mockResolvedValue([PROJECT]);
+    useMemoryStore.setState({
+      entries: [
+        {
+          id: "m-1",
+          text: "A standing memory.",
+          scope: "global",
+          projectId: null,
+          createdAt: 0,
+        },
+      ],
     });
-    mocks.readDistillInstructions.mockResolvedValue({
-      "prompt.md": "Be brief.",
-      "security-posture.md": "Never disclose secrets.",
-      "user.md": "The operator prefers short answers.",
-      "lore.md": "We built Distill together.",
-      "research/index.md": "| 01 | topic | decided | never |",
-    });
-    mocks.listProjectDocuments.mockResolvedValue(["index.md"]);
-    // The first queued send must discover the index without a prior view.
   }
 
   function seedWaveChild(): void {
@@ -449,8 +422,8 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
     });
   }
 
-  it("carries operator-profile on a plain queued chat", async () => {
-    await seedOperatorAndResearch();
+  it("carries project instructions and memory on a plain queued chat", async () => {
+    await seedProjectMemory();
 
     await sendQueuedPromptToExistingSessionInBackground(
       SESSION_ID,
@@ -459,13 +432,12 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
 
     const prompt = dispatchedExecutionPrompt();
     expect(prompt).toContain("Follow Quarp's project instructions.");
-    expect(prompt).toContain("<operator-profile>");
-    expect(prompt).toContain("The operator prefers short answers.");
-    expect(prompt).toContain(PROJECT_RESEARCH_POINTER_PROMPT);
+    expect(prompt).toContain("<memory>");
+    expect(prompt).toContain("A standing memory.");
   });
 
-  it("keeps operator blocks away from a wave-managed queued child and still carries the project research pointer", async () => {
-    await seedOperatorAndResearch();
+  it("keeps memory away from a wave-managed queued child while carrying project instructions", async () => {
+    await seedProjectMemory();
     seedWaveChild();
 
     await sendQueuedPromptToExistingSessionInBackground(
@@ -475,16 +447,12 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
 
     const prompt = dispatchedExecutionPrompt();
     expect(prompt).toContain("Follow Quarp's project instructions.");
-    expect(prompt).toContain(PROJECT_RESEARCH_POINTER_PROMPT);
-    expect(prompt).not.toContain("<operator-profile>");
-    expect(prompt).not.toContain("The operator prefers short answers.");
-    expect(prompt).not.toContain(
-      `The operator keeps a map of past joint work at ${ROOT}/lore.md`,
-    );
+    expect(prompt).not.toContain("<memory>");
+    expect(prompt).not.toContain("A standing memory.");
   });
 
-  it("keeps operator blocks away from an evicted wave executor queued send and still carries the project research pointer", async () => {
-    await seedOperatorAndResearch();
+  it("keeps memory away from an evicted wave executor while carrying project instructions", async () => {
+    await seedProjectMemory();
     useMemoryStore.setState({ waveExecutorSessionIds: [SESSION_ID] });
 
     await sendQueuedPromptToExistingSessionInBackground(
@@ -494,7 +462,7 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
 
     const prompt = dispatchedExecutionPrompt();
     expect(prompt).toContain("Follow Quarp's project instructions.");
-    expect(prompt).toContain(PROJECT_RESEARCH_POINTER_PROMPT);
-    expect(prompt).not.toContain("<operator-profile>");
+    expect(prompt).not.toContain("<memory>");
+    expect(prompt).not.toContain("A standing memory.");
   });
 });

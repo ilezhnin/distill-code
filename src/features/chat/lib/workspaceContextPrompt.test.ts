@@ -17,9 +17,6 @@ describe("formatWorkspaceInstructionsPrompt", () => {
     ]);
 
     expect(prompt).toContain("<workspace-instructions>");
-    expect(prompt).toContain(
-      "The following AGENTS.md and .distill/AGENTS.md files apply to the included workspaces.",
-    );
     expect(prompt).toContain("## /repo/AGENTS.md");
     expect(prompt).toContain("- /repo/app\n- /repo/worker");
     expect(prompt).toContain("Use pnpm.");

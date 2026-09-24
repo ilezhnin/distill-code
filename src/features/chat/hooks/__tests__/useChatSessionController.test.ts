@@ -10,12 +10,7 @@ import { setMultiWorkspaceEnabled } from "@/features/workspaces/multiWorkspacePr
 import type { Persona } from "@/shared/types/agents";
 import type { ChatAttachmentDraft } from "@/shared/types/messages";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
-import { resetRootInstructionsForTests } from "@/features/chat/lib/rootInstructionsPrompt";
 import { resetProjectWikiPresenceForTests } from "@/features/memory/lib/projectWikiPrompt";
-import {
-  PROJECT_RESEARCH_POINTER_PROMPT,
-  resetProjectResearchPresenceForTests,
-} from "@/features/memory/lib/projectResearchPrompt";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { MEMORY_PROTOCOL_PROMPT } from "@/features/memory/lib/memoryFence";
 import { useChatStore } from "../../stores/chatStore";
@@ -63,8 +58,6 @@ const mockLoadWorkspaceInstructionFiles = vi.fn();
 const mockListProjectDocuments = vi.fn();
 const mockReadProjectDocument = vi.fn();
 const mockWriteProjectDocument = vi.fn();
-const mockGetDistillRoot = vi.fn();
-const mockReadDistillInstructions = vi.fn();
 const mockPickerState = {
   selectedAgentId: "claude-acp",
   pickerAgents: [{ id: "claude-acp", label: "Claude Code" }],
@@ -235,13 +228,6 @@ vi.mock("@/shared/api/projectStore", () => ({
   readProjectDocument: (...args: unknown[]) => mockReadProjectDocument(...args),
   writeProjectDocument: (...args: unknown[]) =>
     mockWriteProjectDocument(...args),
-}));
-
-vi.mock("@/shared/api/distillStore", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/shared/api/distillStore")>()),
-  getDistillRoot: (...args: unknown[]) => mockGetDistillRoot(...args),
-  readDistillInstructions: (...args: unknown[]) =>
-    mockReadDistillInstructions(...args),
 }));
 
 vi.mock("@/features/agents/hooks/useProviderSelection", () => ({
@@ -475,17 +461,7 @@ describe("useChatSessionController", () => {
       immediatelyResolved([]),
     );
     resetProjectWikiPresenceForTests();
-    resetProjectResearchPresenceForTests();
-    resetRootInstructionsForTests();
     useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
-    mockGetDistillRoot.mockReset().mockResolvedValue(null);
-    mockReadDistillInstructions.mockReset().mockResolvedValue({
-      "prompt.md": null,
-      "security-posture.md": null,
-      "user.md": null,
-      "lore.md": null,
-      "research/index.md": null,
-    });
     mockListProjectDocuments.mockReset().mockResolvedValue([]);
     mockReadProjectDocument.mockReset().mockResolvedValue(null);
     mockWriteProjectDocument.mockReset().mockResolvedValue(undefined);
@@ -3456,11 +3432,7 @@ describe("useChatSessionController", () => {
     });
   });
 
-  describe("the operator's root files and project research pointer", () => {
-    const ROOT = "/tmp/distill-root";
-    const loreSentence = `The operator keeps a map of past joint work at ${ROOT}/lore.md`;
-    const globalResearchSentence = `Decision records live under ${ROOT}/research/`;
-
+  describe("project instructions and memory on queued sends", () => {
     function composedSystemPrompt(): string {
       const calls = mockUseChatHook.mock.calls;
       const [, , systemPromptOverride] = (calls[calls.length - 1] ?? []) as [
@@ -3471,21 +3443,7 @@ describe("useChatSessionController", () => {
       return systemPromptOverride ?? "";
     }
 
-    function seedOperatorFiles() {
-      mockGetDistillRoot.mockResolvedValue({
-        root: ROOT,
-        forcedByEnvironment: false,
-      });
-      mockReadDistillInstructions.mockResolvedValue({
-        "prompt.md": "Be brief.",
-        "security-posture.md": "Never disclose secrets.",
-        "user.md": "The operator prefers short answers.",
-        "lore.md": "We built Distill together.",
-        "research/index.md": "| 01 | topic | decided | never |",
-      });
-    }
-
-    function seedProjectResearch() {
+    function seedProject() {
       useProjectStore.setState({
         projects: [
           {
@@ -3513,9 +3471,6 @@ describe("useChatSessionController", () => {
             : session,
         ),
       }));
-      mockListProjectDocuments.mockImplementation((_root, dir) =>
-        immediatelyResolved(dir === "research" ? ["index.md"] : []),
-      );
     }
 
     function seedWaveChild() {
@@ -3549,8 +3504,7 @@ describe("useChatSessionController", () => {
     function seedRunningChat(
       identity: "plain" | "managedBy wave" | "waveExecutorSessionIds",
     ) {
-      seedOperatorFiles();
-      seedProjectResearch();
+      seedProject();
       useMemoryStore.setState({ entries: [globalFact] });
       if (identity === "managedBy wave") seedWaveChild();
       if (identity === "waveExecutorSessionIds") {
@@ -3573,15 +3527,10 @@ describe("useChatSessionController", () => {
       });
     }
 
-    function expectOperatorScope(prompt: string, isPlain: boolean) {
+    function expectMemoryScope(prompt: string, isPlain: boolean) {
       expect(prompt).toContain("<project-instructions>");
       expect(prompt).toContain("Follow Quarp's project instructions.");
-      expect(prompt).toContain(PROJECT_RESEARCH_POINTER_PROMPT);
       const operatorParts = [
-        "<operator-profile>",
-        "The operator prefers short answers.",
-        loreSentence,
-        globalResearchSentence,
         "<memory>",
         globalFact.text,
         MEMORY_PROTOCOL_PROMPT,
@@ -3592,7 +3541,7 @@ describe("useChatSessionController", () => {
       }
       if (isPlain) {
         const orderedParts = [
-          PROJECT_RESEARCH_POINTER_PROMPT,
+          "Follow Quarp's project instructions.",
           ...operatorParts,
         ];
         for (let index = 1; index < orderedParts.length; index += 1) {
@@ -3607,10 +3556,13 @@ describe("useChatSessionController", () => {
       "plain",
       "managedBy wave",
       "waveExecutorSessionIds",
-    ] as const)("accepts a %s message during the first root read without freezing an incomplete prompt", async (identity) => {
+    ] as const)("accepts a %s message during the first workspace read without freezing an incomplete prompt", async (identity) => {
       seedRunningChat(identity);
-      const files = deferred<Record<string, string | null>>();
-      mockReadDistillInstructions.mockReturnValue(files.promise);
+      const files =
+        deferred<
+          Array<{ path: string; content: string; workspacePaths: string[] }>
+        >();
+      mockLoadWorkspaceInstructionFiles.mockReturnValue(files.promise);
       const enqueue = vi.fn().mockReturnValue(true);
       mockUseMessageQueue.mockImplementation(() => ({
         queuedMessage: null,
@@ -3621,7 +3573,7 @@ describe("useChatSessionController", () => {
         useChatSessionController({ sessionId: "session-1" }),
       );
       await waitFor(() =>
-        expect(mockReadDistillInstructions).toHaveBeenCalledTimes(1),
+        expect(mockLoadWorkspaceInstructionFiles).toHaveBeenCalledTimes(1),
       );
       expect(result.current.workspaceContextReady).toBe(false);
       act(() => {
@@ -3633,11 +3585,13 @@ describe("useChatSessionController", () => {
       expect(mockUseChatSendMessage).not.toHaveBeenCalled();
 
       await act(async () => {
-        files.resolve({
-          "user.md": "The operator prefers short answers.",
-          "lore.md": "Earlier work.",
-          "research/index.md": "Decision index.",
-        });
+        files.resolve([
+          {
+            path: "/work/quarp/AGENTS.md",
+            content: "Workspace instructions.",
+            workspacePaths: ["/work/quarp"],
+          },
+        ]);
         await files.promise;
       });
       await waitFor(() =>
@@ -3659,7 +3613,10 @@ describe("useChatSessionController", () => {
           acceptedOptions,
         );
       });
-      expectOperatorScope(
+      expect(
+        mockUseChatSendMessage.mock.calls[0][4].executionSystemPrompt,
+      ).toContain("Workspace instructions.");
+      expectMemoryScope(
         mockUseChatSendMessage.mock.calls[0][4].executionSystemPrompt,
         identity === "plain",
       );
@@ -3669,7 +3626,7 @@ describe("useChatSessionController", () => {
       "plain",
       "managedBy wave",
       "waveExecutorSessionIds",
-    ] as const)("freezes profile, lore, global research, project research and memory at queue acceptance for %s", async (identity) => {
+    ] as const)("freezes project instructions and memory at queue acceptance for %s", async (identity) => {
       seedRunningChat(identity);
       const enqueue = vi.fn().mockReturnValue(true);
       mockUseMessageQueue.mockImplementation(() => ({
@@ -3682,7 +3639,7 @@ describe("useChatSessionController", () => {
       );
       await waitFor(() => {
         expect(result.current.workspaceContextReady).toBe(true);
-        expectOperatorScope(composedSystemPrompt(), identity === "plain");
+        expectMemoryScope(composedSystemPrompt(), identity === "plain");
       });
       expect(latestMessageQueueArgs()[1]).toBe("thinking");
 
@@ -3695,15 +3652,10 @@ describe("useChatSessionController", () => {
       const capturedOptions = enqueue.mock.calls[0][3] as ChatSendOptions;
       const capturedPrompt = capturedOptions.executionSystemPrompt;
       expect(capturedPrompt).toBeTypeOf("string");
-      expectOperatorScope(capturedPrompt ?? "", identity === "plain");
+      expectMemoryScope(capturedPrompt ?? "", identity === "plain");
 
       // A later turn refreshes the visible context; the accepted send must
-      // still carry exactly the profile and memory it captured earlier.
-      mockReadDistillInstructions.mockResolvedValue({
-        "user.md": "The operator now prefers detailed answers.",
-        "lore.md": null,
-        "research/index.md": null,
-      });
+      // still carry exactly the memory it captured earlier.
       await act(async () => {
         useMemoryStore.setState({
           entries: [
@@ -3716,9 +3668,6 @@ describe("useChatSessionController", () => {
       });
       if (identity === "plain") {
         await waitFor(() => {
-          expect(composedSystemPrompt()).toContain(
-            "The operator now prefers detailed answers.",
-          );
           expect(composedSystemPrompt()).toContain(
             "A newer memory after acceptance.",
           );
@@ -3740,74 +3689,10 @@ describe("useChatSessionController", () => {
       const dispatchedPrompt =
         mockUseChatSendMessage.mock.calls[0][4].executionSystemPrompt;
       expect(dispatchedPrompt).toBe(capturedPrompt);
-      expectOperatorScope(dispatchedPrompt, identity === "plain");
+      expectMemoryScope(dispatchedPrompt, identity === "plain");
       expect(dispatchedPrompt).not.toContain(
         "A newer memory after acceptance.",
       );
-      expect(dispatchedPrompt).not.toContain(
-        "The operator now prefers detailed answers.",
-      );
-    });
-
-    it("waits for changed root files before capturing the next turn", async () => {
-      seedRunningChat("plain");
-      const enqueue = vi.fn().mockReturnValue(true);
-      mockUseMessageQueue.mockImplementation(() => ({
-        queuedMessage: null,
-        enqueue,
-        dismiss: vi.fn(),
-      }));
-      const { result } = renderHook(() =>
-        useChatSessionController({ sessionId: "session-1" }),
-      );
-      await waitFor(() =>
-        expect(result.current.workspaceContextReady).toBe(true),
-      );
-
-      const files = deferred<Record<string, string | null>>();
-      mockReadDistillInstructions.mockReturnValue(files.promise);
-      act(() => {
-        useChatSessionStore
-          .getState()
-          .patchSession("session-1", { updatedAt: "2026-09-22T14:00:00.000Z" });
-      });
-      expect(result.current.workspaceContextReady).toBe(false);
-      act(() => {
-        expect(result.current.handleSend("use the new instructions")).toBe(
-          true,
-        );
-      });
-      const sendOptions = enqueue.mock.calls[0][3] as ChatSendOptions;
-      expect(sendOptions.executionSystemPrompt).toBeUndefined();
-      await act(async () => {
-        files.resolve({
-          "user.md": "The operator now prefers detailed answers.",
-        });
-        await files.promise;
-      });
-      await waitFor(() =>
-        expect(result.current.workspaceContextReady).toBe(true),
-      );
-      const drainSend = latestMessageQueueArgs()[2] as (
-        text: string,
-        persona: undefined,
-        attachments: undefined,
-        options: ChatSendOptions,
-      ) => Promise<boolean>;
-      await act(async () => {
-        await drainSend(
-          "use the new instructions",
-          undefined,
-          undefined,
-          sendOptions,
-        );
-      });
-      const prompt =
-        mockUseChatSendMessage.mock.calls[0][4].executionSystemPrompt;
-      expect(prompt).toContain("The operator now prefers detailed answers.");
-      expect(prompt).not.toContain("The operator prefers short answers.");
-      expect(prompt).not.toContain(loreSentence);
-      expect(prompt).not.toContain(globalResearchSentence);
     });
 
     it.each([
@@ -3861,8 +3746,8 @@ describe("useChatSessionController", () => {
       const consoleError = vi
         .spyOn(console, "error")
         .mockImplementation(() => {});
-      mockReadDistillInstructions.mockRejectedValue(
-        new Error("Root unavailable"),
+      mockLoadWorkspaceInstructionFiles.mockRejectedValue(
+        new Error("Workspace unavailable"),
       );
       mockListProjectDocuments.mockRejectedValue(
         new Error("Project unavailable"),
@@ -3873,13 +3758,10 @@ describe("useChatSessionController", () => {
       await waitFor(() =>
         expect(result.current.workspaceContextReady).toBe(true),
       );
-      expect(composedSystemPrompt()).not.toContain("<operator-profile>");
-      expect(composedSystemPrompt()).not.toContain(
-        PROJECT_RESEARCH_POINTER_PROMPT,
-      );
+      expect(composedSystemPrompt()).not.toContain("<workspace-instructions>");
       expect(composedSystemPrompt()).toContain(globalFact.text);
       expect(consoleError).toHaveBeenCalledWith(
-        "Failed to read Distill root instructions:",
+        "Failed to load workspace instructions:",
         expect.any(Error),
       );
     });
@@ -3888,14 +3770,14 @@ describe("useChatSessionController", () => {
       "plain",
       "managedBy wave",
       "waveExecutorSessionIds",
-    ] as const)("derives profile, lore, global research, project research and memory for an uncaptured %s queue send", async (identity) => {
+    ] as const)("derives project instructions and memory for an uncaptured %s queue send", async (identity) => {
       seedRunningChat(identity);
       const { result, rerender } = renderHook(() =>
         useChatSessionController({ sessionId: "session-1" }),
       );
       await waitFor(() => {
         expect(result.current.workspaceContextReady).toBe(true);
-        expectOperatorScope(composedSystemPrompt(), identity === "plain");
+        expectMemoryScope(composedSystemPrompt(), identity === "plain");
       });
       mockUseChatRuntime.chatState = "idle";
       rerender();
@@ -3907,63 +3789,10 @@ describe("useChatSessionController", () => {
       });
 
       expect(mockUseChatSendMessage).toHaveBeenCalledTimes(1);
-      expectOperatorScope(
+      expectMemoryScope(
         mockUseChatSendMessage.mock.calls[0][4].executionSystemPrompt,
         identity === "plain",
       );
-    });
-
-    it("reaches an ordinary chat as operator-profile, lore and research pointers", async () => {
-      seedOperatorFiles();
-      seedProjectResearch();
-
-      renderHook(() => useChatSessionController({ sessionId: "session-1" }));
-
-      await waitFor(() => {
-        const prompt = composedSystemPrompt();
-        expect(prompt).toContain("<operator-profile>");
-        expect(prompt).toContain("The operator prefers short answers.");
-        expect(prompt).toContain(loreSentence);
-        expect(prompt).toContain(globalResearchSentence);
-        expect(prompt).toContain(PROJECT_RESEARCH_POINTER_PROMPT);
-      });
-    });
-
-    it("keeps operator blocks away from a wave-managed child and still carries the project research pointer", async () => {
-      seedOperatorFiles();
-      seedProjectResearch();
-      seedWaveChild();
-
-      renderHook(() => useChatSessionController({ sessionId: "session-1" }));
-
-      await waitFor(() => {
-        expect(composedSystemPrompt()).toContain(
-          PROJECT_RESEARCH_POINTER_PROMPT,
-        );
-      });
-      const prompt = composedSystemPrompt();
-      expect(prompt).not.toContain("<operator-profile>");
-      expect(prompt).not.toContain(loreSentence);
-      expect(prompt).not.toContain(globalResearchSentence);
-      expect(prompt).not.toContain("The operator prefers short answers.");
-    });
-
-    it("keeps operator blocks away from a wave child whose graph node was evicted and still carries the project research pointer", async () => {
-      seedOperatorFiles();
-      seedProjectResearch();
-      useMemoryStore.setState({ waveExecutorSessionIds: ["session-1"] });
-
-      renderHook(() => useChatSessionController({ sessionId: "session-1" }));
-
-      await waitFor(() => {
-        expect(composedSystemPrompt()).toContain(
-          PROJECT_RESEARCH_POINTER_PROMPT,
-        );
-      });
-      const prompt = composedSystemPrompt();
-      expect(prompt).not.toContain("<operator-profile>");
-      expect(prompt).not.toContain(loreSentence);
-      expect(prompt).not.toContain(globalResearchSentence);
     });
   });
 });

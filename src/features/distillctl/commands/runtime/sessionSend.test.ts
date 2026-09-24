@@ -10,13 +10,7 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
-import { resetRootInstructionsForTests } from "@/features/chat/lib/rootInstructionsPrompt";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
-import {
-  PROJECT_RESEARCH_POINTER_PROMPT,
-  refreshProjectResearchPresence,
-  resetProjectResearchPresenceForTests,
-} from "@/features/memory/lib/projectResearchPrompt";
 import { resetProjectWikiPresenceForTests } from "@/features/memory/lib/projectWikiPrompt";
 import { MEMORY_PROTOCOL_PROMPT } from "@/features/memory/lib/memoryFence";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
@@ -44,8 +38,6 @@ const mocks = vi.hoisted(() => ({
   resolveSessionCwd: vi.fn(),
   loadWorkspaceInstructionFiles: vi.fn(),
   listSkills: vi.fn(),
-  getDistillRoot: vi.fn(),
-  readDistillInstructions: vi.fn(),
   listProjectDocuments: vi.fn(),
   listProjects: vi.fn(),
 }));
@@ -87,13 +79,6 @@ vi.mock("@/features/chat/api/workspaceContext", () => ({
 
 vi.mock("@/features/skills/api/skills", () => ({
   listSkills: (...args: unknown[]) => mocks.listSkills(...args),
-}));
-
-vi.mock("@/shared/api/distillStore", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/shared/api/distillStore")>()),
-  getDistillRoot: (...args: unknown[]) => mocks.getDistillRoot(...args),
-  readDistillInstructions: (...args: unknown[]) =>
-    mocks.readDistillInstructions(...args),
 }));
 
 vi.mock("@/shared/api/projectStore", async (importOriginal) => ({
@@ -175,8 +160,6 @@ describe("sendPromptToExistingSessionInBackground", () => {
     resetSessionTargetCoordinatorsForTests();
     vi.resetAllMocks();
     window.localStorage.clear();
-    resetRootInstructionsForTests();
-    resetProjectResearchPresenceForTests();
     resetProjectWikiPresenceForTests();
     useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
     useMemoryStore.setState({
@@ -184,8 +167,6 @@ describe("sendPromptToExistingSessionInBackground", () => {
       archived: [],
       waveExecutorSessionIds: [],
     });
-    mocks.getDistillRoot.mockResolvedValue(null);
-    mocks.readDistillInstructions.mockResolvedValue({});
     mocks.listProjectDocuments.mockResolvedValue([]);
     mocks.listProjects.mockResolvedValue([]);
     mocks.preparedProviderBySession.clear();
@@ -229,20 +210,8 @@ describe("sendPromptToExistingSessionInBackground", () => {
     mocks.listSkills.mockResolvedValue([]);
   });
 
-  describe("operator protocols on distillctl session send", () => {
-    const ROOT = "/tmp/distill-root";
-    const profile = "The operator prefers short answers.";
-    const lore = `The operator keeps a map of past joint work at ${ROOT}/lore.md: projects, decisions, results, lessons. Read it when the task touches earlier work. Only the conductor loop updates it.`;
-    const research = `Decision records live under ${ROOT}/research/. Read ${ROOT}/research/index.md before revisiting a settled question.`;
+  describe("project instructions and memory on distillctl sends", () => {
     const fact = "Keep this standing operator fact.";
-    const rootFiles = {
-      "prompt.md": "Be brief.",
-      "security-posture.md": "Never disclose secrets.",
-      "user.md": profile,
-      "lore.md": "We built Distill together.",
-      "research/index.md": "| 01 | topic | decided | never |",
-    };
-
     beforeEach(async () => {
       useChatStore.setState({
         messagesBySession: {
@@ -282,15 +251,6 @@ describe("sendPromptToExistingSessionInBackground", () => {
         ],
       });
       mocks.listProjects.mockResolvedValue(useProjectStore.getState().projects);
-      mocks.getDistillRoot.mockResolvedValue({
-        root: ROOT,
-        forcedByEnvironment: false,
-      });
-      mocks.readDistillInstructions.mockResolvedValue(rootFiles);
-      mocks.listProjectDocuments.mockImplementation(async (_root, dir) =>
-        dir === "research" ? ["index.md"] : [],
-      );
-      // Both instruction caches stay cold until the send itself reads them.
     });
 
     function dispatchedSystemPrompt(): string {
@@ -298,31 +258,13 @@ describe("sendPromptToExistingSessionInBackground", () => {
       return mocks.acpSendMessage.mock.calls[0][2].systemPrompt;
     }
 
-    it("delivers profile, lore, global research, project research and memory from a cold root cache", async () => {
-      let resolveRead!: (files: typeof rootFiles) => void;
-      mocks.readDistillInstructions.mockReturnValue(
-        new Promise<typeof rootFiles>((resolve) => {
-          resolveRead = resolve;
-        }),
-      );
-
-      const send = sendPromptToExistingSessionInBackground(SESSION_ID, "hello");
-      await vi.waitFor(() => {
-        expect(mocks.readDistillInstructions).toHaveBeenCalledTimes(1);
-      });
-      expect(mocks.acpSendMessage).not.toHaveBeenCalled();
-      resolveRead(rootFiles);
-      await send;
+    it("delivers project instructions and memory to a plain chat", async () => {
+      await sendPromptToExistingSessionInBackground(SESSION_ID, "hello");
 
       const prompt = dispatchedSystemPrompt();
       const orderedParts = [
         "<project-instructions>",
         "Follow Quarp's project instructions.",
-        PROJECT_RESEARCH_POINTER_PROMPT,
-        "<operator-profile>",
-        profile,
-        lore,
-        research,
         "<memory>",
         fact,
         MEMORY_PROTOCOL_PROMPT,
@@ -333,14 +275,12 @@ describe("sendPromptToExistingSessionInBackground", () => {
           prompt.indexOf(orderedParts[index - 1]),
         );
       }
-      expect(prompt).not.toContain(rootFiles["lore.md"]);
-      expect(prompt).not.toContain(rootFiles["research/index.md"]);
     });
 
     it.each([
       "managedBy wave",
       "waveExecutorSessionIds",
-    ] as const)("delivers only project research to a wave executor identified by %s", async (identity) => {
+    ] as const)("delivers project instructions without memory to a wave executor identified by %s", async (identity) => {
       if (identity === "managedBy wave") {
         useConductorGraphStore.setState({
           nodesById: {
@@ -365,75 +305,54 @@ describe("sendPromptToExistingSessionInBackground", () => {
       await sendPromptToExistingSessionInBackground(SESSION_ID, "hello");
 
       const prompt = dispatchedSystemPrompt();
-      expect(prompt).toContain(PROJECT_RESEARCH_POINTER_PROMPT);
       expect(prompt).toContain("Follow Quarp's project instructions.");
-      for (const part of [
-        "<operator-profile>",
-        profile,
-        lore,
-        research,
-        "<memory>",
-        fact,
-        MEMORY_PROTOCOL_PROMPT,
-      ])
+      for (const part of ["<memory>", fact, MEMORY_PROTOCOL_PROMPT])
         expect(prompt).not.toContain(part);
     });
 
-    it("omits absent root files and project research while retaining memory", async () => {
-      mocks.readDistillInstructions.mockResolvedValue(
-        Object.fromEntries(Object.keys(rootFiles).map((path) => [path, null])),
-      );
-      mocks.listProjectDocuments.mockResolvedValue([]);
-      await refreshProjectResearchPresence("/work/quarp");
-
-      await sendPromptToExistingSessionInBackground(SESSION_ID, "hello");
-
-      const prompt = dispatchedSystemPrompt();
-      for (const part of [
-        "<operator-profile>",
-        profile,
-        lore,
-        research,
-        PROJECT_RESEARCH_POINTER_PROMPT,
-      ]) {
-        expect(prompt).not.toContain(part);
-      }
-      expect(prompt).toContain("<memory>");
-      expect(prompt).toContain(fact);
-      expect(prompt).toContain(MEMORY_PROTOCOL_PROMPT);
-      expect(prompt).not.toContain("<planner>");
-    });
-
-    it("awaits a pending project index listing before dispatching a cold send", async () => {
-      let resolveListing!: (names: string[]) => void;
-      const listing = new Promise<string[]>((resolve) => {
-        resolveListing = resolve;
+    it("awaits workspace instructions before dispatching a cold send", async () => {
+      useChatSessionStore.getState().patchSession(SESSION_ID, {
+        workspaceAttachments: [
+          {
+            id: "included",
+            path: "/work/quarp",
+            kind: "directory",
+            source: "selected",
+            usedByAgent: false,
+          },
+        ],
       });
-      mocks.listProjectDocuments.mockImplementation(async (_root, dir) =>
-        dir === "research" ? listing : [],
+      type InstructionFile = {
+        path: string;
+        content: string;
+        workspacePaths: string[];
+      };
+      let resolveRead!: (files: InstructionFile[]) => void;
+      mocks.loadWorkspaceInstructionFiles.mockReturnValue(
+        new Promise<InstructionFile[]>((resolve) => {
+          resolveRead = resolve;
+        }),
       );
-      const refresh = refreshProjectResearchPresence("/work/quarp");
       const send = sendPromptToExistingSessionInBackground(SESSION_ID, "hello");
       await vi.waitFor(() =>
-        expect(mocks.readDistillInstructions).toHaveBeenCalledTimes(1),
+        expect(mocks.loadWorkspaceInstructionFiles).toHaveBeenCalledTimes(1),
       );
       expect(mocks.acpSendMessage).not.toHaveBeenCalled();
-      resolveListing(["index.md"]);
-      await Promise.all([refresh, send]);
-      expect(dispatchedSystemPrompt()).toContain(
-        PROJECT_RESEARCH_POINTER_PROMPT,
-      );
-      expect(
-        mocks.listProjectDocuments.mock.calls.filter(
-          ([, dir]) => dir === "research",
-        ),
-      ).toHaveLength(1);
+      resolveRead([
+        {
+          path: "/work/quarp/AGENTS.md",
+          content: "Repository working rules.",
+          workspacePaths: ["/work/quarp"],
+        },
+      ]);
+      await send;
+      expect(dispatchedSystemPrompt()).toContain("Repository working rules.");
     });
 
     it.each([
       true,
       false,
-    ])("loads repository and .distill AGENTS.md from included workspaces (present: %s)", async (present) => {
+    ])("loads repository AGENTS.md from included workspaces (present: %s)", async (present) => {
       useChatSessionStore.getState().patchSession(SESSION_ID, {
         workspaceAttachments: [
           {
@@ -460,11 +379,6 @@ describe("sendPromptToExistingSessionInBackground", () => {
                 content: "Repository working rules.",
                 workspacePaths: ["/work/quarp"],
               },
-              {
-                path: "/work/quarp/.distill/AGENTS.md",
-                content: "Distill project overrides.",
-                workspacePaths: ["/work/quarp"],
-              },
             ]
           : [],
       );
@@ -478,27 +392,19 @@ describe("sendPromptToExistingSessionInBackground", () => {
       if (present) {
         expect(prompt).toContain("<workspace-instructions>");
         expect(prompt).toContain("## /work/quarp/AGENTS.md");
-        expect(prompt).toContain("## /work/quarp/.distill/AGENTS.md");
         expect(
           prompt.indexOf("Follow Quarp's project instructions."),
         ).toBeLessThan(prompt.indexOf("Repository working rules."));
-        expect(prompt.indexOf("Repository working rules.")).toBeLessThan(
-          prompt.indexOf("Distill project overrides."),
-        );
-        expect(prompt.indexOf("Distill project overrides.")).toBeLessThan(
-          prompt.indexOf(PROJECT_RESEARCH_POINTER_PROMPT),
-        );
       } else {
         expect(prompt).not.toContain("<workspace-instructions>");
         expect(prompt).not.toContain("Repository working rules.");
-        expect(prompt).not.toContain("Distill project overrides.");
       }
     });
 
     it.each([
       "  Captured prompt.\nKeep its whitespace.\n",
       "",
-    ])("passes an explicit executionSystemPrompt through unchanged without reading root files (%j)", async (executionSystemPrompt) => {
+    ])("passes an explicit executionSystemPrompt through unchanged without loading workspace instructions (%j)", async (executionSystemPrompt) => {
       await sendPromptToExistingSessionInBackground(
         SESSION_ID,
         "hello",
@@ -509,8 +415,6 @@ describe("sendPromptToExistingSessionInBackground", () => {
       );
 
       expect(dispatchedSystemPrompt()).toBe(executionSystemPrompt);
-      expect(mocks.getDistillRoot).not.toHaveBeenCalled();
-      expect(mocks.readDistillInstructions).not.toHaveBeenCalled();
       expect(mocks.loadWorkspaceInstructionFiles).not.toHaveBeenCalled();
       expect(mocks.listProjectDocuments).not.toHaveBeenCalled();
     });

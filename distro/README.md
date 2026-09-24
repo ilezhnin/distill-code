@@ -47,3 +47,8 @@ Good fits:
 - temporary generic app defaults that cannot yet move to runtime config
 
 Do not use bundled app defaults for policy, provider allowlists, runtime feature toggles, normal app state, user preferences, or ACP-backed data.
+
+Personal skills, agent definitions, prompts and delivery hooks are managed in the
+user's own configuration directories. Keep them outside the shared repository and
+do not add app UI tied to a particular user's skill. Generic built-in skills and
+starter agents remain part of the app distribution.

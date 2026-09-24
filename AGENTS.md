@@ -16,9 +16,13 @@ UI can handle operations that are not yet in ACP or are client specific.
 
 ## Layout
 
-Operator-owned files live under the Distill root (`~/.distill` by default);
-the layout, ownership table and prompt order are in
-`docs/distill-root-layout.md`.
+App-owned data lives under the configured Distill root (`~/.distill` by default).
+Storage paths and migration behavior are documented in `docs/distill-root-layout.md`.
+
+Personal prompt files, their organization and delivery hooks belong to the user.
+Do not encode a personal profile schema, scaffold it, or add its delivery workflow
+to app source, documentation or UI. Keep personal skills and agent definitions
+outside the repository. `distro/` is for generic built-in skills and starter agents.
 
 - `src/` — React UI/features/shared code
 - `src-tauri/` — Tauri shell; `src-tauri/src/services/agent_host/` is the
