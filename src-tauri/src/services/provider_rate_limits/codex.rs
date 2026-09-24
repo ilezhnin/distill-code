@@ -139,6 +139,7 @@ pub fn map_codex_backend_usage(data: &Value) -> ProviderRateLimits {
         weekly,
         fable_weekly: None,
         monthly: None,
+        coding_monthly: None,
         plan_type,
         account_label: None,
         updated_at: now_ms(),

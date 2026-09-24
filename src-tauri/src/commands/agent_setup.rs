@@ -665,7 +665,7 @@ fn auth_capability(check_id: &str) -> AuthCapability {
 /// usage 401 showed the stored tokens are dead. Logout then login is the
 /// re-login path; a missing logout command cannot take it.
 fn can_reauth(provider_id: &str, check: &doctor::DoctorCheck) -> bool {
-    crate::commands::doctor::provider_logout_command(provider_id).is_some()
+    crate::commands::doctor::provider_supports_logout(provider_id)
         && matches!(auth_capability(&check.id), AuthCapability::Probeable)
         && (check.path.is_some() || check.bridge_path.is_some())
         && check.fix_type.is_none()
@@ -675,7 +675,7 @@ fn can_reauth(provider_id: &str, check: &doctor::DoctorCheck) -> bool {
 /// command. Idempotent: signing out when already signed out is a successful
 /// no-op of the CLI, not a forged action.
 fn authorize_logout(provider_id: &str, check: &doctor::DoctorCheck) -> Result<(), String> {
-    if crate::commands::doctor::provider_logout_command(provider_id).is_none() {
+    if !crate::commands::doctor::provider_supports_logout(provider_id) {
         return Err(format!("'{provider_id}' has no sign-out flow"));
     }
     match auth_capability(&check.id) {
@@ -938,6 +938,13 @@ async fn run_logout_command(
     registry: &AgentSetupRegistry,
     provider_id: &str,
 ) -> Result<(), String> {
+    if provider_id == "kimi-acp" {
+        set_phase(app, registry, provider_id, SetupPhase::SigningOut);
+        return crate::services::agent_host::kimi::logout(
+            setup_env_vars(app).await.into_iter().collect(),
+        )
+        .await;
+    }
     let command = crate::commands::doctor::provider_logout_command(provider_id)
         .ok_or_else(|| format!("'{provider_id}' has no sign-out flow"))?
         .to_string();
@@ -981,6 +988,13 @@ async fn run_auth(
         crate::commands::doctor::local_agent_login_command(&check.id).map(str::to_string);
     run_fix(app, registry, provider_id, FixType::Auth, login_command).await?;
 
+    if provider_id == "kimi-acp" {
+        let check = find_check(app, provider_id).await?;
+        if check.auth_status != Some(doctor::types::AuthStatus::Authenticated) {
+            return Err("Kimi Code sign-in could not be verified. Complete browser authorization and try again.".to_string());
+        }
+    }
+
     if plan.verify_install {
         set_phase(app, registry, provider_id, SetupPhase::Checking);
     }
@@ -997,6 +1011,9 @@ async fn run_fix(
     command_override: Option<String>,
 ) -> Result<(), String> {
     let check_id = crate_check_id(provider_id);
+    let command_override = command_override.or_else(|| {
+        crate::commands::doctor::local_agent_fix_command(&check_id, &fix_type).map(str::to_string)
+    });
     let log_tag = format!("[agent-setup {provider_id} {fix_type:?}]");
     log::info!("{log_tag} starting fix");
 
@@ -1479,6 +1496,21 @@ mod tests {
         check.fix_type = Some(FixType::Command);
         check.path = None;
         assert!(authorize_auth("grok-acp", &check).is_err());
+    }
+
+    #[test]
+    fn kimi_auth_and_logout_require_an_installed_provider() {
+        let mut check = check_with_fix(Some(FixType::Command));
+        check.id = "ai-agent-kimi".into();
+        assert!(authorize_auth("kimi-acp", &check).is_err());
+        assert!(authorize_logout("kimi-acp", &check).is_err());
+        check.path = Some("C:\\tools\\kimi.cmd".into());
+        check.fix_type = Some(FixType::Auth);
+        assert!(authorize_auth("kimi-acp", &check).is_ok());
+        assert!(authorize_logout("kimi-acp", &check).is_ok());
+        check.fix_type = None;
+        assert!(authorize_auth("kimi-acp", &check).is_err());
+        assert!(can_reauth("kimi-acp", &check));
     }
 
     #[test]

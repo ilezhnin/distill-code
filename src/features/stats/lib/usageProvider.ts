@@ -1,6 +1,5 @@
-import { getCatalogEntry } from "@/features/providers/providerCatalog";
+export { providerDisplayName } from "@/features/providers/providerCatalog";
 import type { SessionExecutionTarget } from "@/features/chat/lib/sessionExecutionTarget";
-import { formatProviderLabel } from "@/shared/ui/icons/ProviderIcons";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
 import {
   baseModelId,
@@ -62,10 +61,4 @@ export function usageModelBucket(record: {
     return { key: modelId, label: modelId, named: false };
   }
   return { key: modelId, label: record.modelName, named: true };
-}
-
-export function providerDisplayName(providerId: string): string {
-  return (
-    getCatalogEntry(providerId)?.displayName ?? formatProviderLabel(providerId)
-  );
 }

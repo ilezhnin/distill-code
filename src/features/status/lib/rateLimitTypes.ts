@@ -2,13 +2,8 @@ export const STATUS_BAR_USAGE_MODE_KEY = "distill:status-bar-usage-mode";
 export const STATUS_BAR_EMPTY_CTA_DISMISSED_KEY =
   "distill:status-bar-empty-cta-dismissed";
 
-export const TRACKED_AGENT_PLATFORM_IDS = [
-  "claude-acp",
-  "grok-acp",
-  "codex-acp",
-] as const;
-
-export type AgentPlatformId = (typeof TRACKED_AGENT_PLATFORM_IDS)[number];
+// Provider membership belongs to the shared catalog, not to quota adapters.
+export type AgentPlatformId = string;
 
 export type ProviderRateLimitStatus =
   | "idle"
@@ -32,6 +27,7 @@ export interface ProviderRateLimits {
   weekly: RateLimitWindow | null;
   fableWeekly?: RateLimitWindow | null;
   monthly?: RateLimitWindow | null;
+  codingMonthly?: RateLimitWindow | null;
   planType?: string | null;
   accountLabel?: string | null;
   updatedAt: number;
@@ -46,7 +42,7 @@ export interface ProviderRateLimitSnapshot {
 }
 
 export interface UsageSection {
-  key: "session" | "weekly" | "fableWeekly" | "monthly";
+  key: "session" | "weekly" | "fableWeekly" | "monthly" | "codingMonthly";
   label: string;
   shortLabel: string;
   window: RateLimitWindow;

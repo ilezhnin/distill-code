@@ -50,6 +50,22 @@ export const CURATED_PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     supportsLogout: true,
   },
   {
+    id: "kimi-acp",
+    displayName: "Kimi Code",
+    category: "agent",
+    description: "Moonshot AI's coding agent",
+    setupMethod: "cli_auth",
+    binaryName: "kimi",
+    group: "default",
+    aliases: ["kimi-acp", "kimi", "kimi-code", "moonshot"],
+    docsUrl:
+      "https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started",
+    supportsInstall: true,
+    supportsAuth: true,
+    supportsAuthStatus: true,
+    supportsLogout: true,
+  },
+  {
     id: "copilot-acp",
     displayName: "Copilot",
     category: "agent",

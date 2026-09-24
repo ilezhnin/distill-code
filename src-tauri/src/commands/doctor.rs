@@ -142,10 +142,15 @@ struct LocalPathCheck {
 }
 
 struct LocalAuthProbe {
-    status: fn(&HashMap<String, String>) -> AuthStatus,
+    status: LocalAuthStatusProbe,
     /// Run by agent setup's sign-in action; never taken from the renderer.
     login_command: &'static str,
     signed_out_message: &'static str,
+}
+
+enum LocalAuthStatusProbe {
+    Environment(fn(&HashMap<String, String>) -> AuthStatus),
+    KimiAcp,
 }
 
 struct LocalCommandCheck {
@@ -186,11 +191,32 @@ const LOCAL_PATH_CHECKS: &[LocalPathCheck] = &[LocalPathCheck {
     pass_message: "Grok CLI is available for ACP sessions",
     fail_message: "Grok CLI is not on PATH; install the xAI Grok CLI, then run `grok login` or set XAI_API_KEY",
     auth: Some(LocalAuthProbe {
-        status: grok_auth_status,
+        status: LocalAuthStatusProbe::Environment(grok_auth_status),
         // A bare name: agent setup runs it through cmd.exe on the same
         // extended PATH this check resolves `grok` on.
         login_command: "grok login --oauth",
         signed_out_message: "Grok CLI is installed but not signed in; sign in or set XAI_API_KEY",
+    }),
+}, LocalPathCheck {
+    meta: LocalCheckMeta {
+        id: "ai-agent-kimi",
+        label: "Kimi Code",
+        category: AGENTS_CATEGORY,
+        category_label: AGENTS_CATEGORY_LABEL,
+        fix: Some(LocalDoctorFix {
+            fix_type: FixType::Command,
+            command: "npm install -g @moonshot-ai/kimi-code",
+        }),
+        fix_url: Some("https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started"),
+        debug_output: None,
+    },
+    binary_name: "kimi",
+    pass_message: "Kimi Code is ready for ACP sessions",
+    fail_message: "Kimi Code is not on PATH; install Kimi Code, then sign in",
+    auth: Some(LocalAuthProbe {
+        status: LocalAuthStatusProbe::KimiAcp,
+        login_command: "kimi login",
+        signed_out_message: "Kimi Code is installed but not signed in; sign in to load your models",
     }),
 }];
 
@@ -352,7 +378,20 @@ async fn run_local_path_check(
 ) -> DoctorCheck {
     let path = resolve_binary_path(check.binary_name, extended_path).await;
     let auth_status = match (&path, &check.auth) {
-        (Some(_), Some(probe)) => Some((probe.status)(captured_shell_env)),
+        (Some(_), Some(probe)) => Some(match probe.status {
+            LocalAuthStatusProbe::Environment(status) => status(captured_shell_env),
+            LocalAuthStatusProbe::KimiAcp => {
+                let mut env: HashMap<_, _> =
+                    path_env::env_vars_with_extended_path_and_prepended_dirs(
+                        captured_shell_env,
+                        &[],
+                    )
+                    .into_iter()
+                    .collect();
+                env_key::upsert_map(&mut env, "PATH", extended_path.to_string());
+                crate::services::agent_host::kimi::auth_status(env).await
+            }
+        }),
         _ => None,
     };
     local_path_check_result(check, path, auth_status)
@@ -420,6 +459,17 @@ pub(crate) fn local_agent_login_command(check_id: &str) -> Option<&'static str> 
         .find(|check| check.meta.id == check_id)
         .and_then(|check| check.auth.as_ref())
         .map(|probe| probe.login_command)
+}
+
+pub(crate) fn local_agent_fix_command(check_id: &str, fix_type: &FixType) -> Option<&'static str> {
+    if *fix_type == FixType::Auth {
+        return local_agent_login_command(check_id);
+    }
+    find_local_fix(&LOCAL_DOCTOR_REGISTRY, check_id, fix_type).map(|fix| fix.command)
+}
+
+pub(crate) fn provider_supports_logout(provider_id: &str) -> bool {
+    provider_id == "kimi-acp" || provider_logout_command(provider_id).is_some()
 }
 
 /// Non-interactive sign-out command for a catalog provider id. Windows-only
@@ -1237,8 +1287,8 @@ fn plan_doctor_fix(
             return Ok(DoctorFixDispatch::ManagedInstall(provider_id));
         }
     }
-    if let Some(fix) = find_local_fix(&LOCAL_DOCTOR_REGISTRY, check_id, fix_type) {
-        return Ok(DoctorFixDispatch::LocalCommand(fix.command));
+    if let Some(command) = local_agent_fix_command(check_id, fix_type) {
+        return Ok(DoctorFixDispatch::LocalCommand(command));
     }
     Ok(DoctorFixDispatch::CrateCommand)
 }
@@ -1578,13 +1628,71 @@ mod tests {
     }
 
     #[test]
-    fn only_grok_has_a_local_sign_in_command() {
+    fn local_agents_have_backend_owned_sign_in_commands() {
         assert_eq!(
             local_agent_login_command("ai-agent-grok"),
             Some("grok login --oauth")
         );
         assert_eq!(local_agent_login_command("ai-agent-claude"), None);
+        assert_eq!(
+            local_agent_login_command("ai-agent-kimi"),
+            Some("kimi login")
+        );
         assert_eq!(local_agent_login_command("node-runtime"), None);
+    }
+
+    #[test]
+    fn kimi_setup_tracks_missing_signed_out_and_authenticated_states() {
+        let spec = LOCAL_PATH_CHECKS
+            .iter()
+            .find(|check| check.meta.id == "ai-agent-kimi")
+            .unwrap();
+        let missing = local_path_check_result(spec, None, None);
+        assert_eq!(missing.fix_type, Some(FixType::Command));
+        assert_eq!(
+            missing.fix_command.as_deref(),
+            Some("npm install -g @moonshot-ai/kimi-code")
+        );
+
+        let signed_out = local_path_check_result(
+            spec,
+            Some("kimi.cmd".into()),
+            Some(AuthStatus::NotAuthenticated),
+        );
+        assert_eq!(signed_out.status, CheckStatus::Warn);
+        assert_eq!(signed_out.fix_type, Some(FixType::Auth));
+        assert_eq!(signed_out.fix_command.as_deref(), Some("kimi login"));
+
+        let ready = local_path_check_result(
+            spec,
+            Some("kimi.cmd".into()),
+            Some(AuthStatus::Authenticated),
+        );
+        assert_eq!(ready.status, CheckStatus::Pass);
+        assert!(ready.fix_type.is_none());
+        assert!(provider_supports_logout("kimi-acp"));
+        assert_eq!(provider_logout_command("kimi-acp"), None);
+    }
+
+    #[test]
+    fn kimi_fixes_use_local_commands_only_when_currently_offered() {
+        for (fix, expected) in [
+            (FixType::Command, "npm install -g @moonshot-ai/kimi-code"),
+            (FixType::Auth, "kimi login"),
+        ] {
+            assert_eq!(
+                local_agent_fix_command("ai-agent-kimi", &fix),
+                Some(expected)
+            );
+            assert!(
+                matches!(plan_doctor_fix("ai-agent-kimi", &fix, Some(fix.clone())).unwrap(), DoctorFixDispatch::LocalCommand(command) if command == expected)
+            );
+            assert!(plan_doctor_fix("ai-agent-kimi", &fix, None).is_err());
+        }
+        assert_eq!(
+            local_agent_fix_command("ai-agent-kimi", &FixType::Bridge),
+            None
+        );
     }
 
     fn runtime_config_with_doctor(doctor: Option<RuntimeDoctorConfig>) -> RuntimeConfig {

@@ -37,6 +37,25 @@ function report(checks: DoctorCheck[]): DoctorReport {
 }
 
 describe("readinessFromReport auth handling", () => {
+  it.each([
+    [null, null, "fail", "not_installed"],
+    ["C:/tools/kimi.cmd", "notAuthenticated", "warn", "not_ready"],
+    ["C:/tools/kimi.cmd", "authenticated", "pass", "ready"],
+  ] as const)("maps Kimi setup state %s / %s to %s", (path, authStatus, status, expected) => {
+    const readiness = readinessFromReport(
+      report([
+        check({
+          id: "ai-agent-kimi",
+          label: "Kimi Code",
+          path,
+          authStatus,
+          status,
+        }),
+      ]),
+    );
+    expect(readiness.get("kimi-acp")).toBe(expected);
+  });
+
   it("blocks an agent the probe reported as signed out", () => {
     const readiness = readinessFromReport(
       report([check({ authStatus: "notAuthenticated" })]),

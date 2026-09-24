@@ -7,6 +7,7 @@ pub mod bridge;
 mod ext;
 pub mod harness;
 mod harness_env;
+pub(crate) mod kimi;
 mod legacy_import;
 pub mod protocol;
 pub mod router;

@@ -153,6 +153,7 @@ pub fn map_claude_oauth_usage(data: &Value, account_label: Option<String>) -> Pr
         weekly,
         fable_weekly,
         monthly: None,
+        coding_monthly: None,
         plan_type: None,
         account_label,
         updated_at: now_ms(),

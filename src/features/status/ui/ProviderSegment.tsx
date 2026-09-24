@@ -1,4 +1,5 @@
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Check } from "lucide-react";
+import { providerDisplayName } from "@/features/providers/providerCatalog";
 import { useTranslation } from "react-i18next";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import type {
@@ -42,9 +43,25 @@ export function ProviderSegment({
   now?: number;
 }) {
   const { t } = useTranslation("status");
-  const icon = getProviderIcon(provider.provider, "size-3.5");
+  const icon = getProviderIcon(provider.provider, "size-3.5") ?? (
+    <span>{providerDisplayName(provider.provider)}</span>
+  );
   const sections = getUsageSections(provider);
   const tightest = getTightestUsageSection(provider);
+  if (provider.status === "unavailable" && provider.configured && !tightest) {
+    return (
+      <span
+        title={providerDisplayName(provider.provider)}
+        className="inline-flex items-center gap-1.5 text-muted-foreground"
+      >
+        {icon}
+        <Check className="size-2.5" />
+        {!compact ? (
+          <span className="text-[11px] font-medium">{t("bar.connected")}</span>
+        ) : null}
+      </span>
+    );
+  }
   // An expired sign-in arrives as an error, but it needs a sign-in, not a
   // refresh; say so in the bar as the roster does.
   const statusLabel =
@@ -102,9 +119,11 @@ export function ProviderSegment({
               const label =
                 section.key === "fableWeekly"
                   ? t("roster.usedFable", { percent })
-                  : remaining === "now"
-                    ? t("roster.usedNow", { percent })
-                    : t("roster.usedWindow", { percent, window: remaining });
+                  : section.key === "codingMonthly"
+                    ? t("roster.usedCodingMonthly", { percent })
+                    : remaining === "now"
+                      ? t("roster.usedNow", { percent })
+                      : t("roster.usedWindow", { percent, window: remaining });
               return (
                 <span
                   key={section.key}

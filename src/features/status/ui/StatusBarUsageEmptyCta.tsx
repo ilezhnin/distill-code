@@ -8,7 +8,7 @@ import {
 } from "@/shared/ui/hover-card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
-import { TRACKED_AGENT_PLATFORM_IDS } from "../lib/rateLimitTypes";
+import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 
 export function StatusBarUsageEmptyCta({
   onConnect,
@@ -18,6 +18,7 @@ export function StatusBarUsageEmptyCta({
   onHide: () => void;
 }) {
   const { t } = useTranslation("status");
+  const catalog = useProviderCatalogStore((state) => state.entries);
 
   return (
     <HoverCard openDelay={150} closeDelay={80}>
@@ -62,7 +63,7 @@ export function StatusBarUsageEmptyCta({
           <p className="text-muted-foreground">{t("bar.connectDescription")}</p>
           <div className="flex items-center gap-1.5 text-muted-foreground">
             <span>{t("bar.supports")}:</span>
-            {TRACKED_AGENT_PLATFORM_IDS.map((providerId) => (
+            {catalog.map(({ id: providerId }) => (
               <span key={providerId}>
                 {getProviderIcon(providerId, "size-3.5")}
               </span>
