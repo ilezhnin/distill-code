@@ -16,6 +16,7 @@ pub(crate) mod managed_node;
 pub mod path_env;
 pub(crate) mod process;
 pub(crate) mod provider_rate_limits;
+pub(crate) mod root_migration;
 pub mod shell_env;
 pub(crate) mod upstream_names;
 pub(crate) mod windows_names;

@@ -425,7 +425,7 @@ export function useMentionHandlers({
     Map<string, Promise<FileMentionPathEntry[]>>
   >(new Map());
   const { category: preferredAtMentionCategory } =
-    useAtMentionDefaultCategoryPreference();
+    useAtMentionDefaultCategoryPreference(normalizedSkillRoots[0]);
   const defaultAtMentionCategory = fileMentionsEnabled
     ? preferredAtMentionCategory
     : "agents";

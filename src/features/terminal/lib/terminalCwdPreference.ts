@@ -1,4 +1,5 @@
 import { useCallback, useSyncExternalStore } from "react";
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 
 export const TERMINAL_FALLBACK_CWD_STORAGE_KEY =
   "distill:terminal-fallback-cwd";
@@ -17,7 +18,7 @@ export function getTerminalFallbackCwdPreference(): string | null {
 
   try {
     return trimValue(
-      window.localStorage.getItem(TERMINAL_FALLBACK_CWD_STORAGE_KEY),
+      getPreferenceStorage()?.getItem(TERMINAL_FALLBACK_CWD_STORAGE_KEY),
     );
   } catch {
     return null;
@@ -32,9 +33,12 @@ export function setTerminalFallbackCwdPreference(path: string | null): void {
   try {
     const trimmed = trimValue(path);
     if (trimmed) {
-      window.localStorage.setItem(TERMINAL_FALLBACK_CWD_STORAGE_KEY, trimmed);
+      getPreferenceStorage()?.setItem(
+        TERMINAL_FALLBACK_CWD_STORAGE_KEY,
+        trimmed,
+      );
     } else {
-      window.localStorage.removeItem(TERMINAL_FALLBACK_CWD_STORAGE_KEY);
+      getPreferenceStorage()?.removeItem(TERMINAL_FALLBACK_CWD_STORAGE_KEY);
     }
     window.dispatchEvent(new Event(TERMINAL_FALLBACK_CWD_CHANGED_EVENT));
   } catch {

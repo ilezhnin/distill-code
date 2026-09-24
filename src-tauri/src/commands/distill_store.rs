@@ -14,8 +14,9 @@
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use std::sync::Mutex;
 
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 use crate::services::distill_root::{
     ensure_root_layout, resolve_document_path, write_root_pointer, DISTILL_ROOT_ENV,
@@ -28,6 +29,48 @@ use crate::services::distill_root::{
 pub struct DistillRootState {
     pub root: std::path::PathBuf,
     pub os_config_dir: std::path::PathBuf,
+}
+
+static SETTINGS_LOCK: Mutex<()> = Mutex::new(());
+
+/// Merge only changed preferences, preserving edits and other windows' keys.
+#[tauri::command]
+pub async fn update_distill_settings(
+    app: tauri::AppHandle,
+    state: State<'_, DistillRootState>,
+    mut patch: serde_json::Map<String, serde_json::Value>,
+    only_missing: Option<bool>,
+) -> Result<(), String> {
+    let target = state.root.join("settings.json");
+    if let Some(home) = dirs::home_dir() {
+        let mut value = serde_json::Value::Object(patch);
+        crate::services::root_migration::rebase_agent_references(&mut value, &home, &state.root);
+        patch = value.as_object().cloned().unwrap_or_default();
+    }
+    tokio::task::spawn_blocking(move || {
+        let _guard = SETTINGS_LOCK.lock().map_err(|error| error.to_string())?;
+        let raw = read_document_capped(&target)?.unwrap_or_else(|| "{}".into());
+        let mut settings: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&raw)
+                .map_err(|error| format!("Cannot parse settings.json: {error}"))?;
+        for (key, value) in patch {
+            if only_missing.unwrap_or(false) && settings.contains_key(&key) {
+                continue;
+            }
+            if value.is_null() {
+                settings.remove(&key);
+            } else {
+                settings.insert(key, value);
+            }
+        }
+        let contents =
+            serde_json::to_string_pretty(&settings).map_err(|error| error.to_string())?;
+        write_document_at(&target, &contents)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    let _ = app.emit("distill-settings-changed", ());
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -136,14 +179,34 @@ pub async fn read_distill_document(
 /// last-writer-wins bug, and nothing here can detect it.
 #[tauri::command]
 pub async fn write_distill_document(
+    app: tauri::AppHandle,
     state: State<'_, DistillRootState>,
     path: String,
-    contents: String,
+    mut contents: String,
 ) -> Result<(), String> {
     let target = resolve_document_path(&state.root, &path)?;
+    if matches!(
+        path.as_str(),
+        "conductor/graph.json" | "conductor/waves.json"
+    ) {
+        if let (Some(home), Ok(mut value)) = (
+            dirs::home_dir(),
+            serde_json::from_str::<serde_json::Value>(&contents),
+        ) {
+            if crate::services::root_migration::rebase_agent_references(
+                &mut value,
+                &home,
+                &state.root,
+            ) {
+                contents = value.to_string();
+            }
+        }
+    }
     tokio::task::spawn_blocking(move || write_document_at(&target, &contents))
         .await
-        .map_err(|error| format!("Cannot write '{path}': {error}"))?
+        .map_err(|error| format!("Cannot write '{path}': {error}"))??;
+    let _ = app.emit("distill-document-changed", path);
+    Ok(())
 }
 
 fn write_document_at(target: &Path, contents: &str) -> Result<(), String> {
@@ -186,11 +249,16 @@ pub fn initialize(app: &tauri::App) -> Result<DistillRootState, String> {
         .map_err(|error| format!("No home directory: {error}"))?;
     let env_value = std::env::var(DISTILL_ROOT_ENV).ok();
 
-    let root = crate::services::distill_root::resolve_root(
-        env_value.as_deref(),
-        &os_config_dir,
-        &home_dir,
-    );
+    let root = app
+        .try_state::<crate::services::e2e_mode::E2eMode>()
+        .map(|mode| mode.distill_root())
+        .unwrap_or_else(|| {
+            crate::services::distill_root::resolve_root(
+                env_value.as_deref(),
+                &os_config_dir,
+                &home_dir,
+            )
+        });
     ensure_root_layout(&root)?;
 
     // Recorded so the choice survives, including the fresh-install case

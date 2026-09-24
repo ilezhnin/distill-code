@@ -4,15 +4,24 @@ import type { Persona } from "@/shared/types/agents";
 
 import { CommandError } from "../types";
 
-export async function findPersonaOrThrow(personaId: string): Promise<Persona> {
+export async function findPersonaOrThrow(
+  personaId: string,
+  projectDir?: string,
+): Promise<Persona> {
   const cached = useAgentStore.getState().getPersonaById(personaId);
-  if (cached) {
+  if (cached && !projectDir) {
     return cached;
   }
 
-  const personas = await listPersonas();
-  useAgentStore.getState().setPersonas(personas);
-  const persona = personas.find((candidate) => candidate.id === personaId);
+  const personas = await listPersonas(projectDir);
+  if (!projectDir) useAgentStore.getState().setPersonas(personas);
+  const persona =
+    personas.find((candidate) => candidate.id === personaId) ??
+    (cached
+      ? personas.find(
+          (candidate) => candidate.displayName === cached.displayName,
+        )
+      : undefined);
   if (!persona) {
     throw new CommandError(
       "agent_not_found",

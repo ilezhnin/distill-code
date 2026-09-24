@@ -1,3 +1,4 @@
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import { useCallback, useSyncExternalStore } from "react";
 
 export const ARTIFACT_AUTO_OPEN_STORAGE_KEY = "distill:artifact-auto-open";
@@ -12,7 +13,9 @@ function normalize(value: unknown): boolean {
 
 function read(): boolean {
   try {
-    const stored = localStorage.getItem(ARTIFACT_AUTO_OPEN_STORAGE_KEY);
+    const stored = getPreferenceStorage()?.getItem(
+      ARTIFACT_AUTO_OPEN_STORAGE_KEY,
+    );
     if (stored === null) return DEFAULT_ARTIFACT_AUTO_OPEN;
     return normalize(stored);
   } catch {
@@ -53,7 +56,7 @@ export function getArtifactAutoOpen(): boolean {
 
 export function setArtifactAutoOpen(enabled: boolean): void {
   try {
-    localStorage.setItem(
+    getPreferenceStorage()?.setItem(
       ARTIFACT_AUTO_OPEN_STORAGE_KEY,
       enabled ? "true" : "false",
     );

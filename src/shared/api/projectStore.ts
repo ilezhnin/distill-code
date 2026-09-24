@@ -22,6 +22,14 @@
 import { invoke } from "@tauri-apps/api/core";
 
 import { isDesktopRuntime } from "./distillStore";
+import { invokeWithStartupRetry } from "./invokeWithStartupRetry";
+
+export async function initializeProjectContext(
+  projectRoot: string,
+): Promise<void> {
+  if (!isDesktopRuntime() || !projectRoot) return;
+  await invokeWithStartupRetry("initialize_project_context", { projectRoot });
+}
 
 export async function readProjectDocument(
   projectRoot: string,

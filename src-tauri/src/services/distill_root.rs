@@ -17,7 +17,16 @@
 //! everything without touching the user's real setup.
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use tauri::Manager;
+
+/// The single root registered before any app-owned store starts.
+pub fn app_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    app.try_state::<crate::commands::distill_store::DistillRootState>()
+        .map(|state| state.root.clone())
+        .ok_or_else(|| "Distill root is not initialized".to_string())
+}
 
 /// Overrides the pointer file and the default. Absolute paths only.
 pub const DISTILL_ROOT_ENV: &str = "DISTILL_ROOT";
@@ -87,10 +96,58 @@ pub fn write_root_pointer(os_config_dir: &Path, root: &Path) -> Result<(), Strin
 
 /// Creates the root and the folders the app expects inside it.
 pub fn ensure_root_layout(root: &Path) -> Result<(), String> {
-    for sub in ["projects", "state"] {
+    for sub in [
+        "projects",
+        "state",
+        "agents",
+        "skills",
+        "sessions",
+        "cache",
+        "artifacts",
+        "conductor",
+        "runs",
+    ] {
         fs::create_dir_all(root.join(sub))
             .map_err(|error| format!("Cannot create '{}': {error}", root.join(sub).display()))?;
     }
+    for (relative, contents) in [
+        ("settings.json", "{}\n"),
+        ("cache/README.md", "# Cache\n\nRegenerable downloads and runtime assets. Exclude this folder from backups.\n"),
+    ] {
+        create_missing_file(&root.join(relative), contents)?;
+    }
+    Ok(())
+}
+
+/// Never replace operator content, including an intentionally empty file.
+pub fn create_missing_file(path: &Path, contents: &str) -> Result<(), String> {
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => file
+            .write_all(contents.as_bytes())
+            .and_then(|()| file.sync_all())
+            .map_err(|error| format!("Cannot initialize '{}': {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(format!("Cannot initialize '{}': {error}", path.display())),
+    }
+}
+
+pub fn ensure_project_layout(project: &Path) -> Result<(), String> {
+    if !project.is_absolute() || !project.is_dir() {
+        return Err(format!(
+            "Project folder does not exist: {}",
+            project.display()
+        ));
+    }
+    let root = project.join(".distill");
+    for sub in ["agents", "skills", "wiki"] {
+        fs::create_dir_all(root.join(sub)).map_err(|error| error.to_string())?;
+    }
+    create_missing_file(&root.join("settings.json"), "{}\n")?;
+    let _ = crate::commands::project_store::exclude_agent_folders(project);
     Ok(())
 }
 
@@ -128,6 +185,76 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("distill-root-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn startup_creates_only_app_data_and_preserves_custom_files() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_root_layout(dir.path()).unwrap();
+        let mut names = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "agents",
+                "artifacts",
+                "cache",
+                "conductor",
+                "projects",
+                "runs",
+                "sessions",
+                "settings.json",
+                "skills",
+                "state",
+            ]
+        );
+        fs::write(dir.path().join("custom-notes.md"), "My content").unwrap();
+        fs::write(dir.path().join("empty-notes.md"), "").unwrap();
+        fs::write(dir.path().join("settings.json"), "{\"locale\":\"es\"}").unwrap();
+        ensure_root_layout(dir.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("custom-notes.md")).unwrap(),
+            "My content"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("empty-notes.md")).unwrap(),
+            ""
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("settings.json")).unwrap(),
+            "{\"locale\":\"es\"}"
+        );
+    }
+
+    #[test]
+    fn project_layout_contains_only_app_data_and_preserves_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project_layout(dir.path()).unwrap();
+        let context = dir.path().join(".distill");
+        let mut names = fs::read_dir(&context)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, ["agents", "settings.json", "skills", "wiki"]);
+        fs::write(
+            context.join("settings.json"),
+            "{\"style-guidelines\":\"Local\"}",
+        )
+        .unwrap();
+        fs::write(context.join("custom-notes.md"), "Project notes").unwrap();
+        ensure_project_layout(dir.path()).unwrap();
+        assert_eq!(
+            fs::read_to_string(context.join("settings.json")).unwrap(),
+            "{\"style-guidelines\":\"Local\"}"
+        );
+        assert_eq!(
+            fs::read_to_string(context.join("custom-notes.md")).unwrap(),
+            "Project notes"
+        );
     }
 
     #[test]

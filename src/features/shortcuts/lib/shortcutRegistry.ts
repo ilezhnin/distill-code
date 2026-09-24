@@ -1,3 +1,4 @@
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import { useSyncExternalStore } from "react";
 
 import {
@@ -314,7 +315,9 @@ let preferencesCache: PreferencesCache | null = null;
 
 function safeReadRaw(): string | null {
   try {
-    return window.localStorage.getItem(SHORTCUT_PREFERENCES_STORAGE_KEY);
+    return (
+      getPreferenceStorage()?.getItem(SHORTCUT_PREFERENCES_STORAGE_KEY) ?? null
+    );
   } catch {
     return null;
   }
@@ -348,10 +351,10 @@ function writeOverrides(next: ShortcutOverrides): ShortcutSaveResult {
   const overrides = resolveOverrideConflicts(next);
   try {
     if (Object.keys(overrides).length === 0) {
-      window.localStorage.removeItem(SHORTCUT_PREFERENCES_STORAGE_KEY);
+      getPreferenceStorage()?.removeItem(SHORTCUT_PREFERENCES_STORAGE_KEY);
     } else {
       const payload: ShortcutPreferencesV1 = { version: 1, overrides };
-      window.localStorage.setItem(
+      getPreferenceStorage()?.setItem(
         SHORTCUT_PREFERENCES_STORAGE_KEY,
         JSON.stringify(payload),
       );

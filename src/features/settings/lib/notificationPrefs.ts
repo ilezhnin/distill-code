@@ -1,3 +1,4 @@
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import {
   DEFAULT_NOTIFICATION_SOUND,
   normalizeNotificationSoundId,
@@ -24,7 +25,7 @@ const DEFAULTS: NotificationPrefs = {
 
 export function getNotificationPrefs(): NotificationPrefs {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = getPreferenceStorage()?.getItem(STORAGE_KEY);
     if (!raw) return { ...DEFAULTS };
     const parsed = JSON.parse(raw) as Partial<NotificationPrefs>;
     return {
@@ -41,7 +42,10 @@ export function getNotificationPrefs(): NotificationPrefs {
 export function setNotificationPrefs(prefs: Partial<NotificationPrefs>): void {
   try {
     const current = getNotificationPrefs();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, ...prefs }));
+    getPreferenceStorage()?.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ ...current, ...prefs }),
+    );
   } catch {
     // localStorage unavailable in some environments
   }

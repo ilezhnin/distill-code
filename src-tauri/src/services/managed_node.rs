@@ -388,8 +388,8 @@ where
 
 /// `<app-data>/packages/node` — every managed runtime version lives under here.
 pub fn managed_node_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
-    let data_dir = app.path().app_data_dir().ok()?;
-    Some(data_dir.join("packages").join("node"))
+    let root = crate::services::distill_root::app_root(app).ok()?;
+    Some(root.join("cache").join("packages").join("node"))
 }
 
 pub fn managed_node_bin_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {

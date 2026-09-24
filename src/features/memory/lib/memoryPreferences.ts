@@ -1,3 +1,4 @@
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 /**
  * The operator's pause switch for memory.
  *
@@ -67,7 +68,7 @@ let snapshotCache: { key: string; value: MemoryPreferences } | undefined;
 
 function getStorage(): Storage | null {
   if (typeof window === "undefined") return null;
-  return window.localStorage ?? null;
+  return getPreferenceStorage() ?? null;
 }
 
 function defaultStoredPreferences(): StoredPreferences {

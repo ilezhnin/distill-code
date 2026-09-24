@@ -1,3 +1,4 @@
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import { getDistillRoot } from "@/shared/api/distillStore";
 import { resolvePath } from "@/shared/api/pathResolver";
 import { ensureDirectory } from "@/shared/api/system";
@@ -60,7 +61,9 @@ export function getArtifactRootPreference(): string | null {
   }
 
   try {
-    return trimValue(window.localStorage.getItem(ARTIFACT_ROOT_STORAGE_KEY));
+    return trimValue(
+      getPreferenceStorage()?.getItem(ARTIFACT_ROOT_STORAGE_KEY),
+    );
   } catch {
     return null;
   }
@@ -74,9 +77,9 @@ export function setArtifactRootPreference(path: string | null): void {
   try {
     const trimmed = trimValue(path);
     if (trimmed) {
-      window.localStorage.setItem(ARTIFACT_ROOT_STORAGE_KEY, trimmed);
+      getPreferenceStorage()?.setItem(ARTIFACT_ROOT_STORAGE_KEY, trimmed);
     } else {
-      window.localStorage.removeItem(ARTIFACT_ROOT_STORAGE_KEY);
+      getPreferenceStorage()?.removeItem(ARTIFACT_ROOT_STORAGE_KEY);
     }
     window.dispatchEvent(new Event(ARTIFACT_ROOT_CHANGED_EVENT));
   } catch {

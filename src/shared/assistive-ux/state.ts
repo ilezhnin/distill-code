@@ -1,3 +1,4 @@
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import {
   ASSISTIVE_UX_STORAGE_KEY,
   ASSISTIVE_UX_STORAGE_VERSION,
@@ -88,7 +89,7 @@ export function readAssistiveUxState(): StoredAssistiveUxState {
   if (typeof window === "undefined") return defaultAssistiveUxState();
 
   try {
-    const raw = window.localStorage.getItem(ASSISTIVE_UX_STORAGE_KEY);
+    const raw = getPreferenceStorage()?.getItem(ASSISTIVE_UX_STORAGE_KEY);
     if (!raw) return defaultAssistiveUxState();
     return parseStoredAssistiveUxState(JSON.parse(raw));
   } catch {
@@ -100,7 +101,7 @@ export function writeAssistiveUxState(nextState: StoredAssistiveUxState): void {
   if (typeof window === "undefined") return;
 
   try {
-    window.localStorage.setItem(
+    getPreferenceStorage()?.setItem(
       ASSISTIVE_UX_STORAGE_KEY,
       JSON.stringify({
         ...nextState,

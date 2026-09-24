@@ -43,20 +43,6 @@ fn validate_agent_import_path(source_path: &str) -> Result<PathBuf, String> {
     canonicalize_path(&path, "agent import")
 }
 
-fn validate_agent_source_path(
-    source_path: &str,
-    agents_root: Option<&Path>,
-) -> Result<PathBuf, String> {
-    let trusted_root = match agents_root {
-        Some(root) => root.to_path_buf(),
-        None => dirs::home_dir()
-            .ok_or_else(|| "Failed to resolve home directory for agent source read".to_string())?
-            .join(".agents")
-            .join("agents"),
-    };
-    validate_agent_source_path_with_roots(source_path, &[trusted_root])
-}
-
 fn validate_agent_source_path_with_roots(
     source_path: &str,
     trusted_roots: &[PathBuf],
@@ -178,7 +164,25 @@ pub fn read_agent_source_file(
     let e2e_agents_dir = app
         .try_state::<crate::services::e2e_mode::E2eMode>()
         .map(|mode| mode.agents_dir());
-    let path = validate_agent_source_path(&source_path, e2e_agents_dir.as_deref())?;
+    let mut roots = vec![e2e_agents_dir
+        .clone()
+        .unwrap_or(crate::services::distill_root::app_root(&app)?.join("agents"))];
+    if e2e_agents_dir.is_none() {
+        if let Some(home) = dirs::home_dir() {
+            roots.push(home.join(".agents/agents"));
+        }
+        if let Some(parent) = Path::new(&source_path).parent().filter(|parent| {
+            parent.file_name().and_then(|name| name.to_str()) == Some("agents")
+                && parent
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str())
+                    == Some(".distill")
+        }) {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    let path = validate_agent_source_path_with_roots(&source_path, &roots)?;
     read_persona_file(path, "agent source")
 }
 

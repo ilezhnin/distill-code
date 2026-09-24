@@ -21,6 +21,7 @@ import {
 } from "../stores/chatSessionStore";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { selectPersonas } from "@/features/agents/stores/agentSelectors";
+import { useProjectPersonas } from "@/features/agents/hooks/useProjectPersonas";
 import { useProviderSelection } from "@/features/agents/hooks/useProviderSelection";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 import { isAskWorktreeStartupMode } from "@/features/projects/api/projects";
@@ -370,7 +371,7 @@ export function useChatSessionController({
     selectedProvider: globalSelectedProvider,
     setSelectedProvider: setGlobalSelectedProvider,
   } = useProviderSelection();
-  const personas = useAgentStore(selectPersonas);
+  const globalPersonas = useAgentStore(selectPersonas);
   const session = useChatSessionStore((s) =>
     sessionId
       ? s.sessions.find((candidate) => candidate.id === sessionId)
@@ -471,6 +472,10 @@ export function useChatSessionController({
       : undefined,
   );
   const project = storedProject ?? null;
+  const { personas, ready: projectPersonasReady } = useProjectPersonas(
+    project?.workingDirs?.[0],
+    globalPersonas,
+  );
   const hasContextUsageSnapshot = useChatStore(
     (s) => s.sessionStateById[stateSessionId]?.hasUsageSnapshot ?? false,
   );
@@ -484,9 +489,14 @@ export function useChatSessionController({
       : (session?.personaId ?? null);
   const [selectedPersonaSnapshot, setSelectedPersonaSnapshot] =
     useState<Persona | null>(null);
-  const liveSelectedPersona = personas.find(
-    (persona) => persona.id === selectedPersonaId,
-  );
+  const liveSelectedPersona =
+    personas.find((persona) => persona.id === selectedPersonaId) ??
+    personas.find(
+      (persona) =>
+        persona.displayName ===
+        globalPersonas.find((candidate) => candidate.id === selectedPersonaId)
+          ?.displayName,
+    );
   const nextSelectedPersonaSnapshot = !selectedPersonaId
     ? null
     : (liveSelectedPersona ??
@@ -805,7 +815,7 @@ export function useChatSessionController({
     projectWikiPromptState.key === (projectWikiRoot ?? "")
       ? projectWikiPromptState.prompt
       : formatProjectWikiPrompt(knownProjectWikiPresence(projectWikiRoot));
-  const workspaceContextReady = workspaceFilesReady;
+  const workspaceContextReady = projectPersonasReady && workspaceFilesReady;
   // What this session already knows, and how it keeps more. Scoped by the
   // session's own project: a fact learned in one codebase must not follow the
   // operator into an unrelated chat.

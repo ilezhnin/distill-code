@@ -37,6 +37,7 @@ pub struct ListAgentSkillsResponse {
 struct SkillFrontmatter {
     name: Option<String>,
     description: Option<String>,
+    metadata: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -150,7 +151,19 @@ fn read_skill(skill_dir: &Path, root: &SkillRoot) -> Option<AgentSkillEntry> {
         file_location: canonical_skill_file.to_string_lossy().into_owned(),
         source_kind: match root.scope {
             SkillRootScope::App => "app",
-            SkillRootScope::User => "global",
+            SkillRootScope::User => {
+                if parsed
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.get("distillBundled"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    "app"
+                } else {
+                    "global"
+                }
+            }
             SkillRootScope::Workspace => "project",
         }
         .to_string(),
@@ -254,6 +267,14 @@ fn collect_skill_roots(
             add_skill_root(
                 &mut roots,
                 &mut seen_roots,
+                search_dir.join(".distill").join("skills"),
+                SkillRootScope::Workspace,
+                display_name_for_path(&search_dir),
+                Some(&search_dir),
+            );
+            add_skill_root(
+                &mut roots,
+                &mut seen_roots,
                 search_dir.join(AGENTS_SKILLS_DIR),
                 SkillRootScope::Workspace,
                 display_name_for_path(&search_dir),
@@ -354,11 +375,17 @@ fn collect_skills_from_roots(
             .then_with(|| {
                 skill_source_priority(&a.source_kind).cmp(&skill_source_priority(&b.source_kind))
             })
+            .then_with(|| {
+                let compatibility =
+                    |path: &str| path.replace('\\', "/").contains("/.agents/skills/");
+                compatibility(&a.path).cmp(&compatibility(&b.path))
+            })
             .then_with(|| a.file_location.cmp(&b.file_location))
     });
     skills
 }
 
+#[cfg(test)]
 fn collect_agent_skills(
     provider_id: Option<String>,
     workspace_paths: Vec<String>,
@@ -375,10 +402,7 @@ pub async fn list_distill_app_skills(
     bundled_skills_state: State<'_, crate::services::bundled_skills::BundledSkillsState>,
 ) -> Result<ListAgentSkillsResponse, String> {
     bundled_skills_state.wait_until_ready().await;
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| format!("Failed to resolve Distill app data directory: {err}"))?;
+    let app_data_dir = crate::services::distill_root::app_root(&app)?;
     let app_skills_root = app_data_dir.join("skills");
     let skills = tokio::task::spawn_blocking(move || {
         let mut roots = Vec::new();
@@ -387,11 +411,14 @@ pub async fn list_distill_app_skills(
             &mut roots,
             &mut seen_roots,
             app_skills_root,
-            SkillRootScope::App,
+            SkillRootScope::User,
             "Distill app".to_string(),
             None,
         );
         collect_skills_from_roots(roots, None)
+            .into_iter()
+            .filter(|skill| skill.source_kind == "app")
+            .collect()
     })
     .await
     .map_err(|err| format!("Failed to list Distill app skills: {err}"))?;
@@ -405,21 +432,43 @@ pub async fn list_agent_skills(
     request: ListAgentSkillsRequest,
 ) -> Result<ListAgentSkillsResponse, String> {
     bundled_skills_state.wait_until_ready().await;
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| format!("Failed to resolve Distill app data directory: {err}"))?;
-    let app_skills_root = app_data_dir.join("skills");
+    let app_data_dir = crate::services::distill_root::app_root(&app)?;
     let e2e_skills_root = app
         .try_state::<crate::services::e2e_mode::E2eMode>()
         .map(|mode| mode.skills_dir());
+    let isolated = e2e_skills_root.is_some();
+    let personal_skills_root = e2e_skills_root.unwrap_or_else(|| app_data_dir.join("skills"));
     let skills = tokio::task::spawn_blocking(move || {
-        collect_agent_skills(
-            request.provider_id,
-            request.workspace_paths,
-            Some(&app_skills_root),
-            e2e_skills_root.as_deref(),
-        )
+        let mut roots =
+            collect_skill_roots(request.workspace_paths, None, Some(&personal_skills_root));
+        if !isolated {
+            if let Some(home) = dirs::home_dir() {
+                let mut seen = roots.iter().map(|root| root.path.clone()).collect();
+                add_skill_root(
+                    &mut roots,
+                    &mut seen,
+                    home.join(AGENTS_SKILLS_DIR),
+                    SkillRootScope::User,
+                    "Compatibility".into(),
+                    None,
+                );
+            }
+        }
+        let mut skills = collect_skills_from_roots(roots, request.provider_id.as_deref());
+        let primary_names: HashSet<_> = skills
+            .iter()
+            .filter(|skill| Path::new(&skill.path).starts_with(&personal_skills_root))
+            .map(|skill| skill.name.to_lowercase())
+            .collect();
+        skills.retain(|skill| {
+            skill.source_kind == "project"
+                || Path::new(&skill.path).starts_with(&personal_skills_root)
+                || !primary_names.contains(&skill.name.to_lowercase())
+        });
+        // Sorted by name and source priority: project overrides global/app.
+        let mut seen_names = HashSet::new();
+        skills.retain(|skill| seen_names.insert(skill.name.to_lowercase()));
+        skills
     })
     .await
     .map_err(|err| format!("Failed to list agent skills: {err}"))?;

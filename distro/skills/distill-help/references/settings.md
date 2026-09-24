@@ -28,6 +28,12 @@ wrong answer for, and are less likely to change than any section name:
   section, rather than its own page. Don't assume every settings destination
   is a navigable page — verify against the file above or the live UI.
 
-The configured Distill folder holds application-owned documents. Changing the
-folder in Settings requires a restart and does not move existing files.
-See `docs/distill-root-layout.md` for storage boundaries.
+The Distill folder (`~/.distill` unless changed in Settings) holds application
+settings, chat history, registered projects, memory, agents, skills and artifacts.
+Its storage and migration behavior are described in `docs/distill-root-layout.md`.
+
+Global preferences live in `settings.json`. The target project's
+`.distill/settings.json` can override `style-guidelines` and
+`at-mention-default-category`. Project agents and skills take precedence over
+global sources of the same name. Changing the data folder requires a restart and
+does not move existing files.

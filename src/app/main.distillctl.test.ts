@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 
 const SRC_ROOT = fileURLToPath(new URL("../", import.meta.url));
 const mainSource = readFileSync(
-  fileURLToPath(new URL("../main.tsx", import.meta.url)),
+  fileURLToPath(new URL("./renderRoot.tsx", import.meta.url)),
   "utf8",
 );
 const appShellPath = fileURLToPath(new URL("./AppShell.tsx", import.meta.url));

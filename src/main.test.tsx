@@ -50,7 +50,7 @@ async function loadMainAt(search: string) {
   window.history.replaceState({}, "", `/${search}`);
   document.body.innerHTML = '<div id="root"></div>';
   await act(async () => {
-    await import("./main");
+    await (await import("./main")).startup;
   });
 }
 

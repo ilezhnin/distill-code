@@ -70,7 +70,7 @@ with a validated run root, run ID and driver token. The app then:
 
 - runs under its own identifier, `com.levocat.distill.e2e.<run-id>`, so it gets
   its own app data;
-- keeps agents and skills under `<run-root>/home/.agents`;
+- keeps the complete Distill root under `<run-root>/home/.distill`;
 - listens on a random loopback port, requires the token on every command, and
   writes `{ "host", "port", "pid" }` to `<run-root>/app-test-driver.json` once
   it is ready;

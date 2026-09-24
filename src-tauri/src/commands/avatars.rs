@@ -199,7 +199,9 @@ fn trusted_agent_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
     let mut roots = Vec::new();
     if let Some(e2e_mode) = app.try_state::<crate::services::e2e_mode::E2eMode>() {
         roots.push(e2e_mode.agents_dir());
+        return Ok(roots);
     }
+    roots.push(crate::services::distill_root::app_root(app)?.join("agents"));
     roots.push(
         dirs::home_dir()
             .ok_or_else(|| "Failed to resolve home directory for agent avatar import".to_string())?
@@ -408,6 +410,10 @@ fn cached_agent_avatar_for_id(
     // which the webview asset protocol can actually load. Distro copies on
     // E:\ or in Program Files are outside that scope, so looking there first
     // would resolve a path the UI cannot display.
+    let installed = crate::services::distill_root::app_root(app)?.join("agents/.avatars");
+    if let Some(avatar) = cached_agent_avatar_for_id_at(&installed, avatar_id)? {
+        return Ok(Some(avatar));
+    }
     if let Some(home_dir) = dirs::home_dir() {
         let user_avatars = home_dir.join(".agents").join("agents").join(".avatars");
         if let Some(avatar) = cached_agent_avatar_for_id_at(&user_avatars, avatar_id)? {
@@ -516,10 +522,7 @@ fn unique_part_path(target: &Path) -> PathBuf {
 }
 
 fn user_avatar_paths(app: &AppHandle) -> Result<UserAvatarPaths, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("Failed to resolve app data directory: {error}"))?;
+    let app_data_dir = crate::services::distill_root::app_root(app)?;
     let root = app_data_dir.join("user-avatars");
     Ok(UserAvatarPaths {
         meta: root.join("meta"),

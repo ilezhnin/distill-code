@@ -37,7 +37,6 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use tauri::Manager;
 use tokio::io::AsyncBufReadExt;
 
 use crate::services::{env_key, managed_node};
@@ -69,10 +68,9 @@ const ACP_TOOLS_LOCK_JSON: &str = include_str!("../../../acp-tools.lock.json");
 /// Named `packages` rather than `acp` because npm pulls in dependencies that
 /// are not themselves ACP bridges (and the Node runtime lives here too).
 pub fn managed_packages_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
-    app.path()
-        .app_data_dir()
+    crate::services::distill_root::app_root(app)
         .ok()
-        .map(|dir| dir.join("packages"))
+        .map(|dir| dir.join("cache").join("packages"))
 }
 
 /// The Distill-private npm global prefix, `<app-data>/packages/npm-prefix`.
