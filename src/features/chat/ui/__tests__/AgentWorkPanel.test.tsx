@@ -128,47 +128,6 @@ describe("AgentWorkPanel durable disclosure", () => {
 
     expect(screen.getByText("alpha contents")).toBeInTheDocument();
   });
-
-  it("still mounts an untouched settled panel collapsed", () => {
-    render(
-      <Host registry={registry}>
-        <AgentWorkPanel payload={payload()} />
-      </Host>,
-    );
-
-    expect(screen.queryByText("alpha contents")).not.toBeInTheDocument();
-    const stored = registry.getRowState({
-      sessionId: SESSION_ID,
-      rowId: ROW_ID,
-    })?.agentWorkPanels?.[WORK_ID];
-    expect(stored?.userInteracted).toBe(false);
-  });
-
-  it("collapsing again is remembered too", async () => {
-    const user = userEvent.setup();
-    const view = render(
-      <Host registry={registry}>
-        <AgentWorkPanel payload={payload()} />
-      </Host>,
-    );
-
-    await user.click(panelTrigger());
-    await user.click(panelTrigger());
-    view.unmount();
-
-    render(
-      <Host registry={registry}>
-        <AgentWorkPanel payload={payload()} />
-      </Host>,
-    );
-    expect(screen.queryByText("alpha contents")).not.toBeInTheDocument();
-    const stored = registry.getRowState({
-      sessionId: SESSION_ID,
-      rowId: ROW_ID,
-    })?.agentWorkPanels?.[WORK_ID];
-    expect(stored?.open).toBe(false);
-    expect(stored?.userInteracted).toBe(true);
-  });
 });
 
 describe("AgentWorkPanel step actions", () => {

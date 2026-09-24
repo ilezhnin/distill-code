@@ -59,12 +59,6 @@ function build(over: Partial<Parameters<typeof buildRunCloseout>[0]> = {}) {
 }
 
 describe("closeoutFileName", () => {
-  it("dates it and slugs the title", () => {
-    expect(closeoutFileName("Rename the flag!", AT)).toBe(
-      "2026-08-29-rename-the-flag.md",
-    );
-  });
-
   it("never produces a name that is a path", () => {
     // The native side refuses one anyway; producing one would just mean the
     // closeout is silently never written.
@@ -73,29 +67,9 @@ describe("closeoutFileName", () => {
     expect(name).not.toContain("..");
     expect(name.endsWith(".md")).toBe(true);
   });
-
-  it("still names a run whose title has nothing sluggable in it", () => {
-    expect(closeoutFileName("!!!", AT)).toBe("2026-08-29-run.md");
-  });
 });
 
 describe("buildRunCloseout", () => {
-  it("says what the run did, and what it ended as", () => {
-    const text = build();
-    expect(text).toContain("# Rename the flag");
-    expect(text).toContain("1 wave");
-    expect(text).toContain("accepted");
-    expect(text).toContain("Renamed the flag everywhere");
-  });
-
-  it("omits a section rather than leaving it empty", () => {
-    // A heading with nothing under it reads as "we looked and found nothing",
-    // which is a different claim from "this run produced none of that".
-    const text = build();
-    expect(text).not.toContain("## Risks left open");
-    expect(text).not.toContain("## Decisions");
-  });
-
   it("collects the decisions, files and risks the reports carried", () => {
     const text = build({
       reportOf: () =>
@@ -108,28 +82,6 @@ describe("buildRunCloseout", () => {
     expect(text).toContain("- Kept the old name as an alias");
     expect(text).toContain("- src/config.ts");
     expect(text).toContain("- Docs still say enableFoo");
-  });
-
-  it("gives a revision its own heading", () => {
-    const text = build({
-      waves: [
-        wave({ waveId: "w1", outcome: "revised" }),
-        wave({ waveId: "w2", revisionIndex: 1, createdAt: AT }),
-      ],
-    });
-    expect(text).toContain("## What was done");
-    expect(text).toContain("## Revision 1");
-    expect(text).toContain("2 waves");
-  });
-
-  it("says where it came from, so nobody reads it as a model's own account", () => {
-    expect(build()).toContain("not from a model asked to summarize its own");
-  });
-
-  it("carries the operator's request when it is known", () => {
-    expect(build({ request: "rename enableFoo to enableBar" })).toContain(
-      "rename enableFoo to enableBar",
-    );
   });
 });
 

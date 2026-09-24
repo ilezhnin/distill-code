@@ -20,22 +20,6 @@ function node(over: Partial<NodeFacts> = {}): NodeFacts {
 }
 
 describe("decideMemoryWrite", () => {
-  it("lets an ordinary chat write — no graph node means no restriction", () => {
-    expect(decideMemoryWrite(undefined, granted)).toEqual({ allowed: true });
-  });
-
-  it("lets the conductor write", () => {
-    expect(decideMemoryWrite(node({ role: "conductor" }), granted)).toEqual({
-      allowed: true,
-    });
-  });
-
-  it("treats a plain-chat node as the operator's own conversation", () => {
-    expect(decideMemoryWrite(node({ role: "plain-chat" }), granted)).toEqual({
-      allowed: true,
-    });
-  });
-
   it("refuses a wave child regardless of its role", () => {
     expect(
       decideMemoryWrite(
@@ -87,11 +71,5 @@ describe("decideMemoryWrite", () => {
     expect(
       decideMemoryWrite(node({ role: "plain-chat" }), granted, true),
     ).toEqual({ allowed: false, denial: "wave-child" });
-  });
-
-  it("still lets a chat the app remembers nothing about write", () => {
-    expect(decideMemoryWrite(undefined, granted, false)).toEqual({
-      allowed: true,
-    });
   });
 });

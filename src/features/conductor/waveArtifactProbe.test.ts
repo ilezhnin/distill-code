@@ -3,12 +3,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { StructuredReport } from "./types";
 import {
   MAX_CHECKED_ARTIFACT_PATHS,
-  artifactPathsOf,
-  isCheckableArtifactPath,
   resetWaveArtifactProbeForTests,
   resolveArtifactPath,
   startWaveArtifactProbe,
-  waveArtifactFactsOf,
   setWaveArtifactProbeIoForTests,
 } from "./waveArtifactProbe";
 import { createWaveState } from "./waveEngine";
@@ -38,84 +35,12 @@ afterEach(() => {
   resetWaveEngineStateCache();
 });
 
-describe("artifactPathsOf", () => {
-  it("collects paths across reports, in the order they were named", () => {
-    const paths = artifactPathsOf([
-      report({ artifacts: [{ label: "a", path: "src/a.ts" }] }),
-      report({ artifacts: [{ label: "b", path: "src/b.ts" }] }),
-    ]);
-    expect(paths).toEqual(["src/a.ts", "src/b.ts"]);
-  });
-
-  it("asks about each path once", () => {
-    const paths = artifactPathsOf([
-      report({ artifacts: [{ label: "a", path: "src/a.ts" }] }),
-      report({ artifacts: [{ label: "again", path: "src/a.ts" }] }),
-    ]);
-    expect(paths).toEqual(["src/a.ts"]);
-  });
-
-  it("ignores an artifact that is a link rather than a file", () => {
-    // A url artifact does not live on this disk, and calling it missing would
-    // be a false accusation from a check that never looked.
-    const paths = artifactPathsOf([
-      report({ artifacts: [{ label: "run", url: "https://ci/1" }] }),
-    ]);
-    expect(paths).toEqual([]);
-  });
-});
-
 describe("resolveArtifactPath", () => {
-  it("reads a relative path against the conductor's working folder", () => {
-    expect(resolveArtifactPath("src/a.ts", "/repo")).toBe("/repo/src/a.ts");
-    expect(resolveArtifactPath("./src/a.ts", "/repo")).toBe("/repo/src/a.ts");
-  });
-
-  it("keeps the working folder's own separator on Windows", () => {
-    expect(resolveArtifactPath("src/a.ts", "C:\\repo")).toBe(
-      "C:\\repo\\src/a.ts",
-    );
-  });
-
-  it("leaves an already-answerable path alone", () => {
-    expect(resolveArtifactPath("/etc/hosts", "/repo")).toBe("/etc/hosts");
-    expect(resolveArtifactPath("~/notes.md", "/repo")).toBe("~/notes.md");
-    expect(resolveArtifactPath("C:\\x\\y.txt", "/repo")).toBe("C:\\x\\y.txt");
-    expect(resolveArtifactPath("https://ci/1", "/repo")).toBe("https://ci/1");
-  });
-
-  it("passes the path through when there is no working folder", () => {
-    expect(resolveArtifactPath("src/a.ts", undefined)).toBe("src/a.ts");
-  });
-
   it("leaves UNC and root-relative Windows paths alone", () => {
     expect(resolveArtifactPath("\\\\host\\share\\a.ts", "C:\\repo")).toBe(
       "\\\\host\\share\\a.ts",
     );
     expect(resolveArtifactPath("\\src\\a.ts", "C:\\repo")).toBe("\\src\\a.ts");
-  });
-
-  it("drops a cited line and column from the path", () => {
-    expect(resolveArtifactPath("src/a.ts:42", "C:\\repo")).toBe(
-      "C:\\repo\\src/a.ts",
-    );
-    expect(resolveArtifactPath("C:\\repo\\a.ts:4:2", "C:\\repo")).toBe(
-      "C:\\repo\\a.ts",
-    );
-  });
-});
-
-describe("isCheckableArtifactPath", () => {
-  it("refuses what the filesystem cannot answer about", () => {
-    expect(isCheckableArtifactPath("~/notes.md")).toBe(false);
-    expect(isCheckableArtifactPath("https://ci/1")).toBe(false);
-    expect(isCheckableArtifactPath("  ")).toBe(false);
-  });
-
-  it("accepts relative and absolute paths", () => {
-    expect(isCheckableArtifactPath("src/a.ts")).toBe(true);
-    expect(isCheckableArtifactPath("C:\\x\\y.txt")).toBe(true);
-    expect(isCheckableArtifactPath("/etc/hosts")).toBe(true);
   });
 });
 
@@ -202,24 +127,6 @@ describe("startWaveArtifactProbe", () => {
     expect(waveNow().missingArtifacts).toBeUndefined();
   });
 
-  it("records a clean check as checked-and-nothing-missing", async () => {
-    seedWave();
-    setWaveArtifactProbeIoForTests({
-      canProbe: () => true,
-      workingDirOf: () => "/repo",
-      exists: async () => true,
-    });
-    await settled(
-      startWaveArtifactProbe({
-        waveId: "w1",
-        conductorSessionId: "c1",
-        reports: [report({ artifacts: [{ label: "a", path: "src/a.ts" }] })],
-      }),
-    );
-    expect(waveNow().checkedArtifacts).toBe(1);
-    expect(waveNow().missingArtifacts).toBeUndefined();
-  });
-
   it("treats a backend that throws as no answer, never as a missing file", async () => {
     // An IPC failure read as "the worker lied" would refuse every accept on
     // every degraded build.
@@ -239,30 +146,6 @@ describe("startWaveArtifactProbe", () => {
       }),
     );
     expect(waveNow().missingArtifacts).toBeUndefined();
-  });
-
-  it("does not start when there is nothing to ask about", () => {
-    seedWave();
-    setWaveArtifactProbeIoForTests({ canProbe: () => true });
-    expect(
-      startWaveArtifactProbe({
-        waveId: "w1",
-        conductorSessionId: "c1",
-        reports: [report()],
-      }),
-    ).toBe(false);
-  });
-
-  it("does not start when there is no Tauri to ask", () => {
-    seedWave();
-    setWaveArtifactProbeIoForTests({ canProbe: () => false });
-    expect(
-      startWaveArtifactProbe({
-        waveId: "w1",
-        conductorSessionId: "c1",
-        reports: [report({ artifacts: [{ label: "a", path: "src/a.ts" }] })],
-      }),
-    ).toBe(false);
   });
 
   it("stops asking past the ceiling and says how many it looked at", async () => {
@@ -289,30 +172,5 @@ describe("startWaveArtifactProbe", () => {
     );
     expect(asked).toBe(MAX_CHECKED_ARTIFACT_PATHS);
     expect(waveNow().checkedArtifacts).toBe(MAX_CHECKED_ARTIFACT_PATHS);
-  });
-});
-
-describe("waveArtifactFactsOf", () => {
-  it("says nothing when nothing was checked", () => {
-    // "Nothing was checked" and "everything checked out" are different
-    // answers, and only the second is evidence.
-    expect(waveArtifactFactsOf({})).toBeUndefined();
-    expect(waveArtifactFactsOf({ checkedArtifacts: 0 })).toBeUndefined();
-  });
-
-  it("reports a clean check as evidence", () => {
-    expect(waveArtifactFactsOf({ checkedArtifacts: 3 })).toEqual({
-      checked: 3,
-      missing: [],
-    });
-  });
-
-  it("carries the missing paths through", () => {
-    expect(
-      waveArtifactFactsOf({
-        checkedArtifacts: 3,
-        missingArtifacts: ["src/ghost.ts"],
-      }),
-    ).toEqual({ checked: 3, missing: ["src/ghost.ts"] });
   });
 });

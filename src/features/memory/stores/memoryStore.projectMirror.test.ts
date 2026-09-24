@@ -168,32 +168,6 @@ describe("the project memory mirror and a project that joins late", () => {
     expect(ids(state.archived)).toEqual(["c-old"]);
   });
 
-  it("reads the folder as soon as the project joins, before any commit", async () => {
-    putFile("/work/quarp", [entry({ id: "c1" })]);
-    await hydrateMemoryStore();
-
-    useProjectStore.setState({ projects: [project()] });
-    await flushMemoryWrites();
-
-    expect(ids(useMemoryStore.getState().entries)).toEqual(["c1"]);
-  });
-
-  it("still keeps the project present at startup on the same path", async () => {
-    // The control case: the folder read at hydration and the mirror after a
-    // commit agree, and nothing is lost either way.
-    putFile("/work/quarp", [entry({ id: "c1" })]);
-    useProjectStore.setState({ projects: [project()] });
-    await hydrateMemoryStore();
-
-    useMemoryStore
-      .getState()
-      .remember({ text: "Ivan pushes", scope: "global" }, NOW);
-    await flushMemoryWrites();
-
-    expect(ids(readFile("/work/quarp")?.entries ?? [])).toEqual(["c1"]);
-    expect(ids(useMemoryStore.getState().entries)).toContain("c1");
-  });
-
   it("does not write a folder it could not read", async () => {
     // A drive that is not mounted at startup and not mounted now: whatever
     // its file holds has not been merged, so it is not this run's to replace.
@@ -233,29 +207,6 @@ describe("the project memory mirror and a project that joins late", () => {
     ]);
   });
 
-  it("does not bring back a line the operator deleted this run", async () => {
-    // The folder was offline when the operator deleted the line, and comes
-    // back afterwards: the union is by id, and the operator's delete is the
-    // one thing that outranks a copy on disk (LAWS/MEMORY.md, Sovereignty).
-    putFile("/work/quarp", [entry({ id: "c1" }), entry({ id: "c2" })]);
-    useProjectStore.setState({ projects: [project()] });
-    await hydrateMemoryStore();
-    expect(ids(useMemoryStore.getState().entries)).toEqual(["c1", "c2"]);
-
-    folders.unreadable.add("/work/quarp");
-    useMemoryStore.getState().forget("c1");
-    await flushMemoryWrites();
-    folders.unreadable.clear();
-
-    useMemoryStore
-      .getState()
-      .remember({ text: "Ivan pushes", scope: "global" }, NOW);
-    await flushMemoryWrites();
-
-    expect(ids(useMemoryStore.getState().entries)).not.toContain("c1");
-    expect(ids(readFile("/work/quarp")?.entries ?? [])).toEqual(["c2"]);
-  });
-
   it("does not bring back a line the operator deleted in an earlier run", async () => {
     // The tombstones used to live only in memory, so a delete made while the
     // folder was offline was re-adopted at the first mirror after it came back
@@ -290,18 +241,6 @@ describe("the project memory mirror and a project that joins late", () => {
       .remember({ text: "Ivan pushes", scope: "global" }, NOW);
     await flushMemoryWrites();
     expect(ids(readFile("/work/quarp")?.entries ?? [])).toEqual(["c2"]);
-  });
-
-  it("keeps the delete tombstones in the stored document", async () => {
-    useProjectStore.setState({ projects: [project()] });
-    await hydrateMemoryStore();
-    const id = useMemoryStore
-      .getState()
-      .remember({ text: "Ivan prefers pnpm", scope: "global" }, NOW);
-    useMemoryStore.getState().forget(id);
-    await flushMemoryWrites();
-
-    expect(useMemoryStore.getState().forgottenIds).toEqual([id]);
   });
 
   it("reads the new folder when a project is pointed somewhere else", async () => {

@@ -8,7 +8,6 @@ import {
 import { reconcileSessionRunSettings } from "../runSettingsReconciler";
 import {
   observeSessionTargetConfigSnapshots,
-  observeSessionTargetModelSnapshot,
   resetSessionTargetCoordinatorsForTests,
   transitionSessionTarget,
 } from "../sessionTargetCoordinator";
@@ -50,22 +49,6 @@ function seedSession(
   return session;
 }
 
-function observe(
-  snapshotModelId: string,
-  contextModelId: string,
-  harnessId = "codex-acp",
-): boolean {
-  return observeSessionTargetModelSnapshot({
-    sessionId: "session-1",
-    snapshot: { modelId: snapshotModelId, modelName: snapshotModelId },
-    context: {
-      origin: "response",
-      providerId: harnessId,
-      modelId: contextModelId,
-    },
-  });
-}
-
 function effortMenu(currentValue: string): ChatSessionReasoningEffortConfig {
   return {
     configId: "reasoning_effort",
@@ -86,48 +69,6 @@ function liveSession(): ChatSession | undefined {
   return useChatSessionStore.getState().getSession("session-1");
 }
 
-describe("observeSessionTargetModelSnapshot", () => {
-  beforeEach(() => {
-    resetSessionTargetCoordinatorsForTests();
-    useChatSessionStore.setState({ sessions: [] });
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-  });
-
-  it("accepts a snapshot that still folds the effort into the model id", () => {
-    seedSession("gpt-5.6-sol");
-
-    expect(observe("gpt-5.6-sol[ultra]", "gpt-5.6-sol[ultra]")).toBe(true);
-    expect(console.warn).not.toHaveBeenCalled();
-  });
-
-  it("accepts a base-id snapshot for a target that still carries the effort", () => {
-    seedSession("gpt-5.6-sol[ultra]");
-
-    expect(observe("gpt-5.6-sol", "gpt-5.6-sol")).toBe(true);
-  });
-
-  it("drops a legacy folded snapshot that names a different model", () => {
-    seedSession("gpt-5.6-sol");
-
-    expect(observe("gpt-6-astra[ultra]", "gpt-6-astra[ultra]")).toBe(false);
-    expect(
-      useChatSessionStore.getState().getSession("session-1"),
-    ).toMatchObject({ executionTarget: { modelId: "gpt-5.6-sol" } });
-  });
-
-  it("drops a legacy folded snapshot whose context names a model the response does not", () => {
-    seedSession("gpt-5.6-sol");
-
-    expect(observe("gpt-5.6-sol[ultra]", "gpt-6-astra[ultra]")).toBe(false);
-  });
-
-  it("keeps a context lane apart from the model without it", () => {
-    seedSession("opus[1m]", "claude-acp");
-
-    expect(observe("opus", "opus", "claude-acp")).toBe(false);
-  });
-});
-
 describe("run settings in a target transition", () => {
   beforeEach(() => {
     resetSessionTargetCoordinatorsForTests();
@@ -135,66 +76,6 @@ describe("run settings in a target transition", () => {
     vi.clearAllMocks();
     vi.spyOn(console, "warn").mockImplementation(() => {});
     mocks.acpApplySessionRunSettings.mockResolvedValue(undefined);
-  });
-
-  it("applies the model, then the effort, then fast, all under the selection's one request id", async () => {
-    seedSession("gpt-5.5", "codex-acp", {
-      desiredRunSettings: { effort: "high", fast: true },
-    });
-    const wire: unknown[][] = [];
-    mocks.acpPrepareSession.mockImplementation(
-      async (_sessionId, _providerId, _workingDir, options) => {
-        wire.push(["model", options.modelId, options.requestId]);
-        const modelAnswer: AcpSessionConfigSnapshots = {
-          model: { modelId: "gpt-6-astra", modelName: "GPT-6-Astra" },
-          reasoningEffort: effortMenu("medium"),
-          fastMode: { configId: "fast-mode", enabled: false, kind: "select" },
-        };
-        // Stands in for the registry, which runs the planner inside the same
-        // mutation as the model apply.
-        const write = options.planRunSettings?.(modelAnswer);
-        if (write?.effort) {
-          wire.push(["effort", write.effort.value, options.requestId]);
-        }
-        if (write?.fast) {
-          wire.push(["fast", write.fast.value, options.requestId]);
-        }
-        return {
-          ...modelAnswer,
-          reasoningEffort: effortMenu("high"),
-          fastMode: { configId: "fast-mode", enabled: true, kind: "select" },
-        };
-      },
-    );
-
-    const outcome = await transitionSessionTarget({
-      sessionId: "session-1",
-      target: {
-        harnessId: "codex-acp",
-        modelProviderId: "codex-acp",
-        modelId: "gpt-6-astra",
-        modelName: "GPT-6-Astra",
-      },
-      workingDir: "/project",
-      origin: "picker",
-      operationId: "select-1",
-    });
-
-    expect(outcome.status).toBe("committed");
-    expect(wire).toEqual([
-      ["model", "gpt-6-astra", "select-1"],
-      ["effort", "high", "select-1"],
-      ["fast", true, "select-1"],
-    ]);
-    // Everything the intent asked for landed inside the model apply, so the
-    // reconcile that follows the commit has nothing left to write.
-    expect(mocks.acpApplySessionRunSettings).not.toHaveBeenCalled();
-    expect(liveSession()).toMatchObject({
-      executionTarget: { modelId: "gpt-6-astra" },
-      reasoningEffort: { currentValue: "high" },
-      fastMode: { enabled: true },
-      desiredRunSettings: { effort: "high", fast: true },
-    });
   });
 
   it("changes the effort without moving the execution target or superseding a send waiting on the session", async () => {

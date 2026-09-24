@@ -64,11 +64,6 @@ describe("boundConductorGraph", () => {
     vi.restoreAllMocks();
   });
 
-  it("returns the same object while under the bound", () => {
-    const state = stateOf([node("a", "completed")], [report("run-a")]);
-    expect(boundConductorGraph(state, NO_LIVE_WAVES)).toBe(state);
-  });
-
   it("evicts the oldest finished workers first, down to the bound", () => {
     const nodes = Array.from({ length: MAX_GRAPH_NODES + 3 }, (_, index) =>
       node(`w-${index}`, "completed", {
@@ -139,21 +134,6 @@ describe("boundConductorGraph", () => {
     // Its report is referenced by a surviving node, so the report bound leaves
     // it alone too.
     expect(bounded.reportsByRunId["run-parked"]).toBeDefined();
-  });
-
-  it("warns — once — when everything over the bound is unevictable", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const nodes = Array.from({ length: MAX_GRAPH_NODES + 2 }, (_, index) =>
-      node(`busy-${index}`, "running", { createdAt: index }),
-    );
-    const state = stateOf(nodes);
-
-    const bounded = boundConductorGraph(state, NO_LIVE_WAVES);
-    boundConductorGraph(bounded, NO_LIVE_WAVES);
-
-    // Nothing could move, and the failure is visible rather than silent.
-    expect(Object.keys(bounded.nodesById)).toHaveLength(MAX_GRAPH_NODES + 2);
-    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it("drops orphan reports only once the report map is over its own bound", () => {

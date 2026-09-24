@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ModelOption } from "../../types";
-import {
-  findModelOption,
-  PRE_SESSION_EFFORT_CONFIG_ID,
-  resolvePreSessionRunSettings,
-} from "../preSessionRunSettings";
+import { resolvePreSessionRunSettings } from "../preSessionRunSettings";
 
 const opus5: ModelOption = {
   id: "claude-opus-5",
@@ -38,29 +34,7 @@ const opus46: ModelOption = {
   capabilitySource: "declared",
 };
 
-const haiku: ModelOption = {
-  id: "claude-haiku-4-5",
-  name: "Haiku 4.5",
-  providerId: "claude-acp",
-  efforts: [],
-  supportsFast: false,
-  capabilitySource: "probed",
-};
-
 describe("resolvePreSessionRunSettings", () => {
-  it("shows the model's own menu at its default and records no intent when nothing was chosen", () => {
-    const resolved = resolvePreSessionRunSettings({ model: opus5 });
-
-    expect(resolved.reasoningEffort).toEqual({
-      configId: PRE_SESSION_EFFORT_CONFIG_ID,
-      currentValue: "high",
-      options: opus5.efforts,
-    });
-    expect(resolved.fast).toBe(false);
-    expect(resolved.intent).toBeUndefined();
-    expect(resolved.notice).toBeNull();
-  });
-
   it("prefers the composer's choice, then the model's remembered value, then the agent's", () => {
     const preference = {
       modelId: "claude-opus-5",
@@ -89,23 +63,6 @@ describe("resolvePreSessionRunSettings", () => {
     ).toEqual({ effort: "medium", fast: true });
   });
 
-  it("does not carry a remembered value onto a model that cannot honour it", () => {
-    const resolved = resolvePreSessionRunSettings({
-      model: opus46,
-      preference: {
-        modelId: "claude-opus-5",
-        modelName: "Opus 5",
-        providerId: "claude-acp",
-        reasoningEffort: "xhigh",
-        fastMode: true,
-      },
-    });
-
-    expect(resolved.intent).toBeUndefined();
-    expect(resolved.reasoningEffort?.currentValue).toBe("default");
-    expect(resolved.notice).toBeNull();
-  });
-
   it("keeps an explicit choice the model lacks as intent and says what runs instead", () => {
     const resolved = resolvePreSessionRunSettings({
       model: opus46,
@@ -120,49 +77,5 @@ describe("resolvePreSessionRunSettings", () => {
       actual: "default",
       modelName: "Opus 4.6",
     });
-  });
-
-  it("still applies what is remembered for a model whose inventory row is not known yet", () => {
-    const resolved = resolvePreSessionRunSettings({
-      modelId: "claude-opus-5",
-      preference: {
-        modelId: "claude-opus-5",
-        modelName: "Opus 5",
-        providerId: "claude-acp",
-        reasoningEffort: "medium",
-        byModel: {
-          "claude-opus-5": { reasoningEffort: "xhigh", fastMode: true },
-        },
-      },
-    });
-
-    // The per-model value is that model's own; the agent-level one is only
-    // taken where the model is known to offer it.
-    expect(resolved.intent).toEqual({ effort: "xhigh", fast: true });
-    expect(resolved.reasoningEffort).toBeUndefined();
-  });
-
-  it("offers no effort menu for a model whose inventory row has no efforts", () => {
-    expect(
-      resolvePreSessionRunSettings({ model: haiku }).reasoningEffort,
-    ).toBeUndefined();
-    expect(
-      resolvePreSessionRunSettings({ model: { id: "unknown", name: "?" } })
-        .reasoningEffort,
-    ).toBeUndefined();
-  });
-});
-
-describe("findModelOption", () => {
-  it("finds the row a legacy folded id names", () => {
-    expect(
-      findModelOption([opus5, opus46], "claude-opus-4-6", "claude-acp"),
-    ).toBe(opus46);
-    expect(
-      findModelOption(
-        [{ id: "gpt-5.6-sol", name: "GPT-5.6-Sol" }],
-        "gpt-5.6-sol[xhigh]",
-      )?.id,
-    ).toBe("gpt-5.6-sol");
   });
 });

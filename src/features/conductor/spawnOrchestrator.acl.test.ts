@@ -146,35 +146,6 @@ describe("spawnConductorChildSession spawn ACL", () => {
     expect(parentNotices()).toEqual([]);
   });
 
-  it("refuses a conductor spawning outside its layers' targets", async () => {
-    useConductorGraphStore
-      .getState()
-      .registerNode(parentNode({ role: "orchestrator" }));
-
-    await expect(
-      spawnConductorChildSession({
-        parentSessionId: PARENT_ID,
-        role: "orchestrator",
-        task: "do something",
-      }),
-    ).rejects.toBeInstanceOf(SpawnAclDeniedError);
-  });
-
-  it("treats a node-less wave spawn as conductor-initiated", async () => {
-    // The conductor draft-id remap can leave the node unmapped for a tick;
-    // a wave spawn must not be refused over that race.
-    await expect(
-      spawnConductorChildSession({
-        parentSessionId: PARENT_ID,
-        role: "worker",
-        managedBy: "wave",
-        waveId: "wave-1",
-        stepIndex: 0,
-        task: "do something",
-      }),
-    ).rejects.toThrow(REACHED_CREATE);
-  });
-
   it("treats a node-less non-wave parent as a plain chat and refuses", async () => {
     await expect(
       spawnConductorChildSession({

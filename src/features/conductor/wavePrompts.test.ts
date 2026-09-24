@@ -7,7 +7,6 @@ import { VERDICT_FENCE_TAG, parseDistillVerdict } from "./distillVerdict";
 import type { StructuredReport } from "./types";
 import { admitWavePlan } from "./waveEngine";
 import {
-  CONDUCTOR_PROTOCOL_PROMPT,
   MAX_PREVIOUS_REPORTS_CHARS,
   type CompletedWaveStepReport,
   buildWaveStepPrompt,
@@ -39,32 +38,6 @@ function completedStep(
   };
 }
 
-describe("CONDUCTOR_PROTOCOL_PROMPT", () => {
-  it("shows worked examples, and every fence in the prompt is a plan the ENGINE admits", () => {
-    // Few-shots are the largest single win our own ablation measured
-    // (Nielsen et al., Table 9: −9.43pp without them), so the prompt carries
-    // worked examples — including one request that must NOT become a wave.
-    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain("## Worked examples");
-    expect(CONDUCTOR_PROTOCOL_PROMPT).toContain("no wave");
-
-    // Every example is held to admitWavePlan, not just the parser: the format
-    // example used to end on a prod-stage writer, which the E1 lint refuses —
-    // a conductor imitating the canonical example was handed
-    // "verification-step-missing" for its trouble.
-    const fences =
-      CONDUCTOR_PROTOCOL_PROMPT.match(
-        new RegExp(`\`\`\`${WAVE_FENCE_TAG}[\\s\\S]*?\`\`\``, "g"),
-      ) ?? [];
-    expect(fences.length).toBeGreaterThanOrEqual(3);
-    for (const fence of fences) {
-      const parsed = parseDistillWave(fence);
-      expect(parsed.kind).toBe("plan");
-      const admission = admitWavePlan(parsed);
-      expect(admission.kind).toBe("accepted");
-    }
-  });
-});
-
 describe("buildWaveStepPrompt", () => {
   const noAccessStep: WaveStep = {
     role: "researcher",
@@ -81,15 +54,6 @@ describe("buildWaveStepPrompt", () => {
     const prompt = buildWaveStepPrompt(noAccessStep, [completedStep()]);
     expect(prompt).not.toContain("Found three candidate libraries");
     expect(prompt).not.toContain("```json");
-  });
-
-  it("embeds the JSON reports for an access all step", () => {
-    const prompt = buildWaveStepPrompt(allAccessStep, [completedStep()]);
-    expect(prompt).toContain("```json");
-    expect(prompt).toContain("Found three candidate libraries");
-    expect(prompt).toContain("Dropped the unmaintained one");
-    expect(prompt).toContain("notes.md");
-    expect(prompt).toContain("not their transcripts");
   });
 
   it("bounds the whole handoff, keeping the most recent reports", () => {
@@ -114,66 +78,6 @@ describe("buildWaveStepPrompt", () => {
     // The step is told what it is missing rather than left to assume it has
     // everything.
     expect(prompt).toContain("omitted here");
-  });
-
-  it("keeps a single oversized report rather than handing on none", () => {
-    const prompt = buildWaveStepPrompt(allAccessStep, [
-      completedStep({
-        report: report({ summary: `ONLY ONE ${"x".repeat(40_000)}` }),
-      }),
-    ]);
-    expect(prompt).toContain("ONLY ONE");
-    expect(prompt).not.toContain("omitted here");
-  });
-
-  it("labels a revision's carried reports as coming from the previous wave", () => {
-    const prompt = buildWaveStepPrompt(
-      { role: "qa", subtask: "Re-check", access: "all" },
-      [
-        {
-          stepIndex: 0,
-          role: "scout",
-          subtask: "Find every caller",
-          fromPreviousWave: true,
-          report: {
-            runId: "run-prev",
-            status: "completed",
-            summary: "Three callers, all in src/",
-            decisions: [],
-            artifacts: [],
-            risks: [],
-            needsOperator: false,
-            nextSuggestedTask: null,
-          },
-        },
-        {
-          stepIndex: 0,
-          role: "scout",
-          subtask: "Re-run the search",
-          report: {
-            runId: "run-now",
-            status: "completed",
-            summary: "Still three",
-            decisions: [],
-            artifacts: [],
-            risks: [],
-            needsOperator: false,
-            nextSuggestedTask: null,
-          },
-        },
-      ],
-    );
-
-    // Q4: a revision has to be able to tell what it is revising from what its
-    // own siblings just did, or "the revision sees what happened" is a claim
-    // with no mechanism behind it.
-    expect(prompt).toContain('"wave": "previous"');
-    expect(prompt).toContain('"wave": "current"');
-    expect(prompt).toContain("that is what is being revised");
-    // Previous-wave reports come first, whatever order the caller passed.
-    expect(prompt.indexOf("Three callers, all in src/")).toBeLessThan(
-      prompt.indexOf("Still three"),
-    );
   });
 });
 

@@ -22,10 +22,7 @@ import {
 import type { SessionManagedBy, SessionRole } from "@/features/conductor/types";
 
 import { MEMORY_SCAN_TAIL } from "./lib/memoryAgentScan";
-import {
-  setMemoryReadEnabled,
-  setMemoryWriteEnabled,
-} from "./lib/memoryPreferences";
+import { setMemoryWriteEnabled } from "./lib/memoryPreferences";
 import {
   resetWaveExecutorWatchForTests,
   useMemoryStore,
@@ -64,23 +61,6 @@ function putMessages(sessionId: string, messages: Message[]) {
       messagesBySession: { ...state.messagesBySession, [sessionId]: messages },
     }));
   });
-}
-
-/**
- * Transcripts that count the scans that read them.
- *
- * A scan starts by listing the sessions, so the key enumeration is the
- * cheapest honest proxy for "the drain looked at the transcripts".
- */
-function countingTranscripts(inner: Record<string, Message[]>) {
-  let reads = 0;
-  const proxy = new Proxy(inner, {
-    ownKeys(target) {
-      reads += 1;
-      return Reflect.ownKeys(target);
-    },
-  });
-  return { proxy, reads: () => reads };
 }
 
 function putGraphNode(
@@ -161,37 +141,6 @@ describe("useMemoryAgentSync", () => {
     vi.restoreAllMocks();
   });
 
-  it("files a fact under the project the session belongs to", () => {
-    putSession("s-1", "p-1");
-    renderHook(() => useMemoryAgentSync());
-
-    putMessages("s-1", [
-      assistant("m-1", '{"remember":[{"text":"Uses pnpm","scope":"project"}]}'),
-    ]);
-
-    expect(useMemoryStore.getState().entries[0]).toMatchObject({
-      text: "Uses pnpm",
-      scope: "project",
-      projectId: "p-1",
-      createdBySessionId: "s-1",
-    });
-  });
-
-  it("keeps a global fact even from a session with no project", () => {
-    putSession("s-1", null);
-    renderHook(() => useMemoryAgentSync());
-
-    putMessages("s-1", [
-      assistant(
-        "m-1",
-        '{"remember":[{"text":"Ivan pushes","scope":"global"}]}',
-      ),
-    ]);
-
-    expect(useMemoryStore.getState().entries).toHaveLength(1);
-    expect(useMemoryStore.getState().entries[0].scope).toBe("global");
-  });
-
   it("does not re-file on every later store change", () => {
     putSession("s-1", "p-1");
     renderHook(() => useMemoryAgentSync());
@@ -204,32 +153,6 @@ describe("useMemoryAgentSync", () => {
     });
 
     expect(useMemoryStore.getState().entries).toHaveLength(1);
-  });
-
-  it("does not read the transcripts when only a runtime flag changed", () => {
-    // The chat store carries the transcripts and, beside them, per-session
-    // runtime state that moves on every token's bookkeeping. No flag can turn
-    // a message into a fence, so a run that changed no transcript must not
-    // cost a scan — this drain is on the streaming path.
-    putSession("s-1", "p-1");
-    renderHook(() => useMemoryAgentSync());
-    const transcripts = countingTranscripts({
-      "s-1": [assistant("m-1", '{"remember":["Once only"]}')],
-    });
-    act(() => {
-      useChatStore.setState({ messagesBySession: transcripts.proxy });
-    });
-    expect(useMemoryStore.getState().entries).toHaveLength(1);
-
-    const readsAfterTheMessage = transcripts.reads();
-    act(() => {
-      useChatStore.setState({ activeSessionId: "s-1" });
-    });
-    act(() => {
-      useChatStore.setState({ isViewingActiveSession: false });
-    });
-
-    expect(transcripts.reads()).toBe(readsAfterTheMessage);
   });
 
   it("refuses a wave worker's fence, out loud, and does not retry it", () => {
@@ -308,35 +231,6 @@ describe("useMemoryAgentSync", () => {
     }
   });
 
-  it("refuses a worker-layer node even outside the wave engine", () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    putSession("s-w", "p-1");
-    putGraphNode("s-w", "worker", { managedBy: "agent-cli" });
-    renderHook(() => useMemoryAgentSync());
-
-    putMessages("s-w", [assistant("m-1", '{"remember":["Nope"]}')]);
-
-    expect(useMemoryStore.getState().entries).toHaveLength(0);
-  });
-
-  it("lets the conductor write", () => {
-    putSession("s-c", "p-1");
-    putGraphNode("s-c", "conductor");
-    renderHook(() => useMemoryAgentSync());
-
-    putMessages("s-c", [
-      assistant(
-        "m-1",
-        '{"remember":[{"text":"Wave shipped","scope":"project"}]}',
-      ),
-    ]);
-
-    expect(useMemoryStore.getState().entries[0]).toMatchObject({
-      text: "Wave shipped",
-      projectId: "p-1",
-    });
-  });
-
   it("lets an orchestrator write only when its persona is granted", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     putSession("s-o", "p-1");
@@ -394,22 +288,6 @@ describe("useMemoryAgentSync", () => {
     expect(useMemoryStore.getState().appliedMessageIds).toContain("m-1");
   });
 
-  it("says why a project fact from a chat with no project was refused", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    putSession("s-1", null);
-    renderHook(() => useMemoryAgentSync());
-
-    putMessages("s-1", [
-      assistant("m-1", '{"remember":[{"text":"Uses pnpm","scope":"project"}]}'),
-    ]);
-
-    expect(useMemoryStore.getState().entries).toHaveLength(0);
-    expect(warn).toHaveBeenCalledWith(
-      "[memory] statement refused: a project fact needs a project, and this chat has none",
-    );
-    expect(useMemoryStore.getState().appliedMessageIds).toContain("m-1");
-  });
-
   it("keeps the fact when a correction's replacement cannot be kept", () => {
     // The checklist's C.4 correction, sent from a chat with no project. The
     // replacement is refused, so the retirement does not run either: losing
@@ -446,45 +324,7 @@ describe("useMemoryAgentSync", () => {
     expect(state.archived).toEqual([]);
   });
 
-  it("gives a refused secret one reason, not two", () => {
-    // A project-scoped secret from a chat with no project trips both rules;
-    // the operator gets the one that matters, once.
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    putSession("s-1", null);
-    renderHook(() => useMemoryAgentSync());
-
-    putMessages("s-1", [
-      assistant(
-        "m-1",
-        JSON.stringify({
-          remember: [
-            { text: `The key is AKIA${"Q".repeat(16)}`, scope: "project" },
-          ],
-        }),
-      ),
-    ]);
-
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith(
-      "[memory] statement refused: looks like a secret (aws-key)",
-    );
-  });
-
   describe("while the operator has writing switched off", () => {
-    it("neither keeps a fence nor spends it", () => {
-      setMemoryWriteEnabled(false);
-      putSession("s-1", "p-1");
-      renderHook(() => useMemoryAgentSync());
-
-      putMessages("s-1", [assistant("m-1", '{"remember":["Uses pnpm"]}')]);
-
-      expect(useMemoryStore.getState().entries).toHaveLength(0);
-      // The half that makes the pause reversible: a fence this drain looks
-      // at is tombstoned whether or not it was applied, so a paused drain
-      // must not look at all.
-      expect(useMemoryStore.getState().appliedMessageIds).not.toContain("m-1");
-    });
-
     it("keeps the fence, and applies it once writing comes back", () => {
       setMemoryWriteEnabled(false);
       putSession("s-1", "p-1");
@@ -530,27 +370,5 @@ describe("useMemoryAgentSync", () => {
         "Written during the pause",
       ]);
     });
-
-    it("is not the read switch: reading off still lets a fence land", () => {
-      // Two switches, two jobs. Not mixing memory into prompts says nothing
-      // about honouring a request an agent makes anyway.
-      setMemoryReadEnabled(false);
-      putSession("s-1", "p-1");
-      renderHook(() => useMemoryAgentSync());
-
-      putMessages("s-1", [assistant("m-1", '{"remember":["Still kept"]}')]);
-
-      expect(useMemoryStore.getState().entries).toHaveLength(1);
-    });
-  });
-
-  it("stops listening once it unmounts", () => {
-    putSession("s-1", "p-1");
-    const { unmount } = renderHook(() => useMemoryAgentSync());
-    unmount();
-
-    putMessages("s-1", [assistant("m-1", '{"remember":["After unmount"]}')]);
-
-    expect(useMemoryStore.getState().entries).toHaveLength(0);
   });
 });

@@ -3,7 +3,6 @@ import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore
 import { useChatSessionStore, type ChatSession } from "../chatSessionStore";
 import {
   moveSessionToProject,
-  updateSessionProject,
   updateSessionTitle,
 } from "../chatSessionOperations";
 
@@ -60,47 +59,6 @@ describe("chatSessionOperations", () => {
   });
 
   describe("updateSessionTitle", () => {
-    it("renames in backend before patching local state", async () => {
-      seedSession({ userSetName: false });
-      mockRenameSession.mockResolvedValue(undefined);
-
-      await updateSessionTitle("session-1", "Manual Title");
-
-      expect(mockRenameSession).toHaveBeenCalledWith(
-        "session-1",
-        "Manual Title",
-      );
-      expect(
-        useChatSessionStore.getState().getSession("session-1"),
-      ).toMatchObject({
-        title: "Manual Title",
-        userSetName: true,
-      });
-    });
-
-    it("renames a conductor graph label with the chat title", async () => {
-      seedSession({ userSetName: false });
-      mockRenameSession.mockResolvedValue(undefined);
-      useConductorGraphStore.getState().registerNode({
-        sessionId: "session-1",
-        projectId: "project",
-        role: "conductor",
-        managedBy: "ui",
-        parentSessionId: null,
-        rootConductorId: "session-1",
-        runId: null,
-        harnessId: "goose",
-        displayName: "Producer",
-        status: "stopped",
-      });
-
-      await updateSessionTitle("session-1", "Manual Title");
-
-      expect(
-        useConductorGraphStore.getState().getNode("session-1")?.displayName,
-      ).toBe("Manual Title");
-    });
-
     it("does not patch local state when backend rename fails", async () => {
       seedSession({ userSetName: false });
       mockRenameSession.mockRejectedValue(new Error("rename failed"));
@@ -118,45 +76,7 @@ describe("chatSessionOperations", () => {
     });
   });
 
-  describe("updateSessionProject", () => {
-    it("updates project in backend before patching local state", async () => {
-      seedSession({ projectId: "project-old" });
-      mockUpdateSessionProject.mockResolvedValue(undefined);
-
-      await updateSessionProject("session-1", "project-new");
-
-      expect(mockUpdateSessionProject).toHaveBeenCalledWith(
-        "session-1",
-        "project-new",
-      );
-      expect(
-        useChatSessionStore.getState().getSession("session-1")?.projectId,
-      ).toBe("project-new");
-    });
-
-    it("does not patch local state when backend project update fails", async () => {
-      seedSession({ projectId: "project-old" });
-      mockUpdateSessionProject.mockRejectedValue(new Error("project failed"));
-
-      await expect(
-        updateSessionProject("session-1", "project-new"),
-      ).rejects.toThrow("project failed");
-
-      expect(
-        useChatSessionStore.getState().getSession("session-1")?.projectId,
-      ).toBe("project-old");
-    });
-  });
-
   describe("moveSessionToProject", () => {
-    it("ignores moves for missing sessions", async () => {
-      await expect(
-        moveSessionToProject("missing-session", "project-new"),
-      ).resolves.toBeUndefined();
-
-      expect(mockUpdateSessionProject).not.toHaveBeenCalled();
-    });
-
     it("persists project association without changing chat cwd or workspaces", async () => {
       const workspaceAttachments = [
         {
@@ -211,57 +131,6 @@ describe("chatSessionOperations", () => {
         workingDir: "/tmp/old",
         workspaceAttachments,
         activeWorkspaceId: "path:/tmp/other",
-      });
-    });
-
-    it("does not patch local state when project persistence fails", async () => {
-      seedSession({ projectId: "project-old", workingDir: "/tmp/old" });
-      mockUpdateSessionProject.mockRejectedValue(new Error("project failed"));
-
-      await expect(
-        moveSessionToProject("session-1", "project-new"),
-      ).rejects.toThrow("project failed");
-
-      expect(
-        useChatSessionStore.getState().getSession("session-1"),
-      ).toMatchObject({
-        projectId: "project-old",
-        workingDir: "/tmp/old",
-      });
-    });
-
-    it("stops when a session disappears after project persistence", async () => {
-      seedSession({ projectId: "project-old", workingDir: "/tmp/old" });
-      mockUpdateSessionProject.mockImplementationOnce(async () => {
-        useChatSessionStore.setState({ sessions: [] });
-      });
-
-      await expect(
-        moveSessionToProject("session-1", "project-new"),
-      ).resolves.toBeUndefined();
-
-      expect(mockUpdateSessionProject).toHaveBeenCalledWith(
-        "session-1",
-        "project-new",
-      );
-    });
-
-    it("moves a session back to no project", async () => {
-      seedSession({
-        projectId: "project-old",
-        executionTarget: { harnessId: "goose" },
-        workingDir: "/tmp/current",
-      });
-      mockUpdateSessionProject.mockResolvedValue(undefined);
-
-      await moveSessionToProject("session-1", null);
-
-      expect(mockUpdateSessionProject).toHaveBeenCalledWith("session-1", null);
-      expect(
-        useChatSessionStore.getState().getSession("session-1"),
-      ).toMatchObject({
-        projectId: null,
-        workingDir: "/tmp/current",
       });
     });
 

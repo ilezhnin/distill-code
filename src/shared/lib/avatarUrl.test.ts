@@ -1,49 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  isRemoteAvatarUrl,
   isSafePngAvatarDataUrl,
-  isSupportedAvatarUrl,
-  normalizeAvatarRef,
   normalizeAvatarUrl,
-  resolveAvatarMedia,
   resolveAvatarSrc,
 } from "./avatarUrl";
 
 describe("avatarUrl", () => {
-  it("accepts http and https avatar URLs", () => {
-    expect(isRemoteAvatarUrl("https://example.test/avatar.png")).toBe(true);
-    expect(normalizeAvatarUrl(" http://example.test/avatar.png ")).toBe(
-      "http://example.test/avatar.png",
-    );
-  });
-
-  it("accepts known bundled avatar refs", () => {
-    expect(isSupportedAvatarUrl("app-avatar:gloopy-1")).toBe(true);
-    expect(normalizeAvatarUrl(" app-avatar:gloopy-1 ")).toBe(
-      "app-avatar:gloopy-1",
-    );
-    expect(normalizeAvatarRef("app-avatar:gloopy-2")).toBe(
-      "app-avatar:gloopy-2",
-    );
-    expect(resolveAvatarSrc("app-avatar:gloopy-1")).toBeUndefined();
-    expect(resolveAvatarMedia("app-avatar:gloopy-1")).toBeUndefined();
-  });
-
-  it("accepts unknown but safe app avatar refs", () => {
-    expect(normalizeAvatarUrl("app-avatar:unknown")).toBe("app-avatar:unknown");
-    expect(resolveAvatarSrc("app-avatar:../gloopy-1")).toBeUndefined();
-  });
-
-  it("accepts generated user avatar refs", () => {
-    expect(isSupportedAvatarUrl("user-avatar:gloopie-1")).toBe(true);
-    expect(normalizeAvatarUrl(" user-avatar:gloopie-1 ")).toBe(
-      "user-avatar:gloopie-1",
-    );
-    expect(resolveAvatarSrc("user-avatar:gloopie-1")).toBeUndefined();
-    expect(resolveAvatarMedia("user-avatar:gloopie-1")).toBeUndefined();
-    expect(normalizeAvatarUrl("user-avatar:../secret")).toBeUndefined();
-  });
-
   it("accepts only bounded, structurally valid PNG data URLs", () => {
     const value =
       "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=";

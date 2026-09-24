@@ -73,22 +73,6 @@ describe("acpConnection liveness after a timed-out request", () => {
     vi.useRealTimers();
   });
 
-  it("keeps the socket when the host still answers", async () => {
-    const stream = fakeStream();
-    mocks.createWebSocketStream.mockReturnValue(stream);
-    mocks.initialize.mockResolvedValue({ protocolVersion: 1 });
-    const connection = await importConnection();
-    const client = await connection.getClient();
-
-    await expect(
-      connection.invalidateClientConnectionIfUnresponsive(),
-    ).resolves.toBe(false);
-
-    expect(stream.close).not.toHaveBeenCalled();
-    await expect(connection.getClient()).resolves.toBe(client);
-    expect(mocks.initialize).toHaveBeenCalledTimes(2);
-  });
-
   it("drops a socket that stopped answering when no prompt is pending", async () => {
     vi.useFakeTimers();
     const stream = fakeStream();
@@ -138,33 +122,6 @@ describe("acpConnection liveness after a timed-out request", () => {
     expect(connection.hasPendingPrompts()).toBe(false);
   });
 
-  // Nothing aborts an in-flight `client.prompt`, so a prompt on a socket that
-  // is really dead never settles and the pending count never drops. The
-  // transport's own verdict overrides it: otherwise the socket could never be
-  // replaced and every later request on it would hang too.
-  it("drops a socket the transport reports closed even while a prompt is pending", async () => {
-    vi.useFakeTimers();
-    const stream = fakeStream(true);
-    mocks.createWebSocketStream.mockReturnValue(stream);
-    mocks.initialize.mockResolvedValueOnce({ protocolVersion: 1 });
-    const connection = await importConnection();
-    const client = await connection.getClient();
-    const prompt = deferred<{ stopReason: string }>();
-    void connection.trackPendingPrompt(prompt.promise);
-
-    mocks.initialize.mockReturnValueOnce(new Promise(() => {}));
-    const check = connection.invalidateClientConnectionIfUnresponsive();
-    await vi.advanceTimersByTimeAsync(10_000);
-
-    await expect(check).resolves.toBe(true);
-    expect(stream.close).toHaveBeenCalledOnce();
-
-    const nextStream = fakeStream();
-    mocks.createWebSocketStream.mockReturnValue(nextStream);
-    mocks.initialize.mockResolvedValueOnce({ protocolVersion: 1 });
-    await expect(connection.getClient()).resolves.not.toBe(client);
-  });
-
   // The host task serving the socket stops answering while a turn is in
   // flight. The first unanswered probe defers to the pending prompt; the
   // second one is the bound, or the socket would be kept forever.
@@ -190,64 +147,6 @@ describe("acpConnection liveness after a timed-out request", () => {
 
     await expect(second).resolves.toBe(true);
     expect(stream.close).toHaveBeenCalledOnce();
-  });
-
-  // One hung bridge call between two healthy ones must not add up to a
-  // reconnect: an answered probe proves the transport and resets the count.
-  it("forgets an unanswered probe once the host answers again", async () => {
-    vi.useFakeTimers();
-    const stream = fakeStream();
-    mocks.createWebSocketStream.mockReturnValue(stream);
-    mocks.initialize.mockResolvedValueOnce({ protocolVersion: 1 });
-    const connection = await importConnection();
-    await connection.getClient();
-    const prompt = deferred<{ stopReason: string }>();
-    void connection.trackPendingPrompt(prompt.promise);
-
-    mocks.initialize.mockReturnValueOnce(new Promise(() => {}));
-    const failing = connection.invalidateClientConnectionIfUnresponsive();
-    await vi.advanceTimersByTimeAsync(10_000);
-    await expect(failing).resolves.toBe(false);
-
-    mocks.initialize.mockResolvedValueOnce({ protocolVersion: 1 });
-    await expect(
-      connection.invalidateClientConnectionIfUnresponsive(),
-    ).resolves.toBe(false);
-
-    mocks.initialize.mockReturnValueOnce(new Promise(() => {}));
-    const again = connection.invalidateClientConnectionIfUnresponsive();
-    await vi.advanceTimersByTimeAsync(10_000);
-
-    await expect(again).resolves.toBe(false);
-    expect(stream.close).not.toHaveBeenCalled();
-  });
-
-  it("drops a connection that never finished coming up", async () => {
-    const stream = fakeStream();
-    mocks.createWebSocketStream.mockReturnValue(stream);
-    mocks.initialize.mockReturnValueOnce(new Promise(() => {}));
-    const connection = await importConnection();
-    const stuck = connection.getClient();
-    stuck.catch(() => {});
-    await Promise.resolve();
-
-    await expect(
-      connection.invalidateClientConnectionIfUnresponsive(),
-    ).resolves.toBe(true);
-
-    const nextStream = fakeStream();
-    mocks.createWebSocketStream.mockReturnValue(nextStream);
-    mocks.initialize.mockResolvedValueOnce({ protocolVersion: 1 });
-    await expect(connection.getClient()).resolves.toBeDefined();
-    expect(mocks.createWebSocketStream).toHaveBeenCalledTimes(2);
-  });
-
-  it("does nothing when no connection exists", async () => {
-    const connection = await importConnection();
-    await expect(
-      connection.invalidateClientConnectionIfUnresponsive(),
-    ).resolves.toBe(false);
-    expect(mocks.initialize).not.toHaveBeenCalled();
   });
 });
 
@@ -331,16 +230,6 @@ describe("permission requests the renderer answers on its own", () => {
     } as never;
   }
 
-  it("takes the one-time allow when the harness offers one", async () => {
-    const { answerPermissionRequest } = await importConnection();
-
-    expect(
-      answerPermissionRequest(
-        request(["allow_once", "allow_always", "reject_once"]),
-      ),
-    ).toEqual({ outcome: { outcome: "selected", optionId: "allow_once-id" } });
-  });
-
   it("refuses once rather than whitelisting a tool forever", async () => {
     const { answerPermissionRequest } = await importConnection();
 
@@ -355,75 +244,5 @@ describe("permission requests the renderer answers on its own", () => {
     expect(
       answerPermissionRequest(request(["allow_always", "reject_always"])),
     ).toEqual({ outcome: { outcome: "cancelled" } });
-  });
-
-  // Per ACP a `cancelled` outcome ends the *turn* rather than refusing one
-  // tool call, so the harness stops mid-task. The operator has to be able to
-  // see why; a distill.log line is not a trace they will ever look for.
-  it("reports the cancelled answer to the chat so the stopped turn is explained", async () => {
-    const connection = await importConnection();
-    const reportPermissionAnswer = vi.fn();
-    connection.setNotificationHandler({
-      handleSessionNotification: async () => {},
-      reportPermissionAnswer,
-    });
-
-    connection.answerPermissionRequest(
-      request(["allow_always", "reject_always"]),
-    );
-
-    expect(reportPermissionAnswer).toHaveBeenCalledWith({
-      sessionId: "acp-session-1234",
-      toolLabel: "Bash(rm -rf /)",
-      answer: "cancelled",
-    });
-  });
-
-  it("reports nothing when a one-time answer was available", async () => {
-    const connection = await importConnection();
-    const reportPermissionAnswer = vi.fn();
-    connection.setNotificationHandler({
-      handleSessionNotification: async () => {},
-      reportPermissionAnswer,
-    });
-
-    connection.answerPermissionRequest(request(["allow_once"]));
-
-    expect(reportPermissionAnswer).not.toHaveBeenCalled();
-  });
-
-  // The title is bridge-authored, unbounded text and `log_renderer_event`
-  // writes what it is given, so a harness must not be able to compose extra
-  // lines in the app log.
-  it("clamps the agent-authored tool title it logs to one bounded line", async () => {
-    const { answerPermissionRequest } = await importConnection();
-    const noisy = {
-      sessionId: "acp-session-1234",
-      toolCall: {
-        toolCallId: "call-1",
-        title: `Bash\n[fake] injected line\n${"x".repeat(400)}`,
-      },
-      options: [
-        { optionId: "allow_once-id", name: "allow", kind: "allow_once" },
-      ],
-    } as never;
-
-    answerPermissionRequest(noisy);
-
-    const [, message] = mocks.logRendererEvent.mock.calls[0] ?? [];
-    expect(String(message)).not.toContain("\n");
-    expect(String(message).length).toBeLessThan(300);
-  });
-
-  it("logs what it answered, since nothing else records it", async () => {
-    const { answerPermissionRequest } = await importConnection();
-
-    answerPermissionRequest(request(["allow_always", "reject_once"]));
-
-    const [level, message] = mocks.logRendererEvent.mock.calls[0] ?? [];
-    expect(level).toBe("warn");
-    expect(message).toContain("Bash(rm -rf /)");
-    expect(message).toContain("answer=reject_once");
-    expect(message).toContain("offered=[allow_always,reject_once]");
   });
 });

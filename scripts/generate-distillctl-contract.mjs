@@ -11,11 +11,9 @@
 //
 //   pnpm generate:distillctl-contract
 //
-// CI regenerates and fails on any diff (`just distillctl-contract-check`); the
-// vitest freshness tests (apiSurface.test.ts / cliSurface.test.ts) hold the
-// same property locally. All introspection logic lives in
-// src/features/distillctl/commands/contract.ts — shared with those tests so the
-// generator and the assertions cannot disagree.
+// CI and `just check` run `just distillctl-contract-check` to compare both
+// artifacts byte-for-byte. Loading the builders in Node also checks that the
+// command descriptors do not depend on a browser environment.
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";

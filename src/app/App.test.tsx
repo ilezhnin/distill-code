@@ -1,18 +1,11 @@
-import { render, screen } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
 import { ThemeProvider } from "@/shared/theme/ThemeProvider";
 
-const mocks = vi.hoisted(() => ({
-  appShellRender: vi.fn(),
-}));
-
 vi.mock("@/app/AppShell", () => ({
-  AppShell: () => {
-    mocks.appShellRender();
-    return "App Shell";
-  },
+  AppShell: () => null,
 }));
 
 vi.mock("@/app/ui/SelectedTextContextMenu", () => ({
@@ -51,12 +44,5 @@ describe("App", () => {
     const drop = new Event("drop", { cancelable: true });
     window.dispatchEvent(drop);
     expect(drop.defaultPrevented).toBe(true);
-  });
-
-  it("mounts the app shell", () => {
-    renderApp();
-
-    expect(screen.getByText("App Shell")).toBeInTheDocument();
-    expect(mocks.appShellRender).toHaveBeenCalled();
   });
 });

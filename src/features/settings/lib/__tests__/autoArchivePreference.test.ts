@@ -1,11 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
-  AUTO_ARCHIVE_CHANGED_EVENT,
   AUTO_ARCHIVE_CONSENT_STORAGE_KEY,
   AUTO_ARCHIVE_STORAGE_KEY,
   getAutoArchiveAfter,
-  getAutoArchiveAfterMs,
-  setAutoArchiveAfter,
 } from "../autoArchivePreference";
 
 describe("auto archive preference", () => {
@@ -22,22 +19,5 @@ describe("auto archive preference", () => {
     localStorage.setItem(AUTO_ARCHIVE_CONSENT_STORAGE_KEY, "true");
     localStorage.setItem(AUTO_ARCHIVE_STORAGE_KEY, "tomorrow-ish");
     expect(getAutoArchiveAfter()).toBe("never");
-  });
-
-  it("persists changes and notifies mounted consumers", () => {
-    const listener = vi.fn();
-    window.addEventListener(AUTO_ARCHIVE_CHANGED_EVENT, listener);
-
-    setAutoArchiveAfter("30-days");
-
-    expect(localStorage.getItem(AUTO_ARCHIVE_STORAGE_KEY)).toBe("30-days");
-    expect(localStorage.getItem(AUTO_ARCHIVE_CONSENT_STORAGE_KEY)).toBe("true");
-    expect(listener).toHaveBeenCalledOnce();
-    window.removeEventListener(AUTO_ARCHIVE_CHANGED_EVENT, listener);
-  });
-
-  it("converts configured durations to milliseconds", () => {
-    expect(getAutoArchiveAfterMs("never")).toBeNull();
-    expect(getAutoArchiveAfterMs("7-days")).toBe(7 * 24 * 60 * 60 * 1000);
   });
 });

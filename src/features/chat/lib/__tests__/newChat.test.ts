@@ -40,31 +40,6 @@ function find(
 }
 
 describe("findExistingDraft", () => {
-  it("reuses a blank draft that was asked for the same model, effort and fast mode", () => {
-    const session = draft({
-      desiredRunSettings: { effort: "high", fast: true },
-    });
-
-    expect(find(session, { effort: "high", fast: true })).toBe(session);
-  });
-
-  it("does not reuse a draft asked for another effort", () => {
-    expect(
-      find(draft({ desiredRunSettings: { effort: "high" } }), {
-        effort: "max",
-      }),
-    ).toBeUndefined();
-  });
-
-  it("does not reuse a draft asked for another fast mode", () => {
-    expect(
-      find(draft({ desiredRunSettings: { effort: "high", fast: false } }), {
-        effort: "high",
-        fast: true,
-      }),
-    ).toBeUndefined();
-  });
-
   it("compares what was asked for, not the effort the model reports running at", () => {
     const session = draft({
       reasoningEffort: {

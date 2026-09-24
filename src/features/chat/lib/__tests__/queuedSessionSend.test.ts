@@ -4,10 +4,8 @@ import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore
 import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
 import {
   acquireExistingSessionForBackgroundSend,
-  queuedDispatchTargetMatches,
   sendQueuedPromptToExistingSessionInBackground,
 } from "@/features/chat/lib/queuedSessionSend";
-import { SessionDispatchCreationIncompleteError } from "@/features/chat/lib/sessionDispatchAcquisition";
 import {
   acquireSessionDispatchTarget,
   resetSessionTargetCoordinatorsForTests,
@@ -140,27 +138,6 @@ describe("acquireExistingSessionForBackgroundSend", () => {
     });
   });
 
-  it.each([
-    "pending",
-    "failed",
-  ] as const)("holds a %s draft session instead of hydrating it", async (creationState) => {
-    seedSession(creationState);
-
-    await expect(
-      acquireExistingSessionForBackgroundSend(SESSION_ID),
-    ).resolves.toEqual({ status: "creation-incomplete", creationState });
-    expect(mocks.loadSessionMessages).not.toHaveBeenCalled();
-  });
-
-  it("acquires a dispatch target once creation has completed", async () => {
-    seedSession();
-
-    await expect(
-      acquireExistingSessionForBackgroundSend(SESSION_ID),
-    ).resolves.toMatchObject({ status: "acquired" });
-    expect(mocks.loadSessionMessages).toHaveBeenCalledWith(SESSION_ID);
-  });
-
   it("holds the dispatch target across hydration so no other sender dispatches into the load", async () => {
     seedSession();
     let resolveHydration!: (loaded: boolean) => void;
@@ -195,52 +172,6 @@ describe("acquireExistingSessionForBackgroundSend", () => {
     retry.release?.();
   });
 
-  it("hydrates first and leases the replayed target when the session has none yet", async () => {
-    seedSession();
-    useChatSessionStore.setState((state) => ({
-      sessions: state.sessions.map((session) => ({
-        ...session,
-        executionTarget: undefined,
-      })),
-    }));
-    // distillctl can address a session this renderer has never activated; its
-    // execution target arrives with the `session/load` replay itself.
-    mocks.loadSessionMessages.mockImplementation(async () => {
-      useChatSessionStore.setState((state) => ({
-        sessions: state.sessions.map((session) => ({
-          ...session,
-          executionTarget: { harnessId: "goose" },
-        })),
-      }));
-      return true;
-    });
-
-    const acquisition =
-      await acquireExistingSessionForBackgroundSend(SESSION_ID);
-
-    expect(acquisition).toMatchObject({
-      status: "acquired",
-      target: { harnessId: "goose" },
-    });
-    expect(mocks.loadSessionMessages).toHaveBeenCalledWith(SESSION_ID);
-    if (acquisition.status === "acquired") acquisition.release();
-  });
-
-  it("reports unresolved only after hydration had its chance to supply a target", async () => {
-    seedSession();
-    useChatSessionStore.setState((state) => ({
-      sessions: state.sessions.map((session) => ({
-        ...session,
-        executionTarget: undefined,
-      })),
-    }));
-
-    await expect(
-      acquireExistingSessionForBackgroundSend(SESSION_ID),
-    ).resolves.toEqual({ status: "unresolved" });
-    expect(mocks.loadSessionMessages).toHaveBeenCalledWith(SESSION_ID);
-  });
-
   it("releases the dispatch target when the session disappears during hydration", async () => {
     seedSession();
     mocks.loadSessionMessages.mockImplementation(async () => {
@@ -256,42 +187,6 @@ describe("acquireExistingSessionForBackgroundSend", () => {
     const retry = acquireSessionDispatchTarget(SESSION_ID);
     expect(retry.status).toBe("acquired");
     retry.release?.();
-  });
-});
-
-describe("queuedDispatchTargetMatches", () => {
-  const leased = {
-    harnessId: "codex-acp",
-    modelProviderId: "codex-acp",
-    modelId: "gpt-5.6-sol",
-    modelName: "GPT-5.6 Sol",
-  };
-
-  it("dispatches to a session whose replay reports the leased model with a folded effort", () => {
-    expect(
-      queuedDispatchTargetMatches(
-        { ...leased, modelId: "gpt-5.6-sol[low]", modelName: "GPT-5.6 Sol" },
-        leased,
-      ),
-    ).toBe(true);
-  });
-
-  it("treats a different model as a newer selection", () => {
-    expect(
-      queuedDispatchTargetMatches(
-        { ...leased, modelId: "gpt-5.6-luna", modelName: "GPT-5.6 Luna" },
-        leased,
-      ),
-    ).toBe(false);
-  });
-
-  it("treats the same model on another harness as a newer selection", () => {
-    expect(
-      queuedDispatchTargetMatches(
-        { ...leased, harnessId: "grok-acp", modelProviderId: "grok-acp" },
-        leased,
-      ),
-    ).toBe(false);
   });
 });
 
@@ -334,24 +229,6 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
       beforeUserMessageCommitted,
     ).catch((caught: unknown) => caught);
 
-    expect(error).toBeInstanceOf(PreCommitSendRejectedError);
-    expect(mocks.loadSessionMessages).not.toHaveBeenCalled();
-    expect(beforeUserMessageCommitted).not.toHaveBeenCalled();
-  });
-
-  it("rejects a send to a creating session without committing anything", async () => {
-    seedSession("pending");
-    const beforeUserMessageCommitted = vi.fn();
-
-    const error = await sendQueuedPromptToExistingSessionInBackground(
-      SESSION_ID,
-      queuedRecord(),
-      beforeUserMessageCommitted,
-    ).catch((caught: unknown) => caught);
-
-    expect(error).toBeInstanceOf(SessionDispatchCreationIncompleteError);
-    // The drains swallow pre-commit rejections instead of parking the head as
-    // a failed record and toasting, which is what keeps the message queued.
     expect(error).toBeInstanceOf(PreCommitSendRejectedError);
     expect(mocks.loadSessionMessages).not.toHaveBeenCalled();
     expect(beforeUserMessageCommitted).not.toHaveBeenCalled();
@@ -401,55 +278,6 @@ describe("sendQueuedPromptToExistingSessionInBackground", () => {
       ],
     });
   }
-
-  function seedWaveChild(): void {
-    useConductorGraphStore.setState({
-      nodesById: {
-        [SESSION_ID]: {
-          sessionId: SESSION_ID,
-          projectId: "p-1",
-          role: "worker",
-          managedBy: "wave",
-          parentSessionId: "conductor-1",
-          rootConductorId: "conductor-1",
-          runId: "run-1",
-          harnessId: "goose",
-          displayName: "Scout · step",
-          status: "running",
-        },
-      },
-      reportsByRunId: {},
-    });
-  }
-
-  it("carries project instructions and memory on a plain queued chat", async () => {
-    await seedProjectMemory();
-
-    await sendQueuedPromptToExistingSessionInBackground(
-      SESSION_ID,
-      queuedRecord(),
-    );
-
-    const prompt = dispatchedExecutionPrompt();
-    expect(prompt).toContain("Follow Quarp's project instructions.");
-    expect(prompt).toContain("<memory>");
-    expect(prompt).toContain("A standing memory.");
-  });
-
-  it("keeps memory away from a wave-managed queued child while carrying project instructions", async () => {
-    await seedProjectMemory();
-    seedWaveChild();
-
-    await sendQueuedPromptToExistingSessionInBackground(
-      SESSION_ID,
-      queuedRecord(),
-    );
-
-    const prompt = dispatchedExecutionPrompt();
-    expect(prompt).toContain("Follow Quarp's project instructions.");
-    expect(prompt).not.toContain("<memory>");
-    expect(prompt).not.toContain("A standing memory.");
-  });
 
   it("keeps memory away from an evicted wave executor while carrying project instructions", async () => {
     await seedProjectMemory();

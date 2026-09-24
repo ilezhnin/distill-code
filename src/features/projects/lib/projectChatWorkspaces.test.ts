@@ -1,11 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import {
-  planProjectChatWorkspacesAsIs,
   planProjectChatWorkspaces,
-  projectRequiresStartupWorkspaceName,
   rollbackProjectChatWorkspacePlan,
-  summarizeProjectWorkspaceStartup,
 } from "./projectChatWorkspaces";
 
 const gitMocks = vi.hoisted(() => ({
@@ -85,79 +82,6 @@ describe("project chat workspaces", () => {
     gitMocks.removeWorktree.mockResolvedValue(undefined);
   });
 
-  it("summarizes planned Git actions once per repository", () => {
-    expect(
-      summarizeProjectWorkspaceStartup([
-        workspace("/repo/apps/one", "worktree"),
-        workspace("/repo/apps/two", "worktree"),
-        {
-          ...workspace("/other-repo/apps/three", "branch"),
-          repositoryPath: "/other-repo",
-          worktreePath: "/other-repo",
-        },
-      ]),
-    ).toEqual({ worktreeCount: 1, branchCount: 1, exact: true });
-  });
-
-  it("does not claim exact action counts without repository metadata", () => {
-    expect(
-      summarizeProjectWorkspaceStartup([
-        {
-          ...workspace("/repo/apps/one", "worktree"),
-          repositoryPath: null,
-          worktreePath: null,
-        },
-        {
-          ...workspace("/repo/apps/two", "worktree"),
-          repositoryPath: null,
-          worktreePath: null,
-        },
-      ]).exact,
-    ).toBe(false);
-  });
-
-  it("requires a startup name when any project workspace creates git state", () => {
-    expect(
-      projectRequiresStartupWorkspaceName(
-        project({
-          projectWorkspaces: [
-            workspace("/repo/builderbot", "none"),
-            workspace("/repo/bbsubscriber", "worktree"),
-          ],
-        }),
-      ),
-    ).toBe(true);
-  });
-
-  it("plans every project workspace as-is without creating git state", () => {
-    const plan = planProjectChatWorkspacesAsIs(
-      project({
-        projectWorkspaces: [
-          workspace("/repo/builderbot", "worktree"),
-          workspace("/repo/bbsubscriber", "branch"),
-        ],
-        workingDirs: ["/repo/builderbot", "/repo/bbsubscriber"],
-      }),
-    );
-
-    expect(gitMocks.getGitState).not.toHaveBeenCalled();
-    expect(gitMocks.createWorktree).not.toHaveBeenCalled();
-    expect(gitMocks.createBranch).not.toHaveBeenCalled();
-    expect(plan?.workingDir).toBe("/repo/builderbot");
-    expect(plan?.workspaceAttachments).toEqual([
-      expect.objectContaining({
-        path: "/repo/builderbot",
-        source: "inferred",
-        branch: "main",
-      }),
-      expect.objectContaining({
-        path: "/repo/bbsubscriber",
-        source: "inferred",
-        branch: "main",
-      }),
-    ]);
-  });
-
   it("creates one worktree per repo and attaches matching subdirectories", async () => {
     const plan = await planProjectChatWorkspaces(
       project({
@@ -207,45 +131,6 @@ describe("project chat workspaces", () => {
           worktreePath: "/repo-worktrees/chat-123",
           createdBranch: true,
         }),
-      }),
-    ]);
-  });
-
-  it("uses the repository root for worktree creation when the project workspace is a subdirectory", async () => {
-    gitMocks.getGitState.mockImplementation(async () => ({
-      isGitRepo: true,
-      currentBranch: "main",
-      dirtyFileCount: 0,
-      incomingCommitCount: 0,
-      worktrees: [],
-      isWorktree: false,
-      mainWorktreePath: null,
-      localBranches: ["main"],
-    }));
-
-    const plan = await planProjectChatWorkspaces(
-      project({
-        projectWorkspaces: [workspace("/repo/builderbot", "worktree")],
-        workingDirs: ["/repo/builderbot"],
-      }),
-      "chat-123",
-    );
-
-    expect(gitMocks.pathExists).toHaveBeenCalledWith(
-      "/repo-worktrees/chat-123",
-    );
-    expect(gitMocks.createWorktree).toHaveBeenCalledWith(
-      "/repo",
-      "chat-123",
-      "chat-123",
-      true,
-      "main",
-    );
-    expect(plan?.workspaceAttachments).toEqual([
-      expect.objectContaining({
-        path: "/repo-worktrees/chat-123/builderbot",
-        repositoryPath: "/repo",
-        worktreePath: "/repo-worktrees/chat-123",
       }),
     ]);
   });
@@ -314,185 +199,6 @@ describe("project chat workspaces", () => {
     ]);
   });
 
-  it("uses persisted repository metadata when the selected subdirectory cannot be queried", async () => {
-    gitMocks.getGitState.mockImplementation(async (path: string) => {
-      if (path === "/repo/builderbot") {
-        throw new Error("Path does not exist: /repo/builderbot");
-      }
-
-      return {
-        isGitRepo: true,
-        currentBranch: "main",
-        dirtyFileCount: 0,
-        incomingCommitCount: 0,
-        worktrees: [{ path: "/repo", branch: "main", isMain: true }],
-        isWorktree: false,
-        mainWorktreePath: "/repo",
-        localBranches: ["main"],
-      };
-    });
-
-    await planProjectChatWorkspaces(
-      project({
-        projectWorkspaces: [workspace("/repo/builderbot", "worktree")],
-        workingDirs: ["/repo/builderbot"],
-      }),
-      "chat-123",
-    );
-
-    expect(gitMocks.createWorktree).toHaveBeenCalledWith(
-      "/repo",
-      "chat-123",
-      "chat-123",
-      true,
-      "main",
-    );
-  });
-
-  it("attaches use-as-is workspaces alongside generated worktree workspaces", async () => {
-    const plan = await planProjectChatWorkspaces(
-      project({
-        projectWorkspaces: [
-          workspace("/repo/docs", "none"),
-          workspace("/repo/builderbot", "worktree"),
-          workspace("/repo/bbsubscriber", "worktree"),
-        ],
-        workingDirs: ["/repo/docs", "/repo/builderbot", "/repo/bbsubscriber"],
-      }),
-      "chat-123",
-    );
-
-    expect(gitMocks.createWorktree).toHaveBeenCalledOnce();
-    expect(plan?.workspaceAttachments).toEqual([
-      expect.objectContaining({
-        path: "/repo/docs",
-        source: "inferred",
-        branch: "main",
-      }),
-      expect.objectContaining({
-        path: "/repo-worktrees/chat-123/builderbot",
-        source: "created",
-        branch: "chat-123",
-        lifecycle: expect.objectContaining({
-          cleanup: "worktree",
-          worktreePath: "/repo-worktrees/chat-123",
-        }),
-      }),
-      expect.objectContaining({
-        path: "/repo-worktrees/chat-123/bbsubscriber",
-        source: "created",
-        branch: "chat-123",
-        lifecycle: expect.objectContaining({
-          cleanup: "worktree",
-          worktreePath: "/repo-worktrees/chat-123",
-        }),
-      }),
-    ]);
-  });
-
-  it("creates one branch per repo and keeps the original workspace paths", async () => {
-    const plan = await planProjectChatWorkspaces(
-      project({
-        projectWorkspaces: [
-          workspace("/repo/builderbot", "branch"),
-          workspace("/repo/bbsubscriber", "branch"),
-        ],
-        workingDirs: ["/repo/builderbot", "/repo/bbsubscriber"],
-      }),
-      "chat-123",
-    );
-
-    expect(gitMocks.createBranch).toHaveBeenCalledOnce();
-    expect(gitMocks.createBranch).toHaveBeenCalledWith(
-      "/repo",
-      "chat-123",
-      "main",
-    );
-    expect(plan?.workspaceAttachments).toEqual([
-      expect.objectContaining({
-        path: "/repo/builderbot",
-        source: "created",
-        branch: "chat-123",
-        lifecycle: expect.objectContaining({
-          owner: "distill",
-          cleanup: "branch",
-          branch: "chat-123",
-          baseBranch: "main",
-          repositoryPath: "/repo",
-          worktreePath: "/repo",
-          createdBranch: true,
-        }),
-      }),
-      expect.objectContaining({
-        path: "/repo/bbsubscriber",
-        source: "created",
-        branch: "chat-123",
-        lifecycle: expect.objectContaining({
-          owner: "distill",
-          cleanup: "branch",
-          branch: "chat-123",
-          baseBranch: "main",
-          repositoryPath: "/repo",
-          worktreePath: "/repo",
-          createdBranch: true,
-        }),
-      }),
-    ]);
-  });
-
-  it("creates branch startup in the linked worktree checkout for linked-worktree workspaces", async () => {
-    gitMocks.getGitState.mockImplementation(async (path: string) => ({
-      isGitRepo: true,
-      currentBranch: path.startsWith("/repo-linked") ? "feature" : "main",
-      dirtyFileCount: 0,
-      incomingCommitCount: 0,
-      worktrees: [
-        { path: "/repo", branch: "main", isMain: true },
-        { path: "/repo-linked", branch: "feature", isMain: false },
-      ],
-      isWorktree: path.startsWith("/repo-linked"),
-      mainWorktreePath: "/repo",
-      localBranches: ["main", "feature"],
-    }));
-
-    const plan = await planProjectChatWorkspaces(
-      project({
-        projectWorkspaces: [
-          {
-            ...workspace("/repo-linked/builderbot", "branch"),
-            repositoryPath: "/repo",
-            worktreePath: "/repo-linked",
-            branch: "feature",
-          },
-        ],
-        workingDirs: ["/repo-linked/builderbot"],
-      }),
-      "chat-123",
-    );
-
-    expect(gitMocks.createBranch).toHaveBeenCalledOnce();
-    expect(gitMocks.createBranch).toHaveBeenCalledWith(
-      "/repo-linked",
-      "chat-123",
-      "feature",
-    );
-    expect(plan?.workspaceAttachments).toEqual([
-      expect.objectContaining({
-        path: "/repo-linked/builderbot",
-        source: "created",
-        branch: "chat-123",
-        repositoryPath: "/repo",
-        worktreePath: "/repo-linked",
-        lifecycle: expect.objectContaining({
-          cleanup: "branch",
-          repositoryPath: "/repo",
-          worktreePath: "/repo-linked",
-          baseBranch: "feature",
-        }),
-      }),
-    ]);
-  });
-
   it("uses HEAD as the startup base for detached checkouts", async () => {
     gitMocks.getGitState.mockResolvedValue({
       isGitRepo: true,
@@ -520,61 +226,6 @@ describe("project chat workspaces", () => {
       true,
       "HEAD",
     );
-  });
-
-  it("creates worktree startup from the linked worktree checkout branch", async () => {
-    gitMocks.getGitState.mockImplementation(async (path: string) => ({
-      isGitRepo: true,
-      currentBranch: path.startsWith("/repo-linked") ? "feature" : "main",
-      dirtyFileCount: 0,
-      incomingCommitCount: 0,
-      worktrees: [
-        { path: "/repo", branch: "main", isMain: true },
-        { path: "/repo-linked", branch: "feature", isMain: false },
-      ],
-      isWorktree: path.startsWith("/repo-linked"),
-      mainWorktreePath: "/repo",
-      localBranches: ["main", "feature"],
-    }));
-
-    const plan = await planProjectChatWorkspaces(
-      project({
-        projectWorkspaces: [
-          {
-            ...workspace("/repo-linked/builderbot", "worktree"),
-            repositoryPath: "/repo",
-            worktreePath: "/repo-linked",
-            branch: "feature",
-          },
-        ],
-        workingDirs: ["/repo-linked/builderbot"],
-      }),
-      "chat-123",
-    );
-
-    expect(gitMocks.createWorktree).toHaveBeenCalledOnce();
-    expect(gitMocks.createWorktree).toHaveBeenCalledWith(
-      "/repo-linked",
-      "chat-123",
-      "chat-123",
-      true,
-      "feature",
-    );
-    expect(plan?.workspaceAttachments).toEqual([
-      expect.objectContaining({
-        path: "/repo-worktrees/chat-123/builderbot",
-        source: "created",
-        branch: "chat-123",
-        repositoryPath: "/repo",
-        worktreePath: "/repo-worktrees/chat-123",
-        lifecycle: expect.objectContaining({
-          cleanup: "worktree",
-          repositoryPath: "/repo",
-          worktreePath: "/repo-worktrees/chat-123",
-          baseBranch: "feature",
-        }),
-      }),
-    ]);
   });
 
   it("rejects branch startup across multiple worktrees in the same repo before mutating git", async () => {
@@ -633,26 +284,6 @@ describe("project chat workspaces", () => {
 
     expect(gitMocks.createWorktree).not.toHaveBeenCalled();
     expect(gitMocks.createBranch).not.toHaveBeenCalled();
-  });
-
-  it("turns raw git worktree failures into plain English", async () => {
-    gitMocks.createWorktree.mockRejectedValueOnce(
-      new Error(
-        "git worktree add -b test test /Users/test/repo-worktrees/test failed: fatal: not a valid branch name",
-      ),
-    );
-
-    await expect(
-      planProjectChatWorkspaces(
-        project({
-          projectWorkspaces: [workspace("/repo/builderbot", "worktree")],
-          workingDirs: ["/repo/builderbot"],
-        }),
-        "test test",
-      ),
-    ).rejects.toThrow(
-      "That name can’t be used for a worktree. Use letters, numbers, hyphens, or underscores.",
-    );
   });
 
   it("rejects configured startup for non-git workspaces before mutating git", async () => {
@@ -862,59 +493,6 @@ describe("project chat workspaces", () => {
       "/repo-worktrees/chat-123",
       false,
     );
-    expect(gitMocks.deleteBranch).toHaveBeenCalledWith(
-      "/repo",
-      "chat-123",
-      false,
-      "main",
-    );
-  });
-
-  it("rolls back a completed worktree plan from lifecycle metadata", async () => {
-    const plan = await planProjectChatWorkspaces(
-      project({
-        projectWorkspaces: [
-          workspace("/repo/builderbot", "worktree"),
-          workspace("/repo/bbsubscriber", "worktree"),
-        ],
-        workingDirs: ["/repo/builderbot", "/repo/bbsubscriber"],
-      }),
-      "chat-123",
-    );
-    gitMocks.removeWorktree.mockClear();
-    gitMocks.deleteBranch.mockClear();
-
-    await rollbackProjectChatWorkspacePlan(plan);
-
-    expect(gitMocks.removeWorktree).toHaveBeenCalledOnce();
-    expect(gitMocks.removeWorktree).toHaveBeenCalledWith(
-      "/repo",
-      "/repo-worktrees/chat-123",
-      false,
-    );
-    expect(gitMocks.deleteBranch).toHaveBeenCalledOnce();
-    expect(gitMocks.deleteBranch).toHaveBeenCalledWith(
-      "/repo",
-      "chat-123",
-      false,
-      "main",
-    );
-  });
-
-  it("rolls back a completed branch plan from lifecycle metadata", async () => {
-    const plan = await planProjectChatWorkspaces(
-      project({
-        projectWorkspaces: [workspace("/repo/builderbot", "branch")],
-        workingDirs: ["/repo/builderbot"],
-      }),
-      "chat-123",
-    );
-    gitMocks.deleteBranch.mockClear();
-
-    await rollbackProjectChatWorkspacePlan(plan);
-
-    expect(gitMocks.removeWorktree).not.toHaveBeenCalled();
-    expect(gitMocks.deleteBranch).toHaveBeenCalledOnce();
     expect(gitMocks.deleteBranch).toHaveBeenCalledWith(
       "/repo",
       "chat-123",

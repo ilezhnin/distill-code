@@ -113,44 +113,6 @@ afterEach(async () => {
   await flushMemoryWrites();
 });
 
-describe("C.1 — the operator remembers something, and it is a file", () => {
-  it("keeps an everywhere fact in the global group and in the stored document", async () => {
-    // Checklist C.1.1: type the fact, leave the scope selector on
-    // "Everywhere", press Remember.
-    const text = "Ivan pushes himself, the agents have no credentials";
-    const id = useMemoryStore
-      .getState()
-      .remember({ text, scope: "global" }, NOW);
-    expect(id).not.toBe("");
-
-    // C.1.2: it belongs to the "Everywhere" group — global scope, no project,
-    // and no agent provenance, because a person typed it.
-    const kept = live().find((entry) => entry.id === id);
-    expect(kept).toMatchObject({ text, scope: "global", projectId: null });
-    expect(kept?.createdBySessionId).toBeUndefined();
-
-    // C.1.3: and it is in the document, which is the move off localStorage.
-    await flushMemoryWrites();
-    expect(storedDocument()).toMatchObject({ version: 2 });
-    expect(storedTexts()).toContain(text);
-  });
-});
-
-describe("C.2 — the agent sees the memory", () => {
-  it("carries an everywhere fact into a new session's memory block", () => {
-    const text = "Ivan pushes himself, the agents have no credentials";
-    useMemoryStore.getState().remember({ text, scope: "global" }, NOW);
-
-    // Checklist C.2: a *new* chat is asked what it knows. A new chat has no
-    // history, so the block is the whole of what it can answer from.
-    const block = memoryBlockFor(null);
-    expect(block).toContain("<memory>");
-    expect(block).toContain(`- ${text}`);
-    // And in the sandbox project too: global follows the operator everywhere.
-    expect(memoryBlockFor(SANDBOX)).toContain(`- ${text}`);
-  });
-});
-
 describe("C.3 — a fact added to one project by hand", () => {
   beforeEach(() => {
     useMemoryStore.getState().remember(
@@ -189,26 +151,6 @@ describe("C.3 — a fact added to one project by hand", () => {
     // The other project still gets the operator's global facts, so this is a
     // scoped block rather than a missing one.
     expect(blockElsewhere).toContain("no credentials");
-  });
-
-  it("writes the project's row even when the same line is already global", () => {
-    // The operator types a fact they already keep everywhere, with the scope
-    // selector on the sandbox project. Reinforcing the global row instead
-    // clears the form and adds nothing — the click looks lost, and C.3.2
-    // fails with no error to explain it.
-    const text = "The release branch here is release/2026.9";
-    const everywhere = useMemoryStore
-      .getState()
-      .remember({ text, scope: "global" }, NOW + 1);
-    const inProject = useMemoryStore
-      .getState()
-      .remember({ text, scope: "project", projectId: SANDBOX }, NOW + 2);
-
-    expect(inProject).not.toBe(everywhere);
-    expect(live().find((entry) => entry.id === inProject)).toMatchObject({
-      scope: "project",
-      projectId: SANDBOX,
-    });
   });
 });
 

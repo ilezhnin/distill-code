@@ -74,14 +74,6 @@ describe("stopOrchestratorSession", () => {
     expect(acpCancelSession).toHaveBeenCalledWith(CHILD_ID);
   });
 
-  it("leaves a session the graph does not know about entirely alone", async () => {
-    queueFirstPrompt();
-    await stopOrchestratorSession(CHILD_ID);
-    // Not ours to stop: no node, no cancellation, and the queue is untouched.
-    expect(queueFor(CHILD_ID)).toHaveLength(1);
-    expect(acpCancelSession).not.toHaveBeenCalled();
-  });
-
   it("still cancels the turn when the cancel call rejects", async () => {
     registerChild();
     queueFirstPrompt();

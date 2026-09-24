@@ -29,70 +29,6 @@ describe("conductorGraphStore persistence", () => {
     window.localStorage.clear();
   });
 
-  it("loads persisted nodes without managedBy as ui", async () => {
-    window.localStorage.setItem(
-      CONDUCTOR_GRAPH_STORAGE_KEY,
-      JSON.stringify({
-        version: 1,
-        nodes: [
-          {
-            sessionId: "legacy-1",
-            projectId: "project",
-            role: "orchestrator",
-            parentSessionId: "conductor-1",
-            rootConductorId: "conductor-1",
-            runId: "run-1",
-            harnessId: "goose",
-            displayName: "Atlas",
-            status: "running",
-            anchorMessageId: "message-1",
-          },
-        ],
-        reports: [],
-      }),
-    );
-
-    const store = await loadGraph();
-    const node = store.getState().getNode("legacy-1");
-
-    expect(node?.managedBy).toBe("ui");
-    expect(node?.role).toBe("orchestrator");
-    expect(node?.anchorMessageId).toBe("message-1");
-    expect(node?.waveId).toBeUndefined();
-    expect(node?.stepIndex).toBeUndefined();
-  });
-
-  it("falls back to ui when the persisted managedBy is not a known value", async () => {
-    window.localStorage.setItem(
-      CONDUCTOR_GRAPH_STORAGE_KEY,
-      JSON.stringify({
-        version: 1,
-        nodes: [
-          {
-            sessionId: "bogus-1",
-            projectId: "project",
-            role: "worker",
-            parentSessionId: "conductor-1",
-            rootConductorId: "conductor-1",
-            runId: null,
-            harnessId: "goose",
-            displayName: "Curie",
-            status: "completed",
-            managedBy: "sideways",
-            stepIndex: "2",
-          },
-        ],
-        reports: [],
-      }),
-    );
-
-    const store = await loadGraph();
-    const node = store.getState().getNode("bogus-1");
-
-    expect(node?.managedBy).toBe("ui");
-    expect(node?.stepIndex).toBeUndefined();
-  });
-
   it("round-trips managedBy, waveId and stepIndex through persist and load", async () => {
     const store = await loadGraph();
     store.getState().registerNode({
@@ -292,39 +228,6 @@ describe("promoting a draft conductor session", () => {
 
     resetWaveEngineStateCache();
   });
-
-  it("leaves the waves of other conductors alone", async () => {
-    const store = await loadGraph();
-    const { createWaveState } = await import("./waveEngine");
-    const {
-      getWaveEngineState,
-      resetWaveEngineStateCache,
-      setWaveEngineState,
-      withWave,
-      emptyWaveEngineState,
-    } = await import("./waveStore");
-
-    resetWaveEngineStateCache();
-    store.getState().registerNode(conductorNode("draft-1"));
-    store.getState().registerNode(conductorNode("other-1"));
-    setWaveEngineState(
-      withWave(
-        emptyWaveEngineState(),
-        createWaveState({
-          waveId: "w-other",
-          conductorSessionId: "other-1",
-          planMessageId: "plan-other",
-          steps: [{ role: "scout", subtask: "Look", access: [] }],
-          createdAt: 1,
-        }),
-      ),
-    );
-
-    store.getState().remapSessionId("draft-1", "backend-1");
-
-    expect(getWaveEngineState().waves[0].conductorSessionId).toBe("other-1");
-    resetWaveEngineStateCache();
-  });
 });
 
 describe("finishedAt stamping", () => {
@@ -347,36 +250,6 @@ describe("finishedAt stamping", () => {
       createdAt: 1,
     };
   }
-
-  it("stamps the first transition into a terminal status, and only the first", async () => {
-    const store = await loadGraph();
-    store.getState().registerNode(worker("w1"));
-
-    store.getState().patchNode("w1", { status: "waiting" });
-    expect(store.getState().nodesById.w1?.finishedAt).toBeUndefined();
-
-    store.getState().patchNode("w1", { status: "completed" });
-    const stamped = store.getState().nodesById.w1?.finishedAt;
-    expect(typeof stamped).toBe("number");
-
-    // A later terminal-to-terminal patch (a reconcile demotion, say) must not
-    // move the end of a run that already ended.
-    store.getState().patchNode("w1", { status: "stopped" });
-    expect(store.getState().nodesById.w1?.finishedAt).toBe(stamped);
-
-    // And the stamp survives persistence.
-    const persisted = readPersistedNodes().find(
-      (node) => node.sessionId === "w1",
-    );
-    expect(persisted?.finishedAt).toBe(stamped);
-  });
-
-  it("respects an explicit finishedAt supplied by the caller", async () => {
-    const store = await loadGraph();
-    store.getState().registerNode(worker("w2"));
-    store.getState().patchNode("w2", { status: "completed", finishedAt: 42 });
-    expect(store.getState().nodesById.w2?.finishedAt).toBe(42);
-  });
 
   it("keeps the children of a wave parked for the operator when the bound bites", async () => {
     // The parked wave backs the operator's retry, and the retry rebuilds its

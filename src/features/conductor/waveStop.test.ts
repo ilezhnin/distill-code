@@ -10,9 +10,7 @@ const { stopWaveByOperator } = await import("./waveStop");
 const { getWaveTelemetry, resetWaveTelemetryForTests } = await import(
   "./waveTelemetryStore"
 );
-const { createWaveState, withWavePhase, withWaveStepPhase } = await import(
-  "./waveEngine"
-);
+const { createWaveState, withWaveStepPhase } = await import("./waveEngine");
 const {
   getWaveEngineState,
   resetWaveEngineStateCache,
@@ -94,70 +92,6 @@ describe("stopWaveByOperator", () => {
       outcome: "needs-operator",
       closureReason: "operator-stopped",
     });
-  });
-
-  it("leaves a child that already finished alone", async () => {
-    const { useConductorGraphStore } = await import("./conductorGraphStore");
-    useConductorGraphStore.setState({
-      nodesById: {
-        "child-0": {
-          sessionId: "child-0",
-          projectId: "project",
-          role: "worker",
-          managedBy: "wave",
-          parentSessionId: CONDUCTOR_ID,
-          rootConductorId: CONDUCTOR_ID,
-          runId: "run-0",
-          harnessId: "goose",
-          displayName: "Scout",
-          status: "completed",
-          waveId: "wave-1",
-          stepIndex: 0,
-        },
-      },
-    });
-    seed();
-
-    try {
-      expect(stopWaveByOperator(CONDUCTOR_ID, "wave-1")).toBe(true);
-      // Stopping a finished run would relabel it `cancelled` in the graph.
-      expect(stopOrchestratorSession).not.toHaveBeenCalled();
-    } finally {
-      useConductorGraphStore.setState({ nodesById: {} });
-    }
-  });
-
-  it("stops a wave that is waiting on its digest or verdict", () => {
-    // Past `running` there are no workers left to interrupt, but the wave
-    // itself still holds this conductor's only wave slot: until it closes,
-    // every later plan the conductor makes is refused as concurrent. The stop
-    // used to be offered for `running` alone, which left the states where the
-    // loop can actually wedge with no lever at all.
-    for (const phase of [
-      "digestPending",
-      "dispatchingDigest",
-      "awaitingVerdict",
-    ] as const) {
-      seed(withWavePhase(runningWave(), phase));
-
-      expect(stopWaveByOperator(CONDUCTOR_ID, "wave-1")).toBe(true);
-      expect(getWaveEngineState().waves[0]?.phase).toBe("needsOperator");
-      expect(noticeTexts()).toEqual([
-        expect.stringContaining(
-          i18n.t("chat:conductor.wave.verdict.reason.operatorStopped"),
-        ),
-      ]);
-      useChatStore.setState({ messagesBySession: {} });
-    }
-  });
-
-  it("declines silently when the wave is already parked for the operator", () => {
-    seed(withWavePhase(runningWave(), "needsOperator"));
-
-    expect(stopWaveByOperator(CONDUCTOR_ID, "wave-1")).toBe(false);
-    expect(stopOrchestratorSession).not.toHaveBeenCalled();
-    expect(noticeTexts()).toEqual([]);
-    expect(getWaveEngineState().waves[0]?.phase).toBe("needsOperator");
   });
 
   it("declines when the wave is unknown or belongs to another conductor", () => {

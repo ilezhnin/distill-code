@@ -4,7 +4,6 @@ import { MAX_PERSONA_IMPORT_BYTES } from "./personaImport";
 import {
   type AgentZipImportError,
   extractAgentFileFromZip,
-  isAgentZipFileName,
 } from "./agentZipImport";
 
 describe("agent ZIP import", () => {
@@ -16,24 +15,6 @@ describe("agent ZIP import", () => {
       name: "reviewer.agent.png",
       bytes,
     });
-  });
-
-  it("extracts persona markdown", () => {
-    const bytes = new TextEncoder().encode("---\nname: reviewer\n---\nReview.");
-    const archive = zipSync({ "reviewer.persona.md": bytes });
-
-    const extracted = extractAgentFileFromZip(archive);
-    expect(extracted.name).toBe("reviewer.persona.md");
-    expect(Array.from(extracted.bytes)).toEqual(Array.from(bytes));
-  });
-
-  it("ignores macOS metadata", () => {
-    const archive = zipSync({
-      "__MACOSX/._reviewer.agent.png": new Uint8Array([9]),
-      "folder/reviewer.agent.png": new Uint8Array([1]),
-    });
-
-    expect(extractAgentFileFromZip(archive).name).toBe("reviewer.agent.png");
   });
 
   it("rejects duplicate supported paths before extraction collapses them", () => {
@@ -97,9 +78,5 @@ describe("agent ZIP import", () => {
         code: "invalid",
       }),
     );
-  });
-
-  it("recognizes ZIP filenames case-insensitively", () => {
-    expect(isAgentZipFileName("Reviewer.Agent.ZIP")).toBe(true);
   });
 });

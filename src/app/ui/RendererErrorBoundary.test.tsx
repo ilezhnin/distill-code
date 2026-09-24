@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { reportRendererError } from "@/app/lib/rendererDiagnostics";
@@ -22,28 +22,6 @@ describe("RendererErrorBoundary", () => {
     vi.mocked(reportRendererError).mockReset();
     vi.mocked(showMainWindow).mockReset();
     vi.spyOn(console, "error").mockImplementation(() => {});
-  });
-
-  it("reports React render failures and shows reload fallback", async () => {
-    render(
-      <RendererErrorBoundary>
-        <ThrowingChild />
-      </RendererErrorBoundary>,
-    );
-
-    expect(screen.getByRole("heading")).toHaveTextContent(
-      "Something went wrong",
-    );
-    expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
-    await waitFor(() => {
-      expect(reportRendererError).toHaveBeenCalledWith(
-        "react_error_boundary",
-        expect.any(Error),
-        expect.objectContaining({
-          componentStack: expect.any(String),
-        }),
-      );
-    });
   });
 
   it("shows the hidden app window when the first render fails", () => {

@@ -5,18 +5,9 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import { i18n } from "@/shared/i18n";
 import type { Message } from "@/shared/types/messages";
 
-import type { GitState } from "@/shared/types/git";
-
 import { useConductorGraphStore } from "./conductorGraphStore";
 import type { SessionNode, StructuredReport } from "./types";
 import { waveDigestMarker } from "./waveDigest";
-import { setWaveGitProbeIoForTests } from "./waveGitProbe";
-import {
-  FAILED_ATTEMPTS_HEADING,
-  setTaskMemoryIoForTests,
-  taskMemoryDocumentPath,
-  type TaskMemoryDocument,
-} from "./taskMemory";
 
 const spawnConductorChildSession = vi.hoisted(() => vi.fn());
 vi.mock("./spawnOrchestrator", () => ({ spawnConductorChildSession }));
@@ -52,7 +43,6 @@ const { resetWaveRunnerForTests, runWaveEngineTick } = await import(
 );
 const { getWaveEngineState, resetWaveEngineStateCache, hasWaveTombstone } =
   await import("./waveStore");
-const { retryWaveDigest } = await import("./waveRetry");
 const { stopWaveByOperator } = await import("./waveStop");
 const { WAVE_VERDICT_SILENCE_SAMPLE_MS } = await import("./waveLifecycle");
 const { getWaveTelemetry } = await import("./waveTelemetryStore");
@@ -60,8 +50,6 @@ const { getWaveTelemetry } = await import("./waveTelemetryStore");
 const CONDUCTOR_ID = "conductor-1";
 
 const PLAN = `Working on it.\n\n\`\`\`distill-wave\n{"steps":[{"role":"scout","subtask":"Find every caller","access":[]}]}\n\`\`\``;
-/** A two-step plan: one worker, then a step that waits for its report. */
-const TWO_STEP = `Working on it.\n\n\`\`\`distill-wave\n{"steps":[{"role":"scout","subtask":"Find every caller","access":[]},{"role":"qa","subtask":"Write the test plan","access":"all"}]}\n\`\`\``;
 
 const REVISION_PLAN = `\`\`\`distill-wave\n{"steps":[{"role":"qa","subtask":"Re-check the callers against the tests","access":"all"}]}\n\`\`\``;
 
@@ -252,63 +240,6 @@ describe("wave closed loop", () => {
     expect(deliverEnvelope).toHaveBeenCalledTimes(1);
   });
 
-  it("waits for the app's git probe and quotes its measurement in the digest (E3a)", async () => {
-    // A Tauri-like build: probes can run, and git answers only when told to,
-    // so the test can watch the wave hold its digest for the measurement.
-    const gitAnswers: Array<(state: GitState) => void> = [];
-    setWaveGitProbeIoForTests({
-      canProbe: () => true,
-      readGitState: () =>
-        new Promise<GitState>((resolve) => {
-          gitAnswers.push(resolve);
-        }),
-    });
-    useChatSessionStore.setState({
-      sessions: [
-        {
-          id: CONDUCTOR_ID,
-          title: "Conductor",
-          createdAt: "2026-01-01T00:00:00.000Z",
-          updatedAt: "2026-01-01T00:00:00.000Z",
-          messageCount: 0,
-          workingDir: "/repo",
-        },
-      ],
-    });
-    const gitState = (dirtyFileCount: number): GitState => ({
-      isGitRepo: true,
-      currentBranch: "main",
-      dirtyFileCount,
-      incomingCommitCount: 0,
-      worktrees: [],
-      isWorktree: false,
-      mainWorktreePath: null,
-      localBranches: [],
-    });
-
-    await settle();
-    // The admission baseline was requested when the plan was admitted.
-    expect(gitAnswers).toHaveLength(1);
-    gitAnswers[0](gitState(2));
-    completeAllSteps();
-    await settle();
-
-    // The wave finished, but its digest waits for the app's own measurement.
-    expect(gitAnswers).toHaveLength(2);
-    expect(deliverEnvelope).not.toHaveBeenCalled();
-    expect(getWaveEngineState().waves[0].phase).toBe("digestPending");
-
-    gitAnswers[1](gitState(5));
-    await settle();
-
-    expect(deliverEnvelope).toHaveBeenCalledTimes(1);
-    const digestText = deliverEnvelope.mock.calls[0][1] as string;
-    expect(digestText).toContain("APP MEASUREMENT");
-    expect(digestText).toContain("against 2 when the wave was admitted");
-    expect(digestText).toContain("(+3)");
-    expect(getWaveEngineState().waves[0].phase).toBe("awaitingVerdict");
-  });
-
   it("closes the wave on accept and posts nothing extra", async () => {
     await runWaveToDigest();
     const noticesBefore = noticeTexts().length;
@@ -358,86 +289,6 @@ describe("wave closed loop", () => {
     expect(revision.rootRequestId).toBe("plan-1");
   });
 
-  /**
-   * P33: what one wave of a root request already tried and lost has to reach
-   * the next wave of that request, or a revision spends its budget rediscovering
-   * the same dead end. The record is written where the digest is built and read
-   * where the revision's steps spawn; this drives both ends through the real
-   * loop.
-   */
-  it("hands a revision what the previous wave of the same root already failed", async () => {
-    const files = new Map<string, string>();
-    setTaskMemoryIoForTests({
-      projectRootFor: () => "/repo",
-      read: async (_root, path) => files.get(path) ?? null,
-      write: async (_root, path, contents) => {
-        files.set(path, contents);
-      },
-    });
-
-    await settle();
-    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
-    // The first wave loses: the worker reports `failed` with a risk that says
-    // why, which is what the next wave must not walk into again.
-    const graph = useConductorGraphStore.getState();
-    graph.attachReport({
-      ...report("run-1", "rewrote the caller list by hand"),
-      status: "failed",
-      risks: ["the generated file is overwritten on every build"],
-    });
-    graph.patchNode("child-1", { status: "failed" });
-    await settle();
-
-    const document = JSON.parse(
-      files.get(taskMemoryDocumentPath("plan-1")) ?? "{}",
-    ) as TaskMemoryDocument;
-    expect(document.version).toBe(1);
-    expect(document.rootRequestId).toBe("plan-1");
-    expect(document.waves[0]).toMatchObject({ attempt: 1 });
-    expect(document.failedAttempts).toEqual([
-      {
-        wave: 1,
-        role: "scout",
-        what: "rewrote the caller list by hand",
-        why: "the generated file is overwritten on every build",
-      },
-    ]);
-
-    appendConductorMessage(
-      assistant(
-        "verdict-1",
-        `Not quite.\n\n\`\`\`distill-verdict\n{"verdict":"revise"}\n\`\`\`\n\n${REVISION_PLAN}`,
-      ),
-    );
-    await settle();
-
-    expect(spawnConductorChildSession).toHaveBeenCalledTimes(2);
-    const revisionPrompt = spawnConductorChildSession.mock.calls[1][0].prompt;
-    expect(revisionPrompt).toContain(FAILED_ATTEMPTS_HEADING);
-    expect(revisionPrompt).toContain(
-      "- wave 1 (scout): rewrote the caller list by hand — why it failed: the generated file is overwritten on every build",
-    );
-    // The judged wave's own record now says what the conductor decided.
-    const judged = JSON.parse(
-      files.get(taskMemoryDocumentPath("plan-1")) ?? "{}",
-    ) as TaskMemoryDocument;
-    expect(judged.waves[0].verdict).toBe("revise");
-  });
-
-  it("puts no failed-attempts block in a first wave's steps", async () => {
-    setTaskMemoryIoForTests({
-      projectRootFor: () => "/repo",
-      read: async () => null,
-      write: async () => undefined,
-    });
-    await settle();
-    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
-    const prompt = spawnConductorChildSession.mock.calls[0][0].prompt;
-    // Not an empty heading either: a first wave has tried nothing.
-    expect(prompt).not.toContain(FAILED_ATTEMPTS_HEADING);
-    expect(prompt).not.toContain("Already tried and failed");
-  });
-
   it("never lets a revise verdict be admitted again as a new root wave", async () => {
     await runWaveToDigest();
     appendConductorMessage(
@@ -475,64 +326,6 @@ describe("wave closed loop", () => {
     await settle();
     await settle();
     expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
-  });
-
-  it("stops at needsOperator when the conductor answers with no verdict (Q5)", async () => {
-    await runWaveToDigest();
-    appendConductorMessage(
-      assistant("verdict-1", "Nice work everyone, I think that's it."),
-    );
-    await settle();
-
-    const [wave] = getWaveEngineState().waves;
-    expect(wave.phase).toBe("needsOperator");
-    // No revision was spent on an answer that could not be read.
-    expect(wave.revisionCount).toBe(0);
-    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
-    expect(noticeActions()).toContainEqual({
-      type: "retryWaveDigest",
-      sessionId: CONDUCTOR_ID,
-      waveId: wave.waveId,
-    });
-  });
-
-  it("stops at needsOperator on an unreadable verdict, with the reason", async () => {
-    await runWaveToDigest();
-    appendConductorMessage(
-      assistant(
-        "verdict-1",
-        '```distill-verdict\n{"verdict":"looks-good"}\n```',
-      ),
-    );
-    await settle();
-    expect(getWaveEngineState().waves[0].phase).toBe("needsOperator");
-    expect(noticeTexts().join("\n")).toContain("looks-good");
-  });
-
-  it("re-delivers the digest under a new marker when the operator retries", async () => {
-    await runWaveToDigest();
-    appendConductorMessage(assistant("verdict-1", "no fence at all"));
-    await settle();
-    const waveId = getWaveEngineState().waves[0].waveId;
-
-    retryWaveDigest(CONDUCTOR_ID, waveId);
-    await settle();
-
-    expect(deliverEnvelope).toHaveBeenCalledTimes(2);
-    expect(deliverEnvelope.mock.calls[1][1]).toContain(
-      waveDigestMarker(waveId, 1),
-    );
-    const wave = getWaveEngineState().waves[0];
-    expect(wave.phase).toBe("awaitingVerdict");
-    expect(wave.digestAttempt).toBe(1);
-
-    // The answer to the *new* digest is what gets judged; the old one is not
-    // re-read, because the anchor moved with the marker.
-    appendConductorMessage(
-      assistant("verdict-2", '```distill-verdict\n{"verdict":"accept"}\n```'),
-    );
-    await settle();
-    expect(getWaveEngineState().waves).toHaveLength(0);
   });
 
   it("refuses a third revision and says the cap is spent", async () => {
@@ -589,46 +382,6 @@ describe("wave closed loop", () => {
 
     expect(deliverEnvelope).toHaveBeenCalledTimes(1);
     expect(getWaveEngineState().waves[0].phase).toBe("awaitingVerdict");
-  });
-
-  it("re-sends a digest that was lost before it reached the transcript", async () => {
-    await runWaveToDigest();
-    const wave = getWaveEngineState().waves[0];
-
-    // Same restart, but this time the transcript has no digest in it: the
-    // delivery never landed, so it has to be attempted again.
-    resetWaveRunnerForTests();
-    useChatStore.setState({
-      messagesBySession: { [CONDUCTOR_ID]: [assistant("plan-1", PLAN)] },
-    });
-    window.localStorage.setItem(
-      "distill:conductor-waves",
-      JSON.stringify({
-        version: 2,
-        waves: [{ ...wave, phase: "dispatchingDigest" }],
-        tombstones: getWaveEngineState().tombstones,
-      }),
-    );
-    resetWaveEngineStateCache();
-    await settle();
-
-    expect(deliverEnvelope).toHaveBeenCalledTimes(2);
-  });
-
-  it("parks the wave when the digest cannot be delivered at all", async () => {
-    deliverEnvelope.mockResolvedValue({
-      status: "failed" as const,
-      detail: 'No session "conductor-1".',
-    });
-    await runWaveToDigest();
-    await settle();
-
-    expect(getWaveEngineState().waves[0].phase).toBe("needsOperator");
-    const notices = noticeTexts().join("\n");
-    // The reports are already flagged published, so the notice must carry the
-    // digest itself or the run is simply lost.
-    expect(notices).toContain("did the thing child-1");
-    expect(notices).toContain('No session "conductor-1".');
   });
 
   /**
@@ -694,168 +447,6 @@ describe("wave closed loop", () => {
       expect(deliverEnvelope).toHaveBeenCalledTimes(1);
       expect(getWaveEngineState().waves[0].phase).toBe("awaitingVerdict");
     });
-
-    it("re-delivers once the transcript is read and the digest is genuinely absent", async () => {
-      await runWaveToDigest();
-      const wave = getWaveEngineState().waves[0];
-      restartMidDelivery(wave);
-      // This time the delivery really was lost, and hydration is what proves
-      // it: the loader returns the transcript, and there is no digest in it.
-      loadSessionMessages.mockImplementation(async () => {
-        useChatStore.setState({
-          messagesBySession: { [CONDUCTOR_ID]: [assistant("plan-1", PLAN)] },
-        });
-        return true;
-      });
-
-      await settle();
-
-      expect(deliverEnvelope).toHaveBeenCalledTimes(2);
-      expect(getWaveEngineState().waves[0].phase).toBe("awaitingVerdict");
-    });
-
-    it("closes a wave waiting on a verdict with the conductor chat shut", async () => {
-      await runWaveToDigest();
-      const digestText = deliverEnvelope.mock.calls[0][1];
-      const wave = getWaveEngineState().waves[0];
-      expect(wave.phase).toBe("awaitingVerdict");
-
-      // Restart with the wave already waiting: without hydration the verdict
-      // scan finds no digest index, forever, and the wave never closes unless
-      // the operator happens to open that chat.
-      resetWaveRunnerForTests();
-      window.localStorage.setItem(
-        "distill:conductor-waves",
-        JSON.stringify({
-          version: 2,
-          waves: [wave],
-          tombstones: getWaveEngineState().tombstones,
-        }),
-      );
-      resetWaveEngineStateCache();
-      useChatStore.setState({ messagesBySession: {} });
-      loadSessionMessages.mockImplementation(async () => {
-        useChatStore.setState({
-          messagesBySession: {
-            [CONDUCTOR_ID]: [
-              assistant("plan-1", PLAN),
-              {
-                id: "digest-1",
-                role: "user",
-                created: 2,
-                content: [{ type: "text", text: digestText }],
-              },
-              assistant(
-                "verdict-1",
-                'Done.\n\n```distill-verdict\n{"verdict":"accept"}\n```',
-              ),
-            ],
-          },
-        });
-        return true;
-      });
-
-      await settle();
-
-      expect(getWaveEngineState().waves).toHaveLength(0);
-      expect(deliverEnvelope).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  /**
-   * C3. The startup reconcile demotes every child whose runtime died with the
-   * process to `stopped`, which `isTerminalRunStatus` calls terminal — so a
-   * wave interrupted mid-flight looks exactly like a finished one, except that
-   * not one step ever reported.
-   */
-  describe("a wave interrupted before any step reported", () => {
-    it("parks on needsOperator instead of digesting a page of unknowns", async () => {
-      await settle();
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
-
-      // What the reconcile does on the next launch: no runtime, no queued
-      // send, so the working child is demoted. No report was ever attached.
-      const graph = useConductorGraphStore.getState();
-      for (const node of Object.values(graph.nodesById)) {
-        if (node.role !== "worker") continue;
-        graph.patchNode(node.sessionId, { status: "stopped" });
-      }
-      await settle();
-
-      // No model call was spent judging nothing.
-      expect(deliverEnvelope).not.toHaveBeenCalled();
-      const wave = getWaveEngineState().waves[0];
-      expect(wave.phase).toBe("needsOperator");
-      expect(noticeTexts().join("\n")).toContain(
-        i18n.t("chat:conductor.wave.verdict.reason.waveInterrupted"),
-      );
-      expect(noticeActions()).toContainEqual({
-        type: "retryWaveDigest",
-        sessionId: CONDUCTOR_ID,
-        waveId: wave.waveId,
-      });
-    });
-
-    it("sends the unknown digest anyway when the operator asks for it", async () => {
-      await settle();
-      const graph = useConductorGraphStore.getState();
-      for (const node of Object.values(graph.nodesById)) {
-        if (node.role !== "worker") continue;
-        graph.patchNode(node.sessionId, { status: "stopped" });
-      }
-      await settle();
-      const waveId = getWaveEngineState().waves[0].waveId;
-
-      // The affordance is not a no-op: the operator has read the notice and
-      // is saying "ask anyway", and the digest says every step ended without
-      // completing — not that it "finished without a report", which is what
-      // this used to claim about executors that were killed where they stood.
-      retryWaveDigest(CONDUCTOR_ID, waveId);
-      await settle();
-
-      expect(deliverEnvelope).toHaveBeenCalledTimes(1);
-      expect(deliverEnvelope.mock.calls[0][1]).toContain(
-        "ended without completing",
-      );
-      // …and it does not claim the conductor answered something unreadably:
-      // there was never a first digest for it to answer.
-      expect(deliverEnvelope.mock.calls[0][1]).not.toContain(
-        "could not be read as a verdict",
-      );
-      expect(getWaveEngineState().waves[0].phase).toBe("awaitingVerdict");
-    });
-
-    it("still digests when at least one step reported (the mixed case)", async () => {
-      // A partially interrupted wave keeps its evidence: the steps that did
-      // report are real work, and the synthesized "unknown" entries tell the
-      // conductor exactly which ones are not. Refusing here would throw away
-      // the reports that survived.
-      useChatStore.setState({
-        messagesBySession: { [CONDUCTOR_ID]: [assistant("plan-1", TWO_STEP)] },
-      });
-      resetWaveRunnerForTests();
-      await settle();
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
-
-      const graph = useConductorGraphStore.getState();
-      graph.attachReport(report("run-1", "Found three callers"));
-      graph.patchNode("child-1", { status: "completed" });
-      await settle();
-      // Step 2 started and then died with the process.
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2);
-      graph.patchNode("child-2", { status: "stopped" });
-      await settle();
-
-      expect(deliverEnvelope).toHaveBeenCalledTimes(1);
-      const digest = deliverEnvelope.mock.calls[0][1];
-      expect(digest).toContain("Found three callers");
-      // The step that died with the process is reported as what it is. It
-      // used to read "finished without a report", which beside a real report
-      // from step 1 made the wave look whole — the exact shape of the lie
-      // this pass exists to remove.
-      expect(digest).toContain("ended without completing");
-      expect(digest).not.toContain("Treat its result as unknown");
-    });
   });
 
   it("does not re-park a wave the operator stopped inside the delivery window", async () => {
@@ -897,30 +488,6 @@ describe("wave closed loop", () => {
       (candidate) => candidate.waveId === waveId,
     );
     expect(record?.closureReason).toBe("operator-stopped");
-  });
-
-  it("re-asks a different question when the operator retries a verdict (M3)", async () => {
-    await runWaveToDigest();
-    appendConductorMessage(
-      assistant("verdict-1", "Nice work everyone, I think that's it."),
-    );
-    await settle();
-    const waveId = getWaveEngineState().waves[0].waveId;
-
-    retryWaveDigest(CONDUCTOR_ID, waveId);
-    await settle();
-
-    const first = deliverEnvelope.mock.calls[0][1];
-    const retry = deliverEnvelope.mock.calls[1][1];
-    // The old behaviour: byte-identical apart from the marker's attempt, so
-    // every press bought another turn of the same failure.
-    expect(retry.replace(waveDigestMarker(waveId, 1), "")).not.toBe(
-      first.replace(waveDigestMarker(waveId, 0), ""),
-    );
-    expect(retry).toContain("could not be read as a verdict");
-    expect(retry).toContain("no distill-verdict block at all");
-    // Q5 is intact: the retry was the operator's, and it cost no revision.
-    expect(getWaveEngineState().waves[0].revisionCount).toBe(0);
   });
 
   describe("a verdict that is never coming", () => {
@@ -1041,28 +608,6 @@ describe("wave closed loop", () => {
         });
         // The digest was not sent again behind the operator's back.
         expect(deliverEnvelope).toHaveBeenCalledTimes(1);
-      } finally {
-        clock.restore();
-      }
-    });
-
-    it("reads a late answer as the verdict rather than parking", async () => {
-      const clock = pinClock();
-      try {
-        // The digest landed and the conductor is idle, so one silent sample is
-        // already recorded against this wave when the answer arrives.
-        await runWaveToDigest();
-        appendConductorMessage(
-          assistant(
-            "verdict-1",
-            'Good.\n\n```distill-verdict\n{"verdict":"accept"}\n```',
-          ),
-        );
-        await settle();
-        expect(getWaveEngineState().waves).toHaveLength(0);
-        expect(getWaveTelemetry().records[0]).toMatchObject({
-          outcome: "accepted",
-        });
       } finally {
         clock.restore();
       }

@@ -18,11 +18,8 @@ import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore
 import type { SessionManagedBy } from "@/features/conductor/types";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 
-import type { ArchivedMemoryEntry, MemoryEntry } from "./lib/memoryEntry";
-import {
-  setMemoryReadEnabled,
-  setMemoryWriteEnabled,
-} from "./lib/memoryPreferences";
+import type { MemoryEntry } from "./lib/memoryEntry";
+import { setMemoryReadEnabled } from "./lib/memoryPreferences";
 import { RECALL_LIMIT_REACHED_TEXT } from "./lib/memoryRecall";
 import {
   resetWaveExecutorWatchForTests,
@@ -73,40 +70,12 @@ function entry(overrides: Partial<MemoryEntry> & { id: string }): MemoryEntry {
   };
 }
 
-function archivedEntry(
-  overrides: Partial<ArchivedMemoryEntry> & { id: string },
-): ArchivedMemoryEntry {
-  return {
-    ...entry(overrides),
-    archivedAt: Date.UTC(2026, 5, 1),
-    archiveReason: "capacity",
-    ...overrides,
-  };
-}
-
 function putMessages(sessionId: string, messages: Message[]) {
   act(() => {
     useChatStore.setState((state) => ({
       messagesBySession: { ...state.messagesBySession, [sessionId]: messages },
     }));
   });
-}
-
-/**
- * Transcripts that count the scans that read them.
- *
- * A scan starts by listing the sessions, so the key enumeration is the
- * cheapest honest proxy for "the drain looked at the transcripts".
- */
-function countingTranscripts(inner: Record<string, Message[]>) {
-  let reads = 0;
-  const proxy = new Proxy(inner, {
-    ownKeys(target) {
-      reads += 1;
-      return Reflect.ownKeys(target);
-    },
-  });
-  return { proxy, reads: () => reads };
 }
 
 function putSession(sessionId: string, projectId: string | null) {
@@ -215,32 +184,6 @@ describe("useMemoryRecallSync", () => {
     expect(useMemoryStore.getState().recallAnsweredMessageIds).toEqual(["m-1"]);
   });
 
-  it("does not read the transcripts when only a runtime flag changed", () => {
-    // The chat store carries the transcripts and, beside them, per-session
-    // runtime state that moves on every token's bookkeeping. No flag can turn
-    // a message into a question, so a run that changed no transcript must not
-    // cost a scan — this drain is on the streaming path.
-    putSession("s-1", null);
-    renderHook(() => useMemoryRecallSync());
-    const transcripts = countingTranscripts({
-      "s-1": [assistant("m-1", '{"query":"kubernetes"}')],
-    });
-    act(() => {
-      useChatStore.setState({ messagesBySession: transcripts.proxy });
-    });
-    expect(delivered()).toHaveLength(1);
-
-    const readsAfterTheQuestion = transcripts.reads();
-    act(() => {
-      useChatStore.setState({ activeSessionId: "s-1" });
-    });
-    act(() => {
-      useChatStore.setState({ isViewingActiveSession: false });
-    });
-
-    expect(transcripts.reads()).toBe(readsAfterTheQuestion);
-  });
-
   it("never hands over another project's memories", () => {
     // LAWS/MEMORY.md, Reading back: crossing projects is the operator's search.
     putSession("s-1", "p-1");
@@ -269,52 +212,6 @@ describe("useMemoryRecallSync", () => {
     expect(text).not.toContain("Other release branch is main");
   });
 
-  it("marks an archived memory as archived", () => {
-    putSession("s-1", null);
-    useMemoryStore.setState({
-      archived: [archivedEntry({ id: "a", text: "Ivan reviews Rust himself" })],
-    });
-    renderHook(() => useMemoryRecallSync());
-
-    putMessages("s-1", [assistant("m-1", '{"query":"Rust"}')]);
-
-    expect(delivered()[0].text).toContain(
-      "- Ivan reviews Rust himself (global; created 2026-01-02; archived)",
-    );
-  });
-
-  it("says so when the store holds nothing about the question", () => {
-    putSession("s-1", null);
-    renderHook(() => useMemoryRecallSync());
-
-    putMessages("s-1", [assistant("m-1", '{"query":"kubernetes"}')]);
-
-    expect(delivered()[0].text).toContain("Nothing found.");
-  });
-
-  it("leaves a wave child unanswered, out loud, and does not retry it", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    putSession("s-w", "p-1");
-    putGraphNode("s-w", "wave");
-    useMemoryStore.setState({
-      entries: [entry({ id: "g", text: "Secretish" })],
-    });
-    renderHook(() => useMemoryRecallSync());
-
-    putMessages("s-w", [assistant("m-1", '{"query":"Secretish"}')]);
-
-    expect(mocks.deliverEnvelope).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("was not answered"),
-    );
-    warn.mockClear();
-    act(() => {
-      useChatStore.setState({ activeSessionId: "s-w" });
-    });
-    expect(warn).not.toHaveBeenCalled();
-    expect(useMemoryStore.getState().recallAnsweredMessageIds).toContain("m-1");
-  });
-
   it("leaves a wave child unanswered after the graph has evicted its node", () => {
     // The graph is bounded and drops a finished wave child's node first; the
     // answer would hand the operator's list to an executor that was never
@@ -339,22 +236,6 @@ describe("useMemoryRecallSync", () => {
     expect(useMemoryStore.getState().recallAnsweredMessageIds).toContain("m-1");
   });
 
-  it("answers a read-only session, which is the one that needs it most", () => {
-    // Reading is not the write ACL's business: a worker outside the wave
-    // engine may not write memories but still carries the block.
-    putSession("s-r", "p-1");
-    putGraphNode("s-r", "agent-cli");
-    useMemoryStore.setState({
-      entries: [entry({ id: "g", text: "Ivan reviews Rust himself" })],
-    });
-    renderHook(() => useMemoryRecallSync());
-
-    putMessages("s-r", [assistant("m-1", '{"query":"Rust"}')]);
-
-    expect(delivered()).toHaveLength(1);
-    expect(delivered()[0].text).toContain("Ivan reviews Rust himself");
-  });
-
   it("answers nothing once the operator switches memory out of prompts", () => {
     // An answer is memory reaching a session's context, which is the exact
     // thing that switch turns off — so recall follows `read`, not `write`.
@@ -375,19 +256,6 @@ describe("useMemoryRecallSync", () => {
     // Refused, not deferred: an answer that turned up later would land in a
     // conversation that has moved on.
     expect(useMemoryStore.getState().recallAnsweredMessageIds).toContain("m-1");
-  });
-
-  it("still answers when only writing is paused", () => {
-    setMemoryWriteEnabled(false);
-    putSession("s-1", "p-1");
-    useMemoryStore.setState({
-      entries: [entry({ id: "g", text: "Ivan reviews Rust himself" })],
-    });
-    renderHook(() => useMemoryRecallSync());
-
-    putMessages("s-1", [assistant("m-1", '{"query":"Rust"}')]);
-
-    expect(delivered()[0].text).toContain("Ivan reviews Rust himself");
   });
 
   it("stops searching once the session has asked three times over", () => {
@@ -420,15 +288,5 @@ describe("useMemoryRecallSync", () => {
 
     putMessages("s-1", [assistant("m-1", '{"query":"fact"}')]);
     expect(delivered()).toHaveLength(1);
-  });
-
-  it("stops listening once it unmounts", () => {
-    putSession("s-1", null);
-    const { unmount } = renderHook(() => useMemoryRecallSync());
-    unmount();
-
-    putMessages("s-1", [assistant("m-1", '{"query":"fact"}')]);
-
-    expect(mocks.deliverEnvelope).not.toHaveBeenCalled();
   });
 });

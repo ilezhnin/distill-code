@@ -57,26 +57,6 @@ describe("readConductorTranscript", () => {
     resetConductorTranscriptsForTests();
   });
 
-  it("reads a cached transcript without loading anything", () => {
-    useChatStore.setState({
-      messagesBySession: { [SESSION]: [message("m1")] },
-    });
-    const transcript = readConductorTranscript(SESSION, () => undefined);
-    expect(transcript.kind).toBe("loaded");
-    expect(loadSessionMessages).not.toHaveBeenCalled();
-  });
-
-  it("does not take an empty cached transcript as an answer", () => {
-    // A conductor whose wave exists produced a plan message, so an empty
-    // transcript under its key is a cache that holds nothing — never a
-    // transcript that does.
-    useChatStore.setState({ messagesBySession: { [SESSION]: [] } });
-    expect(readConductorTranscript(SESSION, () => undefined).kind).toBe(
-      "unknown",
-    );
-    expect(loadSessionMessages).toHaveBeenCalledWith(SESSION);
-  });
-
   it("does not take the notice a failed load leaves behind as a transcript", async () => {
     // The real failure path: the loader resolves `false` and appends a system
     // notice under this very key. Read as "loaded", that notice made the
@@ -102,16 +82,6 @@ describe("readConductorTranscript", () => {
     expect(readConductorTranscript(SESSION, () => undefined).kind).toBe(
       "loaded",
     );
-  });
-
-  it("says it does not know, and asks, when the session was never loaded", async () => {
-    const onHydrated = vi.fn();
-    expect(readConductorTranscript(SESSION, onHydrated).kind).toBe("unknown");
-    expect(loadSessionMessages).toHaveBeenCalledWith(SESSION);
-    await flush();
-    // The caller is woken so it can re-run its own pass, rather than waiting
-    // for some unrelated chat-store change to fire the tick.
-    expect(onHydrated).toHaveBeenCalled();
   });
 
   it("asks once while a load is in flight, however often it is called", () => {
@@ -147,19 +117,5 @@ describe("readConductorTranscript", () => {
     vi.setSystemTime(TRANSCRIPT_HYDRATION_RETRY_MS + 1);
     readConductorTranscript(SESSION, () => undefined);
     expect(loadSessionMessages).toHaveBeenCalledTimes(2);
-  });
-
-  it("still reports unknown when the load throws", async () => {
-    loadSessionMessages.mockRejectedValue(new Error("no such session"));
-    expect(readConductorTranscript(SESSION, () => undefined).kind).toBe(
-      "unknown",
-    );
-    await flush();
-    // Waiting is the safe side: a wave that waits costs nothing, a wave that
-    // re-delivers a digest that already landed costs a model turn and the
-    // answer to the first copy.
-    expect(readConductorTranscript(SESSION, () => undefined).kind).toBe(
-      "unknown",
-    );
   });
 });

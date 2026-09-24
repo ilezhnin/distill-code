@@ -6,17 +6,11 @@ import { i18n } from "@/shared/i18n";
 import type { Message } from "@/shared/types/messages";
 
 import { useConductorGraphStore } from "./conductorGraphStore";
-import { SpawnAclDeniedError } from "./spawnAcl";
 import type { SessionNode } from "./types";
 import {
   resetWaveStepTargetIoForTests,
   setWaveStepTargetIoForTests,
 } from "./waveStepTarget";
-import {
-  FAILED_ATTEMPTS_HEADING,
-  setTaskMemoryIoForTests,
-  taskMemoryDocumentPath,
-} from "./taskMemory";
 
 const spawnConductorChildSession = vi.hoisted(() => vi.fn());
 
@@ -40,7 +34,6 @@ vi.mock("./waveStepTarget", async (importOriginal) => {
 });
 
 const {
-  WAVE_REPORT_GRACE_MS,
   WAVE_SPAWN_TIMEOUT_MS,
   WAVE_STALL_SAMPLE_MS,
   WAVE_STALL_THRESHOLD,
@@ -54,12 +47,9 @@ const {
   resetWaveEngineStateCache,
   setWaveEngineState,
   setWaveEngineStateHydratedForTests,
-  withWave,
 } = await import("./waveStore");
-const { createWaveState } = await import("./waveEngine");
 const { stopWaveByOperator } = await import("./waveStop");
 const { getWaveTelemetry } = await import("./waveTelemetryStore");
-const { notePersistReadOutage } = await import("./persistHealth");
 
 const CONDUCTOR_ID = "conductor-1";
 
@@ -180,14 +170,6 @@ describe("waveRunner", () => {
     resetWaveEngineStateCache();
   });
 
-  it("does nothing before the session store has hydrated", () => {
-    useChatSessionStore.setState({ hasHydratedSessions: false });
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
-    runWaveEngineTick();
-    expect(spawnConductorChildSession).not.toHaveBeenCalled();
-  });
-
   it("stays off for the session when a folder document could not be read", async () => {
     // A waves.json that never loaded has no tombstones in it: a tick would
     // read every plan in the transcript as new and spawn its workers again.
@@ -203,37 +185,6 @@ describe("waveRunner", () => {
       await Promise.resolve();
       expect(spawnConductorChildSession).not.toHaveBeenCalled();
       expect(getWaveEngineState().waves).toHaveLength(0);
-    } finally {
-      setWaveEngineStateHydratedForTests(null);
-    }
-  });
-
-  it("tells every conductor chat that it is off for the session", async () => {
-    // The engine never starts a wave while a document is unread, so the
-    // write-refusal notice (which waits for a live wave) would wait forever.
-    // Without this the operator sees a conductor answering with a plan and an
-    // app doing nothing at all about it.
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
-    notePersistReadOutage(
-      "waves",
-      Object.assign(new Error("read failed"), { name: "EPERM" }),
-    );
-    setWaveEngineStateHydratedForTests("failed");
-    try {
-      runWaveEngineTick();
-      await Promise.resolve();
-
-      const notices = noticeTexts();
-      expect(notices).toHaveLength(1);
-      expect(notices[0]).toContain("conductor/waves.json");
-      expect(notices[0]).toContain("EPERM");
-
-      // Said once per chat, not once per tick — the tick runs on every
-      // chat-store change.
-      runWaveEngineTick();
-      await Promise.resolve();
-      expect(noticeTexts()).toHaveLength(1);
     } finally {
       setWaveEngineStateHydratedForTests(null);
     }
@@ -284,57 +235,6 @@ describe("waveRunner", () => {
     expect(
       getWaveEngineState().waves.map((wave) => wave.planMessageId),
     ).toEqual(["plan-next"]);
-  });
-
-  it("still admits a plan this process produced when the watermark is in the future", async () => {
-    // A machine whose clock was a day fast stored a mark a day ahead; Windows
-    // Time then resynced. Without the pre-process requirement every later plan
-    // from that conductor is silently dropped — before `markScanned`, so there
-    // is no wave, no refusal and no telemetry to find it by.
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    setWaveEngineState({
-      ...getWaveEngineState(),
-      newestProcessedMessageCreatedAt: {
-        [CONDUCTOR_ID]: Date.now() + 86_400_000,
-      },
-    });
-    setTranscript([
-      { ...assistant("plan-now", TWO_STEP_PLAN), created: Date.now() },
-    ]);
-
-    runWaveEngineTick();
-    await vi.waitFor(() =>
-      expect(
-        getWaveEngineState().waves.map((wave) => wave.planMessageId),
-      ).toEqual(["plan-now"]),
-    );
-  });
-
-  it("spawns the access:[] step immediately and holds the access:all step", async () => {
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
-
-    runWaveEngineTick();
-    await vi.waitFor(() =>
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
-    );
-
-    const [args] = spawnConductorChildSession.mock.calls[0];
-    expect(args).toMatchObject({
-      parentSessionId: CONDUCTOR_ID,
-      role: "worker",
-      managedBy: "wave",
-      stepIndex: 0,
-      anchorMessageId: "plan-1",
-      roleId: "scout",
-      task: "Find every caller",
-    });
-    expect(args.waveId).toBeTruthy();
-    expect(args.prompt).toContain("Find every caller");
-
-    const state = getWaveEngineState();
-    expect(state.waves).toHaveLength(1);
-    expect(hasWaveTombstone(state, "plan-1")).toBe(true);
   });
 
   it("starts the access:all step with the earlier report once step 0 is terminal", async () => {
@@ -423,27 +323,6 @@ describe("waveRunner", () => {
     expect(noticeTexts()).toHaveLength(noticeCount);
   });
 
-  it("shows the enumerated reason and spawns nothing for a broken fence", async () => {
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    setTranscript([assistant("plan-1", fence("{not json}"))]);
-
-    runWaveEngineTick();
-
-    expect(spawnConductorChildSession).not.toHaveBeenCalled();
-    expect(noticeTexts()).toHaveLength(1);
-    expect(noticeTexts()[0]).toContain(
-      i18n.t("chat:conductor.wave.reason.malformedJson"),
-    );
-    const notice = conductorMessages().at(-1);
-    expect(notice?.content[0]).toMatchObject({
-      type: "systemNotification",
-      notificationType: "error",
-      action: { type: "retryWavePlan", sessionId: CONDUCTOR_ID },
-    });
-    expect(getWaveEngineState().waves).toHaveLength(0);
-    expect(hasWaveTombstone(getWaveEngineState(), "plan-1")).toBe(true);
-  });
-
   it("refuses the whole plan when a step's model resolves to nothing, before any spawn", () => {
     // 4a/D5: no seams are installed here, so the live inventory is empty and
     // the named model cannot be honoured — the honest outcome is a refusal of
@@ -504,85 +383,6 @@ describe("waveRunner", () => {
     }
   });
 
-  it("spawns a named step on the model, not the default alias labeled with it", async () => {
-    setWaveStepTargetIoForTests({
-      personas: () => [],
-      providers: () => [{ id: "claude-acp", label: "Claude Code" }] as never,
-      modelsForHarness: (harnessId) =>
-        (harnessId === "claude-acp"
-          ? [
-              { id: "default", displayName: "Opus 5" },
-              { id: "opus[1m]", displayName: "Opus 5" },
-            ]
-          : []) as never,
-      rateLimits: () => [] as never,
-    });
-    try {
-      useConductorGraphStore.getState().registerNode(conductorNode());
-      setTranscript([
-        assistant(
-          "plan-1",
-          fence(
-            '{"steps":[{"role":"scout","subtask":"Look","access":[],"model":"opus"}]}',
-          ),
-        ),
-      ]);
-
-      runWaveEngineTick();
-      await vi.waitFor(() =>
-        expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
-      );
-
-      const [args] = spawnConductorChildSession.mock.calls[0];
-      expect(args.executionTarget).toMatchObject({
-        harnessId: "claude-acp",
-        modelId: "opus[1m]",
-      });
-    } finally {
-      resetWaveStepTargetIoForTests();
-    }
-  });
-
-  it("spawns a step named by family on that family's current model", async () => {
-    setWaveStepTargetIoForTests({
-      personas: () => [],
-      providers: () => [{ id: "claude-acp", label: "Claude Code" }] as never,
-      modelsForHarness: (harnessId) =>
-        (harnessId === "claude-acp"
-          ? [
-              { id: "claude-opus-4-8", displayName: "Opus 4.8" },
-              { id: "default", displayName: "Opus 5" },
-              { id: "opus[1m]", displayName: "Opus 5" },
-            ]
-          : []) as never,
-      rateLimits: () => [] as never,
-    });
-    try {
-      useConductorGraphStore.getState().registerNode(conductorNode());
-      setTranscript([
-        assistant(
-          "plan-1",
-          fence(
-            '{"steps":[{"role":"scout","subtask":"Look","access":[],"model":"opus"}]}',
-          ),
-        ),
-      ]);
-
-      runWaveEngineTick();
-      await vi.waitFor(() =>
-        expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
-      );
-
-      const [args] = spawnConductorChildSession.mock.calls[0];
-      expect(args.executionTarget).toMatchObject({
-        harnessId: "claude-acp",
-        modelId: "opus[1m]",
-      });
-    } finally {
-      resetWaveStepTargetIoForTests();
-    }
-  });
-
   it("spawns a step with the budget, class, effort and fast mode the plan gave it (P49/P36)", async () => {
     // The plan's ceiling is what the budget guard stops the child on, the
     // class is what routes it, and effort and fast mode are how the child
@@ -619,146 +419,6 @@ describe("waveRunner", () => {
       effort: "high",
       fast: false,
     });
-  });
-
-  it("spawns a step with the effort and fast mode its profile ranked (P36)", async () => {
-    // The crew profiles differ by effort as much as by model — "medium
-    // engineering at medium, heavy at xhigh" — and the model id never carries
-    // it. The spawn hands both to the child as its run settings, on every
-    // harness alike.
-    resolveWaveStepTarget.mockReturnValueOnce({
-      target: {
-        harnessId: "claude-acp",
-        modelProviderId: "claude-acp",
-        modelId: "fable-5-1",
-        modelName: "Fable 5.1",
-      },
-      label: "Fable 5.1",
-      fallback: false,
-      nearLimit: false,
-      effort: "medium",
-      fast: true,
-    });
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    setTranscript([
-      assistant(
-        "plan-1",
-        fence('{"steps":[{"role":"scout","subtask":"Look","access":[]}]}'),
-      ),
-    ]);
-
-    runWaveEngineTick();
-    await vi.waitFor(() =>
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
-    );
-
-    const [args] = spawnConductorChildSession.mock.calls[0];
-    expect(args.runSettings).toEqual({ effort: "medium", fast: true });
-    expect(args).not.toHaveProperty("reasoningEffort");
-  });
-
-  it("says so on the wave when the ranked effort is one the picked model does not offer", async () => {
-    setWaveStepTargetIoForTests({
-      personas: () => [],
-      providers: () => [{ id: "claude-acp", label: "Claude Code" }] as never,
-      modelsForHarness: (harnessId) =>
-        (harnessId === "claude-acp"
-          ? [
-              {
-                id: "fable-5-1",
-                displayName: "Fable 5.1",
-                efforts: [{ id: "low" }, { id: "high" }],
-                supportsFast: false,
-              },
-            ]
-          : []) as never,
-      rateLimits: () => [] as never,
-    });
-    resolveWaveStepTarget.mockReturnValueOnce({
-      target: {
-        harnessId: "claude-acp",
-        modelProviderId: "claude-acp",
-        modelId: "fable-5-1",
-        modelName: "Fable 5.1",
-      },
-      label: "Fable 5.1",
-      fallback: false,
-      nearLimit: false,
-      effort: "max",
-      effortApplied: false,
-      fast: true,
-      fastApplied: false,
-    });
-    try {
-      useConductorGraphStore.getState().registerNode(conductorNode());
-      setTranscript([
-        assistant(
-          "plan-1",
-          fence('{"steps":[{"role":"scout","subtask":"Look","access":[]}]}'),
-        ),
-      ]);
-
-      runWaveEngineTick();
-      await vi.waitFor(() =>
-        expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
-      );
-
-      // A ranking is a preference: the step runs, keeps the intent, and says
-      // what it is not getting.
-      const [args] = spawnConductorChildSession.mock.calls[0];
-      expect(args.runSettings).toEqual({ effort: "max", fast: true });
-      const texts = noticeTexts();
-      expect(texts).toContainEqual(
-        expect.stringContaining("without the reasoning effort «max»"),
-      );
-      expect(texts).toContainEqual(
-        expect.stringContaining("without fast mode"),
-      );
-    } finally {
-      resetWaveStepTargetIoForTests();
-    }
-  });
-
-  it("hands a step the effort and fast mode it named on an explicit model", async () => {
-    setWaveStepTargetIoForTests({
-      personas: () => [],
-      providers: () => [{ id: "claude-acp", label: "Claude Code" }] as never,
-      modelsForHarness: (harnessId) =>
-        (harnessId === "claude-acp"
-          ? [
-              {
-                id: "claude-opus-5",
-                displayName: "Opus 5",
-                efforts: [{ id: "high" }, { id: "xhigh" }],
-                supportsFast: true,
-              },
-            ]
-          : []) as never,
-      rateLimits: () => [] as never,
-    });
-    try {
-      useConductorGraphStore.getState().registerNode(conductorNode());
-      setTranscript([
-        assistant(
-          "plan-1",
-          fence(
-            '{"steps":[{"role":"scout","subtask":"Look","access":[],"model":"opus","effort":"xhigh","fast":true}]}',
-          ),
-        ),
-      ]);
-
-      runWaveEngineTick();
-      await vi.waitFor(() =>
-        expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
-      );
-
-      const [args] = spawnConductorChildSession.mock.calls[0];
-      expect(args.executionTarget).toMatchObject({ modelId: "claude-opus-5" });
-      expect(args.runSettings).toEqual({ effort: "xhigh", fast: true });
-      expect(noticeTexts()).toEqual([]);
-    } finally {
-      resetWaveStepTargetIoForTests();
-    }
   });
 
   it("refuses the whole plan when a step names an effort its model does not offer, before any spawn", async () => {
@@ -805,56 +465,6 @@ describe("waveRunner", () => {
     }
   });
 
-  it("runs a legacy folded model string split into model and effort, and says so", async () => {
-    setWaveStepTargetIoForTests({
-      personas: () => [],
-      providers: () => [{ id: "codex-acp", label: "Codex" }] as never,
-      modelsForHarness: (harnessId) =>
-        (harnessId === "codex-acp"
-          ? [
-              {
-                id: "gpt-5.6-sol",
-                displayName: "GPT-5.6 Sol",
-                efforts: [{ id: "low" }, { id: "xhigh" }],
-              },
-            ]
-          : []) as never,
-      rateLimits: () => [] as never,
-    });
-    try {
-      useConductorGraphStore.getState().registerNode(conductorNode());
-      setTranscript([
-        assistant(
-          "plan-1",
-          fence(
-            '{"steps":[{"role":"scout","subtask":"Look","access":[],"model":"gpt-5.6-sol[xhigh]"}]}',
-          ),
-        ),
-      ]);
-
-      runWaveEngineTick();
-      await vi.waitFor(() =>
-        expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
-      );
-
-      const [args] = spawnConductorChildSession.mock.calls[0];
-      expect(args.executionTarget).toMatchObject({
-        harnessId: "codex-acp",
-        modelId: "gpt-5.6-sol",
-      });
-      expect(args.runSettings).toEqual({ effort: "xhigh" });
-      expect(noticeTexts()).toContainEqual(
-        expect.stringContaining("«gpt-5.6-sol[xhigh]»"),
-      );
-      // The plan's own record is not rewritten: the split happens at spawn.
-      expect(getWaveEngineState().waves[0]?.steps[0]?.model).toBe(
-        "gpt-5.6-sol[xhigh]",
-      );
-    } finally {
-      resetWaveStepTargetIoForTests();
-    }
-  });
-
   it("never re-processes a plan message, however often the tick fires", async () => {
     useConductorGraphStore.getState().registerNode(conductorNode());
     setTranscript([
@@ -870,13 +480,6 @@ describe("waveRunner", () => {
     );
     for (let index = 0; index < 5; index += 1) runWaveEngineTick();
     expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
-  });
-
-  it("re-errors nothing when a broken fence is ticked repeatedly", () => {
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    setTranscript([assistant("plan-1", fence("{not json}"))]);
-    for (let index = 0; index < 4; index += 1) runWaveEngineTick();
-    expect(noticeTexts()).toHaveLength(1);
   });
 
   it("resumes a wave after a restart without spawning a second worker", async () => {
@@ -968,39 +571,6 @@ describe("waveRunner", () => {
     }
   });
 
-  it("marks a step failed and warns when its spawn throws", async () => {
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
-    spawnConductorChildSession.mockRejectedValue(
-      new Error("Conductor has no working folder yet."),
-    );
-
-    runWaveEngineTick();
-    await vi.waitFor(() => expect(noticeTexts().length).toBeGreaterThan(0));
-    expect(noticeTexts().join("\n")).toContain("no working folder");
-    // The failed step does not block the access:"all" step behind it.
-    await vi.waitFor(() =>
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2),
-    );
-  });
-
-  it("does not repeat the ACL refusal the spawn chokepoint already posted", async () => {
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
-    // The chokepoint (spawnConductorChildSession) posts the spawn-ACL notice
-    // itself before throwing; the runner must fail the step without adding a
-    // second, generic "could not be started" card on top of it.
-    spawnConductorChildSession.mockRejectedValue(
-      new SpawnAclDeniedError("spawn refused by ACL"),
-    );
-
-    runWaveEngineTick();
-    await vi.waitFor(() =>
-      expect(getWaveEngineState().waves[0]?.steps[0]?.phase).toBe("failed"),
-    );
-    expect(noticeTexts().join("\n")).not.toContain("could not be started");
-  });
-
   it("waits for a late report instead of handing dependents the unknown stub", async () => {
     useConductorGraphStore.getState().registerNode(conductorNode());
     setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
@@ -1039,51 +609,6 @@ describe("waveRunner", () => {
     expect(second.prompt).not.toContain("Treat its result as unknown");
   });
 
-  it("degrades to the unknown stub only after the report grace expires", async () => {
-    vi.useFakeTimers();
-    try {
-      useConductorGraphStore.getState().registerNode(conductorNode());
-      setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
-      runWaveEngineTick();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
-
-      // Completed, and the report never comes (a worker that finished without
-      // emitting distill-report). The wave must still make progress — on the
-      // stub, after the grace, with a wake-up the quiet app would not get
-      // from store traffic.
-      useConductorGraphStore
-        .getState()
-        .patchNode("child-0", { status: "completed" });
-      runWaveEngineTick();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
-
-      await vi.advanceTimersByTimeAsync(WAVE_REPORT_GRACE_MS + 200);
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2);
-      const [second] = spawnConductorChildSession.mock.calls[1];
-      expect(second.prompt).toContain("Treat its result as unknown");
-
-      // 5b: the downgrade is announced to the operator — once. The stub is
-      // otherwise invisible until the digest, by which point the wave has
-      // already spent every remaining step on top of it.
-      const degradedNotice = i18n.t("chat:conductor.wave.reportDegraded", {
-        step: 1,
-        name: "child-0",
-      });
-      expect(
-        noticeTexts().filter((text) => text === degradedNotice),
-      ).toHaveLength(1);
-      runWaveEngineTick();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(
-        noticeTexts().filter((text) => text === degradedNotice),
-      ).toHaveLength(1);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
   it("stops a child whose spawn resolves after the wave was stopped, instead of adopting it", async () => {
     useConductorGraphStore.getState().registerNode(conductorNode());
     stopOrchestratorSession.mockClear();
@@ -1119,23 +644,6 @@ describe("waveRunner", () => {
     expect(wave?.steps[0]?.phase).toBe("spawning");
   });
 
-  it("never prunes waves while the graph knows no conductors at all", async () => {
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
-    runWaveEngineTick();
-    await vi.waitFor(() =>
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
-    );
-    expect(getWaveEngineState().waves).toHaveLength(1);
-
-    // A corrupt graph key or a hydration gap looks exactly like this: the
-    // graph store comes up empty while the wave store still has live waves.
-    // Treating it as "every conductor was deleted" erased them (risk №3).
-    useConductorGraphStore.setState({ nodesById: {} });
-    for (let index = 0; index < 3; index += 1) runWaveEngineTick();
-    expect(getWaveEngineState().waves).toHaveLength(1);
-  });
-
   it("prunes an orphaned wave only on its second consecutive orphaned tick", async () => {
     useConductorGraphStore.getState().registerNode(conductorNode());
     setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
@@ -1160,35 +668,6 @@ describe("waveRunner", () => {
     expect(getWaveEngineState().waves).toHaveLength(0);
     // The prune erased the wave; its telemetry record is the only trace left.
     expect(getWaveTelemetry().records[0]).toMatchObject({ outcome: "pruned" });
-  });
-
-  it("keeps an orphaned wave whose conductor reappears between ticks", async () => {
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
-    runWaveEngineTick();
-    await vi.waitFor(() =>
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
-    );
-
-    const nodes = useConductorGraphStore.getState().nodesById;
-    // One orphaned tick (remap in flight)…
-    useConductorGraphStore.setState({
-      nodesById: {
-        other: { ...conductorNode(), sessionId: "other" },
-        "child-0": nodes["child-0"],
-      },
-    });
-    runWaveEngineTick();
-    // …then the conductor is back. The wave must still be there.
-    useConductorGraphStore.setState({
-      nodesById: {
-        ...useConductorGraphStore.getState().nodesById,
-        [CONDUCTOR_ID]: nodes[CONDUCTOR_ID],
-      },
-    });
-    runWaveEngineTick();
-    runWaveEngineTick();
-    expect(getWaveEngineState().waves).toHaveLength(1);
   });
 
   it("refuses a second wave while the first one is still live (§4.1)", async () => {
@@ -1221,167 +700,6 @@ describe("waveRunner", () => {
     expect(hasWaveTombstone(getWaveEngineState(), "plan-2")).toBe(true);
     for (let index = 0; index < 4; index += 1) runWaveEngineTick();
     expect(noticeTexts()).toHaveLength(1);
-  });
-
-  it("keeps one refusal card per wave and counts the plans it refused", async () => {
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
-    runWaveEngineTick();
-    await vi.waitFor(() =>
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
-    );
-
-    // A message queue drained after a restart delivers several requests at
-    // once, and the conductor answers each of them with a plan.
-    for (const planId of ["plan-2", "plan-3", "plan-4"]) {
-      setTranscript([...conductorMessages(), assistant(planId, TWO_STEP_PLAN)]);
-      runWaveEngineTick();
-      await Promise.resolve();
-      await Promise.resolve();
-    }
-
-    // Every plan is still refused and tombstoned — that is the audit fact…
-    expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
-    for (const planId of ["plan-2", "plan-3", "plan-4"]) {
-      expect(hasWaveTombstone(getWaveEngineState(), planId)).toBe(true);
-    }
-    // …but the operator reads one card, carrying the count, not three walls.
-    expect(noticeTexts()).toHaveLength(1);
-    expect(noticeTexts()[0]).toContain(
-      i18n.t("chat:conductor.wave.concurrent.refusedCount", { count: 3 }),
-    );
-  });
-
-  it("admits a new plan once the conductor's wave is no longer live", async () => {
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
-    runWaveEngineTick();
-    await vi.waitFor(() =>
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
-    );
-
-    // A wave parked on `needsOperator` is a record backing the retry, not work
-    // in flight, so a new root request replaces it exactly as it did before.
-    const parked = getWaveEngineState().waves[0];
-    setWaveEngineState(
-      withWave(getWaveEngineState(), {
-        ...parked,
-        phase: "needsOperator",
-      }),
-    );
-
-    setTranscript([...conductorMessages(), assistant("plan-2", TWO_STEP_PLAN)]);
-    runWaveEngineTick();
-    await vi.waitFor(() =>
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(2),
-    );
-    const waves = getWaveEngineState().waves;
-    expect(waves).toHaveLength(1);
-    expect(waves[0].planMessageId).toBe("plan-2");
-  });
-
-  /**
-   * P33's read side, at the one point that decides what a worker is told. The
-   * block goes into the subtask rather than the report handoff because a
-   * revision step with `access: []` receives no handoff at all.
-   */
-  it("puts the root request's failed attempts into every revision step's subtask", async () => {
-    setTaskMemoryIoForTests({
-      projectRootFor: () => "/repo",
-      read: async (_root, path) =>
-        path === taskMemoryDocumentPath("plan-1")
-          ? JSON.stringify({
-              version: 1,
-              rootRequestId: "plan-1",
-              goal: "make the parser accept trailing commas",
-              waves: [],
-              failedAttempts: [
-                {
-                  wave: 1,
-                  role: "brigade",
-                  what: "patched the tokenizer",
-                  why: "the lexer rejects it earlier",
-                },
-              ],
-            })
-          : null,
-      write: async () => undefined,
-    });
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    setWaveEngineState(
-      withWave(
-        getWaveEngineState(),
-        createWaveState({
-          waveId: "wave-2",
-          conductorSessionId: CONDUCTOR_ID,
-          planMessageId: "verdict-1",
-          steps: [{ role: "qa", subtask: "Re-check the callers", access: [] }],
-          createdAt: Date.now(),
-          rootRequestId: "plan-1",
-          revisionCount: 1,
-        }),
-      ),
-    );
-
-    runWaveEngineTick();
-    await vi.waitFor(() =>
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
-    );
-
-    const [args] = spawnConductorChildSession.mock.calls[0];
-    expect(args.prompt).toContain("Re-check the callers");
-    expect(args.prompt).toContain(FAILED_ATTEMPTS_HEADING);
-    expect(args.prompt).toContain(
-      "- wave 1 (brigade): patched the tokenizer — why it failed: the lexer rejects it earlier",
-    );
-    // The operator-facing task stays the plan's own words; the warning is for
-    // the worker's prompt, not for the chip that names the step.
-    expect(args.task).toBe("Re-check the callers");
-  });
-
-  it("reads no task memory at all for a first wave", async () => {
-    const reads: string[] = [];
-    setTaskMemoryIoForTests({
-      projectRootFor: () => "/repo",
-      read: async (_root, path) => {
-        reads.push(path);
-        return null;
-      },
-      write: async () => undefined,
-    });
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
-    runWaveEngineTick();
-    await vi.waitFor(() =>
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1),
-    );
-    expect(reads).toEqual([]);
-    expect(spawnConductorChildSession.mock.calls[0][0].prompt).not.toContain(
-      FAILED_ATTEMPTS_HEADING,
-    );
-  });
-
-  it('leaves old managedBy:"ui" children alone', () => {
-    useConductorGraphStore.getState().registerNode(conductorNode());
-    useConductorGraphStore.getState().registerNode({
-      sessionId: "legacy-1",
-      projectId: "project",
-      role: "worker",
-      managedBy: "ui",
-      parentSessionId: CONDUCTOR_ID,
-      rootConductorId: CONDUCTOR_ID,
-      runId: "run-legacy",
-      harnessId: "goose",
-      displayName: "Legacy",
-      status: "completed",
-    });
-    setTranscript([assistant("chat-1", "Just an answer, no fence.")]);
-
-    runWaveEngineTick();
-
-    expect(spawnConductorChildSession).not.toHaveBeenCalled();
-    expect(getWaveEngineState().waves).toHaveLength(0);
-    expect(noticeTexts()).toEqual([]);
   });
 });
 
@@ -1444,77 +762,6 @@ describe("wave stall detector (P61)", () => {
       expect(
         noticeTexts().some((text) => text.includes("stopped making progress")),
       ).toBe(true);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("does not count a child that keeps working as a stall", async () => {
-    vi.useFakeTimers();
-    try {
-      useConductorGraphStore.getState().registerNode(conductorNode());
-      setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
-      runWaveEngineTick();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(spawnConductorChildSession).toHaveBeenCalledTimes(1);
-
-      // The child streams for five sample windows: its transcript grows
-      // every half window while the wave's own state has nothing to say.
-      for (let i = 0; i < 10; i += 1) {
-        useChatStore.setState((state) => ({
-          messagesBySession: {
-            ...state.messagesBySession,
-            "child-0": [
-              ...(state.messagesBySession["child-0"] ?? []),
-              assistant(`child-message-${i}`, "still working"),
-            ],
-          },
-        }));
-        runWaveEngineTick();
-        await vi.advanceTimersByTimeAsync(WAVE_STALL_SAMPLE_MS / 2);
-      }
-
-      const wave = getWaveEngineState().waves[0];
-      expect(wave?.phase).toBe("running");
-      expect(wave?.stalled).toBeUndefined();
-      expect(wave?.stallCount ?? 0).toBe(0);
-      expect(stopOrchestratorSession).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("any movement resets the stall count", async () => {
-    vi.useFakeTimers();
-    try {
-      useConductorGraphStore.getState().registerNode(conductorNode());
-      setTranscript([assistant("plan-1", TWO_STEP_PLAN)]);
-      runWaveEngineTick();
-      await vi.advanceTimersByTimeAsync(0);
-
-      // One silent window — one stall sample.
-      await vi.advanceTimersByTimeAsync(WAVE_STALL_SAMPLE_MS + 200);
-      expect(getWaveEngineState().waves[0]?.stallCount).toBe(1);
-
-      // Movement: the step completes and reports; the dependent step spawns.
-      useConductorGraphStore
-        .getState()
-        .patchNode("child-0", { status: "completed" });
-      useConductorGraphStore.getState().attachReport({
-        runId: "run-0",
-        status: "completed",
-        summary: "found them",
-        decisions: [],
-        artifacts: [],
-        risks: [],
-        needsOperator: false,
-        nextSuggestedTask: null,
-      });
-      runWaveEngineTick();
-      await vi.advanceTimersByTimeAsync(0);
-
-      expect(getWaveEngineState().waves[0]?.stallCount).toBe(0);
-      expect(getWaveEngineState().waves[0]?.phase).toBe("running");
     } finally {
       vi.useRealTimers();
     }

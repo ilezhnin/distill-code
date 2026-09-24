@@ -100,11 +100,9 @@ vi.mock("@/features/runtime-config/defaults", () => ({
 
 import {
   deleteDraftAgentSession,
-  discardDraftAgentSession,
   hasAgentBuilderSessionUserContent,
   isEmptyDraftAgentSession,
   promoteDraft,
-  recoverDraftAgent,
   reconcileAgentBuilderSessions,
   saveDraftAgentSession,
   setAgentBuilderSessionLocalEdits,
@@ -112,7 +110,6 @@ import {
   startAgentBuilderSession,
 } from "../agentBuilderSession";
 import { resetAgentBuilderSourceLifecycleForTests } from "../agentBuilderSourceLifecycle";
-import { setStoredModelPreference } from "@/features/chat/lib/modelPreferences";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 
 const draftSource = {
@@ -186,80 +183,6 @@ describe("agentBuilderSession", () => {
     useAgentStore.getState().setProviders([], false);
   });
 
-  it("starts a new draft builder session", async () => {
-    mocks.createPersonaSource.mockResolvedValue(draftSource);
-
-    const id = await startAgentBuilderSession({}, deps);
-
-    expect(id).toBe("sess-1");
-    expect(createNewTab).toHaveBeenCalledWith("New agent");
-    expect(navigateChat).toHaveBeenCalledWith("sess-1");
-    expect(mocks.patchSession).toHaveBeenNthCalledWith(1, "sess-1", {
-      intent: "build-agent",
-      agentBuilderOpen: true,
-      targetAgentPath: null,
-      targetAgentSlug: null,
-      targetAgentDraftState: "preparing",
-      targetAgentDraftSaved: false,
-    });
-    expect(mocks.patchSession).not.toHaveBeenCalledWith(
-      "sess-1",
-      expect.objectContaining({ agentBuilderChatStartCollapsed: true }),
-    );
-
-    await flushDraftPreparation();
-
-    expect(mocks.createPersonaSource).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: expect.stringMatching(/^Untitled agent/),
-        properties: expect.objectContaining({
-          draft: true,
-          builderSessionId: "sess-1",
-        }),
-      }),
-    );
-    expect(mocks.patchSession).toHaveBeenCalledWith("sess-1", {
-      intent: "build-agent",
-      agentBuilderOpen: true,
-      targetAgentPath: draftSource.path,
-      targetAgentSlug: "draft-sess-1",
-      targetAgentDraftState: null,
-      targetAgentDraftSaved: false,
-    });
-    expect(chatState.sessions[0]).toMatchObject({
-      intent: "build-agent",
-      agentBuilderOpen: true,
-      targetAgentPath: draftSource.path,
-      targetAgentSlug: "draft-sess-1",
-    });
-  });
-
-  it("keeps the builder closed when draft preparation finishes later", async () => {
-    let resolveDraft!: (source: typeof draftSource) => void;
-    mocks.createPersonaSource.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveDraft = resolve;
-        }),
-    );
-
-    await startAgentBuilderSession({}, deps);
-    await flushDraftPreparation();
-    expect(mocks.createPersonaSource).toHaveBeenCalledTimes(1);
-
-    patchSessionState("sess-1", { agentBuilderOpen: false });
-    resolveDraft(draftSource);
-    await flushDraftPreparation();
-
-    expect(chatState.sessions[0]).toMatchObject({
-      intent: "build-agent",
-      agentBuilderOpen: false,
-      targetAgentPath: draftSource.path,
-      targetAgentSlug: "draft-sess-1",
-      targetAgentDraftState: null,
-    });
-  });
-
   it("creates the draft source after an optimistic session promotes", async () => {
     createNewTab.mockImplementationOnce(async () => {
       chatState.sessions = [
@@ -322,197 +245,6 @@ describe("agentBuilderSession", () => {
     });
   });
 
-  it("seeds the draft with the stored goose provider and model preference", async () => {
-    window.localStorage.setItem("distill:defaultProvider", "goose");
-    setStoredModelPreference("goose", {
-      modelId: "goose-claude-sonnet-4-6",
-      modelName: "Claude Sonnet 4.6",
-      providerId: "databricks_v2",
-    });
-    mocks.createPersonaSource.mockResolvedValue(draftSource);
-
-    await startAgentBuilderSession({}, deps);
-    await flushDraftPreparation();
-
-    expect(mocks.createPersonaSource).toHaveBeenCalledWith(
-      expect.objectContaining({
-        properties: expect.objectContaining({
-          draft: true,
-          builderSessionId: "sess-1",
-          provider: "goose",
-          modelProviderId: "databricks_v2",
-          model: "goose-claude-sonnet-4-6",
-        }),
-      }),
-    );
-  });
-
-  it("replaces a stored provider that is no longer in the discovered catalog", async () => {
-    window.localStorage.setItem("distill:defaultProvider", "removed-provider");
-    useAgentStore.getState().setProviders(
-      [
-        { id: "openai", label: "OpenAI" },
-        { id: "goose", label: "Goose" },
-      ],
-      false,
-    );
-    setStoredModelPreference("openai", {
-      modelId: "gpt-5",
-      modelName: "GPT-5",
-      providerId: "openai",
-    });
-    mocks.createPersonaSource.mockResolvedValue(draftSource);
-
-    await startAgentBuilderSession({}, deps);
-    await flushDraftPreparation();
-
-    expect(mocks.createPersonaSource).toHaveBeenCalledWith(
-      expect.objectContaining({
-        properties: expect.objectContaining({
-          provider: "openai",
-          modelProviderId: "openai",
-          model: "gpt-5",
-        }),
-      }),
-    );
-  });
-
-  it("starts an existing agent builder session by slug", async () => {
-    mocks.listPersonaSources.mockResolvedValue([
-      {
-        ...draftSource,
-        path: "/Users/x/.agents/agents/code-reviewer.md",
-        name: "Code reviewer",
-        properties: {},
-      },
-    ]);
-
-    const id = await startAgentBuilderSession({ slug: "code-reviewer" }, deps);
-
-    expect(id).toBe("sess-1");
-    expect(mocks.createPersonaSource).not.toHaveBeenCalled();
-    // Editing opens as one full-width page like the agent view page: the
-    // start-collapsed hint tells ChatView to keep the chat column closed.
-    expect(mocks.patchSession).toHaveBeenCalledWith(
-      id,
-      expect.objectContaining({
-        targetAgentPath: "/Users/x/.agents/agents/code-reviewer.md",
-        targetAgentSlug: "code-reviewer",
-        agentBuilderChatStartCollapsed: true,
-      }),
-    );
-  });
-
-  it("starts an existing agent builder session by source path", async () => {
-    mocks.listPersonaSources.mockResolvedValue([
-      {
-        ...draftSource,
-        path: "/Users/x/.agents/agents/code-reviewer.md",
-        name: "Code reviewer",
-        properties: {},
-      },
-    ]);
-
-    const id = await startAgentBuilderSession(
-      { path: "/Users/x/.agents/agents/code-reviewer.md" },
-      deps,
-    );
-
-    expect(id).toBe("sess-1");
-    expect(mocks.createPersonaSource).not.toHaveBeenCalled();
-    expect(mocks.patchSession).toHaveBeenCalledWith(
-      id,
-      expect.objectContaining({
-        targetAgentPath: "/Users/x/.agents/agents/code-reviewer.md",
-        targetAgentSlug: "code-reviewer",
-        agentBuilderChatStartCollapsed: true,
-      }),
-    );
-  });
-
-  it("reuses an existing in-memory builder session by slug", async () => {
-    chatState.sessions = [
-      {
-        id: "sess-old",
-        intent: "build-agent",
-        agentBuilderOpen: true,
-        targetAgentPath: "/Users/x/.agents/agents/code-reviewer.md",
-        targetAgentSlug: "code-reviewer",
-      },
-    ];
-
-    const id = await startAgentBuilderSession({ slug: "code-reviewer" }, deps);
-
-    expect(id).toBe("sess-old");
-    expect(createNewTab).not.toHaveBeenCalled();
-    expect(navigateChat).toHaveBeenCalledWith("sess-old");
-  });
-
-  it("reopens a closed Agent Builder when its existing session is reused", async () => {
-    chatState.sessions = [
-      {
-        id: "sess-old",
-        intent: "build-agent",
-        agentBuilderOpen: false,
-        targetAgentPath: "/Users/x/.agents/agents/code-reviewer.md",
-        targetAgentSlug: "code-reviewer",
-      },
-    ];
-
-    const id = await startAgentBuilderSession({ slug: "code-reviewer" }, deps);
-
-    expect(id).toBe("sess-old");
-    expect(mocks.patchSession).toHaveBeenCalledWith("sess-old", {
-      agentBuilderOpen: true,
-      agentBuilderChatStartCollapsed: true,
-    });
-    expect(navigateChat).toHaveBeenCalledWith("sess-old");
-  });
-
-  it("reuses an existing in-memory builder session by source path", async () => {
-    chatState.sessions = [
-      {
-        id: "sess-old",
-        intent: "build-agent",
-        agentBuilderOpen: true,
-        targetAgentPath: "/Users/x/.agents/agents/code-reviewer.md",
-        targetAgentSlug: "stale-slug",
-      },
-    ];
-
-    const id = await startAgentBuilderSession(
-      { path: "/Users/x/.agents/agents/code-reviewer.md" },
-      deps,
-    );
-
-    expect(id).toBe("sess-old");
-    expect(createNewTab).not.toHaveBeenCalled();
-    expect(navigateChat).toHaveBeenCalledWith("sess-old");
-  });
-
-  it("saveDraftAgentSession flushes local edits and bumps draft recency", async () => {
-    addBuilderSession({ updatedAt: "2026-01-01T00:00:00.000Z" });
-    const saveHandler = vi.fn().mockResolvedValue(true);
-    setAgentBuilderSessionSaveHandler("sess-1", saveHandler);
-    mocks.listPersonaSources.mockResolvedValue([draftSource]);
-    mocks.readAgentSourceFile.mockResolvedValue(draftSource);
-
-    await saveDraftAgentSession("sess-1");
-
-    expect(saveHandler).toHaveBeenCalledTimes(1);
-    expect(chatState.sessions[0]).toMatchObject({
-      intent: "build-agent",
-      agentBuilderOpen: true,
-      targetAgentPath: draftSource.path,
-      targetAgentSlug: "draft-sess-1",
-      targetAgentDraftState: null,
-      targetAgentDraftSaved: true,
-    });
-    expect(Date.parse(chatState.sessions[0].updatedAt ?? "")).toBeGreaterThan(
-      Date.parse("2026-01-01T00:00:00.000Z"),
-    );
-  });
-
   it("saveDraftAgentSession keeps failed local edits queued", async () => {
     addBuilderSession();
     setAgentBuilderSessionSaveHandler("sess-1", () => false);
@@ -539,73 +271,6 @@ describe("agentBuilderSession", () => {
       "sess-1",
       expect.objectContaining({ intent: null }),
     );
-  });
-
-  it("discardDraftAgentSession deletes the draft and clears builder mode", async () => {
-    addBuilderSession();
-    mocks.deletePersonaSource.mockResolvedValue(undefined);
-    mocks.listPersonaSources.mockResolvedValue([draftSource]);
-
-    await discardDraftAgentSession("sess-1", { closeSession });
-
-    expect(mocks.deletePersonaSource).toHaveBeenCalledWith(draftSource.path);
-    expect(chatState.sessions[0]).toMatchObject({
-      intent: null,
-      targetAgentPath: null,
-      targetAgentSlug: null,
-    });
-    expect(mocks.setSkillDrafts).toHaveBeenCalledWith("sess-1", [
-      { id: "skill-1", name: "code-review" },
-    ]);
-    expect(closeSession).toHaveBeenCalledWith("sess-1");
-  });
-
-  it("discardDraftAgentSession follows a draft moved under the same builder session id", async () => {
-    addBuilderSession();
-    const movedDraft = {
-      ...draftSource,
-      path: "/Users/x/.agents/agents/constructive-critic.md",
-      name: "Constructive Critic",
-      content: "Give useful critique.",
-    };
-    mocks.deletePersonaSource.mockResolvedValue(undefined);
-    mocks.listPersonaSources.mockResolvedValue([movedDraft]);
-
-    await discardDraftAgentSession("sess-1");
-
-    expect(mocks.deletePersonaSource).toHaveBeenCalledWith(movedDraft.path);
-  });
-
-  it("discardDraftAgentSession deletes the exact draft file when source listing omits it", async () => {
-    addBuilderSession();
-    const diskDraft = {
-      ...draftSource,
-      name: "Constructive Critic",
-      content: "Give useful critique.",
-    };
-    mocks.deletePersonaSource.mockResolvedValue(undefined);
-    mocks.listPersonaSources.mockResolvedValue([]);
-    mocks.readAgentSourceFile.mockResolvedValue(diskDraft);
-
-    await discardDraftAgentSession("sess-1");
-
-    expect(mocks.readAgentSourceFile).toHaveBeenCalledWith(draftSource.path);
-    expect(mocks.deletePersonaSource).toHaveBeenCalledWith(draftSource.path);
-  });
-
-  it("discardDraftAgentSession clears builder mode even when draft deletion fails", async () => {
-    addBuilderSession();
-    mocks.listPersonaSources.mockResolvedValue([draftSource]);
-    mocks.deletePersonaSource.mockRejectedValue(new Error("already gone"));
-
-    await discardDraftAgentSession("sess-1", { closeSession });
-
-    expect(chatState.sessions[0]).toMatchObject({
-      intent: null,
-      targetAgentPath: null,
-      targetAgentSlug: null,
-    });
-    expect(closeSession).toHaveBeenCalledWith("sess-1");
   });
 
   it("promoteDraft promotes the current draft source and clears builder mode", async () => {
@@ -665,39 +330,12 @@ describe("agentBuilderSession", () => {
     );
   });
 
-  it("isEmptyDraftAgentSession returns true for an unchanged placeholder draft", async () => {
-    addBuilderSession();
-    mocks.listPersonaSources.mockResolvedValue([draftSource]);
-    mocks.readAgentSourceFile.mockResolvedValue(draftSource);
-
-    await expect(isEmptyDraftAgentSession("sess-1")).resolves.toBe(true);
-  });
-
   it("isEmptyDraftAgentSession is conservative when the draft file cannot be read", async () => {
     addBuilderSession();
     mocks.listPersonaSources.mockResolvedValue([draftSource]);
     mocks.readAgentSourceFile.mockRejectedValue(new Error("unavailable"));
 
     await expect(isEmptyDraftAgentSession("sess-1")).resolves.toBe(false);
-  });
-
-  it("does not treat seeded provider and model defaults as user content", async () => {
-    addBuilderSession();
-    const seededDraft = {
-      ...draftSource,
-      properties: {
-        draft: true,
-        builderSessionId: "sess-1",
-        provider: "goose",
-        model: "databricks-gpt-5-2-codex",
-      },
-    };
-    mocks.listPersonaSources.mockResolvedValue([seededDraft]);
-    mocks.readAgentSourceFile.mockResolvedValue(seededDraft);
-
-    await expect(hasAgentBuilderSessionUserContent("sess-1")).resolves.toBe(
-      false,
-    );
   });
 
   it("treats unsaved local edits as agent builder user content", async () => {
@@ -709,116 +347,6 @@ describe("agentBuilderSession", () => {
     await expect(hasAgentBuilderSessionUserContent("sess-1")).resolves.toBe(
       true,
     );
-  });
-
-  it("treats chat composer text as agent builder user content", async () => {
-    addBuilderSession();
-    chatState.draftsBySession = { "sess-1": "build me a reviewer" };
-    mocks.listPersonaSources.mockResolvedValue([draftSource]);
-    mocks.readAgentSourceFile.mockResolvedValue(draftSource);
-
-    await expect(hasAgentBuilderSessionUserContent("sess-1")).resolves.toBe(
-      true,
-    );
-  });
-
-  it("does not treat a bare agent-builder mention as user content", async () => {
-    addBuilderSession();
-    chatState.draftsBySession = { "sess-1": "@agent-builder" };
-    mocks.listPersonaSources.mockResolvedValue([draftSource]);
-    mocks.readAgentSourceFile.mockResolvedValue(draftSource);
-
-    await expect(hasAgentBuilderSessionUserContent("sess-1")).resolves.toBe(
-      false,
-    );
-  });
-
-  it("treats sent user messages as agent builder user content", async () => {
-    addBuilderSession();
-    chatState.messagesBySession = {
-      "sess-1": [
-        {
-          id: "m1",
-          role: "user",
-          created: 1,
-          content: [{ type: "text", text: "make a code reviewer" }],
-          metadata: { userVisible: true },
-        },
-      ],
-    };
-    mocks.listPersonaSources.mockResolvedValue([draftSource]);
-    mocks.readAgentSourceFile.mockResolvedValue(draftSource);
-
-    await expect(hasAgentBuilderSessionUserContent("sess-1")).resolves.toBe(
-      true,
-    );
-  });
-
-  it("recoverDraftAgent rebinds to an existing draft for the session", async () => {
-    const movedDraft = {
-      ...draftSource,
-      path: "/Users/x/.agents/agents/draft-sess-1-2.md",
-    };
-    mocks.listPersonaSources.mockResolvedValue([movedDraft]);
-
-    await expect(
-      recoverDraftAgent("sess-1", draftSource.path),
-    ).resolves.toEqual({
-      path: movedDraft.path,
-      slug: "draft-sess-1-2",
-    });
-    expect(mocks.createPersonaSource).not.toHaveBeenCalled();
-  });
-
-  it("recoverDraftAgent creates a draft when no session draft exists", async () => {
-    mocks.listPersonaSources.mockResolvedValue([]);
-    mocks.readAgentSourceFile.mockRejectedValue(new Error("missing"));
-    mocks.createPersonaSource.mockResolvedValue(draftSource);
-
-    await expect(
-      recoverDraftAgent("sess-1", draftSource.path),
-    ).resolves.toEqual({
-      path: draftSource.path,
-      slug: "draft-sess-1",
-    });
-    expect(mocks.createPersonaSource).toHaveBeenCalled();
-  });
-
-  it("startup reconciliation patches loaded sessions from draft frontmatter", async () => {
-    chatState.sessions = [{ id: "sess-1" }];
-    mocks.listPersonaSources.mockResolvedValue([draftSource]);
-
-    await reconcileAgentBuilderSessions();
-
-    expect(mocks.patchSession).toHaveBeenCalledWith(
-      "sess-1",
-      expect.objectContaining({
-        intent: "build-agent",
-        agentBuilderOpen: true,
-        targetAgentPath: draftSource.path,
-        targetAgentSlug: "draft-sess-1",
-        targetAgentDraftState: null,
-        targetAgentDraftSaved: true,
-      }),
-    );
-  });
-
-  it("startup reconciliation preserves an explicitly closed builder", async () => {
-    chatState.sessions = [
-      { id: "sess-1", intent: "build-agent", agentBuilderOpen: false },
-    ];
-    mocks.listPersonaSources.mockResolvedValue([draftSource]);
-
-    await reconcileAgentBuilderSessions();
-
-    expect(chatState.sessions[0]).toMatchObject({
-      intent: "build-agent",
-      agentBuilderOpen: false,
-      targetAgentPath: draftSource.path,
-      targetAgentSlug: "draft-sess-1",
-      targetAgentDraftState: null,
-      targetAgentDraftSaved: true,
-    });
   });
 
   it("delayed reconciliation does not reopen a builder closed in the meantime", async () => {

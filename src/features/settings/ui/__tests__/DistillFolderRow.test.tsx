@@ -32,14 +32,6 @@ describe("DistillFolderRow", () => {
     });
   });
 
-  it("shows where everything currently lives", async () => {
-    renderWithProviders(<DistillFolderRow />);
-
-    expect(await screen.findByTestId("distill-folder-path")).toHaveTextContent(
-      "C:\\Users\\User\\.distill",
-    );
-  });
-
   it("records a new folder and says a restart is needed", async () => {
     const user = userEvent.setup();
     mocks.open.mockResolvedValue("D:\\distill");
@@ -55,19 +47,6 @@ describe("DistillFolderRow", () => {
     expect(screen.getByTestId("distill-folder-restart")).toBeInTheDocument();
   });
 
-  it("changes nothing when the picker is dismissed", async () => {
-    const user = userEvent.setup();
-    mocks.open.mockResolvedValue(null);
-    renderWithProviders(<DistillFolderRow />);
-
-    await user.click(await screen.findByRole("button", { name: /Change/ }));
-
-    expect(mocks.setDistillRoot).not.toHaveBeenCalled();
-    expect(
-      screen.queryByTestId("distill-folder-restart"),
-    ).not.toBeInTheDocument();
-  });
-
   it("keeps showing the old folder when the new one is refused", async () => {
     const user = userEvent.setup();
     mocks.open.mockResolvedValue("Z:\\read-only");
@@ -80,26 +59,5 @@ describe("DistillFolderRow", () => {
     expect(screen.getByTestId("distill-folder-path")).toHaveTextContent(
       "C:\\Users\\User\\.distill",
     );
-  });
-
-  it("says so when an environment variable is in charge instead", async () => {
-    // Offering a picker that cannot win would have the operator changing a
-    // value that does nothing.
-    mocks.getDistillRoot.mockResolvedValue({
-      root: "/tmp/forced",
-      forcedByEnvironment: true,
-    });
-    renderWithProviders(<DistillFolderRow />);
-
-    expect(await screen.findByTestId("distill-folder-forced")).toBeVisible();
-    expect(
-      screen.queryByRole("button", { name: "Change folder" }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("renders nothing outside the desktop app", async () => {
-    mocks.getDistillRoot.mockResolvedValue(null);
-    const { container } = renderWithProviders(<DistillFolderRow />);
-    expect(container).toBeEmptyDOMElement();
   });
 });

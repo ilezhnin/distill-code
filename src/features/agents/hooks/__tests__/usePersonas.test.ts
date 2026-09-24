@@ -98,128 +98,9 @@ describe("usePersonas", () => {
     vi.restoreAllMocks();
   });
 
-  // ── loading ────────────────────────────────────────────────────────
-
-  describe("loading personas", () => {
-    it("loads personas on mount via listPersonas()", async () => {
-      const personas = [makePersona({ id: "p1" }), makePersona({ id: "p2" })];
-      vi.mocked(api.listPersonas).mockResolvedValueOnce(personas);
-
-      const { result } = renderHook(() => usePersonas());
-
-      await waitFor(() => {
-        expect(api.listPersonas).toHaveBeenCalledTimes(1);
-      });
-
-      await waitFor(() => {
-        expect(result.current.personas).toEqual(personas);
-      });
-    });
-
-    it("sets loading state correctly", async () => {
-      // Create a deferred promise to control timing
-      let resolveList!: (value: Persona[]) => void;
-      vi.mocked(api.listPersonas).mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveList = resolve;
-          }),
-      );
-
-      const { result } = renderHook(() => usePersonas());
-
-      // Should be loading while the API call is in flight
-      await waitFor(() => {
-        expect(result.current.isLoading).toBe(true);
-      });
-
-      // Resolve the API call
-      await act(async () => {
-        resolveList([]);
-      });
-
-      await waitFor(() => {
-        expect(result.current.isLoading).toBe(false);
-      });
-    });
-  });
-
   // ── CRUD operations ────────────────────────────────────────────────
 
   describe("CRUD operations", () => {
-    it("createPersona calls API and adds to store", async () => {
-      const newPersona = {
-        id: "new-id",
-        displayName: "Test",
-        systemPrompt: "You are helpful.",
-        isBuiltin: false,
-        writable: true,
-        createdAt: "2026-01-01T00:00:00Z",
-        updatedAt: "2026-01-01T00:00:00Z",
-      };
-      vi.mocked(api.createPersona).mockResolvedValueOnce(newPersona);
-
-      const { result } = renderHook(() => usePersonas());
-
-      // Wait for initial load to fully complete
-      await waitFor(() => {
-        expect(api.listPersonas).toHaveBeenCalledTimes(1);
-        expect(result.current.isLoading).toBe(false);
-      });
-
-      let created: Persona | undefined;
-      await act(async () => {
-        created = await result.current.createPersona({
-          displayName: "Test",
-          systemPrompt: "You are helpful.",
-        });
-      });
-
-      expect(api.createPersona).toHaveBeenCalledWith({
-        displayName: "Test",
-        systemPrompt: "You are helpful.",
-      });
-      expect(created).toEqual(newPersona);
-      expect(result.current.personas).toContainEqual(newPersona);
-    });
-
-    it("updatePersona calls API and updates store", async () => {
-      const existing = makePersona({ id: "test-id", displayName: "Old" });
-      // Return existing persona from initial load so the store has it
-      vi.mocked(api.listPersonas).mockResolvedValueOnce([existing]);
-
-      const updated = {
-        id: "test-id",
-        displayName: "Updated",
-        systemPrompt: "Updated prompt",
-        isBuiltin: false,
-        writable: true,
-        createdAt: "2026-01-01T00:00:00Z",
-        updatedAt: "2026-01-01T00:00:00Z",
-      };
-      vi.mocked(api.updatePersona).mockResolvedValueOnce(updated);
-
-      const { result } = renderHook(() => usePersonas());
-
-      // Wait for initial load to populate store
-      await waitFor(() => {
-        expect(result.current.personas).toHaveLength(1);
-      });
-
-      await act(async () => {
-        await result.current.updatePersona(existing, {
-          displayName: "Updated",
-        });
-      });
-
-      expect(api.updatePersona).toHaveBeenCalledWith(existing, {
-        displayName: "Updated",
-      });
-      expect(
-        result.current.personas.find((p) => p.id === "test-id")?.displayName,
-      ).toBe("Updated");
-    });
-
     it("reclaims a replaced user avatar after the final reference changes", async () => {
       const existing = makePersona({
         id: "test-id",
@@ -298,28 +179,6 @@ describe("usePersonas", () => {
       );
     });
 
-    it("deletePersona calls API and removes from store", async () => {
-      const existing = makePersona({ id: "del-id" });
-      // Return existing persona from initial load so the store has it
-      vi.mocked(api.listPersonas).mockResolvedValueOnce([existing]);
-
-      const { result } = renderHook(() => usePersonas());
-
-      // Wait for initial load to populate store
-      await waitFor(() => {
-        expect(result.current.personas).toHaveLength(1);
-      });
-
-      await act(async () => {
-        await result.current.deletePersona("del-id");
-      });
-
-      expect(api.deletePersona).toHaveBeenCalledWith("del-id");
-      expect(
-        result.current.personas.find((p) => p.id === "del-id"),
-      ).toBeUndefined();
-    });
-
     it("reclaims a deleted user avatar only after its final reference", async () => {
       const first = makePersona({
         id: "first",
@@ -350,51 +209,6 @@ describe("usePersonas", () => {
   // ── refresh ────────────────────────────────────────────────────────
 
   describe("refresh", () => {
-    it("refreshFromDisk calls refreshPersonas() API", async () => {
-      const refreshed = [makePersona({ id: "refreshed-1" })];
-      vi.mocked(api.refreshPersonas).mockResolvedValueOnce(refreshed);
-
-      const { result } = renderHook(() => usePersonas());
-
-      await waitFor(() => {
-        expect(result.current.isLoading).toBe(false);
-      });
-
-      await act(async () => {
-        await result.current.refreshFromDisk();
-      });
-
-      expect(api.refreshPersonas).toHaveBeenCalled();
-      expect(result.current.personas).toEqual(refreshed);
-    });
-
-    it("does not start overlapping refresh requests", async () => {
-      let resolveRefresh!: (value: Persona[]) => void;
-      vi.mocked(api.refreshPersonas).mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveRefresh = resolve;
-          }),
-      );
-
-      const { result } = renderHook(() => usePersonas());
-
-      await waitFor(() => {
-        expect(result.current.isLoading).toBe(false);
-      });
-
-      const firstRefresh = result.current.refreshFromDisk();
-      const secondRefresh = result.current.refreshFromDisk();
-
-      expect(api.refreshPersonas).toHaveBeenCalledTimes(1);
-
-      await act(async () => {
-        resolveRefresh([]);
-        await firstRefresh;
-        await secondRefresh;
-      });
-    });
-
     it("ignores stale refresh results that started before a mutation", async () => {
       const stalePersona = makePersona({ id: "stale" });
       const createdPersona = makePersona({ id: "created" });

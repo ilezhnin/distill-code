@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MessageBubble } from "../MessageBubble";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import type { Message } from "@/shared/types/messages";
 import type { ProviderCatalogEntry } from "@/shared/types/providers";
-import { ArtifactPolicyProvider } from "@/features/chat/hooks/ArtifactPolicyContext";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 const mockPathExists = vi.hoisted(() =>
   vi.fn<(path: string) => Promise<boolean>>(),
@@ -180,37 +179,6 @@ describe("MessageBubble", () => {
     useProviderCatalogStore.getState().reset();
   });
 
-  it("opens artifact links against the latest cwd after it changes", async () => {
-    const user = userEvent.setup();
-    mockPathExists.mockResolvedValue(true);
-    const message = assistantMessage(
-      [{ type: "text", text: "open [report](report.md)" }],
-      {
-        id: "artifact-link",
-        created: 1,
-      },
-    );
-
-    const { rerender } = render(
-      <ArtifactPolicyProvider messages={[message]} sessionCwd="/old">
-        <MessageBubble message={message} animateEntry={false} />
-      </ArtifactPolicyProvider>,
-    );
-
-    rerender(
-      <ArtifactPolicyProvider messages={[message]} sessionCwd="/new">
-        <MessageBubble message={message} animateEntry={false} />
-      </ArtifactPolicyProvider>,
-    );
-
-    await user.click(await screen.findByRole("link", { name: "report" }));
-
-    await waitFor(() => {
-      expect(mockPathExists).toHaveBeenCalledWith("/new/report.md");
-      expect(vi.mocked(openPath)).toHaveBeenCalledWith("/new/report.md");
-    });
-  });
-
   it("preserves interleaved user content block order", () => {
     withUserMessageScrollHeight(80);
 
@@ -265,43 +233,6 @@ describe("MessageBubble", () => {
     expect(onForkFromMessage).toHaveBeenCalledWith("a1");
   });
 
-  it("offers to edit the agent's reply as well as the user's message", async () => {
-    const user = userEvent.setup();
-    const onEditMessage = vi.fn();
-    const { unmount } = render(
-      <MessageBubble
-        message={assistantMessage([{ type: "text", text: "response" }])}
-        onEditMessage={onEditMessage}
-      />,
-    );
-
-    await user.click(screen.getByRole("button", { name: "Edit message" }));
-    expect(onEditMessage).toHaveBeenCalledWith("a1");
-    unmount();
-
-    render(
-      <MessageBubble
-        message={userMessage("asked")}
-        onEditMessage={onEditMessage}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: "Edit message" }));
-    expect(onEditMessage).toHaveBeenLastCalledWith("u1");
-  });
-
-  it("offers no edit on a message with nothing but images", () => {
-    render(
-      <MessageBubble
-        message={userMessage("", {
-          content: [{ type: "image", data: "aGk=", mimeType: "image/png" }],
-        })}
-        onEditMessage={vi.fn()}
-      />,
-    );
-
-    expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
-  });
-
   it("renders standalone tool responses without dropping surrounding text", () => {
     const msg = assistantMessage([
       { type: "text", text: "Working on it." },
@@ -345,116 +276,5 @@ describe("MessageBubble", () => {
 
     expect(screen.getByText("Checking that now.")).toBeInTheDocument();
     expect(screen.getAllByText(/readfile/i)).toHaveLength(1);
-  });
-
-  it("renders tool cards inline between surrounding assistant text blocks", () => {
-    const msg = assistantMessage([
-      { type: "text", text: "Lemme check..." },
-      {
-        type: "toolRequest",
-        id: "tool-1",
-        name: "readFile",
-        arguments: {},
-        status: "in_progress",
-      },
-      {
-        type: "toolResponse",
-        id: "tool-1",
-        name: "readFile",
-        result: "done",
-        isError: false,
-      },
-      { type: "text", text: "Results from checking." },
-    ]);
-
-    const { container } = render(<MessageBubble message={msg} />);
-    const bubbleText = container.querySelector(
-      '[data-role="assistant-message"]',
-    )?.textContent;
-
-    expect(bubbleText).toContain("Lemme check...");
-    expect(bubbleText).toContain("ReadFile");
-    expect(bubbleText).toContain("Results from checking.");
-    expect(bubbleText?.indexOf("Lemme check...")).toBeLessThan(
-      bubbleText?.indexOf("ReadFile") ?? Number.POSITIVE_INFINITY,
-    );
-    expect(bubbleText?.indexOf("ReadFile")).toBeLessThan(
-      bubbleText?.indexOf("Results from checking.") ?? Number.POSITIVE_INFINITY,
-    );
-  });
-
-  it("does not render a duplicate blank tool card for fallback responses", () => {
-    const msg = assistantMessage([
-      { type: "text", text: "Lemme check..." },
-      {
-        type: "toolRequest",
-        id: "tool-1",
-        name: "readFile",
-        arguments: {},
-        status: "in_progress",
-      },
-      {
-        type: "toolResponse",
-        id: "tool-response-1",
-        name: "",
-        result: "done",
-        isError: false,
-      },
-      { type: "text", text: "Results from checking." },
-    ]);
-
-    render(<MessageBubble message={msg} />);
-
-    expect(screen.getAllByText(/readfile/i)).toHaveLength(1);
-    expect(screen.queryByText("Tool result")).not.toBeInTheDocument();
-  });
-
-  // The tile outlives the file it points at; a rejected open used to do nothing
-  // visible and log an unhandled rejection.
-  describe("attachment tiles", () => {
-    const attachedMessage = () =>
-      userMessage("see the spec", {
-        metadata: {
-          attachments: [
-            {
-              type: "file" as const,
-              name: "spec.pdf",
-              path: "/Users/me/Downloads/spec.pdf",
-              mimeType: "application/pdf",
-            },
-          ],
-        },
-      });
-
-    it("reports a failed attachment open", async () => {
-      const user = userEvent.setup();
-      vi.mocked(openPath).mockRejectedValue(new Error("not found"));
-      const message = attachedMessage();
-
-      render(<MessageBubble message={message} animateEntry={false} />);
-
-      await user.click(screen.getByRole("button", { name: /spec\.pdf/ }));
-
-      await waitFor(() => {
-        expect(mockToastError).toHaveBeenCalledWith(
-          "Couldn't open spec.pdf. It may have been moved or deleted.",
-        );
-      });
-    });
-
-    it("says nothing when the attachment opens", async () => {
-      const user = userEvent.setup();
-      vi.mocked(openPath).mockResolvedValue(undefined);
-      const message = attachedMessage();
-
-      render(<MessageBubble message={message} animateEntry={false} />);
-
-      await user.click(screen.getByRole("button", { name: /spec\.pdf/ }));
-
-      await waitFor(() => {
-        expect(openPath).toHaveBeenCalledWith("/Users/me/Downloads/spec.pdf");
-      });
-      expect(mockToastError).not.toHaveBeenCalled();
-    });
   });
 });

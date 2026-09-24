@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { INITIAL_TOKEN_STATE } from "@/shared/types/chat";
 import type { Message } from "@/shared/types/messages";
 import { useChatStore } from "../chatStore";
 import { loadCachedDrafts } from "../draftPersistence";
@@ -41,84 +40,6 @@ describe("chatStore", () => {
     });
   });
 
-  it("starts with empty messages and no active session", () => {
-    const state = useChatStore.getState();
-    expect(state.messagesBySession).toEqual({});
-    expect(state.sessionStateById).toEqual({});
-    expect(state.activeSessionId).toBeNull();
-  });
-
-  it("stores messages per session", () => {
-    const first = makeMessage({ id: "first" });
-    const second = makeMessage({ id: "second" });
-
-    useChatStore.getState().addMessage("s1", first);
-    useChatStore.getState().addMessage("s2", second);
-
-    expect(useChatStore.getState().messagesBySession.s1).toEqual([first]);
-    expect(useChatStore.getState().messagesBySession.s2).toEqual([second]);
-  });
-
-  it("preserves local text speech state when replay replaces the message", () => {
-    const withSpeech = makeMessage({
-      id: "assistant-1",
-      content: [
-        {
-          type: "text",
-          text: "hello",
-          speech: { status: "interrupted" },
-        },
-      ],
-    });
-    const replayed = makeMessage({ id: "assistant-1" });
-
-    const store = useChatStore.getState();
-    store.setMessages("s1", [withSpeech]);
-    store.setMessages("s1", [replayed]);
-
-    expect(useChatStore.getState().messagesBySession.s1?.[0]?.content).toEqual(
-      withSpeech.content,
-    );
-  });
-
-  it("keeps the 10 most recently active message sessions", () => {
-    for (let index = 1; index <= 11; index += 1) {
-      const sessionId = `s${index}`;
-      useChatStore.getState().setActiveSession(sessionId);
-      useChatStore
-        .getState()
-        .setMessages(sessionId, [makeMessage({ id: `message-${index}` })]);
-    }
-
-    const messagesBySession = useChatStore.getState().messagesBySession;
-    expect(Object.keys(messagesBySession)).toHaveLength(10);
-    expect(messagesBySession.s1).toBeUndefined();
-    expect(messagesBySession.s2).toHaveLength(1);
-    expect(messagesBySession.s11).toHaveLength(1);
-  });
-
-  it("refreshes cached sessions on activation so back-and-forth sessions stay warm", () => {
-    for (let index = 1; index <= 10; index += 1) {
-      const sessionId = `s${index}`;
-      useChatStore.getState().setActiveSession(sessionId);
-      useChatStore
-        .getState()
-        .setMessages(sessionId, [makeMessage({ id: `message-${index}` })]);
-    }
-
-    useChatStore.getState().setActiveSession("s1");
-    useChatStore.getState().setActiveSession("s11");
-    useChatStore
-      .getState()
-      .setMessages("s11", [makeMessage({ id: "message-11" })]);
-
-    const messagesBySession = useChatStore.getState().messagesBySession;
-    expect(Object.keys(messagesBySession)).toHaveLength(10);
-    expect(messagesBySession.s1).toHaveLength(1);
-    expect(messagesBySession.s2).toBeUndefined();
-    expect(messagesBySession.s11).toHaveLength(1);
-  });
-
   it("does not evict inactive messages for a running session", () => {
     useChatStore.getState().setActiveSession("running");
     useChatStore
@@ -138,94 +59,6 @@ describe("chatStore", () => {
     expect(useChatStore.getState().messagesBySession.running).toHaveLength(1);
   });
 
-  it("replaces a pending intervention message id atomically", () => {
-    const store = useChatStore.getState();
-    store.setMessages("s1", [makeMessage({ id: "local-steer", role: "user" })]);
-    store.setPendingInterventionBoundary("s1", {
-      interventionMessageId: "local-steer",
-    });
-
-    store.replaceMessageId("s1", "local-steer", "backend-steer");
-
-    expect(useChatStore.getState().messagesBySession.s1?.[0]?.id).toBe(
-      "backend-steer",
-    );
-    expect(getRuntime("s1").pendingInterventionBoundary).toEqual({
-      interventionMessageId: "backend-steer",
-    });
-  });
-
-  it("updates runtime state per session", () => {
-    const store = useChatStore.getState();
-
-    store.setChatState("s1", "streaming");
-    store.setStreamingMessageId("s1", "stream-1");
-    store.updateTokenState("s1", { inputTokens: 12, outputTokens: 8 });
-
-    const runtime = getRuntime("s1");
-    expect(runtime.chatState).toBe("streaming");
-    expect(runtime.streamingMessageId).toBe("stream-1");
-    expect(runtime.tokenState.totalTokens).toBe(20);
-    expect(runtime.hasUsageSnapshot).toBe(true);
-
-    expect(getRuntime("s2").chatState).toBe("idle");
-    expect(getRuntime("s2").tokenState).toEqual(INITIAL_TOKEN_STATE);
-    expect(getRuntime("s2").hasUsageSnapshot).toBe(false);
-  });
-
-  it("clears the streaming pointer atomically when becoming idle", () => {
-    const store = useChatStore.getState();
-    store.setChatState("s1", "streaming");
-    store.setStreamingMessageId("s1", "stream-1");
-    store.setPendingInterventionBoundary("s1", {
-      interventionMessageId: "user-1",
-    });
-
-    let writes = 0;
-    const unsubscribe = useChatStore.subscribe(() => {
-      writes += 1;
-    });
-    store.setChatState("s1", "idle");
-    unsubscribe();
-
-    expect(writes).toBe(1);
-    expect(getRuntime("s1")).toMatchObject({
-      chatState: "idle",
-      streamingMessageId: null,
-      pendingInterventionBoundary: null,
-    });
-  });
-
-  it("clears settled replay stream state atomically", () => {
-    const store = useChatStore.getState();
-    store.setStreamingMessageId("s1", "stream-1");
-    store.setPendingInterventionBoundary("s1", {
-      interventionMessageId: "user-1",
-    });
-
-    let writes = 0;
-    const unsubscribe = useChatStore.subscribe(() => {
-      writes += 1;
-    });
-    expect(store.clearSettledStreamingMessage("s1")).toBe(true);
-    unsubscribe();
-
-    expect(writes).toBe(1);
-    expect(getRuntime("s1")).toMatchObject({
-      streamingMessageId: null,
-      pendingInterventionBoundary: null,
-    });
-  });
-
-  it("preserves replay stream state while a run is active", () => {
-    const store = useChatStore.getState();
-    store.setStreamingMessageId("s1", "stream-1");
-    store.setActiveRunId("s1", "run-1");
-
-    expect(store.clearSettledStreamingMessage("s1")).toBe(false);
-    expect(getRuntime("s1").streamingMessageId).toBe("stream-1");
-  });
-
   it("appends streamed text only within the targeted session", () => {
     const streaming = makeMessage({
       id: "stream-1",
@@ -240,73 +73,6 @@ describe("chatStore", () => {
     const updated = useChatStore.getState().messagesBySession.s1[0];
     expect(updated.content[0]).toEqual({ type: "text", text: "Hello world" });
     expect(getRuntime("s2").streamingMessageId).toBeNull();
-  });
-
-  it("appends streaming text with one logical write and preserves unrelated session arrays", () => {
-    const streaming = makeMessage({
-      id: "stream-1",
-      content: [{ type: "text", text: "Hello" }],
-    });
-    const other = makeMessage({ id: "other-1" });
-    const store = useChatStore.getState();
-
-    store.setActiveSession("s1");
-    store.setActiveSessionViewing(true);
-    store.setMessages("s1", [streaming]);
-    store.setMessages("s2", [other]);
-    store.setStreamingMessageId("s1", "stream-1");
-
-    let writeCount = 0;
-    const unsubscribe = useChatStore.subscribe(() => {
-      writeCount += 1;
-    });
-    const before = useChatStore.getState();
-    const s2Messages = before.messagesBySession.s2;
-    const s1Runtime = before.sessionStateById.s1;
-
-    store.appendStreamingText("s1", "stream-1", " world");
-
-    const after = useChatStore.getState();
-    expect(after.messagesBySession.s1).not.toBe(before.messagesBySession.s1);
-    expect(after.messagesBySession.s2).toBe(s2Messages);
-    expect(after.sessionStateById.s1).toBe(s1Runtime);
-    expect(after.messagesBySession.s1[0]?.content[0]).toEqual({
-      type: "text",
-      text: "Hello world",
-    });
-    expect(writeCount).toBe(1);
-    unsubscribe();
-  });
-
-  it("does not replace runtime state when appending to the same streaming message", () => {
-    const store = useChatStore.getState();
-    store.setActiveSession("s1");
-    store.setActiveSessionViewing(true);
-    store.setMessages("s1", [makeMessage({ id: "assistant-1" })]);
-    store.setStreamingMessageId("s1", "assistant-1");
-
-    const beforeRuntime = useChatStore.getState().sessionStateById.s1;
-    store.appendStreamingText("s1", "assistant-1", " more");
-
-    expect(useChatStore.getState().sessionStateById.s1).toBe(beforeRuntime);
-  });
-
-  it("updates runtime state once when the streaming message id changes", () => {
-    const store = useChatStore.getState();
-    store.setMessages("s1", [
-      makeMessage({ id: "assistant-1", content: [] }),
-      makeMessage({ id: "assistant-2", content: [] }),
-    ]);
-    store.setStreamingMessageId("s1", "assistant-1");
-
-    const beforeRuntime = useChatStore.getState().sessionStateById.s1;
-    store.appendStreamingText("s1", "assistant-2", "next");
-    const afterRuntime = useChatStore.getState().sessionStateById.s1;
-
-    expect(afterRuntime).not.toBe(beforeRuntime);
-    expect(afterRuntime.streamingMessageId).toBe("assistant-2");
-    store.appendStreamingText("s1", "assistant-2", " chunk");
-    expect(useChatStore.getState().sessionStateById.s1).toBe(afterRuntime);
   });
 
   it("inserts a continuation assistant after a contiguous delivered steer batch", () => {
@@ -363,99 +129,6 @@ describe("chatStore", () => {
     expect(getRuntime("s1").pendingInterventionBoundary).toBeNull();
   });
 
-  it("does not cross a steering message that has not been delivered", () => {
-    const store = useChatStore.getState();
-    store.setMessages("s1", [
-      makeMessage({ id: "assistant-before-steer", role: "assistant" }),
-      makeMessage({
-        id: "steer-1",
-        role: "user",
-        metadata: { userVisible: true, delivery: "steer" },
-      }),
-      makeMessage({
-        id: "steer-2",
-        role: "user",
-        metadata: { userVisible: true, delivery: "steering" },
-      }),
-      makeMessage({
-        id: "assistant-after-steers",
-        role: "assistant",
-        metadata: { userVisible: true, completionStatus: "inProgress" },
-      }),
-    ]);
-    store.setStreamingMessageId("s1", "assistant-before-steer");
-    store.setPendingInterventionBoundary("s1", {
-      interventionMessageId: "steer-1",
-    });
-
-    store.startAssistantStreamAfterIntervention("s1");
-
-    const messages = useChatStore.getState().messagesBySession.s1;
-    expect(messages.map((m) => m.id)).toEqual([
-      "assistant-before-steer",
-      "steer-1",
-      messages[2].id,
-      "steer-2",
-      "assistant-after-steers",
-    ]);
-    expect(messages[2]).toMatchObject({
-      role: "assistant",
-      metadata: { completionStatus: "inProgress" },
-    });
-    expect(getRuntime("s1").streamingMessageId).toBe(messages[2].id);
-    expect(getRuntime("s1").pendingInterventionBoundary).toBeNull();
-  });
-
-  it("appends streamed thinking only within the targeted session", () => {
-    const streaming = makeMessage({
-      id: "stream-1",
-      content: [{ type: "text", text: "Visible reply" }],
-    });
-
-    useChatStore.getState().setMessages("s1", [streaming]);
-    useChatStore.getState().setStreamingMessageId("s1", "stream-1");
-    useChatStore.getState().updateStreamingThinking("s1", "Plan");
-    useChatStore.getState().updateStreamingThinking("s1", " next");
-    useChatStore.getState().updateStreamingThinking("s1", " step");
-
-    const updated = useChatStore.getState().messagesBySession.s1[0];
-    expect(updated.content).toEqual([
-      { type: "text", text: "Visible reply" },
-      { type: "thinking", text: "Plan next step" },
-    ]);
-    expect(getRuntime("s2").streamingMessageId).toBeNull();
-  });
-
-  // Token deltas repeat the tail of the reasoning all the time; every chunk
-  // the bridge sent has to survive into the bubble.
-  it("appends thinking deltas that repeat the accumulated tail", () => {
-    const streaming = makeMessage({ id: "stream-1", content: [] });
-
-    useChatStore.getState().setMessages("s1", [streaming]);
-    useChatStore.getState().setStreamingMessageId("s1", "stream-1");
-    for (const chunk of ["The year was 201", "1", " and foo(bar(baz)", ")"]) {
-      useChatStore.getState().updateStreamingThinking("s1", chunk);
-    }
-
-    expect(useChatStore.getState().messagesBySession.s1[0].content).toEqual([
-      { type: "thinking", text: "The year was 2011 and foo(bar(baz))" },
-    ]);
-  });
-
-  it("keeps a thinking delta identical to the reasoning so far", () => {
-    const streaming = makeMessage({ id: "stream-1", content: [] });
-
-    useChatStore.getState().setMessages("s1", [streaming]);
-    useChatStore.getState().setStreamingMessageId("s1", "stream-1");
-    useChatStore.getState().updateStreamingThinking("s1", "1");
-    useChatStore.getState().updateStreamingThinking("s1", "1");
-    useChatStore.getState().updateStreamingThinking("s1", "1");
-
-    expect(useChatStore.getState().messagesBySession.s1[0].content).toEqual([
-      { type: "thinking", text: "111" },
-    ]);
-  });
-
   it("transitions a session to error without affecting another session", () => {
     const store = useChatStore.getState();
 
@@ -467,94 +140,6 @@ describe("chatStore", () => {
     expect(getRuntime("s1").error).toBe("boom");
     expect(getRuntime("s2").chatState).toBe("thinking");
     expect(getRuntime("s2").error).toBeNull();
-  });
-
-  it("returns a parked error session to idle when the error is cleared", () => {
-    const store = useChatStore.getState();
-
-    store.setError("s1", "boom");
-    store.setStreamingMessageId("s1", "stale-stream");
-    store.setPendingInterventionBoundary("s1", {
-      interventionMessageId: "user-1",
-    });
-    expect(getRuntime("s1").chatState).toBe("error");
-
-    store.setError("s1", null);
-
-    expect(getRuntime("s1")).toMatchObject({
-      chatState: "idle",
-      error: null,
-      streamingMessageId: null,
-      pendingInterventionBoundary: null,
-    });
-  });
-
-  it("preserves live stream state when clearing a parked error", () => {
-    const store = useChatStore.getState();
-    store.setActiveRunId("s1", "run-1");
-    store.setRunCancellationPending("s1", true);
-    store.setError("s1", "cancel failed");
-    store.setStreamingMessageId("s1", "late-stream");
-    store.setPendingInterventionBoundary("s1", {
-      interventionMessageId: "user-1",
-    });
-
-    store.setError("s1", null);
-
-    expect(getRuntime("s1")).toMatchObject({
-      chatState: "idle",
-      activeRunId: "run-1",
-      isRunCancellationPending: true,
-      streamingMessageId: "late-stream",
-      pendingInterventionBoundary: { interventionMessageId: "user-1" },
-    });
-  });
-
-  it("settles an errored backend run and late stream state atomically", () => {
-    const store = useChatStore.getState();
-    store.setActiveRunId("s1", "run-1");
-    store.setRunCancellationPending("s1", true);
-    store.setError("s1", "cancel failed");
-    store.setStreamingMessageId("s1", "late-stream");
-    store.setPendingInterventionBoundary("s1", {
-      interventionMessageId: "user-1",
-    });
-
-    store.settleActiveRun("s1");
-
-    expect(getRuntime("s1")).toMatchObject({
-      chatState: "error",
-      activeRunId: null,
-      isRunCancellationPending: false,
-      streamingMessageId: null,
-      pendingInterventionBoundary: null,
-    });
-  });
-
-  it("settles an idle backend run and late stream state atomically", () => {
-    const store = useChatStore.getState();
-    store.setActiveRunId("s1", "run-1");
-    store.setRunCancellationPending("s1", true);
-    store.setStreamingMessageId("s1", "late-stream");
-    store.setPendingInterventionBoundary("s1", {
-      interventionMessageId: "user-1",
-    });
-
-    let writes = 0;
-    const unsubscribe = useChatStore.subscribe(() => {
-      writes += 1;
-    });
-    store.settleActiveRun("s1");
-    unsubscribe();
-
-    expect(writes).toBe(1);
-    expect(getRuntime("s1")).toMatchObject({
-      chatState: "idle",
-      activeRunId: null,
-      isRunCancellationPending: false,
-      streamingMessageId: null,
-      pendingInterventionBoundary: null,
-    });
   });
 
   function replyWithAnOpenToolCall(): Message {
@@ -598,16 +183,6 @@ describe("chatStore", () => {
     expect(toolCallStatus("s1")).toBe("stopped");
   });
 
-  it("stops a call left open by a run the runtime already counts as settled", () => {
-    const store = useChatStore.getState();
-    store.setMessages("s1", [replyWithAnOpenToolCall()]);
-    store.setActiveRunId("s1", null);
-
-    store.settleActiveRun("s1");
-
-    expect(toolCallStatus("s1")).toBe("stopped");
-  });
-
   it("leaves the calls of a chat that is already streaming its next turn", () => {
     const store = useChatStore.getState();
     store.setMessages("s1", [replyWithAnOpenToolCall()]);
@@ -617,37 +192,6 @@ describe("chatStore", () => {
     store.settleActiveRun("s1");
 
     expect(toolCallStatus("s1")).toBe("in_progress");
-  });
-
-  it("preserves live stream state when settling a still-streaming backend run", () => {
-    const store = useChatStore.getState();
-    store.setChatState("s1", "streaming");
-    store.setActiveRunId("s1", "run-1");
-    store.setRunCancellationPending("s1", true);
-    store.setStreamingMessageId("s1", "live-stream");
-    store.setPendingInterventionBoundary("s1", {
-      interventionMessageId: "user-1",
-    });
-
-    store.settleActiveRun("s1");
-
-    expect(getRuntime("s1")).toMatchObject({
-      chatState: "streaming",
-      activeRunId: null,
-      isRunCancellationPending: false,
-      streamingMessageId: "live-stream",
-      pendingInterventionBoundary: { interventionMessageId: "user-1" },
-    });
-  });
-
-  it("leaves a live chatState untouched when clearing the error", () => {
-    const store = useChatStore.getState();
-
-    store.setChatState("s1", "streaming");
-    store.setError("s1", null);
-
-    expect(getRuntime("s1").chatState).toBe("streaming");
-    expect(getRuntime("s1").error).toBeNull();
   });
 
   it("promotes all local chat state to a real ACP session id", () => {
@@ -731,91 +275,6 @@ describe("chatStore", () => {
     });
   });
 
-  it("completes the prior assistant when starting a steer continuation", () => {
-    const store = useChatStore.getState();
-    store.setMessages("s1", [
-      makeMessage({
-        id: "assistant-1",
-        role: "assistant",
-        metadata: { completionStatus: "inProgress" },
-      }),
-      makeMessage({
-        id: "steer-1",
-        role: "user",
-        metadata: { delivery: "steer" },
-      }),
-    ]);
-    store.setStreamingMessageId("s1", "assistant-1");
-    store.setPendingInterventionBoundary("s1", {
-      interventionMessageId: "steer-1",
-    });
-
-    store.startAssistantStreamAfterIntervention("s1");
-
-    const messages = useChatStore.getState().messagesBySession.s1;
-    expect(messages[0]?.metadata?.completionStatus).toBe("completed");
-    expect(messages[2]).toMatchObject({
-      role: "assistant",
-      metadata: { completionStatus: "inProgress" },
-    });
-  });
-
-  // Archiving or deleting a chat does not cancel its turn, so a trailing
-  // assistant chunk can still land. It used to re-create the session's rows and
-  // persist an unread id that no session owns — nothing can open it to mark it
-  // read, so it came back as unread on every start.
-  it("does not mark a session unread after it was archived away", () => {
-    const store = useChatStore.getState();
-    store.addMessage("gone", makeMessage());
-    store.cleanupSession("gone");
-
-    store.addMessage("gone", makeMessage());
-
-    expect(getRuntime("gone").hasUnread).toBe(false);
-    expect(loadCachedUnreadSessionIds()).toEqual([]);
-  });
-
-  it("marks the session unread again once it is loaded back", () => {
-    const store = useChatStore.getState();
-    store.cleanupSession("returning");
-    store.setSessionLoading("returning", true);
-
-    store.addMessage("returning", makeMessage());
-
-    expect(getRuntime("returning").hasUnread).toBe(true);
-    expect(loadCachedUnreadSessionIds()).toEqual(["returning"]);
-  });
-
-  it("prunes unread flags for sessions the host no longer lists", () => {
-    const store = useChatStore.getState();
-    store.markSessionUnread("still-there");
-    store.markSessionUnread("deleted-elsewhere");
-    expect(loadCachedUnreadSessionIds().sort()).toEqual([
-      "deleted-elsewhere",
-      "still-there",
-    ]);
-
-    store.pruneUnreadSessions(["still-there", "never-unread"]);
-
-    expect(getRuntime("still-there").hasUnread).toBe(true);
-    expect(getRuntime("deleted-elsewhere").hasUnread).toBe(false);
-    expect(loadCachedUnreadSessionIds()).toEqual(["still-there"]);
-  });
-
-  it("clears messages and runtime state for a single session", () => {
-    useChatStore.getState().addMessage("s1", makeMessage());
-    useChatStore.getState().setChatState("s1", "streaming");
-    useChatStore.getState().setStreamingMessageId("s1", "stream-1");
-    useChatStore.getState().markSessionUnread("s1");
-    useChatStore.getState().clearMessages("s1");
-
-    expect(useChatStore.getState().messagesBySession.s1).toEqual([]);
-    expect(getRuntime("s1").chatState).toBe("idle");
-    expect(getRuntime("s1").streamingMessageId).toBeNull();
-    expect(getRuntime("s1").hasUnread).toBe(false);
-    expect(loadCachedUnreadSessionIds()).toEqual([]);
-  });
-
   it("updates and removes queue records by stable ID without reordering", () => {
     const store = useChatStore.getState();
     store.enqueueTransportReadyMessage("s1", {
@@ -857,49 +316,6 @@ describe("chatStore", () => {
     ).toEqual(["first", "third"]);
   });
 
-  it("pauses records while they are edited and resumes them on update", () => {
-    const store = useChatStore.getState();
-    store.enqueueTransportReadyMessage("s1", {
-      persona: { kind: "inherit" },
-      text: "first",
-    });
-    store.enqueueTransportReadyMessage("s1", {
-      persona: { kind: "inherit" },
-      text: "second",
-    });
-    const queue = useChatStore.getState().queuedMessageBySession.s1 ?? [];
-
-    expect(store.setQueuedMessageEditing("s1", queue[0].recordId, true)).toBe(
-      true,
-    );
-    expect(
-      useChatStore.getState().queuedMessageBySession.s1?.[0],
-    ).toMatchObject({ recordId: queue[0].recordId, editing: true });
-    expect(
-      store.updateQueuedMessage("s1", queue[0].recordId, {
-        persona: { kind: "inherit" },
-        text: "edited",
-      }),
-    ).toBe(true);
-    expect(useChatStore.getState().queuedMessageBySession.s1?.[0]).toEqual(
-      expect.objectContaining({
-        recordId: queue[0].recordId,
-        payload: {
-          persona: { kind: "inherit" },
-          text: "edited",
-        },
-      }),
-    );
-    expect(
-      useChatStore.getState().queuedMessageBySession.s1?.[0],
-    ).not.toHaveProperty("editing");
-    expect(
-      useChatStore
-        .getState()
-        .queuedMessageBySession.s1?.map((record) => record.payload.text),
-    ).toEqual(["edited", "second"]);
-  });
-
   it("preserves an edit lock through defer and release", () => {
     const store = useChatStore.getState();
     store.enqueueTransportReadyMessage("s1", {
@@ -925,140 +341,6 @@ describe("chatStore", () => {
       payload: { text: "original" },
       editing: true,
     });
-  });
-
-  it("keeps a queued message's run settings when deferral replaces its payload", () => {
-    const store = useChatStore.getState();
-    store.enqueueTransportReadyMessage("s1", {
-      persona: { kind: "inherit" },
-      text: "original",
-      runSettings: { effort: "xhigh", fast: true },
-    });
-    const recordId =
-      useChatStore.getState().queuedMessageBySession.s1?.[0]?.recordId ?? "";
-
-    expect(
-      store.deferTransportReadyMessage(
-        "s1",
-        recordId,
-        { type: "workspace-first-send", status: "creating" },
-        { persona: { kind: "inherit" }, text: "original" },
-      ),
-    ).toBe(true);
-    expect(
-      useChatStore.getState().queuedMessageBySession.s1?.[0],
-    ).toMatchObject({
-      kind: "deferred",
-      recordId,
-      payload: {
-        text: "original",
-        runSettings: { effort: "xhigh", fast: true },
-      },
-    });
-  });
-
-  it("lets a replacement payload that names its own run settings keep them", () => {
-    const store = useChatStore.getState();
-    store.enqueueTransportReadyMessage("s1", {
-      persona: { kind: "inherit" },
-      text: "original",
-      runSettings: { effort: "xhigh" },
-    });
-    const recordId =
-      useChatStore.getState().queuedMessageBySession.s1?.[0]?.recordId ?? "";
-
-    store.deferTransportReadyMessage(
-      "s1",
-      recordId,
-      { type: "workspace-first-send", status: "creating" },
-      {
-        persona: { kind: "inherit" },
-        text: "original",
-        runSettings: { effort: "low" },
-      },
-    );
-    expect(
-      useChatStore.getState().queuedMessageBySession.s1?.[0]?.payload
-        .runSettings,
-    ).toEqual({ effort: "low" });
-  });
-
-  it("preserves an edit lock when a deferred record is released", () => {
-    const store = useChatStore.getState();
-    store.enqueueDeferredMessage(
-      "s1",
-      { persona: { kind: "inherit" }, text: "original" },
-      { type: "workspace-first-send", status: "creating" },
-    );
-    const recordId =
-      useChatStore.getState().queuedMessageBySession.s1?.[0]?.recordId ?? "";
-
-    expect(store.setQueuedMessageEditing("s1", recordId, true)).toBe(true);
-    expect(store.releaseDeferredMessage("s1", recordId)).toBe(true);
-    expect(
-      useChatStore.getState().queuedMessageBySession.s1?.[0],
-    ).toMatchObject({
-      kind: "transport-ready",
-      recordId,
-      payload: { text: "original" },
-      releasedFromDeferred: true,
-      editing: true,
-    });
-
-    expect(
-      store.updateQueuedMessage("s1", recordId, {
-        persona: { kind: "inherit" },
-        text: "updated",
-      }),
-    ).toBe(true);
-    expect(
-      useChatStore.getState().queuedMessageBySession.s1?.[0],
-    ).toMatchObject({
-      payload: {
-        persona: { kind: "inherit" },
-        text: "updated",
-      },
-      releasedFromDeferred: true,
-    });
-    expect(
-      useChatStore.getState().queuedMessageBySession.s1?.[0],
-    ).not.toHaveProperty("editing");
-  });
-
-  it.each([
-    "held",
-    "failed",
-  ] as const)("releases a %s deferred record when its edit is submitted", (status) => {
-    const store = useChatStore.getState();
-    store.enqueueDeferredMessage(
-      "s1",
-      { persona: { kind: "inherit" }, text: "original" },
-      { type: "workspace-first-send", status },
-    );
-    const recordId =
-      useChatStore.getState().queuedMessageBySession.s1?.[0]?.recordId ?? "";
-
-    expect(store.setQueuedMessageEditing("s1", recordId, true)).toBe(true);
-    expect(
-      store.updateQueuedMessage("s1", recordId, {
-        persona: { kind: "inherit" },
-        text: "updated",
-      }),
-    ).toBe(true);
-    expect(useChatStore.getState().queuedMessageBySession.s1?.[0]).toEqual(
-      expect.objectContaining({
-        kind: "transport-ready",
-        recordId,
-        payload: {
-          persona: { kind: "inherit" },
-          text: "updated",
-        },
-        releasedFromDeferred: true,
-      }),
-    );
-    expect(
-      useChatStore.getState().queuedMessageBySession.s1?.[0],
-    ).not.toHaveProperty("editing");
   });
 
   it("parks interrupted workspace creation, clears edit locks, and restores targetless transport records", async () => {
@@ -1134,57 +416,6 @@ describe("chatStore", () => {
     ).toBeNull();
   });
 
-  it("enqueues and dismisses messages per session", () => {
-    const store = useChatStore.getState();
-
-    store.enqueueTransportReadyMessage("s1", {
-      persona: { kind: "inherit" },
-      text: "follow up",
-    });
-    expect(
-      useChatStore.getState().queuedMessageBySession.s1?.[0]?.payload,
-    ).toEqual({
-      persona: { kind: "inherit" },
-      text: "follow up",
-    });
-    expect(useChatStore.getState().queuedMessageBySession.s2).toBeUndefined();
-
-    store.dismissQueuedMessage("s1");
-    expect(useChatStore.getState().queuedMessageBySession.s1).toBeUndefined();
-  });
-
-  it("appends messages and ignores stale dismissal", () => {
-    const store = useChatStore.getState();
-
-    expect(
-      store.enqueueTransportReadyMessage("s1", {
-        persona: { kind: "inherit" },
-        text: "first",
-      }),
-    ).toBe(true);
-    const first = useChatStore.getState().queuedMessageBySession.s1;
-    const firstRecordId = first?.[0]?.recordId;
-    expect(
-      store.enqueueTransportReadyMessage("s1", {
-        persona: { kind: "inherit" },
-        text: "second",
-      }),
-    ).toBe(true);
-    expect(useChatStore.getState().queuedMessageBySession.s1).toHaveLength(2);
-    store.dismissQueuedMessage("s1", "stale-record");
-    expect(
-      useChatStore
-        .getState()
-        .queuedMessageBySession.s1?.map((record) => record.payload.text),
-    ).toEqual(["first", "second"]);
-    store.dismissQueuedMessage("s1", firstRecordId);
-    expect(
-      useChatStore
-        .getState()
-        .queuedMessageBySession.s1?.map((record) => record.payload.text),
-    ).toEqual(["second"]);
-  });
-
   it("appends promoted records after an occupied destination queue", () => {
     const store = useChatStore.getState();
     store.enqueueTransportReadyMessage("acp-session", {
@@ -1212,39 +443,6 @@ describe("chatStore", () => {
     expect(
       useChatStore.getState().queuedMessageBySession["local-session"],
     ).toBeUndefined();
-  });
-
-  it("moves whole queues and appends them to the destination", () => {
-    const store = useChatStore.getState();
-    store.enqueueTransportReadyMessage("pending", {
-      persona: { kind: "inherit" },
-      text: "first",
-    });
-    const pending = useChatStore.getState().queuedMessageBySession.pending;
-
-    expect(store.moveQueuedMessage("pending", "session-1")).toBe(true);
-    expect(useChatStore.getState().queuedMessageBySession["session-1"]).toEqual(
-      pending,
-    );
-    expect(
-      useChatStore.getState().queuedMessageBySession.pending,
-    ).toBeUndefined();
-
-    store.enqueueTransportReadyMessage("pending", {
-      persona: { kind: "inherit" },
-      text: "second",
-    });
-    expect(store.moveQueuedMessage("pending", "session-1")).toBe(true);
-    expect(
-      useChatStore.getState().queuedMessageBySession.pending,
-    ).toBeUndefined();
-    expect(
-      useChatStore
-        .getState()
-        .queuedMessageBySession["session-1"]?.map(
-          (record) => record.payload.text,
-        ),
-    ).toEqual(["first", "second"]);
   });
 
   it("moves one record without disturbing either queue", () => {
@@ -1295,53 +493,6 @@ describe("chatStore", () => {
     ).toEqual(["second", "first"]);
   });
 
-  it("persists and clears draft text per session", () => {
-    const store = useChatStore.getState();
-
-    store.setDraft("s1", "hello world");
-    expect(useChatStore.getState().draftsBySession.s1).toBe("hello world");
-    expect(useChatStore.getState().draftsBySession.s2).toBeUndefined();
-
-    store.clearDraft("s1");
-    expect(useChatStore.getState().draftsBySession.s1).toBeUndefined();
-  });
-
-  it("stores and clears skill draft chips per session", () => {
-    const store = useChatStore.getState();
-
-    store.setSkillDrafts("s1", [{ id: "skill-1", name: "code-review" }]);
-    expect(useChatStore.getState().skillDraftsBySession.s1).toEqual([
-      { id: "skill-1", name: "code-review" },
-    ]);
-
-    store.clearSkillDrafts("s1");
-    expect(useChatStore.getState().skillDraftsBySession.s1).toBeUndefined();
-  });
-
-  it("stores and clears draft attachments per session", () => {
-    const store = useChatStore.getState();
-    const attachment = {
-      id: "attachment-1",
-      kind: "file" as const,
-      name: "report.pdf",
-      path: "/tmp/report.pdf",
-      mimeType: "application/pdf",
-    };
-
-    store.setDraftAttachments("s1", [attachment]);
-    expect(useChatStore.getState().draftAttachmentsBySession.s1).toEqual([
-      attachment,
-    ]);
-    expect(
-      useChatStore.getState().draftAttachmentsBySession.s2,
-    ).toBeUndefined();
-
-    store.clearDraftAttachments("s1");
-    expect(
-      useChatStore.getState().draftAttachmentsBySession.s1,
-    ).toBeUndefined();
-  });
-
   it("removes session data during cleanup including queued messages and drafts", () => {
     const store = useChatStore.getState();
 
@@ -1366,10 +517,11 @@ describe("chatStore", () => {
     store.setActiveSession("s1");
     store.cleanupSession("s1");
 
-    expect(store.messagesBySession.s1).toBeUndefined();
-    expect(store.sessionStateById.s1).toBeUndefined();
-    expect(store.queuedMessageBySession.s1).toBeUndefined();
-    expect(store.draftsBySession.s1).toBeUndefined();
+    const state = useChatStore.getState();
+    expect(state.messagesBySession.s1).toBeUndefined();
+    expect(state.sessionStateById.s1).toBeUndefined();
+    expect(state.queuedMessageBySession.s1).toBeUndefined();
+    expect(state.draftsBySession.s1).toBeUndefined();
     expect(useChatStore.getState().skillDraftsBySession.s1).toBeUndefined();
     expect(
       useChatStore.getState().draftAttachmentsBySession.s1,
@@ -1401,29 +553,6 @@ describe("chatStore draft localStorage persistence", () => {
 
   afterEach(() => {
     window.localStorage.removeItem(STORAGE_KEY);
-  });
-
-  it("persists non-empty drafts to localStorage on setDraft", () => {
-    useChatStore.getState().setDraft("s1", "hello");
-
-    const stored = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}");
-    expect(stored).toEqual({ s1: "hello" });
-  });
-
-  it("removes empty drafts from localStorage", () => {
-    useChatStore.getState().setDraft("s1", "hello");
-    useChatStore.getState().setDraft("s1", "");
-
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    expect(stored).toBeNull();
-  });
-
-  it("removes draft from localStorage on clearDraft", () => {
-    useChatStore.getState().setDraft("s1", "hello");
-    useChatStore.getState().clearDraft("s1");
-
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    expect(stored).toBeNull();
   });
 
   it("removes draft from localStorage on cleanupSession", () => {

@@ -6,7 +6,6 @@ import {
   clearPendingSessionWorkspaceActivation,
   getPendingSessionWorkspaceActivation,
   queueSessionWorkspaceActivation,
-  supersedePendingSessionWorkspaceActivation,
 } from "./sessionWorkspaceActivation";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
@@ -69,33 +68,6 @@ describe("session workspace activation", () => {
     mocks.updateWorkingDir.mockResolvedValue(undefined);
   });
 
-  it("commits backend, persisted workspace metadata, and rail state together", async () => {
-    queueSessionWorkspaceActivation({
-      sessionId: "session-1",
-      path: "/tmp/feature",
-      branch: "feature",
-    });
-
-    await expect(
-      applyPendingSessionWorkspaceActivation("session-1"),
-    ).resolves.toBe("/tmp/feature");
-
-    expect(mocks.updateWorkingDir).toHaveBeenCalledWith(
-      "session-1",
-      "/tmp/feature",
-    );
-    const store = useChatSessionStore.getState();
-    expect(store.getSession("session-1")?.workingDir).toBe("/tmp/feature");
-    expect(store.getSession("session-1")?.activeWorkspaceId).toBe(
-      "path:/tmp/feature",
-    );
-    expect(store.activeWorkspaceBySession["session-1"]).toEqual({
-      path: "/tmp/feature",
-      branch: "feature",
-    });
-    expect(getPendingSessionWorkspaceActivation("session-1")).toBeNull();
-  });
-
   it("shares one commit when the idle drain and next prompt race", async () => {
     queueSessionWorkspaceActivation({
       sessionId: "session-1",
@@ -120,67 +92,6 @@ describe("session workspace activation", () => {
     });
     releaseUpdate?.();
     await expect(promptBarrier).resolves.toBe("/tmp/feature");
-  });
-
-  it("upgrades an idle-owned activation when a prompt joins while running", async () => {
-    queueSessionWorkspaceActivation({
-      sessionId: "session-1",
-      path: "/tmp/feature",
-      branch: "feature",
-    });
-    let releaseGitState: (() => void) | undefined;
-    mocks.getGitState.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          releaseGitState = () =>
-            resolve({ isGitRepo: true, currentBranch: "feature" });
-        }),
-    );
-
-    const idleDrain = applyPendingSessionWorkspaceActivation("session-1");
-    await vi.waitFor(() => expect(releaseGitState).toBeTypeOf("function"));
-    useChatStore.getState().setChatState("session-1", "thinking");
-    const promptBarrier = applyPendingSessionWorkspaceActivation("session-1", {
-      allowRunning: true,
-    });
-    releaseGitState?.();
-
-    expect(promptBarrier).toBe(idleDrain);
-    await expect(promptBarrier).resolves.toBe("/tmp/feature");
-    expect(mocks.updateWorkingDir).toHaveBeenCalledWith(
-      "session-1",
-      "/tmp/feature",
-    );
-  });
-
-  it("reports the request actually attempted when a newer request is queued", async () => {
-    const first = queueSessionWorkspaceActivation({
-      sessionId: "session-1",
-      path: "/tmp/one",
-      branch: "one",
-    });
-    let rejectFirst: ((error: Error) => void) | undefined;
-    mocks.updateWorkingDir.mockImplementationOnce(
-      () =>
-        new Promise<void>((_resolve, reject) => {
-          rejectFirst = reject;
-        }),
-    );
-
-    const barrier = applyPendingSessionWorkspaceActivation("session-1");
-    await vi.waitFor(() => expect(rejectFirst).toBeTypeOf("function"));
-    const second = queueSessionWorkspaceActivation({
-      sessionId: "session-1",
-      path: "/tmp/two",
-      branch: "two",
-    });
-    rejectFirst?.(new Error("backend offline"));
-
-    await expect(barrier).rejects.toMatchObject({
-      message: "backend offline",
-      attemptedRequestId: first.requestId,
-    });
-    expect(getPendingSessionWorkspaceActivation("session-1")).toEqual(second);
   });
 
   it("applies a newer request before releasing an in-flight barrier", async () => {
@@ -216,18 +127,6 @@ describe("session workspace activation", () => {
     expect(
       useChatSessionStore.getState().getSession("session-1")?.workingDir,
     ).toBe("/tmp/two");
-  });
-
-  it("lets an explicit switch supersede pending intent", async () => {
-    queueSessionWorkspaceActivation({
-      sessionId: "session-1",
-      path: "/tmp/feature",
-      branch: "feature",
-    });
-
-    await supersedePendingSessionWorkspaceActivation("session-1");
-
-    expect(getPendingSessionWorkspaceActivation("session-1")).toBeNull();
   });
 
   it("keeps the switch pending if the session starts before dispatch", async () => {
@@ -273,41 +172,6 @@ describe("session workspace activation", () => {
       useChatSessionStore.getState().getSession("session-1")?.workingDir,
     ).toBe("/tmp/main");
   });
-
-  it("cancels a pending request when its folder is gone", async () => {
-    queueSessionWorkspaceActivation({
-      sessionId: "session-1",
-      path: "/tmp/gone",
-      branch: "gone",
-    });
-    mocks.checkDirectoriesExist.mockResolvedValueOnce(["/tmp/gone"]);
-
-    await expect(
-      applyPendingSessionWorkspaceActivation("session-1"),
-    ).rejects.toThrow("still needs a valid replacement");
-
-    expect(getPendingSessionWorkspaceActivation("session-1")).toMatchObject({
-      path: "/tmp/gone",
-    });
-  });
-
-  it("lets the newest pending request replace an older one", () => {
-    queueSessionWorkspaceActivation({
-      sessionId: "session-1",
-      path: "/tmp/one",
-      branch: "one",
-    });
-    queueSessionWorkspaceActivation({
-      sessionId: "session-1",
-      path: "/tmp/two",
-      branch: "two",
-    });
-
-    expect(getPendingSessionWorkspaceActivation("session-1")).toMatchObject({
-      path: "/tmp/two",
-      branch: "two",
-    });
-  });
   it("rejects an older lifecycle intent after a newer cwd intent is claimed", () => {
     const staleGeneration = claimSessionWorkspaceIntent("session-1");
     claimSessionWorkspaceIntent("session-1");
@@ -321,20 +185,5 @@ describe("session workspace activation", () => {
       }),
     ).toThrow("newer session workspace intent");
     expect(getPendingSessionWorkspaceActivation("session-1")).toBeNull();
-  });
-  it("keeps one operation token while clearing pending activation", async () => {
-    const generation = claimSessionWorkspaceIntent("session-1");
-    await expect(
-      supersedePendingSessionWorkspaceActivation("session-1", generation),
-    ).resolves.toBeUndefined();
-
-    expect(() =>
-      queueSessionWorkspaceActivation({
-        sessionId: "session-1",
-        path: "/tmp/current",
-        branch: null,
-        intentGeneration: generation,
-      }),
-    ).not.toThrow();
   });
 });

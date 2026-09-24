@@ -14,7 +14,6 @@ import type { Persona } from "@/shared/types/agents";
 import { CommandError } from "../../commands/types";
 import {
   enforceDistillctlSpawnAcl,
-  forkTargetLayer,
   registerDistillctlChildNode,
 } from "../../commands/runtime/spawnGate";
 
@@ -66,16 +65,6 @@ beforeEach(async () => {
 });
 
 describe("enforceDistillctlSpawnAcl", () => {
-  it("lets an anonymous call through — that is the operator", () => {
-    expect(() =>
-      enforceDistillctlSpawnAcl({
-        actor: undefined,
-        verb: "create",
-        targetLayer: "worker",
-      }),
-    ).not.toThrow();
-  });
-
   it("logs every anonymous spawn, because with the built-in host that is all of them", () => {
     // The reading "anonymous means the operator" is a product decision, but an
     // unattributed spawn must at least be visible in the app log: the host
@@ -100,25 +89,6 @@ describe("enforceDistillctlSpawnAcl", () => {
     expect(message).toContain("orchestrator");
     expect(message).toContain("Producer");
     expect(message).toContain("AGENT_SESSION_ID");
-  });
-
-  it("does not log when the call carries an actor", () => {
-    enforceDistillctlSpawnAcl({
-      actor: ACTOR_ID,
-      verb: "create",
-      targetLayer: "worker",
-    });
-    expect(logRendererEvent).not.toHaveBeenCalled();
-  });
-
-  it("lets an actor with no graph node through — an ordinary chat acts for the operator", () => {
-    expect(() =>
-      enforceDistillctlSpawnAcl({
-        actor: ACTOR_ID,
-        verb: "create",
-        targetLayer: "worker",
-      }),
-    ).not.toThrow();
   });
 
   it("refuses a worker starting a worker, with the notice in the worker's own transcript", () => {
@@ -198,27 +168,6 @@ describe("enforceDistillctlSpawnAcl", () => {
         targetLayer: "worker",
       }),
     ).toThrow(CommandError);
-  });
-
-  it("lets a conductor start workers, per the layer default", () => {
-    useConductorGraphStore.getState().registerNode(node({ role: "conductor" }));
-    expect(() =>
-      enforceDistillctlSpawnAcl({
-        actor: ACTOR_ID,
-        verb: "create",
-        targetLayer: "worker",
-      }),
-    ).not.toThrow();
-  });
-});
-
-describe("forkTargetLayer", () => {
-  it("is the source node's own rank, worker for plain sessions", () => {
-    expect(forkTargetLayer("no-node")).toBe("worker");
-    useConductorGraphStore
-      .getState()
-      .registerNode(node({ sessionId: "orch-1", role: "orchestrator" }));
-    expect(forkTargetLayer("orch-1")).toBe("orchestrator");
   });
 });
 

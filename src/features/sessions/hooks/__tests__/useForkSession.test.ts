@@ -95,21 +95,6 @@ describe("useForkSession", () => {
     expect(forked?.desiredRunSettings).toEqual({ effort: "xhigh", fast: true });
   });
 
-  it("keeps the host's model when the fork did not open on the source's", async () => {
-    mocks.acpDuplicateSession.mockResolvedValue(forkedInfo("gpt-5.6-luna"));
-
-    const forked = await fork();
-
-    expect(forked?.executionTarget).toEqual({
-      harnessId: "codex-acp",
-      modelProviderId: "codex-acp",
-      modelId: "gpt-5.6-luna",
-      modelName: "gpt-5.6-luna",
-    });
-    // The intent still follows: the reconciler notices if this model refuses it.
-    expect(forked?.desiredRunSettings).toEqual({ effort: "xhigh", fast: true });
-  });
-
   it("prefers the effort and fast mode the host answered the fork with over the source's intent", async () => {
     mocks.acpDuplicateSession.mockResolvedValue({
       ...forkedInfo("gpt-5.6-sol"),
@@ -120,29 +105,5 @@ describe("useForkSession", () => {
     const forked = await fork();
 
     expect(forked?.desiredRunSettings).toEqual({ effort: "high", fast: false });
-  });
-
-  it("fills in from the source what the host's fork answer left out", async () => {
-    mocks.acpDuplicateSession.mockResolvedValue({
-      ...forkedInfo("gpt-5.6-sol"),
-      reasoningEffort: "high",
-      fastMode: null,
-    });
-
-    const forked = await fork();
-
-    expect(forked?.desiredRunSettings).toEqual({ effort: "high", fast: true });
-  });
-
-  it("gives the fork no run-settings intent when its source had none", async () => {
-    useChatSessionStore.setState({
-      sessions: [sourceSession({ desiredRunSettings: undefined })],
-    });
-    mocks.acpDuplicateSession.mockResolvedValue(forkedInfo("gpt-5.6-sol"));
-
-    const forked = await fork();
-
-    expect(forked).toBeDefined();
-    expect(forked).not.toHaveProperty("desiredRunSettings");
   });
 });

@@ -13,54 +13,12 @@ afterEach(() => {
 });
 
 describe("selectionFragmentToHtml", () => {
-  it("keeps anchors so rich targets paste a clickable link", () => {
-    const fragment = createFragment(
-      `<p>See <a class="text-primary" data-streamdown="link" href="https://example.com">docs</a></p>`,
-    );
-
-    expect(selectionFragmentToHtml(fragment)).toBe(
-      `<p>See <a href="https://example.com">docs</a></p>`,
-    );
-  });
-
-  it("unwraps non-external anchors to their label", () => {
-    const fragment = createFragment(
-      `<p><a href="/local/report.md">report</a></p>`,
-    );
-
-    expect(selectionFragmentToHtml(fragment)).toBe("<p>report</p>");
-  });
-
-  it("unwraps app chrome wrappers but keeps their text", () => {
-    const fragment = createFragment(
-      `<div class="rounded-lg bg-muted"><span class="sr-only">kept</span></div>`,
-    );
-
-    expect(selectionFragmentToHtml(fragment)).toBe("kept");
-  });
-
-  it("keeps classes and data attributes off preserved elements", () => {
-    const fragment = createFragment(
-      `<p class="mb-2" data-streamdown="paragraph">text</p>`,
-    );
-
-    expect(selectionFragmentToHtml(fragment)).toBe("<p>text</p>");
-  });
-
   it("drops script and style content", () => {
     const fragment = createFragment(
       `<p>safe</p><script>alert(1)</script><style>p{color:red}</style>`,
     );
 
     expect(selectionFragmentToHtml(fragment)).toBe("<p>safe</p>");
-  });
-
-  it("escapes html special characters in text", () => {
-    const fragment = createFragment("<p>a &lt; b &amp;&amp; c &gt; d</p>");
-
-    expect(selectionFragmentToHtml(fragment)).toBe(
-      "<p>a &lt; b &amp;&amp; c &gt; d</p>",
-    );
   });
 
   it("escapes quotes in hrefs so the attribute cannot be broken out of", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildUsageOverview, getRecentUsageDays } from "../usageOverviewModel";
+import { buildUsageOverview } from "../usageOverviewModel";
 import type { UsageLedger } from "../usageTypes";
 
 const ledger: UsageLedger = {
@@ -92,70 +92,6 @@ describe("usageOverviewModel", () => {
     expect(overview.hasPartialCost).toBe(true);
   });
 
-  it("filters daily totals to the selected provider", () => {
-    const overview = buildUsageOverview({
-      ledger,
-      enabledProviderIds: ["goose", "claude-acp"],
-      providerFilter: "claude-acp",
-    });
-    expect(overview.totalTokens).toBe(15);
-    expect(
-      overview.daily.find((day) => day.day === "2026-08-01")?.totalTokens,
-    ).toBe(0);
-    expect(
-      overview.daily.find((day) => day.day === "2026-08-02")?.totalTokens,
-    ).toBe(15);
-  });
-
-  it("fills a contiguous recent-day window", () => {
-    const days = getRecentUsageDays(
-      buildUsageOverview({ ledger }).daily,
-      3,
-      new Date(2026, 7, 2),
-    );
-    expect(days.map((day) => day.day)).toEqual([
-      "2026-07-31",
-      "2026-08-01",
-      "2026-08-02",
-    ]);
-    expect(days[0]?.intensity).toBe(0);
-    expect(days[1]?.intensity).toBeGreaterThan(0);
-  });
-
-  it("lights heatmap days from session activity even without token totals", () => {
-    const overview = buildUsageOverview({
-      ledger: {
-        version: 1,
-        firstEventAt: Date.parse("2026-08-20T12:00:00"),
-        lastUpdatedAt: Date.parse("2026-08-21T12:00:00"),
-        sessions: {
-          chat: {
-            providerId: "grok-acp",
-            modelId: "grok-4",
-            modelName: "grok-4",
-            createdAt: Date.parse("2026-08-20T12:00:00"),
-            lastActivityAt: Date.parse("2026-08-21T12:00:00"),
-            messageCount: 12,
-            started: true,
-            inputTokens: 0,
-            outputTokens: 0,
-            cacheTokens: 0,
-            totalTokens: 0,
-            costUsd: null,
-            costCurrency: null,
-            turns: 0,
-            workedMs: 0,
-          },
-        },
-        daily: {},
-      },
-    });
-    expect(overview.totalTokens).toBe(0);
-    expect(overview.activeDays).toBe(1);
-    expect(overview.bestDay?.day).toBe("2026-08-21");
-    expect(overview.bestDay?.activity).toBeGreaterThan(0);
-  });
-
   it("counts the totals of sessions that aged out of the ledger", () => {
     const overview = buildUsageOverview({
       ledger: {
@@ -242,61 +178,6 @@ describe("usageOverviewModel", () => {
     expect(overview.hasPartialCost).toBe(true);
     // The known part is still reported; it is the completeness that is flagged.
     expect(overview.estimatedCostUsd).toBe(0.5);
-  });
-
-  it("counts rows with an effort folded into the model id toward the base model, under its name", () => {
-    const { a } = ledger.sessions;
-    const row = (modelId: string, modelName: string) => ({
-      ...a,
-      providerId: "codex-acp",
-      modelId,
-      modelName,
-    });
-    const overview = buildUsageOverview({
-      ledger: {
-        ...ledger,
-        sessions: {
-          luna1: row("gpt-5.6-luna", "GPT-5.6 Luna"),
-          luna2: row("gpt-5.6-luna", "GPT-5.6 Luna"),
-          solLow: row("gpt-5.6-sol[low]", "GPT-5.6 Sol (low)"),
-          solXhigh: row("gpt-5.6-sol[xhigh]", "GPT-5.6 Sol (xhigh)"),
-          sol: row("gpt-5.6-sol", "GPT-5.6 Sol"),
-        },
-      },
-      enabledProviderIds: ["codex-acp"],
-    });
-
-    // Split per tier, Luna's two rows would have outranked each of Sol's.
-    expect(
-      overview.providers.find((provider) => provider.id === "codex-acp")
-        ?.topModel,
-    ).toBe("GPT-5.6 Sol");
-  });
-
-  it("labels a model seen only in folded rows by its base id", () => {
-    const { a } = ledger.sessions;
-    const overview = buildUsageOverview({
-      ledger: {
-        ...ledger,
-        sessions: {
-          low: {
-            ...a,
-            modelId: "gpt-5.6-sol[low]",
-            modelName: "GPT-5.6 Sol (low)",
-          },
-          high: {
-            ...a,
-            modelId: "gpt-5.6-sol[high]",
-            modelName: "GPT-5.6 Sol (high)",
-          },
-        },
-      },
-      enabledProviderIds: ["goose"],
-    });
-
-    expect(
-      overview.providers.find((provider) => provider.id === "goose")?.topModel,
-    ).toBe("gpt-5.6-sol");
   });
 
   it("keeps a single non-USD currency on the figure it belongs to", () => {

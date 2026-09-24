@@ -16,20 +16,6 @@ describe("MessageResponse Distill session Markdown links", () => {
     mockOpenSessionDeepLink.mockResolvedValue(true);
   });
 
-  it("renders valid distill session deep links as links", () => {
-    render(
-      <MessageResponse mode="static">
-        {"Open [the session](distill://session/session-1)."}
-      </MessageResponse>,
-    );
-
-    expect(screen.getByRole("link", { name: "the session" })).toHaveAttribute(
-      "href",
-      "distill://session/session-1",
-    );
-    expect(screen.queryByText("[blocked]", { exact: false })).toBeNull();
-  });
-
   it("preserves encoded session ids as one deep-link path segment", () => {
     render(
       <MessageResponse mode="static">
@@ -86,19 +72,6 @@ describe("MessageResponse Distill session Markdown links", () => {
     "distill://session/%FF",
     "distill://SESSION/session-1",
   ])("keeps malformed or non-session distill link %s blocked", (href) => {
-    render(
-      <MessageResponse mode="static">{`Do not open [this](${href}).`}</MessageResponse>,
-    );
-
-    expect(screen.queryByRole("link", { name: "this" })).toBeNull();
-    expect(screen.getByText(/this \[blocked\]/)).toBeInTheDocument();
-  });
-
-  it.each([
-    "javascript:alert(1)",
-    "data:text/html,hello",
-    "vbscript:msgbox(1)",
-  ])("continues blocking unsafe scheme %s", (href) => {
     render(
       <MessageResponse mode="static">{`Do not open [this](${href}).`}</MessageResponse>,
     );

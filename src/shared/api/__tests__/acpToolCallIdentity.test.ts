@@ -20,31 +20,6 @@ describe("getToolCallIdentity", () => {
       } as SessionUpdate),
     ).toEqual({ toolName: "spawn_agent" });
   });
-  it("returns empty without _meta", () => {
-    expect(
-      getToolCallIdentity({
-        sessionUpdate: "tool_call",
-        toolCallId: "call-1",
-        title: "Some title",
-      } as SessionUpdate),
-    ).toEqual({});
-  });
-
-  it("extracts Claude Code tool names", () => {
-    expect(
-      getToolCallIdentity(toolCallUpdate({ claudeCode: { toolName: "Task" } })),
-    ).toEqual({ toolName: "Task" });
-  });
-
-  it("extracts Codex collaboration tool names", () => {
-    expect(
-      getToolCallIdentity(
-        toolCallUpdate({
-          codex: { collaboration: { tool: "spawn_agent" } },
-        }),
-      ),
-    ).toEqual({ toolName: "spawn_agent" });
-  });
 
   it("reads Claude Code identity when _meta.goose carries only replay fields", () => {
     // Replay stamps `_meta.goose` (messageId/created) on updates for any

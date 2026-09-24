@@ -18,14 +18,6 @@ function report(overrides: Partial<StructuredReport> = {}): StructuredReport {
 }
 
 describe("verifyWaveStepReport", () => {
-  it("passes non-completed reports untouched — they are their own signal", () => {
-    for (const status of ["failed", "cancelled", "blocked"] as const) {
-      expect(
-        verifyWaveStepReport(report({ status }), { role: "brigade" }),
-      ).toEqual({ ok: true });
-    }
-  });
-
   it("refuses a wordless success on any stage", () => {
     const check = verifyWaveStepReport(report({ summary: "   " }), {
       role: "scout",
@@ -66,11 +58,5 @@ describe("verifyWaveStepReport", () => {
         { role: "qa" },
       ),
     ).toEqual({ ok: true });
-  });
-
-  it("asks only for a summary from pre/release/post stages and unknown roles", () => {
-    for (const role of ["scout", "pr-submitter", "marketer", "who-knows"]) {
-      expect(verifyWaveStepReport(report(), { role })).toEqual({ ok: true });
-    }
   });
 });

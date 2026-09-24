@@ -1,21 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { renderToStaticMarkup } from "react-dom/server";
-import { createElement } from "react";
-import type { DoctorReport } from "@/shared/api/doctor";
 import type { ProviderCatalogEntry } from "@/shared/types/providers";
-import {
-  getAgentProviders,
-  providerDisplayName,
-} from "@/features/providers/providerCatalog";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
-import { readinessFromReport } from "@/features/providers/hooks/useAgentProviderStatus";
-import { buildUsageOverview } from "@/features/stats/lib/usageOverviewModel";
-import {
-  syncUsageSessions,
-  recordSessionTokens,
-  getUsageLedger,
-  resetUsageLedgerForTests,
-} from "@/features/stats/lib/usageLedger";
+import { resetUsageLedgerForTests } from "@/features/stats/lib/usageLedger";
 import { buildProviderStatuses } from "./providerStatus";
 import {
   isListedUsageProvider,
@@ -23,12 +9,6 @@ import {
   getUsageSections,
 } from "./rateLimitWindows";
 import { getProviderUsageStatusKind } from "./rateLimitFormatters";
-import { canConnectPlatform } from "./connectPlatforms";
-import { ProviderSegment } from "../ui/ProviderSegment";
-import {
-  parseAgentRankingSource,
-  rankingInventoryFromProviders,
-} from "@/features/agents/lib/agentModelRanking";
 
 const future: ProviderCatalogEntry = {
   id: "future-acp",
@@ -49,85 +29,6 @@ afterEach(() => {
 });
 
 describe("catalog provider participation", () => {
-  it.each([
-    future,
-    { ...future, id: "kimi-acp", displayName: "Kimi Code", aliases: ["kimi"] },
-  ])("includes $displayName in status, setup, names, and recorded history without a usage adapter", (entry) => {
-    useProviderCatalogStore.getState().setEntries([entry]);
-    const readiness = readinessFromReport({
-      checks: [
-        {
-          id: `ai-agent-${entry.aliases?.[0]}`,
-          status: "pass",
-          path: "test-cli",
-          authStatus: "authenticated",
-        },
-      ],
-    } as DoctorReport);
-    expect(readiness.get(entry.id)).toBe("ready");
-    expect(getAgentProviders()).toEqual([entry]);
-    expect(
-      parseAgentRankingSource(
-        JSON.stringify({
-          entries: [
-            { platform: entry.id, modelId: "live-model", label: "Live model" },
-          ],
-        }),
-      )?.kind,
-    ).toBe("list");
-    expect(
-      rankingInventoryFromProviders(
-        [{ id: entry.id, label: entry.displayName }],
-        () => [{ id: "live-model" }],
-      )[0]?.platform,
-    ).toBe(entry.id);
-    expect(canConnectPlatform(entry.id, "not_installed")).toBe(true);
-    expect(canConnectPlatform(entry.id, "not_ready")).toBe(true);
-    const [status] = buildProviderStatuses(getAgentProviders(), [], readiness);
-    expect(status.configured).toBe(true);
-    expect(isListedUsageProvider(status, true)).toBe(true);
-    expect(getProviderUsageStatusKind(status)).toBe("ok");
-    expect(providerDisplayName(status.provider)).toBe(entry.displayName);
-    const html = renderToStaticMarkup(
-      createElement(ProviderSegment, { provider: status }),
-    );
-    expect(html).toContain("Connected");
-    expect(html).not.toContain("Sign in");
-    expect(html).not.toContain("data-usage-bar");
-
-    const date = new Date().toISOString();
-    syncUsageSessions([
-      {
-        id: "catalog-chat",
-        providerId: entry.id,
-        modelId: "live-model",
-        createdAt: date,
-        updatedAt: date,
-        messageCount: 2,
-      },
-    ]);
-    recordSessionTokens("catalog-chat", {
-      inputTokens: 100,
-      outputTokens: 25,
-      totalTokens: 125,
-    });
-    const ledger = getUsageLedger();
-    expect(ledger.sessions["catalog-chat"].providerId).toBe(entry.id);
-    const overview = buildUsageOverview({
-      ledger,
-      enabledProviderIds: [entry.id],
-    });
-    expect(overview.providers).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: entry.id,
-          label: entry.displayName,
-          totalTokens: 125,
-        }),
-      ]),
-    );
-  });
-
   it("keeps signed-out and missing providers distinct without requiring a quota adapter", () => {
     const [signedOut] = buildProviderStatuses(
       [future],

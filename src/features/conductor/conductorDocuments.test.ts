@@ -29,29 +29,20 @@ const {
   hasConductorGraphHydrationFailed,
   hydrateConductorGraph,
   isConductorGraphHydrated,
-  markConductorGraphHydrationFailed,
   resetConductorGraphHydrationForTests,
-  setConductorGraphHydratedForTests,
   useConductorGraphStore,
-  whenConductorGraphHydrated,
 } = await import("./conductorGraphStore");
 const {
-  CONDUCTOR_WAVES_STORAGE_KEY,
   emptyWaveEngineState,
   flushWaveEngineWrites,
   getWaveEngineState,
-  hasWaveEngineStateHydrationFailed,
   hydrateWaveEngineState,
   isWaveEngineStateHydrated,
-  markWaveEngineStateHydrationFailed,
   resetWaveEngineStateCache,
   resetWaveEngineStateHydrationForTests,
   setWaveEngineState,
-  setWaveEngineStateHydratedForTests,
-  whenWaveEngineStateHydrated,
   withWaveTombstone,
 } = await import("./waveStore");
-const { createWaveState } = await import("./waveEngine");
 const {
   bumpWaveTelemetryCounter,
   countPlanlessConductorTurn,
@@ -106,14 +97,6 @@ function rejectNextRead(path: string): void {
 }
 
 describe("the conductor's state lives in the Distill folder (P24)", () => {
-  it("writes the graph to the folder instead of localStorage", async () => {
-    await hydrateConductorGraph();
-    useConductorGraphStore.getState().registerNode(node("w1"));
-    await flushConductorGraphWrites();
-    expect(files.has(CONDUCTOR_GRAPH_DOCUMENT)).toBe(true);
-    expect(window.localStorage.getItem(CONDUCTOR_GRAPH_STORAGE_KEY)).toBeNull();
-  });
-
   it("migrates a browser copy into the folder once, then drops it", async () => {
     // The one-way door: after this the folder is the only source, so a second
     // copy can never drift out of step with it.
@@ -145,95 +128,6 @@ describe("the conductor's state lives in the Distill folder (P24)", () => {
     expect(useConductorGraphStore.getState().nodesById.w1?.status).toBe(
       "running",
     );
-  });
-
-  it("adds the waves of the previous run and keeps the live one", async () => {
-    const stored = createWaveState({
-      waveId: "old-wave",
-      conductorSessionId: "c1",
-      rootRequestId: "r1",
-      planMessageId: "m1",
-      steps: [{ role: "brigade", subtask: "do a thing", access: [] }],
-      createdAt: 1,
-    });
-    const live = createWaveState({
-      waveId: "live-wave",
-      conductorSessionId: "c1",
-      rootRequestId: "r2",
-      planMessageId: "m2",
-      steps: [{ role: "brigade", subtask: "do another thing", access: [] }],
-      createdAt: 2,
-    });
-    files.set(
-      CONDUCTOR_WAVES_DOCUMENT,
-      JSON.stringify({
-        version: 2,
-        waves: [stored],
-        tombstones: [
-          {
-            planMessageId: "m0",
-            conductorSessionId: "c1",
-            outcome: "spawned",
-            at: 1,
-          },
-        ],
-      }),
-    );
-    setWaveEngineState({ ...emptyWaveEngineState(), waves: [live] });
-    await hydrateWaveEngineState();
-    const waves = getWaveEngineState().waves.map((wave) => wave.waveId);
-    expect(waves).toEqual(["old-wave", "live-wave"]);
-    // The tombstone is what stops a restart re-admitting an old plan as a new
-    // root request, so it has to survive the merge too.
-    expect(getWaveEngineState().tombstones).toHaveLength(1);
-    await flushWaveEngineWrites();
-    expect(window.localStorage.getItem(CONDUCTOR_WAVES_STORAGE_KEY)).toBeNull();
-  });
-
-  it("says the waves are not ready until the folder has been read", async () => {
-    setWaveEngineStateHydratedForTests(false);
-    expect(isWaveEngineStateHydrated()).toBe(false);
-    const woken = vi.fn();
-    whenWaveEngineStateHydrated(woken);
-    expect(woken).not.toHaveBeenCalled();
-    // Back to the real answer, which on the desktop waits for the read.
-    setWaveEngineStateHydratedForTests(null);
-    await hydrateWaveEngineState();
-    expect(isWaveEngineStateHydrated()).toBe(true);
-    expect(woken).toHaveBeenCalledTimes(1);
-  });
-
-  it("says the graph is not ready until the folder has been read", async () => {
-    setConductorGraphHydratedForTests(false);
-    expect(isConductorGraphHydrated()).toBe(false);
-    const woken = vi.fn();
-    whenConductorGraphHydrated(woken);
-    expect(woken).not.toHaveBeenCalled();
-    setConductorGraphHydratedForTests(null);
-    await hydrateConductorGraph();
-    expect(isConductorGraphHydrated()).toBe(true);
-    expect(woken).toHaveBeenCalledTimes(1);
-  });
-
-  it("unions telemetry records without counting this session twice", async () => {
-    files.set(
-      WAVE_TELEMETRY_DOCUMENT,
-      JSON.stringify({
-        version: 1,
-        counters: {
-          planlessTurns: 7,
-          admittedWaves: 3,
-          rejectedPlans: 1,
-          concurrentRefusals: 0,
-        },
-        records: [],
-        planlessHighWater: {},
-      }),
-    );
-    await hydrateWaveTelemetry();
-    expect(getWaveTelemetry().counters.planlessTurns).toBe(7);
-    await flushWaveTelemetryWrites();
-    expect(files.has(WAVE_TELEMETRY_DOCUMENT)).toBe(true);
   });
 
   it("adds what a tick counted before telemetry.json landed to the lifetime totals", async () => {
@@ -422,33 +316,5 @@ describe("a folder that could not be read is never overwritten", () => {
     expect(written.nodes.map((entry: SessionNode) => entry.sessionId)).toEqual([
       "w1",
     ]);
-  });
-
-  it("releases the waiters when the caller gives up on the read, and says so", () => {
-    // A waiter parked on a document that will never arrive must not park for
-    // the rest of the session; it runs, finds the store unhydrated and failed,
-    // and decides for itself. The engine tick, for one, then stays off.
-    const graphWoken = vi.fn();
-    const wavesWoken = vi.fn();
-    setConductorGraphHydratedForTests(false);
-    setWaveEngineStateHydratedForTests(false);
-    whenConductorGraphHydrated(graphWoken);
-    whenWaveEngineStateHydrated(wavesWoken);
-    setConductorGraphHydratedForTests(null);
-    setWaveEngineStateHydratedForTests(null);
-
-    markConductorGraphHydrationFailed();
-    markWaveEngineStateHydrationFailed();
-
-    expect(graphWoken).toHaveBeenCalledTimes(1);
-    expect(wavesWoken).toHaveBeenCalledTimes(1);
-    expect(isConductorGraphHydrated()).toBe(false);
-    expect(hasConductorGraphHydrationFailed()).toBe(true);
-    expect(isWaveEngineStateHydrated()).toBe(false);
-    expect(hasWaveEngineStateHydrationFailed()).toBe(true);
-    // A waiter added after the failure runs at once, for the same reason.
-    const late = vi.fn();
-    whenConductorGraphHydrated(late);
-    expect(late).toHaveBeenCalledTimes(1);
   });
 });

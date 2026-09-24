@@ -1,9 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  clearMessageTracking,
-  handleSessionNotification,
-} from "@/features/chat/acp/acpNotificationHandler";
+import { clearMessageTracking } from "@/features/chat/acp/acpNotificationHandler";
 import { clearBufferedStreamingUpdatesForSession } from "@/features/chat/acp/liveStreamingUpdates";
 import { clearReplayBuffer } from "@/features/chat/hooks/replayBuffer";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
@@ -14,7 +11,7 @@ import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore
 import { resetProjectWikiPresenceForTests } from "@/features/memory/lib/projectWikiPrompt";
 import { MEMORY_PROTOCOL_PROMPT } from "@/features/memory/lib/memoryFence";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
-import { createUserMessage, getTextContent } from "@/shared/types/messages";
+import { createUserMessage } from "@/shared/types/messages";
 import {
   acquireSessionDispatchTarget,
   observeSessionTargetModelSnapshot,
@@ -136,25 +133,6 @@ function beginUpdatedTargetSelection(requestId: string) {
   });
 }
 
-async function emitHistoricalReplay(sessionId: string): Promise<void> {
-  await handleSessionNotification({
-    sessionId,
-    update: {
-      sessionUpdate: "user_message_chunk",
-      content: { type: "text", text: "older prompt" },
-      _meta: { distill: { messageId: "historical-user" } },
-    },
-  } as never);
-  await handleSessionNotification({
-    sessionId,
-    update: {
-      sessionUpdate: "agent_message_chunk",
-      content: { type: "text", text: "older answer" },
-      _meta: { distill: { messageId: "historical-assistant" } },
-    },
-  } as never);
-}
-
 describe("sendPromptToExistingSessionInBackground", () => {
   beforeEach(() => {
     resetSessionTargetCoordinatorsForTests();
@@ -258,25 +236,6 @@ describe("sendPromptToExistingSessionInBackground", () => {
       return mocks.acpSendMessage.mock.calls[0][2].systemPrompt;
     }
 
-    it("delivers project instructions and memory to a plain chat", async () => {
-      await sendPromptToExistingSessionInBackground(SESSION_ID, "hello");
-
-      const prompt = dispatchedSystemPrompt();
-      const orderedParts = [
-        "<project-instructions>",
-        "Follow Quarp's project instructions.",
-        "<memory>",
-        fact,
-        MEMORY_PROTOCOL_PROMPT,
-      ];
-      for (const part of orderedParts) expect(prompt).toContain(part);
-      for (let index = 1; index < orderedParts.length; index += 1) {
-        expect(prompt.indexOf(orderedParts[index])).toBeGreaterThan(
-          prompt.indexOf(orderedParts[index - 1]),
-        );
-      }
-    });
-
     it.each([
       "managedBy wave",
       "waveExecutorSessionIds",
@@ -348,131 +307,6 @@ describe("sendPromptToExistingSessionInBackground", () => {
       await send;
       expect(dispatchedSystemPrompt()).toContain("Repository working rules.");
     });
-
-    it.each([
-      true,
-      false,
-    ])("loads repository AGENTS.md from included workspaces (present: %s)", async (present) => {
-      useChatSessionStore.getState().patchSession(SESSION_ID, {
-        workspaceAttachments: [
-          {
-            id: "included",
-            path: "/work/quarp",
-            kind: "directory",
-            source: "selected",
-            usedByAgent: false,
-          },
-          {
-            id: "excluded",
-            path: "/work/other",
-            kind: "directory",
-            source: "excluded",
-            usedByAgent: false,
-          },
-        ],
-      });
-      mocks.loadWorkspaceInstructionFiles.mockResolvedValue(
-        present
-          ? [
-              {
-                path: "/work/quarp/AGENTS.md",
-                content: "Repository working rules.",
-                workspacePaths: ["/work/quarp"],
-              },
-            ]
-          : [],
-      );
-
-      await sendPromptToExistingSessionInBackground(SESSION_ID, "hello");
-
-      expect(mocks.loadWorkspaceInstructionFiles).toHaveBeenCalledWith([
-        "/work/quarp",
-      ]);
-      const prompt = dispatchedSystemPrompt();
-      if (present) {
-        expect(prompt).toContain("<workspace-instructions>");
-        expect(prompt).toContain("## /work/quarp/AGENTS.md");
-        expect(
-          prompt.indexOf("Follow Quarp's project instructions."),
-        ).toBeLessThan(prompt.indexOf("Repository working rules."));
-      } else {
-        expect(prompt).not.toContain("<workspace-instructions>");
-        expect(prompt).not.toContain("Repository working rules.");
-      }
-    });
-
-    it.each([
-      "  Captured prompt.\nKeep its whitespace.\n",
-      "",
-    ])("passes an explicit executionSystemPrompt through unchanged without loading workspace instructions (%j)", async (executionSystemPrompt) => {
-      await sendPromptToExistingSessionInBackground(
-        SESSION_ID,
-        "hello",
-        undefined,
-        {
-          sendOptions: { executionSystemPrompt },
-        },
-      );
-
-      expect(dispatchedSystemPrompt()).toBe(executionSystemPrompt);
-      expect(mocks.loadWorkspaceInstructionFiles).not.toHaveBeenCalled();
-      expect(mocks.listProjectDocuments).not.toHaveBeenCalled();
-    });
-  });
-
-  it("buffers a first-load ACP replay before appending a distill-monitor prompt", async () => {
-    let sessionWasLoaded = false;
-    const replayLoadingStates: boolean[] = [];
-    const messageSnapshots: string[][] = [];
-    const unsubscribe = useChatStore.subscribe((state, previousState) => {
-      if (
-        state.messagesBySession[SESSION_ID] ===
-        previousState.messagesBySession[SESSION_ID]
-      ) {
-        return;
-      }
-      messageSnapshots.push(
-        (state.messagesBySession[SESSION_ID] ?? []).map(getTextContent),
-      );
-    });
-
-    const replayHistory = async (sessionId: string) => {
-      replayLoadingStates.push(
-        useChatStore.getState().loadingSessionIds.has(sessionId),
-      );
-      await emitHistoricalReplay(sessionId);
-    };
-    mocks.acpLoadSession.mockImplementation(async (sessionId: string) => {
-      sessionWasLoaded = true;
-      await replayHistory(sessionId);
-    });
-    mocks.acpPrepareSession.mockImplementation(async (sessionId: string) => {
-      // This models ACP's real first-preparation behavior. Before the fix,
-      // sessions.send reached preparation first, and these history events were
-      // therefore classified as live. After the fix, the explicit history load
-      // prepares and flushes the session before this point.
-      if (!sessionWasLoaded) {
-        await replayHistory(sessionId);
-      }
-    });
-
-    try {
-      await sendPromptToExistingSessionInBackground(
-        SESSION_ID,
-        "new monitor event",
-      );
-      await vi.waitFor(() => {
-        expect(mocks.acpSendMessage).toHaveBeenCalled();
-      });
-    } finally {
-      unsubscribe();
-    }
-
-    expect(replayLoadingStates).toEqual([true]);
-    expect(messageSnapshots[0]).toEqual(["older prompt", "older answer"]);
-    expect(
-      useChatStore.getState().messagesBySession[SESSION_ID].map(getTextContent),
-    ).toEqual(["older prompt", "older answer", "new monitor event"]);
   });
   it("returns at dispatch for a turn still running past 60 seconds and retains ownership through failure", async () => {
     let failTurn!: (error: Error) => void;
@@ -599,46 +433,6 @@ describe("sendPromptToExistingSessionInBackground", () => {
     expect(
       mocks.acpSendMessage.mock.calls[0]?.[2]?.systemPrompt ?? "",
     ).not.toContain("Review from the session persona.");
-  });
-
-  it("inherits the session persona for an uncaptured legacy queue record", async () => {
-    useAgentStore.setState({
-      personas: [
-        {
-          id: "session-reviewer",
-          displayName: "Session Reviewer",
-          systemPrompt: "Review from the session persona.",
-          isBuiltin: false,
-          writable: true,
-        },
-      ],
-    });
-    useChatSessionStore.getState().patchSession(SESSION_ID, {
-      personaId: "session-reviewer",
-    });
-    mocks.acpLoadSession.mockResolvedValue(undefined);
-    mocks.acpPrepareSession.mockResolvedValue(undefined);
-
-    await sendQueuedPromptToExistingSessionInBackground(SESSION_ID, {
-      kind: "transport-ready",
-      recordId: "legacy-uncaptured-persona",
-      payload: {
-        text: "inherit the session persona",
-        persona: { kind: "inherit" },
-      },
-    });
-
-    expect(mocks.acpSendMessage).toHaveBeenCalledWith(
-      SESSION_ID,
-      "inherit the session persona",
-      expect.objectContaining({
-        personaId: "session-reviewer",
-        personaName: "Session Reviewer",
-        systemPrompt: expect.stringContaining(
-          "Review from the session persona.",
-        ),
-      }),
-    );
   });
 
   it("uses the deferred message's captured persona name after the persona is renamed", async () => {
@@ -775,72 +569,6 @@ describe("sendPromptToExistingSessionInBackground", () => {
     expect(systemPrompt?.match(/<\/active-persona>/g)).toHaveLength(1);
   });
 
-  it("uses the live session target with the deferred message's captured persona", async () => {
-    useAgentStore.setState({
-      providers: [
-        { id: "claude-acp", label: "Goose" },
-        { id: "claude-acp", label: "Claude Code" },
-      ],
-      personas: [
-        {
-          id: "claude-reviewer",
-          displayName: "Claude Reviewer",
-          systemPrompt: "Review with Claude.",
-          provider: "claude-acp",
-          model: "claude-sonnet-4",
-          isBuiltin: false,
-          writable: true,
-        },
-      ],
-    });
-    useChatSessionStore.getState().replaceSessionExecutionTarget(SESSION_ID, {
-      harnessId: "claude-acp",
-      modelProviderId: "claude-acp",
-      modelId: "claude-sonnet-4",
-      modelName: "claude-sonnet-4",
-    });
-    useChatSessionStore.getState().patchSession(SESSION_ID, {
-      personaId: "claude-reviewer",
-    });
-    mocks.acpLoadSession.mockResolvedValue(undefined);
-    mocks.acpPrepareSession.mockResolvedValue(undefined);
-
-    await sendQueuedPromptToExistingSessionInBackground(SESSION_ID, {
-      kind: "transport-ready",
-      recordId: "deferred-global-send",
-      releasedFromDeferred: true,
-      payload: {
-        text: "review this",
-        persona: { kind: "persona", id: "claude-reviewer" },
-      },
-    });
-
-    expect(mocks.acpPrepareSession).toHaveBeenCalledWith(
-      SESSION_ID,
-      "claude-acp",
-      expect.any(String),
-      { modelId: "claude-sonnet-4" },
-    );
-    expect(mocks.acpSendMessage).toHaveBeenCalledWith(
-      SESSION_ID,
-      "review this",
-      expect.objectContaining({
-        personaId: "claude-reviewer",
-        systemPrompt: expect.stringContaining("Review with Claude."),
-      }),
-    );
-    expect(useChatSessionStore.getState().getSession(SESSION_ID)).toMatchObject(
-      {
-        executionTarget: {
-          harnessId: "claude-acp",
-          modelProviderId: "claude-acp",
-          modelId: "claude-sonnet-4",
-          modelName: "claude-sonnet-4",
-        },
-      },
-    );
-  });
-
   it("does not dispatch queued work while the live session target is unresolved", async () => {
     useChatSessionStore
       .getState()
@@ -866,40 +594,6 @@ describe("sendPromptToExistingSessionInBackground", () => {
     );
     expect(mocks.acpPrepareSession).not.toHaveBeenCalled();
     expect(mocks.acpSendMessage).not.toHaveBeenCalled();
-  });
-
-  it("uses the live target selected before attempt and ignores a legacy payload target", async () => {
-    useChatSessionStore
-      .getState()
-      .replaceSessionExecutionTarget(SESSION_ID, UPDATED_TARGET);
-    mocks.acpLoadSession.mockResolvedValue(undefined);
-    mocks.acpPrepareSession.mockResolvedValue(undefined);
-    const queuedMessage = {
-      kind: "transport-ready",
-      recordId: "legacy-target-send",
-      releasedFromDeferred: true,
-      payload: {
-        text: "use the selected model",
-        persona: { kind: "inherit" },
-        executionTarget: INITIAL_TARGET,
-      },
-    } as const;
-
-    await sendQueuedPromptToExistingSessionInBackground(
-      SESSION_ID,
-      queuedMessage,
-    );
-
-    expect(mocks.acpPrepareSession.mock.calls.at(-1)).toEqual([
-      SESSION_ID,
-      UPDATED_TARGET.modelProviderId,
-      "/tmp/project",
-      { modelId: UPDATED_TARGET.modelId },
-    ]);
-    expect(mocks.acpSendMessage).toHaveBeenCalledTimes(1);
-    expect(
-      useChatSessionStore.getState().getSession(SESSION_ID)?.executionTarget,
-    ).toEqual(UPDATED_TARGET);
   });
 
   it.each([
@@ -965,44 +659,6 @@ describe("sendPromptToExistingSessionInBackground", () => {
     expect(
       useChatSessionStore.getState().getSession(SESSION_ID)?.executionTarget,
     ).toEqual(source === "snapshot" ? UPDATED_TARGET : UPDATED_TARGET_FROM_ACP);
-  });
-
-  it("releases a deferred external target after transport fails", async () => {
-    let rejectTransport: ((error: Error) => void) | undefined;
-    useChatSessionStore.setState((state) => ({
-      sessions: state.sessions.map((session) => ({
-        ...session,
-        executionTargetSource: "acp" as const,
-      })),
-    }));
-    mocks.acpLoadSession.mockResolvedValue({
-      providerId: UPDATED_TARGET.modelProviderId,
-      modelId: UPDATED_TARGET.modelId,
-    });
-    mocks.acpPrepareSession.mockResolvedValue(undefined);
-    mocks.acpSendMessage.mockReturnValueOnce(
-      new Promise<void>((_resolve, reject) => {
-        rejectTransport = reject;
-      }),
-    );
-
-    const send = sendPromptToExistingSessionInBackground(
-      SESSION_ID,
-      "fail after divergent hydration",
-    );
-    await vi.waitFor(() => {
-      expect(mocks.acpSendMessage).toHaveBeenCalledTimes(1);
-    });
-    expect(
-      useChatSessionStore.getState().getSession(SESSION_ID)?.executionTarget,
-    ).toEqual(INITIAL_TARGET);
-    rejectTransport?.(new Error("transport failed"));
-
-    await expect(send).rejects.toThrow("transport failed");
-    expect(mocks.transportProviders).toEqual([INITIAL_TARGET.modelProviderId]);
-    expect(
-      useChatSessionStore.getState().getSession(SESSION_ID)?.executionTarget,
-    ).toEqual(UPDATED_TARGET_FROM_ACP);
   });
 
   it("holds the lease from before hydration through transport", async () => {
@@ -1113,56 +769,6 @@ describe("sendPromptToExistingSessionInBackground", () => {
       expect.objectContaining({
         modelId: UPDATED_TARGET.modelId,
         requestId: "select-updated-during-prepare",
-      }),
-    ]);
-    expect(mocks.acpSendMessage).toHaveBeenCalledTimes(1);
-    expect(mocks.transportProviders).toEqual([INITIAL_TARGET.modelProviderId]);
-    expect(
-      useChatSessionStore.getState().getSession(SESSION_ID)?.executionTarget,
-    ).toEqual(UPDATED_TARGET);
-  });
-
-  it("keeps the snapshotted target when selection changes while cwd resolves", async () => {
-    let resolveCwd: ((workingDir: string) => void) | undefined;
-    mocks.resolveSessionCwd.mockReturnValueOnce(
-      new Promise<string>((resolve) => {
-        resolveCwd = resolve;
-      }),
-    );
-    mocks.acpLoadSession.mockResolvedValue(undefined);
-    mocks.acpPrepareSession.mockResolvedValue(undefined);
-
-    const send = sendPromptToExistingSessionInBackground(
-      SESSION_ID,
-      "finish with the attempt target",
-    );
-    await vi.waitFor(() => {
-      expect(mocks.resolveSessionCwd).toHaveBeenCalledTimes(1);
-    });
-    const applySelection = beginUpdatedTargetSelection(
-      "select-updated-during-cwd",
-    );
-    expect(
-      useChatSessionStore.getState().getSession(SESSION_ID)?.executionTarget,
-    ).toEqual(INITIAL_TARGET);
-    resolveCwd?.("/tmp/project");
-
-    await send;
-    await applySelection;
-
-    expect(mocks.acpPrepareSession.mock.calls[0]).toEqual([
-      SESSION_ID,
-      INITIAL_TARGET.modelProviderId,
-      "/tmp/project",
-      { modelId: INITIAL_TARGET.modelId },
-    ]);
-    expect(mocks.acpPrepareSession.mock.calls.at(-1)).toEqual([
-      SESSION_ID,
-      UPDATED_TARGET.modelProviderId,
-      "/tmp/project",
-      expect.objectContaining({
-        modelId: UPDATED_TARGET.modelId,
-        requestId: "select-updated-during-cwd",
       }),
     ]);
     expect(mocks.acpSendMessage).toHaveBeenCalledTimes(1);

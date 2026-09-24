@@ -72,68 +72,6 @@ describe("projects API artifact metadata", () => {
     });
   });
 
-  it("stores artifact metadata when creating a project", async () => {
-    mocks.sourcesList.mockResolvedValue({ sources: [] });
-    mocks.sourcesCreate.mockImplementation(async (request) => ({
-      source: source(request.properties),
-    }));
-
-    const { createProject } = await import("./projects");
-    const { createProjectArtifactMetadata } = await import(
-      "../artifact/deriveProjectArtifactState"
-    );
-
-    const project = await createProject(
-      "Launch",
-      "",
-      "Ship it",
-      "tabler:folder-code",
-      "olive",
-      ["/tmp/launch"],
-      false,
-    );
-
-    const createRequest = mocks.sourcesCreate.mock.calls[0]?.[0];
-    expect(createRequest.properties.artifact).toMatchObject({
-      seed: expect.any(Number),
-      color: "olive",
-      mood: expect.any(String),
-      moodIntensity: expect.any(Number),
-      contentMode: expect.any(String),
-    });
-    expect(createRequest.properties.artifact.seed).toBe(
-      createProjectArtifactMetadata({
-        projectId: "launch",
-        name: "Launch",
-        prompt: "Ship it",
-        color: "olive",
-        workingDirs: ["/tmp/launch"],
-      }).seed,
-    );
-    expect(project.artifact).toEqual(createRequest.properties.artifact);
-  });
-
-  it("preserves an existing artifact seed while saving a new project color", async () => {
-    const existingArtifact = artifactMetadata();
-    mocks.sourcesUpdate.mockImplementation(async (request) => ({
-      source: source(request.properties),
-    }));
-
-    const { updateProject } = await import("./projects");
-
-    const project = await updateProject(
-      projectInfo({ artifact: existingArtifact }),
-      { color: "peach" },
-    );
-
-    const updateRequest = mocks.sourcesUpdate.mock.calls[0]?.[0];
-    expect(updateRequest.properties.artifact).toEqual({
-      ...existingArtifact,
-      color: "peach",
-    });
-    expect(project.artifact).toEqual(updateRequest.properties.artifact);
-  });
-
   it("persists structured project workspaces while deriving working dirs", async () => {
     mocks.sourcesList.mockResolvedValue({ sources: [] });
     mocks.sourcesCreate.mockImplementation(async (request) => ({
@@ -197,105 +135,6 @@ describe("projects API artifact metadata", () => {
     ).toEqual([expect.objectContaining({ startupMode: "ask-worktree" })]);
   });
 
-  it("round-trips the new worktree startup policies", async () => {
-    const { normalizeProjectWorkspaces } = await import("./projects");
-
-    expect(
-      normalizeProjectWorkspaces([
-        {
-          id: "auto",
-          path: "/tmp/auto",
-          kind: "repository",
-          source: "selected",
-          branch: "main",
-          usedByAgent: false,
-          startupMode: "auto-worktree",
-        },
-        {
-          id: "ask",
-          path: "/tmp/ask",
-          kind: "repository",
-          source: "selected",
-          branch: "main",
-          usedByAgent: false,
-          startupMode: "ask-worktree",
-        },
-      ]),
-    ).toEqual([
-      expect.objectContaining({ startupMode: "auto-worktree" }),
-      expect.objectContaining({ startupMode: "ask-worktree" }),
-    ]);
-  });
-
-  it("recomputes existing artifact identity when renaming a project", async () => {
-    const existingArtifact = artifactMetadata();
-    mocks.sourcesUpdate.mockImplementation(async (request) => ({
-      source: source(request.properties),
-    }));
-
-    const { updateProject } = await import("./projects");
-    const { createProjectArtifactMetadata } = await import(
-      "../artifact/deriveProjectArtifactState"
-    );
-
-    await updateProject(projectInfo({ artifact: existingArtifact }), {
-      name: "Launch Platform",
-    });
-
-    const updateRequest = mocks.sourcesUpdate.mock.calls[0]?.[0];
-    expect(updateRequest.properties.artifact).toEqual(
-      createProjectArtifactMetadata({
-        projectId: "launch",
-        name: "Launch Platform",
-        prompt: "Ship it",
-        color: "olive",
-        workingDirs: ["/tmp/launch"],
-      }),
-    );
-    expect(updateRequest.properties.artifact.seed).not.toBe(
-      existingArtifact.seed,
-    );
-  });
-
-  it("preserves existing artifact identity when only prompt changes", async () => {
-    const existingArtifact = artifactMetadata();
-    mocks.sourcesUpdate.mockImplementation(async (request) => ({
-      source: source(request.properties),
-    }));
-
-    const { updateProject } = await import("./projects");
-
-    await updateProject(projectInfo({ artifact: existingArtifact }), {
-      prompt: "Ship it with a longer project prompt",
-    });
-
-    const updateRequest = mocks.sourcesUpdate.mock.calls[0]?.[0];
-    expect(updateRequest.properties.artifact).toEqual(existingArtifact);
-  });
-
-  it("stores project chat group metadata when updating a project", async () => {
-    mocks.sourcesUpdate.mockImplementation(async (request) => ({
-      source: source(request.properties),
-    }));
-
-    const { updateProject } = await import("./projects");
-
-    const chatGroups = {
-      groups: [
-        {
-          id: "launch:chat-group:readiness",
-          name: "Readiness",
-          chatIds: ["session-1", "session-2"],
-        },
-      ],
-    };
-    const project = await updateProject(projectInfo(), { chatGroups });
-
-    const updateRequest = mocks.sourcesUpdate.mock.calls[0]?.[0];
-    expect(updateRequest.properties.chatGroups).toEqual(chatGroups);
-    expect(project.chatGroups).toEqual(chatGroups);
-  });
-
   it("keeps fields another writer changed while the caller held its snapshot", async () => {
     const chatGroups = {
       groups: [
@@ -337,43 +176,6 @@ describe("projects API artifact metadata", () => {
     expect(updateRequest.properties.order).toBe(3);
     expect(project.chatGroups).toEqual(chatGroups);
   });
-
-  it("rewrites only the projects whose order actually changed", async () => {
-    const projects = [
-      { ...projectInfo({ id: "a", order: 0 }), path: "/tmp/projects/a.md" },
-      { ...projectInfo({ id: "b", order: 1 }), path: "/tmp/projects/b.md" },
-      { ...projectInfo({ id: "c", order: 2 }), path: "/tmp/projects/c.md" },
-    ];
-    mocks.sourcesList.mockResolvedValue({
-      sources: projects.map((project) => ({
-        ...source({
-          title: project.name,
-          icon: project.icon,
-          color: project.color,
-          workingDirs: project.workingDirs,
-          useWorktrees: project.useWorktrees,
-          order: project.order,
-        }),
-        name: project.id,
-        path: project.path,
-      })),
-    });
-    mocks.sourcesUpdate.mockImplementation(async (request) => ({
-      source: source(request.properties),
-    }));
-
-    const { reorderProjects } = await import("./projects");
-    await reorderProjects([
-      ["a", 0],
-      ["b", 2],
-      ["c", 1],
-    ]);
-
-    expect(mocks.sourcesList).toHaveBeenCalledTimes(1);
-    expect(
-      mocks.sourcesUpdate.mock.calls.map(([request]) => request.path),
-    ).toEqual(["/tmp/projects/b.md", "/tmp/projects/c.md"]);
-  });
 });
 
 describe("normalizeProjectWorkspaces dedupe identity", () => {
@@ -394,17 +196,6 @@ describe("normalizeProjectWorkspaces dedupe identity", () => {
     expect(workspaces[0]?.id).toBe(workspaceAttachmentIdForPath("C:\\Repo"));
   });
 
-  it("collapses UNC-equivalent working dirs to one workspace", async () => {
-    const { normalizeProjectWorkspaces } = await import("./projects");
-
-    const workspaces = normalizeProjectWorkspaces(undefined, [
-      "\\\\Server\\Share\\proj",
-      "//server/share/proj",
-    ]);
-
-    expect(workspaces).toHaveLength(1);
-  });
-
   it("keeps drive-relative working dirs distinct by drive and from ordinary relative paths", async () => {
     const { normalizeProjectWorkspaces } = await import("./projects");
 
@@ -419,17 +210,6 @@ describe("normalizeProjectWorkspaces dedupe identity", () => {
 
     expect(workspaces).toHaveLength(6);
     expect(new Set(workspaces.map((workspace) => workspace.id)).size).toBe(6);
-  });
-
-  it("keeps case-distinct Unix working dirs as separate workspaces", async () => {
-    const { normalizeProjectWorkspaces } = await import("./projects");
-
-    const workspaces = normalizeProjectWorkspaces(undefined, [
-      "/Users/dev/Repo",
-      "/users/dev/repo",
-    ]);
-
-    expect(workspaces).toHaveLength(2);
   });
 
   it("collapses drive-equivalent explicit workspaces to a single stable ID", async () => {

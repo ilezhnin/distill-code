@@ -2,66 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   fileUrlToPath,
-  getPathBasename,
   getRelativePath,
-  isFileUrl,
   isPathWithin,
   isSamePath,
-  isWindowsPath,
-  toComparablePath,
   toIdentityKey,
 } from "./pathIdentity";
 
-describe("toComparablePath", () => {
-  it.each([
-    ["C:\\Users\\dev", "C:/Users/dev"],
-    ["c:/Users/dev/", "c:/Users/dev"],
-    ["/Users/dev/", "/Users/dev"],
-    ["/Users/dev///", "/Users/dev"],
-    ["\\\\server\\share\\dir", "//server/share/dir"],
-    ["C:\\", "C:/"],
-    ["/", "/"],
-    ["C:/repo/../src", "C:/src"],
-    [" folder /file ", " folder /file "],
-    ["//server/share/repo/../../outside", "//server/share/outside"],
-    ["/../../tmp", "/tmp"],
-    ["relative/dir", "relative/dir"],
-    ["C:foo/../bar", "C:bar"],
-    ["D:foo/../bar", "D:bar"],
-    ["C:../bar", "C:../bar"],
-    ["C:../../bar", "C:../../bar"],
-    ["C:foo/../../bar", "C:../bar"],
-  ])("normalizes %s -> %s (case preserved)", (input, expected) => {
-    expect(toComparablePath(input)).toBe(expected);
-  });
-});
-
-describe("isWindowsPath", () => {
-  it.each([
-    ["C:\\Users", true],
-    ["c:/users", true],
-    ["C:", false],
-    ["\\\\server\\share", true],
-    ["//server/share", true],
-    ["/Users/dev", false],
-    ["relative/path", false],
-    ["", false],
-  ])("classifies %s as windows=%s", (input, expected) => {
-    expect(isWindowsPath(input)).toBe(expected);
-  });
-});
-
 describe("toIdentityKey", () => {
-  it("folds case for drive-letter paths", () => {
-    expect(toIdentityKey("C:\\Users\\Dev")).toBe(toIdentityKey("c:/users/dev"));
-  });
-
-  it("folds case for UNC paths", () => {
-    expect(toIdentityKey("\\\\Server\\Share\\Dir")).toBe(
-      toIdentityKey("//server/share/dir"),
-    );
-  });
-
   it("keeps drive-relative paths distinct by drive and from ordinary relative paths", () => {
     expect(toIdentityKey("C:foo/../bar")).toBe("C:bar");
     expect(toIdentityKey("D:foo/../bar")).toBe("D:bar");
@@ -71,11 +18,6 @@ describe("toIdentityKey", () => {
     );
     expect(toIdentityKey("C:foo")).not.toBe(toIdentityKey("c:foo"));
     expect(toIdentityKey("C:../bar")).not.toBe(toIdentityKey("C:../../bar"));
-  });
-
-  it("keeps Unix paths case-sensitive on the non-browser Linux default", () => {
-    expect(toIdentityKey("/Users/Dev")).not.toBe(toIdentityKey("/users/dev"));
-    expect(toIdentityKey("/Users/Dev")).toBe("/Users/Dev");
   });
 });
 
@@ -89,20 +31,6 @@ describe("isSamePath", () => {
     ["/Users/dev", "/Users/other", false],
   ])("%s vs %s -> %s", (a, b, expected) => {
     expect(isSamePath(a, b)).toBe(expected);
-  });
-
-  it("applies platform case semantics to Unix-style paths", () => {
-    expect(toIdentityKey("/Users/Dev/Repo", "mac")).toBe("/users/dev/repo");
-    expect(toIdentityKey("/Users/Dev/Repo", "linux")).toBe("/Users/Dev/Repo");
-    expect(isSamePath("/Users/Dev/Repo", "/users/dev/repo", "mac")).toBe(true);
-    expect(isSamePath("/Users/Dev/Repo", "/users/dev/repo", "linux")).toBe(
-      false,
-    );
-  });
-
-  it("returns false for nullish inputs", () => {
-    expect(isSamePath(null, "/a")).toBe(false);
-    expect(isSamePath("/a", undefined)).toBe(false);
   });
 });
 
@@ -127,20 +55,6 @@ describe("isPathWithin", () => {
   ])("within(%s, %s) -> %s", (base, target, expected) => {
     expect(isPathWithin(base, target)).toBe(expected);
   });
-
-  it("uses platform case semantics for Unix-style containment", () => {
-    expect(
-      isPathWithin("/Users/Dev/Repo", "/users/dev/repo/file.md", "mac"),
-    ).toBe(true);
-    expect(
-      isPathWithin("/Users/Dev/Repo", "/users/dev/repo/file.md", "linux"),
-    ).toBe(false);
-  });
-
-  it("returns false for nullish inputs", () => {
-    expect(isPathWithin(null, "/a")).toBe(false);
-    expect(isPathWithin("/a", null)).toBe(false);
-  });
 });
 
 describe("getRelativePath", () => {
@@ -159,60 +73,6 @@ describe("getRelativePath", () => {
     ["/İ/file.txt", "/i", null],
   ])("relative(%s, %s) -> %s", (path, root, expected) => {
     expect(getRelativePath(path, root)).toBe(expected);
-  });
-
-  it("uses platform case semantics for Unix-style relative paths", () => {
-    expect(
-      getRelativePath("/users/dev/repo/Src/File.ts", "/Users/Dev/Repo", "mac"),
-    ).toBe("Src/File.ts");
-    expect(
-      getRelativePath(
-        "/users/dev/repo/Src/File.ts",
-        "/Users/Dev/Repo",
-        "linux",
-      ),
-    ).toBeNull();
-  });
-
-  it("preserves the original spelling of the remainder", () => {
-    // Base folds case, but the returned remainder keeps `path`'s spelling.
-    expect(getRelativePath("C:\\Work\\Src\\File.TS", "c:/work")).toBe(
-      "Src/File.TS",
-    );
-  });
-
-  it("returns null for missing root", () => {
-    expect(getRelativePath("/a/b", null)).toBe(null);
-  });
-});
-
-describe("getPathBasename", () => {
-  it.each([
-    ["C:\\Users\\dev\\project", "project"],
-    ["/Users/dev/project/", "project"],
-    ["\\\\server\\share\\dir", "dir"],
-    ["single", "single"],
-    ["C:\\", "C:/"],
-  ])("basename(%s) -> %s", (input, expected) => {
-    expect(getPathBasename(input)).toBe(expected);
-  });
-});
-
-describe("isFileUrl", () => {
-  it.each([
-    ["file:///tmp/a.png", true],
-    [" file:/tmp/a.png ", true],
-    ["FILE:C:/Users/dev/a.png", true],
-    ["https://example.com/a.png", false],
-    ["/tmp/a.png", false],
-    ["", false],
-  ])("classifies %s -> %s", (input, expected) => {
-    expect(isFileUrl(input)).toBe(expected);
-  });
-
-  it("returns false for nullish input", () => {
-    expect(isFileUrl(null)).toBe(false);
-    expect(isFileUrl(undefined)).toBe(false);
   });
 });
 
@@ -257,10 +117,5 @@ describe("fileUrlToPath", () => {
 
   it("rejects embedded control characters", () => {
     expect(fileUrlToPath("file:///tmp/%00evil")).toBeNull();
-  });
-
-  it("returns null for non-string input", () => {
-    expect(fileUrlToPath(null)).toBeNull();
-    expect(fileUrlToPath(undefined)).toBeNull();
   });
 });

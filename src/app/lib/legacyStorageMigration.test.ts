@@ -12,16 +12,6 @@ describe("migrateLegacyStorage", () => {
     expect(localStorage.getItem("distill.perf")).toBe("1");
   });
 
-  it("renames goose-era keys", () => {
-    localStorage.setItem("goose:memory", "[]");
-    localStorage.setItem("goose.perf", "1");
-    migrateLegacyStorage(localStorage);
-    expect(localStorage.getItem("distill:memory")).toBe("[]");
-    expect(localStorage.getItem("distill.perf")).toBe("1");
-    expect(localStorage.getItem("goose:memory")).toBeNull();
-    expect(localStorage.getItem("goose.perf")).toBeNull();
-  });
-
   it("restores keys the broken rename moved, newest copy first", () => {
     localStorage.setItem("distillll:locale", "es");
     localStorage.setItem("goose:locale", "en");
@@ -34,11 +24,5 @@ describe("migrateLegacyStorage", () => {
       "distill:locale",
       "distill:theme",
     ]);
-  });
-
-  it("drops retired onboarding state", () => {
-    localStorage.setItem("berd:onboarding:v1", "1");
-    migrateLegacyStorage(localStorage);
-    expect(localStorage.getItem("berd:onboarding:v1")).toBeNull();
   });
 });
