@@ -3,7 +3,7 @@ import type { DoctorCheck, DoctorReport } from "@/shared/api/doctor";
 import { useDoctorReport } from "@/shared/api/useDoctorReport";
 import { crateCheckIdToProviderId } from "@/features/providers/lib/agentIdMap";
 import { recordReadyProviders } from "@/features/providers/lib/providerConnections";
-import { CURATED_PROVIDER_CATALOG_BY_ID } from "@/features/providers/curatedProviders";
+import { getCatalogEntry } from "@/features/providers/providerCatalog";
 import { getProviderUsageStatusKind } from "@/features/status/lib/rateLimitFormatters";
 import type { ProviderRateLimits } from "@/features/status/lib/rateLimitTypes";
 import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
@@ -34,7 +34,7 @@ export function readinessFromReport(
     const providerId = crateCheckIdToProviderId(check.id);
     if (!providerId) continue;
 
-    const provider = CURATED_PROVIDER_CATALOG_BY_ID.get(providerId);
+    const provider = getCatalogEntry(providerId);
 
     // A two-binary ACP agent (e.g. Amp) whose main CLI is present but whose
     // ACP bridge binary is missing: the doctor crate flags it status="warn"

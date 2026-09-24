@@ -5,6 +5,7 @@
     "refreshFailed": "Error al actualizar",
     "limited": "Limitado",
     "unavailable": "No disponible",
+    "connected": "Conectado",
     "signIn": "Iniciar sesión",
     "connect": "Conectar",
     "connectAll": "Conectar todo",
@@ -30,6 +31,8 @@
     "hoursAgo": "hace {{count}} h",
     "refreshFailedCached": "Error al actualizar — mostrando datos en caché",
     "signInToSee": "Inicia sesión para ver el uso",
+    "checking": "Comprobando conexión…",
+    "limitsUnavailable": "Conectado. Los límites de uso no están disponibles.",
     "signInExpired": "Inicio de sesión caducado",
     "resetsNow": "Se restablece ahora",
     "resetsIn": "Se restablece en {{duration}}",
@@ -37,14 +40,11 @@
     "weekly": "Semanal",
     "fable": "Fable",
     "monthly": "Mensual",
+    "codingMonthly": "Programación mensual",
     "usedNow": "{{percent}} usado ahora",
     "usedWindow": "{{percent}} usado {{window}}",
     "usedFable": "{{percent}} usado Fable",
+    "usedCodingMonthly": "{{percent}} usado programación/mes",
     "percentUsed": "{{percent}} usado"
-  },
-  "providers": {
-    "claude-acp": "Claude",
-    "grok-acp": "Grok",
-    "codex-acp": "Codex"
   }
 }

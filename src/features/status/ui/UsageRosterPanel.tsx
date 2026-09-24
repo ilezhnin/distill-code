@@ -1,5 +1,6 @@
 import { ChevronRight, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { providerDisplayName } from "@/features/providers/providerCatalog";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import {
   DropdownMenuItem,
@@ -70,7 +71,7 @@ function UsageRow({
 }) {
   const { t } = useTranslation("status");
   const sections = getUsageSections(provider);
-  const name = t(`providers.${provider.provider}`);
+  const name = providerDisplayName(provider.provider);
   const statusKind = getProviderUsageStatusKind(provider);
   const resetRaw = resetDuration(
     sections
@@ -108,7 +109,9 @@ function UsageRow({
                 ? t("bar.refreshFailed")
                 : statusKind === "sign-in"
                   ? t("roster.signInExpired")
-                  : t("roster.signInToSee")}
+                  : statusKind === "fetching"
+                    ? t("roster.checking")
+                    : t("roster.limitsUnavailable")}
             </span>
             {showSignIn ? (
               <span className="ml-auto shrink-0 rounded-md border border-border bg-secondary px-2.5 py-0.5 text-xs text-foreground">
@@ -251,7 +254,7 @@ export function UsageRosterPanel({
                   <div className="px-3 py-2">
                     <div className="text-[11px] text-muted-foreground">
                       {t("roster.account", {
-                        name: t(`providers.${provider.provider}`),
+                        name: providerDisplayName(provider.provider),
                       })}
                     </div>
                     <div className="truncate text-[13px] text-foreground">

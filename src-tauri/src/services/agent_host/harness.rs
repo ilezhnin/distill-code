@@ -255,6 +255,24 @@ pub const HARNESSES: &[HarnessSpec] = &[
         session_model_meta: None,
     },
     HarnessSpec {
+        id: "kimi-acp",
+        label: "Kimi Code",
+        description: "Moonshot AI Kimi Code CLI through its native ACP interface.",
+        command: "kimi",
+        args: &["acp"],
+        env_remove: &[],
+        // Kimi's engine uses auto for unattended operation and yolo for
+        // routine approvals while retaining questions and sensitive-action gates.
+        modes: &[
+            ("auto", "auto"),
+            ("approve", "default"),
+            ("smartApprove", "yolo"),
+            ("chat", "plan"),
+        ],
+        models: &[],
+        session_model_meta: None,
+    },
+    HarnessSpec {
         id: "copilot-acp",
         label: "GitHub Copilot",
         description: "GitHub Copilot CLI in ACP mode.",
@@ -507,6 +525,34 @@ pub fn session_model_meta(spec: &HarnessSpec, model_id: &str) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kimi_uses_native_acp_modes_and_live_model_capabilities() {
+        let spec = harness("kimi-acp").unwrap();
+        assert_eq!(spec.command, "kimi");
+        assert_eq!(spec.args, ["acp"]);
+        for (mode, expected) in [
+            ("auto", "auto"),
+            ("approve", "default"),
+            ("smartApprove", "yolo"),
+            ("chat", "plan"),
+        ] {
+            assert_eq!(bridge_mode(spec, mode), Some(expected));
+        }
+        let models = merge_inventory(
+            "kimi-acp",
+            vec![probed(
+                "kimi-code/kimi-for-coding",
+                "Kimi for Coding",
+                &["off", "on"],
+                false,
+            )],
+        );
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["id"], "kimi-code/kimi-for-coding");
+        assert_eq!(models[0]["efforts"][1]["value"], "on");
+        assert_eq!(models[0]["supportsFast"], false);
+    }
 
     /// A row as `probe_models` writes it: the bridge's own name, plus what
     /// selecting the model showed.

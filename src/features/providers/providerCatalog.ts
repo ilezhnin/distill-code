@@ -1,4 +1,5 @@
 import type { ProviderCatalogEntry } from "@/shared/types/providers";
+import { formatProviderLabel } from "@/shared/ui/icons/ProviderIcons";
 import { useProviderCatalogStore } from "./stores/providerCatalogStore";
 import { normalizeProviderKey } from "./lib/providerKey";
 
@@ -16,6 +17,12 @@ export function getCatalogEntry(
 
 export function getAgentProviders(): ProviderCatalogEntry[] {
   return getProviderCatalog();
+}
+
+export function providerDisplayName(providerId: string): string {
+  return (
+    getCatalogEntry(providerId)?.displayName ?? formatProviderLabel(providerId)
+  );
 }
 
 export function getCatalogEntryFromEntries(

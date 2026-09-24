@@ -419,7 +419,26 @@ export function CopilotIcon({ className = "" }: { className?: string }) {
   );
 }
 
+export function KimiIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M4 3h4v8l8-8h5l-9 9 9 9h-5l-8-8v8H4V3Z" fill="currentColor" />
+    </svg>
+  );
+}
+
 const PROVIDER_ICON_MAP: Record<string, (className: string) => ReactNode> = {
+  "kimi-acp": (className) => <KimiIcon className={className} />,
+  "kimi-code": (className) => <KimiIcon className={className} />,
+  kimi: (className) => <KimiIcon className={className} />,
+  moonshot: (className) => <KimiIcon className={className} />,
   "claude-acp": (className) => <ClaudeIcon className={className} />,
   "claude-code": (className) => <ClaudeIcon className={className} />,
   claude: (className) => <ClaudeIcon className={className} />,

@@ -5,6 +5,7 @@
     "refreshFailed": "Refresh failed",
     "limited": "Limited",
     "unavailable": "Unavailable",
+    "connected": "Connected",
     "signIn": "Sign in",
     "connect": "Connect",
     "connectAll": "Connect all",
@@ -30,6 +31,8 @@
     "hoursAgo": "{{count}}h ago",
     "refreshFailedCached": "Refresh failed — showing cached data",
     "signInToSee": "Sign in to see usage",
+    "checking": "Checking connection…",
+    "limitsUnavailable": "Connected. Usage limits are unavailable.",
     "signInExpired": "Sign-in expired",
     "resetsNow": "Resets now",
     "resetsIn": "Resets in {{duration}}",
@@ -37,14 +40,11 @@
     "weekly": "Weekly",
     "fable": "Fable",
     "monthly": "Monthly",
+    "codingMonthly": "Monthly coding",
     "usedNow": "{{percent}} used now",
     "usedWindow": "{{percent}} used {{window}}",
     "usedFable": "{{percent}} used Fable",
+    "usedCodingMonthly": "{{percent}} used coding/mo",
     "percentUsed": "{{percent}} used"
-  },
-  "providers": {
-    "claude-acp": "Claude",
-    "grok-acp": "Grok",
-    "codex-acp": "Codex"
   }
 }

@@ -48,6 +48,7 @@ export function mergeStale(
       weekly: provider.weekly ?? prior.weekly,
       fableWeekly: provider.fableWeekly ?? prior.fableWeekly,
       monthly: provider.monthly ?? prior.monthly,
+      codingMonthly: provider.codingMonthly ?? prior.codingMonthly,
       accountLabel: provider.accountLabel ?? prior.accountLabel,
       planType: provider.planType ?? prior.planType,
       error: provider.error ?? prior.error,

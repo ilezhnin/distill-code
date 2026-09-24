@@ -14,7 +14,8 @@ export function hasUsageData(provider: ProviderRateLimits): boolean {
     provider.session ||
       provider.weekly ||
       provider.fableWeekly ||
-      provider.monthly,
+      provider.monthly ||
+      provider.codingMonthly,
   );
 }
 
@@ -74,12 +75,20 @@ export function getUsageSections(provider: ProviderRateLimits): UsageSection[] {
       window: provider.fableWeekly,
     });
   }
-  if (provider.monthly && !provider.session && !provider.weekly) {
+  if (provider.monthly) {
     sections.push({
       key: "monthly",
       label: "monthly",
       shortLabel: formatWindowLength(provider.monthly.windowMinutes),
       window: provider.monthly,
+    });
+  }
+  if (provider.codingMonthly) {
+    sections.push({
+      key: "codingMonthly",
+      label: "codingMonthly",
+      shortLabel: "mo (code)",
+      window: provider.codingMonthly,
     });
   }
   return sections;

@@ -1,9 +1,11 @@
-import { CURATED_PROVIDER_CATALOG_BY_ID } from "@/features/providers/curatedProviders";
+import {
+  getAgentProviders,
+  getCatalogEntry,
+} from "@/features/providers/providerCatalog";
 import type { AgentProviderReadiness } from "@/features/providers/hooks/useAgentProviderStatus";
 import { useAgentSetupStore } from "@/features/providers/stores/agentSetupStore";
 import { requestOpenSettings } from "@/features/settings/lib/settingsEvents";
 import type { AgentPlatformId } from "./rateLimitTypes";
-import { TRACKED_AGENT_PLATFORM_IDS } from "./rateLimitTypes";
 
 export function openProviderAccounts(): void {
   requestOpenSettings("providers");
@@ -17,7 +19,7 @@ export async function connectAgentPlatform(
   providerId: AgentPlatformId,
   readiness: AgentProviderReadiness | undefined,
 ): Promise<void> {
-  const entry = CURATED_PROVIDER_CATALOG_BY_ID.get(providerId);
+  const entry = getCatalogEntry(providerId);
   const startSetup = useAgentSetupStore.getState().startSetup;
   const bundledBridge = entry?.bundledBridge === true;
   const verifyInstall = entry?.setupMethod !== "none";
@@ -48,7 +50,7 @@ export async function connectAllAgentPlatforms(
   readiness: Map<string, AgentProviderReadiness>,
 ): Promise<void> {
   openProviderAccounts();
-  for (const providerId of TRACKED_AGENT_PLATFORM_IDS) {
+  for (const { id: providerId } of getAgentProviders()) {
     const status = readiness.get(providerId);
     // Install missing CLIs from here. Do not auto-run interactive `auth login`:
     // that command needs a browser/TTY, and the doctor crate's Unix login-shell
@@ -64,9 +66,12 @@ export function canConnectPlatform(
   providerId: AgentPlatformId,
   readiness: AgentProviderReadiness | undefined,
 ): boolean {
-  const entry = CURATED_PROVIDER_CATALOG_BY_ID.get(providerId);
+  const entry = getCatalogEntry(providerId);
   if (!entry) return false;
   // Unknown/loading is not "needs connect": Settings may already show a
   // green tick while the doctor report is still hydrating.
-  return readiness === "not_installed" || readiness === "not_ready";
+  return (
+    (readiness === "not_installed" && entry.supportsInstall === true) ||
+    (readiness === "not_ready" && entry.supportsAuth === true)
+  );
 }

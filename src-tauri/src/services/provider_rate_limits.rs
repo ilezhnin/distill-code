@@ -10,6 +10,7 @@
 mod claude;
 mod codex;
 pub(crate) mod grok;
+mod kimi;
 mod types;
 mod windows;
 
@@ -28,14 +29,18 @@ pub fn http_client() -> Result<reqwest::Client, String> {
 
 pub async fn fetch_snapshot() -> Result<ProviderRateLimitSnapshot, String> {
     let client = http_client()?;
-    let (claude, codex, grok) = tokio::join!(
+    let (claude, codex, grok, kimi) = tokio::join!(
         claude::fetch_claude_rate_limits(&client),
         codex::fetch_codex_rate_limits(&client),
         grok::fetch_grok_rate_limits(&client),
+        kimi::fetch_kimi_rate_limits(),
     );
-
+    // These are quota adapters, not the provider roster. The UI derives its
+    // roster from the catalog and fills in connection status without quotas.
+    let mut providers = vec![claude, grok, codex];
+    providers.extend(kimi);
     Ok(ProviderRateLimitSnapshot {
-        providers: vec![claude, grok, codex],
+        providers,
         updated_at: now_ms(),
     })
 }
@@ -63,6 +68,7 @@ fn result(
         weekly: None,
         fable_weekly: None,
         monthly: None,
+        coding_monthly: None,
         plan_type: None,
         account_label: None,
         updated_at: now_ms(),

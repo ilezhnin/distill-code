@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { providerDisplayName } from "@/features/providers/providerCatalog";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import type { ProviderRateLimits } from "../lib/rateLimitTypes";
 import {
@@ -21,7 +22,7 @@ export function ProviderDetailsPanel({
   now?: number;
 }) {
   const { t } = useTranslation("status");
-  const name = t(`providers.${provider.provider}`);
+  const name = providerDisplayName(provider.provider);
   const sections = getUsageSections(provider);
   const statusKind = getProviderUsageStatusKind(provider);
   const updatedParts =
@@ -68,6 +69,12 @@ export function ProviderDetailsPanel({
           <div className="break-words text-muted-foreground">
             {provider.error ?? t("roster.signInToSee")}
           </div>
+        </div>
+      ) : null}
+
+      {statusKind === "ok" && sections.length === 0 ? (
+        <div className="text-muted-foreground">
+          {t("roster.limitsUnavailable")}
         </div>
       ) : null}
 

@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Plug, RefreshCw } from "lucide-react";
 import { useAgentProviderStatus } from "@/features/providers/hooks/useAgentProviderStatus";
+import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
+import { providerDisplayName } from "@/features/providers/providerCatalog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,11 +20,7 @@ import {
   openProviderAccounts,
   openUsageDetails,
 } from "../lib/connectPlatforms";
-import {
-  TRACKED_AGENT_PLATFORM_IDS,
-  type AgentPlatformId,
-  type ProviderRateLimits,
-} from "../lib/rateLimitTypes";
+import { buildProviderStatuses } from "../lib/providerStatus";
 import { isListedUsageProvider } from "../lib/rateLimitWindows";
 import {
   startProviderRateLimitPolling,
@@ -32,21 +30,10 @@ import { ProviderSegment } from "./ProviderSegment";
 import { StatusBarUsageEmptyCta } from "./StatusBarUsageEmptyCta";
 import { UsageRosterPanel } from "./UsageRosterPanel";
 
-function idleProvider(provider: AgentPlatformId): ProviderRateLimits {
-  return {
-    provider,
-    session: null,
-    weekly: null,
-    updatedAt: 0,
-    error: null,
-    status: "idle",
-    configured: false,
-  };
-}
-
 export function StatusBar() {
   const { t } = useTranslation("status");
   const { agentReadiness } = useAgentProviderStatus();
+  const catalog = useProviderCatalogStore((state) => state.entries);
   const snapshot = useProviderRateLimitsStore((state) => state.snapshot);
   const isRefreshing = useProviderRateLimitsStore(
     (state) => state.isRefreshing,
@@ -70,26 +57,21 @@ export function StatusBar() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const providers = useMemo(() => {
-    const byId = new Map(
-      (snapshot?.providers ?? []).map((provider) => [
-        provider.provider,
-        provider,
-      ]),
-    );
-    return TRACKED_AGENT_PLATFORM_IDS.map(
-      (providerId) => byId.get(providerId) ?? idleProvider(providerId),
-    );
-  }, [snapshot]);
+  const providers = useMemo(
+    () => buildProviderStatuses(catalog, snapshot?.providers, agentReadiness),
+    [catalog, snapshot, agentReadiness],
+  );
 
   const visibleProviders = providers.filter((provider) => {
     const readiness = agentReadiness.get(provider.provider);
     const installed = readiness === "ready" || readiness === "not_ready";
     return isListedUsageProvider(provider, installed);
   });
-  const connectable = TRACKED_AGENT_PLATFORM_IDS.filter((providerId) =>
-    canConnectPlatform(providerId, agentReadiness.get(providerId)),
-  );
+  const connectable = catalog
+    .map((provider) => provider.id)
+    .filter((providerId) =>
+      canConnectPlatform(providerId, agentReadiness.get(providerId)),
+    );
   const isEmpty = visibleProviders.length === 0;
 
   return (
@@ -196,7 +178,9 @@ export function StatusBar() {
                 className="gap-2"
               >
                 {getProviderIcon(providerId, "size-3.5")}
-                <span className="flex-1">{t(`providers.${providerId}`)}</span>
+                <span className="flex-1">
+                  {providerDisplayName(providerId)}
+                </span>
                 <span className="text-[11px] text-muted-foreground">
                   {t("bar.signIn")}
                 </span>

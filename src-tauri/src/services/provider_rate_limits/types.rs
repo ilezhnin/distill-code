@@ -8,6 +8,8 @@ pub enum AgentPlatformId {
     Codex,
     #[serde(rename = "grok-acp")]
     Grok,
+    #[serde(rename = "kimi-acp")]
+    Kimi,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -39,6 +41,8 @@ pub struct ProviderRateLimits {
     pub fable_weekly: Option<RateLimitWindow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub monthly: Option<RateLimitWindow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coding_monthly: Option<RateLimitWindow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

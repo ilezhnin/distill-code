@@ -323,6 +323,7 @@ fn billing_usage_result(
         weekly,
         fable_weekly: None,
         monthly,
+        coding_monthly: None,
         plan_type: tier.map(ToOwned::to_owned),
         account_label: Some(account),
         updated_at: now_ms(),

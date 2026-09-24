@@ -1,19 +1,7 @@
-// Map between this app's agent provider IDs and the doctor crate's check IDs.
-//
-// The doctor crate uses `ai-agent-<short>` (e.g. `ai-agent-claude`). The
-// frontend uses the provider catalog's IDs (`claude-acp`, `codex-acp`, etc.). Keeping the translation here lets the rest of the codebase
-// stay on the catalog IDs.
-
-const CRATE_TO_PROVIDER: Record<string, string> = {
-  "ai-agent-claude": "claude-acp",
-  "ai-agent-codex": "codex-acp",
-  "ai-agent-grok": "grok-acp",
-  "ai-agent-amp": "amp-acp",
-  "ai-agent-copilot": "copilot-acp",
-  "ai-agent-pi": "pi-acp",
-  "ai-agent-cursor": "cursor-agent",
-};
+import { resolveAgentProviderCatalogIdStrict } from "../providerCatalog";
 
 export function crateCheckIdToProviderId(checkId: string): string | null {
-  return CRATE_TO_PROVIDER[checkId] ?? null;
+  const prefix = "ai-agent-";
+  if (!checkId.startsWith(prefix)) return null;
+  return resolveAgentProviderCatalogIdStrict(checkId.slice(prefix.length));
 }
