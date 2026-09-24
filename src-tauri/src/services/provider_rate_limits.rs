@@ -27,13 +27,15 @@ pub fn http_client() -> Result<reqwest::Client, String> {
         .map_err(|error| format!("Failed to build rate-limit HTTP client: {error}"))
 }
 
-pub async fn fetch_snapshot() -> Result<ProviderRateLimitSnapshot, String> {
+pub async fn fetch_snapshot(
+    env: &std::collections::HashMap<String, String>,
+) -> Result<ProviderRateLimitSnapshot, String> {
     let client = http_client()?;
     let (claude, codex, grok, kimi) = tokio::join!(
         claude::fetch_claude_rate_limits(&client),
         codex::fetch_codex_rate_limits(&client),
         grok::fetch_grok_rate_limits(&client),
-        kimi::fetch_kimi_rate_limits(),
+        kimi::fetch_kimi_rate_limits(env),
     );
     // These are quota adapters, not the provider roster. The UI derives its
     // roster from the catalog and fills in connection status without quotas.

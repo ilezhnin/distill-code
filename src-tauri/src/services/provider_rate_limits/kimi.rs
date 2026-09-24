@@ -7,8 +7,9 @@ use super::windows::{
     WEEKLY_WINDOW_MINUTES,
 };
 use super::{home_dir, result};
+use crate::services::env_key;
 use serde_json::Value;
-use std::{fs, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 
 fn supports_managed_usage(root: &Path, base_override: Option<&str>) -> Result<bool, String> {
     let raw = match fs::read_to_string(root.join("config.toml")) {
@@ -94,17 +95,17 @@ fn usage_error(message: &str) -> ProviderRateLimits {
     }
 }
 
-pub async fn fetch_kimi_rate_limits() -> Option<ProviderRateLimits> {
-    let root = crate::services::shell_env::user_env_var("KIMI_CODE_HOME")
+pub async fn fetch_kimi_rate_limits(env: &HashMap<String, String>) -> Option<ProviderRateLimits> {
+    let root = env_key::get(env, "KIMI_CODE_HOME")
         .filter(|value| !value.trim().is_empty())
         .map(std::path::PathBuf::from)
         .or_else(|| home_dir().map(|home| home.join(".kimi-code")))?;
-    let base_override = crate::services::shell_env::user_env_var("KIMI_CODE_BASE_URL");
-    match supports_managed_usage(&root, base_override.as_deref()) {
+    let base_override = env_key::get(env, "KIMI_CODE_BASE_URL");
+    match supports_managed_usage(&root, base_override) {
         Ok(false) => None,
         Err(error) => Some(usage_error(&error)),
         Ok(true) => Some(
-            match crate::services::agent_host::kimi::managed_usage(&root).await {
+            match crate::services::agent_host::kimi::managed_usage(&root, env).await {
                 Ok(data) => map_usage(&data),
                 Err(error) => usage_error(&error),
             },

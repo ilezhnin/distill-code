@@ -2,6 +2,47 @@ use std::{collections::HashMap, path::PathBuf};
 
 use crate::services::{dir_env, env_key, shell_env};
 
+/// Resolve a provider executable for both discovery and execution: managed
+/// shims first, then the user's login-shell PATH. Keep selection in one place
+/// so settings, authentication, chats and usage choose the same installation.
+pub fn resolve_executable(
+    name: &str,
+    prepend_dirs: &[PathBuf],
+    path_value: Option<&str>,
+) -> Option<PathBuf> {
+    let mut dirs: Vec<PathBuf> = prepend_dirs.to_vec();
+    if let Some(path_value) = path_value {
+        dirs.extend(std::env::split_paths(path_value));
+    }
+    let candidates: Vec<String> = if cfg!(windows) {
+        let lower = name.to_ascii_lowercase();
+        if lower.ends_with(".exe") || lower.ends_with(".cmd") || lower.ends_with(".bat") {
+            vec![name.to_string()]
+        } else {
+            vec![
+                format!("{name}.exe"),
+                format!("{name}.cmd"),
+                format!("{name}.bat"),
+                name.to_string(),
+            ]
+        }
+    } else {
+        vec![name.to_string()]
+    };
+    for dir in dirs {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        for candidate in &candidates {
+            let path = dir.join(candidate);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
 fn push_existing_path(paths: &mut Vec<PathBuf>, path: &str, preserve_hermit: bool) {
     paths.extend(std::env::split_paths(path).filter(|path| {
         preserve_hermit

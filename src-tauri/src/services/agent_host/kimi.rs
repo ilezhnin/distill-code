@@ -79,7 +79,14 @@ struct UsageEndpoint {
 }
 
 fn usage_endpoint(line: &str) -> Option<UsageEndpoint> {
-    let url = reqwest::Url::parse(line.trim().strip_prefix("Kimi server: ")?).ok()?;
+    let line = line.trim();
+    // Native Kimi prints an indented `Local:` row. Retain the earlier CLI
+    // banner as well; both must still identify an authenticated loopback URL.
+    let address = line
+        .strip_prefix("Local:")
+        .or_else(|| line.strip_prefix("Kimi server:"))?
+        .trim();
+    let url = reqwest::Url::parse(address).ok()?;
     if url.scheme() != "http"
         || url.host_str() != Some("127.0.0.1")
         || url.port().is_none()
@@ -130,20 +137,25 @@ async fn request_managed_usage(
         .ok_or_else(|| "Kimi Code usage response was empty".into())
 }
 
-pub(crate) async fn managed_usage(root: &Path) -> Result<Value, String> {
+pub(crate) async fn managed_usage(
+    root: &Path,
+    env: &HashMap<String, String>,
+) -> Result<Value, String> {
     let operation = async {
         let _guard = USAGE_LOCK.lock().await;
-        let path = crate::services::path_env::build_extended_path_with_prepended_dirs(
-            crate::services::shell_env::user_env_var("PATH").as_deref(),
+        let executable = crate::services::path_env::resolve_executable(
+            harness::harness("kimi-acp")
+                .expect("registered Kimi harness")
+                .command,
             &[],
-        );
-        let executable = super::bridge::resolve_executable("kimi", &[], Some(&path))
-            .ok_or_else(|| "Kimi Code CLI is not installed".to_string())?;
+            crate::services::env_key::get(env, "PATH"),
+        )
+        .ok_or_else(|| "Kimi Code CLI is not installed".to_string())?;
         let mut command = Command::new(executable);
         command
             .args(["web", "--port", "0", "--no-open", "--log-level", "silent"])
             .current_dir(root)
-            .env("PATH", path)
+            .envs(env)
             .env("KIMI_CODE_HOME", root)
             .env("NO_COLOR", "1")
             .env("FORCE_COLOR", "0")
@@ -211,12 +223,112 @@ pub(crate) async fn managed_usage(root: &Path) -> Result<Value, String> {
 mod tests {
     use super::*;
 
+    fn usage_server(
+        paths: &[&'static str],
+        body: &'static str,
+    ) -> (UsageEndpoint, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = UsageEndpoint {
+            origin: format!("http://{}", listener.local_addr().unwrap()),
+            token: "test-token".into(),
+        };
+        let paths = paths.to_vec();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            for expected in paths {
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "usage helper never requested {expected}"
+                            );
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                // TCP may split the headers across reads. Bound their size and
+                // wait for the entire request before checking authorization.
+                let mut reader = std::io::BufReader::new((&mut stream).take(4096));
+                let mut request = String::new();
+                while !request.ends_with("\r\n\r\n") {
+                    assert!(
+                        reader.read_line(&mut request).unwrap() > 0,
+                        "incomplete HTTP headers"
+                    );
+                }
+                let request = request.to_ascii_lowercase();
+                assert!(request.starts_with(expected));
+                assert!(request.contains("\r\nauthorization: bearer test-token\r\n"));
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        (endpoint, server)
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn usage_runs_with_the_private_cli_and_runtime_from_setup() {
+        let root = tempfile::tempdir().unwrap();
+        let prefix = root.path().join("managed npm prefix");
+        let runtime = root.path().join("managed node runtime");
+        std::fs::create_dir_all(&prefix).unwrap();
+        std::fs::create_dir_all(&runtime).unwrap();
+        let (endpoint, server) = usage_server(
+            &["get /api/v1/oauth/usage ", "post /api/v1/shutdown "],
+            r#"{"code":0,"data":{"kind":"ok","quota":{"usages":{"monthTotal":{"usedRatio":0.25}}}}}"#,
+        );
+        std::fs::write(
+            prefix.join("kimi.cmd"),
+            "@echo off\r\nif not \"%~1\"==\"web\" exit /b 2\r\nif not \"%DISTILL_KIMI_CAPTURED_TEST%\"==\"captured\" exit /b 3\r\nif not \"%KIMI_CODE_HOME%\"==\"%CD%\" exit /b 4\r\ncall kimi-test-runtime.cmd\r\n",
+        ).unwrap();
+        std::fs::write(
+            runtime.join("kimi-test-runtime.cmd"),
+            format!(
+                "@echo off\r\necho   Local:    {}#token={}\r\n",
+                endpoint.origin, endpoint.token
+            ),
+        )
+        .unwrap();
+        let captured = HashMap::from([
+            ("Path".into(), String::new()),
+            ("DISTILL_KIMI_CAPTURED_TEST".into(), "captured".into()),
+        ]);
+        let env = crate::services::path_env::env_vars_with_extended_path_and_prepended_dirs(
+            &captured,
+            &[prefix, runtime],
+        )
+        .into_iter()
+        .collect();
+        let response = managed_usage(root.path(), &env).await;
+        server.join().unwrap();
+        assert_eq!(
+            response.unwrap()["quota"]["usages"]["monthTotal"]["usedRatio"],
+            0.25
+        );
+    }
+
     #[test]
     fn usage_handshake_accepts_only_an_authenticated_loopback_endpoint() {
-        let ready = usage_endpoint("Kimi server: http://127.0.0.1:3456#token=test-token").unwrap();
-        assert_eq!(ready.origin, "http://127.0.0.1:3456");
-        assert_eq!(ready.token, "test-token");
         for line in [
+            "  Local:    http://127.0.0.1:3456#token=test-token",
+            "Kimi server: http://127.0.0.1:3456#token=test-token",
+        ] {
+            let ready = usage_endpoint(line).unwrap();
+            assert_eq!(ready.origin, "http://127.0.0.1:3456");
+            assert_eq!(ready.token, "test-token");
+        }
+        for line in [
+            "  Local:    https://example.com#token=secret",
+            "  Network:  http://127.0.0.1:3456#token=secret",
+            "  Local:    http://127.0.0.1:3456",
             "Kimi server: https://example.com#token=secret",
             "Kimi server: http://0.0.0.0:3456#token=secret",
             "Kimi server: http://127.0.0.1:3456",
@@ -230,30 +342,24 @@ mod tests {
 
     #[tokio::test]
     async fn reads_structured_usage_from_kimis_authenticated_local_api() {
-        use std::io::{Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut buffer = [0; 4096];
-            let count = stream.read(&mut buffer).unwrap();
-            let request = String::from_utf8_lossy(&buffer[..count]).to_lowercase();
-            assert!(request.starts_with("get /api/v1/oauth/usage "));
-            assert!(request.contains("authorization: bearer test-token"));
-            let body = r#"{"code":0,"data":{"kind":"ok","quota":{"usages":{"limit5h":{"usedRatio":0.5}}}}}"#;
-            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
-        });
+        let (endpoint, server) = usage_server(
+            &["get /api/v1/oauth/usage "],
+            r#"{"code":0,"data":{"kind":"ok","quota":{"usages":{"limit5h":{"usedRatio":0.5}}}}}"#,
+        );
         let data = request_managed_usage(
-            &reqwest::Client::builder().no_proxy().build().unwrap(),
-            &UsageEndpoint {
-                origin: format!("http://{address}"),
-                token: "test-token".into(),
-            },
+            &reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+            &endpoint,
         )
-        .await
-        .unwrap();
+        .await;
         server.join().unwrap();
-        assert_eq!(data["quota"]["usages"]["limit5h"]["usedRatio"], 0.5);
+        assert_eq!(
+            data.unwrap()["quota"]["usages"]["limit5h"]["usedRatio"],
+            0.5
+        );
     }
 
     #[test]

@@ -20,9 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 #[cfg(windows)]
 use crate::services::shell_env;
-use crate::services::{
-    distro_bundle::DistroBundleState, managed_acp_tools, managed_node, path_env,
-};
+use crate::services::{distro_bundle::DistroBundleState, managed_acp_tools, managed_node};
 use doctor::FixType;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -379,26 +377,6 @@ pub(crate) fn crate_check_id(provider_id: &str) -> String {
     format!("ai-agent-{name}")
 }
 
-/// Binary search dirs for checks and fixes: the managed bridge shims in
-/// `packages/bin` (or the `DISTILL_ACP_TOOLS_DIR` dev override), then the
-/// Distill-private npm prefix and the managed Node runtime its shims run on.
-/// Bridges resolve only from managed installs — nothing ships inside the
-/// bundle anymore.
-fn setup_prepend_dirs(app: &AppHandle) -> Vec<std::path::PathBuf> {
-    managed_acp_tools::managed_prepend_dirs(app)
-}
-
-/// The env snapshot every check/fix subprocess runs with: the captured home
-/// shell env with the extended PATH, plus the managed npm env steering global
-/// installs into the Distill-private prefix.
-async fn setup_env_vars(app: &AppHandle) -> Vec<(String, String)> {
-    let prepend_dirs = setup_prepend_dirs(app);
-    let mut vars =
-        path_env::home_env_vars_with_extended_path_and_prepended_dirs(&prepend_dirs).await;
-    managed_acp_tools::apply_managed_npm_env(&mut vars, &managed_acp_tools::managed_npm_env(app));
-    vars
-}
-
 async fn find_check(app: &AppHandle, provider_id: &str) -> Result<doctor::DoctorCheck, String> {
     find_check_with_options(app, provider_id, false).await
 }
@@ -427,10 +405,13 @@ async fn find_check_with_options(
     {
         return Ok(check);
     }
-    // Agents the crate doesn't know (Grok) are Distill's own local checks.
-    crate::commands::doctor::run_local_agent_check(&target, &setup_prepend_dirs(app))
-        .await
-        .ok_or_else(|| format!("Unknown agent provider '{provider_id}'"))
+    // Agents the crate doesn't know are Distill's own local checks.
+    crate::commands::doctor::run_local_agent_check(
+        &target,
+        &managed_acp_tools::provider_env(app).await,
+    )
+    .await
+    .ok_or_else(|| format!("Unknown agent provider '{provider_id}'"))
 }
 
 /// The crate's AI-agent doctor report (with the Windows managed-bridge repair
@@ -442,7 +423,7 @@ async fn run_crate_check_report(
     app: &AppHandle,
     check_freshness: bool,
 ) -> Vec<doctor::DoctorCheck> {
-    let env_vars = setup_env_vars(app).await;
+    let env_vars = managed_acp_tools::provider_setup_env(app).await;
     let bundled_tools_dir = managed_acp_tools::bundled_tools_dir_for_checks(app);
     let mut report = doctor::run_checks_with_options(
         doctor::RunChecksOptions {
@@ -941,7 +922,7 @@ async fn run_logout_command(
     if provider_id == "kimi-acp" {
         set_phase(app, registry, provider_id, SetupPhase::SigningOut);
         return crate::services::agent_host::kimi::logout(
-            setup_env_vars(app).await.into_iter().collect(),
+            managed_acp_tools::provider_env(app).await,
         )
         .await;
     }
@@ -1052,7 +1033,7 @@ async fn run_fix(
         fix_type,
         command_override,
         npm_registry(app),
-        setup_env_vars(app).await,
+        managed_acp_tools::provider_setup_env(app).await,
         move |line| {
             log::info!("{log_tag_for_lines} {line}");
             append_output(
