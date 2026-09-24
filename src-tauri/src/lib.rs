@@ -335,7 +335,6 @@ pub fn run() {
             commands::distill_store::get_distill_root,
             commands::distill_store::set_distill_root,
             commands::distill_store::read_distill_document,
-            commands::distill_store::read_distill_instructions,
             commands::distill_store::write_distill_document,
             commands::project_store::read_project_document,
             commands::project_store::write_project_document,

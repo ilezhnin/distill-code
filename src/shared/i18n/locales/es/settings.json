@@ -207,7 +207,7 @@
     "title": "General",
     "distillFolder": {
       "label": "Carpeta de Distill",
-      "description": "Los datos propios de Distill — proyectos, memoria, ejecuciones del conductor y artefactos generados — viven aquí. El historial de chats se queda en la carpeta de datos de la app.",
+      "description": "Aquí viven los ajustes, el historial, la memoria, los agentes, las habilidades y los artefactos. La carpeta .distill de cada proyecto contiene sus propios datos y ajustes.",
       "chooseDialogTitle": "Elegir la carpeta de Distill",
       "choose": "Cambiar carpeta",
       "saved": "Nueva carpeta guardada",

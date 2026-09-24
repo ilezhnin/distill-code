@@ -4,12 +4,6 @@ import { sessionProjectInstructionsPrompt } from "@/features/chat/lib/projectIns
 import { loadWorkspaceInstructionFiles } from "@/features/chat/api/workspaceContext";
 import { getWorkspaceAttachments } from "@/features/chat/lib/workspaceAttachments";
 import { formatWorkspaceInstructionsPrompt } from "@/features/chat/lib/workspaceContextPrompt";
-import {
-  formatLorePointerPrompt,
-  formatOperatorProfilePrompt,
-  formatResearchPointerPrompt,
-  refreshRootInstructions,
-} from "@/features/chat/lib/rootInstructionsPrompt";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { sessionSpawnPolicyPrompt } from "@/features/conductor/spawnAcl";
 import {
@@ -18,7 +12,6 @@ import {
 } from "@/features/memory/lib/memoryPreferences";
 import { archivedCountForProject } from "@/features/memory/lib/memoryPrompt";
 import { sessionProjectWikiPrompt } from "@/features/memory/lib/projectWikiPrompt";
-import { loadSessionProjectResearchPrompt } from "@/features/memory/lib/projectResearchPrompt";
 import {
   isWaveExecutorSession,
   sessionMemoryWriteAccess,
@@ -33,7 +26,7 @@ import type { Persona } from "@/shared/types/agents";
 import type { ChatSendOptions } from "../types";
 
 /**
- * The operator's profile, pointers, memory protocols for a
+ * Built-in memory protocols for a
  * background session's system prompt.
  *
  * The two callers that compose an `executionSystemPrompt` themselves (the
@@ -61,9 +54,6 @@ function composeOperatorProtocols(sessionId: string): string | undefined {
     useChatSessionStore.getState().getSession(sessionId)?.projectId ?? null;
   const memory = useMemoryStore.getState();
   return composeSystemPrompt(
-    formatOperatorProfilePrompt(),
-    formatLorePointerPrompt(),
-    formatResearchPointerPrompt(),
     composeGatedMemorySection(
       getMemoryPreferences(),
       memory.entries,
@@ -110,19 +100,16 @@ export async function sendPromptInBackground(
           .filter((attachment) => attachment.source !== "excluded")
           .map((attachment) => attachment.path)
       : [];
-    const [, projectResearchPrompt, instructionFiles] = await Promise.all([
-      refreshRootInstructions(),
-      loadSessionProjectResearchPrompt(sessionId),
+    const instructionFiles =
       workspacePaths.length > 0
-        ? loadWorkspaceInstructionFiles(workspacePaths).catch((error) => {
+        ? await loadWorkspaceInstructionFiles(workspacePaths).catch((error) => {
             console.warn(
               "Failed to load workspace instructions for background send:",
               error,
             );
             return [];
           })
-        : [],
-    ]);
+        : [];
     systemPrompt = composeSystemPrompt(
       formatPersonaSystemPrompt(persona),
       // Right after the persona, where the handwritten sentence used to
@@ -137,7 +124,6 @@ export async function sendPromptInBackground(
       // the operator's memory — still profits from reading it before it
       // re-explores the repository.
       sessionProjectWikiPrompt(sessionId),
-      projectResearchPrompt,
       // Last, matching the foreground order: persona, workspace context,
       // then the operator protocols.
       composeOperatorProtocols(sessionId),

@@ -46,21 +46,10 @@ import {
 import { archivedCountForProject } from "@/features/memory/lib/memoryPrompt";
 import { projectMemoryRoot } from "@/features/memory/lib/projectMemoryDocuments";
 import {
-  formatLorePointerPrompt,
-  formatOperatorProfilePrompt,
-  formatResearchPointerPrompt,
-  refreshRootInstructions,
-} from "@/features/chat/lib/rootInstructionsPrompt";
-import {
   formatProjectWikiPrompt,
   knownProjectWikiPresence,
   refreshProjectWikiPresence,
 } from "@/features/memory/lib/projectWikiPrompt";
-import {
-  formatProjectResearchPrompt,
-  knownProjectResearchPresence,
-  refreshProjectResearchPresence,
-} from "@/features/memory/lib/projectResearchPrompt";
 import { decideMemoryWrite } from "@/features/memory/lib/memoryWriteAccess";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
@@ -786,49 +775,19 @@ export function useChatSessionController({
   );
   const [projectWikiPromptState, setProjectWikiPromptState] =
     useState(EMPTY_PROMPT_STATE);
-  const [projectResearchPromptState, setProjectResearchPromptState] =
-    useState(EMPTY_PROMPT_STATE);
-  const [rootOperatorPrompts, setRootOperatorPrompts] = useState<{
-    key: string | null;
-    profile: string | undefined;
-    lore: string | undefined;
-    research: string | undefined;
-  }>({ key: null, profile: undefined, lore: undefined, research: undefined });
-  // Every committed turn moves the session's `updatedAt`, so the look-up below
-  // runs once per turn: a wiki written mid-session starts being advertised on
-  // the next one, and a deleted one stops. The listing is coalesced per root
-  // with the two send paths that share this cache. Root instruction files
-  // refresh on the same stamp so an edited user.md reaches the next turn.
+  // Refresh optional project knowledge when a new turn updates the session.
   const sessionTurnStamp = session?.updatedAt;
-  const rootInstructionsKey = JSON.stringify([sessionId, sessionTurnStamp]);
-  const projectResearchKey = JSON.stringify([
-    sessionId,
-    projectWikiRoot,
-    sessionTurnStamp,
-  ]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: A new turn refreshes the external wiki listing.
   useEffect(() => {
     let cancelled = false;
-    void refreshRootInstructions().then(() => {
-      if (cancelled) return;
-      setRootOperatorPrompts({
-        key: rootInstructionsKey,
-        profile: formatOperatorProfilePrompt(),
-        lore: formatLorePointerPrompt(),
-        research: formatResearchPointerPrompt(),
-      });
-    });
     if (!projectWikiRoot) {
       setProjectWikiPromptState((current) =>
-        nextPromptState(current, { key: "", prompt: undefined }),
-      );
-      setProjectResearchPromptState((current) =>
         nextPromptState(current, { key: "", prompt: undefined }),
       );
       return () => {
         cancelled = true;
       };
     }
-    // Never rejects; a folder that cannot be listed is recorded as "no wiki".
     void refreshProjectWikiPresence(projectWikiRoot).then((present) => {
       if (cancelled) return;
       setProjectWikiPromptState((current) =>
@@ -838,36 +797,15 @@ export function useChatSessionController({
         }),
       );
     });
-    void refreshProjectResearchPresence(projectWikiRoot).then((present) => {
-      if (cancelled) return;
-      setProjectResearchPromptState((current) =>
-        nextPromptState(current, {
-          key: projectResearchKey,
-          prompt: formatProjectResearchPrompt(present),
-        }),
-      );
-    });
     return () => {
       cancelled = true;
     };
-  }, [projectWikiRoot, rootInstructionsKey, projectResearchKey]);
-  // The wiki keeps its optional cached pointer. Research and root instructions
-  // must finish loading before a complete execution prompt can be captured.
-  // Acceptance still queues immediately while this context is being read.
+  }, [projectWikiRoot, sessionTurnStamp]);
   const projectWikiPrompt =
     projectWikiPromptState.key === (projectWikiRoot ?? "")
       ? projectWikiPromptState.prompt
       : formatProjectWikiPrompt(knownProjectWikiPresence(projectWikiRoot));
-  const projectResearchPrompt =
-    projectResearchPromptState.key === projectResearchKey
-      ? projectResearchPromptState.prompt
-      : formatProjectResearchPrompt(
-          knownProjectResearchPresence(projectWikiRoot),
-        );
-  const workspaceContextReady =
-    workspaceFilesReady &&
-    rootOperatorPrompts.key === rootInstructionsKey &&
-    (!projectWikiRoot || projectResearchPromptState.key === projectResearchKey);
+  const workspaceContextReady = workspaceFilesReady;
   // What this session already knows, and how it keeps more. Scoped by the
   // session's own project: a fact learned in one codebase must not follow the
   // operator into an unrelated chat.
@@ -937,9 +875,6 @@ export function useChatSessionController({
       isWaveExecutorChat
         ? undefined
         : composeSystemPrompt(
-            rootOperatorPrompts.profile,
-            rootOperatorPrompts.lore,
-            rootOperatorPrompts.research,
             composeGatedMemorySection(
               memoryPreferences,
               memoryEntries,
@@ -955,7 +890,6 @@ export function useChatSessionController({
       memoryEntries,
       memoryPreferences,
       memoryWriteAllowed,
-      rootOperatorPrompts,
     ],
   );
   const effectiveSystemPrompt = useMemo(
@@ -974,7 +908,6 @@ export function useChatSessionController({
         // reading this session's context is welcome to it. Same position the
         // queued and background send paths give it.
         projectWikiPrompt,
-        projectResearchPrompt,
         appSkillsCatalogPrompt,
         availableSkillsCatalogPrompt,
         operatorProtocols,
@@ -986,7 +919,6 @@ export function useChatSessionController({
       projectInstructionsPrompt,
       workspaceInstructionsPrompt,
       projectWikiPrompt,
-      projectResearchPrompt,
       appSkillsCatalogPrompt,
       availableSkillsCatalogPrompt,
       operatorProtocols,
@@ -2526,7 +2458,6 @@ export function useChatSessionController({
         projectInstructionsPrompt,
         workspaceInstructionsPrompt,
         projectWikiPrompt,
-        projectResearchPrompt,
         appSkillsCatalogPrompt,
         availableSkillsCatalogPrompt,
         operatorProtocols,
@@ -2555,7 +2486,6 @@ export function useChatSessionController({
       includedWorkspacesPrompt,
       operatorProtocols,
       projectInstructionsPrompt,
-      projectResearchPrompt,
       projectWikiPrompt,
       selectedPersona,
       sendWithAutoCompact,
@@ -2762,7 +2692,6 @@ export function useChatSessionController({
               // wholesale, so the pointer has to ride along here or the project
               // loses it exactly on the sends that were captured.
               projectWikiPrompt,
-              projectResearchPrompt,
               appSkillsCatalogPrompt,
               availableSkillsCatalogPrompt,
               operatorProtocols,
@@ -2795,7 +2724,6 @@ export function useChatSessionController({
       includedWorkspacesPrompt,
       operatorProtocols,
       projectInstructionsPrompt,
-      projectResearchPrompt,
       projectWikiPrompt,
       selectedPersona,
       sessionNodeRole,

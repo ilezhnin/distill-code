@@ -28,13 +28,6 @@ wrong answer for, and are less likely to change than any section name:
   section, rather than its own page. Don't assume every settings destination
   is a navigable page — verify against the file above or the live UI.
 
-The Distill folder (`~/.distill` unless the operator moved it) is where the
-operator's standing files live: `prompt.md` and `security-posture.md` apply
-to every chat, `user.md` describes the operator (plain chats and conductors;
-never written by agents), and `lore.md` plus `research/index.md` are pointers
-to maps kept on disk. Wave executors do not receive these three operator
-blocks; they receive their own project's research pointer. Existing project
-instructions and that project's `.distill/AGENTS.md` supply project conventions.
-The layout and prompt order are in the repo at `docs/distill-root-layout.md`.
-Settings > Behavior already has a row for the folder path; editors for the
-five files are a later stage.
+The configured Distill folder holds application-owned documents. Changing the
+folder in Settings requires a restart and does not move existing files.
+See `docs/distill-root-layout.md` for storage boundaries.

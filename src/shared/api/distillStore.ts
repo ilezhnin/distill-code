@@ -1,15 +1,7 @@
 /**
- * The app's own documents, in the operator's Distill folder.
- *
- * The renderer names a relative path and gets text back. Where that lands —
- * and the fact that it cannot land anywhere else — is decided in Rust
- * (`commands/distill_store.rs`). JSON documents are the writable store;
- * Markdown instruction files are read-only through `readDistillInstructions`.
- *
- * Outside the desktop app there is no folder at all: unit tests and any
- * browser preview fall back to `localStorage` for JSON documents, and
- * instruction reads answer with null for every path. That fallback is why
- * the store layer can be written once and used the same way everywhere.
+ * JSON document storage under the configured Distill data root.
+ * Rust resolves and bounds document paths. Browser previews use localStorage
+ * through the higher-level document adapters.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -52,18 +44,6 @@ export async function readDistillDocument(
   return invokeWithStartupRetry<string | null>("read_distill_document", {
     path,
   });
-}
-
-export async function readDistillInstructions(
-  paths: string[],
-): Promise<Record<string, string | null>> {
-  if (!isDesktopRuntime()) {
-    return Object.fromEntries(paths.map((path) => [path, null]));
-  }
-  return invokeWithStartupRetry<Record<string, string | null>>(
-    "read_distill_instructions",
-    { paths },
-  );
 }
 
 export async function writeDistillDocument(

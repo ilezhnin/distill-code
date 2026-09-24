@@ -207,7 +207,7 @@
     "title": "General",
     "distillFolder": {
       "label": "Distill folder",
-      "description": "Distill's own data — projects, memory, conductor runs and generated artifacts — lives here. Chat history stays in the app data folder.",
+      "description": "Settings, chat history, memory, agents, skills and artifacts live here. Each project's .distill folder holds its own app data and overrides.",
       "chooseDialogTitle": "Choose the Distill folder",
       "choose": "Change folder",
       "saved": "New folder saved",
