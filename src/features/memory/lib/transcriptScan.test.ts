@@ -34,7 +34,7 @@ describe("messageMentions", () => {
 
   it("says no when no part mentions it", () => {
     expect(
-      messageMentions(text("Noted.", "Working on it."), "distill-todo"),
+      messageMentions(text("Noted.", "Working on it."), "distill-memory"),
     ).toBe(false);
   });
 

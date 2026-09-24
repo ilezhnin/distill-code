@@ -29,8 +29,8 @@ interface Doc {
 
 function doc() {
   return distillDocument<Doc>({
-    path: "planner.json",
-    legacyStorageKey: "distill:planner",
+    path: "memory.json",
+    legacyStorageKey: "distill:memory",
     // Salvaging: anything unreadable becomes an empty list, never a throw.
     parse: (raw) => ({
       items: Array.isArray((raw as Doc | null)?.items)
@@ -67,7 +67,7 @@ describe("distillDocument on the desktop", () => {
 
   it("moves an old browser copy into the folder, once", async () => {
     window.localStorage.setItem(
-      "distill:planner",
+      "distill:memory",
       JSON.stringify({ items: ["inherited"] }),
     );
 
@@ -75,25 +75,25 @@ describe("distillDocument on the desktop", () => {
 
     expect(value).toEqual({ items: ["inherited"] });
     expect(mocks.writeDistillDocument).toHaveBeenCalledWith(
-      "planner.json",
+      "memory.json",
       JSON.stringify({ version: 1, items: ["inherited"] }),
     );
     // Removed, so a later reinstall cannot resurrect a stale second copy.
-    expect(window.localStorage.getItem("distill:planner")).toBeNull();
+    expect(window.localStorage.getItem("distill:memory")).toBeNull();
   });
 
   it("keeps the browser copy when the move fails", async () => {
     // Dropping it would lose the data outright.
-    window.localStorage.setItem("distill:planner", '{"items":["fragile"]}');
+    window.localStorage.setItem("distill:memory", '{"items":["fragile"]}');
     mocks.writeDistillDocument.mockRejectedValue(new Error("read-only"));
 
     await expect(doc().read()).resolves.toEqual({ items: ["fragile"] });
-    expect(window.localStorage.getItem("distill:planner")).not.toBeNull();
+    expect(window.localStorage.getItem("distill:memory")).not.toBeNull();
   });
 
   it("prefers the folder over an old browser copy", async () => {
     mocks.readDistillDocument.mockResolvedValue('{"items":["current"]}');
-    window.localStorage.setItem("distill:planner", '{"items":["stale"]}');
+    window.localStorage.setItem("distill:memory", '{"items":["stale"]}');
 
     await expect(doc().read()).resolves.toEqual({ items: ["current"] });
   });
@@ -102,9 +102,9 @@ describe("distillDocument on the desktop", () => {
     mocks.readDistillDocument.mockResolvedValue("}{ broken");
 
     await expect(doc().read()).resolves.toBeNull();
-    // The next write replaces planner.json; the unparseable text is kept.
+    // The next write replaces memory.json; the unparseable text is kept.
     expect(mocks.writeDistillDocument).toHaveBeenCalledWith(
-      expect.stringMatching(/^planner\.corrupt-\d+\.json$/),
+      expect.stringMatching(/^memory\.corrupt-\d+\.json$/),
       "}{ broken",
     );
   });
@@ -119,14 +119,14 @@ describe("distillDocument on the desktop", () => {
   it("rejects when the folder cannot be read, rather than reading empty", async () => {
     // An empty result would let the store's next write replace the file.
     mocks.readDistillDocument.mockRejectedValue(new Error("sharing violation"));
-    window.localStorage.setItem("distill:planner", '{"items":["stale"]}');
+    window.localStorage.setItem("distill:memory", '{"items":["stale"]}');
 
     await expect(doc().read()).rejects.toThrow("sharing violation");
     expect(mocks.writeDistillDocument).not.toHaveBeenCalled();
   });
 
   it("names the corrupt copy beside the original", () => {
-    expect(corruptCopyPath("planner.json", 42)).toBe("planner.corrupt-42.json");
+    expect(corruptCopyPath("memory.json", 42)).toBe("memory.corrupt-42.json");
     expect(corruptCopyPath("conductor/graph.json", 7)).toBe(
       "conductor/graph.corrupt-7.json",
     );
@@ -144,7 +144,7 @@ describe("distillDocument on the desktop", () => {
 
     expect(mocks.writeDistillDocument).toHaveBeenCalledTimes(1);
     expect(mocks.writeDistillDocument).toHaveBeenCalledWith(
-      "planner.json",
+      "memory.json",
       JSON.stringify({ version: 1, items: ["a", "b", "c"] }),
     );
   });
@@ -211,7 +211,7 @@ describe("distillDocument on the desktop", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(mocks.writeDistillDocument).toHaveBeenCalledWith(
-      "planner.json",
+      "memory.json",
       JSON.stringify({ version: 1, items: ["last change"] }),
     );
   });

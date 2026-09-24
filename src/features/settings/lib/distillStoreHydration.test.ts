@@ -18,10 +18,8 @@ import {
 
 const mocks = vi.hoisted(() => ({
   hydrateMemoryStore: vi.fn(),
-  hydratePlannerStore: vi.fn(),
   hydrateReviewSeenStore: vi.fn(),
   flushMemoryWrites: vi.fn(),
-  flushPlannerWrites: vi.fn(),
   flushReviewSeenWrites: vi.fn(),
   hydrateConductorGraph: vi.fn(),
   markConductorGraphHydrationFailed: vi.fn(),
@@ -40,10 +38,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/features/memory/stores/memoryStore", () => ({
   hydrateMemoryStore: mocks.hydrateMemoryStore,
   flushMemoryWrites: mocks.flushMemoryWrites,
-}));
-vi.mock("@/features/planner/stores/plannerStore", () => ({
-  hydratePlannerStore: mocks.hydratePlannerStore,
-  flushPlannerWrites: mocks.flushPlannerWrites,
 }));
 vi.mock("@/features/review/stores/reviewSeenStore", () => ({
   hydrateReviewSeenStore: mocks.hydrateReviewSeenStore,
@@ -70,7 +64,6 @@ vi.mock("@/features/conductor/waveTelemetryStore", () => ({
 
 function flushCallCounts(): number[] {
   return [
-    mocks.flushPlannerWrites.mock.calls.length,
     mocks.flushMemoryWrites.mock.calls.length,
     mocks.flushReviewSeenWrites.mock.calls.length,
   ];
@@ -94,7 +87,6 @@ function resetMocks(): void {
   }
   for (const hydrate of [
     mocks.hydrateMemoryStore,
-    mocks.hydratePlannerStore,
     mocks.hydrateReviewSeenStore,
     mocks.hydrateConductorGraph,
     mocks.hydrateWaveEngineState,
@@ -104,7 +96,6 @@ function resetMocks(): void {
   }
   for (const flush of [
     mocks.flushMemoryWrites,
-    mocks.flushPlannerWrites,
     mocks.flushReviewSeenWrites,
     mocks.flushConductorGraphWrites,
     mocks.flushWaveEngineWrites,
@@ -223,18 +214,18 @@ describe("distill store shutdown flush", () => {
 
   it("flushes every store's queued write", () => {
     flushDistillStores();
-    expect(flushCallCounts()).toEqual([1, 1, 1]);
+    expect(flushCallCounts()).toEqual([1, 1]);
   });
 
   it("keeps flushing the rest when one store's flush rejects", () => {
     const consoleError = vi
       .spyOn(console, "error")
       .mockImplementation(() => {});
-    mocks.flushPlannerWrites.mockRejectedValueOnce(new Error("disk gone"));
+    mocks.flushMemoryWrites.mockRejectedValueOnce(new Error("disk gone"));
 
     flushDistillStores();
 
-    expect(flushCallCounts()).toEqual([1, 1, 1]);
+    expect(flushCallCounts()).toEqual([1, 1]);
     // The rejection surfaces as a diagnostic on the microtask queue, never as
     // an exception into the teardown path.
     return vi.waitFor(() => {
@@ -277,6 +268,6 @@ describe("distill store shutdown flush", () => {
     // One registration from the first hydration: one teardown event, one
     // flush of each store, not one per re-hydration.
     window.dispatchEvent(new Event("pagehide"));
-    expect(flushCallCounts()).toEqual([1, 1, 1]);
+    expect(flushCallCounts()).toEqual([1, 1]);
   });
 });

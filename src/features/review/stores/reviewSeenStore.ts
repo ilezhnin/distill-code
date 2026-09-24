@@ -1,10 +1,8 @@
 /**
  * When the operator last looked at what finished.
  *
- * One number, in a JSON document in the operator's Distill folder, for the
- * same reason the planner's list is there: it is this machine's fact about
- * this person, it must survive a reload, and nothing may break if it cannot
- * be read. An old browser copy is migrated on first read, then removed.
+ * One timestamp in a JSON document in the operator's Distill folder.
+ * It must survive a reload, and nothing may break if it cannot be read. An old browser copy is migrated on first read, then removed.
  *
  * Marking seen is explicit — a button — rather than automatic on render.
  * A queue that clears itself the moment the home screen paints would be

@@ -498,11 +498,6 @@ const spacingTokens: RuntimeToken[] = [
     description: "Height of the persistent usage status bar.",
   },
   {
-    name: "--spacing-app-global-composer-bottom",
-    description:
-      "Docked global composer inset above the status bar on home, agents, and skills.",
-  },
-  {
     name: "--spacing-input",
     description: "Default form control height.",
   },

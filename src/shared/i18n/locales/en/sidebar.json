@@ -56,9 +56,6 @@
     "connections": "Connections",
     "home": "Home",
     "main": "Main navigation",
-    "planner": "Planner",
-    "plannerDue_one": "{{count}} task due",
-    "plannerDue_other": "{{count}} tasks due",
     "sessionList": "Projects and chats",
     "sessionHistory": "Session history",
     "skills": "Skills"

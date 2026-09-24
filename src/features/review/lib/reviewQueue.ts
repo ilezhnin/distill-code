@@ -11,8 +11,7 @@
  * agent: a five-step wave is one piece of work the operator thinks about,
  * and five rows saying "finished" would bury the one saying "stuck".
  *
- * Pure. `nowMs` and `lastSeenAt` are arguments for the same reason the
- * planner's are: a summary that reads the wall clock cannot be tested.
+ * Pure. `nowMs` and `lastSeenAt` are arguments so the summary is deterministic.
  */
 
 import type {

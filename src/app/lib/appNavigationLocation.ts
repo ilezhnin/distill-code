@@ -22,7 +22,6 @@ export function getAppNavigationLocation(
     case "settings":
       return { view, settingsSection };
     case "home":
-    case "planner":
     case "projects":
     case "search":
     case "session-history":

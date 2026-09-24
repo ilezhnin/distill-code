@@ -40,7 +40,6 @@ import {
   formatResearchPointerPrompt,
   refreshRootInstructions,
 } from "@/features/chat/lib/rootInstructionsPrompt";
-import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import {
   composeGatedMemorySection,
   getMemoryPreferences,
@@ -395,7 +394,7 @@ export async function sendQueuedPromptToExistingSessionInBackground(
     );
     // A wave child is scheduled and reported by its conductor, and its own
     // prompt already ends "with this report block and no extra commentary
-    // after it". Handing it the planner and memory protocols would ask it to
+    // after it". Handing it the memory protocols would ask it to
     // contradict that, and would give a one-shot task runner write access to
     // the operator's list and memory — both belong to the conductor's loop.
     const memory = useMemoryStore.getState();
@@ -421,7 +420,6 @@ export async function sendQueuedPromptToExistingSessionInBackground(
             // fence the scanner would refuse.
             sessionMemoryWriteAccess(sessionId).allowed,
           ),
-          PLANNER_PROTOCOL_PROMPT,
         );
     const workspaceContextPrompt = session
       ? composeSystemPrompt(

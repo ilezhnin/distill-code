@@ -173,7 +173,6 @@ const PROTOCOL_FENCE_TAGS = [
   "distill-wave",
   "distill-verdict",
   "distill-report",
-  "distill-todo",
   "distill-memory",
 ] as const;
 
@@ -187,9 +186,7 @@ const PROTOCOL_BLOCK_REMOVED = "[protocol block removed]";
  * message and the plan detector only ever scans assistant messages — but the
  * conductor reading the digest is a model, and a plan-shaped block inside a
  * report it is asked to judge is an invitation to echo it back. Ordinary code
- * fences are left exactly as they are; only the protocol tags are cut — the
- * planner's `distill-todo` among them, for the same reason: a digest cannot
- * file a task itself, but a conductor that echoes one back can.
+ * fences are left exactly as they are; only the active protocol tags are cut.
  *
  * `distill-memory` is cut for the sharpest version of that echo: the memory
  * scanner refuses a worker's fence but honors the conductor's, so a memory

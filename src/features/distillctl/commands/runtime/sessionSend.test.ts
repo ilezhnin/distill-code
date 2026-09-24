@@ -20,7 +20,6 @@ import {
 import { resetProjectWikiPresenceForTests } from "@/features/memory/lib/projectWikiPrompt";
 import { MEMORY_PROTOCOL_PROMPT } from "@/features/memory/lib/memoryFence";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
-import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import { createUserMessage, getTextContent } from "@/shared/types/messages";
 import {
   acquireSessionDispatchTarget,
@@ -327,7 +326,6 @@ describe("sendPromptToExistingSessionInBackground", () => {
         "<memory>",
         fact,
         MEMORY_PROTOCOL_PROMPT,
-        PLANNER_PROTOCOL_PROMPT,
       ];
       for (const part of orderedParts) expect(prompt).toContain(part);
       for (let index = 1; index < orderedParts.length; index += 1) {
@@ -377,7 +375,6 @@ describe("sendPromptToExistingSessionInBackground", () => {
         "<memory>",
         fact,
         MEMORY_PROTOCOL_PROMPT,
-        PLANNER_PROTOCOL_PROMPT,
       ])
         expect(prompt).not.toContain(part);
     });
@@ -404,7 +401,7 @@ describe("sendPromptToExistingSessionInBackground", () => {
       expect(prompt).toContain("<memory>");
       expect(prompt).toContain(fact);
       expect(prompt).toContain(MEMORY_PROTOCOL_PROMPT);
-      expect(prompt).toContain(PLANNER_PROTOCOL_PROMPT);
+      expect(prompt).not.toContain("<planner>");
     });
 
     it("awaits a pending project index listing before dispatching a cold send", async () => {

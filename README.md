@@ -11,8 +11,7 @@ spawns the agent harnesses on demand and keeps every session on your machine:
 
 On top of plain chats it has projects, agents and skills, a conductor that
 plans larger requests as waves of executor sessions and reviews their reports
-(`src/features/conductor/`, `LAWS/WAVES.md`), a planner that collects tasks
-agents file (`src/features/planner/`), and memory that carries short facts into
+(`src/features/conductor/`, `LAWS/WAVES.md`), and memory that carries short facts into
 later prompts, globally or per project (`src/features/memory/`,
 `LAWS/MEMORY.md`). Agents drive the visible app through the bundled `distillctl`
 CLI.

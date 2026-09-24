@@ -15,7 +15,6 @@ import {
   refreshProjectWikiPresence,
   resetProjectWikiPresenceForTests,
 } from "@/features/memory/lib/projectWikiPrompt";
-import { PLANNER_PROTOCOL_PROMPT } from "@/features/planner/lib/plannerFence";
 import type { ProjectInfo } from "@/features/projects/api/projects";
 import { useProjectStore } from "@/features/projects/stores/projectStore";
 
@@ -191,7 +190,7 @@ describe("sendPromptInBackground", () => {
     // unrelated project must not ride along.
     expect(systemPrompt).not.toContain("Another project's secret");
     expect(systemPrompt).toContain(MEMORY_PROTOCOL_PROMPT);
-    expect(systemPrompt).toContain(PLANNER_PROTOCOL_PROMPT);
+    expect(systemPrompt).not.toContain("<planner>");
     // Caller-provided context still leads.
     expect(systemPrompt.startsWith("workspace prompt")).toBe(true);
   });
@@ -219,7 +218,7 @@ describe("sendPromptInBackground", () => {
     expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
     expect(systemPrompt).not.toContain(MEMORY_RECALL_PROMPT);
     // Everything else about the prompt is unchanged.
-    expect(systemPrompt).toContain(PLANNER_PROTOCOL_PROMPT);
+    expect(systemPrompt).not.toContain("<planner>");
     expect(systemPrompt.startsWith("workspace prompt")).toBe(true);
   });
 
@@ -296,7 +295,7 @@ describe("sendPromptInBackground", () => {
     expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
     // Recall is a read, and reading is exactly what this session still does.
     expect(systemPrompt).toContain(MEMORY_RECALL_PROMPT);
-    expect(systemPrompt).toContain(PLANNER_PROTOCOL_PROMPT);
+    expect(systemPrompt).not.toContain("<planner>");
   });
 
   it("tells the session what its block is missing, this project only", async () => {
@@ -356,7 +355,7 @@ describe("sendPromptInBackground", () => {
     expect(systemPrompt).toBe("workspace prompt");
     expect(systemPrompt).not.toContain("A global fact");
     expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
-    expect(systemPrompt).not.toContain(PLANNER_PROTOCOL_PROMPT);
+    expect(systemPrompt).not.toContain("<planner>");
   });
 
   // The line that divides this from memory: an executor may not write the
@@ -376,7 +375,7 @@ describe("sendPromptInBackground", () => {
     expect(systemPrompt).toContain(PROJECT_WIKI_POINTER_PROMPT);
     expect(systemPrompt).not.toContain("A global fact");
     expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
-    expect(systemPrompt).not.toContain(PLANNER_PROTOCOL_PROMPT);
+    expect(systemPrompt).not.toContain("<planner>");
   });
 
   it.each([

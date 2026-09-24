@@ -56,9 +56,6 @@
     "connections": "Conexiones",
     "home": "Inicio",
     "main": "Navegación principal",
-    "planner": "Planificador",
-    "plannerDue_one": "{{count}} tarea pendiente",
-    "plannerDue_other": "{{count}} tareas pendientes",
     "sessionList": "Proyectos y chats",
     "sessionHistory": "Historial de sesiones",
     "skills": "Habilidades"

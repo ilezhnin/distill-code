@@ -4,7 +4,6 @@ import { WelcomeView } from "@/features/chat/ui/home/WelcomeView";
 import { ChatView } from "@/features/chat/ui/ChatView";
 import { SkillsView } from "@/features/skills/ui/SkillsView";
 import { AgentsView } from "@/features/agents/ui/AgentsView";
-import { PlannerView } from "@/features/planner/ui/PlannerView";
 import { ProjectsView } from "@/features/projects/ui/ProjectsView";
 import { SearchView } from "@/features/search/ui/SearchView";
 import { SessionHistoryView } from "@/features/sessions/ui/SessionHistoryView";
@@ -135,7 +134,7 @@ export function AppShellContent({
 
   // The widget desktop is gone (features/home with it): home is the
   // invitation to start — the composer is the new chat, the button the new
-  // project. The planner arrives underneath this as its own feature.
+  // project.
   const homeContent = (
     <WelcomeView
       sessionId={homeSessionId}
@@ -341,8 +340,6 @@ function renderRouteContent({
           }
         />
       );
-    case "planner":
-      return <PlannerView />;
     case "projects":
       return <ProjectsView onStartChat={onStartChatFromProject} />;
     case "search":

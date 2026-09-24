@@ -50,7 +50,7 @@ async function startChatRuntime(
   registerChatSessionConfigSnapshotHandlers();
   registerChatSessionHistoryReplayHandler();
   setNotificationHandler(notificationHandler);
-  // Not awaited: the planner, the memory and the conductor's own state are
+  // Not awaited: memory and the conductor's own state are
   // read from disk, and nothing in the rest of startup depends on them. Each
   // store stays empty and refuses to write until its own read lands (the
   // conductor's three merge instead, so a node created in that window is never

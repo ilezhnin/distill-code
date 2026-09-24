@@ -3,7 +3,6 @@ import type { DesignSystemSection } from "@/features/design-system/ui/designSyst
 
 export type AppView =
   | "home"
-  | "planner"
   | "chat"
   | "design-system"
   | "skills"
@@ -15,7 +14,6 @@ export type AppView =
 
 export type AppNavigationLocation =
   | { view: "home" }
-  | { view: "planner" }
   | { view: "chat"; sessionId: string | null }
   | { view: "design-system"; designSystemSection: DesignSystemSection }
   | { view: "skills"; skillId: string | null }
