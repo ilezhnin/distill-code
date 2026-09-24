@@ -15,8 +15,9 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::harness::HarnessSpec;
 use super::protocol::{self, Message};
-use crate::services::managed_acp_tools;
+use crate::services::path_env::resolve_executable;
 use crate::services::process::ProcessTree;
+use crate::services::{env_key, managed_acp_tools};
 
 /// How long a freshly started bridge gets to answer `initialize`. A process
 /// that is alive but silent — a CLI waiting on a login prompt or a TTY,
@@ -125,46 +126,6 @@ pub struct SpawnEnv {
     pub extra_env: Vec<(String, String)>,
 }
 
-/// Resolve `name` on the extended PATH the bridges see: managed shims first,
-/// then the user's login-shell PATH.
-pub fn resolve_executable(
-    name: &str,
-    prepend_dirs: &[PathBuf],
-    path_value: Option<&str>,
-) -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = prepend_dirs.to_vec();
-    if let Some(path_value) = path_value {
-        dirs.extend(std::env::split_paths(path_value));
-    }
-    let candidates: Vec<String> = if cfg!(windows) {
-        let lower = name.to_ascii_lowercase();
-        if lower.ends_with(".exe") || lower.ends_with(".cmd") || lower.ends_with(".bat") {
-            vec![name.to_string()]
-        } else {
-            vec![
-                format!("{name}.exe"),
-                format!("{name}.cmd"),
-                format!("{name}.bat"),
-                name.to_string(),
-            ]
-        }
-    } else {
-        vec![name.to_string()]
-    };
-    for dir in dirs {
-        if dir.as_os_str().is_empty() {
-            continue;
-        }
-        for candidate in &candidates {
-            let path = dir.join(candidate);
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-    }
-    None
-}
-
 /// The file `spec.command` runs as it stands on disk right now, or `None`
 /// where the harness is not installed.
 ///
@@ -175,8 +136,11 @@ pub fn resolve_executable(
 /// there (the node entrypoint behind a managed launcher, the binary or shim
 /// otherwise). Comparing the answer costs a `stat`, never a bridge process.
 pub fn executable_fingerprint(spec: &HarnessSpec, env: &SpawnEnv) -> Option<Value> {
-    let executable =
-        resolve_executable(spec.command, &env.prepend_dirs, path_value(&env.shell_env))?;
+    let executable = resolve_executable(
+        spec.command,
+        &env.prepend_dirs,
+        env_key::get(&env.shell_env, "PATH"),
+    )?;
     Some(fingerprint_of(spec.id, &executable))
 }
 
@@ -270,26 +234,23 @@ fn cmd_launcher_target(quoted: &str, shim_dir: &Path) -> PathBuf {
     }
 }
 
-fn path_value(env: &HashMap<String, String>) -> Option<&str> {
-    env.iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
-        .map(|(_, value)| value.as_str())
-}
-
 impl Bridge {
     pub async fn spawn(
         spec: &HarnessSpec,
         env: &SpawnEnv,
         events: mpsc::UnboundedSender<BridgeEvent>,
     ) -> Result<Arc<Bridge>, String> {
-        let executable =
-            resolve_executable(spec.command, &env.prepend_dirs, path_value(&env.shell_env))
-                .ok_or_else(|| {
-                    format!(
+        let executable = resolve_executable(
+            spec.command,
+            &env.prepend_dirs,
+            env_key::get(&env.shell_env, "PATH"),
+        )
+        .ok_or_else(|| {
+            format!(
                 "The {} bridge (`{}`) is not installed. Set it up from Settings → AI providers.",
                 spec.label, spec.command
             )
-                })?;
+        })?;
         // A managed bridge resolves to a `.cmd` launcher we wrote ourselves; run
         // what it runs, so the child we hold (and kill) is node rather than the
         // `cmd.exe` that would leave node behind. Only for harnesses we
@@ -307,11 +268,11 @@ impl Bridge {
         }
         command.args(spec.args);
         let extended_path = crate::services::path_env::build_extended_path_with_prepended_dirs(
-            path_value(&env.shell_env),
+            env_key::get(&env.shell_env, "PATH"),
             &env.prepend_dirs,
         );
         for (key, value) in &env.shell_env {
-            if key.eq_ignore_ascii_case("PATH") {
+            if env_key::matches(key, "PATH") {
                 continue;
             }
             command.env(key, value);
@@ -733,7 +694,12 @@ fn truncate(text: &str, max: usize) -> &str {
 
 /// Executable presence check used by the provider inventory.
 pub fn is_installed(spec: &HarnessSpec, env: &SpawnEnv) -> bool {
-    resolve_executable(spec.command, &env.prepend_dirs, path_value(&env.shell_env)).is_some()
+    resolve_executable(
+        spec.command,
+        &env.prepend_dirs,
+        env_key::get(&env.shell_env, "PATH"),
+    )
+    .is_some()
 }
 
 #[cfg(test)]

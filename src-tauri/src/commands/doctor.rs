@@ -16,12 +16,8 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 use crate::services::{
-    dir_env,
-    distro_bundle::DistroBundleState,
-    env_key, managed_acp_tools, managed_node,
-    path_env::{self, build_extended_path_with_prepended_dirs},
-    provider_rate_limits::grok,
-    shell_env,
+    distro_bundle::DistroBundleState, env_key, managed_acp_tools, managed_node, path_env,
+    provider_rate_limits::grok, shell_env,
 };
 
 use crate::commands::runtime_config::{RuntimeConfig, RuntimeConfigState, RuntimeDoctorConfig};
@@ -344,7 +340,6 @@ fn upstream_category(check_id: &str) -> (&'static str, &'static str) {
 async fn run_local_checks(
     registry: &LocalDoctorRegistry<'_>,
     captured_shell_env: &HashMap<String, String>,
-    prepend_dirs: &[PathBuf],
 ) -> Vec<DoctorCheck> {
     let check_count =
         registry.path_checks.len() + registry.command_checks.len() + registry.custom_checks.len();
@@ -352,17 +347,14 @@ async fn run_local_checks(
         return Vec::new();
     }
 
-    let extended_path = build_extended_path_with_prepended_dirs(
-        env_key::get(captured_shell_env, "PATH"),
-        prepend_dirs,
-    );
+    let extended_path = env_key::get(captured_shell_env, "PATH").unwrap_or_default();
     let mut results = Vec::with_capacity(check_count);
 
     for check in registry.path_checks {
-        results.push(run_local_path_check(check, &extended_path, captured_shell_env).await);
+        results.push(run_local_path_check(check, extended_path, captured_shell_env).await);
     }
     for check in registry.command_checks {
-        results.push(run_local_command_check(check, &extended_path).await);
+        results.push(run_local_command_check(check, extended_path).await);
     }
     for check in registry.custom_checks {
         results.push((check.run)(&check.meta, captured_shell_env));
@@ -381,15 +373,7 @@ async fn run_local_path_check(
         (Some(_), Some(probe)) => Some(match probe.status {
             LocalAuthStatusProbe::Environment(status) => status(captured_shell_env),
             LocalAuthStatusProbe::KimiAcp => {
-                let mut env: HashMap<_, _> =
-                    path_env::env_vars_with_extended_path_and_prepended_dirs(
-                        captured_shell_env,
-                        &[],
-                    )
-                    .into_iter()
-                    .collect();
-                env_key::upsert_map(&mut env, "PATH", extended_path.to_string());
-                crate::services::agent_host::kimi::auth_status(env).await
+                crate::services::agent_host::kimi::auth_status(captured_shell_env.clone()).await
             }
         }),
         _ => None,
@@ -437,17 +421,13 @@ fn local_path_check_result(
 /// captured env and extended PATH the report's local checks use.
 pub(crate) async fn run_local_agent_check(
     check_id: &str,
-    prepend_dirs: &[PathBuf],
+    env: &HashMap<String, String>,
 ) -> Option<doctor::DoctorCheck> {
     let check = LOCAL_PATH_CHECKS
         .iter()
         .find(|check| check.meta.id == check_id && check.meta.category == AGENTS_CATEGORY)?;
-    let captured_shell_env = dir_env::capture_home_interactive_env().await;
-    let extended_path = build_extended_path_with_prepended_dirs(
-        env_key::get(&captured_shell_env, "PATH"),
-        prepend_dirs,
-    );
-    let result = run_local_path_check(check, &extended_path, &captured_shell_env).await;
+    let result =
+        run_local_path_check(check, env_key::get(env, "PATH").unwrap_or_default(), env).await;
     Some(result.into())
 }
 
@@ -494,29 +474,18 @@ async fn resolve_binary_path_with_timeout(
     extended_path: &str,
     command_timeout: Duration,
 ) -> Option<String> {
-    let command = if cfg!(target_os = "windows") {
-        "where"
-    } else {
-        "which"
-    };
-    let mut cmd = tokio::process::Command::new(command);
-    cmd.arg(binary_name).env("PATH", extended_path);
-
-    let output = run_timed_command(cmd, &format!("{command} {binary_name}"), command_timeout)
-        .await
-        .ok();
-    output
-        .as_ref()
-        .filter(|output| output.status.success())
-        .and_then(|output| {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout
-                .lines()
-                .next()
-                .map(str::trim)
-                .filter(|p| !p.is_empty())
-                .map(String::from)
-        })
+    let binary_name = binary_name.to_owned();
+    let extended_path = extended_path.to_owned();
+    timeout(
+        command_timeout,
+        tokio::task::spawn_blocking(move || {
+            path_env::resolve_executable(&binary_name, &[], Some(&extended_path))
+        }),
+    )
+    .await
+    .ok()?
+    .ok()?
+    .map(|path| path.to_string_lossy().into_owned())
 }
 
 async fn run_local_command_check(check: &LocalCommandCheck, extended_path: &str) -> DoctorCheck {
@@ -819,15 +788,11 @@ async fn execute_local_fix(
     }
 }
 
-/// Managed-runtime locations threaded into `run_doctor_impl`, which stays
-/// `AppHandle`-free. `node_root` is `<app-data>/packages/node`;
-/// `npm_prefix_dir` configures npm itself, while `npm_prefix_bin_dir` is the
-/// platform-aware location of that prefix's executables (`<prefix>` on Windows,
-/// `<prefix>/bin` on Unix). `shim_bin_dir` holds managed bridge shims.
+/// Locations inspected by the managed Node runtime check. The npm prefix's
+/// executable directory is `<prefix>` on Windows and `<prefix>/bin` on Unix.
 #[derive(Default)]
 struct ManagedRuntimePaths {
     node_root: Option<PathBuf>,
-    npm_prefix_dir: Option<PathBuf>,
     npm_prefix_bin_dir: Option<PathBuf>,
     shim_bin_dir: Option<PathBuf>,
 }
@@ -836,7 +801,6 @@ impl ManagedRuntimePaths {
     fn resolve(app_handle: &AppHandle) -> Self {
         Self {
             node_root: managed_node::managed_node_root(app_handle),
-            npm_prefix_dir: managed_acp_tools::npm_prefix_dir(app_handle),
             npm_prefix_bin_dir: managed_acp_tools::npm_prefix_bin_dir(app_handle),
             shim_bin_dir: managed_acp_tools::managed_shim_bin_dir(app_handle),
         }
@@ -946,30 +910,22 @@ pub(crate) async fn repair_windows_managed_bridge_checks(
 }
 
 async fn run_doctor_impl(
+    app: &AppHandle,
     registry: &LocalDoctorRegistry<'_>,
     distro_state: &DistroBundleState,
     runtime_config: &RuntimeConfig,
     check_freshness: bool,
-    prepend_dirs: &[PathBuf],
-    bundled_tools_dir: Option<PathBuf>,
-    managed_runtime: ManagedRuntimePaths,
 ) -> DoctorReport {
     if !doctor_enabled(runtime_config) {
         return DoctorReport { checks: Vec::new() };
     }
 
-    let captured_shell_env = dir_env::capture_home_interactive_env().await;
-    let mut doctor_env_vars =
-        path_env::env_vars_with_extended_path_and_prepended_dirs(&captured_shell_env, prepend_dirs);
     // Checks probe npm state (`npm prefix -g`, version lookups) with the same
     // private-prefix view the fixes install into, so a check never contradicts
     // the fix that just ran.
-    if let Some(prefix) = managed_runtime.npm_prefix_dir.as_deref() {
-        managed_acp_tools::apply_managed_npm_env(
-            &mut doctor_env_vars,
-            &managed_acp_tools::managed_npm_env_at(prefix),
-        );
-    }
+    let doctor_env_vars = managed_acp_tools::provider_setup_env(app).await;
+    let bundled_tools_dir = managed_acp_tools::bundled_tools_dir_for_checks(app);
+    let managed_runtime = ManagedRuntimePaths::resolve(app);
     let mut checks = doctor::run_checks_with_options(
         doctor::RunChecksOptions {
             npm_registry: crate::commands::agent_setup::npm_registry_for_distro(distro_state),
@@ -993,7 +949,7 @@ async fn run_doctor_impl(
     }
     let mut checks: Vec<DoctorCheck> = checks.checks.into_iter().map(DoctorCheck::from).collect();
     if doctor_internal_tooling_checks_enabled(runtime_config) {
-        let local_checks = run_local_checks(registry, &captured_shell_env, prepend_dirs).await;
+        let local_checks = run_local_checks(registry, &doctor_env_vars.into_iter().collect()).await;
         checks.extend(local_checks);
     }
     if let Some(check) = run_node_runtime_check(
@@ -1094,16 +1050,13 @@ pub async fn run_doctor(
     runtime_config_state: State<'_, RuntimeConfigState>,
 ) -> Result<DoctorReport, String> {
     let runtime_config = runtime_config_state.ready_config().await?;
-    let prepend_dirs = doctor_prepend_dirs(&app_handle);
     Ok(run_doctor_or_timeout(
         run_doctor_impl(
+            &app_handle,
             &LOCAL_DOCTOR_REGISTRY,
             distro_state.inner(),
             &runtime_config,
             false,
-            &prepend_dirs,
-            managed_acp_tools::bundled_tools_dir_for_checks(&app_handle),
-            ManagedRuntimePaths::resolve(&app_handle),
         ),
         DOCTOR_REPORT_TIMEOUT,
     )
@@ -1126,16 +1079,13 @@ pub async fn run_doctor_fresh(
     runtime_config_state: State<'_, RuntimeConfigState>,
 ) -> Result<DoctorReport, String> {
     let runtime_config = runtime_config_state.ready_config().await?;
-    let prepend_dirs = doctor_prepend_dirs(&app_handle);
     run_doctor_fresh_or_timeout(
         run_doctor_impl(
+            &app_handle,
             &LOCAL_DOCTOR_REGISTRY,
             distro_state.inner(),
             &runtime_config,
             true,
-            &prepend_dirs,
-            managed_acp_tools::bundled_tools_dir_for_checks(&app_handle),
-            ManagedRuntimePaths::resolve(&app_handle),
         ),
         DOCTOR_FRESH_REPORT_TIMEOUT,
     )
@@ -1193,21 +1143,12 @@ pub async fn run_doctor_fix(
             .map_err(|error| error.to_string())
         }
         DoctorFixDispatch::LocalCommand(command) => {
-            let captured_shell_env = dir_env::capture_home_interactive_env().await;
-            let prepend_dirs = doctor_prepend_dirs(&app_handle);
             // npm-backed local fixes use the same private prefix and managed
             // runtime as upstream doctor-crate npm fixes.
             if managed_acp_tools::is_npm_backed_command(command) {
                 ensure_managed_node_runtime_logged(&app_handle).await?;
             }
-            let mut env_vars = path_env::env_vars_with_extended_path_and_prepended_dirs(
-                &captured_shell_env,
-                &prepend_dirs,
-            );
-            managed_acp_tools::apply_managed_npm_env(
-                &mut env_vars,
-                &managed_acp_tools::managed_npm_env(&app_handle),
-            );
+            let mut env_vars = managed_acp_tools::provider_setup_env(&app_handle).await;
             if let Some(registry) = crate::commands::agent_setup::npm_registry(&app_handle) {
                 env_key::upsert_vec(&mut env_vars, "NPM_CONFIG_REGISTRY", registry.clone());
                 env_key::upsert_vec(&mut env_vars, "npm_config_registry", registry);
@@ -1215,8 +1156,6 @@ pub async fn run_doctor_fix(
             execute_local_fix(command, env_vars).await
         }
         DoctorFixDispatch::CrateCommand => {
-            let captured_shell_env = dir_env::capture_home_interactive_env().await;
-            let prepend_dirs = doctor_prepend_dirs(&app_handle);
             // npm-backed fixes run the managed npm into the private prefix, so
             // the managed runtime must exist before the command does.
             let resolved_command = doctor::agents::lookup_fix_command(&check_id, &fix_type);
@@ -1226,14 +1165,7 @@ pub async fn run_doctor_fix(
             {
                 ensure_managed_node_runtime_logged(&app_handle).await?;
             }
-            let mut env_vars = path_env::env_vars_with_extended_path_and_prepended_dirs(
-                &captured_shell_env,
-                &prepend_dirs,
-            );
-            managed_acp_tools::apply_managed_npm_env(
-                &mut env_vars,
-                &managed_acp_tools::managed_npm_env(&app_handle),
-            );
+            let env_vars = managed_acp_tools::provider_setup_env(&app_handle).await;
             doctor::execute_fix_with_env_options(
                 check_id,
                 fix_type,
@@ -1344,13 +1276,13 @@ async fn offered_local_fix_for_check(app_handle: &AppHandle, check_id: &str) -> 
         .iter()
         .find(|check| check.meta.id == check_id)?;
     let fix = check.meta.fix.as_ref()?;
-    let captured_shell_env = dir_env::capture_home_interactive_env().await;
-    let prepend_dirs = doctor_prepend_dirs(app_handle);
-    let extended_path = build_extended_path_with_prepended_dirs(
-        env_key::get(&captured_shell_env, "PATH"),
-        &prepend_dirs,
-    );
-    match resolve_binary_path(check.binary_name, &extended_path).await {
+    let env = managed_acp_tools::provider_env(app_handle).await;
+    match resolve_binary_path(
+        check.binary_name,
+        env_key::get(&env, "PATH").unwrap_or_default(),
+    )
+    .await
+    {
         Some(_) => None,
         None => Some(fix.fix_type.clone()),
     }
@@ -1416,18 +1348,41 @@ async fn ensure_managed_node_runtime_logged(app_handle: &AppHandle) -> Result<()
         .map_err(|error| error.to_string())
 }
 
-/// Binary search dirs for doctor checks and fixes: the lock-pinned bridge
-/// shims in `packages/bin` (or the `DISTILL_ACP_TOOLS_DIR` dev override), then the
-/// Distill-private npm prefix and the managed Node runtime its shims run on.
-/// Same order as the agent host's bridge spawn env and agent setup, so the
-/// doctor reports the binary the agent host would spawn.
-fn doctor_prepend_dirs(app_handle: &AppHandle) -> Vec<PathBuf> {
-    managed_acp_tools::managed_prepend_dirs(app_handle)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn provider_checks_and_launches_resolve_the_same_private_install() {
+        let root = tempfile::tempdir().unwrap();
+        let managed = root.path().join("managed npm prefix");
+        let host = root.path().join("host bin");
+        fs::create_dir_all(&managed).unwrap();
+        fs::create_dir_all(&host).unwrap();
+        fs::write(managed.join("kimi.cmd"), "@echo off\r\n").unwrap();
+        fs::write(host.join("kimi.exe"), "host installation").unwrap();
+        let captured = HashMap::from([("Path".into(), host.to_string_lossy().into_owned())]);
+        let env: HashMap<_, _> = path_env::env_vars_with_extended_path_and_prepended_dirs(
+            &captured,
+            std::slice::from_ref(&managed),
+        )
+        .into_iter()
+        .collect();
+        let path = env_key::get(&env, "PATH").unwrap();
+        let setup = resolve_binary_path("kimi", path).await.unwrap();
+        let launch = path_env::resolve_executable("kimi", &[], Some(path)).unwrap();
+        assert_eq!(PathBuf::from(setup), managed.join("kimi.cmd"));
+        assert_eq!(launch, managed.join("kimi.cmd"));
+        assert!(crate::services::agent_host::bridge::is_installed(
+            crate::services::agent_host::harness::harness("kimi-acp").unwrap(),
+            &crate::services::agent_host::bridge::SpawnEnv {
+                shell_env: env,
+                prepend_dirs: vec![],
+                extra_env: vec![],
+            },
+        ));
+    }
 
     #[cfg(windows)]
     fn upstream_check(id: &str) -> doctor::DoctorCheck {

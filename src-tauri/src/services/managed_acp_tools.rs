@@ -32,7 +32,7 @@
 //! set, managed resolution short-circuits (no managed tools, no shim dir, no
 //! installs) so the override dir is the one source of bridge binaries.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -175,6 +175,28 @@ pub fn managed_prepend_dirs<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec
         npm_prefix_bin_dir(app),
         managed_node::managed_node_bin_dir(app),
     )
+}
+
+/// Canonical execution environment for provider discovery, auth, chats and
+/// usage. Resolve the configured Distill root on every call so its private
+/// CLI installs and Node runtime are visible without modifying the host PATH.
+pub async fn provider_env<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> HashMap<String, String> {
+    crate::services::path_env::home_env_vars_with_extended_path_and_prepended_dirs(
+        &managed_prepend_dirs(app),
+    )
+    .await
+    .into_iter()
+    .collect()
+}
+
+/// Provider checks and installation share the execution environment, with
+/// npm directed at Distill's private prefix for both discovery and repair.
+pub async fn provider_setup_env<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Vec<(String, String)> {
+    let mut vars = provider_env(app).await.into_iter().collect();
+    apply_managed_npm_env(&mut vars, &managed_npm_env(app));
+    vars
 }
 
 fn managed_prepend_dirs_from_parts(
@@ -373,7 +395,7 @@ fn node_binary(layout: &managed_node::RuntimeLayout, node_install_dir: &Path) ->
 
 /// The file name a bridge shim is written under and that the agent host
 /// resolves by bare name. On Windows that is `<binary>.cmd` (a batch launcher
-/// found by `bridge::resolve_executable`'s extension probe); elsewhere it is
+/// found by `path_env::resolve_executable`'s extension probe); elsewhere it is
 /// the extensionless `<binary>`.
 fn shim_file_name(layout: &managed_node::RuntimeLayout, binary: &str) -> String {
     if layout.is_windows() {
@@ -3194,7 +3216,7 @@ mod tests {
         // Launch the bridge by its bare name through the directories the agent
         // host prepends (shim dir + managed node bin dir), with `--help` so a
         // real ACP bridge exits promptly. The host spawns bridges in two stages
-        // — resolve the bare name with `bridge::resolve_executable`, then spawn
+        // — resolve the bare name with `path_env::resolve_executable`, then spawn
         // the resolved path — so the gate mirrors that here. On Windows the
         // resolver must return the generated `.cmd` launcher rather than the
         // extensionless name; spawning that resolved path is what proves the
@@ -3202,7 +3224,7 @@ mod tests {
         // apply `PATHEXT` to a bare name.
         let prepend_dirs = vec![shim_dir.clone(), layout.bin_dir(&node_install_dir)];
         let inherited_path = std::env::var("PATH").unwrap_or_default();
-        let resolved = crate::services::agent_host::bridge::resolve_executable(
+        let resolved = crate::services::path_env::resolve_executable(
             tool.binary,
             &prepend_dirs,
             Some(inherited_path.as_str()),

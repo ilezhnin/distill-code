@@ -385,17 +385,6 @@ fn collect_skills_from_roots(
     skills
 }
 
-#[cfg(test)]
-fn collect_agent_skills(
-    provider_id: Option<String>,
-    workspace_paths: Vec<String>,
-    app_skills_root: Option<&Path>,
-    personal_skills_root: Option<&Path>,
-) -> Vec<AgentSkillEntry> {
-    let roots = collect_skill_roots(workspace_paths, app_skills_root, personal_skills_root);
-    collect_skills_from_roots(roots, provider_id.as_deref())
-}
-
 #[tauri::command]
 pub async fn list_distill_app_skills(
     app: AppHandle,

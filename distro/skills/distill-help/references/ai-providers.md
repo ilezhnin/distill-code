@@ -13,6 +13,10 @@ if the CLI has already confirmed success.
 
 The status bar uses the same provider catalog as Settings and model selection.
 Every installed provider appears, including providers without a quota API.
+Provider setup, diagnostics, authentication, chats, and usage share the same
+CLI environment and executable lookup. Distill-managed installations and their
+Node runtime take precedence over the host PATH, so a private installation
+does not need to be added to the system PATH.
 Kimi Code's managed accounts expose 5-hour, weekly, monthly total, and monthly
 coding limits when the service supplies them. The usage adapter briefly starts
 the CLI's authenticated loopback API with `kimi web --port 0 --no-open`, reads

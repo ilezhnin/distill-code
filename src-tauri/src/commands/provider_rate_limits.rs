@@ -4,9 +4,14 @@
 //! Codex / Grok CLIs, so it also fetches their subscription windows. Per-session
 //! token usage arrives separately, on ACP prompt results.
 
-use crate::services::provider_rate_limits::{fetch_snapshot, ProviderRateLimitSnapshot};
+use crate::services::{
+    managed_acp_tools,
+    provider_rate_limits::{fetch_snapshot, ProviderRateLimitSnapshot},
+};
 
 #[tauri::command]
-pub async fn get_provider_rate_limits() -> Result<ProviderRateLimitSnapshot, String> {
-    fetch_snapshot().await
+pub async fn get_provider_rate_limits(
+    app: tauri::AppHandle,
+) -> Result<ProviderRateLimitSnapshot, String> {
+    fetch_snapshot(&managed_acp_tools::provider_env(&app).await).await
 }

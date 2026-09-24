@@ -2,18 +2,16 @@
 //! managed bridge shims in front of PATH, and the distillctl shim/discovery
 //! variables that let an agent running inside a session drive the app.
 
-use std::collections::HashMap;
 #[cfg(feature = "distillctl")]
 use std::path::Path;
 use std::path::PathBuf;
 use tauri::Manager;
 
 use super::bridge::SpawnEnv;
-use crate::services::{dir_env, managed_acp_tools};
+use crate::services::managed_acp_tools;
 
 pub async fn build_spawn_env(app: &tauri::AppHandle) -> SpawnEnv {
-    let mut shell_env: HashMap<String, String> = dir_env::capture_home_interactive_env().await;
-    crate::services::shell_env::sanitize_shell_env(&mut shell_env);
+    let shell_env = managed_acp_tools::provider_env(app).await;
     let mut prepend_dirs: Vec<PathBuf> = Vec::new();
     if let Some(bundle) = app
         .try_state::<crate::services::distro_bundle::DistroBundleState>()
@@ -23,7 +21,6 @@ pub async fn build_spawn_env(app: &tauri::AppHandle) -> SpawnEnv {
             prepend_dirs.push(bin_dir.clone());
         }
     }
-    prepend_dirs.extend(managed_acp_tools::managed_prepend_dirs(app));
     let mut extra_env = Vec::new();
     install_distillctl_shims(app, &mut prepend_dirs, &mut extra_env);
     SpawnEnv {
