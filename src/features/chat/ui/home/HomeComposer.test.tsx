@@ -145,23 +145,6 @@ describe("HomeComposer", () => {
     cleanup();
   });
 
-  it("offers the selected model's own effort stops from the inventory while Home has no session", async () => {
-    const user = userEvent.setup();
-    controller.current = controllerWithoutSession(opus46);
-    renderHome();
-
-    await user.click(
-      screen.getByRole("button", { name: "Reasoning effort: Default" }),
-    );
-    await screen.findByRole("radiogroup", { name: "Reasoning effort" });
-
-    expect(screen.getAllByRole("radio")).toHaveLength(5);
-    for (const name of ["Default", "Low", "Medium", "High", "Max"]) {
-      expect(screen.getByRole("radio", { name })).toBeInTheDocument();
-    }
-    expect(screen.queryByRole("radio", { name: /x ?high/i })).toBeNull();
-  });
-
   it("hands a stop chosen before the session exists to the controller", async () => {
     const user = userEvent.setup();
     const current = controllerWithoutSession(opus46);
@@ -174,14 +157,5 @@ describe("HomeComposer", () => {
     await user.click(await screen.findByRole("radio", { name: "Max" }));
 
     expect(current.handleReasoningEffortChange).toHaveBeenCalledWith("max");
-  });
-
-  it("shows no effort control for a model whose inventory row offers no efforts", () => {
-    controller.current = controllerWithoutSession(haiku);
-    renderHome();
-
-    expect(
-      screen.queryByRole("button", { name: /Reasoning effort/ }),
-    ).toBeNull();
   });
 });

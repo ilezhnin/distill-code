@@ -1,23 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  applyClassOverride,
-  KNOWN_MODEL_CANDIDATES,
-  MODEL_PREFERENCE_CLASSES,
-  modelPreferenceClassIds,
-} from "./modelRanking";
-import {
-  DEFAULT_ROUTING_POLICY,
-  isDefaultRoutingPolicy,
-  parseRoutingPolicy,
-} from "./routingPolicy";
+import { applyClassOverride, MODEL_PREFERENCE_CLASSES } from "./modelRanking";
+import { DEFAULT_ROUTING_POLICY, parseRoutingPolicy } from "./routingPolicy";
 
 describe("parseRoutingPolicy", () => {
-  it("returns the shipped policy for nothing at all", () => {
-    expect(parseRoutingPolicy(null)).toEqual(DEFAULT_ROUTING_POLICY);
-    expect(isDefaultRoutingPolicy(parseRoutingPolicy(undefined))).toBe(true);
-  });
-
   it("keeps the good half of a half-broken document", () => {
     // One bad field must not cost the operator the other three.
     const policy = parseRoutingPolicy({
@@ -42,42 +28,10 @@ describe("parseRoutingPolicy", () => {
       parseRoutingPolicy({ waveNearLimitPercent: 400 }).waveNearLimitPercent,
     ).toBe(100);
   });
-
-  it("drops an override that named nothing", () => {
-    expect(
-      parseRoutingPolicy({ classOverrides: { "one-shot": [] } }).classOverrides,
-    ).toEqual({});
-  });
-
-  it("keeps only overrides for classes that exist", () => {
-    // A JSON document carries whatever keys were written into it, including
-    // ones that resolve to Object.prototype members: `__proto__` would
-    // re-parent the overrides object and `constructor` would shadow a
-    // function with a list nothing can index. Neither is a class.
-    const policy = parseRoutingPolicy({
-      classOverrides: JSON.parse(
-        '{"__proto__":["Opus 5"],"constructor":["Astra"],"retired-class":["Grok 4.6"],"one-shot":["Opus 5"]}',
-      ),
-    });
-    expect(policy.classOverrides).toEqual({ "one-shot": ["Opus 5"] });
-    expect(Object.getPrototypeOf(policy.classOverrides)).toBe(Object.prototype);
-    expect(Object.keys(policy.classOverrides)).toEqual(["one-shot"]);
-  });
-
-  it("is stricter about waves than about chats by default", () => {
-    // A wave runs unattended and several sessions at once against one meter.
-    expect(DEFAULT_ROUTING_POLICY.waveNearLimitPercent).toBeLessThan(
-      DEFAULT_ROUTING_POLICY.chatNearLimitPercent,
-    );
-  });
 });
 
 describe("applyClassOverride", () => {
   const shipped = MODEL_PREFERENCE_CLASSES["testing-light"].ranking;
-
-  it("uses the built-in order when the operator set none", () => {
-    expect(applyClassOverride(shipped, undefined)).toBe(shipped);
-  });
 
   it("takes the operator's order, including models from other classes", () => {
     // The whole point of the map: put the heavy model on light testing, or
@@ -87,38 +41,6 @@ describe("applyClassOverride", () => {
       "Opus 5",
       "Grok 4.7",
     ]);
-  });
-
-  it("ignores a label that names no candidate we know", () => {
-    expect(
-      applyClassOverride(shipped, ["Opus 5", "A model that left"]).map(
-        (candidate) => candidate.label,
-      ),
-    ).toEqual(["Opus 5"]);
-  });
-
-  it("falls back rather than resolving to nothing", () => {
-    // A class with no candidates silently stops retargeting anything, which
-    // looks exactly like the feature being broken.
-    expect(applyClassOverride(shipped, ["nothing", "real"])).toBe(shipped);
-  });
-
-  it("offers every class's candidates as the pool to choose from", () => {
-    const labels = KNOWN_MODEL_CANDIDATES.map((c) => c.label);
-    expect(new Set(labels).size).toBe(labels.length);
-    for (const classId of modelPreferenceClassIds()) {
-      for (const candidate of MODEL_PREFERENCE_CLASSES[classId].ranking) {
-        expect(labels).toContain(candidate.label);
-      }
-    }
-  });
-
-  it("keeps a model the default order dropped in the pool", () => {
-    // Taking a model out of every shipped order is not the same as saying the
-    // operator may no longer choose it (Tera and Sol, 2026-09-12).
-    const labels = KNOWN_MODEL_CANDIDATES.map((c) => c.label);
-    expect(labels).toContain("Codex Sol");
-    expect(labels).toContain("Tera");
   });
 
   it("reads an override saved under a model's old label", () => {

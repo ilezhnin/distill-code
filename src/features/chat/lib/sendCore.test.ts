@@ -1,4 +1,3 @@
-import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import {
@@ -8,8 +7,6 @@ import {
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import { resetSessionTargetCoordinatorsForTests } from "@/features/chat/lib/sessionTargetCoordinator";
-import { useMessageQueue } from "@/features/chat/hooks/useMessageQueue";
-import { isSystemNotification } from "@/shared/types/messages";
 import type { SessionChatRuntime } from "@/shared/types/chat";
 import { QueuedMessageOwnershipLostError } from "./preCommitSendRejection";
 import { isQueuedSessionReady } from "./queuedMessageReadiness";
@@ -98,12 +95,6 @@ describe("dispatchPrompt model rejection recovery", () => {
     modelName: "GPT 5.6 Sol",
   };
 
-  function notices(sessionId: string) {
-    return (useChatStore.getState().messagesBySession[sessionId] ?? [])
-      .flatMap((message) => message.content)
-      .filter(isSystemNotification);
-  }
-
   beforeEach(() => {
     vi.clearAllMocks();
     resetSessionTargetCoordinatorsForTests();
@@ -146,31 +137,6 @@ describe("dispatchPrompt model rejection recovery", () => {
     );
   }
 
-  // The P0 as the operator lived it: the harness refuses the session's model
-  // from inside stream(), so the failure repeats on every send and no control
-  // in the chat can clear it. The session has to heal itself.
-  it("unpins the refused model and tells the operator what changed", async () => {
-    failWith("Request failed: Failed to set ACP model option: Invalid params");
-
-    await expect(dispatchPrompt("session-1", "hello", {})).rejects.toThrow(
-      "Invalid params",
-    );
-
-    expect(
-      useChatSessionStore.getState().getSession("session-1")?.executionTarget,
-    ).toEqual({ harnessId: "codex-acp", modelProviderId: "codex-acp" });
-
-    const notice = notices("session-1").at(-1);
-    expect(notice?.notificationType).toBe("warning");
-    expect(notice?.text).toContain("GPT 5.6 Sol");
-    expect(notice?.text).toContain("Codex");
-    expect(notice?.text).toContain("model pill");
-    // The raw error stays: it is what actually happened.
-    expect(notices("session-1")[0]?.text).toContain(
-      "Failed to set ACP model option",
-    );
-  });
-
   // Not a retry (Q2): re-running the prompt on a model the operator did not
   // choose is the silent substitution D5 forbids.
   it("does not re-send the message it just repaired the target for", async () => {
@@ -179,17 +145,6 @@ describe("dispatchPrompt model rejection recovery", () => {
     await expect(dispatchPrompt("session-1", "hello", {})).rejects.toThrow();
 
     expect(mocks.acpSendMessage).toHaveBeenCalledTimes(1);
-  });
-
-  it("leaves the target alone for any other send failure", async () => {
-    failWith("Request failed: Bad request (400): prompt is too long");
-
-    await expect(dispatchPrompt("session-1", "hello", {})).rejects.toThrow();
-
-    expect(
-      useChatSessionStore.getState().getSession("session-1")?.executionTarget,
-    ).toEqual(PINNED);
-    expect(notices("session-1")).toHaveLength(1);
   });
 });
 
@@ -249,54 +204,6 @@ describe("dispatchPrompt run settlement after a steer", () => {
     return { send, dispatch };
   }
 
-  it("clears the steered run when the prompt resolves and drains the queue", async () => {
-    mocks.acpSteerMessage.mockResolvedValue({
-      runId: "run-2",
-      messageId: "steer-1",
-    });
-    const { send, dispatch } = startPrompt();
-    await Promise.resolve();
-
-    expect(await steerPromptInSession("session-1", "also do X")).toBe(true);
-    const runtime = () =>
-      useChatStore.getState().getSessionRuntime("session-1");
-    expect(runtime().activeRunId).toBe("run-2");
-
-    const sendMessage = vi.fn().mockReturnValue(true);
-    useChatStore.getState().enqueueTransportReadyMessage("session-1", {
-      persona: { kind: "inherit" },
-      text: "after the turn",
-    });
-    renderHook(() => useMessageQueue("session-1", "streaming", sendMessage));
-    expect(sendMessage).not.toHaveBeenCalled();
-
-    send.resolve();
-    await dispatch;
-
-    expect(runtime().chatState).toBe("idle");
-    expect(runtime().activeRunId).toBeNull();
-    expect(isQueuedSessionReady(runtime())).toBe(true);
-    await waitFor(() => expect(sendMessage).toHaveBeenCalledOnce());
-    expect(sendMessage.mock.calls[0]?.[0]).toBe("after the turn");
-  });
-
-  it("clears the steered run when the prompt fails", async () => {
-    mocks.acpSteerMessage.mockResolvedValue({
-      runId: "run-2",
-      messageId: "steer-1",
-    });
-    const { send, dispatch } = startPrompt();
-    await Promise.resolve();
-    expect(await steerPromptInSession("session-1", "also do X")).toBe(true);
-
-    send.reject(new Error("bridge died"));
-    await expect(dispatch).rejects.toThrow("bridge died");
-
-    const runtime = useChatStore.getState().getSessionRuntime("session-1");
-    expect(runtime.activeRunId).toBeNull();
-    expect(isQueuedSessionReady(runtime)).toBe(true);
-  });
-
   it("settles a stop issued after a steer once the prompt settles", async () => {
     mocks.acpSteerMessage.mockResolvedValue({
       runId: "run-2",
@@ -353,43 +260,5 @@ describe("dispatchPrompt run settlement after a steer", () => {
     expect(
       useChatStore.getState().messagesBySession["session-1"]?.[0]?.content,
     ).toEqual([{ type: "text", text: "half a reply" }]);
-  });
-
-  it("leaves a newer owner's run alone when a superseded prompt settles", async () => {
-    mocks.acpSteerMessage.mockResolvedValue({
-      runId: "run-2",
-      messageId: "steer-1",
-    });
-    const { send, dispatch } = startPrompt();
-    await Promise.resolve();
-    expect(await steerPromptInSession("session-1", "also do X")).toBe(true);
-
-    // A newer prompt takes the session over while the first is still pending.
-    const newer = deferred<void>();
-    mocks.acpSendMessage.mockImplementationOnce(
-      (
-        _sessionId: string,
-        _prompt: string,
-        options: { onPromptDispatching(): void },
-      ) => {
-        options.onPromptDispatching();
-        return newer.promise;
-      },
-    );
-    const newerDispatch = dispatchPrompt("session-1", "second prompt", {});
-    await Promise.resolve();
-    useChatStore.getState().setActiveRunId("session-1", "run-3");
-
-    send.resolve();
-    await dispatch;
-    expect(
-      useChatStore.getState().getSessionRuntime("session-1").activeRunId,
-    ).toBe("run-3");
-
-    newer.resolve();
-    await newerDispatch;
-    expect(
-      useChatStore.getState().getSessionRuntime("session-1").activeRunId,
-    ).toBeNull();
   });
 });

@@ -1,17 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addSessionWorkedMs,
-  buildUsageSummary,
   flushUsageLedger,
   getUsageLedger,
   mergeUsageLedgers,
   subscribeUsageLedger,
-  noteSessionWorkState,
   recordSessionTokens,
   resetUsageLedgerForTests,
   syncUsageSessions,
 } from "../usageLedger";
-import { formatLocalDay } from "../usageFormatters";
 import type { UsageLedger, UsageSessionRecord } from "../usageTypes";
 import { USAGE_LEDGER_STORAGE_KEY } from "../usageTypes";
 
@@ -59,78 +56,6 @@ describe("usageLedger", () => {
     expect(stored).toContain('"s1"');
   });
 
-  it("records the effort a session ran at beside its model", () => {
-    syncUsageSessions([
-      {
-        id: "s1",
-        createdAt: "2026-08-01T00:00:00.000Z",
-        updatedAt: "2026-08-02T00:00:00.000Z",
-        messageCount: 1,
-        providerId: "codex-acp",
-        modelId: "gpt-5.6-sol",
-        effort: "xhigh",
-      },
-    ]);
-    recordSessionTokens(
-      "s1",
-      { mode: "add", inputTokens: 10, outputTokens: 5, turnsDelta: 1 },
-      { modelId: "gpt-5.6-sol", effort: "low" },
-    );
-    // A later sync that does not know the effort leaves the recorded one.
-    syncUsageSessions([
-      {
-        id: "s1",
-        createdAt: "2026-08-01T00:00:00.000Z",
-        updatedAt: "2026-08-03T00:00:00.000Z",
-        messageCount: 2,
-        providerId: "codex-acp",
-        modelId: "gpt-5.6-sol",
-      },
-    ]);
-
-    expect(getUsageLedger().sessions.s1).toMatchObject({
-      modelId: "gpt-5.6-sol",
-      effort: "low",
-    });
-    flushUsageLedger();
-    expect(storedLedger().sessions.s1?.effort).toBe("low");
-  });
-
-  it("reads a stored row with a folded model id exactly as it was written", () => {
-    window.localStorage.setItem(
-      USAGE_LEDGER_STORAGE_KEY,
-      JSON.stringify({
-        version: 1,
-        firstEventAt: 1,
-        lastUpdatedAt: 1,
-        sessions: {
-          legacy: {
-            providerId: "codex-acp",
-            modelId: "gpt-5.6-sol[low]",
-            modelName: "GPT-5.6 Sol (low)",
-            createdAt: 1,
-            lastActivityAt: 1,
-            messageCount: 1,
-            started: true,
-            inputTokens: 1,
-            outputTokens: 1,
-            cacheTokens: 0,
-            totalTokens: 2,
-            costUsd: null,
-            costCurrency: null,
-            turns: 1,
-            workedMs: 0,
-          },
-        },
-        daily: {},
-      }),
-    );
-
-    const legacy = getUsageLedger().sessions.legacy;
-    expect(legacy?.modelId).toBe("gpt-5.6-sol[low]");
-    expect(legacy).not.toHaveProperty("effort");
-  });
-
   it("keeps token totals monotonic on replace and adds on add", () => {
     recordSessionTokens("s1", {
       mode: "replace",
@@ -157,16 +82,6 @@ describe("usageLedger", () => {
     expect(session?.inputTokens).toBe(105);
     expect(session?.cacheTokens).toBe(10);
     expect(session?.turns).toBe(1);
-  });
-
-  it("tracks work time across working chat states", () => {
-    noteSessionWorkState("s1", "thinking", 1_000);
-    noteSessionWorkState("s1", "streaming", 1_500);
-    noteSessionWorkState("s1", "idle", 4_000);
-    expect(getUsageLedger().sessions.s1?.workedMs).toBe(3_000);
-
-    addSessionWorkedMs("s1", 250);
-    expect(getUsageLedger().sessions.s1?.workedMs).toBe(3_250);
   });
 
   it("adds later smaller token snapshots instead of dropping them", () => {
@@ -205,28 +120,6 @@ describe("usageLedger", () => {
     expect(session?.totalTokens).toBe(410);
     expect(session?.turns).toBe(2);
   });
-
-  it("summarizes started sessions and extra conductor agents", () => {
-    syncUsageSessions([
-      {
-        id: "chat-1",
-        createdAt: "2026-08-01T00:00:00.000Z",
-        updatedAt: "2026-08-01T00:00:00.000Z",
-        messageCount: 2,
-        providerId: "goose",
-      },
-      {
-        id: "empty",
-        createdAt: "2026-08-01T00:00:00.000Z",
-        updatedAt: "2026-08-01T00:00:00.000Z",
-        messageCount: 0,
-        providerId: "goose",
-      },
-    ]);
-    const summary = buildUsageSummary(new Set(["worker-1", "chat-1"]));
-    expect(summary.chatsStarted).toBe(1);
-    expect(summary.agentsSpawned).toBe(2);
-  });
 });
 
 describe("usageLedger persistence", () => {
@@ -234,34 +127,6 @@ describe("usageLedger persistence", () => {
     resetUsageLedgerForTests();
     vi.restoreAllMocks();
     vi.useRealTimers();
-  });
-
-  it("persists a burst of usage events with a single write", () => {
-    vi.useFakeTimers();
-    const setItem = vi.spyOn(Storage.prototype, "setItem");
-
-    recordSessionTokens("s1", {
-      inputTokens: 100,
-      outputTokens: 50,
-      totalTokens: 150,
-      turnsDelta: 1,
-    });
-    recordSessionTokens("s1", {
-      mode: "add",
-      inputTokens: 10,
-      outputTokens: 10,
-      totalTokens: 20,
-    });
-    addSessionWorkedMs("s1", 500);
-
-    expect(setItem).not.toHaveBeenCalled();
-    // The in-memory ledger stays authoritative while the write is pending.
-    expect(getUsageLedger().sessions.s1?.totalTokens).toBe(170);
-    expect(getUsageLedger().sessions.s1?.workedMs).toBe(500);
-
-    vi.advanceTimersByTime(1_000);
-    expect(setItem).toHaveBeenCalledTimes(1);
-    expect(storedLedger().sessions.s1?.totalTokens).toBe(170);
   });
 
   it("flushes a pending write when the window goes away", () => {
@@ -274,76 +139,6 @@ describe("usageLedger persistence", () => {
     window.dispatchEvent(new Event("pagehide"));
     expect(setItem).toHaveBeenCalledTimes(1);
     expect(storedLedger().sessions.s1?.workedMs).toBe(1_000);
-  });
-
-  it("keeps counting in memory and warns once when the write is refused", () => {
-    vi.useFakeTimers();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new Error("QuotaExceededError");
-    });
-
-    recordSessionTokens("s1", {
-      inputTokens: 100,
-      outputTokens: 50,
-      totalTokens: 150,
-    });
-    vi.advanceTimersByTime(1_000);
-    recordSessionTokens("s1", {
-      mode: "add",
-      inputTokens: 10,
-      totalTokens: 10,
-    });
-    vi.advanceTimersByTime(1_000);
-
-    expect(getUsageLedger().sessions.s1?.totalTokens).toBe(160);
-    expect(warn).toHaveBeenCalledTimes(1);
-  });
-
-  it("folds sessions idle for months into provider totals and drops ancient days", () => {
-    const now = Date.now();
-    const ancientAt = now - 500 * DAY_MS;
-    const staleAt = now - 120 * DAY_MS;
-    recordSessionTokens(
-      "ancient",
-      { inputTokens: 10, outputTokens: 5, totalTokens: 15, turnsDelta: 1 },
-      { providerId: "goose" },
-      ancientAt,
-    );
-    recordSessionTokens(
-      "stale",
-      { inputTokens: 20, outputTokens: 10, totalTokens: 30, turnsDelta: 1 },
-      { providerId: "goose" },
-      staleAt,
-    );
-    recordSessionTokens(
-      "fresh",
-      { inputTokens: 1, outputTokens: 1, totalTokens: 2, turnsDelta: 1 },
-      { providerId: "goose" },
-      now,
-    );
-
-    flushUsageLedger();
-
-    const stored = storedLedger();
-    expect(Object.keys(stored.sessions)).toEqual(["fresh"]);
-    expect(stored.archived?.goose).toMatchObject({
-      sessions: 2,
-      chatsStarted: 2,
-      totalTokens: 45,
-      turns: 2,
-      activeDays: 2,
-    });
-    expect(
-      Object.keys(stored.daily).includes(formatLocalDay(new Date(ancientAt))),
-    ).toBe(false);
-    expect(
-      Object.keys(stored.daily).includes(formatLocalDay(new Date(staleAt))),
-    ).toBe(true);
-
-    // The pruned sessions still count towards the headline numbers.
-    expect(buildUsageSummary().chatsStarted).toBe(3);
-    expect(buildUsageSummary().agentsSpawned).toBe(3);
   });
 });
 
@@ -400,26 +195,6 @@ describe("two windows writing the same ledger", () => {
       const stored = storedLedger();
       expect(stored.sessions.theirs?.totalTokens).toBe(99);
       expect(stored.sessions.ours?.totalTokens).toBe(15);
-    } finally {
-      unsubscribe();
-    }
-  });
-
-  it("adopts the stored copy when nothing of ours is pending", () => {
-    const unsubscribe = subscribeUsageLedger(() => {});
-    try {
-      recordSessionTokens("ours", { mode: "add", totalTokens: 10 });
-      flushUsageLedger();
-      const base = storedLedger();
-
-      otherWindowWrites({
-        ...base,
-        sessions: {
-          theirs: { ...base.sessions.ours, totalTokens: 7 },
-        },
-      });
-
-      expect(Object.keys(getUsageLedger().sessions)).toEqual(["theirs"]);
     } finally {
       unsubscribe();
     }

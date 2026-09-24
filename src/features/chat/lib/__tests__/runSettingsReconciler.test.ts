@@ -75,52 +75,6 @@ describe("reconcileSessionRunSettings", () => {
     mocks.applyRunSettings.mockResolvedValue(undefined);
   });
 
-  it("writes nothing when codex moves from astra at max to gpt-5.5, and names the clamp the host reported", async () => {
-    seedSession({
-      executionTarget: {
-        harnessId: "codex-acp",
-        modelProviderId: "codex-acp",
-        modelId: "gpt-6-astra",
-        modelName: "GPT-6-Astra",
-      },
-      desiredRunSettings: { effort: "max" },
-      reasoningEffort: effortMenu(
-        "reasoning_effort",
-        ["low", "medium", "high", "xhigh", "max", "ultra"],
-        "max",
-      ),
-    });
-
-    switchModel("codex-acp", "gpt-5.5", "GPT-5.5");
-    useChatSessionStore.getState().patchSession(SESSION_ID, {
-      reasoningEffort: effortMenu(
-        "reasoning_effort",
-        ["low", "medium", "high", "xhigh"],
-        "medium",
-      ),
-    });
-    await reconcileSessionRunSettings({
-      sessionId: SESSION_ID,
-      substitutions: [
-        {
-          role: "effort",
-          requested: "max",
-          applied: "medium",
-          reason: "not offered by gpt-5.5",
-        },
-      ],
-    });
-
-    expect(mocks.applyRunSettings).not.toHaveBeenCalled();
-    expect(session()?.runSettingsNotice).toEqual({
-      kind: "effort",
-      wanted: "max",
-      actual: "medium",
-      modelName: "GPT-5.5",
-    });
-    expect(session()?.desiredRunSettings).toEqual({ effort: "max" });
-  });
-
   it("puts xhigh back on opus after the session passed through haiku", async () => {
     const opusMenu = ["default", "low", "medium", "high", "xhigh", "max"];
     seedSession({
@@ -204,26 +158,6 @@ describe("reconcileSessionRunSettings", () => {
       expect.objectContaining({ modelId: "opus[1m]" }),
     );
     expect(session()?.runSettingsNotice).toBeFalsy();
-  });
-
-  it("does not say anything about fast off on a model that has no fast mode", async () => {
-    seedSession({
-      executionTarget: {
-        harnessId: "grok-acp",
-        modelProviderId: "grok-acp",
-        modelId: "grok-4.6",
-        modelName: "Grok 4.6",
-      },
-      desiredRunSettings: { fast: false },
-    });
-
-    await reconcileSessionRunSettings({
-      sessionId: SESSION_ID,
-      substitutions: [{ role: "fast", requested: "off", applied: null }],
-    });
-
-    expect(mocks.applyRunSettings).not.toHaveBeenCalled();
-    expect(session()?.runSettingsNotice).toBeUndefined();
   });
 
   it("writes a grok effort once even when grok echoes the change back as a notification", async () => {

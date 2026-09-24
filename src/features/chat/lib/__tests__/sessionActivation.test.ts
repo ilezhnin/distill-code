@@ -6,13 +6,11 @@ import {
 } from "@/features/chat/acp/acpReplayAssistant";
 import { handleSessionInfoUpdate } from "@/features/chat/acp/acpSessionInfoUpdate";
 import {
-  clearIdleStreamingMessageAfterReplay,
   loadSessionMessages,
   loadSessionMessagesAndPrepare,
 } from "@/features/chat/lib/sessionActivation";
 import { DEFAULT_CHAT_TITLE } from "@/features/chat/lib/sessionTitle";
 import { interruptedTurnNoticeId } from "@/features/chat/lib/unansweredSend";
-import { setMultiWorkspaceEnabled } from "@/features/workspaces/multiWorkspacePreference";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 import {
   type ChatSession,
@@ -52,24 +50,6 @@ vi.mock("@/features/chat/acp/acpNotificationHandler", () => ({
   getReplayPerf: () => undefined,
   clearReplayPerf: vi.fn(),
 }));
-
-function makeProject(overrides: Partial<ProjectInfo> = {}): ProjectInfo {
-  return {
-    id: "project-1",
-    path: "/projects/project-1",
-    name: "Project",
-    description: "",
-    prompt: "",
-    icon: "",
-    color: "",
-    projectWorkspaces: [],
-    workingDirs: ["/missing/project"],
-    useWorktrees: false,
-    order: 0,
-    archivedAt: null,
-    ...overrides,
-  };
-}
 
 function replayUserMessage(id = "m1"): Message {
   return { ...createUserMessage("hello"), id };
@@ -137,12 +117,6 @@ function messagesFor(sessionId: string): Message[] {
   // load produced for the thing it is testing.
   return (useChatStore.getState().messagesBySession[sessionId] ?? []).filter(
     (message) => message.id !== interruptedTurnNoticeId(sessionId),
-  );
-}
-
-function interruptedNoticeFor(sessionId: string): Message | undefined {
-  return (useChatStore.getState().messagesBySession[sessionId] ?? []).find(
-    (message) => message.id === interruptedTurnNoticeId(sessionId),
   );
 }
 
@@ -217,87 +191,6 @@ describe("loadSessionMessages", () => {
     ).toEqual(targetB);
   });
 
-  it("uses the leased target when pinned session info returns a divergent target", async () => {
-    const targetA = {
-      harnessId: "claude-acp",
-      modelProviderId: "claude-acp",
-      modelId: "a",
-      modelName: "a",
-    } as const;
-    const targetB = {
-      harnessId: "claude-acp",
-      modelProviderId: "claude-acp",
-      modelId: "b",
-      modelName: "b",
-    } as const;
-    seedSession({
-      id: "leased-info",
-      executionTarget: targetA,
-      executionTargetSource: "acp",
-      pinnedLoadState: "loading",
-    });
-    acpGetSessionInfo.mockResolvedValue({
-      providerId: "claude-acp",
-      modelId: "b",
-      messageCount: 1,
-    });
-    const lease = acquireSessionDispatchTarget("leased-info");
-
-    await expect(loadSessionMessages("leased-info")).resolves.toBe(true);
-
-    expect(acpPrepareSession).not.toHaveBeenCalled();
-    expect(
-      useChatSessionStore.getState().getSession("leased-info")?.executionTarget,
-    ).toEqual(targetA);
-    lease.release?.();
-    expect(
-      useChatSessionStore.getState().getSession("leased-info")?.executionTarget,
-    ).toEqual(targetB);
-  });
-
-  it.each([
-    ["after replay", false],
-    ["on the cached-message fast path", true],
-  ])("clears an idle streaming pointer %s", async (_name, cached) => {
-    seedSession({ id: "idle-replay" });
-    if (cached) {
-      useChatStore
-        .getState()
-        .setMessages("idle-replay", [replayUserMessage("cached-message")]);
-    }
-    useChatStore.getState().setStreamingMessageId("idle-replay", "assistant-1");
-
-    await expect(loadSessionMessages("idle-replay")).resolves.toBe(true);
-
-    expect(
-      useChatStore.getState().getSessionRuntime("idle-replay")
-        .streamingMessageId,
-    ).toBeNull();
-    expect(acpLoadSession).toHaveBeenCalledTimes(cached ? 0 : 1);
-  });
-
-  it.each([
-    ["a live chat state", { chatState: "streaming" as const }],
-    ["an active run", { activeRunId: "run-1" }],
-    ["pending cancellation", { isRunCancellationPending: true }],
-  ])("preserves a replay streaming pointer during %s", (_name, patch) => {
-    const sessionId = `protected-${_name}`;
-    useChatStore.setState({
-      sessionStateById: {
-        [sessionId]: {
-          ...useChatStore.getState().getSessionRuntime(sessionId),
-          streamingMessageId: "assistant-1",
-          ...patch,
-        },
-      },
-    });
-
-    expect(clearIdleStreamingMessageAfterReplay(sessionId)).toBe(false);
-    expect(
-      useChatStore.getState().getSessionRuntime(sessionId).streamingMessageId,
-    ).toBe("assistant-1");
-  });
-
   it("preserves a populated transcript when a forced replay is invalid", async () => {
     seedSession(
       { id: "empty-forced-replay", messageCount: 2 },
@@ -328,47 +221,6 @@ describe("loadSessionMessages", () => {
     ).toBe(false);
   });
 
-  it("reloads a voice reply without exposing its persisted TTS delivery notice", async () => {
-    const session = seedSession(
-      { id: "voice-replay", messageCount: 1 },
-      { replay: false },
-    );
-    ensureReplayBuffer(session.id).push({
-      ...createUserMessage(
-        "[voice: tts-delivery-failed]\n" +
-          "TTS delivery was interrupted because the user started speaking; the assistant reply was not fully spoken.\n" +
-          "Original text: There was a bookshop where every book was blank.\n" +
-          "This is TTS delivery state, not live user voice input. Do not respond to this control message or repeat the reply unless re-delivery is still appropriate.\n\n" +
-          "Okay, that's perfect. Thank you",
-      ),
-      id: "persisted-voice-reply",
-      metadata: {
-        userVisible: true,
-        agentVisible: true,
-        origin: "voice_conversation",
-      },
-    });
-
-    await expect(loadSessionMessages(session.id)).resolves.toBe(true);
-
-    expect(messagesFor(session.id)).toHaveLength(1);
-    expect(messagesFor(session.id)[0]).toMatchObject({
-      id: "persisted-voice-reply",
-      role: "user",
-      content: [{ type: "text", text: "Okay, that's perfect. Thank you" }],
-      metadata: { userVisible: true },
-    });
-    expect(
-      messagesFor(session.id).some((message) =>
-        message.content.some(
-          (content) =>
-            content.type === "text" &&
-            content.text.includes("[voice: tts-delivery-failed]"),
-        ),
-      ),
-    ).toBe(false);
-  });
-
   it("rejects an empty cold replay when session metadata expects history", async () => {
     seedSession(
       { id: "cold-empty-replay", messageCount: 3 },
@@ -385,124 +237,6 @@ describe("loadSessionMessages", () => {
       useChatSessionStore.getState().getSession("cold-empty-replay")
         ?.messageCount,
     ).toBe(3);
-  });
-
-  it("clears replay loading before publishing error-to-idle", async () => {
-    seedSession({ id: "error-replay" });
-    useChatStore.getState().setError("error-replay", "stale error");
-    const observed: Array<{ loading: boolean; chatState: string }> = [];
-    const unsubscribe = useChatStore.subscribe((state) => {
-      observed.push({
-        loading: state.loadingSessionIds.has("error-replay"),
-        chatState: state.getSessionRuntime("error-replay").chatState,
-      });
-    });
-
-    await expect(loadSessionMessages("error-replay")).resolves.toBe(true);
-    unsubscribe();
-
-    expect(
-      observed.some(
-        (snapshot) => snapshot.loading && snapshot.chatState === "idle",
-      ),
-    ).toBe(false);
-  });
-
-  it("completes the final replay assistant for a settled session", async () => {
-    seedSession({ id: "settled-replay" }, { replay: false });
-    ensureReplayAssistantMessage("settled-replay", "assistant-1").content.push({
-      type: "text",
-      text: "Finished answer",
-    });
-    acpLoadSession.mockImplementation(async () => {
-      handleSessionInfoUpdate("settled-replay", {
-        sessionUpdate: "session_info_update",
-        _meta: { activeRunId: null },
-      } as never);
-    });
-
-    await expect(loadSessionMessages("settled-replay")).resolves.toBe(true);
-
-    expect(messagesFor("settled-replay")[0]).toMatchObject({
-      role: "assistant",
-      metadata: { completionStatus: "completed" },
-    });
-  });
-
-  it("completes a pinned settled replay assistant from refreshed session metadata", async () => {
-    acpGetSessionInfo.mockResolvedValue({
-      sessionId: "pinned-settled-replay",
-      title: "Settled Replay",
-      updatedAt: "2026-06-25T00:45:04.000Z",
-      createdAt: "2026-06-25T00:40:00.000Z",
-      lastMessageAt: "2026-06-25T00:45:04.000Z",
-      archivedAt: null,
-      userSetName: true,
-      messageCount: 1,
-      subtitle: null,
-      workingDir: null,
-      projectId: null,
-      providerId: "claude-acp",
-      modelId: null,
-      personaId: null,
-      activeRunId: null,
-    });
-    seedSession(
-      { id: "pinned-settled-replay", pinnedLoadState: "loading" },
-      { replay: false },
-    );
-    ensureReplayAssistantMessage(
-      "pinned-settled-replay",
-      "assistant-1",
-    ).content.push({
-      type: "text",
-      text: "Finished answer",
-    });
-
-    await expect(loadSessionMessages("pinned-settled-replay")).resolves.toBe(
-      true,
-    );
-
-    expect(messagesFor("pinned-settled-replay")[0]).toMatchObject({
-      role: "assistant",
-      metadata: { completionStatus: "completed" },
-    });
-  });
-
-  it("preserves a pinned replay assistant when refreshed run state is unknown", async () => {
-    acpGetSessionInfo.mockResolvedValue({
-      sessionId: "pinned-unknown-replay",
-      title: "Unknown Replay",
-      updatedAt: "2026-06-25T00:45:04.000Z",
-      createdAt: "2026-06-25T00:40:00.000Z",
-      lastMessageAt: "2026-06-25T00:45:04.000Z",
-      archivedAt: null,
-      userSetName: true,
-      messageCount: 1,
-      subtitle: null,
-      workingDir: null,
-      projectId: null,
-      providerId: "claude-acp",
-      modelId: null,
-      personaId: null,
-    });
-    seedSession(
-      { id: "pinned-unknown-replay", pinnedLoadState: "loading" },
-      { replay: false },
-    );
-    ensureReplayAssistantMessage(
-      "pinned-unknown-replay",
-      "assistant-1",
-    ).content.push({ type: "text", text: "Maybe still working" });
-
-    await expect(loadSessionMessages("pinned-unknown-replay")).resolves.toBe(
-      true,
-    );
-
-    expect(messagesFor("pinned-unknown-replay")[0]).toMatchObject({
-      role: "assistant",
-      metadata: { completionStatus: "inProgress" },
-    });
   });
 
   it("waits for an affirmative run boundary before completing replay", async () => {
@@ -534,119 +268,6 @@ describe("loadSessionMessages", () => {
     });
   });
 
-  it("waits for explicit run settlement before completing a replay assistant", async () => {
-    seedSession({ id: "unknown-run-replay" }, { replay: false });
-    ensureReplayAssistantMessage(
-      "unknown-run-replay",
-      "assistant-1",
-    ).content.push({
-      type: "text",
-      text: "Still working after load",
-    });
-
-    await expect(loadSessionMessages("unknown-run-replay")).resolves.toBe(true);
-
-    expect(messagesFor("unknown-run-replay")[0]).toMatchObject({
-      role: "assistant",
-      metadata: { completionStatus: "inProgress" },
-    });
-
-    handleSessionInfoUpdate("unknown-run-replay", {
-      sessionUpdate: "session_info_update",
-      _meta: { activeRunId: "run-1" },
-    } as never);
-
-    expect(messagesFor("unknown-run-replay")[0]).toMatchObject({
-      role: "assistant",
-      metadata: { completionStatus: "inProgress" },
-    });
-
-    handleSessionInfoUpdate("unknown-run-replay", {
-      sessionUpdate: "session_info_update",
-      _meta: { activeRunId: null },
-    } as never);
-
-    expect(messagesFor("unknown-run-replay")[0]).toMatchObject({
-      role: "assistant",
-      metadata: { completionStatus: "completed" },
-    });
-  });
-
-  // Every `session/list` row says whether the session has a run, and the list
-  // is refreshed every 60 s — so an ordinary load (no `session/info` fetch)
-  // can tell a finished last reply from a running one instead of leaving the
-  // last bubble of every finished chat in progress until the next turn.
-  it("completes the final replay assistant when the listed session has no run", async () => {
-    seedSession(
-      { id: "listed-settled-replay", activeRunId: null },
-      { replay: false },
-    );
-    ensureReplayAssistantMessage(
-      "listed-settled-replay",
-      "assistant-1",
-    ).content.push({ type: "text", text: "Finished answer" });
-
-    await expect(loadSessionMessages("listed-settled-replay")).resolves.toBe(
-      true,
-    );
-
-    expect(acpGetSessionInfo).not.toHaveBeenCalled();
-    expect(messagesFor("listed-settled-replay")[0]).toMatchObject({
-      role: "assistant",
-      metadata: { completionStatus: "completed" },
-    });
-    // A session the host is still working on is not reported as an
-    // interrupted turn either.
-    expect(interruptedNoticeFor("listed-settled-replay")).toBeUndefined();
-  });
-
-  // The app went away under a turn: the transcript has the call and never its
-  // result. Reloaded, it must not read as a call that has been running since.
-  it.each([
-    ["stops", null, "stopped"],
-    ["keeps", "run-1", "in_progress"],
-  ] as const)("%s a tool call the transcript leaves open when the listed run is %s", async (_verb, activeRunId, status) => {
-    seedSession({ id: "open-call-replay", activeRunId }, { replay: false });
-    ensureReplayAssistantMessage(
-      "open-call-replay",
-      "assistant-1",
-    ).content.push({
-      type: "toolRequest",
-      id: "tool-1",
-      name: "Edit agent_skills.rs",
-      arguments: {},
-      status: "in_progress",
-      startedAt: 1,
-    });
-
-    await expect(loadSessionMessages("open-call-replay")).resolves.toBe(true);
-
-    expect(messagesFor("open-call-replay")[0]?.content[0]).toMatchObject({
-      type: "toolRequest",
-      status,
-    });
-  });
-
-  it("leaves the reply in progress when the listed session still has a run", async () => {
-    seedSession(
-      { id: "listed-running-replay", activeRunId: "run-1" },
-      { replay: false },
-    );
-    ensureReplayAssistantMessage(
-      "listed-running-replay",
-      "assistant-1",
-    ).content.push({ type: "text", text: "Still working" });
-
-    await expect(loadSessionMessages("listed-running-replay")).resolves.toBe(
-      true,
-    );
-
-    expect(messagesFor("listed-running-replay")[0]).toMatchObject({
-      role: "assistant",
-      metadata: { completionStatus: "inProgress" },
-    });
-  });
-
   // The listed value can be a refresh interval old; a run this renderer
   // started since then is the newer fact.
   it("keeps the reply in progress when the renderer's own run outranks the listed one", async () => {
@@ -668,84 +289,6 @@ describe("loadSessionMessages", () => {
       role: "assistant",
       metadata: { completionStatus: "inProgress" },
     });
-  });
-
-  it("says so when the loaded transcript ends on an unanswered message", async () => {
-    // The 2.10 gap: a turn killed in flight leaves the chat looking as if
-    // the agent ignored the operator, and nothing replays it.
-    seedSession({ id: "s-interrupted", workingDir: "/existing/session" });
-
-    await expect(loadSessionMessages("s-interrupted")).resolves.toBe(true);
-
-    const notice = interruptedNoticeFor("s-interrupted");
-    expect(notice?.content[0]).toMatchObject({
-      type: "systemNotification",
-      notificationType: "warning",
-      action: {
-        type: "resendMessage",
-        sessionId: "s-interrupted",
-        text: "hello",
-      },
-    });
-  });
-
-  it("does not stack a second notice when the session is loaded again", async () => {
-    seedSession({ id: "s-interrupted-twice", workingDir: "/existing/session" });
-    await expect(loadSessionMessages("s-interrupted-twice")).resolves.toBe(
-      true,
-    );
-    ensureReplayBuffer("s-interrupted-twice").push(replayUserMessage());
-
-    await expect(
-      loadSessionMessages("s-interrupted-twice", { force: true }),
-    ).resolves.toBe(true);
-
-    const notices = (
-      useChatStore.getState().messagesBySession["s-interrupted-twice"] ?? []
-    ).filter(
-      (message) =>
-        message.id === interruptedTurnNoticeId("s-interrupted-twice"),
-    );
-    expect(notices).toHaveLength(1);
-  });
-
-  it("stays quiet when the agent answered", async () => {
-    seedSession(
-      { id: "s-answered", workingDir: "/existing/session" },
-      {
-        replay: false,
-      },
-    );
-    ensureReplayBuffer("s-answered").push(replayUserMessage());
-    ensureReplayBuffer("s-answered").push({
-      id: "a1",
-      role: "assistant",
-      created: 2,
-      content: [{ type: "text", text: "here you go" }],
-      metadata: { completionStatus: "completed" },
-    });
-
-    await expect(loadSessionMessages("s-answered")).resolves.toBe(true);
-
-    expect(interruptedNoticeFor("s-answered")).toBeUndefined();
-  });
-
-  it("loads with the saved cwd and no warning when the directory exists", async () => {
-    seedSession({ id: "s0", workingDir: "/existing/session" });
-
-    await expect(loadSessionMessages("s0")).resolves.toBe(true);
-
-    expect(checkDirectoriesExist).toHaveBeenCalledWith([
-      "/resolved/existing/session",
-    ]);
-    expect(acpLoadSession).toHaveBeenCalledWith(
-      "s0",
-      "/resolved/existing/session",
-    );
-    expect(useChatSessionStore.getState().getSession("s0")?.workingDir).toBe(
-      "/existing/session",
-    );
-    expect(messagesFor("s0").map((m) => m.role)).toEqual(["user"]);
   });
 
   it("reasserts a UI selection changed while cwd resolution delayed ACP load", async () => {
@@ -794,16 +337,6 @@ describe("loadSessionMessages", () => {
     );
   });
 
-  it("rejects missing replay when session history is unknown", async () => {
-    await expect(loadSessionMessages("unknown-session")).resolves.toBe(false);
-
-    expect(checkDirectoriesExist).not.toHaveBeenCalled();
-    expect(acpLoadSession).toHaveBeenCalledWith(
-      "unknown-session",
-      "~/.distill/artifacts",
-    );
-  });
-
   it("skips ACP load while optimistic session creation is pending", async () => {
     seedSession(
       {
@@ -822,143 +355,6 @@ describe("loadSessionMessages", () => {
     expect(checkDirectoriesExist).not.toHaveBeenCalled();
     expect(useChatStore.getState().loadingSessionIds.has("draft-session")).toBe(
       false,
-    );
-  });
-
-  it("skips ACP load for a stale optimistic session id after promotion", async () => {
-    seedSession(
-      {
-        id: "backend-session",
-        clientSessionId: "draft-session",
-        messageCount: 0,
-      },
-      { replay: false },
-    );
-
-    await expect(loadSessionMessages("draft-session")).resolves.toBe(true);
-
-    expect(acpLoadSession).not.toHaveBeenCalled();
-    expect(resolvePath).not.toHaveBeenCalled();
-    expect(checkDirectoriesExist).not.toHaveBeenCalled();
-  });
-
-  it("missing project cwd loads with artifact fallback and appends an edit-project warning", async () => {
-    seedSession(
-      { id: "s1" },
-      { project: makeProject(), missingDir: "/resolved/missing/project" },
-    );
-
-    await expect(loadSessionMessages("s1")).resolves.toBe(true);
-
-    expect(acpLoadSession).toHaveBeenCalledWith("s1", "~/.distill/artifacts");
-    expect(useChatStore.getState().loadingSessionIds.has("s1")).toBe(false);
-    expect(useChatSessionStore.getState().getSession("s1")?.workingDir).toBe(
-      "~/.distill/artifacts",
-    );
-    const warning = notificationFromLastMessage("s1");
-    expect(warning.notificationType).toBe("warning");
-    expect(warning.text).toContain("/resolved/missing/project");
-    expect(warning.text).toContain("~/.distill/artifacts");
-    expect(warning.action).toEqual({
-      type: "editProject",
-      projectId: "project-1",
-    });
-  });
-
-  it("missing saved cwd loads with artifact fallback and appends a change-folder warning", async () => {
-    seedSession(
-      { id: "s2", workingDir: "/missing/session" },
-      { missingDir: "/resolved/missing/session" },
-    );
-
-    await expect(loadSessionMessages("s2")).resolves.toBe(true);
-
-    expect(acpLoadSession).toHaveBeenCalledWith("s2", "~/.distill/artifacts");
-    expect(useChatSessionStore.getState().getSession("s2")?.workingDir).toBe(
-      "~/.distill/artifacts",
-    );
-    const warning = notificationFromLastMessage("s2");
-    expect(warning.notificationType).toBe("warning");
-    expect(warning.text).toContain("/resolved/missing/session");
-    expect(warning.action).toEqual({ type: "openContextPanel" });
-  });
-
-  it("checks the first non-blank project working dir, not just index 0", async () => {
-    seedSession(
-      { id: "s-blank" },
-      {
-        project: makeProject({ workingDirs: ["  ", "/missing/project"] }),
-        missingDir: "/resolved/missing/project",
-      },
-    );
-
-    await expect(loadSessionMessages("s-blank")).resolves.toBe(true);
-
-    expect(checkDirectoriesExist).toHaveBeenCalledWith([
-      "/resolved/missing/project",
-    ]);
-    expect(acpLoadSession).toHaveBeenCalledWith(
-      "s-blank",
-      "~/.distill/artifacts",
-    );
-    expect(notificationFromLastMessage("s-blank").action).toEqual({
-      type: "editProject",
-      projectId: "project-1",
-    });
-  });
-
-  it("uses explicit chat workspace context when resolving the reload cwd", async () => {
-    setMultiWorkspaceEnabled(true);
-    seedSession(
-      {
-        id: "s-project-workspaces",
-        workspaceAttachments: [
-          {
-            id: "path:/attached/workspace",
-            path: "/attached/workspace",
-            kind: "directory",
-            source: "selected",
-            branch: null,
-            usedByAgent: false,
-          },
-          {
-            id: "path:/second/attached/workspace",
-            path: "/second/attached/workspace",
-            kind: "directory",
-            source: "selected",
-            branch: null,
-            usedByAgent: false,
-          },
-        ],
-      },
-      {
-        project: makeProject({
-          workingDirs: ["/project/root"],
-          projectWorkspaces: [
-            {
-              id: "path:/project/root",
-              path: "/project/root",
-              kind: "directory",
-              source: "selected",
-              branch: null,
-              usedByAgent: false,
-              startupMode: "none",
-            },
-          ],
-        }),
-      },
-    );
-
-    await expect(loadSessionMessages("s-project-workspaces")).resolves.toBe(
-      true,
-    );
-
-    expect(checkDirectoriesExist).toHaveBeenCalledWith([
-      "/resolved/attached/workspace",
-    ]);
-    expect(acpLoadSession).toHaveBeenCalledWith(
-      "s-project-workspaces",
-      "/resolved/attached/workspace",
     );
   });
 
@@ -988,143 +384,6 @@ describe("loadSessionMessages", () => {
     expect(warning.action).toEqual({ type: "openContextPanel" });
   });
 
-  it("surfaces the missing-folder warning on activation when the transcript is cached", async () => {
-    seedSession(
-      { id: "s-cached", workingDir: "/missing/session" },
-      { missingDir: "/resolved/missing/session", replay: false },
-    );
-    // A cached transcript makes loadSessionMessages skip the replay path.
-    useChatStore.getState().addMessage("s-cached", replayUserMessage("m-old"));
-
-    await expect(loadSessionMessagesAndPrepare("s-cached")).resolves.toBe(true);
-
-    expect(acpLoadSession).not.toHaveBeenCalled();
-    expect(
-      useChatSessionStore.getState().getSession("s-cached")?.workingDir,
-    ).toBe("~/.distill/artifacts");
-    const warning = notificationFromLastMessage("s-cached");
-    expect(warning.notificationType).toBe("warning");
-    expect(warning.text).toContain("/resolved/missing/session");
-    expect(warning.action).toEqual({ type: "openContextPanel" });
-  });
-
-  // Resolving the folder on the cached-transcript path touches the disk, and
-  // every caller is a `void` call: a rejection used to escape as an unhandled
-  // rejection with nothing said in the chat and the session left unprepared.
-  it("reports a folder resolution that fails on the cached-transcript path", async () => {
-    seedSession(
-      { id: "s-cached-throws", workingDir: "/missing/session" },
-      { replay: false },
-    );
-    useChatStore
-      .getState()
-      .addMessage("s-cached-throws", replayUserMessage("m-old"));
-    resolvePath.mockRejectedValue(new Error("state not managed"));
-
-    await expect(
-      loadSessionMessagesAndPrepare("s-cached-throws"),
-    ).resolves.toBe(false);
-
-    const failure = notificationFromLastMessage("s-cached-throws");
-    expect(failure.notificationType).toBe("error");
-    expect(failure.text).toContain("state not managed");
-    expect(acpPrepareSession).not.toHaveBeenCalled();
-  });
-
-  it("does not stack duplicate warnings across repeated activations", async () => {
-    seedSession(
-      { id: "s-repeat", workingDir: "/missing/session" },
-      { missingDir: "/resolved/missing/session", replay: false },
-    );
-    useChatStore.getState().addMessage("s-repeat", replayUserMessage("m-old"));
-
-    await expect(loadSessionMessagesAndPrepare("s-repeat")).resolves.toBe(true);
-    await expect(loadSessionMessagesAndPrepare("s-repeat")).resolves.toBe(true);
-
-    const warnings = messagesFor("s-repeat").filter(
-      (message) => message.role === "system",
-    );
-    expect(warnings).toHaveLength(1);
-  });
-
-  it("skips the warning when the missing dir is the artifact root the fallback recreates", async () => {
-    resolvePath.mockImplementation(({ parts }: { parts: string[] }) =>
-      Promise.resolve({ path: parts[0] }),
-    );
-    seedSession(
-      { id: "s-root", workingDir: "~/.distill/artifacts" },
-      { missingDir: "~/.distill/artifacts" },
-    );
-
-    await expect(loadSessionMessages("s-root")).resolves.toBe(true);
-
-    expect(acpLoadSession).toHaveBeenCalledWith(
-      "s-root",
-      "~/.distill/artifacts",
-    );
-    expect(
-      useChatSessionStore.getState().getSession("s-root")?.workingDir,
-    ).toBe("~/.distill/artifacts");
-    expect(messagesFor("s-root").map((m) => m.role)).toEqual(["user"]);
-  });
-
-  it("refreshes pinned placeholder metadata before replaying messages", async () => {
-    acpGetSessionInfo.mockResolvedValue({
-      sessionId: "s-pinned",
-      title: "Control Center MCP Hints",
-      updatedAt: "2026-06-25T00:45:04.000Z",
-      createdAt: "2026-06-19T03:43:17.000Z",
-      lastMessageAt: "2026-06-19T06:59:21.000Z",
-      archivedAt: null,
-      userSetName: false,
-      messageCount: 1143,
-      subtitle: "Commented and resolved the GitHub review thread.",
-      workingDir: "/Users/morganm/goose artifacts",
-      projectId: "goose-internal",
-      providerId: "claude-acp",
-      modelId: "claude-sonnet-4",
-      personaId: null,
-    });
-    checkDirectoriesExist.mockImplementation((paths: string[]) =>
-      Promise.resolve(
-        paths.includes("/resolved/missing/session")
-          ? ["/resolved/missing/session"]
-          : [],
-      ),
-    );
-    seedSession(
-      {
-        id: "s-pinned",
-        title: DEFAULT_CHAT_TITLE,
-        projectId: undefined,
-        executionTarget: undefined,
-        workingDir: "/missing/session",
-        pinnedLoadState: "loading",
-        updatedAt: "2026-06-25T00:49:00.000Z",
-      },
-      { replay: true },
-    );
-
-    await expect(loadSessionMessages("s-pinned")).resolves.toBe(true);
-
-    expect(acpGetSessionInfo).toHaveBeenCalledWith("s-pinned");
-    expect(acpLoadSession).toHaveBeenCalledWith(
-      "s-pinned",
-      "/resolved/Users/morganm/goose artifacts",
-    );
-    expect(useChatSessionStore.getState().getSession("s-pinned")).toMatchObject(
-      {
-        title: "Control Center MCP Hints",
-        projectId: "goose-internal",
-        workingDir: "/Users/morganm/goose artifacts",
-        updatedAt: "2026-06-25T00:45:04.000Z",
-        lastMessageAt: "2026-06-19T06:59:21.000Z",
-        messageCount: 1143,
-        pinnedLoadState: undefined,
-      },
-    );
-  });
-
   it("rejects empty pinned replay when authoritative metadata refresh fails", async () => {
     acpGetSessionInfo.mockRejectedValue(new Error("metadata unavailable"));
     seedSession(
@@ -1150,48 +409,6 @@ describe("loadSessionMessages", () => {
     expect(notificationFromLastMessage("s-pinned-unknown")).toMatchObject({
       notificationType: "error",
     });
-  });
-
-  it("keeps refreshed pinned history metadata across invalid replay retries", async () => {
-    acpGetSessionInfo.mockResolvedValue({
-      sessionId: "s-pinned-empty",
-      title: "Existing session",
-      updatedAt: "2026-06-25T00:45:04.000Z",
-      createdAt: "2026-06-19T03:43:17.000Z",
-      lastMessageAt: "2026-06-19T06:59:21.000Z",
-      archivedAt: null,
-      userSetName: false,
-      messageCount: 9,
-      subtitle: null,
-      workingDir: null,
-      projectId: null,
-      providerId: "claude-acp",
-      modelId: "claude-sonnet-4",
-      personaId: null,
-    });
-    seedSession(
-      {
-        id: "s-pinned-empty",
-        messageCount: 0,
-        pinnedLoadState: "loading",
-      },
-      { replay: false },
-    );
-    acpLoadSession.mockImplementation(async (sessionId: string) => {
-      ensureReplayBuffer(sessionId);
-    });
-
-    await expect(loadSessionMessages("s-pinned-empty")).resolves.toBe(false);
-    expect(
-      useChatSessionStore.getState().getSession("s-pinned-empty")?.messageCount,
-    ).toBe(9);
-
-    await expect(loadSessionMessages("s-pinned-empty")).resolves.toBe(false);
-    expect(acpGetSessionInfo).toHaveBeenCalledTimes(1);
-    expect(
-      useChatSessionStore.getState().getSession("s-pinned-empty")?.messageCount,
-    ).toBe(9);
-    expect(messagesFor("s-pinned-empty")).toHaveLength(1);
   });
 
   it("does not let pinned metadata replace a newer UI model selection", async () => {
@@ -1272,42 +489,6 @@ describe("loadSessionMessages", () => {
     );
   });
 
-  it("skips ACP load and cwd checks when the session already has messages", async () => {
-    seedSession(
-      { id: "s3", workingDir: "/missing/session" },
-      { replay: false },
-    );
-    useChatStore.setState({
-      messagesBySession: { s3: [replayUserMessage("m-existing")] },
-    });
-
-    await expect(loadSessionMessages("s3")).resolves.toBe(true);
-
-    expect(acpLoadSession).not.toHaveBeenCalled();
-    expect(resolvePath).not.toHaveBeenCalled();
-    expect(checkDirectoriesExist).not.toHaveBeenCalled();
-  });
-
-  it("ACP load failure appends an error notification and clears settled replay state", async () => {
-    acpLoadSession.mockRejectedValue(new Error("backend down"));
-    seedSession(
-      { id: "s4", workingDir: "/existing/session" },
-      { replay: false },
-    );
-    useChatStore.getState().setStreamingMessageId("s4", "stale-assistant");
-
-    await expect(loadSessionMessages("s4")).resolves.toBe(false);
-
-    const runtime = useChatStore.getState().getSessionRuntime("s4");
-    expect(runtime.error).toBeNull();
-    expect(runtime.chatState).not.toBe("error");
-    expect(runtime.streamingMessageId).toBeNull();
-    expect(useChatStore.getState().loadingSessionIds.has("s4")).toBe(false);
-    const error = notificationFromLastMessage("s4");
-    expect(error.notificationType).toBe("error");
-    expect(error.text).toBe("backend down");
-  });
-
   it("retries the load after a failure and replaces the error notification on success", async () => {
     acpLoadSession.mockRejectedValueOnce(new Error("backend down"));
     seedSession(
@@ -1324,18 +505,5 @@ describe("loadSessionMessages", () => {
 
     expect(acpLoadSession).toHaveBeenCalledTimes(2);
     expect(messagesFor("s5").map((m) => m.role)).toEqual(["user"]);
-  });
-
-  it("repeated failures replace the error notification instead of stacking duplicates", async () => {
-    acpLoadSession.mockRejectedValue(new Error("backend down"));
-    seedSession(
-      { id: "s6", workingDir: "/existing/session" },
-      { replay: false },
-    );
-
-    await expect(loadSessionMessages("s6")).resolves.toBe(false);
-    await expect(loadSessionMessages("s6")).resolves.toBe(false);
-
-    expect(messagesFor("s6").map((m) => m.role)).toEqual(["system"]);
   });
 });

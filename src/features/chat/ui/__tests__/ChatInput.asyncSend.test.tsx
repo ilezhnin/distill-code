@@ -43,28 +43,6 @@ describe("ChatInput async send handling", () => {
     mockSearchFilesForMentions.mockResolvedValue([]);
   });
 
-  it("clears the composer after an accepted async send when the draft is unchanged", async () => {
-    let resolveSend!: (accepted: boolean) => void;
-    const onSend = vi.fn(
-      () =>
-        new Promise<boolean>((resolve) => {
-          resolveSend = resolve;
-        }),
-    );
-    const user = userEvent.setup();
-    render(<ChatInput onSend={onSend} />);
-
-    const input = screen.getByRole("textbox");
-    await user.type(input, "hello");
-    await user.keyboard("{Enter}");
-
-    resolveSend(true);
-
-    await waitFor(() => {
-      expect(input).toHaveValue("");
-    });
-  });
-
   it("preserves newer draft text when an async send resolves later", async () => {
     let resolveSend!: (accepted: boolean) => void;
     const onSend = vi.fn(

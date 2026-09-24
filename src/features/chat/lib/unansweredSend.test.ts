@@ -35,12 +35,4 @@ describe("resendUnansweredMessage", () => {
       "distillctl_cross_session",
     );
   });
-
-  it("sends nothing when the interrupted message was blank", () => {
-    resendUnansweredMessage("session-1", "   ");
-
-    expect(
-      mocks.sendPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-  });
 });

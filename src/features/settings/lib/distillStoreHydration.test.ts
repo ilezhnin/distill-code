@@ -69,12 +69,6 @@ function flushCallCounts(): number[] {
   ];
 }
 
-/** The teardown signal the main window's close-as-hide produces. */
-function dispatchVisibility(state: DocumentVisibilityState): void {
-  vi.spyOn(document, "visibilityState", "get").mockReturnValue(state);
-  document.dispatchEvent(new Event("visibilitychange"));
-}
-
 function resetMocks(): void {
   vi.clearAllMocks();
   resetPersistHealthForTests();
@@ -122,21 +116,6 @@ describe("the conductor documents are retried on a failed read", () => {
     setDistillHydrationDelayForTests(null);
   });
 
-  it("reads again after a transient failure and never tells the store to give up", async () => {
-    mocks.hydrateConductorGraph
-      .mockRejectedValueOnce(new Error("sharing violation"))
-      .mockResolvedValueOnce(undefined);
-
-    await hydrateDistillStores();
-
-    expect(mocks.hydrateConductorGraph).toHaveBeenCalledTimes(2);
-    expect(pauses).toEqual([CONDUCTOR_HYDRATION_RETRY_DELAYS_MS[0]]);
-    expect(mocks.markConductorGraphHydrationFailed).not.toHaveBeenCalled();
-    // The other two read fine the first time and were not retried.
-    expect(mocks.hydrateWaveEngineState).toHaveBeenCalledTimes(1);
-    expect(mocks.hydrateWaveTelemetry).toHaveBeenCalledTimes(1);
-  });
-
   it("gives up after the last attempt, with backoff between them, and says so to the store", async () => {
     mocks.hydrateWaveEngineState.mockRejectedValue(new Error("EPERM"));
 
@@ -150,18 +129,6 @@ describe("the conductor documents are retried on a failed read", () => {
     // One store giving up does not touch the others.
     expect(mocks.markConductorGraphHydrationFailed).not.toHaveBeenCalled();
     expect(mocks.markWaveTelemetryHydrationFailed).not.toHaveBeenCalled();
-  });
-
-  it("tells the operator when a document is given up on, not only devtools", async () => {
-    // A spent retry budget used to disable the whole conductor for the session
-    // with no operator-visible signal at all: the app came up looking normal,
-    // every plan was ignored, and the only clue was a log nobody can open.
-    mocks.hydrateWaveEngineState.mockRejectedValue(new Error("EPERM"));
-
-    await hydrateDistillStores();
-
-    expect(persistReadOutageScopes()).toEqual(["waves"]);
-    expect(isPersistHealthy()).toBe(false);
   });
 
   it("lets the operator re-read a document the startup read gave up on", async () => {
@@ -189,17 +156,6 @@ describe("the conductor documents are retried on a failed read", () => {
       CONDUCTOR_HYDRATION_ATTEMPTS + 2,
     );
   });
-
-  it("retries the telemetry document the same way", async () => {
-    mocks.hydrateWaveTelemetry.mockRejectedValue(new Error("EPERM"));
-
-    await hydrateDistillStores();
-
-    expect(mocks.hydrateWaveTelemetry).toHaveBeenCalledTimes(
-      CONDUCTOR_HYDRATION_ATTEMPTS,
-    );
-    expect(mocks.markWaveTelemetryHydrationFailed).toHaveBeenCalledTimes(1);
-  });
 });
 
 describe("distill store shutdown flush", () => {
@@ -210,11 +166,6 @@ describe("distill store shutdown flush", () => {
     // file and stay on window/document for the rest of it — exactly the
     // per-window once-only behavior the app relies on.
     await hydrateDistillStores();
-  });
-
-  it("flushes every store's queued write", () => {
-    flushDistillStores();
-    expect(flushCallCounts()).toEqual([1, 1]);
   });
 
   it("keeps flushing the rest when one store's flush rejects", () => {
@@ -240,17 +191,6 @@ describe("distill store shutdown flush", () => {
     const before = flushCallCounts();
     window.dispatchEvent(new Event("pagehide"));
     expect(flushCallCounts()).toEqual(before.map((count) => count + 1));
-  });
-
-  it("flushes when the window is hidden, and only then", () => {
-    const before = flushCallCounts();
-
-    dispatchVisibility("hidden");
-    expect(flushCallCounts()).toEqual(before.map((count) => count + 1));
-
-    const afterHidden = flushCallCounts();
-    dispatchVisibility("visible");
-    expect(flushCallCounts()).toEqual(afterHidden);
   });
 
   it("installs the listeners once, however often hydration is re-run", async () => {

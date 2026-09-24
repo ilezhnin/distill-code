@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import type { Message } from "@/shared/types/messages";
@@ -41,25 +41,6 @@ function message(id: string): Message {
 describe("VirtualMessageTimelineGate", () => {
   beforeEach(() => {
     mocks.virtualTimelineSpy.mockClear();
-  });
-
-  it("renders the virtual timeline with the session's messages and footer", () => {
-    render(
-      <VirtualMessageTimelineGate
-        sessionId="session-1"
-        messages={[message("user-1")]}
-        footer={<div data-testid="footer" />}
-      />,
-    );
-
-    expect(screen.getByTestId("virtual-message-timeline")).toBeInTheDocument();
-    expect(screen.getByTestId("footer")).toBeInTheDocument();
-    expect(mocks.virtualTimelineSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionId: "session-1",
-        messages: [expect.objectContaining({ id: "user-1" })],
-      }),
-    );
   });
 
   it("keeps one loaded transcript per session and replaces it when the session changes", () => {

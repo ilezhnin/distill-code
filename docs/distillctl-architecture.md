@@ -163,7 +163,7 @@ bump. Adding a command or optional field is not a wire reshape.
 | Property | Enforced by |
 |---|---|
 | Contract artifacts fresh | `pnpm generate:distillctl-contract --check`, `just check` |
-| Descriptor import purity | `contractImport.test.ts` under node |
+| Descriptors load without a browser | contract generator imports them in Node |
 | Every action strict-parses and has fixtures | `commands.test.ts` |
 | Bounds live in schemas | `bounds.test.ts` plus generated contract diff |
 | Help fields complete | generator + `validate.rs` |

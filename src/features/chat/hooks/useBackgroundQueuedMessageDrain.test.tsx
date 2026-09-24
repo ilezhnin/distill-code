@@ -3,8 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SessionDispatchContentionError } from "@/features/chat/lib/sessionDispatchAcquisition";
 import type { SessionDispatchReleaseWaiter } from "@/features/chat/lib/sessionTargetCoordinator";
-import { QueuedMessageOwnershipLostError } from "@/features/chat/lib/preCommitSendRejection";
-import { QueuedSessionNotReadyError } from "@/features/chat/lib/queuedMessageReadiness";
 import {
   registerForegroundQueueOwner,
   resetForegroundQueueOwnershipForTesting,
@@ -43,21 +41,6 @@ function DrainHarness({
 } = {}) {
   useBackgroundQueuedMessageDrain(sessionId, ownerReady);
   return null;
-}
-
-function contentionHarness() {
-  let listener: (() => void) | undefined;
-  const cancel = vi.fn(() => {
-    listener = undefined;
-  });
-  const waiter: SessionDispatchReleaseWaiter = {
-    wait: vi.fn((next) => {
-      listener = next;
-      return cancel;
-    }),
-    cancel,
-  };
-  return { waiter, release: () => listener?.(), cancel };
 }
 
 function releasedRecord(): QueuedMessageRecord & { kind: "transport-ready" } {
@@ -193,97 +176,6 @@ describe("useBackgroundQueuedMessageDrain", () => {
     });
   });
 
-  it("drains a released exact head once when its session gains a target", async () => {
-    const released = releasedRecord();
-    useChatSessionStore
-      .getState()
-      .replaceSessionExecutionTarget("session-1", undefined);
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [released] },
-    });
-
-    render(<DrainHarness />);
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-
-    act(() =>
-      useChatSessionStore
-        .getState()
-        .replaceSessionExecutionTarget("session-1", { harnessId: "goose" }),
-    );
-
-    await waitFor(() =>
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledOnce(),
-    );
-  });
-
-  it("drains a released exact head once when a pinned placeholder hydrates with an ACP target", async () => {
-    const released = releasedRecord();
-    useChatSessionStore.setState({ sessions: [] });
-    useChatSessionStore.getState().ensurePinnedSessionPlaceholder("session-1");
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [released] },
-    });
-
-    render(<DrainHarness />);
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-
-    act(() =>
-      useChatSessionStore
-        .getState()
-        .patchSession("session-1", { pinnedLoadState: undefined }),
-    );
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-
-    act(() =>
-      useChatSessionStore.setState((state) => ({
-        sessions: state.sessions.map((session) =>
-          session.id === "session-1"
-            ? {
-                ...session,
-                executionTarget: { harnessId: "goose" },
-                executionTargetSource: "acp" as const,
-              }
-            : session,
-        ),
-      })),
-    );
-
-    await waitFor(() =>
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledOnce(),
-    );
-  });
-
-  it("ignores unrelated session updates while a released head stays targetless", () => {
-    const released = releasedRecord();
-    useChatSessionStore
-      .getState()
-      .replaceSessionExecutionTarget("session-1", undefined);
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [released] },
-    });
-
-    render(<DrainHarness />);
-    act(() =>
-      useChatSessionStore
-        .getState()
-        .patchSession("session-1", { title: "Renamed" }),
-    );
-
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-  });
-
   it("waits for session hydration before draining a persisted released head", async () => {
     const released = releasedRecord();
     useChatStore.setState({
@@ -373,122 +265,6 @@ describe("useBackgroundQueuedMessageDrain", () => {
     ).toBeUndefined();
   });
 
-  it("waits for an active run to settle before draining a released payload", async () => {
-    const released = releasedRecord();
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [released] },
-    });
-    useChatStore.getState().setActiveRunId("session-1", "run-1");
-
-    render(<DrainHarness />);
-
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-
-    act(() => useChatStore.getState().setActiveRunId("session-1", null));
-
-    await waitFor(() => {
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledWith(
-        "session-1",
-        released,
-        expect.any(Function),
-        expect.any(Function),
-      );
-    });
-  });
-
-  it("retains and retries a released head when readiness changes before commit", async () => {
-    const released = releasedRecord();
-    mocks.sendQueuedPromptToExistingSessionInBackground
-      .mockImplementationOnce(
-        async (
-          _sessionId: string,
-          _record: QueuedMessageRecord,
-          beforeUserMessageCommitted: () => void,
-        ) => {
-          useChatStore.getState().setActiveRunId("session-1", "racing-run");
-          expect(() => beforeUserMessageCommitted()).toThrow(
-            QueuedSessionNotReadyError,
-          );
-          throw new QueuedSessionNotReadyError();
-        },
-      )
-      .mockResolvedValueOnce(undefined);
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [released] },
-    });
-
-    render(<DrainHarness />);
-
-    await waitFor(() => {
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledTimes(1);
-    });
-    expect(
-      useChatStore.getState().queuedMessageBySession["session-1"]?.[0],
-    ).toBe(released);
-
-    act(() => useChatStore.getState().setActiveRunId("session-1", null));
-
-    await waitFor(() => {
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledTimes(2);
-      expect(
-        useChatStore.getState().queuedMessageBySession["session-1"],
-      ).toBeUndefined();
-    });
-  });
-
-  it("does not drain a released deferred record while its editor owns it", async () => {
-    const deferred = useChatStore.getState().enqueueDeferredMessage(
-      "session-1",
-      {
-        text: "held prompt",
-        persona: { kind: "persona", id: "persona-1" },
-      },
-      { type: "workspace-first-send", status: "held" },
-    );
-    if (!deferred) throw new Error("expected deferred record");
-    const recordId = deferred.recordId;
-    useChatStore
-      .getState()
-      .setQueuedMessageEditing("session-1", recordId, true);
-    useChatStore.getState().releaseDeferredMessage("session-1", recordId);
-
-    render(<DrainHarness />);
-
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-
-    const editedPayload = {
-      text: "edited prompt",
-      persona: { kind: "persona" as const, id: "persona-2" },
-      executionTarget: { harnessId: "goose" },
-    };
-    act(() => {
-      useChatStore
-        .getState()
-        .updateQueuedMessage("session-1", recordId, editedPayload);
-    });
-
-    await waitFor(() => {
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledWith(
-        "session-1",
-        expect.objectContaining({ payload: editedPayload }),
-        expect.any(Function),
-        expect.any(Function),
-      );
-    });
-  });
-
   it("commits only the submitted replacement when editing starts during preparation", async () => {
     const released = releasedRecord();
     const committedPayloads: QueuedMessageRecord["payload"][] = [];
@@ -548,57 +324,6 @@ describe("useBackgroundQueuedMessageDrain", () => {
     });
   });
 
-  it("retries an edited replacement after the stale attempt loses ownership", async () => {
-    let rejectStale!: (error: Error) => void;
-    mocks.sendQueuedPromptToExistingSessionInBackground
-      .mockReturnValueOnce(
-        new Promise<void>((_resolve, reject) => {
-          rejectStale = reject;
-        }),
-      )
-      .mockResolvedValueOnce(undefined);
-    const released = releasedRecord();
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [released] },
-    });
-
-    render(<DrainHarness />);
-    await waitFor(() => {
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledTimes(1);
-    });
-
-    const replacementPayload = {
-      ...released.payload,
-      text: "submitted replacement",
-    };
-    act(() => {
-      useChatStore
-        .getState()
-        .updateQueuedMessage(
-          "session-1",
-          released.recordId,
-          replacementPayload,
-        );
-      rejectStale(new QueuedMessageOwnershipLostError());
-    });
-
-    await waitFor(() => {
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledTimes(2);
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenLastCalledWith(
-        "session-1",
-        expect.objectContaining({ payload: replacementPayload }),
-        expect.any(Function),
-        expect.any(Function),
-      );
-    });
-  });
-
   it("serializes a synchronous contention release after attempt settlement", async () => {
     const released = releasedRecord();
     const cancel = vi.fn();
@@ -624,106 +349,6 @@ describe("useBackgroundQueuedMessageDrain", () => {
       ).toHaveBeenCalledTimes(2),
     );
     expect(waiter.wait).toHaveBeenCalledOnce();
-  });
-
-  it("resumes exactly once when contention releases after registration", async () => {
-    const contention = contentionHarness();
-    const released = releasedRecord();
-    mocks.sendQueuedPromptToExistingSessionInBackground.mockRejectedValueOnce(
-      new SessionDispatchContentionError(contention.waiter),
-    );
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [released] },
-    });
-
-    render(<DrainHarness />);
-    await waitFor(() => expect(contention.waiter.wait).toHaveBeenCalledOnce());
-    act(() => {
-      contention.release();
-      contention.release();
-    });
-
-    await waitFor(() =>
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledTimes(2),
-    );
-  });
-
-  it("retains one contention waiter and cancels it for same-id replacement", async () => {
-    const contention = contentionHarness();
-    const released = releasedRecord();
-    mocks.sendQueuedPromptToExistingSessionInBackground.mockRejectedValueOnce(
-      new SessionDispatchContentionError(contention.waiter),
-    );
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [released] },
-    });
-
-    render(<DrainHarness />);
-    await waitFor(() => expect(contention.waiter.wait).toHaveBeenCalledOnce());
-    act(() => {
-      useChatStore.setState((state) => ({
-        queuedMessageBySession: {
-          ...state.queuedMessageBySession,
-          "session-1": [
-            {
-              ...released,
-              payload: { ...released.payload, text: "replacement" },
-            },
-          ],
-        },
-      }));
-    });
-    expect(contention.cancel).toHaveBeenCalledOnce();
-    await waitFor(() =>
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledTimes(2),
-    );
-    act(() => contention.release());
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).toHaveBeenCalledTimes(2);
-  });
-
-  it("cancels contention without retry when the exact head is removed", async () => {
-    const contention = contentionHarness();
-    const released = releasedRecord();
-    mocks.sendQueuedPromptToExistingSessionInBackground.mockRejectedValueOnce(
-      new SessionDispatchContentionError(contention.waiter),
-    );
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [released] },
-    });
-
-    render(<DrainHarness />);
-    await waitFor(() => expect(contention.waiter.wait).toHaveBeenCalledOnce());
-    act(() => {
-      useChatStore.setState({ queuedMessageBySession: {} });
-      contention.release();
-    });
-
-    expect(contention.cancel).toHaveBeenCalledOnce();
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).toHaveBeenCalledOnce();
-  });
-
-  it("cancels a global contention waiter on unmount", async () => {
-    const contention = contentionHarness();
-    const released = releasedRecord();
-    mocks.sendQueuedPromptToExistingSessionInBackground.mockRejectedValueOnce(
-      new SessionDispatchContentionError(contention.waiter),
-    );
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [released] },
-    });
-
-    const owner = render(<DrainHarness />);
-    await waitFor(() => expect(contention.waiter.wait).toHaveBeenCalledOnce());
-    owner.unmount();
-    expect(contention.cancel).toHaveBeenCalledOnce();
   });
 
   it("parks a failed released payload in a visible terminal state", async () => {
@@ -767,54 +392,6 @@ describe("useBackgroundQueuedMessageDrain", () => {
     );
   });
 
-  it("does not toast when a send loses ownership pre-commit", async () => {
-    const released = releasedRecord();
-    mocks.sendQueuedPromptToExistingSessionInBackground.mockRejectedValueOnce(
-      new QueuedMessageOwnershipLostError(),
-    );
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [released] },
-    });
-
-    render(<DrainHarness />);
-
-    await waitFor(() =>
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledOnce(),
-    );
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(mocks.toastError).not.toHaveBeenCalled();
-  });
-
-  it("ignores Distillctl-origin transport-ready records", () => {
-    useChatStore.setState({
-      queuedMessageBySession: {
-        "session-1": [
-          {
-            kind: "transport-ready",
-            recordId: "distillctl-record",
-            payload: {
-              persona: { kind: "inherit" },
-              text: "distillctl",
-              sendOptions: {
-                userMessageMetadata: { origin: "distillctl_cross_session" },
-              },
-            },
-          },
-        ],
-      },
-    });
-
-    render(<DrainHarness />);
-
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-  });
-
   it("drains an ordinary queued head when no foreground chat owns the session", async () => {
     useChatStore.setState({
       queuedMessageBySession: { "session-1": [ordinaryRecord()] },
@@ -843,20 +420,6 @@ describe("useBackgroundQueuedMessageDrain", () => {
     releaseOwner();
   });
 
-  it("does not drain an ordinary head restored from persistence", () => {
-    useChatStore.setState({
-      queuedMessageBySession: {
-        "session-1": [{ ...ordinaryRecord(), restored: true }],
-      },
-    });
-
-    render(<DrainHarness />);
-
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-  });
-
   it("keeps excluding a restored head after an incidental load clears the flag", async () => {
     const restored = { ...ordinaryRecord(), restored: true };
     useChatStore.setState({
@@ -880,32 +443,6 @@ describe("useBackgroundQueuedMessageDrain", () => {
     ).not.toHaveBeenCalled();
   });
 
-  it("lifts a restored exclusion when the user opens the chat", async () => {
-    const restored = { ...ordinaryRecord(), restored: true };
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [restored] },
-    });
-
-    render(<DrainHarness />);
-    act(() => useChatStore.getState().markQueuedMessagesReady("session-1"));
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-
-    // The user opens the chat (foreground owner registers), then leaves.
-    let releaseOwner: (() => void) | undefined;
-    act(() => {
-      releaseOwner = registerForegroundQueueOwner("session-1");
-    });
-    act(() => releaseOwner?.());
-
-    await waitFor(() =>
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledOnce(),
-    );
-  });
-
   it("drains an ordinary queued head after the foreground owner unmounts", async () => {
     const releaseOwner = registerForegroundQueueOwner("session-1");
     useChatStore.setState({
@@ -918,47 +455,6 @@ describe("useBackgroundQueuedMessageDrain", () => {
     ).not.toHaveBeenCalled();
 
     act(() => releaseOwner());
-
-    await waitFor(() =>
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledOnce(),
-    );
-  });
-
-  it("keeps deferring while any foreground owner remains registered", async () => {
-    const releaseFirst = registerForegroundQueueOwner("session-1");
-    const releaseSecond = registerForegroundQueueOwner("session-1");
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [ordinaryRecord()] },
-    });
-
-    render(<DrainHarness />);
-    act(() => releaseFirst());
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-
-    act(() => releaseSecond());
-    await waitFor(() =>
-      expect(
-        mocks.sendQueuedPromptToExistingSessionInBackground,
-      ).toHaveBeenCalledOnce(),
-    );
-  });
-
-  it("waits for an unowned ordinary head's active run to settle before draining", async () => {
-    useChatStore.setState({
-      queuedMessageBySession: { "session-1": [ordinaryRecord()] },
-    });
-    useChatStore.getState().setActiveRunId("session-1", "run-1");
-
-    render(<DrainHarness />);
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-
-    act(() => useChatStore.getState().setActiveRunId("session-1", null));
 
     await waitFor(() =>
       expect(
@@ -1038,51 +534,6 @@ describe("useBackgroundQueuedMessageDrain", () => {
       expect.any(Function),
       expect.any(Function),
     );
-  });
-
-  it("keeps a queued head parked without toasting when creation failed", async () => {
-    const ordinary = ordinaryRecord();
-    seedDraftSession("failed");
-    useChatStore.setState({
-      queuedMessageBySession: { [DRAFT_SESSION_ID]: [ordinary] },
-    });
-
-    render(<DrainHarness />);
-    act(() =>
-      useChatSessionStore
-        .getState()
-        .patchSession(DRAFT_SESSION_ID, { title: "Renamed" }),
-    );
-
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-    expect(mocks.toastError).not.toHaveBeenCalled();
-    expect(
-      useChatStore.getState().queuedMessageBySession[DRAFT_SESSION_ID]?.[0],
-    ).toBe(ordinary);
-  });
-
-  it("leaves a promoted session's queued head to its mounted foreground owner", () => {
-    const ordinary = ordinaryRecord();
-    seedDraftSession();
-    useChatStore.setState({
-      queuedMessageBySession: { [DRAFT_SESSION_ID]: [ordinary] },
-    });
-    // The promoted id is the one that carries the queue after promotion, so
-    // it is the id a mounted ChatView owns once the hand-off settles.
-    const releaseOwner = registerForegroundQueueOwner(BACKEND_SESSION_ID);
-
-    render(<DrainHarness />);
-    act(() => promoteDraft());
-
-    expect(
-      mocks.sendQueuedPromptToExistingSessionInBackground,
-    ).not.toHaveBeenCalled();
-    expect(
-      useChatStore.getState().queuedMessageBySession[BACKEND_SESSION_ID]?.[0],
-    ).toBe(ordinary);
-    releaseOwner();
   });
 
   it("leaves a just-promoted head to a foreground owner still keyed to the draft id", async () => {

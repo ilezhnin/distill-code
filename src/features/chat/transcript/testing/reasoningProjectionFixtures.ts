@@ -12,10 +12,8 @@ import type {
 /**
  * Deterministic transcripts for the reasoning de-duplication projection.
  *
- * The projection collapses repeated reasoning bodies and drops thoughts a
- * provider re-emits; the transcript engine has no other unit coverage for the
- * shapes below, so the fixture is projected once and compared field by field
- * against `reasoningProjectionFixture.expected.json`.
+ * Tests compare incremental streaming frames with a fresh projection and
+ * measure the cost of updating a long transcript.
  */
 
 const FIXTURE_BASE_TIME = Date.UTC(2026, 5, 4, 10, 0, 0);
@@ -537,15 +535,4 @@ export function digestProjection(
   snapshot: TranscriptProjectionSnapshot,
 ): ProjectedItemDigest[] {
   return snapshot.items.map(digestProjectedItem);
-}
-
-/** FNV-1a over the JSON form, for fixtures too large to store readably. */
-export function digestHash(digests: readonly ProjectedItemDigest[]): string {
-  const serialized = JSON.stringify(digests);
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < serialized.length; index += 1) {
-    hash ^= serialized.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return `${hash.toString(16).padStart(8, "0")}:${serialized.length}`;
 }

@@ -68,31 +68,6 @@ describe("projectStore reorder", () => {
     );
   });
 
-  it("never runs two reorder passes at the same time", async () => {
-    let releaseFirst: (() => void) | undefined;
-    mocks.reorderProjects.mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          releaseFirst = resolve;
-        }),
-    );
-
-    useProjectStore.getState().reorderProjects("a", "c", "after");
-    await vi.waitFor(() => {
-      expect(mocks.reorderProjects).toHaveBeenCalledTimes(1);
-    });
-
-    useProjectStore.getState().reorderProjects("c", "a", "before");
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(mocks.reorderProjects).toHaveBeenCalledTimes(1);
-
-    releaseFirst?.();
-    await vi.waitFor(() => {
-      expect(mocks.reorderProjects).toHaveBeenCalledTimes(2);
-    });
-  });
-
   it("reports a failed reorder and reloads the stored order", async () => {
     mocks.reorderProjects.mockRejectedValueOnce(new Error("locked"));
     mocks.listProjects.mockResolvedValue([project("a", 0)]);

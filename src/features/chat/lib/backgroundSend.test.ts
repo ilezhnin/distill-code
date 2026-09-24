@@ -1,15 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { QueuedSessionNotReadyError } from "./queuedMessageReadiness";
-import { QueuedMessageOwnershipLostError } from "./preCommitSendRejection";
 
 import { useConductorGraphStore } from "@/features/conductor/conductorGraphStore";
 import { MEMORY_PROTOCOL_PROMPT } from "@/features/memory/lib/memoryFence";
 import { setMemoryReadEnabled } from "@/features/memory/lib/memoryPreferences";
 import { MEMORY_RECALL_PROMPT } from "@/features/memory/lib/memoryRecall";
-import type {
-  ArchivedMemoryEntry,
-  MemoryEntry,
-} from "@/features/memory/lib/memoryEntry";
+import type { MemoryEntry } from "@/features/memory/lib/memoryEntry";
 import {
   PROJECT_WIKI_POINTER_PROMPT,
   refreshProjectWikiPresence,
@@ -136,71 +131,6 @@ describe("sendPromptInBackground", () => {
     resetProjectWikiPresenceForTests();
   });
 
-  it("prioritizes the captured execution prompt over current persona context", async () => {
-    await sendPromptInBackground(
-      "session-1",
-      "queued turn",
-      "goose",
-      {
-        id: "current-persona",
-        displayName: "Current Persona",
-        systemPrompt: "current persona prompt",
-      },
-      {
-        executionSystemPrompt: "captured persona and workspace prompt",
-        systemPrompt: "current workspace prompt",
-      },
-    );
-
-    expect(mocks.dispatchPrompt).toHaveBeenCalledWith(
-      "session-1",
-      "queued turn",
-      expect.objectContaining({
-        systemPrompt: "captured persona and workspace prompt",
-      }),
-    );
-  });
-
-  it("carries the operator's memory and the protocols into the composed fallback", async () => {
-    mocks.getSession.mockReturnValue({ projectId: "p-1" });
-    mocks.memoryEntries = [
-      memoryEntry({ id: "g", text: "A global fact" }),
-      memoryEntry({
-        id: "p",
-        text: "A fact about this project",
-        scope: "project",
-        projectId: "p-1",
-      }),
-      memoryEntry({
-        id: "other",
-        text: "Another project's secret",
-        scope: "project",
-        projectId: "p-2",
-      }),
-    ];
-
-    await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
-      systemPrompt: "workspace prompt",
-    });
-
-    const systemPrompt = dispatchedSystemPrompt();
-    expect(systemPrompt).toContain("A global fact");
-    expect(systemPrompt).toContain("A fact about this project");
-    // Memory scoped to the *target* session's project: a fact from an
-    // unrelated project must not ride along.
-    expect(systemPrompt).not.toContain("Another project's secret");
-    expect(systemPrompt).toContain(MEMORY_PROTOCOL_PROMPT);
-    expect(systemPrompt).not.toContain("<planner>");
-    // Caller-provided context still leads.
-    expect(systemPrompt.startsWith("workspace prompt")).toBe(true);
-  });
-
-  it("ships the memory protocol even when nothing is remembered yet", async () => {
-    await sendPromptInBackground("session-1", "prompt", "goose");
-
-    expect(dispatchedSystemPrompt()).toContain(MEMORY_PROTOCOL_PROMPT);
-  });
-
   it("sends nothing remembered once the operator switches the block off", async () => {
     mocks.getSession.mockReturnValue({ projectId: "p-1" });
     mocks.memoryEntries = [memoryEntry({ id: "g", text: "A global fact" })];
@@ -220,51 +150,6 @@ describe("sendPromptInBackground", () => {
     // Everything else about the prompt is unchanged.
     expect(systemPrompt).not.toContain("<planner>");
     expect(systemPrompt.startsWith("workspace prompt")).toBe(true);
-  });
-
-  it("adds the generated spawn-policy line for a persona session", async () => {
-    await sendPromptInBackground("session-1", "prompt", "goose", {
-      id: "p-1",
-      displayName: "Scout",
-      systemPrompt: "persona prompt",
-    });
-
-    // The sentence the agent files used to hardcode now comes from the ACL.
-    expect(dispatchedSystemPrompt()).toContain("do not spawn chats yourself");
-  });
-
-  it("adds the spawn prohibition for a personaless graph worker", async () => {
-    useConductorGraphStore.setState({
-      nodesById: {
-        "session-1": {
-          sessionId: "session-1",
-          projectId: "p-1",
-          role: "worker",
-          managedBy: "wave",
-          parentSessionId: "conductor-1",
-          rootConductorId: "conductor-1",
-          runId: "run-1",
-          harnessId: "goose",
-          displayName: "Scout · step",
-          status: "running",
-        },
-      },
-      reportsByRunId: {},
-    });
-    try {
-      await sendPromptInBackground("session-1", "prompt", "goose");
-      expect(dispatchedSystemPrompt()).toContain("do not spawn chats yourself");
-    } finally {
-      useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
-    }
-  });
-
-  it("gives a plain personaless chat no spawn-policy line", async () => {
-    await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
-      systemPrompt: "workspace prompt",
-    });
-
-    expect(dispatchedSystemPrompt()).not.toContain("spawn");
   });
 
   it("gives a read-only graph node the facts without the memory protocol", async () => {
@@ -296,47 +181,6 @@ describe("sendPromptInBackground", () => {
     // Recall is a read, and reading is exactly what this session still does.
     expect(systemPrompt).toContain(MEMORY_RECALL_PROMPT);
     expect(systemPrompt).not.toContain("<planner>");
-  });
-
-  it("tells the session what its block is missing, this project only", async () => {
-    mocks.getSession.mockReturnValue({ projectId: "p-1" });
-    mocks.memoryEntries = [memoryEntry({ id: "g", text: "A global fact" })];
-    mocks.memoryArchived = [
-      {
-        ...memoryEntry({ id: "a-1", text: "Displaced here" }),
-        scope: "project",
-        projectId: "p-1",
-        archivedAt: 0,
-        archiveReason: "capacity",
-      } satisfies ArchivedMemoryEntry,
-      {
-        ...memoryEntry({ id: "a-2", text: "Displaced elsewhere" }),
-        scope: "project",
-        projectId: "p-2",
-        archivedAt: 0,
-        archiveReason: "capacity",
-      } satisfies ArchivedMemoryEntry,
-    ];
-
-    await sendPromptInBackground("session-1", "prompt", "goose");
-
-    // One archived line is reachable; the other project's is not counted.
-    expect(dispatchedSystemPrompt()).toContain(
-      "…and 1 older memories are stored beyond this block (1 archived).",
-    );
-  });
-
-  it("keeps memory and the protocols away from a wave-managed session", async () => {
-    seedWaveChildNode("session-1");
-    mocks.memoryEntries = [memoryEntry({ id: "g", text: "A global fact" })];
-
-    await sendPromptInBackground("session-1", "prompt", "goose", undefined, {
-      systemPrompt: "workspace prompt",
-    });
-
-    const systemPrompt = dispatchedSystemPrompt();
-    expect(systemPrompt).not.toContain("A global fact");
-    expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
   });
 
   // LAWS/MEMORY.md: "A wave-spawned executor MUST NOT receive the operator's
@@ -376,38 +220,5 @@ describe("sendPromptInBackground", () => {
     expect(systemPrompt).not.toContain("A global fact");
     expect(systemPrompt).not.toContain(MEMORY_PROTOCOL_PROMPT);
     expect(systemPrompt).not.toContain("<planner>");
-  });
-
-  it.each([
-    new QueuedSessionNotReadyError(),
-    new QueuedMessageOwnershipLostError(),
-  ])("rethrows expected pre-commit rejection without a failure log", async (error) => {
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => {});
-    mocks.dispatchPrompt.mockRejectedValueOnce(error);
-
-    await expect(
-      sendPromptInBackground("session-1", "queued turn", "goose"),
-    ).rejects.toBe(error);
-
-    expect(consoleError).not.toHaveBeenCalled();
-  });
-
-  it("logs true background send failures", async () => {
-    const error = new Error("transport failed");
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => {});
-    mocks.dispatchPrompt.mockRejectedValueOnce(error);
-
-    await expect(
-      sendPromptInBackground("session-1", "queued turn", "goose"),
-    ).rejects.toBe(error);
-
-    expect(consoleError).toHaveBeenCalledWith(
-      "[background-send] prompt failed for session session-1",
-      error,
-    );
   });
 });

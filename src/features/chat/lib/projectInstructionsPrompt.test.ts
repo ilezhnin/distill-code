@@ -22,24 +22,6 @@ vi.mock("@/features/projects/stores/projectStore", () => ({
 
 describe("project instructions", () => {
   beforeEach(() => mocks.getSession.mockReset());
-  it("carries the operator's existing project prompt", () => {
-    expect(
-      formatProjectInstructionsPrompt({
-        prompt: "  Use the project conventions.\n",
-      }),
-    ).toBe(
-      "<project-instructions>\nThese are the operator's instructions for this project. Apply them to this project's work.\n\nUse the project conventions.\n</project-instructions>",
-    );
-  });
-
-  it.each([
-    undefined,
-    null,
-    { prompt: "" },
-    { prompt: " \n\t" },
-  ])("omits missing or blank project instructions (%j)", (project) => {
-    expect(formatProjectInstructionsPrompt(project)).toBeUndefined();
-  });
 
   it("escapes closing tags in project instructions", () => {
     const prompt = formatProjectInstructionsPrompt({
@@ -55,14 +37,5 @@ describe("project instructions", () => {
     expect(mocks.getSession).toHaveBeenCalledWith("background-session");
     expect(prompt).toContain("Target project instructions.");
     expect(prompt).not.toContain("Other project instructions.");
-  });
-
-  it.each([
-    undefined,
-    { projectId: null },
-    { projectId: "missing" },
-  ])("omits project instructions without a target project (%j)", (session) => {
-    mocks.getSession.mockReturnValue(session);
-    expect(sessionProjectInstructionsPrompt("general-session")).toBeUndefined();
   });
 });

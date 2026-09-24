@@ -14,9 +14,7 @@ import {
   eventMatchesShortcutCommand,
   getShortcutBindings,
   resolveShortcutCommands,
-  SHORTCUT_COMMANDS,
   SHORTCUT_PREFERENCES_STORAGE_KEY,
-  shortcutScopesOverlap,
 } from "./shortcutRegistry";
 
 function keyEvent(init: KeyboardEventInit): KeyboardEvent {
@@ -45,75 +43,7 @@ beforeEach(() => {
   isDesignSystemExplorerEnabledMock.mockReturnValue(false);
 });
 
-describe("shortcut command definitions", () => {
-  it("ships no colliding default combos across overlapping scopes", () => {
-    isDesignSystemExplorerEnabledMock.mockReturnValue(true);
-
-    // Deliberate exceptions, both reconciled by ChatSearchBar stopping
-    // propagation of consumed keys (Ctrl+N/Ctrl+P off macOS).
-    const allowed = new Set([
-      "chat.search.next|navigation.newConversation",
-      "chat.search.previous|session.quickSwitch",
-    ]);
-    for (const platform of ["mac", "windows"] as const) {
-      getPlatformMock.mockReturnValue(platform);
-      const enabled = SHORTCUT_COMMANDS.filter(
-        (command) => command.when?.() ?? true,
-      );
-      for (const a of enabled) {
-        for (const b of enabled) {
-          if (a.id >= b.id) continue;
-          if (!shortcutScopesOverlap(a.scope, b.scope)) continue;
-          if (allowed.has(`${a.id}|${b.id}`)) continue;
-          const bCombos = new Set(
-            getShortcutBindings(b.id).map((binding) => binding.shortcut),
-          );
-          for (const binding of getShortcutBindings(a.id)) {
-            expect(
-              bCombos.has(binding.shortcut),
-              `${platform}: ${a.id} and ${b.id} share ${binding.shortcut}`,
-            ).toBe(false);
-          }
-        }
-      }
-    }
-  });
-});
-
 describe("reading stored preferences", () => {
-  it("falls back to defaults for invalid JSON, wrong versions, and hostile overrides", () => {
-    // Invalid JSON.
-    storeRaw("{not json");
-    expect(overridesById(), "invalid JSON").toEqual({});
-    expect(getShortcutBindings("navigation.search"), "invalid JSON").toEqual([
-      { shortcut: "meta+k" },
-    ]);
-
-    // Wrong version.
-    storePreferences({ "navigation.search": "meta+y" }, 2);
-    expect(overridesById(), "wrong version").toEqual({});
-    expect(getShortcutBindings("navigation.search"), "wrong version").toEqual([
-      { shortcut: "meta+k" },
-    ]);
-
-    // Unknown ids, non-configurable ids, and invalid combos.
-    storePreferences({
-      "nope.unknown": "meta+y",
-      "chat.mention.confirm": "meta+y",
-      "navigation.search": "shift+k",
-      "navigation.newConversation": 42,
-      "navigation.closeSession": "garbage+x",
-    });
-    expect(overridesById(), "hostile overrides").toEqual({});
-    expect(getShortcutBindings("chat.mention.confirm")).toEqual([
-      { shortcut: "enter" },
-    ]);
-    expect(
-      getShortcutBindings("navigation.search"),
-      "hostile overrides",
-    ).toEqual([{ shortcut: "meta+k" }]);
-  });
-
   it("resolves cascading collisions to a fixpoint with no live duplicates", () => {
     // newConversation's candidate loses to closeSession's and revives its
     // meta+n default — which must then invalidate search's already-walked

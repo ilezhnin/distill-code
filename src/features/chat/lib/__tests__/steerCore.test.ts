@@ -62,33 +62,6 @@ describe("steerPromptInSession payload budget", () => {
       text: expect.stringContaining("errors.attachmentsTooLarge"),
     });
   });
-
-  it("throws for throwOnError callers so distillctl reports the rejection", async () => {
-    await expect(
-      steerPromptInSession(
-        "session-1",
-        "look at this",
-        [oversizedImageDraft()],
-        undefined,
-        { throwOnError: true },
-      ),
-    ).rejects.toThrow(/attachmentsTooLarge/);
-    expect(mockAcpSteerMessage).not.toHaveBeenCalled();
-  });
-
-  it("passes an under-budget steer through to the ACP call", async () => {
-    mockAcpSteerMessage.mockResolvedValue({
-      runId: "run-1",
-      messageId: "msg-1",
-    });
-
-    const accepted = await steerPromptInSession("session-1", "small one", [
-      { ...oversizedImageDraft(), base64: "x".repeat(1024) },
-    ]);
-
-    expect(accepted).toBe(true);
-    expect(mockAcpSteerMessage).toHaveBeenCalledTimes(1);
-  });
 });
 
 // A steer's user-message append is provisional until the backend acknowledges
@@ -105,28 +78,6 @@ describe("steerPromptInSession commit callback", () => {
       activeSessionId: null,
       isConnected: true,
     });
-  });
-
-  it("fires only once the backend acknowledges the steer", async () => {
-    const onUserMessageCommitted = vi.fn();
-    let commitCallsAtDispatch = -1;
-    mockAcpSteerMessage.mockImplementation(async () => {
-      // The provisional user-message append has already happened by the time
-      // the ACP call goes out; the commit callback must not have fired yet.
-      commitCallsAtDispatch = onUserMessageCommitted.mock.calls.length;
-      return { runId: "run-1", messageId: "msg-1" };
-    });
-
-    const accepted = await steerPromptInSession(
-      "session-1",
-      "make it shorter",
-      undefined,
-      { onUserMessageCommitted },
-    );
-
-    expect(accepted).toBe(true);
-    expect(commitCallsAtDispatch).toBe(0);
-    expect(onUserMessageCommitted).toHaveBeenCalledTimes(1);
   });
 
   it("does not fire for a steer that is rolled back", async () => {

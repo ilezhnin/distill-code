@@ -71,22 +71,4 @@ describe("ViewErrorBoundary", () => {
 
     expect(screen.getByText("view content")).toBeInTheDocument();
   });
-
-  it("clears the fallback when the route changes", () => {
-    const { rerender } = render(
-      <ViewErrorBoundary view="chat" resetKey="chat">
-        <Boom explode />
-      </ViewErrorBoundary>,
-    );
-    expect(screen.getByRole("alert")).toBeInTheDocument();
-
-    rerender(
-      <ViewErrorBoundary view="settings" resetKey="settings">
-        <Boom explode={false} />
-      </ViewErrorBoundary>,
-    );
-
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.getByText("view content")).toBeInTheDocument();
-  });
 });

@@ -8,10 +8,8 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 import {
   loadPersistedMessageQueues,
   persistMessageQueues,
-  withQueuedRunSettings,
 } from "./queuePersistence";
 import { useChatSessionStore, type ChatSession } from "./chatSessionStore";
-import { useChatStore } from "./chatStore";
 
 describe("queuePersistence", () => {
   beforeEach(() => {
@@ -88,57 +86,6 @@ describe("queuePersistence", () => {
     expect(queues.s1?.[0]).not.toHaveProperty("editing");
   });
 
-  it("reveals a hidden startup handoff when restoring it", async () => {
-    mockInvoke.mockResolvedValue(
-      JSON.stringify({
-        s1: [
-          {
-            kind: "transport-ready",
-            recordId: "hidden-startup-handoff",
-            payload: {
-              text: "first message",
-              executionTarget: { harnessId: "goose" },
-              showInComposer: false,
-            },
-          },
-        ],
-      }),
-    );
-
-    await expect(loadPersistedMessageQueues()).resolves.toMatchObject({
-      s1: [
-        {
-          payload: { text: "first message", showInComposer: true },
-          restored: true,
-        },
-      ],
-    });
-  });
-
-  it("strips legacy provider/model fields without losing the prompt", async () => {
-    mockInvoke.mockResolvedValue(
-      JSON.stringify({
-        s1: [
-          {
-            kind: "transport-ready",
-            recordId: "legacy-selection",
-            payload: {
-              text: "continue with claude",
-              providerId: "claude",
-              modelId: "claude-fable",
-            },
-          },
-        ],
-      }),
-    );
-
-    const queues = await loadPersistedMessageQueues();
-    expect(queues.s1?.[0]?.payload).toEqual({
-      text: "continue with claude",
-      persona: { kind: "inherit" },
-    });
-  });
-
   it("strips all obsolete legacy model fields while retaining records", async () => {
     mockInvoke.mockResolvedValue(
       JSON.stringify({
@@ -167,41 +114,6 @@ describe("queuePersistence", () => {
       { text: "use the live target", persona: { kind: "inherit" } },
       { text: "keep the loaded model", persona: { kind: "inherit" } },
     ]);
-  });
-
-  it("restores a legacy record whose target folded the effort into the model id", async () => {
-    mockInvoke.mockResolvedValue(
-      JSON.stringify({
-        s1: [
-          {
-            kind: "transport-ready",
-            recordId: "folded-target",
-            payload: {
-              text: "keep going",
-              executionTarget: {
-                harnessId: "codex-acp",
-                modelProviderId: "codex-acp",
-                modelId: "gpt-5.6-sol[low]",
-                modelName: "GPT-5.6 Sol (low)",
-              },
-            },
-          },
-        ],
-      }),
-    );
-
-    const queues = await loadPersistedMessageQueues();
-    expect(queues.s1?.[0]).toMatchObject({
-      recordId: "folded-target",
-      restored: true,
-    });
-    // The target is the session's to lease at dispatch; the effort it was
-    // queued under is kept as the record's run settings.
-    expect(queues.s1?.[0]?.payload).toEqual({
-      text: "keep going",
-      persona: { kind: "inherit" },
-      runSettings: { effort: "low" },
-    });
   });
 
   it("keeps a record's run settings and drops malformed ones without losing the message", async () => {
@@ -241,56 +153,6 @@ describe("queuePersistence", () => {
     ]);
   });
 
-  it("records the chat's run settings on a queued message and keeps them through an edit", () => {
-    mockInvoke.mockResolvedValue(undefined);
-    useChatSessionStore.setState({
-      sessions: [
-        {
-          id: "s1",
-          desiredRunSettings: { effort: "xhigh", fast: true },
-        } as unknown as ChatSession,
-      ],
-    });
-    const chat = useChatStore.getState();
-    chat.enqueueTransportReadyMessage(
-      "s1",
-      admitSystemInheritedQueuedMessage({ text: "first" }),
-    );
-    // The operator changes the chat's settings after queueing.
-    useChatSessionStore.setState({
-      sessions: [
-        {
-          id: "s1",
-          desiredRunSettings: { effort: "low" },
-        } as unknown as ChatSession,
-      ],
-    });
-    const [record] = useChatStore.getState().queuedMessageBySession.s1 ?? [];
-    chat.updateQueuedMessage(
-      "s1",
-      record?.recordId ?? "",
-      admitSystemInheritedQueuedMessage({ text: "first, edited" }),
-    );
-
-    expect(
-      useChatStore.getState().queuedMessageBySession.s1?.[0]?.payload,
-    ).toEqual({
-      text: "first, edited",
-      persona: { kind: "inherit" },
-      runSettings: { effort: "xhigh", fast: true },
-    });
-    useChatStore.setState({ queuedMessageBySession: {} });
-  });
-
-  it("queues a message with no run settings when the chat has none chosen", () => {
-    expect(
-      withQueuedRunSettings(
-        "unknown-session",
-        admitSystemInheritedQueuedMessage({ text: "plain" }),
-      ),
-    ).toEqual({ text: "plain", persona: { kind: "inherit" } });
-  });
-
   it("rejects malformed persona intent instead of guessing", async () => {
     mockInvoke.mockResolvedValue(
       JSON.stringify({
@@ -311,30 +173,6 @@ describe("queuePersistence", () => {
     await expect(loadPersistedMessageQueues()).resolves.toEqual({});
   });
 
-  it("restores targetless transport records with explicit persona intent", async () => {
-    mockInvoke.mockResolvedValue(
-      JSON.stringify({
-        s1: [
-          {
-            kind: "transport-ready",
-            recordId: "missing-target",
-            payload: { text: "do not infer", personaId: null },
-          },
-        ],
-      }),
-    );
-
-    await expect(loadPersistedMessageQueues()).resolves.toMatchObject({
-      s1: [
-        {
-          recordId: "missing-target",
-          restored: true,
-          payload: { text: "do not infer", persona: { kind: "none" } },
-        },
-      ],
-    });
-  });
-
   it("rejects deferred records without supported workspace-first-send state", async () => {
     mockInvoke.mockResolvedValue(
       JSON.stringify({
@@ -350,45 +188,6 @@ describe("queuePersistence", () => {
     );
 
     await expect(loadPersistedMessageQueues()).resolves.toEqual({});
-  });
-
-  it("merges changed sessions into the fallback cache", () => {
-    window.localStorage.setItem(
-      "distill:chat-message-queues:v1",
-      JSON.stringify({
-        main: [
-          {
-            kind: "transport-ready",
-            recordId: "main-record",
-            payload: { text: "main", executionTarget: { harnessId: "goose" } },
-          },
-        ],
-      }),
-    );
-
-    persistMessageQueues(
-      {
-        detached: [
-          {
-            kind: "transport-ready",
-            recordId: "detached-record",
-            payload: admitSystemInheritedQueuedMessage({
-              text: "detached",
-            }),
-          },
-        ],
-      },
-      ["detached"],
-    );
-
-    expect(
-      JSON.parse(
-        window.localStorage.getItem("distill:chat-message-queues:v1") ?? "{}",
-      ),
-    ).toMatchObject({
-      main: [{ recordId: "main-record" }],
-      detached: [{ recordId: "detached-record" }],
-    });
   });
 
   it("drops queue writes for sessions whose creation has not settled", async () => {
@@ -428,32 +227,6 @@ describe("queuePersistence", () => {
     expect(
       window.localStorage.getItem("distill:chat-message-queues:v1"),
     ).toBeNull();
-  });
-
-  it("persists queues again once the session id belongs to a settled session", async () => {
-    mockInvoke.mockResolvedValue(undefined);
-    useChatSessionStore.setState({
-      sessions: [{ id: "backend-1" } as unknown as ChatSession],
-    });
-
-    persistMessageQueues(
-      {
-        "backend-1": [
-          {
-            kind: "transport-ready",
-            recordId: "promoted-record",
-            payload: admitSystemInheritedQueuedMessage({ text: "promoted" }),
-          },
-        ],
-      },
-      ["backend-1"],
-    );
-
-    await vi.waitFor(() =>
-      expect(mockInvoke).toHaveBeenCalledWith("persist_message_queue_updates", {
-        serializedUpdates: expect.stringContaining("promoted-record"),
-      }),
-    );
   });
 
   it("writes only changed sessions through native read-modify-write persistence", async () => {

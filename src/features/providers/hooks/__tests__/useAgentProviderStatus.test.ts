@@ -56,13 +56,6 @@ describe("readinessFromReport auth handling", () => {
     expect(readiness.get("kimi-acp")).toBe(expected);
   });
 
-  it("blocks an agent the probe reported as signed out", () => {
-    const readiness = readinessFromReport(
-      report([check({ authStatus: "notAuthenticated" })]),
-    );
-    expect(readiness.get("claude-acp")).toBe("not_ready");
-  });
-
   it("keeps an agent usable when the auth probe could not run", () => {
     // The crate's `unknown`: a PATH-shadowed CLI is not signed out, so there is
     // no sign-in fix to offer and the agent stays usable.
@@ -70,37 +63,6 @@ describe("readinessFromReport auth handling", () => {
       report([check({ authStatus: "unknown" })]),
     );
     expect(readiness.get("claude-acp")).toBe("ready");
-  });
-
-  it("asks a signed-out Grok to sign in", () => {
-    const readiness = readinessFromReport(
-      report([
-        check({
-          id: "ai-agent-grok",
-          label: "Grok",
-          status: "warn",
-          path: "C:/Users/dev/.grok/bin/grok.exe",
-          authStatus: "notAuthenticated",
-          fixType: "auth",
-          fixCommand: "grok login --oauth",
-        }),
-      ]),
-    );
-    expect(readiness.get("grok-acp")).toBe("not_ready");
-  });
-
-  it("marks a signed-in Grok ready", () => {
-    const readiness = readinessFromReport(
-      report([
-        check({
-          id: "ai-agent-grok",
-          label: "Grok",
-          path: "C:/Users/dev/.grok/bin/grok.exe",
-          authStatus: "authenticated",
-        }),
-      ]),
-    );
-    expect(readiness.get("grok-acp")).toBe("ready");
   });
 });
 

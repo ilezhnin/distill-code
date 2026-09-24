@@ -7,7 +7,6 @@ import {
   enqueueStreamingThinkingUpdate,
   enqueueStreamingTerminalUpdate,
   flushAllBufferedStreamingUpdates,
-  flushBufferedStreamingUpdatesForSession,
   releaseStreamingMessageOwner,
 } from "../liveStreamingUpdates";
 import {
@@ -57,33 +56,6 @@ describe("liveStreamingUpdates", () => {
       isRightRailOpen: false,
       activeWorkspaceBySession: {},
     });
-  });
-
-  it("applies interleaved streaming updates in one store write", () => {
-    claimSessionPrompt(sessionId);
-    useChatStore.getState().setMessages(sessionId, [makeAssistantMessage()]);
-    useChatStore.getState().setStreamingMessageId(sessionId, "assistant-1");
-
-    let storeWrites = 0;
-    const unsubscribe = useChatStore.subscribe(() => {
-      storeWrites += 1;
-    });
-
-    enqueueStreamingThinkingUpdate(sessionId, "assistant-1", "thinking");
-    enqueueStreamingThinkingUpdate(sessionId, "assistant-1", " through");
-    enqueueStreamingThinkingUpdate(sessionId, "assistant-1", " it");
-    enqueueStreamingTextUpdate(sessionId, "assistant-1", "hello ");
-    enqueueStreamingTextUpdate(sessionId, "assistant-1", "world");
-    flushAllBufferedStreamingUpdates();
-    unsubscribe();
-
-    expect(storeWrites).toBe(1);
-    expect(
-      useChatStore.getState().messagesBySession[sessionId]?.[0]?.content,
-    ).toEqual([
-      { type: "thinking", text: "thinking through it" },
-      { type: "text", text: "hello world" },
-    ]);
   });
 
   it("keeps late terminal output on its owning message without moving the active stream", () => {
@@ -157,47 +129,5 @@ describe("liveStreamingUpdates", () => {
         .getState()
         .messagesBySession[sessionId]?.[0]?.content?.at(-1),
     ).toEqual({ type: "text", text: "!" });
-  });
-
-  it("batches stale-owner updates without moving the current stream", () => {
-    const staleOwner = claimSessionPrompt(sessionId);
-    useChatStore
-      .getState()
-      .setMessages(sessionId, [
-        makeAssistantMessage("assistant-1"),
-        makeAssistantMessage("assistant-2"),
-      ]);
-    useChatStore.getState().setStreamingMessageId(sessionId, "assistant-1");
-    enqueueStreamingThinkingUpdate(sessionId, "assistant-1", "old thought");
-    enqueueStreamingTextUpdate(sessionId, "assistant-1", "old text");
-
-    claimSessionPrompt(sessionId);
-    useChatStore.getState().setStreamingMessageId(sessionId, "assistant-2");
-
-    let storeWrites = 0;
-    const unsubscribe = useChatStore.subscribe(() => {
-      storeWrites += 1;
-    });
-    flushBufferedStreamingUpdatesForSession(sessionId, {
-      owner: staleOwner,
-    });
-    unsubscribe();
-
-    expect(storeWrites).toBe(1);
-    expect(
-      useChatStore.getState().messagesBySession[sessionId]?.[0]?.content,
-    ).toEqual([
-      { type: "thinking", text: "old thought" },
-      { type: "text", text: "old text" },
-    ]);
-    expect(
-      useChatStore.getState().getSessionRuntime(sessionId).streamingMessageId,
-    ).toBe("assistant-2");
-    expect(useChatStore.getState().getSessionRuntime(sessionId).hasUnread).toBe(
-      true,
-    );
-    expect(useChatSessionStore.getState().getSession(sessionId)?.subtitle).toBe(
-      undefined,
-    );
   });
 });

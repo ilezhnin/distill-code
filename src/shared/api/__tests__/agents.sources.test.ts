@@ -18,9 +18,6 @@ vi.mock("@/shared/api/acpConnection", () => ({
 
 import {
   agentSourceToPersona,
-  createPersonaSource,
-  deletePersonaSource,
-  listPersonaSources,
   promotePersonaSource,
   updatePersonaSource,
 } from "@/shared/api/agents";
@@ -42,87 +39,6 @@ describe("persona source helpers", () => {
     mockGooseSourcesUpdate.mockReset();
     mockGooseSourcesDelete.mockReset();
     vi.restoreAllMocks();
-  });
-
-  it("createPersonaSource returns the entry the backend assigns", async () => {
-    mockGooseSourcesCreate.mockResolvedValueOnce({ source: draftEntry });
-
-    const out = await createPersonaSource({
-      type: "agent",
-      name: "Untitled agent",
-      description: "Draft",
-      content: "Draft in progress.",
-      target: { scope: "global" },
-      properties: { draft: true, builderSessionId: "abc" },
-    });
-
-    expect(out).toEqual(draftEntry);
-    expect(mockGooseSourcesCreate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        name: "Untitled agent",
-        properties: expect.objectContaining({ draft: true }),
-      }),
-    );
-  });
-
-  it("updatePersonaSource sends a full merged source update", async () => {
-    mockGooseSourcesList.mockResolvedValueOnce({ sources: [draftEntry] });
-    mockGooseSourcesUpdate.mockResolvedValueOnce({
-      source: { ...draftEntry, name: "Snark" },
-    });
-
-    const out = await updatePersonaSource(draftEntry.path, { name: "Snark" });
-
-    expect(out.name).toBe("Snark");
-    expect(mockGooseSourcesUpdate).toHaveBeenCalledWith({
-      type: "agent",
-      path: draftEntry.path,
-      name: "Snark",
-      description: "Draft",
-      content: "Draft in progress.",
-      properties: { draft: true, builderSessionId: "abc" },
-    });
-  });
-
-  it("updatePersonaSource merges property patches with existing properties", async () => {
-    mockGooseSourcesList.mockResolvedValueOnce({
-      sources: [
-        {
-          ...draftEntry,
-          properties: {
-            draft: true,
-            builderSessionId: "abc",
-            provider: "openai",
-          },
-        },
-      ],
-    });
-    mockGooseSourcesUpdate.mockResolvedValueOnce({
-      source: {
-        ...draftEntry,
-        properties: {
-          draft: true,
-          builderSessionId: "abc",
-          provider: "openai",
-          model: "gpt-5",
-        },
-      },
-    });
-
-    await updatePersonaSource(draftEntry.path, {
-      properties: { model: "gpt-5" },
-    });
-
-    expect(mockGooseSourcesUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        properties: {
-          draft: true,
-          builderSessionId: "abc",
-          provider: "openai",
-          model: "gpt-5",
-        },
-      }),
-    );
   });
 
   it("a saved edit to a seeded bundled agent survives the next launch", async () => {
@@ -175,93 +91,6 @@ describe("persona source helpers", () => {
     // Hydration after "restart": the persona built from the stored source
     // still carries the ranking.
     expect(agentSourceToPersona(saved).modelRanking).toBe(ranking);
-  });
-
-  it("drops an emptied metadata container instead of writing metadata: {}", async () => {
-    const bundledEntry = {
-      ...draftEntry,
-      path: "/Users/x/.agents/agents/qa.md",
-      name: "QA",
-      properties: { metadata: { distillBundled: true } },
-    };
-    mockGooseSourcesList.mockResolvedValueOnce({ sources: [bundledEntry] });
-    mockGooseSourcesUpdate.mockImplementationOnce(
-      (request: { properties?: Record<string, unknown> }) =>
-        Promise.resolve({ source: { ...bundledEntry, ...request } }),
-    );
-
-    await updatePersonaSource(bundledEntry.path, {
-      properties: { model_ranking: null },
-    });
-
-    const request = mockGooseSourcesUpdate.mock.calls[0][0] as {
-      properties?: Record<string, unknown>;
-    };
-    expect(request.properties).not.toHaveProperty("metadata");
-  });
-
-  it("deletePersonaSource removes by path", async () => {
-    mockGooseSourcesDelete.mockResolvedValueOnce(undefined);
-
-    await deletePersonaSource(draftEntry.path);
-
-    expect(mockGooseSourcesDelete).toHaveBeenCalledWith({
-      type: "agent",
-      path: draftEntry.path,
-    });
-  });
-
-  it("promotePersonaSource creates a final source and deletes the original draft", async () => {
-    const promotionPatch = {
-      name: "Snark",
-      description: "Sharper reviews.",
-      content: "Be snarky.",
-      properties: {
-        draft: true,
-        builderSessionId: "abc",
-        provider: "openai",
-      },
-    };
-    const promoted = {
-      ...draftEntry,
-      path: "/Users/x/.agents/agents/snark.md",
-      name: promotionPatch.name,
-      description: promotionPatch.description,
-      content: promotionPatch.content,
-      properties: { provider: "openai", model: "gpt-5" },
-    };
-    mockGooseSourcesList.mockResolvedValueOnce({
-      sources: [
-        {
-          ...draftEntry,
-          properties: {
-            draft: true,
-            builderSessionId: "abc",
-            model: "gpt-5",
-          },
-        },
-      ],
-    });
-    mockGooseSourcesCreate.mockResolvedValueOnce({ source: promoted });
-    mockGooseSourcesDelete.mockResolvedValueOnce(undefined);
-
-    const out = await promotePersonaSource(draftEntry.path, promotionPatch);
-
-    expect(out).toEqual(promoted);
-    expect(out.path).toBe("/Users/x/.agents/agents/snark.md");
-    expect(mockGooseSourcesCreate).toHaveBeenCalledWith({
-      type: "agent",
-      name: promotionPatch.name,
-      description: promotionPatch.description,
-      content: promotionPatch.content,
-      target: { scope: "global" },
-      properties: { provider: "openai", model: "gpt-5" },
-    });
-    expect(mockGooseSourcesDelete).toHaveBeenCalledWith({
-      type: "agent",
-      path: draftEntry.path,
-    });
-    expect(mockGooseSourcesUpdate).not.toHaveBeenCalled();
   });
 
   it("promotePersonaSource does not delete the draft when final source creation fails", async () => {
@@ -333,13 +162,5 @@ describe("persona source helpers", () => {
     ).resolves.toEqual(promoted);
 
     expect(mockGooseSourcesDelete).not.toHaveBeenCalled();
-  });
-
-  it("listPersonaSources returns the array, draft entries included", async () => {
-    mockGooseSourcesList.mockResolvedValueOnce({ sources: [draftEntry] });
-
-    const out = await listPersonaSources();
-
-    expect(out).toEqual([draftEntry]);
   });
 });

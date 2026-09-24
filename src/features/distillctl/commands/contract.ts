@@ -19,10 +19,9 @@ import type { AppCommand, ToolGroup } from "./types";
  *   prose) the bundled distillctl binary hand-projects from.
  *
  * `scripts/generate-distillctl-contract.mjs` writes both to disk; the distillctl
- * crate embeds them and builds its clap tree at startup (tree.rs). The
- * vitest freshness tests (apiSurface.test.ts / cliSurface.test.ts) compare
- * these builders against the checked-in artifacts, so generator and tests
- * cannot disagree: both call this code.
+ * crate embeds them and builds its clap tree at startup (tree.rs).
+ * `just distillctl-contract-check` imports the builders in Node and
+ * compares both generated artifacts byte-for-byte.
  */
 
 /** Wire protocol version of the broker envelope this surface describes.
@@ -101,8 +100,7 @@ const API_COMMENT =
   "Derived from the authoritative zod schemas in the colocated command " +
   "modules (src/features/distillctl/commands/impl/*.ts); the renderer " +
   "registry's strict zod parse — not this file — is the trust boundary. " +
-  "vitest asserts freshness " +
-  "(src/features/distillctl/__tests__/apiSurface.test.ts).";
+  "`just distillctl-contract-check` verifies freshness.";
 
 const CLI_COMMENT =
   "GENERATED FILE — do not hand-edit; run `pnpm generate:distillctl-contract`. " +
@@ -111,8 +109,8 @@ const CLI_COMMENT =
   "after-help footers), derived from TOOL_GROUPS' cli metadata and each " +
   "command's summary/helpFooter (src/features/distillctl/commands/registry.ts " +
   "and impl/*.ts). distillctl embeds this file plus api-surface.json and " +
-  "builds its clap tree from them at startup (tree.rs); vitest asserts " +
-  "freshness (src/features/distillctl/__tests__/cliSurface.test.ts).";
+  "builds its clap tree from them at startup (tree.rs). " +
+  "`just distillctl-contract-check` verifies freshness.";
 
 /**
  * Normalize one zod field into the contract's FieldSpec shape. Wrappers are

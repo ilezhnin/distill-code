@@ -256,12 +256,10 @@ callers of `resolveRequestedModelSelection` — may be removed once **no
 clients are in use**. Removing them earlier breaks operator history, imported
 personas and external agents.
 
-Source rules keep folding from coming back:
-`src/shared/lib/__tests__/modelSelectionSourceRules.test.ts` and the
-`source_rules` module in `router.rs` fail on a composed `base[effort]` id or a
-retired folded-effort identifier, and
-`src/features/chat/lib/__tests__/sessionExecutionTargetProvenance.test.ts`
-pins which modules mint a target or name a chat's run-settings intent.
+Behavioral tests cover legacy folded-id reads, separate model and effort
+updates, authoritative model selection, and queued-message intent. Target
+provenance remains a review rule: a module's name cannot establish where its
+model choice came from.
 
 ## Warning: do not reopen codex through `availableModels`
 

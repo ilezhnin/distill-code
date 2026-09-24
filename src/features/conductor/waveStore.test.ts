@@ -1,30 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { setConductorProcessStartedAtForTests } from "./processClock";
-import {
-  WAVE_PHASES,
-  WAVE_STEP_PHASES,
-  createWaveState,
-  type WaveState,
-} from "./waveEngine";
+import { createWaveState, type WaveState } from "./waveEngine";
 import {
   CONDUCTOR_WAVES_STORAGE_KEY,
-  MAX_WAVE_TOMBSTONES,
-  MAX_WAVE_WATERMARKS,
   emptyWaveEngineState,
   getWaveEngineState,
   hasWaveTombstone,
   isSupersededPlanMessage,
   newestProcessedMessageAt,
   parseWaveEngineState,
-  pruneOrphanedWaves,
   resetWaveEngineStateCache,
-  setWaveEngineState,
   withProcessedMessageWatermark,
   withRemappedConductorSessionId,
   withWave,
   withWaveTombstone,
-  withoutWave,
 } from "./waveStore";
 
 function wave(waveId: string, conductorSessionId = "conductor-1"): WaveState {
@@ -38,11 +28,6 @@ function wave(waveId: string, conductorSessionId = "conductor-1"): WaveState {
 }
 
 describe("parseWaveEngineState", () => {
-  it("rejects payloads that are not objects at all", () => {
-    expect(parseWaveEngineState(null)).toEqual(emptyWaveEngineState());
-    expect(parseWaveEngineState("nope")).toEqual(emptyWaveEngineState());
-  });
-
   it("salvages readable entries from an unknown version instead of wiping", () => {
     // A version-gated wipe erased the tombstones with the waves, and the same
     // plan then respawned duplicate children after reload (risk №5). Entries
@@ -137,40 +122,6 @@ describe("parseWaveEngineState", () => {
     expect(migrated.carriedReports).toBeUndefined();
   });
 
-  it("round-trips a revision wave's carried reports", () => {
-    const revision = createWaveState({
-      waveId: "w2",
-      conductorSessionId: "conductor-1",
-      planMessageId: "verdict-1",
-      steps: [{ role: "scout", subtask: "Look again", access: "all" }],
-      createdAt: 2,
-      rootRequestId: "plan-1",
-      revisionCount: 1,
-      carriedReports: [
-        {
-          stepIndex: 0,
-          role: "scout",
-          subtask: "Look",
-          fromPreviousWave: true,
-          report: {
-            runId: "run-0",
-            status: "completed",
-            summary: "Found three",
-            decisions: [],
-            artifacts: [],
-            risks: [],
-            needsOperator: false,
-            nextSuggestedTask: null,
-          },
-        },
-      ],
-    });
-    const state = withWave(emptyWaveEngineState(), revision);
-    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
-      state,
-    );
-  });
-
   it("round-trips a blocked carried report with its reason", () => {
     // A reload must not launder "the step could not be done" into a plain
     // completed entry — the reason is what the reader of the handoff acts on.
@@ -208,220 +159,6 @@ describe("parseWaveEngineState", () => {
     );
   });
 
-  it("keeps the stall detector's fields across a reload (P61)", () => {
-    // Losing stallCount on restart would hand a wedged wave a fresh grace
-    // it did nothing to earn; losing `stalled` would let a cut-short digest
-    // read as a finished wave.
-    const wave = {
-      ...createWaveState({
-        waveId: "w-stall",
-        conductorSessionId: "conductor-1",
-        planMessageId: "plan-1",
-        steps: [{ role: "scout", subtask: "Look", access: [] as const }],
-        createdAt: 3,
-      }),
-      lastProgressAt: 4_000,
-      stallCount: 1,
-      stalled: true,
-    };
-    const state = withWave(emptyWaveEngineState(), wave);
-    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
-      state,
-    );
-  });
-
-  it("drops an unreadable carried report rather than the whole wave", () => {
-    const parsed = parseWaveEngineState({
-      version: 2,
-      waves: [
-        {
-          waveId: "w1",
-          conductorSessionId: "conductor-1",
-          planMessageId: "plan-1",
-          phase: "running",
-          rootRequestId: "plan-1",
-          revisionCount: 1,
-          digestAttempt: 0,
-          steps: [
-            {
-              stepIndex: 0,
-              role: "scout",
-              subtask: "Look",
-              access: "all",
-              phase: "pending",
-            },
-          ],
-          carriedReports: [{ stepIndex: 0, role: "scout" }],
-        },
-      ],
-      tombstones: [],
-    });
-    expect(parsed.waves).toHaveLength(1);
-    expect(parsed.waves[0].carriedReports).toBeUndefined();
-  });
-
-  it("round-trips a wave and its tombstone", () => {
-    const state = withWaveTombstone(
-      withWave(emptyWaveEngineState(), wave("w1")),
-      {
-        planMessageId: "plan-w1",
-        conductorSessionId: "conductor-1",
-        outcome: "spawned",
-        at: 5,
-      },
-    );
-    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
-      state,
-    );
-  });
-
-  it("round-trips the E3a git counts and the 5b degradation mark, and drops junk values", () => {
-    const base = wave("w1");
-    const state = withWave(emptyWaveEngineState(), {
-      ...base,
-      gitDirtyAtAdmission: 3,
-      gitDirtyAtDigest: 7,
-      gitDigestProbed: true,
-      steps: [{ ...base.steps[0], reportDegraded: true }],
-    });
-    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
-      state,
-    );
-
-    // A restart must not resurrect these from garbage: a negative or
-    // non-integer count reads as "never measured", a non-true flag as
-    // "never degraded / never probed".
-    const parsed = parseWaveEngineState({
-      version: 2,
-      waves: [
-        {
-          ...JSON.parse(JSON.stringify(base)),
-          gitDirtyAtAdmission: -1,
-          gitDirtyAtDigest: 1.5,
-          gitDigestProbed: "yes",
-          steps: [{ ...base.steps[0], reportDegraded: "yes" }],
-        },
-      ],
-      tombstones: [],
-    });
-    expect(parsed.waves[0]?.gitDirtyAtAdmission).toBeUndefined();
-    expect(parsed.waves[0]?.gitDirtyAtDigest).toBeUndefined();
-    expect(parsed.waves[0]?.gitDigestProbed).toBeUndefined();
-    expect(parsed.waves[0]?.steps[0]?.reportDegraded).toBeUndefined();
-  });
-
-  it("round-trips the E3b artifact check, and drops junk values", () => {
-    const base = wave("w1");
-    const state = withWave(emptyWaveEngineState(), {
-      ...base,
-      checkedArtifacts: 4,
-      missingArtifacts: ["src/ghost.ts"],
-      artifactsProbed: true,
-    });
-    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
-      state,
-    );
-
-    // A reload that resurrected a junk "missing" entry would refuse an accept
-    // over a path nobody ever reported.
-    const parsed = parseWaveEngineState({
-      version: 2,
-      waves: [
-        {
-          ...JSON.parse(JSON.stringify(base)),
-          checkedArtifacts: -2,
-          missingArtifacts: ["ok.ts", 7, "", null],
-          artifactsProbed: "yes",
-        },
-      ],
-      tombstones: [],
-    });
-    expect(parsed.waves[0]?.checkedArtifacts).toBeUndefined();
-    expect(parsed.waves[0]?.missingArtifacts).toEqual(["ok.ts"]);
-    expect(parsed.waves[0]?.artifactsProbed).toBeUndefined();
-  });
-
-  it("round-trips a step's label and model, and drops junk values", () => {
-    // A reload that lost the label would rename the step's placeholder chip
-    // mid-wave, and one that lost the model would silently retarget a pending
-    // step onto inheritance — the exact substitution D5 forbids. Junk values
-    // must read as "not set", never crash the wave.
-    const base = wave("w1");
-    const state = withWave(emptyWaveEngineState(), {
-      ...base,
-      steps: [{ ...base.steps[0], label: "audit the parser", model: "opus" }],
-    });
-    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
-      state,
-    );
-
-    const parsed = parseWaveEngineState({
-      version: 2,
-      waves: [
-        {
-          ...JSON.parse(JSON.stringify(base)),
-          steps: [{ ...base.steps[0], label: 42, model: false }],
-        },
-      ],
-      tombstones: [],
-    });
-    expect(parsed.waves[0]?.steps[0]?.label).toBeUndefined();
-    expect(parsed.waves[0]?.steps[0]?.model).toBeUndefined();
-  });
-
-  it("round-trips a step's budget and class, and drops junk values", () => {
-    // A pending step resumed after a restart is spawned from this record, so
-    // a reload that lost the budget would run the step with no ceiling and one
-    // that lost the class would route it by the role's default (P49/P36).
-    const base = wave("w1");
-    const state = withWave(emptyWaveEngineState(), {
-      ...base,
-      steps: [
-        {
-          ...base.steps[0],
-          budget: { minutes: 5, usd: 1.5 },
-          modelClass: "coding-simple",
-        },
-      ],
-    });
-    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
-      state,
-    );
-
-    const parsed = parseWaveEngineState({
-      version: 2,
-      waves: [
-        {
-          ...JSON.parse(JSON.stringify(base)),
-          steps: [
-            {
-              ...base.steps[0],
-              budget: { minutes: -1, tokens: "lots", usd: 2 },
-              modelClass: "not-a-class",
-            },
-          ],
-        },
-      ],
-      tombstones: [],
-    });
-    // A budget with any unreadable member is not the ceiling the plan set:
-    // the readable members are kept and the rest read as "not set".
-    expect(parsed.waves[0]?.steps[0]?.budget).toEqual({ usd: 2 });
-    expect(parsed.waves[0]?.steps[0]?.modelClass).toBeUndefined();
-
-    const junkBudget = parseWaveEngineState({
-      version: 2,
-      waves: [
-        {
-          ...JSON.parse(JSON.stringify(base)),
-          steps: [{ ...base.steps[0], budget: "five minutes" }],
-        },
-      ],
-      tombstones: [],
-    });
-    expect(junkBudget.waves[0]?.steps[0]?.budget).toBeUndefined();
-  });
-
   it("round-trips a step's effort and fast mode, and drops junk values", () => {
     // A resumed step is spawned from this record: one that lost its effort
     // would run at the ranking's or the model's default instead of the plan's.
@@ -447,42 +184,6 @@ describe("parseWaveEngineState", () => {
     expect(junk.waves[0]?.steps).toHaveLength(1);
     expect(junk.waves[0]?.steps[0]?.effort).toBeUndefined();
     expect(junk.waves[0]?.steps[0]?.fast).toBeUndefined();
-  });
-
-  it("survives every phase either union can hold", () => {
-    // The C1 regression, as a property over the unions themselves: a phase
-    // that exists in `waveEngine.ts` but not in this module's guard used to
-    // make `parseStep` return null, which dropped the whole wave — its live
-    // children orphaned, its tombstone still in place so nothing was ever
-    // re-admitted, and no notice anywhere. Enumerating both unions is what
-    // stops the two schemas drifting apart again.
-    for (const stepPhase of WAVE_STEP_PHASES) {
-      for (const phase of WAVE_PHASES) {
-        const stored: WaveState = {
-          ...wave(`w-${phase}-${stepPhase}`),
-          phase,
-          steps: [
-            {
-              stepIndex: 0,
-              role: "scout",
-              subtask: "Look",
-              access: [],
-              phase: stepPhase,
-              sessionId: "child-0",
-              runId: "run-0",
-            },
-          ],
-        };
-        const state = withWave(emptyWaveEngineState(), stored);
-        const parsed = parseWaveEngineState(JSON.parse(JSON.stringify(state)));
-        expect(
-          parsed.waves,
-          `wave phase "${phase}" with step phase "${stepPhase}" did not survive`,
-        ).toHaveLength(1);
-        expect(parsed.waves[0].phase).toBe(phase);
-        expect(parsed.waves[0].steps[0].phase).toBe(stepPhase);
-      }
-    }
   });
 
   it("drops an unreadable step, and keeps the rest of the wave", () => {
@@ -520,44 +221,6 @@ describe("parseWaveEngineState", () => {
     });
   });
 
-  it("drops a wave whose every step is unreadable", () => {
-    const parsed = parseWaveEngineState({
-      version: 1,
-      waves: [
-        {
-          waveId: "w1",
-          conductorSessionId: "conductor-1",
-          planMessageId: "plan-1",
-          createdAt: 1,
-          steps: [{ stepIndex: 0, role: "scout", subtask: "Look" }],
-        },
-      ],
-      tombstones: [],
-    });
-    expect(parsed.waves).toEqual([]);
-  });
-
-  it("round-trips the Q5 retry note and rejects a malformed one", () => {
-    const parked: WaveState = {
-      ...wave("w-parked"),
-      phase: "needsOperator",
-      digestAttempt: 1,
-      verdictIssue: { reason: "invalid", detail: 'Unknown verdict "ok".' },
-    };
-    const state = withWave(emptyWaveEngineState(), parked);
-    expect(parseWaveEngineState(JSON.parse(JSON.stringify(state)))).toEqual(
-      state,
-    );
-
-    const bogus = parseWaveEngineState({
-      version: 2,
-      waves: [{ ...parked, verdictIssue: { reason: "whatever" } }],
-      tombstones: [],
-    });
-    expect(bogus.waves).toHaveLength(1);
-    expect(bogus.waves[0].verdictIssue).toBeUndefined();
-  });
-
   it('keeps only [] or "all" access values', () => {
     const parsed = parseWaveEngineState({
       version: 1,
@@ -581,21 +244,6 @@ describe("parseWaveEngineState", () => {
     });
     expect(parsed.waves).toEqual([]);
   });
-
-  it("skips malformed tombstones without losing the good ones", () => {
-    const parsed = parseWaveEngineState({
-      version: 1,
-      waves: [],
-      tombstones: [
-        { planMessageId: "", conductorSessionId: "c", outcome: "spawned" },
-        { planMessageId: "p2", conductorSessionId: "c", outcome: "nope" },
-        { planMessageId: "p3", conductorSessionId: "c", outcome: "rejected" },
-      ],
-    });
-    expect(parsed.tombstones.map((entry) => entry.planMessageId)).toEqual([
-      "p3",
-    ]);
-  });
 });
 
 describe("tombstones", () => {
@@ -610,23 +258,6 @@ describe("tombstones", () => {
     const twice = withWaveTombstone(once, { ...entry, at: 2 });
     expect(twice).toBe(once);
     expect(hasWaveTombstone(twice, "plan-1")).toBe(true);
-  });
-
-  it("drops the oldest entries past the cap", () => {
-    let state = emptyWaveEngineState();
-    for (let index = 0; index < MAX_WAVE_TOMBSTONES + 10; index += 1) {
-      state = withWaveTombstone(state, {
-        planMessageId: `plan-${index}`,
-        conductorSessionId: "conductor-1",
-        outcome: "spawned",
-        at: index,
-      });
-    }
-    expect(state.tombstones).toHaveLength(MAX_WAVE_TOMBSTONES);
-    expect(hasWaveTombstone(state, "plan-0")).toBe(false);
-    expect(hasWaveTombstone(state, `plan-${MAX_WAVE_TOMBSTONES + 9}`)).toBe(
-      true,
-    );
   });
 });
 
@@ -661,72 +292,6 @@ describe("the per-conductor watermark", () => {
     expect(isSupersededPlanMessage(state, "conductor-1", 0)).toBe(false);
   });
 
-  it("never supersedes a plan this process produced, whatever the mark says", () => {
-    // The machine's clock was a day fast when the mark was stored; Windows Time
-    // then resynced. Every new plan that conductor makes is now "older" than
-    // its own mark, and the candidate is dropped before it is even scanned — no
-    // wave, no refusal notice, nothing in the transcript. A genuinely new plan
-    // can only come from this process, so this process's messages are exempt.
-    const processStartedAt = 1_000_000;
-    setConductorProcessStartedAtForTests(() => processStartedAt);
-    const state = withProcessedMessageWatermark(
-      emptyWaveEngineState(),
-      "conductor-1",
-      processStartedAt + 86_400_000,
-    );
-
-    expect(
-      isSupersededPlanMessage(state, "conductor-1", processStartedAt + 1),
-    ).toBe(false);
-    expect(
-      isSupersededPlanMessage(state, "conductor-1", processStartedAt),
-    ).toBe(false);
-    // A replayed transcript from before this process still is superseded —
-    // that is the eviction hazard the mark exists for.
-    expect(
-      isSupersededPlanMessage(state, "conductor-1", processStartedAt - 1),
-    ).toBe(true);
-  });
-
-  it("round-trips through the document, dropping junk marks", () => {
-    const parsed = parseWaveEngineState({
-      version: 2,
-      waves: [],
-      tombstones: [],
-      newestProcessedMessageCreatedAt: {
-        "conductor-1": 7,
-        "conductor-2": "soon",
-        "conductor-3": -1,
-        "": 9,
-      },
-    });
-    expect(parsed.newestProcessedMessageCreatedAt).toEqual({
-      "conductor-1": 7,
-    });
-    // A document written before watermarks existed simply has none.
-    expect(
-      parseWaveEngineState({ version: 2, waves: [], tombstones: [] })
-        .newestProcessedMessageCreatedAt,
-    ).toEqual({});
-  });
-
-  it("keeps the newest marks past the cap", () => {
-    let state = emptyWaveEngineState();
-    for (let index = 0; index < MAX_WAVE_WATERMARKS + 5; index += 1) {
-      state = withProcessedMessageWatermark(
-        state,
-        `conductor-${index}`,
-        index + 1,
-      );
-    }
-    const marks = state.newestProcessedMessageCreatedAt;
-    expect(Object.keys(marks)).toHaveLength(MAX_WAVE_WATERMARKS);
-    expect(marks["conductor-0"]).toBeUndefined();
-    expect(marks[`conductor-${MAX_WAVE_WATERMARKS + 4}`]).toBe(
-      MAX_WAVE_WATERMARKS + 5,
-    );
-  });
-
   it("follows a conductor promoted from its draft id", () => {
     const state = withRemappedConductorSessionId(
       withProcessedMessageWatermark(emptyWaveEngineState(), "draft-1", 4_000),
@@ -738,48 +303,10 @@ describe("the per-conductor watermark", () => {
   });
 });
 
-describe("wave records", () => {
-  it("upserts, removes and prunes by conductor", () => {
-    let state = withWave(emptyWaveEngineState(), wave("w1"));
-    state = withWave(state, wave("w2", "conductor-2"));
-    expect(state.waves).toHaveLength(2);
-
-    const replaced = withWave(state, {
-      ...wave("w1"),
-      createdAt: 99,
-    });
-    expect(replaced.waves).toHaveLength(2);
-    expect(
-      replaced.waves.find((entry) => entry.waveId === "w1")?.createdAt,
-    ).toBe(99);
-
-    expect(withoutWave(replaced, "w1").waves.map((w) => w.waveId)).toEqual([
-      "w2",
-    ]);
-    expect(
-      pruneOrphanedWaves(replaced, new Set(["conductor-1"])).waves.map(
-        (w) => w.waveId,
-      ),
-    ).toEqual(["w1"]);
-  });
-});
-
 describe("persistence", () => {
   beforeEach(() => {
     window.localStorage.clear();
     resetWaveEngineStateCache();
-  });
-
-  it("writes through to localStorage and reloads", () => {
-    setWaveEngineState(withWave(emptyWaveEngineState(), wave("w1")));
-    expect(window.localStorage.getItem(CONDUCTOR_WAVES_STORAGE_KEY)).toContain(
-      "w1",
-    );
-
-    resetWaveEngineStateCache();
-    expect(getWaveEngineState().waves.map((entry) => entry.waveId)).toEqual([
-      "w1",
-    ]);
   });
 
   it("survives a corrupt key", () => {

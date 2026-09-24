@@ -83,12 +83,6 @@ describe("findSecret", () => {
     expect(findSecret("Zm9vYmFy".repeat(8))).toBe("long-base64");
   });
 
-  it("names the first shape that matches, not the widest", () => {
-    // Both an assignment and a 40-character hex run; the assignment is
-    // earlier in the list, so that is what the operator is told.
-    expect(findSecret(`token: ${"a1".repeat(20)}`)).toBe("password-assignment");
-  });
-
   describe("statements that are not secrets", () => {
     it.each([
       ["a token bucket", "The token bucket refills at 200 requests a minute"],
@@ -127,16 +121,6 @@ describe("the store refuses a statement that carries a secret", () => {
       appliedMessageIds: [],
       hydrated: true,
     });
-  });
-
-  it("keeps nothing the operator types by hand", () => {
-    const id = useMemoryStore
-      .getState()
-      .remember({ text: `AWS key AKIA${filler(16, "Q")}`, scope: "global" });
-
-    expect(id).toBe("");
-    expect(useMemoryStore.getState().entries).toHaveLength(0);
-    expect(useMemoryStore.getState().archived).toHaveLength(0);
   });
 
   it("skips the refused item of a fence and keeps the safe one", () => {

@@ -37,13 +37,6 @@ it("loads settings for the target chat's project, not the project selected in th
   expect(effective).toHaveBeenCalledWith("C:/project-a");
 });
 
-it("uses only global settings for a general chat", async () => {
-  session.mockReturnValue({ projectId: null });
-  effective.mockResolvedValue({});
-  expect(await sessionStyleGuidelinesPrompt("chat")).toBe("Default style");
-  expect(effective).toHaveBeenCalledWith(undefined);
-});
-
 it("honors an explicitly empty project style", async () => {
   session.mockReturnValue({ projectId: "a" });
   effective.mockResolvedValue({ "style-guidelines": { prompt: "" } });

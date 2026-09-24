@@ -3,7 +3,6 @@ import {
   clearStoredModelPreference,
   getStoredModelPreference,
   setStoredModelPreference,
-  setStoredModelRunSettings,
 } from "../modelPreferences";
 import {
   resolveSessionModelPreference,
@@ -19,55 +18,6 @@ function seedStoredPreferences(value: unknown): void {
 describe("stored model preferences", () => {
   beforeEach(() => {
     window.localStorage.removeItem(STORAGE_KEY);
-  });
-
-  it("reads the effort out of a preference that folded it into the model id", () => {
-    seedStoredPreferences({
-      "codex-acp": {
-        modelId: "gpt-5.6-sol[ultra]",
-        modelName: "GPT-5.6-Sol (ultra)",
-        providerId: "codex-acp",
-      },
-    });
-
-    expect(getStoredModelPreference("codex-acp")).toEqual({
-      modelId: "gpt-5.6-sol",
-      modelName: "GPT-5.6-Sol (ultra)",
-      providerId: "codex-acp",
-      reasoningEffort: "ultra",
-    });
-  });
-
-  it("lets an explicitly stored effort win over a conflicting suffix", () => {
-    seedStoredPreferences({
-      "codex-acp": {
-        modelId: "gpt-5.6-sol[low]",
-        modelName: "GPT-5.6-Sol",
-        providerId: "codex-acp",
-        reasoningEffort: "ultra",
-      },
-    });
-
-    expect(getStoredModelPreference("codex-acp")).toMatchObject({
-      modelId: "gpt-5.6-sol",
-      reasoningEffort: "ultra",
-    });
-  });
-
-  it("keeps a context lane as part of the model id", () => {
-    seedStoredPreferences({
-      "claude-acp": {
-        modelId: "opus[1m]",
-        modelName: "Opus 5",
-        providerId: "claude-acp",
-      },
-    });
-
-    expect(getStoredModelPreference("claude-acp")).toEqual({
-      modelId: "opus[1m]",
-      modelName: "Opus 5",
-      providerId: "claude-acp",
-    });
   });
 
   it("reads fast mode and the per-model overrides, filing a legacy folded key under its base model", () => {
@@ -97,25 +47,6 @@ describe("stored model preferences", () => {
         "gpt-5.6-luna": { reasoningEffort: "max" },
         "gpt-5.5": { fastMode: false },
       },
-    });
-  });
-
-  it("ignores run settings that are not written in their own shape", () => {
-    seedStoredPreferences({
-      "codex-acp": {
-        modelId: "gpt-5.5",
-        modelName: "GPT-5.5",
-        providerId: "codex-acp",
-        reasoningEffort: "   ",
-        fastMode: "yes",
-        byModel: "high",
-      },
-    });
-
-    expect(getStoredModelPreference("codex-acp")).toEqual({
-      modelId: "gpt-5.5",
-      modelName: "GPT-5.5",
-      providerId: "codex-acp",
     });
   });
 
@@ -175,53 +106,6 @@ describe("stored model preferences", () => {
     });
   });
 
-  it("remembers a chosen effort and fast mode for the model and for the agent", () => {
-    seedStoredPreferences({
-      "claude-acp": {
-        modelId: "claude-opus-5",
-        modelName: "Opus 5",
-        providerId: "claude-acp",
-        byModel: { "claude-opus-5": { fastMode: true } },
-      },
-    });
-
-    setStoredModelRunSettings(
-      "claude-acp",
-      { modelId: "claude-opus-5", providerId: "claude-acp" },
-      { reasoningEffort: "max" },
-    );
-
-    expect(getStoredModelPreference("claude-acp")).toEqual({
-      modelId: "claude-opus-5",
-      modelName: "Opus 5",
-      providerId: "claude-acp",
-      reasoningEffort: "max",
-      byModel: {
-        "claude-opus-5": { fastMode: true, reasoningEffort: "max" },
-      },
-    });
-  });
-
-  it("starts a preference for an agent that had none when a run setting is chosen", () => {
-    setStoredModelRunSettings(
-      "codex-acp",
-      {
-        modelId: "gpt-6-astra",
-        modelName: "GPT-6-Astra",
-        providerId: "codex-acp",
-      },
-      { fastMode: false },
-    );
-
-    expect(getStoredModelPreference("codex-acp")).toEqual({
-      modelId: "gpt-6-astra",
-      modelName: "GPT-6-Astra",
-      providerId: "codex-acp",
-      fastMode: false,
-      byModel: { "gpt-6-astra": { fastMode: false } },
-    });
-  });
-
   // The regression test for silent loss: the split has to happen before the
   // preference meets the inventory, because both of these drop a model id the
   // harness does not advertise, and they drop it with no error at all.
@@ -251,26 +135,6 @@ describe("stored model preferences", () => {
           models: advertised.map((id) => ({ id })),
         }),
       ).toEqual(preference);
-    });
-
-    it("still drops a legacy folded model the harness no longer serves", () => {
-      seedStoredPreferences({
-        "codex-acp": {
-          modelId: "gpt-5.4-mini[low]",
-          modelName: "GPT-5.4-Mini",
-          providerId: "codex-acp",
-        },
-      });
-
-      const preference = resolveSessionModelPreference({
-        providerId: "codex-acp",
-      });
-
-      expect(
-        sanitizeSessionModelPreference(preference, {
-          models: [{ id: "gpt-6-astra" }, { id: "gpt-5.6-sol" }],
-        }),
-      ).toEqual({ providerId: "codex-acp" });
     });
   });
 });

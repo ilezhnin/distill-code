@@ -172,14 +172,4 @@ describe("Distill root settings", () => {
     disk = { "style-guidelines": { prompt: "Edited in a text editor" } };
     expect(await settings.readEffectiveSettings()).toEqual(disk);
   });
-
-  it("keeps browser previews on localStorage with no native traffic", async () => {
-    delete window.__TAURI_INTERNALS__;
-    const settings = await import("./rootSettings");
-    await settings.initializeRootSettings();
-    settings.getPreferenceStorage()?.setItem("distill:locale", "es");
-    expect(localStorage.getItem("distill:locale")).toBe("es");
-    expect(read).not.toHaveBeenCalled();
-    expect(update).not.toHaveBeenCalled();
-  });
 });

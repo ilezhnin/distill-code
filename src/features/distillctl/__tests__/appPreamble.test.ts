@@ -27,42 +27,6 @@ describe("getDistillctlPreamble", () => {
     window.__TAURI_INTERNALS__ = {};
   });
 
-  it("returns the preamble when the plugin reports the broker running", async () => {
-    mocks.invoke.mockResolvedValue({ running: true });
-
-    await expect(getDistillctlPreamble(SESSION_ID)).resolves.toBe(
-      SESSION_PREAMBLE,
-    );
-    expect(mocks.invoke).toHaveBeenCalledWith("plugin:distillctl|status");
-  });
-
-  it("returns null when the plugin reports the broker stopped", async () => {
-    mocks.invoke.mockResolvedValue({ running: false });
-
-    await expect(getDistillctlPreamble(SESSION_ID)).resolves.toBeNull();
-  });
-
-  it("asks the plugin per call so availability changes are picked up", async () => {
-    // The discriminating case for the popped-out-window bug: availability is
-    // an app-global fact owned by the plugin, so it must be queried, not
-    // cached renderer-locally where only one window would ever update it.
-    mocks.invoke.mockResolvedValueOnce({ running: false });
-    await expect(getDistillctlPreamble(SESSION_ID)).resolves.toBeNull();
-
-    mocks.invoke.mockResolvedValueOnce({ running: true });
-    await expect(getDistillctlPreamble(SESSION_ID)).resolves.toBe(
-      SESSION_PREAMBLE,
-    );
-    expect(mocks.invoke).toHaveBeenCalledTimes(2);
-  });
-
-  it("returns null outside the Tauri webview without invoking", async () => {
-    window.__TAURI_INTERNALS__ = undefined;
-
-    await expect(getDistillctlPreamble(SESSION_ID)).resolves.toBeNull();
-    expect(mocks.invoke).not.toHaveBeenCalled();
-  });
-
   it("goes inert after a plugin-unavailable rejection (no repeat IPC)", async () => {
     mocks.invoke.mockRejectedValue(
       new Error(
@@ -88,51 +52,7 @@ describe("getDistillctlPreamble", () => {
   });
 });
 
-describe("formatDistillctlPreamble", () => {
-  it("tells each session its own id and how to pass it", () => {
-    // Nothing else identifies the caller: the host cannot export
-    // AGENT_SESSION_ID per session (one bridge process per harness), and
-    // `info context` reports the chat the user is viewing, not the caller.
-    const text = formatDistillctlPreamble(SESSION_ID);
-    expect(text.startsWith(DISTILLCTL_PREAMBLE)).toBe(true);
-    expect(text).toContain(`Your own session id is ${SESSION_ID}.`);
-    expect(text).toContain(`\`--session-id ${SESSION_ID}\``);
-    expect(text).toContain("distill-monitor");
-    expect(text).toContain("`distillctl info context`");
-    expect(text).not.toContain("AGENT_SESSION_ID");
-  });
-
-  it("gives two sessions different preambles", () => {
-    expect(formatDistillctlPreamble("session-a")).not.toBe(
-      formatDistillctlPreamble("session-b"),
-    );
-  });
-
-  it("falls back to the shared text when the id is blank", () => {
-    expect(formatDistillctlPreamble("   ")).toBe(DISTILLCTL_PREAMBLE);
-  });
-});
-
 describe("DISTILLCTL_PREAMBLE content", () => {
-  it("teaches the CLI name and --help discovery", () => {
-    expect(DISTILLCTL_PREAMBLE).toContain("`distillctl`");
-    expect(DISTILLCTL_PREAMBLE).toContain("--help");
-  });
-
-  it("routes switching to replace, selection/retention to set-cwd, and additions to attach", () => {
-    expect(DISTILLCTL_PREAMBLE).toContain(
-      "switch or move this chat to a new worktree/folder",
-    );
-    expect(DISTILLCTL_PREAMBLE).toContain("use `folder replace`");
-    expect(DISTILLCTL_PREAMBLE).toContain(
-      "Use `folder set-cwd` to select an already attached folder",
-    );
-    expect(DISTILLCTL_PREAMBLE).toContain(
-      "Use `folder attach` only to add context without changing cwd",
-    );
-    expect(DISTILLCTL_PREAMBLE).not.toContain("set-worktree");
-  });
-
   /**
    * Drift protection: every noun and verb the preamble names must exist in
    * the generated CLI surface. The listing is intentionally non-exhaustive

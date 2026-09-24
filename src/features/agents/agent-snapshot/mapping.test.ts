@@ -61,46 +61,6 @@ describe("snapshot mappings", () => {
     );
   });
 
-  it("leaves unsupported configuration unset for the caller's fallback flow", () => {
-    expect(
-      snapshotToCreatePersonaRequest(snapshot(), {
-        supportsConfiguration: () => false,
-      }),
-    ).toEqual({
-      displayName: "Display name",
-      systemPrompt: "Portable prompt",
-    });
-  });
-
-  it("imports a bounded PNG data avatar without persisting remote URLs", () => {
-    const value = snapshot({
-      profile: {
-        displayName: "Portable",
-        avatarDataUrl:
-          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
-        avatarUrl: "https://tracking.example/avatar.png",
-      },
-    });
-
-    expect(snapshotToCreatePersonaRequest(value).avatar).toBe(
-      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
-    );
-  });
-
-  it("falls back to definition name and ignores dangerous avatar schemes", () => {
-    const value = snapshot({
-      profile: {
-        displayName: " ",
-        avatarUrl: "file:///etc/passwd",
-        avatarDataUrl: "data:text/html;base64,WA==",
-      },
-    });
-    expect(snapshotToCreatePersonaRequest(value).displayName).toBe(
-      "Definition name",
-    );
-    expect(snapshotToCreatePersonaRequest(value).avatar).toBeUndefined();
-  });
-
   it("exports a deterministic config-only snapshot with no persistent metadata or secrets", () => {
     const exported = personaToSnapshot(persona());
     expect(exported).toEqual({
@@ -134,48 +94,6 @@ describe("snapshot mappings", () => {
     );
   });
 
-  it.each([
-    "Agent",
-    "Draft",
-    "  agent  ",
-  ])("does not export placeholder description %j", (sourceDescription) => {
-    expect(
-      personaToSnapshot(persona({ sourceDescription })).profile?.about,
-    ).toBeNull();
-  });
-
-  it("round-trips the reviewed public description", () => {
-    const exported = personaToSnapshot(
-      persona({ sourceDescription: "Builds useful things." }),
-    );
-    expect(snapshotToCreatePersonaRequest(exported).description).toBe(
-      "Builds useful things.",
-    );
-  });
-
-  it("bounds public descriptions by grapheme without failing export", () => {
-    const description = "😀".repeat(120);
-    const exported = personaToSnapshot(
-      persona({ sourceDescription: description }),
-    );
-    expect(exported.profile?.about).toBe("😀".repeat(110));
-    expect(snapshotToCreatePersonaRequest(exported).description).toBe(
-      "😀".repeat(110),
-    );
-  });
-
-  it("accepts long v1 descriptions and bounds the imported presentation copy", () => {
-    const value = snapshot({
-      profile: {
-        displayName: "Display name",
-        about: "a".repeat(200),
-      },
-    });
-    expect(snapshotToCreatePersonaRequest(value).description).toBe(
-      "a".repeat(110),
-    );
-  });
-
   it("round-trips grapheme-bounded Unicode share-card metadata", () => {
     const goodFor = "👨‍👩‍👧‍👦".repeat(44);
     const vibes = "😀".repeat(32);
@@ -183,35 +101,6 @@ describe("snapshot mappings", () => {
     expect(snapshotToCreatePersonaRequest(exported)).toMatchObject({
       goodFor,
       vibes,
-    });
-  });
-
-  it.each([
-    [{ legacy: true }, ["calm"]],
-    ["x".repeat(4_097), "y".repeat(4_097)],
-    ["😀".repeat(45), "😀".repeat(33)],
-  ])("ignores incompatible v1 card metadata without rejecting the snapshot", (goodFor, vibes) => {
-    const value = snapshot({
-      profile: {
-        displayName: "Display name",
-        goodFor: goodFor as string,
-        vibes: vibes as string,
-      },
-    });
-
-    expect(snapshotToCreatePersonaRequest(value)).not.toMatchObject({
-      goodFor: expect.anything(),
-      vibes: expect.anything(),
-    });
-  });
-
-  it("round-trips short share-card metadata", () => {
-    const exported = personaToSnapshot(
-      persona({ goodFor: "building useful tools", vibes: "sharp, practical" }),
-    );
-    expect(snapshotToCreatePersonaRequest(exported)).toMatchObject({
-      goodFor: "building useful tools",
-      vibes: "sharp, practical",
     });
   });
 

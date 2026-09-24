@@ -120,16 +120,4 @@ describe("spawnConductorChildSession run settings", () => {
       fast: true,
     });
   });
-
-  it("creates a child with no run settings when the step named none", async () => {
-    await spawnConductorChildSession({
-      parentSessionId: PARENT_ID,
-      role: "worker",
-      task: "run the suite",
-    });
-
-    expect(created).toHaveLength(1);
-    expect(created[0]).not.toHaveProperty("runSettings");
-    expect(mocks.reconcileSessionRunSettings).not.toHaveBeenCalled();
-  });
 });

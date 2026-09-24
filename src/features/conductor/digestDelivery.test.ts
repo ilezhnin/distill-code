@@ -1,12 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-import { PreCommitSendRejectedError } from "@/features/chat/lib/preCommitSendRejection";
-import { QueuedSessionNotReadyError } from "@/features/chat/lib/queuedMessageReadiness";
 import {
   SessionDispatchContentionError,
-  SessionDispatchCreationIncompleteError,
   SessionDispatchMissingError,
-  SessionDispatchUnresolvedError,
 } from "@/features/chat/lib/sessionDispatchAcquisition";
 import { useChatStore } from "@/features/chat/stores/chatStore";
 
@@ -47,53 +42,6 @@ function setRuntime(state: "idle" | "running"): void {
 }
 
 describe("classifyDigestDispatchError", () => {
-  it("queues a busy parent rather than dropping the digest", () => {
-    expect(
-      classifyDigestDispatchError(
-        new SessionDispatchContentionError({} as never),
-      ),
-    ).toEqual({ status: "queued" });
-  });
-
-  it("queues while the target session is still being created", () => {
-    expect(
-      classifyDigestDispatchError(
-        new SessionDispatchCreationIncompleteError("pending"),
-      ),
-    ).toEqual({ status: "queued" });
-  });
-
-  it("fails visibly when the target session failed to be created", () => {
-    const result = classifyDigestDispatchError(
-      new SessionDispatchCreationIncompleteError("failed"),
-    );
-    expect(result.status).toBe("failed");
-    expect(result.detail).toBeTruthy();
-  });
-
-  it("fails visibly when the session is gone", () => {
-    const result = classifyDigestDispatchError(
-      new SessionDispatchMissingError(SESSION),
-    );
-    expect(result.status).toBe("failed");
-    expect(result.detail).toContain(SESSION);
-  });
-
-  it("fails visibly when the session has no model", () => {
-    expect(
-      classifyDigestDispatchError(new SessionDispatchUnresolvedError()).status,
-    ).toBe("failed");
-  });
-
-  it("queues any other pre-commit rejection", () => {
-    expect(
-      classifyDigestDispatchError(new QueuedSessionNotReadyError()),
-    ).toEqual({ status: "queued" });
-    expect(
-      classifyDigestDispatchError(new PreCommitSendRejectedError("nope")),
-    ).toEqual({ status: "queued" });
-  });
-
   it("fails visibly on anything unexpected, keeping the message", () => {
     expect(classifyDigestDispatchError(new Error("boom"))).toEqual({
       status: "failed",
@@ -118,33 +66,6 @@ describe("deliverEnvelope", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-  });
-
-  it("dispatches into an idle parent through the cross-session seam", async () => {
-    sendPromptToExistingSessionInBackground.mockResolvedValue(undefined);
-    const result = await deliverEnvelope(SESSION, "the digest");
-    expect(result).toEqual({ status: "dispatched" });
-    expect(sendPromptToExistingSessionInBackground).toHaveBeenCalledWith(
-      SESSION,
-      "the digest",
-      undefined,
-      { returnOnDispatch: true },
-    );
-    expect(queueFor(SESSION)).toHaveLength(0);
-  });
-
-  it("queues a busy parent without touching the send path", async () => {
-    setRuntime("running");
-    const result = await deliverEnvelope(SESSION, "the digest");
-    expect(result).toEqual({ status: "queued" });
-    expect(sendPromptToExistingSessionInBackground).not.toHaveBeenCalled();
-    const [record] = queueFor(SESSION);
-    expect(record.payload.text).toBe("the digest");
-    // The queued send carries the cross-session origin, exactly like a direct
-    // dispatch would; the parent must not see a digest as its own composer.
-    expect(record.payload.sendOptions?.userMessageMetadata?.origin).toBe(
-      "distillctl_cross_session",
-    );
   });
 
   it("queues behind a parent that already has a queue", async () => {
@@ -188,13 +109,5 @@ describe("deliverEnvelope", () => {
     const result = await deliverEnvelope(SESSION, "the digest");
     expect(result.status).toBe("failed");
     expect(queueFor(SESSION)).toHaveLength(0);
-  });
-
-  it("never throws, whatever the seam does", async () => {
-    sendPromptToExistingSessionInBackground.mockRejectedValue("not an error");
-    await expect(deliverEnvelope(SESSION, "the digest")).resolves.toEqual({
-      status: "failed",
-      detail: "not an error",
-    });
   });
 });

@@ -1,5 +1,5 @@
 {
-  "$comment": "GENERATED FILE — do not hand-edit; run `pnpm generate:distillctl-contract`. CLI projection of api-surface.json: the noun/verb tree mapping onto groups/actions, plus CLI-only prose (noun about lines, verb summaries, after-help footers), derived from TOOL_GROUPS' cli metadata and each command's summary/helpFooter (src/features/distillctl/commands/registry.ts and impl/*.ts). distillctl embeds this file plus api-surface.json and builds its clap tree from them at startup (tree.rs); vitest asserts freshness (src/features/distillctl/__tests__/cliSurface.test.ts).",
+  "$comment": "GENERATED FILE — do not hand-edit; run `pnpm generate:distillctl-contract`. CLI projection of api-surface.json: the noun/verb tree mapping onto groups/actions, plus CLI-only prose (noun about lines, verb summaries, after-help footers), derived from TOOL_GROUPS' cli metadata and each command's summary/helpFooter (src/features/distillctl/commands/registry.ts and impl/*.ts). distillctl embeds this file plus api-surface.json and builds its clap tree from them at startup (tree.rs). `just distillctl-contract-check` verifies freshness.",
   "nouns": {
     "session": {
       "group": "sessions",

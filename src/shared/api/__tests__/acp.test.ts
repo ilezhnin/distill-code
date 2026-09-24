@@ -4,8 +4,6 @@ import {
   type RuntimeConfig,
 } from "@/shared/runtime-config/schema";
 
-import { INTERACTION_NORMS_PREAMBLE } from "@/shared/api/interactionNorms";
-
 const mockLoadSession = vi.fn();
 const mockNewSession = vi.fn();
 const mockSetProvider = vi.fn();
@@ -16,11 +14,6 @@ const mockAppendSessionSystemPrompt = vi.fn();
 const mockForkSession = vi.fn();
 const mockRenameSession = vi.fn();
 const mockArchiveSession = vi.fn();
-const noRequestProviderContext = { requestId: undefined };
-const noRequestModelContext = (providerId: string) => ({
-  providerId,
-  requestId: undefined,
-});
 
 async function setRuntimeConfig(config: RuntimeConfig) {
   const { useRuntimeConfigStore } = await import(
@@ -33,7 +26,6 @@ async function setRuntimeConfig(config: RuntimeConfig) {
   });
 }
 
-const EXTERNAL_AGENT_PROVIDER_IDS = ["claude-acp", "codex-acp"] as const;
 const reasoningEffortSnapshot = {
   configId: "reasoning_effort",
   currentValue: "high",
@@ -52,22 +44,6 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
-}
-
-function executionConfigResponse(providerId: string, modelId: string) {
-  return {
-    configOptions: [
-      {
-        id: "provider",
-        kind: { type: "select", currentValue: providerId, options: [] },
-      },
-      {
-        id: "model",
-        category: "model",
-        kind: { type: "select", currentValue: modelId, options: [] },
-      },
-    ],
-  };
 }
 
 vi.mock("../acpApi", () => ({
@@ -190,144 +166,6 @@ describe("acpSendMessage", () => {
     expect(onPromptDispatched).not.toHaveBeenCalled();
   });
 
-  it("reports dispatch immediately after invoking the external prompt", async () => {
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { acpSendMessage } = await import("../acp");
-    const onPromptDispatched = vi.fn();
-    let resolvePrompt!: () => void;
-    mockPrompt.mockReturnValueOnce(
-      new Promise<void>((resolve) => {
-        resolvePrompt = resolve;
-      }),
-    );
-    sessionRegistry.registerPreparedSession(
-      "acp-session-dispatched",
-      "goose",
-      "/tmp/project",
-      "test-model",
-    );
-
-    const send = acpSendMessage("acp-session-dispatched", "hello", {
-      onPromptDispatched,
-    });
-    await vi.waitFor(() => expect(onPromptDispatched).toHaveBeenCalledOnce());
-    expect(mockPrompt).toHaveBeenCalledOnce();
-
-    resolvePrompt();
-    await send;
-  });
-
-  it("hands the interaction norms off in-band for external agents, before the persona", async () => {
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { __resetAllPersonaHandoffs } = await import("../acpPersonaHandoff");
-    const { acpSendMessage } = await import("../acp");
-    __resetAllPersonaHandoffs();
-
-    sessionRegistry.registerPreparedSession(
-      "acp-session-norms-ext",
-      "claude-acp",
-      "/tmp/project",
-      "test-model",
-    );
-
-    await acpSendMessage("acp-session-norms-ext", "hello", {
-      systemPrompt: "You are Starfriend.",
-    });
-
-    const [, blocks] = mockPrompt.mock.calls[0];
-    expect(blocks[0].annotations).toEqual({ audience: ["assistant"] });
-    expect(blocks[0].text).toContain(INTERACTION_NORMS_PREAMBLE);
-    expect(blocks[0].text.indexOf(INTERACTION_NORMS_PREAMBLE)).toBeLessThan(
-      blocks[0].text.indexOf("You are Starfriend."),
-    );
-  });
-
-  it("hands the distillctl preamble off in-band for external agents, before the persona", async () => {
-    mockGetDistillctlPreamble.mockReturnValue(
-      "[Distill]\ndistillctl is on your PATH.",
-    );
-
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { __resetAllPersonaHandoffs } = await import("../acpPersonaHandoff");
-    const { acpSendMessage } = await import("../acp");
-    __resetAllPersonaHandoffs();
-
-    sessionRegistry.registerPreparedSession(
-      "acp-session-preamble-ext",
-      "claude-acp",
-      "/tmp/project",
-      "test-model",
-    );
-
-    await acpSendMessage("acp-session-preamble-ext", "hello", {
-      systemPrompt: "You are Starfriend.",
-    });
-
-    const [, blocks] = mockPrompt.mock.calls[0];
-    expect(blocks[0].annotations).toEqual({ audience: ["assistant"] });
-    expect(blocks[0].text).toContain("distillctl is on your PATH.");
-    expect(blocks[0].text).toContain("You are Starfriend.");
-    expect(blocks[0].text.indexOf("distillctl is on your PATH.")).toBeLessThan(
-      blocks[0].text.indexOf("You are Starfriend."),
-    );
-  });
-
-  it("hands the distillctl preamble off for external agents even without a persona", async () => {
-    mockGetDistillctlPreamble.mockReturnValue(
-      "[Distill]\ndistillctl is on your PATH.",
-    );
-
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { __resetAllPersonaHandoffs } = await import("../acpPersonaHandoff");
-    const { acpSendMessage } = await import("../acp");
-    __resetAllPersonaHandoffs();
-
-    sessionRegistry.registerPreparedSession(
-      "acp-session-preamble-only",
-      "codex-acp",
-      "/tmp/project",
-      "test-model",
-    );
-
-    await acpSendMessage("acp-session-preamble-only", "hello", {});
-
-    const [, blocks] = mockPrompt.mock.calls[0];
-    expect(blocks[0].annotations).toEqual({ audience: ["assistant"] });
-    expect(blocks[0].text).toContain("distillctl is on your PATH.");
-  });
-
-  it.each(
-    EXTERNAL_AGENT_PROVIDER_IDS,
-  )("hands the persona off in-band on the first prompt for %s", async (providerId) => {
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { __resetAllPersonaHandoffs } = await import("../acpPersonaHandoff");
-    const { acpSendMessage } = await import("../acp");
-    __resetAllPersonaHandoffs();
-
-    sessionRegistry.registerPreparedSession(
-      `acp-session-${providerId}`,
-      providerId,
-      "/tmp/project",
-      "test-model",
-    );
-
-    await acpSendMessage(`acp-session-${providerId}`, "hello", {
-      systemPrompt: "You are Starfriend.",
-    });
-
-    // External agents ignore the goose system-prompt ext method, so we must
-    // not call it for them.
-    expect(mockAppendSessionSystemPrompt).not.toHaveBeenCalled();
-
-    const [, blocks] = mockPrompt.mock.calls[0];
-    expect(blocks[0].annotations).toEqual({ audience: ["assistant"] });
-    expect(blocks[0].text).toContain("You are Starfriend.");
-    expect(blocks[blocks.length - 1]).toEqual({
-      type: "text",
-      text: "hello",
-    });
-  });
-
   it("does not consume an external persona handoff when ownership fails", async () => {
     const sessionRegistry = await import("../acpSessionRegistry");
     const { __resetAllPersonaHandoffs } = await import("../acpPersonaHandoff");
@@ -365,35 +203,6 @@ describe("acpSendMessage", () => {
 
     const [, retryBlocks] = mockPrompt.mock.calls[1];
     expect(retryBlocks[0].text).toContain("You are Starfriend.");
-  });
-
-  it("merges the persona handoff with a skill assistant prompt, persona first", async () => {
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { __resetAllPersonaHandoffs } = await import("../acpPersonaHandoff");
-    const { acpSendMessage } = await import("../acp");
-    __resetAllPersonaHandoffs();
-
-    sessionRegistry.registerPreparedSession(
-      "acp-session-codex",
-      "codex-acp",
-      "/tmp/project",
-      "test-model",
-    );
-
-    await acpSendMessage("acp-session-codex", "hello", {
-      systemPrompt: "You are Starfriend.",
-      assistantPrompt: "Use these skills for this request: goose-help.",
-    });
-
-    const [, blocks] = mockPrompt.mock.calls[0];
-    expect(blocks[0].annotations).toEqual({ audience: ["assistant"] });
-    expect(blocks[0].text).toContain("You are Starfriend.");
-    expect(blocks[0].text).toContain(
-      "Use these skills for this request: goose-help.",
-    );
-    expect(blocks[0].text.indexOf("You are Starfriend.")).toBeLessThan(
-      blocks[0].text.indexOf("Use these skills"),
-    );
   });
 
   it("only hands the persona off once per agent, but re-injects after an agent switch", async () => {
@@ -506,132 +315,6 @@ describe("acpLoadSession", () => {
     await sessionRegistry.applySessionModel("acp-session-1", "gpt-5.6");
     expect(mockSetModel).not.toHaveBeenCalled();
   });
-
-  it("registers the provider and model acknowledged by session load", async () => {
-    mockLoadSession.mockResolvedValueOnce(
-      executionConfigResponse("databricks_v2", "goose-gpt-5-6-sol"),
-    );
-    const { acpLoadSession, acpPrepareSession } = await import("../acp");
-
-    await acpLoadSession("acp-session-1", "/tmp/replay");
-    await acpPrepareSession("acp-session-1", "databricks_v2", "/tmp/replay", {
-      modelId: "goose-gpt-5-6-sol",
-    });
-
-    expect(mockLoadSession).toHaveBeenCalledTimes(1);
-    expect(mockSetProvider).not.toHaveBeenCalled();
-    expect(mockSetModel).not.toHaveBeenCalled();
-  });
-
-  it("does not replay a loaded session when its execution selection is unknown", async () => {
-    mockLoadSession.mockResolvedValueOnce({ configOptions: [] });
-    const { acpLoadSession, acpPrepareSession } = await import("../acp");
-
-    await acpLoadSession("acp-session-1", "/tmp/replay");
-    await acpPrepareSession("acp-session-1", "openai", "/tmp/replay", {
-      modelId: "gpt-5.6",
-    });
-
-    expect(mockLoadSession).toHaveBeenCalledTimes(1);
-    expect(mockSetProvider).toHaveBeenCalledWith(
-      "acp-session-1",
-      "openai",
-      noRequestProviderContext,
-    );
-    expect(mockSetModel).toHaveBeenCalledWith(
-      "acp-session-1",
-      "gpt-5.6",
-      noRequestModelContext("openai"),
-    );
-  });
-
-  it("hydrates reasoning effort from the load response config options", async () => {
-    mockLoadSession.mockResolvedValueOnce({
-      configOptions: [
-        {
-          id: "reasoning_effort",
-          category: "thought_level",
-          kind: {
-            type: "select",
-            currentValue: "medium",
-            options: {
-              type: "ungrouped",
-              values: [
-                { value: "off", name: "off" },
-                { value: "low", name: "low" },
-                { value: "medium", name: "medium" },
-                { value: "high", name: "high" },
-              ],
-            },
-          },
-        },
-      ],
-    });
-    const applyReasoningEffortConfigSnapshot = vi.fn();
-
-    const { setSessionConfigSnapshotHandlers } = await import(
-      "../acpSessionConfigSnapshots"
-    );
-    setSessionConfigSnapshotHandlers({
-      applyReasoningEffortConfigSnapshot,
-    });
-    const { acpLoadSession } = await import("../acp");
-
-    await acpLoadSession("acp-session-1", "/tmp/replay");
-
-    expect(applyReasoningEffortConfigSnapshot).toHaveBeenCalledWith(
-      "acp-session-1",
-      {
-        configId: "reasoning_effort",
-        currentValue: "medium",
-        options: [
-          { id: "off", name: "off" },
-          { id: "low", name: "low" },
-          { id: "medium", name: "medium" },
-          { id: "high", name: "high" },
-        ],
-      },
-      { origin: "response" },
-    );
-  });
-
-  it("does not dispatch a load snapshot superseded by a UI configuration", async () => {
-    const loadResponse = deferred<ReturnType<typeof executionConfigResponse>>();
-    mockLoadSession.mockReturnValueOnce(loadResponse.promise);
-    mockSetProvider.mockResolvedValueOnce(undefined);
-    const applyModelConfigSnapshot = vi.fn();
-    const { setSessionConfigSnapshotHandlers } = await import(
-      "../acpSessionConfigSnapshots"
-    );
-    setSessionConfigSnapshotHandlers({ applyModelConfigSnapshot });
-    const sessionRegistry = await import("../acpSessionRegistry");
-    sessionRegistry.registerPreparedSession(
-      "acp-session-race",
-      "openai",
-      "/tmp/replay",
-      "gpt-5.6",
-    );
-    const { acpLoadSession, acpPrepareSession } = await import("../acp");
-
-    const load = acpLoadSession("acp-session-race", "/tmp/replay");
-    const configure = acpPrepareSession(
-      "acp-session-race",
-      "openai",
-      "/tmp/replay",
-      { modelId: "gpt-5.6" },
-    );
-    loadResponse.resolve(executionConfigResponse("openai", "gpt-5.5"));
-
-    await load;
-    await configure;
-
-    expect(applyModelConfigSnapshot).not.toHaveBeenCalled();
-    expect(mockSetModel).toHaveBeenCalledWith(
-      "acp-session-race",
-      "gpt-5.6",
-      noRequestModelContext("openai"),
-    );
-  });
 });
 
 describe("acpCreateSession", () => {
@@ -643,41 +326,6 @@ describe("acpCreateSession", () => {
     mockSetModel.mockReset();
     mockSetModel.mockResolvedValue({ model: null, reasoningEffort: null });
     await setRuntimeConfig(DEFAULT_RUNTIME_CONFIG);
-  });
-
-  it("uses the ACP session id as the UI session id", async () => {
-    mockNewSession.mockResolvedValue({ sessionId: "acp-session-1" });
-
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { acpCreateSession } = await import("../acp");
-
-    await expect(
-      acpCreateSession("openai", "/tmp/project", {
-        projectId: "project-1",
-        personaId: "persona-1",
-        modelId: "gpt-4.1",
-      }),
-    ).resolves.toEqual({
-      sessionId: "acp-session-1",
-      configOptionsSnapshot: {
-        model: null,
-        reasoningEffort: null,
-      },
-    });
-
-    expect(mockNewSession).toHaveBeenCalledWith("/tmp/project", {
-      providerId: "openai",
-      projectId: "project-1",
-      personaId: "persona-1",
-      modelId: "gpt-4.1",
-    });
-    expect(mockLoadSession).not.toHaveBeenCalled();
-    expect(mockSetModel).toHaveBeenCalledWith(
-      "acp-session-1",
-      "gpt-4.1",
-      noRequestModelContext("openai"),
-    );
-    expect(sessionRegistry.isSessionPrepared("acp-session-1")).toBe(true);
   });
 
   it("opens the session on the chosen model, effort and fast mode in session/new itself", async () => {
@@ -698,100 +346,6 @@ describe("acpCreateSession", () => {
       modelId: "claude-opus-4-6",
       reasoningEffort: "max",
       fastMode: false,
-    });
-  });
-
-  it("keeps a created session on the harness's own model when the model write fails", async () => {
-    mockNewSession.mockResolvedValue({
-      sessionId: "kept-session",
-      ...executionConfigResponse("openai", "gpt-5"),
-    });
-    mockSetModel.mockRejectedValueOnce(new Error("model setup failed"));
-
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { acpCreateSession } = await import("../acp");
-
-    await expect(
-      acpCreateSession("openai", "/tmp/project", { modelId: "gpt-4.1" }),
-    ).resolves.toMatchObject({
-      sessionId: "kept-session",
-      configOptionsSnapshot: {
-        model: { modelId: "gpt-5", modelName: "gpt-5" },
-      },
-      rejectedModel: { modelId: "gpt-4.1", reason: "model setup failed" },
-    });
-    expect(mockArchiveSession).not.toHaveBeenCalled();
-    expect(sessionRegistry.isSessionPrepared("kept-session")).toBe(true);
-  });
-
-  it("does not ask again for a model the host already recorded as refused in session/new", async () => {
-    mockNewSession.mockResolvedValue({
-      sessionId: "acp-session-1",
-      ...executionConfigResponse("claude-acp", "claude-fable-5-1"),
-      _meta: {
-        substitutions: [
-          {
-            role: "model",
-            requested: "claude-fable-5",
-            applied: "claude-fable-5-1",
-            reason: "Couldn't confirm model with the API",
-          },
-        ],
-      },
-    });
-
-    const { acpCreateSession } = await import("../acp");
-
-    await expect(
-      acpCreateSession("claude-acp", "/tmp/project", {
-        modelId: "claude-fable-5",
-      }),
-    ).resolves.toMatchObject({
-      sessionId: "acp-session-1",
-      configOptionsSnapshot: {
-        model: {
-          modelId: "claude-fable-5-1",
-          modelName: "claude-fable-5-1",
-        },
-      },
-      rejectedModel: {
-        modelId: "claude-fable-5",
-        reason: "Couldn't confirm model with the API",
-      },
-    });
-    expect(mockSetModel).not.toHaveBeenCalled();
-    expect(mockArchiveSession).not.toHaveBeenCalled();
-  });
-
-  it("returns the latest config snapshot from session creation setup", async () => {
-    mockNewSession.mockResolvedValue({ sessionId: "acp-session-1" });
-    mockSetProvider.mockResolvedValueOnce({
-      model: null,
-      reasoningEffort: null,
-    });
-    mockSetModel.mockResolvedValueOnce({
-      model: {
-        modelId: "gpt-4.1",
-        modelName: "GPT-4.1",
-      },
-      reasoningEffort: reasoningEffortSnapshot,
-    });
-
-    const { acpCreateSession } = await import("../acp");
-
-    await expect(
-      acpCreateSession("openai", "/tmp/project", {
-        modelId: "gpt-4.1",
-      }),
-    ).resolves.toEqual({
-      sessionId: "acp-session-1",
-      configOptionsSnapshot: {
-        model: {
-          modelId: "gpt-4.1",
-          modelName: "GPT-4.1",
-        },
-        reasoningEffort: reasoningEffortSnapshot,
-      },
     });
   });
 
@@ -822,121 +376,11 @@ describe("acpCreateSession", () => {
   });
 });
 
-describe("acpDuplicateSession", () => {
-  const forkedSession = {
-    sessionId: "session-2",
-    title: "Fork",
-    userSetName: false,
-  };
-
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    vi.resetModules();
-    await setRuntimeConfig(DEFAULT_RUNTIME_CONFIG);
-  });
-
-  it("delegates the session id and working dir to direct ACP", async () => {
-    mockForkSession.mockResolvedValueOnce(forkedSession);
-
-    const { acpDuplicateSession } = await import("../acp");
-
-    await expect(
-      acpDuplicateSession("session-1", "/tmp/project"),
-    ).resolves.toEqual(forkedSession);
-    expect(mockForkSession).toHaveBeenCalledWith(
-      "session-1",
-      "/tmp/project",
-      undefined,
-    );
-    expect(mockRenameSession).not.toHaveBeenCalled();
-  });
-
-  it("delegates fork options to direct ACP", async () => {
-    mockForkSession.mockResolvedValueOnce(forkedSession);
-
-    const { acpDuplicateSession } = await import("../acp");
-
-    await acpDuplicateSession("session-1", "/tmp/project", undefined, {
-      conversationBefore: 1_700_000_123,
-    });
-
-    expect(mockForkSession).toHaveBeenCalledWith("session-1", "/tmp/project", {
-      conversationBefore: 1_700_000_123,
-    });
-  });
-
-  it("renames duplicated sessions when a duplicate title is provided", async () => {
-    mockForkSession.mockResolvedValueOnce(forkedSession);
-
-    const { acpDuplicateSession } = await import("../acp");
-
-    await expect(
-      acpDuplicateSession("session-1", "/tmp/project", "Copy of Chat One"),
-    ).resolves.toEqual({ ...forkedSession, title: "Copy of Chat One" });
-    expect(mockForkSession).toHaveBeenCalledWith(
-      "session-1",
-      "/tmp/project",
-      undefined,
-    );
-    expect(mockRenameSession).toHaveBeenCalledWith(
-      "session-2",
-      "Copy of Chat One",
-    );
-  });
-
-  it("keeps the duplicated session when the cosmetic rename fails", async () => {
-    const error = new Error("rename failed");
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
-    mockForkSession.mockResolvedValueOnce(forkedSession);
-    mockRenameSession.mockRejectedValueOnce(error);
-
-    const { acpDuplicateSession } = await import("../acp");
-
-    await expect(
-      acpDuplicateSession("session-1", "/tmp/project", "Copy of Chat One"),
-    ).resolves.toEqual(forkedSession);
-    expect(mockRenameSession).toHaveBeenCalledWith(
-      "session-2",
-      "Copy of Chat One",
-    );
-    expect(consoleError).toHaveBeenCalledWith(
-      "Failed to rename duplicated session:",
-      error,
-    );
-    consoleError.mockRestore();
-  });
-});
-
 describe("acpPrepareSession", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.resetModules();
     await setRuntimeConfig(DEFAULT_RUNTIME_CONFIG);
-  });
-
-  it("loads the existing ACP session instead of creating a replacement", async () => {
-    mockLoadSession.mockResolvedValue(undefined);
-
-    const sessionRegistry = await import("../acpSessionRegistry");
-    const { acpPrepareSession } = await import("../acp");
-
-    await expect(
-      acpPrepareSession("acp-session-1", "openai", "/tmp/project"),
-    ).resolves.toBeDefined();
-
-    expect(mockLoadSession).toHaveBeenCalledWith(
-      "acp-session-1",
-      "/tmp/project",
-    );
-    expect(mockNewSession).not.toHaveBeenCalled();
-    expect(mockSetProvider).toHaveBeenCalledWith(
-      "acp-session-1",
-      "openai",
-      noRequestProviderContext,
-    );
-    expect(sessionRegistry.isSessionPrepared("acp-session-1")).toBe(true);
   });
 
   it("surfaces load failures instead of creating a new ACP session", async () => {

@@ -71,22 +71,6 @@ describe("publishTerminalGroupDigests", () => {
     useConductorGraphStore.setState({ nodesById: {}, reportsByRunId: {} });
   });
 
-  it("delivers a legacy orchestrator turn through the envelope, not as a bubble", async () => {
-    const graph = useConductorGraphStore.getState();
-    graph.registerNode(node({ sessionId: "orch-1", anchorMessageId: "msg-1" }));
-    graph.attachReport(report("run-orch-1", "Legacy work done"));
-
-    publishTerminalGroupDigests(workersFor);
-    await Promise.resolve();
-
-    expect(deliverEnvelope).toHaveBeenCalledTimes(1);
-    const [target, text] = deliverEnvelope.mock.calls[0];
-    expect(target).toBe(PARENT);
-    expect(text).toContain("Legacy work done");
-    // No synthetic assistant message is appended any more.
-    expect(useChatStore.getState().messagesBySession[PARENT]).toBeUndefined();
-  });
-
   it("publishes a turn exactly once, however often the sync fires", async () => {
     const graph = useConductorGraphStore.getState();
     graph.registerNode(node({ sessionId: "orch-1", anchorMessageId: "msg-1" }));

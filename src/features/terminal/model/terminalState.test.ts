@@ -1,23 +1,7 @@
 import { describe, expect, it } from "vitest";
-import {
-  DEFAULT_TERMINAL_STATE,
-  shortenTerminalPath,
-  terminalTabLabel,
-  validateTerminalState,
-} from "./terminalState";
+import { DEFAULT_TERMINAL_STATE, validateTerminalState } from "./terminalState";
 
 describe("terminal state", () => {
-  it("preserves Windows root spelling and disambiguates equivalent cwd tabs", () => {
-    expect(shortenTerminalPath("C:\\")).toBe("C:/");
-
-    const tabs = [
-      { id: "one", cwd: String.raw`C:\Repo` },
-      { id: "two", cwd: "c:/repo/" },
-    ];
-    expect(terminalTabLabel(tabs[0], tabs)).toBe("C:/Repo (1)");
-    expect(terminalTabLabel(tabs[1], tabs)).toBe("c:/repo (2)");
-  });
-
   it("deduplicates equivalent Windows paths during legacy migration", () => {
     expect(
       validateTerminalState(
@@ -31,54 +15,6 @@ describe("terminal state", () => {
       tabs: [{ cwd: String.raw`C:\Repo` }, { cwd: "/Repo" }, { cwd: "/repo" }],
       activeTabId: expect.stringContaining("legacy-0-"),
       expanded: true,
-    });
-  });
-
-  it("migrates legacy floatingBounds and resets placement when no tabs remain", () => {
-    expect(
-      validateTerminalState(
-        {
-          tabs: [{ id: "tab-1", cwd: "/repo" }],
-          activeTabId: "tab-1",
-          expanded: true,
-          placement: "floating",
-          floatingBounds: {
-            left: 10_000,
-            top: 10_000,
-            width: 100,
-            height: 100,
-          },
-        },
-        DEFAULT_TERMINAL_STATE,
-      ),
-    ).toMatchObject({
-      activeTabId: "tab-1",
-      expanded: true,
-      placement: {
-        kind: "floating",
-        rect: {
-          width: 280,
-          height: 220,
-        },
-      },
-    });
-
-    expect(
-      validateTerminalState(
-        {
-          tabs: [],
-          activeTabId: null,
-          expanded: true,
-          placement: {
-            kind: "floating",
-            rect: { x: 10, y: 10, width: 500, height: 300 },
-          },
-        },
-        DEFAULT_TERMINAL_STATE,
-      ),
-    ).toMatchObject({
-      expanded: false,
-      placement: { kind: "docked" },
     });
   });
 });

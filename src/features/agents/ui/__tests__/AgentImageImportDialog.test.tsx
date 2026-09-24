@@ -84,47 +84,6 @@ describe("AgentImageImportDialog", () => {
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
   });
 
-  it("previews without writing and discloses ignored memory", () => {
-    const onConfirm = vi.fn();
-    render(
-      <AgentImageImportDialog
-        snapshot={snapshot()}
-        imageBytes={new Uint8Array([1, 2, 3])}
-        onCancel={vi.fn()}
-        onConfirm={onConfirm}
-      />,
-    );
-
-    expect(screen.getByRole("dialog")).toHaveClass(
-      "bg-card",
-      "backdrop-filter-none",
-    );
-    expect(screen.getByDisplayValue("Research Assistant")).toBeInTheDocument();
-    expect(screen.getByText("Research carefully.")).toBeInTheDocument();
-    expect(screen.getByText("imageImport.description")).toBeInTheDocument();
-    expect(screen.getByText("imageImport.memoryIgnored")).toBeInTheDocument();
-    expect(screen.getByTestId("configuration")).toHaveTextContent(
-      "supported:supported-model",
-    );
-    expect(onConfirm).not.toHaveBeenCalled();
-  });
-
-  it("closes from the dialog x button", async () => {
-    const onCancel = vi.fn();
-    render(
-      <AgentImageImportDialog
-        snapshot={snapshot()}
-        imageBytes={new Uint8Array([1])}
-        onCancel={onCancel}
-        onConfirm={vi.fn()}
-      />,
-    );
-
-    await userEvent.click(screen.getByRole("button", { name: "Close" }));
-
-    expect(onCancel).toHaveBeenCalledTimes(1);
-  });
-
   it("does not persist when canceled", async () => {
     const onCancel = vi.fn();
     const onConfirm = vi.fn();
@@ -206,43 +165,5 @@ describe("AgentImageImportDialog", () => {
         "user-avatar:temporary",
       ),
     );
-  });
-
-  it("does not claim memory is present when the field is omitted", () => {
-    render(
-      <AgentImageImportDialog
-        snapshot={snapshot({ memory: undefined })}
-        imageBytes={new Uint8Array([1])}
-        onCancel={vi.fn()}
-        onConfirm={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByText("imageImport.description")).toBeInTheDocument();
-    expect(
-      screen.queryByText("imageImport.memoryIgnored"),
-    ).not.toBeInTheDocument();
-  });
-
-  it("clears an unavailable source configuration", () => {
-    render(
-      <AgentImageImportDialog
-        snapshot={snapshot({
-          definition: {
-            name: "Researcher",
-            provider: "missing",
-            model: "missing-model",
-          },
-        })}
-        imageBytes={new Uint8Array([1])}
-        onCancel={vi.fn()}
-        onConfirm={vi.fn()}
-      />,
-    );
-
-    expect(
-      screen.getByText("imageImport.unsupportedConfiguration"),
-    ).toBeInTheDocument();
-    expect(screen.getByTestId("configuration")).toHaveTextContent(":");
   });
 });

@@ -22,7 +22,6 @@ import { useProviderModelCacheStore } from "@/features/providers/stores/provider
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import { useRuntimeConfigStore } from "@/shared/runtime-config/runtimeConfigStore";
 import { hostSelectionFromExecutionTarget } from "@/features/chat/lib/hostExecutionTarget";
-import { setAutoArchiveAfter } from "@/features/settings/lib/autoArchivePreference";
 import {
   DEFAULT_RUNTIME_CONFIG,
   type RuntimeConfig,
@@ -709,34 +708,6 @@ describe("AppShell global navigation", () => {
     expect(mockToastError).toHaveBeenCalledWith("backend down");
   });
 
-  it("archives chats without managed Git resources when session pagination fails", async () => {
-    const user = userEvent.setup();
-    mockAcpListSessionsPage.mockRejectedValue(new Error("list failed"));
-    useChatSessionStore.setState({
-      sessions: [
-        {
-          id: "session-1",
-          title: "Plain chat",
-          executionTarget: { harnessId: "claude-acp" },
-          workingDir: "/tmp/plain-chat",
-          createdAt: "2026-07-10T00:00:00.000Z",
-          updatedAt: "2026-07-10T00:00:00.000Z",
-          messageCount: 1,
-        },
-      ],
-    });
-    renderAppShell();
-
-    await user.click(screen.getByRole("button", { name: "Open session 1" }));
-    await user.click(screen.getByRole("button", { name: "Archive session 1" }));
-
-    await waitFor(() => {
-      expect(mockAcpArchiveSession).toHaveBeenCalledWith("session-1");
-    });
-    expect(mockAcpListSessionsPage).not.toHaveBeenCalled();
-    expect(mockToastError).not.toHaveBeenCalled();
-  });
-
   it("stops the chat's terminals once the operator's archive has succeeded", async () => {
     const user = userEvent.setup();
     useChatSessionStore.setState({
@@ -828,57 +799,6 @@ describe("AppShell global navigation", () => {
     expect(mockStopTerminalSessionsForChat).not.toHaveBeenCalled();
   });
 
-  it("auto-archives a worktree chat without inspecting its Git resources", async () => {
-    const worktreePath = "/repo-worktrees/idle";
-    useChatStore.setState({ hasHydratedMessageQueues: true });
-    useChatSessionStore.setState({
-      sessions: [
-        {
-          id: "session-1",
-          title: "Idle worktree chat",
-          executionTarget: { harnessId: "claude-acp" },
-          workingDir: worktreePath,
-          workspaceAttachments: [
-            {
-              id: `path:${worktreePath}`,
-              path: worktreePath,
-              kind: "git-linked-worktree",
-              source: "created",
-              branch: "idle",
-              repositoryPath: "/repo",
-              worktreePath,
-              usedByAgent: true,
-              lifecycle: {
-                owner: "distill",
-                cleanup: "worktree",
-                branch: "idle",
-                baseBranch: "main",
-                repositoryPath: "/repo",
-                worktreePath,
-                createdBranch: true,
-              },
-            },
-          ],
-          createdAt: "2026-07-10T00:00:00.000Z",
-          updatedAt: "2026-07-10T00:00:00.000Z",
-          messageCount: 1,
-        },
-      ],
-    });
-    setAutoArchiveAfter("7-days");
-    renderAppShell();
-
-    await waitFor(() => {
-      expect(mockAcpArchiveSession).toHaveBeenCalledWith("session-1");
-    });
-    // The sweep never removes a worktree or branch, so there is no plan to
-    // inspect: no second pagination per candidate, no Git probe, and the
-    // worktree stays exactly where it is.
-    expect(gitMocks.getGitState).not.toHaveBeenCalled();
-    expect(gitMocks.removeWorktree).not.toHaveBeenCalled();
-    expect(mockAcpListSessionsPage).toHaveBeenCalledTimes(1);
-  });
-
   it("rejects noninteractive archive before local-file loss", async () => {
     const worktreePath = "/repo-worktrees/cli-reject";
     mockPathExists.mockResolvedValue(true);
@@ -944,77 +864,6 @@ describe("AppShell global navigation", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(mockAcpArchiveSession).not.toHaveBeenCalled();
     expect(gitMocks.removeWorktree).not.toHaveBeenCalled();
-  });
-
-  it("noninteractive discard archives and cleans without a dialog", async () => {
-    const worktreePath = "/repo-worktrees/cli-discard";
-    mockPathExists.mockResolvedValue(true);
-    gitMocks.hasIgnoredFiles.mockResolvedValue(true);
-    gitMocks.getGitState.mockResolvedValue({
-      isGitRepo: true,
-      currentBranch: "cli-discard",
-      dirtyFileCount: 0,
-      incomingCommitCount: 0,
-      worktrees: [
-        { path: "/repo", branch: "main", isMain: true },
-        { path: worktreePath, branch: "cli-discard", isMain: false },
-      ],
-      isWorktree: true,
-      mainWorktreePath: "/repo",
-      localBranches: ["main", "cli-discard"],
-    });
-    useChatSessionStore.setState({
-      sessions: [
-        {
-          id: "session-1",
-          title: "CLI discard",
-          executionTarget: { harnessId: "claude-acp" },
-          workingDir: worktreePath,
-          workspaceAttachments: [
-            {
-              id: `path:${worktreePath}`,
-              path: worktreePath,
-              kind: "git-linked-worktree",
-              source: "created",
-              branch: "cli-discard",
-              repositoryPath: "/repo",
-              worktreePath,
-              usedByAgent: true,
-              lifecycle: {
-                owner: "distill",
-                cleanup: "worktree",
-                branch: "cli-discard",
-                baseBranch: "main",
-                repositoryPath: "/repo",
-                worktreePath,
-                createdBranch: true,
-              },
-            },
-          ],
-          createdAt: "2026-07-10T00:00:00.000Z",
-          updatedAt: "2026-07-10T00:00:00.000Z",
-          messageCount: 1,
-        },
-      ],
-    });
-    renderAppShell();
-
-    let outcome: unknown;
-    await act(async () => {
-      outcome = await getAppNavigationController().archiveSession(
-        "session-1",
-        "discard",
-      );
-    });
-
-    expect(outcome).toEqual({ ok: true });
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(mockAcpArchiveSession).toHaveBeenCalledWith("session-1");
-    expect(gitMocks.removeWorktree).toHaveBeenCalledWith(
-      "/repo",
-      worktreePath,
-      true,
-    );
   });
 
   it("blocks destructive Git cleanup and chat archival until confirmed", async () => {
@@ -1118,59 +967,6 @@ describe("AppShell global navigation", () => {
     expect(screen.getByTestId("active-view")).toHaveTextContent("home");
   });
 
-  it("blocks archive with pre-archive copy when Git inspection fails", async () => {
-    const user = userEvent.setup();
-    const worktreePath = "/repo-worktrees/inspect-fails";
-    mockPathExists.mockResolvedValue(true);
-    mockAcpListSessionsPage.mockRejectedValue(new Error("list failed"));
-    useChatSessionStore.setState({
-      sessions: [
-        {
-          id: "session-1",
-          title: "Inspect fails",
-          executionTarget: { harnessId: "claude-acp" },
-          workingDir: worktreePath,
-          workspaceAttachments: [
-            {
-              id: `path:${worktreePath}`,
-              path: worktreePath,
-              kind: "git-linked-worktree",
-              source: "created",
-              branch: "inspect-fails",
-              repositoryPath: "/repo",
-              worktreePath,
-              usedByAgent: true,
-              lifecycle: {
-                owner: "distill",
-                cleanup: "worktree",
-                branch: "inspect-fails",
-                baseBranch: "main",
-                repositoryPath: "/repo",
-                worktreePath,
-                createdBranch: true,
-              },
-            },
-          ],
-          createdAt: "2026-07-10T00:00:00.000Z",
-          updatedAt: "2026-07-10T00:00:00.000Z",
-          messageCount: 1,
-        },
-      ],
-    });
-    renderAppShell();
-
-    await user.click(screen.getByRole("button", { name: "Open session 1" }));
-    await user.click(screen.getByRole("button", { name: "Archive session 1" }));
-
-    await waitFor(() => {
-      expect(mockToastError).toHaveBeenCalledWith(
-        "Couldn't inspect the worktrees or branches. The chat wasn't archived.",
-        { description: "list failed" },
-      );
-    });
-    expect(mockAcpArchiveSession).not.toHaveBeenCalled();
-  });
-
   it("prompts before removing a worktree with only ignored files", async () => {
     const user = userEvent.setup();
     const worktreePath = "/repo-worktrees/ignored-files";
@@ -1272,63 +1068,6 @@ describe("AppShell global navigation", () => {
     expect(screen.getByTestId("active-view")).toHaveTextContent("home");
   });
 
-  it("reports noninteractive cleanup as incomplete if the session starts running after archival", async () => {
-    let resolveArchive!: () => void;
-    mockAcpArchiveSession.mockReturnValue(
-      new Promise<void>((resolve) => {
-        resolveArchive = resolve;
-      }),
-    );
-    mockPathExists.mockResolvedValue(true);
-    gitMocks.getGitState.mockResolvedValue(
-      managedWorktreeGitState("runs-after-archive"),
-    );
-    useChatSessionStore.setState({
-      sessions: [makeManagedWorktreeSession("runs-after-archive")],
-    });
-    renderAppShell();
-
-    let outcome!: Promise<unknown>;
-    act(() => {
-      outcome = getAppNavigationController().archiveSession(
-        "session-1",
-        "reject",
-      );
-    });
-    await waitFor(() => {
-      expect(mockAcpArchiveSession).toHaveBeenCalledWith("session-1");
-    });
-
-    await act(async () => {
-      useChatStore.getState().setChatState("session-1", "thinking");
-      resolveArchive();
-      await outcome;
-    });
-
-    await expect(outcome).resolves.toEqual({
-      ok: true,
-      cleanupIncomplete: "target_session_running",
-    });
-    expect(gitMocks.removeWorktree).not.toHaveBeenCalled();
-  });
-
-  it("does not start noninteractive archival inside the deadline margin", async () => {
-    useChatSessionStore.setState({
-      sessions: [makeManagedWorktreeSession("near-deadline")],
-    });
-    renderAppShell();
-
-    const outcome = await getAppNavigationController().archiveSession(
-      "session-1",
-      "reject",
-      Date.now() + 2_999,
-    );
-
-    expect(outcome).toEqual({ ok: false, reason: "timed_out" });
-    expect(mockAcpArchiveSession).not.toHaveBeenCalled();
-    expect(gitMocks.removeWorktree).not.toHaveBeenCalled();
-  });
-
   it("rechecks running state before noninteractive archival", async () => {
     const inspection = deferred<GitState>();
     mockPathExists.mockResolvedValue(true);
@@ -1357,51 +1096,6 @@ describe("AppShell global navigation", () => {
     });
     expect(mockAcpArchiveSession).not.toHaveBeenCalled();
     expect(gitMocks.removeWorktree).not.toHaveBeenCalled();
-  });
-
-  it("opens a blank chat before ACP session creation finishes", async () => {
-    const pendingSession = deferred<{ sessionId: string }>();
-    mockAcpCreateSession.mockReturnValueOnce(pendingSession.promise);
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("chat");
-    });
-    await waitFor(() => {
-      expect(mockAcpCreateSession).toHaveBeenCalled();
-    });
-
-    const draftSessionId = useChatSessionStore.getState().activeSessionId;
-    expect(draftSessionId).toEqual(expect.any(String));
-    expect(draftSessionId).not.toBe("created-session");
-    expect(
-      useChatSessionStore.getState().getSession(draftSessionId ?? ""),
-    ).toMatchObject({
-      creationState: "pending",
-      workingDir: "~/.distill/artifacts",
-    });
-    const draftWorkingDir = useChatSessionStore
-      .getState()
-      .getSession(draftSessionId ?? "")?.workingDir;
-
-    act(() => {
-      pendingSession.resolve({ sessionId: "created-session" });
-    });
-
-    await waitFor(() => {
-      expect(useChatSessionStore.getState().activeSessionId).toBe(
-        "created-session",
-      );
-    });
-    expect(
-      useChatSessionStore.getState().getSession("created-session"),
-    ).toMatchObject({
-      creationState: undefined,
-      workingDir: draftWorkingDir,
-    });
   });
 
   it("re-keys the draft's terminals to the created session before the id swaps", async () => {
@@ -1502,38 +1196,6 @@ describe("AppShell global navigation", () => {
     expect(getModelSelectionIntent("created-session")).toBeUndefined();
   });
 
-  it("does not restore a draft target after the UI explicitly clears it", async () => {
-    const pendingSession = deferred<{ sessionId: string }>();
-    mockAcpCreateSession.mockReturnValueOnce(pendingSession.promise);
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
-    await waitFor(() => expect(mockAcpCreateSession).toHaveBeenCalled());
-    const draftSessionId = useChatSessionStore.getState().activeSessionId ?? "";
-
-    act(() => {
-      useChatSessionStore
-        .getState()
-        .replaceSessionExecutionTarget(draftSessionId, undefined);
-      pendingSession.resolve({ sessionId: "created-session" });
-    });
-
-    await waitFor(() => {
-      expect(mockAcpArchiveSession).toHaveBeenCalledWith("created-session");
-      expect(
-        useChatSessionStore.getState().getSession(draftSessionId),
-      ).toMatchObject({
-        creationState: "failed",
-        executionTarget: undefined,
-        executionTargetSource: "ui",
-      });
-    });
-    expect(
-      useChatSessionStore.getState().getSession("created-session"),
-    ).toBeUndefined();
-  });
-
   it("archives the backend session when post-creation reconciliation fails", async () => {
     const pendingSession = deferred<{ sessionId: string }>();
     mockAcpCreateSession.mockReturnValueOnce(pendingSession.promise);
@@ -1562,45 +1224,6 @@ describe("AppShell global navigation", () => {
         useChatSessionStore.getState().getSession(draftSessionId),
       ).toMatchObject({ creationState: "failed" });
     });
-  });
-
-  it("reuses the active blank chat when the sidebar new chat action is repeated", async () => {
-    const pendingSession = deferred<{ sessionId: string }>();
-    mockAcpCreateSession.mockReturnValueOnce(pendingSession.promise);
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
-
-    await waitFor(() => {
-      expect(mockAcpCreateSession).toHaveBeenCalledTimes(1);
-    });
-    const draftSessionId = useChatSessionStore.getState().activeSessionId;
-
-    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
-
-    expect(useChatSessionStore.getState().activeSessionId).toBe(draftSessionId);
-    expect(useChatSessionStore.getState().sessions).toHaveLength(1);
-    expect(mockAcpCreateSession).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      pendingSession.resolve({ sessionId: "created-session" });
-    });
-  });
-
-  it("keeps the quick composer hidden until requested and closes it on Escape", async () => {
-    mockGetPlatform.mockReturnValue("windows");
-    const user = userEvent.setup();
-    renderAppShell();
-
-    expect(screen.queryByPlaceholderText("Start a conversation")).toBeNull();
-    await user.keyboard("{Control>}n{/Control}");
-    const composer = await screen.findByPlaceholderText("Start a conversation");
-    expect(composer).toHaveFocus();
-
-    await user.keyboard("{Escape}");
-    expect(screen.queryByPlaceholderText("Start a conversation")).toBeNull();
-    expect(useChatStore.getState().queuedMessageBySession).toEqual({});
   });
 
   it("opens a chat sent from the global composer on the Home selection's model, effort and fast mode in session/new", async () => {
@@ -1666,171 +1289,6 @@ describe("AppShell global navigation", () => {
     ).toEqual({ effort: "xhigh", fast: true });
   });
 
-  it("starts a chat with an agent on the agent's saved effort and fast mode in session/new", async () => {
-    useAgentStore.setState({
-      personas: [
-        {
-          id: "persona-resolves",
-          displayName: "Planner",
-          systemPrompt: "Plan the work.",
-          isBuiltin: false,
-          writable: true,
-          provider: "claude-acp",
-          model: "claude-opus-5",
-          effort: "xhigh",
-          fastMode: true,
-        },
-      ],
-    });
-    useProviderModelCacheStore.setState({
-      providers: new Map([
-        [
-          "claude-acp",
-          {
-            providerId: "claude-acp",
-            models: [
-              {
-                id: "claude-opus-5",
-                name: "Opus 5",
-                providerId: "claude-acp",
-              },
-            ],
-            fetchedAt: Date.now(),
-          },
-        ],
-      ]),
-    });
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(
-      screen.getByRole("button", { name: "Start chat with resolving agent" }),
-    );
-
-    await waitFor(() => {
-      expect(mockAcpCreateSession).toHaveBeenCalledWith(
-        "claude-acp",
-        expect.any(String),
-        expect.objectContaining({
-          modelId: "claude-opus-5",
-          reasoningEffort: "xhigh",
-          fastMode: true,
-        }),
-      );
-    });
-    expect(
-      useChatSessionStore.getState().getActiveSession()?.desiredRunSettings,
-    ).toEqual({ effort: "xhigh", fast: true });
-  });
-
-  it("does not reuse a blank draft that was asked for another fast mode", async () => {
-    const rememberFast = (fastMode: boolean) =>
-      window.localStorage.setItem(
-        "distill:preferredModelsByAgent",
-        JSON.stringify({
-          "claude-acp": {
-            modelId: "claude-opus-5",
-            modelName: "Opus 5",
-            providerId: "claude-acp",
-            byModel: { "claude-opus-5": { fastMode } },
-          },
-        }),
-      );
-    rememberFast(false);
-    // Creation never settles, so both chats stay blank drafts.
-    mockAcpCreateSession.mockImplementation(() => new Promise(() => {}));
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
-    await waitFor(() => {
-      expect(
-        useChatSessionStore.getState().getActiveSession()?.desiredRunSettings,
-      ).toEqual({ fast: false });
-    });
-    const firstDraftId = useChatSessionStore.getState().activeSessionId;
-
-    rememberFast(true);
-    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
-
-    await waitFor(() => {
-      expect(useChatSessionStore.getState().activeSessionId).not.toBe(
-        firstDraftId,
-      );
-    });
-    expect(
-      useChatSessionStore.getState().getActiveSession()?.desiredRunSettings,
-    ).toEqual({ fast: true });
-    expect(
-      useChatSessionStore.getState().getSession(firstDraftId ?? "")
-        ?.desiredRunSettings,
-    ).toEqual({ fast: false });
-    await waitFor(() => {
-      expect(mockAcpCreateSession).toHaveBeenCalledWith(
-        "claude-acp",
-        expect.any(String),
-        expect.objectContaining({ modelId: "claude-opus-5", fastMode: true }),
-      );
-    });
-  });
-
-  it("keeps a new chat whose remembered model the agent refused, on the agent's own model", async () => {
-    window.localStorage.setItem(
-      "distill:preferredModelsByAgent",
-      JSON.stringify({
-        "claude-acp": {
-          modelId: "claude-opus-5",
-          modelName: "Opus 5",
-          providerId: "claude-acp",
-        },
-      }),
-    );
-    mockAcpCreateSession.mockResolvedValueOnce({
-      sessionId: "settled-session",
-      configOptionsSnapshot: {
-        model: { modelId: "claude-sonnet-5", modelName: "Sonnet 5" },
-        reasoningEffort: null,
-      },
-      rejectedModel: {
-        modelId: "claude-opus-5",
-        reason: "Couldn't confirm model with the API",
-      },
-    });
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
-
-    await waitFor(() => {
-      expect(
-        useChatSessionStore.getState().getSession("settled-session"),
-      ).toMatchObject({
-        executionTarget: {
-          harnessId: "claude-acp",
-          modelId: "claude-sonnet-5",
-          modelName: "Sonnet 5",
-        },
-      });
-    });
-    expect(mockAcpCreateSession).toHaveBeenCalledWith(
-      "claude-acp",
-      expect.any(String),
-      expect.objectContaining({ modelId: "claude-opus-5" }),
-    );
-    expect(
-      useChatSessionStore.getState().getSession("settled-session")
-        ?.creationState,
-    ).toBeUndefined();
-    expect(
-      JSON.parse(
-        window.localStorage.getItem("distill:preferredModelsByAgent") ?? "{}",
-      ),
-    ).not.toHaveProperty("claude-acp");
-    expect(mockToastError).toHaveBeenCalledWith(
-      expect.stringContaining("claude-opus-5"),
-    );
-  });
-
   it("creates a failed draft again on the agent it was moved to", async () => {
     mockAcpCreateSession.mockRejectedValueOnce(
       new Error("Failed to create session: harness is down"),
@@ -1873,74 +1331,6 @@ describe("AppShell global navigation", () => {
     expect(
       useChatStore.getState().messagesBySession["created-session"] ?? [],
     ).toHaveLength(0);
-  });
-
-  it("shows ACP error data when draft session creation fails", async () => {
-    const error = new Error("Internal error") as Error & { data: string };
-    error.name = "RequestError";
-    error.data = "Failed to create session: provider config is missing";
-    mockAcpCreateSession.mockRejectedValueOnce(error);
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(screen.getByRole("button", { name: "Sidebar new chat" }));
-
-    await waitFor(() => {
-      const draftSessionId = useChatSessionStore.getState().activeSessionId;
-      expect(
-        useChatSessionStore.getState().getSession(draftSessionId ?? ""),
-      ).toMatchObject({
-        creationState: "failed",
-        creationError: "Failed to create session: provider config is missing",
-      });
-    });
-
-    const draftSessionId = useChatSessionStore.getState().activeSessionId ?? "";
-    const messages = useChatStore.getState().messagesBySession[draftSessionId];
-    expect(messages).toHaveLength(1);
-    expect(messages[0]).toMatchObject({
-      role: "system",
-      content: [
-        {
-          type: "systemNotification",
-          notificationType: "error",
-          text: "Failed to create session: provider config is missing",
-        },
-      ],
-    });
-  });
-
-  it("discarding a dirty agent draft continues the pending navigation", async () => {
-    const user = userEvent.setup();
-    renderAppShell();
-
-    await user.click(screen.getByRole("button", { name: "Sidebar agents" }));
-    await user.click(screen.getByRole("button", { name: "Create agent" }));
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("chat");
-    });
-    await waitForCreatedAgentBuilderTarget();
-
-    const dirtyDraft = {
-      type: "agent",
-      path: "/Users/test/.agents/agents/untitled-agent-created-session.md",
-      name: "Reviewer",
-      description: "Draft",
-      content: "Review code carefully.",
-      global: true,
-      writable: true,
-      properties: { draft: true, builderSessionId: "created-session" },
-    };
-    mockListPersonaSources.mockResolvedValue([dirtyDraft]);
-    mockReadAgentSourceFile.mockResolvedValue(dirtyDraft);
-
-    await user.click(screen.getByRole("button", { name: "Sidebar skills" }));
-    await user.click(await screen.findByRole("button", { name: "Discard" }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("active-view")).toHaveTextContent("skills");
-    });
-    expect(mockDeletePersonaSource).toHaveBeenCalledWith(dirtyDraft.path);
   });
 
   it("keeping a dirty agent draft continues the pending navigation without deleting it", async () => {

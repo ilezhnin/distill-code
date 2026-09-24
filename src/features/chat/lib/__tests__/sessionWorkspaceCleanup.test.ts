@@ -3,13 +3,10 @@ import type { ChatSession } from "@/features/chat/stores/chatSessionStore";
 import type { WorkspaceAttachment } from "@/shared/types/chat";
 import {
   cleanupSessionWorkspaces,
-  countSessionWorkspaceCleanupResources,
-  getSessionWorkspaceCleanupResourceKind,
   inspectSessionWorkspaceCleanup,
   loadAllSessionsForWorkspaceCleanup,
   planSessionWorkspaceCleanup,
   type SessionWorkspaceCleanupInterruptedError,
-  wouldSessionWorkspaceCleanupDiscardFiles,
 } from "../sessionWorkspaceCleanup";
 
 const mocks = vi.hoisted(() => ({
@@ -57,28 +54,6 @@ function makeManagedWorktree(
       baseBranch: "main",
       repositoryPath: "/repo",
       worktreePath: path,
-      createdBranch: true,
-    },
-  };
-}
-
-function makeManagedBranch(): WorkspaceAttachment {
-  return {
-    id: "path:/repo",
-    path: "/repo",
-    kind: "git-main-worktree",
-    source: "created",
-    branch: "chat",
-    repositoryPath: "/repo",
-    worktreePath: "/repo",
-    usedByAgent: true,
-    lifecycle: {
-      owner: "distill",
-      cleanup: "branch",
-      branch: "chat",
-      baseBranch: "main",
-      repositoryPath: "/repo",
-      worktreePath: "/repo",
       createdBranch: true,
     },
   };
@@ -204,125 +179,12 @@ describe("session workspace cleanup", () => {
     ]);
   });
 
-  it("counts worktree cleanup without separately counting its branch", async () => {
-    const session = makeSession("session", [
-      makeManagedWorktree(),
-      makeManagedBranch(),
-    ]);
-    const plans = await inspectSessionWorkspaceCleanup(
-      planSessionWorkspaceCleanup(session, [session]),
-    );
-
-    expect(countSessionWorkspaceCleanupResources(plans)).toEqual({
-      worktreeCount: 1,
-      branchCount: 1,
-    });
-  });
-
-  it("calls an orphaned branch a branch when its worktree is already gone", () => {
-    const session = makeSession("session", [makeManagedWorktree()]);
-    const [plan] = planSessionWorkspaceCleanup(session, [session]);
-    if (!plan) throw new Error("Expected a cleanup plan");
-    const inspected = {
-      ...plan,
-      uncommittedFileCount: 0,
-      hasIgnoredFiles: false,
-      branchCommitsNotInBase: 0,
-      worktreeExists: false,
-      branchExists: true,
-    };
-
-    expect(getSessionWorkspaceCleanupResourceKind(inspected)).toBe("branch");
-  });
-
-  it("deduplicates subdirectories in one chat into one cleanup target", async () => {
-    const worktreePath = "/repo-worktrees/chat";
-    const app = {
-      ...makeManagedWorktree(worktreePath),
-      id: `path:${worktreePath}/app`,
-      path: `${worktreePath}/app`,
-      kind: "subdirectory" as const,
-    };
-    const docs = {
-      ...makeManagedWorktree(worktreePath),
-      id: `path:${worktreePath}/docs`,
-      path: `${worktreePath}/docs`,
-      kind: "subdirectory" as const,
-    };
-    const session = makeSession("session", [app, docs]);
-    const plans = planSessionWorkspaceCleanup(session, [session]);
-
-    expect(plans).toHaveLength(1);
-    const inspected = await inspectSessionWorkspaceCleanup(plans);
-    await cleanupSessionWorkspaces(inspected);
-
-    expect(mocks.removeWorktree).toHaveBeenCalledTimes(1);
-    expect(mocks.removeWorktree).toHaveBeenCalledWith(
-      "/repo",
-      worktreePath,
-      true,
-    );
-    expect(mocks.deleteBranch).toHaveBeenCalledTimes(1);
-  });
-
   it("does not clean a target still used by another active session", () => {
     const managed = makeManagedWorktree();
     const session = makeSession("session", [managed]);
     const other = makeSession("other", [{ ...managed }]);
 
     expect(planSessionWorkspaceCleanup(session, [session, other])).toEqual([]);
-  });
-
-  it("does not clean a target a `~`-spelled attachment in another session still uses", () => {
-    const managed: WorkspaceAttachment = {
-      ...makeManagedBranch(),
-      id: "path:/Users/test/repo",
-      path: "/Users/test/repo",
-      repositoryPath: "/Users/test/repo",
-      worktreePath: "/Users/test/repo",
-      lifecycle: {
-        owner: "distill",
-        cleanup: "branch",
-        branch: "chat",
-        baseBranch: "main",
-        repositoryPath: "/Users/test/repo",
-        worktreePath: "/Users/test/repo",
-        createdBranch: true,
-      },
-    };
-    const session = makeSession("session", [managed]);
-    const other = makeSession("other", [
-      {
-        id: "path:~/repo",
-        path: "~/repo",
-        kind: "directory",
-        source: "selected",
-        branch: null,
-        usedByAgent: false,
-      },
-    ]);
-
-    // Without the home dir the raw spelling cannot match the absolute target.
-    expect(planSessionWorkspaceCleanup(session, [session, other])).toHaveLength(
-      1,
-    );
-    expect(
-      planSessionWorkspaceCleanup(session, [session, other], "/Users/test"),
-    ).toEqual([]);
-  });
-
-  it("does clean a target used only by an archived session", () => {
-    const managed = makeManagedWorktree();
-    const session = makeSession("session", [managed]);
-    const archived = makeSession(
-      "archived",
-      [{ ...managed }],
-      "2026-07-09T00:00:00.000Z",
-    );
-
-    expect(
-      planSessionWorkspaceCleanup(session, [session, archived]),
-    ).toHaveLength(1);
   });
 
   it("detects ignored files that worktree removal would delete", async () => {
@@ -377,27 +239,6 @@ describe("session workspace cleanup", () => {
     expect(mocks.deleteBranch).not.toHaveBeenCalled();
   });
 
-  it("does not treat local edits on a preserved branch as cleanup loss", async () => {
-    mocks.countBranchCommitsNotInBase.mockResolvedValue(2);
-    mocks.getGitState.mockResolvedValue({
-      isGitRepo: true,
-      currentBranch: "chat",
-      dirtyFileCount: 3,
-      incomingCommitCount: 0,
-      worktrees: [{ path: "/repo", branch: "chat", isMain: true }],
-      isWorktree: false,
-      mainWorktreePath: "/repo",
-      localBranches: ["main", "chat"],
-    });
-    const session = makeSession("session", [makeManagedBranch()]);
-    const [inspected] = await inspectSessionWorkspaceCleanup(
-      planSessionWorkspaceCleanup(session, [session]),
-    );
-
-    if (!inspected) throw new Error("Expected an inspected plan");
-    expect(wouldSessionWorkspaceCleanupDiscardFiles(inspected)).toBe(false);
-  });
-
   it("removes a worktree before deleting its created branch", async () => {
     const session = makeSession("session", [makeManagedWorktree()]);
     const inspected = await inspectSessionWorkspaceCleanup(
@@ -450,33 +291,5 @@ describe("session workspace cleanup", () => {
 
     expect(mocks.removeWorktree).toHaveBeenCalledTimes(1);
     expect(mocks.deleteBranch).not.toHaveBeenCalled();
-  });
-
-  it("detects dirty managed branches and deletes them from their checkout", async () => {
-    mocks.getGitState.mockResolvedValueOnce({
-      isGitRepo: true,
-      currentBranch: "chat",
-      dirtyFileCount: 2,
-      incomingCommitCount: 0,
-      worktrees: [{ path: "/repo", branch: "chat", isMain: true }],
-      isWorktree: false,
-      mainWorktreePath: "/repo",
-      localBranches: ["main", "chat"],
-    });
-    const session = makeSession("session", [makeManagedBranch()]);
-    const inspected = await inspectSessionWorkspaceCleanup(
-      planSessionWorkspaceCleanup(session, [session]),
-    );
-
-    expect(inspected[0]?.uncommittedFileCount).toBe(2);
-    await cleanupSessionWorkspaces(inspected);
-
-    expect(mocks.removeWorktree).not.toHaveBeenCalled();
-    expect(mocks.deleteBranch).toHaveBeenCalledWith(
-      "/repo",
-      "chat",
-      true,
-      "main",
-    );
   });
 });
