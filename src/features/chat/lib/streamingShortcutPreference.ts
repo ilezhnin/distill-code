@@ -1,4 +1,5 @@
 import { useCallback, useSyncExternalStore } from "react";
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 
 export type StreamingShortcutMode = "cmd-enter-steers" | "enter-steers";
 export type StreamingShortcutAction = "queue" | "steer";
@@ -24,7 +25,7 @@ function normalizeStreamingShortcutMode(value: unknown): StreamingShortcutMode {
 function readStreamingShortcutMode(): StreamingShortcutMode {
   try {
     return normalizeStreamingShortcutMode(
-      localStorage.getItem(STREAMING_SHORTCUT_MODE_STORAGE_KEY),
+      getPreferenceStorage()?.getItem(STREAMING_SHORTCUT_MODE_STORAGE_KEY),
     );
   } catch {
     return DEFAULT_STREAMING_SHORTCUT_MODE;
@@ -68,7 +69,10 @@ function subscribe(onStoreChange: () => void) {
 export function setStreamingShortcutMode(mode: StreamingShortcutMode): void {
   const normalized = normalizeStreamingShortcutMode(mode);
   try {
-    localStorage.setItem(STREAMING_SHORTCUT_MODE_STORAGE_KEY, normalized);
+    getPreferenceStorage()?.setItem(
+      STREAMING_SHORTCUT_MODE_STORAGE_KEY,
+      normalized,
+    );
   } catch {
     // localStorage can be unavailable in restricted contexts.
   }

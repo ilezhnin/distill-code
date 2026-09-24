@@ -1,3 +1,4 @@
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import type {
   WorkspaceAttachment,
   WorkspaceAttachmentKind,
@@ -149,7 +150,7 @@ function readAllPersistedChatWorkspaceMetadata(): PersistedChatWorkspaceMetadata
   if (typeof window === "undefined") return {};
 
   try {
-    const stored = window.localStorage.getItem(
+    const stored = getPreferenceStorage()?.getItem(
       CHAT_WORKSPACE_METADATA_STORAGE_KEY,
     );
     if (!stored) return {};
@@ -202,12 +203,12 @@ function writeAllPersistedChatWorkspaceMetadata(
 
   try {
     if (Object.keys(bySession).length === 0) {
-      window.localStorage.removeItem(CHAT_WORKSPACE_METADATA_STORAGE_KEY);
+      getPreferenceStorage()?.removeItem(CHAT_WORKSPACE_METADATA_STORAGE_KEY);
       dispatchWorkspaceMetadataChanged(changedSessionIds);
       return;
     }
 
-    window.localStorage.setItem(
+    getPreferenceStorage()?.setItem(
       CHAT_WORKSPACE_METADATA_STORAGE_KEY,
       JSON.stringify(bySession),
     );

@@ -1,3 +1,4 @@
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 const STORAGE_KEY = "goose_trusted_domains";
 
 /**
@@ -17,7 +18,7 @@ export function extractDomain(url: string): string | null {
 
 function loadUserTrustedDomains(): Set<string> {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = getPreferenceStorage()?.getItem(STORAGE_KEY);
     if (!raw) return new Set();
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return new Set();
@@ -29,7 +30,7 @@ function loadUserTrustedDomains(): Set<string> {
 
 function saveUserTrustedDomains(domains: Set<string>): void {
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify([...domains]));
+    getPreferenceStorage()?.setItem(STORAGE_KEY, JSON.stringify([...domains]));
   } catch {
     // localStorage can be unavailable in restricted contexts.
   }
@@ -84,7 +85,7 @@ export function getUserTrustedDomains(): string[] {
  */
 export function clearUserTrustedDomains(): void {
   try {
-    window.localStorage.removeItem(STORAGE_KEY);
+    getPreferenceStorage()?.removeItem(STORAGE_KEY);
   } catch {
     // localStorage can be unavailable in restricted contexts.
   }

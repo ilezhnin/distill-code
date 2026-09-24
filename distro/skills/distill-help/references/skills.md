@@ -6,11 +6,11 @@ come from more than one source, and the source determines ownership and
 precedence:
 
 - **App-bundled** (`distillBundled` marker) — ships with Distill, read-only in the
-  UI, lives in the app-data skills directory.
+  UI, lives in `~/.distill/skills/`.
 - **Personal** (`global`) — the user's own skills, portable across projects,
-  from `~/.agents/skills`.
+  from `~/.distill/skills`.
 - **Project** — scoped to a specific project/workspace, from
-  `<workspace>/.agents/skills`. Vendor folders (`.claude/skills`,
+  `<workspace>/.distill/skills`. Vendor folders (`.claude/skills`,
   `.codex/skills`, `.gemini/skills`) are not scanned.
 
 When a personal skill and an app-bundled skill share a name, the personal

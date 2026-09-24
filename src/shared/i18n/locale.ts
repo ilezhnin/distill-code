@@ -1,3 +1,4 @@
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import {
   DEFAULT_LOCALE,
   LOCALE_STORAGE_KEY,
@@ -44,7 +45,7 @@ export function getStoredLocalePreference(): AppLocale | null {
   if (typeof window === "undefined") return null;
 
   try {
-    return normalizeLocale(window.localStorage.getItem(LOCALE_STORAGE_KEY));
+    return normalizeLocale(getPreferenceStorage()?.getItem(LOCALE_STORAGE_KEY));
   } catch {
     return null;
   }

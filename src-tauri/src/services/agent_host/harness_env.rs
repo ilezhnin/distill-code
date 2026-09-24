@@ -49,7 +49,10 @@ fn install_distillctl_shims(
             return;
         }
     };
-    let shim_dir = app_data_dir.join("bin");
+    let Ok(root) = crate::services::distill_root::app_root(app) else {
+        return;
+    };
+    let shim_dir = root.join("cache").join("bin");
     let mut installed_any = false;
     if let Some(cli_path) = distillctl_bin.as_deref() {
         match create_cli_shim(&shim_dir, cli_path, shim_name("distillctl")) {

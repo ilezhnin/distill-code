@@ -1,4 +1,5 @@
 import * as React from "react";
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 
 type ThemeMode = "system" | "light" | "dark";
 
@@ -125,7 +126,7 @@ function applyResolvedMode(isDark: boolean) {
  */
 function readStoredValue(key: string): string | null {
   try {
-    return window.localStorage.getItem(key);
+    return getPreferenceStorage()?.getItem(key) ?? null;
   } catch {
     return null;
   }
@@ -133,8 +134,8 @@ function readStoredValue(key: string): string | null {
 
 function writeStoredValue(key: string, value: string | null): void {
   try {
-    if (value === null) window.localStorage.removeItem(key);
-    else window.localStorage.setItem(key, value);
+    if (value === null) getPreferenceStorage()?.removeItem(key);
+    else getPreferenceStorage()?.setItem(key, value);
   } catch {
     // Storage is unavailable; the choice still holds for this run.
   }

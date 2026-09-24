@@ -23,6 +23,18 @@ use std::path::{Path, PathBuf};
 /// The folder a project's own documents live in, inside the project.
 pub const PROJECT_STORE_DIR: &str = ".distill";
 
+#[tauri::command]
+pub async fn initialize_project_context(project_root: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let root = PathBuf::from(project_root);
+        crate::services::distill_root::ensure_project_layout(&root)?;
+        let _ = exclude_agent_folders(&root);
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 /// Folders this tool creates in someone else's repository.
 ///
 /// Listed together because they are excluded together: an operator who never

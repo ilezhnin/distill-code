@@ -126,7 +126,11 @@ impl E2eMode {
     }
 
     pub(crate) fn agents_root(&self) -> PathBuf {
-        self.agents_home.join(".agents")
+        self.distill_root()
+    }
+
+    pub(crate) fn distill_root(&self) -> PathBuf {
+        self.agents_home.join(".distill")
     }
 
     pub(crate) fn agents_dir(&self) -> PathBuf {

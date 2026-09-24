@@ -1,3 +1,4 @@
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import { useCallback, useSyncExternalStore } from "react";
 
 interface BooleanLocalStoragePreferenceOptions {
@@ -13,7 +14,7 @@ function readBooleanPreference(
   if (typeof window === "undefined") return defaultValue;
 
   try {
-    const stored = window.localStorage.getItem(storageKey);
+    const stored = getPreferenceStorage()?.getItem(storageKey);
     if (stored === "true") {
       return true;
     }
@@ -74,7 +75,7 @@ export function createBooleanLocalStoragePreference({
     if (typeof window === "undefined") return;
 
     try {
-      window.localStorage.setItem(storageKey, String(enabled));
+      getPreferenceStorage()?.setItem(storageKey, String(enabled));
     } catch {
       // localStorage can be unavailable in restricted contexts.
     }

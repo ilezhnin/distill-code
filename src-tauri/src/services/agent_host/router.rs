@@ -351,21 +351,52 @@ fn legacy_goose_projects_dir() -> Option<PathBuf> {
 
 impl Inner {
     async fn start(app: tauri::AppHandle) -> Result<Arc<Inner>, String> {
+        // Migration and seeding finish before opening any source or database.
+        app.state::<crate::services::bundled_skills::BundledSkillsState>()
+            .wait_until_ready()
+            .await;
         let app_data_dir = app
             .path()
             .app_data_dir()
             .map_err(|error| format!("failed to resolve app data dir: {error}"))?;
-        let host_dir = app_data_dir.join("agent-host");
+        let distill_root = crate::services::distill_root::app_root(&app)?;
+        if app
+            .try_state::<crate::services::e2e_mode::E2eMode>()
+            .is_none()
+            && std::env::var_os("DISTILL_ROOT").is_none()
+        {
+            crate::services::root_migration::adopt_sessions(&distill_root, &app_data_dir).await?;
+        }
+        let host_dir = distill_root.join("sessions");
         let store = SessionStore::open(&host_dir.join("agent-host.db")).await?;
-        match legacy_import::import_goose_sessions_once(&store).await {
-            Ok(0) => {}
-            Ok(count) => log::info!("[agent-host] imported {count} goose sessions"),
-            Err(error) => log::warn!("[agent-host] goose session import failed: {error}"),
+        let isolated = app
+            .try_state::<crate::services::e2e_mode::E2eMode>()
+            .is_some()
+            || std::env::var_os("DISTILL_ROOT").is_some();
+        if !isolated {
+            match legacy_import::import_goose_sessions_once(&store).await {
+                Ok(0) => {}
+                Ok(count) => log::info!("[agent-host] imported {count} goose sessions"),
+                Err(error) => log::warn!("[agent-host] goose session import failed: {error}"),
+            }
         }
         let roots = SourceRoots {
-            projects_dir: app_data_dir.join("projects"),
-            builtin_skills_dir: app_data_dir.join("skills"),
-            legacy_projects_dir: legacy_goose_projects_dir(),
+            projects_dir: distill_root.join("projects"),
+            builtin_skills_dir: distill_root.join("skills"),
+            root: distill_root,
+            compatibility_root: if app
+                .try_state::<crate::services::e2e_mode::E2eMode>()
+                .is_none()
+            {
+                dirs::home_dir().map(|home| home.join(".agents"))
+            } else {
+                None
+            },
+            legacy_projects_dir: if isolated {
+                None
+            } else {
+                legacy_goose_projects_dir()
+            },
         };
 
         let listener = TcpListener::bind(("127.0.0.1", 0))
@@ -3994,9 +4025,7 @@ impl Inner {
     /// `cwd`, and the probe has no business appearing in the history of the
     /// directory the user actually works in.
     fn probe_cwd(&self) -> String {
-        self.app
-            .path()
-            .app_data_dir()
+        crate::services::distill_root::app_root(&self.app)
             .ok()
             .map(|dir| dir.to_string_lossy().into_owned())
             .unwrap_or_else(|| ".".to_string())

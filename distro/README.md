@@ -28,11 +28,11 @@ In development, `just dev-windows` (`scripts/windows/Dev-Windows.ps1`) exports `
 
 When bundled defaults are present, the Tauri shell:
 
-- installs Distill-owned `distro/skills/<name>/` entries into the platform app-data `skills/<name>/` directory; Personal skills remain in `~/.agents/skills`
-- installs `distro/agents/<name>.md` entries into `~/.agents/agents/<name>.md`
+- installs Distill-owned `distro/skills/<name>/` entries into `~/.distill/skills/<name>/`; personal skills remain in `~/.distill/skills`
+- installs `distro/agents/<name>.md` entries into `~/.distill/agents/<name>.md`
 - resolves bundled `agent-avatar:` images from `distro/agents/.avatars/`
 
-Bundled skills reinstall existing copies only when the installed `SKILL.md` frontmatter has the `metadata.distillBundled: true` marker; unmarked Personal skills are left untouched.
+Bundled skills reinstall existing copies only when the installed `SKILL.md` frontmatter has the `metadata.distillBundled: true` marker; unmarked personal skills are left untouched.
 
 Bundled agents use the `metadata.distillBundled: true` marker. The app records seeded files in `.distill-bundled-agents.json` so deleted starter agents do not reappear on later launches. Existing unmarked user agents are left untouched.
 

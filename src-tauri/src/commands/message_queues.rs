@@ -7,10 +7,8 @@ const MESSAGE_QUEUES_FILENAME: &str = "message-queues.json";
 static MESSAGE_QUEUES_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn message_queues_path(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map(|dir| dir.join(MESSAGE_QUEUES_FILENAME))
-        .map_err(|error| format!("Failed to resolve app data directory: {error}"))
+    crate::services::distill_root::app_root(app)
+        .map(|dir| dir.join("state").join(MESSAGE_QUEUES_FILENAME))
 }
 
 /// Reads the persisted queues.
@@ -19,6 +17,9 @@ fn message_queues_path(app: &AppHandle) -> Result<PathBuf, String> {
 /// worker starves every other async command sharing it.
 #[tauri::command]
 pub async fn load_message_queues(app: AppHandle) -> Result<Option<String>, String> {
+    app.state::<crate::services::bundled_skills::BundledSkillsState>()
+        .wait_until_ready()
+        .await;
     let path = message_queues_path(&app)?;
     tokio::task::spawn_blocking(move || match fs::read_to_string(&path) {
         Ok(serialized) => Ok(Some(serialized)),

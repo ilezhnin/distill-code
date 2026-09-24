@@ -1127,10 +1127,13 @@ export function agentSourceToPersona(source: AgentSourceEntry): Persona {
   };
 }
 
-async function listAgentSources(): Promise<AgentSourceEntry[]> {
+async function listAgentSources(
+  projectDir?: string,
+): Promise<AgentSourceEntry[]> {
   const client = await getClient();
   const response = await client.host.sourcesList({
     type: AGENT_SOURCE_TYPE,
+    ...(projectDir ? { projectDir, includeProjectSources: true } : {}),
   });
   const sources = response.sources.filter(isAgentSource);
   return Promise.all(sources.map(hydrateListedAgentSource));
@@ -1309,8 +1312,8 @@ export async function promotePersonaSource(
   return promoted;
 }
 
-export async function listPersonas(): Promise<Persona[]> {
-  return (await listAgentSources())
+export async function listPersonas(projectDir?: string): Promise<Persona[]> {
+  return (await listAgentSources(projectDir))
     .filter((source) => source.properties?.draft !== true)
     .map(agentSourceToPersona);
 }

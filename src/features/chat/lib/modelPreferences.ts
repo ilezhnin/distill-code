@@ -9,6 +9,7 @@ import {
 } from "@/shared/lib/foldedModelId";
 import { isRecord } from "@/shared/lib/isRecord";
 
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 const MODEL_PREFERENCES_STORAGE_KEY = "distill:preferredModelsByAgent";
 
 /** The two model-scoped knobs an agent's preferred model is remembered with. */
@@ -127,7 +128,9 @@ function readStoredModelPreferences(): StoredModelPreferences {
   }
 
   try {
-    const stored = window.localStorage.getItem(MODEL_PREFERENCES_STORAGE_KEY);
+    const stored = getPreferenceStorage()?.getItem(
+      MODEL_PREFERENCES_STORAGE_KEY,
+    );
     if (!stored) {
       return {};
     }
@@ -147,11 +150,11 @@ function persistStoredModelPreferences(
 
   try {
     if (Object.keys(preferences).length === 0) {
-      window.localStorage.removeItem(MODEL_PREFERENCES_STORAGE_KEY);
+      getPreferenceStorage()?.removeItem(MODEL_PREFERENCES_STORAGE_KEY);
       return;
     }
 
-    window.localStorage.setItem(
+    getPreferenceStorage()?.setItem(
       MODEL_PREFERENCES_STORAGE_KEY,
       JSON.stringify(preferences),
     );

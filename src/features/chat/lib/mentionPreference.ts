@@ -1,4 +1,8 @@
-import { useCallback, useSyncExternalStore } from "react";
+import {
+  getPreferenceStorage,
+  readEffectiveSettings,
+} from "@/shared/preferences/rootSettings";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 
 export type AtMentionDefaultCategory = "agents" | "files";
 
@@ -21,7 +25,7 @@ function normalizeAtMentionDefaultCategory(
 function readAtMentionDefaultCategory(): AtMentionDefaultCategory {
   try {
     return normalizeAtMentionDefaultCategory(
-      localStorage.getItem(AT_MENTION_DEFAULT_CATEGORY_STORAGE_KEY),
+      getPreferenceStorage()?.getItem(AT_MENTION_DEFAULT_CATEGORY_STORAGE_KEY),
     );
   } catch {
     return DEFAULT_AT_MENTION_DEFAULT_CATEGORY;
@@ -45,11 +49,13 @@ function subscribe(onStoreChange: () => void) {
       AT_MENTION_DEFAULT_CATEGORY_CHANGED_EVENT,
       notifyListeners,
     );
+    window.addEventListener("storage", notifyListeners);
     removeWindowListener = () => {
       window.removeEventListener(
         AT_MENTION_DEFAULT_CATEGORY_CHANGED_EVENT,
         notifyListeners,
       );
+      window.removeEventListener("storage", notifyListeners);
     };
   }
 
@@ -67,7 +73,10 @@ export function setAtMentionDefaultCategory(
 ): void {
   const normalized = normalizeAtMentionDefaultCategory(category);
   try {
-    localStorage.setItem(AT_MENTION_DEFAULT_CATEGORY_STORAGE_KEY, normalized);
+    getPreferenceStorage()?.setItem(
+      AT_MENTION_DEFAULT_CATEGORY_STORAGE_KEY,
+      normalized,
+    );
   } catch {
     // localStorage can be unavailable in restricted contexts.
   }
@@ -78,7 +87,7 @@ export function setAtMentionDefaultCategory(
   );
 }
 
-export function useAtMentionDefaultCategoryPreference() {
+export function useAtMentionDefaultCategoryPreference(projectRoot?: string) {
   const category = useSyncExternalStore(
     subscribe,
     readAtMentionDefaultCategory,
@@ -88,5 +97,37 @@ export function useAtMentionDefaultCategoryPreference() {
     setAtMentionDefaultCategory(nextCategory);
   }, []);
 
-  return { category, setCategory };
+  const [override, setOverride] = useState<{
+    root: string;
+    category: AtMentionDefaultCategory;
+  } | null>(null);
+  useEffect(() => {
+    if (!projectRoot) return;
+    let cancelled = false;
+    const refresh = () => {
+      void readEffectiveSettings(projectRoot)
+        .then((settings) => {
+          const value = settings["at-mention-default-category"] ?? category;
+          if (!cancelled)
+            setOverride(
+              value === "agents" || value === "files"
+                ? { root: projectRoot, category: value }
+                : null,
+            );
+        })
+        .catch(console.error);
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", refresh);
+    };
+  }, [projectRoot, category]);
+
+  return {
+    category:
+      override && override.root === projectRoot ? override.category : category,
+    setCategory,
+  };
 }

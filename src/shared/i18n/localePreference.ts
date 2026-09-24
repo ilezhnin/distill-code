@@ -1,3 +1,4 @@
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import {
   type LocalePreference,
   LOCALE_STORAGE_KEY,
@@ -12,9 +13,9 @@ export async function setLocalePreference(
   if (typeof window !== "undefined") {
     try {
       if (preference === SYSTEM_LOCALE) {
-        window.localStorage.removeItem(LOCALE_STORAGE_KEY);
+        getPreferenceStorage()?.removeItem(LOCALE_STORAGE_KEY);
       } else {
-        window.localStorage.setItem(LOCALE_STORAGE_KEY, preference);
+        getPreferenceStorage()?.setItem(LOCALE_STORAGE_KEY, preference);
       }
     } catch {
       // localStorage may be unavailable

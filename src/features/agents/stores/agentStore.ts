@@ -3,6 +3,7 @@ import type { Persona, Agent } from "@/shared/types/agents";
 import type { AcpProvider } from "@/shared/api/acp";
 import { canEditPersona } from "@/features/agents/lib/personaPresentation";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 
 const PROVIDER_STORAGE_KEY = "distill:defaultProvider";
 const FALLBACK_PROVIDER = DEFAULT_HARNESS_ID;
@@ -10,7 +11,8 @@ const FALLBACK_PROVIDER = DEFAULT_HARNESS_ID;
 export function getStoredProvider(providers: AcpProvider[] = []): string {
   try {
     const storedProvider =
-      localStorage.getItem(PROVIDER_STORAGE_KEY) ?? FALLBACK_PROVIDER;
+      getPreferenceStorage()?.getItem(PROVIDER_STORAGE_KEY) ??
+      FALLBACK_PROVIDER;
 
     if (
       providers.length === 0 ||
@@ -28,7 +30,7 @@ export function getStoredProvider(providers: AcpProvider[] = []): string {
 /** Whether a provider was ever chosen here, as opposed to defaulted. */
 export function hasStoredProviderChoice(): boolean {
   try {
-    return localStorage.getItem(PROVIDER_STORAGE_KEY) != null;
+    return getPreferenceStorage()?.getItem(PROVIDER_STORAGE_KEY) != null;
   } catch {
     return false;
   }
@@ -36,7 +38,7 @@ export function hasStoredProviderChoice(): boolean {
 
 function persistProvider(providerId: string): void {
   try {
-    localStorage.setItem(PROVIDER_STORAGE_KEY, providerId);
+    getPreferenceStorage()?.setItem(PROVIDER_STORAGE_KEY, providerId);
   } catch {
     // localStorage may be unavailable
   }

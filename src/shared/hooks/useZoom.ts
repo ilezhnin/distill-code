@@ -1,3 +1,4 @@
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import { useEffect } from "react";
 
 import { eventMatchesShortcutCommand } from "@/features/shortcuts/lib/shortcutRegistry";
@@ -19,7 +20,7 @@ function adjust(n: number) {
 function getStored(): number {
   let stored: string | null = null;
   try {
-    stored = localStorage.getItem(KEY);
+    stored = getPreferenceStorage()?.getItem(KEY) ?? null;
   } catch {
     return 1.0;
   }
@@ -29,7 +30,7 @@ function getStored(): number {
 
 function storeZoom(level: number): void {
   try {
-    localStorage.setItem(KEY, String(level));
+    getPreferenceStorage()?.setItem(KEY, String(level));
   } catch {
     // Storage is unavailable; the zoom still applies for this run.
   }

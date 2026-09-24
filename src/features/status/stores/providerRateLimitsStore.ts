@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import { getProviderRateLimits } from "../api/providerRateLimits";
 import type {
   ProviderRateLimitSnapshot,
@@ -15,7 +16,8 @@ const POLL_MS = 2 * 60 * 1000;
 
 function readUsageMode(): StatusBarUsageMode {
   if (typeof window === "undefined") return "verbose";
-  return window.localStorage.getItem(STATUS_BAR_USAGE_MODE_KEY) === "compact"
+  return getPreferenceStorage()?.getItem(STATUS_BAR_USAGE_MODE_KEY) ===
+    "compact"
     ? "compact"
     : "verbose";
 }
@@ -117,7 +119,7 @@ export const useProviderRateLimitsStore = create<ProviderRateLimitsState>(
 
     setUsageMode: (mode) => {
       if (typeof window !== "undefined") {
-        window.localStorage.setItem(STATUS_BAR_USAGE_MODE_KEY, mode);
+        getPreferenceStorage()?.setItem(STATUS_BAR_USAGE_MODE_KEY, mode);
       }
       set({ usageMode: mode });
     },

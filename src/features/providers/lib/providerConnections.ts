@@ -1,4 +1,5 @@
 import { CURATED_PROVIDER_CATALOG } from "@/features/providers/curatedProviders";
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 
 const STORAGE_KEY = "distill:providerConnections:v1";
 
@@ -11,7 +12,7 @@ interface ProviderConnections {
 
 function readConnections(): ProviderConnections {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = getPreferenceStorage()?.getItem(STORAGE_KEY);
     const parsed = raw ? (JSON.parse(raw) as Partial<ProviderConnections>) : {};
     return {
       connectedAt:
@@ -27,7 +28,7 @@ function readConnections(): ProviderConnections {
 
 function writeConnections(connections: ProviderConnections): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(connections));
+    getPreferenceStorage()?.setItem(STORAGE_KEY, JSON.stringify(connections));
   } catch {
     // localStorage may be unavailable.
   }

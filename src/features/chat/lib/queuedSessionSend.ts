@@ -56,8 +56,30 @@ import type { SessionExecutionTarget } from "@/features/chat/lib/sessionExecutio
 import { hostSelectionFromExecutionTarget } from "@/features/chat/lib/hostExecutionTarget";
 import { sameModelIdentity } from "@/shared/lib/foldedModelId";
 
-async function findPersona(personaId: string): Promise<Persona> {
+async function findPersona(
+  personaId: string,
+  sessionId?: string,
+): Promise<Persona> {
   const cached = useAgentStore.getState().getPersonaById(personaId);
+  const projectId = sessionId
+    ? useChatSessionStore.getState().getSession(sessionId)?.projectId
+    : undefined;
+  const root = projectId
+    ? useProjectStore
+        .getState()
+        .projects.find((project) => project.id === projectId)?.workingDirs?.[0]
+    : undefined;
+  if (root && typeof window !== "undefined" && window.__TAURI_INTERNALS__) {
+    const personas = await listPersonas(root);
+    const persona =
+      personas.find((candidate) => candidate.id === personaId) ??
+      (cached
+        ? personas.find(
+            (candidate) => candidate.displayName === cached.displayName,
+          )
+        : undefined);
+    if (persona) return persona;
+  }
   if (cached) {
     return cached;
   }
@@ -227,7 +249,7 @@ export async function prepareExistingSessionForBackgroundSend(
         })
       : null,
     !options.skipPersonaLookup && session.personaId
-      ? findPersona(session.personaId)
+      ? findPersona(session.personaId, sessionId)
       : null,
   ]);
   const activeWorkspacePath = options.preserveWorkingDir
@@ -322,16 +344,18 @@ export async function sendQueuedPromptToExistingSessionInBackground(
     const payloadPersonaIntent = payload.persona;
     const payloadPersona =
       payloadPersonaIntent.kind === "persona"
-        ? await findPersona(payloadPersonaIntent.id).catch((error) => {
-            if (!payloadPersonaIntent.name) throw error;
-            return {
-              id: payloadPersonaIntent.id,
-              displayName: payloadPersonaIntent.name,
-              systemPrompt: "",
-              isBuiltin: false,
-              writable: false,
-            } satisfies Persona;
-          })
+        ? await findPersona(payloadPersonaIntent.id, sessionId).catch(
+            (error) => {
+              if (!payloadPersonaIntent.name) throw error;
+              return {
+                id: payloadPersonaIntent.id,
+                displayName: payloadPersonaIntent.name,
+                systemPrompt: "",
+                isBuiltin: false,
+                writable: false,
+              } satisfies Persona;
+            },
+          )
         : undefined;
     // Effort and fast mode are read at dispatch: preparation reconciles the
     // chat's `desiredRunSettings` as they are now, not `payload.runSettings`,

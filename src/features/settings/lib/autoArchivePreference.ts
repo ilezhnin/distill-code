@@ -1,3 +1,4 @@
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import { useCallback, useSyncExternalStore } from "react";
 
 export const AUTO_ARCHIVE_STORAGE_KEY = "distill:auto-archive-unpinned-after";
@@ -44,11 +45,13 @@ export function getAutoArchiveAfter(): AutoArchiveAfter {
     // experimental local values from ever enabling destructive behavior on a
     // user's first run of the shipped feature.
     if (
-      window.localStorage.getItem(AUTO_ARCHIVE_CONSENT_STORAGE_KEY) !== "true"
+      getPreferenceStorage()?.getItem(AUTO_ARCHIVE_CONSENT_STORAGE_KEY) !==
+      "true"
     ) {
       return DEFAULT_AUTO_ARCHIVE_AFTER;
     }
-    const stored = window.localStorage.getItem(AUTO_ARCHIVE_STORAGE_KEY);
+    const stored =
+      getPreferenceStorage()?.getItem(AUTO_ARCHIVE_STORAGE_KEY) ?? null;
     return isAutoArchiveAfter(stored) ? stored : DEFAULT_AUTO_ARCHIVE_AFTER;
   } catch {
     return DEFAULT_AUTO_ARCHIVE_AFTER;
@@ -71,8 +74,8 @@ function persistAutoArchivePreference(
   if (typeof window === "undefined") return;
 
   try {
-    window.localStorage.setItem(AUTO_ARCHIVE_STORAGE_KEY, value);
-    window.localStorage.setItem(
+    getPreferenceStorage()?.setItem(AUTO_ARCHIVE_STORAGE_KEY, value);
+    getPreferenceStorage()?.setItem(
       AUTO_ARCHIVE_CONSENT_STORAGE_KEY,
       String(consented),
     );

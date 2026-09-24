@@ -16,6 +16,8 @@ import {
   USAGE_LEDGER_VERSION,
 } from "./usageTypes";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
+import { isDesktopRuntime } from "@/shared/api/distillStore";
+import { distillDocument } from "@/shared/lib/distillDocument";
 
 const WORKING_CHAT_STATES: ReadonlySet<ChatState> = new Set([
   "thinking",
@@ -55,6 +57,38 @@ let pendingWrite = false;
 let writeTimer: ReturnType<typeof setTimeout> | null = null;
 let removeFlushListeners: (() => void) | undefined;
 let storageWriteWarned = false;
+let nativeReady = false;
+let nativeStoredLedger: UsageLedger | null = null;
+const ledgerDocument = distillDocument<UsageLedger>({
+  path: "state/usage-ledger.json",
+  legacyStorageKey: USAGE_LEDGER_STORAGE_KEY,
+  parse: (value) => parseLedger(value) ?? cloneLedger(EMPTY_LEDGER),
+  serialize: (value) => value,
+  onWriteError: (error) => {
+    pendingWrite = true;
+    warnAboutStorageFailureOnce(error);
+  },
+});
+
+export async function initializeUsageLedger(): Promise<void> {
+  if (!isDesktopRuntime() || nativeReady) return;
+  nativeStoredLedger = await ledgerDocument.read();
+  cachedLedger = nativeStoredLedger ?? cloneLedger(EMPTY_LEDGER);
+  nativeReady = true;
+  const { listen } = await import("@tauri-apps/api/event");
+  await listen<string>("distill-document-changed", (event) => {
+    if (event.payload !== "state/usage-ledger.json") return;
+    void ledgerDocument
+      .read()
+      .then((stored) => {
+        nativeStoredLedger = stored;
+        handleStorageChange(
+          new StorageEvent("storage", { key: USAGE_LEDGER_STORAGE_KEY }),
+        );
+      })
+      .catch(warnAboutStorageFailureOnce);
+  });
+}
 
 function emptySessionRecord(): UsageSessionRecord {
   return {
@@ -267,6 +301,7 @@ function parseLedger(raw: unknown): UsageLedger | null {
 }
 
 function readLedger(): UsageLedger {
+  if (nativeReady) return cachedLedger ?? nativeStoredLedger ?? EMPTY_LEDGER;
   if (typeof window === "undefined") {
     return cloneLedger(EMPTY_LEDGER);
   }
@@ -434,6 +469,13 @@ export function flushUsageLedger(): void {
   if (!pendingWrite || typeof window === "undefined") return;
   const pruned = pruneLedger(cachedLedger ?? EMPTY_LEDGER, Date.now());
   cachedLedger = pruned;
+  if (nativeReady) {
+    nativeStoredLedger = pruned;
+    ledgerDocument.write(pruned);
+    pendingWrite = false;
+    void ledgerDocument.flush();
+    return;
+  }
   try {
     const serialized = JSON.stringify(pruned);
     window.localStorage.setItem(USAGE_LEDGER_STORAGE_KEY, serialized);
@@ -883,6 +925,7 @@ function maxDefined(left: number | null, right: number | null): number | null {
 
 /** Parses the stored ledger without touching the module's cache. */
 function readStoredLedger(): UsageLedger | null {
+  if (nativeReady) return nativeStoredLedger;
   try {
     const stored = window.localStorage.getItem(USAGE_LEDGER_STORAGE_KEY);
     if (!stored) return null;
@@ -950,6 +993,8 @@ export function useUsageLedger(): UsageLedger {
 }
 
 export function resetUsageLedgerForTests(): void {
+  nativeReady = false;
+  nativeStoredLedger = null;
   workStartedAtBySession.clear();
   if (writeTimer != null) {
     clearTimeout(writeTimer);

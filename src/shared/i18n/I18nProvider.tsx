@@ -7,6 +7,7 @@ import {
   detectSystemLocale,
   setDocumentLocale,
   normalizeLocale,
+  getInitialLocale,
 } from "./locale";
 import { DEFAULT_LOCALE } from "./constants";
 
@@ -17,6 +18,10 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     };
 
     syncDocumentLanguage(i18n.resolvedLanguage ?? DEFAULT_LOCALE);
+    const syncStoredLanguage = () => {
+      void i18n.changeLanguage(getInitialLocale());
+    };
+    syncStoredLanguage();
 
     const handleLanguageChanged = (language: string) => {
       syncDocumentLanguage(language);
@@ -29,10 +34,12 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
 
     i18n.on("languageChanged", handleLanguageChanged);
     window.addEventListener("languagechange", handleSystemLanguageChanged);
+    window.addEventListener("storage", syncStoredLanguage);
 
     return () => {
       i18n.off("languageChanged", handleLanguageChanged);
       window.removeEventListener("languagechange", handleSystemLanguageChanged);
+      window.removeEventListener("storage", syncStoredLanguage);
     };
   }, []);
 

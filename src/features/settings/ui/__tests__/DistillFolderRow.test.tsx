@@ -92,7 +92,9 @@ describe("DistillFolderRow", () => {
     renderWithProviders(<DistillFolderRow />);
 
     expect(await screen.findByTestId("distill-folder-forced")).toBeVisible();
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Change folder" }),
+    ).not.toBeInTheDocument();
   });
 
   it("renders nothing outside the desktop app", async () => {

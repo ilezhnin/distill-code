@@ -1,7 +1,7 @@
 ---
 name: agent-builder
 description: >-
-  Create, edit, or inspect Distill agents/personas stored as Agent Markdown files with YAML frontmatter under ~/.agents/agents. Use when user needs to manage Distill agents or personas.
+  Create, edit, or inspect Distill agents/personas stored as Agent Markdown files with YAML frontmatter under ~/.distill/agents. Use when user needs to manage Distill agents or personas.
 metadata:
   distillBundled: true
 ---
@@ -14,8 +14,8 @@ Use this skill when managing Distill agents/personas in Agent Markdown format.
 
 Agents are UTF-8 Markdown files with YAML frontmatter:
 
-- Global: `~/.agents/agents/<slug>.md`
-- Project-local: `<project>/.agents/agents/<slug>.md`
+- Global: `~/.distill/agents/<slug>.md`
+- Project-local: `<project>/.distill/agents/<slug>.md`
 
 Default to global unless the user asks for project-local.
 Use platform path APIs or shell-safe home expansion.

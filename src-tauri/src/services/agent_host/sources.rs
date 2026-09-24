@@ -72,6 +72,8 @@ struct Root {
 }
 
 pub struct SourceRoots {
+    pub root: PathBuf,
+    pub compatibility_root: Option<PathBuf>,
     /// `<app data>/projects` — where projects live.
     pub projects_dir: PathBuf,
     /// `<app data>/skills` — bundled skills seeded by the app.
@@ -80,46 +82,38 @@ pub struct SourceRoots {
     pub legacy_projects_dir: Option<PathBuf>,
 }
 
-fn home() -> Option<PathBuf> {
-    dirs::home_dir()
-}
-
-fn skill_roots(project_dir: Option<&Path>) -> Vec<Root> {
-    let mut roots = Vec::new();
-    if let Some(dir) = project_dir {
-        roots.push(Root {
-            path: dir.join(".agents").join("skills"),
-            global: false,
-            writable: true,
-        });
+fn source_roots(kind: &str, project_dir: Option<&Path>, roots: &SourceRoots) -> Vec<Root> {
+    let mut result = Vec::new();
+    if let Some(project) = project_dir {
+        for folder in [".distill", ".agents"] {
+            result.push(Root {
+                path: project.join(folder).join(kind),
+                global: false,
+                writable: true,
+            });
+        }
     }
-    if let Some(home) = home() {
-        roots.push(Root {
-            path: home.join(".agents").join("skills"),
+    result.push(Root {
+        path: roots.root.join(kind),
+        global: true,
+        writable: true,
+    });
+    if let Some(compatibility) = &roots.compatibility_root {
+        result.push(Root {
+            path: compatibility.join(kind),
             global: true,
             writable: true,
         });
     }
-    roots
+    result
 }
 
-fn agent_roots(project_dir: Option<&Path>) -> Vec<Root> {
-    let mut roots = Vec::new();
-    if let Some(dir) = project_dir {
-        roots.push(Root {
-            path: dir.join(".agents").join("agents"),
-            global: false,
-            writable: true,
-        });
-    }
-    if let Some(home) = home() {
-        roots.push(Root {
-            path: home.join(".agents").join("agents"),
-            global: true,
-            writable: true,
-        });
-    }
-    roots
+fn skill_roots(project_dir: Option<&Path>, roots: &SourceRoots) -> Vec<Root> {
+    source_roots("skills", project_dir, roots)
+}
+
+fn agent_roots(project_dir: Option<&Path>, roots: &SourceRoots) -> Vec<Root> {
+    source_roots("agents", project_dir, roots)
 }
 
 fn canonical(path: &Path) -> PathBuf {
@@ -355,6 +349,9 @@ fn builtin_skills(roots: &SourceRoots) -> Vec<Value> {
     dirs.sort();
     for dir in dirs {
         if let Some(mut skill) = skill_entry(&dir, &root) {
+            if skill["properties"]["distillBundled"].as_bool() != Some(true) {
+                continue;
+            }
             let name = skill["name"].as_str().unwrap_or_default().to_string();
             skill["type"] = json!(SourceType::BuiltinSkill.wire());
             skill["path"] = json!(format!("builtin://skills/{name}"));
@@ -516,6 +513,24 @@ fn ensure_projects_dir(roots: &SourceRoots) -> Result<(), Value> {
     Ok(())
 }
 
+fn initialize_project_folders(project: &Value) {
+    if let Some(dirs) = project["properties"]["workingDirs"].as_array() {
+        for dir in dirs
+            .iter()
+            .filter_map(Value::as_str)
+            .map(Path::new)
+            .filter(|path| path.is_dir())
+        {
+            if let Err(error) = crate::services::distill_root::ensure_project_layout(dir) {
+                log::warn!(
+                    "Cannot initialize project context at {}: {error}",
+                    dir.display()
+                );
+            }
+        }
+    }
+}
+
 fn project_entry(file: &Path) -> Option<Value> {
     if file.extension().and_then(|ext| ext.to_str()) != Some("md") {
         return None;
@@ -648,7 +663,7 @@ pub fn list(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
     for kind in types {
         match kind {
             SourceType::Skill => {
-                for root in skill_roots(project_dir.as_deref()) {
+                for root in skill_roots(project_dir.as_deref(), roots) {
                     if !root.global && !include_project {
                         continue;
                     }
@@ -661,7 +676,7 @@ pub fn list(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
             }
             SourceType::BuiltinSkill => out.extend(builtin_skills(roots)),
             SourceType::Agent => {
-                for root in agent_roots(project_dir.as_deref()) {
+                for root in agent_roots(project_dir.as_deref(), roots) {
                     if !root.global && !include_project {
                         continue;
                     }
@@ -676,6 +691,7 @@ pub fn list(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
                     files.sort();
                     for file in files {
                         if let Some(project) = project_entry(&file) {
+                            initialize_project_folders(&project);
                             out.push(project);
                         }
                     }
@@ -683,6 +699,18 @@ pub fn list(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
             }
         }
     }
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|source| {
+        let kind = source["type"].as_str().unwrap_or_default();
+        if kind == "skill"
+            && source["global"].as_bool() == Some(true)
+            && source["properties"]["distillBundled"].as_bool() == Some(true)
+        {
+            return false;
+        }
+        let name = source["name"].as_str().unwrap_or_default();
+        seen.insert((kind.to_owned(), name.to_lowercase()))
+    });
     Ok(json!({ "sources": out }))
 }
 
@@ -720,14 +748,12 @@ pub fn create(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
         SourceType::Skill => {
             validate_skill_name(&name)?;
             let base = if global {
-                home()
-                    .map(|home| home.join(".agents").join("skills"))
-                    .ok_or_else(|| protocol::internal("home directory unavailable"))?
+                roots.root.join("skills")
             } else {
                 project_dir
                     .clone()
                     .ok_or_else(|| invalid_params("project directory required"))?
-                    .join(".agents")
+                    .join(".distill")
                     .join("skills")
             };
             let dir = base.join(&name);
@@ -755,14 +781,12 @@ pub fn create(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
                 return Err(invalid_params("Agent name must not be empty"));
             }
             let base = if global {
-                home()
-                    .map(|home| home.join(".agents").join("agents"))
-                    .ok_or_else(|| protocol::internal("home directory unavailable"))?
+                roots.root.join("agents")
             } else {
                 project_dir
                     .clone()
                     .ok_or_else(|| invalid_params("project directory required"))?
-                    .join(".agents")
+                    .join(".distill")
                     .join("agents")
             };
             fs::create_dir_all(&base).map_err(|error| {
@@ -811,6 +835,9 @@ pub fn create(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
         }
         SourceType::BuiltinSkill => return Err(invalid_params("Built-in skills are read-only")),
     };
+    if source_type == SourceType::Project {
+        initialize_project_folders(&source);
+    }
     Ok(json!({ "source": source }))
 }
 
@@ -833,7 +860,7 @@ pub fn update(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
             validate_skill_name(&name)?;
             let (dir, root) = resolve_writable_skill_dir(
                 &path,
-                &skill_roots(None)
+                &skill_roots(None, roots)
                     .into_iter()
                     .chain(project_root_guess(&path, "skills"))
                     .collect::<Vec<_>>(),
@@ -870,7 +897,7 @@ pub fn update(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
             }
             let (file, root) = resolve_writable_agent_file(
                 &path,
-                &agent_roots(None)
+                &agent_roots(None, roots)
                     .into_iter()
                     .chain(project_root_guess(&path, "agents"))
                     .collect::<Vec<_>>(),
@@ -914,10 +941,14 @@ pub fn update(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
         }
         SourceType::BuiltinSkill => return Err(invalid_params("Built-in skills are read-only")),
     };
+    if source_type == SourceType::Project {
+        initialize_project_folders(&source);
+    }
     Ok(json!({ "source": source }))
 }
 
-/// A source path inside `<some project>/.agents/<kind>` is writable even when
+/// A source path inside a project's `.distill/<kind>` (or compatibility
+/// `.agents/<kind>`) is writable even when
 /// the request carries no project directory: derive the root from the path.
 fn project_root_guess(path: &str, kind: &str) -> Option<Root> {
     let path = PathBuf::from(path);
@@ -928,7 +959,7 @@ fn project_root_guess(path: &str, kind: &str) -> Option<Root> {
                 .parent()
                 .and_then(|grand| grand.file_name())
                 .and_then(|name| name.to_str())
-                == Some(".agents")
+                .is_some_and(|name| name == ".agents" || name == ".distill")
         {
             return Some(Root {
                 path: parent.to_path_buf(),
@@ -948,7 +979,7 @@ pub fn delete(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
         SourceType::Skill => {
             let (dir, _) = resolve_writable_skill_dir(
                 &path,
-                &skill_roots(None)
+                &skill_roots(None, roots)
                     .into_iter()
                     .chain(project_root_guess(&path, "skills"))
                     .collect::<Vec<_>>(),
@@ -959,7 +990,7 @@ pub fn delete(params: &Value, roots: &SourceRoots) -> Result<Value, Value> {
         SourceType::Agent => {
             let (file, _) = resolve_writable_agent_file(
                 &path,
-                &agent_roots(None)
+                &agent_roots(None, roots)
                     .into_iter()
                     .chain(project_root_guess(&path, "agents"))
                     .collect::<Vec<_>>(),
@@ -1159,30 +1190,73 @@ mod tests {
         assert_eq!(leftovers, vec!["SKILL.md".to_string()]);
     }
 
-    /// Skills and agents are read from `.agents` alone — the project's and the
-    /// home directory's — however many vendor folders sit next to it.
+    /// Distill roots precede compatibility .agents roots; vendor folders
+    /// belonging to harnesses are never imported as Distill configuration.
     #[test]
     fn a_vendor_folder_is_never_a_root() {
         let dir = tempfile::tempdir().expect("temp dir");
         let project = dir.path().join("repo");
-        for vendor in [".agents", ".claude", ".codex", ".gemini", ".goose"] {
+        for vendor in [
+            ".distill", ".agents", ".claude", ".codex", ".gemini", ".goose",
+        ] {
             std::fs::create_dir_all(project.join(vendor).join("skills")).unwrap();
             std::fs::create_dir_all(project.join(vendor).join("agents")).unwrap();
         }
+        let sources = SourceRoots {
+            root: dir.path().join("global"),
+            compatibility_root: Some(dir.path().join("home/.agents")),
+            projects_dir: dir.path().join("projects"),
+            builtin_skills_dir: dir.path().join("skills"),
+            legacy_projects_dir: None,
+        };
         for (kind, roots) in [
-            ("skills", skill_roots(Some(&project))),
-            ("agents", agent_roots(Some(&project))),
+            ("skills", skill_roots(Some(&project), &sources)),
+            ("agents", agent_roots(Some(&project), &sources)),
         ] {
-            assert_eq!(roots[0].path, project.join(".agents").join(kind));
+            assert_eq!(roots[0].path, project.join(".distill").join(kind));
+            assert_eq!(roots[1].path, project.join(".agents").join(kind));
+            assert_eq!(roots[2].path, sources.root.join(kind));
             for root in &roots {
                 assert!(
-                    root.path.ends_with(Path::new(".agents").join(kind)),
-                    "{} is not an .agents root",
+                    root.path == sources.root.join(kind)
+                        || root.path.ends_with(Path::new(".distill").join(kind))
+                        || root.path.ends_with(Path::new(".agents").join(kind)),
+                    "{} is not a Distill or compatibility root",
                     root.path.display()
                 );
                 assert!(root.writable);
             }
         }
+    }
+
+    #[test]
+    fn project_agent_overrides_global_without_leaking_into_general_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("repo");
+        let root = dir.path().join("global");
+        for (folder, body) in [
+            (project.join(".distill/agents"), "local"),
+            (root.join("agents"), "global"),
+        ] {
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(
+                folder.join("worker.md"),
+                format!("---\nname: Worker\ndescription: Example\n---\n{body}"),
+            )
+            .unwrap();
+        }
+        let roots = SourceRoots {
+            projects_dir: root.join("projects"),
+            builtin_skills_dir: root.join("skills"),
+            root,
+            compatibility_root: None,
+            legacy_projects_dir: None,
+        };
+        let local = list(&json!({"type":"agent", "projectDir": project}), &roots).unwrap();
+        let general = list(&json!({"type":"agent"}), &roots).unwrap();
+        assert_eq!(local["sources"].as_array().unwrap().len(), 1);
+        assert_eq!(local["sources"][0]["content"], "local");
+        assert_eq!(general["sources"][0]["content"], "global");
     }
 
     #[test]

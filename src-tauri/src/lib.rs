@@ -159,19 +159,13 @@ pub fn run() {
 
             // Resolved before anything writes to disk so every part of the app
             // agrees on the chosen folder.
-            match commands::distill_store::initialize(app) {
-                Ok(state) => {
-                    log::info!("Distill root: {}", state.root.display());
-                    app.manage(state);
-                }
-                Err(error) => {
-                    // Not fatal: without a root the app still runs on the
-                    // previous OS-scattered layout, which is worse but
-                    // working. Refusing to start over a folder would be a
-                    // cure worse than the disease.
-                    log::error!("Failed to resolve the Distill root: {error}");
-                }
-            }
+            let root_state =
+                commands::distill_store::initialize(app).map_err(std::io::Error::other)?;
+            let distill_root = root_state.root.clone();
+            app.asset_protocol_scope()
+                .allow_directory(&distill_root, true)?;
+            log::info!("Distill root: {}", distill_root.display());
+            app.manage(root_state);
 
             let bundled_runtime_config_path = app
                 .try_state::<services::e2e_mode::E2eMode>()
@@ -190,7 +184,7 @@ pub fn run() {
                 });
 
             app.manage(commands::runtime_config::RuntimeConfigState::new(
-                app_data_dir.clone(),
+                distill_root.clone(),
                 bundled_runtime_config_path,
             ));
             // Construct and register the distro bundle up front (the agent host
@@ -201,6 +195,14 @@ pub fn run() {
             app.manage(commands::terminal::TerminalState::default());
             app.manage(services::agent_host::AgentHost::new());
             app.manage(commands::agent_setup::AgentSetupRegistry::default());
+
+            if app.try_state::<services::e2e_mode::E2eMode>().is_none()
+                && std::env::var_os("DISTILL_ROOT").is_none()
+            {
+                let home = app.path().home_dir()?;
+                services::root_migration::adopt_files(&distill_root, &app_data_dir, &home)
+                    .map_err(std::io::Error::other)?;
+            }
 
             // With all command state registered, it is now safe to run blocking,
             // async, network, or filesystem work.
@@ -238,7 +240,7 @@ pub fn run() {
                     .clone();
                 if let Some(bundle) = distro_state.bundle() {
                     let skills_bundle = bundle.clone();
-                    let skills_app_data_dir = app_data_dir.clone();
+                    let skills_app_data_dir = distill_root.clone();
                     tauri::async_runtime::spawn(async move {
                         match bundled_skills::seed_bundled_skills(
                             &skills_bundle,
@@ -253,7 +255,8 @@ pub fn run() {
                         bundled_skills_state.mark_ready();
                     });
 
-                    match bundled_agents::seed_bundled_agents(bundle, e2e_agents_dir.as_deref()) {
+                    let agents_dir = e2e_agents_dir.unwrap_or_else(|| distill_root.join("agents"));
+                    match bundled_agents::seed_bundled_agents(bundle, Some(&agents_dir)) {
                         Ok(result) => {
                             if result.seeded_count > 0 {
                                 log::info!("Seeded {} bundled agent(s)", result.seeded_count);
@@ -279,6 +282,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::agents::read_import_agent_file,
+            commands::distill_store::update_distill_settings,
+            commands::project_store::initialize_project_context,
             commands::agents::read_agent_source_file,
             commands::avatars::get_cached_avatars_for_refs,
             commands::avatars::import_user_avatar_data_url,

@@ -33,8 +33,8 @@ skill folder. Skill documentation belongs in `SKILL.md` or `references/`.
 
 Skills can be global or project-local:
 
-- Global: `~/.agents/skills/<skill-name>/SKILL.md`
-- Project-local: `<project>/.agents/skills/<skill-name>/SKILL.md`
+- Global: `~/.distill/skills/<skill-name>/SKILL.md`
+- Project-local: `<project>/.distill/skills/<skill-name>/SKILL.md`
 
 Default to global unless the user is clearly working in a project directory.
 

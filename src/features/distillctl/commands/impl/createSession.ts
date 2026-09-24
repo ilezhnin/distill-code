@@ -196,11 +196,21 @@ Result:
     // harness that is not installed or not signed in would either run a
     // multi-minute managed install inside this call or fail as an opaque
     // `internal_error` long after the caller was told "dispatched".
+    const projectPromise = args.project_id
+      ? findProjectOrThrow(args.project_id)
+      : Promise.resolve(null);
     const [project, , models, persona] = await Promise.all([
-      args.project_id ? findProjectOrThrow(args.project_id) : null,
+      projectPromise,
       findReadyHarnessOrThrow(harnessId),
       args.model_id ? harnessModelOptions(harnessId).catch(() => []) : null,
-      args.agent_id ? findPersonaOrThrow(args.agent_id) : null,
+      args.agent_id
+        ? projectPromise.then((project) =>
+            findPersonaOrThrow(
+              args.agent_id as string,
+              project?.workingDirs?.[0],
+            ),
+          )
+        : null,
     ]);
     // Enforced after validation resolved the target persona (the named
     // allowlist needs to know WHO is being started) and before anything is

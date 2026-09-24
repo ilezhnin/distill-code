@@ -1,3 +1,4 @@
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import { createBooleanLocalStoragePreference } from "@/shared/preferences/createBooleanLocalStoragePreference";
 
 export const SIDEBAR_GROUP_CHATS_BY_PROJECT_STORAGE_KEY =
@@ -14,10 +15,16 @@ const SIDEBAR_GROUP_CHATS_BY_PROJECT_CHANGED_EVENT =
  */
 function migrateFromRetiredFlatChatListExperiment() {
   try {
-    if (localStorage.getItem(SIDEBAR_GROUP_CHATS_BY_PROJECT_STORAGE_KEY)) {
+    if (
+      getPreferenceStorage()?.getItem(
+        SIDEBAR_GROUP_CHATS_BY_PROJECT_STORAGE_KEY,
+      )
+    ) {
       return;
     }
-    const stored = localStorage.getItem("distill:experimental-features");
+    const stored = getPreferenceStorage()?.getItem(
+      "distill:experimental-features",
+    );
     if (!stored) {
       return;
     }
@@ -42,7 +49,10 @@ function migrateFromRetiredFlatChatListExperiment() {
     const groupChatsByProject = (config as { groupChatsByProject?: unknown })
       .groupChatsByProject;
     if (groupChatsByProject === false) {
-      localStorage.setItem(SIDEBAR_GROUP_CHATS_BY_PROJECT_STORAGE_KEY, "false");
+      getPreferenceStorage()?.setItem(
+        SIDEBAR_GROUP_CHATS_BY_PROJECT_STORAGE_KEY,
+        "false",
+      );
     }
   } catch {
     // Migration is best-effort; the grouped default is a safe fallback.

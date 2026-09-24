@@ -1,3 +1,4 @@
+import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import { useCallback, useSyncExternalStore } from "react";
 import { isRecord } from "@/shared/lib/isRecord";
 
@@ -41,7 +42,7 @@ function defaultStyleGuidelinesPreference(): StyleGuidelinesPreference {
 
 function getStorage(): Storage | null {
   if (typeof window === "undefined") return null;
-  return window.localStorage ?? null;
+  return getPreferenceStorage() ?? null;
 }
 
 function readStorageSnapshotKey(): string {
