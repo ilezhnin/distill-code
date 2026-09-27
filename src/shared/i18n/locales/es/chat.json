@@ -739,6 +739,7 @@
     "sessionLoadMissingWorkingDir": "La carpeta de esta sesión ya no existe: {{missingPath}}. Se cargó la conversación usando {{fallbackPath}} en su lugar.",
     "sessionLoadFailed": "No se pudo cargar esta sesión.",
     "sessionReplayIncomplete": "No se pudo actualizar esta conversación. Tus mensajes anteriores siguen visibles.",
+    "sessionReplayMissing": "No se pudo cargar esta conversación. Ábrela de nuevo para volver a intentarlo.",
     "editProjectFolders": "Editar proyecto",
     "changeFolder": "Cambiar carpeta",
     "stopGeneration": "Detener generación"
