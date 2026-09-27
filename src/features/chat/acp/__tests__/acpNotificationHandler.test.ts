@@ -689,6 +689,56 @@ describe("acpNotificationHandler", () => {
     expect(imageAttachmentMocks.readImageAttachment).toHaveBeenCalledWith(path);
   });
 
+  it("keeps an inline tool image before the text that streams after it", async () => {
+    // The ACP SDK does not wait for a handler before starting the next one,
+    // so an image that already came with its bytes is placed at once.
+    markSessionReplayLoading();
+    const updates = [
+      {
+        sessionUpdate: "tool_call",
+        messageId: "assistant-replay-1",
+        toolCallId: "tool-image",
+        title: "generate_image",
+      },
+      {
+        sessionUpdate: "tool_call_update",
+        messageId: "assistant-replay-1",
+        toolCallId: "tool-image",
+        status: "completed",
+        content: [
+          {
+            type: "content",
+            content: { type: "image", mimeType: "image/png", data: "Zm9v" },
+          },
+        ],
+      },
+      {
+        sessionUpdate: "agent_message_chunk",
+        messageId: "assistant-replay-1",
+        content: { type: "text", text: "Here it is" },
+      },
+    ];
+    const handled = updates.map((update) =>
+      handleSessionNotification({
+        sessionId: "acp-session",
+        update,
+      } as never),
+    );
+    await Promise.all(handled);
+
+    replaceMessagesFromSessionReplay("acp-session", {
+      historyExpectation: "nonempty",
+    });
+    const [message] = useChatStore.getState().messagesBySession["acp-session"];
+    expect(message.content.map((block) => block.type)).toEqual([
+      "toolRequest",
+      "toolResponse",
+      "image",
+      "text",
+    ]);
+    expect(imageAttachmentMocks.readImageAttachment).not.toHaveBeenCalled();
+  });
+
   it("adds a replayed tool image whose file loads after the replay was committed", async () => {
     // The ACP SDK does not wait for this handler, so the host's load response
     // can commit the replay while the image file is still being read.

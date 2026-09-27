@@ -28,6 +28,7 @@ const SPECS = {
     "transcript-streaming-smoothness.spec.ts",
     "transcript-visual-spacing.spec.ts",
     "copy-action-streaming-parity.spec.ts",
+    "transcript-memory.spec.ts",
   ],
 };
 

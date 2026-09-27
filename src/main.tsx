@@ -1,5 +1,8 @@
 import "@/app/lib/legacyStorageMigration";
+import { installDevtoolsTimingBufferGuard } from "@/app/lib/devtoolsTimingBuffer";
 import { initializeRootSettings } from "@/shared/preferences/rootSettings";
+
+installDevtoolsTimingBufferGuard();
 
 // Native settings load before stores and UI modules derive their initial state.
 export const startup = initializeRootSettings()

@@ -59,6 +59,26 @@ describe("chatStore", () => {
     expect(useChatStore.getState().messagesBySession.running).toHaveLength(1);
   });
 
+  it("drops the least recently opened chat once cached transcripts outgrow their budget", () => {
+    const heavy = (id: string) =>
+      makeMessage({
+        id,
+        content: [{ type: "text", text: "x".repeat(20_000_000) }],
+      });
+    const store = useChatStore.getState();
+    store.setActiveSession("oldest");
+    store.setMessages("oldest", [heavy("oldest-message")]);
+    store.setActiveSession("older");
+    store.setMessages("older", [heavy("older-message")]);
+    store.setActiveSession("open");
+    store.setMessages("open", [heavy("open-message")]);
+
+    const cached = useChatStore.getState().messagesBySession;
+    expect(cached.oldest).toBeUndefined();
+    expect(cached.older).toHaveLength(1);
+    expect(cached.open).toHaveLength(1);
+  });
+
   it("appends streamed text only within the targeted session", () => {
     const streaming = makeMessage({
       id: "stream-1",
