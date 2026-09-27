@@ -337,6 +337,7 @@ pub fn run() {
             commands::system::save_exported_session_file,
             commands::system::save_exported_session_files,
             commands::system::path_exists,
+            commands::system::allow_asset_directories,
             commands::system::ensure_directory,
             commands::system::list_directory_entries,
             commands::system::inspect_attachment_paths,

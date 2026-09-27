@@ -3,6 +3,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -15,7 +16,7 @@ import type {
   ToolCallLocation,
   ToolKind,
 } from "@/shared/types/messages";
-import { pathExists } from "@/shared/api/system";
+import { allowAssetDirectories, pathExists } from "@/shared/api/system";
 import { useResolvedArtifactRoot } from "@/shared/artifacts/useResolvedArtifactRoot";
 import { revealInFileManager } from "@/shared/lib/fileManager";
 import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
@@ -76,6 +77,11 @@ export interface ArtifactPolicyContextValue {
    * would happily fetch anything the asset scope allows (`$HOME/**`).
    */
   isPathWithinTrustedRoots: (path: string) => boolean;
+  /**
+   * Settles once the asset scheme may serve files under this chat's trusted
+   * folders. Its static scope does not reach projects on other drives.
+   */
+  ensureAssetAccess: () => Promise<void>;
   openResolvedPath: (path: string) => Promise<void>;
   /**
    * Primary "open this file" action for UI surfaces: viewable files
@@ -89,6 +95,7 @@ const DEFAULT_ACTIONS_CONTEXT_VALUE: ArtifactPolicyContextValue = {
   resolveMarkdownHref: () => null,
   pathExists: async () => false,
   isPathWithinTrustedRoots: () => false,
+  ensureAssetAccess: async () => {},
   openResolvedPath: async () => {},
   openInApp: async () => {},
 };
@@ -612,6 +619,19 @@ export function ArtifactPolicyProvider({
     [normalizedSessionCwd, trustedOpenRoots],
   );
 
+  // Asked for as soon as the chat is shown, so an image usually finds its
+  // folder allowed already; one about to load still waits for it.
+  const ensureAssetAccess = useCallback(
+    () =>
+      allowAssetDirectories(
+        trustedOpenRoots.filter((root): root is string => Boolean(root)),
+      ),
+    [trustedOpenRoots],
+  );
+  useEffect(() => {
+    void ensureAssetAccess();
+  }, [ensureAssetAccess]);
+
   const settlePendingOpen = useCallback((confirmed: boolean) => {
     const pending = pendingOpenRef.current;
     pendingOpenRef.current = null;
@@ -699,11 +719,13 @@ export function ArtifactPolicyProvider({
       resolveMarkdownHref,
       pathExists: checkPathExists,
       isPathWithinTrustedRoots,
+      ensureAssetAccess,
       openResolvedPath,
       openInApp,
     }),
     [
       checkPathExists,
+      ensureAssetAccess,
       isPathWithinTrustedRoots,
       openResolvedPath,
       openInApp,
