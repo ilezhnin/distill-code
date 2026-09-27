@@ -13,7 +13,10 @@ import {
   readUsageCostBilledFlag,
   sessionCostBillingForAmount,
 } from "@/features/chat/lib/sessionCostBilling";
-import { useChatStore } from "@/features/chat/stores/chatStore";
+import {
+  onChatSessionReleased,
+  useChatStore,
+} from "@/features/chat/stores/chatStore";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
   bufferReplayTokenState,
@@ -73,7 +76,7 @@ import {
   resolveSubagentContext,
 } from "@/features/chat/lib/subagentToolCalls";
 import { applyChatSessionConfigOptionsSnapshot } from "./sessionConfigSnapshotAdapter";
-import { perfLog } from "@/shared/lib/perfLog";
+import { logSessionId, perfLog } from "@/shared/lib/perfLog";
 import {
   enqueueStreamingTextUpdate,
   enqueueStreamingThinkingUpdate,
@@ -82,6 +85,7 @@ import {
   clearStreamingMessageOwners,
   isStreamingMessageOwnedByCurrentPrompt,
   registerStreamingMessageOwner,
+  releaseStreamingSession,
 } from "./liveStreamingUpdates";
 import { addSessionWorkedMs } from "@/features/stats/lib/usageLedger";
 import { recordAcpSessionUsage } from "@/features/stats/lib/usageRecorder";
@@ -111,6 +115,33 @@ const pendingReplayAgentBoundaryCandidates = new Map<
 >();
 const replayAssistantMessageIds = new Map<string, string>();
 const replayAgentBoundaryActive = new Set<string>();
+
+/** The replay bookkeeping above, for one session. */
+function clearReplaySessionTracking(sessionId: string): void {
+  replayPerf.delete(sessionId);
+  pendingReplayAgentBoundaryCandidates.delete(sessionId);
+  replayAssistantMessageIds.delete(sessionId);
+  replayAgentBoundaryActive.delete(sessionId);
+}
+
+/**
+ * A replay ends when its loader clears the session's loading flag, whether the
+ * history was committed to the transcript or discarded. The bookkeeping above
+ * only means something while that replay runs: left behind, it kept an entry
+ * per chat ever opened, and the next load of the same chat started from the
+ * last one's boundary candidates and timings instead of a clean slate. The
+ * loader reads the replay's timings before it clears the flag.
+ */
+useChatStore.subscribe(
+  (state) => state.loadingSessionIds,
+  (loadingSessionIds, previousLoadingSessionIds) => {
+    for (const sessionId of previousLoadingSessionIds) {
+      if (!loadingSessionIds.has(sessionId)) {
+        clearReplaySessionTracking(sessionId);
+      }
+    }
+  },
+);
 
 function enqueueReplayAgentBoundaryCandidate(
   sessionId: string,
@@ -307,7 +338,7 @@ export async function handleSessionNotification(
   const isReplay = useChatStore.getState().loadingSessionIds.has(sessionId);
 
   if (isReplay) {
-    const sid = sessionId.slice(0, 8);
+    const sid = logSessionId(sessionId);
     let perf = replayPerf.get(sessionId);
     const now = performance.now();
     if (!perf) {
@@ -1320,6 +1351,7 @@ function adoptHostTurnMessageId(
 }
 
 export function clearMessageTracking(): void {
+  replayPerf.clear();
   pendingReplayAgentBoundaryCandidates.clear();
   replayAssistantMessageIds.clear();
   replayAgentBoundaryActive.clear();
@@ -1329,6 +1361,21 @@ export function clearMessageTracking(): void {
   clearSkillReplayChips();
   clearWorkspaceToolCallObservations();
 }
+
+/**
+ * The per-session counterpart of `clearMessageTracking`, for a session the
+ * chat store let go of. An evicted session is settled and not loading; a
+ * cleaned-up one was archived or deleted. A chunk that still trails in for
+ * either is bound again to whoever owns the session at that point.
+ */
+export function forgetSessionMessageTracking(sessionId: string): void {
+  clearReplaySessionTracking(sessionId);
+  clearReplayAssistantTracking(sessionId);
+  releaseStreamingSession(sessionId);
+  clearWorkspaceToolCallObservations(sessionId);
+}
+
+onChatSessionReleased(forgetSessionMessageTracking);
 
 /**
  * The app answers permission requests itself (`answerPermissionRequest`), and

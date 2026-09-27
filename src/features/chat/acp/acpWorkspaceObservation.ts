@@ -4,7 +4,11 @@ import { getPendingSessionWorkspaceActivation } from "@/features/chat/lib/sessio
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { isSameWorkspacePath } from "@/features/chat/lib/workspaceAttachments";
 import { getMultiWorkspaceEnabled } from "@/features/workspaces/multiWorkspacePreference";
+import { logSessionId } from "@/shared/lib/perfLog";
 
+// Tool calls seen and not yet finished. A call whose turn is cut short never
+// reports completion, so a session's entries are also dropped when the chat
+// store lets go of that session (`forgetSessionMessageTracking`).
 const pendingExecutionByToolCall = new Map<
   string,
   { cwd?: string; isExecution: boolean; createsWorkspace: boolean }
@@ -39,7 +43,7 @@ function registerObservedWorkspace(sessionId: string, path: string): void {
     .then(() => undefined)
     .catch((error) => {
       console.info("[workspace-observer] ignored completed tool cwd", {
-        sessionId: sessionId.slice(0, 8),
+        sessionId: logSessionId(sessionId),
         error: String(error),
       });
     })

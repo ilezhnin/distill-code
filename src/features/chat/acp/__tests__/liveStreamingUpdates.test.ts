@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearBufferedStreamingUpdatesForSession,
   clearLiveSubtitleUpdate,
@@ -7,7 +7,10 @@ import {
   enqueueStreamingThinkingUpdate,
   enqueueStreamingTerminalUpdate,
   flushAllBufferedStreamingUpdates,
+  registerStreamingMessageOwner,
   releaseStreamingMessageOwner,
+  releaseStreamingSession,
+  scheduleLiveSubtitleUpdate,
 } from "../liveStreamingUpdates";
 import {
   type ChatSession,
@@ -129,5 +132,105 @@ describe("liveStreamingUpdates", () => {
         .getState()
         .messagesBySession[sessionId]?.[0]?.content?.at(-1),
     ).toEqual({ type: "text", text: "!" });
+  });
+
+  describe("per-session bookkeeping", () => {
+    function contentOf(messageId: string) {
+      return useChatStore
+        .getState()
+        .messagesBySession[sessionId]?.find(
+          (message) => message.id === messageId,
+        )?.content;
+    }
+
+    function subtitle() {
+      return useChatSessionStore.getState().getSession(sessionId)?.subtitle;
+    }
+
+    it("keeps a message bound to the prompt it began under while it is recent", () => {
+      const first = claimSessionPrompt(sessionId);
+      useChatStore
+        .getState()
+        .setMessages(sessionId, [makeAssistantMessage("oldest")]);
+      registerStreamingMessageOwner(sessionId, "oldest");
+      for (let index = 0; index < 8; index += 1) {
+        registerStreamingMessageOwner(sessionId, `newer-${index}`);
+      }
+      releaseSessionPrompt(sessionId, first);
+      claimSessionPrompt(sessionId);
+
+      enqueueStreamingTextUpdate(sessionId, "oldest", "late");
+      flushAllBufferedStreamingUpdates();
+
+      // Still the first prompt's: held back rather than applied as the
+      // current prompt's stream.
+      expect(contentOf("oldest")).toEqual([]);
+    });
+
+    it("binds a message that fell out of the per-session window to the prompt that owns the chat now", () => {
+      const first = claimSessionPrompt(sessionId);
+      useChatStore
+        .getState()
+        .setMessages(sessionId, [makeAssistantMessage("oldest")]);
+      registerStreamingMessageOwner(sessionId, "oldest");
+      for (let index = 0; index < 64; index += 1) {
+        registerStreamingMessageOwner(sessionId, `newer-${index}`);
+      }
+      releaseSessionPrompt(sessionId, first);
+      claimSessionPrompt(sessionId);
+
+      enqueueStreamingTextUpdate(sessionId, "oldest", "late");
+      flushAllBufferedStreamingUpdates();
+
+      expect(contentOf("oldest")).toEqual([{ type: "text", text: "late" }]);
+    });
+
+    it("forgets a released session's bindings", () => {
+      const first = claimSessionPrompt(sessionId);
+      useChatStore
+        .getState()
+        .setMessages(sessionId, [makeAssistantMessage("reply")]);
+      registerStreamingMessageOwner(sessionId, "reply");
+      releaseSessionPrompt(sessionId, first);
+      claimSessionPrompt(sessionId);
+
+      releaseStreamingSession(sessionId);
+      enqueueStreamingTextUpdate(sessionId, "reply", "trailing");
+      flushAllBufferedStreamingUpdates();
+
+      expect(contentOf("reply")).toEqual([{ type: "text", text: "trailing" }]);
+    });
+
+    it("publishes a throttled subtitle at once when the session is released", () => {
+      vi.useFakeTimers();
+      try {
+        scheduleLiveSubtitleUpdate(sessionId, "First words");
+        scheduleLiveSubtitleUpdate(sessionId, "First words and more");
+        expect(subtitle()).toBe("First words");
+
+        releaseStreamingSession(sessionId);
+        expect(subtitle()).toBe("First words and more");
+
+        // Nothing is left waiting to publish over a later subtitle.
+        useChatSessionStore
+          .getState()
+          .patchSession(sessionId, { subtitle: "Renamed" });
+        vi.runAllTimers();
+        expect(subtitle()).toBe("Renamed");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not publish an already published subtitle again on release", () => {
+      scheduleLiveSubtitleUpdate(sessionId, "Streamed words");
+      useChatSessionStore
+        .getState()
+        .patchSession(sessionId, { subtitle: "Newer subtitle" });
+
+      releaseStreamingSession(sessionId);
+
+      expect(subtitle()).toBe("Newer subtitle");
+    });
   });
 });

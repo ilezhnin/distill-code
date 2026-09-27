@@ -141,3 +141,47 @@ describe("run settings in a target transition", () => {
     expect(liveSession()?.reasoningEffort?.currentValue).toBe("high");
   });
 });
+
+describe("session store subscription", () => {
+  beforeEach(() => {
+    resetSessionTargetCoordinatorsForTests();
+    useChatSessionStore.setState({ sessions: [] });
+  });
+
+  it("leaves the session list alone on writes that do not replace it", () => {
+    seedSession("gpt-5.5");
+    const sessions = useChatSessionStore.getState().sessions;
+    const readSessions = vi.spyOn(sessions, "map");
+
+    useChatSessionStore.setState({ isLoading: true });
+    useChatSessionStore.setState({ isRightRailOpen: true });
+
+    expect(readSessions).not.toHaveBeenCalled();
+  });
+
+  it("still settles a pending transition when its session leaves the list", async () => {
+    seedSession("gpt-5.5");
+    const prepared = deferred<AcpSessionConfigSnapshots>();
+    mocks.acpPrepareSession.mockReturnValue(prepared.promise);
+    const transition = transitionSessionTarget({
+      sessionId: "session-1",
+      target: {
+        harnessId: "codex-acp",
+        modelProviderId: "codex-acp",
+        modelId: "gpt-5.6",
+        modelName: "gpt-5.6",
+      },
+      workingDir: "/project",
+    });
+    await vi.waitFor(() =>
+      expect(mocks.acpPrepareSession).toHaveBeenCalledTimes(1),
+    );
+
+    useChatSessionStore.setState({ sessions: [] });
+    prepared.resolve({} as AcpSessionConfigSnapshots);
+
+    await expect(transition).resolves.toMatchObject({
+      status: "session-missing",
+    });
+  });
+});

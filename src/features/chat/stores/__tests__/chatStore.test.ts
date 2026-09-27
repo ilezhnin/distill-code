@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildTranscriptItems } from "@/features/chat/transcript/projection/buildTranscriptItems";
+import type { SessionChatRuntime } from "@/shared/types/chat";
 import type { Message } from "@/shared/types/messages";
-import { useChatStore } from "../chatStore";
+import { onChatSessionReleased, useChatStore } from "../chatStore";
 import { loadCachedDrafts } from "../draftPersistence";
 import { loadCachedUnreadSessionIds } from "../unreadPersistence";
 
@@ -548,6 +550,116 @@ describe("chatStore", () => {
     ).toBeUndefined();
     expect(store.activeSessionId).toBeNull();
     expect(loadCachedUnreadSessionIds()).toEqual(["s2"]);
+  });
+
+  it("releases every chat it evicts or cleans up to the session release listeners", () => {
+    const released: string[] = [];
+    const stopListening = onChatSessionReleased((sessionId) =>
+      released.push(sessionId),
+    );
+    try {
+      for (let index = 1; index <= 11; index += 1) {
+        const sessionId = `s${index}`;
+        useChatStore.getState().setActiveSession(sessionId);
+        useChatStore
+          .getState()
+          .setMessages(sessionId, [makeMessage({ id: `message-${index}` })]);
+      }
+
+      expect(useChatStore.getState().messagesBySession.s1).toBeUndefined();
+      expect(released).toEqual(["s1"]);
+
+      useChatStore.getState().cleanupSession("s11");
+      expect(released).toEqual(["s1", "s11"]);
+    } finally {
+      stopListening();
+    }
+  });
+
+  it("drops an evicted chat's transcript linkage along with its messages", () => {
+    const delegateTurn = [
+      makeMessage({
+        id: "delegate",
+        content: [
+          {
+            type: "toolRequest",
+            id: "delegate-1",
+            name: "delegate",
+            toolName: "delegate",
+            arguments: {},
+            status: "completed",
+          },
+        ],
+        metadata: { userVisible: true, completionStatus: "completed" },
+      }),
+      makeMessage({
+        id: "load",
+        content: [
+          {
+            type: "toolRequest",
+            id: "load-1",
+            name: "load",
+            toolName: "load",
+            arguments: {},
+            status: "completed",
+          },
+        ],
+        metadata: { userVisible: true, completionStatus: "completed" },
+      }),
+    ];
+    const linkageOf = () => {
+      const items = buildTranscriptItems({
+        sessionId: "s1",
+        messages: delegateTurn,
+        streamingMessageId: null,
+        nowBucket: "2026-06-04",
+        localeKey: "en-US",
+        calendarRevisionToken: "0:",
+      });
+      for (const item of items) {
+        if ("subagentLinkage" in item && item.subagentLinkage) {
+          return item.subagentLinkage;
+        }
+      }
+      return undefined;
+    };
+    const before = linkageOf();
+    expect(before).toBeDefined();
+    expect(linkageOf()).toBe(before);
+
+    for (let index = 1; index <= 11; index += 1) {
+      const sessionId = `s${index}`;
+      useChatStore.getState().setActiveSession(sessionId);
+      useChatStore
+        .getState()
+        .setMessages(sessionId, [makeMessage({ id: `message-${index}` })]);
+    }
+
+    expect(linkageOf()).not.toBe(before);
+  });
+
+  it("does not walk the session runtimes on writes that leave them untouched", () => {
+    let runtimeScans = 0;
+    const sessionStateById = new Proxy<Record<string, SessionChatRuntime>>(
+      {},
+      {
+        ownKeys(target) {
+          runtimeScans += 1;
+          return Reflect.ownKeys(target);
+        },
+      },
+    );
+    useChatStore.setState({ sessionStateById });
+    const store = useChatStore.getState();
+
+    store.addMessage("s1", makeMessage({ id: "prompt", role: "user" }));
+    store.updateMessage("s1", "prompt", (message) => ({
+      ...message,
+      created: message.created + 1,
+    }));
+
+    expect(useChatStore.getState().sessionStateById).toBe(sessionStateById);
+    expect(runtimeScans).toBe(0);
   });
 });
 

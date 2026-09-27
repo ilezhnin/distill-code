@@ -49,8 +49,22 @@ interface PendingSubtitleUpdate {
   lastPublishedAt: number;
 }
 
+/**
+ * How many messages per session keep the prompt they were bound to. A chunk
+ * for a message that fell out is bound again to whoever owns the session then,
+ * which only differs from its old binding if the message still streams after
+ * this many newer replies started in the same chat. Without a bound the map
+ * kept an entry for every streamed reply of every chat, because a message
+ * bound to no prompt (a turn this window did not send) was never released.
+ */
+const STREAM_OWNERS_PER_SESSION_LIMIT = 64;
+
 const bufferedStreamingUpdates: BufferedStreamingUpdate[] = [];
-const streamOwnerByMessage = new Map<string, symbol | null>();
+/**
+ * Per session, per message: the prompt that owned the session when the message
+ * began streaming, or `null` when none did.
+ */
+const streamOwnersBySession = new Map<string, Map<string, symbol | null>>();
 const pendingSubtitleUpdates = new Map<string, PendingSubtitleUpdate>();
 let scheduledFrameId: number | null = null;
 let scheduledTimeoutId: TimerId | null = null;
@@ -93,21 +107,33 @@ function cancelScheduledFrame(): void {
   scheduledTimeoutId = null;
 }
 
-function streamingMessageKey(sessionId: string, messageId: string): string {
-  return `${sessionId}\0${messageId}`;
+function bindStreamOwner(
+  sessionId: string,
+  messageId: string,
+  owner: symbol | null,
+): void {
+  let owners = streamOwnersBySession.get(sessionId);
+  if (!owners) {
+    owners = new Map();
+    streamOwnersBySession.set(sessionId, owners);
+  }
+  owners.set(messageId, owner);
+  if (owners.size > STREAM_OWNERS_PER_SESSION_LIMIT) {
+    const oldest = owners.keys().next();
+    if (!oldest.done) owners.delete(oldest.value);
+  }
 }
 
 export function clearStreamingMessageOwners(): void {
-  streamOwnerByMessage.clear();
+  streamOwnersBySession.clear();
 }
 
 export function registerStreamingMessageOwner(
   sessionId: string,
   messageId: string,
 ): void {
-  const key = streamingMessageKey(sessionId, messageId);
-  if (!streamOwnerByMessage.has(key)) {
-    streamOwnerByMessage.set(key, getSessionPromptOwner(sessionId));
+  if (!streamOwnersBySession.get(sessionId)?.has(messageId)) {
+    bindStreamOwner(sessionId, messageId, getSessionPromptOwner(sessionId));
   }
 }
 
@@ -126,22 +152,43 @@ export function releaseStreamingMessageOwner(
   sessionId: string,
   owner: symbol,
 ): void {
-  const prefix = `${sessionId}\0`;
-  for (const [key, value] of streamOwnerByMessage) {
-    if (value === owner && key.startsWith(prefix)) {
-      streamOwnerByMessage.delete(key);
+  const owners = streamOwnersBySession.get(sessionId);
+  if (!owners) return;
+  for (const [messageId, value] of owners) {
+    if (value === owner) {
+      owners.delete(messageId);
     }
+  }
+  if (owners.size === 0) {
+    streamOwnersBySession.delete(sessionId);
+  }
+}
+
+/**
+ * Forgets what this module keeps for a session the chat store let go of
+ * (evicted or cleaned up). A throttled subtitle still waiting on its timer is
+ * published now, as the timer would have done; one already published is not
+ * published again, since something newer may have replaced it since.
+ */
+export function releaseStreamingSession(sessionId: string): void {
+  streamOwnersBySession.delete(sessionId);
+  const pending = pendingSubtitleUpdates.get(sessionId);
+  if (!pending) return;
+  pendingSubtitleUpdates.delete(sessionId);
+  if (pending.timerId !== null) {
+    clearTimeout(pending.timerId);
+    updateLiveSubtitle(sessionId, pending.text);
   }
 }
 
 function resolveStreamOwner(sessionId: string, messageId: string) {
-  const key = streamingMessageKey(sessionId, messageId);
-  if (streamOwnerByMessage.has(key)) {
-    return streamOwnerByMessage.get(key) ?? null;
+  const owners = streamOwnersBySession.get(sessionId);
+  if (owners?.has(messageId)) {
+    return owners.get(messageId) ?? null;
   }
 
   const owner = getSessionPromptOwner(sessionId);
-  streamOwnerByMessage.set(key, owner);
+  bindStreamOwner(sessionId, messageId, owner);
   return owner;
 }
 

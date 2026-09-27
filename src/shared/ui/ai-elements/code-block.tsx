@@ -157,9 +157,26 @@ const highlighterCache = new Map<
   Promise<HighlighterGeneric<BundledLanguage, BundledTheme>>
 >();
 
-// Token cache
+/**
+ * Sources longer than this are shown as plain preformatted text instead of
+ * being highlighted. Tokenizing runs on the main thread and allocates an
+ * object per highlighted span, so a 200 KB tool result or artifact stalled the
+ * transcript and then held megabytes of tokens in the cache below, while
+ * nobody reads output that size for its colors.
+ */
+export const CODE_BLOCK_HIGHLIGHT_CHAR_LIMIT = 64 * 1024;
+
+const isHighlightableSource = (code: string) =>
+  code.length <= CODE_BLOCK_HIGHLIGHT_CHAR_LIMIT;
+
+// Token cache. The key carries the whole source, and the tokens are cut from
+// it, so what an entry costs grows with its source. The cache is bounded by
+// source characters as well as by entries: a hundred large outputs held
+// hundreds of megabytes when only the entry count was capped.
 const MAX_TOKEN_CACHE_ENTRIES = 100;
+const MAX_TOKEN_CACHE_SOURCE_CHARS = 1_000_000;
 const tokensCache = new Map<string, TokenizedCode>();
+let tokensCacheSourceChars = 0;
 
 const getCachedTokenizedCode = (key: string): TokenizedCode | null => {
   const cached = tokensCache.get(key);
@@ -170,15 +187,36 @@ const getCachedTokenizedCode = (key: string): TokenizedCode | null => {
   return cached;
 };
 
-const rememberTokenizedCode = (key: string, value: TokenizedCode) => {
-  tokensCache.delete(key);
-  tokensCache.set(key, value);
-
-  while (tokensCache.size > MAX_TOKEN_CACHE_ENTRIES) {
-    const oldest = tokensCache.keys().next();
-    if (oldest.done) break;
-    tokensCache.delete(oldest.value);
+const forgetTokenizedCode = (key: string) => {
+  if (tokensCache.delete(key)) {
+    tokensCacheSourceChars -= key.length;
   }
+};
+
+const rememberTokenizedCode = (key: string, value: TokenizedCode) => {
+  forgetTokenizedCode(key);
+  tokensCache.set(key, value);
+  tokensCacheSourceChars += key.length;
+
+  while (
+    tokensCache.size > MAX_TOKEN_CACHE_ENTRIES ||
+    tokensCacheSourceChars > MAX_TOKEN_CACHE_SOURCE_CHARS
+  ) {
+    const oldest = tokensCache.keys().next();
+    if (oldest.done || oldest.value === key) break;
+    forgetTokenizedCode(oldest.value);
+  }
+};
+
+/** Test seam: how much the token cache holds, and a way to empty it. */
+export const getCodeBlockTokenCacheStatsForTests = () => ({
+  entries: tokensCache.size,
+  sourceChars: tokensCacheSourceChars,
+});
+
+export const resetCodeBlockTokenCacheForTests = () => {
+  tokensCache.clear();
+  tokensCacheSourceChars = 0;
 };
 
 // Subscribers for async token updates
@@ -245,6 +283,12 @@ export const highlightCode = (
   // oxlint-disable-next-line eslint-plugin-promise(prefer-await-to-callbacks)
   errorCallback?: (error: unknown) => void,
 ): TokenizedCode | null => {
+  // Too large to highlight: answered at once with the plain lines, which are
+  // neither tokenized nor cached.
+  if (!isHighlightableSource(code)) {
+    return createRawTokens(code);
+  }
+
   const tokensCacheKey = getTokensCacheKey(code, language);
 
   // Return cached result if available
@@ -450,15 +494,20 @@ export const CodeBlockContent = ({
   viewportClassName?: string;
   transparentBackground?: boolean;
 }) => {
-  // Memoized raw tokens for immediate display
+  // Memoized raw tokens for immediate display, and for good when the source
+  // is too large to highlight.
   const rawTokens = useMemo(() => createRawTokens(code), [code]);
+  const highlightable = isHighlightableSource(code);
+  // A source that is never highlighted needs no key: building one would copy
+  // the whole of it for nothing.
   const cacheKey = useMemo(
-    () => getTokensCacheKey(code, language),
-    [code, language],
+    () => (highlightable ? getTokensCacheKey(code, language) : ""),
+    [code, highlightable, language],
   );
   const cachedTokens = useMemo(
-    () => getCachedTokenizedCodeForInput(code, language),
-    [code, language],
+    () =>
+      highlightable ? getCachedTokenizedCodeForInput(code, language) : null,
+    [code, highlightable, language],
   );
 
   // Async highlighting result (populated after shiki loads)
@@ -468,12 +517,12 @@ export const CodeBlockContent = ({
     tokens: TokenizedCode | null;
   }>(() => ({
     cacheKey,
-    isHighlighting: cachedTokens == null,
+    isHighlighting: highlightable && cachedTokens == null,
     tokens: cachedTokens,
   }));
 
   useEffect(() => {
-    if (cachedTokens) {
+    if (!highlightable || cachedTokens) {
       return;
     }
 
@@ -516,12 +565,14 @@ export const CodeBlockContent = ({
     return () => {
       cancelled = true;
     };
-  }, [cacheKey, cachedTokens, code, language]);
+  }, [cacheKey, cachedTokens, code, highlightable, language]);
 
-  const highlightedTokens =
-    cachedTokens ??
-    (highlightState.cacheKey === cacheKey ? highlightState.tokens : null);
+  const highlightedTokens = !highlightable
+    ? null
+    : (cachedTokens ??
+      (highlightState.cacheKey === cacheKey ? highlightState.tokens : null));
   const isHighlighting =
+    highlightable &&
     highlightedTokens == null &&
     (highlightState.cacheKey === cacheKey
       ? highlightState.isHighlighting

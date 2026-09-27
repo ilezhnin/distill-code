@@ -29,6 +29,7 @@ import {
   type SessionTargetSyncState,
   type TargetTransitionOrigin,
 } from "./sessionTargetReducer";
+import { logSessionId } from "@/shared/lib/perfLog";
 
 export interface SessionTargetTransition {
   sessionId: string;
@@ -108,7 +109,12 @@ const actors = new Map<string, SessionActor>();
 let nextOperationId = 0;
 let restoringLeasedTarget = false;
 
-useChatSessionStore.subscribe?.((state) => {
+useChatSessionStore.subscribe?.((state, previousState) => {
+  // Both passes below read only the session list, and every write that could
+  // break a lease or remove a session replaces it. The store is written far
+  // more often than that (loading flags, workspace and rail state), and each
+  // write used to rebuild the set of every session id.
+  if (previousState && state.sessions === previousState.sessions) return;
   if (!restoringLeasedTarget) {
     for (const [sessionId, actor] of actors) {
       const dispatch = actor.dispatch;
@@ -895,7 +901,7 @@ function rejectModelSnapshot(
   selection: SessionTargetSelection | undefined,
 ): false {
   console.warn("Dropped divergent ACP model config snapshot", {
-    sessionId: input.sessionId.slice(0, 8),
+    sessionId: logSessionId(input.sessionId),
     localModelId: session?.executionTarget?.modelId,
     snapshotModelId: input.snapshot.modelId,
     intentKind: selection
@@ -1100,7 +1106,7 @@ export function observeSessionTargetModelSnapshot(input: {
   if (session) {
     if (input.reasoningEffort && !pairedReasoningIsCurrent) {
       console.warn("Dropped stale ACP reasoningEffort config snapshot", {
-        sessionId: input.sessionId.slice(0, 8),
+        sessionId: logSessionId(input.sessionId),
         origin: input.context.origin,
         providerId: input.context.providerId,
         modelId: input.context.modelId,
@@ -1212,7 +1218,7 @@ export function observeSessionTargetReasoningSnapshot(input: {
       snapshotContextMatchesTarget(session.executionTarget, input.context);
   if (!requestIsCurrent || !contextIsCurrent) {
     console.warn("Dropped stale ACP reasoningEffort config snapshot", {
-      sessionId: input.sessionId.slice(0, 8),
+      sessionId: logSessionId(input.sessionId),
       intentKind: selection
         ? selection.target.modelId
           ? "model"

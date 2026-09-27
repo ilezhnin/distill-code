@@ -10,6 +10,7 @@ import {
   settleAbandonedToolCalls,
 } from "@/features/chat/lib/messageCompletion";
 import { clearReplayBuffer } from "../hooks/replayBuffer";
+import { forgetTranscriptItemDescriptorSession } from "@/features/chat/transcript/projection/buildTranscriptItems";
 import { isSessionRunning } from "../lib/sessionActivity";
 import { mergeTokenState } from "@/features/chat/lib/tokenState";
 import type {
@@ -256,6 +257,39 @@ function trimMessageSessionCache(
   return { messagesBySession, evictedSessionIds };
 }
 
+type ChatSessionReleaseListener = (sessionId: string) => void;
+
+const sessionReleaseListeners = new Set<ChatSessionReleaseListener>();
+
+/**
+ * Registers a callback for when this store lets go of a session: its messages
+ * were evicted from the transcript cache, or the session was cleaned up.
+ *
+ * Several modules keep bookkeeping per session id at module level (streaming
+ * owners, replay tracking, pending tool calls) and were only ever cleared all
+ * at once by test helpers, so every chat opened in a long run left its entries
+ * behind. This store is the one place that sees every eviction. Modules it can
+ * import are released directly in `releaseChatSession`; this hook is for the
+ * ones that import the store, which it cannot import back.
+ */
+export function onChatSessionReleased(
+  listener: ChatSessionReleaseListener,
+): () => void {
+  sessionReleaseListeners.add(listener);
+  return () => {
+    sessionReleaseListeners.delete(listener);
+  };
+}
+
+function releaseChatSession(sessionId: string): void {
+  // Discard any orphaned replay buffer so the module-level map doesn't leak.
+  clearReplayBuffer(sessionId);
+  forgetTranscriptItemDescriptorSession(sessionId);
+  for (const listener of sessionReleaseListeners) {
+    listener(sessionId);
+  }
+}
+
 /**
  * Sessions this window has archived or deleted.
  *
@@ -320,6 +354,10 @@ function persistUnreadStateIfChanged(
   previousSessionStateById: Record<string, SessionChatRuntime>,
   nextSessionStateById: Record<string, SessionChatRuntime>,
 ): void {
+  // Most writes that reach here (every streamed chunk among them) leave the
+  // runtimes untouched; comparing the unread sets would walk every session
+  // twice to find nothing.
+  if (previousSessionStateById === nextSessionStateById) return;
   const previousUnreadIds = getUnreadSessionIds(previousSessionStateById);
   const nextUnreadIds = getUnreadSessionIds(nextSessionStateById);
   if (areSessionIdListsEqual(previousUnreadIds, nextUnreadIds)) return;
@@ -725,7 +763,7 @@ const createChatStore: StateCreator<
             },
       };
     });
-    evictedSessionIds.forEach(clearReplayBuffer);
+    evictedSessionIds.forEach(releaseChatSession);
   },
 
   setActiveSessionViewing: (isViewingActiveSession) =>
@@ -777,7 +815,7 @@ const createChatStore: StateCreator<
           : {}),
       };
     });
-    evictedSessionIds.forEach(clearReplayBuffer);
+    evictedSessionIds.forEach(releaseChatSession);
     persistUnreadStateIfChanged(
       previousSessionStateById,
       get().sessionStateById,
@@ -906,7 +944,7 @@ const createChatStore: StateCreator<
         recentMessageSessionIds,
       };
     });
-    evictedSessionIds.forEach(clearReplayBuffer);
+    evictedSessionIds.forEach(releaseChatSession);
   },
 
   clearMessages: (sessionId) => {
@@ -2063,8 +2101,7 @@ const createChatStore: StateCreator<
 
   // Cleanup
   cleanupSession: (sessionId) => {
-    // Discard any orphaned replay buffer so module-level Map doesn't leak.
-    clearReplayBuffer(sessionId);
+    releaseChatSession(sessionId);
     rememberCleanedUpSession(sessionId);
     const previousSessionStateById = get().sessionStateById;
     set((state) => {
