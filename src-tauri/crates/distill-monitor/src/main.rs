@@ -100,6 +100,7 @@ struct StatePaths {
     log: PathBuf,
     pending: PathBuf,
     owner: PathBuf,
+    owner_lock: PathBuf,
 }
 
 struct PendingState {
@@ -162,6 +163,7 @@ impl StatePaths {
             log: root.join("watcher.log"),
             pending: root.join("pending.txt"),
             owner: root.join("owner.pid"),
+            owner_lock: root.join("owner.lock"),
             root,
         }
     }
@@ -601,23 +603,25 @@ fn ensure_private_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+// The lock lives in its own file, apart from the token: on Windows an exclusive
+// lock is mandatory, so the owner itself could not read a locked `owner.pid`
+// through a second handle (ERROR_LOCK_VIOLATION, os error 33) and every stop
+// check, `distill-monitor stop` included, failed.
 fn claim_owner(paths: &StatePaths, owner_token: &str) -> io::Result<File> {
-    let mut owner = OpenOptions::new()
+    let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(&paths.owner)?;
-    owner.try_lock_exclusive().map_err(|error| {
+        .open(&paths.owner_lock)?;
+    lock.try_lock_exclusive().map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("a monitor already owns {}: {error}", paths.root.display()),
         )
     })?;
-    owner.set_len(0)?;
-    writeln!(owner, "{owner_token}")?;
-    owner.flush()?;
-    Ok(owner)
+    atomic_write(&paths.owner, format!("{owner_token}\n").as_bytes())?;
+    Ok(lock)
 }
 
 fn owner_token(paths: &StatePaths) -> io::Result<String> {
@@ -665,7 +669,7 @@ fn request_stop(state_key: &str, session_id: &str) -> io::Result<()> {
     let owner = OpenOptions::new()
         .read(true)
         .write(true)
-        .open(&paths.owner)
+        .open(&paths.owner_lock)
         .map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
                 io::Error::new(
@@ -1782,6 +1786,29 @@ mod tests {
         );
         drop(owner);
         claim_owner(&paths, "owner-b").unwrap();
+        fs::remove_dir_all(&paths.root).unwrap();
+    }
+
+    #[test]
+    fn a_running_owner_can_be_asked_to_stop() {
+        let key = format!(
+            "owner-stop-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let paths = StatePaths::for_key(&key, "test-session");
+        ensure_private_directory(&paths.root).unwrap();
+        let owner = claim_owner(&paths, "owner-a").unwrap();
+        assert_eq!(owner_token(&paths).unwrap(), "owner-a");
+        assert!(!stop_requested(&paths));
+        request_stop(&key, "test-session").unwrap();
+        assert!(stop_requested(&paths));
+        remove_active_stop(&paths).unwrap();
+        assert!(!stop_requested(&paths));
+        drop(owner);
         fs::remove_dir_all(&paths.root).unwrap();
     }
 
