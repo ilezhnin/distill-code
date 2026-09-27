@@ -28,6 +28,17 @@ const workspaceObservationMocks = vi.hoisted(() => ({
 }));
 vi.mock("../acpWorkspaceObservation", () => workspaceObservationMocks);
 
+const imageAttachmentMocks = vi.hoisted(() => ({
+  readImageAttachment: vi.fn(),
+}));
+vi.mock("@/shared/api/system", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/shared/api/system")>();
+  return {
+    ...actual,
+    readImageAttachment: imageAttachmentMocks.readImageAttachment,
+  };
+});
+
 function markSessionReplayLoading(sessionId = "acp-session") {
   useChatStore.setState({
     loadingSessionIds: new Set([sessionId]),
@@ -39,6 +50,10 @@ describe("acpNotificationHandler", () => {
     resetUsageLedgerForTests();
     workspaceObservationMocks.clearWorkspaceToolCallObservations.mockClear();
     workspaceObservationMocks.observeWorkspaceToolCall.mockClear();
+    imageAttachmentMocks.readImageAttachment.mockReset();
+    imageAttachmentMocks.readImageAttachment.mockRejectedValue(
+      new Error("unexpected image read"),
+    );
     clearMessageTracking();
     clearReplayBuffer("acp-session");
     useChatStore.setState({
@@ -611,6 +626,126 @@ describe("acpNotificationHandler", () => {
       },
       isError: false,
     });
+  });
+
+  it("inlines a tool-written image file from rawOutput", async () => {
+    const path = "C:\\Users\\User\\.grok\\sessions\\cwd\\images\\1.jpg";
+    imageAttachmentMocks.readImageAttachment.mockResolvedValue({
+      base64: "Zm9v",
+      mimeType: "image/jpeg",
+    });
+    registerPreparedSession("acp-session", "grok-acp", "/tmp/artifacts");
+    setActiveMessageId("acp-session", "assistant-1");
+
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-image",
+        title: "image_gen",
+      },
+    } as never);
+
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-image",
+        status: "completed",
+        content: [
+          {
+            type: "content",
+            content: {
+              type: "text",
+              text: JSON.stringify({
+                path,
+                filename: "1.jpg",
+                session_folder: "images",
+              }),
+            },
+          },
+        ],
+        rawOutput: {
+          type: "ImageGen",
+          path,
+          filename: "1.jpg",
+          session_folder: "images",
+        },
+      },
+    } as never);
+
+    const [message] = useChatStore.getState().messagesBySession["acp-session"];
+    expect(message.content.map((block) => block.type)).toEqual([
+      "toolRequest",
+      "toolResponse",
+      "image",
+    ]);
+    expect(message.content[2]).toMatchObject({
+      type: "image",
+      data: "Zm9v",
+      mimeType: "image/jpeg",
+      uri: path,
+    });
+    expect(imageAttachmentMocks.readImageAttachment).toHaveBeenCalledWith(path);
+  });
+
+  it("adds a replayed tool image whose file loads after the replay was committed", async () => {
+    // The ACP SDK does not wait for this handler, so the host's load response
+    // can commit the replay while the image file is still being read.
+    const path = "C:\\Users\\User\\.grok\\sessions\\cwd\\images\\1.jpg";
+    let finishRead: (payload: { base64: string; mimeType: string }) => void =
+      () => {};
+    imageAttachmentMocks.readImageAttachment.mockReturnValue(
+      new Promise((resolve) => {
+        finishRead = resolve;
+      }),
+    );
+    markSessionReplayLoading();
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        messageId: "assistant-replay-1",
+        content: { type: "text", text: "Drawing it" },
+      },
+    } as never);
+    await handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "tool_call",
+        toolCallId: "tool-image",
+        title: "image_gen",
+      },
+    } as never);
+    const imageUpdate = handleSessionNotification({
+      sessionId: "acp-session",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-image",
+        status: "completed",
+        rawOutput: { type: "ImageGen", path, filename: "1.jpg" },
+      },
+    } as never);
+
+    replaceMessagesFromSessionReplay("acp-session", {
+      historyExpectation: "nonempty",
+    });
+    useChatStore.setState({ loadingSessionIds: new Set<string>() });
+    const [committed] =
+      useChatStore.getState().messagesBySession["acp-session"];
+    finishRead({ base64: "Zm9v", mimeType: "image/jpeg" });
+    await imageUpdate;
+
+    const [message] = useChatStore.getState().messagesBySession["acp-session"];
+    expect(message.content.at(-1)).toMatchObject({
+      type: "image",
+      data: "Zm9v",
+      uri: path,
+    });
+    // Added through the store, not by mutating what it already holds.
+    expect(committed.content.some((block) => block.type === "image")).toBe(
+      false,
+    );
   });
 
   it("replay preserves ordered user text and image chunks", async () => {

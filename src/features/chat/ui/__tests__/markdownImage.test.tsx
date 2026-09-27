@@ -51,23 +51,40 @@ describe("MarkdownImage", () => {
     expect(mocks.pathExists).toHaveBeenCalledWith("/work/puppy.jpg");
   });
 
-  it("does not rescue a path resolved outside the session cwd", () => {
+  it("does not rescue a path resolved outside the chat's folders", () => {
     mocks.resolveMarkdownHref.mockReturnValue({
       rawPath: "../../secret.png",
       resolvedPath: "/secret.png",
       isWithinSessionCwd: false,
     });
+    mocks.isPathWithinTrustedRoots.mockReturnValue(false);
     mocks.pathExists.mockResolvedValue(true);
 
     render(<MarkdownImage src="../../secret.png" alt="escape" />);
 
-    // Out-of-cwd paths are rejected before any existence check, including
-    // absolute paths and paths that escape with `..`.
+    // Paths outside the session cwd, attached workspaces, and artifact root
+    // are rejected before any existence check.
     expect(mocks.pathExists).not.toHaveBeenCalled();
     expect(screen.queryByTestId("clickable-image")).toBeNull();
     expect(screen.getByAltText("escape").getAttribute("src")).toBe(
       "../../secret.png",
     );
+  });
+
+  it("rescues a path outside cwd when it sits in a trusted chat folder", async () => {
+    mocks.resolveMarkdownHref.mockReturnValue({
+      rawPath: "/work/assets/puppy.jpg",
+      resolvedPath: "/work/assets/puppy.jpg",
+      isWithinSessionCwd: false,
+    });
+    mocks.isPathWithinTrustedRoots.mockReturnValue(true);
+    mocks.pathExists.mockResolvedValue(true);
+
+    render(<MarkdownImage src="/work/assets/puppy.jpg" alt="puppy" />);
+
+    const img = await screen.findByTestId("clickable-image");
+    expect(img.getAttribute("src")).toBe("asset:///work/assets/puppy.jpg");
+    expect(mocks.pathExists).toHaveBeenCalledWith("/work/assets/puppy.jpg");
   });
 
   it("clears the stale image when src switches to a new local image", async () => {
