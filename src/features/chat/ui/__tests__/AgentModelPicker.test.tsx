@@ -84,6 +84,40 @@ function moreColumnHidden() {
 }
 
 describe("AgentModelPicker", () => {
+  it("lets a chat on Default explicitly select Opus without switching through another model", async () => {
+    const user = userEvent.setup();
+    const onModelChange = vi.fn();
+    const models = claudeModels.map((model) => ({
+      ...model,
+      name:
+        model.id === "default"
+          ? "Default (recommended)"
+          : model.id === "opus[1m]"
+            ? "Opus 5.5"
+            : model.name,
+    }));
+    render(
+      <PickerHarness
+        models={models}
+        initialModelId="default"
+        onModelChange={onModelChange}
+      />,
+    );
+    await openPicker(user);
+
+    expect(modelRow("model", "Default (recommended)")).toHaveAttribute(
+      "data-selected",
+    );
+    await user.click(modelRow("model", "Opus 5.5"));
+
+    expect(onModelChange).toHaveBeenCalledWith("opus[1m]");
+    expect(modelRow("model", "Opus 5.5")).toHaveAttribute("data-selected");
+    expect(trigger()).toHaveTextContent("Opus 5.5");
+    expect(
+      screen.queryByRole("button", { name: "Default (recommended)" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("hands onModelChange the row's base id from the main page, More models and search", async () => {
     const user = userEvent.setup();
     const onModelChange = vi.fn();
