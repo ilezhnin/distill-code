@@ -16,8 +16,15 @@ vi.mock("@/shared/api/acpConnection", () => ({
   invalidateClientConnectionIfUnresponsive: vi.fn(),
 }));
 
+const mockPerfLog = vi.hoisted(() => vi.fn());
+vi.mock("@/shared/lib/perfLog", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/shared/lib/perfLog")>()),
+  perfLog: mockPerfLog,
+}));
+
 import { ensureReplayBuffer, getReplayBuffer } from "../../hooks/replayBuffer";
 import { useChatStore } from "../../stores/chatStore";
+import { useChatSessionStore } from "../../stores/chatSessionStore";
 import { registerChatSessionHistoryReplayHandler } from "../sessionHistoryReplayAdapter";
 import * as registry from "@/shared/api/acpSessionRegistry";
 
@@ -50,6 +57,31 @@ describe("session history replay on a preparing load", () => {
     });
     mockSetProvider.mockResolvedValue({ configOptions: [] });
     registerChatSessionHistoryReplayHandler();
+  });
+
+  it("takes an empty replay of a chat with no messages as expected", async () => {
+    const draft = "session-history-empty-draft";
+    useChatSessionStore.setState({
+      sessions: [
+        {
+          id: draft,
+          title: "New Chat",
+          createdAt: "2026-09-27T00:00:00.000Z",
+          updatedAt: "2026-09-27T00:00:00.000Z",
+          messageCount: 0,
+        } as never,
+      ],
+    });
+    mockLoadSession.mockResolvedValue({ configOptions: [] });
+
+    await registry.prepareSession(draft, "claude-acp", "/project");
+
+    expect(mockPerfLog).toHaveBeenCalledWith(
+      expect.stringContaining("history replay not-required"),
+    );
+    expect(mockPerfLog).not.toHaveBeenCalledWith(
+      expect.stringContaining("history replay invalid"),
+    );
   });
 
   it("treats the history a preparing load replays as the transcript, user messages included", async () => {

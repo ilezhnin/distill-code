@@ -1,8 +1,9 @@
 import { setSessionHistoryReplayHandler } from "@/shared/api/acpSessionRegistry";
 import { clearReplayBuffer } from "@/features/chat/hooks/replayBuffer";
 import { replaceMessagesFromSessionReplay } from "@/features/chat/lib/sessionReplayReplacement";
+import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useChatStore } from "@/features/chat/stores/chatStore";
-import { perfLog } from "@/shared/lib/perfLog";
+import { logSessionId, perfLog } from "@/shared/lib/perfLog";
 
 /**
  * How a chat's history is treated when a `session/load` was issued to prepare
@@ -31,7 +32,7 @@ async function loadWithHistoryAsReplay<T>(
   load: () => Promise<T>,
 ): Promise<T> {
   const store = useChatStore.getState();
-  const sid = sessionId.slice(0, 8);
+  const sid = logSessionId(sessionId);
   if (store.loadingSessionIds.has(sessionId)) {
     try {
       return await load();
@@ -47,8 +48,12 @@ async function loadWithHistoryAsReplay<T>(
   } finally {
     const result = replaceMessagesFromSessionReplay(sessionId, {
       // An empty replay of a chat that shows messages is not a reason to blank
-      // it, and an empty chat may well have no history yet.
-      historyExpectation: "unknown",
+      // it. A chat the session list says has no messages (the Home draft) is
+      // expected to replay nothing, which is not a failed replay.
+      historyExpectation:
+        useChatSessionStore.getState().getSession(sessionId)?.messageCount === 0
+          ? "empty"
+          : "unknown",
     });
     useChatStore.getState().setSessionLoading(sessionId, false);
     perfLog(
