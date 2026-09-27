@@ -27,7 +27,9 @@ pub enum Message {
 }
 
 pub fn parse(line: &str) -> Option<Message> {
-    let value: Value = serde_json::from_str(line).ok()?;
+    // `FromStr` runs inside serde_json, which dev builds optimize; a generic
+    // `from_str` instantiated here would parse every bridge line unoptimized.
+    let value: Value = line.parse().ok()?;
     let object = value.as_object()?;
     let id = object.get("id").filter(|id| !id.is_null()).cloned();
     if let Some(method) = object.get("method").and_then(Value::as_str) {
