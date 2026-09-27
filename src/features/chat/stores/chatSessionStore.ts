@@ -349,6 +349,29 @@ function isPlainNoopSessionPatch(
 }
 
 /**
+ * True when marking workspaces as used by the agent left the session's
+ * workspace fields as they were.
+ *
+ * Every send marks them, and after the first send of a chat there is nothing
+ * left to mark; replacing the session anyway handed the sidebar a new sessions
+ * array on every prompt. Attachments are compared by their text, which errs
+ * toward "changed" when two equal lists were built in a different key order —
+ * that only costs the update this exists to skip.
+ */
+function sameWorkspaceFields(
+  existing: ChatSession,
+  next: ChatSession,
+): boolean {
+  return (
+    existing.activeWorkspaceId === next.activeWorkspaceId &&
+    existing.workingDir === next.workingDir &&
+    Array.isArray(existing.workspaceAttachments) &&
+    JSON.stringify(existing.workspaceAttachments) ===
+      JSON.stringify(next.workspaceAttachments)
+  );
+}
+
+/**
  * Id lookup without a scan.
  *
  * `sessions` grows to thousands and `getSession` is called for every streamed
@@ -1409,7 +1432,10 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
             usedByAgent: true,
           })),
         });
+        // Persisting is still asked for: it is a no-op when the stored copy
+        // matches, and it repairs one that went missing.
         sessionForWorkspacePersistence = nextSession;
+        if (sameWorkspaceFields(existing, nextSession)) return state;
 
         return {
           sessions: state.sessions.map((session) =>
@@ -1425,6 +1451,7 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
         makeActive: true,
       });
       sessionForWorkspacePersistence = nextSession;
+      if (sameWorkspaceFields(existing, nextSession)) return state;
 
       return {
         sessions: state.sessions.map((session) =>

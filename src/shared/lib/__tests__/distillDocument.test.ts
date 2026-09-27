@@ -17,7 +17,10 @@ vi.mock("@/shared/api/distillStore", () => ({
   writeDistillDocument: mocks.writeDistillDocument,
 }));
 
-import { distillDocument } from "../distillDocument";
+import {
+  distillDocument,
+  openDistillDocumentCountForTests,
+} from "../distillDocument";
 
 interface Doc {
   items: string[];
@@ -153,6 +156,89 @@ describe("distillDocument on the desktop", () => {
     expect(mocks.writeDistillDocument).toHaveBeenCalledWith(
       "memory.json",
       JSON.stringify({ version: 1, items: ["last change"] }),
+    );
+  });
+
+  describe("change notices", () => {
+    function recognizingDoc() {
+      return distillDocument<Doc>({
+        path: "memory.json",
+        legacyStorageKey: "distill:memory",
+        parse: (raw) => ({ items: (raw as Doc).items }),
+        serialize: (value) => ({ version: 1, items: value.items }),
+        recognizeOwnWrites: true,
+      });
+    }
+
+    let disk: string | null;
+
+    beforeEach(() => {
+      disk = null;
+      mocks.readDistillDocument.mockImplementation(async () => disk);
+      mocks.writeDistillDocument.mockImplementation(
+        async (_path: string, contents: string) => {
+          disk = contents;
+        },
+      );
+    });
+
+    it("skips this instance's own write coming back", async () => {
+      const document = recognizingDoc();
+      document.write({ items: ["mine"] });
+      await document.flush();
+
+      await expect(document.readExternal()).resolves.toBeUndefined();
+      // A second notice for the same text is still recognized.
+      await expect(document.readExternal()).resolves.toBeUndefined();
+    });
+
+    it("recognizes an older own write that the notice brings back late", async () => {
+      const document = recognizingDoc();
+      document.write({ items: ["v1"] });
+      await document.flush();
+      const v1 = disk;
+      document.write({ items: ["v2"] });
+      await document.flush();
+
+      // The read after the first notice lands before the second write does.
+      disk = v1;
+      await expect(document.readExternal()).resolves.toBeUndefined();
+    });
+
+    it("reads another window's write", async () => {
+      const document = recognizingDoc();
+      document.write({ items: ["mine"] });
+      await document.flush();
+
+      disk = JSON.stringify({ version: 1, items: ["theirs"] });
+      await expect(document.readExternal()).resolves.toEqual({
+        items: ["theirs"],
+      });
+    });
+
+    it("reads everything when it was not asked to recognize its writes", async () => {
+      const document = doc();
+      document.write({ items: ["mine"] });
+      await document.flush();
+
+      await expect(document.readExternal()).resolves.toEqual({
+        items: ["mine"],
+      });
+    });
+  });
+
+  it("flushes and stops tracking a disposed document", async () => {
+    const before = openDistillDocumentCountForTests();
+    const document = doc();
+    expect(openDistillDocumentCountForTests()).toBe(before + 1);
+    document.write({ items: ["final"] });
+
+    await document.dispose();
+
+    expect(openDistillDocumentCountForTests()).toBe(before);
+    expect(mocks.writeDistillDocument).toHaveBeenCalledWith(
+      "memory.json",
+      JSON.stringify({ version: 1, items: ["final"] }),
     );
   });
 });

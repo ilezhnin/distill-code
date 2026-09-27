@@ -162,6 +162,7 @@ describe("two windows writing the same ledger", () => {
     // The detached session window is a real feature. Flushing our copy over
     // theirs lost their delta; dropping ours lost the debounced mutation.
     // Sessions are keyed by id and a chat lives in one window, so both survive.
+    vi.useFakeTimers();
     const unsubscribe = subscribeUsageLedger(() => {});
     try {
       recordSessionTokens(
@@ -191,13 +192,101 @@ describe("two windows writing the same ledger", () => {
       const merged = getUsageLedger();
       expect(merged.sessions.theirs?.totalTokens).toBe(99);
       expect(merged.sessions.ours?.totalTokens).toBe(15);
-      // And the merge is persisted, so the other window converges too.
+      // The merge is not written back at once — two busy windows answering
+      // each other's write with one of their own was a write loop…
+      expect(storedLedger().sessions.ours?.totalTokens).toBe(10);
+      // …but the pending write carries it, so the other window converges too.
+      vi.advanceTimersByTime(1_000);
       const stored = storedLedger();
       expect(stored.sessions.theirs?.totalTokens).toBe(99);
       expect(stored.sessions.ours?.totalTokens).toBe(15);
     } finally {
       unsubscribe();
+      vi.useRealTimers();
     }
+  });
+});
+
+describe("usageLedger writes only what changed", () => {
+  afterEach(() => {
+    resetUsageLedgerForTests();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  // Recent enough that the flush's retention prune keeps the record.
+  const source = {
+    id: "s1",
+    createdAt: new Date(Date.now() - 2 * DAY_MS).toISOString(),
+    updatedAt: new Date(Date.now() - DAY_MS).toISOString(),
+    lastMessageAt: new Date(Date.now() - DAY_MS).toISOString(),
+    messageCount: 3,
+    providerId: "claude-acp",
+    modelId: "fable",
+    modelName: "Fable",
+    effort: "high",
+  };
+
+  it("does not rewrite the ledger when a session sync changes nothing", () => {
+    vi.useFakeTimers();
+    syncUsageSessions([source]);
+    flushUsageLedger();
+    const before = getUsageLedger();
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+
+    // The stats page re-syncs the whole list on every change to it.
+    syncUsageSessions([source, { ...source }]);
+    vi.advanceTimersByTime(1_000);
+
+    expect(setItem).not.toHaveBeenCalled();
+    expect(getUsageLedger()).toBe(before);
+  });
+
+  it("still writes a sync that moves a session forward", () => {
+    vi.useFakeTimers();
+    syncUsageSessions([source]);
+    flushUsageLedger();
+
+    syncUsageSessions([{ ...source, messageCount: 4 }]);
+    vi.advanceTimersByTime(1_000);
+
+    expect(storedLedger().sessions.s1?.messageCount).toBe(4);
+  });
+
+  it("moves the first event back for a session older than every other", () => {
+    syncUsageSessions([source]);
+    flushUsageLedger();
+    const firstEventAt = getUsageLedger().firstEventAt;
+
+    syncUsageSessions([
+      source,
+      {
+        ...source,
+        id: "s0",
+        createdAt: new Date(Date.now() - 10 * DAY_MS).toISOString(),
+      },
+    ]);
+
+    expect(getUsageLedger().firstEventAt).toBeLessThan(firstEventAt ?? 0);
+    expect(getUsageLedger().sessions.s0).toBeDefined();
+  });
+
+  it("shares the records a usage update did not touch, and edits none in place", () => {
+    recordSessionTokens("s1", { mode: "add", totalTokens: 10, costUsd: 0.1 });
+    recordSessionTokens("s2", { mode: "add", totalTokens: 20, costUsd: 0.2 });
+    const before = getUsageLedger();
+    const s1Before = { ...before.sessions.s1 };
+
+    recordSessionTokens("s1", { mode: "add", totalTokens: 5, costUsd: 0.05 });
+    const after = getUsageLedger();
+
+    expect(after).not.toBe(before);
+    expect(after.sessions.s2).toBe(before.sessions.s2);
+    expect(after.sessions.s1).not.toBe(before.sessions.s1);
+    // The previous ledger a subscriber may still hold is left as it was.
+    expect(before.sessions.s1).toEqual(s1Before);
+    expect(after.sessions.s1?.totalTokens).toBe(15);
+    expect(after.sessions.s1?.costUsd).toBe(0.1 + 0.05);
   });
 });
 

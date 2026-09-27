@@ -122,7 +122,13 @@ interface Journal {
    */
   readFailed: boolean;
   write: (events: RunEvent[]) => void;
-  flush: () => Promise<void>;
+  /**
+   * Writes what is queued and releases the document. Called when the journal
+   * leaves memory: the document layer keeps every live document for its flush
+   * on window close, so an evicted journal that was only flushed stayed
+   * referenced there for the rest of the run, one per wave.
+   */
+  dispose: () => Promise<void>;
 }
 
 export function runJournalPath(waveId: string): string {
@@ -176,7 +182,7 @@ function journalFor(waveId: string): Journal {
     loaded: !isDesktopRuntime(),
     readFailed: false,
     write: (events) => document.write(events),
-    flush: () => document.flush(),
+    dispose: () => document.dispose(),
   };
   if (!journal.loaded) {
     readJournalDocument(journal, document, 0);
@@ -188,7 +194,7 @@ function journalFor(waveId: string): Journal {
     if (oldest.done || oldest.value === waveId) break;
     const dropped = journals.get(oldest.value);
     journals.delete(oldest.value);
-    void dropped?.flush();
+    void dropped?.dispose();
   }
   return journal;
 }
@@ -316,6 +322,7 @@ export function subscribeRunEvents(listener: () => void): () => void {
 
 /** Drops the in-memory journals. Tests only. */
 export function resetRunJournalsForTests(): void {
+  for (const journal of journals.values()) void journal.dispose();
   journals.clear();
   listeners.clear();
 }

@@ -35,7 +35,13 @@ export function useSessionListRefresh(): void {
   }, []);
 
   useEffect(() => {
-    refreshTimerRef.current = setInterval(refresh, REFRESH_INTERVAL_MS);
+    refreshTimerRef.current = setInterval(() => {
+      // A hidden window has nobody reading its sidebar, and each refresh maps
+      // a whole page of rows. Returning to the window fires `focus`, which
+      // refreshes straight away, so skipping these ticks loses nothing.
+      if (document.hidden) return;
+      void refresh();
+    }, REFRESH_INTERVAL_MS);
 
     const handleFocus = () => {
       void refresh();

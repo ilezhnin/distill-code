@@ -68,6 +68,10 @@ const ledgerDocument = distillDocument<UsageLedger>({
     pendingWrite = true;
     warnAboutStorageFailureOnce(error);
   },
+  // The store announces each write to the window that made it as well, and
+  // re-reading half a megabyte of our own ledger — then merging it into a
+  // pending change and writing again — kept a busy window in a write loop.
+  recognizeOwnWrites: true,
 });
 
 export async function initializeUsageLedger(): Promise<void> {
@@ -79,8 +83,10 @@ export async function initializeUsageLedger(): Promise<void> {
   await listen<string>("distill-document-changed", (event) => {
     if (event.payload !== "state/usage-ledger.json") return;
     void ledgerDocument
-      .read()
+      .readExternal()
       .then((stored) => {
+        // This window's own write coming back: there is nothing to adopt.
+        if (stored === undefined) return;
         nativeStoredLedger = stored;
         handleStorageChange(
           new StorageEvent("storage", { key: USAGE_LEDGER_STORAGE_KEY }),
@@ -489,6 +495,17 @@ export function flushUsageLedger(): void {
   }
 }
 
+/** Arms the flush of a pending write, unless one is already armed. */
+function scheduleLedgerFlush(): void {
+  installFlushListeners();
+  if (writeTimer == null) {
+    writeTimer = setTimeout(() => {
+      writeTimer = null;
+      flushUsageLedger();
+    }, LEDGER_WRITE_DEBOUNCE_MS);
+  }
+}
+
 function writeLedger(next: UsageLedger): void {
   const stamped: UsageLedger = {
     ...next,
@@ -500,19 +517,31 @@ function writeLedger(next: UsageLedger): void {
     return;
   }
   pendingWrite = true;
-  installFlushListeners();
-  if (writeTimer == null) {
-    writeTimer = setTimeout(() => {
-      writeTimer = null;
-      flushUsageLedger();
-    }, LEDGER_WRITE_DEBOUNCE_MS);
-  }
+  scheduleLedgerFlush();
   window.dispatchEvent(new Event(USAGE_LEDGER_CHANGED_EVENT));
   notifyListeners();
 }
 
+/**
+ * A copy of the ledger for one mutation to write into.
+ *
+ * Every mutator replaces the session and day records it changes rather than
+ * editing them (`recordSessionTokens`, `addSessionWorkedMs`, `addDailyTokens`,
+ * `sessionFromSource` all build new ones), so copying the two maps they write
+ * into is enough; the untouched records are shared with the previous ledger,
+ * which nothing edits either. A deep clone of every record ran on each usage
+ * update, prompt completion and idle transition.
+ */
+function draftLedger(ledger: UsageLedger): UsageLedger {
+  return {
+    ...ledger,
+    sessions: { ...ledger.sessions },
+    daily: { ...ledger.daily },
+  };
+}
+
 function mutateLedger(mutator: (draft: UsageLedger) => void): void {
-  const draft = cloneLedger(readLedger());
+  const draft = draftLedger(readLedger());
   mutator(draft);
   writeLedger(draft);
 }
@@ -588,18 +617,47 @@ export function getUsageLedger(): UsageLedger {
   return readLedger();
 }
 
+function sameSessionRecord(
+  left: UsageSessionRecord,
+  right: UsageSessionRecord,
+): boolean {
+  const leftFields = left as unknown as Record<string, unknown>;
+  const rightFields = right as unknown as Record<string, unknown>;
+  const keys = Object.keys(leftFields);
+  if (keys.length !== Object.keys(rightFields).length) return false;
+  return keys.every((key) => Object.is(leftFields[key], rightFields[key]));
+}
+
 export function syncUsageSessions(
   sources: readonly UsageSessionSource[],
 ): void {
   if (sources.length === 0) return;
-  mutateLedger((ledger) => {
-    for (const source of sources) {
-      const next = sessionFromSource(ledger.sessions[source.id], source);
-      ledger.sessions[source.id] = next;
-      if (next.createdAt > 0) {
-        touchFirstEvent(ledger, next.createdAt);
-      }
+  // The stats page syncs the whole session list whenever it changes, and a
+  // streaming reply changes it every second. Most of those passes find every
+  // record already as it would be written, and writing anyway re-stamped and
+  // re-saved the ledger (half a megabyte) for nothing.
+  const ledger = readLedger();
+  const changed = new Map<string, UsageSessionRecord>();
+  let firstEventAt = ledger.firstEventAt;
+  for (const source of sources) {
+    const existing = changed.get(source.id) ?? ledger.sessions[source.id];
+    const next = sessionFromSource(existing, source);
+    if (!existing || !sameSessionRecord(existing, next)) {
+      changed.set(source.id, next);
     }
+    if (
+      next.createdAt > 0 &&
+      (!firstEventAt || next.createdAt < firstEventAt)
+    ) {
+      firstEventAt = next.createdAt;
+    }
+  }
+  if (changed.size === 0 && firstEventAt === ledger.firstEventAt) return;
+  mutateLedger((draft) => {
+    for (const [id, next] of changed) {
+      draft.sessions[id] = next;
+    }
+    if (firstEventAt) touchFirstEvent(draft, firstEventAt);
   });
 }
 
@@ -948,13 +1006,15 @@ function handleStorageChange(event: StorageEvent): void {
   }
   // Both windows have something. Flushing ours first would overwrite the write
   // that fired this event; dropping ours would lose the debounced mutation. The
-  // merge keeps both, then writes it so the other window converges too.
+  // merge keeps both, and the pending write carries it to the other window.
+  // That write keeps its debounce: flushing here at once made two busy windows
+  // answer each other's write with a write of their own, back to back.
   const stored = readStoredLedger();
   if (stored) {
     cachedLedger = mergeUsageLedgers(stored, cachedLedger);
   }
   cachedSerialized = null;
-  flushUsageLedger();
+  scheduleLedgerFlush();
   notifyListeners();
 }
 

@@ -13,6 +13,7 @@ import {
   updatedAgoParts,
 } from "../lib/rateLimitFormatters";
 import { formatDuration } from "../lib/rateLimitWindows";
+import { useProviderRateLimitsStore } from "../stores/providerRateLimitsStore";
 
 export function ProviderDetailsPanel({
   provider,
@@ -25,8 +26,13 @@ export function ProviderDetailsPanel({
   const name = providerDisplayName(provider.provider);
   const sections = getUsageSections(provider);
   const statusKind = getProviderUsageStatusKind(provider);
-  const updatedParts =
-    provider.updatedAt > 0 ? updatedAgoParts(provider.updatedAt, now) : null;
+  // A poll that brings back the same usage keeps the provider object it had,
+  // so the latest fetch time is read from the store.
+  const fetchedAt =
+    useProviderRateLimitsStore(
+      (state) => state.fetchedAtByProvider[provider.provider],
+    ) ?? provider.updatedAt;
+  const updatedParts = fetchedAt > 0 ? updatedAgoParts(fetchedAt, now) : null;
   const updated = updatedParts
     ? t("roster.updated", {
         when:

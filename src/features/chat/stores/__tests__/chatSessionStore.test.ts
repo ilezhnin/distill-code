@@ -3,6 +3,7 @@ import type { AcpSessionInfo } from "@/shared/api/acp";
 import { workspaceAttachmentIdForPath } from "@/features/chat/lib/workspaceAttachments";
 import { targetFromAgentModelSelection } from "@/features/chat/lib/sessionExecutionTarget";
 import {
+  CHAT_WORKSPACE_METADATA_CHANGED_EVENT,
   CHAT_WORKSPACE_METADATA_STORAGE_KEY,
   type PersistedChatWorkspaceMetadata,
 } from "../workspaceAttachmentPersistence";
@@ -713,6 +714,91 @@ describe("chatSessionStore", () => {
         activeWorkspaceId: null,
         workingDir: "/tmp/main",
       });
+    });
+
+    it("leaves the session and the stored metadata alone on a send that changes nothing", () => {
+      const session = seedSession({
+        workingDir: "/tmp/main",
+        workspaceAttachments: [
+          {
+            id: workspaceAttachmentIdForPath("/tmp/main"),
+            path: "/tmp/main",
+            kind: "git-main-worktree",
+            source: "inferred",
+            branch: "main",
+            usedByAgent: false,
+          },
+          {
+            id: workspaceAttachmentIdForPath("/tmp/main-worktrees/feature"),
+            path: "/tmp/main-worktrees/feature",
+            kind: "git-linked-worktree",
+            source: "selected",
+            branch: "feature",
+            usedByAgent: false,
+          },
+        ],
+      });
+      useChatSessionStore.getState().markWorkspaceUsedByAgent(session.id);
+      const sessionsAfterFirstSend = useChatSessionStore.getState().sessions;
+      const persistedAfterFirstSend = readPersistedWorkspaceMetadata();
+
+      const setItem = vi.spyOn(Storage.prototype, "setItem");
+      const changed = vi.fn();
+      window.addEventListener(CHAT_WORKSPACE_METADATA_CHANGED_EVENT, changed);
+      try {
+        useChatSessionStore.getState().markWorkspaceUsedByAgent(session.id);
+
+        expect(useChatSessionStore.getState().sessions).toBe(
+          sessionsAfterFirstSend,
+        );
+        expect(
+          setItem.mock.calls.filter(
+            ([key]) => key === CHAT_WORKSPACE_METADATA_STORAGE_KEY,
+          ),
+        ).toEqual([]);
+        expect(changed).not.toHaveBeenCalled();
+        expect(readPersistedWorkspaceMetadata()).toEqual(
+          persistedAfterFirstSend,
+        );
+      } finally {
+        setItem.mockRestore();
+        window.removeEventListener(
+          CHAT_WORKSPACE_METADATA_CHANGED_EVENT,
+          changed,
+        );
+      }
+    });
+
+    it("does not rewrite the active workspace's metadata on a repeat send", () => {
+      const session = seedSession({ workingDir: "/tmp/main" });
+      useChatSessionStore.setState({
+        activeWorkspaceBySession: {
+          [session.id]: { path: "/tmp/main", branch: "main" },
+        },
+      });
+      useChatSessionStore.getState().markWorkspaceUsedByAgent(session.id);
+      const afterFirstSend = useChatSessionStore
+        .getState()
+        .getSession(session.id);
+      expect(afterFirstSend?.workspaceAttachments).toEqual([
+        expect.objectContaining({ path: "/tmp/main", usedByAgent: true }),
+      ]);
+      expect(readPersistedWorkspaceMetadata()[session.id]).toBeDefined();
+
+      const setItem = vi.spyOn(Storage.prototype, "setItem");
+      try {
+        useChatSessionStore.getState().markWorkspaceUsedByAgent(session.id);
+        expect(useChatSessionStore.getState().getSession(session.id)).toBe(
+          afterFirstSend,
+        );
+        expect(
+          setItem.mock.calls.filter(
+            ([key]) => key === CHAT_WORKSPACE_METADATA_STORAGE_KEY,
+          ),
+        ).toEqual([]);
+      } finally {
+        setItem.mockRestore();
+      }
     });
   });
 });

@@ -58,8 +58,81 @@ export function mergeStale(
   });
 }
 
+/**
+ * Deep equality for the plain data a fetch returns, where a missing field and
+ * an `undefined` one mean the same thing (`mergeStale` spreads both kinds).
+ */
+function sameUsageValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (
+    !left ||
+    !right ||
+    typeof left !== "object" ||
+    typeof right !== "object"
+  ) {
+    return false;
+  }
+  const leftFields = left as Record<string, unknown>;
+  const rightFields = right as Record<string, unknown>;
+  const keys = new Set([
+    ...Object.keys(leftFields),
+    ...Object.keys(rightFields),
+  ]);
+  for (const key of keys) {
+    if (!sameUsageValue(leftFields[key], rightFields[key])) return false;
+  }
+  return true;
+}
+
+/**
+ * Whether a fetched provider says what the one already shown says. The fetch
+ * time is left out: it is new on every poll even when nothing else is.
+ */
+function sameProviderUsage(
+  left: ProviderRateLimits,
+  right: ProviderRateLimits,
+): boolean {
+  return sameUsageValue(
+    { ...left, updatedAt: undefined },
+    { ...right, updatedAt: undefined },
+  );
+}
+
+/**
+ * The fetched providers, reusing each object already shown whose usage did
+ * not change, and the previous array itself when none did.
+ *
+ * Every poll used to hand subscribers new objects, so the status bar, each
+ * `useAgentProviderStatus` consumer and the new-chat session preparation
+ * recomputed every two minutes with nothing to show for it. A kept object
+ * keeps the fetch time it came with; the time of the latest fetch lives in
+ * `fetchedAtByProvider`, which only the details panel reads.
+ */
+export function keepUnchangedProviders(
+  previous: ProviderRateLimits[] | undefined,
+  next: ProviderRateLimits[],
+): ProviderRateLimits[] {
+  if (!previous) return next;
+  const previousById = new Map(
+    previous.map((provider) => [provider.provider, provider]),
+  );
+  let changed = previous.length !== next.length;
+  const providers = next.map((provider, index) => {
+    const prior = previousById.get(provider.provider);
+    if (!prior || !sameProviderUsage(prior, provider)) {
+      changed = true;
+      return provider;
+    }
+    if (previous[index] !== prior) changed = true;
+    return prior;
+  });
+  return changed ? providers : previous;
+}
+
 interface ProviderRateLimitsState {
   snapshot: ProviderRateLimitSnapshot | null;
+  /** When each provider was last fetched, for the "updated … ago" line. */
+  fetchedAtByProvider: Record<string, number>;
   isRefreshing: boolean;
   error: string | null;
   usageMode: StatusBarUsageMode;
@@ -71,11 +144,18 @@ interface ProviderRateLimitsState {
 }
 
 let pollTimer: number | null = null;
+let removeVisibilityListener: (() => void) | null = null;
 let inFlight: Promise<void> | null = null;
+/**
+ * When the last fetch settled. A window coming back into view fetches at once
+ * only when the ticks it skipped while hidden left this more than a poll old.
+ */
+let lastFetchSettledAt = 0;
 
 export const useProviderRateLimitsStore = create<ProviderRateLimitsState>(
   (set, get) => ({
     snapshot: null,
+    fetchedAtByProvider: {},
     isRefreshing: false,
     error: null,
     usageMode: readUsageMode(),
@@ -98,22 +178,31 @@ export const useProviderRateLimitsStore = create<ProviderRateLimitsState>(
       set({ isRefreshing: true });
       try {
         const snapshot = await getProviderRateLimits();
-        set((state) => ({
-          snapshot: {
-            ...snapshot,
-            providers: mergeStale(
-              state.snapshot?.providers,
-              snapshot.providers,
-            ),
-          },
-          error: null,
-          isRefreshing: false,
-        }));
+        set((state) => {
+          const previous = state.snapshot;
+          const merged = mergeStale(previous?.providers, snapshot.providers);
+          const providers = keepUnchangedProviders(previous?.providers, merged);
+          const fetchedAtByProvider = Object.fromEntries(
+            merged.map((provider) => [provider.provider, provider.updatedAt]),
+          );
+          if (previous && providers === previous.providers) {
+            // Same usage as last time: subscribers keep the snapshot they have.
+            return { fetchedAtByProvider, error: null, isRefreshing: false };
+          }
+          return {
+            snapshot: { ...snapshot, providers },
+            fetchedAtByProvider,
+            error: null,
+            isRefreshing: false,
+          };
+        });
       } catch (error) {
         set({
           isRefreshing: false,
           error: error instanceof Error ? error.message : String(error),
         });
+      } finally {
+        lastFetchSettledAt = Date.now();
       }
     },
 
@@ -138,13 +227,27 @@ export function startProviderRateLimitPolling(): () => void {
   if (pollTimer != null) {
     window.clearInterval(pollTimer);
   }
+  removeVisibilityListener?.();
   pollTimer = window.setInterval(() => {
-    void useProviderRateLimitsStore.getState().refresh();
+    // Each tick is an HTTP request per provider, and a hidden window has
+    // nobody looking at its status bar. Coming back into view catches up.
+    if (document.hidden) return;
+    void useProviderRateLimitsStore.getState().load();
   }, POLL_MS);
+  const handleVisibilityChange = () => {
+    if (document.hidden || Date.now() - lastFetchSettledAt < POLL_MS) return;
+    void useProviderRateLimitsStore.getState().load();
+  };
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+  removeVisibilityListener = () => {
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
+  };
   return () => {
     if (pollTimer != null) {
       window.clearInterval(pollTimer);
       pollTimer = null;
     }
+    removeVisibilityListener?.();
+    removeVisibilityListener = null;
   };
 }
