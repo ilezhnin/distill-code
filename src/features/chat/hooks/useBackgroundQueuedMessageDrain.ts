@@ -1,6 +1,4 @@
 import { useEffect } from "react";
-import { toast } from "sonner";
-import { i18n } from "@/shared/i18n";
 
 import {
   assertQueuedSessionReady,
@@ -26,6 +24,7 @@ import {
 } from "@/features/chat/stores/chatStore";
 import { SessionDispatchContentionError } from "@/features/chat/lib/sessionDispatchAcquisition";
 import { sendQueuedPromptToExistingSessionInBackground } from "@/features/chat/lib/queuedSessionSend";
+import { parkFailedQueuedMessage } from "@/features/chat/lib/queuedMessageFailure";
 
 const drainingSessionIds = new Set<string>();
 const activeOwners = new Set<string>();
@@ -292,33 +291,11 @@ function drainQueuedMessage(sessionId: string, ownerId: string): void {
         return;
       }
       if (error instanceof PreCommitSendRejectedError) return;
-      const message = i18n.t("chat:queue.backgroundSendFailed");
       console.error(
         `[background-queue] failed to send queued prompt for session ${sessionId}`,
         error,
       );
-      const current =
-        useChatStore.getState().queuedMessageBySession[sessionId]?.[0];
-      if (current === queuedMessage) {
-        useChatStore
-          .getState()
-          .deferTransportReadyMessage(sessionId, queuedMessage.recordId, {
-            type: "workspace-first-send",
-            status: "failed",
-            error: message,
-          });
-        // The user is not viewing this chat (the background drain only
-        // claims unowned sessions), so a parked failure would otherwise be
-        // invisible until they reopen it. Surface it where they are now.
-        const sessionTitle = useChatSessionStore
-          .getState()
-          .getSession(sessionId)
-          ?.title?.trim();
-        toast.error(
-          sessionTitle || i18n.t("chat:queue.backgroundSendFailedTitle"),
-          { description: message },
-        );
-      }
+      parkFailedQueuedMessage(sessionId, queuedMessage);
     })
     .finally(() => {
       drainingSessionIds.delete(sessionId);

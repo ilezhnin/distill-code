@@ -22,6 +22,7 @@ import {
   sendPromptToExistingSessionInBackground,
 } from "@/features/distillctl/commands/runtime/sessionSend";
 import { SessionDispatchContentionError } from "@/features/chat/lib/sessionDispatchAcquisition";
+import { parkFailedQueuedMessage } from "@/features/chat/lib/queuedMessageFailure";
 
 const drainingSessionIds = new Set<string>();
 const activeOwners = new Set<string>();
@@ -179,6 +180,7 @@ function drainQueuedMessage(queuedSessionId: string, ownerId: string): void {
         `[distillctl-queue] failed to send queued prompt for session ${queuedSessionId}`,
         error,
       );
+      parkFailedQueuedMessage(queuedSessionId, queuedMessage);
     })
     .finally(() => {
       drainingSessionIds.delete(queuedSessionId);
