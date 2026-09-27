@@ -25,14 +25,12 @@ function isAliasRow(model: ModelOption): boolean {
 }
 
 /**
- * Drops one of two rows when a harness lists an alias next to the model that
- * alias resolves to.
+ * Hides an unselected alias when its concrete model is already listed.
  *
- * Claude Code lists both "default" and "opus[1m]", and both read "Opus 5", so
- * the list would name that model twice. The selected row always survives:
- * while the session runs on the alias that row stays and its twin goes,
- * otherwise the alias goes. Only the rows shown change — the inventory keeps
- * both ids, since sessions and agent rankings may be pinned to either.
+ * Claude Code lists both "default" and "opus[1m]". Keep a selected alias so
+ * the picker accurately names the running selection, but always keep the
+ * concrete row selectable: a chat on Default must be able to pin Opus without
+ * first switching to another model. The inventory retains both ids.
  *
  * The pairing is the harness's own `aliasOf` where it states one. Comparing
  * labels is what this did before anything said it, and it stays as the
@@ -47,19 +45,6 @@ export function hideAliasTwins(
   const concreteLabels = new Set(
     models.filter((model) => !isAliasRow(model)).map(rowLabel),
   );
-  const selectedAliasTargets = new Set<string>();
-  const selectedAliasLabels = new Set<string>();
-  for (const model of models) {
-    if (model.id !== selectedModelId || !isAliasRow(model)) {
-      continue;
-    }
-    const target = aliasTarget(model);
-    if (target) {
-      selectedAliasTargets.add(target);
-    } else {
-      selectedAliasLabels.add(rowLabel(model));
-    }
-  }
   return models.filter((model) => {
     if (isAliasRow(model)) {
       if (model.id === selectedModelId) {
@@ -70,9 +55,6 @@ export function hideAliasTwins(
         ? !listedIds.has(target)
         : !concreteLabels.has(rowLabel(model));
     }
-    return (
-      !selectedAliasTargets.has(model.id) &&
-      !selectedAliasLabels.has(rowLabel(model))
-    );
+    return true;
   });
 }
