@@ -278,15 +278,20 @@ describe("useDistillctlQueuedMessageDrain", () => {
         sendError,
       );
     });
-    expect(
-      useChatStore.getState().queuedMessageBySession["session-1"]?.[0]?.payload,
-    ).toEqual({
+    const head =
+      useChatStore.getState().queuedMessageBySession["session-1"]?.[0];
+    expect(head?.payload).toEqual({
       persona: { kind: "inherit" },
       text: "queued prompt",
       sendOptions: {
         userMessageMetadata: { origin: "distillctl_cross_session" as const },
         acpPromptMetadata: { origin: "distillctl_cross_session" },
       },
+    });
+    // Parked as failed, so neither this run nor the next start retries it.
+    expect(head).toMatchObject({
+      kind: "deferred",
+      state: { status: "failed" },
     });
   });
 
