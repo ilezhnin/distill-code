@@ -129,10 +129,12 @@ import { AgentBuilderLeaveDraftDialog } from "@/features/agents/ui/AgentBuilderL
 import { AppShellLayout } from "./ui/AppShellLayout";
 import { AppShellContent } from "./ui/AppShellContent";
 import {
+  getSessionTargetState,
   replaceSessionTargetAfterDispatch,
   transferSessionTargetOwnership,
   transitionSessionTarget,
 } from "@/features/chat/lib/sessionTargetCoordinator";
+import { isSessionPrepared } from "@/shared/api/acpSessionRegistry";
 import {
   beginModelSelectionIntent,
   getModelSelectionIntent,
@@ -158,7 +160,7 @@ import {
   loadSessionMessagesAndPrepare,
 } from "@/features/chat/lib/sessionActivation";
 import { resolveSessionCwd } from "@/features/projects/lib/sessionCwdSelection";
-import { perfLog } from "@/shared/lib/perfLog";
+import { logSessionId, perfLog } from "@/shared/lib/perfLog";
 import { cn } from "@/shared/lib/cn";
 import { isEditableTarget } from "@/shared/keyboard/isEditableTarget";
 import {
@@ -1159,6 +1161,19 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           bootstrapTarget &&
           (uiOwnsBootstrapTarget || isModelExecutionTarget(bootstrapTarget))
         ) {
+          // Unrelated changes re-create this callback (the session list
+          // refresh every minute, provider status polls), and each re-run
+          // prepared the draft on the target it was already prepared on.
+          const targetState = getSessionTargetState(homeSession.id);
+          if (
+            liveHomeSession.reasoningEffort &&
+            liveHomeSession.workingDir === workingDir &&
+            isSessionPrepared(homeSession.id) &&
+            targetState.status === "settled" &&
+            sameSessionExecutionTarget(targetState.committed, bootstrapTarget)
+          ) {
+            return liveHomeSession;
+          }
           const bootstrapSelection =
             hostSelectionFromExecutionTarget(bootstrapTarget);
           const target = await ensureNewSessionTarget(
@@ -1953,7 +1968,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           setChatActiveSession(existingDraft.id);
         }
         perfLog(
-          `[perf:newtab] ${existingDraft.id.slice(0, 8)} reused draft in ${(performance.now() - tStart).toFixed(1)}ms`,
+          `[perf:newtab] ${logSessionId(existingDraft.id)} reused draft in ${(performance.now() - tStart).toFixed(1)}ms`,
         );
         return existingDraft;
       }
@@ -1968,7 +1983,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           workingDir,
         });
         perfLog(
-          `[perf:newtab] ${session.id.slice(0, 8)} created session in ${(performance.now() - tStart).toFixed(1)}ms`,
+          `[perf:newtab] ${logSessionId(session.id)} created session in ${(performance.now() - tStart).toFixed(1)}ms`,
         );
         return session;
       }
@@ -1986,7 +2001,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       setActiveView("chat");
       setChatActiveSession(session.id);
       perfLog(
-        `[perf:newtab] ${session.id.slice(0, 8)} created draft in ${(performance.now() - tStart).toFixed(1)}ms`,
+        `[perf:newtab] ${logSessionId(session.id)} created draft in ${(performance.now() - tStart).toFixed(1)}ms`,
       );
       startDraftSessionCreation({
         session,
@@ -2156,7 +2171,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         (chatState.queuedMessageBySession[existingDraft.id]?.length ?? 0) === 0
       ) {
         perfLog(
-          `[perf:newtab] ${existingDraft.id.slice(0, 8)} reused background draft in ${(performance.now() - tStart).toFixed(1)}ms`,
+          `[perf:newtab] ${logSessionId(existingDraft.id)} reused background draft in ${(performance.now() - tStart).toFixed(1)}ms`,
         );
         return existingDraft;
       }
@@ -2170,7 +2185,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         workingDir: optimisticWorkingDir,
       });
       perfLog(
-        `[perf:newtab] ${session.id.slice(0, 8)} created background draft in ${(performance.now() - tStart).toFixed(1)}ms`,
+        `[perf:newtab] ${logSessionId(session.id)} created background draft in ${(performance.now() - tStart).toFixed(1)}ms`,
       );
       startDraftSessionCreation({
         session,
