@@ -44,6 +44,16 @@ const BRIDGE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 /// How often the host looks for idle bridges; one lives at most this much
 /// longer than [`BRIDGE_IDLE_TIMEOUT`].
 const BRIDGE_REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+/// How long an attached chat may go unused before the host lets go of its
+/// bridge session. Every chat left on screen for [`BACKGROUND_ATTACH_DELAY`]
+/// is attached, and without a limit each one keeps its agent context loaded in
+/// the bridge, and keeps that bridge from ever being shut down, for the rest of
+/// the run. The price is paid by the next prompt or model change in that chat,
+/// which has to resume the bridge session first: one to three seconds, more if
+/// the bridge itself was shut down meanwhile. Opening the chat again resumes it
+/// in the background instead. Half an hour keeps a conversation with pauses in
+/// it attached, and still lets the chats someone merely clicked through go.
+const SESSION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 const SNIPPET_CHARS: usize = 200;
 /// How much of a conversation goes with a chat that moved to another agent
 /// (`carryover_block`), in characters: roughly 30k tokens, which every model
@@ -227,6 +237,9 @@ struct Selection {
 }
 
 pub struct SessionRuntime {
+    /// The harness and the bridge's own id for this session. Once the runtime
+    /// is in a [`SessionTable`] they only change through the table, which
+    /// finds a chat by them for every update a bridge streams.
     pub harness: String,
     pub bridge_session_id: String,
     /// The bridge process that accepted `bridge_session_id`. A later process
@@ -242,9 +255,20 @@ pub struct SessionRuntime {
     /// What the bridge would not do when this session was last put on its
     /// selections, as `_meta.substitutions` entries (see `apply_selection`).
     substitutions: Vec<Value>,
+    /// When the chat was last used: attached or opened, a turn ending, a
+    /// setting written, an update of its transcript arriving. What
+    /// [`Inner::session_is_evictable`] measures an idle chat by. A running or
+    /// queued turn keeps the chat regardless, so a turn only has to count when
+    /// it ends.
+    last_active: std::time::Instant,
 }
 
 impl SessionRuntime {
+    /// Record that the chat is in use now (see the `last_active` field).
+    fn touch(&mut self) {
+        self.last_active = std::time::Instant::now();
+    }
+
     /// The bridge session calls on this session go to, and the bridge process
     /// that accepted it. There is none while the session is still being
     /// attached: the bridge has not accepted the stored id yet (and may
@@ -280,6 +304,126 @@ impl SessionRuntime {
     }
 }
 
+/// The attached chats' runtimes by host session id, with the reverse index
+/// from a bridge's own session id back to the chat.
+///
+/// The bridge event loop maps every streamed update back to its chat, under
+/// the lock this table sits behind. Scanning every runtime for it made each
+/// chunk cost more the more chats had been opened, and held up every other
+/// caller of the lock meanwhile; the index makes it one lookup.
+///
+/// The index is right only while a runtime's `harness` and
+/// `bridge_session_id` change nowhere but here: through `insert`, `remove`,
+/// `retain` and `rebind`.
+#[derive(Default)]
+struct SessionTable {
+    runtimes: HashMap<String, SessionRuntime>,
+    /// Harness, then the bridge's session id, to the host session id. Nested
+    /// rather than keyed by the pair so a lookup borrows the two strings
+    /// instead of building a key for every update.
+    by_bridge: HashMap<String, HashMap<String, String>>,
+}
+
+impl SessionTable {
+    fn get(&self, session_id: &str) -> Option<&SessionRuntime> {
+        self.runtimes.get(session_id)
+    }
+
+    fn get_mut(&mut self, session_id: &str) -> Option<&mut SessionRuntime> {
+        self.runtimes.get_mut(session_id)
+    }
+
+    fn values(&self) -> impl Iterator<Item = &SessionRuntime> {
+        self.runtimes.values()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&String, &SessionRuntime)> {
+        self.runtimes.iter()
+    }
+
+    /// The chat a bridge session belongs to. Checked against the runtime it
+    /// names, so an index gone stale drops an update rather than handing it
+    /// to another chat.
+    fn host_session_for(&self, harness: &str, bridge_session_id: &str) -> Option<&str> {
+        let session_id = self.by_bridge.get(harness)?.get(bridge_session_id)?;
+        self.runtimes
+            .get(session_id)
+            .filter(|runtime| {
+                runtime.harness == harness && runtime.bridge_session_id == bridge_session_id
+            })
+            .map(|_| session_id.as_str())
+    }
+
+    /// Register a chat's runtime, replacing whatever it had.
+    fn insert(&mut self, session_id: String, runtime: SessionRuntime) {
+        self.remove(&session_id);
+        Self::index(&mut self.by_bridge, &session_id, &runtime);
+        self.runtimes.insert(session_id, runtime);
+    }
+
+    fn remove(&mut self, session_id: &str) -> Option<SessionRuntime> {
+        let runtime = self.runtimes.remove(session_id)?;
+        let Some(bridge_ids) = self.by_bridge.get_mut(&runtime.harness) else {
+            return Some(runtime);
+        };
+        if bridge_ids
+            .get(&runtime.bridge_session_id)
+            .map(String::as_str)
+            == Some(session_id)
+        {
+            bridge_ids.remove(&runtime.bridge_session_id);
+            // Two chats on one bridge session is not something the host sets
+            // up, but the scan this index replaced still found the other one;
+            // so does this. A removal is rare, so the scan costs nothing.
+            if let Some((other, _)) = self.runtimes.iter().find(|(_, other)| {
+                other.harness == runtime.harness
+                    && other.bridge_session_id == runtime.bridge_session_id
+            }) {
+                bridge_ids.insert(runtime.bridge_session_id.clone(), other.clone());
+            }
+        }
+        Some(runtime)
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&SessionRuntime) -> bool) {
+        let before = self.runtimes.len();
+        self.runtimes.retain(|_, runtime| keep(runtime));
+        if self.runtimes.len() == before {
+            return;
+        }
+        self.by_bridge.clear();
+        for (session_id, runtime) in &self.runtimes {
+            Self::index(&mut self.by_bridge, session_id, runtime);
+        }
+    }
+
+    /// Point a chat at another bridge session, as an attach that could not
+    /// resume the stored one does.
+    fn rebind(
+        &mut self,
+        session_id: &str,
+        bridge_session_id: String,
+    ) -> Option<&mut SessionRuntime> {
+        if self.runtimes.get(session_id)?.bridge_session_id != bridge_session_id {
+            let mut runtime = self.remove(session_id)?;
+            runtime.bridge_session_id = bridge_session_id;
+            self.insert(session_id.to_string(), runtime);
+        }
+        self.runtimes.get_mut(session_id)
+    }
+
+    fn index(
+        by_bridge: &mut HashMap<String, HashMap<String, String>>,
+        session_id: &str,
+        runtime: &SessionRuntime,
+    ) {
+        by_bridge
+            .entry(runtime.harness.clone())
+            .or_default()
+            .insert(runtime.bridge_session_id.clone(), session_id.to_string());
+    }
+}
+
 pub struct Inner {
     pub app: tauri::AppHandle,
     pub store: SessionStore,
@@ -289,7 +433,7 @@ pub struct Inner {
     /// One lock per harness so two callers never spawn the same bridge twice,
     /// without holding `bridges` while a spawn is in flight.
     spawn_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
-    sessions: Mutex<HashMap<String, SessionRuntime>>,
+    sessions: Mutex<SessionTable>,
     frontend: StdMutex<Option<mpsc::UnboundedSender<String>>>,
     /// Requests a bridge made of the client, by the id the renderer was
     /// asked under: (harness, the bridge's own id, method).
@@ -429,7 +573,7 @@ impl Inner {
             ws_url,
             bridges: Mutex::new(HashMap::new()),
             spawn_locks: Mutex::new(HashMap::new()),
-            sessions: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(SessionTable::default()),
             frontend: StdMutex::new(None),
             client_requests: StdMutex::new(HashMap::new()),
             next_client_request_id: AtomicU64::new(1_000_000),
@@ -813,7 +957,151 @@ impl Inner {
             let Some(host) = host.upgrade() else {
                 return;
             };
+            // Chats first: a bridge whose last chat is let go of here is one
+            // the reaper may shut down once its own idle window has passed.
+            host.evict_idle_sessions().await;
             host.reap_idle_bridges().await;
+        }
+    }
+
+    /// Let go of the bridge sessions of the chats
+    /// [`Self::session_is_evictable`] finds idle, the way
+    /// [`Self::release_bridge_session`] does, except that the chat keeps the
+    /// bridge session's id: the next prompt, model change or visit attaches it
+    /// again through the ordinary attach path, which resumes it.
+    ///
+    /// Which bridge processes can resume a session is read first and let go
+    /// of: the session map and the bridge map are never held together (see
+    /// `attached_route`). A process's capabilities are fixed at `initialize`,
+    /// so what was read holds for as long as the runtime names that process.
+    async fn evict_idle_sessions(&self) {
+        let holders: HashMap<String, (u64, bool)> = self
+            .bridges
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, bridge)| bridge.is_alive())
+            .map(|(harness, bridge)| {
+                (
+                    harness.clone(),
+                    (bridge.generation(), bridge.supports_load_session()),
+                )
+            })
+            .collect();
+        let now = std::time::Instant::now();
+        let idle: Vec<(String, u64)> = self
+            .sessions
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, runtime)| {
+                let resumable = Self::resumable_after_release(
+                    holders.get(&runtime.harness).copied(),
+                    runtime.generation,
+                );
+                Self::session_is_evictable(runtime, resumable, now)
+            })
+            .map(|(session_id, runtime)| (session_id.clone(), runtime.generation))
+            .collect();
+        // Side by side, so a bridge slow to close one session does not hold up
+        // the others, or the bridge reaper behind them, by its full deadline.
+        futures_util::future::join_all(
+            idle.iter()
+                .map(|(session_id, generation)| self.release_idle_session(session_id, *generation)),
+        )
+        .await;
+    }
+
+    /// Let go of one chat [`Self::evict_idle_sessions`] found idle, if it
+    /// still is.
+    ///
+    /// Under the chat's attach lock, like every other change to what bridge
+    /// session a chat has. An attach that takes the lock afterwards finds no
+    /// runtime and resumes the bridge session only once the close below has
+    /// been answered; were the close sent in the background instead, it could
+    /// reach the bridge after that resume and close the session again under
+    /// the new turn. And an attach that took the lock first has just marked
+    /// the chat as used, so it is no longer idle here.
+    async fn release_idle_session(&self, session_id: &str, generation: u64) {
+        let lock = self.attach_lock(session_id).await;
+        let released = {
+            let _releasing = lock.lock().await;
+            let released = {
+                let mut sessions = self.sessions.lock().await;
+                // Still on the process the scan found able to resume it.
+                let still_idle = sessions.get(session_id).is_some_and(|runtime| {
+                    runtime.generation == generation
+                        && Self::session_is_evictable(runtime, true, std::time::Instant::now())
+                });
+                if still_idle {
+                    sessions.remove(session_id)
+                } else {
+                    None
+                }
+            };
+            if let Some(runtime) = &released {
+                log::info!(
+                    "[agent-host] session {session_id} unused for {}s; letting go of its {} bridge session",
+                    runtime.last_active.elapsed().as_secs(),
+                    runtime.harness
+                );
+                // Nothing is running, so unlike `let_go_of` there is nothing
+                // to cancel first.
+                if let Some(bridge) = self
+                    .live_bridge(&runtime.harness)
+                    .await
+                    .filter(|bridge| bridge.generation() == runtime.generation)
+                {
+                    bridge.close_session(&runtime.bridge_session_id).await;
+                }
+            }
+            released.is_some()
+        };
+        if !released {
+            return;
+        }
+        // The attach lock goes with the runtime, as it does when a chat is
+        // deleted, or the map keeps an entry for every chat ever attached.
+        // Only when this task holds the last reference besides the map: a
+        // caller already waiting on this lock has to get this very lock, or it
+        // could attach alongside a caller that took a fresh one.
+        let mut locks = self.attach_locks.lock().await;
+        if locks
+            .get(session_id)
+            .is_some_and(|entry| Arc::ptr_eq(entry, &lock) && Arc::strong_count(&lock) == 2)
+        {
+            locks.remove(session_id);
+        }
+    }
+
+    /// Whether an attached chat may let go of its bridge session: it is not
+    /// being attached, runs no turn and has none queued, the bridge can give
+    /// it back on the next attach (`resumable`, see
+    /// [`Self::resumable_after_release`]), and nothing has used it for
+    /// [`SESSION_IDLE_TIMEOUT`].
+    fn session_is_evictable(
+        runtime: &SessionRuntime,
+        resumable: bool,
+        now: std::time::Instant,
+    ) -> bool {
+        resumable
+            && !runtime.loading
+            && runtime.run.is_none()
+            && runtime.steer_queue.is_empty()
+            && now.saturating_duration_since(runtime.last_active) >= SESSION_IDLE_TIMEOUT
+    }
+
+    /// Whether letting go of a bridge session loses nothing the next attach
+    /// cannot get back. `holder` is the live bridge of the session's harness,
+    /// as its generation and whether it loads sessions. A bridge that cannot
+    /// load one would start the chat over without the agent's context, so its
+    /// chats stay attached. A process other than the one that accepted the
+    /// session has never heard of it, and none at all means it went with the
+    /// process that had it: either way there is nothing left to lose.
+    fn resumable_after_release(holder: Option<(u64, bool)>, generation: u64) -> bool {
+        match holder {
+            Some((live, loads_sessions)) if live == generation => loads_sessions,
+            _ => true,
         }
     }
 
@@ -970,7 +1258,7 @@ impl Inner {
                     }
                     drop(bridges);
                     let mut sessions = self.sessions.lock().await;
-                    sessions.retain(|_, runtime| !runtime.served_by(&harness, generation));
+                    sessions.retain(|runtime| !runtime.served_by(&harness, generation));
                 }
             }
         }
@@ -1034,20 +1322,26 @@ impl Inner {
         }
     }
 
-    /// Map a bridge-side session id back to the host session id.
+    /// Map a bridge-side session id back to the host session id: one lookup
+    /// in the table's index, whatever the number of attached chats.
     async fn host_session_for(&self, harness: &str, bridge_session_id: &str) -> Option<String> {
-        let sessions = self.sessions.lock().await;
-        sessions
-            .iter()
-            .find(|(_, runtime)| {
-                runtime.harness == harness && runtime.bridge_session_id == bridge_session_id
-            })
-            .map(|(id, _)| id.clone())
+        self.sessions
+            .lock()
+            .await
+            .host_session_for(harness, bridge_session_id)
+            .map(str::to_string)
     }
 
     async fn runtime_route(&self, session_id: &str) -> Option<(String, String, u64)> {
         let sessions = self.sessions.lock().await;
         sessions.get(session_id).and_then(SessionRuntime::route)
+    }
+
+    /// Mark an attached chat as in use now; see [`SessionRuntime::touch`].
+    async fn touch_session(&self, session_id: &str) {
+        if let Some(runtime) = self.sessions.lock().await.get_mut(session_id) {
+            runtime.touch();
+        }
     }
 
     /// Handle one notification and report the update the transcript has to
@@ -1098,6 +1392,10 @@ impl Inner {
                     self.notify_frontend("session/update", params);
                     return None;
                 }
+                // Only what the conversation is made of counts as use: a
+                // bridge restating its command list to every session it has
+                // would otherwise keep every chat of it attached for good.
+                runtime.touch();
                 persist = true;
                 if let Some(run) = runtime.run.as_mut() {
                     Self::stamp_run_update(&mut params, run, &now_iso());
@@ -1937,6 +2235,7 @@ impl Inner {
                 snapshot: snapshot.clone(),
                 has_model_option,
                 substitutions: substitutions.clone(),
+                last_active: std::time::Instant::now(),
             },
         );
         let mut response = Self::presented_snapshot(&harness_id, &snapshot, has_model_option);
@@ -1995,6 +2294,10 @@ impl Inner {
         let lock = self.attach_lock(&record.id).await;
         let _attaching = lock.lock().await;
         if let Some(attached) = self.attached_route(&record.id).await {
+            // Every caller is about to use the session. Marked under the
+            // attach lock, which `release_idle_session` takes too, so the chat
+            // cannot be let go of between this answer and that use.
+            self.touch_session(&record.id).await;
             return Ok(attached);
         }
         // The caller's copy may predate a move to another harness made while
@@ -2051,6 +2354,7 @@ impl Inner {
                 snapshot: snapshot.clone(),
                 has_model_option: Self::has_model_option(&snapshot),
                 substitutions: Vec::new(),
+                last_active: std::time::Instant::now(),
             },
         );
         let attached = self
@@ -2076,7 +2380,15 @@ impl Inner {
     /// `session/close` would happily resume it forever. Falling back to the
     /// host's own session id here (the record's `id`) would do exactly that for
     /// an imported chat, whose two ids are the same.
+    ///
+    /// A chat nobody has prompted has nothing to resume either, and the agent
+    /// never saved its bridge session: claude answers such a resume with
+    /// "Resource not found" after about three seconds, and the home composer's
+    /// draft paid that on every start.
     fn resumable_bridge_session(record: &SessionRecord) -> Option<&str> {
+        if record.message_count == 0 {
+            return None;
+        }
         record
             .bridge_session_id
             .as_deref()
@@ -2178,12 +2490,12 @@ impl Inner {
         self.drain_bridge_events().await;
         {
             let mut sessions = self.sessions.lock().await;
-            if let Some(runtime) = sessions.get_mut(&record.id) {
-                runtime.bridge_session_id = bridge_session_id.clone();
+            if let Some(runtime) = sessions.rebind(&record.id, bridge_session_id.clone()) {
                 runtime.loading = false;
                 runtime.snapshot = snapshot;
                 runtime.has_model_option = has_model_option;
                 runtime.substitutions = substitutions;
+                runtime.touch();
             }
         }
         Ok((Arc::clone(bridge), bridge_session_id))
@@ -2247,6 +2559,12 @@ impl Inner {
             frames,
         );
         let attached = self.attached_route(&session_id).await.is_some();
+        if attached {
+            // Opening a chat whose agent is awake counts as using it: the
+            // background attach that would wake it otherwise is skipped, and a
+            // chat someone is looking at is the likeliest to be prompted next.
+            self.touch_session(&session_id).await;
+        }
         let (snapshot, has_model_option, substitutions) =
             match self.runtime_snapshot(&session_id).await {
                 Some(live) if attached => live,
@@ -2458,7 +2776,10 @@ impl Inner {
     /// attach reads the id straight back out of the row and resumes the same
     /// bridge session — which, for a bridge that supports `loadSession` but not
     /// `session/close` (every bridge shipped today), is still alive in the old
-    /// folder, so the chat would keep running there.
+    /// folder, so the chat would keep running there. That holds for a chat with
+    /// no runtime as much as for one with: one never attached in this run, or
+    /// let go of while idle (`release_idle_session`, which keeps the id so the
+    /// chat resumes), names the old bridge session in its row just the same.
     pub async fn release_bridge_session(&self, session_id: &str) -> bool {
         let released = {
             let mut sessions = self.sessions.lock().await;
@@ -2466,15 +2787,13 @@ impl Inner {
                 .get(session_id)
                 .is_some_and(|runtime| runtime.loading || runtime.run.is_some());
             if busy {
-                None
-            } else {
-                sessions.remove(session_id)
+                return false;
             }
+            sessions.remove(session_id)
         };
-        let Some(runtime) = released else {
-            return false;
-        };
-        self.let_go_of(&runtime).await;
+        if let Some(runtime) = released {
+            self.let_go_of(&runtime).await;
+        }
         if let Err(error) = self.store.set_bridge_session_id(session_id, None).await {
             log::warn!("[agent-host] failed to forget the bridge session of {session_id}: {error}");
         }
@@ -3080,6 +3399,7 @@ impl Inner {
                 // told the same thing — and a write the bridge did honour
                 // clears a notice left by one it did not.
                 runtime.substitutions = substitutions.clone();
+                runtime.touch();
             }
         }
         let _ = self.store.set_snapshot(&session_id, &snapshot).await;
@@ -3163,11 +3483,10 @@ impl Inner {
                 // stays open in its bridge with nobody to hear it until the
                 // next attach loads an id the bridge never let go of.
                 if let Some(previously) = previously {
-                    self.sessions
-                        .lock()
-                        .await
-                        .entry(session_id.to_string())
-                        .or_insert(previously);
+                    let mut sessions = self.sessions.lock().await;
+                    if sessions.get(session_id).is_none() {
+                        sessions.insert(session_id.to_string(), previously);
+                    }
                 }
                 bridge.close_session(&bridge_session_id).await;
                 return Err(protocol::internal(error));
@@ -3191,6 +3510,7 @@ impl Inner {
                 snapshot: snapshot.clone(),
                 has_model_option,
                 substitutions: Vec::new(),
+                last_active: std::time::Instant::now(),
             },
         );
         log::info!(
@@ -3418,6 +3738,14 @@ impl Inner {
     ///
     /// Returns what it takes to undo these writes, for the case where the
     /// bridge rejects the prompt outright.
+    ///
+    /// The rows are written straight to the store, past the event loop that
+    /// commits what the bridge streams, so every caller drains that loop first
+    /// or the previous reply's tail could be committed after them. The drain
+    /// happens before the turn is claimed rather than in here: once it is,
+    /// anything still queued would be stamped as this turn's. `start_turn`
+    /// drains before its claim, and `run_prompt` before a turn it ran ends,
+    /// which is what precedes each steered turn's claim.
     async fn record_user_prompt(
         &self,
         session_id: &str,
@@ -3602,6 +3930,13 @@ impl Inner {
         // stamped onto the run as something the turn produced — which is what
         // stops a prompt the bridge then rejects from being withdrawn.
         let mut carryover = self.pending_carryover(&session_id).await;
+        // For the same reason, everything the bridge said before this prompt
+        // is handled and stored before the turn is claimed and the prompt is
+        // recorded. An update still queued would otherwise be stamped as this
+        // turn's, and one still waiting for its commit would land in the log
+        // after this prompt's rows. The previous turn's own tail is already in:
+        // `run_prompt` drains before a turn it ran ends.
+        self.drain_bridge_events().await;
         // The bridge session the prompt goes to is the one the runtime names
         // in the very lock the run is registered in. `attach_session` released
         // its own lock before returning, and a `reopen_on_model` that took it
@@ -3674,6 +4009,9 @@ impl Inner {
                 let Some(runtime) = sessions.get_mut(&session_id) else {
                     break;
                 };
+                // A turn just ended: the chat's idle time starts now, not when
+                // the turn began.
+                runtime.touch();
                 // The turn failed (the bridge exited, the prompt was
                 // rejected): the queued steers were never sent, so they are
                 // dropped rather than persisted and echoed as sent messages
@@ -3740,6 +4078,17 @@ impl Inner {
             request["_meta"] = meta;
         }
         let result = bridge.request("session/prompt", request).await;
+        // The bridge writes every update of the turn before it answers the
+        // prompt, but the two do not travel together: its reader hands the
+        // answer straight to this request, while the updates wait in the
+        // event queue (see `bridge_event_loop`). Until the loop has reached
+        // the point of the answer, the reply's tail is still queued, and
+        // handling it after the caller ends this run would stamp it with no
+        // run or with the next steered turn's ids, storing it under the
+        // wrong message; the snippet read below would miss it too. An answer
+        // that is an error gets the same wait, since a failed turn may have
+        // streamed as well.
+        self.drain_bridge_events().await;
         let (agent_text, saw_agent_message) = {
             let sessions = self.sessions.lock().await;
             sessions
@@ -6021,6 +6370,7 @@ mod tests {
             snapshot: claude_session(),
             has_model_option: true,
             substitutions: Vec::new(),
+            last_active: std::time::Instant::now(),
         }
     }
 
@@ -6085,6 +6435,7 @@ mod tests {
             snapshot: Value::Null,
             has_model_option: false,
             substitutions: Vec::new(),
+            last_active: std::time::Instant::now(),
         }
     }
 
@@ -6108,7 +6459,7 @@ mod tests {
             updated_at: "2026-09-11T00:00:00.000Z".to_string(),
             last_message_at: None,
             archived_at: None,
-            message_count: 0,
+            message_count: 1,
             last_snippet: None,
             snapshot: None,
         };
@@ -6117,6 +6468,11 @@ mod tests {
             Some("bridge-1"),
             "an attach resumes the bridge session the row names"
         );
+
+        // Never prompted: the agent never saved that bridge session.
+        record.message_count = 0;
+        assert_eq!(Inner::resumable_bridge_session(&record), None);
+        record.message_count = 1;
 
         // What `release_bridge_session` leaves behind after a folder move: the
         // bridge session it ran in is gone for good, so the attach has to open a
@@ -6224,6 +6580,147 @@ mod tests {
         // A task that took the bridge for an attach or a probe and has not
         // sent anything yet.
         assert!(!Inner::bridge_is_reapable(0, 0, 1, last_used, long_after));
+    }
+
+    /// An attached chat last used at `last_active`, with nothing running.
+    fn idle_since(last_active: std::time::Instant) -> SessionRuntime {
+        let mut idle = runtime("claude-acp", "a", 1);
+        idle.last_active = last_active;
+        idle
+    }
+
+    #[test]
+    fn a_chat_nobody_uses_lets_go_of_its_bridge_session_once_its_idle_window_has_passed() {
+        let last_active = std::time::Instant::now();
+        let idle = idle_since(last_active);
+        assert!(Inner::session_is_evictable(
+            &idle,
+            true,
+            last_active + SESSION_IDLE_TIMEOUT
+        ));
+        assert!(Inner::session_is_evictable(
+            &idle,
+            true,
+            last_active + SESSION_IDLE_TIMEOUT * 10
+        ));
+
+        let one_second = std::time::Duration::from_secs(1);
+        assert!(!Inner::session_is_evictable(&idle, true, last_active));
+        assert!(!Inner::session_is_evictable(
+            &idle,
+            true,
+            last_active + SESSION_IDLE_TIMEOUT - one_second
+        ));
+        // A clock read before the last use (the use raced the check) is no
+        // idle time at all.
+        assert!(!Inner::session_is_evictable(
+            &idle_since(last_active + one_second),
+            true,
+            last_active
+        ));
+    }
+
+    #[test]
+    fn a_chat_with_work_in_hand_or_no_way_back_keeps_its_bridge_session() {
+        let last_active = std::time::Instant::now();
+        let long_after = last_active + SESSION_IDLE_TIMEOUT * 10;
+
+        // A turn that has run for hours: its updates route through the runtime.
+        let mut running = idle_since(last_active);
+        running.run = Some(RunState::start(&ids()));
+        assert!(!Inner::session_is_evictable(&running, true, long_after));
+
+        // A message steered in, waiting for its turn.
+        let mut queued = idle_since(last_active);
+        queued.steer_queue.push_back(QueuedPrompt {
+            prompt: json!([{ "type": "text", "text": "also this" }]),
+            meta: json!({}),
+            ids: TurnIds::new(),
+        });
+        assert!(!Inner::session_is_evictable(&queued, true, long_after));
+
+        // An attach in flight, which makes the runtime live when it is done.
+        let mut loading = idle_since(last_active);
+        loading.loading = true;
+        assert!(!Inner::session_is_evictable(&loading, true, long_after));
+
+        // A bridge that cannot load the session again would start the chat
+        // over without the agent's context.
+        assert!(!Inner::session_is_evictable(
+            &idle_since(last_active),
+            false,
+            long_after
+        ));
+    }
+
+    #[test]
+    fn only_a_bridge_that_cannot_load_sessions_keeps_its_chats_attached() {
+        // The process that accepted the session is the one running.
+        assert!(Inner::resumable_after_release(Some((3, true)), 3));
+        assert!(!Inner::resumable_after_release(Some((3, false)), 3));
+        // That process is gone, replaced or not: its sessions went with it,
+        // so letting go of the runtime loses nothing.
+        assert!(Inner::resumable_after_release(Some((4, false)), 3));
+        assert!(Inner::resumable_after_release(None, 3));
+    }
+
+    #[test]
+    fn an_update_finds_its_chat_by_the_bridge_session_it_came_from() {
+        let mut table = SessionTable::default();
+        table.insert("chat-1".to_string(), runtime("claude-acp", "a", 1));
+        table.insert("chat-2".to_string(), runtime("codex-acp", "a", 1));
+        table.insert("chat-3".to_string(), runtime("claude-acp", "b", 1));
+        assert_eq!(table.host_session_for("claude-acp", "a"), Some("chat-1"));
+        // The same bridge id under another harness is another session.
+        assert_eq!(table.host_session_for("codex-acp", "a"), Some("chat-2"));
+        assert_eq!(table.host_session_for("claude-acp", "b"), Some("chat-3"));
+        // A probe or naming session nobody attached.
+        assert_eq!(table.host_session_for("claude-acp", "probe"), None);
+        assert_eq!(table.host_session_for("grok", "a"), None);
+
+        // An attach that could not resume the stored session opened another.
+        let rebound = table.rebind("chat-1", "c".to_string());
+        assert_eq!(
+            rebound.map(|runtime| runtime.bridge_session_id.as_str()),
+            Some("c")
+        );
+        assert_eq!(table.host_session_for("claude-acp", "a"), None);
+        assert_eq!(table.host_session_for("claude-acp", "c"), Some("chat-1"));
+        assert!(table.rebind("nobody", "d".to_string()).is_none());
+
+        // Re-registering a chat (a reopen, a move) replaces its old route.
+        table.insert("chat-3".to_string(), runtime("codex-acp", "e", 2));
+        assert_eq!(table.host_session_for("claude-acp", "b"), None);
+        assert_eq!(table.host_session_for("codex-acp", "e"), Some("chat-3"));
+
+        // Let go of, deleted, or gone with its bridge process.
+        assert!(table.remove("chat-1").is_some());
+        assert!(table.remove("chat-1").is_none());
+        assert_eq!(table.host_session_for("claude-acp", "c"), None);
+        table.retain(|runtime| !runtime.served_by("codex-acp", 2));
+        assert_eq!(table.host_session_for("codex-acp", "e"), None);
+        assert_eq!(table.host_session_for("codex-acp", "a"), Some("chat-2"));
+        assert_eq!(table.values().count(), 1);
+    }
+
+    #[test]
+    fn a_second_chat_on_one_bridge_session_is_still_found_when_the_first_goes() {
+        let mut table = SessionTable::default();
+        table.insert("chat-1".to_string(), runtime("claude-acp", "a", 1));
+        table.insert("chat-2".to_string(), runtime("claude-acp", "a", 1));
+        let first = table
+            .host_session_for("claude-acp", "a")
+            .map(str::to_string);
+        let first = first.expect("one of the two chats is found");
+        table.remove(&first);
+        let second = if first == "chat-1" {
+            "chat-2"
+        } else {
+            "chat-1"
+        };
+        assert_eq!(table.host_session_for("claude-acp", "a"), Some(second));
+        table.remove(second);
+        assert_eq!(table.host_session_for("claude-acp", "a"), None);
     }
 
     #[test]
