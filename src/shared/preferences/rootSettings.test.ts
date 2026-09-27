@@ -166,6 +166,40 @@ describe("Distill root settings", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  it("encodes an unchanged object value once, however often it is read", async () => {
+    disk = { "chat-workspace-metadata": { s1: { workingDir: "C:/a" } } };
+    const settings = await import("./rootSettings");
+    await settings.initializeRootSettings();
+    const storage = settings.getPreferenceStorage();
+    const key = "distill:chat-workspace-metadata";
+    const stringify = vi.spyOn(JSON, "stringify");
+    const first = storage?.getItem(key);
+    const second = storage?.getItem(key);
+    const third = storage?.getItem(key);
+    const encodes = stringify.mock.calls.length;
+    stringify.mockRestore();
+    expect(encodes).toBe(1);
+    expect(second).toBe(first);
+    expect(third).toBe(first);
+    expect(JSON.parse(first ?? "null")).toEqual({
+      s1: { workingDir: "C:/a" },
+    });
+
+    // A write replaces the value, so the next read encodes the new one.
+    storage?.setItem(key, '{"s1":{"workingDir":"C:/b"}}');
+    expect(JSON.parse(storage?.getItem(key) ?? "null")).toEqual({
+      s1: { workingDir: "C:/b" },
+    });
+    await settings.flushRootSettings();
+
+    // So does a refresh that picked up another window's edit.
+    disk["chat-workspace-metadata"] = { s1: { workingDir: "C:/c" } };
+    await settings.refreshRootSettings();
+    expect(JSON.parse(storage?.getItem(key) ?? "null")).toEqual({
+      s1: { workingDir: "C:/c" },
+    });
+  });
+
   it("rereads manual file edits before the next effective-settings read", async () => {
     const settings = await import("./rootSettings");
     await settings.initializeRootSettings();

@@ -28,6 +28,7 @@ import {
 } from "./runJournal";
 import type { WaveState } from "./waveEngine";
 import type { SessionNode } from "./types";
+import { openDistillDocumentCountForTests } from "@/shared/lib/distillDocument";
 
 function wave(over: Partial<WaveState> = {}): WaveState {
   return {
@@ -253,5 +254,36 @@ describe("the journal in the folder", () => {
     );
     expect(runEventsFor("w-retry").map((event) => event.seq)).toEqual([0, 1]);
     expect(hasUnreadableRunJournal()).toBe(false);
+  });
+
+  it("lets go of the document of every journal it evicts", async () => {
+    // Each wave opens a document, and the document layer holds every live one
+    // for its flush on window close. Eviction used to only flush, so a long
+    // session kept one document per wave it had ever journaled.
+    resetRunJournalsForTests();
+    const before = openDistillDocumentCountForTests();
+    for (let index = 0; index < 30; index += 1) {
+      appendRunEvent({
+        at: index,
+        kind: "wave-admitted",
+        waveId: `w-evict-${index}`,
+        conductorSessionId: "c1",
+        rootRequestId: "m1",
+      });
+    }
+
+    // Only the journals still in memory (24 of them) hold a document open.
+    expect(openDistillDocumentCountForTests() - before).toBe(24);
+    expect(runEventsFor("w-evict-0")).toEqual([]);
+    expect(runEventsFor("w-evict-29")).toHaveLength(1);
+
+    // The evicted wave's event still reaches its file once its read settles.
+    await vi.waitFor(() => {
+      const raw = files.get(runJournalPath("w-evict-0")) ?? "{}";
+      expect(JSON.parse(raw).events).toHaveLength(1);
+    });
+
+    resetRunJournalsForTests();
+    expect(openDistillDocumentCountForTests()).toBe(before);
   });
 });

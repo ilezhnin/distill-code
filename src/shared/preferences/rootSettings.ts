@@ -60,6 +60,16 @@ function legacyKey(name: string): string {
   return `distill:${name}`;
 }
 
+/**
+ * Setting names by the storage key callers use, built once. `getItem` runs on
+ * hot paths — the session list reads one chat's workspace metadata per row —
+ * and rebuilding every legacy key to find one allocated a string per key per
+ * read.
+ */
+const SETTING_NAME_BY_KEY: ReadonlyMap<string, string> = new Map(
+  PREFERENCE_KEYS.map((name) => [legacyKey(name), name]),
+);
+
 let settings: Record<string, unknown> = {};
 let ready = false;
 let initializing: Promise<void> | undefined;
@@ -75,9 +85,29 @@ function decode(raw: string): unknown {
     return raw;
   }
 }
+/**
+ * The encoded text of each object value, keyed by the value itself.
+ *
+ * `getItem` has to hand back a string, and re-encoding the value on every call
+ * made each read cost a full `JSON.stringify` of it: the chat workspace
+ * metadata holds an entry for every chat that ever had a workspace, and the
+ * session list reads it once per row, every minute and on every focus. Values
+ * in `settings` are never mutated in place — a write or a refresh replaces
+ * them with a new object — so an unchanged value can keep its text, and
+ * handing back the same string instance lets a caller that memoizes on it
+ * compare in constant time.
+ */
+const encodedByValue = new WeakMap<object, string>();
+
 function encode(value: unknown): string | null {
   if (value === undefined || value === null) return null;
-  return typeof value === "string" ? value : JSON.stringify(value);
+  if (typeof value === "string") return value;
+  if (typeof value !== "object") return JSON.stringify(value);
+  const cached = encodedByValue.get(value);
+  if (cached !== undefined) return cached;
+  const encoded = JSON.stringify(value);
+  encodedByValue.set(value, encoded);
+  return encoded;
 }
 function parseSettings(raw: string | null): Record<string, unknown> {
   const value: unknown = JSON.parse(raw ?? "{}");
@@ -87,7 +117,7 @@ function parseSettings(raw: string | null): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 function settingKey(key: string): string | null {
-  return PREFERENCE_KEYS.find((name) => legacyKey(name) === key) ?? null;
+  return SETTING_NAME_BY_KEY.get(key) ?? null;
 }
 
 export async function initializeRootSettings(): Promise<void> {

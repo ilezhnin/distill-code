@@ -224,12 +224,37 @@ export function loadPersistedChatWorkspaceMetadata(
   return readAllPersistedChatWorkspaceMetadata()[sessionId] ?? null;
 }
 
+/**
+ * Whether two normalized entries hold the same metadata. Both come out of
+ * {@link normalizePersistedChatWorkspaceMetadata}, which builds every object in
+ * one fixed key order, so their text is equal exactly when their content is.
+ */
+function samePersistedChatWorkspaceMetadata(
+  left: PersistedChatWorkspaceMetadata,
+  right: PersistedChatWorkspaceMetadata,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 export function persistChatWorkspaceMetadata(
   sessionId: string,
   metadata: PersistedChatWorkspaceMetadata,
 ): void {
   const normalized = normalizePersistedChatWorkspaceMetadata(metadata);
-  const bySession = { ...readAllPersistedChatWorkspaceMetadata() };
+  const current = readAllPersistedChatWorkspaceMetadata();
+  const existing = current[sessionId];
+  // Every send marks the chat's workspaces as used by the agent, and after the
+  // first one that changes nothing. Writing anyway re-encoded the whole blob
+  // (one entry per chat), rewrote settings.json, echoed the change to every
+  // window and handed the session list a new session object to re-render.
+  if (
+    normalized
+      ? existing && samePersistedChatWorkspaceMetadata(existing, normalized)
+      : !existing
+  ) {
+    return;
+  }
+  const bySession = { ...current };
   if (!normalized) {
     delete bySession[sessionId];
     writeAllPersistedChatWorkspaceMetadata(bySession, [sessionId]);

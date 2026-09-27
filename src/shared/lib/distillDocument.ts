@@ -47,6 +47,13 @@ export interface DistillDocumentOptions<T> {
    * the console.
    */
   onWriteError?: (error: unknown) => void;
+  /**
+   * Remember this instance's recent writes, so that
+   * {@link DistillDocument.readExternal} can tell its own write coming back
+   * from another window's. Off by default, since it keeps the text of those
+   * writes alive; only a document that re-reads on change notices needs it.
+   */
+  recognizeOwnWrites?: boolean;
 }
 
 export interface DistillDocument<T> {
@@ -56,15 +63,32 @@ export interface DistillDocument<T> {
    * read, so the caller never mistakes it for an empty one.
    */
   read: () => Promise<T | null>;
+  /**
+   * Reads the document after a change notice, or resolves `undefined` when the
+   * stored text is exactly what this instance itself wrote lately.
+   *
+   * The native store announces every write to every window, the writer
+   * included, so a store that re-reads on that notice would otherwise parse
+   * its own write back — for the usage ledger, half a megabyte, and often
+   * enough to queue yet another write.
+   */
+  readExternal: () => Promise<T | null | undefined>;
   /** Queues a write. Returns immediately. */
   write: (value: T) => void;
   /** Flushes a queued write — for tests, and for shutdown. */
   flush: () => Promise<void>;
+  /**
+   * Flushes a queued write and stops tracking the document for the flush on
+   * window close. For documents with a bounded life, such as one wave's run
+   * journal: without it every one ever opened stays referenced until the
+   * window goes away.
+   */
+  dispose: () => Promise<void>;
 }
 
 /**
- * Every document created in this renderer, so a teardown can flush the ones
- * still holding a debounced payload.
+ * Every document created in this renderer and not yet disposed, so a teardown
+ * can flush the ones still holding a debounced payload.
  *
  * The webview is destroyed without warning when the window closes, and the
  * only signals that reliably precede that are `pagehide` and `beforeunload`;
@@ -77,6 +101,18 @@ export interface DistillDocument<T> {
  */
 const openDocuments = new Set<{ flush: () => Promise<void> }>();
 let closeFlushInstalled = false;
+
+/** How many documents the close flush is tracking. Tests only. */
+export function openDistillDocumentCountForTests(): number {
+  return openDocuments.size;
+}
+
+/**
+ * Most own writes an instance remembers while their change notices are on the
+ * way. A notice is normally matched before the next write is made, so this
+ * only bounds a burst of writes, or a window whose notices never arrive.
+ */
+const MAX_REMEMBERED_OWN_WRITES = 4;
 
 function installCloseFlush(): void {
   if (closeFlushInstalled || typeof window === "undefined") return;
@@ -121,6 +157,28 @@ export function distillDocument<T>(
   let timer: ReturnType<typeof setTimeout> | null = null;
   let pending: unknown = null;
   let inFlight: Promise<void> = Promise.resolve();
+  /**
+   * The text of this instance's writes whose change notice may still be on
+   * the way, oldest first; only kept with `recognizeOwnWrites`.
+   *
+   * Notices arrive in write order, so a read that comes back with one of these
+   * drops the older ones. It keeps the one it matched: the read after the next
+   * notice can return that same text, when the next write has not landed yet.
+   */
+  let ownWrites: string[] = [];
+
+  const rememberOwnWrite = (contents: string): void => {
+    if (!options.recognizeOwnWrites) return;
+    ownWrites.push(contents);
+    if (ownWrites.length > MAX_REMEMBERED_OWN_WRITES) ownWrites.shift();
+  };
+
+  const isOwnWrite = (raw: string): boolean => {
+    const index = ownWrites.lastIndexOf(raw);
+    if (index < 0) return false;
+    ownWrites = ownWrites.slice(index);
+    return true;
+  };
 
   const flushNow = (): Promise<void> => {
     if (timer !== null) {
@@ -139,7 +197,13 @@ export function distillDocument<T>(
     // the older payload can land after the newer one — leaving the previous
     // version on disk while memory holds the newer one.
     inFlight = inFlight
-      .then(() => writeDistillDocument(options.path, JSON.stringify(payload)))
+      .then(() => {
+        const contents = JSON.stringify(payload);
+        // Remembered before the write is handed over: the store announces it
+        // before the invoke returns, so the notice can beat the resolution.
+        rememberOwnWrite(contents);
+        return writeDistillDocument(options.path, contents);
+      })
       .catch((error: unknown) => {
         console.error(`Failed to write ${options.path}:`, error);
         try {
@@ -151,49 +215,62 @@ export function distillDocument<T>(
     return inFlight;
   };
 
+  const readLegacyValue = (): T | null => {
+    const legacy = readLegacy(options.legacyStorageKey);
+    return legacy === null ? null : options.parse(legacy);
+  };
+
+  /** What a read of the stored text resolves to, on the desktop. */
+  const settleStored = async (raw: string | null): Promise<T | null> => {
+    let stored: unknown = null;
+    if (raw !== null) {
+      try {
+        stored = JSON.parse(raw);
+      } catch (error) {
+        console.error(`Failed to parse ${options.path}:`, error);
+        // The next write replaces this file, so keep the unparseable text
+        // beside it for a person to recover. Should that copy fail too,
+        // throw rather than start from empty over the only copy.
+        await writeDistillDocument(corruptCopyPath(options.path), raw);
+      }
+    }
+    if (stored !== null) return options.parse(stored);
+
+    // Nothing on disk: this may be the first run after the move. Take the
+    // browser copy, write it where it belongs, and drop it — two sources of
+    // truth that can drift is exactly what this is fixing.
+    const legacy = readLegacy(options.legacyStorageKey);
+    if (legacy === null) return null;
+    const migrated = options.parse(legacy);
+    try {
+      await writeDistillDocument(
+        options.path,
+        JSON.stringify(options.serialize(migrated)),
+      );
+      window.localStorage.removeItem(options.legacyStorageKey);
+    } catch (error) {
+      // Keep the browser copy if the move failed; losing it would lose the
+      // data outright.
+      console.error(`Failed to migrate ${options.legacyStorageKey}:`, error);
+    }
+    return migrated;
+  };
+
   const instance: DistillDocument<T> = {
     read: async () => {
-      if (!isDesktopRuntime()) {
-        const legacy = readLegacy(options.legacyStorageKey);
-        return legacy === null ? null : options.parse(legacy);
-      }
+      if (!isDesktopRuntime()) return readLegacyValue();
       // A document that exists but cannot be read is not an empty one: the
       // caller would mark itself hydrated and its next write would replace
       // the operator's data. Throw instead, so the store stays unhydrated,
       // keeps this run's changes in memory, and the next start tries again.
-      const raw = await readDistillDocument(options.path);
-      let stored: unknown = null;
-      if (raw !== null) {
-        try {
-          stored = JSON.parse(raw);
-        } catch (error) {
-          console.error(`Failed to parse ${options.path}:`, error);
-          // The next write replaces this file, so keep the unparseable text
-          // beside it for a person to recover. Should that copy fail too,
-          // throw rather than start from empty over the only copy.
-          await writeDistillDocument(corruptCopyPath(options.path), raw);
-        }
-      }
-      if (stored !== null) return options.parse(stored);
+      return settleStored(await readDistillDocument(options.path));
+    },
 
-      // Nothing on disk: this may be the first run after the move. Take the
-      // browser copy, write it where it belongs, and drop it — two sources of
-      // truth that can drift is exactly what this is fixing.
-      const legacy = readLegacy(options.legacyStorageKey);
-      if (legacy === null) return null;
-      const migrated = options.parse(legacy);
-      try {
-        await writeDistillDocument(
-          options.path,
-          JSON.stringify(options.serialize(migrated)),
-        );
-        window.localStorage.removeItem(options.legacyStorageKey);
-      } catch (error) {
-        // Keep the browser copy if the move failed; losing it would lose the
-        // data outright.
-        console.error(`Failed to migrate ${options.legacyStorageKey}:`, error);
-      }
-      return migrated;
+    readExternal: async () => {
+      if (!isDesktopRuntime()) return readLegacyValue();
+      const raw = await readDistillDocument(options.path);
+      if (raw !== null && isOwnWrite(raw)) return undefined;
+      return settleStored(raw);
     },
 
     write: (value) => {
@@ -205,6 +282,11 @@ export function distillDocument<T>(
     },
 
     flush: () => flushNow(),
+
+    dispose: () => {
+      openDocuments.delete(instance);
+      return flushNow();
+    },
   };
 
   openDocuments.add(instance);
