@@ -1,5 +1,6 @@
 mod commands;
 mod deep_links;
+mod renderer_recovery;
 mod services;
 
 use services::{bundled_agents, bundled_skills, distro_bundle::DistroBundleState};
@@ -277,6 +278,10 @@ pub fn run() {
             services::acp_tools_reconciler::spawn_startup_reconcile(app.handle());
 
             apply_app_window_icons(app.handle());
+
+            if let Some(window) = app.get_webview_window("main") {
+                renderer_recovery::reload_when_renderer_dies(&window);
+            }
 
             Ok(())
         })

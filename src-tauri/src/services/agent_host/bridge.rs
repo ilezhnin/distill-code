@@ -284,6 +284,11 @@ impl Bridge {
         for key in spec.env_remove {
             command.env_remove(key);
         }
+        // `RUST_LOG` configures Distill's own log. Handed down, it turns a
+        // Rust-built bridge (grok) into an INFO firehose whose stderr lands in
+        // distill.log and rotates it every few minutes, taking crash history
+        // with it.
+        command.env_remove("RUST_LOG");
         crate::services::shell_env::remove_inherited_launcher_env(command.as_std_mut());
         crate::services::process::apply_no_window_async(&mut command);
         command
