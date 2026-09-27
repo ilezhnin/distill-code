@@ -44,3 +44,11 @@ export function perfLog(message: string): void {
   console.log(message);
   void logRendererEvent("info", message);
 }
+
+/**
+ * A session id short enough for a log line. Current ids all start with
+ * `session_`, so their first eight characters named every chat the same.
+ */
+export function logSessionId(sessionId: string): string {
+  return sessionId.replace(/^session_/, "").slice(0, 8);
+}

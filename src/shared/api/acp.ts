@@ -32,7 +32,7 @@ import {
 import { getDistillctlPreamble } from "@/features/distillctl/appPreamble";
 import { sessionStyleGuidelinesPrompt } from "@/features/chat/lib/sessionSettings";
 import { INTERACTION_NORMS_PREAMBLE } from "@/shared/api/interactionNorms";
-import { perfLog } from "@/shared/lib/perfLog";
+import { logSessionId, perfLog } from "@/shared/lib/perfLog";
 import {
   applySessionConfigOptionsSnapshot,
   readSessionConfigOptionsSnapshots,
@@ -163,7 +163,7 @@ async function acpSendMessageNow(
     onPromptDispatching,
     onPromptDispatched,
   } = options;
-  const sid = sessionId.slice(0, 8);
+  const sid = logSessionId(sessionId);
   const tStart = performance.now();
 
   // ACP agents expose no system-prompt channel, so the persona and the app
@@ -317,7 +317,7 @@ export async function acpPrepareSession(
   workingDir: string,
   options: AcpSessionConfigApplyOptions = {},
 ): Promise<AcpSessionConfigSnapshots | undefined> {
-  const sid = sessionId.slice(0, 8);
+  const sid = logSessionId(sessionId);
   const t0 = performance.now();
   perfLog(
     `[perf:prepare] ${sid} acpPrepareSession start (provider=${providerId})`,
@@ -524,7 +524,7 @@ export async function acpLoadSession(
   workingDir?: string,
 ): Promise<AcpSessionExecutionSelection | undefined> {
   const effectiveWorkingDir = workingDir ?? "~";
-  const sid = sessionId.slice(0, 8);
+  const sid = logSessionId(sessionId);
   const t0 = performance.now();
   logReasoningEffortInfo("acpLoadSession start", {
     sessionId: shortLogId(sessionId),

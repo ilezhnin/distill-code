@@ -1,3 +1,4 @@
+import { logSessionId } from "@/shared/lib/perfLog";
 import {
   logReasoningEffortInfo,
   reasoningEffortConfigLogFields,
@@ -191,7 +192,7 @@ function warnUnhandledSnapshot(kind: string, sessionId: string): void {
   console.warn(
     `Dropped ACP ${kind} config snapshot: no snapshot handler registered. ` +
       "Ensure registerChatSessionConfigSnapshotHandlers() runs during startup.",
-    { sessionId: sessionId.slice(0, 8) },
+    { sessionId: logSessionId(sessionId) },
   );
 }
 

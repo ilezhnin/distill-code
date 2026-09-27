@@ -5,7 +5,7 @@ import {
   type AcpSessionConfigSnapshotContext,
   type AcpSessionConfigSnapshots,
 } from "./acpSessionConfigSnapshots";
-import { perfLog } from "@/shared/lib/perfLog";
+import { logSessionId, perfLog } from "@/shared/lib/perfLog";
 import {
   logReasoningEffortInfo,
   shortLogId,
@@ -152,7 +152,7 @@ async function runBoundedSessionMutation<T>(
           onAbandoned();
           reject(
             new Error(
-              `ACP operation timed out for session ${sessionId.slice(0, 8)}. Reconnect and retry.`,
+              `ACP operation timed out for session ${logSessionId(sessionId)}. Reconnect and retry.`,
             ),
           );
         }, SESSION_MUTATION_TIMEOUT_MS);
@@ -277,7 +277,7 @@ async function prepareSessionNow(
   options: SessionConfigMutationOptions,
   turn: SessionMutationTurn,
 ): Promise<AcpSessionConfigSnapshots | undefined> {
-  const sid = sessionId.slice(0, 8);
+  const sid = logSessionId(sessionId);
   const existing = prepared.get(sessionId);
   if (existing) {
     const tReuse = performance.now();
@@ -392,7 +392,7 @@ async function applySessionModelNow(
   options: SessionConfigMutationOptions,
   turn: SessionMutationTurn,
 ): Promise<AcpSessionConfigSnapshots | undefined> {
-  const sid = sessionId.slice(0, 8);
+  const sid = logSessionId(sessionId);
   const entry = prepared.get(sessionId);
   const executionSelection = entry?.executionSelection;
   if (!entry || !executionSelection) {

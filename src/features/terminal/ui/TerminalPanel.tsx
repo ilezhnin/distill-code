@@ -20,7 +20,7 @@ import { Button } from "@/shared/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { cn } from "@/shared/lib/cn";
-import { perfLog } from "@/shared/lib/perfLog";
+import { logSessionId, perfLog } from "@/shared/lib/perfLog";
 import { scheduleAfterNextPaint } from "@/app/lib/scheduleAfterNextPaint";
 import { useTheme } from "@/shared/theme/ThemeProvider";
 import {
@@ -36,7 +36,7 @@ const TERMINAL_EXPAND_RESIZE_FALLBACK_MS = 260;
 
 function shortTerminalSessionKey(sessionKey: string): string {
   const [sessionId, tabId] = sessionKey.split(":");
-  return `${sessionId?.slice(0, 8) ?? "unknown"}:${tabId ?? "unknown"}`;
+  return `${sessionId ? logSessionId(sessionId) : "unknown"}:${tabId ?? "unknown"}`;
 }
 
 interface TerminalPanelProps {

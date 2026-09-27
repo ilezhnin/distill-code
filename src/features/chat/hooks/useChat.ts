@@ -21,7 +21,7 @@ import {
   registerAssistantCancellationTarget,
   resolveAssistantCancellation,
 } from "../lib/sendCore";
-import { perfLog } from "@/shared/lib/perfLog";
+import { logSessionId, perfLog } from "@/shared/lib/perfLog";
 import { settleAbandonedToolCalls } from "../lib/messageCompletion";
 import { replaceMessagesFromSessionReplay } from "../lib/sessionReplayReplacement";
 import { i18n } from "@/shared/i18n";
@@ -162,7 +162,7 @@ export function useChat(
       attachments?: ChatAttachmentDraft[],
       sendOptions?: ChatSendOptions,
     ) => {
-      const sid = sessionId.slice(0, 8);
+      const sid = logSessionId(sessionId);
       const hasAttachments = (attachments?.length ?? 0) > 0;
       const hasAssistantPrompt = Boolean(sendOptions?.assistantPrompt?.trim());
       const currentChatState = useChatStore
