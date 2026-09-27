@@ -1,4 +1,5 @@
 import { logRendererEvent } from "@/shared/api/rendererLog";
+import { logSessionId } from "@/shared/lib/perfLog";
 
 type ReasoningEffortLogValue = string | number | boolean | null | undefined;
 
@@ -52,7 +53,7 @@ function serializeFields(fields: ReasoningEffortLogFields): string {
 }
 
 export function shortLogId(id: string | null | undefined): string | null {
-  return id ? id.slice(0, 8) : null;
+  return id ? logSessionId(id) : null;
 }
 
 export function reasoningEffortConfigLogFields(

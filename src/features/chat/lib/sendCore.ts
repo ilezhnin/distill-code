@@ -47,7 +47,7 @@ import {
   isHarnessRejectedModelError,
   recoverSessionFromRejectedModel,
 } from "@/features/chat/lib/rejectedModelRecovery";
-import { perfLog } from "@/shared/lib/perfLog";
+import { logSessionId, perfLog } from "@/shared/lib/perfLog";
 import { completeAssistantMessage } from "@/features/chat/lib/messageCompletion";
 import {
   type ChatAttachmentDraft,
@@ -210,7 +210,7 @@ export async function dispatchPrompt(
   text: string,
   opts: SendCoreOptions,
 ): Promise<void> {
-  const sid = sessionId.slice(0, 8);
+  const sid = logSessionId(sessionId);
   const tSendStart = performance.now();
   const {
     assistantPrompt,

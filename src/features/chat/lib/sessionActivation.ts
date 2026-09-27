@@ -18,7 +18,7 @@ import {
   getExplicitCwdSource,
 } from "@/features/projects/lib/sessionCwdSelection";
 import { resolveSessionArtifactCwd } from "@/shared/artifacts/sessionArtifactLocation";
-import { perfLog } from "@/shared/lib/perfLog";
+import { logSessionId, perfLog } from "@/shared/lib/perfLog";
 import {
   isDefaultChatTitle,
   titleFromUserText,
@@ -366,7 +366,7 @@ async function performSessionMessagesLoad(
   sessionId: string,
   options: LoadSessionMessagesOptions,
 ): Promise<boolean> {
-  const sid = sessionId.slice(0, 8);
+  const sid = logSessionId(sessionId);
   const existingMsgs = useChatStore.getState().messagesBySession[sessionId];
   if (!options.force && hasConversationMessages(existingMsgs)) {
     perfLog(`[perf:load] ${sid} skip — has messages`);

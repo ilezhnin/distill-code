@@ -22,7 +22,7 @@ import type {
   SessionTranscript,
 } from "./hostTypes";
 import type { MessagePart } from "@/shared/types/messageParts";
-import { perfLog } from "@/shared/lib/perfLog";
+import { logSessionId, perfLog } from "@/shared/lib/perfLog";
 import {
   logReasoningEffortInfo,
   reasoningEffortConfigLogFields,
@@ -267,7 +267,7 @@ export async function setModel(
   modelId: string,
   context: { providerId?: string; requestId?: string } = {},
 ): Promise<AcpSessionConfigSnapshots> {
-  const sid = sessionId.slice(0, 8);
+  const sid = logSessionId(sessionId);
   const tClient = performance.now();
   const client = await getClient();
   const tCall = performance.now();
@@ -303,7 +303,7 @@ export async function setSessionConfigOption(
   value: string | boolean,
   context: Omit<AcpSessionConfigSnapshotContext, "origin"> = {},
 ): Promise<AcpSessionConfigSnapshots> {
-  const sid = sessionId.slice(0, 8);
+  const sid = logSessionId(sessionId);
   const tClient = performance.now();
   const client = await getClient();
   const tCall = performance.now();
@@ -341,7 +341,7 @@ export async function setProvider(
   providerId: string,
   context: { requestId?: string } = {},
 ): Promise<AcpSessionConfigSnapshots> {
-  const sid = sessionId.slice(0, 8);
+  const sid = logSessionId(sessionId);
   const tClient = performance.now();
   const client = await getClient();
   const tCall = performance.now();
@@ -468,7 +468,7 @@ export async function newSession(
 
   const tCall = performance.now();
   const response = await client.newSession(request);
-  const sid = response.sessionId.slice(0, 8);
+  const sid = logSessionId(response.sessionId);
   perfLog(
     `[perf:api] ${sid} newSession getClient=${(tCall - tClient).toFixed(1)}ms wire=${(performance.now() - tCall).toFixed(1)}ms`,
   );
@@ -479,7 +479,7 @@ export async function loadSession(
   sessionId: string,
   workingDir: string,
 ): Promise<LoadSessionResponse> {
-  const sid = sessionId.slice(0, 8);
+  const sid = logSessionId(sessionId);
   const tClient = performance.now();
   const client = await getClient();
   const tCall = performance.now();

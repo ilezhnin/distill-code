@@ -12,7 +12,7 @@ import {
   type WebSocketStream,
 } from "./createWebSocketStream";
 import { HostClient } from "./hostClient";
-import { perfLog } from "@/shared/lib/perfLog";
+import { logSessionId, perfLog } from "@/shared/lib/perfLog";
 import { logRendererEvent } from "./rendererLog";
 
 let notificationHandler: AcpNotificationHandler | null = null;
@@ -78,7 +78,7 @@ export function answerPermissionRequest(
   const toolLabel = permissionToolLabel(args);
   void logRendererEvent(
     "warn",
-    `[acp] permission request answered without asking: session=${args.sessionId?.slice(0, 8) ?? "?"} tool=${toolLabel} offered=[${offered}] answer=${option?.kind ?? "cancelled"}`,
+    `[acp] permission request answered without asking: session=${args.sessionId ? logSessionId(args.sessionId) : "?"} tool=${toolLabel} offered=[${offered}] answer=${option?.kind ?? "cancelled"}`,
   );
   if (!option) {
     notificationHandler?.reportPermissionAnswer?.({

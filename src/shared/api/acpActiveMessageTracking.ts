@@ -1,4 +1,4 @@
-import { perfLog } from "@/shared/lib/perfLog";
+import { logSessionId, perfLog } from "@/shared/lib/perfLog";
 import type { MessageMetadata } from "@/shared/types/messages";
 
 export interface ActiveMessagePreset {
@@ -44,7 +44,7 @@ export function recordLiveAgentMessageChunk(sessionId: string): void {
   perf.chunkCount += 1;
   if (perf.firstChunkAt === null) {
     perf.firstChunkAt = performance.now();
-    const sid = sessionId.slice(0, 8);
+    const sid = logSessionId(sessionId);
     perfLog(
       `[perf:stream] ${sid} first agent_message_chunk at ttft=${(perf.firstChunkAt - perf.sendStartedAt).toFixed(1)}ms`,
     );
@@ -55,7 +55,7 @@ export function clearActiveMessageId(sessionId: string): void {
   activeMessagePresets.delete(sessionId);
   const perf = livePerf.get(sessionId);
   if (perf) {
-    const sid = sessionId.slice(0, 8);
+    const sid = logSessionId(sessionId);
     const total = performance.now() - perf.sendStartedAt;
     const ttft =
       perf.firstChunkAt !== null

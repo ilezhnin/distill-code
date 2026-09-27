@@ -42,7 +42,7 @@ import {
   useChatContextPanelCompactViewport,
 } from "./ChatContextPanel";
 import { useFocusRegion } from "@/app/focus/FocusRegionProvider";
-import { perfLog } from "@/shared/lib/perfLog";
+import { logSessionId, perfLog } from "@/shared/lib/perfLog";
 import { Badge } from "@/shared/ui/badge";
 import { cn } from "@/shared/lib/cn";
 import {
@@ -543,7 +543,7 @@ export function ChatView({
 
   useEffect(() => {
     const ms = (performance.now() - mountStart.current).toFixed(1);
-    perfLog(`[perf:chatview] ${sessionId.slice(0, 8)} mounted in ${ms}ms`);
+    perfLog(`[perf:chatview] ${logSessionId(sessionId)} mounted in ${ms}ms`);
   }, [sessionId]);
 
   // ChatView remounts per session via its key upstream; this covers the one
