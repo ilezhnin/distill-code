@@ -10,9 +10,14 @@ import {
 } from "../ArtifactPolicyContext";
 
 const mockPathExists = vi.fn<(path: string) => Promise<boolean>>();
+const mockAllowAssetDirectories = vi.fn<
+  (paths: readonly string[]) => Promise<void>
+>(async () => {});
 
 vi.mock("@/shared/api/system", () => ({
   pathExists: (path: string) => mockPathExists(path),
+  allowAssetDirectories: (paths: readonly string[]) =>
+    mockAllowAssetDirectories(paths),
 }));
 
 function LinkProbe({ href }: { href: string }) {
@@ -49,6 +54,18 @@ describe("ArtifactPolicyContext", () => {
 
     expect(screen.getByTestId("link-has-candidate")).toHaveTextContent("false");
     expect(screen.getByTestId("link-path")).toHaveTextContent("");
+  });
+
+  it("lets the asset scheme serve the chat's own folders once shown", () => {
+    render(
+      <ArtifactPolicyProvider messages={[]} sessionCwd="E:/Projects/game">
+        <LinkProbe href="./shot.png" />
+      </ArtifactPolicyProvider>,
+    );
+
+    expect(mockAllowAssetDirectories).toHaveBeenCalledWith(
+      expect.arrayContaining(["E:/Projects/game"]),
+    );
   });
 
   it("marks a ..-escaping relative path as not within cwd", () => {

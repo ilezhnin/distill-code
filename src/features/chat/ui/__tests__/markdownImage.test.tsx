@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   resolveMarkdownHref: vi.fn(),
   pathExists: vi.fn<(path: string) => Promise<boolean>>(),
   isPathWithinTrustedRoots: vi.fn<(path: string) => boolean>(),
+  ensureAssetAccess: vi.fn(async () => {}),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -18,6 +19,7 @@ vi.mock("@/features/chat/hooks/ArtifactPolicyContext", () => ({
     resolveMarkdownHref: mocks.resolveMarkdownHref,
     pathExists: mocks.pathExists,
     isPathWithinTrustedRoots: mocks.isPathWithinTrustedRoots,
+    ensureAssetAccess: mocks.ensureAssetAccess,
   }),
 }));
 

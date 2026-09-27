@@ -359,6 +359,50 @@ pub async fn path_exists(path: String) -> bool {
         .unwrap_or(false)
 }
 
+/// Lets the `asset:` scheme serve files under the open chat's folders. The
+/// static scope covers only $HOME, $TEMP and the Distill root, while most
+/// projects live on other drives, so images and artifacts in them failed to
+/// load. The renderer passes the folders it already trusts for the chat (its
+/// working folder and attached folders); anything that is not an existing,
+/// absolute, local directory is ignored. A UNC path would make the asset
+/// request reach out to another machine, so none is accepted.
+#[tauri::command]
+pub async fn allow_asset_directories(app: tauri::AppHandle, paths: Vec<String>) {
+    let directories = tokio::task::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|path| is_local_absolute_directory(path))
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
+    use tauri::Manager;
+    let scope = app.asset_protocol_scope();
+    for directory in directories {
+        if let Err(error) = scope.allow_directory(&directory, true) {
+            log::warn!(
+                "[asset] cannot allow {} for the asset scheme: {error}",
+                directory.display()
+            );
+        }
+    }
+}
+
+fn is_local_absolute_directory(path: &Path) -> bool {
+    let unc = matches!(
+        path.components().next(),
+        Some(Component::Prefix(prefix))
+            if matches!(
+                prefix.kind(),
+                std::path::Prefix::UNC(..)
+                    | std::path::Prefix::VerbatimUNC(..)
+                    | std::path::Prefix::DeviceNS(..)
+            )
+    );
+    !unc && path.is_absolute() && path.is_dir()
+}
+
 fn ensure_directory_path(path: &Path) -> Result<(), String> {
     if path.as_os_str().is_empty() {
         return Err("Directory path cannot be empty".to_string());
@@ -1924,9 +1968,10 @@ pub async fn search_file_mentions(
 mod tests {
     use super::{
         build_file_mention_index, get_or_build_file_mention_index_from_cache,
-        normalize_attachment_paths, normalize_roots, plain_export_filename,
-        read_image_attachment_blocking, read_text_file_blocking, search_file_mentions_blocking,
-        FileMentionIndexCache, MAX_IMAGE_ATTACHMENT_BYTES, MAX_TEXT_FILE_BYTES,
+        is_local_absolute_directory, normalize_attachment_paths, normalize_roots,
+        plain_export_filename, read_image_attachment_blocking, read_text_file_blocking,
+        search_file_mentions_blocking, FileMentionIndexCache, MAX_IMAGE_ATTACHMENT_BYTES,
+        MAX_TEXT_FILE_BYTES,
     };
     use std::fs;
     use std::panic::{self, AssertUnwindSafe};
@@ -1939,6 +1984,22 @@ mod tests {
     use std::thread;
     use std::time::Duration;
     use tempfile::tempdir;
+
+    #[test]
+    fn only_local_absolute_directories_reach_the_asset_scope() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("image.png");
+        fs::write(&file, b"png").unwrap();
+        assert!(is_local_absolute_directory(dir.path()));
+        assert!(!is_local_absolute_directory(&file));
+        assert!(!is_local_absolute_directory(Path::new("relative/folder")));
+        assert!(!is_local_absolute_directory(Path::new(
+            r"\\server\share\project"
+        )));
+        assert!(!is_local_absolute_directory(Path::new(
+            r"\\?\UNC\server\share\project"
+        )));
+    }
 
     /// Create a temp dir with `git init` so the ignore crate picks up `.gitignore`.
     fn git_tempdir() -> tempfile::TempDir {

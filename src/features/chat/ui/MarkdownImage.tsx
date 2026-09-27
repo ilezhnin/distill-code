@@ -32,8 +32,12 @@ export const MarkdownImage = memo(
     node: _node,
     ...rest
   }: ComponentProps<"img"> & { node?: unknown }) => {
-    const { resolveMarkdownHref, pathExists, isPathWithinTrustedRoots } =
-      useArtifactActionsContext();
+    const {
+      resolveMarkdownHref,
+      pathExists,
+      isPathWithinTrustedRoots,
+      ensureAssetAccess,
+    } = useArtifactActionsContext();
     const [assetSrc, setAssetSrc] = useState<string | null>(null);
 
     const rawSrc = typeof src === "string" ? src : "";
@@ -79,8 +83,8 @@ export const MarkdownImage = memo(
         return;
       }
       const targetPath = resolvedPath;
-      void pathExists(targetPath)
-        .then((exists) => {
+      void Promise.all([pathExists(targetPath), ensureAssetAccess()])
+        .then(([exists]) => {
           if (cancelled) return;
           setAssetSrc(exists ? convertFileSrc(targetPath, "asset") : null);
         })
@@ -99,6 +103,7 @@ export const MarkdownImage = memo(
       resolveMarkdownHref,
       pathExists,
       isPathWithinTrustedRoots,
+      ensureAssetAccess,
     ]);
 
     if (assetSrc) {

@@ -115,6 +115,30 @@ export async function pathExists(path: string): Promise<boolean> {
   return invoke("path_exists", { path });
 }
 
+const assetDirectoryRequests = new Map<string, Promise<void>>();
+
+/**
+ * Lets the `asset:` scheme serve files under these folders (see the command's
+ * doc). Each folder is asked for once per run; the promise settles when the
+ * host has widened the scope, so an image request can wait for it.
+ */
+export function allowAssetDirectories(paths: readonly string[]): Promise<void> {
+  const fresh = [...new Set(paths)].filter(
+    (path) => path.length > 0 && !assetDirectoryRequests.has(path),
+  );
+  if (fresh.length > 0) {
+    const request = invoke<void>("allow_asset_directories", {
+      paths: fresh,
+    }).catch(() => {
+      for (const path of fresh) assetDirectoryRequests.delete(path);
+    });
+    for (const path of fresh) assetDirectoryRequests.set(path, request);
+  }
+  return Promise.all(
+    paths.map((path) => assetDirectoryRequests.get(path)),
+  ).then(() => undefined);
+}
+
 export async function ensureDirectory(path: string): Promise<void> {
   return invoke("ensure_directory", { path });
 }
