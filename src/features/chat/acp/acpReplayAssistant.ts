@@ -119,6 +119,18 @@ export function completeReplayAssistantMessage(sessionId: string): boolean {
   return completedStoredMessage;
 }
 
-export function clearReplayAssistantTracking(): void {
-  replayAssistantMessageIds.clear();
+/**
+ * Forgets the tracked replay reply of one session, or of every session.
+ *
+ * The tracking deliberately outlives the replay: a load that finds the run
+ * still going leaves the last reply open, and the `session_info_update` that
+ * later reports the run over completes it through this id. It is dropped when
+ * the chat store lets go of the session, whose messages are gone by then.
+ */
+export function clearReplayAssistantTracking(sessionId?: string): void {
+  if (sessionId === undefined) {
+    replayAssistantMessageIds.clear();
+    return;
+  }
+  replayAssistantMessageIds.delete(sessionId);
 }

@@ -9,9 +9,11 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import {
   clearMessageTracking,
+  getReplayPerf,
   handleSessionNotification,
   reportPermissionAnswer,
 } from "../acpNotificationHandler";
+import { getTrackedReplayAssistantMessageId } from "../acpReplayAssistant";
 import { flushBufferedStreamingUpdatesForSession } from "../liveStreamingUpdates";
 import { setActiveMessageId } from "@/shared/api/acpActiveMessageTracking";
 import { isLegacyReplayReplyId } from "@/shared/api/acpReplayMetadata";
@@ -1103,5 +1105,62 @@ describe("permission answers the operator never saw", () => {
       notificationType: "warning",
       text: expect.stringContaining("Bash(rm -rf /)"),
     });
+  });
+});
+
+describe("per-session tracking", () => {
+  const SESSION = "released-session";
+
+  beforeEach(() => {
+    clearMessageTracking();
+    clearReplayBuffer(SESSION);
+    workspaceObservationMocks.clearWorkspaceToolCallObservations.mockClear();
+    useChatStore.setState({
+      messagesBySession: {},
+      sessionStateById: {},
+      loadingSessionIds: new Set<string>(),
+    });
+  });
+
+  async function replayReply(): Promise<void> {
+    useChatStore.getState().setSessionLoading(SESSION, true);
+    await handleSessionNotification({
+      sessionId: SESSION,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        messageId: "reply-1",
+        content: { type: "text", text: "Still working" },
+      },
+    } as never);
+  }
+
+  it("drops a replay's bookkeeping once its loader clears the loading flag", async () => {
+    await replayReply();
+    expect(getReplayPerf(SESSION)).toMatchObject({ count: 1 });
+
+    replaceMessagesFromSessionReplay(SESSION, {
+      historyExpectation: "nonempty",
+    });
+    useChatStore.getState().setSessionLoading(SESSION, false);
+
+    expect(getReplayPerf(SESSION)).toBeNull();
+    // The open reply stays tracked past the replay: the update that later
+    // reports the run over completes it through this id.
+    expect(getTrackedReplayAssistantMessageId(SESSION)).toBe("reply-1");
+  });
+
+  it("forgets a session's tracking when the chat store cleans it up", async () => {
+    await replayReply();
+    replaceMessagesFromSessionReplay(SESSION, {
+      historyExpectation: "nonempty",
+    });
+    useChatStore.getState().setSessionLoading(SESSION, false);
+
+    useChatStore.getState().cleanupSession(SESSION);
+
+    expect(getTrackedReplayAssistantMessageId(SESSION)).toBeNull();
+    expect(
+      workspaceObservationMocks.clearWorkspaceToolCallObservations,
+    ).toHaveBeenCalledWith(SESSION);
   });
 });

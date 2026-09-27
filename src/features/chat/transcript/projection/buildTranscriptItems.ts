@@ -167,8 +167,20 @@ let staticTextMessageItemCacheGeneration = 0;
 export function invalidateTranscriptItemDescriptorCache(): void {
   staticTextMessageItemCacheGeneration += 1;
   cachedSubagentLinkageBySession.clear();
-  sanitizedReasoningTextCache.clear();
-  canonicalReasoningSignatureCache.clear();
+  clearReasoningTextCache(sanitizedReasoningTextCache);
+  clearReasoningTextCache(canonicalReasoningSignatureCache);
+}
+
+/**
+ * Drops what the projection keeps for one session between runs. The chat
+ * store calls this when it lets go of a session's messages (evicted from its
+ * cache, or the session cleaned up): the linkage holds that session's
+ * `delegate` calls and their full results, and nothing else ever removes it
+ * while the transcript still contains a `delegate`. A transcript still on
+ * screen just collects the linkage again on its next run.
+ */
+export function forgetTranscriptItemDescriptorSession(sessionId: string): void {
+  cachedSubagentLinkageBySession.delete(sessionId);
 }
 
 /**
@@ -195,11 +207,12 @@ export function invalidateTranscriptItemDescriptorCache(): void {
  * projection evict the other's entry, so the linkage array identity changed on
  * every projection of either — exactly the churn this memo exists to prevent.
  *
- * The map is keyed by session id and cleared wholesale by
- * `invalidateTranscriptItemDescriptorCache`, which the projection cache already
- * calls when a session is cleaned up. A `WeakMap` keyed on the `messages` array
- * would not work here: `controller.messages` is a fresh array on every streamed
- * token, so every lookup would miss.
+ * The map is keyed by session id. A session's entry is dropped by
+ * `forgetTranscriptItemDescriptorSession` when the chat store evicts or cleans
+ * up that session, and the whole map by
+ * `invalidateTranscriptItemDescriptorCache`. A `WeakMap` keyed on the
+ * `messages` array would not work here: `controller.messages` is a fresh array
+ * on every streamed token, so every lookup would miss.
  */
 const cachedSubagentLinkageBySession = new Map<
   string,
@@ -1186,36 +1199,106 @@ function canonicalizeReasoningRange(
  * Sanitized display text and canonical signatures, per block text. Both are
  * pure in the text, so entries never go stale; the maps are bounded as an LRU
  * because a streaming thought produces a new text every frame.
+ *
+ * The bound is on characters as well as entries. Every frame of a streaming
+ * thought is a key one chunk longer than the last, and both the raw and the
+ * sanitized text of a block become keys, so 512 entries of one long thought
+ * held hundreds of near-copies of it. A text too long for the budget on its
+ * own is computed and not cached: it would only push everything else out.
  */
 const REASONING_TEXT_CACHE_LIMIT = 512;
-const sanitizedReasoningTextCache = new Map<string, string>();
-const canonicalReasoningSignatureCache = new Map<string, string | null>();
+const REASONING_TEXT_CACHE_CHAR_LIMIT = 1_000_000;
+
+interface ReasoningTextCache<T> {
+  entries: Map<string, T>;
+  /** Characters held: every key, plus every value that is a string. */
+  chars: number;
+}
+
+function createReasoningTextCache<T>(): ReasoningTextCache<T> {
+  return { entries: new Map(), chars: 0 };
+}
+
+const sanitizedReasoningTextCache = createReasoningTextCache<string>();
+const canonicalReasoningSignatureCache = createReasoningTextCache<
+  string | null
+>();
+
+function reasoningTextCacheEntryChars(text: string, value: unknown): number {
+  return text.length + (typeof value === "string" ? value.length : 0);
+}
+
+function clearReasoningTextCache<T>(cache: ReasoningTextCache<T>): void {
+  cache.entries.clear();
+  cache.chars = 0;
+}
+
+/** Test seam: how many entries and characters each reasoning cache holds. */
+export function getReasoningTextCacheStatsForTests(): {
+  sanitized: { entries: number; chars: number };
+  canonical: { entries: number; chars: number };
+} {
+  return {
+    sanitized: {
+      entries: sanitizedReasoningTextCache.entries.size,
+      chars: sanitizedReasoningTextCache.chars,
+    },
+    canonical: {
+      entries: canonicalReasoningSignatureCache.entries.size,
+      chars: canonicalReasoningSignatureCache.chars,
+    },
+  };
+}
 
 function readReasoningTextCache<T>(
-  cache: Map<string, T>,
+  cache: ReasoningTextCache<T>,
   text: string,
 ): { hit: boolean; value: T | undefined } {
-  if (!cache.has(text)) {
+  const { entries } = cache;
+  if (!entries.has(text)) {
     return { hit: false, value: undefined };
   }
-  const value = cache.get(text) as T;
-  cache.delete(text);
-  cache.set(text, value);
+  const value = entries.get(text) as T;
+  entries.delete(text);
+  entries.set(text, value);
   return { hit: true, value };
 }
 
+function deleteReasoningTextCacheEntry<T>(
+  cache: ReasoningTextCache<T>,
+  text: string,
+): void {
+  const { entries } = cache;
+  if (!entries.has(text)) {
+    return;
+  }
+  cache.chars -= reasoningTextCacheEntryChars(text, entries.get(text));
+  entries.delete(text);
+}
+
 function writeReasoningTextCache<T>(
-  cache: Map<string, T>,
+  cache: ReasoningTextCache<T>,
   text: string,
   value: T,
 ): T {
-  if (cache.size >= REASONING_TEXT_CACHE_LIMIT) {
-    const oldest = cache.keys().next();
-    if (!oldest.done) {
-      cache.delete(oldest.value);
-    }
+  const entryChars = reasoningTextCacheEntryChars(text, value);
+  if (entryChars > REASONING_TEXT_CACHE_CHAR_LIMIT) {
+    return value;
   }
-  cache.set(text, value);
+  deleteReasoningTextCacheEntry(cache, text);
+  const { entries } = cache;
+  while (
+    entries.size >= REASONING_TEXT_CACHE_LIMIT ||
+    cache.chars + entryChars > REASONING_TEXT_CACHE_CHAR_LIMIT
+  ) {
+    const oldest = entries.keys().next();
+    if (oldest.done) {
+      break;
+    }
+    deleteReasoningTextCacheEntry(cache, oldest.value);
+  }
+  entries.set(text, value);
+  cache.chars += entryChars;
   return value;
 }
 
