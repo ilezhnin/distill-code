@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, Weak};
 use tauri::Manager;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -32,6 +32,18 @@ const SESSION_PAGE_SIZE: i64 = 200;
 const BACKGROUND_ATTACH_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
 /// How long closing a bridge session may take before reopening it anyway.
 const BRIDGE_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a bridge no chat is attached to may sit unused before the host
+/// shuts it down. Listing a harness's models spawns its bridge, so without a
+/// limit every installed harness keeps a process of 35 to 250 MB for the rest
+/// of the run whether or not a chat ever uses it. Stopping one costs a fresh
+/// spawn and `initialize`, one to three seconds, on the next prompt or model
+/// probe that needs it: the window is long enough that moving between chats
+/// and pickers keeps the bridge, and short enough that one woken for a model
+/// list does not outlive the list by much.
+const BRIDGE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// How often the host looks for idle bridges; one lives at most this much
+/// longer than [`BRIDGE_IDLE_TIMEOUT`].
+const BRIDGE_REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 const SNIPPET_CHARS: usize = 200;
 /// How much of a conversation goes with a chat that moved to another agent
 /// (`carryover_block`), in characters: roughly 30k tokens, which every model
@@ -431,6 +443,7 @@ impl Inner {
 
         tokio::spawn(Arc::clone(&inner).accept_loop(listener, token));
         tokio::spawn(Arc::clone(&inner).bridge_event_loop(events_rx));
+        tokio::spawn(Self::reap_idle_bridges_periodically(Arc::downgrade(&inner)));
         log::info!("[agent-host] listening on 127.0.0.1:{port}");
         Ok(inner)
     }
@@ -730,10 +743,16 @@ impl Inner {
             .cloned()
     }
 
+    /// The running bridge for `harness_id`, spawned if there is none, for a
+    /// caller about to do work on it. Handing one out counts as using it (see
+    /// [`Self::reap_idle_bridges`]); a mere [`Self::live_bridge`] lookup does
+    /// not, or the model inventory's check of which executable is serving
+    /// would keep an unused bridge up forever.
     pub async fn ensure_bridge(&self, harness_id: &str) -> Result<Arc<Bridge>, Value> {
         let spec: &HarnessSpec = harness::harness(harness_id)
             .ok_or_else(|| invalid_params(format!("Unknown harness {harness_id}")))?;
         if let Some(bridge) = self.live_bridge(harness_id).await {
+            bridge.touch();
             return Ok(bridge);
         }
         // Spawning waits on a managed install and on the bridge's
@@ -749,6 +768,7 @@ impl Inner {
         );
         let _spawning = spawn_lock.lock().await;
         if let Some(bridge) = self.live_bridge(harness_id).await {
+            bridge.touch();
             return Ok(bridge);
         }
         let env = self.spawn_env().await;
@@ -782,6 +802,84 @@ impl Inner {
             .await
             .insert(harness_id.to_string(), Arc::clone(&bridge));
         Ok(bridge)
+    }
+
+    /// Every [`BRIDGE_REAP_INTERVAL`], shut down the bridges nothing is using.
+    /// Holds the host weakly, so the task never keeps a host alive on its own
+    /// and ends once the host is gone.
+    async fn reap_idle_bridges_periodically(host: Weak<Inner>) {
+        loop {
+            tokio::time::sleep(BRIDGE_REAP_INTERVAL).await;
+            let Some(host) = host.upgrade() else {
+                return;
+            };
+            host.reap_idle_bridges().await;
+        }
+    }
+
+    /// Shut down every bridge [`Self::bridge_is_reapable`] finds idle.
+    ///
+    /// Which harnesses have chats is read first and let go of: the session map
+    /// and the bridge map are never held together (see `attached_route`). A
+    /// chat registered in between cannot slip through: every path that
+    /// registers one first takes its bridge from `ensure_bridge`, which
+    /// restarts the idle clock, and still holds it when it registers the chat.
+    ///
+    /// The decision and the removal happen under one hold of the bridge map,
+    /// the only place a bridge is handed out from. A task that took the bridge
+    /// before still holds it, which keeps it; one that looks for it after finds
+    /// nothing, and `ensure_bridge` spawns a fresh one. The spawn lock is not
+    /// needed: a spawn only starts while the map has no live bridge for the
+    /// harness, and only live ones are removed here.
+    async fn reap_idle_bridges(&self) {
+        let mut chats: HashMap<String, usize> = HashMap::new();
+        for runtime in self.sessions.lock().await.values() {
+            *chats.entry(runtime.harness.clone()).or_default() += 1;
+        }
+        let now = std::time::Instant::now();
+        let mut idle = Vec::new();
+        self.bridges.lock().await.retain(|harness, bridge| {
+            // A bridge that already died is for the exit handler to forget.
+            let reapable = bridge.is_alive()
+                && Self::bridge_is_reapable(
+                    chats.get(harness).copied().unwrap_or(0),
+                    bridge.in_flight(),
+                    // The map's own reference is not a user.
+                    Arc::strong_count(bridge) - 1,
+                    bridge.last_used(),
+                    now,
+                );
+            if reapable {
+                idle.push(Arc::clone(bridge));
+            }
+            !reapable
+        });
+        for bridge in idle {
+            log::info!(
+                "[agent-host] {} bridge idle for {}s with no chats; shutting it down",
+                bridge.harness,
+                now.saturating_duration_since(bridge.last_used()).as_secs()
+            );
+            bridge.kill();
+        }
+    }
+
+    /// Whether a bridge may be shut down: no chat of its harness is attached
+    /// (to it, or to an earlier process that chat will come back for), none of
+    /// the host's requests to it is waiting for an answer, no task holds it for
+    /// work it is about to do, and nothing has used it for
+    /// [`BRIDGE_IDLE_TIMEOUT`].
+    fn bridge_is_reapable(
+        attached_chats: usize,
+        in_flight: usize,
+        other_holders: usize,
+        last_used: std::time::Instant,
+        now: std::time::Instant,
+    ) -> bool {
+        attached_chats == 0
+            && in_flight == 0
+            && other_holders == 0
+            && now.saturating_duration_since(last_used) >= BRIDGE_IDLE_TIMEOUT
     }
 
     pub async fn installed_harnesses(&self) -> Vec<&'static HarnessSpec> {
@@ -848,8 +946,16 @@ impl Inner {
                 BridgeEvent::Exited {
                     harness,
                     generation,
+                    stopped,
                 } => {
-                    log::warn!("[agent-host] {harness} bridge exited");
+                    // A bridge the host shut down itself — idle, or the app
+                    // quitting — ended normally. Either way nothing may route
+                    // at it any more, so the cleanup below is the same.
+                    if stopped {
+                        log::info!("[agent-host] {harness} bridge stopped");
+                    } else {
+                        log::warn!("[agent-host] {harness} bridge exited");
+                    }
                     // A replacement bridge may already be running and serving
                     // sessions: only the process that actually died is
                     // forgotten, and only the sessions it was serving. The
@@ -6046,6 +6152,78 @@ mod tests {
         assert!(old.served_by("claude-acp", 1));
         assert!(!replacement.served_by("claude-acp", 1));
         assert!(!other_harness.served_by("claude-acp", 1));
+    }
+
+    #[test]
+    fn a_bridge_nobody_uses_is_shut_down_once_its_idle_window_has_passed() {
+        let last_used = std::time::Instant::now();
+        // Spawned for a model list, then left alone: no chat, no request, no
+        // task holding it.
+        assert!(Inner::bridge_is_reapable(
+            0,
+            0,
+            0,
+            last_used,
+            last_used + BRIDGE_IDLE_TIMEOUT
+        ));
+        assert!(Inner::bridge_is_reapable(
+            0,
+            0,
+            0,
+            last_used,
+            last_used + BRIDGE_IDLE_TIMEOUT * 12
+        ));
+    }
+
+    #[test]
+    fn a_bridge_with_a_chat_attached_is_never_shut_down() {
+        let last_used = std::time::Instant::now();
+        // However long the chat has sat there: shutting its bridge down would
+        // lose the agent's context behind it.
+        for idle in [BRIDGE_IDLE_TIMEOUT, BRIDGE_IDLE_TIMEOUT * 1000] {
+            assert!(!Inner::bridge_is_reapable(
+                1,
+                0,
+                0,
+                last_used,
+                last_used + idle
+            ));
+        }
+    }
+
+    #[test]
+    fn a_bridge_used_within_its_idle_window_is_kept() {
+        let last_used = std::time::Instant::now();
+        let one_second = std::time::Duration::from_secs(1);
+        assert!(!Inner::bridge_is_reapable(0, 0, 0, last_used, last_used));
+        assert!(!Inner::bridge_is_reapable(
+            0,
+            0,
+            0,
+            last_used,
+            last_used + BRIDGE_IDLE_TIMEOUT - one_second
+        ));
+        // A clock read before the last use (the use raced the check) is no
+        // idle time at all.
+        assert!(!Inner::bridge_is_reapable(
+            0,
+            0,
+            0,
+            last_used + one_second,
+            last_used
+        ));
+    }
+
+    #[test]
+    fn a_bridge_with_work_in_hand_is_kept_however_long_ago_it_was_touched() {
+        let last_used = std::time::Instant::now();
+        let long_after = last_used + BRIDGE_IDLE_TIMEOUT * 12;
+        // A request still waiting for its answer, such as a turn that has run
+        // for an hour.
+        assert!(!Inner::bridge_is_reapable(0, 1, 0, last_used, long_after));
+        // A task that took the bridge for an attach or a probe and has not
+        // sent anything yet.
+        assert!(!Inner::bridge_is_reapable(0, 0, 1, last_used, long_after));
     }
 
     #[test]
