@@ -71,6 +71,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
+# Same version wry already builds; reached through `with_webview` for the
+# renderer-crash reload in renderer_recovery.rs.
+webview2-com = "0.38"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Globalization",
