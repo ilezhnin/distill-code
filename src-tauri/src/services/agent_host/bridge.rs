@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
@@ -63,6 +63,10 @@ pub enum BridgeEvent {
         /// [`Bridge::generation`]. A replacement may already be running and
         /// serving sessions by the time this is handled.
         generation: u64,
+        /// Whether the host ended it through [`Bridge::kill`] — an idle bridge
+        /// shut down, the app quitting, a bridge that would not initialize —
+        /// rather than the process dying on its own.
+        stopped: bool,
     },
     /// Not a bridge event at all: a marker the host puts in the same queue to
     /// learn when everything queued before it has been handled. Answering
@@ -111,6 +115,10 @@ pub struct Bridge {
     pending: Arc<Pending>,
     next_id: AtomicU64,
     alive: Arc<AtomicBool>,
+    /// When the host last used this process: handed it out for work (see
+    /// [`Bridge::touch`]), or sent it a request or got an answer back. What the
+    /// host measures an idle bridge by before shutting it down.
+    last_used: Mutex<Instant>,
     child: Mutex<Option<Child>>,
     /// The bridge and everything it started — the agent CLI a node bridge
     /// spawns is a grandchild no kill of `child` reaches.
@@ -416,10 +424,14 @@ impl Bridge {
                         ),
                     }
                 }
+                // `kill` marks the bridge dead before it ends the process, so
+                // one still marked alive here ended on its own.
+                let stopped = !alive.load(Ordering::SeqCst);
                 fail_pending_on_exit(&pending, &alive);
                 let _ = events.send(BridgeEvent::Exited {
                     harness,
                     generation,
+                    stopped,
                 });
             });
         }
@@ -433,6 +445,7 @@ impl Bridge {
             pending,
             next_id: AtomicU64::new(1),
             alive,
+            last_used: Mutex::new(Instant::now()),
             child: Mutex::new(Some(child)),
             tree,
         });
@@ -486,6 +499,26 @@ impl Bridge {
     /// The file this process runs; see the field's comment.
     pub fn executable(&self) -> Value {
         self.executable.clone()
+    }
+
+    /// Record that the host is using this bridge now, which restarts its idle
+    /// clock (see the `last_used` field).
+    pub fn touch(&self) {
+        if let Ok(mut last_used) = self.last_used.lock() {
+            *last_used = Instant::now();
+        }
+    }
+
+    /// When the host last used this bridge; see [`Bridge::touch`].
+    pub fn last_used(&self) -> Instant {
+        self.last_used
+            .lock()
+            .map_or_else(|_| Instant::now(), |last_used| *last_used)
+    }
+
+    /// How many of the host's requests are still waiting for an answer.
+    pub fn in_flight(&self) -> usize {
+        self.pending.lock().map_or(0, |pending| pending.len())
     }
 
     pub fn supports_load_session(&self) -> bool {
@@ -566,6 +599,7 @@ impl Bridge {
                 self.harness
             )));
         }
+        self.touch();
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         if !self.register_pending(id, tx) {
@@ -596,6 +630,9 @@ impl Bridge {
             },
             None => rx.await,
         };
+        // The idle clock starts when the bridge finished its work, not when it
+        // was given it: a turn that ran for an hour was not an hour of idling.
+        self.touch();
         answer.unwrap_or_else(|_| {
             Err(protocol::internal(format!(
                 "{} bridge dropped the request",
@@ -724,6 +761,7 @@ mod tests {
             pending: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             alive: Arc::new(AtomicBool::new(true)),
+            last_used: Mutex::new(Instant::now()),
             child: Mutex::new(None),
             tree: None,
         };
@@ -910,6 +948,7 @@ mod tests {
             pending: Arc::clone(&pending),
             next_id: AtomicU64::new(1),
             alive: Arc::clone(&alive),
+            last_used: Mutex::new(Instant::now()),
             child: Mutex::new(None),
             tree: None,
         };
