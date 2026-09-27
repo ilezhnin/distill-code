@@ -44,7 +44,7 @@ reqwest = { version = "0.13.3", default-features = false, features = ["json", "r
 tar = "0.4"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 yaml_serde = "0.10.4"
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "migrate", "macros"] }
@@ -104,8 +104,14 @@ tempfile = "3"
 [profile.dev]
 debug = "line-tables-only"
 
+# Dependencies are also optimized. The dev build is the one the app runs as
+# day to day, and unoptimized serde_json, sqlx and the bundled SQLite made the
+# host take 1.4 s to read a 100 MB chat history that SQLite itself returns in
+# 0.2 s. Rebuilding them costs time once; our own crates stay at opt-level 0
+# for fast incremental builds.
 [profile.dev.package."*"]
 debug = false
+opt-level = 2
 
 [profile.dev.build-override]
 debug = false

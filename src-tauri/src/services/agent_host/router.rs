@@ -2115,8 +2115,11 @@ impl Inner {
             .list_event_payloads(&session_id)
             .await
             .map_err(protocol::internal)?;
-        let before_send = std::time::Instant::now();
+        let before_compact = std::time::Instant::now();
         let event_count = events.len();
+        let events = super::replay::compact(events);
+        let before_send = std::time::Instant::now();
+        let replayed_count = events.len();
         let batched = params
             .pointer("/_meta/distill/replayBatch")
             .and_then(Value::as_bool)
@@ -2126,13 +2129,15 @@ impl Inner {
         });
         log::debug!(
             target: "perf",
-            "[perf:host-load] {} record={}ms drain={}ms read={}ms enqueue={}ms events={} frames={}",
+            "[perf:host-load] {} record={}ms drain={}ms read={}ms compact={}ms enqueue={}ms events={} replayed={} frames={}",
             session_id,
             before_drain.duration_since(started).as_millis(),
             before_read.duration_since(before_drain).as_millis(),
-            before_send.duration_since(before_read).as_millis(),
+            before_compact.duration_since(before_read).as_millis(),
+            before_send.duration_since(before_compact).as_millis(),
             before_send.elapsed().as_millis(),
             event_count,
+            replayed_count,
             frames,
         );
         let attached = self.attached_route(&session_id).await.is_some();
