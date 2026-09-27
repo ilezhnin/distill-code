@@ -13,12 +13,12 @@ function isRemoteOrDataSrc(src: string): boolean {
 }
 
 /**
- * Renders a Markdown image whose `src` points at a local file in the session
- * working directory by routing it through the Tauri `asset:` scheme (the same
+ * Renders a Markdown image whose `src` points at a local file in the chat's
+ * folders by routing it through the Tauri `asset:` scheme (the same
  * mechanism avatars/artifacts use), so `![alt](./photo.jpg)` renders inline
- * instead of a broken image. Scoped to the session working directory via
- * `ArtifactPolicyContext`; remote http(s) images are left to the
- * (CSP-blocking) default renderer.
+ * instead of a broken image. Scoped to the session cwd, attached workspaces,
+ * and artifact root via `ArtifactPolicyContext`; remote http(s) images are
+ * left to the (CSP-blocking) default renderer.
  *
  * Lives in `features/chat` (not `shared/ui`) because it depends on the chat
  * artifact-policy machinery; it is injected into the shared `MessageResponse`
@@ -60,17 +60,20 @@ export const MarkdownImage = memo(
       // the chat's folders directly. A Markdown destination goes through
       // resolveMarkdownHref, which returns null for blocked schemes and
       // resolves relative paths against the session cwd; the resolved path must
-      // be contained within that cwd, so absolute paths (`/abs/private.png`)
-      // and `..`-escapes (`../../private.png`) are rejected rather than
-      // rendered from outside the working directory.
+      // sit in the session cwd, an attached workspace, or the artifact root,
+      // so absolute paths (`/abs/private.png`) and `..`-escapes that land
+      // outside those folders are rejected.
       let resolvedPath: string | null = null;
       if (assetPath !== null) {
         resolvedPath = isPathWithinTrustedRoots(assetPath) ? assetPath : null;
       } else {
         const candidate = resolveMarkdownHref(rawSrc);
-        resolvedPath = candidate?.isWithinSessionCwd
-          ? candidate.resolvedPath
-          : null;
+        resolvedPath =
+          candidate &&
+          (candidate.isWithinSessionCwd ||
+            isPathWithinTrustedRoots(candidate.resolvedPath))
+            ? candidate.resolvedPath
+            : null;
       }
       if (!resolvedPath || !IMAGE_EXTENSION_RE.test(resolvedPath)) {
         return;
@@ -110,7 +113,7 @@ export const MarkdownImage = memo(
     }
 
     // Fall back to the default rendering for remote images and local files
-    // that are missing, unsupported, or outside the session working directory.
+    // that are missing, unsupported, or outside the chat's folders.
     return <img src={src} alt={alt ?? ""} {...rest} />;
   },
 );

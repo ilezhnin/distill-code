@@ -22,6 +22,7 @@ import {
   getReplayBuffer,
 } from "@/features/chat/hooks/replayBuffer";
 import type {
+  ImageContent,
   MessageContent,
   MessageMetadata,
   ToolCallLocation,
@@ -45,10 +46,10 @@ import {
   handleReplayUserMessageChunk,
 } from "./acpSkillReplayChips";
 import {
-  extractToolResultImages,
   extractToolStructuredContent,
   extractToolResultText,
   findReplayMessageWithToolCall,
+  loadToolResultImages,
 } from "./acpToolCallContent";
 import {
   clearReplayAssistantTracking,
@@ -315,7 +316,7 @@ export async function handleSessionNotification(
     }
     perf.lastAt = now;
     perf.count += 1;
-    handleReplay(sessionId, update);
+    await handleReplay(sessionId, update);
   } else {
     // Usage is recorded only while the turn is live. Replay re-feeds every
     // `usage_update` the host persisted, and the ledger would take each one
@@ -328,7 +329,7 @@ export async function handleSessionNotification(
     if (update.sessionUpdate === "agent_message_chunk") {
       recordLiveAgentMessageChunk(sessionId);
     }
-    handleLive(sessionId, update);
+    await handleLive(sessionId, update);
   }
 }
 
@@ -459,7 +460,22 @@ function upsertThinkingContent(content: MessageContent[], text: string): void {
   last.text += text;
 }
 
-function handleReplay(sessionId: string, update: SessionUpdate): void {
+async function appendToolResultImages(
+  update: Extract<
+    SessionUpdate,
+    { sessionUpdate: "tool_call" | "tool_call_update" }
+  >,
+  sink: (images: ImageContent[]) => void,
+): Promise<void> {
+  const images = await loadToolResultImages(update);
+  if (images.length === 0) return;
+  sink(images);
+}
+
+async function handleReplay(
+  sessionId: string,
+  update: SessionUpdate,
+): Promise<void> {
   if (handleSessionEvent(sessionId, update, true)) return;
   switch (update.sessionUpdate) {
     case "agent_message_chunk": {
@@ -649,10 +665,22 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
             isError: update.status === "failed",
           });
           // Mirror the live branch: surface image blocks returned by the tool
-          // so image-producing MCPs render inline on replay too.
-          for (const image of extractToolResultImages(update)) {
-            msg.content.push(image);
-          }
+          // so image-producing MCPs render inline on replay too. A tool-written
+          // file is read from disk, and the ACP SDK does not wait for this
+          // handler: the load can commit the replay before the read returns,
+          // and then the image goes to the committed message in the store.
+          await appendToolResultImages(update, (images) => {
+            if (getReplayBuffer(sessionId)?.includes(msg)) {
+              msg.content.push(...images);
+              return;
+            }
+            useChatStore
+              .getState()
+              .updateMessage(sessionId, msg.id, (message) => ({
+                ...message,
+                content: [...message.content, ...images],
+              }));
+          });
         }
       }
       break;
@@ -669,7 +697,10 @@ function handleReplay(sessionId: string, update: SessionUpdate): void {
   }
 }
 
-function handleLive(sessionId: string, update: SessionUpdate): void {
+async function handleLive(
+  sessionId: string,
+  update: SessionUpdate,
+): Promise<void> {
   if (handleSessionEvent(sessionId, update, false)) return;
   const store = useChatStore.getState();
 
@@ -894,14 +925,16 @@ function handleLive(sessionId: string, update: SessionUpdate): void {
           content: [...msg.content, toolResponse],
         }));
         // Append any image blocks the tool returned so image-producing MCPs
-        // (e.g. imagegenerator) render inline rather than only as text/JSON.
-        const toolImages = extractToolResultImages(update);
-        if (toolImages.length > 0) {
-          store.updateMessage(sessionId, messageId, (msg) => ({
-            ...msg,
-            content: [...msg.content, ...toolImages],
-          }));
-        }
+        // (e.g. imagegenerator) and file-path generators (Grok image_gen)
+        // render inline rather than only as text/JSON.
+        await appendToolResultImages(update, (images) => {
+          useChatStore
+            .getState()
+            .updateMessage(sessionId, messageId, (msg) => ({
+              ...msg,
+              content: [...msg.content, ...images],
+            }));
+        });
       }
       break;
     }

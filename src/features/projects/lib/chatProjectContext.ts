@@ -93,6 +93,8 @@ This general chat uses this shared artifact folder as its working directory:
 ${workingDirectory}
 
 When creating a new standalone file, check whether the target filename already exists before writing. If it exists and the user did not explicitly ask to replace or edit that file, use the next clear filename such as "name-2.ext" or ask before overwriting.
+
+Image tools already show the generated picture in this chat. Do not also embed that same file in markdown. If you write an image file yourself, save it in this folder under a unique name and embed it once as ![description](filename.ext).
 </artifact-folder>`;
 }
 
