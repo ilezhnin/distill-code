@@ -48,8 +48,9 @@ import {
 import {
   extractToolStructuredContent,
   extractToolResultText,
+  extractToolResultImages,
   findReplayMessageWithToolCall,
-  loadToolResultImages,
+  hydrateToolResultImages,
 } from "./acpToolCallContent";
 import {
   clearReplayAssistantTracking,
@@ -460,16 +461,31 @@ function upsertThinkingContent(content: MessageContent[], text: string): void {
   last.text += text;
 }
 
-async function appendToolResultImages(
+/**
+ * Images a tool returned inline go to the message at once, in stream order.
+ * Only a tool that named an image file waits for the file's bytes, and those
+ * land after whatever the stream delivered meanwhile.
+ */
+function appendToolResultImages(
   update: Extract<
     SessionUpdate,
     { sessionUpdate: "tool_call" | "tool_call_update" }
   >,
   sink: (images: ImageContent[]) => void,
-): Promise<void> {
-  const images = await loadToolResultImages(update);
-  if (images.length === 0) return;
-  sink(images);
+): Promise<void> | undefined {
+  const images = extractToolResultImages(update);
+  if (images.length === 0) return undefined;
+  const inline = images.filter(
+    (image): image is ImageContent =>
+      typeof image.data === "string" && image.data.length > 0,
+  );
+  if (inline.length === images.length) {
+    sink(inline);
+    return undefined;
+  }
+  return hydrateToolResultImages(images).then((loaded) => {
+    if (loaded.length > 0) sink(loaded);
+  });
 }
 
 async function handleReplay(

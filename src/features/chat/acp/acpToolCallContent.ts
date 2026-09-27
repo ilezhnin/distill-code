@@ -38,20 +38,27 @@ export function findReplayMessageWithToolCall(
   return undefined;
 }
 
+/** The text blocks of a tool update, or `null` when it carries none. */
+function extractToolContentText(update: {
+  // biome-ignore lint/suspicious/noExplicitAny: ACP SDK ToolCallContent type is complex
+  content?: Array<any> | null;
+}): string | null {
+  const texts: string[] = [];
+  for (const item of update.content ?? []) {
+    if (item.type === "content" && item.content?.type === "text") {
+      texts.push(item.content.text);
+    }
+  }
+  return texts.length > 0 ? texts.join("\n") : null;
+}
+
 export function extractToolResultText(update: {
   // biome-ignore lint/suspicious/noExplicitAny: ACP SDK ToolCallContent type is complex
   content?: Array<any> | null;
   rawOutput?: unknown;
 }): string {
-  if (update.content && update.content.length > 0) {
-    const texts: string[] = [];
-    for (const item of update.content) {
-      if (item.type === "content" && item.content?.type === "text") {
-        texts.push(item.content.text);
-      }
-    }
-    if (texts.length) return texts.join("\n");
-  }
+  const contentText = extractToolContentText(update);
+  if (contentText !== null) return contentText;
   if (update.rawOutput !== undefined && update.rawOutput !== null) {
     return typeof update.rawOutput === "string"
       ? update.rawOutput
@@ -108,7 +115,13 @@ function imagePathFromUnknown(value: unknown): string | null {
   return null;
 }
 
+// A tool that names the file it wrote answers with a short JSON object. A
+// longer text result is ordinary output, and parsing it on every replayed
+// tool call is wasted work.
+const IMAGE_PATH_RESULT_MAX_LENGTH = 4096;
+
 function parseJsonObject(text: string): Record<string, unknown> | null {
+  if (text.length > IMAGE_PATH_RESULT_MAX_LENGTH) return null;
   const trimmed = text.trim();
   if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
   try {
@@ -217,24 +230,101 @@ export async function hydrateToolResultImages(
   return hydrated;
 }
 
-export async function loadToolResultImages(update: {
+export function extractToolStructuredContent(update: {
   // biome-ignore lint/suspicious/noExplicitAny: ACP SDK ToolCallContent type is complex
   content?: Array<any> | null;
-  rawOutput?: unknown;
-}): Promise<ImageContent[]> {
-  return hydrateToolResultImages(extractToolResultImages(update));
-}
-
-export function extractToolStructuredContent(update: {
   rawOutput?: unknown;
   _meta?: Record<string, unknown> | null;
 }): unknown | undefined {
   if (Object.hasOwn(update, "rawOutput")) {
-    return update.rawOutput;
+    return withoutRepeatedText(update.rawOutput, carriedResult(update));
   }
 
   const exit = update._meta?.terminal_exit;
   if (isRecord(exit)) return { ...exit };
 
   return undefined;
+}
+
+const REPEATED_TEXT_MIN_LENGTH = 1024;
+const REPEATED_TEXT_MAX_DEPTH = 3;
+
+interface CarriedResult {
+  text: string;
+  imageData: Set<string>;
+}
+
+/** What the tool response keeps anyway: its text and its images' bytes. */
+function carriedResult(update: {
+  // biome-ignore lint/suspicious/noExplicitAny: ACP SDK ToolCallContent type is complex
+  content?: Array<any> | null;
+}): CarriedResult {
+  const imageData = new Set<string>();
+  for (const item of update.content ?? []) {
+    const data = item?.type === "content" ? item.content?.data : undefined;
+    if (
+      item?.content?.type === "image" &&
+      typeof data === "string" &&
+      data.length >= REPEATED_TEXT_MIN_LENGTH
+    ) {
+      imageData.add(data);
+    }
+  }
+  return { text: extractToolContentText(update) ?? "", imageData };
+}
+
+function isCarried(field: unknown, carried: CarriedResult): boolean {
+  return (
+    typeof field === "string" &&
+    field.length >= REPEATED_TEXT_MIN_LENGTH &&
+    (carried.imageData.has(field) || carried.text.includes(field))
+  );
+}
+
+/**
+ * `rawOutput` minus the long strings the tool response already carries word
+ * for word: a grok terminal call repeats its whole `output`, a file read its
+ * whole content, a claude image read the image's base64 bytes. Kept as is,
+ * every tool response holds its output twice for as long as the chat stays in
+ * memory. Only a copy is changed, never the update.
+ */
+function withoutRepeatedText(
+  value: unknown,
+  carried: CarriedResult,
+  depth = 0,
+): unknown {
+  if (
+    (carried.text.length < REPEATED_TEXT_MIN_LENGTH &&
+      carried.imageData.size === 0) ||
+    depth > REPEATED_TEXT_MAX_DEPTH
+  ) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    let trimmed: unknown[] | null = null;
+    for (const [index, item] of value.entries()) {
+      if (typeof item === "string") continue;
+      const next = withoutRepeatedText(item, carried, depth + 1);
+      if (next === item) continue;
+      trimmed ??= [...value];
+      trimmed[index] = next;
+    }
+    return trimmed ?? value;
+  }
+  if (!isRecord(value)) return value;
+  let trimmed: Record<string, unknown> | null = null;
+  for (const [key, field] of Object.entries(value)) {
+    const repeated = isCarried(field, carried);
+    const next = repeated
+      ? undefined
+      : withoutRepeatedText(field, carried, depth + 1);
+    if (next === field) continue;
+    trimmed ??= { ...value };
+    if (repeated) {
+      delete trimmed[key];
+    } else {
+      trimmed[key] = next;
+    }
+  }
+  return trimmed ?? value;
 }

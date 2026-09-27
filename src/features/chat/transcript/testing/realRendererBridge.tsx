@@ -12,6 +12,7 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import ReactDOM from "react-dom/client";
+import { installDevtoolsTimingBufferGuard } from "@/app/lib/devtoolsTimingBuffer";
 import { I18nProvider } from "@/shared/i18n";
 import { ThemeProvider } from "@/shared/theme/ThemeProvider";
 import {
@@ -1425,6 +1426,9 @@ function Providers({ children }: { children: ReactNode }) {
     </QueryClientProvider>
   );
 }
+
+// Mirror the app entry (src/main.tsx) so the harness measures what ships.
+installDevtoolsTimingBufferGuard();
 
 const rootElement = document.getElementById("root");
 if (!rootElement) {

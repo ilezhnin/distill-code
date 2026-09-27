@@ -41,6 +41,34 @@ import { noteSessionWorkState } from "@/features/stats/lib/usageLedger";
 import { appendTerminalOutputToMessage } from "../lib/terminalOutput";
 
 const MESSAGE_SESSION_CACHE_LIMIT = 10;
+// Chats the operator left stay in memory so switching back is instant, but a
+// long agent chat holds tens of megabytes of tool output, and ten of them kept
+// the renderer at gigabytes. Past this much transcript text the least recently
+// opened settled chats are dropped; opening one again replays it from the host.
+const MESSAGE_SESSION_CACHE_CHAR_BUDGET = 48_000_000;
+
+const transcriptCharCounts = new WeakMap<Message[], number>();
+
+function countTranscriptChars(messages: Message[]): number {
+  const cached = transcriptCharCounts.get(messages);
+  if (cached !== undefined) return cached;
+  let chars = 0;
+  for (const message of messages) {
+    chars += countValueChars(message.content);
+  }
+  transcriptCharCounts.set(messages, chars);
+  return chars;
+}
+
+function countValueChars(value: unknown): number {
+  if (typeof value === "string") return value.length;
+  if (typeof value !== "object" || value === null) return 0;
+  let chars = 0;
+  for (const item of Array.isArray(value) ? value : Object.values(value)) {
+    chars += countValueChars(item);
+  }
+  return chars;
+}
 
 function createInitialSessionRuntime(): SessionChatRuntime {
   return {
@@ -167,20 +195,48 @@ function trimMessageSessionCache(
   messagesBySession: Record<string, Message[]>;
   evictedSessionIds: string[];
 } {
-  const protectedSessionIds = new Set([
-    ...recentMessageSessionIds,
-    ...additionalProtectedSessionIds,
-  ]);
+  const cachedSessionIds = Object.keys(state.messagesBySession);
   const evictedSessionIds: string[] = [];
-  let cachedSessionCount = Object.keys(state.messagesBySession).length;
+  let cachedSessionCount = cachedSessionIds.length;
+  let cachedChars = 0;
+  for (const sessionId of cachedSessionIds) {
+    cachedChars += countTranscriptChars(state.messagesBySession[sessionId]);
+  }
   let messagesBySession = state.messagesBySession;
 
-  if (cachedSessionCount <= MESSAGE_SESSION_CACHE_LIMIT) {
+  if (
+    cachedSessionCount <= MESSAGE_SESSION_CACHE_LIMIT &&
+    cachedChars <= MESSAGE_SESSION_CACHE_CHAR_BUDGET
+  ) {
     return { messagesBySession, evictedSessionIds };
   }
 
-  for (const sessionId of Object.keys(state.messagesBySession)) {
-    if (cachedSessionCount <= MESSAGE_SESSION_CACHE_LIMIT) break;
+  // Least recently opened first: chats that fell out of the recent list, then
+  // the recent ones from the oldest. The chat being opened or written to is
+  // never dropped.
+  const recentSessionIds = new Set(recentMessageSessionIds);
+  const evictionOrder = [
+    ...cachedSessionIds.filter((id) => !recentSessionIds.has(id)),
+    ...recentMessageSessionIds
+      .filter((id) => Object.hasOwn(state.messagesBySession, id))
+      .reverse(),
+  ];
+  const protectedSessionIds = new Set(additionalProtectedSessionIds);
+  if (recentMessageSessionIds[0]) {
+    protectedSessionIds.add(recentMessageSessionIds[0]);
+  }
+  if (state.activeSessionId) {
+    protectedSessionIds.add(state.activeSessionId);
+  }
+
+  for (const sessionId of evictionOrder) {
+    const overCharBudget = cachedChars > MESSAGE_SESSION_CACHE_CHAR_BUDGET;
+    if (!overCharBudget && cachedSessionCount <= MESSAGE_SESSION_CACHE_LIMIT) {
+      break;
+    }
+    // Too many chats alone never drops a recent one: the recent list is
+    // already capped at the same limit.
+    if (!overCharBudget && recentSessionIds.has(sessionId)) break;
     if (
       protectedSessionIds.has(sessionId) ||
       !canEvictSessionMessages(state, sessionId)
@@ -191,6 +247,7 @@ function trimMessageSessionCache(
     if (messagesBySession === state.messagesBySession) {
       messagesBySession = { ...state.messagesBySession };
     }
+    cachedChars -= countTranscriptChars(messagesBySession[sessionId]);
     delete messagesBySession[sessionId];
     evictedSessionIds.push(sessionId);
     cachedSessionCount -= 1;

@@ -14,6 +14,8 @@ import type {
   ToolResponseContent,
 } from "@/shared/types/messages";
 
+const FNV_OFFSET = 2166136261;
+
 export interface RevisionParts {
   renderRevision: string;
   heightRevision: string;
@@ -30,22 +32,34 @@ export function buildMessageRevisions(
   const contentRevisions = buildContentRevisionParts(visibleContent);
 
   return {
-    renderRevision: [
+    renderRevision: compactRevision(
       "message",
       message.id,
-      message.role,
-      String(message.created),
-      renderMetadataRevision(message.metadata),
-      contentRevisions.renderRevision,
-    ].join(":"),
-    heightRevision: [
+      [
+        message.role,
+        String(message.created),
+        renderMetadataRevision(message.metadata),
+        contentRevisions.renderRevision,
+      ].join(":"),
+    ),
+    heightRevision: compactRevision(
       "message-height",
       message.id,
-      message.role,
-      heightMetadataRevision(message.metadata),
-      contentRevisions.heightRevision,
-    ].join(":"),
+      [
+        message.role,
+        heightMetadataRevision(message.metadata),
+        contentRevisions.heightRevision,
+      ].join(":"),
+    ),
   };
+}
+
+// Revisions are only compared for equality, but they are also part of every
+// measurement cache key, and a long agent turn joins one per content block,
+// tool titles (whole shell commands) included: tens of kilobytes per key, a
+// new one for every streamed chunk. Keep the id readable and hash the rest.
+function compactRevision(kind: string, id: string, revision: string): string {
+  return `${kind}:${id}:${revision.length}:${hash53(revision)}`;
 }
 
 function buildSingleTextMessageRevisions(
@@ -95,6 +109,12 @@ function buildContentRevisionParts(
   };
 }
 
+// Tool calls, their results, app payloads and images are never changed in
+// place: every update replaces the block. Their revisions hash the whole tool
+// output, and a streamed chunk rebuilds the revisions of its whole message,
+// so a long turn used to rehash every earlier tool result on each chunk.
+const blockRevisionCache = new WeakMap<MessageContent, RevisionParts>();
+
 function buildSingleContentRevisionParts(
   content: MessageContent,
 ): RevisionParts {
@@ -118,7 +138,16 @@ function buildSingleContentRevisionParts(
     case "image":
     case "toolRequest":
     case "toolResponse":
-    case "mcpApp":
+    case "mcpApp": {
+      const cached = blockRevisionCache.get(content);
+      if (cached) return cached;
+      const revisions = {
+        renderRevision: buildContentRenderRevision(content),
+        heightRevision: buildContentHeightRevision(content),
+      };
+      blockRevisionCache.set(content, revisions);
+      return revisions;
+    }
     case "thinking":
     case "redactedThinking":
     case "reasoning":
@@ -211,7 +240,7 @@ export function stableValueRevision(value: unknown): string {
     return EMPTY_ARRAY_REVISION;
   }
 
-  return hashString(stableStringify(value));
+  return (hashValue(value, FNV_OFFSET) >>> 0).toString(36);
 }
 
 const EMPTY_ARRAY_REVISION = hashString("[]");
@@ -485,29 +514,65 @@ function textRevision(value: string): string {
   return `${value.length}:${hashString(value)}`;
 }
 
-function stableStringify(value: unknown): string {
+/**
+ * FNV-1a over a value's structure, with object keys in sorted order. It is fed
+ * straight from the value: building the value's stable JSON text first made a
+ * copy of every tool output each time a revision was taken. Strings carry
+ * their length, so no string's content can pass for structure.
+ */
+function hashValue(value: unknown, hash: number): number {
+  if (typeof value === "string") {
+    return hashChars(value, hashChars(`"${value.length}:`, hash));
+  }
   if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
+    return hashChars(String(JSON.stringify(value)), hash);
   }
-
   if (Array.isArray(value)) {
-    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+    let next = hashChars("[", hash);
+    for (const [index, item] of value.entries()) {
+      if (index > 0) next = hashChars(",", next);
+      next = hashValue(item, next);
+    }
+    return hashChars("]", next);
   }
-
   const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
-    .join(",")}}`;
+  let next = hashChars("{", hash);
+  for (const [index, key] of Object.keys(record).sort().entries()) {
+    if (index > 0) next = hashChars(",", next);
+    next = hashChars(":", hashValue(key, next));
+    next = hashValue(record[key], next);
+  }
+  return hashChars("}", next);
+}
+
+function hashChars(value: string, hash: number): number {
+  let next = hash;
+  for (let index = 0; index < value.length; index += 1) {
+    next ^= value.charCodeAt(index);
+    next = Math.imul(next, 16777619);
+  }
+  return next;
 }
 
 function hashString(value: string): string {
-  let hash = 2166136261;
+  return (hashChars(value, FNV_OFFSET) >>> 0).toString(36);
+}
+
+// cyrb53: 53 bits, so unlike the 32-bit hash above a collision between two
+// revisions of the same message is not a practical concern.
+function hash53(value: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
   for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
+    const code = value.charCodeAt(index);
+    h1 = Math.imul(h1 ^ code, 2654435761);
+    h2 = Math.imul(h2 ^ code, 1597334677);
   }
-  return (hash >>> 0).toString(36);
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+  h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+  h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
 }
 
 function assertNever(value: never): never {

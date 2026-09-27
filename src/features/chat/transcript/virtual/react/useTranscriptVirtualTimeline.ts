@@ -267,11 +267,11 @@ export interface TranscriptVirtualTimelineState {
     typeof createTranscriptRowStateRegistry
   >;
   localMeasurementCounters: LocalMeasurementCounters;
-  readonly measuredHeightByToken: Map<string, number>;
-  readonly offscreenMeasuredHeightByToken: Map<string, number>;
-  readonly cachedHeightAppliedByToken: Map<string, number>;
-  readonly skippedMeasurementByToken: Set<string>;
-  readonly deferredMeasurementByToken: Set<string>;
+  readonly measuredHeightByToken: RowTokenMap<number>;
+  readonly offscreenMeasuredHeightByToken: RowTokenMap<number>;
+  readonly cachedHeightAppliedByToken: RowTokenMap<number>;
+  readonly skippedMeasurementByToken: RowTokenMap<true>;
+  readonly deferredMeasurementByToken: RowTokenMap<true>;
   measurementFlushScheduled: boolean;
   visibleMeasurementFrame: number | null;
   visibleMeasurementTimeout: number | null;
@@ -299,8 +299,8 @@ function createTranscriptVirtualTimelineState(): TranscriptVirtualTimelineState 
     measuredHeightByToken: new Map(),
     offscreenMeasuredHeightByToken: new Map(),
     cachedHeightAppliedByToken: new Map(),
-    skippedMeasurementByToken: new Set(),
-    deferredMeasurementByToken: new Set(),
+    skippedMeasurementByToken: new Map(),
+    deferredMeasurementByToken: new Map(),
     measurementFlushScheduled: false,
     visibleMeasurementFrame: null,
     visibleMeasurementTimeout: null,
@@ -393,6 +393,9 @@ export function useTranscriptVirtualTimeline({
     () => normalizeProtectedRowIds(rows, protectedRowIds),
     [protectedRowIds, rows],
   );
+  if (runtimeRef.current.rows !== rows) {
+    forgetRemovedRowMeasurements(runtimeRef.current, rows);
+  }
   runtimeRef.current.rows = rows;
   runtimeRef.current.normalizedProtectedRowIds = normalizedProtectedRowIds;
 
@@ -642,14 +645,19 @@ export function useTranscriptVirtualTimeline({
 
         const tokenKey = getMeasurementTokenKey(cached.token);
         if (
-          runtimeRef.current.cachedHeightAppliedByToken.get(tokenKey) ===
-          cached.height
+          getForToken(
+            runtimeRef.current.cachedHeightAppliedByToken,
+            row.rowId,
+            tokenKey,
+          ) === cached.height
         ) {
           continue;
         }
 
         if (scheduler.queueCachedControllerUpdate(row.rowId)) {
-          runtimeRef.current.cachedHeightAppliedByToken.set(
+          setForToken(
+            runtimeRef.current.cachedHeightAppliedByToken,
+            row.rowId,
             tokenKey,
             cached.height,
           );
@@ -1083,9 +1091,18 @@ export function useTranscriptVirtualTimeline({
 
       if (measuredBlockSize <= 0) {
         if (
-          !runtimeRef.current.skippedMeasurementByToken.has(`${tokenKey}:zero`)
+          !getForToken(
+            runtimeRef.current.skippedMeasurementByToken,
+            rowId,
+            tokenKey,
+          )
         ) {
-          runtimeRef.current.skippedMeasurementByToken.add(`${tokenKey}:zero`);
+          setForToken(
+            runtimeRef.current.skippedMeasurementByToken,
+            rowId,
+            tokenKey,
+            true,
+          );
           runtimeRef.current.localMeasurementCounters = {
             ...runtimeRef.current.localMeasurementCounters,
             skippedZeroMeasurements:
@@ -1105,8 +1122,11 @@ export function useTranscriptVirtualTimeline({
       });
       const shouldAcceptPendingAnimationMeasurement =
         shouldAcceptVisibleAnimationMeasurement(element, finalization);
-      const previousHeight =
-        runtimeRef.current.measuredHeightByToken.get(tokenKey);
+      const previousHeight = getForToken(
+        runtimeRef.current.measuredHeightByToken,
+        rowId,
+        tokenKey,
+      );
       if (
         (finalization.canFinalize || shouldAcceptPendingAnimationMeasurement) &&
         previousHeight !== undefined &&
@@ -1142,8 +1162,19 @@ export function useTranscriptVirtualTimeline({
         !shouldAcceptPendingAnimationMeasurement
       ) {
         const skippedKey = `${tokenKey}:${finalization.source}`;
-        if (!runtimeRef.current.deferredMeasurementByToken.has(skippedKey)) {
-          runtimeRef.current.deferredMeasurementByToken.add(skippedKey);
+        if (
+          !getForToken(
+            runtimeRef.current.deferredMeasurementByToken,
+            rowId,
+            skippedKey,
+          )
+        ) {
+          setForToken(
+            runtimeRef.current.deferredMeasurementByToken,
+            rowId,
+            skippedKey,
+            true,
+          );
           runtimeRef.current.localMeasurementCounters = {
             ...runtimeRef.current.localMeasurementCounters,
             reservedMeasurementsDeferred:
@@ -1157,11 +1188,15 @@ export function useTranscriptVirtualTimeline({
       }
 
       if (result.status === "accepted" && result.queuedControllerUpdate) {
-        runtimeRef.current.measuredHeightByToken.set(
+        setForToken(
+          runtimeRef.current.measuredHeightByToken,
+          rowId,
           tokenKey,
           result.entry.height,
         );
-        runtimeRef.current.cachedHeightAppliedByToken.set(
+        setForToken(
+          runtimeRef.current.cachedHeightAppliedByToken,
+          rowId,
           tokenKey,
           result.entry.height,
         );
@@ -1187,14 +1222,20 @@ export function useTranscriptVirtualTimeline({
       const tokenKey = getMeasurementTokenKey(plan.token);
       if (
         isStableMeasurementHeight(
-          runtimeRef.current.offscreenMeasuredHeightByToken.get(tokenKey),
+          getForToken(
+            runtimeRef.current.offscreenMeasuredHeightByToken,
+            rowId,
+            tokenKey,
+          ),
           measuredBlockSize,
         )
       ) {
         continue;
       }
 
-      runtimeRef.current.offscreenMeasuredHeightByToken.set(
+      setForToken(
+        runtimeRef.current.offscreenMeasuredHeightByToken,
+        rowId,
         tokenKey,
         measuredBlockSize,
       );
@@ -1211,7 +1252,9 @@ export function useTranscriptVirtualTimeline({
         source: "offscreen-shell",
       });
       if (result.status === "accepted" && result.queuedControllerUpdate) {
-        runtimeRef.current.cachedHeightAppliedByToken.set(
+        setForToken(
+          runtimeRef.current.cachedHeightAppliedByToken,
+          rowId,
           tokenKey,
           result.entry.height,
         );
@@ -1237,14 +1280,20 @@ export function useTranscriptVirtualTimeline({
       const tokenKey = getMeasurementTokenKey(plan.token);
       if (
         isStableMeasurementHeight(
-          runtimeRef.current.offscreenMeasuredHeightByToken.get(tokenKey),
+          getForToken(
+            runtimeRef.current.offscreenMeasuredHeightByToken,
+            rowId,
+            tokenKey,
+          ),
           measuredBlockSize,
         )
       ) {
         continue;
       }
 
-      runtimeRef.current.offscreenMeasuredHeightByToken.set(
+      setForToken(
+        runtimeRef.current.offscreenMeasuredHeightByToken,
+        rowId,
         tokenKey,
         measuredBlockSize,
       );
@@ -1261,7 +1310,9 @@ export function useTranscriptVirtualTimeline({
         source: "offscreen-real",
       });
       if (result.status === "accepted" && result.queuedControllerUpdate) {
-        runtimeRef.current.cachedHeightAppliedByToken.set(
+        setForToken(
+          runtimeRef.current.cachedHeightAppliedByToken,
+          rowId,
           tokenKey,
           result.entry.height,
         );
@@ -1349,18 +1400,12 @@ export function useTranscriptVirtualTimeline({
         runtimeRef.current.registeredVisibleRowElements.delete(rowId);
         continue;
       }
-      const token =
-        runtimeRef.current.measurementScheduler?.getMeasurementToken(rowId);
-      if (token) {
-        // Force the current-width visible measurement through even if this
-        // exact token height was observed before. Controller measurements are
-        // row-keyed, so an intervening width can overwrite the current row
-        // height; on A → B → A resize, token A must be allowed to restore its
-        // height even when the DOM height equals the previous A measurement.
-        runtimeRef.current.measuredHeightByToken.delete(
-          getMeasurementTokenKey(token),
-        );
-      }
+      // Force the current-width visible measurement through even if this
+      // exact token height was observed before. Controller measurements are
+      // row-keyed, so an intervening width can overwrite the current row
+      // height; on A → B → A resize, token A must be allowed to restore its
+      // height even when the DOM height equals the previous A measurement.
+      runtimeRef.current.measuredHeightByToken.delete(rowId);
       runtimeRef.current.pendingVisibleMeasurementElements.set(rowId, element);
     }
 
@@ -2131,6 +2176,56 @@ function getFallbackReasons(
   }
 
   return reasons;
+}
+
+/**
+ * Measurement bookkeeping for a row's current token only. Keyed by token, it
+ * gained an entry per streamed chunk (every chunk is a new height revision)
+ * and kept them for as long as the chat stayed open, while nothing ever
+ * looks up anything but the row's current token.
+ */
+type RowTokenMap<T> = Map<string, { readonly tokenKey: string; value: T }>;
+
+function getForToken<T>(
+  map: RowTokenMap<T>,
+  rowId: string,
+  tokenKey: string,
+): T | undefined {
+  const entry = map.get(rowId);
+  return entry?.tokenKey === tokenKey ? entry.value : undefined;
+}
+
+function setForToken<T>(
+  map: RowTokenMap<T>,
+  rowId: string,
+  tokenKey: string,
+  value: T,
+): void {
+  map.set(rowId, { tokenKey, value });
+}
+
+function forgetRemovedRowMeasurements(
+  state: TranscriptVirtualTimelineState,
+  rows: readonly TranscriptRowDescriptor[],
+): void {
+  const maps = [
+    state.measuredHeightByToken,
+    state.offscreenMeasuredHeightByToken,
+    state.cachedHeightAppliedByToken,
+    state.skippedMeasurementByToken,
+    state.deferredMeasurementByToken,
+  ];
+  if (maps.every((map) => map.size <= rows.length)) {
+    return;
+  }
+  const liveRowIds = new Set(rows.map((row) => row.rowId));
+  for (const map of maps) {
+    for (const rowId of map.keys()) {
+      if (!liveRowIds.has(rowId)) {
+        map.delete(rowId);
+      }
+    }
+  }
 }
 
 function getMeasurementTokenKey(
