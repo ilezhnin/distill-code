@@ -739,6 +739,7 @@
     "sessionLoadMissingWorkingDir": "This session's folder no longer exists: {{missingPath}}. Loaded the conversation using {{fallbackPath}} instead.",
     "sessionLoadFailed": "Couldn't load this session.",
     "sessionReplayIncomplete": "Couldn't refresh this conversation. Your previous messages are still shown.",
+    "sessionReplayMissing": "Couldn't load this conversation. Open it again to try once more.",
     "editProjectFolders": "Edit project",
     "changeFolder": "Change folder",
     "stopGeneration": "Stop generation"

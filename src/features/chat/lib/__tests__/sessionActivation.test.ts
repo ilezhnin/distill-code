@@ -230,8 +230,10 @@ describe("loadSessionMessages", () => {
 
     await expect(loadSessionMessages("cold-empty-replay")).resolves.toBe(false);
 
+    // Nothing is on screen, so the notice must not claim earlier messages are.
     expect(notificationFromLastMessage("cold-empty-replay")).toMatchObject({
       notificationType: "error",
+      text: "Couldn't load this conversation. Open it again to try once more.",
     });
     expect(
       useChatSessionStore.getState().getSession("cold-empty-replay")

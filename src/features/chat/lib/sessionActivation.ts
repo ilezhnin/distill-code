@@ -492,7 +492,13 @@ async function performSessionMessagesLoad(
     clearReplayPerf(sessionId);
     const chatStore = useChatStore.getState();
     if (replayResult.status === "invalid") {
-      const errorMessage = i18n.t("chat:toolbar.sessionReplayIncomplete");
+      // "Your previous messages are still shown" is only true when there are
+      // some: a chat dropped from the cache has nothing left on screen.
+      const errorMessage = hasConversationMessages(
+        useChatStore.getState().messagesBySession[sessionId],
+      )
+        ? i18n.t("chat:toolbar.sessionReplayIncomplete")
+        : i18n.t("chat:toolbar.sessionReplayMissing");
       chatStore.setSessionLoading(sessionId, false);
       chatStore.removeMessage(
         sessionId,
