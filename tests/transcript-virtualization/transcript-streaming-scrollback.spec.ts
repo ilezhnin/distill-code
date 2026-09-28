@@ -364,10 +364,19 @@ function readNumber(record: Record<string, unknown>, key: string): number {
 async function collectMessageTopSamplesDuringStreaming(
   page: Page,
   messageId: string,
-  options: { durationMs: number; sampleIntervalMs: number },
+  options: {
+    durationMs: number;
+    minimumActiveSamples: number;
+    timeoutMs: number;
+  },
 ) {
   return page.evaluate(
-    async ({ targetMessageId, durationMs, sampleIntervalMs }) => {
+    async ({
+      targetMessageId,
+      durationMs,
+      minimumActiveSamples,
+      timeoutMs,
+    }) => {
       const samples: {
         elapsedMs: number;
         topPx: number | null;
@@ -377,8 +386,14 @@ async function collectMessageTopSamplesDuringStreaming(
       }[] = [];
       const startedAt = performance.now();
       const escapedMessageId = CSS.escape(targetMessageId);
+      let activeSampleCount = 0;
 
-      while (performance.now() - startedAt <= durationMs) {
+      // Keep the same evidence requirement on slower CI runners without
+      // assuming that a fixed wall-clock window contains 24 painted frames.
+      while (performance.now() - startedAt <= timeoutMs) {
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => resolve()),
+        );
         const scroller = document.querySelector(
           '[data-testid="message-timeline-scroll"]',
         );
@@ -411,11 +426,22 @@ async function collectMessageTopSamplesDuringStreaming(
               diagnostics.activeStreamingOperations ?? 0,
             ),
           });
+          const sample = samples[samples.length - 1];
+          if (
+            sample.activeStreamingOperations > 0 &&
+            sample.streamingChunkApplyCount > 1 &&
+            sample.topPx != null
+          ) {
+            activeSampleCount += 1;
+          }
         }
 
-        await new Promise<void>((resolve) =>
-          window.setTimeout(resolve, sampleIntervalMs),
-        );
+        if (
+          performance.now() - startedAt >= durationMs &&
+          activeSampleCount >= minimumActiveSamples
+        ) {
+          break;
+        }
       }
 
       return samples;
@@ -423,7 +449,8 @@ async function collectMessageTopSamplesDuringStreaming(
     {
       targetMessageId: messageId,
       durationMs: options.durationMs,
-      sampleIntervalMs: options.sampleIntervalMs,
+      minimumActiveSamples: options.minimumActiveSamples,
+      timeoutMs: options.timeoutMs,
     },
   );
 }
@@ -482,7 +509,7 @@ test.describe("transcript streaming scrollback proof", () => {
 
   test("virtual renderer does not bounce stable rows while a short response streams at bottom", async ({
     page,
-  }) => {
+  }, testInfo) => {
     test.skip(
       !rendererUrl.includes("real-renderer-bridge"),
       "streaming row stability proof requires the real renderer bridge",
@@ -513,7 +540,8 @@ test.describe("transcript streaming scrollback proof", () => {
       targetMessageId,
       {
         durationMs: 1_200,
-        sampleIntervalMs: 16,
+        minimumActiveSamples: 24,
+        timeoutMs: 5_000,
       },
     );
     const activeSamples = samples.filter(
@@ -530,6 +558,11 @@ test.describe("transcript streaming scrollback proof", () => {
         deltaPx: (sample.topPx ?? 0) - (activeSamples[index]?.topPx ?? 0),
       }))
       .filter((sample) => sample.deltaPx > 3);
+
+    await testInfo.attach("streaming-row-stability.json", {
+      contentType: "application/json",
+      body: JSON.stringify(samples, null, 2),
+    });
 
     expect(
       activeSamples.length,

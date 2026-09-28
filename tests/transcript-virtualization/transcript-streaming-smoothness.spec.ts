@@ -79,8 +79,6 @@ interface StreamingSmoothnessSummary {
   maxActiveHeightDelta: number;
   p95ActiveHeightDelta: number;
   maxActiveTailBlankAfterContent: number;
-  maxChunkScrollTopDelta: number;
-  maxChunkScrollHeightDelta: number;
   maxFragmentRows: number;
   maxStreamingTailRows: number;
   lastScrollCorrectionCount: number;
@@ -449,12 +447,6 @@ function summarizeSmoothness(
       0.95,
     ),
     maxActiveTailBlankAfterContent: max(activeTailBlankAfterContent),
-    maxChunkScrollTopDelta: max(
-      chunkDeltas.map((delta) => delta.scrollTopDelta),
-    ),
-    maxChunkScrollHeightDelta: max(
-      chunkDeltas.map((delta) => delta.scrollHeightDelta),
-    ),
     maxFragmentRows: max(activeSamples.map((sample) => sample.fragmentRows)),
     maxStreamingTailRows: max(
       activeSamples.map((sample) => sample.streamingTailRows),
@@ -571,11 +563,14 @@ test.describe("transcript streaming smoothness A/B", () => {
         virtual.summary.p95DistanceFromBottomDelta,
         "virtual p95 bottom-distance movement per frame should stay close to legacy",
       ).toBeLessThanOrEqual(legacy.summary.p95DistanceFromBottomDelta + 8);
+      // The bridge increments its chunk counter after a frame, while layout
+      // can change before that counter advances. Compare every active frame
+      // so the result does not depend on the counter's phase relative to paint.
       expect(
-        virtual.summary.maxChunkScrollHeightDelta,
-        "virtual per-chunk scrollHeight pop should not substantially exceed legacy",
+        virtual.summary.maxScrollHeightDelta,
+        "virtual per-frame scrollHeight pop should not substantially exceed legacy",
       ).toBeLessThanOrEqual(
-        Math.max(legacy.summary.maxChunkScrollHeightDelta * 1.25, 32),
+        Math.max(legacy.summary.maxScrollHeightDelta * 1.25, 32),
       );
       expect(
         virtual.summary.maxActiveTailBlankAfterContent,
