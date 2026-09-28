@@ -6,7 +6,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use tauri::Manager;
 use tokio::net::TcpListener;
@@ -69,7 +69,7 @@ const CARRYOVER_MESSAGE_CHARS: usize = 12_000;
 const CARRYOVER_OPENING: &str =
     "This conversation was started with a different agent and has been handed over to you.";
 /// How long an attach waits for the bridge event loop to catch up with the
-/// history the bridge replayed before it gives up and goes live anyway.
+/// history the bridge replayed before reporting a failed synchronization.
 const EVENT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 /// How many streamed updates may wait for their commit before the bridge event
 /// loop stops taking new ones and writes what it has. A burst of chunks then
@@ -455,6 +455,7 @@ pub struct Inner {
     /// 1 on, 2 off. Every session load asks, so the kv row behind it is read
     /// once per run.
     selection_split: AtomicU8,
+    shutdown_prepared: AtomicBool,
 }
 
 /// Tauri-managed handle; the host starts lazily on the first URL request.
@@ -483,6 +484,33 @@ impl AgentHost {
         let inner = Inner::start(app.clone()).await?;
         *guard = Some(Arc::clone(&inner));
         Ok(inner)
+    }
+
+    pub async fn prepare_shutdown(&self, prepared: bool) -> Result<(), String> {
+        let inner = self.inner.lock().await.clone();
+        let Some(inner) = inner else {
+            return Ok(());
+        };
+        {
+            let sessions = inner.sessions.lock().await;
+            if prepared
+                && sessions.values().any(|runtime| {
+                    runtime.loading || runtime.run.is_some() || !runtime.steer_queue.is_empty()
+                })
+            {
+                return Err(
+                    "Wait for active chats to finish or stop them before closing Distill.".into(),
+                );
+            }
+            inner.shutdown_prepared.store(prepared, Ordering::SeqCst);
+        }
+        if prepared {
+            if let Err(error) = inner.drain_bridge_events().await {
+                inner.shutdown_prepared.store(false, Ordering::SeqCst);
+                return Err(error_text(&error));
+            }
+        }
+        Ok(())
     }
 
     pub fn shutdown(&self) {
@@ -583,6 +611,7 @@ impl Inner {
             last_loaded: StdMutex::new(None),
             naming_replies: StdMutex::new(HashMap::new()),
             selection_split: AtomicU8::new(0),
+            shutdown_prepared: AtomicBool::new(false),
         });
 
         tokio::spawn(Arc::clone(&inner).accept_loop(listener, token));
@@ -610,37 +639,44 @@ impl Inner {
     // The handshake callback's error type is tungstenite's `ErrorResponse`.
     #[allow(clippy::result_large_err)]
     async fn accept_loop(self: Arc<Self>, listener: TcpListener, token: String) {
+        let handshakes = Arc::new(tokio::sync::Semaphore::new(16));
         loop {
             let Ok((stream, _)) = listener.accept().await else {
                 continue;
             };
-            let expected = token.clone();
-            let ws = tokio_tungstenite::accept_hdr_async(
-                stream,
-                move |request: &Request, response: Response| {
-                    let query = request.uri().query().unwrap_or("");
-                    let authorized = query
-                        .split('&')
-                        .any(|pair| pair.strip_prefix("token=") == Some(expected.as_str()));
-                    if authorized {
-                        Ok(response)
-                    } else {
-                        let mut rejection = ErrorResponse::new(Some("unauthorized".to_string()));
-                        *rejection.status_mut() =
-                            tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED;
-                        Err(rejection)
-                    }
-                },
-            )
-            .await;
-            let ws = match ws {
-                Ok(ws) => ws,
-                Err(error) => {
-                    log::warn!("[agent-host] rejected socket: {error}");
-                    continue;
-                }
+            let Ok(permit) = Arc::clone(&handshakes).try_acquire_owned() else {
+                continue;
             };
-            tokio::spawn(Arc::clone(&self).serve_frontend(ws));
+            let host = Arc::clone(&self);
+            let expected = token.clone();
+            tokio::spawn(async move {
+                let ws = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    tokio_tungstenite::accept_hdr_async(
+                        stream,
+                        move |request: &Request, response: Response| {
+                            let query = request.uri().query().unwrap_or("");
+                            let authorized = query
+                                .split('&')
+                                .any(|pair| pair.strip_prefix("token=") == Some(expected.as_str()));
+                            if authorized {
+                                Ok(response)
+                            } else {
+                                let mut rejection =
+                                    ErrorResponse::new(Some("unauthorized".to_string()));
+                                *rejection.status_mut() =
+                                    tokio_tungstenite::tungstenite::http::StatusCode::UNAUTHORIZED;
+                                Err(rejection)
+                            }
+                        },
+                    ),
+                )
+                .await;
+                drop(permit);
+                if let Ok(Ok(ws)) = ws {
+                    host.serve_frontend(ws).await;
+                }
+            });
         }
     }
 
@@ -1195,10 +1231,10 @@ impl Inner {
                     // Nothing else is waiting: store what the burst produced
                     // before parking on the channel, so a chat is never more
                     // than one idle moment away from being on disk.
-                    self.flush_pending_events(&mut pending).await;
-                    match events.recv().await {
-                        Some(event) => event,
-                        None => break,
+                    let _ = self.flush_pending_events(&mut pending).await;
+                    tokio::select! {
+                        event = events.recv() => match event { Some(event) => event, None => break },
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(1)), if !pending.is_empty() => continue,
                     }
                 }
                 Err(mpsc::error::TryRecvError::Disconnected) => break,
@@ -1214,7 +1250,7 @@ impl Inner {
                     {
                         pending.push(event);
                         if pending.len() >= APPEND_BATCH_LIMIT {
-                            self.flush_pending_events(&mut pending).await;
+                            let _ = self.flush_pending_events(&mut pending).await;
                         }
                     }
                 }
@@ -1228,8 +1264,8 @@ impl Inner {
                     // Whoever waits for this marker reads the transcript, the
                     // run state, or both: everything queued before it is now
                     // handled *and* committed.
-                    self.flush_pending_events(&mut pending).await;
-                    let _ = ack.send(());
+                    let result = self.flush_pending_events(&mut pending).await;
+                    let _ = ack.send(result);
                 }
                 BridgeEvent::Exited {
                     harness,
@@ -1262,21 +1298,28 @@ impl Inner {
                 }
             }
         }
-        self.flush_pending_events(&mut pending).await;
+        let _ = self.flush_pending_events(&mut pending).await;
     }
 
     /// Commit the session updates a burst of events produced. Consecutive
     /// events of one chat go in one transaction; the order they were handled in
     /// is the order the transcript keeps.
-    async fn flush_pending_events(&self, pending: &mut Vec<(String, Value)>) {
-        for (session_id, payloads) in Self::group_events_by_session(std::mem::take(pending)) {
-            if let Err(error) = self.store.append_events(&session_id, &payloads).await {
-                log::warn!(
-                    "[agent-host] failed to persist {} update(s) of session {session_id}: {error}",
-                    payloads.len()
-                );
+    async fn flush_pending_events(&self, pending: &mut Vec<(String, Value)>) -> Result<(), String> {
+        Self::persist_pending_events(&self.store, pending).await
+    }
+
+    async fn persist_pending_events(
+        store: &SessionStore,
+        pending: &mut Vec<(String, Value)>,
+    ) -> Result<(), String> {
+        for (session_id, payloads) in Self::group_events_by_session(pending.clone()) {
+            if let Err(error) = store.append_events(&session_id, &payloads).await {
+                log::error!("[agent-host] history is not durable for {session_id}; retained for retry: {error}");
+                return Err(error);
             }
+            pending.drain(..payloads.len());
         }
+        Ok(())
     }
 
     /// Runs of *consecutive* events belonging to the same chat. Two chats
@@ -1306,20 +1349,20 @@ impl Inner {
     /// The queue is shared by every bridge, so this waits for other harnesses'
     /// events too — bounded by what the loop does per event, which is stamping
     /// and forwarding, not a database round trip.
-    pub(super) async fn drain_bridge_events(&self) {
+    pub(super) async fn drain_bridge_events(&self) -> Result<(), Value> {
         let (ack, drained) = oneshot::channel();
-        if self.events_tx.send(BridgeEvent::Drained { ack }).is_err() {
-            return;
-        }
-        if tokio::time::timeout(EVENT_DRAIN_TIMEOUT, drained)
+        self.events_tx
+            .send(BridgeEvent::Drained { ack })
+            .map_err(|_| protocol::internal("The history writer stopped"))?;
+        tokio::time::timeout(EVENT_DRAIN_TIMEOUT, drained)
             .await
-            .is_err()
-        {
-            log::warn!(
-                "[agent-host] bridge events still backlogged after {} seconds",
-                EVENT_DRAIN_TIMEOUT.as_secs()
-            );
-        }
+            .map_err(|_| {
+                protocol::internal("History synchronization timed out; operation was not completed")
+            })?
+            .map_err(|_| {
+                protocol::internal("The history writer stopped before confirming the save")
+            })?
+            .map_err(protocol::internal)
     }
 
     /// Map a bridge-side session id back to the host session id: one lookup
@@ -2151,6 +2194,9 @@ impl Inner {
     }
 
     async fn new_session(self: &Arc<Self>, params: Value) -> Result<Value, Value> {
+        if self.shutdown_prepared.load(Ordering::SeqCst) {
+            return Err(protocol::internal("Distill is closing"));
+        }
         let harness_id = Self::meta_string(&params, "provider").ok_or_else(|| {
             invalid_params("session/new requires _meta.provider (the agent harness id)")
         })?;
@@ -2216,14 +2262,21 @@ impl Inner {
             last_snippet: None,
             snapshot: Some(snapshot.clone()),
         };
+        let mut sessions = self.sessions.lock().await;
+        if self.shutdown_prepared.load(Ordering::SeqCst) {
+            drop(sessions);
+            bridge.close_session(&bridge_session_id).await;
+            return Err(protocol::internal("Distill is closing"));
+        }
         if let Err(error) = self.store.insert_session(&record).await {
             // There is no chat to reach it through, so the session the bridge
             // just opened for us is unreachable: hand it back instead of
             // leaving the agent holding it until the process exits.
+            drop(sessions);
             bridge.close_session(&bridge_session_id).await;
             return Err(protocol::internal(error));
         }
-        self.sessions.lock().await.insert(
+        sessions.insert(
             session_id.clone(),
             SessionRuntime {
                 harness: harness_id.clone(),
@@ -2293,6 +2346,10 @@ impl Inner {
     ) -> Result<(Arc<Bridge>, String), Value> {
         let lock = self.attach_lock(&record.id).await;
         let _attaching = lock.lock().await;
+        let current = self.session_record(&record.id).await?;
+        if self.shutdown_prepared.load(Ordering::SeqCst) || current.archived_at.is_some() {
+            return Err(invalid_params("Session is archived or Distill is closing"));
+        }
         if let Some(attached) = self.attached_route(&record.id).await {
             // Every caller is about to use the session. Marked under the
             // attach lock, which `release_idle_session` takes too, so the chat
@@ -2303,7 +2360,6 @@ impl Inner {
         // The caller's copy may predate a move to another harness made while
         // it waited for the lock (a delayed background attach, say); attach
         // what the store holds now.
-        let current = self.session_record(&record.id).await?;
         self.attach_session_locked(&current).await
     }
 
@@ -2342,7 +2398,11 @@ impl Inner {
 
         // Register early with `loading` so replayed history from the bridge is
         // swallowed rather than duplicated in the renderer.
-        self.sessions.lock().await.insert(
+        let mut sessions = self.sessions.lock().await;
+        if self.shutdown_prepared.load(Ordering::SeqCst) {
+            return Err(protocol::internal("Distill is closing"));
+        }
+        sessions.insert(
             record.id.clone(),
             SessionRuntime {
                 harness: record.harness.clone(),
@@ -2357,6 +2417,7 @@ impl Inner {
                 last_active: std::time::Instant::now(),
             },
         );
+        drop(sessions);
         let attached = self
             .attach_registered_session(record, spec, &bridge, stored_bridge_id, snapshot)
             .await;
@@ -2374,7 +2435,7 @@ impl Inner {
     /// imported from another tool — the agent's own session id.
     ///
     /// `None` means "open a fresh one". That is what
-    /// [`Inner::release_bridge_session`] leaves behind: a bridge session runs in
+    /// [`Inner::update_working_dir`] leaves behind: a bridge session runs in
     /// the folder it was created in, so a chat that moved folders must not
     /// resume it, and every bridge that supports `loadSession` but not
     /// `session/close` would happily resume it forever. Falling back to the
@@ -2487,7 +2548,7 @@ impl Inner {
         // Everything the bridge replayed for this session is already in the
         // event queue; let the loop swallow it all before the session is live,
         // or its tail would be appended to the transcript a second time.
-        self.drain_bridge_events().await;
+        self.drain_bridge_events().await?;
         {
             let mut sessions = self.sessions.lock().await;
             if let Some(runtime) = sessions.rebind(&record.id, bridge_session_id.clone()) {
@@ -2508,12 +2569,8 @@ impl Inner {
         let mut record = self.session_record(&session_id).await?;
         if let Some(cwd) = params.get("cwd").and_then(Value::as_str) {
             if !cwd.is_empty() && cwd != "~" && cwd != record.cwd {
-                let _ = self.store.set_cwd(&session_id, cwd).await;
+                self.update_working_dir(&session_id, cwd).await?;
                 record.cwd = cwd.to_string();
-                // The bridge session it may still be attached to was created
-                // in the old folder and cannot move; stop using it so the
-                // background attach below opens one in the new folder.
-                self.release_bridge_session(&session_id).await;
             }
         }
         // The transcript is ours: replay it from the local log and answer
@@ -2526,7 +2583,7 @@ impl Inner {
         // first: a chat that is streaming right now has its last chunks there,
         // and replaying without them would show a transcript missing its tail.
         let before_drain = std::time::Instant::now();
-        self.drain_bridge_events().await;
+        self.drain_bridge_events().await?;
         let before_read = std::time::Instant::now();
         let events = self
             .store
@@ -2765,39 +2822,78 @@ impl Inner {
         });
     }
 
-    /// Stop using a session's bridge session, so the next prompt attaches a
-    /// fresh one. A bridge session's working directory is fixed when the bridge
-    /// creates it, so this is the only way a chat that moved folders runs in
-    /// the new one. Refuses (returns `false`) while a turn is running or an
-    /// attach is in flight: dropping the runtime then would strand that turn's
-    /// updates, which `host_session_for` routes through it.
-    ///
-    /// The stored id is cleared too, not just the runtime. Without that the next
-    /// attach reads the id straight back out of the row and resumes the same
-    /// bridge session — which, for a bridge that supports `loadSession` but not
-    /// `session/close` (every bridge shipped today), is still alive in the old
-    /// folder, so the chat would keep running there. That holds for a chat with
-    /// no runtime as much as for one with: one never attached in this run, or
-    /// let go of while idle (`release_idle_session`, which keeps the id so the
-    /// chat resumes), names the old bridge session in its row just the same.
-    pub async fn release_bridge_session(&self, session_id: &str) -> bool {
-        let released = {
-            let mut sessions = self.sessions.lock().await;
-            let busy = sessions
-                .get(session_id)
-                .is_some_and(|runtime| runtime.loading || runtime.run.is_some());
-            if busy {
-                return false;
-            }
-            sessions.remove(session_id)
-        };
+    pub(super) async fn update_working_dir(
+        &self,
+        session_id: &str,
+        cwd: &str,
+    ) -> Result<(), Value> {
+        let lock = self.attach_lock(session_id).await;
+        let _changing = lock.lock().await;
+        let record = self.session_record(session_id).await?;
+        if record.cwd == cwd {
+            return Ok(());
+        }
+        if self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .is_some_and(|runtime| {
+                runtime.loading || runtime.run.is_some() || !runtime.steer_queue.is_empty()
+            })
+        {
+            return Err(invalid_params(
+                "Wait for the session to finish before changing its working directory",
+            ));
+        }
+        self.drain_bridge_events().await?;
+        self.store
+            .move_working_dir(session_id, cwd)
+            .await
+            .map_err(protocol::internal)?;
+        let released = self.sessions.lock().await.remove(session_id);
         if let Some(runtime) = released {
             self.let_go_of(&runtime).await;
         }
-        if let Err(error) = self.store.set_bridge_session_id(session_id, None).await {
-            log::warn!("[agent-host] failed to forget the bridge session of {session_id}: {error}");
+        Ok(())
+    }
+
+    pub(super) async fn archive_session(&self, session_id: &str) -> Result<(), Value> {
+        let lock = self.attach_lock(session_id).await;
+        let _archiving = lock.lock().await;
+        if self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .is_some_and(|runtime| {
+                runtime.loading || runtime.run.is_some() || !runtime.steer_queue.is_empty()
+            })
+        {
+            return Err(invalid_params(
+                "Wait for the session to finish before archiving it",
+            ));
         }
-        true
+        self.drain_bridge_events().await?;
+        self.store
+            .set_archived(session_id, true)
+            .await
+            .map_err(protocol::internal)?;
+        if let Some((harness, bridge_id, generation)) = self.runtime_route(session_id).await {
+            let bridge = self.live_bridge(&harness).await;
+            if Self::resumable_after_release(
+                bridge
+                    .as_ref()
+                    .map(|bridge| (bridge.generation(), bridge.supports_load_session())),
+                generation,
+            ) {
+                self.sessions.lock().await.remove(session_id);
+                if let Some(bridge) = bridge {
+                    bridge.close_session(&bridge_id).await;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The `session/new _meta` a fork opens on: everything about the chat it
@@ -2828,6 +2924,7 @@ impl Inner {
         let session_id =
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
         let record = self.session_record(&session_id).await?;
+        self.drain_bridge_events().await?;
         let meta = Self::fork_meta(&record);
         let cwd = params
             .get("cwd")
@@ -2855,14 +2952,6 @@ impl Inner {
                 .set_title(&new_id, title, record.user_set_name)
                 .await;
         }
-        let _ = self
-            .store
-            .touch(
-                &new_id,
-                record.message_count,
-                record.last_snippet.as_deref(),
-            )
-            .await;
         Ok(created)
     }
 
@@ -3696,39 +3785,30 @@ impl Inner {
     }
 
     /// The transcript a session owes the agent it moved to, when it owes one.
-    /// A transcript that cannot be read is not a reason to refuse the prompt:
-    /// the debt stands and the agent answers without it this once.
-    async fn pending_carryover(&self, session_id: &str) -> Option<Value> {
-        match self.store.carryover_pending(session_id).await {
-            Ok(true) => {}
-            Ok(false) => return None,
-            Err(error) => {
-                log::warn!("[agent-host] failed to read the carry-over of {session_id}: {error}");
-                return None;
-            }
+    /// Refuse a prompt if the owed transcript cannot be read safely.
+    async fn pending_carryover(&self, session_id: &str) -> Result<Option<Value>, Value> {
+        if !self
+            .store
+            .carryover_pending(session_id)
+            .await
+            .map_err(protocol::internal)?
+        {
+            return Ok(None);
         }
-        // The tail of the last reply may still be in the event loop's buffer.
-        self.drain_bridge_events().await;
-        match self.store.list_events(session_id).await {
-            Ok(events) => {
-                let block = Self::carryover_block(&events);
-                if block.is_none() {
-                    // Pictures and attachments only: nothing a transcript can
-                    // carry. Left standing, the debt would be paid later with
-                    // the new agent's own turns.
-                    if let Err(error) = self.store.clear_carryover(session_id).await {
-                        log::warn!(
-                            "[agent-host] failed to settle the carry-over of {session_id}: {error}"
-                        );
-                    }
-                }
-                block
-            }
-            Err(error) => {
-                log::warn!("[agent-host] failed to read the transcript of {session_id}: {error}");
-                None
-            }
+        self.drain_bridge_events().await?;
+        let events = self
+            .store
+            .list_events(session_id)
+            .await
+            .map_err(protocol::internal)?;
+        let block = Self::carryover_block(&events);
+        if block.is_none() {
+            self.store
+                .clear_carryover(session_id)
+                .await
+                .map_err(protocol::internal)?;
         }
+        Ok(block)
     }
 
     /// Persist a user turn's prompt blocks. A steered turn (one the agent
@@ -3753,24 +3833,18 @@ impl Inner {
         meta: &Value,
         ids: &TurnIds,
         steer: bool,
-    ) -> Option<RecordedPrompt> {
+    ) -> Result<Option<RecordedPrompt>, Value> {
         let events = Self::user_prompt_events(session_id, prompt, meta, ids, &now_iso(), steer);
-        let undo = match self.store.touch_undo(session_id).await {
-            Ok(undo) => undo,
-            Err(error) => {
-                log::warn!("[agent-host] failed to read session {session_id}: {error}");
-                None
-            }
-        };
-        // One commit for the whole prompt: its blocks are one message and
-        // half of them in the log is never a state anyone wants to read.
-        let event_ids = match self.store.append_events(session_id, &events).await {
-            Ok(ids) => ids,
-            Err(error) => {
-                log::warn!("[agent-host] failed to persist prompt: {error}");
-                Vec::new()
-            }
-        };
+        let undo = self
+            .store
+            .touch_undo(session_id)
+            .await
+            .map_err(protocol::internal)?;
+        let event_ids = self
+            .store
+            .append_events(session_id, &events)
+            .await
+            .map_err(protocol::internal)?;
         if steer {
             if let Some(mut echo) = events.into_iter().next() {
                 echo["update"]["messageId"] = json!(ids.message_id);
@@ -3782,11 +3856,11 @@ impl Inner {
         if snippet.is_none() {
             let _ = self.store.touch(session_id, 0, None).await;
         }
-        undo.map(|undo| RecordedPrompt {
+        Ok(undo.map(|undo| RecordedPrompt {
             run_id: ids.run_id.clone(),
             event_ids,
             undo,
-        })
+        }))
     }
 
     /// Take a prompt the bridge rejected back out of the log and off the
@@ -3812,7 +3886,9 @@ impl Inner {
         // emitted before it answered with an error is only stamped onto the run
         // when the event loop gets to it. Wait for the loop to catch up, or a
         // chunk that is about to be persisted reads as "nothing happened".
-        self.drain_bridge_events().await;
+        if self.drain_bridge_events().await.is_err() {
+            return;
+        }
         let produced_nothing = {
             let sessions = self.sessions.lock().await;
             Self::turn_produced_nothing(sessions.get(session_id), &recorded.run_id)
@@ -3918,6 +3994,19 @@ impl Inner {
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
         let record = self.session_record(&session_id).await?;
         let (bridge, _) = self.attach_session(&record).await?;
+        let lock = self.attach_lock(&session_id).await;
+        let admission = lock.lock().await;
+        let current = self.session_record(&session_id).await?;
+        if current.archived_at.is_some() {
+            return Err(invalid_params(
+                "Unarchive the session before sending a prompt",
+            ));
+        }
+        if current.cwd != record.cwd || current.harness != record.harness {
+            return Err(invalid_params(
+                "Session changed while preparing the prompt; retry in its current workspace",
+            ));
+        }
         let prompt = params
             .get("prompt")
             .cloned()
@@ -3929,14 +4018,14 @@ impl Inner {
         // freshly opened bridge session says about itself meanwhile would be
         // stamped onto the run as something the turn produced — which is what
         // stops a prompt the bridge then rejects from being withdrawn.
-        let mut carryover = self.pending_carryover(&session_id).await;
+        let carryover = self.pending_carryover(&session_id).await?;
         // For the same reason, everything the bridge said before this prompt
         // is handled and stored before the turn is claimed and the prompt is
         // recorded. An update still queued would otherwise be stamped as this
         // turn's, and one still waiting for its commit would land in the log
         // after this prompt's rows. The previous turn's own tail is already in:
         // `run_prompt` drains before a turn it ran ends.
-        self.drain_bridge_events().await;
+        self.drain_bridge_events().await?;
         // The bridge session the prompt goes to is the one the runtime names
         // in the very lock the run is registered in. `attach_session` released
         // its own lock before returning, and a `reopen_on_model` that took it
@@ -3949,6 +4038,9 @@ impl Inner {
             let runtime = sessions
                 .get_mut(&session_id)
                 .ok_or_else(|| protocol::internal("session vanished"))?;
+            if self.shutdown_prepared.load(Ordering::SeqCst) {
+                return Err(invalid_params("Distill is closing"));
+            }
             match Self::claim_turn(runtime, &ids) {
                 Ok(bridge_session_id) => bridge_session_id,
                 Err(active_run_id) => {
@@ -3970,12 +4062,19 @@ impl Inner {
         // cannot go stale: it catches a chat that changed agents between the
         // first look and the claim. Both come before the prompt is recorded,
         // so the transcript handed over ends where this message begins.
-        if carryover.is_none() {
-            carryover = self.pending_carryover(&session_id).await;
-        }
-        let recorded = self
+        let recorded = match self
             .record_user_prompt(&session_id, &prompt, &meta, &ids, steer)
-            .await;
+            .await
+        {
+            Ok(recorded) => recorded,
+            Err(error) => {
+                if let Some(runtime) = self.sessions.lock().await.get_mut(&session_id) {
+                    runtime.run = None;
+                }
+                return Err(error);
+            }
+        };
+        drop(admission);
         self.name_untitled_session(&record, &prompt);
         // What is recorded is what the user sent; what the agent is sent
         // opens with what it missed.
@@ -4034,9 +4133,19 @@ impl Inner {
                 runtime.run = Some(RunState::start(&queued.ids));
                 queued
             };
-            let recorded = self
+            let recorded = match self
                 .record_user_prompt(&session_id, &queued.prompt, &queued.meta, &queued.ids, true)
-                .await;
+                .await
+            {
+                Ok(recorded) => recorded,
+                Err(error) => {
+                    if let Some(runtime) = self.sessions.lock().await.get_mut(&session_id) {
+                        runtime.steer_queue.push_front(queued);
+                        runtime.run = None;
+                    }
+                    return Err(error);
+                }
+            };
             result = self
                 .run_prompt(
                     &bridge,
@@ -4088,7 +4197,13 @@ impl Inner {
         // wrong message; the snippet read below would miss it too. An answer
         // that is an error gets the same wait, since a failed turn may have
         // streamed as well.
-        self.drain_bridge_events().await;
+        while let Err(error) = self.drain_bridge_events().await {
+            log::error!(
+                "[agent-host] holding turn {session_id} until history is durable: {}",
+                error_text(&error)
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
         let (agent_text, saw_agent_message) = {
             let sessions = self.sessions.lock().await;
             sessions
@@ -4126,6 +4241,9 @@ impl Inner {
         let ids = TurnIds::new();
         let queued = {
             let mut sessions = self.sessions.lock().await;
+            if self.shutdown_prepared.load(Ordering::SeqCst) {
+                return Err(invalid_params("Distill is closing"));
+            }
             match sessions.get_mut(&session_id).and_then(|runtime| {
                 runtime
                     .run
@@ -4405,7 +4523,7 @@ impl Inner {
         if asked.is_err() {
             bridge.notify("session/cancel", json!({ "sessionId": naming_id }));
         }
-        self.drain_bridge_events().await;
+        self.drain_bridge_events().await?;
         let reply = self
             .naming_replies
             .lock()
@@ -4820,6 +4938,50 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_history_batch_retains_the_uncommitted_suffix_for_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.db");
+        let store = SessionStore::open(&path).await.unwrap();
+        for id in ["a", "b"] {
+            let record: SessionRecord = serde_json::from_value(json!({
+                "id": id, "harness": "goose", "cwd": "C:\\work", "user_set_name": false,
+                "hidden": false, "created_at": now_iso(), "updated_at": now_iso(), "message_count": 0
+            })).unwrap();
+            store.insert_session(&record).await.unwrap();
+        }
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&path))
+            .await
+            .unwrap();
+        sqlx::query("CREATE TRIGGER fail_append BEFORE INSERT ON session_events WHEN NEW.session_id = 'b' BEGIN SELECT RAISE(FAIL, 'simulated full disk'); END")
+            .execute(&pool).await.unwrap();
+        let mut pending = vec![
+            ("a".into(), json!({"n":1})),
+            ("b".into(), json!({"n":2})),
+            ("a".into(), json!({"n":3})),
+        ];
+        assert!(Inner::persist_pending_events(&store, &mut pending)
+            .await
+            .is_err());
+        assert_eq!(pending.len(), 2);
+        assert_eq!(store.list_events("a").await.unwrap(), vec![json!({"n":1})]);
+        assert!(store.list_events("b").await.unwrap().is_empty());
+        sqlx::query("DROP TRIGGER fail_append")
+            .execute(&pool)
+            .await
+            .unwrap();
+        Inner::persist_pending_events(&store, &mut pending)
+            .await
+            .unwrap();
+        assert!(pending.is_empty());
+        assert_eq!(
+            store.list_events("a").await.unwrap(),
+            vec![json!({"n":1}), json!({"n":3})]
+        );
+        assert_eq!(store.list_events("b").await.unwrap(), vec![json!({"n":2})]);
+    }
 
     fn ids() -> TurnIds {
         TurnIds {

@@ -391,6 +391,42 @@ describe("first workspace send", () => {
     });
   });
 
+  it("bounds a queued draft's backend wait and retains its message", async () => {
+    vi.useFakeTimers();
+    try {
+      const plan = { workingDir: "/created", workspaceAttachments: [selected] };
+      vi.mocked(planProjectChatWorkspaces).mockResolvedValueOnce(plan);
+      useChatSessionStore.setState({
+        sessions: [
+          { ...session(), creationState: "pending", clientSessionId: "s1" },
+        ],
+      });
+      acceptFirstSend(
+        "s1",
+        { persona: { kind: "inherit" }, text: "keep this" },
+        { onNeedsName: vi.fn() },
+      );
+      const record = useChatStore.getState().queuedMessageBySession.s1?.[0];
+      if (!record) throw new Error("missing queue");
+      const creating = createDeferredWorkspaces(
+        "s1",
+        record.recordId,
+        "feature",
+      );
+      await vi.advanceTimersByTimeAsync(30_000);
+      await creating;
+      expect(rollbackProjectChatWorkspacePlan).toHaveBeenCalledWith(plan);
+      expect(
+        useChatStore.getState().queuedMessageBySession.s1?.[0],
+      ).toMatchObject({
+        payload: { text: "keep this" },
+        state: { status: "failed" },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps a creating deferred message paused when setup finishes during editing", async () => {
     let finishApply:
       | ((value: {

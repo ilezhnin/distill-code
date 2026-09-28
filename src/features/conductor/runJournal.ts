@@ -194,7 +194,7 @@ function journalFor(waveId: string): Journal {
     if (oldest.done || oldest.value === waveId) break;
     const dropped = journals.get(oldest.value);
     journals.delete(oldest.value);
-    void dropped?.dispose();
+    void dropped?.dispose().catch(() => {});
   }
   return journal;
 }
@@ -322,7 +322,8 @@ export function subscribeRunEvents(listener: () => void): () => void {
 
 /** Drops the in-memory journals. Tests only. */
 export function resetRunJournalsForTests(): void {
-  for (const journal of journals.values()) void journal.dispose();
+  for (const journal of journals.values())
+    void journal.dispose().catch(() => {});
   journals.clear();
   listeners.clear();
 }

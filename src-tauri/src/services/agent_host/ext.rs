@@ -72,10 +72,7 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
         }
         "session/archive" => {
             let id = session_id(&params)?;
-            host.store
-                .set_archived(&id, true)
-                .await
-                .map_err(protocol::internal)?;
+            host.archive_session(&id).await?;
             Ok(json!({}))
         }
         "session/unarchive" => {
@@ -104,22 +101,7 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
                 .get("workingDir")
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid_params("workingDir required"))?;
-            let moved = host
-                .session_record(&id)
-                .await
-                .is_ok_and(|record| record.cwd != cwd);
-            host.store
-                .set_cwd(&id, cwd)
-                .await
-                .map_err(protocol::internal)?;
-            // A bridge session runs in the folder it was created in and cannot
-            // be moved, so a chat that changed folders has to stop using the
-            // one it has — otherwise the next prompt still runs in the old one.
-            if moved && !host.release_bridge_session(&id).await {
-                log::warn!(
-                    "[agent-host] session {id} moved folders while a turn was running; the running turn stays in the old one"
-                );
-            }
+            host.update_working_dir(&id, cwd).await?;
             Ok(json!({}))
         }
         "session/steer" => host.steer(params).await,
@@ -138,7 +120,7 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
             // The updates of a chat that is streaming right now may still be
             // waiting for their commit in the event loop; a transcript read has
             // to wait for them or it stops short of the live reply.
-            host.drain_bridge_events().await;
+            host.drain_bridge_events().await?;
             let events = host
                 .store
                 .list_events(&id)
@@ -160,7 +142,7 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
             // so it has to wait for them or it edits a transcript missing its
             // tail. The message itself is settled: the renderer offers no
             // edit on a reply still being written.
-            host.drain_bridge_events().await;
+            host.drain_bridge_events().await?;
             let rewrite = host
                 .store
                 .rewrite_message_text(&id, side, &message_id, text, part.as_ref())
@@ -189,7 +171,7 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
             let (message_id, side) = message_target(&params)?;
             let part = message_part(&params)?.ok_or_else(|| invalid_params("part required"))?;
             // As for an edit: the log has to hold the whole turn first.
-            host.drain_bridge_events().await;
+            host.drain_bridge_events().await?;
             let removal = host
                 .store
                 .remove_message_part(&id, side, &message_id, &part)

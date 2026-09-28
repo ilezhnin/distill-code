@@ -126,13 +126,14 @@ describe("distillDocument on the desktop", () => {
     const first = document.flush();
     document.write({ items: ["v2"] });
     const second = document.flush();
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
 
     // The second write waits for the first to settle.
     expect(started).toEqual([JSON.stringify({ version: 1, items: ["v1"] })]);
 
     finishers.shift()?.();
     await first;
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(started).toEqual([
       JSON.stringify({ version: 1, items: ["v1"] }),
@@ -240,5 +241,43 @@ describe("distillDocument on the desktop", () => {
       "memory.json",
       JSON.stringify({ version: 1, items: ["final"] }),
     );
+  });
+
+  it("retains a failed save and retries it without another edit", async () => {
+    const document = doc();
+    mocks.writeDistillDocument.mockRejectedValueOnce(new Error("disk full"));
+    document.write({ items: ["keep this memory"] });
+    await expect(document.flush()).rejects.toThrow("disk full");
+    await document.flush();
+    expect(mocks.writeDistillDocument).toHaveBeenLastCalledWith(
+      "memory.json",
+      JSON.stringify({ version: 1, items: ["keep this memory"] }),
+    );
+    expect(mocks.writeDistillDocument).toHaveBeenCalledTimes(2);
+    await document.dispose();
+  });
+
+  it("a failed older write never replaces a newer pending value", async () => {
+    let rejectWrite: (error: Error) => void = () => {};
+    mocks.writeDistillDocument.mockImplementationOnce(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectWrite = reject;
+        }),
+    );
+    const document = doc();
+    document.write({ items: ["old"] });
+    const first = document.flush();
+    const failed = expect(first).rejects.toThrow("disk full");
+    await vi.advanceTimersByTimeAsync(0);
+    document.write({ items: ["new"] });
+    rejectWrite(new Error("disk full"));
+    await failed;
+    await document.flush();
+    expect(mocks.writeDistillDocument).toHaveBeenLastCalledWith(
+      "memory.json",
+      JSON.stringify({ version: 1, items: ["new"] }),
+    );
+    await document.dispose();
   });
 });

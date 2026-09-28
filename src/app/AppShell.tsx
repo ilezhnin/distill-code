@@ -49,7 +49,6 @@ import { useActiveProjectTint } from "@/features/chat/hooks/useActiveProjectTint
 import { useWorkspaceNameRequestQueue } from "@/features/chat/hooks/useWorkspaceNameRequestQueue";
 import {
   cleanupSessionWorkspaces,
-  countSessionWorkspaceCleanupResources,
   hasSessionWorkspaceCleanupTargets,
   inspectSessionWorkspaceCleanup,
   type InspectedSessionWorkspaceCleanupPlan,
@@ -65,7 +64,6 @@ import {
   isAgentBuilderVisible,
   isContextPanelVisible,
 } from "@/features/chat/lib/chatCapabilityVisibility";
-import { SessionWorkspaceCleanupDialog } from "@/features/chat/ui/SessionWorkspaceCleanupDialog";
 import {
   type ChatSession,
   getVisibleSessions,
@@ -271,12 +269,6 @@ function executionTargetFromModelPreference(
   });
 }
 
-interface PendingSessionWorkspaceCleanupConfirmation {
-  worktreeCount: number;
-  branchCount: number;
-  resolve: (confirmed: boolean) => void;
-}
-
 interface ArchiveChatOptions {
   /** The record to archive when the store has already dropped the session —
    *  the automatic sweep can outlive its own list entry. */
@@ -301,7 +293,7 @@ const GLOBAL_COMPOSER_ROUTE_SWAP_DELAY_MS = 220;
 
 function getSessionArchiveInterruptionReason(
   sessionId: string,
-  cleanupPolicy: ArchiveCleanupPolicy,
+  _cleanupPolicy: ArchiveCleanupPolicy,
   deadlineMs?: number,
 ): SessionWorkspaceCleanupInterruptionReason | null {
   if (
@@ -309,9 +301,6 @@ function getSessionArchiveInterruptionReason(
     Date.now() >= deadlineMs - MUTATION_DEADLINE_MARGIN_MS
   ) {
     return "timed_out";
-  }
-  if (cleanupPolicy === "confirm") {
-    return null;
   }
   const runtime = useChatStore.getState().getSessionRuntime(sessionId);
   return isSessionRunning(runtime.chatState) || runtime.isRunCancellationPending
@@ -613,12 +602,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     string | null
   >(null);
   const [searchEscapeRequest, setSearchEscapeRequest] = useState(0);
-  const [
-    pendingWorkspaceCleanupConfirmation,
-    setPendingWorkspaceCleanupConfirmation,
-  ] = useState<PendingSessionWorkspaceCleanupConfirmation | null>(null);
-  const pendingWorkspaceCleanupConfirmationRef =
-    useRef<PendingSessionWorkspaceCleanupConfirmation | null>(null);
   const sessionArchiveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const [activeDesignSystemSection, setActiveDesignSystemSection] =
     useState<DesignSystemSection>(DEFAULT_DESIGN_SYSTEM_SECTION);
@@ -2967,43 +2950,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     };
   }, [openSettings]);
 
-  const settleWorkspaceCleanupConfirmation = useCallback(
-    (confirmed: boolean) => {
-      const pending = pendingWorkspaceCleanupConfirmationRef.current;
-      if (!pending) return;
-      pendingWorkspaceCleanupConfirmationRef.current = null;
-      setPendingWorkspaceCleanupConfirmation(null);
-      pending.resolve(confirmed);
-    },
-    [],
-  );
-
-  useEffect(
-    () => () => {
-      const pending = pendingWorkspaceCleanupConfirmationRef.current;
-      pendingWorkspaceCleanupConfirmationRef.current = null;
-      pending?.resolve(false);
-    },
-    [],
-  );
-
-  const confirmGitCleanup = useCallback(
-    (plans: InspectedSessionWorkspaceCleanupPlan[]): Promise<boolean> => {
-      const { worktreeCount, branchCount } =
-        countSessionWorkspaceCleanupResources(plans);
-      return new Promise((resolve) => {
-        const pending: PendingSessionWorkspaceCleanupConfirmation = {
-          worktreeCount,
-          branchCount,
-          resolve,
-        };
-        pendingWorkspaceCleanupConfirmationRef.current = pending;
-        setPendingWorkspaceCleanupConfirmation(pending);
-      });
-    },
-    [],
-  );
-
   const archiveChat = useCallback(
     async (
       sessionId: string,
@@ -3079,15 +3025,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               reason: "cleanup_requires_discard" as const,
             };
           }
-          if (
-            cleanupPolicy === "confirm" &&
-            !(await confirmGitCleanup(plans))
-          ) {
-            return {
-              ok: false as const,
-              reason: "blocked_unsaved_changes" as const,
-            };
-          }
+          // Archiving preserves local work. Only clean resources are eligible
+          // for best-effort cleanup, and Git checks them again before removal.
+          plans = plans.filter(
+            (plan) => !wouldSessionWorkspaceCleanupDiscardFiles(plan),
+          );
         }
 
         const preArchiveInterruption = getSessionArchiveInterruptionReason(
@@ -3178,7 +3120,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
         const wasActiveSession =
           useChatSessionStore.getState().activeSessionId === sessionId;
-        cleanupChatSession(sessionId);
+        cleanupChatSession(sessionId, { preserveUnsent: true });
         if (wasActiveSession) {
           setActiveSession(null);
           setActiveView("home");
@@ -3191,7 +3133,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         releaseArchiveQueue();
       }
     },
-    [cleanupChatSession, confirmGitCleanup, setActiveSession, t],
+    [cleanupChatSession, setActiveSession, t],
   );
 
   const handleAutoArchiveChat = useCallback(
@@ -4163,13 +4105,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           </>
         )}
       </AppShellLayout>
-      <SessionWorkspaceCleanupDialog
-        open={Boolean(pendingWorkspaceCleanupConfirmation)}
-        worktreeCount={pendingWorkspaceCleanupConfirmation?.worktreeCount ?? 0}
-        branchCount={pendingWorkspaceCleanupConfirmation?.branchCount ?? 0}
-        onCancel={() => settleWorkspaceCleanupConfirmation(false)}
-        onConfirm={() => settleWorkspaceCleanupConfirmation(true)}
-      />
       <ProjectWorkspaceStartupNameDialog
         open={Boolean(pendingWorkspaceName)}
         creating={false}

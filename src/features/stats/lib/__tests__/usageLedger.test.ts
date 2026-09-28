@@ -402,7 +402,7 @@ describe("usageLedger cost currency", () => {
     expect(session?.costCurrency).toBe("EUR");
   });
 
-  it("marks an archived fold that had to drop a cost as incomplete", () => {
+  it("retains old session identities and costs in both currencies", () => {
     // A bridge that reported EUR for a while and USD after, both past the
     // 90-day prune: the archived record keeps one currency and silently drops
     // the other amounts, so a "$" total on the Stats page was short with no
@@ -423,14 +423,14 @@ describe("usageLedger cost currency", () => {
 
     flushUsageLedger();
 
-    const archived = storedLedger().archived?.goose;
-    expect(archived?.hasMissingCost).toBe(true);
-    // The kept figure is one currency's worth, and now says so.
-    expect(archived?.costUsd).toBe(3);
-    expect(archived?.costCurrency).toBe("EUR");
+    const ledger = storedLedger();
+    expect(ledger.sessions["eur-session"]?.costUsd).toBe(3);
+    expect(ledger.sessions["eur-session"]?.costCurrency).toBe("EUR");
+    expect(ledger.sessions["usd-session"]?.costUsd).toBe(5);
+    expect(ledger.sessions["usd-session"]?.costCurrency).toBe("USD");
   });
 
-  it("does not mark a single-currency fold as incomplete", () => {
+  it("preserves old counters for later cumulative updates", () => {
     const staleAt = Date.now() - 120 * DAY_MS;
     for (const id of ["a", "b"]) {
       recordSessionTokens(
@@ -443,9 +443,17 @@ describe("usageLedger cost currency", () => {
 
     flushUsageLedger();
 
-    const archived = storedLedger().archived?.goose;
-    expect(archived?.costUsd).toBe(4);
-    expect(archived?.hasMissingCost).toBeUndefined();
+    expect(storedLedger().sessions.a?.costUsd).toBe(2);
+    expect(storedLedger().sessions.b?.costUsd).toBe(2);
+    recordSessionTokens("a", {
+      mode: "replace",
+      totalTokens: 15,
+      costUsd: 3,
+      costCurrency: "USD",
+    });
+    flushUsageLedger();
+    expect(storedLedger().sessions.a?.totalTokens).toBe(15);
+    expect(storedLedger().sessions.a?.costUsd).toBe(3);
   });
 
   it("replaces rather than sums a cost that arrives in another currency", () => {

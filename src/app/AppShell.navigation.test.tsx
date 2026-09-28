@@ -866,7 +866,7 @@ describe("AppShell global navigation", () => {
     expect(gitMocks.removeWorktree).not.toHaveBeenCalled();
   });
 
-  it("blocks destructive Git cleanup and chat archival until confirmed", async () => {
+  it("archives a dirty chat while preserving its worktree and branch", async () => {
     const user = userEvent.setup();
     const worktreePath = "/repo-worktrees/dirty-chat";
     mockPathExists.mockResolvedValue(true);
@@ -919,55 +919,15 @@ describe("AppShell global navigation", () => {
     await user.click(screen.getByRole("button", { name: "Open session 1" }));
     await user.click(screen.getByRole("button", { name: "Archive session 1" }));
 
-    expect(
-      await screen.findByRole("dialog", {
-        name: "Archive chat and remove its worktrees?",
-      }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/discard local files and changes/i),
-    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mockAcpArchiveSession).toHaveBeenCalledWith("session-1"),
+    );
     expect(gitMocks.removeWorktree).not.toHaveBeenCalled();
-    expect(mockAcpArchiveSession).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
-
-    await waitFor(() => {
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    });
-    expect(gitMocks.removeWorktree).not.toHaveBeenCalled();
-    expect(mockAcpArchiveSession).not.toHaveBeenCalled();
-    expect(useChatSessionStore.getState().activeSessionId).toBe("session-1");
-    expect(
-      useChatSessionStore.getState().getSession("session-1")?.archivedAt,
-    ).toBeUndefined();
-
-    await user.click(screen.getByRole("button", { name: "Archive session 1" }));
-    await user.click(
-      await screen.findByRole("button", { name: "Archive and remove" }),
-    );
-
-    await waitFor(() => {
-      expect(mockAcpArchiveSession).toHaveBeenCalledWith("session-1");
-    });
-    expect(gitMocks.removeWorktree).toHaveBeenCalledWith(
-      "/repo",
-      worktreePath,
-      true,
-    );
-    expect(gitMocks.deleteBranch).toHaveBeenCalledWith(
-      "/repo",
-      "dirty-chat",
-      true,
-      "main",
-    );
-    expect(mockAcpArchiveSession.mock.invocationCallOrder[0]).toBeLessThan(
-      gitMocks.removeWorktree.mock.invocationCallOrder[0] ?? Infinity,
-    );
+    expect(gitMocks.deleteBranch).not.toHaveBeenCalled();
     expect(screen.getByTestId("active-view")).toHaveTextContent("home");
   });
 
-  it("prompts before removing a worktree with only ignored files", async () => {
+  it("preserves a worktree with only ignored files when archiving", async () => {
     const user = userEvent.setup();
     const worktreePath = "/repo-worktrees/ignored-files";
     mockPathExists.mockResolvedValue(true);
@@ -1024,13 +984,11 @@ describe("AppShell global navigation", () => {
     await user.click(screen.getByRole("button", { name: "Open session 1" }));
     await user.click(screen.getByRole("button", { name: "Archive session 1" }));
 
-    expect(
-      await screen.findByRole("dialog", {
-        name: "Archive chat and remove its worktrees?",
-      }),
-    ).toBeInTheDocument();
-    expect(mockAcpArchiveSession).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(mockAcpArchiveSession).toHaveBeenCalledWith("session-1"),
+    );
     expect(gitMocks.removeWorktree).not.toHaveBeenCalled();
+    expect(gitMocks.deleteBranch).not.toHaveBeenCalled();
   });
 
   it("reports cleanup failure as an archived chat with incomplete cleanup", async () => {

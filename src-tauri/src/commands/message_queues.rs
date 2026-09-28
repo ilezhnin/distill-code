@@ -47,37 +47,12 @@ pub async fn persist_message_queue_updates(
     .map_err(|error| format!("Failed to write message queues: {error}"))?
 }
 
-/// Moves a file that cannot be parsed aside, so the caller can carry on from an
-/// empty map.
-///
-/// The alternative — failing the write — is what made a single corrupt file
-/// permanent: every later persist aborted before writing, and nothing ever
-/// replaced the bad bytes. Quarantining keeps them around for a post-mortem
-/// while letting persistence resume. If even the rename fails there is nothing
-/// left to try but delete; if that fails too the caller still proceeds, and the
-/// write that follows overwrites the file wholesale.
-fn quarantine_unparseable_queues(path: &Path) {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_millis())
-        .unwrap_or(0);
-    let name = path
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "message-queues".to_string());
-    let quarantined = path.with_file_name(format!("{name}.corrupt-{stamp}.json"));
-    match fs::rename(path, &quarantined) {
-        Ok(()) => log::warn!(
-            "Persisted message queues were unparseable; moved them to {}",
-            quarantined.display()
-        ),
-        Err(error) => {
-            log::warn!(
-                "Persisted message queues were unparseable and could not be moved aside ({error}); discarding them"
-            );
-            let _ = fs::remove_file(path);
-        }
-    }
+/// Preserve malformed data before accepting a replacement. A failed recovery
+/// copy must leave the only original intact and fail the write.
+fn quarantine_unparseable_queues(path: &Path) -> Result<(), String> {
+    let quarantined = path.with_extension(format!("corrupt-{}.json", uuid::Uuid::new_v4()));
+    fs::rename(path, &quarantined)
+        .map_err(|error| format!("Cannot preserve malformed message queues: {error}"))
 }
 
 fn persist_message_queue_updates_at_path(
@@ -98,7 +73,7 @@ fn persist_message_queue_updates_at_path(
                 // Not an error for this write: a corrupt file that aborted every
                 // future persist is how queued messages were lost for good.
                 Err(_) => {
-                    quarantine_unparseable_queues(path);
+                    quarantine_unparseable_queues(path)?;
                     serde_json::Map::new()
                 }
             }
@@ -125,13 +100,8 @@ fn persist_message_queue_updates_at_path(
 }
 
 fn persist_message_queues_at_path(path: &Path, serialized: Option<&str>) -> Result<(), String> {
-    let Some(serialized) = serialized else {
-        return match fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("Failed to remove message queues: {error}")),
-        };
-    };
+    // An empty document remains authoritative across renderer restarts.
+    let serialized = serialized.unwrap_or("{}");
     let parent = path
         .parent()
         .ok_or_else(|| "Message queue path has no parent".to_string())?;
@@ -184,7 +154,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"s2":[1]}"#);
 
         persist_message_queues_at_path(&path, None).unwrap();
-        assert!(!path.exists());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{}");
     }
 
     #[test]

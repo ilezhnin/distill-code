@@ -102,9 +102,10 @@ export function syncConductorNodesIntoUsageLedger(
   syncUsageSessions(
     nodes.map((node) => ({
       id: node.sessionId,
-      createdAt: new Date(node.createdAt ?? Date.now()).toISOString(),
-      updatedAt: new Date(node.createdAt ?? Date.now()).toISOString(),
-      lastMessageAt: new Date(node.createdAt ?? Date.now()).toISOString(),
+      createdAt:
+        node.createdAt == null ? "" : new Date(node.createdAt).toISOString(),
+      updatedAt:
+        node.createdAt == null ? "" : new Date(node.createdAt).toISOString(),
       messageCount: 0,
       started: node.role === "orchestrator" || node.role === "worker",
       providerId: node.harnessId || DEFAULT_HARNESS_ID,

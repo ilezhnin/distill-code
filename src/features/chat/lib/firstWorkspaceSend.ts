@@ -239,12 +239,26 @@ async function waitForBackendSessionId(
   const initial = resolve();
   if (initial !== undefined) return initial;
   return new Promise((finish) => {
-    const unsubscribe = useChatSessionStore.subscribe(() => {
-      const result = resolve();
-      if (result === undefined) return;
-      unsubscribe();
+    let settled = false;
+    const complete = (result: string | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      unsubscribeSession();
+      unsubscribeQueue();
       finish(result);
-    });
+    };
+    const check = () => {
+      const result = resolve();
+      if (result !== undefined) complete(result);
+    };
+    const unsubscribeSession = useChatSessionStore.subscribe(check);
+    const unsubscribeQueue = useChatStore.subscribe(check);
+    const timeoutId = window.setTimeout(
+      () => complete(null),
+      WORKSPACE_SESSION_PROMOTION_TIMEOUT_MS,
+    );
+    check();
   });
 }
 

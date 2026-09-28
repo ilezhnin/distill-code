@@ -179,6 +179,16 @@ function writeSetting(name: string, value: unknown): void {
   if (value === null) delete settings[name];
   else settings[name] = value;
   pending.set(name, value);
+  void flushRootSettings().catch((error: unknown) => {
+    console.error("Cannot save Distill settings", error);
+    window.dispatchEvent(
+      new CustomEvent("distill-settings-error", { detail: String(error) }),
+    );
+  });
+}
+
+/** Retry retained patches, including when closing after a temporary failure. */
+export function flushRootSettings(): Promise<void> {
   // The backend merges each patch under a lock, so a second window cannot
   // overwrite unrelated settings from an older renderer snapshot.
   writes = writes
@@ -191,12 +201,7 @@ function writeSetting(name: string, value: unknown): void {
         if (pending.get(key) === saved) pending.delete(key);
       }
     });
-  void writes.catch((error: unknown) => {
-    console.error("Cannot save Distill settings", error);
-    window.dispatchEvent(
-      new CustomEvent("distill-settings-error", { detail: String(error) }),
-    );
-  });
+  return writes;
 }
 
 const storage: Storage = {
@@ -254,8 +259,4 @@ export async function readEffectiveSettings(
     await readProjectDocument(projectRoot, "settings.json"),
   );
   return { ...global, ...project };
-}
-
-export function flushRootSettings(): Promise<void> {
-  return writes;
 }
