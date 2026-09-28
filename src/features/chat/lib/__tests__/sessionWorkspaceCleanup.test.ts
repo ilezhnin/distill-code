@@ -234,7 +234,7 @@ describe("session workspace cleanup", () => {
     expect(mocks.removeWorktree).toHaveBeenCalledWith(
       "/repo",
       "/repo-worktrees/chat",
-      true,
+      false,
     );
     expect(mocks.deleteBranch).not.toHaveBeenCalled();
   });
@@ -250,12 +250,12 @@ describe("session workspace cleanup", () => {
     expect(mocks.removeWorktree).toHaveBeenCalledWith(
       "/repo",
       "/repo-worktrees/chat",
-      true,
+      false,
     );
     expect(mocks.deleteBranch).toHaveBeenCalledWith(
       "/repo",
       "chat",
-      true,
+      false,
       "main",
     );
     expect(mocks.removeWorktree.mock.invocationCallOrder[0]).toBeLessThan(

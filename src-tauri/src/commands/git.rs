@@ -466,6 +466,22 @@ pub async fn git_remove_worktree(
 ) -> Result<(), String> {
     let repo_path = resolve_repo_path(&path)?;
     let worktree_path = require_nonempty(&worktree_path, "Worktree path")?;
+    if !force {
+        let output = run_git_output_async(
+            Path::new(&worktree_path),
+            &[
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+                "--ignored",
+            ],
+            GIT_READ_COMMAND_TIMEOUT,
+        )
+        .await?;
+        if !output.status.success() || !output.stdout.is_empty() {
+            return Err("Worktree contains local or ignored files; it was preserved".into());
+        }
+    }
     let mut args = vec!["worktree", "remove"];
     if force {
         args.push("--force");

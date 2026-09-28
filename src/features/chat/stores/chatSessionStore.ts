@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { noteSessionWorkState } from "@/features/stats/lib/usageLedger";
 import { acpCreateSession, acpListSessionsPage } from "@/shared/api/acp";
 import type {
   WorkspaceAttachment,
@@ -1118,6 +1119,7 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
   },
 
   removeSession: (id) => {
+    noteSessionWorkState(id, "idle");
     set((state) => {
       const nextSessions = state.sessions.filter(
         (session) => session.id !== id,

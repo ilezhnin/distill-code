@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useChatSessionStore } from "./chatSessionStore";
+import { useChatSessionStore, type ChatSession } from "./chatSessionStore";
 import type { QueuedMessagePayload, QueuedMessageRecord } from "./chatStore";
 import {
   isAdmittedQueuedMessagePayload,
@@ -15,6 +15,7 @@ import { splitLegacyFoldedModelId } from "@/shared/lib/foldedModelId";
 
 const QUEUES_STORAGE_KEY = "distill:chat-message-queues:v1";
 let nativeWriteChain = Promise.resolve();
+const pendingNativeUpdates = new Map<string, QueuedMessageRecord[] | null>();
 
 type PersistedQueues = Record<string, QueuedMessageRecord[]>;
 
@@ -210,19 +211,52 @@ export async function loadPersistedMessageQueues(): Promise<PersistedQueues> {
   if (typeof window === "undefined" || !window.__TAURI_INTERNALS__) {
     return loadCachedMessageQueues();
   }
-  try {
-    const stored = await invoke<string | null>("load_message_queues");
-    if (!stored) return loadCachedMessageQueues();
-    const queues = parseMessageQueues(stored);
+  // Missing native data is an empty queue. Keep any legacy browser copy as
+  // recovery data, but never turn potentially completed sends into new turns.
+  // Read failures propagate so hydration cannot overwrite an unreadable file.
+  const stored = await invoke<string | null>("load_message_queues");
+  if (stored == null) {
     try {
-      window.localStorage.setItem(QUEUES_STORAGE_KEY, stored);
+      const legacy = window.localStorage.getItem(QUEUES_STORAGE_KEY);
+      if (legacy)
+        window.localStorage.setItem(`${QUEUES_STORAGE_KEY}:recovery`, legacy);
     } catch {
-      // Native persistence remains authoritative for oversized queues.
+      /* The original cache is left intact when recovery storage is unavailable. */
     }
-    return queues;
-  } catch {
-    return loadCachedMessageQueues();
+    return {};
   }
+  const queues = parseMessageQueues(stored);
+  for (const [id, records] of Object.entries(queues)) {
+    const draft = (
+      records[0] as QueuedMessageRecord & { draftSession?: ChatSession }
+    ).draftSession;
+    if (
+      !draft ||
+      draft.id !== id ||
+      typeof draft.title !== "string" ||
+      typeof draft.createdAt !== "string" ||
+      typeof draft.updatedAt !== "string" ||
+      !["pending", "failed"].includes(draft.creationState ?? "") ||
+      useChatSessionStore.getState().getSession(id)
+    )
+      continue;
+    useChatSessionStore.getState().addSession({
+      ...draft,
+      creationState: "failed",
+      creationError:
+        "Chat creation was interrupted. Your queued message was preserved; retry creation to continue.",
+    });
+  }
+  try {
+    const cached = window.localStorage.getItem(QUEUES_STORAGE_KEY);
+    if (cached && cached !== stored) {
+      window.localStorage.setItem(`${QUEUES_STORAGE_KEY}:recovery`, cached);
+    }
+    window.localStorage.setItem(QUEUES_STORAGE_KEY, stored);
+  } catch {
+    // Native persistence remains authoritative for oversized queues.
+  }
+  return queues;
 }
 
 function parseMessageQueues(stored: string): PersistedQueues {
@@ -254,11 +288,22 @@ export function loadCachedMessageQueues(): PersistedQueues {
   }
 }
 
-// A session still creating (or failed to create) only exists under a
-// client-local draft id that no restart can resolve, so persisting its queue
-// would strand unreachable records; quitting mid-creation drops the message.
-function isSessionPersistable(sessionId: string): boolean {
-  return !useChatSessionStore.getState().getSession(sessionId)?.creationState;
+// A draft needs its local session metadata alongside its queue. It is restored
+// as failed, requiring the operator to retry creation before anything can send.
+function persistableRecords(
+  sessionId: string,
+  records: QueuedMessageRecord[] | undefined,
+) {
+  if (!records?.length) return null;
+  const session = useChatSessionStore.getState().getSession(sessionId);
+  return records.map((record) => {
+    const { draftSession: _old, ...current } = record as QueuedMessageRecord & {
+      draftSession?: ChatSession;
+    };
+    return session?.creationState
+      ? { ...current, draftSession: session }
+      : current;
+  });
 }
 
 export function persistMessageQueues(
@@ -269,23 +314,35 @@ export function persistMessageQueues(
   const updates = Object.fromEntries(
     changedSessionIds.map((sessionId) => [
       sessionId,
-      queues[sessionId]?.length && isSessionPersistable(sessionId)
-        ? queues[sessionId]
-        : null,
+      persistableRecords(sessionId, queues[sessionId]),
     ]),
   );
   if (window.__TAURI_INTERNALS__) {
-    nativeWriteChain = nativeWriteChain
-      .then(() =>
-        invoke<void>("persist_message_queue_updates", {
-          serializedUpdates: JSON.stringify(updates),
-        }),
-      )
-      .catch((error) => {
-        console.error("Failed to persist message queues:", error);
-      });
+    for (const [id, records] of Object.entries(updates))
+      pendingNativeUpdates.set(id, records);
+    void flushMessageQueues().catch((error: unknown) => {
+      console.error("Failed to persist message queues:", error);
+    });
   }
   refreshCachedMessageQueues(updates);
+}
+
+/** Retry retained writes and report failures to the close barrier. */
+export function flushMessageQueues(): Promise<void> {
+  nativeWriteChain = nativeWriteChain
+    .catch(() => {})
+    .then(async () => {
+      const updates = Object.fromEntries(pendingNativeUpdates);
+      if (Object.keys(updates).length === 0) return;
+      await invoke<void>("persist_message_queue_updates", {
+        serializedUpdates: JSON.stringify(updates),
+      });
+      for (const [id, records] of Object.entries(updates)) {
+        if (pendingNativeUpdates.get(id) === records)
+          pendingNativeUpdates.delete(id);
+      }
+    });
+  return nativeWriteChain;
 }
 
 export function refreshCachedMessageQueues(

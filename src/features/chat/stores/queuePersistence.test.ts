@@ -7,6 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 
 import {
   loadPersistedMessageQueues,
+  flushMessageQueues,
   persistMessageQueues,
 } from "./queuePersistence";
 import { useChatSessionStore, type ChatSession } from "./chatSessionStore";
@@ -17,6 +18,67 @@ describe("queuePersistence", () => {
     window.localStorage.clear();
     window.__TAURI_INTERNALS__ = {};
     useChatSessionStore.setState({ sessions: [] });
+  });
+
+  it("does not replace a failed native read with stale browser commands", async () => {
+    window.localStorage.setItem("distill:chat-message-queues:v1", '{"s1":[]}');
+    mockInvoke.mockRejectedValue(new Error("read denied"));
+    await expect(loadPersistedMessageQueues()).rejects.toThrow("read denied");
+    expect(window.localStorage.getItem("distill:chat-message-queues:v1")).toBe(
+      '{"s1":[]}',
+    );
+  });
+
+  it("restores an interrupted draft with its queued text and requires manual retry", async () => {
+    mockInvoke.mockResolvedValue(
+      JSON.stringify({
+        draft: [
+          {
+            kind: "transport-ready",
+            recordId: "unsent",
+            payload: { text: "preserved prompt", persona: { kind: "inherit" } },
+            draftSession: {
+              id: "draft",
+              title: "Draft",
+              creationState: "pending",
+              createdAt: "2026-09-28T00:00:00Z",
+              updatedAt: "2026-09-28T00:00:00Z",
+            },
+          },
+        ],
+      }),
+    );
+    const queues = await loadPersistedMessageQueues();
+    expect(queues.draft[0]).toMatchObject({
+      restored: true,
+      payload: { text: "preserved prompt" },
+    });
+    expect(useChatSessionStore.getState().getSession("draft")).toMatchObject({
+      creationState: "failed",
+      title: "Draft",
+    });
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains failed writes and retries them during the close flush", async () => {
+    mockInvoke.mockRejectedValueOnce(new Error("disk full"));
+    persistMessageQueues(
+      {
+        s1: [
+          {
+            kind: "transport-ready",
+            recordId: "r1",
+            payload: admitSystemInheritedQueuedMessage({ text: "keep" }),
+          },
+        ],
+      },
+      ["s1"],
+    );
+    await vi.waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(1));
+    mockInvoke.mockResolvedValue(undefined);
+    await flushMessageQueues();
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    expect(mockInvoke.mock.calls[1]).toEqual(mockInvoke.mock.calls[0]);
   });
 
   it("loads inline image attachments from native persistence when localStorage is over quota", async () => {
@@ -190,7 +252,7 @@ describe("queuePersistence", () => {
     await expect(loadPersistedMessageQueues()).resolves.toEqual({});
   });
 
-  it("drops queue writes for sessions whose creation has not settled", async () => {
+  it("preserves draft queues with the metadata needed for recovery", async () => {
     mockInvoke.mockResolvedValue(undefined);
     useChatSessionStore.setState({
       sessions: [
@@ -219,14 +281,19 @@ describe("queuePersistence", () => {
       ["draft-1", "draft-2"],
     );
 
-    await vi.waitFor(() =>
-      expect(mockInvoke).toHaveBeenCalledWith("persist_message_queue_updates", {
-        serializedUpdates: JSON.stringify({ "draft-1": null, "draft-2": null }),
-      }),
-    );
+    await vi.waitFor(() => expect(mockInvoke).toHaveBeenCalled());
+    const saved = JSON.parse(mockInvoke.mock.calls[0][1].serializedUpdates);
+    expect(saved["draft-1"][0]).toMatchObject({
+      payload: { text: "pending" },
+      draftSession: { id: "draft-1", creationState: "pending" },
+    });
+    expect(saved["draft-2"][0]).toMatchObject({
+      payload: { text: "failed" },
+      draftSession: { id: "draft-2", creationState: "failed" },
+    });
     expect(
       window.localStorage.getItem("distill:chat-message-queues:v1"),
-    ).toBeNull();
+    ).toContain("pending-record");
   });
 
   it("writes only changed sessions through native read-modify-write persistence", async () => {

@@ -42,8 +42,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * window hides so a close cannot drop them.
  */
 const LEDGER_WRITE_DEBOUNCE_MS = 1_000;
-/** Detailed session records are kept while they stay this recent. */
-const SESSION_RETENTION_MS = 90 * DAY_MS;
 /** Daily token rollups are kept for this long. */
 const DAILY_RETENTION_MS = 400 * DAY_MS;
 
@@ -123,23 +121,6 @@ function emptyDailyRecord(): UsageDailyRecord {
     outputTokens: 0,
     cacheTokens: 0,
     byProvider: {},
-  };
-}
-
-function emptyArchivedRecord(): UsageArchivedRecord {
-  return {
-    sessions: 0,
-    chatsStarted: 0,
-    messageCount: 0,
-    turns: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheTokens: 0,
-    totalTokens: 0,
-    costUsd: null,
-    costCurrency: null,
-    workedMs: 0,
-    activeDays: 0,
   };
 }
 
@@ -343,100 +324,16 @@ function notifyListeners(): void {
   }
 }
 
-function foldSessionIntoArchive(
-  archived: Map<string, UsageArchivedRecord>,
-  session: UsageSessionRecord,
-): void {
-  const providerId = session.providerId || DEFAULT_HARNESS_ID;
-  const current = archived.get(providerId) ?? emptyArchivedRecord();
-  const started =
-    session.started || session.messageCount > 0 || session.totalTokens > 0;
-  const foldsCost =
-    current.costUsd == null || current.costCurrency === session.costCurrency;
-  // A cost this fold is about to drop. The record keeps one currency, so a
-  // provider that reported EUR for a while and USD after loses the EUR
-  // amounts here — and `costUsd` would otherwise read as a complete figure.
-  const dropsCost = session.costUsd != null && !foldsCost;
-  archived.set(providerId, {
-    sessions: current.sessions + 1,
-    chatsStarted: current.chatsStarted + (started ? 1 : 0),
-    messageCount: current.messageCount + session.messageCount,
-    turns: current.turns + session.turns,
-    inputTokens: current.inputTokens + session.inputTokens,
-    outputTokens: current.outputTokens + session.outputTokens,
-    cacheTokens: current.cacheTokens + session.cacheTokens,
-    totalTokens: current.totalTokens + session.totalTokens,
-    // Only same-currency costs are summed; a session in another currency
-    // contributes its tokens but not its cost (`costUsd` would be a lie).
-    costUsd:
-      session.costUsd == null || !foldsCost
-        ? current.costUsd
-        : (current.costUsd ?? 0) + session.costUsd,
-    costCurrency:
-      current.costUsd == null && session.costUsd != null && foldsCost
-        ? session.costCurrency
-        : current.costCurrency,
-    ...(current.hasMissingCost || dropsCost ? { hasMissingCost: true } : {}),
-    workedMs: current.workedMs + session.workedMs,
-    activeDays: current.activeDays,
-  });
-}
-
-/**
- * Keeps the persisted ledger bounded: detailed session records live for
- * `SESSION_RETENTION_MS` and are then folded into per-provider totals, daily
- * rollups are kept for `DAILY_RETENTION_MS`. Returns the same object when
- * nothing aged out.
- */
+/** Keep session identities and counters: dropping them lets a later sync
+ * count the same historical chat again. Existing legacy aggregates are kept
+ * unchanged because they contain no IDs from which to reconstruct ownership. */
 function pruneLedger(ledger: UsageLedger, now: number): UsageLedger {
-  const sessionCutoff = now - SESSION_RETENTION_MS;
   const dailyCutoff = formatLocalDay(new Date(now - DAILY_RETENTION_MS));
-
-  const archived = new Map<string, UsageArchivedRecord>(
-    Object.entries(ledger.archived ?? {}).map(([providerId, record]) => [
-      providerId,
-      { ...record },
-    ]),
-  );
-  const sessions: Record<string, UsageSessionRecord> = {};
-  const prunedDays = new Map<string, Set<string>>();
-  let prunedSessions = 0;
-  for (const [id, session] of Object.entries(ledger.sessions)) {
-    const lastSeenAt = session.lastActivityAt || session.createdAt;
-    if (lastSeenAt > 0 && lastSeenAt < sessionCutoff) {
-      prunedSessions += 1;
-      foldSessionIntoArchive(archived, session);
-      const providerId = session.providerId || DEFAULT_HARNESS_ID;
-      const days = prunedDays.get(providerId) ?? new Set<string>();
-      days.add(formatLocalDay(new Date(lastSeenAt)));
-      prunedDays.set(providerId, days);
-      continue;
-    }
-    sessions[id] = session;
-  }
-  for (const [providerId, days] of prunedDays) {
-    const record = archived.get(providerId);
-    if (!record) continue;
-    // Approximate: days seen in earlier prunes are already counted, and a
-    // prune batch only covers sessions that just crossed the retention edge.
-    archived.set(providerId, {
-      ...record,
-      activeDays: record.activeDays + days.size,
-    });
-  }
-
   const dailyEntries = Object.entries(ledger.daily).filter(
     ([day]) => day >= dailyCutoff,
   );
-  const prunedDaily = dailyEntries.length !== Object.keys(ledger.daily).length;
-  if (prunedSessions === 0 && !prunedDaily) return ledger;
-
-  return {
-    ...ledger,
-    sessions,
-    daily: Object.fromEntries(dailyEntries),
-    ...(archived.size > 0 ? { archived: Object.fromEntries(archived) } : {}),
-  };
+  if (dailyEntries.length === Object.keys(ledger.daily).length) return ledger;
+  return { ...ledger, daily: Object.fromEntries(dailyEntries) };
 }
 
 function warnAboutStorageFailureOnce(error: unknown): void {
@@ -479,7 +376,7 @@ export function flushUsageLedger(): void {
     nativeStoredLedger = pruned;
     ledgerDocument.write(pruned);
     pendingWrite = false;
-    void ledgerDocument.flush();
+    void ledgerDocument.flush().catch(warnAboutStorageFailureOnce);
     return;
   }
   try {

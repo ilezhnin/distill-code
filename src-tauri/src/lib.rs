@@ -296,6 +296,7 @@ pub fn run() {
             commands::avatars::delete_user_avatar,
             commands::cache::clear_local_media_caches,
             commands::agent_host::get_agent_host_url,
+            commands::agent_host::prepare_agent_host_shutdown,
             commands::project_icons::scan_project_icons,
             commands::project_icons::read_project_icon,
             commands::renderer::log_renderer_event,

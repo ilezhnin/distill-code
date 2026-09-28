@@ -16,3 +16,14 @@ pub async fn get_agent_host_url(app_handle: tauri::AppHandle) -> Result<String, 
         .inspect_err(|error| log::error!("[agent-host] failed to start: {error}"))?;
     Ok(inner.ws_url().to_string())
 }
+
+#[tauri::command]
+pub async fn prepare_agent_host_shutdown(
+    app_handle: tauri::AppHandle,
+    prepared: bool,
+) -> Result<(), String> {
+    app_handle
+        .state::<AgentHost>()
+        .prepare_shutdown(prepared)
+        .await
+}

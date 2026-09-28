@@ -41,7 +41,7 @@ export interface DistillDocumentOptions<T> {
   /**
    * Called when a queued write could not be made durable.
    *
-   * The write is swallowed either way — a full disk must not take a running
+   * Background writes report failures without taking a running
    * wave down with it — but a caller that has somewhere to record the failure
    * (the conductor's `persistHealth`) can no longer only find out by reading
    * the console.
@@ -90,17 +90,19 @@ export interface DistillDocument<T> {
  * Every document created in this renderer and not yet disposed, so a teardown
  * can flush the ones still holding a debounced payload.
  *
- * The webview is destroyed without warning when the window closes, and the
- * only signals that reliably precede that are `pagehide` and `beforeunload`;
- * both are hooked because WebView2 does not always deliver `pagehide` on a
- * controller close. A flush is fire-and-forget — nothing on the Rust side
- * defers the window's destruction until pending commands finish, so a write
- * queued in the last few milliseconds can still be lost. Closing that gap
- * needs a `WindowEvent::CloseRequested` hold in `src-tauri` (see the audit's
- * shared #4 follow-up).
+ * Normal window closes await these writes through the desktop close guard.
+ * Browser teardown hooks remain best-effort for reloads and abnormal exits.
  */
 const openDocuments = new Set<{ flush: () => Promise<void> }>();
 let closeFlushInstalled = false;
+
+export async function flushDistillDocuments(): Promise<void> {
+  const results = await Promise.allSettled(
+    [...openDocuments].map((entry) => entry.flush()),
+  );
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed?.status === "rejected") throw failed.reason;
+}
 
 /** How many documents the close flush is tracking. Tests only. */
 export function openDistillDocumentCountForTests(): number {
@@ -157,6 +159,7 @@ export function distillDocument<T>(
   let timer: ReturnType<typeof setTimeout> | null = null;
   let pending: unknown = null;
   let inFlight: Promise<void> = Promise.resolve();
+  let revision = 0;
   /**
    * The text of this instance's writes whose change notice may still be on
    * the way, oldest first; only kept with `recognizeOwnWrites`.
@@ -187,6 +190,7 @@ export function distillDocument<T>(
     }
     if (pending === null) return inFlight;
     const payload = pending;
+    const writingRevision = revision;
     pending = null;
     if (!isDesktopRuntime()) {
       writeLegacy(options.legacyStorageKey, payload);
@@ -197,6 +201,7 @@ export function distillDocument<T>(
     // the older payload can land after the newer one — leaving the previous
     // version on disk while memory holds the newer one.
     inFlight = inFlight
+      .catch(() => {})
       .then(() => {
         const contents = JSON.stringify(payload);
         // Remembered before the write is handed over: the store announces it
@@ -205,12 +210,18 @@ export function distillDocument<T>(
         return writeDistillDocument(options.path, contents);
       })
       .catch((error: unknown) => {
+        // Keep the failed value unless a later write already superseded it.
+        if (revision === writingRevision) pending = payload;
+        ownWrites = ownWrites.filter(
+          (text) => text !== JSON.stringify(payload),
+        );
         console.error(`Failed to write ${options.path}:`, error);
         try {
           options.onWriteError?.(error);
         } catch {
           // A reporter that throws must not reach the caller's write path.
         }
+        throw error;
       });
     return inFlight;
   };
@@ -274,18 +285,23 @@ export function distillDocument<T>(
     },
 
     write: (value) => {
+      revision += 1;
       pending = options.serialize(value);
       if (timer !== null) clearTimeout(timer);
       timer = setTimeout(() => {
-        void flushNow();
+        void flushNow().catch(() => {});
       }, DISTILL_WRITE_DEBOUNCE_MS);
     },
 
-    flush: () => flushNow(),
+    flush: async () => {
+      do {
+        await flushNow();
+      } while (pending !== null);
+    },
 
-    dispose: () => {
+    dispose: async () => {
+      await instance.flush();
       openDocuments.delete(instance);
-      return flushNow();
     },
   };
 

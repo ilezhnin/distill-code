@@ -143,6 +143,7 @@ pub fn ensure_project_layout(project: &Path) -> Result<(), String> {
         ));
     }
     let root = project.join(".distill");
+    reject_document_links(project, &root)?;
     for sub in ["agents", "skills", "wiki"] {
         fs::create_dir_all(root.join(sub)).map_err(|error| error.to_string())?;
     }
@@ -173,13 +174,79 @@ pub fn resolve_document_path(root: &Path, relative: &str) -> Result<PathBuf, Str
     if resolved.extension().and_then(|ext| ext.to_str()) != Some("json") {
         return Err("Only .json documents are stored here".into());
     }
+    reject_document_links(root, &resolved)?;
     Ok(resolved)
+}
+
+/// Check existing components too: lexical containment alone follows a junction
+/// or symlink into another folder. Missing descendants are safe to create.
+pub fn reject_document_links(root: &Path, target: &Path) -> Result<(), String> {
+    let relative = target
+        .strip_prefix(root)
+        .map_err(|_| "Document is outside its store")?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                #[cfg(windows)]
+                let linked = {
+                    use std::os::windows::fs::MetadataExt;
+                    metadata.file_attributes() & 0x400 != 0
+                };
+                #[cfg(not(windows))]
+                let linked = metadata.file_type().is_symlink();
+                if linked {
+                    return Err("Document path crosses a link or junction".into());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(format!("Cannot inspect document path: {error}")),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[cfg(windows)]
+    #[test]
+    fn document_resolvers_reject_junctions_outside_the_store() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = root.path().join(".distill");
+        let script = format!(
+            "New-Item -ItemType Junction -Path '{}' -Target '{}' | Out-Null",
+            link.display(),
+            outside.path().display()
+        );
+        assert!(std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", &script])
+            .status()
+            .unwrap()
+            .success());
+        fs::write(outside.path().join("memory.json"), "original").unwrap();
+        assert!(ensure_project_layout(root.path()).is_err());
+        assert!(!outside.path().join("settings.json").exists());
+        assert!(resolve_document_path(root.path(), ".distill/memory.json").is_err());
+        assert!(resolve_document_path(root.path(), ".distill/new/file.json").is_err());
+        assert!(
+            crate::commands::project_store::resolve_project_document_path(
+                root.path(),
+                "memory.json"
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(outside.path().join("memory.json")).unwrap(),
+            "original"
+        );
+        // Remove only the junction itself; never recurse into its target.
+        fs::remove_dir(&link).unwrap();
+    }
 
     fn temp() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("distill-root-{}", uuid::Uuid::new_v4()));

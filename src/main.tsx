@@ -11,6 +11,8 @@ export const startup = initializeRootSettings()
       "@/features/stats/lib/usageLedger"
     );
     await initializeUsageLedger();
+    const { installCloseGuard } = await import("@/app/lib/closeGuard");
+    await installCloseGuard();
     const { renderApp } = await import("@/app/renderRoot");
     renderApp();
   })

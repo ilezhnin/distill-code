@@ -61,7 +61,7 @@ pub struct McpServerRecord {
 
 /// Whose message an edit names: the ids of a prompt and of its reply live in
 /// different stamps, so the side has to be said along with the id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MessageSide {
     User,
     Assistant,
@@ -408,13 +408,9 @@ impl SessionStore {
             .filename(db_path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
-            // Every streamed chunk of every chat is one commit here, and
-            // sqlx leaves `synchronous` at FULL, which fsyncs the WAL on each
-            // of them. In WAL mode NORMAL keeps the database consistent after
-            // a crash and only risks the very last commits after a power cut
-            // — a cheap trade for the transcript of a chat the user is
-            // watching arrive.
-            .synchronous(SqliteSynchronous::Normal)
+            // A successful save must survive a power loss. Streaming writes
+            // are batched by the host, so each batch pays for one WAL sync.
+            .synchronous(SqliteSynchronous::Full)
             .foreign_keys(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(4)
@@ -425,6 +421,8 @@ impl SessionStore {
             .run(&pool)
             .await
             .map_err(|error| format!("failed to migrate agent host database: {error}"))?;
+        // Best effort planner maintenance; never rewrite or compact history.
+        let _ = sqlx::query("PRAGMA optimize").execute(&pool).await;
         Ok(Self { pool })
     }
 
@@ -619,14 +617,15 @@ impl SessionStore {
         Ok(())
     }
 
-    pub async fn set_cwd(&self, id: &str, cwd: &str) -> Result<(), String> {
-        sqlx::query("UPDATE sessions SET cwd = ?, updated_at = ? WHERE id = ?")
+    /// Folder, bridge identity and transcript handover change atomically.
+    pub async fn move_working_dir(&self, id: &str, cwd: &str) -> Result<(), String> {
+        sqlx::query("UPDATE sessions SET cwd = ?, bridge_session_id = NULL, carryover_pending = EXISTS(SELECT 1 FROM session_events WHERE session_id = sessions.id), updated_at = ? WHERE id = ?")
             .bind(cwd)
             .bind(now_iso())
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(|error| db_error("failed to update session working dir", error))?;
+            .map_err(|error| db_error("failed to move session working dir", error))?;
         Ok(())
     }
 
@@ -1055,16 +1054,14 @@ impl SessionStore {
             .begin()
             .await
             .map_err(|error| db_error("failed to start fork transaction", error))?;
+        let mut copied = Vec::new();
         for row in rows {
             let created_at: String = row.get("created_at");
             if before.is_some_and(|cutoff| !recorded_before(&created_at, cutoff)) {
                 continue;
             }
-            let Ok(mut event) =
-                serde_json::from_str::<Value>(&row.get::<String, _>("payload_json"))
-            else {
-                continue;
-            };
+            let mut event = serde_json::from_str::<Value>(&row.get::<String, _>("payload_json"))
+                .map_err(|error| format!("Cannot fork malformed history: {error}"))?;
             if let Some(object) = event.as_object_mut() {
                 object.insert("sessionId".to_string(), Value::String(to.to_string()));
             }
@@ -1077,7 +1074,49 @@ impl SessionStore {
             .execute(&mut *tx)
             .await
             .map_err(|error| db_error("failed to copy session event", error))?;
+            copied.push(event);
         }
+        let mut identities = std::collections::HashSet::new();
+        // Old imports predate message identities. Group their consecutive
+        // chunks by speaker for summary metadata only; keep stored bytes intact.
+        let mut legacy_side = None;
+        let mut legacy_message = 0;
+        for event in &mut copied {
+            let Some(update) = event.get_mut("update") else {
+                continue;
+            };
+            if let Some(identity) = renderer_identity(update) {
+                legacy_side = None;
+                identities.insert(identity);
+            } else {
+                let side = match update["sessionUpdate"].as_str() {
+                    Some("user_message_chunk") => MessageSide::User,
+                    Some(
+                        "agent_message_chunk"
+                        | "agent_thought_chunk"
+                        | "tool_call"
+                        | "tool_call_update",
+                    ) => MessageSide::Assistant,
+                    _ => continue,
+                };
+                if legacy_side != Some(side) {
+                    legacy_message += 1;
+                    legacy_side = Some(side);
+                }
+                update["messageId"] =
+                    Value::String(format!("\0legacy-fork-summary:{legacy_message}"));
+            }
+        }
+        let snippet =
+            last_text_run(copied.iter()).map(|text| text.chars().take(200).collect::<String>());
+        sqlx::query("UPDATE sessions SET message_count = ?, last_snippet = ?, carryover_pending = ? WHERE id = ?")
+            .bind(identities.len() as i64 + legacy_message)
+            .bind(snippet)
+            .bind(!copied.is_empty())
+            .bind(to)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| db_error("failed to copy fork metadata", error))?;
         tx.commit()
             .await
             .map_err(|error| db_error("failed to commit fork", error))?;
@@ -1453,6 +1492,33 @@ mod tests {
         assert_eq!(copied, texts_and_times(&store, "a").await);
         assert_eq!(copied.len(), 3);
         assert_eq!(copied[0].1, "2026-09-11T00:00:09.500Z");
+        let fork = store.get_session("b").await.unwrap().unwrap();
+        assert_eq!(fork.message_count, 1);
+        assert_eq!(fork.last_snippet.as_deref(), Some("onetwothree"));
+    }
+
+    #[tokio::test]
+    async fn a_fork_rolls_back_instead_of_silently_omitting_corrupt_history() {
+        let (_dir, store) = store_with_history().await;
+        sqlx::query("UPDATE session_events SET payload_json = 'malformed' WHERE id = (SELECT MAX(id) FROM session_events WHERE session_id = 'a')")
+            .execute(&store.pool).await.unwrap();
+        assert!(store
+            .copy_events("a", "b", None)
+            .await
+            .unwrap_err()
+            .contains("malformed"));
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM session_events WHERE session_id = 'b'")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0);
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM session_events WHERE session_id = 'a'")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 3);
     }
 
     #[tokio::test]
@@ -1468,6 +1534,44 @@ mod tests {
             .map(|(text, _)| text)
             .collect();
         assert_eq!(copied, vec!["one".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_directory_move_preserves_history_and_carries_it_to_the_fresh_bridge() {
+        let (_dir, store) = store_with_history().await;
+        let history = store.list_events("a").await.unwrap();
+        store
+            .set_bridge_session_id("a", Some("old-bridge"))
+            .await
+            .unwrap();
+        store.touch("a", 1, Some("history")).await.unwrap();
+        store.move_working_dir("a", "C:\\new").await.unwrap();
+        let moved = store.get_session("a").await.unwrap().unwrap();
+        assert_eq!(moved.cwd, "C:\\new");
+        assert!(moved.bridge_session_id.is_none());
+        assert!(store.carryover_pending("a").await.unwrap());
+        assert_eq!(store.list_events("a").await.unwrap(), history);
+    }
+
+    #[tokio::test]
+    async fn a_truncated_fork_uses_only_copied_message_metadata() {
+        let (_dir, store) = store_with_history().await;
+        // Each source row has its own stable message identity.
+        sqlx::query("UPDATE session_events SET payload_json = json_set(payload_json, '$.update.messageId', CAST(id AS TEXT)) WHERE session_id = 'a'")
+            .execute(&store.pool).await.unwrap();
+        store.touch("a", 30, Some("future text")).await.unwrap();
+        store
+            .copy_events("a", "b", Some(1_789_084_810))
+            .await
+            .unwrap();
+        let fork = store.get_session("b").await.unwrap().unwrap();
+        assert_eq!(fork.message_count, 1);
+        assert_eq!(fork.last_snippet.as_deref(), Some("one"));
+        assert!(store.carryover_pending("b").await.unwrap());
+        assert_eq!(
+            store.get_session("a").await.unwrap().unwrap().message_count,
+            30
+        );
     }
 
     #[tokio::test]
@@ -1888,7 +1992,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_database_fsyncs_only_at_checkpoints() {
+    async fn the_database_syncs_each_committed_batch() {
         let (_dir, store) = store_with_history().await;
         let mode: String = sqlx::query_scalar("PRAGMA journal_mode")
             .fetch_one(&store.pool)
@@ -1899,8 +2003,8 @@ mod tests {
             .fetch_one(&store.pool)
             .await
             .expect("synchronous");
-        // 1 == NORMAL; sqlx's default is 2 (FULL), an fsync per commit.
-        assert_eq!(synchronous, 1);
+        // 2 == FULL: acknowledged WAL commits have been synced.
+        assert_eq!(synchronous, 2);
     }
 
     #[tokio::test]

@@ -28,7 +28,10 @@ import {
 } from "./runJournal";
 import type { WaveState } from "./waveEngine";
 import type { SessionNode } from "./types";
-import { openDistillDocumentCountForTests } from "@/shared/lib/distillDocument";
+import {
+  flushDistillDocuments,
+  openDistillDocumentCountForTests,
+} from "@/shared/lib/distillDocument";
 
 function wave(over: Partial<WaveState> = {}): WaveState {
   return {
@@ -261,6 +264,7 @@ describe("the journal in the folder", () => {
     // for its flush on window close. Eviction used to only flush, so a long
     // session kept one document per wave it had ever journaled.
     resetRunJournalsForTests();
+    await flushDistillDocuments();
     const before = openDistillDocumentCountForTests();
     for (let index = 0; index < 30; index += 1) {
       appendRunEvent({
@@ -273,7 +277,9 @@ describe("the journal in the folder", () => {
     }
 
     // Only the journals still in memory (24 of them) hold a document open.
-    expect(openDistillDocumentCountForTests() - before).toBe(24);
+    await vi.waitFor(() =>
+      expect(openDistillDocumentCountForTests() - before).toBe(24),
+    );
     expect(runEventsFor("w-evict-0")).toEqual([]);
     expect(runEventsFor("w-evict-29")).toHaveLength(1);
 
@@ -284,6 +290,7 @@ describe("the journal in the folder", () => {
     });
 
     resetRunJournalsForTests();
+    await flushDistillDocuments();
     expect(openDistillDocumentCountForTests()).toBe(before);
   });
 });

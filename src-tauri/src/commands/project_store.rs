@@ -66,7 +66,10 @@ pub fn resolve_project_document_path(
         }
     }
     match resolved.extension().and_then(|ext| ext.to_str()) {
-        Some("json") | Some("md") => Ok(resolved),
+        Some("json") | Some("md") => {
+            crate::services::distill_root::reject_document_links(project_root, &resolved)?;
+            Ok(resolved)
+        }
         _ => Err("Only .json and .md documents are stored here".into()),
     }
 }
@@ -179,6 +182,7 @@ fn list_project_documents_blocking(
             _ => return Err("Document path must not leave the project store".into()),
         }
     }
+    crate::services::distill_root::reject_document_links(&root, &target)?;
     let entries = match fs::read_dir(&target) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -252,9 +256,10 @@ fn write_project_run_closeout_blocking(
     let dir = PROJECT_RUNS_DIR
         .split('/')
         .fold(root.clone(), |path, part| path.join(part));
+    let target = dir.join(file);
+    crate::services::distill_root::reject_document_links(&root, &target)?;
     fs::create_dir_all(&dir)
         .map_err(|error| format!("Cannot create '{}': {error}", dir.display()))?;
-    let target = dir.join(file);
     let temporary = target.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
     super::distill_store::write_file_synced(&temporary, contents.as_bytes())
         .map_err(|error| format!("Cannot write '{}': {error}", temporary.display()))?;

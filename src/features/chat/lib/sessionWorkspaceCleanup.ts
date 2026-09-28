@@ -317,7 +317,8 @@ export async function cleanupSessionWorkspaces(
       if (plan.worktreeExists) {
         requireCleanupMutationAllowed(options.getInterruptionReason);
         try {
-          await removeWorktree(plan.repositoryPath, plan.cleanupPath, true);
+          // Git rechecks for files written since inspection. Never discard them.
+          await removeWorktree(plan.repositoryPath, plan.cleanupPath, false);
           removedWorktree = true;
         } catch (error) {
           failures.push(error);
@@ -335,7 +336,7 @@ export async function cleanupSessionWorkspaces(
           await deleteBranch(
             plan.repositoryPath,
             plan.target.branch,
-            true,
+            false,
             plan.target.baseBranch ?? undefined,
           );
         } catch (error) {
@@ -355,7 +356,7 @@ export async function cleanupSessionWorkspaces(
         await deleteBranch(
           plan.cleanupPath,
           plan.target.branch,
-          true,
+          false,
           plan.target.baseBranch ?? undefined,
         );
       } catch (error) {

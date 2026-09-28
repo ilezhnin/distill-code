@@ -684,13 +684,19 @@ interface ChatStoreActions {
   ) => void;
   clearScrollTargetMessage: (sessionId: string) => void;
   promoteSessionId: (draftSessionId: string, backendSessionId: string) => void;
-  cleanupSession: (sessionId: string) => void;
+  cleanupSession: (
+    sessionId: string,
+    options?: { preserveUnsent?: boolean },
+  ) => void;
 }
 
 export type ChatStore = ChatStoreState & ChatStoreActions;
 
 const cachedDrafts = loadCachedDrafts();
-const cachedMessageQueues = loadCachedMessageQueues();
+const cachedMessageQueues =
+  typeof window !== "undefined" && window.__TAURI_INTERNALS__
+    ? {}
+    : loadCachedMessageQueues();
 
 /**
  * The session's messages with every call its finished run left open closed,
@@ -948,6 +954,7 @@ const createChatStore: StateCreator<
   },
 
   clearMessages: (sessionId) => {
+    noteSessionWorkState(sessionId, "idle");
     const previousSessionStateById = get().sessionStateById;
     set((state) => ({
       messagesBySession: {
@@ -2100,7 +2107,8 @@ const createChatStore: StateCreator<
   },
 
   // Cleanup
-  cleanupSession: (sessionId) => {
+  cleanupSession: (sessionId, { preserveUnsent = false } = {}) => {
+    noteSessionWorkState(sessionId, "idle");
     releaseChatSession(sessionId);
     rememberCleanedUpSession(sessionId);
     const previousSessionStateById = get().sessionStateById;
@@ -2127,11 +2135,21 @@ const createChatStore: StateCreator<
       return {
         messagesBySession: rest,
         sessionStateById: remainingSessionState,
-        queuedMessageBySession: remainingQueued,
-        draftsBySession: remainingDrafts,
-        nonEmptyDraftSessionIds,
-        skillDraftsBySession: remainingSkillDrafts,
-        draftAttachmentsBySession: remainingDraftAttachments,
+        queuedMessageBySession: preserveUnsent
+          ? state.queuedMessageBySession
+          : remainingQueued,
+        draftsBySession: preserveUnsent
+          ? state.draftsBySession
+          : remainingDrafts,
+        nonEmptyDraftSessionIds: preserveUnsent
+          ? state.nonEmptyDraftSessionIds
+          : nonEmptyDraftSessionIds,
+        skillDraftsBySession: preserveUnsent
+          ? state.skillDraftsBySession
+          : remainingSkillDrafts,
+        draftAttachmentsBySession: preserveUnsent
+          ? state.draftAttachmentsBySession
+          : remainingDraftAttachments,
         scrollTargetMessageBySession: remainingTargets,
         activeSessionId:
           state.activeSessionId === sessionId ? null : state.activeSessionId,

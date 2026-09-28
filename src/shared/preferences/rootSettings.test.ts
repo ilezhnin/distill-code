@@ -138,9 +138,14 @@ describe("Distill root settings", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const settings = await import("./rootSettings");
     await settings.initializeRootSettings();
-    update.mockRejectedValueOnce(new Error("offline"));
+    update.mockRejectedValue(new Error("offline"));
     settings.getPreferenceStorage()?.setItem("distill:locale", "es");
     await expect(settings.flushRootSettings()).rejects.toThrow("offline");
+    update.mockImplementation(async (_command, { patch }) => {
+      Object.assign(disk, patch);
+    });
+    await settings.flushRootSettings();
+    expect(disk).toEqual({ locale: "es" });
     settings
       .getPreferenceStorage()
       ?.setItem("distill:notifications", '{"enabled":false}');
