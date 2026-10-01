@@ -253,6 +253,12 @@ export interface LoadedTranscriptState {
 
 export interface TranscriptVirtualTimelineState {
   rows: readonly TranscriptRowDescriptor[];
+  committedRows: readonly TranscriptRowDescriptor[];
+  historyRowAnchor: { rowId: string; viewportOffset: number } | null;
+  pendingRowsCommit: {
+    snapshot: TranscriptVirtualTimelineSnapshot;
+    correction: TranscriptScrollCorrection | null;
+  } | null;
   normalizedProtectedRowIds: readonly string[];
   controller: TranscriptVirtualEngine | null;
   controllerScrollElement: HTMLDivElement | null;
@@ -288,6 +294,9 @@ export interface TranscriptVirtualTimelineState {
 function createTranscriptVirtualTimelineState(): TranscriptVirtualTimelineState {
   return {
     rows: [],
+    committedRows: [],
+    historyRowAnchor: null,
+    pendingRowsCommit: null,
     normalizedProtectedRowIds: [],
     controller: null,
     controllerScrollElement: null,
@@ -409,6 +418,7 @@ export function useTranscriptVirtualTimeline({
       protectedRowIds: normalizedProtectedRowIds,
     });
     controller.setRows(rows);
+    runtimeRef.current.committedRows = rows;
     runtimeRef.current.controller = controller;
     runtimeRef.current.controllerScrollElement = container;
   }
@@ -474,9 +484,19 @@ export function useTranscriptVirtualTimeline({
       if (!container) {
         return;
       }
-
+      const historyAnchor = runtimeRef.current.historyRowAnchor;
+      const anchorElement =
+        historyAnchor &&
+        runtimeRef.current.registeredVisibleRowElements.get(
+          historyAnchor.rowId,
+        );
       runtimeRef.current.controller?.writeScrollTop?.(
-        correction.nextScrollTop,
+        historyAnchor && anchorElement
+          ? container.scrollTop +
+              anchorElement.getBoundingClientRect().top -
+              container.getBoundingClientRect().top -
+              historyAnchor.viewportOffset
+          : correction.nextScrollTop,
         {
           source: "correction",
         },
@@ -969,7 +989,33 @@ export function useTranscriptVirtualTimeline({
       sessionEpoch,
     );
     syncMeasurementScheduler(currentController);
-    const preserveLiveViewport = shouldPreserveLiveScrollPosition();
+    const previousRows = runtimeRef.current.committedRows;
+    const firstContentRow = previousRows.find(
+      (row) => row.kind !== "date-separator",
+    );
+    const hasPrependedHistory =
+      rows.length > previousRows.length &&
+      firstContentRow != null &&
+      rows.findIndex((row) => row.rowId === firstContentRow.rowId) >
+        previousRows.indexOf(firstContentRow);
+    // Live appends keep the browser's pixels. A history prepend instead needs
+    // the controller's existing row anchor to follow the inserted prefix.
+    const preserveLiveViewport =
+      !hasPrependedHistory && shouldPreserveLiveScrollPosition();
+    const anchor = currentController.getState().anchor;
+    const anchorElement =
+      hasPrependedHistory && anchor.type === "row"
+        ? runtimeRef.current.registeredVisibleRowElements.get(anchor.rowId)
+        : null;
+    const rowAnchor =
+      anchorElement && container && anchor.type === "row"
+        ? {
+            rowId: anchor.rowId,
+            viewportOffset:
+              anchorElement.getBoundingClientRect().top -
+              container.getBoundingClientRect().top,
+          }
+        : null;
     applyCorrection(
       currentController.syncViewport(
         readViewportGeometry(containerRef.current, footerHeight),
@@ -981,10 +1027,13 @@ export function useTranscriptVirtualTimeline({
       ).correction,
       "layout-sync-viewport",
     );
-    currentController.setScrollWritesSuspended?.(preserveLiveViewport);
+    currentController.setScrollWritesSuspended?.(
+      preserveLiveViewport || hasPrependedHistory,
+    );
     let rowsCorrection: TranscriptScrollCorrection | null;
     try {
       rowsCorrection = currentController.setRows(rows).correction;
+      runtimeRef.current.committedRows = rows;
       if (preserveLiveViewport) {
         currentController.syncViewport(
           readViewportGeometry(containerRef.current, footerHeight),
@@ -997,6 +1046,26 @@ export function useTranscriptVirtualTimeline({
       }
     } finally {
       currentController.setScrollWritesSuspended?.(false);
+    }
+    if (hasPrependedHistory) {
+      runtimeRef.current.historyRowAnchor = rowAnchor;
+      // The old DOM cannot accept the new offset yet: the browser would clamp
+      // it to the previous page's bottom and recapture the wrong row. Publish
+      // the new range first, then commit its correction in the next layout.
+      const nextSnapshot = buildSnapshot({
+        controller: currentController,
+        registry: runtimeRef.current.rowStateRegistry,
+        rows,
+        sessionId,
+        sessionEpoch,
+      });
+      runtimeRef.current.pendingRowsCommit = {
+        snapshot: nextSnapshot,
+        correction: rowsCorrection,
+      };
+      runtimeRef.current.snapshot = nextSnapshot;
+      setSnapshot(nextSnapshot);
+      return;
     }
     if (!preserveLiveViewport) {
       applyCorrection(rowsCorrection, "layout-setRows");
@@ -1015,6 +1084,33 @@ export function useTranscriptVirtualTimeline({
     shouldPreserveLiveScrollPosition,
     syncMeasurementScheduler,
   ]);
+
+  useLayoutEffect(() => {
+    const pending = runtimeRef.current.pendingRowsCommit;
+    if (!pending || pending.snapshot !== currentSnapshot) return;
+    runtimeRef.current.pendingRowsCommit = null;
+    applyCorrection(pending.correction, "prepended-history-commit");
+    commitSnapshot();
+  }, [applyCorrection, commitSnapshot, currentSnapshot]);
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const runtime = loadedTranscript.virtualTimeline;
+    const releaseAnchor = () => {
+      runtime.historyRowAnchor = null;
+    };
+    const events = ["wheel", "pointerdown", "touchstart", "keydown"] as const;
+    for (const event of events)
+      container.addEventListener(event, releaseAnchor, {
+        capture: true,
+        passive: true,
+      });
+    return () => {
+      for (const event of events)
+        container.removeEventListener(event, releaseAnchor, true);
+    };
+  }, [containerRef, loadedTranscript]);
 
   const flushPendingMeasurementsInner = useCallback(() => {
     const runtime = runtimeRef.current;
@@ -1456,6 +1552,7 @@ export function useTranscriptVirtualTimeline({
 
   const scrollToRow = useCallback(
     (rowId: string, align: TranscriptScrollAlign = "auto") => {
+      runtimeRef.current.historyRowAnchor = null;
       const controller = runtimeRef.current.controller;
       if (!controller) {
         return false;
@@ -1471,6 +1568,7 @@ export function useTranscriptVirtualTimeline({
 
   const scrollToBottom = useCallback(
     (behavior: ScrollBehavior = "smooth") => {
+      runtimeRef.current.historyRowAnchor = null;
       const controller = runtimeRef.current.controller;
       const container = containerRef.current;
       if (!controller || !container) {

@@ -218,6 +218,29 @@ describe("forkSession", () => {
   });
 });
 
+it("prefers an exact fork message boundary over legacy seconds", async () => {
+  vi.clearAllMocks();
+  mocks.getClient.mockResolvedValue({
+    unstable_forkSession: mocks.unstableForkSession,
+  });
+  mocks.unstableForkSession.mockResolvedValueOnce({
+    sessionId: "fork",
+    _meta: {},
+  });
+  const { forkSession } = await import("../acpApi");
+  const target = { messageId: "reply-1", role: "assistant" as const };
+  await forkSession("source", "/project", {
+    conversationThrough: target,
+    conversationBefore: 1_700_000_123,
+  });
+  expect(mocks.unstableForkSession).toHaveBeenCalledWith({
+    sessionId: "source",
+    cwd: "/project",
+    mcpServers: [],
+    _meta: { conversationThrough: target },
+  });
+});
+
 describe("steerSession", () => {
   beforeEach(() => {
     vi.clearAllMocks();

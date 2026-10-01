@@ -12,6 +12,10 @@ import { useShallow } from "zustand/react/shallow";
 import { IconLayoutSidebarLeftCollapse } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { VirtualMessageTimelineGate } from "./VirtualMessageTimelineGate";
+import {
+  useChatHistoryStore,
+  loadCompleteHistory,
+} from "../stores/chatHistoryStore";
 import { ChatSearchBar } from "./ChatSearchBar";
 import { WorkspaceSetupChoice } from "./WorkspaceSetupChoice";
 import { summarizeProjectWorkspaceStartup } from "@/features/projects/lib/projectChatWorkspaces";
@@ -79,7 +83,7 @@ import {
 import { useTerminalFallbackCwdPreference } from "@/features/terminal/lib/terminalCwdPreference";
 import { ActiveChatDistillIndicator } from "@/shared/ui/SessionActivityIndicator";
 import { getTextContent } from "@/shared/types/messages";
-import { getConversationBeforeForMessageFork } from "@/features/sessions/lib/sessionFork";
+import { getMessageForkTarget } from "@/features/sessions/lib/sessionFork";
 import type { ForkSessionHandler } from "@/features/sessions/hooks/useForkSession";
 import { eventMatchesShortcutCommand } from "@/features/shortcuts/lib/shortcutRegistry";
 import { useChatTranscriptSearch } from "@/features/chat/hooks/useChatTranscriptSearch";
@@ -222,8 +226,16 @@ export function ChatView({
   const transcriptSearchBackendRef = useRef<TranscriptSearchBackend | null>(
     null,
   );
+  const historyPage = useChatHistoryStore((state) => state.pages[sessionId]);
+  const historySearching = useChatHistoryStore(
+    (state) => state.searching[sessionId],
+  );
   const search = useChatTranscriptSearch(transcriptSearchRootRef, {
     backendRef: transcriptSearchBackendRef,
+    onOpen: () => {
+      void loadCompleteHistory(sessionId);
+    },
+    historyLoading: historyPage?.loading || historySearching,
   });
   const { close: closeSearch } = search;
   const controller = useChatSessionController({
@@ -951,15 +963,15 @@ export function ChatView({
         return;
       }
 
-      const conversationBefore = getConversationBeforeForMessageFork(
+      const conversationThrough = getMessageForkTarget(
         controller.messages,
         messageId,
       );
-      if (conversationBefore == null) {
+      if (conversationThrough == null) {
         return;
       }
 
-      void onForkChat(effectiveSession.id, { conversationBefore });
+      void onForkChat(effectiveSession.id, { conversationThrough });
     },
     [controller.messages, effectiveSession?.id, onForkChat],
   );

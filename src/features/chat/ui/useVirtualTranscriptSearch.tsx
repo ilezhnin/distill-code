@@ -13,6 +13,7 @@ import type { TranscriptRowDescriptor } from "../transcript/projection";
 import { TranscriptRowStateProvider } from "../transcript/row-state";
 import type { TranscriptVirtualRowStateProviderConfig } from "../transcript/virtual/react/useTranscriptVirtualTimeline";
 import { MessageBubble } from "./MessageBubble";
+import { AgentWorkPanel } from "./AgentWorkPanel";
 import {
   clearTranscriptSearchHighlights,
   collectTranscriptSearchText,
@@ -80,13 +81,13 @@ const EMPTY_SNAPSHOT: TranscriptSearchSnapshot = {
 };
 
 /**
- * Only rows that render conversation content through MessageBubble are
- * searchable; date separators are locale chrome and the remaining kinds
- * render nothing today (mirrors VirtualTranscriptRow).
+ * Message content and expanded work panels are searchable. Date separators
+ * are locale chrome. Harvesting uses the same disclosure state as the chat.
  */
 function isSearchableRow(row: TranscriptRowDescriptor): boolean {
   return (
     row.kind === "message" ||
+    (row.kind === "agent-work" && row.agentWork != null) ||
     (row.kind === "assistant-content-fragment" && row.fragment != null)
   );
 }
@@ -430,11 +431,16 @@ export function useVirtualTranscriptSearch({
 
   useEffect(() => {
     if (!rowStateProvider) return;
-    return rowStateProvider.registry.subscribeToStateChanges(() => {
-      textCacheRef.current.clear();
-      countCacheRef.current.clear();
-      if (queryRef.current) requestTick();
-    });
+    return rowStateProvider.registry.subscribeToStateChanges(
+      (sessionId, rowId) => {
+        if (sessionId !== rowStateProvider.sessionId) return;
+        // Mounting a harvest batch can initialize disclosure state. Invalidating
+        // every row here discarded earlier batches and made indexing endless.
+        textCacheRef.current.delete(rowId);
+        countCacheRef.current.delete(rowId);
+        if (queryRef.current) requestTick();
+      },
+    );
   }, [requestTick, rowStateProvider]);
 
   useEffect(
@@ -714,7 +720,7 @@ export function TranscriptSearchHarvestHost({
     >
       {requests.map((row) => {
         const message = messageByRowId.get(row.rowId);
-        if (!isSearchableRow(row) || !message) {
+        if (!isSearchableRow(row) || (!message && !row.agentWork)) {
           // Unsearchable rows still get a harvest entry so the index stops
           // treating them as missing.
           return (
@@ -726,6 +732,15 @@ export function TranscriptSearchHarvestHost({
           );
         }
 
+        const content = row.agentWork ? (
+          <AgentWorkPanel payload={row.agentWork} />
+        ) : message ? (
+          <MessageBubble
+            message={message}
+            contentOverride={row.fragment?.content}
+            fragmentRole={row.fragment?.role}
+          />
+        ) : null;
         return (
           <div
             key={`${row.rowId}:${row.renderRevision}`}
@@ -740,18 +755,10 @@ export function TranscriptSearchHarvestHost({
                 rowId={row.rowId}
                 onRowStateChange={rowStateProvider.onRowStateChange}
               >
-                <MessageBubble
-                  message={message}
-                  contentOverride={row.fragment?.content}
-                  fragmentRole={row.fragment?.role}
-                />
+                {content}
               </TranscriptRowStateProvider>
             ) : (
-              <MessageBubble
-                message={message}
-                contentOverride={row.fragment?.content}
-                fragmentRole={row.fragment?.role}
-              />
+              content
             )}
           </div>
         );

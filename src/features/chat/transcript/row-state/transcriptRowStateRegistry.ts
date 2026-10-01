@@ -319,7 +319,9 @@ export class TranscriptRowStateRegistry {
     TranscriptKeepAliveDiagnostics
   >();
   private readonly policy: TranscriptKeepAlivePolicyOptions;
-  private readonly stateChangeListeners = new Set<() => void>();
+  private readonly stateChangeListeners = new Set<
+    (sessionId: string, rowId: string) => void
+  >();
 
   constructor(policy: Partial<TranscriptKeepAlivePolicyOptions> = {}) {
     this.policy = {
@@ -383,20 +385,22 @@ export class TranscriptRowStateRegistry {
       });
     }
 
-    this.notifyStateChange();
+    this.notifyStateChange(input.sessionId, input.rowId);
     return record.state;
   }
 
-  subscribeToStateChanges(callback: () => void): () => void {
+  subscribeToStateChanges(
+    callback: (sessionId: string, rowId: string) => void,
+  ): () => void {
     this.stateChangeListeners.add(callback);
     return () => {
       this.stateChangeListeners.delete(callback);
     };
   }
 
-  private notifyStateChange(): void {
+  private notifyStateChange(sessionId: string, rowId: string): void {
     for (const cb of this.stateChangeListeners) {
-      cb();
+      cb(sessionId, rowId);
     }
   }
 

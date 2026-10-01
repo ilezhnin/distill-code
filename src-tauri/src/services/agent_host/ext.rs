@@ -127,6 +127,32 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
             Ok(json!({ "extensions": extensions }))
         }
         "session/extensions/remove" => Ok(json!({})),
+        "session/history" => {
+            let id = session_id(&params)?;
+            let before = params
+                .get("beforeEventId")
+                .and_then(Value::as_i64)
+                .filter(|id| *id > 0)
+                .ok_or_else(|| invalid_params("beforeEventId must be positive"))?;
+            let page = host
+                .store
+                .history_page(&id, Some(before))
+                .await
+                .map_err(protocol::internal)?;
+            serde_json::to_value(page).map_err(|e| protocol::internal(e.to_string()))
+        }
+        "session/history/result" => {
+            let id = session_id(&params)?;
+            let event_id = params
+                .get("eventId")
+                .and_then(Value::as_i64)
+                .filter(|id| *id > 0)
+                .ok_or_else(|| invalid_params("eventId must be positive"))?;
+            host.store
+                .history_event(&id, event_id)
+                .await
+                .map_err(protocol::internal)
+        }
         "session/messages" => {
             let id = session_id(&params)?;
             // The updates of a chat that is streaming right now may still be

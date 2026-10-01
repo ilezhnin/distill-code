@@ -1,4 +1,13 @@
 {
+  "history": {
+    "resultLoading": "Cargando resultado guardado...",
+    "resultFailed": "No se pudo cargar el resultado guardado.",
+    "retry": "Reintentar",
+    "searchIncomplete": "No se pudo cargar parte del historial. Los resultados de búsqueda pueden estar incompletos.",
+    "loadOlder": "Cargar mensajes anteriores",
+    "loading": "Cargando historial...",
+    "failed": "No se pudieron cargar los mensajes anteriores. Inténtalo de nuevo."
+  },
   "attachments": {
     "alt": "Adjunto {{index}}",
     "chooseFilesDialogTitle": "Elegir archivos para adjuntar",

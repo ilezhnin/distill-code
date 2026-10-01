@@ -80,7 +80,10 @@ export class TranscriptViewportCoordinator implements TranscriptVirtualEngine {
       result = this.engine.setRows(rows);
       return result.correction;
     });
-    return { correction: null };
+    return {
+      correction:
+        this.transactionWriteSuspensionDepth > 0 ? result.correction : null,
+    };
   }
 
   syncViewport(

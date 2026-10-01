@@ -1,4 +1,11 @@
 import { setSessionHistoryReplayHandler } from "@/shared/api/acpSessionRegistry";
+import { setHistoryHandler } from "@/shared/api/acpHistory";
+import { useChatHistoryStore } from "../stores/chatHistoryStore";
+import {
+  beginHistorySnapshot,
+  acceptHistorySnapshot,
+  failHistorySnapshot,
+} from "./acpNotificationHandler";
 import { clearReplayBuffer } from "@/features/chat/hooks/replayBuffer";
 import { replaceMessagesFromSessionReplay } from "@/features/chat/lib/sessionReplayReplacement";
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
@@ -65,5 +72,13 @@ async function loadWithHistoryAsReplay<T>(
 }
 
 export function registerChatSessionHistoryReplayHandler(): void {
+  setHistoryHandler({
+    begin: beginHistorySnapshot,
+    accept: async (sessionId, page) => {
+      if (await acceptHistorySnapshot(sessionId, page))
+        useChatHistoryStore.getState().accept(sessionId, page.olderCursor);
+    },
+    failed: failHistorySnapshot,
+  });
   setSessionHistoryReplayHandler(loadWithHistoryAsReplay);
 }

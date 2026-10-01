@@ -133,6 +133,7 @@ export interface ToolRequestContent {
 }
 
 export interface ToolResponseContent {
+  historyResult?: { sessionId: string; eventId: number };
   type: "toolResponse";
   id: string;
   name: string;

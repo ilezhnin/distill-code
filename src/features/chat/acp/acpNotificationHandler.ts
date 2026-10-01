@@ -20,11 +20,13 @@ import {
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import {
   bufferReplayTokenState,
+  clearReplayBuffer,
   ensureReplayBuffer,
   getBufferedMessage,
   getReplayBuffer,
 } from "@/features/chat/hooks/replayBuffer";
 import type {
+  Message,
   ImageContent,
   MessageContent,
   MessageMetadata,
@@ -109,6 +111,83 @@ interface ReplayPerf {
   count: number;
 }
 const replayPerf = new Map<string, ReplayPerf>();
+const loadingLiveUpdates = new Map<string, SessionNotification[]>();
+const historyBoundaries = new Map<string, number>();
+
+export function beginHistorySnapshot(sessionId: string): void {
+  loadingLiveUpdates.set(sessionId, []);
+}
+
+export async function acceptHistorySnapshot(
+  sessionId: string,
+  page: import("@/shared/api/acpHistory").HistoryPage,
+): Promise<boolean> {
+  const live = loadingLiveUpdates.get(sessionId);
+  if (!live) return false;
+  clearReplayBuffer(sessionId);
+  clearReplaySessionTracking(sessionId);
+  clearReplayAssistantTracking(sessionId);
+  clearSkillReplayChips(sessionId);
+  ensureReplayBuffer(sessionId);
+  const started = performance.now();
+  for (const event of page.events) {
+    if (loadingLiveUpdates.get(sessionId) !== live) return false;
+    await handleReplay(sessionId, event.update);
+  }
+  // Notifications are published only after commit. Rows at or below the
+  // snapshot's boundary have already been replayed, even if delivered later.
+  for (let index = 0; index < live.length; index++) {
+    if (loadingLiveUpdates.get(sessionId) !== live) return false;
+    const update = live[index].update;
+    const meta = update._meta?.distill;
+    const id = isRecord(meta) ? meta.eventId : undefined;
+    if (typeof id === "number" && id <= page.highWaterEventId) continue;
+    await handleReplay(sessionId, update);
+  }
+  loadingLiveUpdates.delete(sessionId);
+  historyBoundaries.set(sessionId, page.highWaterEventId);
+  replayPerf.set(sessionId, {
+    firstAt: started,
+    lastAt: performance.now(),
+    count: page.events.length,
+  });
+  return true;
+}
+
+export async function failHistorySnapshot(sessionId: string): Promise<void> {
+  const live = loadingLiveUpdates.get(sessionId) ?? [];
+  loadingLiveUpdates.delete(sessionId);
+  for (const event of live) await handleLive(sessionId, event.update);
+}
+
+/** Older pages use an isolated replay buffer and never publish old session state. */
+export async function parseHistoryPage(
+  sessionId: string,
+  events: SessionNotification[],
+  cursor: number,
+): Promise<Message[]> {
+  const bufferId = `${sessionId}:history:${cursor}`;
+  try {
+    for (const event of events) {
+      if (
+        [
+          "session_info_update",
+          "config_option_update",
+          "usage_update",
+        ].includes(event.update.sessionUpdate)
+      )
+        continue;
+      await handleReplay(bufferId, event.update, sessionId);
+    }
+    completeReplayAssistantMessage(bufferId);
+    return getReplayBuffer(bufferId) ?? [];
+  } finally {
+    clearReplayBuffer(bufferId);
+    clearReplaySessionTracking(bufferId);
+    clearReplayAssistantTracking(bufferId);
+    clearSkillReplayChips(bufferId);
+  }
+}
 interface ReplayAgentBoundaryCandidate {
   messageId: string;
   precedingAssistantMessageId: string | null;
@@ -344,7 +423,21 @@ export async function handleSessionNotification(
   );
   const sessionId = notification.sessionId;
   const { update } = notification;
+  const captured = loadingLiveUpdates.get(sessionId);
+  if (captured) {
+    recordUsageNotification(sessionId, update);
+    observeWorkspaceToolCall(sessionId, update);
+    captured.push(notification);
+    return;
+  }
   const isReplay = useChatStore.getState().loadingSessionIds.has(sessionId);
+  const hostMeta = update._meta?.distill;
+  if (
+    isRecord(hostMeta) &&
+    typeof hostMeta.eventId === "number" &&
+    hostMeta.eventId <= (historyBoundaries.get(sessionId) ?? 0)
+  )
+    return;
 
   if (isReplay) {
     const sid = logSessionId(sessionId);
@@ -531,6 +624,7 @@ function appendToolResultImages(
 async function handleReplay(
   sessionId: string,
   update: SessionUpdate,
+  sourceSessionId = sessionId,
 ): Promise<void> {
   if (handleSessionEvent(sessionId, update, true)) return;
   switch (update.sessionUpdate) {
@@ -540,7 +634,7 @@ async function handleReplay(
         sessionId,
         getReplayAssistantMessageId(update),
         getReplayCreated(update),
-        getReplayAssistantMessageMetadata(sessionId, update),
+        getReplayAssistantMessageMetadata(sourceSessionId, update),
       );
       if (update.content.type === "text" && "text" in update.content) {
         const last = msg.content[msg.content.length - 1];
@@ -562,7 +656,7 @@ async function handleReplay(
           sessionId,
           getReplayAssistantMessageId(update),
           getReplayCreated(update),
-          getReplayAssistantMessageMetadata(sessionId, update),
+          getReplayAssistantMessageMetadata(sourceSessionId, update),
         );
         upsertThinkingContent(msg.content, update.content.text);
       }
@@ -608,7 +702,7 @@ async function handleReplay(
         sessionId,
         getReplayAssistantMessageId(update),
         created,
-        getReplayAssistantMessageMetadata(sessionId, update),
+        getReplayAssistantMessageMetadata(sourceSessionId, update),
       );
       const replayArguments = rawInputToArguments(update.rawInput);
       const replaySubagentContext =
@@ -714,6 +808,15 @@ async function handleReplay(
             (tc?.type === "toolRequest" ? (tc.terminalOutput ?? "") : "");
           msg.content.push({
             type: "toolResponse",
+            ...(isRecord(update._meta?.distill) &&
+            typeof update._meta.distill.resultEventId === "number"
+              ? {
+                  historyResult: {
+                    sessionId: sourceSessionId,
+                    eventId: update._meta.distill.resultEventId,
+                  },
+                }
+              : {}),
             id: update.toolCallId,
             name: (tc as ToolRequestContent)?.name ?? "",
             result: resultText,
@@ -1361,6 +1464,8 @@ function adoptHostTurnMessageId(
 }
 
 export function clearMessageTracking(): void {
+  loadingLiveUpdates.clear();
+  historyBoundaries.clear();
   replayPerf.clear();
   pendingReplayAgentBoundaryCandidates.clear();
   replayAssistantMessageIds.clear();
@@ -1379,6 +1484,9 @@ export function clearMessageTracking(): void {
  * either is bound again to whoever owns the session at that point.
  */
 export function forgetSessionMessageTracking(sessionId: string): void {
+  loadingLiveUpdates.delete(sessionId);
+  historyBoundaries.delete(sessionId);
+  clearSkillReplayChips(sessionId);
   clearReplaySessionTracking(sessionId);
   clearReplayAssistantTracking(sessionId);
   releaseStreamingSession(sessionId);

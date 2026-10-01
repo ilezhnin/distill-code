@@ -2,6 +2,7 @@
 //! append-only session event log used for history replay, a small key/value
 //! store for defaults and preferences, and the MCP server configuration.
 
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -68,6 +69,20 @@ pub struct McpServerRecord {
 pub enum MessageSide {
     User,
     Assistant,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ForkBoundary {
+    BeforeSecond(i64),
+    ThroughEvent(i64),
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPage {
+    pub events: Vec<Box<serde_json::value::RawValue>>,
+    pub older_cursor: Option<i64>,
+    pub high_water_event_id: i64,
 }
 
 /// What rewriting a message's text did.
@@ -1262,44 +1277,172 @@ impl SessionStore {
             .collect())
     }
 
-    /// The session's events as the JSON text they were stored as, in order,
-    /// for callers that only forward them: replaying a transcript is the one
-    /// hot read of this table and parsing megabytes of history into a tree
-    /// just to print it again was a measurable share of opening a chat.
-    /// Rows that are not valid JSON are skipped, as `list_events` skips them.
-    pub async fn list_event_payloads(&self, session_id: &str) -> Result<Vec<String>, String> {
-        let rows = sqlx::query(
+    /// Compact one consistent SQLite read while streaming rows. Only the
+    /// compacted output is retained until it can be sent without interleaving
+    /// live notifications. The raw transcript is never materialized as a Vec.
+    pub async fn replay_payloads(&self, session_id: &str) -> Result<(Vec<String>, usize), String> {
+        let mut rows = sqlx::query(
             "SELECT payload_json FROM session_events WHERE session_id = ? ORDER BY id ASC",
         )
         .bind(session_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|error| db_error("failed to read session events", error))?;
-        // A row that is not JSON would break the replay frame it lands in.
-        // `RawValue::from_string` checks it inside serde_json, which dev builds
-        // optimize, where a generic parse instantiated here would not be: four
-        // times faster on a 100 MB chat, and it keeps the text without a copy.
-        Ok(rows
-            .into_iter()
-            .filter_map(|row| {
-                serde_json::value::RawValue::from_string(row.get::<String, _>("payload_json")).ok()
-            })
-            .map(|raw| String::from(Box::<str>::from(raw)))
-            .collect())
+        .fetch(&self.pool);
+        let mut compactor = super::replay::Compactor::default();
+        let mut count = 0;
+        while let Some(row) = rows
+            .try_next()
+            .await
+            .map_err(|error| db_error("failed to read session events", error))?
+        {
+            if compactor.push(row.get("payload_json")) {
+                count += 1;
+            }
+        }
+        Ok((compactor.finish(), count))
     }
 
-    /// Copy a session's history onto another session (a fork), keeping each
-    /// event's original time. With `before` (Unix seconds), only events
-    /// recorded before that second are copied, which is how a fork from a
-    /// given message drops what came after it.
+    /// A stable snapshot of complete turns, paged backwards by immutable row
+    /// id. Legacy prompts with no identity use the entire remaining prefix.
+    pub async fn history_page(
+        &self,
+        session_id: &str,
+        before: Option<i64>,
+    ) -> Result<HistoryPage, String> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| db_error("failed to start history read", e))?;
+        let high_water: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(id), 0) FROM session_events WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| db_error("failed to read history boundary", e))?;
+        let end = before.unwrap_or(i64::MAX);
+        let mut start = 0;
+        let mut older = false;
+        {
+            let mut rows = sqlx::query("SELECT id, json_extract(payload_json, '$.update.messageId') AS message_id, json_extract(payload_json, '$.update._meta.distill.messageId') AS host_message_id, json_extract(payload_json, '$.update._meta.distill.runId') AS run_id FROM session_events WHERE session_id = ? AND id < ? AND json_valid(payload_json) AND json_extract(payload_json, '$.update.sessionUpdate') = 'user_message_chunk' ORDER BY id DESC")
+                .bind(session_id).bind(end).fetch(&mut *tx);
+            let mut last = None;
+            let mut turns = 0;
+            while let Some(row) = rows
+                .try_next()
+                .await
+                .map_err(|e| db_error("failed to read prompt boundaries", e))?
+            {
+                let identity = row
+                    .get::<Option<String>, _>("run_id")
+                    .or_else(|| row.get("message_id"))
+                    .or_else(|| row.get("host_message_id"));
+                let Some(identity) = identity else {
+                    start = 0;
+                    break;
+                };
+                if last.as_ref() != Some(&identity) {
+                    turns += 1;
+                    if turns > 20 {
+                        older = true;
+                        break;
+                    }
+                    last = Some(identity);
+                }
+                start = row.get("id");
+            }
+        }
+        if !older {
+            start = 0;
+        }
+        let mut compactor = super::replay::Compactor::default();
+        {
+            let mut rows = sqlx::query("SELECT id, payload_json FROM session_events WHERE session_id = ? AND id >= ? AND id < ? ORDER BY id ASC")
+                .bind(session_id).bind(start).bind(end).fetch(&mut *tx);
+            while let Some(row) = rows
+                .try_next()
+                .await
+                .map_err(|e| db_error("failed to read history page", e))?
+            {
+                compactor.push(super::replay::defer_tool_result(
+                    row.get("payload_json"),
+                    row.get("id"),
+                ));
+            }
+        }
+        tx.commit()
+            .await
+            .map_err(|e| db_error("failed to finish history read", e))?;
+        let events = compactor
+            .finish()
+            .into_iter()
+            .filter_map(|row| serde_json::value::RawValue::from_string(row).ok())
+            .collect();
+        Ok(HistoryPage {
+            events,
+            older_cursor: older.then_some(start),
+            high_water_event_id: high_water,
+        })
+    }
+
+    /// Read a deferred result only from the session that owns the event.
+    pub async fn history_event(&self, session_id: &str, id: i64) -> Result<Value, String> {
+        let payload: Option<String> = sqlx::query_scalar(
+            "SELECT payload_json FROM session_events WHERE session_id = ? AND id = ?",
+        )
+        .bind(session_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| db_error("failed to read history result", e))?;
+        serde_json::from_str(&payload.ok_or("History result no longer exists")?)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Locate the last stored piece of an exact renderer message. Row ordering
+    /// distinguishes messages even when their timestamps are equal or skewed.
+    pub async fn message_last_event(
+        &self,
+        session_id: &str,
+        side: MessageSide,
+        message_id: &str,
+    ) -> Result<i64, String> {
+        let mut rows = sqlx::query(
+            "SELECT id, payload_json FROM session_events WHERE session_id = ? ORDER BY id ASC",
+        )
+        .bind(session_id)
+        .fetch(&self.pool);
+        let mut last = None;
+        while let Some(row) = rows
+            .try_next()
+            .await
+            .map_err(|error| db_error("failed to find fork message", error))?
+        {
+            let event: Value = serde_json::from_str(&row.get::<String, _>("payload_json"))
+                .map_err(|error| format!("Cannot fork malformed history: {error}"))?;
+            if event
+                .get("update")
+                .is_some_and(|update| belongs_to(update, side, message_id))
+            {
+                last = Some(row.get("id"));
+            }
+        }
+        last.ok_or_else(|| {
+            "Cannot locate an exact stored boundary for this message; fork the entire chat instead"
+                .into()
+        })
+    }
+
+    /// Copy history without changing source events or their original times.
+    /// Timestamp boundaries remain supported for older callers; the UI uses
+    /// an exact event boundary resolved from the selected message identity.
     pub async fn copy_events(
         &self,
         from: &str,
         to: &str,
-        before: Option<i64>,
+        boundary: Option<ForkBoundary>,
     ) -> Result<(), String> {
         let rows = sqlx::query(
-            "SELECT created_at, payload_json FROM session_events WHERE session_id = ? ORDER BY id ASC",
+            "SELECT id, created_at, payload_json FROM session_events WHERE session_id = ? ORDER BY id ASC",
         )
         .bind(from)
         .fetch_all(&self.pool)
@@ -1313,7 +1456,10 @@ impl SessionStore {
         let mut copied = Vec::new();
         for row in rows {
             let created_at: String = row.get("created_at");
-            if before.is_some_and(|cutoff| !recorded_before(&created_at, cutoff)) {
+            if boundary.is_some_and(|boundary| match boundary {
+                ForkBoundary::BeforeSecond(cutoff) => !recorded_before(&created_at, cutoff),
+                ForkBoundary::ThroughEvent(cutoff) => row.get::<i64, _>("id") > cutoff,
+            }) {
                 continue;
             }
             let mut event = serde_json::from_str::<Value>(&row.get::<String, _>("payload_json"))
@@ -1984,6 +2130,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn history_pages_keep_whole_prompts_and_are_stable_after_appends() {
+        let (_dir, store) = store_with_history().await;
+        let mut expected = Vec::new();
+        for turn in 0..45 {
+            for part in 0..2 {
+                expected.push(serde_json::json!({"sessionId":"paged","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":format!("{turn}:{part}")},"_meta":{"distill":{"messageId":format!("u-{turn}")}}}}));
+            }
+            expected.push(serde_json::json!({"sessionId":"paged","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":format!("reply-{turn}")},"_meta":{"distill":{"assistantMessageId":format!("a-{turn}")}}}}));
+        }
+        store.append_events("paged", &expected).await.unwrap();
+        let latest = store.history_page("paged", None).await.unwrap();
+        assert_eq!(latest.events.len(), 60);
+        let cursor = latest.older_cursor.unwrap();
+        let mut actual: Vec<Value> = latest
+            .events
+            .iter()
+            .map(|event| serde_json::from_str(event.get()).unwrap())
+            .collect();
+        store.append_events("paged", &[serde_json::json!({"sessionId":"paged","update":{"sessionUpdate":"notice","title":"new"}})]).await.unwrap();
+        let middle = store.history_page("paged", Some(cursor)).await.unwrap();
+        assert_eq!(middle.events.len(), 60);
+        let first = store
+            .history_page("paged", middle.older_cursor)
+            .await
+            .unwrap();
+        assert_eq!(first.events.len(), 15);
+        assert!(first.older_cursor.is_none());
+        let mut prefix: Vec<Value> = first
+            .events
+            .iter()
+            .chain(middle.events.iter())
+            .map(|event| serde_json::from_str(event.get()).unwrap())
+            .collect();
+        prefix.append(&mut actual);
+        assert_eq!(prefix, expected);
+    }
+
+    #[tokio::test]
+    async fn deferred_results_are_read_by_session_and_leave_export_unchanged() {
+        let (_dir, store) = store_with_history().await;
+        let original = serde_json::json!({"sessionId":"large","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool","status":"completed","rawOutput":"x".repeat(100_000)}});
+        let ids = store
+            .append_events("large", std::slice::from_ref(&original))
+            .await
+            .unwrap();
+        let page = store.history_page("large", None).await.unwrap();
+        let event: Value = serde_json::from_str(page.events[0].get()).unwrap();
+        assert!(event["update"]["rawOutput"].is_null());
+        assert_eq!(event["update"]["_meta"]["distill"]["resultEventId"], ids[0]);
+        assert_eq!(
+            store.history_event("large", ids[0]).await.unwrap(),
+            original
+        );
+        assert!(store.history_event("a", ids[0]).await.is_err());
+        assert_eq!(store.list_events("large").await.unwrap(), vec![original]);
+    }
+
+    #[tokio::test]
     async fn a_fork_rolls_back_instead_of_silently_omitting_corrupt_history() {
         let (_dir, store) = store_with_history().await;
         sqlx::query("UPDATE session_events SET payload_json = 'malformed' WHERE id = (SELECT MAX(id) FROM session_events WHERE session_id = 'a')")
@@ -2011,7 +2215,7 @@ mod tests {
     async fn a_fork_from_a_message_drops_what_came_after_it() {
         let (_dir, store) = store_with_history().await;
         store
-            .copy_events("a", "b", Some(1_789_084_810))
+            .copy_events("a", "b", Some(ForkBoundary::BeforeSecond(1_789_084_810)))
             .await
             .expect("copy");
         let copied: Vec<String> = texts_and_times(&store, "b")
@@ -2020,6 +2224,106 @@ mod tests {
             .map(|(text, _)| text)
             .collect();
         assert_eq!(copied, vec!["one".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn exact_forks_separate_same_timestamp_messages_and_keep_all_reply_pieces() {
+        let (_dir, store) = store_with_history().await;
+        let stamp = "2026-09-11T00:00:09.500Z".to_string();
+        let mut prompt = event("prompt");
+        prompt["update"]["messageId"] = json!("shared-id");
+        let mut reply = event("reply");
+        reply["update"]["sessionUpdate"] = json!("agent_message_chunk");
+        reply["update"]["_meta"]["distill"] =
+            json!({ "messageId": "shared-id", "assistantMessageId": "shared-id" });
+        let mut thought = reply.clone();
+        thought["update"]["sessionUpdate"] = json!("agent_thought_chunk");
+        thought["update"]["content"]["text"] = json!("thinking");
+        let mut later = event("next prompt");
+        later["update"]["messageId"] = json!("next-id");
+        let history: Vec<_> = [prompt, thought, reply, later]
+            .into_iter()
+            .map(|event| (stamp.clone(), event))
+            .collect();
+        store
+            .import_session(&record("source"), &history)
+            .await
+            .unwrap();
+        store.insert_session(&record("reply-fork")).await.unwrap();
+        store.insert_session(&record("prompt-fork")).await.unwrap();
+        let reply_end = store
+            .message_last_event("source", MessageSide::Assistant, "shared-id")
+            .await
+            .unwrap();
+        let prompt_end = store
+            .message_last_event("source", MessageSide::User, "shared-id")
+            .await
+            .unwrap();
+        assert!(prompt_end < reply_end);
+        store
+            .copy_events(
+                "source",
+                "reply-fork",
+                Some(ForkBoundary::ThroughEvent(reply_end)),
+            )
+            .await
+            .unwrap();
+        store
+            .copy_events(
+                "source",
+                "prompt-fork",
+                Some(ForkBoundary::ThroughEvent(prompt_end)),
+            )
+            .await
+            .unwrap();
+        let texts = |rows: Vec<(String, String)>| {
+            rows.into_iter().map(|(text, _)| text).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            texts(texts_and_times(&store, "reply-fork").await),
+            ["prompt", "thinking", "reply"]
+        );
+        assert_eq!(
+            texts(texts_and_times(&store, "prompt-fork").await),
+            ["prompt"]
+        );
+        assert!(store
+            .message_last_event("source", MessageSide::Assistant, "missing")
+            .await
+            .is_err());
+        assert_eq!(store.list_events("source").await.unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn streaming_replay_preserves_content_across_many_database_rows() {
+        let (_dir, store) = store_with_history().await;
+        let events: Vec<_> = (0..5000)
+            .map(|index| {
+                json!({
+                    "sessionId": "replay",
+                    "update": { "sessionUpdate": "agent_message_chunk", "messageId": "reply",
+                        "content": { "type": "text", "text": format!("piece-{index} ") } }
+                })
+            })
+            .collect();
+        store.insert_session(&record("replay")).await.unwrap();
+        store.append_events("replay", &events).await.unwrap();
+        let (replayed, count) = store.replay_payloads("replay").await.unwrap();
+        assert_eq!(count, events.len());
+        assert!(replayed.len() < 10);
+        let text: String = replayed
+            .iter()
+            .map(|payload| {
+                let event: Value = serde_json::from_str(payload).unwrap();
+                event["update"]["content"]["text"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        let expected: String = (0..5000).map(|index| format!("piece-{index} ")).collect();
+        assert_eq!(text, expected);
+        assert_eq!(store.list_events("replay").await.unwrap(), events);
     }
 
     #[tokio::test]
@@ -2047,7 +2351,7 @@ mod tests {
             .execute(&store.pool).await.unwrap();
         store.touch("a", 30, Some("future text")).await.unwrap();
         store
-            .copy_events("a", "b", Some(1_789_084_810))
+            .copy_events("a", "b", Some(ForkBoundary::BeforeSecond(1_789_084_810)))
             .await
             .unwrap();
         let fork = store.get_session("b").await.unwrap().unwrap();
