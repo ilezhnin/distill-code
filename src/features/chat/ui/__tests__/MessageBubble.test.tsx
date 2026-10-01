@@ -7,11 +7,17 @@ import { useProviderCatalogStore } from "@/features/providers/stores/providerCat
 import type { Message } from "@/shared/types/messages";
 import type { ProviderCatalogEntry } from "@/shared/types/providers";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { ArtifactPolicyProvider } from "@/features/chat/hooks/ArtifactPolicyContext";
 const mockPathExists = vi.hoisted(() =>
   vi.fn<(path: string) => Promise<boolean>>(),
 );
 const mockWriteText = vi.fn().mockResolvedValue(undefined);
 const mockToastError = vi.hoisted(() => vi.fn());
+const mockReveal = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+
+vi.mock("@/shared/lib/fileManager", () => ({
+  revealInFileManager: mockReveal,
+}));
 
 const providerCatalogEntries: ProviderCatalogEntry[] = [
   {
@@ -79,6 +85,7 @@ vi.mock("@/shared/api/system", async (importOriginal) => {
   return {
     ...actual,
     pathExists: (path: string) => mockPathExists(path),
+    allowAssetDirectories: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -164,6 +171,7 @@ describe("MessageBubble", () => {
     mockPathExists.mockResolvedValue(false);
     mockWriteText.mockClear();
     mockToastError.mockClear();
+    mockReveal.mockClear();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: {
@@ -177,6 +185,55 @@ describe("MessageBubble", () => {
     vi.useRealTimers();
     restoreScrollHeight();
     useProviderCatalogStore.getState().reset();
+  });
+
+  it("reveals executable attachments through the shared file policy", async () => {
+    mockPathExists.mockResolvedValue(true);
+    const message = userMessage("Review this attachment", {
+      metadata: {
+        attachments: [
+          { type: "file", name: "tool.cmd", path: "E:/work/tool.cmd" },
+        ],
+      },
+    });
+    const { container } = render(
+      <ArtifactPolicyProvider messages={[message]} sessionCwd="E:/work">
+        <MessageBubble message={message} />
+      </ArtifactPolicyProvider>,
+    );
+    await userEvent
+      .setup()
+      .click(
+        container.querySelector(
+          '[data-role="message-attachment-tile"]',
+        ) as HTMLElement,
+      );
+    expect(mockReveal).toHaveBeenCalledWith("E:/work/tool.cmd");
+    expect(openPath).not.toHaveBeenCalled();
+  });
+
+  it("asks before opening an untrusted attachment URL", async () => {
+    const message = userMessage("Review this link", {
+      metadata: {
+        attachments: [
+          {
+            type: "url",
+            name: "report",
+            url: "https://attachment.example.test/report",
+          },
+        ],
+      },
+    });
+    const { container } = render(<MessageBubble message={message} />);
+    await userEvent
+      .setup()
+      .click(
+        container.querySelector(
+          '[data-role="message-attachment-tile"]',
+        ) as HTMLElement,
+      );
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(openUrl).not.toHaveBeenCalled();
   });
 
   it("preserves interleaved user content block order", () => {
