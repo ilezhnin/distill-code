@@ -50,6 +50,11 @@ export function getProviderUsageStatusKind(
   if (provider.status === "error" && getUsageSections(provider).length === 0) {
     return "refresh-failed";
   }
+  // Managed accounts have an explicit quota state. A 429 from their telemetry
+  // endpoint is a failed refresh, not evidence that the account is exhausted.
+  if (provider.accountId && provider.status === "error") {
+    return "refresh-failed";
+  }
   if (/\brate[- ]?limit/i.test(provider.error ?? "")) {
     return "limited";
   }

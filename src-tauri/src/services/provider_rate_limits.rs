@@ -8,7 +8,8 @@ mod types;
 mod windows;
 
 pub use types::{
-    AgentPlatformId, ProviderRateLimitSnapshot, ProviderRateLimitStatus, ProviderRateLimits,
+    AgentPlatformId, CreditBalance, ProviderRateLimitSnapshot, ProviderRateLimitStatus,
+    ProviderRateLimits,
 };
 
 const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -66,6 +67,7 @@ fn result(
         coding_monthly: None,
         plan_type: None,
         account_label: None,
+        credits: None,
         updated_at: now_ms(),
         error,
         status,

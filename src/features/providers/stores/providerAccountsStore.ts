@@ -18,6 +18,7 @@ interface ProviderAccountsState extends api.ProviderAccountsSnapshot {
   setDefault: (providerId: string, accountId: string) => Promise<void>;
   setRouting: (providerId: string, enabled: boolean) => Promise<void>;
   authenticate: (accountId: string, force?: boolean) => Promise<void>;
+  cancelAuthentication: (accountId: string) => Promise<void>;
   signOut: (accountId: string) => Promise<void>;
 }
 
@@ -66,6 +67,20 @@ function acceptStatuses(snapshot: api.ProviderAccountStatuses) {
       }
     }
     return { statuses };
+  });
+}
+
+function acceptAuthState(auth: api.ProviderAccountAuthState) {
+  useProviderAccountsStore.setState((state) => {
+    const current = state.authStates[auth.accountId];
+    // A cancelled attempt can finish delivering its IPC response after retry.
+    if (
+      auth.attemptId &&
+      current?.attemptId &&
+      auth.attemptId !== current.attemptId
+    )
+      return state;
+    return { authStates: { ...state.authStates, [auth.accountId]: auth } };
   });
 }
 
@@ -189,26 +204,45 @@ export const useProviderAccountsStore = create<ProviderAccountsState>(
       acceptRegistry(snapshot);
     },
     authenticate: async (accountId, force = false) => {
+      if (get().authStates[accountId]?.status === "running") return;
+      const attemptId = crypto.randomUUID();
       set((state) => ({
         authStates: {
           ...state.authStates,
-          [accountId]: { accountId, status: "running", message: "" },
+          [accountId]: { accountId, attemptId, status: "running", message: "" },
         },
       }));
       try {
-        const auth = await api.authenticateProviderAccount(accountId, force);
-        set((state) => ({
-          authStates: { ...state.authStates, [accountId]: auth },
-        }));
+        const auth = await api.authenticateProviderAccount(
+          accountId,
+          force,
+          attemptId,
+        );
+        acceptAuthState({ ...auth, attemptId });
       } catch (error) {
-        set((state) => ({
-          authStates: {
-            ...state.authStates,
-            [accountId]: { accountId, status: "error", message: String(error) },
-          },
-        }));
+        acceptAuthState({
+          accountId,
+          attemptId,
+          status: "error",
+          message: String(error),
+        });
       }
       await get().refresh(true);
+    },
+    cancelAuthentication: async (accountId) => {
+      const attempt = get().authStates[accountId];
+      await api.cancelProviderAccountAuthentication(
+        accountId,
+        attempt?.attemptId,
+      );
+      const current = get().authStates[accountId];
+      if (
+        current?.status === "running" &&
+        current.attemptId === attempt?.attemptId
+      ) {
+        acceptAuthState({ ...current, status: "needs_auth", message: "" });
+      }
+      void get().refresh(true);
     },
     signOut: async (accountId) => {
       await api.signOutProviderAccount(accountId);
@@ -264,9 +298,7 @@ export function startProviderAccountsMonitor() {
       api.onProviderAccountStatuses(acceptStatuses),
       api.onProviderAccountsChanged(refreshChanged),
       api.onProviderAccountAuthState((auth) => {
-        useProviderAccountsStore.setState((state) => ({
-          authStates: { ...state.authStates, [auth.accountId]: auth },
-        }));
+        acceptAuthState(auth);
         if (auth.status !== "running") refreshChanged();
       }),
     ]);

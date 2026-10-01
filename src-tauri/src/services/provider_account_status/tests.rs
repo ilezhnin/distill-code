@@ -524,7 +524,7 @@ fn codex_preserves_all_buckets_and_authoritative_reset_count() {
     assert_eq!(result.state, AccountState::Limited);
     assert_eq!(result.limits.len(), 3);
     assert_eq!(result.limits[0].resets_at, Some(1_800_000_000_000));
-    assert_eq!(result.subscription.as_deref(), Some("pro"));
+    assert_eq!(result.subscription.as_deref(), Some("ChatGPT Pro 200"));
     let tokens = result.reset_tokens.unwrap();
     assert_eq!(tokens.available, 3);
     assert_eq!(tokens.credits.unwrap().len(), 1);

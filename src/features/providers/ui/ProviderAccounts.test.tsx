@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   setDefault: vi.fn(),
   authenticate: vi.fn(),
+  cancelAuthentication: vi.fn(),
   setRouting: vi.fn(),
   signOut: vi.fn(),
   update: vi.fn(),
@@ -40,6 +41,7 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import { useAccountQuotaWaitStore } from "@/features/chat/lib/accountQuotaWait";
 import { ProviderAccountsPanel } from "./ProviderAccountsPanel";
 import { ProviderAccountPicker } from "./ProviderAccountPicker";
+import { ProviderAccountDetails } from "./ProviderAccountDetails";
 
 const now = Date.now();
 const accounts: ProviderAccount[] = ["Personal", "Work"].map((label) => ({
@@ -71,6 +73,108 @@ function status(
     error: null,
   };
 }
+
+describe("account plan and credit display", () => {
+  it.each([
+    ["USD", "58", "$58.00", "$100.00"],
+    ["JPY", "58", "¥58", "¥100"],
+    ["KWD", "58.125", "KWD 58.125", "KWD 100.000"],
+  ])("shows each %s grant with its remaining balance and expiry", (currency, balance, remaining, total) => {
+    render(
+      <ProviderAccountDetails
+        account={accounts[0]}
+        now={now}
+        status={{
+          ...status("personal"),
+          credits: [
+            {
+              id: "iguana_necktie",
+              label: "Cloud session credits",
+              balance,
+              total: "100",
+              currency,
+              expiresAt: now + 86_400_000,
+              unlimited: false,
+            },
+            {
+              id: "project",
+              label: "Project setup credit",
+              balance: "0",
+              total: null,
+              currency: "USD",
+              expiresAt: null,
+              unlimited: false,
+            },
+          ],
+        }}
+      />,
+    );
+    expect(
+      screen.getByText(`Cloud session credits: ${remaining} of ${total} left`),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Project setup credit: $0.00")).toBeInTheDocument();
+    expect(screen.getAllByText(/^Expires/)).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /Use/ })).toBeNull();
+  });
+
+  it.each([
+    ["62427.6745075000", "62,428"],
+    ["0", "0"],
+    [null, "Not reported"],
+    ["", "Not reported"],
+  ])("formats the reported credit balance %s", (balance, expected) => {
+    const snapshot = {
+      ...status("personal"),
+      subscription: "ChatGPT Pro 200",
+      credits: [
+        {
+          id: "credits",
+          label: "Credits",
+          balance,
+          unlimited: false,
+          total: null,
+          currency: null,
+          expiresAt: null,
+        },
+      ],
+    };
+    render(
+      <ProviderAccountDetails
+        account={accounts[0]}
+        status={snapshot}
+        now={now}
+      />,
+    );
+    expect(screen.getByText("Plan: ChatGPT Pro 200")).toBeInTheDocument();
+    expect(screen.getByText(`Credits: ${expected}`)).toBeInTheDocument();
+    expect(snapshot.credits[0].balance).toBe(balance);
+  });
+
+  it("keeps unlimited credits distinct from a missing balance", () => {
+    render(
+      <ProviderAccountDetails
+        account={accounts[0]}
+        status={{
+          ...status("personal"),
+          credits: [
+            {
+              id: "credits",
+              label: "Credits",
+              balance: null,
+              unlimited: true,
+              total: null,
+              currency: null,
+              expiresAt: null,
+            },
+          ],
+        }}
+        now={now}
+      />,
+    );
+    expect(screen.getByText("Credits: Unlimited")).toBeInTheDocument();
+  });
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   useChatStore.setState({ sessionStateById: {} });
@@ -87,6 +191,7 @@ beforeEach(() => {
     refresh: mocks.refresh,
     setDefault: mocks.setDefault,
     authenticate: mocks.authenticate,
+    cancelAuthentication: mocks.cancelAuthentication,
     setRouting: mocks.setRouting,
     signOut: mocks.signOut,
     update: mocks.update,
@@ -255,6 +360,68 @@ describe("account surfaces", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("lets a pending sign-in be cancelled without showing credential-lock telemetry errors", async () => {
+    mocks.cancelAuthentication.mockResolvedValueOnce(undefined);
+    useProviderAccountsStore.setState({
+      authStates: {
+        work: { accountId: "work", status: "running", message: "" },
+      },
+      statuses: {
+        work: {
+          ...status("work"),
+          state: "error",
+          stale: true,
+          error: "Account authorization is being changed",
+        },
+      },
+    });
+    const { rerender } = render(<ProviderAccountsPanel />);
+    const card = screen.getByRole("article", { name: "Work" });
+    expect(within(card).queryByRole("alert")).toBeNull();
+    expect(card).not.toHaveTextContent("Usage unavailable");
+    expect(card).not.toHaveTextContent("Reset tokens");
+    expect(within(card).queryByRole("button", { name: "Refresh" })).toBeNull();
+    expect(
+      within(card).queryByRole("button", { name: "Set default" }),
+    ).toBeNull();
+    fireEvent.click(
+      within(card).getByRole("button", { name: "Cancel sign-in" }),
+    );
+    await waitFor(() =>
+      expect(mocks.cancelAuthentication).toHaveBeenCalledWith("work"),
+    );
+    useProviderAccountsStore.setState({
+      authStates: {
+        work: {
+          accountId: "work",
+          status: "needs_auth",
+          message: "Sign-in cancelled. You can start again.",
+        },
+      },
+    });
+    rerender(<ProviderAccountsPanel />);
+    fireEvent.click(within(card).getByRole("button", { name: "Sign in" }));
+    expect(mocks.authenticate).toHaveBeenCalledWith("work");
+    expect(mocks.signOut).not.toHaveBeenCalled();
+  });
+
+  it("allows retry after sign-in fails before fresh telemetry arrives", () => {
+    useProviderAccountsStore.setState({
+      authStates: {
+        work: {
+          accountId: "work",
+          status: "error",
+          message: "Cannot start sign-in",
+        },
+      },
+      statuses: { work: { ...status("work"), state: "error", stale: true } },
+    });
+    render(<ProviderAccountsPanel />);
+    const card = screen.getByRole("article", { name: "Work" });
+    expect(within(card).getByRole("button", { name: "Sign in" })).toBeEnabled();
+    expect(within(card).queryByRole("button", { name: "Sign out" })).toBeNull();
+  });
+
   it("signs out only the selected profile and preserves its chat", async () => {
     mocks.signOut.mockResolvedValueOnce(undefined);
     render(<ProviderAccountsPanel />);
@@ -390,7 +557,20 @@ describe("account surfaces", () => {
       screen.getByRole("article", { name: "Personal" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("article", { name: "Work" })).toBeInTheDocument();
-    expect(screen.getAllByText("Reset tokens: Not reported")).toHaveLength(2);
+    expect(
+      screen.queryByText("Reset tokens: Not reported"),
+    ).not.toBeInTheDocument();
+    const checkedAt = screen.getByText(/^Last checked/);
+    expect(checkedAt).toHaveAttribute("datetime", new Date(now).toISOString());
+    expect(screen.queryByText(/^Updated /)).toBeNull();
+    expect(
+      within(screen.getByRole("article", { name: "Personal" })).queryByText(
+        /^Last checked/,
+      ),
+    ).toBeNull();
+    expect(checkedAt.parentElement).toContainElement(
+      screen.getByRole("button", { name: "Refresh" }),
+    );
     expect(
       screen.queryByRole("button", { name: "Use a reset token" }),
     ).not.toBeInTheDocument();
@@ -427,6 +607,157 @@ describe("account surfaces", () => {
     await waitFor(() => expect(mocks.reset).toHaveBeenCalledTimes(2));
     expect(mocks.reset.mock.calls[0]).toEqual(mocks.reset.mock.calls[1]);
     await waitFor(() => expect(mocks.refresh).toHaveBeenCalledWith(true));
+  });
+
+  it.each([
+    false,
+    true,
+  ])("confirms the same Claude account, grant and retry operation with stale telemetry=%s", async (stale) => {
+    const credit = {
+      id: "launch-grant",
+      resetType: "full",
+      status: "available",
+      grantedAt: now - 1000,
+      expiresAt: now + 86400000,
+      title: "Full reset",
+      description: "Launch allowance",
+    };
+    const claudeStatus: ProviderAccountStatus = {
+      ...status("personal", {
+        available: 1,
+        supported: true,
+        expiresAt: credit.expiresAt,
+        credits: [credit],
+      }),
+      providerId: "claude-acp",
+      accountLabel: "claude@example.test",
+      state: stale ? "error" : "ready",
+      stale,
+      error: stale ? "Claude usage is temporarily rate limited" : null,
+    };
+    useProviderAccountsStore.setState({
+      accounts: [{ ...accounts[0], providerId: "claude-acp" }],
+      statuses: { personal: claudeStatus },
+    });
+    mocks.reset
+      .mockRejectedValueOnce(new Error("Connection lost"))
+      .mockResolvedValueOnce({ outcome: "alreadyRedeemed" });
+    render(<ProviderAccountsPanel />);
+    expect(screen.queryByText("Reset tokens: 1")).toBeNull();
+    expect(screen.getAllByText(/Expires/)).toHaveLength(1);
+    expect(screen.queryByText("Available")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Use Full reset" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Use Full reset" }),
+    ).toHaveTextContent(/^Use$/);
+    expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Use Full reset" }));
+    expect(mocks.reset).not.toHaveBeenCalled();
+    const dialog = screen.getByRole("dialog", { name: "Use one reset token?" });
+    expect(dialog).toHaveTextContent("claude@example.test");
+    expect(dialog).toHaveTextContent("Claude Code");
+    expect(dialog).not.toHaveTextContent("Full reset");
+    expect(within(dialog).queryByRole("button", { name: "Close" })).toBeNull();
+    expect(dialog).not.toHaveTextContent("Automatic switching");
+    expect(dialog).toHaveTextContent("Expires");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Use one token" }),
+    );
+    await waitFor(() =>
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(
+        "Connection lost",
+      ),
+    );
+    // A background refresh must not silently retarget a confirmed operation.
+    useProviderAccountsStore.setState({
+      statuses: {
+        personal: {
+          ...claudeStatus,
+          resetTokens: {
+            available: 1,
+            supported: true,
+            expiresAt: null,
+            credits: [{ ...credit, id: "another-grant" }],
+          },
+        },
+      },
+    });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Use one token" }),
+    );
+    await waitFor(() => expect(mocks.reset).toHaveBeenCalledTimes(2));
+    expect(mocks.reset.mock.calls[0]).toEqual([
+      "personal",
+      expect.any(String),
+      "launch-grant",
+    ]);
+    expect(mocks.reset.mock.calls[1]).toEqual(mocks.reset.mock.calls[0]);
+  });
+
+  it.each([
+    "expired",
+    "used",
+    "paused",
+    "unavailable",
+  ])("does not offer an unavailable Claude grant (%s)", (creditState) => {
+    useProviderAccountsStore.setState({
+      statuses: {
+        personal: status("personal", {
+          available: 1,
+          supported: true,
+          expiresAt: null,
+          credits: [
+            {
+              id: "grant",
+              resetType: "full",
+              status: creditState,
+              grantedAt: null,
+              expiresAt: null,
+              title: "Full reset",
+              description: null,
+            },
+          ],
+        }),
+      },
+    });
+    render(<ProviderAccountsPanel />);
+    expect(screen.queryByRole("button", { name: "Use Full reset" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Use a reset token" }),
+    ).toBeNull();
+    expect(mocks.reset).not.toHaveBeenCalled();
+  });
+
+  it("opening and cancelling a reset confirmation never consumes a token", async () => {
+    useProviderAccountsStore.setState({
+      statuses: {
+        personal: status("personal", {
+          available: 1,
+          supported: true,
+          expiresAt: null,
+          credits: [
+            {
+              id: "grant",
+              resetType: "full",
+              status: "available",
+              grantedAt: null,
+              expiresAt: null,
+              title: "Full reset",
+              description: null,
+            },
+          ],
+        }),
+      },
+    });
+    render(<ProviderAccountsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Use Full reset" }));
+    const dialog = screen.getByRole("dialog", { name: "Use one reset token?" });
+    expect(mocks.reset).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(mocks.reset).not.toHaveBeenCalled();
   });
 
   it("switches only the selected chat after the backend succeeds", async () => {

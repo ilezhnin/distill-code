@@ -31,6 +31,19 @@ pub struct RateLimitWindow {
     pub reset_description: Option<String>,
 }
 
+/// Display-only balances. Currency amounts are in major units; expiry is epoch milliseconds.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreditBalance {
+    pub id: String,
+    pub label: String,
+    pub balance: Option<String>,
+    pub total: Option<String>,
+    pub currency: Option<String>,
+    pub expires_at: Option<i64>,
+    pub unlimited: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderRateLimits {
@@ -47,6 +60,8 @@ pub struct ProviderRateLimits {
     pub plan_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credits: Option<Vec<CreditBalance>>,
     pub updated_at: i64,
     pub error: Option<String>,
     pub status: ProviderRateLimitStatus,

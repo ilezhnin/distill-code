@@ -3,104 +3,198 @@ import { useLocaleFormatting } from "@/shared/i18n";
 import { accountUsageFor } from "@/features/status/lib/accountUsage";
 import { getUsageSections } from "@/features/status/lib/rateLimitWindows";
 import { UsageLimits } from "@/features/status/ui/UsageLimits";
+import type { ProviderRateLimits } from "@/features/status/lib/rateLimitTypes";
 import { Badge } from "@/shared/ui/badge";
+import { Button } from "@/shared/ui/button";
 import type {
   ProviderAccount,
+  ProviderAccountResetCredit,
   ProviderAccountStatus,
 } from "../api/providerAccounts";
-import { accountStatusIsStale } from "../lib/providerAccountStatus";
+import {
+  accountStatusIsStale,
+  canUseAccountReset,
+  resetCreditIsAvailable,
+} from "../lib/providerAccountStatus";
 
 export function ProviderAccountDetails({
   account,
   status,
   now,
+  onUseReset,
+  resetDisabled = false,
 }: {
   account: ProviderAccount;
   status: ProviderAccountStatus | undefined;
   now: number;
+  onUseReset?: (credit: ProviderAccountResetCredit, label: string) => void;
+  resetDisabled?: boolean;
 }) {
   const usage = accountUsageFor(account, status);
+  return (
+    <ProviderUsageDetails
+      usage={usage}
+      now={now}
+      state={status?.state}
+      stale={status ? accountStatusIsStale(status, now) : false}
+      resetTokens={status?.resetTokens}
+      onUseReset={canUseAccountReset(status, now) ? onUseReset : undefined}
+      resetDisabled={resetDisabled}
+    />
+  );
+}
+
+/** One presentation for every provider; adapters own provider-specific data. */
+export function ProviderUsageDetails({
+  usage,
+  now,
+  state = usage.accountLimited
+    ? "limited"
+    : usage.status === "error"
+      ? "error"
+      : usage.status === "ok"
+        ? "ready"
+        : "unknown",
+  stale = usage.status === "error",
+  resetTokens,
+  onUseReset,
+  resetDisabled = false,
+}: {
+  usage: ProviderRateLimits;
+  now: number;
+  state?: ProviderAccountStatus["state"];
+  stale?: boolean;
+  resetTokens?: ProviderAccountStatus["resetTokens"];
+  onUseReset?: (credit: ProviderAccountResetCredit, label: string) => void;
+  resetDisabled?: boolean;
+}) {
   const { t } = useTranslation("settings");
   const { formatDate, formatNumber } = useLocaleFormatting();
+  const hasResetCredits = Boolean(resetTokens?.credits?.length);
   const date = (value: number) =>
     formatDate(value, { dateStyle: "short", timeStyle: "short" });
   return (
     <div className="space-y-2 text-xs">
       <div className="flex flex-wrap items-center gap-2">
-        {status?.state !== "ready" ? (
+        {state !== "ready" ? (
           <Badge
             variant={
-              status?.state === "limited" ||
-              status?.state === "error" ||
-              status?.state === "needs_auth"
+              state === "limited" || state === "error" || state === "needs_auth"
                 ? "destructive"
                 : "secondary"
             }
           >
-            {t(`accounts.states.${status?.state ?? "unknown"}`)}
+            {t(`accounts.states.${state}`)}
           </Badge>
         ) : null}
         <span className="text-muted-foreground">
           {t("accounts.subscription", {
-            value: status?.subscription ?? t("accounts.notReported"),
+            value: usage.planType ?? t("accounts.notReported"),
           })}
         </span>
-        {status && accountStatusIsStale(status, now) ? (
-          <Badge variant="outline">{t("accounts.stale")}</Badge>
-        ) : null}
+        {stale ? <Badge variant="outline">{t("accounts.stale")}</Badge> : null}
       </div>
       {getUsageSections(usage).length ? (
         <UsageLimits provider={usage} now={now} />
       ) : (
         <p className="text-muted-foreground">{t("accounts.limitsUnknown")}</p>
       )}
-      <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
-        <span>
-          {t("accounts.resetTokens", {
-            value: status?.resetTokens
-              ? formatNumber(status.resetTokens.available)
-              : t("accounts.notReported"),
-          })}
-        </span>
-        {status?.resetTokens?.expiresAt ? (
+      {!hasResetCredits && resetTokens ? (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
           <span>
-            {t("accounts.expiresAt", {
-              date: date(status.resetTokens.expiresAt),
+            {t("accounts.resetTokens", {
+              value: formatNumber(resetTokens.available),
             })}
           </span>
-        ) : null}
-        {status?.credits ? (
-          <span>
-            {t("accounts.credits", {
-              value: status.credits.unlimited
-                ? t("accounts.unlimited")
-                : (status.credits.balance ?? t("accounts.notReported")),
-            })}
-          </span>
-        ) : null}
-      </div>
-      {status?.resetTokens?.credits?.length ? (
-        <div className="space-y-1 text-muted-foreground">
-          {status.resetTokens.credits.map((credit) => (
-            <p key={credit.id} title={credit.description ?? undefined}>
-              {credit.title ?? credit.resetType}
-              {" · "}
-              {credit.status}
-              {credit.expiresAt
-                ? ` · ${t("accounts.expiresAt", { date: date(credit.expiresAt) })}`
-                : ""}
-            </p>
-          ))}
+          {resetTokens.expiresAt ? (
+            <span>
+              {t("accounts.expiresAt", {
+                date: date(resetTokens.expiresAt),
+              })}
+            </span>
+          ) : null}
         </div>
       ) : null}
-      <div className="text-muted-foreground">
-        {status && status.lastUpdatedAt > 0
-          ? t("accounts.updatedAt", { date: date(status.lastUpdatedAt) })
-          : t("accounts.neverUpdated")}
-      </div>
-      {status?.error ? (
+      {usage.credits?.map((credit) => {
+        const amount = (raw: string | null) => {
+          const numeric = raw?.trim() ? Number(raw) : NaN;
+          if (!Number.isFinite(numeric)) return t("accounts.notReported");
+          const currency = credit.currency?.match(/^[A-Z]{3}$/)?.[0];
+          return formatNumber(
+            numeric,
+            currency
+              ? { style: "currency", currency }
+              : { maximumFractionDigits: 0 },
+          );
+        };
+        const balance = credit.unlimited
+          ? t("accounts.unlimited")
+          : amount(credit.balance);
+        const label = t(`accounts.creditLabels.${credit.id}`, {
+          defaultValue: credit.label,
+        });
+        return (
+          <div key={credit.id} className="space-y-1 text-muted-foreground">
+            <p>
+              {t("accounts.creditBalance", {
+                label,
+                value:
+                  credit.total == null || credit.unlimited
+                    ? balance
+                    : t("accounts.creditRemaining", {
+                        balance,
+                        total: amount(credit.total),
+                      }),
+              })}
+            </p>
+            {credit.expiresAt ? (
+              <p>{t("accounts.expiresAt", { date: date(credit.expiresAt) })}</p>
+            ) : null}
+          </div>
+        );
+      })}
+      {resetTokens?.credits?.length ? (
+        <div className="space-y-1 text-muted-foreground">
+          {resetTokens.credits.map((credit) => {
+            const label = t(`accounts.resetTypes.${credit.resetType}`, {
+              defaultValue: credit.title ?? credit.resetType,
+            });
+            return (
+              <div
+                key={credit.id}
+                className="flex flex-wrap items-center justify-between gap-2"
+              >
+                <p title={credit.description ?? undefined}>
+                  {label}
+                  {credit.status !== "available"
+                    ? ` · ${t(`accounts.resetStates.${credit.status}`, {
+                        defaultValue: credit.status,
+                      })}`
+                    : ""}
+                  {credit.expiresAt
+                    ? ` · ${t("accounts.expiresAt", { date: date(credit.expiresAt) })}`
+                    : ""}
+                </p>
+                {onUseReset && resetCreditIsAvailable(credit, now) ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="xs"
+                    disabled={resetDisabled}
+                    aria-label={t("accounts.useNamedReset", { name: label })}
+                    onClick={() => onUseReset(credit, label)}
+                  >
+                    {t("accounts.use")}
+                  </Button>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+      {usage.error ? (
         <p className="break-words text-destructive" role="status">
-          {status.error}
+          {usage.error}
         </p>
       ) : null}
     </div>

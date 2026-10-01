@@ -44,7 +44,7 @@ export function mergeStale(
     if (
       !prior ||
       prior.accountId !== provider.accountId ||
-      !hasUsageData(prior)
+      (!hasUsageData(prior) && !prior.credits?.length)
     )
       return provider;
     // Managed accounts own stale retention too. An authoritative empty
@@ -64,6 +64,7 @@ export function mergeStale(
       codingMonthly: provider.codingMonthly ?? prior.codingMonthly,
       accountLabel: provider.accountLabel ?? prior.accountLabel,
       planType: provider.planType ?? prior.planType,
+      credits: provider.credits ?? prior.credits,
       error: provider.error ?? prior.error,
     };
   });

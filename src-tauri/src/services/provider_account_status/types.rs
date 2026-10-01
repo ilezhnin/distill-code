@@ -1,3 +1,4 @@
+pub use crate::services::provider_rate_limits::CreditBalance;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,13 +49,6 @@ pub struct ResetTokens {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AccountCredits {
-    pub balance: Option<String>,
-    pub unlimited: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ProviderAccountStatus {
     pub account_id: String,
     pub provider_id: String,
@@ -63,7 +57,7 @@ pub struct ProviderAccountStatus {
     pub account_label: Option<String>,
     pub limits: Vec<AccountLimitWindow>,
     pub reset_tokens: Option<ResetTokens>,
-    pub credits: Option<AccountCredits>,
+    pub credits: Option<Vec<CreditBalance>>,
     pub last_updated_at: i64,
     pub last_attempt_at: i64,
     pub stale: bool,

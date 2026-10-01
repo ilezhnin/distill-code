@@ -23,6 +23,16 @@ export interface RateLimitWindow {
 
 export type UsagePeriod = "session" | "weekly" | "monthly";
 
+export interface ProviderCreditBalance {
+  id: string;
+  label: string;
+  balance: string | null;
+  total: string | null;
+  currency: string | null;
+  expiresAt: number | null;
+  unlimited: boolean;
+}
+
 export interface ProviderRateLimits {
   provider: AgentPlatformId;
   accountId?: string;
@@ -39,6 +49,7 @@ export interface ProviderRateLimits {
   }[];
   planType?: string | null;
   accountLabel?: string | null;
+  credits?: ProviderCreditBalance[] | null;
   updatedAt: number;
   error: string | null;
   status: ProviderRateLimitStatus;

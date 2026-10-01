@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { ProviderCreditBalance } from "@/features/status/lib/rateLimitTypes";
 
 export const MANAGED_ACCOUNT_PROVIDERS = ["codex-acp", "claude-acp"] as const;
 
@@ -30,6 +31,16 @@ export interface ProviderAccountLimit {
   modelId: string | null;
 }
 
+export interface ProviderAccountResetCredit {
+  id: string;
+  resetType: string;
+  status: string;
+  grantedAt: number | null;
+  expiresAt: number | null;
+  title: string | null;
+  description: string | null;
+}
+
 export interface ProviderAccountStatus {
   accountId: string;
   providerId: string;
@@ -41,17 +52,9 @@ export interface ProviderAccountStatus {
     available: number;
     expiresAt: number | null;
     supported: boolean;
-    credits?: Array<{
-      id: string;
-      resetType: string;
-      status: string;
-      grantedAt: number | null;
-      expiresAt: number | null;
-      title: string | null;
-      description: string | null;
-    }> | null;
+    credits?: ProviderAccountResetCredit[] | null;
   } | null;
-  credits: { balance: string | null; unlimited: boolean } | null;
+  credits: ProviderCreditBalance[] | null;
   lastUpdatedAt: number;
   lastAttemptAt: number;
   stale: boolean;
@@ -65,6 +68,7 @@ export interface ProviderAccountStatuses {
 
 export interface ProviderAccountAuthState {
   accountId: string;
+  attemptId?: string;
   status: "running" | "authenticated" | "needs_auth" | "error";
   message: string;
 }
@@ -128,8 +132,23 @@ export function setProviderAccountRouting(
 export function authenticateProviderAccount(
   accountId: string,
   force = false,
+  attemptId?: string,
 ): Promise<ProviderAccountAuthState> {
-  return invoke("authenticate_provider_account", { accountId, force });
+  return invoke("authenticate_provider_account", {
+    accountId,
+    force,
+    attemptId,
+  });
+}
+
+export function cancelProviderAccountAuthentication(
+  accountId: string,
+  attemptId?: string,
+): Promise<void> {
+  return invoke("cancel_provider_account_authentication", {
+    accountId,
+    attemptId,
+  });
 }
 
 export function signOutProviderAccount(accountId: string): Promise<void> {
@@ -145,10 +164,12 @@ export type AccountResetOutcome =
 export function consumeProviderAccountReset(
   accountId: string,
   idempotencyKey: string,
+  creditId?: string,
 ): Promise<{ outcome: AccountResetOutcome }> {
   return invoke("consume_provider_account_reset", {
     accountId,
     idempotencyKey,
+    ...(creditId ? { creditId } : {}),
   });
 }
 

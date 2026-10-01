@@ -86,6 +86,8 @@ pub const MANAGED_AUTH_ENV_KEYS: &[&str] = &[
     "DEFAULT_AUTH_REQUEST",
     "MODEL_PROVIDER",
     "CODEX_CONFIG",
+    "CODEX_APP_SERVER_LOGIN_ISSUER",
+    "CODEX_APP_SERVER_DEV_OPEN_APP_URL",
 ];
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -573,12 +575,26 @@ fn add_account_at(
     if auth_method == AuthMethod::OAuth && api_key.is_some() {
         return Err("OAuth accounts do not accept an API key".into());
     }
+    let label = clean_label(label)?;
     let mut snapshot = read_store(root)?;
+    // Retrying Add after an interrupted browser login must resume the same
+    // connection. Keep its stable ID, private home and chat references. The
+    // caller probes saved authorization before deciding whether to sign in.
+    if auth_method == AuthMethod::OAuth {
+        let normalized_label = label.to_lowercase();
+        if let Some(existing) = snapshot.accounts.iter().find(|account| {
+            account.provider_id == provider_id
+                && account.auth_method == AuthMethod::OAuth
+                && account.label.trim().to_lowercase() == normalized_label
+        }) {
+            return Ok(existing.clone());
+        }
+    }
     let now = now_ms();
     let account = ProviderAccount {
         id: uuid::Uuid::new_v4().to_string(),
         provider_id,
-        label: clean_label(label)?,
+        label,
         auth_method,
         enabled: true,
         auto_switch: true,
@@ -903,6 +919,103 @@ fn unprotect_secret(bytes: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_subscription_add_resumes_the_same_pending_account() {
+        for provider in ["codex-acp", "claude-acp"] {
+            let root = tempfile::tempdir().unwrap();
+            let first = add_account_at(
+                root.path(),
+                provider.into(),
+                "person@example.test".into(),
+                AuthMethod::OAuth,
+                None,
+            )
+            .unwrap();
+            let index = store_dir(root.path()).unwrap().join("index.json");
+            let before = fs::read(&index).unwrap();
+            for label in ["person@example.test", "  PERSON@EXAMPLE.TEST  "] {
+                let retry = add_account_at(
+                    root.path(),
+                    provider.into(),
+                    label.into(),
+                    AuthMethod::OAuth,
+                    None,
+                )
+                .unwrap();
+                assert_eq!(retry, first);
+                assert_eq!(fs::read(&index).unwrap(), before);
+            }
+            let snapshot = read_store(root.path()).unwrap();
+            assert_eq!(snapshot.accounts, vec![first.clone()]);
+            assert_eq!(snapshot.defaults[provider], first.id);
+        }
+    }
+
+    #[test]
+    fn repeated_subscription_add_preserves_saved_credentials_and_history() {
+        let root = tempfile::tempdir().unwrap();
+        let first = add_account_at(
+            root.path(),
+            "codex-acp".into(),
+            "Personal".into(),
+            AuthMethod::OAuth,
+            None,
+        )
+        .unwrap();
+        let home = account_dir(root.path(), &first).unwrap().join("home");
+        fs::write(home.join("auth.json"), "fixture credentials").unwrap();
+        fs::write(home.join("history.jsonl"), "fixture history").unwrap();
+        let retry = add_account_at(
+            root.path(),
+            "codex-acp".into(),
+            "Personal".into(),
+            AuthMethod::OAuth,
+            None,
+        )
+        .unwrap();
+        assert_eq!(retry, first);
+        assert_eq!(
+            fs::read_to_string(home.join("auth.json")).unwrap(),
+            "fixture credentials"
+        );
+        assert_eq!(
+            fs::read_to_string(home.join("history.jsonl")).unwrap(),
+            "fixture history"
+        );
+    }
+
+    #[test]
+    fn subscription_names_are_scoped_to_the_provider() {
+        let root = tempfile::tempdir().unwrap();
+        let codex = add_account_at(
+            root.path(),
+            "codex-acp".into(),
+            "person@example.test".into(),
+            AuthMethod::OAuth,
+            None,
+        )
+        .unwrap();
+        let claude = add_account_at(
+            root.path(),
+            "claude-acp".into(),
+            "person@example.test".into(),
+            AuthMethod::OAuth,
+            None,
+        )
+        .unwrap();
+        let other = add_account_at(
+            root.path(),
+            "codex-acp".into(),
+            "other@example.test".into(),
+            AuthMethod::OAuth,
+            None,
+        )
+        .unwrap();
+        assert_ne!(codex.id, claude.id);
+        assert_ne!(codex.id, other.id);
+        assert_eq!(read_store(root.path()).unwrap().accounts.len(), 3);
+    }
 
     #[test]
     fn absent_index_starts_without_accounts_or_external_credentials() {

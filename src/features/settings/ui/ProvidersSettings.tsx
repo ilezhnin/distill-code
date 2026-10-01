@@ -1,5 +1,4 @@
 import { useCallback, useMemo } from "react";
-import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   rerunDoctorReport,
@@ -25,7 +24,6 @@ interface ProvidersSettingsProps {
 export function ProvidersSettings({
   onStartTroubleshootingChat,
 }: ProvidersSettingsProps) {
-  const { t } = useTranslation(["settings", "common"]);
   const catalogEntries = useProviderCatalogStore((state) => state.entries);
   const queryClient = useQueryClient();
 
@@ -63,22 +61,25 @@ export function ProvidersSettings({
     [catalogEntries],
   );
 
-  const otherAgents = agents.filter(
-    (agent) => !MANAGED_ACCOUNT_PROVIDERS.some((id) => id === agent.id),
-  );
-
   return (
     <SettingsPage>
       <ProviderAccountsPanel
+        providerIds={agents.map((agent) => agent.id)}
+        connectedProviders={agents
+          .filter((agent) => agentReadiness.get(agent.id) === "ready")
+          .map((agent) => agent.id)}
         onRefresh={rerunAgentStatus}
         renderProviderHeader={(providerId) => {
           const provider = agents.find((agent) => agent.id === providerId);
+          const managed = MANAGED_ACCOUNT_PROVIDERS.some(
+            (id) => id === providerId,
+          );
           return provider ? (
             <AgentProviderCard
               provider={{
                 ...provider,
-                supportsAuth: false,
-                supportsLogout: false,
+                supportsAuth: !managed && provider.supportsAuth,
+                supportsLogout: !managed && provider.supportsLogout,
               }}
               readiness={agentReadiness.get(providerId)}
               versionCheck={agentChecks.get(providerId)}
@@ -90,38 +91,6 @@ export function ProvidersSettings({
           ) : null;
         }}
       />
-      {otherAgents.length ? (
-        <section className="mt-6 space-y-4">
-          <div className="mb-3 flex items-start justify-between gap-3">
-            <div>
-              <h4 className="text-base text-foreground">
-                {t("accounts.otherProviders")}
-              </h4>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                {t("accounts.otherProvidersDescription")}
-              </p>
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            {otherAgents.map((agent) => (
-              <div
-                key={agent.id}
-                className="rounded-md border border-border px-4"
-              >
-                <AgentProviderCard
-                  provider={agent}
-                  readiness={agentReadiness.get(agent.id)}
-                  versionCheck={agentChecks.get(agent.id)}
-                  statusLoading={agentStatusRefreshing}
-                  statusUnavailable={agentStatusUnavailable}
-                  onStartTroubleshootingChat={onStartTroubleshootingChat}
-                />
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
 
       {/* Which harness gets the work when one is running low, and which
           models each class of work prefers. Here rather than in a section of

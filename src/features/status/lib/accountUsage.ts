@@ -38,6 +38,7 @@ export function accountUsageFor(
     monthly: null,
     accountLabel: status?.accountLabel ?? account.label,
     planType: status?.subscription ?? null,
+    credits: status?.credits ?? null,
     updatedAt: status?.lastAttemptAt ?? account.updatedAt,
     error: status?.error ?? null,
     status: !configured
