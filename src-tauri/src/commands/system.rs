@@ -293,16 +293,11 @@ pub async fn save_exported_session_files(
         .into_path()
         .map_err(|_| "Selected folder path is not available".to_string())?;
 
-    let mut used: HashSet<String> = HashSet::new();
     let mut written: Vec<String> = Vec::with_capacity(items.len());
 
     for item in items {
         let filename = plain_export_filename(&item.filename);
-        let resolved = resolve_export_filename(&folder_path, &filename, &used);
-        let path = folder_path.join(&resolved);
-        std::fs::write(&path, &item.contents)
-            .map_err(|e| format!("Failed to write file '{}': {}", path.display(), e))?;
-        used.insert(resolved.clone());
+        let resolved = write_new_export(&folder_path, &filename, &item.contents)?;
         written.push(resolved);
     }
 
@@ -329,24 +324,48 @@ fn plain_export_filename(raw: &str) -> String {
     }
 }
 
-fn resolve_export_filename(folder: &Path, filename: &str, used: &HashSet<String>) -> String {
-    if !folder.join(filename).exists() && !used.contains(filename) {
-        return filename.to_string();
-    }
-
+fn write_new_export(folder: &Path, filename: &str, contents: &str) -> Result<String, String> {
+    use std::io::Write;
+    crate::services::windows_names::reject_unusable_windows_name(filename, "Export filename")?;
     let (stem, ext) = match filename.rsplit_once('.') {
         Some((s, e)) => (s.to_string(), format!(".{}", e)),
         None => (filename.to_string(), String::new()),
     };
 
-    for n in 2..=9999 {
-        let candidate = format!("{}-{}{}", stem, n, ext);
-        if !folder.join(&candidate).exists() && !used.contains(&candidate) {
-            return candidate;
+    for n in 1..=9999 {
+        let candidate = if n == 1 {
+            filename.to_string()
+        } else {
+            format!("{stem}-{n}{ext}")
+        };
+        let path = folder.join(&candidate);
+        // Reserve atomically: another export or a newly created symlink must
+        // never turn the name check into permission to overwrite existing data.
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "Cannot create export '{}': {error}",
+                    path.display()
+                ))
+            }
+        };
+        let saved = file
+            .write_all(contents.as_bytes())
+            .and_then(|()| file.sync_all());
+        drop(file);
+        if let Err(error) = saved {
+            let _ = std::fs::remove_file(&path);
+            return Err(format!("Cannot save export '{}': {error}", path.display()));
         }
+        return Ok(candidate);
     }
-
-    format!("{}-{}{}", stem, 9999, ext)
+    Err("All export filenames already exist; choose another folder".into())
 }
 
 /// Off the main thread: `exists()` is a metadata call that can wait on a
@@ -2022,6 +2041,37 @@ mod tests {
             query.to_string(),
             Some(max_results),
         )
+    }
+
+    #[test]
+    fn concurrent_exports_never_overwrite_existing_files() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("chat.json"), "original").unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let workers: Vec<_> = ["first", "second"]
+            .into_iter()
+            .map(|contents| {
+                let folder = dir.path().to_owned();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    let name = super::write_new_export(&folder, "chat.json", contents).unwrap();
+                    assert_eq!(fs::read_to_string(folder.join(&name)).unwrap(), contents);
+                    name
+                })
+            })
+            .collect();
+        let names: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_ne!(names[0], names[1]);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("chat.json")).unwrap(),
+            "original"
+        );
+        assert!(super::write_new_export(dir.path(), "NUL.json", "data").is_err());
+        assert!(super::write_new_export(dir.path(), "chat.json.", "data").is_err());
     }
 
     #[test]
