@@ -140,7 +140,7 @@ fn should_remove_env_var(key: &str, value: &str, orca: &OrcaContext) -> bool {
 
     if matches!(
         upper_key.as_str(),
-        "NPM_CONFIG_PREFIX" | "NPM_CONFIG_CACHE" | "COREPACK_HOME"
+        "NPM_CONFIG_PREFIX" | "NPM_CONFIG_CACHE" | "COREPACK_HOME" | "APP_TEST_DRIVER_TOKEN"
     ) {
         return true;
     }
@@ -237,6 +237,24 @@ pub(crate) fn contains_hermit_path_component(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{inherited_env_keys_to_remove, remove_inherited_launcher_env, sanitize_shell_env};
+
+    #[test]
+    fn ui_driver_token_is_not_inherited_by_agent_or_terminal_children() {
+        let mut env = std::collections::HashMap::from([
+            (
+                "APP_TEST_DRIVER_TOKEN".into(),
+                "private-driver-access".into(),
+            ),
+            (
+                "app_test_driver_token".into(),
+                "private-driver-access".into(),
+            ),
+            ("DISTILL_ROOT".into(), "C:/work/distill".into()),
+        ]);
+        sanitize_shell_env(&mut env);
+        assert_eq!(env.len(), 1);
+        assert!(env.contains_key("DISTILL_ROOT"));
+    }
     use std::collections::HashMap;
 
     fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {

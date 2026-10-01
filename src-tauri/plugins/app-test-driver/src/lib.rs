@@ -1,13 +1,17 @@
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Manager, Runtime};
 
 const READY_FILE_NAME: &str = "app-test-driver.json";
 const SERVER_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_COMMAND_BYTES: usize = 1024 * 1024;
+const MAX_TIMEOUT_MS: u64 = 60_000;
+const MAX_CONNECTIONS: usize = 16;
 
 const SUPPORTED_ACTIONS: &[&str] = &[
     "snapshot",
@@ -22,7 +26,7 @@ const SUPPORTED_ACTIONS: &[&str] = &[
     "screenshot",
 ];
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 struct TestCommand {
     #[serde(default)]
     token: String,
@@ -46,7 +50,6 @@ struct DriverReady {
     pid: u32,
 }
 
-#[derive(Debug)]
 pub struct DriverConfig {
     token: String,
     ready_file: PathBuf,
@@ -61,7 +64,6 @@ impl DriverConfig {
     }
 }
 
-#[derive(Debug)]
 enum DriverMode {
     Legacy,
     Isolated(DriverConfig),
@@ -141,15 +143,13 @@ impl TestResult {
 }
 
 #[tauri::command]
-fn driver_result(state: tauri::State<'_, DriverState>, value: String) {
-    let mut result = state.pending_result.lock().unwrap();
-    *result = Some(value);
-    state.signal.notify_one();
+fn driver_result(state: tauri::State<'_, DriverState>, request_id: u64, value: String) {
+    state.submit(request_id, value);
 }
 
 struct DriverState {
     command_lock: Mutex<()>,
-    pending_result: Mutex<Option<String>>,
+    pending_result: Mutex<(u64, Option<String>)>,
     signal: std::sync::Condvar,
 }
 
@@ -157,7 +157,7 @@ impl DriverState {
     fn new() -> Self {
         Self {
             command_lock: Mutex::new(()),
-            pending_result: Mutex::new(None),
+            pending_result: Mutex::new((0, None)),
             signal: std::sync::Condvar::new(),
         }
     }
@@ -167,21 +167,30 @@ impl DriverState {
         let guard = self.pending_result.lock().unwrap();
         let (mut guard, _) = self
             .signal
-            .wait_timeout_while(guard, timeout, |result| result.is_none())
+            .wait_timeout_while(guard, timeout, |result| result.1.is_none())
             .unwrap();
-        guard.take()
+        guard.1.take()
     }
 
-    fn reset(&self) {
-        *self.pending_result.lock().unwrap() = None;
+    fn reset(&self) -> u64 {
+        let mut result = self.pending_result.lock().unwrap();
+        *result = (result.0.wrapping_add(1), None);
+        result.0
+    }
+
+    fn submit(&self, request_id: u64, value: String) {
+        let mut result = self.pending_result.lock().unwrap();
+        if result.0 == request_id && result.1.is_none() {
+            result.1 = Some(value);
+            self.signal.notify_one();
+        }
     }
 }
 
 fn escape_js_string(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('\'', "\\'")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
+    // JSON string escaping also covers CR, NUL and the other control bytes.
+    let quoted = serde_json::to_string(s).expect("strings serialize to JSON");
+    quoted[1..quoted.len() - 1].to_owned()
 }
 
 fn with_wait_for(selector: &str, action_js: &str, timeout_ms: u64) -> String {
@@ -202,7 +211,7 @@ fn with_wait_for(selector: &str, action_js: &str, timeout_ms: u64) -> String {
     )
 }
 
-fn build_js(cmd: &TestCommand) -> Result<String, String> {
+fn build_js(cmd: &TestCommand, request_id: u64) -> Result<String, String> {
     let timeout_ms = cmd.timeout.unwrap_or(5000);
     let inner_js = match cmd.action.as_str() {
         "snapshot" => r#"
@@ -237,7 +246,7 @@ fn build_js(cmd: &TestCommand) -> Result<String, String> {
                             let info = '[e' + eIdx + '] ' + tagLower;
                             if (node.type) info += ' type="' + node.type + '"';
                             if (node.placeholder) info += ' placeholder="' + node.placeholder + '"';
-                            if (node.value) info += ' value="' + node.value + '"';
+                            if (node.value) info += ' value="' + (node.type === 'password' ? '[redacted]' : node.value) + '"';
                             if (node.href) info += ' href="' + node.href + '"';
                             const text = node.innerText?.trim();
                             if (text && text.length < 100) info += ' "' + text + '"';
@@ -381,9 +390,9 @@ fn build_js(cmd: &TestCommand) -> Result<String, String> {
         (async function() {{
             try {{
                 const result = await Promise.resolve({inner_js});
-                await window.__TAURI_INTERNALS__.invoke('plugin:app-test-driver|driver_result', {{ value: String(result) }});
+                await window.__TAURI_INTERNALS__.invoke('plugin:app-test-driver|driver_result', {{ requestId: {request_id}, value: String(result) }});
             }} catch(e) {{
-                await window.__TAURI_INTERNALS__.invoke('plugin:app-test-driver|driver_result', {{ value: 'ERROR: ' + e.message }});
+                await window.__TAURI_INTERNALS__.invoke('plugin:app-test-driver|driver_result', {{ requestId: {request_id}, value: 'ERROR: ' + e.message }});
             }}
         }})();
         "#
@@ -401,7 +410,9 @@ fn constant_time_token_matches(expected: &[u8], actual: &[u8]) -> bool {
 }
 
 fn validate_command(cmd: &TestCommand, expected_token: &str) -> Result<(), TestResult> {
-    if !constant_time_token_matches(expected_token.as_bytes(), cmd.token.as_bytes()) {
+    if expected_token.is_empty()
+        || !constant_time_token_matches(expected_token.as_bytes(), cmd.token.as_bytes())
+    {
         return Err(TestResult::failure("Unauthorized test driver request"));
     }
     if !SUPPORTED_ACTIONS.contains(&cmd.action.as_str()) {
@@ -415,7 +426,36 @@ fn validate_command(cmd: &TestCommand, expected_token: &str) -> Result<(), TestR
             "Test driver screenshots are not supported on this platform",
         ));
     }
+    if cmd.timeout.is_some_and(|timeout| timeout > MAX_TIMEOUT_MS) {
+        return Err(TestResult::failure("Test driver timeout exceeds 60000 ms"));
+    }
     Ok(())
+}
+
+fn valid_driver_token(token: &str) -> bool {
+    (32..=128).contains(&token.len()) && token.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+fn read_command_line(reader: &mut impl BufRead) -> std::io::Result<Option<String>> {
+    let mut line = String::new();
+    let size = reader
+        .take((MAX_COMMAND_BYTES + 1) as u64)
+        .read_line(&mut line)?;
+    if size > MAX_COMMAND_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Test driver command exceeds the size limit",
+        ));
+    }
+    Ok((size > 0).then_some(line))
+}
+
+struct ConnectionGuard(Arc<AtomicUsize>);
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 fn write_result(stream: &mut impl Write, result: &TestResult) {
@@ -472,10 +512,11 @@ fn remove_ready_file(path: &Path) {
 
 fn start_server<R: Runtime>(
     app_handle: AppHandle<R>,
-    token: Option<String>,
+    token: String,
     listener: TcpListener,
     shutdown_rx: mpsc::Receiver<()>,
 ) -> std::thread::JoinHandle<()> {
+    let connections = Arc::new(AtomicUsize::new(0));
     std::thread::spawn(move || loop {
         if shutdown_rx.try_recv().is_ok() {
             break;
@@ -493,10 +534,26 @@ fn start_server<R: Runtime>(
             }
         };
 
+        if connections.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
+            continue;
+        }
+        connections.fetch_add(1, Ordering::Relaxed);
+        let connection = ConnectionGuard(Arc::clone(&connections));
+
         let app = app_handle.clone();
         let token = token.clone();
 
         std::thread::spawn(move || {
+            let _connection = connection;
+            if stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .is_err()
+                || stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .is_err()
+            {
+                return;
+            }
             let read_stream = match stream.try_clone() {
                 Ok(stream) => stream,
                 Err(error) => {
@@ -509,10 +566,9 @@ fn start_server<R: Runtime>(
                     return;
                 }
             };
-            let reader = BufReader::new(read_stream);
+            let mut reader = BufReader::new(read_stream);
 
-            for line in reader.lines() {
-                let Ok(line) = line else { break };
+            while let Ok(Some(line)) = read_command_line(&mut reader) {
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -528,20 +584,9 @@ fn start_server<R: Runtime>(
                     }
                 };
 
-                if let Some(expected_token) = &token {
-                    if let Err(result) = validate_command(&cmd, expected_token) {
-                        write_result(&mut stream, &result);
-                        continue;
-                    }
-                } else if !SUPPORTED_ACTIONS.contains(&cmd.action.as_str()) {
-                    write_result(
-                        &mut stream,
-                        &TestResult::failure(format!(
-                            "Unsupported test driver action: {}",
-                            cmd.action
-                        )),
-                    );
-                    continue;
+                if let Err(result) = validate_command(&cmd, &token) {
+                    write_result(&mut stream, &result);
+                    break;
                 }
                 log::info!("[app-test-driver] Received action: {}", cmd.action);
 
@@ -556,8 +601,8 @@ fn start_server<R: Runtime>(
                 let state = app.state::<DriverState>();
                 let _command_guard = state.command_lock.lock().unwrap();
 
-                state.reset();
-                let js = match build_js(&cmd) {
+                let request_id = state.reset();
+                let js = match build_js(&cmd, request_id) {
                     Ok(js) => js,
                     Err(error) => {
                         write_result(&mut stream, &TestResult::failure(error));
@@ -592,6 +637,11 @@ fn plugin<R: Runtime>(mode: DriverMode) -> tauri::plugin::TauriPlugin<R> {
         .setup(move |app, _api| {
             let (listener, token, ready_file) = match mode.as_ref() {
                 DriverMode::Legacy => {
+                    let token = std::env::var("APP_TEST_DRIVER_TOKEN").unwrap_or_default();
+                    if !valid_driver_token(&token) {
+                        log::warn!("[app-test-driver] Disabled: set APP_TEST_DRIVER_TOKEN to 32-128 ASCII letters or digits to enable local control");
+                        return Ok(());
+                    }
                     let port = std::env::var("APP_TEST_DRIVER_PORT")
                         .unwrap_or_else(|_| "9999".to_string());
                     let address = format!("127.0.0.1:{port}");
@@ -602,13 +652,16 @@ fn plugin<R: Runtime>(mode: DriverMode) -> tauri::plugin::TauriPlugin<R> {
                             return Ok(());
                         }
                     };
-                    (listener, None, None)
+                    (listener, token, None)
                 }
                 DriverMode::Isolated(config) => {
+                    if !valid_driver_token(&config.token) {
+                        return Err("Invalid test driver token".into());
+                    }
                     remove_ready_file(&config.ready_file);
                     (
                         TcpListener::bind(("127.0.0.1", 0))?,
-                        Some(config.token.clone()),
+                        config.token.clone(),
                         Some(config.ready_file.clone()),
                     )
                 }
@@ -646,8 +699,8 @@ fn plugin<R: Runtime>(mode: DriverMode) -> tauri::plugin::TauriPlugin<R> {
 
 /// Start the legacy local driver on `APP_TEST_DRIVER_PORT` (default `9999`).
 ///
-/// This mode intentionally preserves the app's normal profile and credential
-/// storage and accepts the historical unauthenticated loopback protocol.
+/// Keeps the normal profile. Disabled unless APP_TEST_DRIVER_TOKEN is valid;
+/// every request must carry that token, just like an isolated run.
 pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     plugin(DriverMode::Legacy)
 }
@@ -685,6 +738,60 @@ mod tests {
         assert_eq!(
             error.error.as_deref(),
             Some("Unauthorized test driver request")
+        );
+    }
+
+    #[test]
+    fn driver_requires_a_token_and_bounds_timeouts() {
+        assert!(validate_command(&command("", "snapshot"), "").is_err());
+        assert!(!valid_driver_token(""));
+        assert!(!valid_driver_token(&"x".repeat(129)));
+        assert!(!valid_driver_token(&"!".repeat(32)));
+        assert!(valid_driver_token(&"x".repeat(32)));
+        let mut request = command("test", "click");
+        request.timeout = Some(u64::MAX);
+        assert!(validate_command(&request, "test").is_err());
+        request.timeout = Some(MAX_TIMEOUT_MS);
+        assert!(validate_command(&request, "test").is_ok());
+    }
+
+    #[test]
+    fn command_reader_rejects_oversized_lines_before_reading_the_rest() {
+        let bytes = vec![b'x'; MAX_COMMAND_BYTES * 2];
+        let mut reader = std::io::Cursor::new(bytes);
+        assert!(read_command_line(&mut reader).is_err());
+        assert_eq!(reader.position(), (MAX_COMMAND_BYTES + 1) as u64);
+        let mut reader = std::io::Cursor::new(b"first\nsecond\n");
+        assert_eq!(
+            read_command_line(&mut reader).unwrap().as_deref(),
+            Some("first\n")
+        );
+        assert_eq!(
+            read_command_line(&mut reader).unwrap().as_deref(),
+            Some("second\n")
+        );
+        assert_eq!(read_command_line(&mut reader).unwrap(), None);
+    }
+
+    #[test]
+    fn javascript_arguments_roundtrip_control_characters() {
+        let input = "quote\"\\\r\n\0\t apostrophe'";
+        let encoded = format!("\"{}\"", escape_js_string(input));
+        assert_eq!(serde_json::from_str::<String>(&encoded).unwrap(), input);
+    }
+
+    #[test]
+    fn late_results_cannot_complete_the_next_command() {
+        let state = DriverState::new();
+        let first = state.reset();
+        let second = state.reset();
+        state.submit(first, "late response".into());
+        assert!(state.pending_result.lock().unwrap().1.is_none());
+        state.submit(second, "current response".into());
+        state.submit(first, "another late response".into());
+        assert_eq!(
+            state.wait_for_result(0).as_deref(),
+            Some("current response")
         );
     }
 }

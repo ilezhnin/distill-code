@@ -175,7 +175,7 @@ Expected result:
 `scripts\windows\Launch-Distill.ps1 -InstallShortcut` puts a "Distill Code"
 shortcut on the desktop that runs the same launch from Explorer. That launcher
 builds with `distillctl` only: unlike `just dev-windows` it does not enable
-`app-test-driver`, so a shortcut-launched app exposes no unauthenticated
+`app-test-driver`, so a shortcut-launched app exposes no
 UI-driving socket (see [docs/app-e2e.md](app-e2e.md)).
 
 The launcher also starts `tauri dev` with `--no-watch`. It is the app agents

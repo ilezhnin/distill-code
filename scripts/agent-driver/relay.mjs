@@ -796,7 +796,7 @@ const USAGE = [
   "  --root <dir>   Folder holding inbox/ and outbox/.",
   "                 Default: <repo>/../agent-driver",
   "  --port <n>     app-test-driver port. Default: 9999 (legacy mode)",
-  "  --token <s>    Driver token. Only needed in isolated mode.",
+  "  --token <s>    Driver token. Required in both driver modes.",
   "",
 ].join("\n");
 
