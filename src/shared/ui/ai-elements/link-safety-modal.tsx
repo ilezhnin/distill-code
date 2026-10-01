@@ -39,10 +39,6 @@ export function LinkSafetyModal({
 
   const domain = useMemo(() => extractDomain(url), [url]);
 
-  if (isOpen && isCopied) {
-    setIsCopied(false);
-  }
-
   useEffect(
     () => () => {
       window.clearTimeout(timeoutRef.current);
@@ -50,10 +46,12 @@ export function LinkSafetyModal({
     [],
   );
 
-  // Reset the checkbox when the modal opens with a new URL
+  // Reset feedback only when opening a new link, not during the copy render.
   useEffect(() => {
     if (isOpen) {
       setTrustChecked(false);
+      setIsCopied(false);
+      window.clearTimeout(timeoutRef.current);
     }
   }, [isOpen, url]);
 

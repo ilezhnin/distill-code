@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Check, FileText, FolderClosed, ImageIcon } from "lucide-react";
 import { IconRobot } from "@tabler/icons-react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { useLinkSafetyGate } from "@/shared/ui/ai-elements/link-safety-modal";
 import { cn } from "@/shared/lib/cn";
 import { useLocaleFormatting } from "@/shared/i18n";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
@@ -192,6 +192,8 @@ function MessageAttachmentTile({
   onViewImage: (item: MessageAttachmentPreviewItem) => void;
 }) {
   const { t } = useTranslation("chat");
+  const { openResolvedPath } = useArtifactActionsContext();
+  const { openExternalUrl, linkSafetyModal } = useLinkSafetyGate();
   const { attachment, imageSrc } = item;
   const reportOpenFailure = () => {
     toast.error(t("artifactChips.openFailed", { name: attachment.name }));
@@ -211,64 +213,67 @@ function MessageAttachmentTile({
         : FileText;
 
   return (
-    <button
-      type="button"
-      data-role="message-attachment-tile"
-      onClick={() => {
-        if (displayedImageSrc) {
-          onViewImage(item);
-          return;
+    <>
+      <button
+        type="button"
+        data-role="message-attachment-tile"
+        onClick={() => {
+          if (displayedImageSrc) {
+            onViewImage(item);
+            return;
+          }
+          // A tile outlives its file: the attachment can be moved or deleted, or
+          // the opener scope can refuse the path. Say so instead of leaving the
+          // click to do nothing and log an unhandled rejection.
+          if (attachment.path) {
+            void openResolvedPath(attachment.path).catch(reportOpenFailure);
+            return;
+          }
+          if (attachment.url) {
+            openExternalUrl(attachment.url);
+          }
+        }}
+        disabled={!canOpen}
+        className={cn(
+          "group relative flex size-16 shrink-0 overflow-hidden rounded-xl border border-border/70 bg-background/50 text-left shadow-sm transition-colors",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+          canOpen
+            ? "hover:border-foreground/20 hover:bg-muted/70"
+            : "cursor-default opacity-75",
+        )}
+        aria-label={
+          displayedImageSrc
+            ? t("attachments.viewFullSize", { name: attachment.name })
+            : canOpen
+              ? t("attachments.open", { name: attachment.name })
+              : t("attachments.unavailable", { name: attachment.name })
         }
-        // A tile outlives its file: the attachment can be moved or deleted, or
-        // the opener scope can refuse the path. Say so instead of leaving the
-        // click to do nothing and log an unhandled rejection.
-        if (attachment.path) {
-          void openPath(attachment.path).catch(reportOpenFailure);
-          return;
-        }
-        if (attachment.url) {
-          void openUrl(attachment.url).catch(reportOpenFailure);
-        }
-      }}
-      disabled={!canOpen}
-      className={cn(
-        "group relative flex size-16 shrink-0 overflow-hidden rounded-xl border border-border/70 bg-background/50 text-left shadow-sm transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-        canOpen
-          ? "hover:border-foreground/20 hover:bg-muted/70"
-          : "cursor-default opacity-75",
-      )}
-      aria-label={
-        displayedImageSrc
-          ? t("attachments.viewFullSize", { name: attachment.name })
-          : canOpen
-            ? t("attachments.open", { name: attachment.name })
-            : t("attachments.unavailable", { name: attachment.name })
-      }
-      title={attachment.path ?? attachment.url ?? attachment.name}
-    >
-      {displayedImageSrc ? (
-        <>
-          <img
-            src={displayedImageSrc}
-            alt=""
-            onError={() => setFailedImageSrc(displayedImageSrc)}
-            className="h-full w-full object-cover transition-transform duration-150 group-hover:scale-[1.03]"
-          />
-          <span className="absolute bottom-1 right-1 rounded bg-background/85 px-1 text-[9px] font-medium leading-4 text-foreground shadow-sm backdrop-blur-sm">
-            {extension}
+        title={attachment.path ?? attachment.url ?? attachment.name}
+      >
+        {displayedImageSrc ? (
+          <>
+            <img
+              src={displayedImageSrc}
+              alt=""
+              onError={() => setFailedImageSrc(displayedImageSrc)}
+              className="h-full w-full object-cover transition-transform duration-150 group-hover:scale-[1.03]"
+            />
+            <span className="absolute bottom-1 right-1 rounded bg-background/85 px-1 text-[9px] font-medium leading-4 text-foreground shadow-sm backdrop-blur-sm">
+              {extension}
+            </span>
+          </>
+        ) : (
+          <span className="flex h-full w-full flex-col items-center justify-center gap-1 px-1.5 text-center">
+            <Icon className="size-5 text-muted-foreground" aria-hidden="true" />
+            <span className="max-w-full truncate rounded bg-muted px-1.5 py-0.5 text-[9px] font-medium leading-none text-muted-foreground">
+              {extension}
+            </span>
           </span>
-        </>
-      ) : (
-        <span className="flex h-full w-full flex-col items-center justify-center gap-1 px-1.5 text-center">
-          <Icon className="size-5 text-muted-foreground" aria-hidden="true" />
-          <span className="max-w-full truncate rounded bg-muted px-1.5 py-0.5 text-[9px] font-medium leading-none text-muted-foreground">
-            {extension}
-          </span>
-        </span>
-      )}
-      <span className="sr-only">{attachment.name}</span>
-    </button>
+        )}
+        <span className="sr-only">{attachment.name}</span>
+      </button>
+      {linkSafetyModal}
+    </>
   );
 }
 
