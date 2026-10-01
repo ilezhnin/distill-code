@@ -1,12 +1,10 @@
-import { Label } from "@/shared/ui/label";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { useLocaleFormatting } from "@/shared/i18n";
 import { revealInFileManager } from "@/shared/lib/fileManager";
 import { Button } from "@/shared/ui/button";
 import { Checkbox } from "@/shared/ui/checkbox";
-import { Input } from "@/shared/ui/input";
-import { Textarea } from "@/shared/ui/textarea";
 import {
   Dialog,
   DialogBody,
@@ -16,19 +14,47 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/shared/ui/dialog";
+import { Input } from "@/shared/ui/input";
+import { Label } from "@/shared/ui/label";
+import { Switch } from "@/shared/ui/switch";
+import { Textarea } from "@/shared/ui/textarea";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
+import { shortId } from "../lib/benchmarkLabels";
 import type {
   BenchmarkDraft,
-  RunSummary,
   ExportResult,
+  RunSummary,
   Schedule,
 } from "../types";
 import {
-  BenchmarkField,
-  BenchmarkNotice,
-  BenchmarkSelect,
-} from "./BenchmarkFields";
+  BenchmarkAlert,
+  Field,
+  SectionHeading,
+  SelectField,
+} from "./BenchmarkPrimitives";
+
+function CloseButton({
+  onClose,
+  disabled = false,
+}: {
+  onClose: () => void;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation("benchmarks");
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      flush
+      className="sm:mr-auto"
+      disabled={disabled}
+      onClick={onClose}
+    >
+      {t("actions.close")}
+    </Button>
+  );
+}
 
 export function BenchmarkImportDialog({
   onClose,
@@ -63,42 +89,40 @@ export function BenchmarkImportDialog({
         if (!open) onClose();
       }}
     >
-      <DialogContent size="xl">
+      <DialogContent size="lg">
         <DialogHeader>
           <DialogTitle>{t("import.title")}</DialogTitle>
           <DialogDescription>{t("import.description")}</DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-4">
-          {error && <BenchmarkNotice error>{error}</BenchmarkNotice>}
+          {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
           <Input
             type="file"
             accept=".json,application/json"
             aria-label={t("import.file")}
             onChange={(event) => {
               const file = event.target.files?.[0];
-              if (file) {
-                if (file.size > 8 * 1024 * 1024) {
-                  setError(t("import.tooLarge"));
-                  return;
-                }
-                void file
-                  .text()
-                  .then(setContent)
-                  .catch((failure) => setError(benchmarkErrorMessage(failure)));
+              if (!file) return;
+              if (file.size > 8 * 1024 * 1024) {
+                setError(t("import.tooLarge"));
+                return;
               }
+              void file
+                .text()
+                .then(setContent)
+                .catch((failure) => setError(benchmarkErrorMessage(failure)));
             }}
           />
           <Textarea
-            rows={16}
+            rows={14}
+            variant="code"
             aria-label={t("import.content")}
             value={content}
             onChange={(event) => setContent(event.target.value)}
           />
         </DialogBody>
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose}>
-            {t("actions.close")}
-          </Button>
+          <CloseButton onClose={onClose} disabled={busy} />
           <Button
             type="button"
             variant="primary"
@@ -123,12 +147,16 @@ export function BenchmarkBaselineDialog({
   onCreated: (id: string) => void;
 }) {
   const { t } = useTranslation("benchmarks");
+  const { formatDate } = useLocaleFormatting();
   const client = useQueryClient();
   const [name, setName] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [threshold, setThreshold] = useState(5);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const eligible = runs.filter(
+    (run) => run.state === "completed" && !run.request.preview,
+  );
   const save = async () => {
     setBusy(true);
     setError(null);
@@ -159,8 +187,8 @@ export function BenchmarkBaselineDialog({
           <DialogDescription>{t("baseline.description")}</DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-4">
-          {error && <BenchmarkNotice error>{error}</BenchmarkNotice>}
-          <BenchmarkField label={t("fields.name")}>
+          {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
+          <Field label={t("fields.name")}>
             {(id) => (
               <Input
                 id={id}
@@ -168,8 +196,8 @@ export function BenchmarkBaselineDialog({
                 onChange={(event) => setName(event.target.value)}
               />
             )}
-          </BenchmarkField>
-          <BenchmarkField label={t("baseline.threshold")}>
+          </Field>
+          <Field label={t("baseline.threshold")}>
             {(id) => (
               <Input
                 id={id}
@@ -180,35 +208,42 @@ export function BenchmarkBaselineDialog({
                 onChange={(event) => setThreshold(Number(event.target.value))}
               />
             )}
-          </BenchmarkField>
+          </Field>
           <fieldset className="space-y-2">
-            <legend>{t("baseline.runs")}</legend>
-            {runs
-              .filter(
-                (run) => run.state === "completed" && !run.request.preview,
-              )
-              .map((run) => (
-                <Label key={run.id} className="flex items-center gap-2 text-sm">
-                  <Checkbox
-                    checked={selected.includes(run.id)}
-                    onCheckedChange={(checked) =>
-                      setSelected((previous) =>
-                        checked
-                          ? [...previous, run.id]
-                          : previous.filter((id) => id !== run.id),
-                      )
-                    }
-                  />
-                  {new Date(run.createdAt).toLocaleString()}
-                  <code className="text-xs">{run.id.slice(0, 8)}</code>
-                </Label>
-              ))}
+            <legend className="text-sm">{t("baseline.runs")}</legend>
+            {eligible.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {t("baseline.noRuns")}
+              </p>
+            ) : null}
+            {eligible.map((run) => (
+              <Label
+                key={run.id}
+                className="flex items-center gap-2 py-1 text-sm"
+              >
+                <Checkbox
+                  checked={selected.includes(run.id)}
+                  onCheckedChange={(checked) =>
+                    setSelected((previous) =>
+                      checked
+                        ? [...previous, run.id]
+                        : previous.filter((id) => id !== run.id),
+                    )
+                  }
+                />
+                {formatDate(run.createdAt, {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                })}
+                <code className="text-xs text-muted-foreground">
+                  {shortId(run.id)}
+                </code>
+              </Label>
+            ))}
           </fieldset>
         </DialogBody>
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose}>
-            {t("actions.close")}
-          </Button>
+          <CloseButton onClose={onClose} disabled={busy} />
           <Button
             type="button"
             variant="primary"
@@ -260,7 +295,7 @@ export function BenchmarkExportDialog({ onClose }: { onClose: () => void }) {
           <DialogDescription>{t("export.description")}</DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-4">
-          {error && <BenchmarkNotice error>{error}</BenchmarkNotice>}
+          {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
           <Label className="flex items-start gap-2 text-sm">
             <Checkbox
               checked={includeHeldOut}
@@ -271,21 +306,22 @@ export function BenchmarkExportDialog({ onClose }: { onClose: () => void }) {
             />
             {t("export.heldOut")}
           </Label>
-          {result && (
-            <BenchmarkNotice>
+          {result ? (
+            <div role="status" className="space-y-1 text-sm">
               <p>{t("export.completed", { count: result.rowCount })}</p>
-              <code className="block break-all text-xs">{result.path}</code>
-              <code className="block break-all text-xs">
-                {result.contentHash}
+              <code className="block break-all text-xs text-muted-foreground">
+                {result.path}
               </code>
-            </BenchmarkNotice>
-          )}
+              <p className="text-xs text-muted-foreground">
+                {t("export.hash")}:{" "}
+                <code className="break-all">{result.contentHash}</code>
+              </p>
+            </div>
+          ) : null}
         </DialogBody>
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose}>
-            {t("actions.close")}
-          </Button>
-          {result && (
+          <CloseButton onClose={onClose} disabled={busy} />
+          {result ? (
             <Button
               type="button"
               variant="outline"
@@ -295,16 +331,16 @@ export function BenchmarkExportDialog({ onClose }: { onClose: () => void }) {
                 )
               }
             >
-              {t("export.reveal")}
+              {t("actions.reveal")}
             </Button>
-          )}
+          ) : null}
           <Button
             type="button"
             variant="primary"
             disabled={busy}
             onClick={() => void exportData()}
           >
-            {t("actions.export")}
+            {t("toolbar.export")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -320,6 +356,7 @@ export function BenchmarkSchedulesDialog({
   onClose: () => void;
 }) {
   const { t } = useTranslation("benchmarks");
+  const { formatDate } = useLocaleFormatting();
   const client = useQueryClient();
   const schedules = useQuery({
     queryKey: [...benchmarkKeys, "schedules"],
@@ -351,6 +388,43 @@ export function BenchmarkSchedulesDialog({
       setBusy(false);
     }
   };
+  const canSave =
+    !busy &&
+    name.trim() !== "" &&
+    Boolean(run) &&
+    Number.isFinite(interval) &&
+    interval >= 60 &&
+    Number.isInteger(maxRuns) &&
+    maxRuns >= 1 &&
+    maxRuns <= 1000 &&
+    Number.isInteger(maxTotalExecutions) &&
+    maxTotalExecutions >= 1 &&
+    maxTotalExecutions <= 10000 &&
+    (!discovery ||
+      (Boolean(scope?.accountId) &&
+        Number.isInteger(maxCandidates) &&
+        maxCandidates >= 1 &&
+        maxCandidates <= 32));
+  const numberField = (
+    label: string,
+    value: number,
+    set: (value: number) => void,
+    min: number,
+    max?: number,
+  ) => (
+    <Field label={label}>
+      {(id) => (
+        <Input
+          id={id}
+          type="number"
+          min={min}
+          max={max}
+          value={value}
+          onChange={(event) => set(Number(event.target.value))}
+        />
+      )}
+    </Field>
+  );
   return (
     <Dialog
       open
@@ -363,250 +437,220 @@ export function BenchmarkSchedulesDialog({
           <DialogTitle>{t("schedules.title")}</DialogTitle>
           <DialogDescription>{t("schedules.description")}</DialogDescription>
         </DialogHeader>
-        <DialogBody className="space-y-4">
-          {(error || schedules.error) && (
-            <BenchmarkNotice error>
+        <DialogBody className="space-y-6">
+          {error || schedules.error ? (
+            <BenchmarkAlert>
               {error ?? benchmarkErrorMessage(schedules.error)}
-            </BenchmarkNotice>
-          )}
-          {schedules.data?.map((schedule) => (
-            <div
-              key={schedule.id}
-              className="flex items-center justify-between gap-4 rounded-md border border-border p-3"
-            >
-              <div>
-                <p className="text-sm">{schedule.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {schedule.missed
-                    ? t("schedules.missed")
-                    : t("schedules.due", {
-                        time: new Date(schedule.nextDueAt).toLocaleString(),
-                      })}
-                </p>
-                {schedule.pausedReason && (
-                  <p className="text-xs text-muted-foreground">
-                    {schedule.pausedReason}
-                  </p>
-                )}
-                <p className="text-xs text-muted-foreground">
-                  {t("schedules.generated", {
-                    count: schedule.generatedRunIds?.length ?? 0,
-                    max: schedule.maxRuns,
-                  })}
-                </p>
-              </div>
-              <Label className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={schedule.enabled}
-                  disabled={busy}
-                  onCheckedChange={(checked) =>
-                    void save({
-                      ...schedule,
-                      enabled: checked === true,
-                      nextDueAt:
-                        checked === true
-                          ? Date.now() + schedule.intervalMinutes * 60_000
-                          : schedule.nextDueAt,
-                      missed: false,
-                    })
-                  }
-                />
-                {t("enabled")}
-              </Label>
-            </div>
-          ))}
-          <BenchmarkField label={t("fields.name")}>
-            {(id) => (
-              <Input
-                id={id}
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-              />
-            )}
-          </BenchmarkField>
-          <BenchmarkField label={t("schedules.plan")}>
-            {(id) => (
-              <BenchmarkSelect
-                id={id}
-                value={runId}
-                onChange={setRunId}
-                options={[
-                  { value: "none", label: t("schedules.chooseRun") },
-                  ...runs
-                    .filter((entry) => !entry.request.preview)
-                    .map((entry) => ({
-                      value: entry.id,
-                      label: `${new Date(entry.createdAt).toLocaleString()} / ${entry.id.slice(0, 8)}`,
-                    })),
-                ]}
-              />
-            )}
-          </BenchmarkField>
-          <BenchmarkField label={t("schedules.interval")}>
-            {(id) => (
-              <Input
-                id={id}
-                type="number"
-                min={60}
-                value={interval}
-                onChange={(event) => setInterval(Number(event.target.value))}
-              />
-            )}
-          </BenchmarkField>
-          {run && (
-            <BenchmarkNotice>
-              {t("schedules.budget", {
-                executions: run.request.maxExecutions,
-                seconds: run.request.timeoutSeconds,
-              })}
-            </BenchmarkNotice>
-          )}
-          <div className="grid gap-4 md:grid-cols-2">
-            <BenchmarkField label={t("schedules.maxRuns")}>
-              {(id) => (
-                <Input
-                  id={id}
-                  type="number"
-                  min={1}
-                  max={1000}
-                  value={maxRuns}
-                  onChange={(event) => setMaxRuns(Number(event.target.value))}
-                />
-              )}
-            </BenchmarkField>
-            <BenchmarkField label={t("schedules.maxTotalExecutions")}>
-              {(id) => (
-                <Input
-                  id={id}
-                  type="number"
-                  min={1}
-                  max={10000}
-                  value={maxTotalExecutions}
-                  onChange={(event) =>
-                    setMaxTotalExecutions(Number(event.target.value))
-                  }
-                />
-              )}
-            </BenchmarkField>
-          </div>
-          <Label className="flex items-start gap-2 text-sm">
-            <Checkbox
-              checked={discovery}
-              onCheckedChange={(checked) => setDiscovery(checked === true)}
-            />
-            {t("schedules.discovery")}
-          </Label>
-          {discovery && (
-            <div className="space-y-4 rounded-md border border-border p-3">
-              <BenchmarkNotice>
-                {scope
-                  ? t("schedules.scope", {
-                      provider: scope.providerId,
-                      account: scope.accountId ?? t("run.noAccount"),
-                    })
-                  : t("schedules.chooseRun")}
-              </BenchmarkNotice>
-              <p className="text-sm text-muted-foreground">
-                {t("schedules.discoveryHelp")}
-              </p>
-              <BenchmarkField label={t("schedules.modelIds")}>
+            </BenchmarkAlert>
+          ) : null}
+          {schedules.data && schedules.data.length > 0 ? (
+            <section className="space-y-2">
+              <SectionHeading title={t("schedules.existing")} />
+              <ul className="divide-y divide-border">
+                {schedules.data.map((schedule) => (
+                  <li
+                    key={schedule.id}
+                    className="flex items-center justify-between gap-4 py-3"
+                  >
+                    <div className="min-w-0 space-y-0.5">
+                      <p className="text-sm">{schedule.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {schedule.missed
+                          ? t("schedules.missed")
+                          : t("schedules.due", {
+                              time: formatDate(schedule.nextDueAt, {
+                                dateStyle: "medium",
+                                timeStyle: "short",
+                              }),
+                            })}
+                        {" · "}
+                        {t("schedules.generated", {
+                          count: schedule.generatedRunIds?.length ?? 0,
+                          max: schedule.maxRuns,
+                        })}
+                      </p>
+                      {schedule.pausedReason ? (
+                        <p className="text-xs text-muted-foreground">
+                          {schedule.pausedReason}
+                        </p>
+                      ) : null}
+                    </div>
+                    <Label className="flex items-center gap-2 text-sm">
+                      <Switch
+                        checked={schedule.enabled}
+                        disabled={busy}
+                        aria-label={t("enabled")}
+                        onCheckedChange={(checked) =>
+                          void save({
+                            ...schedule,
+                            enabled: checked,
+                            nextDueAt: checked
+                              ? Date.now() + schedule.intervalMinutes * 60_000
+                              : schedule.nextDueAt,
+                            missed: false,
+                          })
+                        }
+                      />
+                      {t("enabled")}
+                    </Label>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+          <section className="space-y-4">
+            <SectionHeading title={t("schedules.newCampaign")} />
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label={t("fields.name")}>
                 {(id) => (
                   <Input
                     id={id}
-                    value={modelIds}
-                    onChange={(event) => setModelIds(event.target.value)}
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
                   />
                 )}
-              </BenchmarkField>
-              <BenchmarkField label={t("schedules.maxCandidates")}>
+              </Field>
+              <Field label={t("schedules.plan")}>
                 {(id) => (
-                  <Input
+                  <SelectField
                     id={id}
-                    type="number"
-                    min={1}
-                    max={32}
-                    value={maxCandidates}
-                    onChange={(event) =>
-                      setMaxCandidates(Number(event.target.value))
+                    value={runId}
+                    onChange={setRunId}
+                    options={[
+                      { value: "none", label: t("schedules.chooseRun") },
+                      ...runs
+                        .filter((entry) => !entry.request.preview)
+                        .map((entry) => ({
+                          value: entry.id,
+                          label: t("filters.runLabel", {
+                            date: formatDate(entry.createdAt, {
+                              dateStyle: "short",
+                              timeStyle: "short",
+                            }),
+                            id: shortId(entry.id),
+                          }),
+                        })),
+                    ]}
+                  />
+                )}
+              </Field>
+              {numberField(t("schedules.interval"), interval, setInterval, 60)}
+              {numberField(
+                t("schedules.maxRuns"),
+                maxRuns,
+                setMaxRuns,
+                1,
+                1000,
+              )}
+              {numberField(
+                t("schedules.maxTotalExecutions"),
+                maxTotalExecutions,
+                setMaxTotalExecutions,
+                1,
+                10000,
+              )}
+            </div>
+            {run ? (
+              <p className="text-xs text-muted-foreground">
+                {t("schedules.budget", {
+                  executions: run.request.maxExecutions,
+                  seconds: run.request.timeoutSeconds,
+                })}
+              </p>
+            ) : null}
+            <Label className="flex items-start gap-2 text-sm">
+              <Checkbox
+                checked={discovery}
+                onCheckedChange={(checked) => setDiscovery(checked === true)}
+              />
+              {t("schedules.discovery")}
+            </Label>
+            {discovery ? (
+              <div className="space-y-4 rounded-md bg-muted/40 p-4">
+                <p className="text-xs text-muted-foreground">
+                  {scope
+                    ? t("schedules.scope", {
+                        provider: scope.providerId,
+                        account: scope.accountId ?? t("run.noAccount"),
+                      })
+                    : t("schedules.chooseRun")}{" "}
+                  {t("schedules.discoveryHelp")}
+                </p>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field label={t("schedules.modelIds")}>
+                    {(id) => (
+                      <Input
+                        id={id}
+                        value={modelIds}
+                        onChange={(event) => setModelIds(event.target.value)}
+                      />
+                    )}
+                  </Field>
+                  {numberField(
+                    t("schedules.maxCandidates"),
+                    maxCandidates,
+                    setMaxCandidates,
+                    1,
+                    32,
+                  )}
+                </div>
+                <Label className="flex items-start gap-2 text-sm">
+                  <Checkbox
+                    checked={includeNewModels}
+                    onCheckedChange={(checked) =>
+                      setIncludeNewModels(checked === true)
                     }
                   />
-                )}
-              </BenchmarkField>
-              <Label className="flex items-start gap-2 text-sm">
-                <Checkbox
-                  checked={includeNewModels}
-                  onCheckedChange={(checked) =>
-                    setIncludeNewModels(checked === true)
-                  }
-                />
-                {t("schedules.includeNew")}
-              </Label>
-            </div>
-          )}
-          <Label className="flex items-start gap-2 text-sm">
-            <Checkbox
-              checked={enabled}
-              onCheckedChange={(checked) => setEnabled(checked === true)}
-            />
-            {t("schedules.optIn")}
-          </Label>
+                  {t("schedules.includeNew")}
+                </Label>
+              </div>
+            ) : null}
+            <Label className="flex items-start gap-2 text-sm">
+              <Checkbox
+                checked={enabled}
+                onCheckedChange={(checked) => setEnabled(checked === true)}
+              />
+              {t("schedules.optIn")}
+            </Label>
+          </section>
         </DialogBody>
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose}>
-            {t("actions.close")}
-          </Button>
+          <CloseButton onClose={onClose} disabled={busy} />
           <Button
             type="button"
             variant="primary"
-            disabled={
-              busy ||
-              !name.trim() ||
-              !run ||
-              interval < 60 ||
-              !Number.isFinite(interval) ||
-              !Number.isInteger(maxRuns) ||
-              maxRuns < 1 ||
-              maxRuns > 1000 ||
-              !Number.isInteger(maxTotalExecutions) ||
-              maxTotalExecutions < 1 ||
-              maxTotalExecutions > 10000 ||
-              (discovery &&
-                (!scope?.accountId ||
-                  !Number.isInteger(maxCandidates) ||
-                  maxCandidates < 1 ||
-                  maxCandidates > 32))
-            }
+            disabled={!canSave}
             onClick={() => {
-              if (run)
-                void save({
-                  id: crypto.randomUUID(),
-                  name: name.trim(),
-                  enabled,
-                  intervalMinutes: interval,
-                  nextDueAt: Date.now() + interval * 60_000,
-                  request: { ...run.request, requestKey: crypto.randomUUID() },
-                  missed: false,
-                  discovery:
-                    discovery && scope?.accountId
-                      ? {
-                          providerId: scope.providerId,
-                          accountId: scope.accountId,
-                          includeNewModels,
-                          modelIds: modelIds
-                            .split(",")
-                            .map((id) => id.trim())
-                            .filter(Boolean),
-                          maxCandidates,
-                        }
-                      : null,
-                  maxRuns,
-                  maxTotalExecutions,
-                  generatedRunIds: [],
-                  pausedReason: null,
-                });
+              if (!run) return;
+              void save({
+                id: crypto.randomUUID(),
+                name: name.trim(),
+                enabled,
+                intervalMinutes: interval,
+                nextDueAt: Date.now() + interval * 60_000,
+                request: { ...run.request, requestKey: crypto.randomUUID() },
+                missed: false,
+                discovery:
+                  discovery && scope?.accountId
+                    ? {
+                        providerId: scope.providerId,
+                        accountId: scope.accountId,
+                        includeNewModels,
+                        modelIds: modelIds
+                          .split(",")
+                          .map((id) => id.trim())
+                          .filter(Boolean),
+                        maxCandidates,
+                      }
+                    : null,
+                maxRuns,
+                maxTotalExecutions,
+                generatedRunIds: [],
+                pausedReason: null,
+              });
             }}
           >
-            {t("actions.save")}
+            {t("schedules.save")}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -391,7 +391,7 @@ impl BenchmarkService {
                     a.phase != "terminal"
                         || !matches!(
                             a.outcome.as_deref(),
-                            Some("pass" | "fail" | "budget_timeout")
+                            Some("pass" | "fail" | "budget_timeout" | "budget_reached")
                         )
                 })
             {

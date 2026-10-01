@@ -17,7 +17,9 @@ pub(super) fn score(attempt: &Attempt) -> Option<f64> {
     }
     match attempt.outcome.as_deref()? {
         "pass" => Some(1.0),
-        "fail" | "timeout" | "budget_timeout" => Some(0.0),
+        // Exceeding the published time or artifact budget is a task failure, not
+        // an infrastructure exclusion: the candidate chose that behavior.
+        "fail" | "budget_timeout" | "budget_reached" => Some(0.0),
         _ => None,
     }
 }
@@ -93,9 +95,21 @@ fn median(mut values: Vec<f64>) -> Option<f64> {
     })
 }
 
-pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> Vec<LeaderboardRow> {
+pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> LeaderboardReport {
     let runs = selected_runs(data, query);
     let ids: BTreeSet<_> = runs.iter().map(|run| run.id.as_str()).collect();
+    let cohort = runs.iter().max_by_key(|run| run.created_at).map(|newest| {
+        let mut version_ids = newest.request.version_ids.clone();
+        version_ids.sort();
+        LeaderboardCohort {
+            run_ids: runs.iter().map(|run| run.id.clone()).collect(),
+            version_ids,
+            repetitions: newest.request.repetitions,
+            timeout_seconds: newest.request.timeout_seconds,
+            max_executions: newest.request.max_executions,
+            newest_run_at: newest.created_at,
+        }
+    });
     let mut groups: BTreeMap<String, Vec<&Attempt>> = BTreeMap::new();
     for attempt in &data.attempts {
         if ids.contains(attempt.run_id.as_str()) {
@@ -135,10 +149,12 @@ pub fn leaderboard(data: &QueryData, query: &ResultQuery) -> Vec<LeaderboardRow>
                     .total_cmp(&a.quality.unwrap_or(-1.0))
             })
     });
-    rows.into_iter()
+    let rows = rows
+        .into_iter()
         .skip(query.offset.unwrap_or(0) as usize)
         .take(query.limit.unwrap_or(100).min(500) as usize)
-        .collect()
+        .collect();
+    LeaderboardReport { cohort, rows }
 }
 
 fn means_by_family(data: &QueryData, attempts: &[&Attempt]) -> BTreeMap<String, f64> {

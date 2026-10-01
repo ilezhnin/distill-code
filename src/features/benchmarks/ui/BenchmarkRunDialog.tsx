@@ -1,12 +1,12 @@
-import { Label } from "@/shared/ui/label";
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { IconX } from "@tabler/icons-react";
 import { listProviderAccounts } from "@/features/providers/api/providerAccounts";
+import { providerDisplayName } from "@/features/providers/providerCatalog";
 import { useProviderCatalogStore } from "@/features/providers/stores/providerCatalogStore";
 import { Button } from "@/shared/ui/button";
 import { Checkbox } from "@/shared/ui/checkbox";
-import { Input } from "@/shared/ui/input";
 import {
   Dialog,
   DialogBody,
@@ -16,9 +16,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/shared/ui/dialog";
+import { Input } from "@/shared/ui/input";
+import { Label } from "@/shared/ui/label";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
+import { shortId } from "../lib/benchmarkLabels";
 import type {
   BenchmarkDefinition,
   Configuration,
@@ -26,10 +29,12 @@ import type {
   RunRequest,
 } from "../types";
 import {
-  BenchmarkField,
-  BenchmarkNotice,
-  BenchmarkSelect,
-} from "./BenchmarkFields";
+  BenchmarkAlert,
+  BenchmarkEmpty,
+  Field,
+  SectionHeading,
+  SelectField,
+} from "./BenchmarkPrimitives";
 
 export function BenchmarkRunDialog({
   definitions,
@@ -105,7 +110,10 @@ export function BenchmarkRunDialog({
   );
   const signature = JSON.stringify(request);
   const validPreview = preview?.signature === signature ? preview.result : null;
-  const caseTurns = definitions
+  const published = definitions.filter(
+    (entry) => !entry.archived && entry.versions.length > 0,
+  );
+  const caseTurns = published
     .flatMap((definition) => definition.versions)
     .filter((version) => versions.includes(version.id))
     .reduce(
@@ -114,6 +122,11 @@ export function BenchmarkRunDialog({
       0,
     );
   const count = caseTurns * configurations.length * repetitions;
+  const supported = new Set(
+    capabilities.data
+      ?.filter((entry) => entry.supported)
+      .map((entry) => entry.providerId) ?? [],
+  );
   const providerOptions = [
     ...new Set([
       ...(capabilities.data
@@ -121,7 +134,14 @@ export function BenchmarkRunDialog({
         .filter((id) => id !== "*") ?? []),
       ...providers.map((entry) => entry.id),
     ]),
-  ];
+  ].map((id) => ({
+    value: id,
+    label: supported.has(id)
+      ? providerDisplayName(id)
+      : t("run.unsupportedProvider", { provider: providerDisplayName(id) }),
+  }));
+  const providerReasons =
+    capabilities.data?.filter((entry) => entry.providerId === providerId) ?? [];
   const operate = async (action: () => Promise<void>) => {
     setError(null);
     setBusy(true);
@@ -155,6 +175,24 @@ export function BenchmarkRunDialog({
           : [...previous, config],
     );
   };
+  const budgetField = (
+    key: "repetitions" | "timeoutSeconds" | "maxExecutions",
+    value: number,
+    set: (value: number) => void,
+  ) => (
+    <Field key={key} label={t(`fields.${key}`)}>
+      {(id) => (
+        <Input
+          id={id}
+          type="number"
+          min={1}
+          disabled={previewOnly && key === "repetitions"}
+          value={value}
+          onChange={(event) => set(Number(event.target.value))}
+        />
+      )}
+    </Field>
+  );
   return (
     <Dialog
       open
@@ -165,255 +203,254 @@ export function BenchmarkRunDialog({
       <DialogContent size="xl">
         <DialogHeader>
           <DialogTitle>{t("run.title")}</DialogTitle>
-          <DialogDescription>{t("run.description")}</DialogDescription>
+          <DialogDescription>
+            {previewOnly ? t("run.preview") : t("run.description")}
+          </DialogDescription>
         </DialogHeader>
-        <DialogBody className="space-y-5">
-          {error && <BenchmarkNotice error>{error}</BenchmarkNotice>}
-          {previewOnly && <BenchmarkNotice>{t("run.preview")}</BenchmarkNotice>}
+        <DialogBody className="space-y-6">
+          {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
           <fieldset className="space-y-2">
-            <legend className="mb-2 text-sm font-medium">
-              {t("run.tests")}
+            <legend className="mb-2">
+              <SectionHeading title={t("run.tests")} />
             </legend>
-            {definitions
-              .filter((entry) => !entry.archived)
-              .flatMap((definition) =>
-                definition.versions.map((version) => (
-                  <Label
-                    key={version.id}
-                    className="flex items-center gap-2 text-sm"
-                  >
-                    <Checkbox
-                      disabled={previewOnly}
-                      checked={versions.includes(version.id)}
-                      onCheckedChange={(checked) =>
-                        setVersions((previous) =>
-                          checked
-                            ? [...previous, version.id]
-                            : previous.filter((id) => id !== version.id),
-                        )
-                      }
-                    />
-                    <span>{version.manifest.name}</span>
-                    <code className="text-xs text-muted-foreground">
-                      {version.contentHash.slice(0, 10)}
-                    </code>
-                  </Label>
-                )),
-              )}
-            {!definitions.some(
-              (entry) => !entry.archived && entry.versions.length,
-            ) && <BenchmarkNotice>{t("run.noPublished")}</BenchmarkNotice>}
-          </fieldset>
-          <div className="grid gap-3 md:grid-cols-2">
-            <BenchmarkField label={t("fields.provider")}>
-              {(id) => (
-                <BenchmarkSelect
-                  id={id}
-                  value={providerId || "none"}
-                  onChange={(value) => {
-                    setProviderId(value === "none" ? "" : value);
-                    setAccountId("none");
-                    setModelIndex("none");
-                    setEffort("none");
-                  }}
-                  options={[
-                    { value: "none", label: t("run.chooseProvider") },
-                    ...providerOptions.map((value) => ({
-                      value,
-                      label: value,
-                    })),
-                  ]}
-                />
-              )}
-            </BenchmarkField>
-            <BenchmarkField label={t("fields.account")}>
-              {(id) => (
-                <BenchmarkSelect
-                  id={id}
-                  value={accountId}
-                  onChange={(value) => {
-                    setAccountId(value);
-                    setModelIndex("none");
-                  }}
-                  options={[
-                    { value: "none", label: t("run.noAccount") },
-                    ...(accounts.data?.accounts
-                      .filter(
-                        (entry) =>
-                          entry.providerId === providerId && entry.enabled,
+            {published.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {t("run.noPublished")}
+              </p>
+            ) : null}
+            {published.flatMap((definition) =>
+              definition.versions.map((version) => (
+                <Label
+                  key={version.id}
+                  className="flex items-center gap-2 py-1 text-sm"
+                >
+                  <Checkbox
+                    disabled={previewOnly}
+                    checked={versions.includes(version.id)}
+                    onCheckedChange={(checked) =>
+                      setVersions((previous) =>
+                        checked
+                          ? [...previous, version.id]
+                          : previous.filter((id) => id !== version.id),
                       )
-                      .map((entry) => ({
-                        value: entry.id,
-                        label: entry.label,
-                      })) ?? []),
-                  ]}
-                />
-              )}
-            </BenchmarkField>
-          </div>
-          {providerId && (
-            <>
-              {inventory.isPending && (
-                <BenchmarkNotice>{t("loading")}</BenchmarkNotice>
-              )}
-              {inventory.error && (
-                <BenchmarkNotice error>
-                  {benchmarkErrorMessage(inventory.error)}
-                </BenchmarkNotice>
-              )}
-              <BenchmarkField label={t("fields.model")}>
+                    }
+                  />
+                  <span className="min-w-0 truncate">
+                    {version.manifest.name}
+                  </span>
+                  <code className="text-xs text-muted-foreground">
+                    {shortId(version.contentHash)}
+                  </code>
+                </Label>
+              )),
+            )}
+          </fieldset>
+          <section className="space-y-3">
+            <SectionHeading title={t("run.configurations")} />
+            <div className="grid gap-3 md:grid-cols-2">
+              <Field label={t("fields.provider")}>
                 {(id) => (
-                  <BenchmarkSelect
+                  <SelectField
                     id={id}
-                    value={modelIndex}
+                    value={providerId || "none"}
                     onChange={(value) => {
-                      setModelIndex(value);
+                      setProviderId(value === "none" ? "" : value);
+                      setAccountId("none");
+                      setModelIndex("none");
                       setEffort("none");
-                      setFastMode(false);
                     }}
                     options={[
-                      { value: "none", label: t("run.chooseModel") },
-                      ...(inventory.data?.map((entry, index) => ({
-                        value: String(index),
-                        label: entry.name,
-                      })) ?? []),
+                      { value: "none", label: t("run.chooseProvider") },
+                      ...providerOptions,
                     ]}
                   />
                 )}
-              </BenchmarkField>
-              {model && (
-                <div className="space-y-3">
-                  <BenchmarkField label={t("fields.effort")}>
-                    {(id) => (
-                      <BenchmarkSelect
-                        id={id}
-                        value={effort}
-                        onChange={setEffort}
-                        options={[
-                          {
-                            value: "none",
-                            label: model.efforts.length
-                              ? t("run.defaultEffort")
-                              : t("run.noEffort"),
-                          },
-                          ...model.efforts.map((value) => ({
-                            value,
-                            label: value,
-                          })),
-                        ]}
-                      />
-                    )}
-                  </BenchmarkField>
-                  {model.supportsFastMode && (
-                    <Label className="flex items-center gap-2 text-sm">
-                      <Checkbox
-                        checked={fastMode}
-                        onCheckedChange={(checked) =>
-                          setFastMode(checked === true)
-                        }
-                      />
-                      {t("fields.fastMode")}
-                    </Label>
-                  )}
-                  {!model.available && (
-                    <BenchmarkNotice>
-                      {model.reason ?? t("unsupported")}
-                    </BenchmarkNotice>
-                  )}
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={!model.available}
-                    onClick={addConfiguration}
-                  >
-                    {t("run.addConfiguration")}
-                  </Button>
-                </div>
-              )}
-              {capabilities.data
-                ?.filter((entry) => entry.providerId === providerId)
-                .map((entry) => (
-                  <p
-                    key={entry.executionProfile}
-                    className="text-xs text-muted-foreground"
-                  >
-                    {entry.executionProfile}: {entry.reason}
-                  </p>
-                ))}
-            </>
-          )}
-          <div className="space-y-2">
-            {configurations.map((entry) => (
-              <div
-                key={entry.id}
-                className="flex items-center justify-between gap-2 text-sm"
-              >
-                <span>{configurationLabel(entry)}</span>
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="ghost"
-                  onClick={() =>
-                    setConfigurations((previous) =>
-                      previous.filter((config) => config.id !== entry.id),
-                    )
-                  }
-                >
-                  {t("actions.remove")}
-                </Button>
-              </div>
-            ))}
-          </div>
-          <div className="grid gap-3 md:grid-cols-3">
-            {[
-              { key: "repetitions", value: repetitions, set: setRepetitions },
-              {
-                key: "timeoutSeconds",
-                value: timeoutSeconds,
-                set: setTimeoutSeconds,
-              },
-              {
-                key: "maxExecutions",
-                value: maxExecutions,
-                set: setMaxExecutions,
-              },
-            ].map((field) => (
-              <BenchmarkField key={field.key} label={t(`fields.${field.key}`)}>
+              </Field>
+              <Field label={t("fields.account")}>
                 {(id) => (
-                  <Input
+                  <SelectField
                     id={id}
-                    type="number"
-                    min={1}
-                    disabled={previewOnly && field.key === "repetitions"}
-                    value={field.value}
-                    onChange={(event) => field.set(Number(event.target.value))}
+                    value={accountId}
+                    onChange={(value) => {
+                      setAccountId(value);
+                      setModelIndex("none");
+                    }}
+                    options={[
+                      { value: "none", label: t("run.noAccount") },
+                      ...(accounts.data?.accounts
+                        .filter(
+                          (entry) =>
+                            entry.providerId === providerId && entry.enabled,
+                        )
+                        .map((entry) => ({
+                          value: entry.id,
+                          label: entry.label,
+                        })) ?? []),
+                    ]}
                   />
                 )}
-              </BenchmarkField>
-            ))}
-          </div>
-          <BenchmarkNotice>
-            {t("run.executionCount", { count })}
-            <div>
-              {t("run.estimatedCost", {
-                value:
-                  validPreview?.estimatedCost == null
-                    ? t("unknown")
-                    : validPreview.estimatedCost.toFixed(4),
-              })}
+              </Field>
+              {providerId ? (
+                <Field label={t("fields.model")}>
+                  {(id) => (
+                    <SelectField
+                      id={id}
+                      value={modelIndex}
+                      onChange={(value) => {
+                        setModelIndex(value);
+                        setEffort("none");
+                        setFastMode(false);
+                      }}
+                      options={[
+                        { value: "none", label: t("run.chooseModel") },
+                        ...(inventory.data?.map((entry, index) => ({
+                          value: String(index),
+                          label: entry.name,
+                        })) ?? []),
+                      ]}
+                    />
+                  )}
+                </Field>
+              ) : null}
+              {model ? (
+                <Field label={t("fields.effort")}>
+                  {(id) => (
+                    <SelectField
+                      id={id}
+                      value={effort}
+                      onChange={setEffort}
+                      options={[
+                        {
+                          value: "none",
+                          label: model.efforts.length
+                            ? t("run.defaultEffort")
+                            : t("run.noEffort"),
+                        },
+                        ...model.efforts.map((value) => ({
+                          value,
+                          label: value,
+                        })),
+                      ]}
+                    />
+                  )}
+                </Field>
+              ) : null}
             </div>
-            {validPreview?.costReason && <div>{validPreview.costReason}</div>}
-          </BenchmarkNotice>
-          {validPreview && !validPreview.valid && (
-            <BenchmarkNotice error>
-              {validPreview.issues.join("\n")}
-            </BenchmarkNotice>
-          )}
+            {providerId && inventory.isPending ? (
+              <BenchmarkEmpty title={t("loading")} compact />
+            ) : null}
+            {inventory.error ? (
+              <BenchmarkAlert>
+                {benchmarkErrorMessage(inventory.error)}
+              </BenchmarkAlert>
+            ) : null}
+            {providerReasons.map((entry) => (
+              <p
+                key={entry.executionProfile}
+                className="text-xs text-muted-foreground"
+              >
+                {t(`profiles.${entry.executionProfile}`, {
+                  defaultValue: entry.executionProfile,
+                })}
+                : {entry.reason}
+              </p>
+            ))}
+            {model && !model.available ? (
+              <p className="text-xs text-muted-foreground">
+                {model.reason ?? t("states.unsupported")}
+              </p>
+            ) : null}
+            {model ? (
+              <div className="flex flex-wrap items-center gap-4">
+                {model.supportsFastMode ? (
+                  <Label className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      checked={fastMode}
+                      onCheckedChange={(checked) =>
+                        setFastMode(checked === true)
+                      }
+                    />
+                    {t("fields.fastMode")}
+                  </Label>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!model.available}
+                  onClick={addConfiguration}
+                >
+                  {t("run.addConfiguration")}
+                </Button>
+              </div>
+            ) : null}
+            {configurations.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {t("run.noConfigurations")}
+              </p>
+            ) : (
+              <ul className="divide-y divide-border">
+                {configurations.map((entry) => (
+                  <li
+                    key={entry.id}
+                    className="flex items-center justify-between gap-2 py-1.5 text-sm"
+                  >
+                    <span className="min-w-0 truncate">
+                      {configurationLabel(entry)}
+                    </span>
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="ghost"
+                      aria-label={t("actions.remove")}
+                      onClick={() =>
+                        setConfigurations((previous) =>
+                          previous.filter((config) => config.id !== entry.id),
+                        )
+                      }
+                    >
+                      <IconX />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+          <section className="space-y-3">
+            <SectionHeading title={t("run.budgetTitle")} />
+            <div className="grid gap-3 md:grid-cols-3">
+              {budgetField("repetitions", repetitions, setRepetitions)}
+              {budgetField("timeoutSeconds", timeoutSeconds, setTimeoutSeconds)}
+              {budgetField("maxExecutions", maxExecutions, setMaxExecutions)}
+            </div>
+            <p className="text-sm">
+              <span>{t("run.executionCount", { count })}</span>
+              {" · "}
+              <span className="text-muted-foreground">
+                {t("run.estimatedCost", {
+                  value:
+                    validPreview?.estimatedCost == null
+                      ? t("unknown")
+                      : validPreview.estimatedCost.toFixed(4),
+                })}
+              </span>
+            </p>
+            {validPreview?.costReason ? (
+              <p className="text-xs text-muted-foreground">
+                {validPreview.costReason}
+              </p>
+            ) : null}
+            {validPreview && !validPreview.valid ? (
+              <BenchmarkAlert>{validPreview.issues.join("\n")}</BenchmarkAlert>
+            ) : null}
+          </section>
         </DialogBody>
         <DialogFooter>
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
+            flush
+            className="sm:mr-auto"
             disabled={busy}
             onClick={onClose}
           >

@@ -70,6 +70,17 @@ vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => path,
 }));
 
+const scopeProps = {
+  loading: false,
+  scope: { versionId: "all", runId: "all" },
+  onScopeChange: vi.fn(),
+  suiteOptions: [{ value: "all", label: "All published versions" }],
+  runOptions: [{ value: "all", label: "All runs" }],
+  page: 0,
+  pageSize: 50,
+  onPageChange: vi.fn(),
+};
+
 function wrap(content: ReactNode) {
   return render(
     <QueryClientProvider
@@ -102,7 +113,10 @@ describe("benchmark authoring and saved evidence", () => {
     vi.mocked(benchmarkApi.getRun).mockResolvedValue(run);
     vi.mocked(benchmarkApi.getEvidence).mockResolvedValue(attempt);
     vi.mocked(benchmarkApi.listBaselines).mockResolvedValue([]);
-    vi.mocked(benchmarkApi.getLeaderboard).mockResolvedValue([]);
+    vi.mocked(benchmarkApi.getLeaderboard).mockResolvedValue({
+      cohort: null,
+      rows: [],
+    });
     vi.mocked(benchmarkApi.getUsageSeries).mockResolvedValue([]);
     vi.mocked(benchmarkApi.listSchedules).mockResolvedValue([]);
     vi.mocked(benchmarkApi.eventsSince).mockResolvedValue([]);
@@ -170,7 +184,7 @@ describe("benchmark authoring and saved evidence", () => {
     );
     expect(useBenchmarkViewStore.getState().dirty).toBe(true);
   });
-  it("rejects malformed fixture JSON before IPC", async () => {
+  it("rejects an empty fixture path before IPC", async () => {
     wrap(
       <BenchmarkEditor
         definition={definition}
@@ -178,13 +192,31 @@ describe("benchmark authoring and saved evidence", () => {
         onRun={vi.fn()}
       />,
     );
-    fireEvent.change(
-      screen.getByRole("textbox", { name: "Fixture files (JSON)" }),
-      { target: { value: "invalid" } },
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Add fixture" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Content" }), {
+      target: { value: "fixture body" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
     await screen.findByRole("alert");
     expect(benchmarkApi.saveDraft).not.toHaveBeenCalled();
+  });
+  it("hides single-value execution limits that the catalog fixes", () => {
+    wrap(
+      <BenchmarkEditor
+        definition={definition}
+        onSaved={vi.fn()}
+        onRun={vi.fn()}
+      />,
+    );
+    expect(
+      screen.queryByRole("spinbutton", { name: /turns/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("checkbox", { name: /network/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("spinbutton", { name: "Time limit (seconds)" }),
+    ).toHaveValue(120);
   });
   it("opens all four views without probing inventory or starting inference", async () => {
     function Workspace() {
@@ -200,9 +232,7 @@ describe("benchmark authoring and saved evidence", () => {
       );
     }
     wrap(<Workspace />);
-    await screen.findByText(
-      "No results match this selection. Publish and run a benchmark to collect evidence.",
-    );
+    await screen.findByText("No results for this selection.");
     for (const label of [
       "Bench development",
       "Nerf Bench",
@@ -214,7 +244,7 @@ describe("benchmark authoring and saved evidence", () => {
     expect(benchmarkApi.getInventory).not.toHaveBeenCalled();
     expect(benchmarkApi.startRun).not.toHaveBeenCalled();
   });
-  it("replaces the run drawer with captured evidence when Inspect is clicked", async () => {
+  it("replaces the run dialog with captured evidence when Inspect is clicked", async () => {
     function Workspace() {
       const [location, setLocation] = useState<BenchmarkLocation>({
         section: "leaderboard",
@@ -229,13 +259,13 @@ describe("benchmark authoring and saved evidence", () => {
       );
     }
     wrap(<Workspace />);
-    const drawer = await screen.findByRole("dialog", {
-      name: "Runs and history",
-    });
+    const drawer = await screen.findByRole("dialog", { name: "Run run-1" });
     await userEvent.click(
       await within(drawer).findByRole("button", { name: "Inspect" }),
     );
-    const evidence = await screen.findByRole("dialog", { name: "Evidence" });
+    const evidence = await screen.findByRole("dialog", {
+      name: "claude-acp / model-1 / high",
+    });
     expect(
       await within(evidence).findByText("Captured output"),
     ).toBeInTheDocument();
@@ -243,7 +273,7 @@ describe("benchmark authoring and saved evidence", () => {
       within(evidence).getByText("4", { selector: "pre" }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("dialog", { name: "Runs and history" }),
+      screen.queryByRole("dialog", { name: "Run run-1" }),
     ).not.toBeInTheDocument();
     expect(screen.getAllByRole("dialog")).toHaveLength(1);
   });
@@ -251,29 +281,73 @@ describe("benchmark authoring and saved evidence", () => {
     const inspect = vi.fn();
     wrap(
       <LeaderboardView
-        rows={[
-          {
-            configuration,
-            passed: 0,
-            attempted: 0,
-            planned: 4,
-            quality: null,
-            medianDurationMs: null,
-            cost: null,
-            status: "preliminary",
-            reason: "No valid evidence",
-            attemptIds: ["attempt-1"],
+        {...scopeProps}
+        report={{
+          cohort: {
+            runIds: ["run-1"],
+            versionIds: ["version-1"],
+            repetitions: 1,
+            timeoutSeconds: 120,
+            maxExecutions: 2,
+            newestRunAt: 1000,
           },
-        ]}
+          rows: [
+            {
+              configuration,
+              passed: 0,
+              attempted: 0,
+              planned: 4,
+              quality: null,
+              medianDurationMs: null,
+              cost: null,
+              status: "preliminary",
+              reason: "No valid evidence",
+              attemptIds: ["attempt-1"],
+            },
+          ],
+        }}
         onEvidence={inspect}
       />,
     );
+    expect(
+      screen.getByText(
+        "Newest frozen suite: 1 runs · 1 cases · 1 repetitions · 120 s per attempt",
+      ),
+    ).toBeInTheDocument();
     const row = screen.getByRole("row", { name: /model-1/ });
     expect(within(row).getAllByText("Not reported")).toHaveLength(3);
     expect(row).toHaveTextContent("0 / 4");
     expect(row).not.toHaveTextContent("0.0%");
     await userEvent.click(within(row).getByRole("button", { name: "1" }));
     expect(inspect).toHaveBeenCalledWith("attempt-1");
+  });
+  it("labels every outcome the service emits instead of showing raw keys", () => {
+    wrap(
+      <LeaderboardView
+        {...scopeProps}
+        report={{
+          cohort: null,
+          rows: ["budget_reached", "selection_changed", "confirmed_change"].map(
+            (status) => ({
+              configuration: { ...configuration, id: status, modelId: status },
+              passed: 0,
+              attempted: 1,
+              planned: 1,
+              quality: 0,
+              medianDurationMs: null,
+              cost: null,
+              status,
+              reason: "",
+              attemptIds: [],
+            }),
+          ),
+        }}
+        onEvidence={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Artifact budget exceeded")).toBeInTheDocument();
+    expect(screen.getByText("Selection changed")).toBeInTheDocument();
+    expect(screen.getByText("Confirmed change")).toBeInTheDocument();
   });
   it("defaults dataset export to exclude held-out outcomes", async () => {
     vi.mocked(benchmarkApi.exportDataset).mockResolvedValue({
@@ -296,7 +370,7 @@ describe("benchmark authoring and saved evidence", () => {
     wrap(<BenchmarkSchedulesDialog runs={[runSummary]} onClose={vi.fn()} />);
     await act(async () => {});
     expect(
-      screen.getByRole("checkbox", { name: /explicitly enable/ }),
+      screen.getByRole("checkbox", { name: /Enable this campaign/ }),
     ).not.toBeChecked();
     expect(benchmarkApi.saveSchedule).not.toHaveBeenCalled();
   });
@@ -309,10 +383,10 @@ describe("benchmark authoring and saved evidence", () => {
         onRun={vi.fn()}
       />,
     );
-    fireEvent.change(
-      screen.getByRole("textbox", { name: "Role ID (optional)" }),
-      { target: { value: "reviewer" } },
-    );
+    await userEvent.click(screen.getByRole("button", { name: /^Advanced/ }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Role ID" }), {
+      target: { value: "reviewer" },
+    });
     fireEvent.change(
       screen.getByRole("textbox", { name: "Frozen role instructions" }),
       { target: { value: "Report verified errors only." } },
@@ -354,22 +428,20 @@ describe("benchmark authoring and saved evidence", () => {
       screen.getByRole("textbox", { name: "Name" }),
       "Calibration",
     );
-    await user.click(
-      screen.getByRole("combobox", { name: "Frozen plan and per-run budget" }),
-    );
+    await user.click(screen.getByRole("combobox", { name: "Frozen plan" }));
     await user.click(screen.getByRole("option", { name: /run-1/ }));
     await user.click(
       screen.getByRole("checkbox", {
-        name: "Refresh models within a declared discovery scope",
+        name: "Refresh models within the plan's provider and account",
       }),
     );
     expect(
-      screen.getByRole("checkbox", { name: /Allow calibration/ }),
+      screen.getByRole("checkbox", { name: /Calibrate newly discovered/ }),
     ).not.toBeChecked();
     await user.click(
-      screen.getByRole("checkbox", { name: /Allow calibration/ }),
+      screen.getByRole("checkbox", { name: /Calibrate newly discovered/ }),
     );
-    await user.click(screen.getByRole("button", { name: "Save draft" }));
+    await user.click(screen.getByRole("button", { name: "Save campaign" }));
     await waitFor(() =>
       expect(benchmarkApi.saveSchedule).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -405,6 +477,9 @@ describe("benchmark authoring and saved evidence", () => {
       />,
     );
     expect(benchmarkApi.getRoutingEvidence).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("checkbox", { name: "Available now" }),
+    ).not.toBeChecked();
     await userEvent.click(
       screen.getByRole("button", { name: "Read evidence" }),
     );
@@ -414,6 +489,7 @@ describe("benchmark authoring and saved evidence", () => {
           mode: "exact",
           purpose: "analysis",
           targetVersionId: "version-1",
+          permittedSplits: ["development", "train"],
           candidates: [
             expect.objectContaining({ available: false, configuration }),
           ],

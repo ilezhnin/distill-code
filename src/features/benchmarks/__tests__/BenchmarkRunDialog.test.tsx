@@ -105,7 +105,7 @@ it("counts every workflow step against the explicit execution budget", async () 
     </QueryClientProvider>,
   );
   await user.click(screen.getByRole("combobox", { name: "Provider" }));
-  await user.click(screen.getByRole("option", { name: "claude-acp" }));
+  await user.click(screen.getByRole("option", { name: "Claude Code" }));
   await user.click(screen.getByRole("combobox", { name: "Account" }));
   await user.click(screen.getByRole("option", { name: "Test account" }));
   await user.click(screen.getByRole("combobox", { name: "Model" }));
@@ -138,7 +138,7 @@ it("requires a fresh validated plan and sends the pinned account with a stable r
   );
   expect(screen.getByRole("button", { name: "Start batch" })).toBeDisabled();
   await user.click(screen.getByRole("combobox", { name: "Provider" }));
-  await user.click(screen.getByRole("option", { name: "claude-acp" }));
+  await user.click(screen.getByRole("option", { name: "Claude Code" }));
   await user.click(screen.getByRole("combobox", { name: "Account" }));
   await user.click(screen.getByRole("option", { name: "Test account" }));
   await user.click(screen.getByRole("combobox", { name: "Model" }));

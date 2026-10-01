@@ -6,6 +6,17 @@ import { LeaderboardView } from "../ui/LeaderboardView";
 import { NerfBenchView } from "../ui/NerfBenchView";
 import { configuration } from "./fixtures";
 
+const scopeProps = {
+  loading: false,
+  scope: { versionId: "all", runId: "all" },
+  onScopeChange: vi.fn(),
+  suiteOptions: [{ value: "all", label: "All published versions" }],
+  runOptions: [{ value: "all", label: "All runs" }],
+  page: 0,
+  pageSize: 50,
+  onPageChange: vi.fn(),
+};
+
 describe("bounded benchmark evidence links", () => {
   afterEach(cleanup);
 
@@ -46,7 +57,8 @@ describe("bounded benchmark evidence links", () => {
         onEvidence={onEvidence}
       />,
     );
-    expect(screen.getByText("1–1 of 1 attempts")).toBeInTheDocument();
+    // A single page needs no range or navigation.
+    expect(screen.getAllByRole("button")).toHaveLength(1);
     await userEvent.click(screen.getByRole("button", { name: "1" }));
     expect(onEvidence).toHaveBeenLastCalledWith("filtered-attempt");
   });
@@ -54,20 +66,27 @@ describe("bounded benchmark evidence links", () => {
   it("bounds a large leaderboard row and resets its page after filtering it out", async () => {
     render(
       <LeaderboardView
-        rows={[
-          {
-            configuration,
-            passed: 2000,
-            attempted: 2000,
-            planned: 2000,
-            quality: 1,
-            medianDurationMs: 9,
-            cost: null,
-            status: "comparable",
-            reason: "Synthetic",
-            attemptIds: Array.from({ length: 2000 }, (_, i) => `attempt-${i}`),
-          },
-        ]}
+        {...scopeProps}
+        report={{
+          cohort: null,
+          rows: [
+            {
+              configuration,
+              passed: 2000,
+              attempted: 2000,
+              planned: 2000,
+              quality: 1,
+              medianDurationMs: 9,
+              cost: null,
+              status: "comparable",
+              reason: "Synthetic",
+              attemptIds: Array.from(
+                { length: 2000 },
+                (_, i) => `attempt-${i}`,
+              ),
+            },
+          ],
+        }}
         onEvidence={vi.fn()}
       />,
     );
@@ -75,7 +94,9 @@ describe("bounded benchmark evidence links", () => {
     expect(within(row).getAllByRole("button")).toHaveLength(7);
     await userEvent.click(within(row).getByRole("button", { name: "Next" }));
     expect(within(row).getByText("6–10 of 2000 attempts")).toBeInTheDocument();
-    const search = screen.getByRole("textbox", { name: "Model" });
+    const search = screen.getByRole("searchbox", {
+      name: "Search configurations",
+    });
     await userEvent.type(search, "absent");
     expect(
       screen.queryByRole("row", { name: /model-1/ }),
@@ -88,6 +109,11 @@ describe("bounded benchmark evidence links", () => {
     const onEvidence = vi.fn();
     render(
       <NerfBenchView
+        {...scopeProps}
+        baselineId="baseline"
+        baselineOptions={[{ value: "baseline", label: "Frozen" }]}
+        onBaselineChange={vi.fn()}
+        onCreateBaseline={vi.fn()}
         comparisons={[
           {
             baselineId: "baseline",

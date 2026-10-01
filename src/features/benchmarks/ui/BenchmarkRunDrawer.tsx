@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { useLocaleFormatting } from "@/shared/i18n";
 import { Button } from "@/shared/ui/button";
 import {
   Dialog,
@@ -11,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/shared/ui/dialog";
+import { Progress } from "@/shared/ui/progress";
 import {
   Table,
   TableBody,
@@ -22,8 +24,14 @@ import {
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { configurationLabel } from "../lib/benchmarkDraft";
-import { BenchmarkNotice } from "./BenchmarkFields";
+import { shortId } from "../lib/benchmarkLabels";
+import {
+  BenchmarkAlert,
+  BenchmarkEmpty,
+  StateBadge,
+} from "./BenchmarkPrimitives";
 
+/** One frozen run: progress, per-attempt outcomes and pause/resume/cancel. */
 export function BenchmarkRunDrawer({
   runId,
   onClose,
@@ -34,6 +42,7 @@ export function BenchmarkRunDrawer({
   onEvidence: (id: string) => void;
 }) {
   const { t } = useTranslation("benchmarks");
+  const { formatDate } = useLocaleFormatting();
   const client = useQueryClient();
   const query = useQuery({
     queryKey: [...benchmarkKeys, "run", runId],
@@ -55,6 +64,9 @@ export function BenchmarkRunDrawer({
   };
   const run = query.data;
   const terminal = run && ["completed", "cancelled"].includes(run.state);
+  const settled =
+    run?.attempts.filter((attempt) => attempt.phase === "terminal").length ?? 0;
+  const total = run?.attempts.length ?? 0;
   return (
     <Dialog
       open
@@ -64,40 +76,48 @@ export function BenchmarkRunDrawer({
     >
       <DialogContent size="xl">
         <DialogHeader>
-          <DialogTitle>{t("runs.title")}</DialogTitle>
-          <DialogDescription>{t("runs.description")}</DialogDescription>
+          <DialogTitle>
+            {t("runs.runTitle", { id: shortId(runId) })}
+          </DialogTitle>
+          <DialogDescription>
+            {run
+              ? formatDate(run.createdAt, {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                })
+              : t("loading")}
+          </DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-4">
-          {query.isPending && <BenchmarkNotice>{t("loading")}</BenchmarkNotice>}
-          {(query.error || error) && (
-            <BenchmarkNotice error>
+          {query.error || error ? (
+            <BenchmarkAlert>
               {error ?? benchmarkErrorMessage(query.error)}
-            </BenchmarkNotice>
-          )}
-          {run && (
+            </BenchmarkAlert>
+          ) : null}
+          {query.isPending ? (
+            <BenchmarkEmpty title={t("loading")} compact />
+          ) : null}
+          {run ? (
             <>
-              <div className="flex justify-between gap-3 text-sm">
-                <span>
-                  {t(`states.${run.state}`, { defaultValue: run.state })}
-                </span>
-                <span>
-                  {t("runs.progress", {
-                    completed: run.attempts.filter(
-                      (attempt) => attempt.phase === "terminal",
-                    ).length,
-                    total: run.attempts.length,
-                  })}
-                </span>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3 text-sm">
+                  <div className="flex items-center gap-2">
+                    <StateBadge state={run.state} />
+                    {run.request.preview ? (
+                      <span className="text-xs text-muted-foreground">
+                        {t("runs.preview")}
+                      </span>
+                    ) : null}
+                  </div>
+                  <span className="text-xs text-muted-foreground">
+                    {t("runs.progress", { completed: settled, total })}
+                  </span>
+                </div>
+                <Progress
+                  value={total === 0 ? 0 : (settled / total) * 100}
+                  aria-label={t("runs.progressLabel")}
+                />
               </div>
-              <progress
-                className="w-full"
-                value={
-                  run.attempts.filter((attempt) => attempt.phase === "terminal")
-                    .length
-                }
-                max={Math.max(1, run.attempts.length)}
-                aria-label={t("runs.progressLabel")}
-              />
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -114,15 +134,13 @@ export function BenchmarkRunDrawer({
                         {configurationLabel(attempt.configuration)}
                       </TableCell>
                       <TableCell>{attempt.repetition + 1}</TableCell>
-                      <TableCell>
-                        <div>
-                          {t(`states.${attempt.outcome ?? attempt.phase}`, {
-                            defaultValue: attempt.outcome ?? attempt.phase,
-                          })}
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          {attempt.reason}
-                        </p>
+                      <TableCell className="whitespace-normal">
+                        <StateBadge state={attempt.outcome ?? attempt.phase} />
+                        {attempt.reason ? (
+                          <p className="mt-1 max-w-80 text-xs text-muted-foreground">
+                            {attempt.reason}
+                          </p>
+                        ) : null}
                       </TableCell>
                       <TableCell>
                         <Button
@@ -138,14 +156,25 @@ export function BenchmarkRunDrawer({
                   ))}
                 </TableBody>
               </Table>
+              {!terminal ? (
+                <p className="text-xs text-muted-foreground">
+                  {t("runs.controls")}
+                </p>
+              ) : null}
             </>
-          )}
+          ) : null}
         </DialogBody>
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose}>
+          <Button
+            type="button"
+            variant="ghost"
+            flush
+            className="sm:mr-auto"
+            onClick={onClose}
+          >
             {t("actions.close")}
           </Button>
-          {run && !terminal && (
+          {run && !terminal ? (
             <>
               <Button
                 type="button"
@@ -176,7 +205,7 @@ export function BenchmarkRunDrawer({
                 {t("actions.cancelRun")}
               </Button>
             </>
-          )}
+          ) : null}
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -232,6 +232,19 @@ export interface LeaderboardRow {
   reason: string;
   attemptIds: string[];
 }
+/** The newest frozen suite the leaderboard compares; every row shares it. */
+export interface LeaderboardCohort {
+  runIds: string[];
+  versionIds: string[];
+  repetitions: number;
+  timeoutSeconds: number;
+  maxExecutions: number;
+  newestRunAt: number;
+}
+export interface LeaderboardReport {
+  cohort: LeaderboardCohort | null;
+  rows: LeaderboardRow[];
+}
 export interface Baseline {
   id: string;
   name: string;

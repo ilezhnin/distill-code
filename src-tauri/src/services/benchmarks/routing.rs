@@ -559,7 +559,10 @@ pub fn get_evidence(data: &QueryData, q: &RoutingEvidenceQuery) -> Result<Routin
     })
 }
 fn score_at(attempt: &Attempt, cutoff: i64) -> Option<f64> {
-    if attempt.outcome.as_deref() == Some("budget_timeout") {
+    if matches!(
+        attempt.outcome.as_deref(),
+        Some("budget_timeout" | "budget_reached")
+    ) {
         return Some(0.0);
     }
     if !matches!(
