@@ -189,6 +189,7 @@ function parseSessionRecord(value: unknown): UsageSessionRecord | null {
   const effort = normalizeEffort(raw.effort);
   return {
     providerId: raw.providerId,
+    ...(raw.origin === "benchmark" ? { origin: "benchmark" as const } : {}),
     modelId: typeof raw.modelId === "string" ? raw.modelId : null,
     modelName: typeof raw.modelName === "string" ? raw.modelName : null,
     ...(effort ? { effort } : {}),
@@ -663,6 +664,60 @@ export function recordSessionTokens(
       totalTokens: Math.max(0, next.totalTokens - previousTotal),
       providerId: next.providerId,
     });
+  });
+}
+
+/** Reconcile sealed benchmark evidence. Replaying the same snapshot adds nothing. */
+export function projectBenchmarkUsage(record: {
+  sessionId: string;
+  providerId: string;
+  modelId: string;
+  effort: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  costUsd: number | null;
+  durationMs: number | null;
+  finishedAt: number;
+}): void {
+  const current = getUsageLedger().sessions[record.sessionId];
+  const input = record.inputTokens ?? current?.inputTokens;
+  const output = record.outputTokens ?? current?.outputTokens;
+  if (
+    current?.origin === "benchmark" &&
+    current.inputTokens === (input ?? 0) &&
+    current.outputTokens === (output ?? 0) &&
+    current.costUsd === record.costUsd &&
+    current.workedMs === (record.durationMs ?? 0)
+  )
+    return;
+  recordSessionTokens(
+    record.sessionId,
+    {
+      mode: "replace",
+      inputTokens: input,
+      outputTokens: output,
+      ...(input !== undefined && output !== undefined
+        ? { totalTokens: input + output }
+        : {}),
+      costUsd: record.costUsd,
+      costCurrency: "USD",
+    },
+    {
+      providerId: record.providerId,
+      modelId: record.modelId,
+      effort: record.effort,
+    },
+    record.finishedAt,
+  );
+  mutateLedger((ledger) => {
+    const row = ledger.sessions[record.sessionId];
+    if (!row) return;
+    ledger.sessions[record.sessionId] = {
+      ...row,
+      origin: "benchmark",
+      turns: 1,
+      workedMs: record.durationMs ?? row.workedMs,
+    };
   });
 }
 

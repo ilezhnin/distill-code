@@ -185,6 +185,9 @@ importers:
       motion:
         specifier: ^13.0.0
         version: 13.0.0(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      playwright-core:
+        specifier: 1.62.1
+        version: 1.62.1
       react:
         specifier: ^19.2.8
         version: 19.2.8

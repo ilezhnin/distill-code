@@ -1,0 +1,4 @@
+CREATE TABLE decision_snapshots(id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES run_plans(id), version_id TEXT NOT NULL REFERENCES benchmark_versions(id), created_at INTEGER NOT NULL, data_json TEXT NOT NULL, UNIQUE(run_id,version_id));
+CREATE TABLE candidate_observations(id TEXT PRIMARY KEY, captured_at INTEGER NOT NULL, provider_id TEXT NOT NULL, account_id TEXT, data_json TEXT NOT NULL);
+CREATE INDEX candidate_observations_scope ON candidate_observations(provider_id,account_id,captured_at);
+CREATE TABLE workflow_steps(attempt_id TEXT PRIMARY KEY, root_attempt_id TEXT NOT NULL REFERENCES attempts(id), step_index INTEGER NOT NULL, step_id TEXT NOT NULL, parent_step_id TEXT, entry_state_hash TEXT NOT NULL, entry_state_json TEXT NOT NULL, prompt TEXT NOT NULL, phase TEXT NOT NULL, data_json TEXT NOT NULL, UNIQUE(root_attempt_id,step_index));

@@ -33,6 +33,7 @@ export function acpSessionToChatSession(session: AcpSessionInfo): ChatSession {
   });
   return withWorkspaceBackfill({
     id: session.sessionId,
+    executionOwner: session.executionOwner,
     // An untitled chat is a default-titled one, so its first message still
     // names it (sendCore) instead of leaving a literal "Untitled" behind.
     title: normalizeAcpTitle(session.title) ?? DEFAULT_CHAT_TITLE,
@@ -75,6 +76,14 @@ function sameChatSession(left: ChatSession, right: ChatSession): boolean {
     ...(Object.keys(right) as (keyof ChatSession)[]),
   ]);
   for (const key of keys) {
+    if (key === "executionOwner") {
+      if (
+        left.executionOwner?.kind !== right.executionOwner?.kind ||
+        left.executionOwner?.id !== right.executionOwner?.id
+      )
+        return false;
+      continue;
+    }
     if (key === "executionTarget") {
       if (
         !sameSessionExecutionTarget(left.executionTarget, right.executionTarget)

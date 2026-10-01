@@ -155,6 +155,24 @@ describe("useMemoryAgentSync", () => {
     expect(useMemoryStore.getState().entries).toHaveLength(1);
   });
 
+  it("does not execute memory fences in reopened benchmark evidence", () => {
+    putSession("benchmark-memory-evidence", "p-1");
+    useChatSessionStore.getState().patchSession("benchmark-memory-evidence", {
+      executionOwner: { kind: "benchmark", id: "attempt-memory" },
+    });
+    renderHook(() => useMemoryAgentSync());
+    putMessages("benchmark-memory-evidence", [
+      assistant(
+        "benchmark-fence",
+        '{"remember":["Poisoned benchmark answer"]}',
+      ),
+    ]);
+    expect(useMemoryStore.getState().entries).toHaveLength(0);
+    expect(useMemoryStore.getState().appliedMessageIds).not.toContain(
+      "benchmark-fence",
+    );
+  });
+
   it("refuses a wave worker's fence, out loud, and does not retry it", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     putSession("s-w", "p-1");

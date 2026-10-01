@@ -30,6 +30,38 @@ pub async fn build_spawn_env(app: &tauri::AppHandle) -> SpawnEnv {
     }
 }
 
+/// Minimum runtime environment for a separate no-tool bridge. Authentication
+/// is installed afterwards by the existing managed-account adapter.
+pub async fn build_owned_spawn_env(app: &tauri::AppHandle) -> SpawnEnv {
+    let mut shell_env = managed_acp_tools::provider_env(app).await;
+    shell_env.retain(|key, _| {
+        matches!(
+            key.to_ascii_uppercase().as_str(),
+            "PATH"
+                | "SYSTEMROOT"
+                | "WINDIR"
+                | "COMSPEC"
+                | "PATHEXT"
+                | "TEMP"
+                | "TMP"
+                | "USERPROFILE"
+                | "APPDATA"
+                | "LOCALAPPDATA"
+                | "PROGRAMFILES"
+                | "PROGRAMFILES(X86)"
+                | "HOMEDRIVE"
+                | "HOMEPATH"
+                | "HOME"
+        )
+    });
+    SpawnEnv {
+        shell_env,
+        prepend_dirs: Vec::new(),
+        extra_env: Vec::new(),
+        remove_env: Vec::new(),
+    }
+}
+
 #[cfg(feature = "distillctl")]
 fn install_distillctl_shims(
     app: &tauri::AppHandle,

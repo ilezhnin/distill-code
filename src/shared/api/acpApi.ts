@@ -29,6 +29,10 @@ import {
   shortLogId,
 } from "@/shared/lib/reasoningEffortDiagnostics";
 import { isRecord } from "@/shared/lib/isRecord";
+import {
+  observeExecutionOwner,
+  type ExecutionOwner,
+} from "@/features/chat/lib/executionOwnership";
 
 export interface AcpProvider {
   id: string;
@@ -36,6 +40,7 @@ export interface AcpProvider {
 }
 
 export interface AcpSessionInfo {
+  executionOwner?: ExecutionOwner | null;
   sessionId: string;
   title: string | null;
   updatedAt: string | null;
@@ -113,6 +118,7 @@ function mapSessionInfo(info: SessionInfo): AcpSessionInfo {
 
   return {
     sessionId: info.sessionId,
+    executionOwner: observeExecutionOwner(info.sessionId, meta?.executionOwner),
     title: info.title ?? null,
     updatedAt: info.updatedAt ?? null,
     createdAt: metaString(meta, "createdAt"),

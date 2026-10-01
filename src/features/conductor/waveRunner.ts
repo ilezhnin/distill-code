@@ -35,6 +35,7 @@ import { SpawnAclDeniedError } from "./spawnAcl";
 import { spawnConductorChildSession } from "./spawnOrchestrator";
 import type { SessionNode } from "./types";
 import { detectWavePlanCandidates } from "./waveDetection";
+import { isBenchmarkSession } from "@/features/chat/lib/executionOwnership";
 import {
   admitWavePlan,
   advanceWave,
@@ -330,7 +331,9 @@ function spawnKey(waveId: string, stepIndex: number): string {
 }
 
 function conductorNodes(nodes: readonly SessionNode[]): SessionNode[] {
-  return nodes.filter((node) => node.role === "conductor");
+  return nodes.filter(
+    (node) => node.role === "conductor" && !isBenchmarkSession(node.sessionId),
+  );
 }
 
 function appendConductorNotice(

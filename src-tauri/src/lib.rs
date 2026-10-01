@@ -195,6 +195,7 @@ pub fn run() {
             app.manage(bundled_skills::BundledSkillsState::default());
             app.manage(commands::terminal::TerminalState::default());
             app.manage(services::agent_host::AgentHost::new());
+            app.manage(services::benchmarks::BenchmarkState::default());
             app.manage(commands::agent_setup::AgentSetupRegistry::default());
 
             if app.try_state::<services::e2e_mode::E2eMode>().is_none()
@@ -277,6 +278,17 @@ pub fn run() {
             // previously installed version keeps working.
             services::acp_tools_reconciler::spawn_startup_reconcile(app.handle());
 
+            let benchmark_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = benchmark_app
+                    .state::<services::benchmarks::BenchmarkState>()
+                    .start_existing(&benchmark_app)
+                    .await
+                {
+                    log::warn!("Benchmark queue startup failed: {}", error.message);
+                }
+            });
+
             apply_app_window_icons(app.handle());
 
             if let Some(window) = app.get_webview_window("main") {
@@ -286,6 +298,39 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::benchmarks::benchmark_list_definitions,
+            commands::benchmarks::benchmark_save_draft,
+            commands::benchmarks::benchmark_validate_draft,
+            commands::benchmarks::benchmark_publish_version,
+            commands::benchmarks::benchmark_duplicate_definition,
+            commands::benchmarks::benchmark_archive_definition,
+            commands::benchmarks::benchmark_import_definition,
+            commands::benchmarks::benchmark_preview_run,
+            commands::benchmarks::benchmark_start_run,
+            commands::benchmarks::benchmark_list_runs,
+            commands::benchmarks::benchmark_list_attempts,
+            commands::benchmarks::benchmark_get_run,
+            commands::benchmarks::benchmark_pause_run,
+            commands::benchmarks::benchmark_resume_run,
+            commands::benchmarks::benchmark_cancel_run,
+            commands::benchmarks::benchmark_get_evidence,
+            commands::benchmarks::benchmark_events_since,
+            commands::benchmarks::benchmark_get_inventory,
+            commands::benchmarks::benchmark_get_capabilities,
+            commands::benchmarks::benchmark_get_leaderboard,
+            commands::benchmarks::benchmark_get_usage_series,
+            commands::benchmarks::benchmark_get_usage_ledger,
+            commands::benchmarks::benchmark_get_routing_evidence,
+            commands::benchmarks::benchmark_get_candidate_observations,
+            commands::benchmarks::benchmark_get_usage_comparisons,
+            commands::benchmarks::benchmark_list_baselines,
+            commands::benchmarks::benchmark_create_baseline,
+            commands::benchmarks::benchmark_get_comparisons,
+            commands::benchmarks::benchmark_submit_review,
+            commands::benchmarks::benchmark_rescore,
+            commands::benchmarks::benchmark_export_dataset,
+            commands::benchmarks::benchmark_list_schedules,
+            commands::benchmarks::benchmark_save_schedule,
             commands::agents::read_import_agent_file,
             commands::distill_store::update_distill_settings,
             commands::project_store::initialize_project_context,

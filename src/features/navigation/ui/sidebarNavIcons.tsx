@@ -87,6 +87,20 @@ export function SidebarNavSkillsIcon({
   );
 }
 
+export function SidebarNavBenchmarksIcon(props: SidebarNavIconProps) {
+  return (
+    <SidebarNavIcon {...props}>
+      <path
+        d="M2 12.5h10M3 10V7m3.5 3V3m3.5 7V5"
+        stroke="currentColor"
+        strokeWidth={STROKE_WIDTH}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </SidebarNavIcon>
+  );
+}
+
 /** Message bubble used for session history and chat rows. */
 export function SidebarNavChatsIcon({
   className,

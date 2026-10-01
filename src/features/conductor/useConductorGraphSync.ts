@@ -23,6 +23,7 @@ import type { Message } from "@/shared/types/messages";
 import type { RunStatus, SessionNode } from "./types";
 import { BoundedSet } from "./boundedSet";
 import { runWaveEngineTick } from "./waveRunner";
+import { isBenchmarkSession } from "@/features/chat/lib/executionOwnership";
 
 /** Sessions seen executing at least once. Bounded — see BoundedSet. */
 const seenRunningBySession = new BoundedSet(5_000);
@@ -222,6 +223,7 @@ function runSyncPass(): void {
   const chat = useChatStore.getState();
   const workersByParent = indexWorkersByParent(graph.nodesById);
   for (const node of Object.values(graph.nodesById)) {
+    if (isBenchmarkSession(node.sessionId)) continue;
     if (node.role !== "orchestrator" && node.role !== "worker") continue;
     const hasWorkers =
       node.role === "orchestrator" &&
@@ -301,6 +303,7 @@ function remapPromotedSessions(): void {
   const sessions = useChatSessionStore.getState().sessions;
   const graph = useConductorGraphStore.getState();
   for (const session of sessions) {
+    if (session.executionOwner) continue;
     if (
       session.clientSessionId &&
       session.clientSessionId !== session.id &&

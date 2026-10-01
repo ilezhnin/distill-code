@@ -15,6 +15,9 @@ the user has moved.
 | `agents/` | Installed built-in and user-created agent definitions |
 | `skills/` | Installed built-in and user-created skills |
 | `state/` | Message queues, usage history and other application state |
+| `benchmarks/benchmarks.db` | Versioned benchmark catalog, frozen plans, results, decisions, quota batches and opt-in campaigns |
+| `benchmarks/versions/`, `benchmarks/runs/` | Immutable public fixtures, frozen execution manifests and sealed evidence |
+| `benchmarks/evaluations/`, `benchmarks/exports/` | Protected evaluator artifacts and portable dataset exports |
 | `memory.json` | The built-in memory feature's records |
 | `conductor/`, `runs/` | Orchestration state and run records |
 | `artifacts/` | Generated artifacts |
@@ -62,6 +65,14 @@ prompts are preserved.
 `DISTILL_ROOT` and the E2E profile skip adoption from the real user's AppData.
 Changing the folder in Settings takes effect after restart and does not move
 existing data. Copy an existing root while Distill is stopped.
+
+Benchmark storage uses its own SQLite WAL database. Back it up while stopped or
+through a consistent SQLite snapshot. The host database retains the corresponding
+benchmark owner and idempotent dispatch records. Keep both databases and the
+benchmark version/evidence directories together when restoring. Archiving a test
+preserves published versions and results. Interrupted dispatches are reconciled
+against host records and are never automatically resent when acceptance is unknown.
+Restart parks interrupted work and disables missed campaigns until reviewed.
 
 WebView caches, derived avatar thumbnails, logs and CLI discovery may remain
 outside the root. Disposable UI state can remain in localStorage. External

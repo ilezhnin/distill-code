@@ -273,6 +273,21 @@ impl Bridge {
             .as_ref()
             .map_or(executable.as_path(), |(node, _)| node.as_path());
         let mut command = Command::new(program);
+        if route_key.contains("\u{1f}benchmark:") {
+            command.env_clear();
+            if spec.id != "claude-acp" {
+                return Err(
+                    "capability_missing: native benchmark adapter is unavailable for this provider"
+                        .into(),
+                );
+            }
+            let (_, entrypoint) = launcher.as_ref().ok_or(
+                "capability_missing: benchmark execution requires the managed Claude launcher",
+            )?;
+            command
+                .arg("--import")
+                .arg(super::execution::native_preload_argument(entrypoint)?);
+        }
         if let Some((_, entrypoint)) = &launcher {
             command.arg(entrypoint);
         }

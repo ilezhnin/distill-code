@@ -124,6 +124,20 @@ function delivered(): { sessionId: string; text: string }[] {
 }
 
 describe("useMemoryRecallSync", () => {
+  it("does not answer recall requests from benchmark evidence", () => {
+    putSession("benchmark-recall-evidence", "p-1");
+    useChatSessionStore.getState().patchSession("benchmark-recall-evidence", {
+      executionOwner: { kind: "benchmark", id: "attempt-recall" },
+    });
+    renderHook(() => useMemoryRecallSync());
+    putMessages("benchmark-recall-evidence", [
+      assistant("benchmark-recall", '{"query":"private","scope":"all"}'),
+    ]);
+    expect(mocks.deliverEnvelope).not.toHaveBeenCalled();
+    expect(useMemoryStore.getState().recallAnsweredMessageIds).not.toContain(
+      "benchmark-recall",
+    );
+  });
   beforeEach(() => {
     window.localStorage.clear();
     vi.clearAllMocks();

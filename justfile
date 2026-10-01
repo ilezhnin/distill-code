@@ -152,9 +152,11 @@ tauri-fmt-check:
 # this recipe reported from a GUI client. [script] passes each argument on its
 # own and names the temp file .ps1, which -File requires.
 [windows]
+[positional-arguments]
 [script("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File")]
 _tauri-cargo-windows *ARGS:
     $ErrorActionPreference = "Stop"
+    $cargoArguments = @($args)
     Import-Module (Join-Path (Get-Location) "scripts/windows/WindowsDev.psm1") -Force -DisableNameChecking
     Assert-WindowsHost
     Update-SessionPathFromRegistry
@@ -162,7 +164,7 @@ _tauri-cargo-windows *ARGS:
     Set-Location (Join-Path (Get-DistillRepoRoot) "src-tauri")
     $env:CARGO_TARGET_DIR = Get-TauriCargoTargetDir
     $env:TAURI_CONFIG = '{"bundle":{"externalBin":[],"resources":[]}}'
-    cargo {{ ARGS }}
+    & (Join-Path (Get-DistillRepoRoot) "scripts/windows/Invoke-Tauri-Cargo-Windows.ps1") @cargoArguments
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # Run Rust clippy with warnings denied. `--all-targets` lints test code too,

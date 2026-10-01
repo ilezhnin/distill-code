@@ -23,6 +23,11 @@ pub async fn prepare_agent_host_shutdown(
     prepared: bool,
 ) -> Result<(), String> {
     app_handle
+        .state::<crate::services::benchmarks::BenchmarkState>()
+        .park()
+        .await
+        .map_err(|error| error.message)?;
+    app_handle
         .state::<AgentHost>()
         .prepare_shutdown(prepared)
         .await

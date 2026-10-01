@@ -1,0 +1,8 @@
+{
+  "viewport": { "width": 960, "height": 720 },
+  "steps": [
+    { "action": "fill", "selector": "#name", "value": "Mira" },
+    { "action": "click", "selector": "#submit" },
+    { "action": "expectText", "selector": "#result", "value": "Hello, Mira!" }
+  ]
+}

@@ -5,6 +5,7 @@ export const USAGE_LEDGER_VERSION = 1;
 export type UsageIntensity = 0 | 1 | 2 | 3 | 4;
 
 export interface UsageSessionRecord {
+  origin?: "benchmark";
   providerId: string;
   /**
    * The model as the session last named it. Rows written while an effort was

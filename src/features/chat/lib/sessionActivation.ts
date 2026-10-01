@@ -1,4 +1,5 @@
 import { clearReplayBuffer } from "@/features/chat/hooks/replayBuffer";
+import { isBenchmarkSession } from "@/features/chat/lib/executionOwnership";
 import {
   hasConversationMessages,
   replaceMessagesFromSessionReplay,
@@ -317,6 +318,7 @@ export async function loadSessionMessagesAndPrepare(
       applyMissingCwdRecovery(sessionId, missingCwdWarning, workingDir);
     }
     try {
+      if (isBenchmarkSession(sessionId)) return true;
       await transitionSessionTarget({
         sessionId,
         target: liveTarget,
@@ -416,7 +418,10 @@ async function performSessionMessagesLoad(
     perfLog(`[perf:load] ${sid} modules ready in ${(t1 - t0).toFixed(1)}ms`);
     let sessionInfo: Awaited<ReturnType<typeof acpGetSessionInfo>> | null =
       null;
-    if (sessionAtRequest?.pinnedLoadState) {
+    if (
+      sessionAtRequest?.pinnedLoadState ||
+      sessionAtRequest?.executionOwner === undefined
+    ) {
       try {
         sessionInfo = await acpGetSessionInfo(sessionId);
       } catch (error) {
@@ -430,6 +435,7 @@ async function performSessionMessagesLoad(
         modelId: sessionInfo.modelId ?? undefined,
       });
       const sessionPatch: ChatSessionPatch = {
+        executionOwner: sessionInfo.executionOwner,
         projectId: sessionInfo.projectId ?? undefined,
         personaId: sessionInfo.personaId ?? undefined,
         archivedAt: sessionInfo.archivedAt ?? undefined,

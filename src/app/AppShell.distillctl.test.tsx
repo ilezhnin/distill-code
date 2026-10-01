@@ -48,6 +48,10 @@ vi.mock("./hooks/useAppStartup", () => ({
   useAppStartup: () => ({ ready: true }),
 }));
 
+vi.mock("@/features/benchmarks/hooks/useBenchmarks", () => ({
+  useBenchmarkRuntime: () => {},
+}));
+
 vi.mock("@/features/migration/hooks/useMigrationGate", () => ({
   useMigrationGate: () => ({ status: "ready", retry: vi.fn() }),
 }));
