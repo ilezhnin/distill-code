@@ -1,6 +1,6 @@
 # Distill benchmark workspace implementation plan
 
-Status: B00–B11 software foundation implemented and Windows acceptance passed for the supported profiles. Provider capability and measurement limits are recorded below.
+Status: B00–B11 software foundation implemented and Windows acceptance passed for the supported profiles. Reviewed and revised on October 1, 2026 (see [Review revision](#review-revision-october-1-2026)). Provider capability and measurement limits are recorded below.
 
 Date: September 30, 2026, America/Los_Angeles.
 
@@ -758,3 +758,35 @@ Managed provider-account APIs, `provider_account_status`, and the benchmark samp
 The initial benchmark commit `34e3067e` preserved overlapping account integration as a temporary patch. Commit `e2449643` adds the managed-account prerequisites and the actual benchmark changes in `agent_host/router.rs` and `provider_account_status/mod.rs`. They include account-scoped bridges, generation-scoped request routing, rejection rollback, raw prompt-response evidence, and the sampling module declaration. The temporary patch has been removed; no manual application is needed for the current checkout.
 
 The remaining changes are recorded separately: paged chat history (`f2d5b2f6`), authenticated UI driver (`8dc76539`), safe export filenames (`3654158c`), and shared attachment-opening policy (`f89c6785`). Shared files were split by feature without changing the final runtime source that passed the acceptance gates above. A checkout of `34e3067e` alone still lacks the follow-up account prerequisites; the complete commit series contains the integrated implementation.
+
+## Review revision (October 1, 2026)
+
+An independent review of the delivered implementation found correctness defects, presentation debt and a seed catalog that could not support honest comparisons. The revision keeps every contract from the checkpoint above and changes the following.
+
+### Defects fixed
+
+- The service emits outcome and status vocabulary that the renderer did not label: `budget_timeout`, `budget_reached`, `selection_changed`, `confirmed_change`, `changed_conditions`, `cannot_attribute`, `not_measured`, `remaining_capacity`, `unavailable`, `below_requirement` and the error codes that become attempt outcomes (`storage_unavailable`, `capability_missing`, `validation`, `evidence_missing`). They rendered as raw keys. Every emitted value is now labelled in both locales through one helper (`lib/benchmarkLabels.ts`), which also falls back to a readable form for any future value. The unused labels `timeout`, `selection_mismatch`, `regression`, `conditions_changed`, `unchanged` and `unsupported_telemetry` were removed.
+- `budget_reached` (output exceeded the published artifact cap) was unscored in the leaderboard and selector evidence, so a candidate that overran the cap disappeared from quality instead of failing. It now scores zero like `budget_timeout`, and a completed run containing it can be frozen as a baseline.
+- The leaderboard silently restricted rows to the newest frozen suite. The command now returns the cohort (run IDs, case IDs, repetitions, timeout, execution cap) with the rows, and the view states it: "Newest frozen suite: N runs · N cases · N repetitions · N s per attempt".
+- The evidence dialog rendered its "Evaluation history" heading above the workflow-step section, and the run dialog carried the same title as the history list. Both are corrected; a run is titled by its ID and date.
+- The editor exposed limits that the catalog rejects with any value but the default (maximum turns, allowed tools, network, context). They are no longer editable; the execution section states the clean-context, no-tool contract instead. Fixtures are edited as path/content rows rather than raw JSON.
+- The Usage Bench view offered a suite filter that the usage query ignores; only the run filter remains there.
+- `src/features/benchmarks` is now inside the i18n string check scope.
+
+### Presentation
+
+The workspace follows the Skills and Session history pages: no page title (the breadcrumb names the section), weight tabs on the left, the page toolbar on the right (run, new test, more actions), quiet filter menus instead of labelled selects, `Alert` for errors, centered empty states, badges for every status, and dialog footers with the close action flush left. One primitive module (`ui/BenchmarkPrimitives.tsx`) owns fields, selects, filter menus, pager, empty state and status badge; the hand-rolled notice box, SVG bars and raw JSON `<details>` blocks are gone. The selector-evidence dialog is a form (target, match mode, purpose, objective, age, candidates with an explicit "available now" flag) instead of a JSON editor; the automatic-retesting dialog separates existing campaigns from the new-campaign form.
+
+### Seed catalog
+
+The previous eighteen seeds were generic puzzles (sort and deduplicate, clamp, range sum, temperature sign) that any model passes and that plausibly appear in training data. The catalog now ships nineteen seeds, still two or more independent families per declared work class, designed so recall does not help: answers depend on invented fixture data, dated corrections, distractor entries, stale summaries and an embedded instruction that must be ignored. They cover rule-ordered classification, strict normalization, layered constraints, handbook structuring, source reconciliation, specification-to-contract, critical-path and two-worker scheduling, mutant-killing test selection, regression root cause, off-by-one diagnosis, CI-log verdicts, interval merging, semantic-version precedence, the two-step invoice workflow, cycle-tolerant graph traversal and three browser-checked UI tasks. Every description and source field states that the seed is synthetic and model-authored, and the library shows that note.
+
+The seeds validate the pipeline and give each class a smoke signal. They remain written by a model, so they are not an unbiased ranking instrument. An honest ranking still needs held-out tasks drawn from our own work, created without the candidates in the loop, with repetitions and the comparable cohorts described in section 12.
+
+### Verification
+
+- `just check` (design-system guards, contract freshness, formatting, lint, i18n including the benchmark feature, bundled agents, TypeScript for sources and tests) passed.
+- Benchmark Vitest suites (45 tests) plus locale parity, Stats projection and AppShell navigation passed; the full `just test` result is recorded in the final report.
+- Rust: `cargo fmt --check`, `cargo clippy --all-targets --features distillctl,app-test-driver -D warnings` and the 58 benchmark module tests passed, including two new seed tests (two families per class, no answer or reference solution inside any public prompt or fixture).
+- Live check: the isolated E2E build was rebuilt and driven over CDP; screenshots of every section, the editor, the run, status, evidence, selector and campaign dialogs are under `E:/Unity/distill_code/benchmark-review-qa/`.
+

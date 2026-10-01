@@ -175,7 +175,7 @@ pub fn benchmark_get_capabilities(app: AppHandle) -> Vec<Capability> {
 pub async fn benchmark_get_leaderboard(
     app: AppHandle,
     query: ResultQuery,
-) -> Result<Vec<LeaderboardRow>> {
+) -> Result<LeaderboardReport> {
     let s = service(&app).await?;
     Ok(benchmarks::analysis::leaderboard(
         &s.query_data().await?,

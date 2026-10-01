@@ -368,6 +368,23 @@ pub struct LeaderboardRow {
     pub reason: String,
     pub attempt_ids: Vec<String>,
 }
+/// The newest frozen suite the leaderboard compares: every row shares these conditions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderboardCohort {
+    pub run_ids: Vec<String>,
+    pub version_ids: Vec<String>,
+    pub repetitions: u32,
+    pub timeout_seconds: u32,
+    pub max_executions: u32,
+    pub newest_run_at: i64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderboardReport {
+    pub cohort: Option<LeaderboardCohort>,
+    pub rows: Vec<LeaderboardRow>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Baseline {

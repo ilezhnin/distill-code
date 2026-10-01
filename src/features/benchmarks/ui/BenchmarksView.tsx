@@ -1,26 +1,36 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import {
+  IconDots,
+  IconFileExport,
+  IconFileImport,
+  IconHistory,
+  IconPlayerPlay,
+  IconPlus,
+  IconRepeat,
+  IconRoute,
+} from "@tabler/icons-react";
 import type { AppNavigationUpdateOptions } from "@/app/types/appNavigation";
-import { Button } from "@/shared/ui/button";
-import { PageHeader, PageShell } from "@/shared/ui/page-shell";
-import { Tabs, TabsList, TabsTrigger } from "@/shared/ui/tabs";
+import { useLocaleFormatting } from "@/shared/i18n";
 import { ConfirmDialog } from "@/shared/ui/confirm-dialog";
 import {
-  Dialog,
-  DialogBody,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/shared/ui/dialog";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/shared/ui/dropdown-menu";
+import { PageShell } from "@/shared/ui/page-shell";
+import { PageToolbarButton } from "@/shared/ui/page-toolbar-button";
+import { Tabs, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import { benchmarkApi, benchmarkErrorMessage } from "../api/benchmarks";
 import {
   benchmarkKeys,
   useBenchmarkDefinitions,
   useBenchmarkRuns,
 } from "../hooks/useBenchmarks";
+import { shortId } from "../lib/benchmarkLabels";
 import {
   BENCHMARK_SECTIONS,
   type BenchmarkLocation,
@@ -29,23 +39,27 @@ import {
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
 import { BenchDevelopmentView } from "./BenchDevelopmentView";
 import { BenchmarkEvidenceView } from "./BenchmarkEvidenceView";
-import { BenchmarkRoutingDialog } from "./BenchmarkRoutingDialog";
-import {
-  BenchmarkField,
-  BenchmarkNotice,
-  BenchmarkSelect,
-} from "./BenchmarkFields";
 import {
   BenchmarkBaselineDialog,
   BenchmarkExportDialog,
   BenchmarkImportDialog,
   BenchmarkSchedulesDialog,
 } from "./BenchmarkManagementDialogs";
+import { BenchmarkAlert, type Option } from "./BenchmarkPrimitives";
+import { BenchmarkRoutingDialog } from "./BenchmarkRoutingDialog";
 import { BenchmarkRunDialog } from "./BenchmarkRunDialog";
 import { BenchmarkRunDrawer } from "./BenchmarkRunDrawer";
+import { BenchmarkRunsDialog } from "./BenchmarkRunsDialog";
 import { LeaderboardView } from "./LeaderboardView";
 import { NerfBenchView } from "./NerfBenchView";
 import { UsageBenchView } from "./UsageBenchView";
+
+const PAGE_SIZE = 50;
+
+export interface ResultScope {
+  versionId: string;
+  runId: string;
+}
 
 interface Props {
   location: BenchmarkLocation;
@@ -56,42 +70,47 @@ interface Props {
   onSelectSession: (id: string) => void;
 }
 
+type DialogKind =
+  | "runs"
+  | "import"
+  | "export"
+  | "baseline"
+  | "schedules"
+  | "routing";
+
 export function BenchmarksView({
   location,
   onNavigate,
   onSelectSession,
 }: Props) {
   const { t } = useTranslation("benchmarks");
+  const { formatDate } = useLocaleFormatting();
   const definitions = useBenchmarkDefinitions();
   const runs = useBenchmarkRuns();
-  const [dialog, setDialog] = useState<
-    | "history"
-    | "import"
-    | "export"
-    | "baseline"
-    | "schedules"
-    | "routing"
-    | null
-  >(null);
+  const [dialog, setDialog] = useState<DialogKind | null>(null);
   const [runSelection, setRunSelection] = useState<{
     versions: string[];
     preview: boolean;
   } | null>(null);
-  const [versionId, setVersionId] = useState("all");
-  const [runFilter, setRunFilter] = useState("all");
+  const [scope, setScope] = useState<ResultScope>({
+    versionId: "all",
+    runId: "all",
+  });
   const [baselineId, setBaselineId] = useState("none");
   const [page, setPage] = useState(0);
   const pendingNavigation = useBenchmarkViewStore((state) => state.pending);
-  const versions =
-    definitions.data?.flatMap((definition) => definition.versions) ?? [];
+  const versions = useMemo(
+    () => definitions.data?.flatMap((definition) => definition.versions) ?? [],
+    [definitions.data],
+  );
   const query = useMemo(
     () => ({
-      runId: runFilter === "all" ? null : runFilter,
-      versionIds: versionId === "all" ? null : [versionId],
-      offset: page * 50,
-      limit: 50,
+      runId: scope.runId === "all" ? null : scope.runId,
+      versionIds: scope.versionId === "all" ? null : [scope.versionId],
+      offset: page * PAGE_SIZE,
+      limit: PAGE_SIZE,
     }),
-    [runFilter, versionId, page],
+    [scope, page],
   );
   const leaderboard = useQuery({
     queryKey: [...benchmarkKeys, "leaderboard", query],
@@ -118,6 +137,8 @@ export function BenchmarksView({
     queryFn: () => benchmarkApi.getUsageComparisons(baselineId),
     enabled: location.section === "usage" && baselineId !== "none",
   });
+  const guarded = (action: () => void) =>
+    useBenchmarkViewStore.getState().guardNavigation(action);
   const openEvidence = (attemptId: string) =>
     onNavigate({ ...location, attemptId });
   const openRun = (id: string) => {
@@ -125,245 +146,209 @@ export function BenchmarksView({
     setRunSelection(null);
     onNavigate({ ...location, runId: id, attemptId: undefined });
   };
-  const openRunDialog = (version?: string, preview = false) => {
-    setRunSelection({ versions: version ? [version] : [], preview });
+  const openRunDialog = (version?: string, preview = false) =>
+    guarded(() =>
+      setRunSelection({ versions: version ? [version] : [], preview }),
+    );
+  const changeScope = (next: ResultScope) => {
+    setScope(next);
+    setPage(0);
   };
-  const guarded = (action: () => void) =>
-    useBenchmarkViewStore.getState().guardNavigation(action);
   const errors = [
-    definitions.error,
-    runs.error,
-    leaderboard.error,
-    usage.error,
-    baselines.error,
-    comparisons.error,
-    usageComparisons.error,
-  ].filter(Boolean);
-  const rowsLength =
-    location.section === "leaderboard"
-      ? leaderboard.data?.length
-      : location.section === "usage"
-        ? usage.data?.length
-        : comparisons.data?.length;
+    ...new Set(
+      [
+        definitions.error,
+        runs.error,
+        leaderboard.error,
+        usage.error,
+        baselines.error,
+        comparisons.error,
+        usageComparisons.error,
+      ]
+        .filter(Boolean)
+        .map(benchmarkErrorMessage),
+    ),
+  ];
+  const suiteOptions: Option[] = [
+    { value: "all", label: t("filters.allSuites") },
+    ...versions.map((version) => ({
+      value: version.id,
+      label: t("editor.versionLabel", {
+        name: version.manifest.name,
+        hash: shortId(version.contentHash),
+      }),
+    })),
+  ];
+  const runOptions: Option[] = [
+    { value: "all", label: t("filters.allRuns") },
+    ...(runs.data ?? [])
+      .filter((run) => !run.request.preview)
+      .map((run) => ({
+        value: run.id,
+        label: t("filters.runLabel", {
+          date: formatDate(run.createdAt, {
+            dateStyle: "short",
+            timeStyle: "short",
+          }),
+          id: shortId(run.id),
+        }),
+      })),
+  ];
+  const baselineOptions: Option[] = [
+    { value: "none", label: t("filters.noBaseline") },
+    ...(baselines.data ?? []).map((baseline) => ({
+      value: baseline.id,
+      label: baseline.name,
+    })),
+  ];
+  const menuItems: { kind: DialogKind; label: string; icon: ReactNode }[] = [
+    { kind: "runs", label: t("toolbar.runs"), icon: <IconHistory /> },
+    { kind: "import", label: t("toolbar.import"), icon: <IconFileImport /> },
+    { kind: "export", label: t("toolbar.export"), icon: <IconFileExport /> },
+    { kind: "schedules", label: t("toolbar.schedules"), icon: <IconRepeat /> },
+    { kind: "routing", label: t("toolbar.routing"), icon: <IconRoute /> },
+  ];
   return (
     <PageShell contentWidth="full">
-      <PageHeader
-        title={t("title")}
-        description={t("description")}
-        actions={
-          <>
-            <Button
+      <section
+        aria-label={t("title")}
+        className="mx-auto flex w-full max-w-[70rem] flex-col gap-6"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Tabs
+            value={location.section}
+            onValueChange={(section) => {
+              setPage(0);
+              onNavigate({ section: section as BenchmarkSection });
+            }}
+          >
+            <TabsList variant="weight">
+              {BENCHMARK_SECTIONS.map((section) => (
+                <TabsTrigger key={section} value={section} variant="weight">
+                  {t(`sections.${section}`)}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+          <div className="flex items-center gap-2">
+            <PageToolbarButton
               type="button"
-              variant="outline"
-              onClick={() => guarded(() => setDialog("history"))}
+              size="icon-xs"
+              aria-label={t("actions.run")}
+              tooltip={t("actions.run")}
+              onClick={() => openRunDialog()}
             >
-              {t("runs.title")}
-            </Button>
-            <Button
+              <IconPlayerPlay className="!size-4" />
+            </PageToolbarButton>
+            <PageToolbarButton
               type="button"
-              variant="outline"
+              size="icon-xs"
+              aria-label={t("actions.new")}
+              tooltip={t("actions.new")}
               onClick={() =>
                 onNavigate({ section: "development", benchmarkId: "new" })
               }
             >
-              {t("actions.new")}
-            </Button>
-            <Button
-              type="button"
-              variant="primary"
-              onClick={() => guarded(() => openRunDialog())}
-            >
-              {t("actions.run")}
-            </Button>
-          </>
-        }
-      />
-      <Tabs
-        value={location.section}
-        onValueChange={(section) => {
-          setPage(0);
-          onNavigate({ section: section as BenchmarkSection });
-        }}
-      >
-        <TabsList variant="weight">
-          {BENCHMARK_SECTIONS.map((section) => (
-            <TabsTrigger key={section} value={section}>
-              {t(`sections.${section}`)}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
-      <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          onClick={() => guarded(() => setDialog("import"))}
-        >
-          {t("actions.import")}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          onClick={() => guarded(() => setDialog("export"))}
-        >
-          {t("actions.export")}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          onClick={() => guarded(() => setDialog("schedules"))}
-        >
-          {t("schedules.title")}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          onClick={() => guarded(() => setDialog("routing"))}
-        >
-          {t("routing.title")}
-        </Button>
-      </div>
-      {[...new Set(errors.map(benchmarkErrorMessage))].map((error) => (
-        <BenchmarkNotice key={error} error>
-          {benchmarkErrorMessage(error)}
-        </BenchmarkNotice>
-      ))}
-      {definitions.isPending && (
-        <BenchmarkNotice>{t("loading")}</BenchmarkNotice>
-      )}
-      {location.section !== "development" && (
-        <div className="grid gap-3 md:grid-cols-2">
-          <BenchmarkField label={t("fields.version")}>
-            {(id) => (
-              <BenchmarkSelect
-                id={id}
-                value={versionId}
-                onChange={(value) => {
-                  setVersionId(value);
-                  setPage(0);
-                }}
-                options={[
-                  { value: "all", label: t("allVersions") },
-                  ...versions.map((version) => ({
-                    value: version.id,
-                    label: `${version.manifest.name} / ${version.contentHash.slice(0, 8)}`,
-                  })),
-                ]}
-              />
-            )}
-          </BenchmarkField>
-          <BenchmarkField label={t("fields.run")}>
-            {(id) => (
-              <BenchmarkSelect
-                id={id}
-                value={runFilter}
-                onChange={(value) => {
-                  setRunFilter(value);
-                  setPage(0);
-                }}
-                options={[
-                  { value: "all", label: t("allRuns") },
-                  ...(runs.data ?? [])
-                    .filter((run) => !run.request.preview)
-                    .map((run) => ({
-                      value: run.id,
-                      label: `${new Date(run.createdAt).toLocaleString()} / ${run.id.slice(0, 8)}`,
-                    })),
-                ]}
-              />
-            )}
-          </BenchmarkField>
-        </div>
-      )}
-      {(location.section === "nerf" || location.section === "usage") && (
-        <div className="flex items-end gap-3">
-          <div className="min-w-0 flex-1">
-            <BenchmarkField label={t("baseline.title")}>
-              {(id) => (
-                <BenchmarkSelect
-                  id={id}
-                  value={baselineId}
-                  onChange={setBaselineId}
-                  options={[
-                    { value: "none", label: t("baseline.choose") },
-                    ...(baselines.data ?? []).map((baseline) => ({
-                      value: baseline.id,
-                      label: baseline.name,
-                    })),
-                  ]}
-                />
-              )}
-            </BenchmarkField>
+              <IconPlus className="!size-4" />
+            </PageToolbarButton>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <PageToolbarButton
+                  type="button"
+                  size="icon-xs"
+                  aria-label={t("actions.more")}
+                >
+                  <IconDots className="!size-4" />
+                </PageToolbarButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {menuItems.map((item, index) => (
+                  <Fragment key={item.kind}>
+                    {index === 1 || index === 3 ? (
+                      <DropdownMenuSeparator />
+                    ) : null}
+                    <DropdownMenuItem
+                      onSelect={() => guarded(() => setDialog(item.kind))}
+                    >
+                      {item.icon}
+                      {item.label}
+                    </DropdownMenuItem>
+                  </Fragment>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setDialog("baseline")}
-          >
-            {t("baseline.create")}
-          </Button>
         </div>
-      )}
-      {location.section === "development" && definitions.data && (
-        <BenchDevelopmentView
-          definitions={definitions.data}
-          benchmarkId={location.benchmarkId}
-          onEdit={(id) =>
-            onNavigate(
-              { section: "development", benchmarkId: id },
-              { replace: location.benchmarkId === "new" && id !== "new" },
-            )
-          }
-          onRun={openRunDialog}
-          onEvidence={openEvidence}
-        />
-      )}
-      {location.section === "leaderboard" && (
-        <LeaderboardView
-          rows={leaderboard.data ?? []}
-          onEvidence={openEvidence}
-        />
-      )}
-      {location.section === "nerf" && (
-        <NerfBenchView
-          comparisons={comparisons.data ?? []}
-          onEvidence={openEvidence}
-        />
-      )}
-      {location.section === "usage" && (
-        <UsageBenchView
-          comparisons={usageComparisons.data ?? []}
-          samples={usage.data ?? []}
-          onEvidence={openEvidence}
-        />
-      )}
-      {location.section !== "development" && (
-        <div className="flex gap-2">
-          <Button
-            type="button"
-            size="xs"
-            variant="ghost"
-            disabled={page === 0}
-            onClick={() => setPage((current) => current - 1)}
-          >
-            {t("actions.previous")}
-          </Button>
-          <Button
-            type="button"
-            size="xs"
-            variant="ghost"
-            disabled={(rowsLength ?? 0) < 50}
-            onClick={() => setPage((current) => current + 1)}
-          >
-            {t("actions.next")}
-          </Button>
-        </div>
-      )}
-      {runSelection && (
+        {errors.map((error) => (
+          <BenchmarkAlert key={error}>{error}</BenchmarkAlert>
+        ))}
+        {location.section === "development" ? (
+          <BenchDevelopmentView
+            definitions={definitions.data ?? []}
+            loading={definitions.isPending}
+            benchmarkId={location.benchmarkId}
+            onEdit={(id) =>
+              onNavigate(
+                { section: "development", benchmarkId: id },
+                { replace: location.benchmarkId === "new" && id !== "new" },
+              )
+            }
+            onRun={openRunDialog}
+            onEvidence={openEvidence}
+          />
+        ) : null}
+        {location.section === "leaderboard" ? (
+          <LeaderboardView
+            report={leaderboard.data}
+            loading={leaderboard.isPending}
+            scope={scope}
+            onScopeChange={changeScope}
+            suiteOptions={suiteOptions}
+            runOptions={runOptions}
+            page={page}
+            pageSize={PAGE_SIZE}
+            onPageChange={setPage}
+            onEvidence={openEvidence}
+          />
+        ) : null}
+        {location.section === "nerf" ? (
+          <NerfBenchView
+            comparisons={comparisons.data ?? []}
+            loading={baselineId !== "none" && comparisons.isPending}
+            scope={scope}
+            onScopeChange={changeScope}
+            suiteOptions={suiteOptions}
+            runOptions={runOptions}
+            baselineId={baselineId}
+            baselineOptions={baselineOptions}
+            onBaselineChange={setBaselineId}
+            onCreateBaseline={() => setDialog("baseline")}
+            page={page}
+            pageSize={PAGE_SIZE}
+            onPageChange={setPage}
+            onEvidence={openEvidence}
+          />
+        ) : null}
+        {location.section === "usage" ? (
+          <UsageBenchView
+            comparisons={usageComparisons.data ?? []}
+            samples={usage.data ?? []}
+            loading={usage.isPending}
+            scope={scope}
+            onScopeChange={changeScope}
+            runOptions={runOptions}
+            baselineId={baselineId}
+            baselineOptions={baselineOptions}
+            onBaselineChange={setBaselineId}
+            onCreateBaseline={() => setDialog("baseline")}
+            page={page}
+            pageSize={PAGE_SIZE}
+            onPageChange={setPage}
+            onEvidence={openEvidence}
+          />
+        ) : null}
+      </section>
+      {runSelection ? (
         <BenchmarkRunDialog
           definitions={definitions.data ?? []}
           selectedVersionIds={runSelection.versions}
@@ -371,23 +356,30 @@ export function BenchmarksView({
           onClose={() => setRunSelection(null)}
           onStarted={openRun}
         />
-      )}
-      {location.runId && !location.attemptId && (
+      ) : null}
+      {location.runId && !location.attemptId ? (
         <BenchmarkRunDrawer
           runId={location.runId}
           onClose={() => onNavigate({ ...location, runId: undefined })}
           onEvidence={openEvidence}
         />
-      )}
-      {location.attemptId && (
+      ) : null}
+      {location.attemptId ? (
         <BenchmarkEvidenceView
           attemptId={location.attemptId}
           onSelectAttempt={openEvidence}
           onClose={() => onNavigate({ ...location, attemptId: undefined })}
           onSelectSession={onSelectSession}
         />
-      )}
-      {dialog === "import" && (
+      ) : null}
+      {dialog === "runs" ? (
+        <BenchmarkRunsDialog
+          runs={runs.data ?? []}
+          onClose={() => setDialog(null)}
+          onOpenRun={openRun}
+        />
+      ) : null}
+      {dialog === "import" ? (
         <BenchmarkImportDialog
           onClose={() => setDialog(null)}
           onImported={(id) => {
@@ -395,11 +387,11 @@ export function BenchmarksView({
             onNavigate({ section: "development", benchmarkId: id });
           }}
         />
-      )}
-      {dialog === "export" && (
+      ) : null}
+      {dialog === "export" ? (
         <BenchmarkExportDialog onClose={() => setDialog(null)} />
-      )}
-      {dialog === "baseline" && (
+      ) : null}
+      {dialog === "baseline" ? (
         <BenchmarkBaselineDialog
           runs={runs.data ?? []}
           onClose={() => setDialog(null)}
@@ -408,14 +400,14 @@ export function BenchmarksView({
             setDialog(null);
           }}
         />
-      )}
-      {dialog === "schedules" && (
+      ) : null}
+      {dialog === "schedules" ? (
         <BenchmarkSchedulesDialog
           runs={runs.data ?? []}
           onClose={() => setDialog(null)}
         />
-      )}
-      {dialog === "routing" && (
+      ) : null}
+      {dialog === "routing" ? (
         <BenchmarkRoutingDialog
           versions={versions}
           runs={runs.data ?? []}
@@ -425,60 +417,7 @@ export function BenchmarksView({
             onNavigate({ ...location, attemptId: id });
           }}
         />
-      )}
-      {dialog === "history" && (
-        <Dialog
-          open
-          onOpenChange={(open) => {
-            if (!open) setDialog(null);
-          }}
-        >
-          <DialogContent size="xl">
-            <DialogHeader>
-              <DialogTitle>{t("runs.title")}</DialogTitle>
-              <DialogDescription>{t("runs.description")}</DialogDescription>
-            </DialogHeader>
-            <DialogBody className="space-y-2">
-              {runs.data?.length === 0 && (
-                <BenchmarkNotice>{t("runs.empty")}</BenchmarkNotice>
-              )}
-              {runs.data?.map((run) => (
-                <div
-                  key={run.id}
-                  className="flex items-center justify-between gap-3 border-b border-border py-3"
-                >
-                  <div>
-                    <p className="text-sm">
-                      {new Date(run.createdAt).toLocaleString()}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {t(`states.${run.state}`, { defaultValue: run.state })}
-                      {run.request.preview ? ` / ${t("runs.preview")}` : ""}
-                    </p>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    onClick={() => openRun(run.id)}
-                  >
-                    {t("actions.inspect")}
-                  </Button>
-                </div>
-              ))}
-            </DialogBody>
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setDialog(null)}
-              >
-                {t("actions.close")}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
+      ) : null}
       <ConfirmDialog
         open={Boolean(pendingNavigation)}
         onOpenChange={(open) => {

@@ -121,10 +121,10 @@ describe("blind benchmark review", () => {
       expect(screen.getByRole("dialog")).not.toHaveTextContent(hidden);
     }
     expect(
-      screen.queryByText("Selection, usage, and provenance"),
+      screen.queryByText("Selection, usage and provenance"),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Open read-only transcript" }),
+      screen.queryByRole("button", { name: "Open transcript" }),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Evaluate again" }),
@@ -142,7 +142,7 @@ describe("blind benchmark review", () => {
       screen.queryByRole("button", { name: "Record rubric review" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByText("Selection, usage, and provenance"),
+      screen.queryByText("Selection, usage and provenance"),
     ).not.toBeInTheDocument();
   });
 
@@ -168,7 +168,7 @@ describe("blind benchmark review", () => {
     showEvidence();
     await screen.findByText("Score contrast and legible labels from 0 to 1.");
     fireEvent.change(
-      screen.getByRole("spinbutton", { name: "Visual / rubric score (0–1)" }),
+      screen.getByRole("spinbutton", { name: "Review score (0–1)" }),
       { target: { value: "0.4" } },
     );
     await userEvent.type(
@@ -185,7 +185,7 @@ describe("blind benchmark review", () => {
         "Labels are clear but contrast is weak.",
       ),
     );
-    await screen.findByRole("button", { name: "Open read-only transcript" });
+    await screen.findByRole("button", { name: "Open transcript" });
     expect(
       screen.getByRole("heading", { name: /model-1/ }),
     ).toBeInTheDocument();

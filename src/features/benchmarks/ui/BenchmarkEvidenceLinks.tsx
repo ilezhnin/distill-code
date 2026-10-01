@@ -4,6 +4,7 @@ import { Button } from "@/shared/ui/button";
 
 const PAGE_SIZE = 5;
 
+/** Numbered links into sealed attempts, five at a time. */
 export function BenchmarkEvidenceLinks({
   attemptIds,
   onEvidence,
@@ -18,50 +19,51 @@ export function BenchmarkEvidenceLinks({
     Math.floor(Math.max(0, attemptIds.indexOf(pageStartId ?? "")) / PAGE_SIZE) *
     PAGE_SIZE;
   const end = Math.min(start + PAGE_SIZE, attemptIds.length);
+  const paged = attemptIds.length > PAGE_SIZE;
   return (
-    <div className="w-64 space-y-1 whitespace-normal">
-      <div className="flex flex-wrap gap-1">
-        {attemptIds.slice(start, end).map((id, index) => (
-          <Button
-            key={id}
-            type="button"
-            variant="ghost"
-            size="xs"
-            onClick={() => onEvidence(id)}
-          >
-            {start + index + 1}
-          </Button>
-        ))}
-      </div>
-      <p className="text-xs text-muted-foreground">
-        {t("evidence.range", {
-          start: attemptIds.length ? start + 1 : 0,
-          end,
-          total: attemptIds.length,
-        })}
-      </p>
-      {attemptIds.length > PAGE_SIZE && (
-        <div className="flex gap-1">
+    <div className="flex flex-wrap items-center gap-1 whitespace-normal">
+      {attemptIds.slice(start, end).map((id, index) => (
+        <Button
+          key={id}
+          type="button"
+          variant="ghost"
+          size="xs"
+          onClick={() => onEvidence(id)}
+        >
+          {start + index + 1}
+        </Button>
+      ))}
+      {paged ? (
+        <>
+          <span className="px-1 text-xs text-muted-foreground">
+            {t("evidence.range", {
+              start: attemptIds.length ? start + 1 : 0,
+              end,
+              total: attemptIds.length,
+            })}
+          </span>
           <Button
             type="button"
             variant="ghost"
             size="xs"
             disabled={start === 0}
+            aria-label={t("actions.previous")}
             onClick={() => setPageStartId(attemptIds[start - PAGE_SIZE])}
           >
-            {t("actions.previous")}
+            ‹
           </Button>
           <Button
             type="button"
             variant="ghost"
             size="xs"
             disabled={end === attemptIds.length}
+            aria-label={t("actions.next")}
             onClick={() => setPageStartId(attemptIds[end])}
           >
-            {t("actions.next")}
+            ›
           </Button>
-        </div>
-      )}
+        </>
+      ) : null}
     </div>
   );
 }

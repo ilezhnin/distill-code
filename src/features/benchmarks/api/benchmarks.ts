@@ -19,7 +19,7 @@ import type {
   Baseline,
   Comparison,
   ExportResult,
-  LeaderboardRow,
+  LeaderboardReport,
   ResultQuery,
   Schedule,
   UsageSample,
@@ -83,7 +83,7 @@ export const benchmarkApi = {
     invoke<BenchmarkEvent[]>("benchmark_events_since", { afterSequence }),
   getCapabilities: () => invoke<Capability[]>("benchmark_get_capabilities"),
   getLeaderboard: (query: ResultQuery) =>
-    invoke<LeaderboardRow[]>("benchmark_get_leaderboard", { query }),
+    invoke<LeaderboardReport>("benchmark_get_leaderboard", { query }),
   getRoutingEvidence: (query: RoutingEvidenceQuery) =>
     invoke<RoutingEvidence>("benchmark_get_routing_evidence", { query }),
   getUsageSeries: (query: ResultQuery) =>

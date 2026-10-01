@@ -1,10 +1,23 @@
-import { Label } from "@/shared/ui/label";
 import { useState } from "react";
-import { useTranslation } from "react-i18next";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
+import {
+  IconArchive,
+  IconArchiveOff,
+  IconChevronLeft,
+  IconCopy,
+  IconDots,
+  IconPlayerPlay,
+} from "@tabler/icons-react";
+import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
-import { Checkbox } from "@/shared/ui/checkbox";
-import { Input } from "@/shared/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/shared/ui/dropdown-menu";
+import { SearchBar } from "@/shared/ui/SearchBar";
 import {
   Table,
   TableBody,
@@ -19,25 +32,35 @@ import { benchmarkKeys } from "../hooks/useBenchmarks";
 import { useBenchmarkViewStore } from "../stores/benchmarkViewStore";
 import type { BenchmarkDefinition } from "../types";
 import { BenchmarkEditor } from "./BenchmarkEditor";
-import { BenchmarkNotice } from "./BenchmarkFields";
+import {
+  BenchmarkAlert,
+  BenchmarkEmpty,
+  BenchmarkPager,
+  FilterMenu,
+  StateBadge,
+} from "./BenchmarkPrimitives";
+
+const RESULTS_PAGE = 50;
 
 export function BenchDevelopmentView({
   definitions,
+  loading,
   benchmarkId,
   onEdit,
   onRun,
   onEvidence,
 }: {
   definitions: BenchmarkDefinition[];
+  loading: boolean;
   benchmarkId?: string;
   onEdit: (id?: string) => void;
   onRun: (versionId: string, preview?: boolean) => void;
   onEvidence: (id: string) => void;
 }) {
-  const { t } = useTranslation("benchmarks");
+  const { t } = useTranslation(["benchmarks", "settings"]);
   const client = useQueryClient();
   const [query, setQuery] = useState("");
-  const [showArchived, setShowArchived] = useState(false);
+  const [scope, setScope] = useState<"active" | "all">("active");
   const [tab, setTab] = useState("editor");
   const [error, setError] = useState<string | null>(null);
   const definition = definitions.find((entry) => entry.id === benchmarkId);
@@ -51,32 +74,46 @@ export function BenchDevelopmentView({
     }
   };
   if (benchmarkId) {
-    if (benchmarkId !== "new" && !definition)
-      return <BenchmarkNotice>{t("editor.missing")}</BenchmarkNotice>;
+    if (benchmarkId !== "new" && !definition) {
+      return loading ? (
+        <BenchmarkEmpty title={t("benchmarks:loading")} compact />
+      ) : (
+        <BenchmarkEmpty title={t("benchmarks:editor.missing")} />
+      );
+    }
     return (
       <div className="space-y-5">
-        <div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <Button
             type="button"
             variant="ghost"
-            size="xs"
-            onClick={() => onEdit()}
+            flush
+            leftIcon={<IconChevronLeft />}
+            onClick={() =>
+              useBenchmarkViewStore.getState().guardNavigation(() => onEdit())
+            }
           >
-            {t("actions.backToLibrary")}
+            {t("benchmarks:actions.back")}
           </Button>
+          <Tabs
+            value={tab}
+            onValueChange={(value) =>
+              useBenchmarkViewStore
+                .getState()
+                .guardNavigation(() => setTab(value))
+            }
+          >
+            <TabsList variant="weight">
+              <TabsTrigger value="editor" variant="weight">
+                {t("benchmarks:editor.tab")}
+              </TabsTrigger>
+              <TabsTrigger value="results" variant="weight">
+                {t("benchmarks:editor.results")}
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
         </div>
-        <Tabs
-          value={tab}
-          onValueChange={(value) =>
-            useBenchmarkViewStore
-              .getState()
-              .guardNavigation(() => setTab(value))
-          }
-        >
-          <TabsList>
-            <TabsTrigger value="editor">{t("editor.title")}</TabsTrigger>
-            <TabsTrigger value="results">{t("editor.results")}</TabsTrigger>
-          </TabsList>
+        <Tabs value={tab}>
           <TabsContent value="editor">
             <BenchmarkEditor
               key={benchmarkId}
@@ -98,116 +135,187 @@ export function BenchDevelopmentView({
       </div>
     );
   }
+  const needle = query.trim().toLowerCase();
   const visible = definitions.filter(
     (entry) =>
-      (showArchived || !entry.archived) &&
-      [entry.draft.name, entry.draft.taskFamily, entry.draft.category]
+      (scope === "all" || !entry.archived) &&
+      [entry.draft.name, entry.draft.taskFamily, entry.draft.workClassId]
         .join(" ")
         .toLowerCase()
-        .includes(query.toLowerCase()),
+        .includes(needle),
   );
   return (
     <section className="space-y-4">
-      {error && <BenchmarkNotice error>{error}</BenchmarkNotice>}
-      <div className="flex flex-wrap items-center gap-4">
-        <Input
-          aria-label={t("library.search")}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <SearchBar
+          size="pill-card"
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          className="max-w-sm"
+          onChange={setQuery}
+          placeholder={t("benchmarks:filters.search")}
+          aria-label={t("benchmarks:filters.search")}
+          className="w-64"
         />
-        <Label className="flex items-center gap-2 text-sm">
-          <Checkbox
-            checked={showArchived}
-            onCheckedChange={(checked) => setShowArchived(checked === true)}
-          />
-          {t("library.archived")}
-        </Label>
+        <FilterMenu
+          label={t("benchmarks:filters.scope")}
+          value={scope}
+          onChange={(value) => setScope(value === "all" ? "all" : "active")}
+          options={[
+            { value: "active", label: t("benchmarks:filters.active") },
+            { value: "all", label: t("benchmarks:filters.includeArchived") },
+          ]}
+        />
       </div>
-      {visible.length === 0 ? (
-        <BenchmarkNotice>{t("library.empty")}</BenchmarkNotice>
+      {error ? <BenchmarkAlert>{error}</BenchmarkAlert> : null}
+      {loading ? (
+        <BenchmarkEmpty title={t("benchmarks:loading")} compact />
+      ) : visible.length === 0 ? (
+        <BenchmarkEmpty
+          title={
+            definitions.length === 0
+              ? t("benchmarks:library.empty")
+              : t("benchmarks:library.noMatch")
+          }
+          description={
+            definitions.length === 0
+              ? t("benchmarks:library.emptyHint")
+              : undefined
+          }
+          action={
+            definitions.length === 0 ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onEdit("new")}
+              >
+                {t("benchmarks:actions.new")}
+              </Button>
+            ) : undefined
+          }
+        />
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              {["name", "category", "split", "versions"].map((key) => (
-                <TableHead key={key}>{t(`fields.${key}`)}</TableHead>
-              ))}
-              <TableHead>{t("actions.title")}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {visible.map((entry) => (
-              <TableRow key={entry.id}>
-                <TableCell>
-                  <Button
-                    type="button"
-                    variant="link"
-                    size="xs"
-                    onClick={() => onEdit(entry.id)}
-                  >
-                    {entry.draft.name}
-                  </Button>
-                  <p className="text-xs text-muted-foreground">
-                    {entry.draft.taskFamily}
-                  </p>
-                </TableCell>
-                <TableCell>{entry.draft.category}</TableCell>
-                <TableCell>
-                  {t(`split.${entry.draft.split}`, {
-                    defaultValue: entry.draft.split,
-                  })}
-                </TableCell>
-                <TableCell>{entry.versions.length}</TableCell>
-                <TableCell>
-                  <div className="flex gap-1">
-                    <Button
-                      type="button"
-                      size="xs"
-                      variant="ghost"
-                      disabled={!entry.versions.length || entry.archived}
-                      onClick={() => onRun(entry.versions[0].id)}
-                    >
-                      {t("actions.run")}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="xs"
-                      variant="ghost"
-                      onClick={() =>
-                        void operate(async () => {
-                          const copy = await benchmarkApi.duplicateDefinition(
-                            entry.id,
-                          );
-                          onEdit(copy.id);
-                        })
-                      }
-                    >
-                      {t("actions.duplicate")}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="xs"
-                      variant="ghost"
-                      onClick={() =>
-                        void operate(async () => {
-                          await benchmarkApi.archiveDefinition(
-                            entry.id,
-                            !entry.archived,
-                          );
-                        })
-                      }
-                    >
-                      {t(
-                        entry.archived ? "actions.restore" : "actions.archive",
-                      )}
-                    </Button>
-                  </div>
-                </TableCell>
+        <>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t("benchmarks:fields.name")}</TableHead>
+                <TableHead>{t("benchmarks:fields.workClass")}</TableHead>
+                <TableHead>{t("benchmarks:fields.difficulty")}</TableHead>
+                <TableHead>{t("benchmarks:fields.split")}</TableHead>
+                <TableHead>{t("benchmarks:fields.versions")}</TableHead>
+                <TableHead className="w-10" />
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {visible.map((entry) => (
+                <TableRow key={entry.id}>
+                  <TableCell className="whitespace-normal">
+                    <Button
+                      type="button"
+                      variant="link"
+                      size="xs"
+                      className="h-auto px-0 text-sm"
+                      onClick={() => onEdit(entry.id)}
+                    >
+                      {entry.draft.name || t("benchmarks:editor.new")}
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      {entry.draft.taskFamily}
+                      {entry.archived
+                        ? ` · ${t("benchmarks:library.archivedTag")}`
+                        : ""}
+                    </p>
+                  </TableCell>
+                  <TableCell>
+                    {t(`settings:routing.classes.${entry.draft.workClassId}`, {
+                      defaultValue: entry.draft.workClassId,
+                    })}
+                  </TableCell>
+                  <TableCell>
+                    {t(
+                      `benchmarks:difficulty.${entry.draft.facets.difficulty ?? "unspecified"}`,
+                      { defaultValue: entry.draft.facets.difficulty ?? "" },
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="outline">
+                      {t(`benchmarks:split.${entry.draft.split}`, {
+                        defaultValue: entry.draft.split,
+                      })}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>{entry.versions.length}</TableCell>
+                  <TableCell>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-xs"
+                          aria-label={t("benchmarks:actions.rowMenu", {
+                            name: entry.draft.name,
+                          })}
+                        >
+                          <IconDots />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent variant="raised" align="end">
+                        <DropdownMenuItem
+                          disabled={!entry.versions.length || entry.archived}
+                          onSelect={() => onRun(entry.versions[0].id)}
+                        >
+                          <IconPlayerPlay className="size-3.5" />
+                          {t("benchmarks:actions.runLatest")}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() =>
+                            void operate(async () => {
+                              const copy =
+                                await benchmarkApi.duplicateDefinition(
+                                  entry.id,
+                                );
+                              onEdit(copy.id);
+                            })
+                          }
+                        >
+                          <IconCopy className="size-3.5" />
+                          {t("benchmarks:actions.duplicate")}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() =>
+                            void operate(async () => {
+                              await benchmarkApi.archiveDefinition(
+                                entry.id,
+                                !entry.archived,
+                              );
+                            })
+                          }
+                        >
+                          {entry.archived ? (
+                            <IconArchiveOff className="size-3.5" />
+                          ) : (
+                            <IconArchive className="size-3.5" />
+                          )}
+                          {t(
+                            entry.archived
+                              ? "benchmarks:actions.restore"
+                              : "benchmarks:actions.archive",
+                          )}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          {visible.some((entry) =>
+            entry.draft.taskFamily.startsWith("seed-"),
+          ) ? (
+            <p className="text-xs text-muted-foreground">
+              {t("benchmarks:library.seedHint")}
+            </p>
+          ) : null}
+        </>
       )}
     </section>
   );
@@ -222,7 +330,11 @@ function BenchmarkResults({
 }) {
   const { t } = useTranslation("benchmarks");
   const [page, setPage] = useState(0);
-  const query = { versionIds, offset: page * 50, limit: 50 };
+  const query = {
+    versionIds,
+    offset: page * RESULTS_PAGE,
+    limit: RESULTS_PAGE,
+  };
   const attempts = useQuery({
     queryKey: [...benchmarkKeys, "attempts", query],
     queryFn: () => benchmarkApi.listAttempts(query),
@@ -230,57 +342,44 @@ function BenchmarkResults({
   });
   const rows = attempts.data ?? [];
   return (
-    <div className="space-y-2">
-      {attempts.isFetching && <BenchmarkNotice>{t("loading")}</BenchmarkNotice>}
-      {attempts.error && (
-        <BenchmarkNotice error>
-          {benchmarkErrorMessage(attempts.error)}
-        </BenchmarkNotice>
+    <div className="space-y-3">
+      {attempts.error ? (
+        <BenchmarkAlert>{benchmarkErrorMessage(attempts.error)}</BenchmarkAlert>
+      ) : null}
+      {attempts.isFetching ? (
+        <BenchmarkEmpty title={t("loading")} compact />
+      ) : rows.length === 0 ? (
+        <BenchmarkEmpty title={t("results.empty")} compact />
+      ) : (
+        <ul className="divide-y divide-border">
+          {rows.map((attempt) => (
+            <li
+              key={attempt.id}
+              className="flex items-center justify-between gap-3 py-2 text-sm"
+            >
+              <span className="min-w-0 truncate">{attempt.modelId}</span>
+              <div className="flex items-center gap-2">
+                <StateBadge state={attempt.outcome ?? attempt.phase} />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => onEvidence(attempt.id)}
+                >
+                  {t("actions.inspect")}
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
       )}
-      {!attempts.isFetching && rows.length === 0 && (
-        <BenchmarkNotice>{t("leaderboard.empty")}</BenchmarkNotice>
-      )}
-      {rows.map((attempt) => (
-        <div
-          key={attempt.id}
-          className="flex justify-between gap-3 border-b border-border py-3"
-        >
-          <span>{attempt.modelId}</span>
-          <span>
-            {t(`states.${attempt.outcome ?? attempt.phase}`, {
-              defaultValue: attempt.outcome ?? attempt.phase,
-            })}
-          </span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="xs"
-            onClick={() => onEvidence(attempt.id)}
-          >
-            {t("actions.inspect")}
-          </Button>
-        </div>
-      ))}
-      <div className="flex gap-2">
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          disabled={page === 0 || attempts.isFetching}
-          onClick={() => setPage((current) => current - 1)}
-        >
-          {t("actions.previous")}
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="xs"
-          disabled={rows.length < 50 || attempts.isFetching}
-          onClick={() => setPage((current) => current + 1)}
-        >
-          {t("actions.next")}
-        </Button>
-      </div>
+      <BenchmarkPager
+        page={page}
+        pageSize={RESULTS_PAGE}
+        count={rows.length}
+        busy={attempts.isFetching}
+        onPageChange={setPage}
+      />
     </div>
   );
 }
