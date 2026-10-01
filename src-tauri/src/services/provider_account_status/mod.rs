@@ -3,6 +3,7 @@
 
 pub mod benchmark_sampling;
 mod claude;
+mod claude_resets;
 mod codex;
 mod types;
 
@@ -678,7 +679,7 @@ pub async fn consume_reset(
         return Err("Invalid reset credit identifier".into());
     }
     let account = provider_accounts::account(app, account_id)?;
-    if account.provider_id != "codex-acp"
+    if !matches!(account.provider_id.as_str(), "codex-acp" | "claude-acp")
         || account.auth_method == provider_accounts::AuthMethod::ApiKey
         || !account.enabled
     {
@@ -688,7 +689,10 @@ pub async fn consume_reset(
     let _guard = state.reset_lock.lock().await;
     let slot = state.refresh_slot(account_id).await;
     let refresh_guard = slot.gate.lock().await;
-    let result = codex::consume(app, &account, idempotency_key, credit_id).await?;
+    let result = match account.provider_id.as_str() {
+        "claude-acp" => claude::consume(app, &account, idempotency_key, credit_id).await?,
+        _ => codex::consume(app, &account, idempotency_key, credit_id).await?,
+    };
     drop(refresh_guard);
     invalidate(app, account_id).await;
     // Keep the redemption outcome authoritative even if the subsequent status

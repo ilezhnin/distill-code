@@ -377,6 +377,7 @@ pub fn run() {
             commands::provider_accounts::set_default_provider_account,
             commands::provider_accounts::set_provider_account_routing,
             commands::provider_accounts::authenticate_provider_account,
+            commands::provider_accounts::cancel_provider_account_authentication,
             commands::provider_accounts::sign_out_provider_account,
             commands::provider_account_status::get_provider_account_statuses,
             commands::provider_account_status::consume_provider_account_reset,

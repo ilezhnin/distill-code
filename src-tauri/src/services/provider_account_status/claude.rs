@@ -9,8 +9,8 @@ use tauri::AppHandle;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, ChildStdout, Command};
 
-use super::{now_ms, timestamp, types::*};
-use crate::services::{managed_acp_tools, process, provider_accounts};
+use super::{claude_resets, now_ms, timestamp, types::*};
+use crate::services::{distill_root, managed_acp_tools, process, provider_accounts};
 use provider_accounts::ProviderAccount;
 
 struct Client {
@@ -59,7 +59,11 @@ impl Client {
     }
 }
 
-async fn read_usage(app: &AppHandle, account: &ProviderAccount) -> Result<(Value, Value), String> {
+async fn read_usage(
+    app: &AppHandle,
+    account: &ProviderAccount,
+    refresh_oauth: bool,
+) -> Result<(Value, Value, Option<String>), String> {
     let env: HashMap<String, String> = provider_accounts::scoped_env(
         app,
         account,
@@ -118,10 +122,19 @@ async fn read_usage(app: &AppHandle, account: &ProviderAccount) -> Result<(Value
     };
     let operation = async {
         let init = client.request(json!({"subtype":"initialize","hooks":{},"sdkMcpServers":[],"skills":[],"promptSuggestions":false})).await?;
-        let usage = client
-            .request(json!({"subtype":"get_usage","skip_behaviors":true}))
-            .await?;
-        Ok((init["account"].clone(), usage))
+        let usage = if refresh_oauth {
+            client
+                .request(json!({"subtype":"get_usage","skip_behaviors":true}))
+                .await?
+        } else {
+            Value::Null
+        };
+        let version = client
+            .request(json!({"subtype":"get_binary_version"}))
+            .await
+            .ok()
+            .and_then(|value| value["version"].as_str().map(str::to_owned));
+        Ok((init["account"].clone(), usage, version))
     };
     let result = tokio::time::timeout(Duration::from_secs(25), operation)
         .await
@@ -139,21 +152,16 @@ pub(super) async fn fetch(
     app: &AppHandle,
     account: &ProviderAccount,
 ) -> Result<ProviderAccountStatus, String> {
-    let (identity, usage) = read_usage(app, account).await?;
+    let (identity, _, version) = read_usage(app, account, false).await?;
     let mut status = ProviderAccountStatus::empty(&account.id, &account.provider_id, now_ms());
     status.account_label = identity["email"].as_str().map(str::to_owned);
-    status.subscription = usage["subscription_type"]
-        .as_str()
-        .or_else(|| identity["subscriptionType"].as_str())
-        .map(str::to_owned);
-    if is_api_billed(&identity, &usage) {
+    status.subscription = account_plan(app, account, &identity);
+    if is_api_billed(&identity, &Value::Null) {
         status.subscription = Some("API".into());
         status.state = AccountState::Ready;
-    } else if usage["rate_limits"].is_object() {
-        map_usage(&mut status, &usage["rate_limits"]);
-    } else if status.subscription.is_some() || usage["rate_limits_available"] == true {
-        return Err("Claude subscription usage is temporarily unavailable".into());
-    } else {
+        return Ok(status);
+    }
+    if status.subscription.is_none() {
         status.state = if crate::commands::provider_accounts::probe_account_auth(app, account)
             .await
             .unwrap_or(false)
@@ -162,8 +170,50 @@ pub(super) async fn fetch(
         } else {
             AccountState::NeedsAuth
         };
+        return Ok(status);
     }
+    // One usage request returns both quota and reset grants. Calling get_usage
+    // first doubles traffic to the same endpoint and can exhaust its read limit.
+    let mut usage = claude_resets::fetch_usage(app, account, version.as_deref()).await;
+    if matches!(usage, Err(claude_resets::RequestError::Unauthorized)) {
+        // OAuth refresh remains owned by the native CLI. Retry a rejected read
+        // once after that refresh; a 429 never triggers another request here.
+        let (_, _, version) = read_usage(app, account, true).await?;
+        usage = claude_resets::fetch_usage(app, account, version.as_deref()).await;
+    }
+    let usage = match usage {
+        Ok(usage) => usage,
+        Err(claude_resets::RequestError::Unauthorized) => {
+            status.state = AccountState::NeedsAuth;
+            return Ok(status);
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    if !usage["limits"].is_array()
+        && !usage["five_hour"].is_object()
+        && !usage["seven_day"].is_object()
+    {
+        return Err("Claude subscription usage is temporarily unavailable".into());
+    }
+    map_usage(&mut status, &usage);
+    status.reset_tokens = claude_resets::map_inventory(&usage, now_ms())?;
     Ok(status)
+}
+
+pub(super) async fn consume(
+    app: &AppHandle,
+    account: &ProviderAccount,
+    idempotency_key: &str,
+    credit_id: Option<&str>,
+) -> Result<ResetResult, String> {
+    let credit_id = credit_id.ok_or("Select a Claude reset before confirming")?;
+    // Let the native CLI refresh OAuth before reading its account-scoped token.
+    let (identity, usage, version) = read_usage(app, account, true).await?;
+    if is_api_billed(&identity, &usage) || usage["subscription_type"].is_null() {
+        return Err("Claude limit resets require a subscription account".into());
+    }
+    let _guard = provider_accounts::begin_account_change(&account.id)?;
+    claude_resets::consume(app, account, version.as_deref(), idempotency_key, credit_id).await
 }
 
 fn is_api_billed(identity: &Value, usage: &Value) -> bool {
@@ -176,12 +226,61 @@ fn is_api_billed(identity: &Value, usage: &Value) -> bool {
                 .is_some_and(|source| !source.is_empty() && source != "none"))
 }
 
+fn account_plan(app: &AppHandle, account: &ProviderAccount, identity: &Value) -> Option<String> {
+    // The native profile records upgrades and Max tiers that the credential's
+    // subscriptionType (and initialize response) can omit or leave outdated.
+    let profile = (|| {
+        let root = distill_root::app_root(app).ok()?;
+        let path = provider_accounts::account_home(app, account)
+            .ok()?
+            .join(".claude.json");
+        distill_root::reject_document_links(&root, &path).ok()?;
+        serde_json::from_slice::<Value>(&std::fs::read(path).ok()?).ok()
+    })()
+    .unwrap_or(Value::Null);
+    plan_label(identity, &profile["oauthAccount"])
+}
+
+fn plan_label(identity: &Value, profile: &Value) -> Option<String> {
+    // Never borrow profile metadata from a different signed-in identity.
+    let profile = match (identity["email"].as_str(), profile["emailAddress"].as_str()) {
+        (Some(email), Some(saved)) if email.eq_ignore_ascii_case(saved) => profile,
+        _ => &Value::Null,
+    };
+    let family = |plan: &str| match plan {
+        "claude_max" | "max" | "Claude Max" => Some("Claude Max"),
+        "claude_pro" | "pro" | "Claude Pro" => Some("Claude Pro"),
+        "claude_team" | "team" | "Claude Team" => Some("Claude Team"),
+        "claude_enterprise" | "enterprise" | "Claude Enterprise" => Some("Claude Enterprise"),
+        "claude_free" | "free" | "Claude Free" => Some("Claude Free"),
+        _ => None,
+    };
+    let name = profile["organizationType"]
+        .as_str()
+        .and_then(family)
+        .or_else(|| identity["subscriptionType"].as_str().and_then(family))?;
+    let tier = profile["userRateLimitTier"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .or_else(|| profile["organizationRateLimitTier"].as_str());
+    Some(match (name, tier) {
+        ("Claude Max", Some("default_claude_max_5x")) => "Claude Max (5x)".into(),
+        ("Claude Max", Some("default_claude_max_20x")) => "Claude Max (20x)".into(),
+        _ => name.into(),
+    })
+}
+
 pub(super) fn map_usage(status: &mut ProviderAccountStatus, usage: &Value) {
+    status.credits = credit_balances(usage);
     // Newer CLIs expose authoritative server rows. Prefer them to the legacy
     // compatibility windows so each allowance appears only once.
     if usage["limits"].as_array().is_none() {
         if let Some(windows) = usage.as_object() {
             for (id, window) in windows {
+                // Monetary grants are balances, not subscription quota windows.
+                if id != "five_hour" && !id.starts_with("seven_day") {
+                    continue;
+                }
                 let Some(used) = window
                     .get("utilization")
                     .or_else(|| window.get("used_percentage"))
@@ -190,10 +289,6 @@ pub(super) fn map_usage(status: &mut ProviderAccountStatus, usage: &Value) {
                 else {
                     continue;
                 };
-                // Extra usage is a spend allowance, not a blocking subscription window.
-                if id == "extra_usage" {
-                    continue;
-                }
                 let model_id = id
                     .strip_prefix("seven_day_")
                     .filter(|name| *name != "all" && *name != "oauth_apps")
@@ -272,11 +367,6 @@ pub(super) fn map_usage(status: &mut ProviderAccountStatus, usage: &Value) {
             }
         }
     }
-    if let Some(plan) = usage.get("plan_type").and_then(Value::as_str) {
-        status.subscription = Some(plan.into());
-    }
-    // Claude's OAuth usage response does not have a documented reset-credit
-    // contract. Leave it unknown instead of presenting a fabricated zero.
     status.state = if status.limits.iter().any(|window| {
         window.model_id.is_none() && window.used_percent.is_some_and(|used| used >= 100.0)
     }) {
@@ -286,6 +376,50 @@ pub(super) fn map_usage(status: &mut ProviderAccountStatus, usage: &Value) {
     } else {
         AccountState::Ready
     };
+}
+
+fn credit_balances(usage: &Value) -> Option<Vec<CreditBalance>> {
+    let mut balances = Vec::new();
+    for (id, grant) in usage.as_object()? {
+        let number = |key: &str| grant[key].as_f64().filter(|n| n.is_finite() && *n >= 0.0);
+        let Some(balance) = number("remaining_dollars") else {
+            continue;
+        };
+        let label = grant["display_name"].as_str().unwrap_or(match id.as_str() {
+            "iguana_necktie" => "Cloud session credits",
+            _ => "Included credits",
+        });
+        balances.push(CreditBalance {
+            id: id.clone(),
+            label: label.into(),
+            balance: Some(balance.to_string()),
+            total: number("limit_dollars").map(|n| n.to_string()),
+            currency: Some("USD".into()),
+            expires_at: timestamp(&grant["resets_at"]),
+            unlimited: false,
+        });
+    }
+    let money = &usage["spend"]["balance"];
+    if let (Some(amount), Some(currency), Some(exponent)) = (
+        money["amount_minor"]
+            .as_f64()
+            .filter(|n| n.is_finite() && *n >= 0.0),
+        money["currency"]
+            .as_str()
+            .filter(|s| s.len() == 3 && s.bytes().all(|b| b.is_ascii_uppercase())),
+        money["exponent"].as_u64().filter(|e| *e <= 6),
+    ) {
+        balances.push(CreditBalance {
+            id: "usage_credits".into(),
+            label: "Usage credits".into(),
+            balance: Some((amount / 10_f64.powi(exponent as i32)).to_string()),
+            total: None,
+            currency: Some(currency.into()),
+            expires_at: None,
+            unlimited: false,
+        });
+    }
+    (!balances.is_empty()).then_some(balances)
 }
 
 fn window_minutes(kind: &str) -> Option<u32> {
@@ -300,6 +434,94 @@ fn window_minutes(kind: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credit_grants_are_balances_and_never_exhaust_subscription_quota() {
+        let mut status = ProviderAccountStatus::empty("one", "claude-acp", 0);
+        map_usage(
+            &mut status,
+            &json!({
+                "five_hour":{"utilization":20},
+                "iguana_necktie":{"utilization":100,"limit_dollars":250,"remaining_dollars":0,"resets_at":"2026-11-05T07:59:00Z"},
+                "project_grant":{"display_name":"Project setup credit","utilization":42,"limit_dollars":100,"remaining_dollars":58}
+            }),
+        );
+        assert_eq!(status.state, AccountState::Ready);
+        assert_eq!(status.limits.len(), 1);
+        let balances = status.credits.unwrap();
+        assert_eq!(balances.len(), 2);
+        assert_eq!(balances[0].label, "Cloud session credits");
+        assert_eq!(balances[0].balance.as_deref(), Some("0"));
+        assert_eq!(balances[0].total.as_deref(), Some("250"));
+        assert_eq!(balances[0].currency.as_deref(), Some("USD"));
+        assert!(balances[0].expires_at.is_some());
+        assert_eq!(balances[1].label, "Project setup credit");
+    }
+
+    #[test]
+    fn purchased_credits_respect_currency_exponent_and_unknown_values() {
+        for (currency, exponent, minor, expected) in [
+            ("USD", 2, 1234, "12.34"),
+            ("JPY", 0, 1234, "1234"),
+            ("KWD", 3, 1234, "1.234"),
+            ("USD", 2, 0, "0"),
+        ] {
+            let rows = credit_balances(&json!({"spend":{"balance":{"amount_minor":minor,"currency":currency,"exponent":exponent}}})).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].balance.as_deref(), Some(expected));
+            assert_eq!(rows[0].currency.as_deref(), Some(currency));
+        }
+        for value in [
+            Value::Null,
+            json!({"spend":{"balance":null}}),
+            json!({"spend":{"used":{"amount_minor":500,"currency":"USD","exponent":2}}}),
+            json!({"spend":{"balance":{"amount_minor":-1,"currency":"USD","exponent":2}}}),
+            json!({"spend":{"balance":{"amount_minor":100,"currency":"USD","exponent":99}}}),
+        ] {
+            assert!(credit_balances(&value).is_none());
+        }
+    }
+
+    #[test]
+    fn native_profile_upgrade_overrides_stale_subscription_type() {
+        let identity = json!({"email":"a@example.test","subscriptionType":"Claude Pro"});
+        for (tier, expected) in [
+            ("default_claude_max_5x", "Claude Max (5x)"),
+            ("default_claude_max_20x", "Claude Max (20x)"),
+        ] {
+            let profile = json!({"emailAddress":"a@example.test","organizationType":"claude_max","organizationRateLimitTier":tier});
+            assert_eq!(plan_label(&identity, &profile).as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn unknown_tiers_and_mismatched_profiles_do_not_invent_a_plan() {
+        let identity = json!({"email":"a@example.test","subscriptionType":"max"});
+        let profile = json!({"emailAddress":"other@example.test","organizationType":"claude_pro","organizationRateLimitTier":"default_claude_max_5x"});
+        assert_eq!(
+            plan_label(&identity, &profile).as_deref(),
+            Some("Claude Max")
+        );
+        let profile = json!({"emailAddress":"a@example.test","organizationType":"claude_max","organizationRateLimitTier":"future_tier"});
+        assert_eq!(
+            plan_label(&identity, &profile).as_deref(),
+            Some("Claude Max")
+        );
+        assert_eq!(plan_label(&Value::Null, &profile), None);
+    }
+
+    #[test]
+    fn individual_tier_wins_and_usage_does_not_downgrade_the_plan() {
+        let identity = json!({"email":"a@example.test","subscriptionType":"max"});
+        let profile = json!({"emailAddress":"a@example.test","organizationType":"claude_max","organizationRateLimitTier":"default_claude_max_20x","userRateLimitTier":"default_claude_max_5x"});
+        let mut status = ProviderAccountStatus::empty("one", "claude-acp", 0);
+        status.subscription = plan_label(&identity, &profile);
+        map_usage(
+            &mut status,
+            &json!({"plan_type":"Claude Max","five_hour":{"utilization":20}}),
+        );
+        assert_eq!(status.subscription.as_deref(), Some("Claude Max (5x)"));
+    }
 
     #[test]
     fn effective_api_source_overrides_stored_oauth_identity() {

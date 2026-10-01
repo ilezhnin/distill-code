@@ -326,6 +326,7 @@ fn billing_usage_result(
         coding_monthly: None,
         plan_type: tier.map(ToOwned::to_owned),
         account_label: Some(account),
+        credits: None,
         updated_at: now_ms(),
         error: None,
         status: ProviderRateLimitStatus::Ok,

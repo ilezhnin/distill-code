@@ -105,15 +105,64 @@ describe("provider account status", () => {
     ).toBe(false);
   });
 
-  it("offers an operator reset only from a fresh supported unexpired inventory", () => {
+  it("requires fresh supported unexpired inventory for an aggregate reset count", () => {
     const available = {
       ...status,
       resetTokens: { available: 1, supported: true, expiresAt: now + 1000 },
     };
     expect(canUseAccountReset(available, now)).toBe(true);
     expect(canUseAccountReset({ ...available, stale: true }, now)).toBe(false);
+    expect(canUseAccountReset({ ...available, state: "error" }, now)).toBe(
+      false,
+    );
     expect(canUseAccountReset(available, now + 1001)).toBe(false);
     expect(accountStatusIsStale(status, now + 120_001)).toBe(true);
+  });
+
+  it("checks individual reset expiry without letting an old grant hide a usable one", () => {
+    const credit = {
+      id: "old",
+      resetType: "full",
+      status: "available",
+      grantedAt: null,
+      expiresAt: now - 1,
+      title: "Full reset",
+      description: null,
+    };
+    const available: ProviderAccountStatus = {
+      ...status,
+      resetTokens: {
+        available: 1,
+        supported: true,
+        expiresAt: now - 1,
+        credits: [credit, { ...credit, id: "current", expiresAt: now + 1000 }],
+      },
+    };
+    expect(canUseAccountReset(available, now)).toBe(true);
+    expect(canUseAccountReset(available, now + 1000)).toBe(false);
+    expect(canUseAccountReset({ ...available, state: "needs_auth" }, now)).toBe(
+      false,
+    );
+    expect(canUseAccountReset({ ...available, stale: true }, now)).toBe(true);
+    expect(
+      canUseAccountReset({ ...available, state: "error", stale: true }, now),
+    ).toBe(true);
+    for (const state of ["needs_auth", "disabled", "unknown"] as const)
+      expect(canUseAccountReset({ ...available, state }, now)).toBe(false);
+    expect(
+      canUseAccountReset(
+        {
+          ...available,
+          resetTokens: {
+            available: 1,
+            supported: true,
+            expiresAt: now + 1000,
+            credits: [{ ...credit, id: "", expiresAt: now + 1000 }],
+          },
+        },
+        now,
+      ),
+    ).toBe(false);
   });
 
   it("does not describe an unknown or stale account as exhausted", () => {

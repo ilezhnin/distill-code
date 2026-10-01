@@ -73,6 +73,22 @@ describe("managed account readiness", () => {
     ).toBe("not_ready");
     expect(readiness.get("codex-acp")).toBe("ready");
   });
+  it("keeps a saved account connected when its quota refresh is rate limited", () => {
+    expect(
+      applyManagedAccountReadiness(
+        new Map([["codex-acp", "ready"]]),
+        [account],
+        {
+          managed: {
+            ...status,
+            state: "error",
+            stale: true,
+            error: "HTTP 429",
+          },
+        },
+      ).get("codex-acp"),
+    ).toBe("ready");
+  });
 });
 
 function check(overrides: Partial<DoctorCheck> = {}): DoctorCheck {

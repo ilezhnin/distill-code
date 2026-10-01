@@ -553,7 +553,7 @@
       "limited": "Límite alcanzado",
       "needs_auth": "Requiere iniciar sesión",
       "unknown": "Estado desconocido",
-      "error": "Error de conexión",
+      "error": "Uso no disponible",
       "disabled": "Desactivada"
     },
     "subscription": "Plan: {{value}}",
@@ -563,9 +563,16 @@
     "resetTokens": "Tokens de reinicio: {{value}}",
     "expiresAt": "Caduca {{date}}",
     "credits": "Créditos: {{value}}",
+    "creditBalance": "{{label}}: {{value}}",
+    "creditRemaining": "Quedan {{balance}} de {{total}}",
+    "creditLabels": {
+      "credits": "Créditos",
+      "usage_credits": "Créditos de uso",
+      "extra_usage": "Uso adicional",
+      "iguana_necktie": "Créditos de sesiones en la nube"
+    },
     "unlimited": "Sin límite",
-    "updatedAt": "Actualizado {{date}}",
-    "neverUpdated": "Sin comprobar",
+    "checkedAt": "Última comprobación {{date}}",
     "allLimited": "Las cuentas habilitadas incluidas en el cambio automático indican límites generales agotados. Primer reinicio utilizable según estos datos: {{date}} ({{hours}} h {{minutes}} min). Debes solicitar el uso de tokens.",
     "default": "Predeterminada",
     "methods": {
@@ -576,13 +583,27 @@
     "sessionCount": "Usada en {{count}} chats abiertos",
     "setDefault": "Usar por defecto",
     "signingIn": "Iniciando sesión…",
+    "cancelSignIn": "Cancelar inicio de sesión",
     "signIn": "Iniciar sesión",
     "signOut": "Cerrar sesión",
     "useReset": "Usar token de reinicio",
+    "useNamedReset": "Usar {{name}}",
+    "use": "Usar",
+    "resetTypes": {
+      "full": "Reinicio completo",
+      "five_hour": "Reinicio de 5 horas"
+    },
+    "resetStates": {
+      "available": "Disponible",
+      "used": "Usado",
+      "expired": "Caducado",
+      "paused": "En pausa",
+      "unavailable": "No disponible ahora"
+    },
     "browserPending": "Completa el inicio de sesión en el navegador. Las demás cuentas permanecen conectadas.",
     "cancel": "Cancelar",
     "resetTitle": "¿Usar un token de reinicio?",
-    "resetDescription": "Reiniciar ahora el límite de {{label}}. Se gastará un token y no se puede deshacer. El cambio automático nunca gasta tokens.",
+    "resetDescription": "Se gastará un token de reinicio y no se puede deshacer.",
     "confirmReset": "Usar un token",
     "resetOutcomes": {
       "reset": "Límite reiniciado.",

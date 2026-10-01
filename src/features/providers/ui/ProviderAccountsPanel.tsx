@@ -41,31 +41,45 @@ import {
   earliestAccountReset,
   resetCountdown,
 } from "../lib/providerAccountStatus";
-import { ProviderAccountDetails } from "./ProviderAccountDetails";
+import {
+  ProviderAccountDetails,
+  ProviderUsageDetails,
+} from "./ProviderAccountDetails";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
-
-function providerLabel(id: string) {
-  return id === "codex-acp"
-    ? "Codex"
-    : id === "claude-acp"
-      ? "Claude Code"
-      : id;
-}
+import { providerDisplayName as providerLabel } from "../providerCatalog";
+import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
 
 export function ProviderAccountsPanel({
   renderProviderHeader,
   onRefresh,
+  providerIds = MANAGED_ACCOUNT_PROVIDERS,
+  connectedProviders = [],
 }: {
   renderProviderHeader?: (providerId: string) => ReactNode;
   onRefresh?: () => void;
+  providerIds?: readonly string[];
+  connectedProviders?: readonly string[];
 }) {
   const { t } = useTranslation("settings");
+  const { formatDate } = useLocaleFormatting();
   const accounts = useProviderAccountsStore((state) => state.accounts);
+  const statuses = useProviderAccountsStore((state) => state.statuses);
   const loaded = useProviderAccountsStore((state) => state.loaded);
   const refreshing = useProviderAccountsStore((state) => state.refreshing);
+  const usageRefreshing = useProviderRateLimitsStore(
+    (state) => state.isRefreshing,
+  );
+  const fetchTimes = useProviderRateLimitsStore(
+    (state) => state.fetchedAtByProvider,
+  );
   const error = useProviderAccountsStore((state) => state.error);
   const [addingFor, setAddingFor] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now);
+  const lastCheckedAt = Math.max(
+    0,
+    ...accounts.map((account) => statuses[account.id]?.lastAttemptAt ?? 0),
+    ...providerIds.map((id) => fetchTimes[id] ?? 0),
+  );
   useEffect(() => {
     startProviderAccountsMonitor();
     const timer = window.setInterval(() => setNow(Date.now()), 15_000);
@@ -73,28 +87,45 @@ export function ProviderAccountsPanel({
   }, []);
   const providers = [
     ...new Set([
-      ...MANAGED_ACCOUNT_PROVIDERS,
+      ...providerIds,
       ...accounts.map((account) => account.providerId),
     ]),
   ];
 
   return (
     <section aria-label={t("accounts.title")} className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-base font-medium">{t("accounts.title")}</h3>
-        <Button
-          type="button"
-          variant="outline"
-          size="xs"
-          leftIcon={<RefreshCw />}
-          disabled={refreshing}
-          onClick={() => {
-            void useProviderAccountsStore.getState().refresh(true);
-            onRefresh?.();
-          }}
-        >
-          {refreshing ? t("accounts.refreshing") : t("accounts.refresh")}
-        </Button>
+        <div className="flex flex-wrap items-center gap-3">
+          {lastCheckedAt > 0 ? (
+            <time
+              className="text-xs text-muted-foreground"
+              dateTime={new Date(lastCheckedAt).toISOString()}
+            >
+              {t("accounts.checkedAt", {
+                date: formatDate(lastCheckedAt, {
+                  dateStyle: "short",
+                  timeStyle: "short",
+                }),
+              })}
+            </time>
+          ) : null}
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            leftIcon={<RefreshCw />}
+            disabled={refreshing || usageRefreshing}
+            onClick={() => {
+              void useProviderRateLimitsStore.getState().refresh();
+              onRefresh?.();
+            }}
+          >
+            {refreshing || usageRefreshing
+              ? t("accounts.refreshing")
+              : t("accounts.refresh")}
+          </Button>
+        </div>
       </div>
       {error ? (
         <p role="alert" className="text-xs text-destructive">
@@ -111,6 +142,7 @@ export function ProviderAccountsPanel({
             now={now}
             onAdd={() => setAddingFor(providerId)}
             header={renderProviderHeader?.(providerId)}
+            connected={connectedProviders.includes(providerId)}
           />
         ))
       )}
@@ -129,11 +161,13 @@ function ProviderAccountGroup({
   now,
   onAdd,
   header,
+  connected,
 }: {
   providerId: string;
   now: number;
   onAdd: () => void;
   header?: ReactNode;
+  connected: boolean;
 }) {
   const { t } = useTranslation("settings");
   const { formatDate } = useLocaleFormatting();
@@ -144,6 +178,12 @@ function ProviderAccountGroup({
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const managed = MANAGED_ACCOUNT_PROVIDERS.some((id) => id === providerId);
+  const usage = useProviderRateLimitsStore((state) =>
+    state.snapshot?.providers.find(
+      (provider) => provider.provider === providerId,
+    ),
+  );
   const providerAccounts = accounts.filter(
     (account) => account.providerId === providerId,
   );
@@ -172,34 +212,34 @@ function ProviderAccountGroup({
           <h4 className="text-sm font-medium">{providerLabel(providerId)}</h4>
         </div>
       )}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-4">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="flex items-center gap-2">
-                <Switch
-                  id={`automatic-${providerId}`}
-                  aria-label={t("accounts.autoSwitchLabel", {
-                    provider: providerLabel(providerId),
-                  })}
-                  checked={automaticSwitching}
-                  disabled={saving}
-                  onCheckedChange={(checked) => void setRouting(checked)}
-                />
-                <Label
-                  htmlFor={`automatic-${providerId}`}
-                  className="text-xs text-muted-foreground"
-                >
-                  {t("accounts.autoSwitch")}
-                </Label>
-              </div>
-            </TooltipTrigger>
-            <TooltipContent>
-              {t("accounts.autoSwitchDescription")}
-            </TooltipContent>
-          </Tooltip>
-        </div>
-        {MANAGED_ACCOUNT_PROVIDERS.some((id) => id === providerId) ? (
+      {managed ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-4">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id={`automatic-${providerId}`}
+                    aria-label={t("accounts.autoSwitchLabel", {
+                      provider: providerLabel(providerId),
+                    })}
+                    checked={automaticSwitching}
+                    disabled={saving}
+                    onCheckedChange={(checked) => void setRouting(checked)}
+                  />
+                  <Label
+                    htmlFor={`automatic-${providerId}`}
+                    className="text-xs text-muted-foreground"
+                  >
+                    {t("accounts.autoSwitch")}
+                  </Label>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>
+                {t("accounts.autoSwitchDescription")}
+              </TooltipContent>
+            </Tooltip>
+          </div>
           <Button
             type="button"
             variant="outline"
@@ -209,8 +249,8 @@ function ProviderAccountGroup({
           >
             {t("accounts.add")}
           </Button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
       {resetAt ? (
         <p role="status" className="text-xs text-muted-foreground">
           {t("accounts.allLimited", {
@@ -227,16 +267,42 @@ function ProviderAccountGroup({
           {error}
         </p>
       ) : null}
-      <div className="divide-y divide-border border-t border-border">
-        {!providerAccounts.length ? (
-          <p className="py-4 text-xs text-muted-foreground">
-            {t("accounts.empty")}
-          </p>
-        ) : null}
-        {providerAccounts.map((account) => (
-          <AccountCard key={account.id} account={account} now={now} />
-        ))}
-      </div>
+      {managed ? (
+        <div className="divide-y divide-border border-t border-border">
+          {!providerAccounts.length ? (
+            <p className="py-4 text-xs text-muted-foreground">
+              {t("accounts.empty")}
+            </p>
+          ) : null}
+          {providerAccounts.map((account) => (
+            <AccountCard key={account.id} account={account} now={now} />
+          ))}
+        </div>
+      ) : connected || usage?.configured ? (
+        <article
+          className="space-y-3 border-t border-border pt-4"
+          aria-label={usage?.accountLabel ?? providerLabel(providerId)}
+        >
+          {usage?.accountLabel ? (
+            <h4 className="text-sm font-medium">{usage.accountLabel}</h4>
+          ) : null}
+          <ProviderUsageDetails
+            now={now}
+            usage={
+              usage ?? {
+                provider: providerId,
+                configured: true,
+                status: "ok",
+                error: null,
+                session: null,
+                weekly: null,
+                monthly: null,
+                updatedAt: 0,
+              }
+            }
+          />
+        </article>
+      ) : null}
     </section>
   );
 }
@@ -249,6 +315,7 @@ function AccountCard({
   now: number;
 }) {
   const { t } = useTranslation("settings");
+  const { formatDate } = useLocaleFormatting();
   const status = useProviderAccountsStore(
     (state) => state.statuses[account.id],
   );
@@ -265,7 +332,11 @@ function AccountCard({
       ).length,
   );
   const [connecting, setConnecting] = useState(false);
-  const [resetRequest, setResetRequest] = useState<string | null>(null);
+  const [resetRequest, setResetRequest] = useState<{
+    key: string;
+    creditId?: string;
+    expiresAt?: number | null;
+  } | null>(null);
   const [resetOutcome, setResetOutcome] = useState<AccountResetOutcome | null>(
     null,
   );
@@ -287,10 +358,18 @@ function AccountCard({
     status?.state === "ready" || status?.state === "limited";
   const needsSignIn =
     status?.state === "needs_auth" ||
-    (!hasAuthenticatedStatus && auth?.status === "needs_auth");
-  const canReset = !needsSignIn && canUseAccountReset(status, now);
+    (!hasAuthenticatedStatus &&
+      (auth?.status === "needs_auth" || auth?.status === "error"));
+  const canReset =
+    !authenticating &&
+    !needsSignIn &&
+    account.enabled &&
+    canUseAccountReset(status, now);
+  const showDefaultReset = canReset && !status?.resetTokens?.credits?.length;
   const showRefresh =
-    status?.error || status?.stale || status?.state === "error";
+    !authenticating &&
+    !needsSignIn &&
+    (status?.error || status?.stale || status?.state === "error");
   const displayName = status?.accountLabel || account.label;
   return (
     <article className="space-y-3 py-4" aria-label={displayName}>
@@ -320,7 +399,7 @@ function AccountCard({
           ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {!isDefault && !needsSignIn ? (
+          {!isDefault && !needsSignIn && !authenticating ? (
             <Button
               type="button"
               variant="outline"
@@ -337,7 +416,23 @@ function AccountCard({
               {t("accounts.setDefault")}
             </Button>
           ) : null}
-          {needsSignIn || !status || authenticating ? (
+          {authenticating ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              disabled={busy}
+              onClick={() =>
+                void run(() =>
+                  useProviderAccountsStore
+                    .getState()
+                    .cancelAuthentication(account.id),
+                )
+              }
+            >
+              {t("accounts.cancelSignIn")}
+            </Button>
+          ) : needsSignIn || !status ? (
             <Button
               type="button"
               variant="outline"
@@ -351,7 +446,7 @@ function AccountCard({
                     .authenticate(account.id);
               }}
             >
-              {authenticating ? t("accounts.signingIn") : t("accounts.signIn")}
+              {t("accounts.signIn")}
             </Button>
           ) : (
             <Button
@@ -370,10 +465,24 @@ function AccountCard({
           )}
         </div>
       </div>
-      {!needsSignIn ? (
-        <ProviderAccountDetails account={account} status={status} now={now} />
+      {!needsSignIn && !authenticating ? (
+        <ProviderAccountDetails
+          account={account}
+          status={status}
+          now={now}
+          resetDisabled={busy || authenticating || !account.enabled}
+          onUseReset={(credit) => {
+            setError(null);
+            setResetOutcome(null);
+            setResetRequest({
+              key: crypto.randomUUID(),
+              creditId: credit.id,
+              expiresAt: credit.expiresAt,
+            });
+          }}
+        />
       ) : null}
-      {showRefresh || canReset ? (
+      {showRefresh || showDefaultReset ? (
         <div className="flex flex-wrap items-center gap-2">
           {showRefresh ? (
             <Button
@@ -390,7 +499,7 @@ function AccountCard({
               {t("accounts.refresh")}
             </Button>
           ) : null}
-          {canReset ? (
+          {showDefaultReset ? (
             <Button
               type="button"
               variant="outline"
@@ -398,7 +507,8 @@ function AccountCard({
               disabled={busy}
               onClick={() => {
                 setError(null);
-                setResetRequest(crypto.randomUUID());
+                setResetOutcome(null);
+                setResetRequest({ key: crypto.randomUUID() });
               }}
             >
               {t("accounts.useReset")}
@@ -442,9 +552,20 @@ function AccountCard({
         title={t("accounts.resetTitle")}
         description={
           <span className="block space-y-2">
-            <span className="block">
-              {t("accounts.resetDescription", { label: account.label })}
+            <span className="block font-medium">
+              {providerLabel(account.providerId)} · {displayName}
             </span>
+            <span className="block">{t("accounts.resetDescription")}</span>
+            {resetRequest?.expiresAt ? (
+              <span className="block">
+                {t("accounts.expiresAt", {
+                  date: formatDate(resetRequest.expiresAt, {
+                    dateStyle: "long",
+                    timeStyle: "short",
+                  }),
+                })}
+              </span>
+            ) : null}
             {error ? (
               <span role="alert" className="block text-destructive">
                 {error}
@@ -455,13 +576,15 @@ function AccountCard({
         cancelLabel={t("accounts.cancel")}
         confirmLabel={t("accounts.confirmReset")}
         destructive={false}
+        showCloseButton={false}
         isLoading={busy}
         onConfirm={() =>
           run(async () => {
             if (!resetRequest) return;
             const result = await consumeProviderAccountReset(
               account.id,
-              resetRequest,
+              resetRequest.key,
+              resetRequest.creditId,
             );
             setResetOutcome(result.outcome);
             setResetRequest(null);

@@ -1,7 +1,9 @@
 //! Kimi's own local API owns token refresh. Distill reads only configuration
 //! to decide whether subscription quotas apply, never the OAuth credential.
 
-use super::types::{AgentPlatformId, ProviderRateLimitStatus, ProviderRateLimits, RateLimitWindow};
+use super::types::{
+    AgentPlatformId, CreditBalance, ProviderRateLimitStatus, ProviderRateLimits, RateLimitWindow,
+};
 use super::windows::{
     parse_reset_timestamp, usage_window, MONTHLY_WINDOW_MINUTES, SESSION_WINDOW_MINUTES,
     WEEKLY_WINDOW_MINUTES,
@@ -61,6 +63,36 @@ fn map_usage(data: &Value) -> ProviderRateLimits {
     let usages = data.get("quota").and_then(|quota| quota.get("usages"));
     let mut output = result(AgentPlatformId::Kimi, ProviderRateLimitStatus::Ok, None);
     output.configured = true;
+    let profile_text = |key: &str| {
+        data["userInfo"][key]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    output.account_label = profile_text("email")
+        .or_else(|| profile_text("nickname"))
+        .or_else(|| profile_text("username"))
+        .map(str::to_owned);
+    output.plan_type = profile_text("userLevelName").map(str::to_owned);
+    let extra = &data["quota"]["extraUsage"];
+    let cents = |key: &str| extra[key].as_f64().filter(|n| n.is_finite() && *n >= 0.0);
+    if let (Some(balance), Some(currency)) = (
+        cents("balanceCents"),
+        extra["currency"]
+            .as_str()
+            .filter(|s| s.len() == 3 && s.bytes().all(|b| b.is_ascii_uppercase())),
+    ) {
+        // The native CLI normalizes the booster wallet into cents.
+        output.credits = Some(vec![CreditBalance {
+            id: "extra_usage".into(),
+            label: "Extra usage".into(),
+            balance: Some((balance / 100.0).to_string()),
+            total: cents("totalCents").map(|n| (n / 100.0).to_string()),
+            currency: Some(currency.into()),
+            expires_at: None,
+            unlimited: false,
+        }]);
+    }
     output.session = quota_window(
         usages.and_then(|u| u.get("limit5h")),
         SESSION_WINDOW_MINUTES,
@@ -169,6 +201,37 @@ mod tests {
         assert!(unknown.session.is_none());
         assert_eq!(unknown.status, ProviderRateLimitStatus::Unavailable);
         assert!(unknown.configured);
+    }
+
+    #[test]
+    fn maps_native_profile_and_booster_wallet_without_guessing_missing_balances() {
+        let usage = map_usage(&json!({"kind":"ok", "userInfo": {
+            "email":"kimi@example.test", "nickname":"Personal", "userLevelName":"Kimi Moderato"
+        }, "quota": {"usages":{"limit7d":{"usedRatio":0.23}}, "extraUsage": {
+            "balanceCents":750, "totalCents":2000, "currency":"USD"
+        }}}));
+        assert_eq!(usage.account_label.as_deref(), Some("kimi@example.test"));
+        assert_eq!(usage.plan_type.as_deref(), Some("Kimi Moderato"));
+        let credits = usage.credits.unwrap();
+        assert_eq!(credits[0].balance.as_deref(), Some("7.5"));
+        assert_eq!(credits[0].total.as_deref(), Some("20"));
+        assert_eq!(credits[0].currency.as_deref(), Some("USD"));
+        for extra in [
+            json!(null),
+            json!({"balanceCents":-1,"currency":"USD"}),
+            json!({"currency":"USD"}),
+        ] {
+            let usage = map_usage(&json!({"kind":"ok", "quota":{"extraUsage":extra}}));
+            assert!(usage.credits.is_none());
+            assert!(usage.plan_type.is_none());
+            assert!(usage.account_label.is_none());
+        }
+        let exhausted = map_usage(
+            &json!({"kind":"ok", "quota": {"usages":{"limit7d":{"usedRatio":0.23}},
+            "extraUsage":{"balanceCents":0,"totalCents":2000,"currency":"USD"}}}),
+        );
+        assert_eq!(exhausted.credits.unwrap()[0].balance.as_deref(), Some("0"));
+        assert_eq!(exhausted.status, ProviderRateLimitStatus::Ok);
     }
 
     #[test]

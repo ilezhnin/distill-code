@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Check, ChevronDown, RefreshCw, Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useLocaleFormatting } from "@/shared/i18n";
 import { Button } from "@/shared/ui/button";
 import { ComposerActionButton } from "@/shared/ui/composer-action-button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
@@ -44,6 +45,7 @@ export function ProviderAccountPicker({
   onOpenChange,
 }: ProviderAccountPickerProps) {
   const { t } = useTranslation("settings");
+  const { formatDate } = useLocaleFormatting();
   const accounts = useProviderAccountsStore((state) => state.accounts);
   const defaults = useProviderAccountsStore((state) => state.defaults);
   const statuses = useProviderAccountsStore((state) => state.statuses);
@@ -71,6 +73,12 @@ export function ProviderAccountPicker({
   const [now, setNow] = useState(Date.now);
   const providerAccounts = accounts.filter(
     (account) => account.providerId === providerId,
+  );
+  const lastCheckedAt = Math.max(
+    0,
+    ...providerAccounts.map(
+      (account) => statuses[account.id]?.lastAttemptAt ?? 0,
+    ),
   );
   const selectedId = sessionId ? session?.accountId : defaults[providerId];
   const selected = providerAccounts.find(
@@ -151,22 +159,37 @@ export function ProviderAccountPicker({
           align="start"
           className="w-96 max-w-[calc(100vw-2rem)] p-3"
         >
-          <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-sm font-medium">
               {t("accounts.chooseAccount")}
             </h3>
-            <Button
-              type="button"
-              variant="ghost"
-              size="xs"
-              leftIcon={<RefreshCw />}
-              disabled={refreshing}
-              onClick={() =>
-                void useProviderAccountsStore.getState().refresh(true)
-              }
-            >
-              {t("accounts.refresh")}
-            </Button>
+            <div className="flex flex-wrap items-center gap-3">
+              {lastCheckedAt > 0 ? (
+                <time
+                  className="text-xs text-muted-foreground"
+                  dateTime={new Date(lastCheckedAt).toISOString()}
+                >
+                  {t("accounts.checkedAt", {
+                    date: formatDate(lastCheckedAt, {
+                      dateStyle: "short",
+                      timeStyle: "short",
+                    }),
+                  })}
+                </time>
+              ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                leftIcon={<RefreshCw />}
+                disabled={refreshing}
+                onClick={() =>
+                  void useProviderAccountsStore.getState().refresh(true)
+                }
+              >
+                {t("accounts.refresh")}
+              </Button>
+            </div>
           </div>
           <p className="mb-2 text-xs text-muted-foreground">
             {t(

@@ -202,7 +202,7 @@ pub(super) fn map_usage(
         return status;
     };
     status.account_label = account["email"].as_str().map(str::to_owned);
-    status.subscription = account["planType"].as_str().map(str::to_owned);
+    status.subscription = account["planType"].as_str().and_then(plan_label);
     if account["type"] == "apiKey" {
         status.subscription = Some("API".into());
         status.state = AccountState::Ready;
@@ -348,23 +348,82 @@ fn append_bucket(status: &mut ProviderAccountStatus, id: &str, bucket: &Value) {
                 .or_else(|| (id != "codex").then(|| id.to_owned())),
         });
     }
-    if status.subscription.is_none() {
-        status.subscription = bucket["planType"].as_str().map(str::to_owned);
+    if let Some(plan) = bucket["planType"].as_str().and_then(plan_label) {
+        // Usage is a fresh server response; account/read may reflect an older token.
+        status.subscription = Some(plan);
     }
     if let Some(credits) = bucket.get("credits").filter(|value| !value.is_null()) {
-        status.credits = Some(AccountCredits {
+        status.credits = Some(vec![CreditBalance {
+            id: "credits".into(),
+            label: "Credits".into(),
             balance: credits["balance"]
                 .as_str()
                 .map(str::to_owned)
                 .or_else(|| credits["balance"].as_f64().map(|n| n.to_string())),
             unlimited: credits["unlimited"].as_bool().unwrap_or(false),
-        });
+            total: None,
+            currency: None,
+            expires_at: None,
+        }]);
     }
+}
+
+fn plan_label(plan: &str) -> Option<String> {
+    // Match the consumer tier names in the Codex app, not internal plan codes.
+    let label = match plan {
+        "free" => "ChatGPT Free",
+        "go" => "ChatGPT Go",
+        "plus" => "ChatGPT Plus",
+        "prolite" => "ChatGPT Pro 100",
+        "pro" => "ChatGPT Pro 200",
+        "promax" => "ChatGPT Pro 500",
+        "team" | "business" | "self_serve_business_usage_based" => "ChatGPT Business",
+        "self_serve_business_prolite" => "ChatGPT Business Premium",
+        "enterprise" | "ent26" | "enterprise_cbp_automation" | "enterprise_cbp_usage_based" => {
+            "ChatGPT Enterprise"
+        }
+        "edu" => "ChatGPT Edu",
+        "edu_plus" => "ChatGPT Edu Plus",
+        "edu_pro" => "ChatGPT Edu Pro",
+        _ => return None,
+    };
+    Some(label.into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn consumer_plans_have_their_public_tier_names() {
+        for (code, label) in [
+            ("prolite", "ChatGPT Pro 100"),
+            ("pro", "ChatGPT Pro 200"),
+            ("promax", "ChatGPT Pro 500"),
+            ("plus", "ChatGPT Plus"),
+        ] {
+            let status = map_usage(
+                "one",
+                &json!({"account":{"type":"chatgpt","planType":code}}),
+                &Value::Null,
+                0,
+            );
+            assert_eq!(status.subscription.as_deref(), Some(label));
+        }
+        assert_eq!(plan_label("unknown"), None);
+        assert_eq!(plan_label("unreleased_internal_plan"), None);
+    }
+
+    #[test]
+    fn fresh_usage_plan_takes_precedence_over_token_identity() {
+        let status = map_usage(
+            "one",
+            &json!({"account":{"type":"chatgpt","planType":"prolite"}}),
+            &json!({"rateLimits":{"planType":"pro","primary":{"usedPercent":20}}}),
+            0,
+        );
+        assert_eq!(status.subscription.as_deref(), Some("ChatGPT Pro 200"));
+    }
 
     #[test]
     fn spending_exhaustion_survives_an_already_full_session_window() {

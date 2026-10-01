@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   add: vi.fn(),
   remove: vi.fn(),
   auth: vi.fn(),
+  cancelAuth: vi.fn(),
   signOut: vi.fn(),
   invalidate: vi.fn(),
   refreshModels: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock("../api/providerAccounts", () => ({
   addProviderAccount: mocks.add,
   removeProviderAccount: mocks.remove,
   authenticateProviderAccount: mocks.auth,
+  cancelProviderAccountAuthentication: mocks.cancelAuth,
   signOutProviderAccount: mocks.signOut,
 }));
 vi.mock("./providerModelCacheStore", () => ({
@@ -84,6 +86,98 @@ beforeEach(() => {
 });
 
 describe("providerAccountsStore", () => {
+  it("keeps one card when adding a subscription resumes an existing account", async () => {
+    await useProviderAccountsStore.getState().refresh();
+    mocks.add.mockResolvedValue(account);
+    const reused = await useProviderAccountsStore.getState().add({
+      providerId: account.providerId,
+      label: account.label,
+      authMethod: "oauth",
+    });
+    await useProviderAccountsStore.getState().refresh();
+    expect(reused.id).toBe(account.id);
+    expect(useProviderAccountsStore.getState().accounts).toEqual([account]);
+    expect(useProviderAccountsStore.getState().statuses[account.id]).toEqual(
+      status,
+    );
+  });
+
+  it("cancels only the active attempt and ignores its late response after retry", async () => {
+    await useProviderAccountsStore.getState().refresh();
+    let finishOld!: (value: unknown) => void;
+    let finishNew!: (value: unknown) => void;
+    mocks.auth
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishOld = resolve;
+        }),
+      )
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishNew = resolve;
+        }),
+      );
+    const oldLogin = useProviderAccountsStore
+      .getState()
+      .authenticate(account.id);
+    const oldAttempt =
+      useProviderAccountsStore.getState().authStates[account.id].attemptId;
+    await useProviderAccountsStore.getState().authenticate(account.id);
+    expect(mocks.auth).toHaveBeenCalledTimes(1);
+    mocks.cancelAuth.mockResolvedValueOnce(undefined);
+    await useProviderAccountsStore.getState().cancelAuthentication(account.id);
+    expect(mocks.cancelAuth).toHaveBeenCalledWith(account.id, oldAttempt);
+    expect(
+      useProviderAccountsStore.getState().authStates[account.id].status,
+    ).toBe("needs_auth");
+    const newLogin = useProviderAccountsStore
+      .getState()
+      .authenticate(account.id);
+    const newAttempt =
+      useProviderAccountsStore.getState().authStates[account.id].attemptId;
+    expect(newAttempt).not.toBe(oldAttempt);
+    finishOld({
+      accountId: account.id,
+      attemptId: oldAttempt,
+      status: "needs_auth",
+      message: "Cancelled",
+    });
+    await oldLogin;
+    expect(
+      useProviderAccountsStore.getState().authStates[account.id],
+    ).toMatchObject({ attemptId: newAttempt, status: "running" });
+    finishNew({
+      accountId: account.id,
+      attemptId: newAttempt,
+      status: "authenticated",
+      message: "Ready",
+    });
+    await newLogin;
+    expect(
+      useProviderAccountsStore.getState().authStates[account.id].status,
+    ).toBe("authenticated");
+  });
+
+  it("keeps a sign-in pending if cancellation could not reach the backend", async () => {
+    useProviderAccountsStore.setState({
+      authStates: {
+        saved: {
+          accountId: "saved",
+          attemptId: "pending",
+          status: "running",
+          message: "",
+        },
+      },
+    });
+    mocks.cancelAuth.mockRejectedValueOnce(new Error("IPC unavailable"));
+    await expect(
+      useProviderAccountsStore.getState().cancelAuthentication("saved"),
+    ).rejects.toThrow("IPC unavailable");
+    expect(useProviderAccountsStore.getState().authStates.saved.status).toBe(
+      "running",
+    );
+  });
+
   it("clears signed-out usage without removing the profile, default or other accounts", async () => {
     const siblingAccount = { ...account, id: "sibling" };
     mocks.list.mockResolvedValue({

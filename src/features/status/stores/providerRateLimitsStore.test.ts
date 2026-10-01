@@ -42,6 +42,40 @@ function usage(
 }
 
 describe("mergeStale", () => {
+  it("retains reported balances on a transient failure and clears them after sign-out", () => {
+    const previous = [
+      usage({
+        provider: "kimi-acp",
+        credits: [
+          {
+            id: "extra_usage",
+            label: "Extra usage",
+            balance: "5",
+            total: "10",
+            currency: "USD",
+            expiresAt: null,
+            unlimited: false,
+          },
+        ],
+      }),
+    ];
+    const failed = usage({
+      provider: "kimi-acp",
+      session: null,
+      credits: null,
+      status: "error",
+    });
+    expect(mergeStale(previous, [failed])[0].credits).toEqual(
+      previous[0].credits,
+    );
+    expect(
+      mergeStale(previous, [{ ...failed, configured: false }])[0].credits,
+    ).toBeNull();
+    expect(
+      mergeStale(previous, [{ ...failed, status: "ok", credits: [] }])[0]
+        .credits,
+    ).toEqual([]);
+  });
   it("drops cached windows when the next fetch is an expired sign-in", () => {
     const previous = [usage()];
     const next = [

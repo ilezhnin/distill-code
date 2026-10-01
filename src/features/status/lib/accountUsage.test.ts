@@ -89,6 +89,20 @@ describe("account usage projection", () => {
     expect(getProviderUsageStatusKind(usage)).toBe("sign-in");
   });
 
+  it("preserves cached quota without reporting sign-in or exhaustion during a 429", () => {
+    const [usage] = project({
+      state: "error",
+      stale: true,
+      error:
+        "Claude usage is temporarily rate limited. Try again in 60 seconds.",
+    });
+    expect(usage.configured).toBe(true);
+    expect(usage.session?.usedPercent).toBe(10);
+    expect(usage.weekly?.usedPercent).toBe(30);
+    expect(getProviderUsageStatusKind(usage)).toBe("refresh-failed");
+    expect(platformLimitState([usage], "claude-acp")).not.toBe("at-limit");
+  });
+
   it("retains a separate spending block with no known duration", () => {
     const [usage] = project({ state: "limited", limits: [] });
     expect(getProviderUsageStatusKind(usage)).toBe("limited");

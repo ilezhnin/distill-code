@@ -24,6 +24,7 @@ interface ConfirmDialogProps {
    * neutral confirmations like archiving.
    */
   destructive?: boolean;
+  showCloseButton?: boolean;
   contentClassName?: string;
   overlayClassName?: string;
   positionerClassName?: string;
@@ -41,6 +42,7 @@ export function ConfirmDialog({
   loadingLabel,
   isLoading = false,
   destructive = true,
+  showCloseButton = true,
   contentClassName = "max-w-sm",
   overlayClassName,
   positionerClassName,
@@ -65,6 +67,7 @@ export function ConfirmDialog({
       }}
     >
       <DialogContent
+        showCloseButton={showCloseButton}
         className={contentClassName}
         overlayClassName={overlayClassName}
         positionerClassName={positionerClassName}

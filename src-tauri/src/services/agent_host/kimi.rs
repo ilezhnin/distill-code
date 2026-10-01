@@ -116,8 +116,25 @@ async fn request_managed_usage(
     client: &reqwest::Client,
     endpoint: &UsageEndpoint,
 ) -> Result<Value, String> {
+    let mut usage = request_managed_data(client, endpoint, "usage").await?;
+    // Profile metadata is optional: a failed profile read must not hide quotas.
+    if usage["kind"] == "ok" {
+        if let Ok(profile) = request_managed_data(client, endpoint, "userinfo").await {
+            if profile["kind"] == "ok" && profile["userInfo"].is_object() {
+                usage["userInfo"] = profile["userInfo"].clone();
+            }
+        }
+    }
+    Ok(usage)
+}
+
+async fn request_managed_data(
+    client: &reqwest::Client,
+    endpoint: &UsageEndpoint,
+    resource: &str,
+) -> Result<Value, String> {
     let response = client
-        .get(format!("{}/api/v1/oauth/usage", endpoint.origin))
+        .get(format!("{}/api/v1/oauth/{resource}", endpoint.origin))
         .bearer_auth(&endpoint.token)
         .send()
         .await
@@ -286,7 +303,11 @@ mod tests {
         std::fs::create_dir_all(&prefix).unwrap();
         std::fs::create_dir_all(&runtime).unwrap();
         let (endpoint, server) = usage_server(
-            &["get /api/v1/oauth/usage ", "post /api/v1/shutdown "],
+            &[
+                "get /api/v1/oauth/usage ",
+                "get /api/v1/oauth/userinfo ",
+                "post /api/v1/shutdown ",
+            ],
             r#"{"code":0,"data":{"kind":"ok","quota":{"usages":{"monthTotal":{"usedRatio":0.25}}}}}"#,
         );
         std::fs::write(
@@ -345,10 +366,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reads_structured_usage_from_kimis_authenticated_local_api() {
+    async fn reads_usage_and_profile_from_kimis_authenticated_local_api() {
         let (endpoint, server) = usage_server(
-            &["get /api/v1/oauth/usage "],
-            r#"{"code":0,"data":{"kind":"ok","quota":{"usages":{"limit5h":{"usedRatio":0.5}}}}}"#,
+            &["get /api/v1/oauth/usage ", "get /api/v1/oauth/userinfo "],
+            r#"{"code":0,"data":{"kind":"ok","quota":{"usages":{"limit5h":{"usedRatio":0.5}}},"userInfo":{"email":"kimi@example.test","userLevelName":"Plus"}}}"#,
         );
         let data = request_managed_usage(
             &reqwest::Client::builder()
@@ -360,10 +381,30 @@ mod tests {
         )
         .await;
         server.join().unwrap();
-        assert_eq!(
-            data.unwrap()["quota"]["usages"]["limit5h"]["usedRatio"],
-            0.5
+        let data = data.unwrap();
+        assert_eq!(data["quota"]["usages"]["limit5h"]["usedRatio"], 0.5);
+        assert_eq!(data["userInfo"]["userLevelName"], "Plus");
+    }
+
+    #[tokio::test]
+    async fn profile_failure_does_not_discard_successful_usage() {
+        let (endpoint, server) = usage_server(
+            &["get /api/v1/oauth/usage "],
+            r#"{"code":0,"data":{"kind":"ok","quota":{"usages":{"limit5h":{"usedRatio":0.5}}}}}"#,
         );
+        let data = request_managed_usage(
+            &reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+            &endpoint,
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(data["quota"]["usages"]["limit5h"]["usedRatio"], 0.5);
+        assert!(data.get("userInfo").is_none());
     }
 
     #[test]

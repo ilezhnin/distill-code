@@ -9,6 +9,7 @@ import type { ProviderRateLimits } from "@/features/status/lib/rateLimitTypes";
 import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
 import { useProviderAccountsStore } from "../stores/providerAccountsStore";
 import { MANAGED_ACCOUNT_PROVIDERS } from "../api/providerAccounts";
+import { accountIsConnected } from "../lib/providerAccountStatus";
 import type {
   ProviderAccount,
   ProviderAccountStatus,
@@ -163,8 +164,7 @@ export function applyManagedAccountReadiness(
       (account) =>
         account.providerId === providerId &&
         account.enabled &&
-        (statuses[account.id]?.state === "ready" ||
-          statuses[account.id]?.state === "limited"),
+        accountIsConnected(statuses[account.id]),
     );
     const status = connected ? "ready" : "not_ready";
     if (installed === status) continue;

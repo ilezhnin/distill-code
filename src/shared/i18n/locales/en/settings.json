@@ -553,7 +553,7 @@
       "limited": "Limit reached",
       "needs_auth": "Sign-in required",
       "unknown": "Status unknown",
-      "error": "Connection error",
+      "error": "Usage unavailable",
       "disabled": "Disabled"
     },
     "subscription": "Plan: {{value}}",
@@ -563,9 +563,16 @@
     "resetTokens": "Reset tokens: {{value}}",
     "expiresAt": "Expires {{date}}",
     "credits": "Credits: {{value}}",
+    "creditBalance": "{{label}}: {{value}}",
+    "creditRemaining": "{{balance}} of {{total}} left",
+    "creditLabels": {
+      "credits": "Credits",
+      "usage_credits": "Usage credits",
+      "extra_usage": "Extra usage",
+      "iguana_necktie": "Cloud session credits"
+    },
     "unlimited": "Unlimited",
-    "updatedAt": "Updated {{date}}",
-    "neverUpdated": "Not checked yet",
+    "checkedAt": "Last checked {{date}}",
     "allLimited": "Enabled accounts included in automatic switching report exhausted general limits. Earliest usable reset in this snapshot: {{date}} ({{hours}} h {{minutes}} min). Reset tokens require your action.",
     "default": "Default",
     "methods": {
@@ -576,13 +583,27 @@
     "sessionCount": "Used by {{count}} open chats",
     "setDefault": "Set default",
     "signingIn": "Signing in…",
+    "cancelSignIn": "Cancel sign-in",
     "signIn": "Sign in",
     "signOut": "Sign out",
     "useReset": "Use a reset token",
+    "useNamedReset": "Use {{name}}",
+    "use": "Use",
+    "resetTypes": {
+      "full": "Full reset",
+      "five_hour": "5-hour reset"
+    },
+    "resetStates": {
+      "available": "Available",
+      "used": "Used",
+      "expired": "Expired",
+      "paused": "Paused",
+      "unavailable": "Not available now"
+    },
     "browserPending": "Complete sign-in in your browser. Other accounts stay connected.",
     "cancel": "Cancel",
     "resetTitle": "Use one reset token?",
-    "resetDescription": "Reset the usage limit for {{label}} now. This spends one available reset token and cannot be undone. Automatic switching never spends reset tokens.",
+    "resetDescription": "This spends one reset token and cannot be undone.",
     "confirmReset": "Use one token",
     "resetOutcomes": {
       "reset": "Limit reset successfully.",
