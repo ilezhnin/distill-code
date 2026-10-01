@@ -27,6 +27,7 @@ pub async fn build_spawn_env(app: &tauri::AppHandle) -> SpawnEnv {
         shell_env,
         prepend_dirs,
         extra_env,
+        remove_env: Vec::new(),
     }
 }
 

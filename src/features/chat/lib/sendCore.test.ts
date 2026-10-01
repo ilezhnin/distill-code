@@ -12,12 +12,100 @@ import { QueuedMessageOwnershipLostError } from "./preCommitSendRejection";
 import { isQueuedSessionReady } from "./queuedMessageReadiness";
 import { dispatchPrompt } from "./sendCore";
 import { steerPromptInSession } from "./steerCore";
+import {
+  clearAccountQuotaWait,
+  isAccountQuotaWaiting,
+} from "./accountQuotaWait";
 
 const mocks = vi.hoisted(() => ({
   acpSendMessage: vi.fn(),
   acpSteerMessage: vi.fn(),
   acpPrepareSession: vi.fn(),
 }));
+
+describe("dispatchPrompt account quota deferral", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearAccountQuotaWait("quota-session");
+    useChatStore.setState({
+      messagesBySession: {},
+      sessionStateById: {},
+      queuedMessageBySession: {},
+    });
+  });
+
+  it("commits no transcript message when preflight waits for a quota reset", async () => {
+    const error = {
+      data: { kind: "account_quota_wait", promptNotAccepted: true },
+    };
+    mocks.acpSendMessage.mockRejectedValueOnce(error);
+    await expect(
+      dispatchPrompt("quota-session", "queued task", {}),
+    ).rejects.toBe(error);
+    expect(
+      useChatStore.getState().messagesBySession["quota-session"] ?? [],
+    ).toEqual([]);
+    expect(isAccountQuotaWaiting("quota-session")).toBe(true);
+    expect(
+      isQueuedSessionReady(
+        useChatStore.getState().getSessionRuntime("quota-session"),
+      ),
+    ).toBe(false);
+    clearAccountQuotaWait("quota-session");
+  });
+
+  it("retracts only the optimistic user message when the host proves zero activity and rollback", async () => {
+    const error = {
+      data: { kind: "account_quota_wait", promptNotAccepted: true },
+    };
+    mocks.acpSendMessage.mockImplementationOnce(
+      (
+        _id: string,
+        _prompt: string,
+        options: { onPromptDispatching(): void },
+      ) => {
+        options.onPromptDispatching();
+        return Promise.reject(error);
+      },
+    );
+    await expect(
+      dispatchPrompt("quota-session", "queued task", {}),
+    ).rejects.toBe(error);
+    expect(
+      useChatStore.getState().messagesBySession["quota-session"] ?? [],
+    ).toEqual([]);
+    expect(isAccountQuotaWaiting("quota-session")).toBe(true);
+    clearAccountQuotaWait("quota-session");
+  });
+
+  it("keeps an already dispatched turn without rollback proof and never marks it retryable", async () => {
+    const error = {
+      message: "Quota interrupted the turn",
+      data: { kind: "account_quota_wait", promptNotAccepted: false },
+    };
+    mocks.acpSendMessage.mockImplementationOnce(
+      (
+        _id: string,
+        _prompt: string,
+        options: { onPromptDispatching(): void },
+      ) => {
+        options.onPromptDispatching();
+        return Promise.reject(error);
+      },
+    );
+    await expect(
+      dispatchPrompt("quota-session", "partially executed task", {}),
+    ).rejects.toBe(error);
+    expect(
+      useChatStore
+        .getState()
+        .messagesBySession["quota-session"]?.some(
+          (message) => message.role === "user",
+        ),
+    ).toBe(true);
+    expect(isAccountQuotaWaiting("quota-session")).toBe(false);
+  });
+});
 
 vi.mock("@/shared/api/acp", () => ({
   acpSendMessage: (...args: unknown[]) => mocks.acpSendMessage(...args),

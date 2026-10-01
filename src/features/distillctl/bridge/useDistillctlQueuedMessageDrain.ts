@@ -23,6 +23,7 @@ import {
 } from "@/features/distillctl/commands/runtime/sessionSend";
 import { SessionDispatchContentionError } from "@/features/chat/lib/sessionDispatchAcquisition";
 import { parkFailedQueuedMessage } from "@/features/chat/lib/queuedMessageFailure";
+import { accountQuotaWaitData } from "@/features/chat/lib/accountQuotaWait";
 
 const drainingSessionIds = new Set<string>();
 const activeOwners = new Set<string>();
@@ -106,6 +107,7 @@ function drainQueuedMessage(queuedSessionId: string, ownerId: string): void {
   }
 
   drainingSessionIds.add(queuedSessionId);
+  let promptNotAccepted = false;
   const send = sendPromptToExistingSessionInBackground(
     queuedSessionId,
     queuedMessage.payload.text,
@@ -119,6 +121,12 @@ function drainQueuedMessage(queuedSessionId: string, ownerId: string): void {
     },
     {
       returnOnDispatch: true,
+      onPromptNotAccepted: () => {
+        promptNotAccepted = true;
+        useChatStore
+          .getState()
+          .restoreUnacceptedQueuedMessage(queuedSessionId, queuedMessage);
+      },
       ...(queuedMessage.payload.sendOptions?.userMessageMetadata
         ?.distillSenderLabel ||
       queuedMessage.payload.sendOptions?.userMessageMetadata?.distillDeliveryId
@@ -146,9 +154,17 @@ function drainQueuedMessage(queuedSessionId: string, ownerId: string): void {
   void send
     .then(() => {
       sendSucceeded = true;
-      dismissQueuedMessageIfCurrent(queuedSessionId, queuedMessage);
+      if (!promptNotAccepted)
+        dismissQueuedMessageIfCurrent(queuedSessionId, queuedMessage);
     })
     .catch((error) => {
+      if (accountQuotaWaitData(error)?.promptNotAccepted === true) {
+        useChatStore
+          .getState()
+          .restoreUnacceptedQueuedMessage(queuedSessionId, queuedMessage);
+        shouldResumeDrain = true;
+        return;
+      }
       if (error instanceof DistillctlDeliveryAlreadyAcceptedError) {
         dismissQueuedMessageIfCurrent(queuedSessionId, queuedMessage);
         shouldResumeDrain = true;

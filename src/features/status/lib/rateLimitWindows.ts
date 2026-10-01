@@ -15,7 +15,8 @@ export function hasUsageData(provider: ProviderRateLimits): boolean {
       provider.weekly ||
       provider.fableWeekly ||
       provider.monthly ||
-      provider.codingMonthly,
+      provider.codingMonthly ||
+      provider.modelWindows?.length,
   );
 }
 
@@ -54,7 +55,7 @@ export function getUsageSections(provider: ProviderRateLimits): UsageSection[] {
   if (provider.session) {
     sections.push({
       key: "session",
-      label: "session",
+      label: provider.session.windowMinutes === 300 ? "fiveHour" : "session",
       shortLabel: formatWindowLength(provider.session.windowMinutes),
       window: provider.session,
     });
@@ -89,6 +90,18 @@ export function getUsageSections(provider: ProviderRateLimits): UsageSection[] {
       label: "codingMonthly",
       shortLabel: "mo (code)",
       window: provider.codingMonthly,
+    });
+  }
+  for (const { modelId, period, window } of provider.modelWindows ?? []) {
+    sections.push({
+      key: `model:${modelId}:${period}`,
+      modelId,
+      label:
+        period === "session" && window.windowMinutes === 300
+          ? "fiveHour"
+          : period,
+      shortLabel: `${modelId} ${formatWindowLength(window.windowMinutes)}`,
+      window,
     });
   }
   return sections;
@@ -204,10 +217,11 @@ export function platformLimitState(
 ): PlatformLimitState {
   const entry = providers.find((provider) => provider.provider === platform);
   if (!entry) return "clear";
+  if (entry.accountLimited) return "at-limit";
   const nearLimit = options.nearLimitPercent ?? NEAR_LIMIT_PERCENT;
   const applicable = getUsageSections(entry).filter(
     (section) =>
-      !MODEL_SCOPED_WINDOW_KEYS.includes(section.key) ||
+      (!section.modelId && !MODEL_SCOPED_WINDOW_KEYS.includes(section.key)) ||
       section.key === options.scopedWindow,
   );
   const tightest = applicable.reduce(

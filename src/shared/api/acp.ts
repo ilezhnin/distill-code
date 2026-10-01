@@ -70,6 +70,7 @@ export interface AcpSendMessageOptions {
 }
 
 export interface AcpCreateSessionOptions {
+  accountId?: string;
   personaId?: string;
   projectId?: string;
   modelId?: string | null;
@@ -96,6 +97,7 @@ export interface AcpSessionConfigApplyOptions {
 
 export interface AcpCreateSessionResult {
   sessionId: string;
+  accountId?: string | null;
   configOptionsSnapshot: AcpSessionConfigSnapshots;
   /**
    * The model the session was asked to open on, when the harness would not
@@ -356,6 +358,7 @@ export async function acpCreateSession(
   // it is skipped when it did, and it is the old follow-up write when it did not.
   const response = await directAcp.newSession(workingDir, {
     providerId,
+    ...(options.accountId ? { accountId: options.accountId } : {}),
     projectId: options.projectId,
     personaId: options.personaId,
     ...(modelId ? { modelId } : {}),
@@ -363,6 +366,15 @@ export async function acpCreateSession(
     ...(options.fastMode !== undefined ? { fastMode: options.fastMode } : {}),
   });
   const sessionId = response.sessionId;
+  const account =
+    response._meta && "accountId" in response._meta
+      ? {
+          accountId:
+            typeof response._meta.accountId === "string"
+              ? response._meta.accountId
+              : null,
+        }
+      : {};
   let configOptionsSnapshot = readSessionConfigOptionsSnapshots(response);
   logReasoningEffortInfo("acpCreateSession newSession response", {
     sessionId: shortLogId(sessionId),
@@ -381,7 +393,7 @@ export async function acpCreateSession(
     configOptionsSnapshot.model?.modelId,
   );
   if (!modelId) {
-    return { sessionId, configOptionsSnapshot };
+    return { sessionId, ...account, configOptionsSnapshot };
   }
   // The host already asked the bridge for the model in `session/new` and
   // recorded its refusal; asking again would only fail the same way, slowly.
@@ -401,6 +413,7 @@ export async function acpCreateSession(
     );
     return {
       sessionId,
+      ...account,
       configOptionsSnapshot,
       rejectedModel: {
         modelId,
@@ -412,7 +425,7 @@ export async function acpCreateSession(
     configOptionsSnapshot =
       (await sessionRegistry.applySessionModel(sessionId, modelId)) ??
       configOptionsSnapshot;
-    return { sessionId, configOptionsSnapshot };
+    return { sessionId, ...account, configOptionsSnapshot };
   } catch (error) {
     // The session is open on the harness's own model, which by definition
     // runs; only the model that was to ride along was refused. Keeping the
@@ -422,6 +435,7 @@ export async function acpCreateSession(
     logRejectedCreationModel(sessionId, providerId, modelId, reason);
     return {
       sessionId,
+      ...account,
       configOptionsSnapshot,
       rejectedModel: { modelId, ...(reason ? { reason } : {}) },
     };

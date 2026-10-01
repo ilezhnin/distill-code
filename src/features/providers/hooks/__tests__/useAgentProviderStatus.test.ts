@@ -3,8 +3,77 @@ import type { DoctorCheck, DoctorReport } from "@/shared/api/doctor";
 import type { ProviderRateLimits } from "@/features/status/lib/rateLimitTypes";
 import {
   applyUsageAuthReadiness,
+  applyManagedAccountReadiness,
   readinessFromReport,
 } from "../useAgentProviderStatus";
+import type {
+  ProviderAccount,
+  ProviderAccountStatus,
+} from "../../api/providerAccounts";
+
+describe("managed account readiness", () => {
+  const account: ProviderAccount = {
+    id: "managed",
+    providerId: "codex-acp",
+    label: "Managed",
+    authMethod: "oauth",
+    enabled: true,
+    autoSwitch: true,
+    createdAt: 0,
+    updatedAt: 0,
+  };
+  const status: ProviderAccountStatus = {
+    accountId: "managed",
+    providerId: "codex-acp",
+    state: "ready",
+    subscription: null,
+    accountLabel: null,
+    limits: [],
+    resetTokens: null,
+    credits: null,
+    lastUpdatedAt: Date.now(),
+    lastAttemptAt: Date.now(),
+    stale: false,
+    error: null,
+  };
+  it("keeps an installed provider usable through a saved account when the system CLI is signed out", () => {
+    const readiness = new Map([["codex-acp", "not_ready" as const]]);
+    expect(
+      applyManagedAccountReadiness(readiness, [account], {
+        managed: status,
+      }).get("codex-acp"),
+    ).toBe("ready");
+    expect(readiness.get("codex-acp")).toBe("not_ready");
+  });
+  it("does not hide a missing bridge or invent readiness for revoked accounts", () => {
+    expect(
+      applyManagedAccountReadiness(
+        new Map([["codex-acp", "not_installed"]]),
+        [account],
+        { managed: status },
+      ).get("codex-acp"),
+    ).toBe("not_installed");
+    expect(
+      applyManagedAccountReadiness(
+        new Map([["codex-acp", "not_ready"]]),
+        [account],
+        { managed: { ...status, state: "needs_auth" } },
+      ).get("codex-acp"),
+    ).toBe("not_ready");
+  });
+  it("ignores external CLI sign-in when Distill has no connected account", () => {
+    const readiness = new Map([["codex-acp", "ready" as const]]);
+    expect(
+      applyManagedAccountReadiness(readiness, [], {}).get("codex-acp"),
+    ).toBe("not_ready");
+    expect(
+      applyManagedAccountReadiness(readiness, [account], {
+        managed: { ...status, state: "needs_auth" },
+      }).get("codex-acp"),
+    ).toBe("not_ready");
+    expect(readiness.get("codex-acp")).toBe("ready");
+  });
+});
 
 function check(overrides: Partial<DoctorCheck> = {}): DoctorCheck {
   return {

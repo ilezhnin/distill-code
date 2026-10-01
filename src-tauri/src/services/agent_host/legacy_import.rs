@@ -178,6 +178,7 @@ async fn import_from(store: &SessionStore, db_path: &Path) -> Result<usize, Stri
         let record = SessionRecord {
             id: id.clone(),
             harness: harness_id,
+            account_id: None,
             bridge_session_id: converter.provider_session_id.clone(),
             cwd: row.try_get("working_dir").unwrap_or_default(),
             title: Some(name).filter(|value| !value.trim().is_empty()),

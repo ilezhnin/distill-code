@@ -12,6 +12,7 @@ import { resetProjectWikiPresenceForTests } from "@/features/memory/lib/projectW
 import { MEMORY_PROTOCOL_PROMPT } from "@/features/memory/lib/memoryFence";
 import { useMemoryStore } from "@/features/memory/stores/memoryStore";
 import { createUserMessage } from "@/shared/types/messages";
+import { clearAccountQuotaWait } from "@/features/chat/lib/accountQuotaWait";
 import {
   acquireSessionDispatchTarget,
   observeSessionTargetModelSnapshot,
@@ -352,6 +353,41 @@ describe("sendPromptToExistingSessionInBackground", () => {
       nextLease.release?.();
     });
     vi.useRealTimers();
+  });
+
+  it("reports rollback proof to the queue owner after a direct dispatch acknowledgement", async () => {
+    let failTurn!: (error: unknown) => void;
+    let signalDispatched!: () => void;
+    mocks.acpSendMessage.mockImplementation(
+      (...args: unknown[]) =>
+        new Promise<void>((_resolve, reject) => {
+          failTurn = reject;
+          signalDispatched = () =>
+            (args[2] as { onPromptDispatched?(): void }).onPromptDispatched?.();
+        }),
+    );
+    const onPromptNotAccepted = vi.fn();
+    const send = sendPromptToExistingSessionInBackground(
+      SESSION_ID,
+      "retry exactly once",
+      undefined,
+      { returnOnDispatch: true, onPromptNotAccepted },
+    );
+    await vi.waitFor(() => expect(signalDispatched).toBeTypeOf("function"));
+    signalDispatched();
+    await send;
+    failTurn({ data: { kind: "account_quota_wait", promptNotAccepted: true } });
+    await vi.waitFor(() =>
+      expect(onPromptNotAccepted).toHaveBeenCalledTimes(1),
+    );
+    expect(
+      useChatStore
+        .getState()
+        .messagesBySession[SESSION_ID]?.some(
+          (message) => message.role === "user",
+        ) ?? false,
+    ).toBe(false);
+    clearAccountQuotaWait(SESSION_ID);
   });
 
   it("refuses to reach the wire while the target session is still being created", async () => {

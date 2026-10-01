@@ -47,6 +47,9 @@ export function handleSessionInfoUpdate(
   }
 
   const patch: Parameters<typeof sessionStore.patchSession>[1] = {};
+  if (typeof meta.accountId === "string" || meta.accountId === null) {
+    patch.accountId = meta.accountId;
+  }
 
   if (
     typeof info.title === "string" &&

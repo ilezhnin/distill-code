@@ -2,18 +2,13 @@ import { useTranslation } from "react-i18next";
 import { providerDisplayName } from "@/features/providers/providerCatalog";
 import { getProviderIcon } from "@/shared/ui/icons/ProviderIcons";
 import type { ProviderRateLimits } from "../lib/rateLimitTypes";
+import { getUsageSections } from "../lib/rateLimitWindows";
 import {
-  barColorClass,
-  clampUsedPercent,
-  getUsageSections,
-} from "../lib/rateLimitWindows";
-import {
-  formatUsedPercent,
   getProviderUsageStatusKind,
   updatedAgoParts,
 } from "../lib/rateLimitFormatters";
-import { formatDuration } from "../lib/rateLimitWindows";
 import { useProviderRateLimitsStore } from "../stores/providerRateLimitsStore";
+import { UsageLimits } from "./UsageLimits";
 
 export function ProviderDetailsPanel({
   provider,
@@ -88,38 +83,7 @@ export function ProviderDetailsPanel({
         <div className="border-t border-border/70" />
       ) : null}
 
-      {sections.map((section) => {
-        const used = clampUsedPercent(section.window.usedPercent);
-        const reset =
-          typeof section.window.resetsAt === "number"
-            ? formatDuration(section.window.resetsAt - now)
-            : null;
-        const resetLabel =
-          reset == null
-            ? null
-            : reset === "now"
-              ? t("roster.resetsNow")
-              : t("roster.resetsIn", { duration: reset });
-        return (
-          <div key={section.key} className="space-y-1">
-            <div className="font-medium text-foreground">
-              {t(`roster.${section.label}`)}
-            </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-              <div
-                className={`h-full rounded-full ${barColorClass(used)}`}
-                style={{ width: `${used}%` }}
-              />
-            </div>
-            <div className="flex justify-between text-muted-foreground">
-              <span>
-                {t("roster.percentUsed", { percent: formatUsedPercent(used) })}
-              </span>
-              {resetLabel ? <span>{resetLabel}</span> : null}
-            </div>
-          </div>
-        );
-      })}
+      <UsageLimits provider={provider} now={now} />
 
       {provider.error && sections.length > 0 ? (
         <div className="space-y-0.5">

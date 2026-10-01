@@ -28,6 +28,7 @@ async fn request(method: &str, env: HashMap<String, String>) -> Result<Value, Va
                 shell_env: env,
                 prepend_dirs: vec![],
                 extra_env: vec![],
+                remove_env: vec![],
             },
             events,
         )

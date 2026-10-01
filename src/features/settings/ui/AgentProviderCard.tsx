@@ -76,6 +76,7 @@ interface AgentProviderCardProps {
   // The provider's raw doctor check, used to surface install source / version
   // / update-available. `undefined` until the report (and freshness) land.
   versionCheck?: DoctorCheck;
+  showVersionDetails?: boolean;
   // True only during the shared report's cold first fetch, so a warm-cache
   // revisit paints instantly instead of re-spinning.
   statusLoading?: boolean;
@@ -119,6 +120,7 @@ export function AgentProviderCard({
   provider,
   readiness,
   versionCheck,
+  showVersionDetails = true,
   statusLoading = false,
   statusUnavailable = false,
   onStartTroubleshootingChat,
@@ -794,7 +796,7 @@ export function AgentProviderCard({
 
   const setupFailureMessage = getSetupFailureMessage();
   const versionDetails =
-    versionCheck && !isActive ? (
+    showVersionDetails && versionCheck && !isActive ? (
       <AgentVersionInfo check={versionCheck} />
     ) : null;
   const hasSupplementaryProviderDetails =

@@ -37,6 +37,8 @@
     "resetsNow": "Se restablece ahora",
     "resetsIn": "Se restablece en {{duration}}",
     "session": "Sesión",
+    "fiveHour": "5 horas",
+    "modelWindow": "{{model}} · {{window}}",
     "weekly": "Semanal",
     "fable": "Fable",
     "monthly": "Mensual",

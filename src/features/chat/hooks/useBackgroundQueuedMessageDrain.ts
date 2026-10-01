@@ -25,6 +25,7 @@ import {
 import { SessionDispatchContentionError } from "@/features/chat/lib/sessionDispatchAcquisition";
 import { sendQueuedPromptToExistingSessionInBackground } from "@/features/chat/lib/queuedSessionSend";
 import { parkFailedQueuedMessage } from "@/features/chat/lib/queuedMessageFailure";
+import { accountQuotaWaitData } from "@/features/chat/lib/accountQuotaWait";
 
 const drainingSessionIds = new Set<string>();
 const activeOwners = new Set<string>();
@@ -272,6 +273,15 @@ function drainQueuedMessage(sessionId: string, ownerId: string): void {
       }
     })
     .catch((error) => {
+      const quotaWait = accountQuotaWaitData(error);
+      if (quotaWait?.promptNotAccepted === true) {
+        // A switch can clear the wait before this outer catch runs. Rollback
+        // proof still requires restoring the same head before resuming.
+        useChatStore
+          .getState()
+          .restoreUnacceptedQueuedMessage(sessionId, queuedMessage);
+        return;
+      }
       if (error instanceof SessionDispatchContentionError) {
         waitingForContention = true;
         const waiter: ContentionWaiter = {

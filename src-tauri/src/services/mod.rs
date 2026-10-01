@@ -16,6 +16,8 @@ pub(crate) mod managed_acp_tools;
 pub(crate) mod managed_node;
 pub mod path_env;
 pub(crate) mod process;
+pub(crate) mod provider_account_status;
+pub(crate) mod provider_accounts;
 pub(crate) mod provider_rate_limits;
 pub(crate) mod root_migration;
 pub mod shell_env;

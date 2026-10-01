@@ -15,6 +15,7 @@ the user has moved.
 | `agents/` | Installed built-in and user-created agent definitions |
 | `skills/` | Installed built-in and user-created skills |
 | `state/` | Message queues, usage history and other application state |
+| `provider-accounts/` | Saved Claude and Codex account metadata and isolated credential homes |
 | `benchmarks/benchmarks.db` | Versioned benchmark catalog, frozen plans, results, decisions, quota batches and opt-in campaigns |
 | `benchmarks/versions/`, `benchmarks/runs/` | Immutable public fixtures, frozen execution manifests and sealed evidence |
 | `benchmarks/evaluations/`, `benchmarks/exports/` | Protected evaluator artifacts and portable dataset exports |
@@ -76,7 +77,11 @@ Restart parks interrupted work and disables missed campaigns until reviewed.
 
 WebView caches, derived avatar thumbnails, logs and CLI discovery may remain
 outside the root. Disposable UI state can remain in localStorage. External
-harnesses own their credentials and configuration.
+harnesses own their credentials and configuration. Distill-managed Claude and
+Codex accounts keep each harness's credential files in a separate protected
+home under `provider-accounts/`, without falling back to another application's
+credentials. Native CLI history import is a separate operation. See
+[Provider accounts](provider-accounts.md).
 
 The `distro/` catalog supplies generic built-in skills and starter agents. Personal
 definitions remain user-managed and are not copied into the app distribution.

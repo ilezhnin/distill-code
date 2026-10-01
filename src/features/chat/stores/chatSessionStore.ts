@@ -66,6 +66,7 @@ export interface ChatSession {
   id: string;
   title: string;
   projectId?: string | null;
+  accountId?: string | null;
   executionTarget?: SessionExecutionTarget;
   executionTargetSource?: "ui" | "acp";
   personaId?: string;
@@ -649,7 +650,7 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
     const providerId = requestedExecutionTarget.harnessId;
     const requestedModelId = requestedExecutionTarget.modelId;
     const desiredRunSettings = normalizeSessionRunSettings(opts.runSettings);
-    const { sessionId, configOptionsSnapshot, rejectedModel } =
+    const { sessionId, accountId, configOptionsSnapshot, rejectedModel } =
       await acpCreateSession(providerId, opts.workingDir, {
         personaId: opts.personaId,
         modelId: requestedModelId,
@@ -682,6 +683,7 @@ export const useChatSessionStore = create<ChatSessionStore>((set, get) => ({
         : requestedExecutionTarget;
     const chatSession: ChatSession = withWorkspaceBackfill({
       id: sessionId,
+      ...(accountId !== undefined ? { accountId } : {}),
       title: opts.title ?? DEFAULT_CHAT_TITLE,
       projectId: opts.projectId,
       executionTarget,

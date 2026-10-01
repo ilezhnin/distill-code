@@ -15,6 +15,8 @@ use super::protocol::now_iso;
 pub struct SessionRecord {
     pub id: String,
     pub harness: String,
+    #[serde(default)]
+    pub account_id: Option<String>,
     pub bridge_session_id: Option<String>,
     pub cwd: String,
     pub title: Option<String>,
@@ -442,6 +444,7 @@ impl SessionStore {
         SessionRecord {
             id: row.get("id"),
             harness: row.get("harness"),
+            account_id: row.get("account_id"),
             bridge_session_id: row.get("bridge_session_id"),
             cwd: row.get("cwd"),
             title: row.get("title"),
@@ -509,11 +512,12 @@ impl SessionStore {
     ) -> sqlx::query::Query<'_, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'_>> {
         let snapshot = record.snapshot.as_ref().map(|value| value.to_string());
         sqlx::query(
-            "INSERT INTO sessions (id, harness, bridge_session_id, cwd, title, user_set_name, project_id, persona_id, model_id, reasoning_effort, fast_mode, legacy_model_id, hidden, created_at, updated_at, last_message_at, archived_at, message_count, last_snippet, snapshot_json) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (id, harness, account_id, bridge_session_id, cwd, title, user_set_name, project_id, persona_id, model_id, reasoning_effort, fast_mode, legacy_model_id, hidden, created_at, updated_at, last_message_at, archived_at, message_count, last_snippet, snapshot_json) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&record.id)
         .bind(&record.harness)
+        .bind(&record.account_id)
         .bind(&record.bridge_session_id)
         .bind(&record.cwd)
         .bind(&record.title)
@@ -975,6 +979,7 @@ impl SessionStore {
         &self,
         id: &str,
         harness: &str,
+        account_id: Option<&str>,
         bridge_session_id: &str,
         model_id: Option<&str>,
         snapshot: &Value,
@@ -990,12 +995,13 @@ impl SessionStore {
         // retries) the moment another connection has committed in between —
         // and every chunk of every other chat that is streaming is a commit.
         let started = sqlx::query(
-            "UPDATE sessions SET harness = ?, bridge_session_id = ?, model_id = ?, snapshot_json = ?, \
+            "UPDATE sessions SET harness = ?, account_id = ?, bridge_session_id = ?, model_id = ?, snapshot_json = ?, \
              reasoning_effort = NULL, fast_mode = NULL, carryover_pending = (message_count > 0), \
              updated_at = ? \
              WHERE id = ? RETURNING message_count",
         )
         .bind(harness)
+        .bind(account_id)
         .bind(bridge_session_id)
         .bind(model_id)
         .bind(snapshot.to_string())
@@ -1030,6 +1036,34 @@ impl SessionStore {
             .await
             .map_err(|error| db_error("failed to commit rebind", error))?;
         Ok(started)
+    }
+
+    /// Account changes retain the model, effort, and transcript. Native CLI
+    /// sessions are private to the account, so only the host transcript is
+    /// handed over and no historical tool invocation is dispatched again.
+    pub async fn switch_account(
+        &self,
+        id: &str,
+        account_id: &str,
+        bridge_session_id: &str,
+        snapshot: &Value,
+    ) -> Result<(), String> {
+        let result = sqlx::query(
+            "UPDATE sessions SET account_id = ?, bridge_session_id = ?, snapshot_json = ?, \
+             carryover_pending = EXISTS(SELECT 1 FROM session_events WHERE session_id = sessions.id), updated_at = ? WHERE id = ?",
+        )
+        .bind(account_id)
+        .bind(bridge_session_id)
+        .bind(snapshot.to_string())
+        .bind(now_iso())
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| db_error("failed to switch session account", error))?;
+        if result.rows_affected() == 0 {
+            return Err(format!("session {id} is gone"));
+        }
+        Ok(())
     }
 
     /// Whether the agent behind a session has yet to be given the conversation
@@ -1787,6 +1821,7 @@ mod tests {
         SessionRecord {
             id: id.to_string(),
             harness: "claude-acp".to_string(),
+            account_id: None,
             bridge_session_id: None,
             cwd: "C:\\work".to_string(),
             title: None,
@@ -1859,6 +1894,80 @@ mod tests {
             )
         })
         .collect()
+    }
+
+    #[tokio::test]
+    async fn switching_accounts_preserves_history_settings_and_marks_context_for_transfer() {
+        let (_dir, store) = store_with_history().await;
+        store.set_model("a", Some("claude-sonnet")).await.unwrap();
+        store
+            .set_run_settings("a", Some("high"), Some(true))
+            .await
+            .unwrap();
+        let before = store.list_events("a").await.unwrap();
+        let snapshot = json!({"models":{"currentModelId":"claude-sonnet"}});
+        store
+            .switch_account("a", "account-two", "native-two", &snapshot)
+            .await
+            .unwrap();
+        let switched = store.get_session("a").await.unwrap().unwrap();
+        assert_eq!(switched.account_id.as_deref(), Some("account-two"));
+        assert_eq!(switched.bridge_session_id.as_deref(), Some("native-two"));
+        assert_eq!(switched.model_id.as_deref(), Some("claude-sonnet"));
+        assert_eq!(switched.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(switched.fast_mode, Some(true));
+        assert_eq!(store.list_events("a").await.unwrap(), before);
+        assert!(store.carryover_pending("a").await.unwrap());
+        assert_eq!(
+            store.get_session("b").await.unwrap().unwrap().account_id,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn saved_account_identity_survives_store_reopen_and_unassigned_chats_stay_unbound() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("host.db");
+        let store = SessionStore::open(&path).await.unwrap();
+        let mut managed = record("managed");
+        managed.account_id = Some("account-one".into());
+        store.insert_session(&managed).await.unwrap();
+        store.insert_session(&record("legacy")).await.unwrap();
+        store.pool.close().await;
+        let reopened = SessionStore::open(&path).await.unwrap();
+        assert_eq!(
+            reopened
+                .get_session("managed")
+                .await
+                .unwrap()
+                .unwrap()
+                .account_id
+                .as_deref(),
+            Some("account-one")
+        );
+        assert_eq!(
+            reopened
+                .get_session("legacy")
+                .await
+                .unwrap()
+                .unwrap()
+                .account_id,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn switching_an_unknown_chat_cannot_reassign_another_chats_account() {
+        let (_dir, store) = store_with_history().await;
+        assert!(store
+            .switch_account("missing", "account-two", "native", &json!({}))
+            .await
+            .is_err());
+        assert_eq!(
+            store.get_session("a").await.unwrap().unwrap().account_id,
+            None
+        );
+        assert!(!store.carryover_pending("a").await.unwrap());
     }
 
     #[tokio::test]
@@ -1960,7 +2069,7 @@ mod tests {
             .expect("event");
         let snapshot = json!({ "models": { "currentModelId": "gpt-5" } });
         let started = store
-            .rebind_session("b", "codex-acp", "codex-1", Some("gpt-5"), &snapshot)
+            .rebind_session("b", "codex-acp", None, "codex-1", Some("gpt-5"), &snapshot)
             .await
             .expect("rebind");
         assert!(!started);
@@ -2001,7 +2110,7 @@ mod tests {
             .expect("raw row");
 
         let started = store
-            .rebind_session("a", "codex-acp", "codex-1", Some("gpt-5"), &json!({}))
+            .rebind_session("a", "codex-acp", None, "codex-1", Some("gpt-5"), &json!({}))
             .await
             .expect("rebind");
         assert!(started);
@@ -2024,7 +2133,7 @@ mod tests {
     async fn a_session_that_is_gone_is_not_moved_anywhere() {
         let (_dir, store) = store_with_history().await;
         let moved = store
-            .rebind_session("nobody", "codex-acp", "codex-1", None, &json!({}))
+            .rebind_session("nobody", "codex-acp", None, "codex-1", None, &json!({}))
             .await;
         assert!(moved.is_err());
         // Nothing of anyone else's was touched on the way to finding that out.
@@ -2059,6 +2168,45 @@ mod tests {
                 "migration {version} changed after it shipped; restore the file and add a new migration instead"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn retiring_system_accounts_preserves_transcripts_and_saved_account_bindings() {
+        let (_dir, store) = store_with_history().await;
+        let before = store.list_events("a").await.unwrap();
+        sqlx::query("UPDATE sessions SET harness = 'codex-acp', account_id = 'system:codex-acp' WHERE id = 'a'")
+            .execute(&store.pool).await.unwrap();
+        sqlx::query("UPDATE sessions SET account_id = 'saved-account' WHERE id = 'b'")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query(include_str!(
+            "../../../migrations_agent_host/20260929000000_retire_system_accounts.sql"
+        ))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            store.get_session("a").await.unwrap().unwrap().account_id,
+            None
+        );
+        assert_eq!(
+            store
+                .get_session("b")
+                .await
+                .unwrap()
+                .unwrap()
+                .account_id
+                .as_deref(),
+            Some("saved-account")
+        );
+        assert_eq!(store.list_events("a").await.unwrap(), before);
+        store
+            .switch_account("a", "saved-account", "new-native-session", &json!({}))
+            .await
+            .unwrap();
+        assert_eq!(store.list_events("a").await.unwrap(), before);
+        assert!(store.carryover_pending("a").await.unwrap());
     }
 
     #[tokio::test]

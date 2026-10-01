@@ -1,6 +1,8 @@
 import { create } from "zustand";
+import { useProviderAccountsStore } from "@/features/providers/stores/providerAccountsStore";
 import { getPreferenceStorage } from "@/shared/preferences/rootSettings";
 import { getProviderRateLimits } from "../api/providerRateLimits";
+import { accountUsage, isManagedUsage } from "../lib/accountUsage";
 import type {
   ProviderRateLimitSnapshot,
   ProviderRateLimits,
@@ -39,7 +41,16 @@ export function mergeStale(
   );
   return next.map((provider) => {
     const prior = previousById.get(provider.provider);
-    if (!prior || !hasUsageData(prior)) return provider;
+    if (
+      !prior ||
+      prior.accountId !== provider.accountId ||
+      !hasUsageData(prior)
+    )
+      return provider;
+    // Managed accounts own stale retention too. An authoritative empty
+    // snapshot (for example OAuth -> API billing) must clear old windows.
+    if (isManagedUsage(provider.provider) && provider.accountId)
+      return provider;
     if (hasUsageData(provider) || provider.status === "ok") return provider;
     // A dead or expired sign-in is not a blip: keep the error, drop the
     // previous windows so the roster offers Sign in instead of stale usage.
@@ -145,12 +156,42 @@ interface ProviderRateLimitsState {
 
 let pollTimer: number | null = null;
 let removeVisibilityListener: (() => void) | null = null;
+let removeAccountListener: (() => void) | null = null;
 let inFlight: Promise<void> | null = null;
+let refreshInFlight: Promise<void> | null = null;
 /**
  * When the last fetch settled. A window coming back into view fetches at once
  * only when the ticks it skipped while hidden left this more than a poll old.
  */
 let lastFetchSettledAt = 0;
+
+function composeUsage(
+  previous: ProviderRateLimitSnapshot | null,
+  snapshot: ProviderRateLimitSnapshot,
+  previousFetchTimes: Record<string, number> = {},
+) {
+  const merged = mergeStale(previous?.providers, [
+    ...snapshot.providers.filter(
+      (provider) => !isManagedUsage(provider.provider),
+    ),
+    ...accountUsage(useProviderAccountsStore.getState()),
+  ]);
+  const providers = keepUnchangedProviders(previous?.providers, merged);
+  return {
+    snapshot:
+      previous && providers === previous.providers
+        ? previous
+        : { ...snapshot, providers },
+    fetchedAtByProvider: Object.fromEntries(
+      merged.map((provider) => [
+        provider.provider,
+        snapshot === previous && !isManagedUsage(provider.provider)
+          ? (previousFetchTimes[provider.provider] ?? provider.updatedAt)
+          : provider.updatedAt,
+      ]),
+    ),
+  };
+}
 
 export const useProviderRateLimitsStore = create<ProviderRateLimitsState>(
   (set, get) => ({
@@ -166,44 +207,50 @@ export const useProviderRateLimitsStore = create<ProviderRateLimitsState>(
         await inFlight;
         return;
       }
-      inFlight = get()
-        .refresh()
-        .finally(() => {
-          inFlight = null;
-        });
+      set({ isRefreshing: true });
+      inFlight = (async () => {
+        try {
+          const snapshot = await getProviderRateLimits();
+          set((state) => ({
+            ...composeUsage(state.snapshot, snapshot),
+            error: null,
+          }));
+        } catch (error) {
+          set({
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          lastFetchSettledAt = Date.now();
+          set({ isRefreshing: refreshInFlight !== null });
+        }
+      })().finally(() => {
+        inFlight = null;
+      });
       await inFlight;
     },
 
     refresh: async () => {
+      if (refreshInFlight) return refreshInFlight;
       set({ isRefreshing: true });
-      try {
-        const snapshot = await getProviderRateLimits();
-        set((state) => {
-          const previous = state.snapshot;
-          const merged = mergeStale(previous?.providers, snapshot.providers);
-          const providers = keepUnchangedProviders(previous?.providers, merged);
-          const fetchedAtByProvider = Object.fromEntries(
-            merged.map((provider) => [provider.provider, provider.updatedAt]),
+      refreshInFlight = Promise.all([
+        get().load(),
+        useProviderAccountsStore.getState().refresh(true),
+      ])
+        .then(() => {
+          const previous = get().snapshot;
+          set(
+            composeUsage(
+              previous,
+              previous ?? { providers: [], updatedAt: Date.now() },
+              get().fetchedAtByProvider,
+            ),
           );
-          if (previous && providers === previous.providers) {
-            // Same usage as last time: subscribers keep the snapshot they have.
-            return { fetchedAtByProvider, error: null, isRefreshing: false };
-          }
-          return {
-            snapshot: { ...snapshot, providers },
-            fetchedAtByProvider,
-            error: null,
-            isRefreshing: false,
-          };
+        })
+        .finally(() => {
+          refreshInFlight = null;
+          set({ isRefreshing: inFlight !== null });
         });
-      } catch (error) {
-        set({
-          isRefreshing: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      } finally {
-        lastFetchSettledAt = Date.now();
-      }
+      await refreshInFlight;
     },
 
     setUsageMode: (mode) => {
@@ -223,6 +270,27 @@ export const useProviderRateLimitsStore = create<ProviderRateLimitsState>(
 );
 
 export function startProviderRateLimitPolling(): () => void {
+  removeAccountListener?.();
+  const syncAccounts = () => {
+    useProviderRateLimitsStore.setState((state) =>
+      composeUsage(
+        state.snapshot,
+        state.snapshot ?? { providers: [], updatedAt: Date.now() },
+        state.fetchedAtByProvider,
+      ),
+    );
+  };
+  removeAccountListener = useProviderAccountsStore.subscribe(
+    (state, previous) => {
+      if (
+        state.accounts !== previous.accounts ||
+        state.defaults !== previous.defaults ||
+        state.statuses !== previous.statuses
+      )
+        syncAccounts();
+    },
+  );
+  syncAccounts();
   void useProviderRateLimitsStore.getState().load();
   if (pollTimer != null) {
     window.clearInterval(pollTimer);
@@ -249,5 +317,7 @@ export function startProviderRateLimitPolling(): () => void {
     }
     removeVisibilityListener?.();
     removeVisibilityListener = null;
+    removeAccountListener?.();
+    removeAccountListener = null;
   };
 }

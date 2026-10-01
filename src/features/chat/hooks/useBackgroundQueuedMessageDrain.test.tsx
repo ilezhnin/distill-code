@@ -12,6 +12,10 @@ import { useChatStore } from "@/features/chat/stores/chatStore";
 import * as queuePersistence from "@/features/chat/stores/queuePersistence";
 import type { QueuedMessageRecord } from "@/features/chat/stores/chatStore";
 import {
+  clearAccountQuotaWait,
+  deferForAccountQuota,
+} from "@/features/chat/lib/accountQuotaWait";
+import {
   resetBackgroundQueueDrainStateForTesting,
   useBackgroundQueuedMessageDrain,
 } from "./useBackgroundQueuedMessageDrain";
@@ -174,6 +178,80 @@ describe("useBackgroundQueuedMessageDrain", () => {
       ],
       hasHydratedSessions: true,
     });
+  });
+
+  it("restores a proven unaccepted head ahead of later records and waits without spinning", async () => {
+    const first = releasedRecord();
+    const next = ordinaryRecord();
+    useChatStore.setState({
+      queuedMessageBySession: { "session-1": [first, next] },
+    });
+    mocks.sendQueuedPromptToExistingSessionInBackground.mockImplementationOnce(
+      (
+        sessionId: string,
+        _record: QueuedMessageRecord,
+        beforeCommit: () => void,
+        dispatched: () => void,
+      ) => {
+        beforeCommit();
+        const error = {
+          data: { kind: "account_quota_wait", promptNotAccepted: true },
+        };
+        // A real dispatch owns a streaming runtime until sendCore receives the rejection.
+        useChatStore.getState().setChatState(sessionId, "streaming");
+        dispatched();
+        deferForAccountQuota(sessionId, error);
+        useChatStore.getState().setChatState(sessionId, "idle");
+        return Promise.reject(error);
+      },
+    );
+    const view = render(<DrainHarness />);
+    await waitFor(() =>
+      expect(
+        useChatStore.getState().queuedMessageBySession["session-1"]?.[0],
+      ).toBe(first),
+    );
+    expect(useChatStore.getState().queuedMessageBySession["session-1"]).toEqual(
+      [first, next],
+    );
+    expect(
+      mocks.sendQueuedPromptToExistingSessionInBackground,
+    ).toHaveBeenCalledTimes(1);
+    view.unmount();
+    clearAccountQuotaWait("session-1");
+  });
+
+  it("restores an unaccepted head even when an account switch cleared its wait first", async () => {
+    const original = releasedRecord();
+    useChatStore.setState({
+      queuedMessageBySession: { "session-1": [original] },
+    });
+    mocks.sendQueuedPromptToExistingSessionInBackground.mockImplementationOnce(
+      (
+        sessionId: string,
+        _record: QueuedMessageRecord,
+        beforeCommit: () => void,
+        dispatched: () => void,
+      ) => {
+        beforeCommit();
+        useChatStore.getState().setChatState(sessionId, "streaming");
+        dispatched();
+        const error = {
+          data: { kind: "account_quota_wait", promptNotAccepted: true },
+        };
+        deferForAccountQuota(sessionId, error);
+        clearAccountQuotaWait(sessionId);
+        // Keep runtime busy to inspect restoration before the next dispatch.
+        return Promise.reject(error);
+      },
+    );
+    const view = render(<DrainHarness />);
+    await waitFor(() =>
+      expect(
+        useChatStore.getState().queuedMessageBySession["session-1"]?.[0],
+      ).toBe(original),
+    );
+    view.unmount();
   });
 
   it("waits for session hydration before draining a persisted released head", async () => {

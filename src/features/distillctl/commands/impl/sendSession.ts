@@ -100,6 +100,7 @@ Result:
       { acceptFirstSend },
       { loadSessionForDistillctl, requireSession },
       { findProjectOrThrow },
+      { accountQuotaWaitData, isAccountQuotaWaiting },
       {
         distillctlCrossSessionSendOptions,
         DistillctlDeliveryAlreadyAcceptedError,
@@ -113,6 +114,7 @@ Result:
       import("@/features/chat/lib/firstWorkspaceSend"),
       import("../runtime/sessions"),
       import("../runtime/projects"),
+      import("@/features/chat/lib/accountQuotaWait"),
       import("../runtime/sessionSend"),
     ]);
     const sendOptions = distillctlCrossSessionSendOptions({
@@ -142,6 +144,13 @@ Result:
           "invalid_args",
           "startup_name is only valid for the first send when workspace setup is available.",
         );
+      }
+      if (isAccountQuotaWaiting(args.session_id)) {
+        chatStore.enqueueTransportReadyMessage(
+          args.session_id,
+          admitSystemInheritedQueuedMessage({ text: args.prompt, sendOptions }),
+        );
+        return { session_id: session.id, send_status: "queued" };
       }
       if (!isQueuedSessionReady(runtime)) {
         switch (args.if_running) {
@@ -218,6 +227,14 @@ Result:
         return { session_id: session.id, send_status: "queued" };
       }
 
+      const retryRecord = {
+        kind: "transport-ready" as const,
+        recordId: crypto.randomUUID(),
+        payload: admitSystemInheritedQueuedMessage({
+          text: args.prompt,
+          sendOptions,
+        }),
+      };
       try {
         await sendPromptToExistingSessionInBackground(
           args.session_id,
@@ -233,6 +250,11 @@ Result:
           {
             returnOnDispatch: true,
             sendOptions,
+            onPromptNotAccepted: () => {
+              useChatStore
+                .getState()
+                .restoreUnacceptedQueuedMessage(args.session_id, retryRecord);
+            },
             validateHydratedTranscript: () => {
               if (
                 args.delivery_id &&
@@ -244,6 +266,12 @@ Result:
           },
         );
       } catch (error) {
+        if (accountQuotaWaitData(error)?.promptNotAccepted === true) {
+          useChatStore
+            .getState()
+            .restoreUnacceptedQueuedMessage(args.session_id, retryRecord);
+          return { session_id: session.id, send_status: "queued" };
+        }
         if (error instanceof DistillctlDeliveryAlreadyAcceptedError) {
           return { session_id: session.id, send_status: "deduplicated" };
         }

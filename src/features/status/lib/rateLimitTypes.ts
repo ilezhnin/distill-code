@@ -21,13 +21,22 @@ export interface RateLimitWindow {
   resetDescription: string | null;
 }
 
+export type UsagePeriod = "session" | "weekly" | "monthly";
+
 export interface ProviderRateLimits {
   provider: AgentPlatformId;
+  accountId?: string;
+  accountLimited?: boolean;
   session: RateLimitWindow | null;
   weekly: RateLimitWindow | null;
   fableWeekly?: RateLimitWindow | null;
   monthly?: RateLimitWindow | null;
   codingMonthly?: RateLimitWindow | null;
+  modelWindows?: {
+    modelId: string;
+    period: UsagePeriod;
+    window: RateLimitWindow;
+  }[];
   planType?: string | null;
   accountLabel?: string | null;
   updatedAt: number;
@@ -42,7 +51,12 @@ export interface ProviderRateLimitSnapshot {
 }
 
 export interface UsageSection {
-  key: "session" | "weekly" | "fableWeekly" | "monthly" | "codingMonthly";
+  key:
+    | UsagePeriod
+    | "fableWeekly"
+    | "codingMonthly"
+    | `model:${string}:${UsagePeriod}`;
+  modelId?: string;
   label: string;
   shortLabel: string;
   window: RateLimitWindow;

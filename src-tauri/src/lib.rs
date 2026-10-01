@@ -197,6 +197,7 @@ pub fn run() {
             app.manage(services::agent_host::AgentHost::new());
             app.manage(services::benchmarks::BenchmarkState::default());
             app.manage(commands::agent_setup::AgentSetupRegistry::default());
+            app.manage(services::provider_account_status::ProviderAccountStatusState::default());
 
             if app.try_state::<services::e2e_mode::E2eMode>().is_none()
                 && std::env::var_os("DISTILL_ROOT").is_none()
@@ -369,6 +370,16 @@ pub fn run() {
             commands::agent_setup::list_agent_setup_status,
             commands::agent_setup::clear_agent_setup_status,
             commands::provider_rate_limits::get_provider_rate_limits,
+            commands::provider_accounts::list_provider_accounts,
+            commands::provider_accounts::add_provider_account,
+            commands::provider_accounts::update_provider_account,
+            commands::provider_accounts::remove_provider_account,
+            commands::provider_accounts::set_default_provider_account,
+            commands::provider_accounts::set_provider_account_routing,
+            commands::provider_accounts::authenticate_provider_account,
+            commands::provider_accounts::sign_out_provider_account,
+            commands::provider_account_status::get_provider_account_statuses,
+            commands::provider_account_status::consume_provider_account_reset,
             commands::path_resolver::resolve_path,
             commands::path_resolver::canonicalize_authorized_workspace_directory,
             commands::path_resolver::check_directories_exist,

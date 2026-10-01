@@ -332,6 +332,25 @@ pub fn is_managed(provider_id: &str) -> bool {
     managed_tool(provider_id).is_some()
 }
 
+/// The native CLI shipped by the same pinned bridge used for chat sessions.
+/// Account probes use it directly so no shell or detached grandchild is needed.
+pub(crate) fn native_cli_path(app: &tauri::AppHandle, provider_id: &str) -> Option<PathBuf> {
+    if !managed_bridges_enabled() {
+        return None;
+    }
+    let tool = managed_tool(provider_id)?;
+    let target = managed_node::current_target_triple()?;
+    let relative = tool_lock_entry(tool.id)
+        .ok()?
+        .native_executables
+        .get(target)?;
+    let path = managed_packages_root(app)?
+        .join("tools")
+        .join(tool.id)
+        .join(relative);
+    path.is_file().then_some(path)
+}
+
 // ---------------------------------------------------------------------------
 // state.json — installed versions + last reconcile result
 // ---------------------------------------------------------------------------

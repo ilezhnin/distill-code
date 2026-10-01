@@ -18,6 +18,8 @@ pub mod notifications;
 pub mod path_resolver;
 pub mod project_icons;
 pub mod project_store;
+pub mod provider_account_status;
+pub mod provider_accounts;
 pub mod provider_rate_limits;
 pub mod renderer;
 pub mod runtime_config;

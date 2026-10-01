@@ -57,6 +57,10 @@ import {
   createUserMessage,
 } from "@/shared/types/messages";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
+import {
+  accountQuotaWaitData,
+  deferForAccountQuota,
+} from "@/features/chat/lib/accountQuotaWait";
 
 /** Persona recorded on the user message and forwarded to the ACP send. */
 export interface SendCorePersona {
@@ -247,6 +251,7 @@ export async function dispatchPrompt(
   const isCurrent = () => ownsSessionPrompt(sessionId, promptOwner);
   let userMessageCommitted = false;
   let preCommitRejected = false;
+  const userMessageId = crypto.randomUUID();
 
   const { addMessage, setChatState, setError, setPendingAssistantProvider } =
     useChatStore.getState();
@@ -270,7 +275,6 @@ export async function dispatchPrompt(
     // records the prompt's chunks under the id the transcript already shows:
     // an edit of this message can then name it to the host without waiting
     // for a reload to replay the host's ids over the renderer's.
-    const userMessageId = crypto.randomUUID();
     const commitUserMessage = () => {
       throwIfAborted(signal);
       beforeUserMessageCommitted?.();
@@ -421,13 +425,30 @@ export async function dispatchPrompt(
     }
   } catch (err) {
     preCommitRejected = err instanceof PreCommitSendRejectedError;
-    if (!preCommitRejected) {
+    const quotaWait = accountQuotaWaitData(err);
+    const quotaDeferred =
+      quotaWait !== null &&
+      (!userMessageCommitted || quotaWait.promptNotAccepted === true);
+    if (!preCommitRejected && !quotaDeferred) {
       const cancellationRace = assistantCancellationRaces.get(promptOwner);
       if (cancellationRace) {
         recordAssistantPromptOutcome(promptOwner, "error");
       }
     }
-    if (preCommitRejected) {
+    if (quotaDeferred && isCurrent()) {
+      // Publish the wait before returning to idle, so neither queue owner can
+      // dispatch the next record before the rejected head has been restored.
+      deferForAccountQuota(sessionId, err);
+      if (userMessageCommitted) {
+        // Only the host's explicit zero-activity rollback proof permits this.
+        useChatStore.getState().removeMessage(sessionId, userMessageId);
+      }
+      clearBufferedStreamingUpdatesForSession(sessionId, {
+        owner: promptOwner,
+      });
+      setError(sessionId, null);
+      setChatState(sessionId, "idle");
+    } else if (preCommitRejected) {
       // Ownership/readiness changed at the last reversible boundary. This
       // prompt committed nothing, so leave the newer owner's runtime intact.
     } else if (err instanceof DOMException && err.name === "AbortError") {

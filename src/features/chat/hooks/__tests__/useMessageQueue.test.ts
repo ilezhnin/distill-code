@@ -13,6 +13,10 @@ import type { ChatSendOptions } from "../../types";
 import { useChatStore } from "../../stores/chatStore";
 import { useChatSessionStore } from "../../stores/chatSessionStore";
 import { useMessageQueue } from "../useMessageQueue";
+import {
+  clearAccountQuotaWait,
+  deferForAccountQuota,
+} from "../../lib/accountQuotaWait";
 
 const mockAcpPrepareSession = vi.fn().mockResolvedValue(undefined);
 
@@ -57,6 +61,69 @@ describe("useMessageQueue", () => {
       activeSessionId: null,
       isConnected: false,
     });
+  });
+
+  it("retains the original head across repeated quota deferrals without exhausting rejection retries", () => {
+    let waiting = true;
+    const sendMessage = vi.fn(() => {
+      if (!waiting) return true;
+      deferForAccountQuota("s1", {
+        data: { kind: "account_quota_wait", promptNotAccepted: true },
+      });
+      return false;
+    });
+    useChatStore.getState().enqueueTransportReadyMessage("s1", {
+      text: "keep exact intent",
+      persona: { kind: "none" },
+    });
+    const original = useChatStore.getState().queuedMessageBySession.s1[0];
+    const hook = renderHook(() => useMessageQueue("s1", "idle", sendMessage));
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    for (let attempt = 2; attempt <= 8; attempt++) {
+      act(() => clearAccountQuotaWait("s1"));
+      expect(sendMessage).toHaveBeenCalledTimes(attempt);
+      expect(useChatStore.getState().queuedMessageBySession.s1[0]).toBe(
+        original,
+      );
+    }
+    waiting = false;
+    act(() => clearAccountQuotaWait("s1"));
+    expect(sendMessage).toHaveBeenCalledTimes(9);
+    expect(useChatStore.getState().queuedMessageBySession.s1).toBeUndefined();
+    hook.unmount();
+  });
+
+  it("retains a proven rejected head when account switching clears the wait before dispatch acknowledgment", async () => {
+    const sendMessage = vi.fn().mockReturnValue(true);
+    sendMessage.mockImplementationOnce(
+      (
+        _text: string,
+        _persona: unknown,
+        _attachments: unknown,
+        options: ChatSendOptions,
+      ) => {
+        options.onUserMessageCommitted?.();
+        deferForAccountQuota("s1", {
+          data: { kind: "account_quota_wait", promptNotAccepted: true },
+        });
+        options.onPromptNotAccepted?.();
+        useChatStore.getState().setChatState("s1", "thinking");
+        clearAccountQuotaWait("s1");
+        return Promise.resolve(true);
+      },
+    );
+    useChatStore.getState().enqueueTransportReadyMessage("s1", {
+      persona: { kind: "none" },
+      text: "retain before acknowledgment",
+    });
+    const original = useChatStore.getState().queuedMessageBySession.s1[0];
+    renderHook(() => useMessageQueue("s1", "idle", sendMessage));
+    await act(async () => Promise.resolve());
+    expect(useChatStore.getState().queuedMessageBySession.s1[0]).toBe(original);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    act(() => useChatStore.getState().setChatState("s1", "idle"));
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    expect(useChatStore.getState().queuedMessageBySession.s1).toBeUndefined();
   });
 
   it("admits under a pending draft id, then dispatches once after promotion", async () => {

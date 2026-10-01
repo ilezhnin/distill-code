@@ -35,6 +35,7 @@ import {
 } from "../acp/liveStreamingUpdates";
 import { useWorkspaceRepository } from "@/features/workspaces/workspaceRepository";
 import { DEFAULT_HARNESS_ID } from "@/features/providers/curatedProviders";
+import { accountQuotaWaitData } from "../lib/accountQuotaWait";
 
 // TODO: Remove this fallback once goose2 has first-class /-commands.
 const MANUAL_COMPACT_TRIGGER = "/compact";
@@ -240,7 +241,13 @@ export function useChat(
             resolve(true);
           },
         })
-          .catch(() => {
+          .catch((error) => {
+            if (accountQuotaWaitData(error)?.promptNotAccepted === true) {
+              if (userMessageCommitted) sendOptions?.onPromptNotAccepted?.();
+              userMessageCommitted = false;
+              if (!accepted) resolve(false);
+              return;
+            }
             // dispatchPrompt records the failure in the chat stores. A failure
             // before commitment is a rejection; a later run failure does not
             // make the already-committed user turn retryable.

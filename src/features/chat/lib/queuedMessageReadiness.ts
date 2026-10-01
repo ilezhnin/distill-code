@@ -21,13 +21,17 @@ export function isQueuedSessionReady(
   runtime:
     | Pick<
         SessionChatRuntime,
-        "chatState" | "activeRunId" | "isRunCancellationPending"
+        | "chatState"
+        | "activeRunId"
+        | "isRunCancellationPending"
+        | "accountQuotaWaitUntil"
       >
     | undefined,
   preparationReady = true,
 ): boolean {
   return (
     preparationReady &&
+    runtime?.accountQuotaWaitUntil == null &&
     (runtime?.chatState ?? "idle") === "idle" &&
     (runtime?.activeRunId ?? null) === null &&
     !(runtime?.isRunCancellationPending ?? false)

@@ -34,6 +34,7 @@ import { useProviderModelCacheStore } from "@/features/providers/stores/provider
 import { setMultiWorkspaceEnabled } from "@/features/workspaces/multiWorkspacePreference";
 import type { AcpSessionInfo, AcpSessionsPage } from "@/shared/api/acp";
 import { createUserMessage } from "@/shared/types/messages";
+import { clearAccountQuotaWait } from "@/features/chat/lib/accountQuotaWait";
 
 const mocks = vi.hoisted(() => ({
   acpCreateSession: vi.fn(),
@@ -910,6 +911,40 @@ describe("sessions.create", () => {
 });
 
 describe("sessions.send", () => {
+  it("queues an idle direct send when account preflight proves that all quotas are exhausted", async () => {
+    mockSessionFound({ providerId: "codex-acp" });
+    const error = {
+      data: { kind: "account_quota_wait", promptNotAccepted: true },
+    };
+    mocks.acpSendMessage.mockImplementationOnce(() => {
+      throw error;
+    });
+    const result = await dispatchCommand(
+      "sessions",
+      {
+        action: "send",
+        session_id: "session-1",
+        prompt: "retry after reset",
+        delivery_id: "quota-delivery",
+      },
+      ctx,
+    );
+    expect(result).toMatchObject({ send_status: "queued" });
+    const head = useChatStore.getState().queuedMessageBySession["session-1"][0];
+    expect(head.payload.text).toBe("retry after reset");
+    expect(
+      head.payload.sendOptions?.userMessageMetadata?.distillDeliveryId,
+    ).toBe("quota-delivery");
+    expect(
+      useChatStore
+        .getState()
+        .messagesBySession["session-1"]?.some(
+          (message) => message.role === "user",
+        ) ?? false,
+    ).toBe(false);
+    clearAccountQuotaWait("session-1");
+  });
+
   it("does not inject a prompt when history hydration fails", async () => {
     mockSessionFound({ providerId: "codex-acp" });
     mocks.loadSessionMessages.mockResolvedValueOnce(false);

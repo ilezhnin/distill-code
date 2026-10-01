@@ -3,7 +3,6 @@ use super::types::RateLimitWindow;
 pub const SESSION_WINDOW_MINUTES: u32 = 300;
 pub const WEEKLY_WINDOW_MINUTES: u32 = 10_080;
 pub const MONTHLY_WINDOW_MINUTES: u32 = 43_200;
-const CODEX_WINDOW_DURATION_TOLERANCE_MINUTES: u32 = 1;
 
 pub fn clamp_used_percent(value: f64) -> f64 {
     if !value.is_finite() {
@@ -65,15 +64,4 @@ pub fn usage_window(
         resets_at,
         reset_description: reset_description(resets_at),
     })
-}
-
-pub fn classify_codex_window_minutes(duration_minutes: Option<f64>) -> Option<&'static str> {
-    let duration = duration_minutes.filter(|value| value.is_finite())? as u32;
-    if duration.abs_diff(SESSION_WINDOW_MINUTES) <= CODEX_WINDOW_DURATION_TOLERANCE_MINUTES {
-        return Some("session");
-    }
-    if duration.abs_diff(WEEKLY_WINDOW_MINUTES) <= CODEX_WINDOW_DURATION_TOLERANCE_MINUTES {
-        return Some("weekly");
-    }
-    None
 }
