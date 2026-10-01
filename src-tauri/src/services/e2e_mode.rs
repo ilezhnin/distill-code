@@ -5,13 +5,9 @@
 //! `DISTILL_E2E_MODE=1`. Only then is persistent state redirected into the run
 //! root and the driver socket bound on a random port behind a required token.
 //!
-//! A feature-only developer build still exposes the driver: `lib.rs` falls back
-//! to `DriverMode::Legacy`, which binds `127.0.0.1:9999` (or
-//! `APP_TEST_DRIVER_PORT`) and accepts unauthenticated loopback commands
-//! against the real app profile. That is deliberate - `just dev-windows` and
-//! the agent-driver relay rely on it (docs/app-e2e.md) - and it is why the
-//! shipped NSIS bundle and the desktop-shortcut launcher
-//! (`scripts/windows/Launch-Distill.ps1`) are built without the feature.
+//! A feature-only developer build enables its normal-profile driver only when
+//! APP_TEST_DRIVER_TOKEN is valid. Every mode authenticates requests. The shipped
+//! NSIS bundle and desktop-shortcut launcher omit the driver feature entirely.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};

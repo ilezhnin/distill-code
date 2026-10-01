@@ -22,7 +22,7 @@ one relay with two kinds of envelope.
 From a terminal where `pnpm` already works:
 
 ```sh
-node scripts/agent-driver/relay.mjs
+node scripts/agent-driver/relay.mjs --token <launcher-token>
 ```
 
 That watches `../agent-driver/` next to the repository — the folder the agent
@@ -31,14 +31,17 @@ build puts the driver (`justfile`'s `app_features` includes
 `app-test-driver`; the app logs `[app-test-driver] Listening on
 127.0.0.1:9999` at startup).
 
-Start the app with `just dev-windows` for that. The desktop-shortcut launcher
+Set `APP_TEST_DRIVER_TOKEN` to a fresh 32-128 character alphanumeric token, then
+start the app with `just dev-windows`. Without a valid token the driver stays
+disabled; every request in both normal and isolated modes requires it.
+The desktop-shortcut launcher
 (`scripts/windows/Launch-Distill.ps1`) and the installer builds leave
-`app-test-driver` out on purpose — the socket is unauthenticated — so `driver`
+`app-test-driver` out on purpose, so `driver`
 envelopes against an app started that way answer with a connection failure.
 `exec` envelopes do not need the app at all.
 
-Options: `--root <dir>`, `--port <n>`, `--token <s>` (only for the isolated
-driver mode, which mints its own port and token).
+Options: `--root <dir>`, `--port <n>`, `--token <s>` (required for either driver
+mode). Isolated mode chooses its own port and uses the launcher's token.
 
 Leave it running. It prints one line per envelope. Ctrl+C stops it.
 

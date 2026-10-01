@@ -72,6 +72,9 @@ Invoke-CargoCheck -ArgumentList @(
 Invoke-CargoCheck -ArgumentList @(
     "clippy", "--all-targets", "-p", "tauri-plugin-distillctl", "--features", "server", "--", "-D", "warnings"
 ) -Label "cargo clippy distillctl plugin"
+Invoke-CargoCheck -ArgumentList @(
+    "clippy", "--all-targets", "-p", "tauri-plugin-app-test-driver", "--", "-D", "warnings"
+) -Label "cargo clippy app test driver"
 
 Write-Host ""
 Write-Host "Windows native CI gate passed." -ForegroundColor Green

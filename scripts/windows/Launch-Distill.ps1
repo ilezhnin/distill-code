@@ -401,11 +401,9 @@ try {
     [System.IO.File]::WriteAllText($devConfigPath, ($devConfig | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
 
     # This launcher is the desktop-shortcut/daily-driver entry point, so it
-    # builds without `app-test-driver`: that feature binds an unauthenticated
-    # UI-driving socket on 127.0.0.1:9999 that any local process - including a
-    # command an agent runs - can use to read the rendered transcript and input
-    # values and to click any control. Use `just dev-windows` when you want the
-    # driver (see docs/app-e2e.md).
+    # builds without `app-test-driver`. A dev build can enable the authenticated
+    # UI-driving socket with APP_TEST_DRIVER_TOKEN. Use `just dev-windows` when
+    # you want the driver (see docs/app-e2e.md).
     $features = Get-DistillAppFeatures -BaseFeatures @("distillctl")
     Write-WindowsDevInfo "version: $($version.RichVersion)"
     Write-WindowsDevInfo "vite: http://localhost:$vitePort"

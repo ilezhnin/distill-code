@@ -176,6 +176,7 @@ clippy:
     just _tauri-cargo-windows clippy --all-targets -p distillctl -- -D warnings
     just _tauri-cargo-windows clippy --all-targets -p distill-monitor -- -D warnings
     just _tauri-cargo-windows clippy --all-targets -p tauri-plugin-distillctl --features server -- -D warnings
+    just _tauri-cargo-windows clippy --all-targets -p tauri-plugin-app-test-driver -- -D warnings
 
 # Build the frontend.
 build:
@@ -194,6 +195,7 @@ tauri-check:
 tauri-test:
     just _tauri-cargo-windows test --lib --features {{ app_features }}
     just _tauri-cargo-windows test -p tauri-plugin-distillctl --features server
+    just _tauri-cargo-windows test -p tauri-plugin-app-test-driver
     just _tauri-cargo-windows test -p distillctl
     just _tauri-cargo-windows test -p distill-monitor
 

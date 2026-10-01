@@ -6,8 +6,7 @@ a running Distill can be clicked, typed into and read from outside. There is no
 checked-in end-to-end suite built on it: you use the driver by hand, or an agent
 uses it through the [agent-driver relay](../scripts/agent-driver/README.md).
 
-Two entry points deliberately leave the feature out, because the driver accepts
-unauthenticated local commands (see the warning below): the NSIS/MSI bundles
+Two entry points deliberately leave the feature out: the NSIS/MSI bundles
 (`just bundle`), and `scripts\windows\Launch-Distill.ps1` — the one-click
 launcher behind the "Distill Code" desktop shortcut. Launch the app with
 `just dev-windows` when you want to drive it.
@@ -19,24 +18,27 @@ Automated UI coverage lives elsewhere: component tests next to the code in
 
 ## The local driver (default)
 
-A dev build started with `just dev-windows` (or
+A dev build with `APP_TEST_DRIVER_TOKEN` set to 32-128 ASCII letters or digits,
+started with `just dev-windows` (or
 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\windows\Dev-Windows.ps1`)
 listens on `127.0.0.1:9999`, or on `APP_TEST_DRIVER_PORT` when that is set,
 and logs `[app-test-driver] Listening on 127.0.0.1:<port>` at startup. It uses
-your normal app profile and accepts unauthenticated loopback connections.
+your normal app profile and requires that token on every request. Without a valid
+token, this driver stays disabled and the app runs normally.
 
-> **Anything running on the machine can drive that socket.** No token, no
-> origin check: a postinstall script or a shell command an agent runs can read
-> the whole rendered transcript and every input value (`getText`, `snapshot`
-> prints `value="…"`, password fields included) and click any control —
-> including approving its own permission prompt. Prefer isolated mode below for
-> unattended runs, and do not leave a driver-enabled build running while you
-> work in a real session with agents that have shell access.
+Generate a fresh token in the launcher's shell and pass the same token to the
+relay with `--token`. Treat it as permission to read and control the entire UI.
+Password values are redacted in snapshots; agent and terminal child environments
+do not inherit the token. This is not a sandbox against other processes running
+as the same Windows user. Use isolated mode for unattended checks.
+
+Commands are limited to 1 MiB and a 60-second action timeout. The listener accepts
+at most 16 concurrent connections and closes idle reads after five seconds.
 
 The protocol is one JSON object per line in each direction:
 
 ```json
-{ "action": "waitForText", "selector": "body", "value": "Ready", "timeout": 30000 }
+{ "token": "<launcher-token>", "action": "waitForText", "selector": "body", "value": "Ready", "timeout": 30000 }
 ```
 
 ```json
@@ -54,7 +56,7 @@ through `scripts/agent-driver/relay.mjs`. Start it from a shell where `pnpm`
 works:
 
 ```sh
-node scripts/agent-driver/relay.mjs
+node scripts/agent-driver/relay.mjs --token <launcher-token>
 ```
 
 It watches `../agent-driver/` next to the repository, forwards `driver`
@@ -71,6 +73,8 @@ with a validated run root, run ID and driver token. The app then:
 - runs under its own identifier, `com.levocat.distill.e2e.<run-id>`, so it gets
   its own app data;
 - keeps the complete Distill root under `<run-root>/home/.distill`;
+- skips the legacy background subscription poll, which reads host CLI
+  credentials; explicit provider tests still need isolated account fixtures;
 - listens on a random loopback port, requires the token on every command, and
   writes `{ "host", "port", "pid" }` to `<run-root>/app-test-driver.json` once
   it is ready;

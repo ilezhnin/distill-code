@@ -70,10 +70,8 @@ try {
     Assert-Equal "process args: trailing backslash doubled inside quotes" (Join-WindowsProcessArguments -Arguments @("C:\Program Files\")) '"C:\Program Files\\"'
     Assert-Equal "process args: embedded quote escaped" (Join-WindowsProcessArguments -Arguments @('say "hi"')) '"say \"hi\""'
 
-    # The default deliberately includes the unauthenticated loopback driver:
-    # `just dev-windows` and the agent-driver relay need it. It is NOT a
-    # fail-closed default, so the entry points that must not expose it - the
-    # NSIS bundle and the desktop-shortcut launcher - ask for `distillctl` alone.
+    # Dev builds include the driver, enabled only with a valid launcher token.
+    # The NSIS bundle and desktop shortcut omit it entirely.
     Assert-Equal "dev app feature default includes the loopback test driver" (Get-DistillAppFeatures) "distillctl,app-test-driver"
     Assert-Equal "an explicit base feature set drops the loopback test driver" (Get-DistillAppFeatures -BaseFeatures @("distillctl")) "distillctl"
     $launchDistill = Get-Content -Raw (Join-Path (Get-DistillRepoRoot) "scripts/windows/Launch-Distill.ps1")
