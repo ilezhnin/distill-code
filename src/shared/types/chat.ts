@@ -47,6 +47,8 @@ export interface SessionChatRuntime {
   streamingMessageId: string | null;
   activeRunId: string | null;
   isRunCancellationPending: boolean;
+  /** Account quota deferral; clears when a scheduled or operator retry is due. */
+  accountQuotaWaitUntil?: number | null;
   pendingInterventionBoundary: {
     interventionMessageId: string;
   } | null;
@@ -115,6 +117,7 @@ export interface Session {
   title: string;
   projectId?: string | null;
   providerId?: string;
+  accountId?: string | null;
   personaId?: string;
   modelId?: string;
   modelName?: string;

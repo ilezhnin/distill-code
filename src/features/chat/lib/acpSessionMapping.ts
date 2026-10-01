@@ -38,6 +38,9 @@ export function acpSessionToChatSession(session: AcpSessionInfo): ChatSession {
     // names it (sendCore) instead of leaving a literal "Untitled" behind.
     title: normalizeAcpTitle(session.title) ?? DEFAULT_CHAT_TITLE,
     projectId: session.projectId ?? undefined,
+    ...(session.accountId !== undefined
+      ? { accountId: session.accountId }
+      : {}),
     executionTarget,
     executionTargetSource: executionTarget ? "acp" : undefined,
     personaId: session.personaId ?? undefined,

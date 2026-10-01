@@ -1641,6 +1641,7 @@ export function ChatInput({
               <ChatInputToolbar
                 agentModelPicker={{
                   enabled: scopedControls.agentModelPicker,
+                  accountSessionId: agentModelPicker?.accountSessionId,
                   providers,
                   providersLoading,
                   selectedProvider,

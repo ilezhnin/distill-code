@@ -1,14 +1,7 @@
-//! Agent-platform subscription rate limits.
-//!
-//! Distill owns this surface because Distill already owns agent CLI install
-//! and auth (`agent_setup`). Per-session token usage is a separate signal:
-//! the ACP bridges report it on prompt results, the agent host passes those
-//! through unchanged, and the renderer records them in its usage ledger for
-//! Settings → Stats. Subscription windows come only from the CLIs' own
-//! accounts, fetched here.
+//! Subscription limits for Grok and Kimi CLI accounts. Managed Claude/Codex
+//! accounts use provider_account_status as their single telemetry owner.
+//! Per-session token usage arrives separately through ACP prompt results.
 
-mod claude;
-mod codex;
 pub(crate) mod grok;
 mod kimi;
 mod types;
@@ -31,15 +24,15 @@ pub async fn fetch_snapshot(
     env: &std::collections::HashMap<String, String>,
 ) -> Result<ProviderRateLimitSnapshot, String> {
     let client = http_client()?;
-    let (claude, codex, grok, kimi) = tokio::join!(
-        claude::fetch_claude_rate_limits(&client),
-        codex::fetch_codex_rate_limits(&client),
+    // Managed Claude/Codex accounts have one telemetry owner:
+    // provider_account_status. The renderer projects that snapshot here.
+    let (grok, kimi) = tokio::join!(
         grok::fetch_grok_rate_limits(&client),
         kimi::fetch_kimi_rate_limits(env),
     );
     // These are quota adapters, not the provider roster. The UI derives its
     // roster from the catalog and fills in connection status without quotas.
-    let mut providers = vec![claude, grok, codex];
+    let mut providers = vec![grok];
     providers.extend(kimi);
     Ok(ProviderRateLimitSnapshot {
         providers,

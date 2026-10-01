@@ -116,8 +116,15 @@ export function ProviderSegment({
             {sections.map((section, index) => {
               const percent = formatUsedPercent(section.window.usedPercent);
               const remaining = remainingDurationLabel(section.window, now);
-              const label =
-                section.key === "fableWeekly"
+              const label = section.modelId
+                ? t("roster.modelWindow", {
+                    model: section.modelId,
+                    window: t("roster.usedWindow", {
+                      percent,
+                      window: remaining,
+                    }),
+                  })
+                : section.key === "fableWeekly"
                   ? t("roster.usedFable", { percent })
                   : section.key === "codingMonthly"
                     ? t("roster.usedCodingMonthly", { percent })

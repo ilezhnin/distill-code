@@ -7,6 +7,12 @@ import { getCatalogEntry } from "@/features/providers/providerCatalog";
 import { getProviderUsageStatusKind } from "@/features/status/lib/rateLimitFormatters";
 import type { ProviderRateLimits } from "@/features/status/lib/rateLimitTypes";
 import { useProviderRateLimitsStore } from "@/features/status/stores/providerRateLimitsStore";
+import { useProviderAccountsStore } from "../stores/providerAccountsStore";
+import { MANAGED_ACCOUNT_PROVIDERS } from "../api/providerAccounts";
+import type {
+  ProviderAccount,
+  ProviderAccountStatus,
+} from "../api/providerAccounts";
 
 export type AgentProviderReadiness = "ready" | "not_installed" | "not_ready";
 
@@ -144,19 +150,49 @@ function readyIdsFromReadiness(
 
 const EMPTY_READINESS = new Map<string, AgentProviderReadiness>();
 
+export function applyManagedAccountReadiness(
+  readiness: Map<string, AgentProviderReadiness>,
+  accounts: ProviderAccount[],
+  statuses: Record<string, ProviderAccountStatus>,
+): Map<string, AgentProviderReadiness> {
+  let next = readiness;
+  for (const providerId of MANAGED_ACCOUNT_PROVIDERS) {
+    const installed = readiness.get(providerId);
+    if (!installed || installed === "not_installed") continue;
+    const connected = accounts.some(
+      (account) =>
+        account.providerId === providerId &&
+        account.enabled &&
+        (statuses[account.id]?.state === "ready" ||
+          statuses[account.id]?.state === "limited"),
+    );
+    const status = connected ? "ready" : "not_ready";
+    if (installed === status) continue;
+    if (next === readiness) next = new Map(readiness);
+    next.set(providerId, status);
+  }
+  return next;
+}
+
 export function useAgentProviderStatus(): UseAgentProviderStatusReturn {
   const query = useDoctorReport();
+  const accounts = useProviderAccountsStore((state) => state.accounts);
+  const statuses = useProviderAccountsStore((state) => state.statuses);
   const usageProviders = useProviderRateLimitsStore(
     (state) => state.snapshot?.providers,
   );
 
   const agentReadiness = useMemo(
     () =>
-      applyUsageAuthReadiness(
-        query.data ? readinessFromReport(query.data) : EMPTY_READINESS,
-        usageProviders,
+      applyManagedAccountReadiness(
+        applyUsageAuthReadiness(
+          query.data ? readinessFromReport(query.data) : EMPTY_READINESS,
+          usageProviders,
+        ),
+        accounts,
+        statuses,
       ),
-    [query.data, usageProviders],
+    [query.data, usageProviders, accounts, statuses],
   );
 
   const readyAgentIds = useMemo(
@@ -180,9 +216,14 @@ export function useAgentProviderStatus(): UseAgentProviderStatusReturn {
   const refetch = query.refetch;
   const refresh = useCallback(async () => {
     const result = await refetch();
-    return applyUsageAuthReadiness(
-      result.data ? readinessFromReport(result.data) : EMPTY_READINESS,
-      useProviderRateLimitsStore.getState().snapshot?.providers,
+    const accountState = useProviderAccountsStore.getState();
+    return applyManagedAccountReadiness(
+      applyUsageAuthReadiness(
+        result.data ? readinessFromReport(result.data) : EMPTY_READINESS,
+        useProviderRateLimitsStore.getState().snapshot?.providers,
+      ),
+      accountState.accounts,
+      accountState.statuses,
     );
   }, [refetch]);
 

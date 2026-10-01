@@ -110,6 +110,13 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => `asset://${path}`,
+  invoke: vi.fn(async (command: string) => {
+    if (command === "list_provider_accounts")
+      return { accounts: [], defaults: {}, automaticSwitching: {} };
+    if (command === "get_provider_account_statuses")
+      return { accounts: [], updatedAt: Date.now() };
+    return undefined;
+  }),
 }));
 
 describe("ChatInput attachments", () => {

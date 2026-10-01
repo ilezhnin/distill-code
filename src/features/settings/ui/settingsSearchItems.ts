@@ -18,6 +18,11 @@ export interface SettingsSearchItem {
 /** Searchable controls and destinations that are visible within Settings. */
 export const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
   {
+    id: "provider-accounts",
+    sectionId: "providers",
+    labelKey: "accounts.title",
+  },
+  {
     id: "theme",
     sectionId: "appearance",
     labelKey: "appearance.theme.label",

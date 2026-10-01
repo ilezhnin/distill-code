@@ -46,6 +46,18 @@ fn message_part(params: &Value) -> Result<Option<MessagePart>, Value> {
 pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Value, Value> {
     match method {
         // --- sessions -------------------------------------------------------
+        "sessions/prepare_account" => {
+            let id = session_id(&params)?;
+            host.prepare_session_account(&id).await
+        }
+        "sessions/set_account" | "session/account/update" => {
+            let id = session_id(&params)?;
+            let account_id = params
+                .get("accountId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_params("accountId required"))?;
+            host.set_session_account(&id, account_id).await
+        }
         "session/info" => {
             let id = session_id(&params)?;
             let record = host.session_record(&id).await?;
@@ -340,7 +352,8 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
             let mut entries = Vec::new();
             for spec in harness::HARNESSES {
                 let is_installed = installed.iter().any(|candidate| candidate.id == spec.id);
-                let cached = cached_inventory(host, spec.id).await;
+                let account_id = host.resolve_account_id(spec.id, None).ok().flatten();
+                let cached = cached_inventory(host, spec.id, account_id.as_deref()).await;
                 let models = harness::merge_inventory(spec.id, cached.models);
                 entries.push(json!({
                     "providerId": spec.id,
@@ -375,8 +388,14 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid_params("providerId required"))?
                 .to_string();
-            let cached = cached_inventory(host, &provider_id).await;
-            let serving = host.serving_executable(&provider_id).await;
+            let account_id = host.resolve_account_id(
+                &provider_id,
+                params.get("accountId").and_then(Value::as_str),
+            )?;
+            let cached = cached_inventory(host, &provider_id, account_id.as_deref()).await;
+            let serving = host
+                .serving_executable(&provider_id, account_id.as_deref())
+                .await;
             let (models, updated_at) = if cached.models.is_empty()
                 || !inventory_is_fresh(&cached, &serving, chrono::Utc::now().timestamp())
             {
@@ -385,16 +404,15 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
                         "[agent-host] {provider_id} model inventory expired or its executable changed; probing it again"
                     );
                 }
-                let (models, updated_at) = refresh_models(host, &provider_id).await?;
+                let (models, updated_at) =
+                    refresh_models(host, &provider_id, account_id.as_deref()).await?;
                 (models, Some(updated_at))
             } else {
                 (cached.models, cached.updated_at)
             };
-            Ok(inventory_response(
-                &provider_id,
-                models,
-                updated_at.as_deref(),
-            ))
+            let mut response = inventory_response(&provider_id, models, updated_at.as_deref());
+            response["accountId"] = json!(account_id);
+            Ok(response)
         }
         "providers/inventory/refresh" => {
             let provider_id = params
@@ -402,8 +420,15 @@ pub async fn handle(host: &Arc<Inner>, method: &str, params: Value) -> Result<Va
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid_params("providerId required"))?
                 .to_string();
-            let (models, updated_at) = refresh_models(host, &provider_id).await?;
-            Ok(inventory_response(&provider_id, models, Some(&updated_at)))
+            let account_id = host.resolve_account_id(
+                &provider_id,
+                params.get("accountId").and_then(Value::as_str),
+            )?;
+            let (models, updated_at) =
+                refresh_models(host, &provider_id, account_id.as_deref()).await?;
+            let mut response = inventory_response(&provider_id, models, Some(&updated_at));
+            response["accountId"] = json!(account_id);
+            Ok(response)
         }
 
         // --- sources -------------------------------------------------------
@@ -481,9 +506,16 @@ fn inventory_revision(updated_at: Option<&str>) -> String {
 /// outside the model endpoints: the same rows `providers/supported_models/list`
 /// answers, with no probe and no bridge. Empty until the harness has been
 /// probed once, which is the honest answer to "what does it advertise".
-pub(super) async fn known_models(store: &SessionStore, harness_id: &str) -> Vec<Value> {
+pub(super) async fn known_models(
+    store: &SessionStore,
+    harness_id: &str,
+    account_id: Option<&str>,
+) -> Vec<Value> {
     let probed = store
-        .kv_get(MODELS_KV_SCOPE, harness_id)
+        .kv_get(
+            MODELS_KV_SCOPE,
+            &super::router::account_route_key(harness_id, account_id),
+        )
         .await
         .ok()
         .flatten()
@@ -525,9 +557,16 @@ impl CachedInventory {
     }
 }
 
-async fn cached_inventory(host: &Arc<Inner>, harness_id: &str) -> CachedInventory {
+async fn cached_inventory(
+    host: &Arc<Inner>,
+    harness_id: &str,
+    account_id: Option<&str>,
+) -> CachedInventory {
     host.store
-        .kv_get(MODELS_KV_SCOPE, harness_id)
+        .kv_get(
+            MODELS_KV_SCOPE,
+            &super::router::account_route_key(harness_id, account_id),
+        )
         .await
         .ok()
         .flatten()
@@ -569,12 +608,17 @@ fn inventory_is_fresh(cached: &CachedInventory, serving: &Value, now: i64) -> bo
 async fn refresh_models(
     host: &Arc<Inner>,
     harness_id: &str,
+    account_id: Option<&str>,
 ) -> Result<(Vec<Value>, String), Value> {
-    let (models, probed_on) = host.probe_models(harness_id).await?;
+    let (models, probed_on) = host.probe_models(harness_id, account_id).await?;
     let updated_at = protocol::now_iso();
     let value = inventory_record(&models, &updated_at, &probed_on);
     host.store
-        .kv_set(MODELS_KV_SCOPE, harness_id, &value)
+        .kv_set(
+            MODELS_KV_SCOPE,
+            &super::router::account_route_key(harness_id, account_id),
+            &value,
+        )
         .await
         .map_err(protocol::internal)?;
     Ok((models, updated_at))

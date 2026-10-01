@@ -1,6 +1,7 @@
 import * as acpApi from "./acpApi";
 import { invalidateClientConnectionIfUnresponsive } from "./acpConnection";
 import {
+  applySessionConfigOptionsSnapshot,
   readSessionExecutionConfigSnapshot,
   type AcpSessionConfigSnapshotContext,
   type AcpSessionConfigSnapshots,
@@ -45,6 +46,7 @@ function loadSessionForPreparation<T>(
 
 export interface AcpSessionExecutionSelection {
   providerId: string;
+  accountId?: string | null;
   /** Last model this window observed ACP acknowledge successfully. */
   modelId?: string;
   /**
@@ -233,6 +235,28 @@ export async function prepareSession(
       options,
       turn,
     ),
+  );
+}
+
+/** Account changes share the session queue with model changes and prompts. */
+export function setSessionAccount(sessionId: string, accountId: string) {
+  return serializeSessionMutation(
+    sessionId,
+    async () => {
+      const response = await acpApi.setSessionAccount(sessionId, accountId);
+      const snapshot = readSessionExecutionConfigSnapshot(response);
+      const entry = prepared.get(sessionId);
+      if (entry && snapshot)
+        entry.executionSelection = { ...snapshot, accountId };
+      applySessionConfigOptionsSnapshot(sessionId, response, {
+        origin: "response",
+        ...(snapshot
+          ? { providerId: snapshot.providerId, modelId: snapshot.modelId }
+          : {}),
+      });
+      return response;
+    },
+    false,
   );
 }
 
@@ -752,14 +776,26 @@ export async function loadSession(
       const response = await acpApi.loadSession(sessionId, workingDir);
       const isCurrentResult = turn.isLatest();
       const executionSnapshot = readSessionExecutionConfigSnapshot(response);
+      const account =
+        response._meta && "accountId" in response._meta
+          ? {
+              accountId:
+                typeof response._meta.accountId === "string"
+                  ? response._meta.accountId
+                  : null,
+            }
+          : {};
+      const executionSelection = executionSnapshot
+        ? { ...executionSnapshot, ...account }
+        : undefined;
       prepared.set(sessionId, {
         workingDir,
-        executionSelection: executionSnapshot ?? undefined,
+        executionSelection,
       });
       return {
         response,
         isCurrent: isCurrentResult,
-        executionSelection: executionSnapshot ?? undefined,
+        executionSelection,
       };
     },
     false,

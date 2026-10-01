@@ -36,6 +36,7 @@ export function updatedAgoParts(
 export function getProviderUsageStatusKind(
   provider: ProviderRateLimits,
 ): "ok" | "refresh-failed" | "sign-in" | "limited" | "fetching" {
+  if (provider.accountLimited) return "limited";
   if (provider.status === "idle" || provider.status === "fetching") {
     return "fetching";
   }

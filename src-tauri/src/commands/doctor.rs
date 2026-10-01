@@ -452,14 +452,10 @@ pub(crate) fn provider_supports_logout(provider_id: &str) -> bool {
     provider_id == "kimi-acp" || provider_logout_command(provider_id).is_some()
 }
 
-/// Non-interactive sign-out command for a catalog provider id. Windows-only
-/// Distill talks to the managed shims (`claude-agent-acp`, `codex-acp`) and
-/// Grok's own CLI; providers without a known logout stay `None` so the card
-/// never offers Sign out it cannot run.
+/// Provider-wide sign-out is only available to single-account integrations.
+/// Codex and Claude use the selected Distill account's sign-out command.
 pub(crate) fn provider_logout_command(provider_id: &str) -> Option<&'static str> {
     match provider_id {
-        "claude-acp" => Some("claude-agent-acp --cli auth logout"),
-        "codex-acp" => Some("codex-acp cli logout"),
         "grok-acp" => Some("grok logout"),
         _ => None,
     }
@@ -812,8 +808,8 @@ fn managed_bridge_probe(
     tool: managed_acp_tools::ManagedTool,
 ) -> (&'static [&'static str], &'static str) {
     match tool.id {
-        "claude-acp" => (&["--cli", "auth", "status"], "auth status"),
-        "codex-acp" => (&["cli", "login", "status"], "login status"),
+        "claude-acp" => (&["--cli", "--version"], "version"),
+        "codex-acp" => (&["cli", "--version"], "version"),
         _ => (&[], "probe"),
     }
 }
@@ -855,31 +851,24 @@ pub(crate) async fn repair_windows_managed_bridge_checks(
                 Ok(output) if output.status.success() => (
                     CheckStatus::Pass,
                     "Installed".to_string(),
-                    Some(AuthStatus::Authenticated),
+                    None,
                     None,
                     None,
                     format_command_output(&output),
                 ),
                 Ok(output) => (
-                    CheckStatus::Warn,
-                    "Installed, not authenticated".to_string(),
-                    Some(AuthStatus::NotAuthenticated),
-                    Some(FixType::Auth),
-                    Some(
-                        match tool.id {
-                            "claude-acp" => "claude-agent-acp --cli auth login",
-                            "codex-acp" => "codex-acp cli login",
-                            _ => tool.binary,
-                        }
-                        .to_string(),
-                    ),
+                    CheckStatus::Fail,
+                    "Provider runtime could not start".to_string(),
+                    None,
+                    Some(FixType::Command),
+                    None,
                     format_command_output(&output),
                 ),
                 Err(error) => (
-                    CheckStatus::Warn,
-                    "Installed, auth status unknown".to_string(),
+                    CheckStatus::Fail,
+                    "Provider runtime check failed".to_string(),
                     Some(AuthStatus::Unknown),
-                    None,
+                    Some(FixType::Command),
                     None,
                     format!("failed to run command: {error}"),
                 ),
@@ -906,6 +895,53 @@ pub(crate) async fn repair_windows_managed_bridge_checks(
             probe_label,
             probe_output
         ));
+    }
+}
+
+/// Account authorization belongs to Distill's registry, independently of any
+/// login discovered by the upstream CLI diagnostics.
+pub(crate) fn apply_managed_account_checks(app: &AppHandle, checks: &mut [doctor::DoctorCheck]) {
+    use crate::services::provider_accounts;
+    let accounts = provider_accounts::snapshot(app);
+    for provider in ["codex-acp", "claude-acp"] {
+        let id = crate::commands::agent_setup::crate_check_id(provider);
+        let Some(check) = checks.iter_mut().find(|check| check.id == id) else {
+            continue;
+        };
+        if check.path.is_none() {
+            continue;
+        }
+        let connected = accounts.as_ref().ok().is_some_and(|snapshot| {
+            snapshot
+                .accounts
+                .iter()
+                .filter(|account| account.provider_id == provider)
+                .any(|account| {
+                    provider_accounts::account_has_credentials(app, account).unwrap_or(false)
+                })
+        });
+        check.auth_status = Some(if connected {
+            AuthStatus::Authenticated
+        } else {
+            AuthStatus::NotAuthenticated
+        });
+        if check.fix_type == Some(FixType::Auth) {
+            check.fix_type = None;
+            check.fix_command = None;
+        }
+        if check.fix_type.is_none() {
+            check.status = if connected {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Warn
+            };
+            check.message = if connected {
+                "Installed"
+            } else {
+                "Sign in to an account in Settings > AI providers"
+            }
+            .into();
+        }
     }
 }
 
@@ -947,6 +983,7 @@ async fn run_doctor_impl(
     if let Some(dir) = bundled_tools_dir.as_deref() {
         repair_windows_managed_bridge_checks(&mut checks.checks, dir, &doctor_env_vars).await;
     }
+    apply_managed_account_checks(app, &mut checks.checks);
     let mut checks: Vec<DoctorCheck> = checks.checks.into_iter().map(DoctorCheck::from).collect();
     if doctor_internal_tooling_checks_enabled(runtime_config) {
         let local_checks = run_local_checks(registry, &doctor_env_vars.into_iter().collect()).await;
@@ -1380,6 +1417,7 @@ mod tests {
                 shell_env: env,
                 prepend_dirs: vec![],
                 extra_env: vec![],
+                remove_env: vec![],
             },
         ));
     }
@@ -1410,16 +1448,16 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    async fn repairs_windows_managed_cmd_bridge_checks_and_auth_outcomes() {
+    async fn repairs_windows_managed_cmd_bridges_without_probing_external_auth() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
             dir.path().join("claude-agent-acp.cmd"),
-            "@echo off\r\nif \"%1 %2 %3\"==\"--cli auth status\" exit /b 0\r\nexit /b 9\r\n",
+            "@echo off\r\nif \"%1 %2\"==\"--cli --version\" exit /b 0\r\nexit /b 9\r\n",
         )
         .unwrap();
         fs::write(
             dir.path().join("codex-acp.cmd"),
-            "@echo off\r\nif \"%1 %2 %3\"==\"cli login status\" exit /b 1\r\nexit /b 9\r\n",
+            "@echo off\r\nif \"%1 %2\"==\"cli --version\" exit /b 1\r\nexit /b 9\r\n",
         )
         .unwrap();
         let mut checks = vec![
@@ -1438,7 +1476,7 @@ mod tests {
             .find(|check| check.id == "ai-agent-claude")
             .unwrap();
         assert_eq!(claude.status, CheckStatus::Pass);
-        assert_eq!(claude.auth_status, Some(AuthStatus::Authenticated));
+        assert_eq!(claude.auth_status, None);
         assert_eq!(claude.install_source, Some(InstallSource::Bundled));
         assert!(claude
             .path
@@ -1450,10 +1488,10 @@ mod tests {
             .iter()
             .find(|check| check.id == "ai-agent-codex")
             .unwrap();
-        assert_eq!(codex.status, CheckStatus::Warn);
-        assert_eq!(codex.auth_status, Some(AuthStatus::NotAuthenticated));
-        assert_eq!(codex.fix_type, Some(FixType::Auth));
-        assert_eq!(codex.fix_command.as_deref(), Some("codex-acp cli login"));
+        assert_eq!(codex.status, CheckStatus::Fail);
+        assert_eq!(codex.auth_status, None);
+        assert_eq!(codex.fix_type, Some(FixType::Command));
+        assert_eq!(codex.fix_command, None);
         assert!(codex.raw_output.as_deref().is_some_and(
             |output| output.contains("exit code: 1") || output.contains("exit status: 1")
         ));
@@ -1568,15 +1606,9 @@ mod tests {
     }
 
     #[test]
-    fn known_harnesses_have_non_interactive_sign_out_commands() {
-        assert_eq!(
-            provider_logout_command("claude-acp"),
-            Some("claude-agent-acp --cli auth logout")
-        );
-        assert_eq!(
-            provider_logout_command("codex-acp"),
-            Some("codex-acp cli logout")
-        );
+    fn managed_accounts_have_no_provider_wide_sign_out() {
+        assert_eq!(provider_logout_command("claude-acp"), None);
+        assert_eq!(provider_logout_command("codex-acp"), None);
         assert_eq!(provider_logout_command("grok-acp"), Some("grok logout"));
         assert_eq!(provider_logout_command("copilot-acp"), None);
         assert_eq!(provider_logout_command("amp-acp"), None);

@@ -48,11 +48,14 @@ fn request_deadline(method: &str) -> Option<Duration> {
 pub enum BridgeEvent {
     Notification {
         harness: String,
+        generation: u64,
+        run_id: Option<String>,
         method: String,
         params: Value,
     },
     Request {
         harness: String,
+        generation: u64,
         id: Value,
         method: String,
         params: Value,
@@ -76,13 +79,26 @@ pub enum BridgeEvent {
     },
 }
 
-type Pending = Mutex<HashMap<u64, oneshot::Sender<Result<Value, Value>>>>;
+struct PendingRequest {
+    reply: oneshot::Sender<Result<Value, Value>>,
+    turn: Option<(String, String)>,
+}
+
+type Pending = Mutex<HashMap<u64, PendingRequest>>;
+
+fn received_run(pending: &Pending, params: &Value) -> Option<String> {
+    let session_id = protocol::session_id(params)?;
+    pending.lock().ok()?.values().find_map(|request| {
+        let (session, run) = request.turn.as_ref()?;
+        (session == &session_id).then(|| run.clone())
+    })
+}
 
 /// The bridge's stdout has ended: mark it dead and fail every request still
 /// waiting for an answer that will never come.
 ///
 /// `alive` is set while the `pending` lock is held, which is the same lock
-/// [`Bridge::register_pending`] registers under. That is what closes the race:
+/// [`Bridge::register_owned`] registers under. That is what closes the race:
 /// a request either registers before this drain (and is failed by it) or sees
 /// the bridge as gone. Registering *after* the drain would wait forever — the
 /// writer channel is still open so nothing errors, and `session/prompt` has no
@@ -91,8 +107,8 @@ fn fail_pending_on_exit(pending: &Pending, alive: &AtomicBool) {
     let guard = pending.lock();
     alive.store(false, Ordering::SeqCst);
     if let Ok(mut pending) = guard {
-        for (_, sender) in pending.drain() {
-            let _ = sender.send(Err(protocol::internal("bridge exited")));
+        for (_, request) in pending.drain() {
+            let _ = request.reply.send(Err(protocol::internal("bridge exited")));
         }
     }
 }
@@ -130,10 +146,12 @@ pub struct Bridge {
 /// Everything a bridge process inherits: the user's login-shell environment,
 /// the directories to put in front of PATH (managed bridge shims, the distillctl
 /// shim), and host-provided variables such as `DISTILLCTL_LOCK`.
+#[derive(Clone)]
 pub struct SpawnEnv {
     pub shell_env: HashMap<String, String>,
     pub prepend_dirs: Vec<PathBuf>,
     pub extra_env: Vec<(String, String)>,
+    pub remove_env: Vec<String>,
 }
 
 /// The file `spec.command` runs as it stands on disk right now, or `None`
@@ -250,6 +268,15 @@ impl Bridge {
         env: &SpawnEnv,
         events: mpsc::UnboundedSender<BridgeEvent>,
     ) -> Result<Arc<Bridge>, String> {
+        Self::spawn_scoped(spec, env, events, spec.id).await
+    }
+
+    pub async fn spawn_scoped(
+        spec: &HarnessSpec,
+        env: &SpawnEnv,
+        events: mpsc::UnboundedSender<BridgeEvent>,
+        route_key: &str,
+    ) -> Result<Arc<Bridge>, String> {
         let executable = resolve_executable(
             spec.command,
             &env.prepend_dirs,
@@ -292,6 +319,11 @@ impl Bridge {
             command.arg(entrypoint);
         }
         command.args(spec.args);
+        // Remove inherited credentials before installing this account's own
+        // environment. Filtering only shell_env would still inherit the host.
+        for key in &env.remove_env {
+            command.env_remove(key);
+        }
         let extended_path = crate::services::path_env::build_extended_path_with_prepended_dirs(
             env_key::get(&env.shell_env, "PATH"),
             &env.prepend_dirs,
@@ -373,7 +405,7 @@ impl Bridge {
 
         // stderr: keep the bridge's own logging visible in Distill's log.
         if let Some(stderr) = stderr {
-            let harness = spec.id.to_string();
+            let harness = route_key.to_string();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stderr);
                 let mut buf = Vec::new();
@@ -385,7 +417,7 @@ impl Bridge {
 
         // Reader: demultiplex responses, requests, and notifications.
         {
-            let harness = spec.id.to_string();
+            let harness = route_key.to_string();
             let pending = Arc::clone(&pending);
             let alive = Arc::clone(&alive);
             tokio::spawn(async move {
@@ -401,8 +433,8 @@ impl Bridge {
                                 .as_u64()
                                 .and_then(|key| pending.lock().ok()?.remove(&key));
                             match sender {
-                                Some(sender) => {
-                                    let _ = sender.send(result);
+                                Some(request) => {
+                                    let _ = request.reply.send(result);
                                 }
                                 // Every id the host issues is a number, so a
                                 // response under any other id answers a request
@@ -423,6 +455,7 @@ impl Bridge {
                         Some(Message::Request { id, method, params }) => {
                             let _ = events.send(BridgeEvent::Request {
                                 harness: harness.clone(),
+                                generation,
                                 id,
                                 method,
                                 params,
@@ -431,6 +464,8 @@ impl Bridge {
                         Some(Message::Notification { method, params }) => {
                             let _ = events.send(BridgeEvent::Notification {
                                 harness: harness.clone(),
+                                generation,
+                                run_id: received_run(&pending, &params),
                                 method,
                                 params,
                             });
@@ -476,7 +511,10 @@ impl Bridge {
                         "fs": { "readTextFile": false, "writeTextFile": false },
                         "terminal": false,
                         "session": { "notices": {}, "compaction": {} },
-                        "_meta": { "terminal_output_delta": true }
+                        "_meta": {
+                            "terminal_output_delta": true,
+                            "jetbrains": { "air": { "version": 1, "capabilities": ["sessionFailure"] } }
+                        }
                     },
                     "clientInfo": {
                         "name": "distill",
@@ -610,6 +648,25 @@ impl Bridge {
         params: Value,
         deadline: Option<Duration>,
     ) -> Result<Value, Value> {
+        self.request_owned(method, params, deadline, None).await
+    }
+
+    /// Capture turn ownership at stdout receipt, before notifications can
+    /// wait behind another session's disk writes in the host event queue.
+    pub async fn prompt(&self, params: Value, run_id: String) -> Result<Value, Value> {
+        let session_id = protocol::session_id(&params)
+            .ok_or_else(|| protocol::invalid_params("sessionId required"))?;
+        self.request_owned("session/prompt", params, None, Some((session_id, run_id)))
+            .await
+    }
+
+    async fn request_owned(
+        &self,
+        method: &str,
+        params: Value,
+        deadline: Option<Duration>,
+        turn: Option<(String, String)>,
+    ) -> Result<Value, Value> {
         if !self.is_alive() {
             return Err(protocol::internal(format!(
                 "{} bridge is not running",
@@ -619,7 +676,7 @@ impl Bridge {
         self.touch();
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
-        if !self.register_pending(id, tx) {
+        if !self.register_owned(id, tx, turn) {
             return Err(protocol::internal(format!(
                 "{} bridge is not running",
                 self.harness
@@ -662,14 +719,24 @@ impl Bridge {
     /// already gone. The liveness check happens under the `pending` lock, the
     /// same one [`fail_pending_on_exit`] drains under, so a request can never
     /// end up registered behind the drain with nothing left to answer it.
+    #[cfg(test)]
     fn register_pending(&self, id: u64, tx: oneshot::Sender<Result<Value, Value>>) -> bool {
+        self.register_owned(id, tx, None)
+    }
+
+    fn register_owned(
+        &self,
+        id: u64,
+        tx: oneshot::Sender<Result<Value, Value>>,
+        turn: Option<(String, String)>,
+    ) -> bool {
         let Ok(mut pending) = self.pending.lock() else {
             return false;
         };
         if !self.alive.load(Ordering::SeqCst) {
             return false;
         }
-        pending.insert(id, tx);
+        pending.insert(id, PendingRequest { reply: tx, turn });
         true
     }
 
@@ -762,12 +829,12 @@ pub fn is_installed(spec: &HarnessSpec, env: &SpawnEnv) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     /// A bridge with no process behind it: whatever is written to it lands
     /// in the returned receiver, and nothing ever answers.
-    fn silent_bridge() -> (Bridge, mpsc::UnboundedReceiver<String>) {
+    pub(crate) fn silent_bridge() -> (Bridge, mpsc::UnboundedReceiver<String>) {
         let (writer, written) = mpsc::unbounded_channel();
         let bridge = Bridge {
             harness: "test-acp".to_string(),
@@ -791,6 +858,26 @@ mod tests {
             .lock()
             .map(|pending| pending.len())
             .unwrap_or(0)
+    }
+
+    #[test]
+    fn queued_notifications_keep_their_turn_when_the_next_prompt_starts() {
+        let (bridge, _written) = silent_bridge();
+        let params = json!({"sessionId":"s"});
+        let (tx, _rx) = oneshot::channel();
+        assert!(bridge.register_owned(1, tx, Some(("s".into(), "first".into()))));
+        let queued = received_run(&bridge.pending, &params);
+        assert_eq!(queued.as_deref(), Some("first"));
+        assert!(received_run(&bridge.pending, &json!({"sessionId":"other"})).is_none());
+        bridge.forget(1);
+        assert!(received_run(&bridge.pending, &params).is_none());
+        let (tx, _rx) = oneshot::channel();
+        assert!(bridge.register_owned(2, tx, Some(("s".into(), "second".into()))));
+        assert_eq!(
+            received_run(&bridge.pending, &params).as_deref(),
+            Some("second")
+        );
+        assert_eq!(queued.as_deref(), Some("first"));
     }
 
     #[test]

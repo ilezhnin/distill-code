@@ -101,6 +101,8 @@ export interface ChatSendOptions {
   beforeUserMessageCommitted?: () => void;
   /** Internal notification that this attempt has committed its user turn. */
   onUserMessageCommitted?: () => void;
+  /** The host proved that this prompt was not accepted. */
+  onPromptNotAccepted?: () => void;
   /** Fully composed execution prompt captured for a queued send. */
   executionSystemPrompt?: string;
   /** Persona-only prompt captured while workspace context is still loading. */
@@ -178,6 +180,7 @@ export interface AgentPickerOption extends AcpProvider {
 }
 
 export interface ChatInputAgentModelPicker {
+  accountSessionId?: string;
   providers?: AgentPickerOption[];
   providersLoading?: boolean;
   selectedProvider?: string;

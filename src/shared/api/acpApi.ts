@@ -53,6 +53,7 @@ export interface AcpSessionInfo {
   workingDir: string | null;
   projectId?: string | null;
   providerId: string | null;
+  accountId?: string | null;
   modelId: string | null;
   /**
    * The reasoning effort the host last saw the bridge acknowledge for this
@@ -130,6 +131,9 @@ function mapSessionInfo(info: SessionInfo): AcpSessionInfo {
     workingDir: info.cwd ?? null,
     projectId: metaString(meta, "projectId"),
     providerId: metaString(meta, "providerId"),
+    ...(meta && "accountId" in meta
+      ? { accountId: metaString(meta, "accountId") }
+      : {}),
     modelId: metaString(meta, "modelId"),
     ...(meta && "reasoningEffort" in meta
       ? { reasoningEffort: metaString(meta, "reasoningEffort") }
@@ -170,6 +174,11 @@ export async function listSessionsPage({
     sessions: response.sessions.map(mapSessionInfo),
     nextCursor: response.nextCursor?.trim() || null,
   };
+}
+
+export async function setSessionAccount(sessionId: string, accountId: string) {
+  const client = await getClient();
+  return client.host.sessionSetAccount({ sessionId, accountId });
 }
 
 /** The text messages of a session as the host stored them. */
@@ -255,6 +264,9 @@ export async function forkSession(
     workingDir,
     projectId: metaString(response._meta, "projectId"),
     providerId: metaString(response._meta, "providerId"),
+    ...(response._meta && "accountId" in response._meta
+      ? { accountId: metaString(response._meta, "accountId") }
+      : {}),
     modelId: metaString(response._meta, "modelId"),
     // The host opens a fork on the source's stored selection and answers with
     // what the bridge acknowledged for it; an older host says nothing.
@@ -429,6 +441,7 @@ export async function cancelSession(sessionId: string): Promise<void> {
 
 export interface NewSessionOptions {
   providerId?: string;
+  accountId?: string;
   projectId?: string;
   personaId?: string;
   hidden?: boolean;
@@ -448,6 +461,7 @@ export async function newSession(
 ): Promise<NewSessionResponse> {
   const {
     providerId,
+    accountId,
     projectId,
     personaId,
     hidden,
@@ -464,6 +478,7 @@ export async function newSession(
 
   const meta: Record<string, string | boolean> = {};
   if (providerId) meta.provider = providerId;
+  if (accountId) meta.accountId = accountId;
   if (projectId) meta.projectId = projectId;
   if (personaId) meta.personaId = personaId;
   if (hidden) meta.hidden = true;
@@ -520,6 +535,7 @@ export async function prompt(
   } = {},
 ): Promise<PromptResponse> {
   const client = await getClient();
+  await client.host.sessionPrepareAccount({ sessionId });
   callbacks.onPromptDispatching?.();
   const promptPromise = trackPendingPrompt(
     client.prompt({

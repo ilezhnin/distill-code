@@ -19,6 +19,7 @@ export {
 import { formatIncludedWorkspacesPrompt } from "@/features/chat/lib/workspaceAttachments";
 import type { MessageMetadata } from "@/shared/types/messages";
 import type { ChatSendOptions } from "@/features/chat/types";
+import { accountQuotaWaitData } from "@/features/chat/lib/accountQuotaWait";
 export { isDistillctlCrossSessionQueuedMessage } from "@/features/chat/lib/queuedMessageOrigin";
 
 export const DISTILLCTL_CROSS_SESSION_ORIGIN =
@@ -108,6 +109,8 @@ export async function sendPromptToExistingSessionInBackground(
     returnOnDispatch?: boolean;
     sendOptions?: ChatSendOptions;
     validateHydratedTranscript?: () => void;
+    /** Explicit host rollback proof after an optimistic dispatch acknowledgement. */
+    onPromptNotAccepted?: () => void;
   } = {},
 ): Promise<void> {
   const acquisition = await acquireExistingSessionForBackgroundSend(sessionId);
@@ -163,6 +166,12 @@ export async function sendPromptToExistingSessionInBackground(
         },
       );
     } catch (error) {
+      if (
+        dispatched &&
+        accountQuotaWaitData(error)?.promptNotAccepted === true
+      ) {
+        options.onPromptNotAccepted?.();
+      }
       if (!dispatched) rejectDispatch?.(error);
       throw error;
     } finally {

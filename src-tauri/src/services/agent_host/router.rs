@@ -15,6 +15,10 @@ use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, 
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::bridge::{error_text, Bridge, BridgeEvent, SpawnEnv};
+use super::execution::{
+    self, AccountActivity, ExecutionDispatch, ObservedSelection, OwnedEventPage, OwnedSession,
+    OwnedSessionRequest, OwnedTurnRequest,
+};
 use super::ext;
 use super::harness::{self, HarnessSpec};
 use super::harness_env::build_spawn_env;
@@ -24,6 +28,25 @@ use super::session_title;
 use super::sources::SourceRoots;
 use super::store::{SessionRecord, SessionStore, SessionTouchUndo};
 use crate::services::managed_acp_tools;
+use crate::services::provider_accounts;
+
+/// Each account gets an isolated bridge, including when native session IDs match.
+pub(super) fn account_route_key(harness: &str, account_id: Option<&str>) -> String {
+    match account_id {
+        Some(id) => format!("{harness}\u{1f}{id}"),
+        None => harness.to_string(),
+    }
+}
+
+fn account_validation_id<'a>(
+    harness: &str,
+    account_id: Option<&'a str>,
+) -> Result<Option<&'a str>, Value> {
+    if provider_accounts::supports_managed_accounts(harness) && account_id.is_none() {
+        return Err(invalid_params("Choose a signed-in account for this chat"));
+    }
+    Ok(account_id)
+}
 
 const SESSION_PAGE_SIZE: i64 = 200;
 /// How long a chat has to stay on screen before its agent is woken in the
@@ -241,6 +264,8 @@ pub struct SessionRuntime {
     /// is in a [`SessionTable`] they only change through the table, which
     /// finds a chat by them for every update a bridge streams.
     pub harness: String,
+    pub account_id: Option<String>,
+    execution_profile: Option<String>,
     pub bridge_session_id: String,
     /// The bridge process that accepted `bridge_session_id`. A later process
     /// for the same harness has never heard of it, and the exit of an earlier
@@ -264,6 +289,14 @@ pub struct SessionRuntime {
 }
 
 impl SessionRuntime {
+    fn route_key(&self) -> String {
+        let key = account_route_key(&self.harness, self.account_id.as_deref());
+        self.execution_profile.as_ref().map_or_else(
+            || key.clone(),
+            |profile| format!("{key}\u{1f}benchmark:{profile}"),
+        )
+    }
+
     /// Record that the chat is in use now (see the `last_active` field).
     fn touch(&mut self) {
         self.last_active = std::time::Instant::now();
@@ -279,7 +312,7 @@ impl SessionRuntime {
             return None;
         }
         Some((
-            self.harness.clone(),
+            self.route_key(),
             self.bridge_session_id.clone(),
             self.generation,
         ))
@@ -289,7 +322,7 @@ impl SessionRuntime {
     /// bridge exits: only the sessions of the process that died are forgotten,
     /// never those of a replacement that is already serving the same harness.
     fn served_by(&self, harness: &str, generation: u64) -> bool {
-        self.harness == harness && self.generation == generation
+        self.route_key() == harness && self.generation == generation
     }
 
     /// Forget the messages steered into the running turn, and report how many
@@ -324,6 +357,65 @@ struct SessionTable {
     by_bridge: HashMap<String, HashMap<String, String>>,
 }
 
+#[derive(Default)]
+struct ActivityGenerations {
+    by_account: HashMap<String, u64>,
+}
+
+fn activity_scope_matches(route: &str, provider: &str, account: &str) -> bool {
+    if account == "*" {
+        route == provider || route.starts_with(&format!("{provider}\u{1f}"))
+    } else {
+        route == account_route_key(provider, Some(account))
+    }
+}
+
+impl ActivityGenerations {
+    fn record(&mut self, provider: &str, account: Option<&str>) {
+        let generation = self
+            .by_account
+            .entry(account_route_key(provider, account))
+            .or_default();
+        *generation = generation.saturating_add(1);
+    }
+
+    fn snapshot(&self, provider: &str, account: &str) -> u64 {
+        self.by_account
+            .iter()
+            .filter(|(route, _)| activity_scope_matches(route, provider, account))
+            .fold(0u64, |sum, (_, generation)| sum.saturating_add(*generation))
+    }
+}
+
+async fn drain_queued_bridge_events(
+    events_tx: &mpsc::UnboundedSender<BridgeEvent>,
+) -> Result<(), Value> {
+    let (ack, drained) = oneshot::channel();
+    events_tx
+        .send(BridgeEvent::Drained { ack })
+        .map_err(|_| protocol::internal("The history writer stopped"))?;
+    tokio::time::timeout(EVENT_DRAIN_TIMEOUT, drained)
+        .await
+        .map_err(|_| {
+            protocol::internal("History synchronization timed out; operation was not completed")
+        })?
+        .map_err(|_| protocol::internal("The history writer stopped before confirming the save"))?
+        .map_err(protocol::internal)
+}
+
+async fn install_owned_runtime(
+    events_tx: &mpsc::UnboundedSender<BridgeEvent>,
+    sessions: &Mutex<SessionTable>,
+    session_id: String,
+    runtime: SessionRuntime,
+) -> Result<(), Value> {
+    // Replies bypass the notification queue. Finish all setup notifications
+    // before the final acknowledged selection becomes an immutable runtime.
+    drain_queued_bridge_events(events_tx).await?;
+    sessions.lock().await.insert(session_id, runtime);
+    Ok(())
+}
+
 impl SessionTable {
     fn get(&self, session_id: &str) -> Option<&SessionRuntime> {
         self.runtimes.get(session_id)
@@ -349,9 +441,22 @@ impl SessionTable {
         self.runtimes
             .get(session_id)
             .filter(|runtime| {
-                runtime.harness == harness && runtime.bridge_session_id == bridge_session_id
+                runtime.route_key() == harness && runtime.bridge_session_id == bridge_session_id
             })
             .map(|_| session_id.as_str())
+    }
+
+    fn host_session_for_generation(
+        &self,
+        harness: &str,
+        generation: u64,
+        bridge_session_id: &str,
+    ) -> Option<&str> {
+        let session_id = self.host_session_for(harness, bridge_session_id)?;
+        self.runtimes
+            .get(session_id)
+            .filter(|runtime| runtime.generation == generation)
+            .map(|_| session_id)
     }
 
     /// Register a chat's runtime, replacing whatever it had.
@@ -363,7 +468,7 @@ impl SessionTable {
 
     fn remove(&mut self, session_id: &str) -> Option<SessionRuntime> {
         let runtime = self.runtimes.remove(session_id)?;
-        let Some(bridge_ids) = self.by_bridge.get_mut(&runtime.harness) else {
+        let Some(bridge_ids) = self.by_bridge.get_mut(&runtime.route_key()) else {
             return Some(runtime);
         };
         if bridge_ids
@@ -376,7 +481,7 @@ impl SessionTable {
             // up, but the scan this index replaced still found the other one;
             // so does this. A removal is rare, so the scan costs nothing.
             if let Some((other, _)) = self.runtimes.iter().find(|(_, other)| {
-                other.harness == runtime.harness
+                other.route_key() == runtime.route_key()
                     && other.bridge_session_id == runtime.bridge_session_id
             }) {
                 bridge_ids.insert(runtime.bridge_session_id.clone(), other.clone());
@@ -418,9 +523,24 @@ impl SessionTable {
         runtime: &SessionRuntime,
     ) {
         by_bridge
-            .entry(runtime.harness.clone())
+            .entry(runtime.route_key())
             .or_default()
             .insert(runtime.bridge_session_id.clone(), session_id.to_string());
+    }
+}
+
+struct ClientRequest {
+    harness: String,
+    generation: u64,
+    bridge_id: Value,
+    method: String,
+}
+
+impl ClientRequest {
+    fn respond(self, bridge: &Bridge, result: Result<Value, Value>) {
+        if bridge.generation() == self.generation {
+            bridge.respond(self.bridge_id, result);
+        }
     }
 }
 
@@ -436,8 +556,9 @@ pub struct Inner {
     sessions: Mutex<SessionTable>,
     frontend: StdMutex<Option<mpsc::UnboundedSender<String>>>,
     /// Requests a bridge made of the client, by the id the renderer was
-    /// asked under: (harness, the bridge's own id, method).
-    client_requests: StdMutex<HashMap<u64, (String, Value, String)>>,
+    /// asked under, including the originating process generation. A response
+    /// must never answer the same numeric request ID in a replacement process.
+    client_requests: StdMutex<HashMap<u64, ClientRequest>>,
     next_client_request_id: AtomicU64,
     events_tx: mpsc::UnboundedSender<BridgeEvent>,
     spawn_env: Mutex<Option<Arc<SpawnEnv>>>,
@@ -456,6 +577,8 @@ pub struct Inner {
     /// once per run.
     selection_split: AtomicU8,
     shutdown_prepared: AtomicBool,
+    owned_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    activity_generations: StdMutex<ActivityGenerations>,
 }
 
 /// Tauri-managed handle; the host starts lazily on the first URL request.
@@ -513,6 +636,51 @@ impl AgentHost {
         Ok(())
     }
 
+    /// Credential changes may retire an idle account's processes, but cannot
+    /// replace credentials underneath a running turn. Chat history stays stored.
+    pub async fn prepare_account_change(&self, account_id: &str) -> Result<(), String> {
+        let Some(inner) = self.inner.lock().await.clone() else {
+            return Ok(());
+        };
+        let account = provider_accounts::account(&inner.app, account_id)?;
+        let key = account_route_key(&account.provider_id, Some(account_id));
+        let spawn_lock = Arc::clone(
+            inner
+                .spawn_locks
+                .lock()
+                .await
+                .entry(key.clone())
+                .or_default(),
+        );
+        let _spawning = spawn_lock.lock().await;
+        if inner.bridges.lock().await.iter().any(|(route, bridge)| {
+            (route == &key || route.starts_with(&format!("{key}\u{1f}benchmark:")))
+                && bridge.in_flight() > 0
+        }) {
+            return Err(
+                "Wait for this account's provider operations before changing credentials".into(),
+            );
+        }
+        let mut sessions = inner.sessions.lock().await;
+        if sessions.values().any(|runtime| {
+            runtime.account_id.as_deref() == Some(account_id)
+                && (runtime.loading || runtime.run.is_some() || !runtime.steer_queue.is_empty())
+        }) {
+            return Err("Finish or stop this account's active chats before changing its credentials or removing it".into());
+        }
+        sessions.retain(|runtime| runtime.account_id.as_deref() != Some(account_id));
+        drop(sessions);
+        inner.bridges.lock().await.retain(|route, bridge| {
+            if route == &key || route.starts_with(&format!("{key}\u{1f}benchmark:")) {
+                bridge.kill();
+                false
+            } else {
+                true
+            }
+        });
+        Ok(())
+    }
+
     pub fn shutdown(&self) {
         if let Ok(guard) = self.inner.try_lock() {
             if let Some(inner) = guard.as_ref() {
@@ -553,6 +721,7 @@ impl Inner {
         }
         let host_dir = distill_root.join("sessions");
         let store = SessionStore::open(&host_dir.join("agent-host.db")).await?;
+        store.reconcile_execution_dispatches().await?;
         let isolated = app
             .try_state::<crate::services::e2e_mode::E2eMode>()
             .is_some()
@@ -612,6 +781,8 @@ impl Inner {
             naming_replies: StdMutex::new(HashMap::new()),
             selection_split: AtomicU8::new(0),
             shutdown_prepared: AtomicBool::new(false),
+            owned_locks: Mutex::new(HashMap::new()),
+            activity_generations: StdMutex::new(ActivityGenerations::default()),
         });
 
         tokio::spawn(Arc::clone(&inner).accept_loop(listener, token));
@@ -790,6 +961,11 @@ impl Inner {
     }
 
     async fn handle_client_notification(&self, method: &str, params: Value) {
+        if let Some(id) = protocol::session_id(&params) {
+            if !matches!(self.store.execution_owner(&id).await, Ok(None)) {
+                return;
+            }
+        }
         if method == "session/cancel" {
             if let Some(session_id) = protocol::session_id(&params) {
                 // Stop means stop: the messages steered into the turn being
@@ -820,12 +996,12 @@ impl Inner {
         let mapping = id
             .as_u64()
             .and_then(|key| self.client_requests.lock().ok()?.remove(&key));
-        let Some((harness, bridge_id, _)) = mapping else {
+        let Some(request) = mapping else {
             log::warn!("[agent-host] response for unknown client request {id}");
             return;
         };
-        if let Some(bridge) = self.bridges.lock().await.get(&harness).cloned() {
-            bridge.respond(bridge_id, result);
+        if let Some(bridge) = self.bridges.lock().await.get(&request.harness) {
+            request.respond(bridge, result);
         }
     }
 
@@ -842,26 +1018,49 @@ impl Inner {
 
     /// Every request still waiting on the renderer; taken when the socket it
     /// was sent over is replaced or goes away.
-    fn take_client_requests(&self) -> Vec<(String, Value, String)> {
+    fn take_client_requests(&self) -> Vec<ClientRequest> {
         match self.client_requests.lock() {
             Ok(mut pending) => pending.drain().map(|(_, request)| request).collect(),
             Err(_) => Vec::new(),
         }
     }
 
-    async fn answer_orphaned_client_requests(&self, orphaned: Vec<(String, Value, String)>) {
+    async fn answer_orphaned_client_requests(&self, orphaned: Vec<ClientRequest>) {
         if orphaned.is_empty() {
             return;
         }
         let bridges = self.bridges.lock().await;
-        for (harness, id, method) in orphaned {
-            if let Some(bridge) = bridges.get(&harness) {
-                bridge.respond(id, Self::unanswered_client_request(&method));
+        for request in orphaned {
+            if let Some(bridge) = bridges.get(&request.harness) {
+                let result = Self::unanswered_client_request(&request.method);
+                request.respond(bridge, result);
             }
         }
     }
 
     async fn handle_request(self: &Arc<Self>, method: &str, params: Value) -> Result<Value, Value> {
+        if let Some(id) = protocol::session_id(&params) {
+            if self
+                .store
+                .execution_owner(&id)
+                .await
+                .map_err(protocol::internal)?
+                .is_some()
+                && !matches!(
+                    method,
+                    "session/load"
+                        | "session/fork"
+                        | "_distill/session/info"
+                        | "_distill/session/history"
+                        | "_distill/session/history/result"
+                        | "_distill/session/messages"
+                )
+            {
+                return Err(invalid_params(
+                    "Benchmark evidence is read-only; fork it into an ordinary chat to continue",
+                ));
+            }
+        }
         if let Some(ext_method) = method.strip_prefix(EXT_PREFIX) {
             return ext::handle(self, ext_method, params).await;
         }
@@ -928,10 +1127,53 @@ impl Inner {
     /// [`Self::reap_idle_bridges`]); a mere [`Self::live_bridge`] lookup does
     /// not, or the model inventory's check of which executable is serving
     /// would keep an unused bridge up forever.
-    pub async fn ensure_bridge(&self, harness_id: &str) -> Result<Arc<Bridge>, Value> {
+    pub(super) fn resolve_account_id(
+        &self,
+        harness_id: &str,
+        explicit: Option<&str>,
+    ) -> Result<Option<String>, Value> {
+        if !provider_accounts::supports_managed_accounts(harness_id) {
+            return if explicit.is_some() {
+                Err(invalid_params(
+                    "This provider does not support saved accounts",
+                ))
+            } else {
+                Ok(None)
+            };
+        }
+        provider_accounts::resolve_account(&self.app, harness_id, explicit)
+            .map(|account| Some(account.id))
+            .map_err(invalid_params)
+    }
+
+    async fn ensure_account_bridge(
+        &self,
+        harness_id: &str,
+        account_id: Option<&str>,
+    ) -> Result<Arc<Bridge>, Value> {
+        self.ensure_execution_bridge(harness_id, account_id, None)
+            .await
+    }
+
+    async fn ensure_execution_bridge(
+        &self,
+        harness_id: &str,
+        account_id: Option<&str>,
+        profile: Option<&str>,
+    ) -> Result<Arc<Bridge>, Value> {
         let spec: &HarnessSpec = harness::harness(harness_id)
             .ok_or_else(|| invalid_params(format!("Unknown harness {harness_id}")))?;
-        if let Some(bridge) = self.live_bridge(harness_id).await {
+        let base_key = account_route_key(harness_id, account_id);
+        let route_key = profile.map_or_else(
+            || base_key.clone(),
+            |profile| format!("{base_key}\u{1f}benchmark:{profile}"),
+        );
+        let validation_id = account_validation_id(harness_id, account_id)?;
+        if let Some(id) = validation_id {
+            provider_accounts::resolve_account(&self.app, harness_id, Some(id))
+                .map_err(invalid_params)?;
+        }
+        if let Some(bridge) = self.live_bridge(&route_key).await {
             bridge.touch();
             return Ok(bridge);
         }
@@ -943,15 +1185,38 @@ impl Inner {
             self.spawn_locks
                 .lock()
                 .await
-                .entry(harness_id.to_string())
+                .entry(base_key.clone())
                 .or_default(),
         );
         let _spawning = spawn_lock.lock().await;
-        if let Some(bridge) = self.live_bridge(harness_id).await {
+        // A credential mutation can begin while this caller was waiting.
+        // Revalidate inside the same lock used when retiring this process.
+        let account = validation_id
+            .map(|id| {
+                provider_accounts::resolve_account(&self.app, harness_id, Some(id))
+                    .map_err(invalid_params)
+            })
+            .transpose()?;
+        if let Some(bridge) = self.live_bridge(&route_key).await {
             bridge.touch();
             return Ok(bridge);
         }
-        let env = self.spawn_env().await;
+        let mut env = if profile.is_some() {
+            super::harness_env::build_owned_spawn_env(&self.app).await
+        } else {
+            (*self.spawn_env().await).clone()
+        };
+        if let Some(account) = account.as_ref() {
+            let base = env.shell_env.into_iter().collect();
+            env.shell_env = provider_accounts::scoped_env(&self.app, account, base)
+                .map_err(protocol::internal)?
+                .into_iter()
+                .collect();
+            env.remove_env = provider_accounts::MANAGED_AUTH_ENV_KEYS
+                .iter()
+                .map(|key| (*key).to_string())
+                .collect();
+        }
         // Startup reconciliation and the first model picker race. Waiting
         // only for an install already in flight could start yesterday's
         // bridge before reconciliation got the lock, keeping it for the
@@ -961,6 +1226,11 @@ impl Inner {
             if let Err(error) =
                 managed_acp_tools::install_managed_tool(&self.app, harness_id, &on_line).await
             {
+                if profile.is_some() {
+                    return Err(protocol::internal(format!(
+                        "capability_missing: pinned benchmark bridge cannot be verified: {error}"
+                    )));
+                }
                 log::warn!(
                     "[agent-host] {harness_id} update failed; trying the installed bridge: {error}"
                 );
@@ -974,13 +1244,13 @@ impl Inner {
         } else {
             None
         };
-        let bridge = Bridge::spawn(spec, &env, self.events_tx.clone())
+        let bridge = Bridge::spawn_scoped(spec, &env, self.events_tx.clone(), &route_key)
             .await
             .map_err(protocol::internal)?;
         self.bridges
             .lock()
             .await
-            .insert(harness_id.to_string(), Arc::clone(&bridge));
+            .insert(route_key, Arc::clone(&bridge));
         Ok(bridge)
     }
 
@@ -1032,7 +1302,7 @@ impl Inner {
             .iter()
             .filter(|(_, runtime)| {
                 let resumable = Self::resumable_after_release(
-                    holders.get(&runtime.harness).copied(),
+                    holders.get(&runtime.route_key()).copied(),
                     runtime.generation,
                 );
                 Self::session_is_evictable(runtime, resumable, now)
@@ -1084,7 +1354,7 @@ impl Inner {
                 // Nothing is running, so unlike `let_go_of` there is nothing
                 // to cancel first.
                 if let Some(bridge) = self
-                    .live_bridge(&runtime.harness)
+                    .live_bridge(&runtime.route_key())
                     .await
                     .filter(|bridge| bridge.generation() == runtime.generation)
                 {
@@ -1158,7 +1428,7 @@ impl Inner {
     async fn reap_idle_bridges(&self) {
         let mut chats: HashMap<String, usize> = HashMap::new();
         for runtime in self.sessions.lock().await.values() {
-            *chats.entry(runtime.harness.clone()).or_default() += 1;
+            *chats.entry(runtime.route_key()).or_default() += 1;
         }
         let now = std::time::Instant::now();
         let mut idle = Vec::new();
@@ -1242,11 +1512,20 @@ impl Inner {
             match event {
                 BridgeEvent::Notification {
                     harness,
+                    generation,
+                    run_id,
                     method,
                     params,
                 } => {
-                    if let Some(event) =
-                        self.on_bridge_notification(&harness, &method, params).await
+                    if let Some(event) = self
+                        .on_bridge_notification(
+                            &harness,
+                            generation,
+                            run_id.as_deref(),
+                            &method,
+                            params,
+                        )
+                        .await
                     {
                         pending.push(event);
                         if pending.len() >= APPEND_BATCH_LIMIT {
@@ -1256,10 +1535,14 @@ impl Inner {
                 }
                 BridgeEvent::Request {
                     harness,
+                    generation,
                     id,
                     method,
                     params,
-                } => self.on_bridge_request(&harness, id, &method, params).await,
+                } => {
+                    self.on_bridge_request(&harness, generation, id, &method, params)
+                        .await
+                }
                 BridgeEvent::Drained { ack } => {
                     // Whoever waits for this marker reads the transcript, the
                     // run state, or both: everything queued before it is now
@@ -1350,28 +1633,20 @@ impl Inner {
     /// events too — bounded by what the loop does per event, which is stamping
     /// and forwarding, not a database round trip.
     pub(super) async fn drain_bridge_events(&self) -> Result<(), Value> {
-        let (ack, drained) = oneshot::channel();
-        self.events_tx
-            .send(BridgeEvent::Drained { ack })
-            .map_err(|_| protocol::internal("The history writer stopped"))?;
-        tokio::time::timeout(EVENT_DRAIN_TIMEOUT, drained)
-            .await
-            .map_err(|_| {
-                protocol::internal("History synchronization timed out; operation was not completed")
-            })?
-            .map_err(|_| {
-                protocol::internal("The history writer stopped before confirming the save")
-            })?
-            .map_err(protocol::internal)
+        drain_queued_bridge_events(&self.events_tx).await
     }
 
     /// Map a bridge-side session id back to the host session id: one lookup
     /// in the table's index, whatever the number of attached chats.
-    async fn host_session_for(&self, harness: &str, bridge_session_id: &str) -> Option<String> {
-        self.sessions
-            .lock()
-            .await
-            .host_session_for(harness, bridge_session_id)
+    async fn host_session_for(
+        &self,
+        harness: &str,
+        generation: u64,
+        bridge_session_id: &str,
+    ) -> Option<String> {
+        let sessions = self.sessions.lock().await;
+        sessions
+            .host_session_for_generation(harness, generation, bridge_session_id)
             .map(str::to_string)
     }
 
@@ -1395,20 +1670,33 @@ impl Inner {
     async fn on_bridge_notification(
         &self,
         harness: &str,
+        generation: u64,
+        received_run: Option<&str>,
         method: &str,
         mut params: Value,
     ) -> Option<(String, Value)> {
+        // Drain notifications already queued before Exited even if stdout has
+        // closed. Liveness is not ownership; a replacement generation is.
+        if self.bridges.lock().await.get(harness)?.generation() != generation {
+            return None;
+        }
         let method = if Self::normalize_xai_turn_usage(method, &mut params) {
             "session/update"
         } else {
             method
         };
         if method != "session/update" {
+            if harness.contains("\u{1f}benchmark:") {
+                return None;
+            }
             self.notify_frontend(method, params);
             return None;
         }
         let bridge_session_id = protocol::session_id(&params)?;
-        let Some(session_id) = self.host_session_for(harness, &bridge_session_id).await else {
+        let Some(session_id) = self
+            .host_session_for(harness, generation, &bridge_session_id)
+            .await
+        else {
             // Probe sessions and history replays we asked for are not
             // surfaced to the renderer; a naming session's reply is kept.
             self.capture_naming_reply(harness, &bridge_session_id, &params);
@@ -1419,14 +1707,44 @@ impl Inner {
         {
             let mut sessions = self.sessions.lock().await;
             if let Some(runtime) = sessions.get_mut(&session_id) {
-                if runtime.loading {
-                    return None;
-                }
-                if Self::is_command_list_update(&params)
-                    || params
+                if runtime.execution_profile.is_some() {
+                    params["update"]["_meta"]["executionOwner"] =
+                        runtime.snapshot["_meta"]["executionOwner"].clone();
+                    if matches!(
+                        params
+                            .pointer("/update/sessionUpdate")
+                            .and_then(Value::as_str),
+                        Some("tool_call" | "tool_call_update")
+                    ) {
+                        params["update"]["_meta"]["executionViolation"] =
+                            json!("native tool activity in no-tool profile");
+                    }
+                    if params
                         .pointer("/update/sessionUpdate")
                         .and_then(Value::as_str)
-                        == Some("notice")
+                        == Some("usage_update")
+                    {
+                        let raw = params["update"].clone();
+                        params["update"]["_meta"]["benchmarkRawUsage"] = raw;
+                    }
+                }
+                if runtime.loading || runtime.generation != generation {
+                    return None;
+                }
+                if Self::is_turn_update(&params)
+                    && (received_run.is_none()
+                        || runtime.run.as_ref().map(|run| run.run_id.as_str()) != received_run)
+                {
+                    return None;
+                }
+                if runtime.execution_profile.is_none()
+                    && (Self::is_command_list_update(&params)
+                        || Self::is_failure_state_update(&params)
+                        || Self::is_zero_usage_update(&params)
+                        || params
+                            .pointer("/update/sessionUpdate")
+                            .and_then(Value::as_str)
+                            == Some("notice"))
                 {
                     // Passed on, but neither a part of the turn nor of the
                     // transcript. Notices are explicitly live-only in ACP.
@@ -1440,7 +1758,11 @@ impl Inner {
                 // would otherwise keep every chat of it attached for good.
                 runtime.touch();
                 persist = true;
-                if let Some(run) = runtime.run.as_mut() {
+                if let Some(run) = runtime
+                    .run
+                    .as_mut()
+                    .filter(|run| Some(run.run_id.as_str()) == received_run)
+                {
                     Self::stamp_run_update(&mut params, run, &now_iso());
                 }
                 if let Some(options) = Self::config_option_update(&params) {
@@ -1449,6 +1771,12 @@ impl Inner {
                     // mode back after a cooldown. Until now the host watched
                     // the update go past and kept describing the old state.
                     let selection = Self::selection_from(&options);
+                    if runtime.execution_profile.is_some()
+                        && selection != Self::selection_from(&runtime.snapshot["configOptions"])
+                    {
+                        params["update"]["_meta"]["executionViolation"] =
+                            json!("native selection changed during owned execution");
+                    }
                     runtime.snapshot["configOptions"] = options;
                     runtime.has_model_option = Self::has_model_option(&runtime.snapshot);
                     reconfigured = Some((runtime.snapshot.clone(), selection));
@@ -1487,6 +1815,24 @@ impl Inner {
         };
         self.notify_frontend("session/update", params);
         stored
+    }
+
+    fn is_turn_update(params: &Value) -> bool {
+        matches!(
+            params
+                .pointer("/update/sessionUpdate")
+                .and_then(Value::as_str),
+            Some(
+                "user_message_chunk"
+                    | "agent_message_chunk"
+                    | "agent_thought_chunk"
+                    | "tool_call"
+                    | "tool_call_update"
+                    | "plan"
+                    | "usage_update"
+                    | "message_usage"
+            )
+        )
     }
 
     /// Rewrites grok's `_x.ai/session/update` `turn_completed` into the
@@ -1655,11 +2001,100 @@ impl Inner {
         update.insert("_meta".to_string(), Value::Object(meta));
     }
 
-    async fn on_bridge_request(&self, harness: &str, id: Value, method: &str, mut params: Value) {
+    fn air_session_failure(meta: &Value) -> Option<&Value> {
+        let air = meta.pointer("/jetbrains/air")?;
+        if air["version"].as_u64().is_none_or(|version| version < 1) {
+            return None;
+        }
+        let failure = air.get("sessionFailure")?;
+        (failure["id"].is_string() && failure["revision"].is_u64()).then_some(failure)
+    }
+
+    /// AIR failure rows describe provider state; they are not model output.
+    /// Extra fields make an update substantive and retain normal bookkeeping.
+    fn is_failure_state_update(params: &Value) -> bool {
+        let Some(update) = params.get("update").and_then(Value::as_object) else {
+            return false;
+        };
+        update.get("sessionUpdate").and_then(Value::as_str) == Some("session_info_update")
+            && update
+                .keys()
+                .all(|key| key == "sessionUpdate" || key == "_meta")
+            && update
+                .get("_meta")
+                .and_then(Self::air_session_failure)
+                .is_some()
+    }
+
+    fn is_zero_usage_update(params: &Value) -> bool {
+        let Some(update) = params.get("update").and_then(Value::as_object) else {
+            return false;
+        };
+        // Claude reports zero synthetic-message usage before its terminal
+        // quota failure. Positive/unknown usage remains fail-closed.
+        update.get("sessionUpdate").and_then(Value::as_str) == Some("usage_update")
+            && update.get("used").and_then(Value::as_f64) == Some(0.0)
+            && update
+                .get("cost")
+                .is_none_or(|cost| cost["amount"].as_f64() == Some(0.0))
+            && update.keys().all(|key| {
+                matches!(
+                    key.as_str(),
+                    "sessionUpdate" | "used" | "size" | "cost" | "_meta"
+                )
+            })
+    }
+
+    fn prompt_response(result: Result<Value, Value>) -> Result<Value, Value> {
+        result.and_then(|response| {
+            let Some(failure) = response
+                .get("_meta")
+                .and_then(Self::air_session_failure)
+                .filter(|failure| failure["severity"] == "error")
+            else {
+                return Ok(response);
+            };
+            // Both pinned Claude/Codex bridges reserve this policy for quota
+            // exhaustion. Temporary rate limits offer retry; context and turn
+            // budgets offer new_session. Do not infer quota from error prose.
+            let quota = failure["category"] == "limit"
+                && failure["actions"].as_array().is_some_and(Vec::is_empty);
+            Err(protocol::error_with_data(
+                protocol::INTERNAL_ERROR,
+                failure["title"]
+                    .as_str()
+                    .unwrap_or("The provider could not complete this turn"),
+                json!({
+                    "errorKind": if quota { "quota_exhausted" } else { "provider_failure" },
+                    "sessionFailure": failure,
+                }),
+            ))
+        })
+    }
+
+    async fn on_bridge_request(
+        &self,
+        harness: &str,
+        generation: u64,
+        id: Value,
+        method: &str,
+        mut params: Value,
+    ) {
+        let Some(origin) = self
+            .live_bridge(harness)
+            .await
+            .filter(|bridge| bridge.generation() == generation)
+        else {
+            return;
+        };
+        if harness.contains("\u{1f}benchmark:") && protocol::session_id(&params).is_none() {
+            origin.respond(id, Self::unanswered_client_request(method));
+            return;
+        }
         if let Some(bridge_session_id) = protocol::session_id(&params) {
             if self.is_naming_session(harness, &bridge_session_id) {
                 // Nobody sees a naming session, so nothing it asks for is granted.
-                if let Some(bridge) = self.live_bridge(harness).await {
+                {
                     let answer = if method == "session/request_permission" {
                         Ok(json!({ "outcome": { "outcome": "cancelled" } }))
                     } else {
@@ -1668,19 +2103,50 @@ impl Inner {
                             format!("{method} is not available to a naming session"),
                         ))
                     };
-                    bridge.respond(id, answer);
+                    origin.respond(id, answer);
                 }
                 return;
             }
-            if let Some(session_id) = self.host_session_for(harness, &bridge_session_id).await {
+            if let Some(session_id) = self
+                .host_session_for(harness, generation, &bridge_session_id)
+                .await
+            {
+                if harness.contains("\u{1f}benchmark:") {
+                    let owner = self
+                        .store
+                        .execution_owner(&session_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|(owner, _)| owner.owner_id);
+                    let event = json!({"sessionId":session_id,"update":{"sessionUpdate":"notice","_meta":{"executionOwner":{"kind":"benchmark","id":owner},"executionViolation":format!("Unexpected native client request: {method}")}}});
+                    if let Err(error) = self.store.append_events(&session_id, &[event]).await {
+                        log::error!(
+                            "[agent-host] cannot retain execution policy violation: {error}"
+                        );
+                    }
+                    origin.respond(id, Self::unanswered_client_request(method));
+                    return;
+                }
                 params["sessionId"] = json!(session_id);
+            } else {
+                origin.respond(
+                    id,
+                    Err(invalid_params("Unknown or detached bridge session")),
+                );
+                return;
             }
         }
         let request_id = self.next_client_request_id.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut pending) = self.client_requests.lock() {
             pending.insert(
                 request_id,
-                (harness.to_string(), id.clone(), method.to_string()),
+                ClientRequest {
+                    harness: harness.to_string(),
+                    generation,
+                    bridge_id: id.clone(),
+                    method: method.to_string(),
+                },
             );
         }
         let has_frontend = self.frontend.lock().map(|f| f.is_some()).unwrap_or(false);
@@ -1689,9 +2155,7 @@ impl Inner {
             if let Ok(mut pending) = self.client_requests.lock() {
                 pending.remove(&request_id);
             }
-            if let Some(bridge) = self.bridges.lock().await.get(harness).cloned() {
-                bridge.respond(id, Self::unanswered_client_request(method));
-            }
+            origin.respond(id, Self::unanswered_client_request(method));
             return;
         }
         self.send_to_frontend(protocol::request(json!(request_id), method, params));
@@ -2202,6 +2666,10 @@ impl Inner {
         })?;
         let spec = harness::harness(&harness_id)
             .ok_or_else(|| invalid_params(format!("Unknown harness {harness_id}")))?;
+        let account_id = self.resolve_account_id(
+            &harness_id,
+            Self::meta_string(&params, "accountId").as_deref(),
+        )?;
         let cwd = params
             .get("cwd")
             .and_then(Value::as_str)
@@ -2216,9 +2684,16 @@ impl Inner {
             .as_deref()
             .and_then(|model_id| harness::session_model_meta(spec, model_id));
         let (bridge, bridge_session_id, mut snapshot) = self
-            .open_bridge_session(spec, &cwd, mcp_servers, open_meta.as_ref())
+            .open_bridge_session(
+                spec,
+                account_id.as_deref(),
+                &cwd,
+                mcp_servers,
+                open_meta.as_ref(),
+            )
             .await?;
-        let session_id = bridge_session_id.clone();
+        // Native session ids are local to each account's process/home.
+        let session_id = uuid::Uuid::new_v4().to_string();
         let substitutions = self
             .apply_to_session(
                 &harness_id,
@@ -2235,6 +2710,7 @@ impl Inner {
         let record = SessionRecord {
             id: session_id.clone(),
             harness: harness_id.clone(),
+            account_id: account_id.clone(),
             bridge_session_id: Some(bridge_session_id.clone()),
             cwd: cwd.clone(),
             title: None,
@@ -2280,6 +2756,8 @@ impl Inner {
             session_id.clone(),
             SessionRuntime {
                 harness: harness_id.clone(),
+                account_id: account_id.clone(),
+                execution_profile: None,
                 bridge_session_id,
                 generation: bridge.generation(),
                 loading: false,
@@ -2295,6 +2773,7 @@ impl Inner {
         response["sessionId"] = json!(session_id);
         response["_meta"] = json!({
             "providerId": harness_id,
+            "accountId": account_id,
             "modelId": record.model_id,
             "reasoningEffort": record.reasoning_effort,
             "fastMode": record.fast_mode,
@@ -2310,11 +2789,12 @@ impl Inner {
     async fn open_bridge_session(
         &self,
         spec: &HarnessSpec,
+        account_id: Option<&str>,
         cwd: &str,
         mcp_servers: Vec<Value>,
         open_meta: Option<&Value>,
     ) -> Result<(Arc<Bridge>, String, Value), Value> {
-        let bridge = self.ensure_bridge(spec.id).await?;
+        let bridge = self.ensure_account_bridge(spec.id, account_id).await?;
         let mut params = json!({ "cwd": cwd, "mcpServers": mcp_servers });
         if let Some(meta) = open_meta {
             params["_meta"] = meta.clone();
@@ -2357,6 +2837,17 @@ impl Inner {
             self.touch_session(&record.id).await;
             return Ok(attached);
         }
+        if self
+            .store
+            .execution_owner(&record.id)
+            .await
+            .map_err(protocol::internal)?
+            .is_some()
+        {
+            return Err(protocol::internal(
+                "dispatch_uncertain: owned session runtime is unavailable; no automatic reopen",
+            ));
+        }
         // The caller's copy may predate a move to another harness made while
         // it waited for the lock (a delayed background attach, say); attach
         // what the store holds now.
@@ -2386,7 +2877,9 @@ impl Inner {
     ) -> Result<(Arc<Bridge>, String), Value> {
         let spec = harness::harness(&record.harness)
             .ok_or_else(|| invalid_params(format!("Unknown harness {}", record.harness)))?;
-        let bridge = self.ensure_bridge(&record.harness).await?;
+        let bridge = self
+            .ensure_account_bridge(&record.harness, record.account_id.as_deref())
+            .await?;
         let stored_bridge_id = record
             .bridge_session_id
             .clone()
@@ -2406,6 +2899,8 @@ impl Inner {
             record.id.clone(),
             SessionRuntime {
                 harness: record.harness.clone(),
+                account_id: record.account_id.clone(),
+                execution_profile: None,
                 bridge_session_id: stored_bridge_id.clone(),
                 generation: bridge.generation(),
                 loading: true,
@@ -2567,10 +3062,18 @@ impl Inner {
         let session_id =
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
         let mut record = self.session_record(&session_id).await?;
-        if let Some(cwd) = params.get("cwd").and_then(Value::as_str) {
-            if !cwd.is_empty() && cwd != "~" && cwd != record.cwd {
-                self.update_working_dir(&session_id, cwd).await?;
-                record.cwd = cwd.to_string();
+        let owned = self
+            .store
+            .execution_owner(&session_id)
+            .await
+            .map_err(protocol::internal)?
+            .is_some();
+        if !owned {
+            if let Some(cwd) = params.get("cwd").and_then(Value::as_str) {
+                if !cwd.is_empty() && cwd != "~" && cwd != record.cwd {
+                    self.update_working_dir(&session_id, cwd).await?;
+                    record.cwd = cwd.to_string();
+                }
             }
         }
         // The transcript is ours: replay it from the local log and answer
@@ -2635,12 +3138,23 @@ impl Inner {
                 }
             };
         let mut response = Self::presented_snapshot(&record.harness, &snapshot, has_model_option);
-        response["_meta"] = json!({ "providerId": record.harness });
+        response["_meta"] = json!({ "providerId": record.harness, "accountId": record.account_id });
+        if owned {
+            response["_meta"]["executionOwner"] = record
+                .snapshot
+                .as_ref()
+                .and_then(|v| v.pointer("/_meta/executionOwner"))
+                .cloned()
+                .unwrap_or(Value::Null);
+        }
         let response = Self::with_substitutions(response, &substitutions);
         if let Ok(mut last) = self.last_loaded.lock() {
             *last = Some(session_id.clone());
         }
-        if !attached {
+        if !owned
+            && !attached
+            && account_validation_id(&record.harness, record.account_id.as_deref()).is_ok()
+        {
             let host = Arc::clone(self);
             let presented = response["configOptions"].clone();
             tokio::spawn(async move {
@@ -2686,7 +3200,7 @@ impl Inner {
             );
             return;
         }
-        let Some((harness, _, _)) = self.runtime_route(&record.id).await else {
+        let Some((_, _, _)) = self.runtime_route(&record.id).await else {
             return;
         };
         let Some((snapshot, has_model_option, substitutions)) =
@@ -2694,7 +3208,11 @@ impl Inner {
         else {
             return;
         };
-        let presented = Self::presented_snapshot(&harness, &snapshot, has_model_option);
+        let current = match self.session_record(&record.id).await {
+            Ok(record) => record,
+            Err(_) => return,
+        };
+        let presented = Self::presented_snapshot(&current.harness, &snapshot, has_model_option);
         if presented["configOptions"] == presented_before && substitutions.is_empty() {
             return;
         }
@@ -2728,6 +3246,7 @@ impl Inner {
                 "lastMessageSnippet": record.last_snippet,
                 "projectId": record.project_id,
                 "providerId": record.harness,
+                "accountId": record.account_id,
                 "modelId": record.model_id,
                 // The two knobs that belong to the model, so a chat the
                 // operator has not opened still reports what it runs at.
@@ -2735,6 +3254,7 @@ impl Inner {
                 "fastMode": record.fast_mode,
                 "personaId": record.persona_id,
                 "activeRunId": active_run_id,
+                "executionOwner": record.snapshot.as_ref().and_then(|v| v.pointer("/_meta/executionOwner")),
             }
         })
     }
@@ -2798,7 +3318,7 @@ impl Inner {
     /// agent stops holding its context and whatever it was doing. Best effort:
     /// a bridge without `session/close` keeps it until the process exits.
     async fn let_go_of(&self, runtime: &SessionRuntime) {
-        let Some(bridge) = self.live_bridge(&runtime.harness).await else {
+        let Some(bridge) = self.live_bridge(&runtime.route_key()).await else {
             return;
         };
         if bridge.generation() != runtime.generation {
@@ -2902,6 +3422,9 @@ impl Inner {
     /// the bridge's own default.
     fn fork_meta(record: &SessionRecord) -> Value {
         let mut meta = json!({ "provider": record.harness });
+        if let Some(account_id) = &record.account_id {
+            meta["accountId"] = json!(account_id);
+        }
         if let Some(project_id) = &record.project_id {
             meta["projectId"] = json!(project_id);
         }
@@ -3523,12 +4046,13 @@ impl Inner {
                 record.harness
             ))
         };
+        let account_id = self.resolve_account_id(harness_id, None)?;
         if self.active_run_id(session_id).await.is_some() {
             return Err(running());
         }
         let mcp_servers = self.mcp_servers(&Value::Null).await;
         let (bridge, bridge_session_id, snapshot) = self
-            .open_bridge_session(spec, &record.cwd, mcp_servers, None)
+            .open_bridge_session(spec, account_id.as_deref(), &record.cwd, mcp_servers, None)
             .await?;
         let model_id = Self::current_model(&snapshot);
         // Opening the bridge session took a while, and a prompt that was past
@@ -3559,6 +4083,7 @@ impl Inner {
             .rebind_session(
                 session_id,
                 harness_id,
+                account_id.as_deref(),
                 &bridge_session_id,
                 model_id.as_deref(),
                 &snapshot,
@@ -3591,6 +4116,8 @@ impl Inner {
             session_id.to_string(),
             SessionRuntime {
                 harness: harness_id.to_string(),
+                account_id: account_id.clone(),
+                execution_profile: None,
                 bridge_session_id,
                 generation: bridge.generation(),
                 loading: false,
@@ -3611,11 +4138,159 @@ impl Inner {
                 " before its first message"
             }
         );
-        Ok(Self::presented_snapshot(
-            harness_id,
-            &snapshot,
-            has_model_option,
-        ))
+        let mut response = Self::presented_snapshot(harness_id, &snapshot, has_model_option);
+        response["_meta"] = json!({"providerId":harness_id,"accountId":account_id});
+        self.notify_frontend("session/update", json!({"sessionId":session_id,"update":{"sessionUpdate":"session_info_update","_meta":response["_meta"]}}));
+        Ok(response)
+    }
+
+    /// Switch only an idle chat. A new CLI session receives context as text;
+    /// historical commands are never dispatched as live tool invocations.
+    pub(super) async fn set_session_account(
+        self: &Arc<Self>,
+        session_id: &str,
+        account_id: &str,
+    ) -> Result<Value, Value> {
+        let lock = self.attach_lock(session_id).await;
+        let _moving = lock.lock().await;
+        let record = self.session_record(session_id).await?;
+        let selected =
+            provider_accounts::resolve_account(&self.app, &record.harness, Some(account_id))
+                .map_err(invalid_params)?;
+        if record.archived_at.is_some() || self.shutdown_prepared.load(Ordering::SeqCst) {
+            return Err(invalid_params("Session is archived or Distill is closing"));
+        }
+        if account_route_key(&record.harness, record.account_id.as_deref())
+            == account_route_key(&record.harness, Some(&selected.id))
+        {
+            let snapshot = record.snapshot.clone().unwrap_or_else(|| json!({}));
+            let mut response = Self::presented_snapshot(
+                &record.harness,
+                &snapshot,
+                Self::has_model_option(&snapshot),
+            );
+            response["_meta"] = json!({"providerId":record.harness,"accountId":selected.id});
+            return Ok(response);
+        }
+        let can_switch = |runtime: &SessionRuntime| {
+            !runtime.loading && runtime.run.is_none() && runtime.steer_queue.is_empty()
+        };
+        if self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .is_some_and(|runtime| !can_switch(runtime))
+        {
+            return Err(invalid_params(
+                "Finish or stop the active turn before switching accounts",
+            ));
+        }
+        let spec =
+            harness::harness(&record.harness).ok_or_else(|| invalid_params("Unknown provider"))?;
+        let wanted = Selection {
+            model: record.model_id.clone(),
+            effort: record.reasoning_effort.clone(),
+            fast: record.fast_mode,
+        };
+        let open_meta = wanted
+            .model
+            .as_deref()
+            .and_then(|model| harness::session_model_meta(spec, model));
+        let (bridge, bridge_session_id, mut snapshot) = self
+            .open_bridge_session(
+                spec,
+                Some(&selected.id),
+                &record.cwd,
+                self.mcp_servers(&Value::Null).await,
+                open_meta.as_ref(),
+            )
+            .await?;
+        let substitutions = self
+            .apply_to_session(
+                &record.harness,
+                &bridge,
+                &bridge_session_id,
+                &mut snapshot,
+                &wanted,
+                open_meta.is_some(),
+            )
+            .await;
+        if !substitutions.is_empty()
+            || wanted
+                .model
+                .as_ref()
+                .is_some_and(|model| Self::current_model(&snapshot).as_ref() != Some(model))
+        {
+            bridge.close_session(&bridge_session_id).await;
+            return Err(protocol::error_with_data(
+                protocol::INVALID_PARAMS,
+                "The selected account cannot preserve this chat's model and settings",
+                json!({"accountId":selected.id,"substitutions":substitutions}),
+            ));
+        }
+        if let Err(error) = self.drain_bridge_events().await {
+            bridge.close_session(&bridge_session_id).await;
+            return Err(error);
+        }
+        // Remove the route under the same lock that claims turns. A prompt
+        // admitted earlier either owns a run now or cannot dispatch here.
+        let previously = {
+            let mut sessions = self.sessions.lock().await;
+            if self.shutdown_prepared.load(Ordering::SeqCst)
+                || sessions
+                    .get(session_id)
+                    .is_some_and(|runtime| !can_switch(runtime))
+            {
+                drop(sessions);
+                bridge.close_session(&bridge_session_id).await;
+                return Err(invalid_params(
+                    "Finish or stop the active turn before switching accounts",
+                ));
+            }
+            sessions.remove(session_id)
+        };
+        if let Err(error) = self
+            .store
+            .switch_account(session_id, &selected.id, &bridge_session_id, &snapshot)
+            .await
+        {
+            if let Some(runtime) = previously {
+                self.sessions
+                    .lock()
+                    .await
+                    .insert(session_id.to_string(), runtime);
+            }
+            bridge.close_session(&bridge_session_id).await;
+            return Err(protocol::internal(error));
+        }
+        if let Some(runtime) = previously {
+            self.let_go_of(&runtime).await;
+        }
+        let has_model_option = Self::has_model_option(&snapshot);
+        self.sessions.lock().await.insert(
+            session_id.to_string(),
+            SessionRuntime {
+                harness: record.harness.clone(),
+                account_id: Some(selected.id.clone()),
+                execution_profile: None,
+                bridge_session_id,
+                generation: bridge.generation(),
+                loading: false,
+                run: None,
+                steer_queue: VecDeque::new(),
+                snapshot: snapshot.clone(),
+                has_model_option,
+                substitutions: Vec::new(),
+                last_active: std::time::Instant::now(),
+            },
+        );
+        let meta = json!({"providerId":record.harness,"accountId":selected.id,"contextTransfer":"transcript"});
+        self.notify_frontend("session/update", json!({"sessionId":session_id,"update":{"sessionUpdate":"session_info_update","_meta":meta}}));
+        let mut response = Self::presented_snapshot(&record.harness, &snapshot, has_model_option);
+        self.notify_frontend("session/update", json!({"sessionId":session_id,"update":{"sessionUpdate":"config_option_update","configOptions":response["configOptions"],"_meta":meta}}));
+        response["_meta"] = meta;
+        Ok(response)
     }
 
     pub(super) fn snippet(text: &str) -> Option<String> {
@@ -3761,7 +4436,9 @@ impl Inner {
             "{CARRYOVER_OPENING} Below is its transcript so far: the user's messages, the previous \
              agent's replies and the names of the tools it ran. Tool output is not included; \
              whatever those tools changed is in the working directory. Treat this as the history \
-             of the conversation you are now part of and continue it. Do not answer the \
+             of the conversation you are now part of and continue it. Previously recorded tool \
+             actions have already been attempted; inspect their effects before continuing and \
+             never repeat a completed action just because it appears in this transcript. Do not answer the \
              transcript itself and do not mention the hand-over unless it matters to the user's \
              request — their new message follows it.\n\n<conversation_transcript>\n"
         );
@@ -3878,23 +4555,30 @@ impl Inner {
     /// duplicate the user can see and delete; withdrawing a message whose reply
     /// was persisted leaves a transcript holding an answer to nothing and loses
     /// what the user typed.
-    async fn discard_rejected_prompt(&self, session_id: &str, recorded: Option<RecordedPrompt>) {
+    async fn discard_rejected_prompt(
+        &self,
+        session_id: &str,
+        recorded: Option<RecordedPrompt>,
+    ) -> bool {
+        if !matches!(self.store.execution_owner(session_id).await, Ok(None)) {
+            return false;
+        }
         let Some(recorded) = recorded else {
-            return;
+            return false;
         };
         // The evidence lives in the bridge event queue: an update the bridge
         // emitted before it answered with an error is only stamped onto the run
         // when the event loop gets to it. Wait for the loop to catch up, or a
         // chunk that is about to be persisted reads as "nothing happened".
         if self.drain_bridge_events().await.is_err() {
-            return;
+            return false;
         }
         let produced_nothing = {
             let sessions = self.sessions.lock().await;
             Self::turn_produced_nothing(sessions.get(session_id), &recorded.run_id)
         };
         if !produced_nothing {
-            return;
+            return false;
         }
         if let Err(error) = self
             .store
@@ -3904,7 +4588,9 @@ impl Inner {
             log::warn!(
                 "[agent-host] failed to withdraw the rejected prompt of session {session_id}: {error}"
             );
+            return false;
         }
+        true
     }
 
     /// Whether `runtime` positively says that turn `run_id` produced nothing:
@@ -3964,7 +4650,212 @@ impl Inner {
 
     async fn prompt(self: &Arc<Self>, mut params: Value) -> Result<Value, Value> {
         let ids = TurnIds::for_prompt(&mut params);
-        self.start_turn(params, ids, false).await
+        let mut attempted = std::collections::HashSet::new();
+        loop {
+            let result = self.start_turn(params.clone(), ids.clone(), false).await;
+            let Err(error) = &result else {
+                return result;
+            };
+            // Retry only an explicit quota rejection before the bridge emitted
+            // any turn activity. The rejected prompt was removed by start_turn,
+            // so its original message id remains the only accepted user turn.
+            if error
+                .pointer("/data/dispatchStarted")
+                .and_then(Value::as_bool)
+                != Some(false)
+                || error
+                    .pointer("/data/promptNotAccepted")
+                    .and_then(Value::as_bool)
+                    != Some(true)
+            {
+                return result;
+            }
+            let Some(account_id) = error.pointer("/data/accountId").and_then(Value::as_str) else {
+                return result;
+            };
+            if !attempted.insert(account_id.to_string()) || attempted.len() > 32 {
+                return match Self::rejected_quota_wait(error, None) {
+                    Some(wait) => Err(wait),
+                    None => result,
+                };
+            }
+            let session_id = protocol::session_id(&params)
+                .ok_or_else(|| invalid_params("sessionId required"))?;
+            let record = self.session_record(&session_id).await?;
+            if !crate::services::provider_account_status::record_quota_error(
+                &self.app, account_id, error,
+            )
+            .await
+            {
+                return result;
+            }
+            if !self.automatic_account_switching(&record.harness)? {
+                // Manual routing still parks a proven unaccepted prompt.
+                // Otherwise the renderer drops its queue entry while the host
+                // has already withdrawn that same prompt from history.
+                let selected_wait = self.route_account_for_dispatch(&record).await.err();
+                if let Some(wait) = Self::rejected_quota_wait(error, selected_wait) {
+                    return Err(wait);
+                }
+                return result;
+            }
+        }
+    }
+
+    fn quota_wait_error(
+        account_id: &str,
+        next_reset: Option<i64>,
+        reset_tokens_available: bool,
+        unavailable: &std::collections::HashSet<String>,
+    ) -> Value {
+        protocol::error_with_data(
+            -32010,
+            "All eligible accounts are waiting for quota; the message remains queued",
+            json!({
+                "kind":"account_quota_wait", "type":"account_quota_wait",
+                "accountId":account_id, "nextReset":next_reset,
+                "resetTokensAvailable":reset_tokens_available, "dispatchStarted":false,
+                "promptNotAccepted":true, "unavailableAccounts":unavailable,
+            }),
+        )
+    }
+
+    fn rejected_quota_wait(error: &Value, selected_wait: Option<Value>) -> Option<Value> {
+        if error
+            .pointer("/data/dispatchStarted")
+            .and_then(Value::as_bool)
+            != Some(false)
+            || error
+                .pointer("/data/promptNotAccepted")
+                .and_then(Value::as_bool)
+                != Some(true)
+            || !crate::services::provider_account_status::is_quota_error(error)
+        {
+            return None;
+        }
+        let account_id = error.pointer("/data/accountId").and_then(Value::as_str)?;
+        Some(
+            selected_wait
+                .filter(|wait| {
+                    wait.pointer("/data/type").and_then(Value::as_str) == Some("account_quota_wait")
+                })
+                .unwrap_or_else(|| {
+                    // A concurrent account mutation or new telemetry can make the
+                    // selection inconclusive. Keep the unaccepted message queued until
+                    // the operator or a fresh status update makes it runnable again.
+                    Self::quota_wait_error(
+                        account_id,
+                        None,
+                        false,
+                        &std::collections::HashSet::new(),
+                    )
+                }),
+        )
+    }
+
+    fn automatic_account_switching(&self, harness_id: &str) -> Result<bool, Value> {
+        if !provider_accounts::supports_managed_accounts(harness_id) {
+            return Ok(false);
+        }
+        let registry = provider_accounts::snapshot(&self.app).map_err(protocol::internal)?;
+        Ok(registry
+            .automatic_switching
+            .get(harness_id)
+            .copied()
+            .unwrap_or(false))
+    }
+
+    async fn route_account_for_dispatch(
+        self: &Arc<Self>,
+        record: &SessionRecord,
+    ) -> Result<(), Value> {
+        if !provider_accounts::supports_managed_accounts(&record.harness) {
+            return Ok(());
+        }
+        let account_id = record
+            .account_id
+            .as_deref()
+            .ok_or_else(|| invalid_params("Choose a signed-in account for this chat"))?;
+        let owned = self
+            .store
+            .execution_owner(&record.id)
+            .await
+            .map_err(protocol::internal)?
+            .is_some();
+        let automatic = !owned && self.automatic_account_switching(&record.harness)?;
+        let mut unavailable = std::collections::HashSet::new();
+        loop {
+            let selection = if unavailable.is_empty() {
+                crate::services::provider_account_status::select_account(
+                    &self.app,
+                    &record.harness,
+                    Some(account_id),
+                    automatic,
+                    record.model_id.as_deref(),
+                )
+                .await
+            } else {
+                crate::services::provider_account_status::select_account_excluding(
+                    &self.app,
+                    &record.harness,
+                    Some(account_id),
+                    automatic,
+                    record.model_id.as_deref(),
+                    &unavailable,
+                )
+                .await
+            }
+            .map_err(protocol::internal)?;
+            match selection {
+                crate::services::provider_account_status::AccountSelection::Ready {
+                    account_id: selected,
+                } => {
+                    if selected != account_id {
+                        if let Err(error) = self.set_session_account(&record.id, &selected).await {
+                            if !automatic || !unavailable.insert(selected) || unavailable.len() > 32
+                            {
+                                return Err(error);
+                            }
+                            // Preparation leaves the old account/model intact on
+                            // failure. A different spare may support this model.
+                            continue;
+                        }
+                    }
+                    return Ok(());
+                }
+                crate::services::provider_account_status::AccountSelection::Wait {
+                    account_id,
+                    next_reset,
+                    reset_tokens_available,
+                } => {
+                    // Selection points to the best next account but does not open a
+                    // new session until it can run. Reset credits require operator action.
+                    return Err(Self::quota_wait_error(
+                        &account_id,
+                        next_reset,
+                        reset_tokens_available,
+                        &unavailable,
+                    ));
+                }
+            }
+        }
+    }
+
+    pub(super) async fn prepare_session_account(
+        self: &Arc<Self>,
+        session_id: &str,
+    ) -> Result<Value, Value> {
+        let record = self.session_record(session_id).await?;
+        if self.active_run_id(session_id).await.is_some() {
+            return Err(invalid_params(
+                "A prompt is already running for this session",
+            ));
+        }
+        self.route_account_for_dispatch(&record).await?;
+        let current = self.session_record(session_id).await?;
+        Ok(
+            json!({"sessionId":session_id,"accountId":current.account_id,"providerId":current.harness}),
+        )
     }
 
     /// The update that tells the renderer a turn has ended when no request of
@@ -3992,7 +4883,11 @@ impl Inner {
     ) -> Result<Value, Value> {
         let session_id =
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
-        let record = self.session_record(&session_id).await?;
+        let mut record = self.session_record(&session_id).await?;
+        if self.active_run_id(&session_id).await.is_none() {
+            self.route_account_for_dispatch(&record).await?;
+            record = self.session_record(&session_id).await?;
+        }
         let (bridge, _) = self.attach_session(&record).await?;
         let lock = self.attach_lock(&session_id).await;
         let admission = lock.lock().await;
@@ -4002,10 +4897,21 @@ impl Inner {
                 "Unarchive the session before sending a prompt",
             ));
         }
-        if current.cwd != record.cwd || current.harness != record.harness {
+        if current.cwd != record.cwd
+            || current.harness != record.harness
+            || current.account_id != record.account_id
+        {
             return Err(invalid_params(
                 "Session changed while preparing the prompt; retry in its current workspace",
             ));
+        }
+        if provider_accounts::supports_managed_accounts(&current.harness) {
+            let id = current
+                .account_id
+                .as_deref()
+                .ok_or_else(|| invalid_params("Choose a signed-in account for this chat"))?;
+            provider_accounts::resolve_account(&self.app, &current.harness, Some(id))
+                .map_err(invalid_params)?;
         }
         let prompt = params
             .get("prompt")
@@ -4042,7 +4948,13 @@ impl Inner {
                 return Err(invalid_params("Distill is closing"));
             }
             match Self::claim_turn(runtime, &ids) {
-                Ok(bridge_session_id) => bridge_session_id,
+                Ok(bridge_session_id) => {
+                    self.activity_generations
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .record(&runtime.harness, runtime.account_id.as_deref());
+                    bridge_session_id
+                }
                 Err(active_run_id) => {
                     if steer {
                         runtime
@@ -4075,6 +4987,21 @@ impl Inner {
             }
         };
         drop(admission);
+        if self
+            .store
+            .session_execution_cancelled(&session_id)
+            .await
+            .map_err(protocol::internal)?
+        {
+            if let Some(runtime) = self.sessions.lock().await.get_mut(&session_id) {
+                runtime.run = None;
+            }
+            return Err(protocol::error_with_data(
+                -32000,
+                "Benchmark was cancelled before provider dispatch",
+                json!({"kind":"cancelled"}),
+            ));
+        }
         self.name_untitled_session(&record, &prompt);
         // What is recorded is what the user sent; what the agent is sent
         // opens with what it missed.
@@ -4085,7 +5012,30 @@ impl Inner {
         let mut result = self
             .run_prompt(&bridge, &session_id, &bridge_session_id, sent, meta)
             .await;
-        match &result {
+        if let Err(error) = &mut result {
+            let dispatch_started = self
+                .sessions
+                .lock()
+                .await
+                .get(&session_id)
+                .and_then(|runtime| runtime.run.as_ref())
+                .is_none_or(|run| run.saw_update);
+            let mut data = error
+                .get("data")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            data.insert("dispatchStarted".into(), json!(dispatch_started));
+            data.insert("accountId".into(), json!(record.account_id));
+            error["data"] = Value::Object(data);
+            if let Some(account_id) = &record.account_id {
+                crate::services::provider_account_status::record_quota_error(
+                    &self.app, account_id, error,
+                )
+                .await;
+            }
+        }
+        match &mut result {
             // Only a turn the bridge saw through proves the agent has the
             // transcript. A failed one proves nothing either way — a bridge
             // that died took the prompt with it — and an agent told the same
@@ -4098,7 +5048,10 @@ impl Inner {
                 }
             }
             Ok(_) => {}
-            Err(_) => self.discard_rejected_prompt(&session_id, recorded).await,
+            Err(error) => {
+                let withdrawn = self.discard_rejected_prompt(&session_id, recorded).await;
+                error["data"]["promptNotAccepted"] = json!(withdrawn);
+            }
         }
         // Steering while the turn ran: send the queued messages one after the
         // other so the agent sees them in order.
@@ -4159,6 +5112,11 @@ impl Inner {
                 self.discard_rejected_prompt(&session_id, recorded).await;
             }
         }
+        if result.is_ok() {
+            if let Some(account_id) = &record.account_id {
+                crate::services::provider_account_status::invalidate(&self.app, account_id).await;
+            }
+        }
         result
     }
 
@@ -4186,7 +5144,30 @@ impl Inner {
         if meta.as_object().is_some_and(|meta| !meta.is_empty()) {
             request["_meta"] = meta;
         }
-        let result = bridge.request("session/prompt", request).await;
+        let run_id = self
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .and_then(|runtime| runtime.run.as_ref())
+            .map(|run| run.run_id.clone())
+            .ok_or_else(|| protocol::internal("Turn ended before its provider request"))?;
+        let raw_result = bridge.prompt(request, run_id).await;
+        if let Some((owner, _)) = self
+            .store
+            .execution_owner(session_id)
+            .await
+            .map_err(protocol::internal)?
+        {
+            let raw = match &raw_result {
+                Ok(value) => {
+                    json!({"usage":value.get("usage"),"quota":value.pointer("/_meta/quota"),"stopReason":value.get("stopReason")})
+                }
+                Err(error) => json!({"error":error}),
+            };
+            self.store.append_events(session_id,&[json!({"sessionId":session_id,"update":{"sessionUpdate":"benchmark_turn_result","_meta":{"executionOwner":{"kind":"benchmark","id":owner.owner_id},"benchmarkRawResult":raw}}})]).await.map_err(protocol::internal)?;
+        }
+        let result = Self::prompt_response(raw_result);
         // The bridge writes every update of the turn before it answers the
         // prompt, but the two do not travel together: its reader hands the
         // answer straight to this request, while the updates wait in the
@@ -4303,6 +5284,490 @@ impl Inner {
         }))
     }
 
+    pub async fn create_owned_session(
+        self: &Arc<Self>,
+        request: OwnedSessionRequest,
+    ) -> Result<OwnedSession, String> {
+        execution::validate_request(&request)?;
+        let policy_hash = execution::digest(
+            serde_json::to_vec(&json!({
+                "request":request,
+                "nativePolicy":execution::native_text_meta(&request.model_id),
+                "processPolicy":"clear-environment-no-distill-shims-v1",
+                "bridgeVersion":"0.81.0", "sdkVersion":"0.3.280"
+            }))
+            .map_err(|e| e.to_string())?,
+        );
+        let lock = self
+            .owned_lock(&format!("owner:{}", request.owner_id))
+            .await;
+        let _guard = lock.lock().await;
+        let existing_id = self.store.owned_session_id(&request.owner_id).await?;
+        if let Some(id) = existing_id.as_ref() {
+            let (_, existing_hash) = self
+                .store
+                .execution_owner(id)
+                .await?
+                .ok_or("evidence_missing: owner")?;
+            if existing_hash != policy_hash {
+                return Err("validation: owner already exists with another policy".into());
+            }
+            let record = self.session_record(id).await.map_err(|e| error_text(&e))?;
+            if self.attached_route(id).await.is_some()
+                || self.store.session_has_execution_dispatch(id).await?
+            {
+                return Ok(Self::owned_session_result(&request, &record, existing_hash));
+            }
+        }
+        if self.shutdown_prepared.load(Ordering::SeqCst) {
+            return Err("Distill is closing".into());
+        }
+        let account = provider_accounts::resolve_account(
+            &self.app,
+            &request.provider_id,
+            Some(&request.account_id),
+        )?;
+        let profile_key = execution::digest("native_text_v1:claude:0.81.0:sdk:0.3.280");
+        let bridge = self
+            .ensure_execution_bridge(&request.provider_id, Some(&account.id), Some(&profile_key))
+            .await
+            .map_err(|e| error_text(&e))?;
+        let opened = bridge.request("session/new",json!({"cwd":request.cwd,"mcpServers":[],"_meta":execution::native_text_meta(&request.model_id)})).await.map_err(|e|error_text(&e))?;
+        let bridge_session_id =
+            protocol::session_id(&opened).ok_or("bridge returned no sessionId")?;
+        if let Err(error) = bridge
+            .request(
+                "session/set_mode",
+                json!({"sessionId":bridge_session_id,"modeId":"default"}),
+            )
+            .await
+        {
+            bridge.close_session(&bridge_session_id).await;
+            return Err(format!(
+                "capability_missing: explicit permission mode was rejected: {}",
+                error_text(&error)
+            ));
+        }
+        let wanted = Selection {
+            model: Some(request.model_id.clone()),
+            effort: request.reasoning_effort.clone(),
+            fast: request.fast_mode,
+        };
+        let mut snapshot = Self::snapshot_from(&opened);
+        let substitutions = self
+            .apply_to_session(
+                &request.provider_id,
+                &bridge,
+                &bridge_session_id,
+                &mut snapshot,
+                &wanted,
+                true,
+            )
+            .await;
+        let acknowledged = Self::selection_from(&snapshot["configOptions"]);
+        let matches = substitutions.is_empty()
+            && acknowledged.model.as_deref() == Some(request.model_id.as_str())
+            && request
+                .reasoning_effort
+                .as_ref()
+                .is_none_or(|effort| acknowledged.effort.as_ref() == Some(effort))
+            && request
+                .fast_mode
+                .is_none_or(|fast| acknowledged.fast == Some(fast));
+        snapshot["_meta"]["executionOwner"] = json!({"kind":"benchmark","id":request.owner_id});
+        let session_id = existing_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let now = now_iso();
+        let record = SessionRecord {
+            id: session_id.clone(),
+            harness: request.provider_id.clone(),
+            account_id: Some(account.id),
+            bridge_session_id: Some(bridge_session_id.clone()),
+            cwd: request.cwd.clone(),
+            title: Some(request.title.clone()),
+            user_set_name: true,
+            project_id: None,
+            persona_id: None,
+            model_id: acknowledged.model.clone(),
+            reasoning_effort: acknowledged.effort.clone(),
+            fast_mode: acknowledged.fast,
+            legacy_model_id: None,
+            hidden: true,
+            created_at: now.clone(),
+            updated_at: now,
+            last_message_at: None,
+            archived_at: None,
+            message_count: 0,
+            last_snippet: None,
+            snapshot: Some(snapshot.clone()),
+        };
+        let stored = if existing_id.is_some() {
+            self.store
+                .set_bridge_session_id(&record.id, Some(&bridge_session_id))
+                .await?;
+            self.store_bridge_selection(&record.id, &snapshot, &acknowledged)
+                .await;
+            Ok(())
+        } else {
+            self.store
+                .insert_owned_session(&record, &request, &policy_hash)
+                .await
+        };
+        if let Err(error) = stored {
+            bridge.close_session(&bridge_session_id).await;
+            return Err(error);
+        }
+        if let Err(error) = install_owned_runtime(
+            &self.events_tx,
+            &self.sessions,
+            session_id.clone(),
+            SessionRuntime {
+                harness: request.provider_id.clone(),
+                account_id: Some(request.account_id.clone()),
+                execution_profile: Some(profile_key),
+                bridge_session_id: bridge_session_id.clone(),
+                generation: bridge.generation(),
+                loading: false,
+                run: None,
+                steer_queue: VecDeque::new(),
+                has_model_option: Self::has_model_option(&snapshot),
+                snapshot,
+                substitutions: substitutions.clone(),
+                last_active: std::time::Instant::now(),
+            },
+        )
+        .await
+        {
+            bridge.close_session(&bridge_session_id).await;
+            return Err(error_text(&error));
+        }
+        let mut result = Self::owned_session_result(&request, &record, policy_hash);
+        result.substitutions = substitutions;
+        if !matches && result.substitutions.is_empty() {
+            result.substitutions.push(json!({"kind":"selection_changed","message":"Requested selection was not acknowledged exactly"}));
+        }
+        Ok(result)
+    }
+
+    fn owned_session_result(
+        request: &OwnedSessionRequest,
+        record: &SessionRecord,
+        policy_hash: String,
+    ) -> OwnedSession {
+        OwnedSession {
+            session_id: record.id.clone(),
+            owner_id: request.owner_id.clone(),
+            policy_hash,
+            selection: ObservedSelection {
+                model_id: record.model_id.clone(),
+                reasoning_effort: record.reasoning_effort.clone(),
+                fast_mode: record.fast_mode,
+            },
+            substitutions: Vec::new(),
+        }
+    }
+
+    async fn owned_lock(&self, key: &str) -> Arc<Mutex<()>> {
+        Arc::clone(
+            self.owned_locks
+                .lock()
+                .await
+                .entry(key.to_string())
+                .or_default(),
+        )
+    }
+
+    pub async fn dispatch_owned_turn(
+        self: &Arc<Self>,
+        request: OwnedTurnRequest,
+    ) -> Result<ExecutionDispatch, String> {
+        if request.request_key.trim().is_empty()
+            || request.request_key.len() > 256
+            || request.prompt.len() > 1024 * 1024
+            || request.timeout_ms == 0
+            || request.timeout_ms > 3_600_000
+        {
+            return Err("validation: invalid dispatch key, prompt size or time limit".into());
+        }
+        let lock = self
+            .owned_lock(&format!("dispatch:{}", request.session_id))
+            .await;
+        let _guard = lock.lock().await;
+        let (owner, hash) = self
+            .store
+            .execution_owner(&request.session_id)
+            .await?
+            .ok_or("validation: session has no execution owner")?;
+        if request.policy_hash != hash {
+            return Err("validation: execution policy changed".into());
+        }
+        let prompt_hash = execution::digest(request.prompt.as_bytes());
+        if let Some(existing) = self.store.execution_dispatch(&request.request_key).await? {
+            self.store.reserve_dispatch(&existing, &prompt_hash).await?;
+            if existing.session_id != request.session_id {
+                return Err("validation: request key belongs to another session".into());
+            }
+            return Ok(existing);
+        }
+        let current = self
+            .session_record(&request.session_id)
+            .await
+            .map_err(|e| error_text(&e))?;
+        self.require_owned_selection(&owner, &current).await?;
+        if self.attached_route(&request.session_id).await.is_none() {
+            return Err(
+                "dispatch_uncertain: owned runtime is unavailable; create an explicit rerun".into(),
+            );
+        }
+        let ids = TurnIds::new();
+        let dispatch = ExecutionDispatch {
+            request_key: request.request_key.clone(),
+            session_id: request.session_id.clone(),
+            run_id: ids.run_id.clone(),
+            user_message_id: ids.message_id.clone(),
+            phase: "reserved".into(),
+            event_cursor: 0,
+            result: None,
+            error: None,
+        };
+        if !self.store.reserve_dispatch(&dispatch, &prompt_hash).await? {
+            return self
+                .store
+                .execution_dispatch(&request.request_key)
+                .await?
+                .ok_or("dispatch_uncertain: reservation vanished".into());
+        }
+        let host = Arc::clone(self);
+        tokio::spawn(async move {
+            if let Err(error) = host
+                .store
+                .settle_dispatch(&request.request_key, "running", None, None)
+                .await
+            {
+                log::error!("[agent-host] owned dispatch cannot start: {error}");
+                return;
+            }
+            if host
+                .store
+                .execution_cancel_requested(&request.request_key)
+                .await
+                .unwrap_or(true)
+            {
+                let error = json!({"kind":"cancelled","message":"Cancelled before dispatch"});
+                let _ = host
+                    .store
+                    .settle_dispatch(&request.request_key, "terminal", None, Some(&error))
+                    .await;
+                return;
+            }
+            let prompt = json!({"sessionId":request.session_id,"prompt":[{"type":"text","text":format!("Benchmark task:\n{}",request.prompt)}],"_meta":{"executionOwner":{"kind":"benchmark","id":owner.owner_id}}});
+            let task = host.start_turn(prompt, ids, false);
+            tokio::pin!(task);
+            let mut timed_out = false;
+            let cancellation = async {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    if host
+                        .store
+                        .execution_cancel_requested(&request.request_key)
+                        .await
+                        .unwrap_or(true)
+                    {
+                        break;
+                    }
+                }
+            };
+            let mut cancelled = false;
+            let outcome = tokio::select! {
+                result=&mut task => result,
+                _=cancellation=>{
+                    cancelled=true;
+                    let _=host.cancel_owned_turn(&request.request_key).await;
+                    match tokio::time::timeout(std::time::Duration::from_secs(15),&mut task).await {
+                        Ok(result)=>result,
+                        Err(_)=>{
+                            let error=json!({"kind":"dispatch_uncertain","message":"Cancellation was not acknowledged; the account remains busy"});
+                            let _=host.store.settle_dispatch(&request.request_key,"uncertain",None,Some(&error)).await;
+                            let _=task.await;
+                            return;
+                        }
+                    }
+                }
+                _=tokio::time::sleep(std::time::Duration::from_millis(request.timeout_ms))=>{
+                    timed_out=true;
+                    let _=host.cancel_owned_turn(&request.request_key).await;
+                    match tokio::time::timeout(std::time::Duration::from_secs(15),&mut task).await {
+                        Ok(result)=>result,
+                        Err(_)=>{
+                            let error=json!({"kind":"dispatch_uncertain","message":"Cancellation was not acknowledged; the account remains busy"});
+                            let _=host.store.settle_dispatch(&request.request_key,"uncertain",None,Some(&error)).await;
+                            // Keep the future alive so the live turn retains its owner and drains on completion.
+                            let _=task.await;
+                            return;
+                        }
+                    }
+                }
+            };
+            let mut result = outcome.as_ref().ok().cloned();
+            let mut error = outcome.err();
+            if result
+                .as_ref()
+                .is_some_and(|value| value["stopReason"] == "cancelled")
+            {
+                cancelled = true;
+            }
+            if cancelled {
+                error = Some(json!({"kind":"cancelled","message":"Cancelled by the operator"}));
+                result = None;
+            }
+            if timed_out {
+                error = Some(
+                    json!({"kind":"budget_timeout","message":"The declared task duration expired"}),
+                );
+                result = None;
+            }
+            match host.session_record(&request.session_id).await {
+                Ok(record) => {
+                    if let Err(reason) = host.require_owned_selection(&owner, &record).await {
+                        error = Some(json!({"kind":"selection_changed","message":reason}));
+                        result = None;
+                    } else if let Some(value) = result.as_mut() {
+                        value["observedSelection"] = json!(ObservedSelection {
+                            model_id: record.model_id,
+                            reasoning_effort: record.reasoning_effort,
+                            fast_mode: record.fast_mode
+                        });
+                    }
+                }
+                Err(err) => {
+                    error = Some(err);
+                    result = None;
+                }
+            }
+            if let Err(error) = host
+                .store
+                .settle_dispatch(
+                    &request.request_key,
+                    "terminal",
+                    result.as_ref(),
+                    error.as_ref(),
+                )
+                .await
+            {
+                log::error!("[agent-host] owned terminal evidence not committed: {error}");
+            }
+        });
+        Ok(dispatch)
+    }
+
+    async fn require_owned_selection(
+        &self,
+        owner: &OwnedSessionRequest,
+        record: &SessionRecord,
+    ) -> Result<(), String> {
+        if self.store.execution_policy_violation(&record.id).await? {
+            return Err(
+                "capability_missing: native execution violated the declared no-tool policy".into(),
+            );
+        }
+        if record.harness != owner.provider_id
+            || record.account_id.as_deref() != Some(owner.account_id.as_str())
+            || record.model_id.as_deref() != Some(owner.model_id.as_str())
+            || owner
+                .reasoning_effort
+                .as_ref()
+                .is_some_and(|effort| record.reasoning_effort.as_ref() != Some(effort))
+            || owner
+                .fast_mode
+                .is_some_and(|fast| record.fast_mode != Some(fast))
+        {
+            return Err(
+                "selection_changed: requested benchmark selection was not acknowledged".into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn execution_status(&self, key: &str) -> Result<Option<ExecutionDispatch>, String> {
+        self.store.execution_dispatch(key).await
+    }
+    pub async fn read_owned_events(
+        &self,
+        id: &str,
+        after: i64,
+        limit: u32,
+    ) -> Result<OwnedEventPage, String> {
+        self.store.owned_events(id, after, limit).await
+    }
+    pub async fn cancel_owned_turn(&self, key: &str) -> Result<(), String> {
+        let dispatch = self
+            .store
+            .execution_dispatch(key)
+            .await?
+            .ok_or("validation: unknown dispatch")?;
+        if dispatch.phase == "terminal" {
+            return Ok(());
+        }
+        self.store.request_execution_cancel(key).await?;
+        if let Some((bridge, id)) = self.attached_route(&dispatch.session_id).await {
+            bridge.notify("session/cancel", json!({"sessionId":id}));
+            Ok(())
+        } else {
+            Err("dispatch_uncertain: no live runtime can confirm cancellation".into())
+        }
+    }
+    pub async fn account_activity(
+        &self,
+        provider: &str,
+        account: &str,
+    ) -> Result<AccountActivity, String> {
+        let sessions = self.sessions.lock().await;
+        let mut active_sessions: Vec<String> = sessions
+            .iter()
+            .filter(|(_, runtime)| {
+                runtime.harness == provider
+                    && (account == "*" || runtime.account_id.as_deref() == Some(account))
+                    && (runtime.loading || runtime.run.is_some())
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let naming = self
+            .naming_replies
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        active_sessions.extend(
+            naming
+                .keys()
+                .filter(|key| {
+                    activity_scope_matches(key.split('\0').next().unwrap_or(key), provider, account)
+                })
+                .map(|key| format!("auxiliary:{key}")),
+        );
+        Ok(AccountActivity {
+            active_sessions,
+            generation: self
+                .activity_generations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .snapshot(provider, account),
+        })
+    }
+    pub async fn benchmark_inventory(
+        self: &Arc<Self>,
+        provider: &str,
+        account: &str,
+        _refresh: bool,
+    ) -> Result<Value, String> {
+        let (models, executable) = self
+            .probe_models(provider, Some(account))
+            .await
+            .map_err(|e| error_text(&e))?;
+        Ok(
+            json!({"models":models,"executable":executable,"providerId":provider,"accountId":account,"observedAt":now_iso()}),
+        )
+    }
+
     /// A stored session, with any model id that still carries a folded effort
     /// split first. Every single-session read goes through here, so a chat is
     /// converted on the load that first looks at it and never by a sweep over
@@ -4337,7 +5802,8 @@ impl Inner {
         if !model_id.ends_with(']') || !self.selection_split_enabled().await {
             return;
         }
-        let models = ext::known_models(&self.store, &record.harness).await;
+        let models =
+            ext::known_models(&self.store, &record.harness, record.account_id.as_deref()).await;
         let Some((base, effort)) = Self::legacy_split(&model_id, &models) else {
             return;
         };
@@ -4432,10 +5898,16 @@ impl Inner {
         let host = Arc::clone(self);
         let session_id = record.id.clone();
         let harness_id = record.harness.clone();
+        let account_id = record.account_id.clone();
         let model_id = record.model_id.clone();
         tokio::spawn(async move {
             match host
-                .summarize_title(&harness_id, model_id.as_deref(), &text)
+                .summarize_title(
+                    &harness_id,
+                    account_id.as_deref(),
+                    model_id.as_deref(),
+                    &text,
+                )
                 .await
             {
                 Ok(Some(title)) => host.apply_host_title(&session_id, &title).await,
@@ -4473,10 +5945,11 @@ impl Inner {
     async fn summarize_title(
         &self,
         harness_id: &str,
+        account_id: Option<&str>,
         model_id: Option<&str>,
         user_text: &str,
     ) -> Result<Option<String>, Value> {
-        let bridge = self.ensure_bridge(harness_id).await?;
+        let bridge = self.ensure_account_bridge(harness_id, account_id).await?;
         let cwd = dirs::home_dir()
             .map(|home| home.to_string_lossy().into_owned())
             .unwrap_or_else(|| ".".to_string());
@@ -4491,9 +5964,13 @@ impl Inner {
         .map_err(|_| protocol::internal("the naming session did not open in time"))??;
         let naming_id = protocol::session_id(&opened)
             .ok_or_else(|| protocol::internal("bridge returned no sessionId"))?;
-        let key = Self::naming_key(harness_id, &naming_id);
+        let key = Self::naming_key(&account_route_key(harness_id, account_id), &naming_id);
         if let Ok(mut replies) = self.naming_replies.lock() {
             replies.insert(key.clone(), String::new());
+            self.activity_generations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .record(harness_id, account_id);
         }
         let keeps_no_transcript = session_title::keeps_no_transcript(harness_id);
         // Claude Code's naming session is opened on the model
@@ -4616,8 +6093,11 @@ impl Inner {
     /// The distinction matters for a CLI updated while its bridge is up: the
     /// old process keeps serving the old models until it exits, and probing
     /// it again would only confirm what the inventory already says.
-    pub async fn serving_executable(&self, harness_id: &str) -> Value {
-        if let Some(bridge) = self.live_bridge(harness_id).await {
+    pub async fn serving_executable(&self, harness_id: &str, account_id: Option<&str>) -> Value {
+        if let Some(bridge) = self
+            .live_bridge(&account_route_key(harness_id, account_id))
+            .await
+        {
             return bridge.executable();
         }
         let Some(spec) = harness::harness(harness_id) else {
@@ -4643,8 +6123,9 @@ impl Inner {
     pub async fn probe_models(
         self: &Arc<Self>,
         harness_id: &str,
+        account_id: Option<&str>,
     ) -> Result<(Vec<Value>, Value), Value> {
-        let bridge = self.ensure_bridge(harness_id).await?;
+        let bridge = self.ensure_account_bridge(harness_id, account_id).await?;
         let probed_on = bridge.executable();
         let mut params = json!({ "cwd": self.probe_cwd(), "mcpServers": [] });
         if let Some(meta) = harness::probe_session_meta(harness_id) {
@@ -4938,6 +6419,114 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn benchmark_activity_generation_matches_provider_and_account_scope() {
+        let mut generations = ActivityGenerations::default();
+        generations.record("claude-acp", Some("a"));
+        generations.record("codex-acp", Some("a"));
+        generations.record("codex-acp", Some("a"));
+        assert_eq!(generations.snapshot("claude-acp", "*"), 1);
+        assert_eq!(generations.snapshot("claude-acp", "a"), 1);
+        generations.record("claude-acp", Some("ab"));
+        assert_eq!(generations.snapshot("claude-acp", "a"), 1);
+        assert_eq!(generations.snapshot("claude-acp", "*"), 2);
+        generations.record("claude-acp", None);
+        assert_eq!(generations.snapshot("claude-acp", "*"), 3);
+        assert_eq!(generations.snapshot("codex-acp", "*"), 2);
+        assert_eq!(generations.snapshot("unknown", "*"), 0);
+        assert!(!activity_scope_matches(
+            "claude-acp\u{1f}ab",
+            "claude-acp",
+            "a"
+        ));
+    }
+
+    #[tokio::test]
+    async fn owned_runtime_registration_drains_intermediate_setup_notifications() {
+        let sessions = Arc::new(Mutex::new(SessionTable::default()));
+        let routed = Arc::new(StdMutex::new(Vec::new()));
+        let (events, mut received) = mpsc::unbounded_channel();
+        let receiver_sessions = sessions.clone();
+        let receiver_routed = routed.clone();
+        let mut final_runtime = runtime("claude-acp", "native-owned", 71);
+        final_runtime.account_id = Some("a".into());
+        final_runtime.execution_profile = Some("text".into());
+        final_runtime.snapshot = json!({"configOptions":[{"id":"effort","currentValue":"high"}]});
+        let route = final_runtime.route_key();
+        let worker = tokio::spawn(async move {
+            while let Some(event) = received.recv().await {
+                match event {
+                    BridgeEvent::Notification {
+                        harness,
+                        generation,
+                        params,
+                        ..
+                    } => {
+                        let table = receiver_sessions.lock().await;
+                        let target = table.host_session_for_generation(
+                            &harness,
+                            generation,
+                            params["sessionId"].as_str().unwrap(),
+                        );
+                        receiver_routed
+                            .lock()
+                            .unwrap()
+                            .push((params["update"]["stage"].clone(), target.is_some()));
+                    }
+                    BridgeEvent::Drained { ack } => {
+                        let _ = ack.send(Ok(()));
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        });
+        let notification = |stage: &str| BridgeEvent::Notification {
+            harness: route.clone(),
+            generation: 71,
+            run_id: None,
+            method: "session/update".into(),
+            params: json!({"sessionId":"native-owned","update":{"sessionUpdate":"config_option_update","stage":stage}}),
+        };
+        events.send(notification("default effort")).unwrap();
+        events.send(notification("selected effort")).unwrap();
+        install_owned_runtime(&events, &sessions, "owned".into(), final_runtime)
+            .await
+            .unwrap();
+        events.send(notification("later selection change")).unwrap();
+        drain_queued_bridge_events(&events).await.unwrap();
+        assert_eq!(
+            *routed.lock().unwrap(),
+            vec![
+                (json!("default effort"), false),
+                (json!("selected effort"), false),
+                (json!("later selection change"), true),
+            ]
+        );
+        assert_eq!(
+            sessions.lock().await.get("owned").unwrap().snapshot["configOptions"][0]
+                ["currentValue"],
+            "high"
+        );
+        drop(events);
+        worker.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn owned_runtime_is_not_registered_when_setup_barrier_fails() {
+        let (events, received) = mpsc::unbounded_channel();
+        drop(received);
+        let sessions = Mutex::new(SessionTable::default());
+        assert!(install_owned_runtime(
+            &events,
+            &sessions,
+            "owned".into(),
+            runtime("claude-acp", "s", 1)
+        )
+        .await
+        .is_err());
+        assert!(sessions.lock().await.get("owned").is_none());
+    }
 
     #[tokio::test]
     async fn failed_history_batch_retains_the_uncommitted_suffix_for_retry() {
@@ -5341,6 +6930,108 @@ mod tests {
             }
         })));
         assert!(!Inner::is_command_list_update(&json!({})));
+    }
+
+    fn air_failure(category: &str, actions: Value) -> Value {
+        json!({"jetbrains":{"air":{"version":1,"sessionFailure":{
+            "id":"turn-1:error", "revision":1, "category":category,
+            "severity":"error", "title":"Provider condition", "actions":actions
+        }}}})
+    }
+
+    #[test]
+    fn negotiated_terminal_failure_is_an_error_and_only_quota_policy_can_rotate() {
+        let quota = Inner::prompt_response(Ok(
+            json!({"stopReason":"end_turn","_meta":air_failure("limit",json!([]))}),
+        ))
+        .unwrap_err();
+        assert!(crate::services::provider_account_status::is_quota_error(
+            &quota
+        ));
+        assert_eq!(quota["data"]["sessionFailure"]["id"], "turn-1:error");
+        for (category, actions) in [
+            ("limit", json!(["retry"])),
+            ("limit", json!(["new_session"])),
+            ("service", json!(["retry"])),
+        ] {
+            let error = Inner::prompt_response(Ok(
+                json!({"stopReason":"end_turn","_meta":air_failure(category,actions)}),
+            ))
+            .unwrap_err();
+            assert!(!crate::services::provider_account_status::is_quota_error(
+                &error
+            ));
+        }
+        let mut warning = air_failure("limit", json!([]));
+        warning["jetbrains"]["air"]["sessionFailure"]["severity"] = json!("warning");
+        assert!(
+            Inner::prompt_response(Ok(json!({"stopReason":"end_turn","_meta":warning}))).is_ok()
+        );
+        assert!(Inner::prompt_response(Ok(json!({"stopReason":"end_turn"}))).is_ok());
+    }
+
+    #[test]
+    fn failure_metadata_and_zero_usage_do_not_turn_a_rejection_into_model_activity() {
+        let metadata = json!({"update":{"sessionUpdate":"session_info_update","_meta":air_failure("limit",json!([]))}});
+        assert!(Inner::is_failure_state_update(&metadata));
+        let zero_usage = json!({"update":{"sessionUpdate":"usage_update","used":0,"size":200000,"cost":{"amount":0,"currency":"USD"}}});
+        assert!(Inner::is_zero_usage_update(&zero_usage));
+        for kind in [
+            "user_message_chunk",
+            "agent_message_chunk",
+            "agent_thought_chunk",
+            "tool_call",
+            "tool_call_update",
+            "plan",
+        ] {
+            let mut substantive = json!({"update":{"sessionUpdate":kind,"content":{"type":"text","text":"usage limit"},"_meta":air_failure("limit",json!([]))}});
+            assert!(!Inner::is_failure_state_update(&substantive));
+            assert!(!Inner::is_zero_usage_update(&substantive));
+            let mut run = RunState::start(&ids());
+            Inner::stamp_run_update(&mut substantive, &mut run, "2026-09-28T00:00:00Z");
+            assert!(run.saw_update, "{kind} must prevent automatic replay");
+        }
+        let mut positive = zero_usage.clone();
+        positive["update"]["used"] = json!(1);
+        assert!(!Inner::is_zero_usage_update(&positive));
+        positive["update"]["used"] = json!(0);
+        positive["update"]["cost"]["amount"] = json!(0.01);
+        assert!(!Inner::is_zero_usage_update(&positive));
+        let mut with_content = metadata;
+        with_content["update"]["content"] = json!({"type":"text","text":"actual content"});
+        assert!(!Inner::is_failure_state_update(&with_content));
+    }
+
+    #[test]
+    fn manual_routing_parks_a_quota_rejection_only_after_proven_prompt_rollback() {
+        let rejected = json!({"code":-32603,"data":{
+            "errorKind":"quota_exhausted", "accountId":"saved-account",
+            "dispatchStarted":false, "promptNotAccepted":true,
+        }});
+        let wait = Inner::rejected_quota_wait(&rejected, None).unwrap();
+        assert_eq!(wait["code"], -32010);
+        assert_eq!(wait["data"]["type"], "account_quota_wait");
+        assert_eq!(wait["data"]["accountId"], "saved-account");
+        assert_eq!(wait["data"]["promptNotAccepted"], true);
+        let known_wait = Inner::quota_wait_error(
+            "saved-account",
+            Some(1900000000000),
+            true,
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(
+            Inner::rejected_quota_wait(&rejected, Some(known_wait.clone())),
+            Some(known_wait)
+        );
+        let mut partial = rejected.clone();
+        partial["data"]["dispatchStarted"] = json!(true);
+        assert!(Inner::rejected_quota_wait(&partial, None).is_none());
+        partial = rejected.clone();
+        partial["data"]["promptNotAccepted"] = json!(false);
+        assert!(Inner::rejected_quota_wait(&partial, None).is_none());
+        partial = rejected;
+        partial["data"]["errorKind"] = json!("rate_limit");
+        assert!(Inner::rejected_quota_wait(&partial, None).is_none());
     }
 
     #[test]
@@ -6389,6 +8080,7 @@ mod tests {
         SessionRecord {
             id: "s1".to_string(),
             harness: "codex-acp".to_string(),
+            account_id: None,
             bridge_session_id: Some("bridge-1".to_string()),
             cwd: "/work".to_string(),
             title: None,
@@ -6524,6 +8216,8 @@ mod tests {
     fn runtime_on(bridge_session_id: &str) -> SessionRuntime {
         SessionRuntime {
             harness: "claude-acp".to_string(),
+            account_id: None,
+            execution_profile: None,
             bridge_session_id: bridge_session_id.to_string(),
             generation: 0,
             loading: false,
@@ -6589,6 +8283,8 @@ mod tests {
     fn runtime(harness: &str, bridge_session_id: &str, generation: u64) -> SessionRuntime {
         SessionRuntime {
             harness: harness.to_string(),
+            account_id: None,
+            execution_profile: None,
             bridge_session_id: bridge_session_id.to_string(),
             generation,
             loading: false,
@@ -6602,10 +8298,76 @@ mod tests {
     }
 
     #[test]
+    fn account_routes_isolate_identical_native_session_ids_and_bridge_exits() {
+        let mut first = runtime("codex-acp", "native-shared", 1);
+        first.account_id = Some("account-one".into());
+        let first_key = first.route_key();
+        let mut second = runtime("codex-acp", "native-shared", 2);
+        second.account_id = Some("account-two".into());
+        let second_key = second.route_key();
+        let mut table = SessionTable::default();
+        table.insert("host-one".into(), first);
+        table.insert("host-two".into(), second);
+        assert_ne!(first_key, second_key);
+        assert_eq!(
+            table.host_session_for(&first_key, "native-shared"),
+            Some("host-one")
+        );
+        assert_eq!(
+            table.host_session_for(&second_key, "native-shared"),
+            Some("host-two")
+        );
+        table.retain(|runtime| !runtime.served_by(&first_key, 1));
+        assert!(table.get("host-one").is_none());
+        assert_eq!(
+            table.host_session_for(&second_key, "native-shared"),
+            Some("host-two")
+        );
+        table.rebind("host-two", "native-new".into());
+        assert!(table
+            .host_session_for(&second_key, "native-shared")
+            .is_none());
+        assert_eq!(
+            table.host_session_for(&second_key, "native-new"),
+            Some("host-two")
+        );
+    }
+
+    #[test]
+    fn provider_account_bridges_require_an_explicit_identity() {
+        assert_ne!(
+            account_route_key("codex-acp", None),
+            account_route_key("codex-acp", Some("account-one"))
+        );
+        assert_ne!(
+            account_route_key("codex-acp", Some("account-one")),
+            account_route_key("claude-acp", Some("account-one"))
+        );
+        for provider in ["codex-acp", "claude-acp"] {
+            assert!(account_validation_id(provider, None).is_err());
+            assert_eq!(
+                account_validation_id(provider, Some("saved-account")).unwrap(),
+                Some("saved-account")
+            );
+        }
+        assert_eq!(account_validation_id("kimi", None).unwrap(), None);
+    }
+
+    #[test]
+    fn a_fork_keeps_its_account_and_unassigned_chats_do_not_invent_one() {
+        let mut record = record_on(None, None, None);
+        record.account_id = Some("account-one".into());
+        assert_eq!(Inner::fork_meta(&record)["accountId"], "account-one");
+        record.account_id = None;
+        assert!(Inner::fork_meta(&record).get("accountId").is_none());
+    }
+
+    #[test]
     fn a_chat_that_let_go_of_its_bridge_session_does_not_resume_it() {
         let mut record = SessionRecord {
             id: "session-1".to_string(),
             harness: "claude-acp".to_string(),
+            account_id: None,
             bridge_session_id: Some("bridge-1".to_string()),
             cwd: "C:\\work".to_string(),
             title: None,
@@ -6863,6 +8625,50 @@ mod tests {
         assert_eq!(table.host_session_for("codex-acp", "e"), None);
         assert_eq!(table.host_session_for("codex-acp", "a"), Some("chat-2"));
         assert_eq!(table.values().count(), 1);
+    }
+
+    #[test]
+    fn a_restarted_bridge_cannot_reuse_the_old_process_session_route() {
+        let mut table = SessionTable::default();
+        table.insert("old-chat".into(), runtime("codex-acp", "reused-id", 7));
+        assert_eq!(
+            table.host_session_for_generation("codex-acp", 7, "reused-id"),
+            Some("old-chat")
+        );
+        table.remove("old-chat");
+        table.insert("new-chat".into(), runtime("codex-acp", "reused-id", 8));
+        assert_eq!(
+            table.host_session_for_generation("codex-acp", 7, "reused-id"),
+            None
+        );
+        assert_eq!(
+            table.host_session_for_generation("codex-acp", 8, "reused-id"),
+            Some("new-chat")
+        );
+        assert_eq!(
+            table.host_session_for_generation("claude-acp", 8, "reused-id"),
+            None
+        );
+    }
+
+    #[test]
+    fn permission_responses_cannot_answer_requests_from_a_replacement_process() {
+        let (original, mut original_output) = super::super::bridge::tests::silent_bridge();
+        let (replacement, mut replacement_output) = super::super::bridge::tests::silent_bridge();
+        let request = || ClientRequest {
+            harness: "test-acp".into(),
+            generation: original.generation(),
+            bridge_id: json!(7),
+            method: "session/request_permission".into(),
+        };
+        let approved = Ok(json!({"outcome": {"outcome": "selected", "optionId": "allow-once"}}));
+        request().respond(&replacement, approved.clone());
+        assert!(replacement_output.try_recv().is_err());
+        assert!(original_output.try_recv().is_err());
+        request().respond(&original, approved);
+        let response: Value = serde_json::from_str(&original_output.try_recv().unwrap()).unwrap();
+        assert_eq!(response["id"], 7);
+        assert_eq!(response["result"]["outcome"]["optionId"], "allow-once");
     }
 
     #[test]

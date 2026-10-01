@@ -1448,53 +1448,68 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               // a selection made while creation is in flight can be applied to
               // the backend session as soon as it exists.
             },
-          ).then(({ sessionId, configOptionsSnapshot, rejectedModel }) => {
-            createdBackendSessionId = sessionId;
-            let openedOn = requestedTarget;
-            if (rejectedModel) {
-              // The chat exists, on the agent's own model; only the model it
-              // was to open on was refused. The draft — and a selection made
-              // while creation ran — may still name that model, and neither
-              // is what the chat is on.
-              openedOn = settleCreatedSessionOnHarnessModel({
-                harnessId:
-                  creationSelection.providerId ?? requestedTarget.harnessId,
-                requestedTarget,
-                model: configOptionsSnapshot.model,
-                rejected: rejectedModel,
-              });
-              const intent = getModelSelectionIntent(session.id);
-              if (
-                intent &&
-                isModelExecutionTarget(intent.target) &&
-                sameModelIdentity(intent.target.modelId, rejectedModel.modelId)
-              ) {
-                clearCurrentModelSelectionIntent(session.id, intent.requestId);
-              }
-              const draftNow = useChatSessionStore
-                .getState()
-                .getSession(session.id);
-              if (
-                draftNow &&
-                sameSessionExecutionTarget(
-                  draftNow.executionTarget,
-                  requestedTarget,
-                )
-              ) {
-                replaceSessionTargetAfterDispatch(session.id, openedOn);
-              }
-            }
-            return {
+          ).then(
+            ({
               sessionId,
+              accountId,
               configOptionsSnapshot,
-              sessionExecutionTarget: openedOn,
-              workingDir: resolvedWorkingDir,
-            };
-          });
+              rejectedModel,
+            }) => {
+              createdBackendSessionId = sessionId;
+              let openedOn = requestedTarget;
+              if (rejectedModel) {
+                // The chat exists, on the agent's own model; only the model it
+                // was to open on was refused. The draft — and a selection made
+                // while creation ran — may still name that model, and neither
+                // is what the chat is on.
+                openedOn = settleCreatedSessionOnHarnessModel({
+                  harnessId:
+                    creationSelection.providerId ?? requestedTarget.harnessId,
+                  requestedTarget,
+                  model: configOptionsSnapshot.model,
+                  rejected: rejectedModel,
+                });
+                const intent = getModelSelectionIntent(session.id);
+                if (
+                  intent &&
+                  isModelExecutionTarget(intent.target) &&
+                  sameModelIdentity(
+                    intent.target.modelId,
+                    rejectedModel.modelId,
+                  )
+                ) {
+                  clearCurrentModelSelectionIntent(
+                    session.id,
+                    intent.requestId,
+                  );
+                }
+                const draftNow = useChatSessionStore
+                  .getState()
+                  .getSession(session.id);
+                if (
+                  draftNow &&
+                  sameSessionExecutionTarget(
+                    draftNow.executionTarget,
+                    requestedTarget,
+                  )
+                ) {
+                  replaceSessionTargetAfterDispatch(session.id, openedOn);
+                }
+              }
+              return {
+                sessionId,
+                accountId,
+                configOptionsSnapshot,
+                sessionExecutionTarget: openedOn,
+                workingDir: resolvedWorkingDir,
+              };
+            },
+          );
         })
         .then(
           async ({
             sessionId,
+            accountId,
             configOptionsSnapshot,
             sessionExecutionTarget,
             workingDir,
@@ -1628,6 +1643,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
             // the first.
             renameTerminalSessionPrefix(session.id, sessionId);
             promoteDraftSession(session.id, sessionId, {
+              ...(accountId !== undefined ? { accountId } : {}),
               executionTarget: promotedTarget,
               workingDir: latestSessionAfterReady.workingDir ?? workingDir,
               workspaceAttachments:

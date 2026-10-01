@@ -50,6 +50,15 @@ export class HostExt {
   sessionRename(params: { sessionId: string; title: string }) {
     return this.call<Params>("session/rename", params);
   }
+  sessionSetAccount(params: { sessionId: string; accountId: string }) {
+    return this.call<Record<string, unknown>>("sessions/set_account", params);
+  }
+  sessionPrepareAccount(params: { sessionId: string }) {
+    return this.call<Record<string, unknown>>(
+      "sessions/prepare_account",
+      params,
+    );
+  }
   sessionArchive(params: { sessionId: string }) {
     return this.call<Params>("session/archive", params);
   }
@@ -145,7 +154,10 @@ export class HostExt {
       params,
     );
   }
-  providersSupportedModelsList(params: { providerId: string }) {
+  providersSupportedModelsList(params: {
+    providerId: string;
+    accountId?: string;
+  }) {
     return this.call<ProviderSupportedModelsResponse>(
       "providers/supported_models/list",
       params,

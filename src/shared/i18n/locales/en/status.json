@@ -37,6 +37,8 @@
     "resetsNow": "Resets now",
     "resetsIn": "Resets in {{duration}}",
     "session": "Session",
+    "fiveHour": "5 hours",
+    "modelWindow": "{{model}} · {{window}}",
     "weekly": "Weekly",
     "fable": "Fable",
     "monthly": "Monthly",

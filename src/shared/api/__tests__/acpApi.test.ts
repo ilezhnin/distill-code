@@ -76,7 +76,14 @@ describe("prompt", () => {
     });
     mocks.getClient.mockImplementation(async () => {
       order.push("getClient");
-      return { prompt: clientPrompt };
+      return {
+        prompt: clientPrompt,
+        host: {
+          sessionPrepareAccount: async () => {
+            order.push("account.ready");
+          },
+        },
+      };
     });
     const { prompt } = await import("../acpApi");
 
@@ -87,6 +94,7 @@ describe("prompt", () => {
 
     expect(order).toEqual([
       "getClient",
+      "account.ready",
       "dispatching",
       "client.prompt",
       "dispatched",
@@ -107,6 +115,30 @@ describe("prompt", () => {
     ).rejects.toThrow("client unavailable");
     expect(onPromptDispatching).not.toHaveBeenCalled();
     expect(onPromptDispatched).not.toHaveBeenCalled();
+  });
+
+  it("keeps quota waits before dispatch callbacks and prompt transport", async () => {
+    const wait = {
+      code: -32010,
+      data: { kind: "account_quota_wait", dispatchStarted: false },
+    };
+    const clientPrompt = vi.fn();
+    const dispatching = vi.fn();
+    const dispatched = vi.fn();
+    mocks.getClient.mockResolvedValue({
+      prompt: clientPrompt,
+      host: { sessionPrepareAccount: vi.fn().mockRejectedValue(wait) },
+    });
+    const { prompt } = await import("../acpApi");
+    await expect(
+      prompt("session-1", [], undefined, {
+        onPromptDispatching: dispatching,
+        onPromptDispatched: dispatched,
+      }),
+    ).rejects.toBe(wait);
+    expect(clientPrompt).not.toHaveBeenCalled();
+    expect(dispatching).not.toHaveBeenCalled();
+    expect(dispatched).not.toHaveBeenCalled();
   });
 });
 

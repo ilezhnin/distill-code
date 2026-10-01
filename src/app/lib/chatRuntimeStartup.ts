@@ -9,6 +9,7 @@ import { getModelCacheRefreshProviderIds } from "@/features/providers/modelCache
 import { getProviderCatalog } from "@/features/providers/providerCatalog";
 import { personaTargetMigration } from "@/features/agents/lib/personaExecutionTarget";
 import { useAgentSetupStore } from "@/features/providers/stores/agentSetupStore";
+import { startProviderAccountsMonitor } from "@/features/providers/stores/providerAccountsStore";
 import { useProviderModelCacheStore } from "@/features/providers/stores/providerModelCacheStore";
 import { useDistroStore } from "@/features/settings/stores/distroStore";
 import { getClient, setNotificationHandler } from "@/shared/api/acpConnection";
@@ -73,6 +74,7 @@ async function startChatRuntime(
   store.setProviders(getCuratedAgentProviders(), false);
 
   await getClient();
+  startProviderAccountsMonitor();
   perfLog(
     `[perf:startup] ACP getClient ready in ${(performance.now() - tConn).toFixed(1)}ms`,
   );

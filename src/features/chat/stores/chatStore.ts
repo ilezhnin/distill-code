@@ -575,6 +575,7 @@ interface ChatStoreActions {
   settleAbandonedToolCalls: (sessionId: string) => void;
   setActiveRunId: (sessionId: string, runId: string | null) => void;
   setRunCancellationPending: (sessionId: string, pending: boolean) => void;
+  setAccountQuotaWaitUntil: (sessionId: string, until: number | null) => void;
   setPendingInterventionBoundary: (
     sessionId: string,
     boundary: SessionChatRuntime["pendingInterventionBoundary"],
@@ -662,6 +663,11 @@ interface ChatStoreActions {
   ) => void;
   markQueuedMessagesReady: (sessionId: string) => void;
   dismissQueuedMessage: (sessionId: string, expectedRecordId?: string) => void;
+  /** Restore only after the host proves the optimistic dispatch was not accepted. */
+  restoreUnacceptedQueuedMessage: (
+    sessionId: string,
+    record: QueuedMessageRecord,
+  ) => void;
   moveQueuedMessage: (
     sourceSessionId: string,
     destinationSessionId: string,
@@ -1841,6 +1847,34 @@ const createChatStore: StateCreator<
       };
     });
   },
+
+  restoreUnacceptedQueuedMessage: (sessionId, record) => {
+    set((state) => {
+      const queue = state.queuedMessageBySession[sessionId] ?? [];
+      // A retained or edited record wins. Never replace the latest user intent.
+      if (queue.some((entry) => entry.recordId === record.recordId))
+        return state;
+      return {
+        queuedMessageBySession: {
+          ...state.queuedMessageBySession,
+          [sessionId]: [record, ...queue],
+        },
+      };
+    });
+    persistMessageQueues(get().queuedMessageBySession, [sessionId]);
+  },
+
+  setAccountQuotaWaitUntil: (sessionId, until) =>
+    set((state) => ({
+      sessionStateById: {
+        ...state.sessionStateById,
+        [sessionId]: {
+          ...(state.sessionStateById[sessionId] ??
+            createInitialSessionRuntime()),
+          accountQuotaWaitUntil: until,
+        },
+      },
+    })),
 
   dismissQueuedMessage: (sessionId, expectedRecordId) => {
     set((state) => {

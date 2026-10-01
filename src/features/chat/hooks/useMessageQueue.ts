@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useMemo, useRef } from "react";
 import type { ChatState } from "@/shared/types/chat";
 import { isPromiseLike } from "@/shared/lib/isPromiseLike";
+import { isAccountQuotaWaiting } from "../lib/accountQuotaWait";
 import type { ChatAttachmentDraft } from "@/shared/types/messages";
 import {
   assertQueuedMessageAttemptOwned,
@@ -237,6 +238,7 @@ export function useMessageQueue(
       const { text, persona, attachments, sendOptions } = payload;
       const queuedPersona = personaIntentToOverride(persona);
       let userMessageCommitted = false;
+      let promptNotAccepted = false;
       const queuedSendOptions = {
         ...sendOptions,
         beforeUserMessageCommitted: () => {
@@ -252,6 +254,14 @@ export function useMessageQueue(
         onUserMessageCommitted: () => {
           userMessageCommitted = true;
           sendOptions?.onUserMessageCommitted?.();
+        },
+        onPromptNotAccepted: () => {
+          promptNotAccepted = true;
+          userMessageCommitted = false;
+          useChatStore
+            .getState()
+            .restoreUnacceptedQueuedMessage(sessionId, queuedMsg);
+          sendOptions?.onPromptNotAccepted?.();
         },
         sessionSelection: targetLease.target,
         sessionSelectionToken: targetLease.token,
@@ -269,6 +279,25 @@ export function useMessageQueue(
         if (activeLease?.recordId === key && activeLease.payload === payload) {
           queueAttemptLeaseBySession.delete(sessionId);
           activeLease.targetLease.release();
+        }
+
+        if (promptNotAccepted || isAccountQuotaWaiting(sessionId)) {
+          // Quota deferrals consume no rejection budget. The quota timer or an
+          // account change publishes the next readiness edge.
+          lastAttemptRef.current = null;
+          autoRetryRef.current = null;
+          if (retryTimerRef.current !== null) {
+            clearTimeout(retryTimerRef.current);
+            retryTimerRef.current = null;
+          }
+          if (!isAccountQuotaWaiting(sessionId)) {
+            queueMicrotask(() => {
+              const head =
+                useChatStore.getState().queuedMessageBySession[sessionId]?.[0];
+              if (head) tryDrainQueuedMessage(head);
+            });
+          }
+          return;
         }
 
         const latestQueuedMessage =

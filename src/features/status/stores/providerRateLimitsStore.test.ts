@@ -3,6 +3,7 @@ import type {
   ProviderRateLimitSnapshot,
   ProviderRateLimits,
 } from "../lib/rateLimitTypes";
+import { useProviderAccountsStore } from "@/features/providers/stores/providerAccountsStore";
 
 const fetchSnapshot = vi.hoisted(() =>
   vi.fn<() => Promise<ProviderRateLimitSnapshot>>(),
@@ -68,6 +69,15 @@ describe("mergeStale", () => {
     ];
 
     expect(mergeStale(previous, next)[0].session).toEqual(previous[0].session);
+  });
+
+  it("never borrows windows from a different account", () => {
+    expect(
+      mergeStale(
+        [usage({ accountId: "one" })],
+        [usage({ accountId: "two", session: null, status: "error" })],
+      )[0].session,
+    ).toBeNull();
   });
 });
 
@@ -139,7 +149,10 @@ describe("provider rate limit polling", () => {
   let hidden = false;
 
   function snapshot(updatedAt: number): ProviderRateLimitSnapshot {
-    return { providers: [usage({ updatedAt })], updatedAt };
+    return {
+      providers: [usage({ provider: "grok-cli", updatedAt })],
+      updatedAt,
+    };
   }
 
   beforeEach(() => {
@@ -150,6 +163,11 @@ describe("provider rate limit polling", () => {
       get: () => hidden,
     });
     fetchSnapshot.mockReset();
+    useProviderAccountsStore.setState({
+      accounts: [],
+      defaults: {},
+      statuses: {},
+    });
     fetchSnapshot.mockImplementation(async () => snapshot(Date.now()));
     useProviderRateLimitsStore.setState({
       snapshot: null,
@@ -236,5 +254,72 @@ describe("provider rate limit polling", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     await vi.advanceTimersByTimeAsync(0);
     expect(fetchSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("switches account data immediately while an unrelated poll is pending", async () => {
+    let resolve!: (value: ProviderRateLimitSnapshot) => void;
+    fetchSnapshot.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    useProviderAccountsStore.setState({
+      accounts: ["one", "two"].map((id) => ({
+        id,
+        providerId: "codex-acp",
+        label: id,
+        authMethod: "oauth",
+        enabled: true,
+        autoSwitch: false,
+        createdAt: 1,
+        updatedAt: 1,
+      })),
+      defaults: { "codex-acp": "one" },
+    });
+    const stop = startProviderRateLimitPolling();
+    try {
+      expect(
+        useProviderRateLimitsStore.getState().snapshot?.providers[0].accountId,
+      ).toBe("one");
+      useProviderAccountsStore.setState({ defaults: { "codex-acp": "two" } });
+      expect(
+        useProviderRateLimitsStore.getState().snapshot?.providers[0].accountId,
+      ).toBe("two");
+      resolve(snapshot(4));
+      await useProviderRateLimitsStore.getState().load();
+      expect(
+        useProviderRateLimitsStore
+          .getState()
+          .snapshot?.providers.find((entry) => entry.provider === "codex-acp")
+          ?.accountId,
+      ).toBe("two");
+    } finally {
+      stop();
+    }
+  });
+
+  it("keeps manual refresh busy until managed account telemetry finishes", async () => {
+    let finish!: () => void;
+    const refresh = vi
+      .spyOn(useProviderAccountsStore.getState(), "refresh")
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+    try {
+      const pending = useProviderRateLimitsStore.getState().refresh();
+      const duplicate = useProviderRateLimitsStore.getState().refresh();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(useProviderRateLimitsStore.getState().isRefreshing).toBe(true);
+      expect(refresh).toHaveBeenCalledTimes(1);
+      finish();
+      await Promise.all([pending, duplicate]);
+      expect(useProviderRateLimitsStore.getState().isRefreshing).toBe(false);
+    } finally {
+      refresh.mockRestore();
+    }
   });
 });

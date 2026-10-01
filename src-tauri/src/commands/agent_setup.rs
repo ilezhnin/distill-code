@@ -449,6 +449,7 @@ async fn run_crate_check_report(
         )
         .await;
     }
+    crate::commands::doctor::apply_managed_account_checks(app, &mut report.checks);
     report.checks
 }
 
@@ -621,6 +622,9 @@ enum AuthCapability {
 /// A local agent check with a sign-in probe (Grok) is probe-capable. An unknown
 /// id has no capability, so auth is never authorized for it.
 fn auth_capability(check_id: &str) -> AuthCapability {
+    if matches!(check_id, "ai-agent-codex" | "ai-agent-claude") {
+        return AuthCapability::None;
+    }
     if let Some(info) = doctor::agents::AI_AGENT_CHECKS
         .iter()
         .find(|info| info.id == check_id)
@@ -943,6 +947,9 @@ async fn run_auth(
     provider_id: &str,
     plan: &SetupPlan,
 ) -> Result<(), String> {
+    if crate::services::provider_accounts::supports_managed_accounts(provider_id) {
+        return Err("Sign in to an account in Settings > AI providers".into());
+    }
     // The renderer only names the *action*; before running the auth shell
     // command we re-read the provider's doctor check and authorize `Auth`
     // against its backend-owned sign-in capability (see [`authorize_auth`]). A
@@ -1417,10 +1424,11 @@ mod tests {
     #[test]
     fn authorize_logout_allows_an_installed_probeable_agent() {
         let mut check = check_with_fix(None);
-        check.path = Some(r"C:\tools\codex-acp.cmd".into());
-        assert!(authorize_logout("codex-acp", &check).is_ok());
+        check.id = "ai-agent-grok".into();
+        check.path = Some(r"C:\tools\grok.exe".into());
+        assert!(authorize_logout("grok-acp", &check).is_ok());
         check.fix_type = Some(FixType::Auth);
-        assert!(authorize_logout("codex-acp", &check).is_ok());
+        assert!(authorize_logout("grok-acp", &check).is_ok());
     }
 
     #[test]
@@ -1435,13 +1443,14 @@ mod tests {
     #[test]
     fn can_reauth_only_an_installed_authenticated_probeable_agent() {
         let mut check = check_with_fix(None);
-        check.path = Some(r"C:\tools\codex-acp.cmd".into());
-        assert!(can_reauth("codex-acp", &check));
+        check.id = "ai-agent-grok".into();
+        check.path = Some(r"C:\tools\grok.exe".into());
+        assert!(can_reauth("grok-acp", &check));
         check.fix_type = Some(FixType::Auth);
-        assert!(!can_reauth("codex-acp", &check));
+        assert!(!can_reauth("grok-acp", &check));
         check.fix_type = None;
         check.path = None;
-        assert!(!can_reauth("codex-acp", &check));
+        assert!(!can_reauth("grok-acp", &check));
         check.path = Some(r"C:\tools\copilot.exe".into());
         check.id = "ai-agent-copilot".into();
         assert!(!can_reauth("copilot-acp", &check));
@@ -1459,6 +1468,13 @@ mod tests {
         assert!(authorize_auth("codex-acp", &check).is_err());
         check.fix_type = None;
         assert!(authorize_auth("codex-acp", &check).is_err());
+        check.path = Some(r"C:\tools\codex-acp.cmd".into());
+        check.fix_type = Some(FixType::Auth);
+        assert!(authorize_auth("codex-acp", &check).is_err());
+        assert!(authorize_logout("codex-acp", &check).is_err());
+        check.id = "ai-agent-claude".into();
+        assert!(authorize_auth("claude-acp", &check).is_err());
+        assert!(authorize_logout("claude-acp", &check).is_err());
     }
 
     #[test]

@@ -1,9 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
-import { RefreshCw } from "lucide-react";
-import { Button } from "@/shared/ui/button";
-import { Spinner } from "@/shared/ui/spinner";
 import {
   rerunDoctorReport,
   useDoctorReport,
@@ -16,6 +13,8 @@ import { SettingsPage } from "@/shared/ui/SettingsPage";
 import { RoutingPolicySection } from "./RoutingPolicySection";
 import type { AgentSetupTroubleshootingRequest } from "@/features/providers/lib/agentSetupTroubleshooting";
 import type { ProviderDisplayInfo } from "@/shared/types/providers";
+import { ProviderAccountsPanel } from "@/features/providers/ui/ProviderAccountsPanel";
+import { MANAGED_ACCOUNT_PROVIDERS } from "@/features/providers/api/providerAccounts";
 
 interface ProvidersSettingsProps {
   onStartTroubleshootingChat?: (
@@ -64,55 +63,65 @@ export function ProvidersSettings({
     [catalogEntries],
   );
 
-  return (
-    <SettingsPage title={t("nav.providers")}>
-      <section>
-        <div className="mb-3 flex items-start justify-between gap-3">
-          <div>
-            <h4 className="text-base text-foreground">
-              {t("providers.agents.title")}
-            </h4>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {t("providers.agents.description")}
-            </p>
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            onClick={rerunAgentStatus}
-            disabled={agentStatusRefreshing}
-            leftIcon={
-              agentStatusRefreshing ? (
-                <Spinner className="size-3" />
-              ) : (
-                <RefreshCw className="size-3" />
-              )
-            }
-            className="shrink-0"
-          >
-            {t("providers.agents.refresh")}
-          </Button>
-        </div>
+  const otherAgents = agents.filter(
+    (agent) => !MANAGED_ACCOUNT_PROVIDERS.some((id) => id === agent.id),
+  );
 
-        <div>
-          {agents.map((agent, index) => (
-            <div
-              key={agent.id}
-              className={index > 0 ? "border-t border-border" : undefined}
-            >
-              <AgentProviderCard
-                provider={agent}
-                readiness={agentReadiness.get(agent.id)}
-                versionCheck={agentChecks.get(agent.id)}
-                statusLoading={agentStatusRefreshing}
-                statusUnavailable={agentStatusUnavailable}
-                onStartTroubleshootingChat={onStartTroubleshootingChat}
-              />
+  return (
+    <SettingsPage>
+      <ProviderAccountsPanel
+        onRefresh={rerunAgentStatus}
+        renderProviderHeader={(providerId) => {
+          const provider = agents.find((agent) => agent.id === providerId);
+          return provider ? (
+            <AgentProviderCard
+              provider={{
+                ...provider,
+                supportsAuth: false,
+                supportsLogout: false,
+              }}
+              readiness={agentReadiness.get(providerId)}
+              versionCheck={agentChecks.get(providerId)}
+              showVersionDetails={false}
+              statusLoading={agentStatusRefreshing}
+              statusUnavailable={agentStatusUnavailable}
+              onStartTroubleshootingChat={onStartTroubleshootingChat}
+            />
+          ) : null;
+        }}
+      />
+      {otherAgents.length ? (
+        <section className="mt-6 space-y-4">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div>
+              <h4 className="text-base text-foreground">
+                {t("accounts.otherProviders")}
+              </h4>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {t("accounts.otherProvidersDescription")}
+              </p>
             </div>
-          ))}
-        </div>
-      </section>
+          </div>
+
+          <div className="space-y-4">
+            {otherAgents.map((agent) => (
+              <div
+                key={agent.id}
+                className="rounded-md border border-border px-4"
+              >
+                <AgentProviderCard
+                  provider={agent}
+                  readiness={agentReadiness.get(agent.id)}
+                  versionCheck={agentChecks.get(agent.id)}
+                  statusLoading={agentStatusRefreshing}
+                  statusUnavailable={agentStatusUnavailable}
+                  onStartTroubleshootingChat={onStartTroubleshootingChat}
+                />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {/* Which harness gets the work when one is running low, and which
           models each class of work prefers. Here rather than in a section of

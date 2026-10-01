@@ -1169,6 +1169,7 @@ export function ChatView({
             onPersonaChange: controller.handlePersonaChange,
           }}
           agentModelPicker={{
+            accountSessionId: effectiveSession?.id ?? sessionId,
             providers: controller.pickerAgents,
             providersLoading: controller.providersLoading,
             selectedProvider: controller.selectedProvider,

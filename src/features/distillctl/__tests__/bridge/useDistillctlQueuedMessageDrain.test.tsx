@@ -10,6 +10,10 @@ import {
 import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useDistillctlQueuedMessageDrain } from "@/features/distillctl/bridge/useDistillctlQueuedMessageDrain";
 import { createUserMessage } from "@/shared/types/messages";
+import {
+  clearAccountQuotaWait,
+  deferForAccountQuota,
+} from "@/features/chat/lib/accountQuotaWait";
 
 const mocks = vi.hoisted(() => ({
   sendPromptToExistingSessionInBackground: vi.fn(),
@@ -88,7 +92,121 @@ describe("useDistillctlQueuedMessageDrain", () => {
   });
 
   afterEach(() => {
+    clearAccountQuotaWait("session-1");
     vi.restoreAllMocks();
+  });
+
+  it("keeps a quota-deferred cross-session message ready for its reset instead of parking it as failed", async () => {
+    useChatStore.getState().enqueueTransportReadyMessage("session-1", {
+      persona: { kind: "inherit" },
+      text: "cross-session task",
+      sendOptions: {
+        userMessageMetadata: { origin: "distillctl_cross_session" },
+      },
+    });
+    const original =
+      useChatStore.getState().queuedMessageBySession["session-1"][0];
+    mocks.sendPromptToExistingSessionInBackground.mockImplementationOnce(() => {
+      const error = {
+        data: { kind: "account_quota_wait", promptNotAccepted: true },
+      };
+      deferForAccountQuota("session-1", error);
+      return Promise.reject(error);
+    });
+    const view = render(<DrainHarness />);
+    await waitFor(() =>
+      expect(
+        mocks.sendPromptToExistingSessionInBackground,
+      ).toHaveBeenCalledTimes(1),
+    );
+    expect(useChatStore.getState().queuedMessageBySession["session-1"][0]).toBe(
+      original,
+    );
+    expect(original.kind).toBe("transport-ready");
+    view.unmount();
+  });
+
+  it("restores the same delivery after an optimistic dispatch was proven unaccepted", async () => {
+    useChatStore.getState().enqueueTransportReadyMessage("session-1", {
+      persona: { kind: "inherit" },
+      text: "cross-session task",
+      sendOptions: {
+        userMessageMetadata: {
+          origin: "distillctl_cross_session",
+          distillDeliveryId: "once",
+        },
+      },
+    });
+    const original =
+      useChatStore.getState().queuedMessageBySession["session-1"][0];
+    let rollback: (() => void) | undefined;
+    mocks.sendPromptToExistingSessionInBackground.mockImplementationOnce(
+      (
+        _sessionId: string,
+        _text: string,
+        _before: unknown,
+        options: { onPromptNotAccepted(): void },
+      ) => {
+        rollback = options.onPromptNotAccepted;
+        useChatStore.getState().setChatState("session-1", "streaming");
+        return Promise.resolve();
+      },
+    );
+    const view = render(<DrainHarness />);
+    await waitFor(() =>
+      expect(
+        useChatStore.getState().queuedMessageBySession["session-1"],
+      ).toBeUndefined(),
+    );
+    act(() => {
+      deferForAccountQuota("session-1", {
+        data: { kind: "account_quota_wait", promptNotAccepted: true },
+      });
+      useChatStore.getState().setChatState("session-1", "idle");
+      rollback?.();
+    });
+    expect(useChatStore.getState().queuedMessageBySession["session-1"][0]).toBe(
+      original,
+    );
+    expect(mocks.sendPromptToExistingSessionInBackground).toHaveBeenCalledTimes(
+      1,
+    );
+    view.unmount();
+  });
+
+  it("keeps a rejected delivery when rollback arrives before dispatch acknowledgment", async () => {
+    useChatStore.getState().enqueueTransportReadyMessage("session-1", {
+      persona: { kind: "inherit" },
+      text: "rollback before acknowledgment",
+      sendOptions: {
+        userMessageMetadata: { origin: "distillctl_cross_session" },
+      },
+    });
+    const original =
+      useChatStore.getState().queuedMessageBySession["session-1"][0];
+    mocks.sendPromptToExistingSessionInBackground.mockImplementationOnce(
+      (
+        _sessionId: string,
+        _text: string,
+        _before: unknown,
+        options: { onPromptNotAccepted(): void },
+      ) => {
+        deferForAccountQuota("session-1", {
+          data: { kind: "account_quota_wait", promptNotAccepted: true },
+        });
+        options.onPromptNotAccepted();
+        return Promise.resolve();
+      },
+    );
+    const view = render(<DrainHarness />);
+    await act(async () => Promise.resolve());
+    expect(useChatStore.getState().queuedMessageBySession["session-1"][0]).toBe(
+      original,
+    );
+    expect(mocks.sendPromptToExistingSessionInBackground).toHaveBeenCalledTimes(
+      1,
+    );
+    view.unmount();
   });
 
   it("serializes a synchronous contention release after attempt settlement", async () => {
@@ -159,7 +277,7 @@ describe("useDistillctlQueuedMessageDrain", () => {
         "session-1",
         "restored prompt",
         expect.any(Function),
-        { returnOnDispatch: true },
+        { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
       );
     });
   });
@@ -223,13 +341,13 @@ describe("useDistillctlQueuedMessageDrain", () => {
           "session-1",
           "first prompt",
           expect.any(Function),
-          { returnOnDispatch: true },
+          { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
         ],
         [
           "session-1",
           "second prompt",
           expect.any(Function),
-          { returnOnDispatch: true },
+          { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
         ],
       ]);
     });
@@ -269,7 +387,7 @@ describe("useDistillctlQueuedMessageDrain", () => {
         "session-1",
         "queued prompt",
         expect.any(Function),
-        { returnOnDispatch: true },
+        { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
       );
     });
     await waitFor(() => {
@@ -332,7 +450,7 @@ describe("useDistillctlQueuedMessageDrain", () => {
       "session-1",
       "cached prompt",
       expect.any(Function),
-      { returnOnDispatch: true },
+      { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
     );
   });
 
@@ -369,7 +487,7 @@ describe("useDistillctlQueuedMessageDrain", () => {
         "owned-session",
         "queued while source runs",
         expect.any(Function),
-        { returnOnDispatch: true },
+        { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
       );
     });
   });
@@ -433,7 +551,10 @@ describe("useDistillctlQueuedMessageDrain", () => {
         beforeUserMessageCommitted: () => void,
         options?: { returnOnDispatch?: boolean },
       ) => {
-        expect(options).toEqual({ returnOnDispatch: true });
+        expect(options).toEqual({
+          returnOnDispatch: true,
+          onPromptNotAccepted: expect.any(Function),
+        });
         beforeUserMessageCommitted();
         useChatStore.getState().setActiveRunId("session-1", "held-turn");
         // Match the real helper's split contract: queue ownership completes
@@ -494,7 +615,7 @@ describe("useDistillctlQueuedMessageDrain", () => {
         "session-1",
         "replacement prompt",
         expect.any(Function),
-        { returnOnDispatch: true },
+        { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
       );
     });
   });
@@ -527,7 +648,7 @@ describe("useDistillctlQueuedMessageDrain", () => {
         "session-1",
         "original prompt",
         expect.any(Function),
-        { returnOnDispatch: true },
+        { returnOnDispatch: true, onPromptNotAccepted: expect.any(Function) },
       );
     });
 

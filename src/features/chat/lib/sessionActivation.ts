@@ -437,6 +437,9 @@ async function performSessionMessagesLoad(
       const sessionPatch: ChatSessionPatch = {
         executionOwner: sessionInfo.executionOwner,
         projectId: sessionInfo.projectId ?? undefined,
+        ...(sessionInfo.accountId !== undefined
+          ? { accountId: sessionInfo.accountId }
+          : {}),
         personaId: sessionInfo.personaId ?? undefined,
         archivedAt: sessionInfo.archivedAt ?? undefined,
         messageCount: sessionInfo.messageCount,
@@ -470,6 +473,11 @@ async function performSessionMessagesLoad(
     const { workingDir, missingCwdWarning } =
       await resolveWorkingDirForSessionLoad(session, project);
     const loadedSelection = await acpLoadSession(sessionId, workingDir);
+    if (loadedSelection?.accountId !== undefined) {
+      useChatSessionStore
+        .getState()
+        .patchSession(sessionId, { accountId: loadedSelection.accountId });
+    }
     const loadedTarget = loadedSelection
       ? executionTargetFromHostSession(loadedSelection)
       : undefined;

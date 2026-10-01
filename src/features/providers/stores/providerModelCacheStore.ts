@@ -304,7 +304,7 @@ function inventoryCapabilities(
   };
 }
 
-function providerModelOptionsFromInventory(
+export function providerModelOptionsFromInventory(
   providerId: string,
   inventory: ProviderInventoryModel[],
 ): ModelOption[] {
