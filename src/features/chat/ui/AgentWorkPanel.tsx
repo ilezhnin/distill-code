@@ -450,6 +450,7 @@ function AgentWorkItemRow({
           locations={item.request?.locations}
           result={item.response?.result}
           structuredContent={item.response?.structuredContent}
+          historyResult={item.response?.historyResult}
           isError={item.response?.isError}
           startedAt={item.request?.startedAt}
           showStatusBadge={false}

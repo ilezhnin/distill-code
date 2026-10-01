@@ -10,6 +10,7 @@ import type {
 import { messageSnippet } from "@/features/chat/lib/messageSnippet";
 import { getCuratedAgentProviders } from "@/features/providers/curatedProviders";
 import { getClient, trackPendingPrompt } from "./acpConnection";
+import { getHistoryHandler, type HistoryPage } from "./acpHistory";
 import {
   applySessionConfigOptionsSnapshot,
   readSessionConfigOptionsSnapshots,
@@ -182,6 +183,13 @@ export async function setSessionAccount(sessionId: string, accountId: string) {
 }
 
 /** The text messages of a session as the host stored them. */
+export async function readHistoryPage(
+  sessionId: string,
+  beforeEventId: number,
+): Promise<HistoryPage> {
+  return (await getClient()).host.sessionHistory({ sessionId, beforeEventId });
+}
+
 export async function readSessionTranscript(
   sessionId: string,
 ): Promise<SessionTranscript> {
@@ -229,6 +237,7 @@ export async function removeSessionMessagePart(
 
 export interface AcpForkSessionOptions {
   conversationBefore?: number;
+  conversationThrough?: { messageId: string; role: "user" | "assistant" };
 }
 
 function isValidConversationBefore(value: number | undefined): value is number {
@@ -246,7 +255,9 @@ export async function forkSession(
     cwd: workingDir,
     mcpServers: [],
   };
-  if (isValidConversationBefore(options.conversationBefore)) {
+  if (options.conversationThrough) {
+    params._meta = { conversationThrough: options.conversationThrough };
+  } else if (isValidConversationBefore(options.conversationBefore)) {
     params._meta = { conversationBefore: options.conversationBefore };
   }
 
@@ -504,12 +515,37 @@ export async function loadSession(
   const tClient = performance.now();
   const client = await getClient();
   const tCall = performance.now();
-  const response = await client.loadSession({
-    sessionId,
-    cwd: workingDir,
-    mcpServers: [],
-    _meta: { distill: { replayBatch: true } },
-  });
+  const history = getHistoryHandler();
+  history?.begin(sessionId);
+  let response: LoadSessionResponse;
+  try {
+    response = await client.loadSession({
+      sessionId,
+      cwd: workingDir,
+      mcpServers: [],
+      _meta: {
+        distill: {
+          replayBatch: true,
+          ...(history ? { historyPage: true } : {}),
+        },
+      },
+    });
+    if (history) {
+      const page = response._meta?.distillHistory as unknown as
+        | HistoryPage
+        | undefined;
+      if (
+        !page ||
+        !Array.isArray(page.events) ||
+        !Number.isSafeInteger(page.highWaterEventId)
+      )
+        throw new Error("The host returned an invalid history snapshot");
+      await history.accept(sessionId, page);
+    }
+  } catch (error) {
+    await history?.failed(sessionId);
+    throw error;
+  }
   const snapshots = readSessionConfigOptionsSnapshots(response);
   logReasoningEffortInfo("loadSession response", {
     sessionId: shortLogId(sessionId),

@@ -9,6 +9,9 @@ import { useChatSessionStore } from "@/features/chat/stores/chatSessionStore";
 import { useAgentStore } from "@/features/agents/stores/agentStore";
 import {
   clearMessageTracking,
+  beginHistorySnapshot,
+  acceptHistorySnapshot,
+  parseHistoryPage,
   getReplayPerf,
   handleSessionNotification,
   reportPermissionAnswer,
@@ -48,6 +51,49 @@ function markSessionReplayLoading(sessionId = "acp-session") {
 }
 
 describe("acpNotificationHandler", () => {
+  it("deduplicates committed live updates against a history snapshot and preserves its newer tail", async () => {
+    clearMessageTracking();
+    clearReplayBuffer("paged");
+    useChatStore.getState().setSessionLoading("paged", true);
+    const chunk = (text: string, eventId: number) => ({
+      sessionId: "paged",
+      update: {
+        sessionUpdate: "agent_message_chunk" as const,
+        content: { type: "text" as const, text },
+        _meta: { distill: { assistantMessageId: "reply", eventId } },
+      },
+    });
+    beginHistorySnapshot("paged");
+    await handleSessionNotification(chunk("old", 10));
+    await handleSessionNotification(chunk("new", 11));
+    await acceptHistorySnapshot("paged", {
+      events: [chunk("old", 10)],
+      olderCursor: 1,
+      highWaterEventId: 10,
+    });
+    await handleSessionNotification(chunk("old", 10));
+    expect(getReplayBuffer("paged")?.[0].content).toEqual([
+      { type: "text", text: "oldnew" },
+    ]);
+    clearReplayBuffer("paged");
+    useChatStore.getState().setSessionLoading("paged", false);
+  });
+
+  it("parses an older page without replacing the active replay buffer or session state", async () => {
+    const event = {
+      sessionId: "paged",
+      update: {
+        sessionUpdate: "user_message_chunk" as const,
+        content: { type: "text" as const, text: "earlier" },
+        _meta: { distill: { messageId: "user-1" } },
+      },
+    };
+    const before = useChatStore.getState().messagesBySession;
+    const messages = await parseHistoryPage("paged", [event], 42);
+    expect(messages[0].id).toBe("user-1");
+    expect(useChatStore.getState().messagesBySession).toBe(before);
+    expect(getReplayBuffer("paged:history:42")).toBeUndefined();
+  });
   beforeEach(() => {
     resetUsageLedgerForTests();
     workspaceObservationMocks.clearWorkspaceToolCallObservations.mockClear();

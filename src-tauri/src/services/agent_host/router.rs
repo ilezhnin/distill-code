@@ -26,7 +26,7 @@ use super::legacy_import;
 use super::protocol::{self, invalid_params, now_iso, Message};
 use super::session_title;
 use super::sources::SourceRoots;
-use super::store::{SessionRecord, SessionStore, SessionTouchUndo};
+use super::store::{ForkBoundary, MessageSide, SessionRecord, SessionStore, SessionTouchUndo};
 use crate::services::managed_acp_tools;
 use crate::services::provider_accounts;
 
@@ -1588,19 +1588,27 @@ impl Inner {
     /// events of one chat go in one transaction; the order they were handled in
     /// is the order the transcript keeps.
     async fn flush_pending_events(&self, pending: &mut Vec<(String, Value)>) -> Result<(), String> {
-        Self::persist_pending_events(&self.store, pending).await
+        Self::persist_pending_events(&self.store, pending, |mut payload, id| {
+            Self::stamp_event_id(&mut payload, id);
+            self.notify_frontend("session/update", payload);
+        })
+        .await
     }
 
     async fn persist_pending_events(
         store: &SessionStore,
         pending: &mut Vec<(String, Value)>,
+        mut committed: impl FnMut(Value, i64),
     ) -> Result<(), String> {
         for (session_id, payloads) in Self::group_events_by_session(pending.clone()) {
-            if let Err(error) = store.append_events(&session_id, &payloads).await {
+            let ids = store.append_events(&session_id, &payloads).await.map_err(|error| {
                 log::error!("[agent-host] history is not durable for {session_id}; retained for retry: {error}");
-                return Err(error);
-            }
+                error
+            })?;
             pending.drain(..payloads.len());
+            for (payload, id) in payloads.into_iter().zip(ids) {
+                committed(payload, id);
+            }
         }
         Ok(())
     }
@@ -1813,8 +1821,23 @@ impl Inner {
         } else {
             None
         };
-        self.notify_frontend("session/update", params);
+        if !persist {
+            self.notify_frontend("session/update", params);
+        }
         stored
+    }
+
+    fn stamp_event_id(payload: &mut Value, id: i64) {
+        if let Some(update) = payload.get_mut("update").and_then(Value::as_object_mut) {
+            let meta = update.entry("_meta").or_insert_with(|| json!({}));
+            if !meta.is_object() {
+                *meta = json!({});
+            }
+            if !meta["distill"].is_object() {
+                meta["distill"] = json!({});
+            }
+            meta["distill"]["eventId"] = json!(id);
+        }
     }
 
     fn is_turn_update(params: &Value) -> bool {
@@ -3088,14 +3111,28 @@ impl Inner {
         let before_drain = std::time::Instant::now();
         self.drain_bridge_events().await?;
         let before_read = std::time::Instant::now();
-        let events = self
-            .store
-            .list_event_payloads(&session_id)
-            .await
-            .map_err(protocol::internal)?;
-        let before_compact = std::time::Instant::now();
-        let event_count = events.len();
-        let events = super::replay::compact(events);
+        let paged = params
+            .pointer("/_meta/distill/historyPage")
+            .and_then(Value::as_bool)
+            == Some(true);
+        let history = if paged {
+            Some(
+                self.store
+                    .history_page(&session_id, None)
+                    .await
+                    .map_err(protocol::internal)?,
+            )
+        } else {
+            None
+        };
+        let (events, event_count) = if paged {
+            (Vec::new(), 0)
+        } else {
+            self.store
+                .replay_payloads(&session_id)
+                .await
+                .map_err(protocol::internal)?
+        };
         let before_send = std::time::Instant::now();
         let replayed_count = events.len();
         let batched = params
@@ -3107,16 +3144,17 @@ impl Inner {
         });
         log::debug!(
             target: "perf",
-            "[perf:host-load] {} record={}ms drain={}ms read={}ms compact={}ms enqueue={}ms events={} replayed={} frames={}",
+            "[perf:host-load] {} record={}ms drain={}ms read_compact={}ms enqueue={}ms events={} replayed={} frames={} page_events={} page_bytes={}",
             session_id,
             before_drain.duration_since(started).as_millis(),
             before_read.duration_since(before_drain).as_millis(),
-            before_compact.duration_since(before_read).as_millis(),
-            before_send.duration_since(before_compact).as_millis(),
+            before_send.duration_since(before_read).as_millis(),
             before_send.elapsed().as_millis(),
             event_count,
             replayed_count,
             frames,
+            history.as_ref().map_or(0, |page| page.events.len()),
+            history.as_ref().map_or(0, |page| page.events.iter().map(|event| event.get().len()).sum::<usize>()),
         );
         let attached = self.attached_route(&session_id).await.is_some();
         if attached {
@@ -3146,6 +3184,9 @@ impl Inner {
                 .and_then(|v| v.pointer("/_meta/executionOwner"))
                 .cloned()
                 .unwrap_or(Value::Null);
+        }
+        if let Some(history) = history {
+            response["_meta"]["distillHistory"] = json!(history);
         }
         let response = Self::with_substitutions(response, &substitutions);
         if let Ok(mut last) = self.last_loaded.lock() {
@@ -3446,8 +3487,39 @@ impl Inner {
     async fn fork_session(self: &Arc<Self>, params: Value) -> Result<Value, Value> {
         let session_id =
             protocol::session_id(&params).ok_or_else(|| invalid_params("sessionId required"))?;
+        let lock = self.attach_lock(&session_id).await;
+        let _forking = lock.lock().await;
         let record = self.session_record(&session_id).await?;
         self.drain_bridge_events().await?;
+        // Resolve the selected message before creating a provider session. A
+        // missing/stale identity must not silently become a full-history fork.
+        let boundary = if let Some(target) = params.pointer("/_meta/conversationThrough") {
+            let message_id = target
+                .get("messageId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| invalid_params("conversationThrough.messageId required"))?;
+            let side = match target.get("role").and_then(Value::as_str) {
+                Some("user") => MessageSide::User,
+                Some("assistant") => MessageSide::Assistant,
+                _ => {
+                    return Err(invalid_params(
+                        "conversationThrough.role must be user or assistant",
+                    ))
+                }
+            };
+            Some(ForkBoundary::ThroughEvent(
+                self.store
+                    .message_last_event(&session_id, side, message_id)
+                    .await
+                    .map_err(invalid_params)?,
+            ))
+        } else {
+            params
+                .pointer("/_meta/conversationBefore")
+                .and_then(Value::as_i64)
+                .map(ForkBoundary::BeforeSecond)
+        };
         let meta = Self::fork_meta(&record);
         let cwd = params
             .get("cwd")
@@ -3460,15 +3532,15 @@ impl Inner {
             .await?;
         let new_id = protocol::session_id(&created)
             .ok_or_else(|| protocol::internal("fork produced no session"))?;
-        // "Fork from this message": the renderer sends the Unix second the
-        // copy must stop before.
-        let before = params
-            .pointer("/_meta/conversationBefore")
-            .and_then(Value::as_i64);
-        self.store
-            .copy_events(&session_id, &new_id, before)
-            .await
-            .map_err(protocol::internal)?;
+        if let Err(error) = self.store.copy_events(&session_id, &new_id, boundary).await {
+            // Do not leave an empty, attached fork when copying fails.
+            if let Err(cleanup) = self.delete_session(json!({ "sessionId": new_id })).await {
+                return Err(protocol::internal(format!(
+                    "{error}; failed to remove incomplete fork: {cleanup}"
+                )));
+            }
+            return Err(protocol::internal(error));
+        }
         if let Some(title) = &record.title {
             let _ = self
                 .store
@@ -4525,6 +4597,9 @@ impl Inner {
         if steer {
             if let Some(mut echo) = events.into_iter().next() {
                 echo["update"]["messageId"] = json!(ids.message_id);
+                if let Some(id) = event_ids.first() {
+                    Self::stamp_event_id(&mut echo, *id);
+                }
                 self.notify_frontend("session/update", echo);
             }
         }
@@ -6551,9 +6626,11 @@ mod tests {
             ("b".into(), json!({"n":2})),
             ("a".into(), json!({"n":3})),
         ];
-        assert!(Inner::persist_pending_events(&store, &mut pending)
-            .await
-            .is_err());
+        assert!(
+            Inner::persist_pending_events(&store, &mut pending, |_, _| {})
+                .await
+                .is_err()
+        );
         assert_eq!(pending.len(), 2);
         assert_eq!(store.list_events("a").await.unwrap(), vec![json!({"n":1})]);
         assert!(store.list_events("b").await.unwrap().is_empty());
@@ -6561,7 +6638,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        Inner::persist_pending_events(&store, &mut pending)
+        Inner::persist_pending_events(&store, &mut pending, |_, _| {})
             .await
             .unwrap();
         assert!(pending.is_empty());

@@ -16,6 +16,7 @@ import {
   type WheelEvent,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { HistoryPageControl } from "./HistoryPageControl";
 import { cn } from "@/shared/lib/cn";
 import { useLocaleFormatting } from "@/shared/i18n";
 import type { Message } from "@/shared/types/messages";
@@ -1245,21 +1246,6 @@ function VirtualMessageTimelineSession({
     },
     [searchContentRef],
   );
-  const scrollRowForSearch = useCallback(
-    (rowId: string) => scrollVirtualToRow(rowId, "center"),
-    [scrollVirtualToRow],
-  );
-  const {
-    registerRowElement: registerSearchRowElement,
-    harvestHost: searchHarvestHost,
-  } = useVirtualTranscriptSearch({
-    rows: stableRows,
-    messageByRowId: stableMessageByRowId,
-    listRootRef: searchListRootRef,
-    scrollToRow: scrollRowForSearch,
-    rowStateProvider: virtualTimeline.rowStateProvider,
-    backendRef: searchBackendRef,
-  });
   const virtualRangeMountedRows = isBoundedVirtualMode
     ? virtualTimelineSnapshot.range.virtualItems.length
     : virtualRows.length;
@@ -1776,6 +1762,25 @@ function VirtualMessageTimelineSession({
       syncJumpToLatestVisibility,
     ],
   );
+
+  const scrollRowForSearch = useCallback(
+    (rowId: string) => {
+      setDetachedFromLatest(true);
+      return scrollVirtualToRow(rowId, "center");
+    },
+    [scrollVirtualToRow, setDetachedFromLatest],
+  );
+  const {
+    registerRowElement: registerSearchRowElement,
+    harvestHost: searchHarvestHost,
+  } = useVirtualTranscriptSearch({
+    rows: stableRows,
+    messageByRowId: stableMessageByRowId,
+    listRootRef: searchListRootRef,
+    scrollToRow: scrollRowForSearch,
+    rowStateProvider: virtualTimeline.rowStateProvider,
+    backendRef: searchBackendRef,
+  });
 
   const getBottomScrollTop = useCallback(
     (container: HTMLDivElement) => getTimelineBottomScrollTop(container),
@@ -4213,6 +4218,13 @@ function VirtualMessageTimelineSession({
           />
         ) : null}
         {searchHarvestHost}
+        <HistoryPageControl
+          sessionId={sessionId}
+          visible={
+            !showPlaceholderContent &&
+            virtualTimelineSnapshot.range.visibleRange.startIndex <= 2
+          }
+        />
         <MessageTimelineScrollContainer
           ref={containerRef}
           hasFooter={hasFooter}

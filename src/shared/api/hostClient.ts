@@ -6,6 +6,8 @@ import {
 } from "@agentclientprotocol/sdk";
 
 import type { MessagePart } from "@/shared/types/messageParts";
+import type { HistoryPage } from "./acpHistory";
+import type { SessionNotification } from "@agentclientprotocol/sdk";
 import type {
   CreateSourceRequest,
   HostSessionInfo,
@@ -88,6 +90,12 @@ export class HostExt {
   }
   sessionMessages(params: { sessionId: string }) {
     return this.call<SessionTranscript>("session/messages", params);
+  }
+  sessionHistory(params: { sessionId: string; beforeEventId: number }) {
+    return this.call<HistoryPage>("session/history", params);
+  }
+  sessionHistoryResult(params: { sessionId: string; eventId: number }) {
+    return this.call<SessionNotification>("session/history/result", params);
   }
   sessionMessageUpdate(params: {
     sessionId: string;

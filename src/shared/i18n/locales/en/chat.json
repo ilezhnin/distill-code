@@ -1,4 +1,13 @@
 {
+  "history": {
+    "resultLoading": "Loading saved result...",
+    "resultFailed": "The saved result could not be loaded.",
+    "retry": "Retry",
+    "searchIncomplete": "Some history could not be loaded. Search results may be incomplete.",
+    "loadOlder": "Load earlier messages",
+    "loading": "Loading history...",
+    "failed": "Earlier messages could not be loaded. Try again."
+  },
   "attachments": {
     "alt": "Attachment {{index}}",
     "chooseFilesDialogTitle": "Choose files to attach",

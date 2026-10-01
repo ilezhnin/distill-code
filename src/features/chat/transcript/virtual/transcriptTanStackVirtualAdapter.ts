@@ -89,7 +89,6 @@ export class TranscriptTanStackVirtualAdapter
   private offsetCallback: OffsetCallback | null = null;
   private rectCallback: ((rect: Rect) => void) | null = null;
   private lastRangeSelection: TranscriptPixelRangeSelection | null = null;
-  private correctionWritesSuspended = false;
 
   constructor(
     input: TranscriptSessionGeometry,
@@ -338,10 +337,6 @@ export class TranscriptTanStackVirtualAdapter
     this.syncVirtualizerOffset();
   }
 
-  setScrollWritesSuspended(suspended: boolean): void {
-    this.correctionWritesSuspended = suspended;
-  }
-
   getPendingScrollCorrection(): TranscriptScrollCorrection | null {
     return this.controller.getPendingScrollCorrection();
   }
@@ -563,9 +558,11 @@ export class TranscriptTanStackVirtualAdapter
   private applyCorrection(
     correction: TranscriptScrollCorrection | null | undefined,
   ): void {
-    if (!correction || this.correctionWritesSuspended) {
+    if (!correction) {
       return;
     }
+    // This element is in memory. Even while the coordinator defers browser
+    // writes, TanStack must render the range at the proposed row anchor.
     this.setScrollOffset(correction.nextScrollTop, false);
   }
 

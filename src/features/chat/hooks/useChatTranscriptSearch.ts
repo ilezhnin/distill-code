@@ -73,6 +73,8 @@ function activeElementInsideSearchBar(): boolean {
 }
 
 export interface UseChatTranscriptSearchOptions {
+  onOpen?: () => void;
+  historyLoading?: boolean;
   /** When a renderer fills this (the virtualized timeline), matching,
       painting, and match navigation are delegated to it; the controller
       keeps owning the bar state, shortcut, focus, and announcements. */
@@ -94,6 +96,9 @@ export function useChatTranscriptSearch(
   options?: UseChatTranscriptSearchOptions,
 ): ChatTranscriptSearch {
   const backendRef = options?.backendRef;
+  const historyLoading = Boolean(options?.historyLoading);
+  const onOpenRef = useRef(options?.onOpen);
+  onOpenRef.current = options?.onOpen;
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState("");
   // The query whose matches are currently painted; mutation re-matching keys
@@ -176,6 +181,7 @@ export function useChatTranscriptSearch(
   );
 
   const open = useCallback(() => {
+    onOpenRef.current?.();
     // Re-capture on every invocation from outside the bar so Escape returns
     // to where the user actually came from, not the original opener.
     if (!activeElementInsideSearchBar()) {
@@ -259,6 +265,7 @@ export function useChatTranscriptSearch(
       return;
     }
 
+    if (historyLoading) return;
     const timer = window.setTimeout(() => {
       // The cleanup that clears this timer is a passive effect, so the timer
       // can still fire after a synchronous close().
@@ -289,7 +296,15 @@ export function useChatTranscriptSearch(
     }, QUERY_DEBOUNCE_MS);
 
     return () => window.clearTimeout(timer);
-  }, [adoptBackendSnapshot, applyMatches, backendRef, isOpen, query, rootRef]);
+  }, [
+    adoptBackendSnapshot,
+    applyMatches,
+    backendRef,
+    historyLoading,
+    isOpen,
+    query,
+    rootRef,
+  ]);
 
   // Async backend updates (indexing progress, streaming recounts) refresh the
   // visible count without announcing.
@@ -427,10 +442,11 @@ export function useChatTranscriptSearch(
     query,
     matchCount: matchState.count,
     activeMatchIndex: matchState.activeIndex,
-    isIndexing: matchState.indexing,
+    isIndexing: matchState.indexing || Boolean(options?.historyLoading),
     announcedMatchCount: announcedState.count,
     announcedActiveMatchIndex: announcedState.activeIndex,
-    announcedIsIndexing: announcedState.indexing,
+    announcedIsIndexing:
+      announcedState.indexing || Boolean(options?.historyLoading),
     focusSignal,
     open,
     close,

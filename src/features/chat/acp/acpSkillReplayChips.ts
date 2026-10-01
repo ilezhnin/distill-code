@@ -93,8 +93,9 @@ export function handleReplayUserMessageChunk(
   clearPendingReplayChips(sessionId, messageId);
 }
 
-export function clearSkillReplayChips(): void {
-  pendingReplayChips.clear();
+export function clearSkillReplayChips(sessionId?: string): void {
+  if (sessionId === undefined) pendingReplayChips.clear();
+  else pendingReplayChips.delete(sessionId);
 }
 
 function isAssistantOnly(ann?: TextContent["annotations"]) {

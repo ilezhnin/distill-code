@@ -13,8 +13,8 @@
 //!   (`completed` or `failed`) update, so the output of the earlier ones is
 //!   left out. Their title, kind, locations and terminal output stay.
 //!
-//! Everything else passes through byte for byte, in order. An event that does
-//! not parse the way these rules expect is passed through as well, so passing
+//! Everything else passes through byte for byte, in order. Valid JSON that does
+//! not have the shape these rules expect is passed through as well, so passing
 //! an event through unchanged is always correct and only costs replay time.
 //!
 //! Only events that may change are parsed; which ones is told from the tail
@@ -22,10 +22,53 @@
 //! events and 104 MB, the replay becomes 15 797 events and 53 MB.
 
 use serde_json::{Map, Value};
+use std::ops::Range;
 
 /// Streamed pieces are joined only while small; one long piece is already
 /// cheap to replay on its own.
 const MAX_JOINED_PIECE_BYTES: usize = 64 * 1024;
+
+/// Keep heavy completed output on disk until its tool card is opened. The
+/// original event remains authoritative for exports and explicit reads.
+pub fn defer_tool_result(payload: String, id: i64) -> String {
+    if payload.len() < MAX_JOINED_PIECE_BYTES {
+        return payload;
+    }
+    let Ok(mut event) = payload.parse::<Value>() else {
+        return payload;
+    };
+    let Some(update) = event.get_mut("update").and_then(Value::as_object_mut) else {
+        return payload;
+    };
+    if update.get("sessionUpdate").and_then(Value::as_str) != Some("tool_call_update")
+        || !matches!(
+            update.get("status").and_then(Value::as_str),
+            Some("completed" | "failed")
+        )
+    {
+        return payload;
+    }
+    update.remove("rawOutput");
+    update.remove("content");
+    let meta = update
+        .entry("_meta")
+        .or_insert_with(|| serde_json::json!({}));
+    if !meta.is_object() {
+        *meta = serde_json::json!({});
+    }
+    if let Some(claude) = meta.get_mut("claudeCode").and_then(Value::as_object_mut) {
+        claude.remove("toolResponse");
+    }
+    if let Some(object) = meta.as_object_mut() {
+        object.remove("terminal_output");
+        object.remove("terminal_output_delta");
+    }
+    if !meta["distill"].is_object() {
+        meta["distill"] = serde_json::json!({});
+    }
+    meta["distill"]["resultEventId"] = serde_json::json!(id);
+    event.to_string()
+}
 
 enum Replayed {
     /// A piece of streamed text, keyed by everything but its text and time:
@@ -51,6 +94,82 @@ struct PendingPiece {
     /// carries the time the run ended.
     created: Option<Value>,
     pieces: usize,
+    text_shape: Option<TextShape>,
+}
+
+/// A validated text chunk's unchanged JSON segments. Most adjacent chunks
+/// differ only in text and the host timestamp; compare the remaining bytes
+/// and decode those two strings instead of rebuilding the whole JSON tree.
+/// Any other change falls back to the structural compactor below.
+struct TextShape {
+    fields: Vec<(Range<usize>, bool)>,
+}
+
+impl TextShape {
+    fn new(payload: &str, shape: &Value, created: Option<&Value>) -> Option<Self> {
+        if shape.pointer("/update/content/type")?.as_str()? != "text" {
+            return None;
+        }
+        let mut fields = vec![(string_field(payload, "\"text\":")?, true)];
+        if let Some(created) = created {
+            created.as_str()?;
+            fields.push((string_field(payload, "\"created\":")?, false));
+        }
+        fields.sort_by_key(|(range, _)| range.start);
+        Some(Self { fields })
+    }
+
+    fn read(&self, original: &str, payload: &str) -> Option<(String, Option<Value>)> {
+        let mut old = 0;
+        let mut new = 0;
+        let mut text = None;
+        let mut created = None;
+        for (range, is_text) in &self.fields {
+            let literal = &original[old..range.start];
+            if !payload.get(new..)?.starts_with(literal) {
+                return None;
+            }
+            new += literal.len();
+            let end = string_end(payload, new)?;
+            let Value::String(value) = payload[new..end].parse::<Value>().ok()? else {
+                return None;
+            };
+            if *is_text {
+                text = Some(value);
+            } else {
+                created = Some(Value::String(value));
+            }
+            old = range.end;
+            new = end;
+        }
+        (original[old..] == payload[new..]).then_some((text?, created))
+    }
+}
+
+fn string_field(payload: &str, key: &str) -> Option<Range<usize>> {
+    let mut matches = payload.match_indices(key);
+    let (start, _) = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    let start = start + key.len();
+    Some(start..string_end(payload, start)?)
+}
+
+fn string_end(payload: &str, start: usize) -> Option<usize> {
+    let bytes = payload.as_bytes();
+    if bytes.get(start) != Some(&b'"') {
+        return None;
+    }
+    let mut index = start + 1;
+    while let Some(byte) = bytes.get(index) {
+        match byte {
+            b'"' => return Some(index + 1),
+            b'\\' => index += 2,
+            _ => index += 1,
+        }
+    }
+    None
 }
 
 impl PendingPiece {
@@ -62,11 +181,49 @@ impl PendingPiece {
     }
 }
 
-pub fn compact(payloads: Vec<String>) -> Vec<String> {
-    let mut out = Vec::with_capacity(payloads.len());
-    let mut pending: Option<PendingPiece> = None;
-    for payload in payloads {
-        match classify(&payload) {
+#[derive(Default)]
+pub struct Compactor {
+    out: Vec<String>,
+    pending: Option<PendingPiece>,
+}
+
+impl Compactor {
+    /// Validate and compact each stored row in one pass. Invalid JSON is
+    /// skipped, as it cannot be included in a replay notification frame.
+    pub fn push(&mut self, payload: String) -> bool {
+        if payload.len() < MAX_JOINED_PIECE_BYTES {
+            if let Some(run) = self.pending.as_mut() {
+                if let Some((text, created)) = run
+                    .text_shape
+                    .as_ref()
+                    .and_then(|shape| shape.read(&run.payload, &payload))
+                {
+                    run.text.push_str(&text);
+                    run.created = created.or(run.created.take());
+                    run.pieces += 1;
+                    if run.text.len() >= MAX_JOINED_PIECE_BYTES {
+                        self.out
+                            .extend(self.pending.take().map(PendingPiece::into_payload));
+                    }
+                    return true;
+                }
+            }
+        }
+        if !may_compact(&payload) {
+            let Ok(raw) = serde_json::value::RawValue::from_string(payload) else {
+                return false;
+            };
+            self.out
+                .extend(self.pending.take().map(PendingPiece::into_payload));
+            self.out.push(String::from(Box::<str>::from(raw)));
+            return true;
+        }
+        let Ok(value) = payload.parse::<Value>() else {
+            return false;
+        };
+        let classified = classify(value, payload.len() < MAX_JOINED_PIECE_BYTES);
+        let Self { out, pending } = self;
+        match classified {
             Replayed::Piece {
                 shape,
                 text,
@@ -79,15 +236,17 @@ pub fn compact(payloads: Vec<String>) -> Vec<String> {
                     if run.text.len() >= MAX_JOINED_PIECE_BYTES {
                         out.extend(pending.take().map(PendingPiece::into_payload));
                     }
-                    continue;
+                    return true;
                 }
                 out.extend(pending.take().map(PendingPiece::into_payload));
-                pending = Some(PendingPiece {
+                let text_shape = TextShape::new(&payload, &shape, created.as_ref());
+                *pending = Some(PendingPiece {
                     payload,
                     shape,
                     text,
                     created,
                     pieces: 1,
+                    text_shape,
                 });
             }
             Replayed::Trimmed(trimmed) => {
@@ -99,19 +258,26 @@ pub fn compact(payloads: Vec<String>) -> Vec<String> {
                 out.push(payload);
             }
         }
+        true
     }
-    out.extend(pending.map(PendingPiece::into_payload));
-    out
+
+    pub fn finish(mut self) -> Vec<String> {
+        self.out
+            .extend(self.pending.map(PendingPiece::into_payload));
+        self.out
+    }
 }
 
-fn classify(payload: &str) -> Replayed {
-    if !may_compact(payload) {
-        return Replayed::Unchanged;
+#[cfg(test)]
+pub fn compact(payloads: Vec<String>) -> Vec<String> {
+    let mut compactor = Compactor::default();
+    for payload in payloads {
+        compactor.push(payload);
     }
-    let Ok(mut value) = payload.parse::<Value>() else {
-        return Replayed::Unchanged;
-    };
-    let small = payload.len() < MAX_JOINED_PIECE_BYTES;
+    compactor.finish()
+}
+
+fn classify(mut value: Value, small: bool) -> Replayed {
     match value
         .pointer("/update/sessionUpdate")
         .and_then(Value::as_str)
@@ -343,6 +509,31 @@ mod tests {
     }
 
     #[test]
+    fn fast_text_chunks_preserve_unicode_escapes_and_validate_changed_strings() {
+        let texts = ["a\\\"b", "Ж🙂\n\t", "\\", "\"created\":\"other\""];
+        let events: Vec<_> = texts
+            .iter()
+            .map(|text| chunk("agent_message_chunk", "a", text, "t"))
+            .collect();
+        let first: Value = events[0].parse().unwrap();
+        let Replayed::Piece { shape, created, .. } = classify(first, true) else {
+            panic!()
+        };
+        let fast = TextShape::new(&events[0], &shape, created.as_ref()).unwrap();
+        for (event, text) in events.iter().zip(texts) {
+            assert_eq!(fast.read(&events[0], event).unwrap().0, text);
+        }
+        let out = parsed(&compact(events.clone()));
+        assert_eq!(out[0]["update"]["content"]["text"], texts.concat());
+        let invalid = events[0].replace(r#"a\\\"b"#, r#"a\qb"#);
+        assert_ne!(invalid, events[0]);
+        assert!(fast.read(&events[0], &invalid).is_none());
+        assert!(fast
+            .read(&events[0], &chunk("agent_message_chunk", "other", "x", "t"))
+            .is_none());
+    }
+
+    #[test]
     fn text_is_never_joined_across_another_event() {
         let tool = json!({
             "sessionId": "s",
@@ -363,9 +554,20 @@ mod tests {
         let events = vec![
             chunk("agent_message_chunk", "a", "only", "t1"),
             r#"{"sessionId":"s","update":{"sessionUpdate":"usage_update","used":1}}"#.to_string(),
-            "not json".to_string(),
         ];
         assert_eq!(compact(events.clone()), events);
+    }
+
+    #[test]
+    fn invalid_stored_rows_are_skipped_without_breaking_the_valid_replay() {
+        let mut compactor = Compactor::default();
+        assert!(compactor.push(chunk("agent_message_chunk", "a", "one", "t1")));
+        assert!(!compactor.push("not json".into()));
+        assert!(!compactor.push(r#"{"sessionUpdate":"usage_update",broken}"#.into()));
+        assert!(compactor.push(chunk("agent_message_chunk", "a", "two", "t2")));
+        let out = parsed(&compactor.finish());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["update"]["content"]["text"], "onetwo");
     }
 
     #[test]

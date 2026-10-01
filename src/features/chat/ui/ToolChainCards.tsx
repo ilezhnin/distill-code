@@ -440,6 +440,7 @@ export function ToolChainCards({
               locations={request?.locations}
               result={response?.result ?? request?.terminalOutput}
               structuredContent={response?.structuredContent}
+              historyResult={response?.historyResult}
               isError={response?.isError}
               startedAt={request?.startedAt}
               open={isOpen}
@@ -474,6 +475,7 @@ export function ToolChainCards({
             locations={request?.locations}
             result={response?.result ?? request?.terminalOutput}
             structuredContent={response?.structuredContent}
+            historyResult={response?.historyResult}
             isError={response?.isError}
             startedAt={request?.startedAt}
             open={isOpen}

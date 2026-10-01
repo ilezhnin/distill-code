@@ -24,8 +24,11 @@ import {
 import type { ToolCallLocation, ToolCallStatus } from "@/shared/types/messages";
 import { useArtifactActionsContext } from "@/features/chat/hooks/ArtifactPolicyContext";
 import { getSubagentToolCallInfo } from "@/features/chat/lib/subagentToolCalls";
+import { loadHistoryToolResult } from "../lib/historyToolResult";
+import type { ToolResponseContent } from "@/shared/types/messages";
 
 interface ToolCallAdapterProps {
+  historyResult?: ToolResponseContent["historyResult"];
   className?: string;
   name: string;
   /** Real (wire-level) tool name from `_meta`, when the harness provides it. */
@@ -502,6 +505,7 @@ function splitHeaderTitleByPath(name: string, fileLabel: string) {
  * row-state change and hint toggle, and its own props are stable between those.
  */
 export const ToolCallAdapter = memo(function ToolCallAdapter({
+  historyResult,
   className,
   name,
   toolName,
@@ -525,6 +529,22 @@ export const ToolCallAdapter = memo(function ToolCallAdapter({
   agentWorkLayout = false,
 }: ToolCallAdapterProps) {
   const { t } = useTranslation("chat");
+  const [localOpen, setLocalOpen] = useState(false);
+  const [resultError, setResultError] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const expanded = open ?? localOpen;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: retry intentionally restarts a failed read without changing the result reference.
+  useEffect(() => {
+    if (!expanded || !historyResult) return;
+    let active = true;
+    setResultError(false);
+    void loadHistoryToolResult(historyResult).catch(() => {
+      if (active) setResultError(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, [expanded, historyResult, retry]);
   const elapsed = useElapsedTime(status, startedAt);
   const state = toolStatusMap[status];
   const summaryRows = useMemo(
@@ -645,7 +665,13 @@ export const ToolCallAdapter = memo(function ToolCallAdapter({
       : null;
   return (
     <div className={cn("w-full min-w-0 max-w-full", className)}>
-      <Tool open={open} onOpenChange={onOpenChange}>
+      <Tool
+        open={expanded}
+        onOpenChange={(next) => {
+          setLocalOpen(next);
+          onOpenChange?.(next);
+        }}
+      >
         <ToolHeader
           type="dynamic-tool"
           toolName={name}
@@ -664,6 +690,22 @@ export const ToolCallAdapter = memo(function ToolCallAdapter({
           data-role="tool-call-content"
           className="text-muted-foreground [&_button]:text-muted-foreground [&_code]:text-muted-foreground [&_dd]:text-muted-foreground [&_dt]:text-muted-foreground [&_span]:text-muted-foreground"
         >
+          {historyResult ? (
+            <div role="status" className="flex items-center gap-2 py-2 text-xs">
+              {resultError
+                ? t("history.resultFailed")
+                : t("history.resultLoading")}
+              {resultError ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRetry((value) => value + 1)}
+                >
+                  {t("history.retry")}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
           {agentWorkLayout ? (
             <ToolDetailsViewport
               data-role="agent-work-tool-details"
